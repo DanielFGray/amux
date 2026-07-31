@@ -1,0 +1,100 @@
+import { test, expect } from "bun:test"
+import { spawnPty, readPty, type Pty } from "./pty.ts"
+
+const fs = require("node:fs")
+
+/** PIDs of every process in a session — mirrors pty.ts's sessionPids. */
+function sessionPids(session: number): number[] {
+  const pids: number[] = []
+  let entries: string[]
+  try {
+    entries = fs.readdirSync("/proc")
+  } catch {
+    return pids
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue
+    try {
+      const stat = fs.readFileSync(`/proc/${entry}/stat`, "utf8")
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+      if (Number(fields[3]) === session) pids.push(Number(entry))
+    } catch {}
+  }
+  return pids
+}
+
+async function waitFor(fn: () => boolean, ms = 5000) {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (fn()) return
+    await Bun.sleep(10)
+  }
+  throw new Error("waitFor: condition never became true")
+}
+
+/** Iterate a pty's pump in the background and collect everything it yields. */
+function collect(p: Pty): { text: () => string; done: Promise<void> } {
+  const chunks: Uint8Array[] = []
+  const done = (async () => {
+    for await (const c of readPty(p)) chunks.push(c)
+  })()
+  return { text: () => new TextDecoder().decode(Buffer.concat(chunks)), done }
+}
+
+test("input round-trips through the pty", async () => {
+  const p = spawnPty(["cat"], { cols: 80, rows: 24 })
+  const out = collect(p)
+  p.write("hello-pty\n")
+  await waitFor(() => out.text().includes("hello-pty"))
+  p.kill()
+  await out.done
+  expect(p.closed).toBe(true)
+})
+
+test("close() is idempotent and stops the pump", async () => {
+  const p = spawnPty(["cat"], { cols: 80, rows: 24 })
+  const out = collect(p)
+  p.close()
+  p.close()
+  p.kill() // must not throw on an already-closed master
+  await out.done
+  expect(p.closed).toBe(true)
+})
+
+test("kill terminates the whole session, background jobs included", async () => {
+  const p = spawnPty(["sh", "-c", "sleep 30 & sleep 30"], { cols: 80, rows: 24 })
+  await waitFor(() => p.sessionId() > 0)
+  const session = p.sessionId()
+  await waitFor(() => sessionPids(session).length >= 3) // shell + bg + fg sleeps
+  p.kill()
+  await waitFor(() => sessionPids(session).length === 0)
+  expect(p.closed).toBe(true)
+})
+
+test("a dead pump never reads an fd reused by a newer pty", async () => {
+  const a = spawnPty(["cat"], { cols: 80, rows: 24 })
+  const outA = collect(a)
+  a.kill()
+  await outA.done
+  await a.proc.exited // child gone, so its slave fd is free and a.master is reusable
+
+  const b = spawnPty(["cat"], { cols: 80, rows: 24 })
+  // Assert the reuse we're guarding against actually happened, so the test
+  // cannot pass vacuously on an allocator that happened to pick a new fd.
+  expect(b.master).toBe(a.master)
+
+  const outB = collect(b)
+  b.write("SECRET\n")
+  await waitFor(() => outB.text().includes("SECRET"))
+  await Bun.sleep(50)
+  expect(outA.text()).not.toContain("SECRET")
+  b.kill()
+  await outB.done
+})
+
+test("a child that exits on its own closes the pty exactly once", async () => {
+  const p = spawnPty(["sh", "-c", "exit 0"], { cols: 80, rows: 24 })
+  const out = collect(p)
+  await out.done
+  expect(p.closed).toBe(true)
+})

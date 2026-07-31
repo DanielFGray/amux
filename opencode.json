@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "references": {
+    "opentui": {
+      "path": "../opentui"
+    },
+    "herdr": {
+      "path": "../herdr"
+    }
+  }
+}
