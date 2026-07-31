@@ -58,6 +58,7 @@ const packOptions = (cols: number, rows: number, scrollback: number) =>
 
 const STATE_ROW_ITERATOR = 4
 const ROW_DATA_CELLS = 3
+const ROW_DATA_SELECTION = 4
 const CELL_GRAPHEMES_LEN = 3
 const CELL_GRAPHEMES_BUF = 4
 const CELL_BG_COLOR = 5
@@ -280,7 +281,15 @@ export class MouseEncoder {
 }
 
 export interface CellVisitor {
-  (x: number, y: number, text: string, fg: number | null, bg: number | null, width: number): void
+  (
+    x: number,
+    y: number,
+    text: string,
+    fg: number | null,
+    bg: number | null,
+    width: number,
+    selected: boolean,
+  ): void
 }
 
 export const Dirty = { none: 0, partial: 1, full: 2 } as const
@@ -313,6 +322,7 @@ export class RenderState {
   #i32 = new Int32Array(1)
   #raw = new BigUint64Array(1)
   #wide = new Int32Array(1)
+  #selection = new Uint8Array(16)
   // Measured: ghostty_render_state_row_cells_get_multi is SLOWER here than
   // separate get() calls (5.09ms vs 3.02ms per 200x50 walk) — Bun's marshalling
   // of the pointer array costs more than the calls it saves. Left unused.
@@ -393,6 +403,15 @@ export class RenderState {
 
     let y = 0
     while (g.ghostty_render_state_row_iterator_next(asPtr(iter))) {
+      let selectionStart = -1
+      let selectionEnd = -1
+      this.#selection.fill(0)
+      new DataView(this.#selection.buffer).setBigUint64(0, 16n, true)
+      if (g.ghostty_render_state_row_get(asPtr(iter), ROW_DATA_SELECTION, ptr(this.#selection)) === OK) {
+        const view = new DataView(this.#selection.buffer)
+        selectionStart = view.getUint16(8, true)
+        selectionEnd = view.getUint16(10, true)
+      }
       if (g.ghostty_render_state_row_get(asPtr(iter), ROW_DATA_CELLS, ptr(this.#cells)) === OK) {
         const cells = Number(this.#cells[0])
         this.#cellsCur = cells
@@ -437,7 +456,7 @@ export class RenderState {
               ) {
                 width = 2
               }
-              if (text) visit(x, y, text, fg, bg, width)
+              if (text) visit(x, y, text, fg, bg, width, selectionStart >= 0 && x >= selectionStart && x <= selectionEnd)
             }
           }
           x++

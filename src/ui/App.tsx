@@ -7,6 +7,7 @@ import { Sidebar } from "./Sidebar.tsx"
 import { WindowTabs } from "./WindowTabs.tsx"
 import { Hints } from "./Hints.tsx"
 import { Prompt, type PromptRequest } from "./Prompt.tsx"
+import { Capture, type CaptureView } from "./Capture.tsx"
 import { Settings, type SettingsSection } from "./Settings.tsx"
 import type { AppState } from "./state.ts"
 import type { Config } from "../config.ts"
@@ -54,6 +55,9 @@ export interface AppProps {
   capturing: boolean
   onKeybindList?: (box: ScrollBoxRenderable) => void
   prompt: PromptRequest | null
+  captureView: CaptureView | null
+  /** Compile error from the prompt's last submit, for the prompt to show. */
+  promptError?: string
 }
 
 export function App(props: AppProps) {
@@ -129,7 +133,14 @@ export function App(props: AppProps) {
         />
       </Show>
       <Show when={props.prompt} keyed>
-        {(request: PromptRequest) => <Prompt request={request} width={props.size.width} />}
+        {(request: PromptRequest) => (
+          <Prompt request={request} width={props.size.width} error={props.promptError} />
+        )}
+      </Show>
+      <Show when={props.captureView} keyed>
+        {(view: CaptureView) => (
+          <Capture view={view} width={props.size.width} height={props.size.height} />
+        )}
       </Show>
     </box>
   )

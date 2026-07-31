@@ -1,6 +1,7 @@
 import { BoxRenderable, type RenderContext } from "@opentui/core"
 import { Window } from "./window.ts"
 import type { Agent, AgentState } from "./agent.ts"
+import type { TerminalPane } from "./pane.ts"
 
 let nextSpaceId = 0
 
@@ -32,6 +33,8 @@ export class Space {
 
   onChange?: () => void
   onAgentExit?: (agent: Agent, window: Window, space: Space) => void
+  onCopy?: (text: string) => boolean | void
+  onCopyError?: (error: Error) => void
 
   constructor(ctx: RenderContext, opts: { name: string; dir: string; shell: string[] }) {
     this.#ctx = ctx
@@ -74,6 +77,8 @@ export class Space {
     if (name) window.customName = name
     window.onChange = () => this.onChange?.()
     window.onAgentExit = (agent) => this.onAgentExit?.(agent, window, this)
+    window.onCopy = this.onCopy
+    window.onCopyError = this.onCopyError
     this.#windows.push(window)
     this.selectWindow(window)
     return window
@@ -103,6 +108,42 @@ export class Space {
     if (this.#windows.length < 2) return
     const i = this.#active ? this.#windows.indexOf(this.#active) : -1
     this.selectWindow(this.#windows[(i + step + this.#windows.length) % this.#windows.length]!)
+  }
+
+  /**
+   * Break a pane out of its window into a new one — tmux's break-pane.
+   *
+   * The pane and its agent are MOVED, not restarted: the process keeps its
+   * PTY, its terminal, its scrollback and its title. Only ownership changes,
+   * which is why the agent's lifecycle hooks are re-pointed at the destination
+   * window — an exit must close the pane in the window it now lives in and
+   * fire that window's onAgentExit, or the app-level cascade would act on
+   * stale ownership.
+   *
+   * The source window collapses to its remaining panes (the same tree surgery
+   * close() does, minus the destruction). A window left with no panes is
+   * closed, the way tmux closes a window it just emptied — unless it still
+   * holds running agents, which are never discarded silently (the rule
+   * afterAgentExit uses).
+   *
+   * The destination window takes the next number and becomes active, which is
+   * tmux's session_select after a break. Returns the new window, or null when
+   * the pane is not in this space.
+   */
+  breakPane(pane: TerminalPane): Window | null {
+    const source = this.#windows.find((w) => w.panes.includes(pane))
+    if (!source) return null
+    const agent = pane.agent
+    if (!source.detachPane(pane)) return null
+    source.relinquishAgent(agent)
+
+    const window = this.newWindow()
+    window.adopt(agent, pane)
+
+    if (source.panes.length === 0 && !source.agents.some((a) => a.state !== "done")) {
+      this.closeWindow(source)
+    }
+    return window
   }
 
   /** Redraw every window's borders after `frame.externalLeft` changed. */
@@ -184,6 +225,8 @@ export class SpaceSet {
   #active: Space | null = null
   onChange?: () => void
   onAgentExit?: (agent: Agent, window: Window, space: Space) => void
+  onCopy?: (text: string) => boolean | void
+  onCopyError?: (error: Error) => void
 
   constructor(ctx: RenderContext, host: BoxRenderable, shell: string[]) {
     this.#ctx = ctx
@@ -213,6 +256,8 @@ export class SpaceSet {
     const space = new Space(this.#ctx, { name, dir, shell: this.#shell })
     space.onChange = () => this.onChange?.()
     space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space)
+    space.onCopy = this.onCopy
+    space.onCopyError = this.onCopyError
     this.#spaces.push(space)
     if (!this.#active) this.activate(space)
     else this.onChange?.()

@@ -177,3 +177,24 @@ test("windows nest between the space and its agents", async () => {
     await s.dispose()
   }
 })
+
+test("breaking a pane re-renders it under its new window", async () => {
+  const s = await setup()
+  try {
+    s.win.split("row") // the newcomer (bash) takes focus, so the tab reads 1:bash
+    await s.t.waitForFrame((f: string) => f.includes("1:bash"))
+
+    // No manual refresh: breakPane must drive the repaint itself, the way any
+    // structural change does — this is the "tabs update" half of the contract.
+    s.space.breakPane(s.win.panes[1]!)
+
+    // The broken-out pane now hangs under a fresh 2:, and the source window
+    // collapsed back to its surviving shell.
+    await s.t.waitForFrame((f: string) => f.includes("2:bash"))
+    const frame = s.t.captureCharFrame()
+    expect(frame).toContain("1:shell")
+    expect(s.space.active?.number).toBe(2)
+  } finally {
+    await s.dispose()
+  }
+})

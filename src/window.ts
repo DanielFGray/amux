@@ -51,11 +51,17 @@ export class Window {
   #zoomed: TerminalPane | null = null
   #zoomSlot: { parent: BoxRenderable; index: number; weight: number } | null = null
   #zoomTree: Renderable[] = []
+  /** Whether ordinary child input is replicated to every pane — tmux's
+   *  synchronize-panes. Treated like zoom: a transient interactive mode, shown
+   *  in the tab, never persisted or configured. */
+  #sync = false
   onChange?: () => void
   /** Fired after an agent's process exits and its views have been closed. The
    *  app uses it to decide what to show next; it is deliberately not the same
    *  as "a pane closed", because closing a view by hand is a detach, not an end. */
   onAgentExit?: (agent: Agent) => void
+  onCopy?: (text: string) => boolean | void
+  onCopyError?: (error: Error) => void
 
   constructor(ctx: RenderContext, shell: string[], cwd: string | undefined, number: number) {
     this.#ctx = ctx
@@ -84,12 +90,17 @@ export class Window {
   /** How the window reads in the tab bar and the sidebar. Both show the same
    *  string, including the zoom marker, so neither can drift from the other. */
   get label(): string {
-    return `${this.number}:${this.title}${this.#zoomed ? " Z" : ""}`
+    return `${this.number}:${this.title}${this.#zoomed ? " Z" : ""}${this.#sync ? " Y" : ""}`
   }
 
   /** True while one pane is filling the window on its own. */
   get zoomed(): boolean {
     return this.#zoomed !== null
+  }
+
+  /** True while ordinary child input is broadcast to every pane in the window. */
+  get sync(): boolean {
+    return this.#sync
   }
 
   /** Every agent, including ones no pane is currently showing. This is what
@@ -108,10 +119,15 @@ export class Window {
     return this.#agents.filter((a) => a.viewers === 0)
   }
 
-  /** Start an agent without opening a view onto it. The name defaults to the
-   *  command being run — "zsh", not a generic "shell". */
-  spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Agent {
-    const agent = new Agent({ name, cmd, cwd })
+  /**
+   * Wire an agent's lifecycle callbacks to this window.
+   *
+   * Shared by spawn and by break-pane, which hands a live agent and its hooks
+   * to a new window rather than restarting it. The callbacks close panes and
+   * fire onAgentExit against THIS window, so an agent that changes windows
+   * must be re-bound or an exit would act on stale ownership.
+   */
+  #bind(agent: Agent) {
     agent.onOutput = () => {
       for (const p of this.#panes) if (p.agent === agent) p.invalidate()
       this.onChange?.()
@@ -131,9 +147,27 @@ export class Window {
       // no output to invalidate panes — but the sidebar's ▲ must repaint.
       this.onChange?.()
     }
+  }
+
+  /** Start an agent without opening a view onto it. The name defaults to the
+   *  command being run — "zsh", not a generic "shell". */
+  spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Agent {
+    const agent = new Agent({ name, cmd, cwd })
+    this.#bind(agent)
     this.#agents.push(agent)
     this.onChange?.()
     return agent
+  }
+
+  /** Stop owning an agent without stopping it — the moving half of a break.
+   *  Its hooks are re-pointed at its new window by that window's #bind, so a
+   *  lone agent answers to exactly one window at a time. */
+  relinquishAgent(agent: Agent): boolean {
+    const i = this.#agents.indexOf(agent)
+    if (i === -1) return false
+    this.#agents.splice(i, 1)
+    this.onChange?.()
+    return true
   }
 
   /** Permanently stop an agent and close any views of it. */
@@ -150,6 +184,46 @@ export class Window {
     return this.#focused
   }
 
+  /**
+   * Send bytes to the focused pane — or to every pane when sync is on.
+   *
+   * The single child-input path. Everything the user aims at a child funnels
+   * through here: unhandled keystrokes and the literal-prefix passthrough. herdr
+   * controls (the keymap's own bindings), overlays, prompts and pane-local mouse
+   * events never reach it, so sync mode can only ever replicate input that was
+   * meant for a child in the first place.
+   *
+   * The broadcast target is the window's panes — exactly the set on screen — so
+   * it follows the layout without bookkeeping: a new split joins the fan-out, a
+   * closed pane leaves it, and a parked pane stays in it while the window is
+   * zoomed, because zoom hides panes rather than detaching them. A *detached*
+   * agent has no pane, so it receives nothing until a view is opened on it.
+   *
+   * Deduplicated by agent: a pane is a viewport, and two panes viewing one agent
+   * are one process — writing twice would double the input into it. Different
+   * sizes need no handling: every child owns a terminal of its own geometry, so
+   * the same bytes are simply delivered to each.
+   */
+  write(bytes: string | Uint8Array) {
+    if (this.#sync) {
+      const seen = new Set<Agent>()
+      for (const pane of this.#panes) {
+        if (seen.has(pane.agent)) continue
+        seen.add(pane.agent)
+        pane.write(bytes)
+      }
+      return
+    }
+    this.#focused?.write(bytes)
+  }
+
+  /** Flip synchronize-panes for this window. */
+  toggleSync() {
+    this.#sync = !this.#sync
+    this.onChange?.()
+    this.#ctx.requestRender()
+  }
+
   #makeDivider(direction: SplitDirection): Divider {
     const divider = new Divider(this.#ctx, { id: `divider-${nextId++}`, axis: direction })
     // It is a segment of the pane frame, so its ends finish as junctions.
@@ -164,6 +238,8 @@ export class Window {
     })
     setWeight(pane, 1)
     pane.onFocusRequest = (p) => this.focus(p)
+    pane.onCopy = this.onCopy
+    pane.onCopyError = this.onCopyError
     this.#panes.push(pane)
     return pane
   }
@@ -517,14 +593,22 @@ export class Window {
     return this.split("row", agent)
   }
 
-  /** Close a pane and collapse any split box left holding a single child. */
-  close(pane: TerminalPane) {
-    const i = this.#panes.indexOf(pane)
-    if (i === -1) return
+  /**
+   * Remove a pane from the layout and hand it over, without destroying it or
+   * touching its agent — the source half of a break-pane. The process keeps
+   * running and its terminal keeps its state; only ownership moves.
+   *
+   * The same tree surgery as close(): the pane's divider goes with it, and any
+   * split box left holding a single child is collapsed back into its parent.
+   * Returns the pane, or null when this window does not hold it.
+   */
+  detachPane(pane: TerminalPane): TerminalPane | null {
     // Unzoom first, whichever pane is going: while zoomed the tree is off the
     // root, and unpicking a pane out of a detached tree is how you end up
     // restoring a layout that no longer contains anything.
     if (this.#zoomed) this.#unzoom()
+    const i = this.#panes.indexOf(pane)
+    if (i === -1) return null
     this.#panes.splice(i, 1)
 
     const parent = pane.parent as BoxRenderable | null
@@ -540,7 +624,6 @@ export class Window {
       }
       parent.remove(pane)
     }
-    pane.destroyRecursively()
 
     if (parent && parent !== this.root && parent.getChildrenCount() === 1) {
       const [only] = parent.getChildren()
@@ -554,15 +637,48 @@ export class Window {
       }
     }
 
+    // Redistribute the freed space the way tmux's layout_close_pane does: the
+    // survivors keep their relative proportions but now share the whole window.
+    // Re-writing the weights is also what forces yoga to re-lay them out —
+    // OpenTUI treats flexGrow as a fraction of the container, so a lone
+    // survivor left at its old 0.5 share would otherwise render half-width.
+    const total = this.#panes.reduce((sum, p) => sum + getWeight(p), 0)
+    for (const p of this.#panes) setWeight(p, total > 0 ? getWeight(p) / total : 1)
+
     if (this.#focused === pane) {
       this.#focused = null
       if (this.#panes.length) this.focus(this.#panes[Math.min(i, this.#panes.length - 1)]!)
-      else this.onChange?.()
     }
-    // Survivors have gained edges the closed pane's divider used to cover, and
-    // a collapsed split box changes what is adjacent to what.
+    // Survivors have gained edges the removed pane's divider used to cover,
+    // and a collapsed split box changes what is adjacent to what.
     this.#refreshChrome()
     this.#ctx.requestRender()
+    return pane
+  }
+
+  /** Adopt a pane and its agent, detached from another window — break-pane's
+   *  destination half. The process and its terminal state are untouched; only
+   *  ownership moves, so the agent's hooks are re-pointed here and an exit
+   *  closes the pane in the window it now lives in. The caller detaches first,
+   *  so the pane arrives unmounted and with no other owner. */
+  adopt(agent: Agent, pane: TerminalPane) {
+    this.#agents.push(agent)
+    this.#bind(agent)
+    this.#panes.push(pane)
+    setWeight(pane, 1)
+    pane.onFocusRequest = (p) => this.focus(p)
+    this.root.add(pane)
+    this.focus(pane)
+  }
+
+  /** Close a pane and collapse any split box left holding a single child. */
+  close(pane: TerminalPane) {
+    if (!this.detachPane(pane)) return
+    pane.destroyRecursively()
+    // detachPane refocused a survivor (which notified) or left the window
+    // empty — and an empty window needs the app told, so it can close it or
+    // decide what to show next.
+    if (this.#panes.length === 0) this.onChange?.()
   }
 
   /** Kill every agent and free its terminal. Used by app shutdown so no child

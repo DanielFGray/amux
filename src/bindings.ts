@@ -7,6 +7,7 @@ import {
   registerEscapeClearsPendingSequence,
 } from "@opentui/keymap/addons"
 import type { Keymap } from "@opentui/keymap"
+import type { KeyStroke } from "./keys.ts"
 
 export type AppKeymap = Keymap<Renderable, KeyEvent>
 
@@ -93,6 +94,38 @@ export function keyToBinding(event: KeyEvent): string | null {
   }
   parts.push(name)
   return parts.join("+")
+}
+
+/**
+ * A binding string parsed into the strokes that would produce it.
+ *
+ * The send-keys path uses the same encoder the bindings are written in, so
+ * `ctrl+a`, `Enter`, `space` and even `<leader>` mean the same thing in the
+ * command prompt as they do in the keybind editor. Returns the whole sequence,
+ * not just a single key: `<leader>:` is the prefix then a colon. Returns null
+ * for anything the parser rejects outright.
+ */
+export function parseKeyStrokes(keymap: AppKeymap, token: string): KeyStroke[] | null {
+  let parts: ReturnType<AppKeymap["parseKeySequence"]>
+  try {
+    parts = keymap.parseKeySequence(token)
+  } catch {
+    return null
+  }
+  if (parts.length === 0) return null
+  const strokes: KeyStroke[] = []
+  for (const part of parts) {
+    const stroke = (part as unknown as { stroke?: Partial<KeyStroke> }).stroke
+    if (!stroke?.name) return null
+    strokes.push({
+      name: stroke.name,
+      ctrl: stroke.ctrl ?? false,
+      shift: stroke.shift ?? false,
+      meta: stroke.meta ?? false,
+      super: stroke.super ?? false,
+    })
+  }
+  return strokes
 }
 
 /**

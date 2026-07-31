@@ -7,7 +7,8 @@ import {
 } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createSignal, createMemo } from "solid-js"
-import { basename, resolve } from "node:path"
+import { basename, join, resolve } from "node:path"
+import { writeFileSync } from "node:fs"
 
 import { Divider } from "./divider.ts"
 import { SpaceSet, type Space } from "./space.ts"
@@ -15,12 +16,14 @@ import { frame, type Window } from "./window.ts"
 import type { Agent } from "./agent.ts"
 import { readGit } from "./git.ts"
 import { encodeKey } from "./keys.ts"
+import { pickSendTarget, sendKeys, type SendTarget } from "./send.ts"
 import {
   createBindings,
   helpGroups,
   nextKeys,
   formatSequence,
   leaderBytes,
+  parseKeyStrokes,
   DEFAULT_LEADER,
   type CommandSpec,
   type Conflict,
@@ -38,6 +41,13 @@ import {
   type SettingsSection,
 } from "./ui/Settings.tsx"
 import type { PromptRequest } from "./ui/Prompt.tsx"
+import {
+  captureSpan,
+  pickCaptureTarget,
+  type CaptureSpan,
+  type CaptureTarget,
+} from "./capture.ts"
+import { Capture, type CaptureView } from "./ui/Capture.tsx"
 
 const config = await loadConfig()
 // Push the loaded values into the copy imperative code reads.
@@ -60,6 +70,8 @@ const paneHost = new BoxRenderable(renderer, {
 })
 
 const spaces = new SpaceSet(renderer, paneHost, SHELL)
+spaces.onCopy = (text) => renderer.copyToClipboardOSC52(text)
+spaces.onCopyError = (error) => console.error(error.message)
 const app = createAppState(spaces)
 
 /**
@@ -138,6 +150,10 @@ const [overlay, setOverlay] = createSignal<Overlay>("none")
 // reachable, and a display string cannot be matched back.
 const [pendingParts, setPendingParts] = createSignal<readonly { display: string }[]>([])
 const [promptRequest, setPromptRequest] = createSignal<PromptRequest | null>(null)
+/** Compile error from the send-keys prompt's last submit. Kept separate from
+ *  the request so a reject does not recreate it and wipe the user's input. */
+const [promptError, setPromptError] = createSignal<string>("")
+const [captureView, setCaptureView] = createSignal<CaptureView | null>(null)
 const [settingsSection, setSettingsSection] = createSignal<SettingsSection>("sidebar")
 const [settingsSelected, setSettingsSelected] = createSignal(0)
 const [settingsDirty, setSettingsDirty] = createSignal(false)
@@ -156,6 +172,7 @@ const activeWin = () => spaces.activeWindow
 /** Open a modal prompt and resolve with the field values, or null on cancel. */
 function ask(title: string, fields: PromptRequest["fields"]): Promise<string[] | null> {
   return new Promise((resolveAsk) => {
+    setPromptError("")
     setPromptRequest({
       title,
       fields,
@@ -356,6 +373,130 @@ function resetBinding(unbind: boolean) {
   setKeys({ ...keys, bindings: next })
 }
 
+/**
+ * A capture command's target: the focused pane, else the sidebar's selected
+ * agent. Capture only reads a terminal, so — unlike send-keys — the selected
+ * agent needs no viewport: a detached agent is captured as it is, without
+ * being revealed or otherwise touched.
+ */
+function captureTarget(): CaptureTarget | null {
+  const focused = spaces.activeWindow?.focused?.agent ?? null
+  const selection = targets()[selected()]
+  const selectedAgent = selection?.kind === "agent" ? selection.agent : null
+  return pickCaptureTarget(
+    focused ? { term: focused.term, describe: () => focused.title || "pane" } : null,
+    selectedAgent
+      ? { term: selectedAgent.term, describe: () => selectedAgent.title || "pane" }
+      : null,
+  )
+}
+
+/**
+ * Capture the focused or selected pane and open its destination.
+ *
+ * The popup is tmux's capture-pane followed by save-buffer: it shows exactly
+ * what was captured and `s` writes it to the shown path. `f` re-captures the
+ * other span (visible ↔ scrollback) into the same buffer, so both reaches of
+ * the terminal are one `s` away. Nothing is written until then, and capturing
+ * never touches the terminal — a detached agent is as capturable as the pane
+ * in front of you.
+ */
+function openCapture() {
+  const target = captureTarget()
+  if (!target) {
+    setPromptError("")
+    setPromptRequest({
+      title: "capture",
+      notice: "no pane to capture",
+      fields: [],
+      resolve: () => setPromptRequest(null),
+    })
+    return
+  }
+  const dir = spaces.active?.dir ?? process.cwd()
+  const name = target.describe().replace(/[^\w.-]+/g, "-") || "pane"
+  const path = join(dir, `capture-${name}-${Date.now()}.txt`)
+  const open = (span: CaptureSpan) => {
+    const content = captureSpan(target.term, span)
+    setCaptureView({
+      title: `captured pane: ${target.describe()}`,
+      content,
+      path,
+      span,
+      saved: false,
+      onToggleSpan: () => open(span === "scrollback" ? "visible" : "scrollback"),
+      onSave: () => {
+        writeFileSync(path, content)
+        setCaptureView((view) => (view ? { ...view, saved: true } : view))
+      },
+      onClose: () => setCaptureView(null),
+    })
+  }
+  open("visible")
+}
+
+/**
+ * The pane send-keys targets: the focused pane, or the sidebar's selected
+ * agent when nothing is focused. Selected agents are revealed first — a row is
+ * only a "selected pane" once it has a viewport keystrokes can land in.
+ */
+function sendKeysTarget(): SendTarget | null {
+  const focused = spaces.activeWindow?.focused ?? null
+  const selection = targets()[selected()]
+  const focusedTarget = focused
+    ? {
+        write: (b: string) => focused.write(b),
+        describe: () => focused.agent.title || "pane",
+      }
+    : null
+  const selectedTarget =
+    selection?.kind === "agent"
+      ? {
+          write: (b: string) => selection.window.reveal(selection.agent)?.write(b),
+          describe: () => selection.agent.title || "pane",
+        }
+      : null
+  return pickSendTarget(focusedTarget, selectedTarget, () => {
+    if (selection?.kind !== "agent") return
+    if (selection.space !== spaces.active) spaces.activate(selection.space)
+    selection.space.selectWindow(selection.window)
+  })
+}
+
+/**
+ * ^a : — tmux's command prompt, for tmux's send-keys.
+ *
+ * The prompt names its target up front, so "where did that go" is answered
+ * before the keystroke is typed. A rejected input keeps the prompt open with
+ * the reason in it — an empty or misquoted string is a typo to fix, not a
+ * command to retype — while a missing target is a plain notice. Injected bytes
+ * go to the pane's own write path, so app bindings never see them.
+ */
+function sendKeysCommand() {
+  const target = sendKeysTarget()
+  if (!target) {
+    setPromptError("")
+    setPromptRequest({
+      title: "send-keys",
+      notice: "no pane to send to",
+      fields: [],
+      resolve: () => setPromptRequest(null),
+    })
+    return
+  }
+  setPromptError("")
+  setPromptRequest({
+    title: `send-keys → ${target.describe()}`,
+    footer: "keys: Enter, Escape, ctrl+a, space · text: 'ls -la' Enter · esc cancel",
+    fields: [{ label: "keys", placeholder: "e.g. 'ls -la' Enter" }],
+    resolve: (values) => {
+      const error = sendKeys(target, values?.[0] ?? "", parseKeyStrokes.bind(null, bindings.keymap))
+      if (error) setPromptError(error.message)
+      else setPromptRequest(null)
+    },
+  })
+}
+
 const COMMANDS: CommandSpec[] = [
   // Panes — splits keep the tmux-ish | and -, which read better than " and %.
   {
@@ -426,6 +567,33 @@ const COMMANDS: CommandSpec[] = [
       if (w?.focused) w.close(w.focused)
     },
   },
+  {
+    name: "pane.capture",
+    // shift+c: plain ^a c is new window, and this is near pane.close's ^a x.
+    key: "<leader>shift+c",
+    desc: "capture the focused pane (s saves)",
+    group: "panes",
+    run: openCapture,
+  },
+  {
+    name: "pane.send-keys",
+    // tmux's command prompt, via tmux's send-keys.
+    key: "<leader>:",
+    desc: "send keys to the focused pane (tmux send-keys)",
+    group: "panes",
+    run: sendKeysCommand,
+  },
+  {
+    // The binding tmux itself gives break-pane.
+    name: "pane.break",
+    key: "<leader>!",
+    desc: "break the focused pane into its own window",
+    group: "panes",
+    run: () => {
+      const w = activeWin()
+      if (w?.focused) spaces.active?.breakPane(w.focused)
+    },
+  },
 
   // Windows.
   {
@@ -466,6 +634,13 @@ const COMMANDS: CommandSpec[] = [
       const w = space?.active
       if (space && w) space.closeWindow(w)
     },
+  },
+  {
+    name: "window.synchronize-panes",
+    key: "<leader>y",
+    desc: "toggle synchronize-panes (input to every pane)",
+    group: "windows",
+    run: () => activeWin()?.toggleSync(),
   },
   // 1..9 select by the window's own number, which is why that number is stable
   // rather than a position in the list.
@@ -586,7 +761,7 @@ const COMMANDS: CommandSpec[] = [
     fixed: true,
     run: () => {
       const bytes = leaderBytes(bindings.leader())
-      if (bytes) activeWin()?.focused?.write(bytes)
+      if (bytes) activeWin()?.write(bytes)
     },
   },
   { name: "app.quit", key: "<leader>q", desc: "quit", group: "global", run: () => shutdown() },
@@ -599,13 +774,32 @@ const COMMANDS: CommandSpec[] = [
  */
 function onUnhandled(event: KeyEvent): boolean {
   if (promptRequest()) {
+    const request = promptRequest()!
+    // A notice is a message, not a form: nothing is focused to hand the key to,
+    // so every key is consumed here and enter/escape dismiss it.
+    if (request.notice) {
+      if (event.name === "escape" || event.name === "return" || event.name === "enter") {
+        request.resolve(null)
+      }
+      return true
+    }
     // Escape cancels; everything else belongs to the focused input, so leave
     // the event alone and let focus routing deliver it.
     if (event.name === "escape") {
-      promptRequest()?.resolve(null)
+      request.resolve(null)
       return true
     }
     return false
+  }
+  if (captureView()) {
+    // The capture popup is its own modal: s writes the file, f re-captures
+    // the other span, escape backs out without saving. Everything else stays
+    // with the popup.
+    const view = captureView()!
+    if (event.name === "s") view.onSave()
+    else if (event.name === "f") view.onToggleSpan()
+    else if (event.name === "escape") view.onClose()
+    return true
   }
   if (overlay() !== "none") {
     if (event.name === "escape" || event.name === "q") setOverlay("none")
@@ -617,7 +811,7 @@ function onUnhandled(event: KeyEvent): boolean {
     return true
   }
   const bytes = encodeKey(event)
-  if (bytes !== null) activeWin()?.focused?.write(bytes)
+  if (bytes !== null) activeWin()?.write(bytes)
   return true
 }
 
@@ -820,6 +1014,8 @@ await render(
         keybindList = box
       }}
       prompt={promptRequest()}
+      promptError={promptError()}
+      captureView={captureView()}
     />
   ),
   renderer,

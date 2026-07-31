@@ -17,6 +17,8 @@ import {
 import type { Agent } from "./agent.ts"
 import { runtime } from "./config.ts"
 import { STATE_GLYPH } from "./detect.ts"
+import { captureRange } from "./shim.ts"
+import { clearSelection, setSelection } from "./shim.ts"
 
 const DEFAULT_FG = RGBA.fromInts(205, 214, 244, 255)
 const DEFAULT_BG = RGBA.fromInts(30, 30, 46, 255)
@@ -25,6 +27,8 @@ const BORDER_HOVER = RGBA.fromInts(203, 166, 247, 255) // mauve
 const BORDER_IDLE = RGBA.fromInts(69, 71, 90, 255) // surface1
 const CURSOR_ON = RGBA.fromInts(249, 226, 175, 255)
 const CURSOR_IDLE = RGBA.fromInts(108, 112, 134, 255)
+const SELECTION_FG = 0x1e1e2e
+const SELECTION_BG = 0x89b4fa
 
 /** @deprecated the sidebar owns state glyphs now; see detect.ts STATE_GLYPH. */
 export const STATUS_DOT = STATE_GLYPH
@@ -54,6 +58,11 @@ interface Run {
   bg: RGBA
 }
 
+interface CellPoint {
+  x: number
+  y: number
+}
+
 const color = (c: number | null, fallback: RGBA) =>
   c === null ? fallback : RGBA.fromInts((c >> 16) & 255, (c >> 8) & 255, c & 255, 255)
 
@@ -81,12 +90,17 @@ export class TerminalPane extends Renderable {
   active = false
   hovered = false
   onFocusRequest?: (pane: TerminalPane) => void
+  onCopy?: (text: string) => boolean | void
+  onCopyError?: (error: Error) => void
 
   #runs: Run[] = []
   #cachedCursor: CursorInfo | null = null
   #cursorText = " "
   #haveCache = false
   #edges: Edges = { ...ALL_EDGES }
+  #selectionAnchor: CellPoint | null = null
+  #selectionEnd: CellPoint | null = null
+  #selecting = false
 
   constructor(ctx: RenderContext, options: { id: string; agent: Agent } & Record<string, any>) {
     super(ctx, options)
@@ -139,7 +153,7 @@ export class TerminalPane extends Renderable {
     this.#haveCache = false
   }
 
-  write(data: string) {
+  write(data: string | Uint8Array) {
     this.agent.write(data)
     this.#haveCache = false
   }
@@ -182,6 +196,42 @@ export class TerminalPane extends Renderable {
 
     const seq = this.#mouse.encode(this.agent.term, x, y, action, button, event.modifiers)
 
+    const point = this.#point(x, y)
+    if (event.type === "down" && (event.modifiers.shift || !seq)) {
+      this.#selecting = true
+      this.#selectionAnchor = point
+      this.#selectionEnd = point
+      setSelection(this.agent.term.handle, point.x, point.y, point.x, point.y)
+      ;(this._ctx as unknown as { setCapturedRenderable?: (r: unknown) => void })
+        .setCapturedRenderable?.(this)
+      this.invalidate()
+      event.stopPropagation()
+      return
+    }
+
+    if (this.#selecting && (event.type === "drag" || event.type === "move")) {
+      this.#selectionEnd = point
+      const anchor = this.#selectionAnchor!
+      setSelection(this.agent.term.handle, anchor.x, anchor.y, point.x, point.y)
+      this.invalidate()
+      event.stopPropagation()
+      return
+    }
+
+    if (this.#selecting && (event.type === "drag-end" || event.type === "up")) {
+      this.#selectionEnd = point
+      const anchor = this.#selectionAnchor!
+      setSelection(this.agent.term.handle, anchor.x, anchor.y, point.x, point.y)
+      if (anchor.x !== point.x || anchor.y !== point.y) this.#copySelection(anchor, point)
+      else clearSelection(this.agent.term.handle)
+      this.#selecting = false
+      this.#selectionAnchor = null
+      this.#selectionEnd = null
+      this.invalidate()
+      event.stopPropagation()
+      return
+    }
+
     // Full-screen apps (vim, htop) want the wheel themselves. A plain shell
     // does not, and there the wheel should walk our scrollback instead.
     if (!seq && event.type === "scroll") {
@@ -196,6 +246,34 @@ export class TerminalPane extends Renderable {
       this.agent.write(seq)
       this.#haveCache = false
       event.stopPropagation()
+    }
+  }
+
+  #point(x: number, y: number): CellPoint {
+    const rows = this.agent.term.scrollbar
+    return {
+      x: Math.max(0, Math.min(this.agent.term.cols - 1, x)),
+      y: Math.max(0, Math.min(this.agent.term.rows - 1, y)) + rows.offset,
+    }
+  }
+
+  #copySelection(a: CellPoint, b: CellPoint) {
+    const start = a.y < b.y || (a.y === b.y && a.x <= b.x) ? a : b
+    const end = start === a ? b : a
+    const bytes = captureRange(this.agent.term.handle, {
+      startTag: 2,
+      startX: start.x,
+      startY: start.y,
+      endTag: 2,
+      endX: end.x,
+      endY: end.y,
+    })
+    const text = new TextDecoder().decode(bytes)
+    if (!text || !this.onCopy) return
+    try {
+      if (this.onCopy(text) === false) this.onCopyError?.(new Error("clipboard rejected OSC 52"))
+    } catch (error) {
+      this.onCopyError?.(error instanceof Error ? error : new Error(String(error)))
     }
   }
 
@@ -273,16 +351,18 @@ export class TerminalPane extends Renderable {
 
     const maxY = this.height - this.#padY
     const maxX = this.width - this.#padX
-    this.#state.forEachCell((x, y, t, fg, bg, width) => {
+    this.#state.forEachCell((x, y, t, fg, bg, width, selected) => {
       if (y >= maxY || x >= maxX) return
       if (cur && x === cur.x && y === cur.y) this.#cursorText = t
 
-      if (text && (y !== ry || x !== nextX || fg !== rFg || bg !== rBg)) flush()
+      const runFg = selected ? SELECTION_FG : fg
+      const runBg = selected ? SELECTION_BG : bg
+      if (text && (y !== ry || x !== nextX || runFg !== rFg || runBg !== rBg)) flush()
       if (!text) {
         rx = x
         ry = y
-        rFg = fg
-        rBg = bg
+        rFg = runFg
+        rBg = runBg
       }
       text += t
       nextX = x + width

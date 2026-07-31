@@ -5,6 +5,8 @@
   "private": true,
   "scripts": {
     "start": "bun src/main.tsx",
+    "daemon": "bun src/daemon-main.ts",
+    "session": "bun src/session-cli.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
   },
