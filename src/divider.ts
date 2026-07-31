@@ -73,6 +73,10 @@ export class Divider extends Renderable {
    *  divider. Set by Window, which is the only thing that knows the tree. */
   capStart = false
   capEnd = false
+  /** True when the divider is the frame's outer edge — the sidebar handle,
+   *  which is the left border of the panes beside it. Nothing is drawn on its
+   *  far side, so its ends are corners rather than tees. */
+  outer = false
   /** True when the focused pane is on one side of this divider — the shared
    *  border is the focused pane's border too, so it highlights with it. */
   adjacentToFocus = false
@@ -192,9 +196,11 @@ export class Divider extends Renderable {
     for (let i = 0; i < length; i++) buffer.setCell(...at(i), vertical ? "│" : "─", fg, BG)
 
     if (!this.tees) return
+    // An outer edge has no frame continuing past it, so it turns a corner where
+    // an interior divider would tee into the pane on the other side.
     const [sx, sy] = at(this.capStart ? 0 : -1)
-    buffer.setCell(sx, sy, vertical ? "┬" : "├", fg, BG)
+    buffer.setCell(sx, sy, this.outer ? "┌" : vertical ? "┬" : "├", fg, BG)
     const [ex, ey] = at(this.capEnd ? length - 1 : length)
-    buffer.setCell(ex, ey, vertical ? "┴" : "┤", fg, BG)
+    buffer.setCell(ex, ey, this.outer ? (vertical ? "└" : "┐") : vertical ? "┴" : "┤", fg, BG)
   }
 }

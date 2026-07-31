@@ -20,9 +20,9 @@ export interface AppProps {
   paneHost: BoxRenderable
   size: { width: number; height: number }
 
-  /** The draggable edge between sidebar and panes. A Divider instance rather
-   *  than a component: it needs to claim the pointer on press, which only the
-   *  renderable can do. */
+  /** The draggable edge between sidebar and panes, which doubles as the pane
+   *  frame's left border. A Divider instance rather than a component: it needs
+   *  to claim the pointer on press, which only the renderable can do. */
   sidebarHandle: Renderable
   sidebarWidth: number
   sidebarOpen: boolean
@@ -51,6 +51,10 @@ export function App(props: AppProps) {
   // the pane area, beside the sidebar rather than above it. Always present, even
   // at one window — a tab bar that appears and disappears shifts the whole pane
   // area by a row, and it is where the prefix indicator lives.
+  //
+  // The sidebar handle sits *below* the tab row rather than beside it, because
+  // it is the pane frame's left border: it has to start and end exactly where
+  // the frame does, or its corners land in the wrong cells.
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
       <Show when={props.sidebarOpen}>
@@ -63,7 +67,6 @@ export function App(props: AppProps) {
           onHover={props.onHover}
           onActivate={props.onActivate}
         />
-        {props.sidebarHandle}
       </Show>
 
       <box style={{ flexGrow: 1, flexDirection: "column" }}>
@@ -74,7 +77,10 @@ export function App(props: AppProps) {
           pending={props.pending}
           onSelect={props.onSelectWindow}
         />
-        {props.paneHost}
+        <box style={{ flexGrow: 1, flexDirection: "row" }}>
+          <Show when={props.sidebarOpen}>{props.sidebarHandle}</Show>
+          {props.paneHost}
+        </box>
       </box>
 
       <Show when={props.overlay === "help"}>

@@ -1,7 +1,13 @@
 import { Terminal, RenderState } from "./ghostty.ts"
 import { spawnPty, readPty, type Pty } from "./pty.ts"
 import { scrollViewport, ScrollTo } from "./shim.ts"
-import { splitActivity, looksBlocked, identifyAgent, type AgentState } from "./detect.ts"
+import {
+  splitActivity,
+  looksBlocked,
+  identifyAgent,
+  commandName,
+  type AgentState,
+} from "./detect.ts"
 
 export type { AgentState }
 /** @deprecated use AgentState — kept so older call sites keep compiling. */
@@ -23,7 +29,9 @@ const BLOCKED_SCAN_ROWS = 20
 const AGENT_POLL_MS = 500
 
 export interface AgentOptions {
-  name: string
+  /** Display name before the child reports an OSC title. Defaults to the
+   *  executable being run, which is nearly always the better answer. */
+  name?: string
   cmd: string[]
   cwd?: string
   cols?: number
@@ -72,7 +80,7 @@ export class Agent {
   onScroll?: (agent: Agent) => void
 
   constructor(opts: AgentOptions) {
-    this.name = opts.name
+    this.name = opts.name ?? commandName(opts.cmd)
     this.cmd = opts.cmd
     this.#spawnedAs = identifyAgent(opts.cmd.join(" "))
     const cols = opts.cols ?? 80

@@ -6,7 +6,7 @@ import { basename, resolve } from "node:path"
 
 import { Divider } from "./divider.ts"
 import { SpaceSet, type Space } from "./space.ts"
-import type { Window } from "./window.ts"
+import { frame, type Window } from "./window.ts"
 import type { Agent } from "./agent.ts"
 import { readGit } from "./git.ts"
 import { encodeKey } from "./keys.ts"
@@ -99,6 +99,14 @@ const sidebarHandle = new Divider(renderer, {
   axis: "row",
   onDrag: resizeSidebar,
 })
+// It is the pane frame's left border, not a bare rule between two regions: it
+// finishes with corners and the panes beside it stop drawing a left edge, so
+// the seam is one column wide instead of two adjacent lines.
+sidebarHandle.tees = true
+sidebarHandle.outer = true
+sidebarHandle.capStart = true
+sidebarHandle.capEnd = true
+
 const [sidebarOpen, setSidebarOpen] = createSignal(config.sidebar.open)
 const [sidebarFocused, setSidebarFocused] = createSignal(false)
 const [selected, setSelected] = createSignal(0)
@@ -141,7 +149,7 @@ async function newSpace() {
   const target = resolve(dir?.trim() || cwd)
   const space = spaces.create(name?.trim() || basename(target), target)
   spaces.activate(space)
-  space.newWindow().init("shell")
+  space.newWindow().init()
   void refreshGit()
 }
 
@@ -197,6 +205,32 @@ function killSelection() {
   app.refresh()
 }
 
+/**
+ * Keep the pane frame in step with the sidebar.
+ *
+ * While the sidebar is open its handle is the frame's left border, so every
+ * pane must stop drawing one; closing it hands that side back. And because the
+ * handle *is* the leftmost pane's border, it highlights with that pane rather
+ * than sitting inertly grey next to a focused one.
+ */
+function syncSidebarBorder() {
+  sidebarHandle.adjacentToFocus = sidebarOpen() && (spaces.activeWindow?.focusAtLeftEdge ?? false)
+}
+
+function syncSidebarFrame() {
+  frame.externalLeft = sidebarOpen()
+  syncSidebarBorder()
+  spaces.refreshChrome()
+}
+
+// Appended to the app state's own handler rather than replacing it: focus moves
+// are structural changes, and this is the only notification of one.
+const notifyChange = spaces.onChange
+spaces.onChange = () => {
+  notifyChange?.()
+  syncSidebarBorder()
+}
+
 function toggleSidebar() {
   // closed -> open+focused, open+focused -> closed, open+unfocused -> focus it.
   if (!sidebarOpen()) {
@@ -210,6 +244,7 @@ function toggleSidebar() {
     setSidebarFocused(true)
     selectFocusedAgent()
   }
+  syncSidebarFrame()
 }
 
 function selectFocusedAgent() {
@@ -261,6 +296,36 @@ const COMMANDS: CommandSpec[] = [
     group: "panes",
     run: () => activeWin()?.focusNext(1),
   },
+  // Directional focus, tmux's select-pane. Two sequences per direction rather
+  // than two commands, so the help shows both against one entry.
+  ...(
+    [
+      ["left", "h"],
+      ["down", "j"],
+      ["up", "k"],
+      ["right", "l"],
+    ] as const
+  ).map(([direction, letter]) => ({
+    name: `pane.focus-${direction}`,
+    key: [`<leader>${letter}`, `<leader>${direction}`],
+    desc: `focus pane ${direction}`,
+    group: "panes",
+    run: () => activeWin()?.focusDirection(direction),
+  })),
+  {
+    name: "pane.swap-previous",
+    key: "<leader>{",
+    desc: "swap pane with the previous one",
+    group: "panes",
+    run: () => activeWin()?.swap(-1),
+  },
+  {
+    name: "pane.swap-next",
+    key: "<leader>}",
+    desc: "swap pane with the next one",
+    group: "panes",
+    run: () => activeWin()?.swap(1),
+  },
   {
     name: "pane.close",
     key: "<leader>x",
@@ -278,7 +343,7 @@ const COMMANDS: CommandSpec[] = [
     key: "<leader>c",
     desc: "new window",
     group: "windows",
-    run: () => void spaces.active?.newWindow().init("shell"),
+    run: () => void spaces.active?.newWindow().init(),
   },
   {
     name: "window.next",
@@ -516,8 +581,11 @@ for (const sig of Object.keys(SIGNAL_EXIT)) {
 }
 process.once("exit", () => spaces.disposeAll())
 
+// Before the first window exists, so its panes are built with the right edges.
+syncSidebarFrame()
 const first = spaces.create(basename(process.cwd()) || "space", process.cwd())
-first.newWindow().init("shell")
+first.newWindow().init()
+syncSidebarFrame()
 void refreshGit()
 const gitTimer = setInterval(() => void refreshGit(), 5000)
 gitTimer.unref?.()

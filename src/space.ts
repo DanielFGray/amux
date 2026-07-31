@@ -105,6 +105,11 @@ export class Space {
     this.selectWindow(this.#windows[(i + step + this.#windows.length) % this.#windows.length]!)
   }
 
+  /** Redraw every window's borders after `frame.externalLeft` changed. */
+  refreshChrome() {
+    for (const w of this.#windows) w.refreshChrome()
+  }
+
   /** Close a window and everything running in it. */
   closeWindow(window: Window) {
     const i = this.#windows.indexOf(window)
@@ -203,6 +208,12 @@ export class SpaceSet {
     if (window && pane) window.focus(pane)
     this.onChange?.()
     this.#ctx.requestRender()
+  }
+
+  /** Redraw every pane frame everywhere — an inactive space's windows too, so
+   *  switching back to one does not reveal a stale border. */
+  refreshChrome() {
+    for (const s of this.#spaces) s.refreshChrome()
   }
 
   cycle(step = 1) {

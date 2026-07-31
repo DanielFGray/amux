@@ -6,7 +6,20 @@ import { Divider, getWeight, setWeight, getDirection, setDirection } from "./div
 
 export type SplitDirection = "row" | "column"
 
+/** Which way `focusDirection` looks. Screen directions, not tree axes. */
+export type Direction = "left" | "right" | "up" | "down"
+
 let nextId = 0
+
+/**
+ * Chrome the window does not draw itself.
+ *
+ * With the sidebar open, the sidebar's drag handle *is* the pane frame's left
+ * border — one line between the tree and the panes rather than two adjacent
+ * ones. The panes and their dividers then have to leave that column alone, and
+ * they need telling, because nothing inside a window can see the sidebar.
+ */
+export const frame = { externalLeft: false }
 
 /**
  * A window: one split tree of panes, and the agents behind them.
@@ -79,8 +92,9 @@ export class Window {
     return this.#agents.filter((a) => a.viewers === 0)
   }
 
-  /** Start an agent without opening a view onto it. */
-  spawn(name: string, cmd = this.#shell, cwd = this.#cwd): Agent {
+  /** Start an agent without opening a view onto it. The name defaults to the
+   *  command being run — "zsh", not a generic "shell". */
+  spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Agent {
     const agent = new Agent({ name, cmd, cwd })
     agent.onOutput = () => {
       for (const p of this.#panes) if (p.agent === agent) p.invalidate()
@@ -139,7 +153,7 @@ export class Window {
   }
 
   /** Seed the workspace with a single agent and a view onto it. */
-  init(name = "shell"): TerminalPane {
+  init(name?: string): TerminalPane {
     const pane = this.#makePane(this.spawn(name))
     this.root.add(pane)
     this.focus(pane)
@@ -187,7 +201,9 @@ export class Window {
   #refreshChrome() {
     for (const pane of this.#panes) {
       pane.edges = {
-        left: !this.#hasNeighbour(pane, "row", -1),
+        // frame.externalLeft: the sidebar handle owns that column, so no pane
+        // draws a left border while the sidebar is open.
+        left: !frame.externalLeft && !this.#hasNeighbour(pane, "row", -1),
         right: !this.#hasNeighbour(pane, "row", 1),
         top: !this.#hasNeighbour(pane, "column", -1),
         bottom: !this.#hasNeighbour(pane, "column", 1),
@@ -197,10 +213,28 @@ export class Window {
       // A divider's ends meet the window's outer border exactly where it has no
       // neighbour of its own across the perpendicular axis.
       const cross: SplitDirection = divider.axis === "row" ? "column" : "row"
-      divider.capStart = !this.#hasNeighbour(divider, cross, -1)
+      // A horizontal divider running to the window's left edge no longer ends
+      // there: the sidebar handle is one column further out, and an uncapped end
+      // is exactly the "draw the tee one cell outside me" case, which lands the
+      // junction in that handle's column.
+      divider.capStart =
+        !this.#hasNeighbour(divider, cross, -1) && !(frame.externalLeft && cross === "row")
       divider.capEnd = !this.#hasNeighbour(divider, cross, 1)
       divider.adjacentToFocus = this.#focused ? this.#touches(divider, this.#focused) : false
     }
+  }
+
+  /** Recompute borders after something outside the window changed — the only
+   *  case being the sidebar opening or closing. */
+  refreshChrome() {
+    this.#refreshChrome()
+    this.#ctx.requestRender()
+  }
+
+  /** True when the focused pane sits against the window's left edge, so the
+   *  sidebar handle is that pane's border and should highlight with it. */
+  get focusAtLeftEdge(): boolean {
+    return this.#focused ? !this.#hasNeighbour(this.#focused, "row", -1) : false
   }
 
   #dividers(root: Renderable = this.root, out: Divider[] = []): Divider[] {
@@ -235,13 +269,108 @@ export class Window {
   }
 
   /**
+   * Move focus to the nearest pane in a screen direction.
+   *
+   * Geometric rather than structural, the way tmux's select-pane -LDUR is: the
+   * split tree says a pane's *sibling* is to the right, but with nesting the
+   * pane visually to the right is often two levels away, and walking the tree
+   * gets that wrong in exactly the layouts where it matters.
+   *
+   * Candidates are panes wholly on the requested side that overlap this pane on
+   * the perpendicular axis; the nearest wins, and the widest overlap breaks a
+   * tie — so leaving a tall pane for a column of short ones lands on the one you
+   * are actually looking at rather than the first in the list.
+   */
+  focusDirection(direction: Direction) {
+    const from = this.#focused
+    if (!from || this.#panes.length < 2) return
+    const horizontal = direction === "left" || direction === "right"
+    const backwards = direction === "left" || direction === "up"
+
+    const start = (p: TerminalPane) => (horizontal ? p.x : p.y)
+    const end = (p: TerminalPane) => (horizontal ? p.x + p.width : p.y + p.height)
+    const crossStart = (p: TerminalPane) => (horizontal ? p.y : p.x)
+    const crossEnd = (p: TerminalPane) => (horizontal ? p.y + p.height : p.x + p.width)
+
+    let best: TerminalPane | null = null
+    let bestGap = Infinity
+    let bestOverlap = 0
+    for (const pane of this.#panes) {
+      if (pane === from) continue
+      const gap = backwards ? start(from) - end(pane) : start(pane) - end(from)
+      // Negative means the two overlap on this axis: not on that side at all.
+      if (gap < 0 || gap > bestGap) continue
+      const overlap =
+        Math.min(crossEnd(from), crossEnd(pane)) - Math.max(crossStart(from), crossStart(pane))
+      if (overlap <= 0) continue
+      if (gap < bestGap || overlap > bestOverlap) {
+        best = pane
+        bestGap = gap
+        bestOverlap = overlap
+      }
+    }
+    if (best) this.focus(best)
+  }
+
+  /**
+   * Exchange the focused pane with its neighbour in pane order, tmux's `{`/`}`.
+   *
+   * The panes trade places in the tree while each *slot* keeps its size, so a
+   * swap rearranges the layout's contents without reshaping it. Focus travels
+   * with the pane, which is what makes repeated presses walk it along.
+   */
+  swap(step: 1 | -1) {
+    const from = this.#focused
+    if (!from || this.#panes.length < 2) return
+    const i = this.#panes.indexOf(from)
+    const j = (i + step + this.#panes.length) % this.#panes.length
+    const to = this.#panes[j]!
+
+    const parentA = from.parent as BoxRenderable | null
+    const parentB = to.parent as BoxRenderable | null
+    if (!parentA || !parentB) return
+
+    const weightA = getWeight(from)
+    const weightB = getWeight(to)
+
+    if (parentA === parentB) {
+      const children = parentA.getChildren()
+      const [firstAt, secondAt] = [children.indexOf(from), children.indexOf(to)].sort((a, b) => a - b)
+      const first = children[firstAt!] as Renderable
+      const second = children[secondAt!] as Renderable
+      // Remove the later one first: taking the earlier one out would shift the
+      // index we still need.
+      parentA.remove(second)
+      parentA.remove(first)
+      parentA.add(second, firstAt!)
+      parentA.add(first, secondAt!)
+    } else {
+      const atA = parentA.getChildren().indexOf(from)
+      const atB = parentB.getChildren().indexOf(to)
+      parentA.remove(from)
+      parentB.remove(to)
+      parentA.add(to, atA)
+      parentB.add(from, atB)
+    }
+
+    setWeight(from, weightB)
+    setWeight(to, weightA)
+    // Keep pane order matching the layout, so another press keeps going the
+    // same way instead of swapping back.
+    this.#panes[i] = to
+    this.#panes[j] = from
+    this.#refreshChrome()
+    this.focus(from)
+  }
+
+  /**
    * Split the focused pane, reusing its slot.
    *
    * If the parent already runs along the requested axis the new pane is just
    * inserted as a sibling; otherwise the pane is swapped for a nested Box so
    * the tree stays a proper h/v alternation instead of a flat list.
    */
-  split(direction: SplitDirection, agent?: Agent, name = "shell"): TerminalPane | null {
+  split(direction: SplitDirection, agent?: Agent, name?: string): TerminalPane | null {
     const target = this.#focused
     if (!target) {
       if (!agent) return this.init(name)

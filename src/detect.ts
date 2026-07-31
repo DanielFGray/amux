@@ -72,6 +72,20 @@ export function identifyAgent(command: string): string | null {
   return AGENT_EXECUTABLES[executableName(tokens[1])] ?? null
 }
 
+/**
+ * A readable name for whatever a pane was launched as: "zsh", "claude", "nvim".
+ *
+ * Every pane used to be labelled "shell" until its child got round to setting an
+ * OSC title, which said nothing — the interesting part is *which* shell, and the
+ * command line already carries it. Login shells arrive as argv[0] "-zsh", so the
+ * conventional leading dash is stripped.
+ */
+export function commandName(cmd: readonly string[]): string {
+  const first = cmd[0]?.trim()
+  if (!first) return "shell"
+  return executableName(first.replace(/^-/, "")) || "shell"
+}
+
 /** Non-braille glyphs Claude Code cycles through in its title while thinking. */
 const CLAUDE_ACTIVITY_GLYPHS = "·✢✳✶✻✽"
 
