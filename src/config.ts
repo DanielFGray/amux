@@ -1,0 +1,69 @@
+import { mkdir } from "node:fs/promises"
+import { dirname, join } from "node:path"
+
+export interface Config {
+  sidebar: {
+    width: number
+    /** Whether the sidebar starts open. */
+    open: boolean
+  }
+  behaviour: {
+    /** Rows a wheel notch scrolls in a pane's scrollback. */
+    scrollRows: number
+    /** Shell used for new agents. Empty means $SHELL. */
+    shell: string
+  }
+}
+
+export const DEFAULT_CONFIG: Config = {
+  sidebar: { width: 30, open: true },
+  behaviour: { scrollRows: 3, shell: "" },
+}
+
+const CONFIG_DIR =
+  process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config")
+export const CONFIG_PATH = join(CONFIG_DIR, "opentui-herdr", "config.json")
+
+/** Merge one level deep so a config written by an older version keeps working
+ *  when new sections or keys are added. */
+function merge(base: Config, loaded: unknown): Config {
+  if (!loaded || typeof loaded !== "object") return base
+  const out = structuredClone(base)
+  for (const [section, values] of Object.entries(loaded as Record<string, unknown>)) {
+    if (!(section in out) || !values || typeof values !== "object") continue
+    Object.assign((out as Record<string, any>)[section], values)
+  }
+  return out
+}
+
+/**
+ * Live copy of the settings that imperative code reads at the point of use.
+ *
+ * The Solid chrome takes config through props, but a pane is a plain
+ * Renderable several layers below any component — threading a preference down
+ * to it would mean plumbing config through Workspace and Space for no gain.
+ * Kept in sync by applyConfig() whenever the config changes.
+ */
+export const runtime = {
+  scrollRows: DEFAULT_CONFIG.behaviour.scrollRows,
+}
+
+export function applyConfig(config: Config): void {
+  runtime.scrollRows = config.behaviour.scrollRows
+}
+
+export async function loadConfig(path = CONFIG_PATH): Promise<Config> {
+  try {
+    const file = Bun.file(path)
+    if (!(await file.exists())) return structuredClone(DEFAULT_CONFIG)
+    return merge(DEFAULT_CONFIG, await file.json())
+  } catch {
+    // A corrupt config must not stop the app from starting.
+    return structuredClone(DEFAULT_CONFIG)
+  }
+}
+
+export async function saveConfig(config: Config, path = CONFIG_PATH): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  await Bun.write(path, JSON.stringify(config, null, 2) + "\n")
+}

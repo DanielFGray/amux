@@ -67,6 +67,7 @@ const CELL_RAW = 1
 const CELL_DATA_WIDE = 3
 const WIDE_WIDE = 1
 
+const TERMINAL_DATA_SCROLLBAR = 9
 const TERMINAL_DATA_TITLE = 12
 const TERMINAL_DATA_PWD = 13
 
@@ -94,6 +95,8 @@ export class Terminal {
   #cols: number
   #rows: number
   #str = new BigUint64Array(2)
+  /** GhosttyTerminalScrollbar {u64 total, u64 offset, u64 len}, filled in place. */
+  #scroll = new BigUint64Array(3)
 
   constructor(cols: number, rows: number, scrollback = 10_000) {
     const out = handle()
@@ -144,6 +147,34 @@ export class Terminal {
   /** Working directory reported via OSC 7, or "" if never set. */
   get pwd(): string {
     return this.#string(TERMINAL_DATA_PWD)
+  }
+
+  /**
+   * Viewport position within the scrollable area: {total, offset, len} rows.
+   *
+   * Ghostty maintains this incrementally, so reading it is amortized O(1) — and
+   * it is the only way to know where the viewport actually sits. Tracking our
+   * own scroll offset instead does not work: ghostty clamps at the top and the
+   * bottom, so a counter over-counts every scroll past an edge and then
+   * disagrees with reality forever. There is deliberately no change
+   * notification; poll it per frame, as Ghostty's own renderer does.
+   */
+  get scrollbar(): { total: number; offset: number; len: number } {
+    if (g.ghostty_terminal_get(asPtr(this.#h), TERMINAL_DATA_SCROLLBAR, ptr(this.#scroll)) !== OK) {
+      return { total: 0, offset: 0, len: 0 }
+    }
+    return {
+      total: Number(this.#scroll[0]),
+      offset: Number(this.#scroll[1]),
+      len: Number(this.#scroll[2]),
+    }
+  }
+
+  /** True when the viewport is pinned to the live/active area rather than
+   *  parked somewhere in history. */
+  get atBottom(): boolean {
+    const s = this.scrollbar
+    return s.total === 0 || s.offset + s.len >= s.total
   }
 
   free() {
@@ -414,6 +445,60 @@ export class RenderState {
       }
       y++
     }
+  }
+
+  /**
+   * Plain text of the last `rows` *written* lines of the viewport.
+   *
+   * Trailing blank rows are dropped before the tail is taken. A screen is
+   * mostly empty until something fills it — a shell three commands in has its
+   * output at the top and twenty blank rows below — so slicing the literal
+   * bottom of the grid would return nothing but spaces.
+   *
+   * Deliberately not forEachCell: state detection only needs characters, so
+   * this skips the colour, styling and wide-glyph reads and costs roughly one
+   * FFI call per cell instead of four. Used to spot "waiting for input"
+   * prompts, which is a periodic poll rather than a per-render one.
+   */
+  tailText(rows: number): string[] {
+    this.#iterBox[0] = BigInt(this.#iter)
+    if (g.ghostty_render_state_get(asPtr(this.#s), STATE_ROW_ITERATOR, ptr(this.#iterBox)) !== OK)
+      return []
+    const iter = Number(this.#iterBox[0])
+
+    // The iterator only runs forward, so collect every line and keep the tail.
+    const lines: string[] = []
+    while (g.ghostty_render_state_row_iterator_next(asPtr(iter))) {
+      if (g.ghostty_render_state_row_get(asPtr(iter), ROW_DATA_CELLS, ptr(this.#cells)) !== OK) {
+        lines.push("")
+        continue
+      }
+      const cells = Number(this.#cells[0])
+      this.#cellsCur = cells
+      let line = ""
+      while (g.ghostty_render_state_row_cells_next(asPtr(cells))) {
+        if (
+          g.ghostty_render_state_row_cells_get(asPtr(cells), CELL_GRAPHEMES_LEN, ptr(this.#len)) !==
+            OK ||
+          this.#len[0]! === 0
+        ) {
+          line += " "
+          continue
+        }
+        const n = Math.min(this.#len[0]!, this.#cps.length)
+        if (
+          g.ghostty_render_state_row_cells_get(asPtr(cells), CELL_GRAPHEMES_BUF, ptr(this.#cps)) ===
+          OK
+        ) {
+          for (let i = 0; i < n; i++)
+            if (this.#cps[i]! > 0) line += String.fromCodePoint(this.#cps[i]!)
+        }
+      }
+      lines.push(line)
+    }
+    let end = lines.length
+    while (end > 0 && lines[end - 1]!.trim() === "") end--
+    return lines.slice(Math.max(0, end - rows), end)
   }
 
   free() {

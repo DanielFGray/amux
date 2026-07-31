@@ -1,10 +1,10 @@
 {
   "name": "opentui-herdr",
-  "module": "src/main.ts",
+  "module": "src/main.tsx",
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun src/main.ts",
+    "start": "bun src/main.tsx",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test"
   },
@@ -12,9 +12,12 @@
     "@types/bun": "latest"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@opentui/core": "^0.4.5"
+    "@opentui/core": "^0.4.5",
+    "@opentui/keymap": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "solid-js": "^1.9.14"
   }
 }

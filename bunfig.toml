@@ -1,0 +1,7 @@
+# Installs @opentui/solid's JSX transform. Solid compiles JSX into fine-grained
+# reactive updates rather than a virtual DOM, so it needs a real transform at
+# load time — plain esbuild-style JSX would silently produce a non-reactive UI.
+preload = ["@opentui/solid/preload"]
+
+[test]
+preload = ["@opentui/solid/preload"]

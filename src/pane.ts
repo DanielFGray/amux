@@ -14,7 +14,9 @@ import {
   Dirty,
   type CursorInfo,
 } from "./ghostty.ts"
-import type { Agent, AgentStatus } from "./agent.ts"
+import type { Agent } from "./agent.ts"
+import { runtime } from "./config.ts"
+import { SPINNER_FRAMES, STATE_GLYPH } from "./detect.ts"
 
 const DEFAULT_FG = RGBA.fromInts(205, 214, 244, 255)
 const DEFAULT_BG = RGBA.fromInts(30, 30, 46, 255)
@@ -26,14 +28,10 @@ const BAR_FG_IDLE = RGBA.fromInts(166, 173, 200, 255)
 const CURSOR_ON = RGBA.fromInts(249, 226, 175, 255)
 const CURSOR_IDLE = RGBA.fromInts(108, 112, 134, 255)
 
-export const STATUS_DOT: Record<AgentStatus, string> = {
-  working: "●",
-  idle: "○",
-  done: "✓",
-}
+/** @deprecated the sidebar owns state glyphs now; see detect.ts STATE_GLYPH. */
+export const STATUS_DOT = STATE_GLYPH
 
 const TITLE_H = 1
-const SCROLL_ROWS = 3
 
 interface Run {
   text: string
@@ -139,7 +137,8 @@ export class TerminalPane extends Renderable {
     // Full-screen apps (vim, htop) want the wheel themselves. A plain shell
     // does not, and there the wheel should walk our scrollback instead.
     if (!seq && event.type === "scroll") {
-      this.agent.scrollBy(event.scroll?.direction === "up" ? -SCROLL_ROWS : SCROLL_ROWS)
+      const rows = runtime.scrollRows
+      this.agent.scrollBy(event.scroll?.direction === "up" ? -rows : rows)
       this.invalidate()
       event.stopPropagation()
       return
@@ -161,10 +160,16 @@ export class TerminalPane extends Renderable {
     const barFg = this.active || this.hovered ? BAR_FG_ACTIVE : BAR_FG_IDLE
     buffer.fillRect(this.x, this.y, this.width, TITLE_H, barBg)
 
-    const status = this.agent.status
+    const state = this.agent.state
     const fgCmd = this.agent.foregroundCommand
-    const suffix = status === "done" ? " (exited)" : fgCmd ? ` — ${fgCmd}` : ""
-    const label = `${STATUS_DOT[status]} ${this.#title || this.agent.name}${suffix}`
+    const suffix = state === "done" ? " (exited)" : fgCmd ? ` — ${fgCmd}` : ""
+    // The title bar is repainted every frame anyway, so animate off the clock
+    // rather than plumbing a tick down here.
+    const glyph =
+      state === "working"
+        ? SPINNER_FRAMES[Math.floor(Date.now() / 100) % SPINNER_FRAMES.length]!
+        : STATE_GLYPH[state]
+    const label = `${glyph} ${this.#title || this.agent.name}${suffix}`
     buffer.drawText(label.slice(0, Math.max(0, this.width)), this.x, this.y, barFg, barBg)
 
     this.#state.update(this.agent.term)

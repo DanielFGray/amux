@@ -21,11 +21,18 @@ export class Workspace {
   #agents: Agent[] = []
   #focused: TerminalPane | null = null
   #shell: string[]
+  /** Directory agents spawn in — the owning space's attached directory. */
+  #cwd: string | undefined
   onChange?: () => void
+  /** Fired after an agent's process exits and its views have been closed. The
+   *  app uses it to decide what to show next; it is deliberately not the same
+   *  as "a pane closed", because closing a view by hand is a detach, not an end. */
+  onAgentExit?: (agent: Agent) => void
 
-  constructor(ctx: RenderContext, shell: string[]) {
+  constructor(ctx: RenderContext, shell: string[], cwd?: string) {
     this.#ctx = ctx
     this.#shell = shell
+    this.#cwd = cwd
     this.root = new BoxRenderable(ctx, {
       id: "workspace",
       flexDirection: "row",
@@ -49,14 +56,20 @@ export class Workspace {
   }
 
   /** Start an agent without opening a view onto it. */
-  spawn(name: string, cmd = this.#shell, cwd?: string): Agent {
+  spawn(name: string, cmd = this.#shell, cwd = this.#cwd): Agent {
     const agent = new Agent({ name, cmd, cwd })
     agent.onOutput = () => {
       for (const p of this.#panes) if (p.agent === agent) p.invalidate()
       this.onChange?.()
     }
     agent.onExit = () => {
+      // The process is gone, so its viewports are dead weight — close them and
+      // give the space back to the surviving panes, the way tmux does.
+      // The agent itself stays: it keeps its terminal, so it remains in the
+      // sidebar as "done" and revealing it again still shows its final output.
+      for (const pane of [...this.#panes]) if (pane.agent === agent) this.close(pane)
       this.onChange?.()
+      this.onAgentExit?.(agent)
       this.#ctx.requestRender()
     }
     agent.onScroll = () => {
@@ -205,8 +218,14 @@ export class Workspace {
   }
 
   /** Kill every agent and free its terminal. Used by app shutdown so no child
-   *  process is orphaned; idempotent, safe to call from an exit path. */
+   *  process is orphaned; idempotent, safe to call from an exit path.
+   *
+   *  Panes come down FIRST. A pane renders straight out of its agent's
+   *  terminal, so freeing the terminal under a still-mounted pane is a
+   *  use-after-free into ghostty — a segfault on the next frame, not an
+   *  exception. */
   disposeAll() {
+    for (const pane of [...this.#panes]) this.close(pane)
     for (const agent of [...this.#agents]) agent.dispose()
     this.#agents.length = 0
   }
