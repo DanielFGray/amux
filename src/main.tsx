@@ -4,6 +4,7 @@ import { render } from "@opentui/solid"
 import { createSignal, createMemo } from "solid-js"
 import { basename, resolve } from "node:path"
 
+import { Divider } from "./divider.ts"
 import { SpaceSet, type Space } from "./space.ts"
 import type { Window } from "./window.ts"
 import type { Agent } from "./agent.ts"
@@ -74,6 +75,30 @@ function afterAgentExit(_agent: Agent, window: Window, space: Space) {
 spaces.onAgentExit = afterAgentExit
 
 const [configState, setConfigState] = createSignal<Config>(config)
+
+/** Sidebar width lives in the config so the drag and the settings window are
+ *  editing the same number, and dragging it survives a save. */
+const SIDEBAR_MIN = 16
+const SIDEBAR_MAX = 60
+function resizeSidebar(delta: number) {
+  setConfigState((c) => ({
+    ...c,
+    sidebar: {
+      ...c.sidebar,
+      width: Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, c.sidebar.width + delta)),
+    },
+  }))
+  setSettingsDirty(true)
+}
+
+// A Divider rather than a component with mouse props: dragging a one-cell
+// target only works if the pointer is claimed on the press, and that is a
+// renderable-level concern. See the note in divider.ts.
+const sidebarHandle = new Divider(renderer, {
+  id: "sidebar-divider",
+  axis: "row",
+  onDrag: resizeSidebar,
+})
 const [sidebarOpen, setSidebarOpen] = createSignal(config.sidebar.open)
 const [sidebarFocused, setSidebarFocused] = createSignal(false)
 const [selected, setSelected] = createSignal(0)
@@ -199,7 +224,9 @@ function editSetting(delta: number) {
   const section = settingsSection()
   const field = settingsSelected()
   if (section === "sidebar") {
-    if (field === 0) next.sidebar.width = Math.max(16, Math.min(60, next.sidebar.width + delta))
+    if (field === 0) {
+      next.sidebar.width = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, next.sidebar.width + delta))
+    }
     else next.sidebar.open = !next.sidebar.open
   } else if (section === "behaviour") {
     if (field === 0) {
@@ -502,6 +529,8 @@ await render(
       config={configState()}
       paneHost={paneHost}
       size={size()}
+      sidebarHandle={sidebarHandle}
+      sidebarWidth={configState().sidebar.width}
       sidebarOpen={sidebarOpen()}
       sidebarFocused={sidebarFocused()}
       selected={selected()}

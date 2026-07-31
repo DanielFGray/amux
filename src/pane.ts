@@ -16,22 +16,35 @@ import {
 } from "./ghostty.ts"
 import type { Agent } from "./agent.ts"
 import { runtime } from "./config.ts"
-import { SPINNER_FRAMES, STATE_GLYPH } from "./detect.ts"
+import { STATE_GLYPH } from "./detect.ts"
 
 const DEFAULT_FG = RGBA.fromInts(205, 214, 244, 255)
 const DEFAULT_BG = RGBA.fromInts(30, 30, 46, 255)
-const FOCUS_BG = RGBA.fromInts(137, 180, 250, 255)
-const HOVER_BG = RGBA.fromInts(69, 71, 90, 255)
-const IDLE_BG = RGBA.fromInts(49, 50, 68, 255)
-const BAR_FG_ACTIVE = RGBA.fromInts(17, 17, 27, 255)
-const BAR_FG_IDLE = RGBA.fromInts(166, 173, 200, 255)
+const BORDER_FOCUS = RGBA.fromInts(137, 180, 250, 255) // blue
+const BORDER_HOVER = RGBA.fromInts(203, 166, 247, 255) // mauve
+const BORDER_IDLE = RGBA.fromInts(69, 71, 90, 255) // surface1
 const CURSOR_ON = RGBA.fromInts(249, 226, 175, 255)
 const CURSOR_IDLE = RGBA.fromInts(108, 112, 134, 255)
 
 /** @deprecated the sidebar owns state glyphs now; see detect.ts STATE_GLYPH. */
 export const STATUS_DOT = STATE_GLYPH
 
-const TITLE_H = 1
+/**
+ * Which of a pane's four sides it draws itself.
+ *
+ * A pane only draws the sides that face the window's outer edge. Sides that
+ * face another pane are drawn by the Divider sitting between them, which is a
+ * single shared cell — so borders stay one column/row wide everywhere instead of
+ * doubling up at every split.
+ */
+export interface Edges {
+  top: boolean
+  right: boolean
+  bottom: boolean
+  left: boolean
+}
+
+const ALL_EDGES: Edges = { top: true, right: true, bottom: true, left: true }
 
 interface Run {
   text: string
@@ -73,13 +86,46 @@ export class TerminalPane extends Renderable {
   #cachedCursor: CursorInfo | null = null
   #cursorText = " "
   #haveCache = false
-  #title = ""
+  #edges: Edges = { ...ALL_EDGES }
 
   constructor(ctx: RenderContext, options: { id: string; agent: Agent } & Record<string, any>) {
     super(ctx, options)
     this.agent = options.agent
     this.agent.addViewer()
-    this.agent.resize(Math.max(1, this.width), Math.max(1, this.height - TITLE_H))
+    this.#sync()
+  }
+
+  get edges(): Edges {
+    return this.#edges
+  }
+
+  /** Set by the window after any structural change; the agent is resized to
+   *  whatever the border leaves over. */
+  set edges(edges: Edges) {
+    const e = this.#edges
+    if (e.top === edges.top && e.right === edges.right && e.bottom === edges.bottom &&
+        e.left === edges.left) {
+      return
+    }
+    this.#edges = { ...edges }
+    this.#sync()
+    this.#haveCache = false
+    this.requestRender()
+  }
+
+  /** Columns/rows the border eats on each axis. */
+  get #padX(): number {
+    return (this.#edges.left ? 1 : 0) + (this.#edges.right ? 1 : 0)
+  }
+  get #padY(): number {
+    return (this.#edges.top ? 1 : 0) + (this.#edges.bottom ? 1 : 0)
+  }
+
+  #sync() {
+    this.agent.resize(
+      Math.max(1, this.width - this.#padX),
+      Math.max(1, this.height - this.#padY),
+    )
   }
 
   /** Called by the workspace when the agent produces output. */
@@ -89,7 +135,7 @@ export class TerminalPane extends Renderable {
   }
 
   protected override onResize(width: number, height: number): void {
-    this.agent.resize(Math.max(1, width), Math.max(1, height - TITLE_H))
+    this.agent.resize(Math.max(1, width - this.#padX), Math.max(1, height - this.#padY))
     this.#haveCache = false
   }
 
@@ -101,8 +147,8 @@ export class TerminalPane extends Renderable {
   protected override onMouseEvent(event: MouseEvent): void {
     // opentui resolved the target from its native hit grid, so local
     // coordinates are just the offset — no rect math, no layout duplication.
-    const x = event.x - this.x
-    const y = event.y - this.y - TITLE_H
+    const x = event.x - this.x - (this.#edges.left ? 1 : 0)
+    const y = event.y - this.y - (this.#edges.top ? 1 : 0)
 
     switch (event.type) {
       case "over":
@@ -116,7 +162,9 @@ export class TerminalPane extends Renderable {
     }
 
     if (event.type === "down") this.onFocusRequest?.(this)
-    if (y < 0) return // title bar: focus only, nothing forwarded to the agent
+    // On the border: focus only. Forwarding it would hand the child a click at
+    // coordinates that are off its grid.
+    if (x < 0 || y < 0 || x >= this.agent.term.cols || y >= this.agent.term.rows) return
 
     const action =
       event.type === "down"
@@ -152,25 +200,10 @@ export class TerminalPane extends Renderable {
   }
 
   protected override renderSelf(buffer: OptimizedBuffer): void {
-    const ox = this.x
-    const oy = this.y + TITLE_H
+    const ox = this.x + (this.#edges.left ? 1 : 0)
+    const oy = this.y + (this.#edges.top ? 1 : 0)
     buffer.fillRect(this.x, this.y, this.width, this.height, DEFAULT_BG)
-
-    const barBg = this.active ? FOCUS_BG : this.hovered ? HOVER_BG : IDLE_BG
-    const barFg = this.active || this.hovered ? BAR_FG_ACTIVE : BAR_FG_IDLE
-    buffer.fillRect(this.x, this.y, this.width, TITLE_H, barBg)
-
-    const state = this.agent.state
-    const fgCmd = this.agent.foregroundCommand
-    const suffix = state === "done" ? " (exited)" : fgCmd ? ` — ${fgCmd}` : ""
-    // The title bar is repainted every frame anyway, so animate off the clock
-    // rather than plumbing a tick down here.
-    const glyph =
-      state === "working"
-        ? SPINNER_FRAMES[Math.floor(Date.now() / 100) % SPINNER_FRAMES.length]!
-        : STATE_GLYPH[state]
-    const label = `${glyph} ${this.#title || this.agent.name}${suffix}`
-    buffer.drawText(label.slice(0, Math.max(0, this.width)), this.x, this.y, barFg, barBg)
+    this.#drawBorder(buffer)
 
     this.#state.update(this.agent.term)
 
@@ -185,16 +218,42 @@ export class TerminalPane extends Renderable {
     for (const r of this.#runs) buffer.drawText(r.text, ox + r.x, oy + r.y, r.fg, r.bg)
 
     const cur = this.#cachedCursor
-    if (cur && cur.x < this.width && cur.y < this.height - TITLE_H) {
+    if (cur && cur.x < this.width - this.#padX && cur.y < this.height - this.#padY) {
       this.#drawCursor(buffer, ox + cur.x, oy + cur.y, cur.style, this.#cursorText)
     }
+  }
+
+  /**
+   * Draw only the sides this pane owns.
+   *
+   * A corner glyph is used where two owned sides meet; where only one of the
+   * pair is owned the line simply runs to the end of the pane and the Divider
+   * next to it draws the tee. That is what keeps a split looking like one
+   * continuous frame rather than two boxes pushed together.
+   */
+  #drawBorder(buffer: OptimizedBuffer): void {
+    const fg = this.active ? BORDER_FOCUS : this.hovered ? BORDER_HOVER : BORDER_IDLE
+    const { top, right, bottom, left } = this.#edges
+    const x0 = this.x
+    const y0 = this.y
+    const x1 = this.x + this.width - 1
+    const y1 = this.y + this.height - 1
+
+    if (top) for (let x = x0; x <= x1; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG)
+    if (bottom) for (let x = x0; x <= x1; x++) buffer.setCell(x, y1, "─", fg, DEFAULT_BG)
+    if (left) for (let y = y0; y <= y1; y++) buffer.setCell(x0, y, "│", fg, DEFAULT_BG)
+    if (right) for (let y = y0; y <= y1; y++) buffer.setCell(x1, y, "│", fg, DEFAULT_BG)
+
+    if (top && left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG)
+    if (top && right) buffer.setCell(x1, y0, "┐", fg, DEFAULT_BG)
+    if (bottom && left) buffer.setCell(x0, y1, "└", fg, DEFAULT_BG)
+    if (bottom && right) buffer.setCell(x1, y1, "┘", fg, DEFAULT_BG)
   }
 
   /** Walk the grid once and batch contiguous same-style cells into runs.
    *  drawText is width-aware; setCell is single-column and drops wide glyphs. */
   #rebuild(): void {
     const runs: Run[] = []
-    this.#title = this.agent.title
     const cur = this.#state.cursor()
     this.#cachedCursor = cur
     this.#cursorText = " "
@@ -212,9 +271,10 @@ export class TerminalPane extends Renderable {
       text = ""
     }
 
-    const maxY = this.height - TITLE_H
+    const maxY = this.height - this.#padY
+    const maxX = this.width - this.#padX
     this.#state.forEachCell((x, y, t, fg, bg, width) => {
-      if (y >= maxY || x >= this.width) return
+      if (y >= maxY || x >= maxX) return
       if (cur && x === cur.x && y === cur.y) this.#cursorText = t
 
       if (text && (y !== ry || x !== nextX || fg !== rFg || bg !== rBg)) flush()

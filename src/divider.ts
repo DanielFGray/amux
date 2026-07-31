@@ -1,7 +1,8 @@
 import { Renderable, RGBA, type MouseEvent, type OptimizedBuffer, type RenderContext } from "@opentui/core"
 
 const IDLE = RGBA.fromInts(69, 71, 90, 255) // surface1
-const HOVER = RGBA.fromInts(137, 180, 250, 255) // blue
+const FOCUS = RGBA.fromInts(137, 180, 250, 255) // blue
+const HOVER = RGBA.fromInts(203, 166, 247, 255) // mauve
 const BG = RGBA.fromInts(30, 30, 46, 255) // base
 
 /** Smallest a pane may be squeezed to, so a divider can never be dragged past
@@ -20,6 +21,26 @@ const WEIGHTS = new WeakMap<object, number>()
 
 export function getWeight(r: object): number {
   return WEIGHTS.get(r) ?? 1
+}
+
+/**
+ * Flex direction, tracked the same way and for the same reason.
+ *
+ * `flexDirection` is another setter with no getter. Reading it back gives
+ * `undefined`, so any `parent.flexDirection === "row"` test is silently always
+ * false — which is how a pane came to draw its own border right next to the
+ * divider that was already drawing one.
+ */
+const DIRECTIONS = new WeakMap<object, "row" | "column">()
+
+export function getDirection(r: object): "row" | "column" {
+  // Boxes are created row-wise unless told otherwise, matching yoga's default.
+  return DIRECTIONS.get(r) ?? "row"
+}
+
+export function setDirection(r: object, direction: "row" | "column"): void {
+  DIRECTIONS.set(r, direction)
+  ;(r as { flexDirection: string }).flexDirection = direction
 }
 
 export function setWeight(r: object, weight: number): void {
@@ -45,10 +66,33 @@ export class Divider extends Renderable {
   /** Axis of the parent split: "row" means a vertical bar between left/right
    *  neighbours, "column" a horizontal one between top/bottom. */
   readonly axis: "row" | "column"
+  /** Whether this divider is part of a pane frame and should finish its ends
+   *  with a junction. The sidebar handle is a bare line and sets this false. */
+  tees = false
+  /** Whether each end meets the window's outer border rather than another
+   *  divider. Set by Window, which is the only thing that knows the tree. */
+  capStart = false
+  capEnd = false
+  /** True when the focused pane is on one side of this divider — the shared
+   *  border is the focused pane's border too, so it highlights with it. */
+  adjacentToFocus = false
   #hovered = false
   #dragging = false
 
-  constructor(ctx: RenderContext, options: { id: string; axis: "row" | "column" }) {
+  /**
+   * Where the drag goes instead of the neighbours' flex weights.
+   *
+   * The sidebar edge is the same gesture with a different destination: the
+   * sidebar has an explicit width rather than a weight, and its neighbour is the
+   * whole pane area. Handing that case a callback reuses the capture-on-press
+   * handling, which is the part that is actually fiddly.
+   */
+  onDrag?: (delta: number) => void
+
+  constructor(
+    ctx: RenderContext,
+    options: { id: string; axis: "row" | "column"; onDrag?: (delta: number) => void },
+  ) {
     super(ctx, {
       ...options,
       flexShrink: 0,
@@ -56,6 +100,7 @@ export class Divider extends Renderable {
       ...(options.axis === "row" ? { width: 1 } : { height: 1 }),
     })
     this.axis = options.axis
+    this.onDrag = options.onDrag
   }
 
   protected override onMouseEvent(event: MouseEvent): void {
@@ -91,7 +136,11 @@ export class Divider extends Renderable {
         // Self-correcting, so a dropped event cannot accumulate drift the way
         // a running total of per-event deltas would.
         const delta = this.axis === "row" ? event.x - this.x : event.y - this.y
-        if (delta !== 0) this.#resize(delta)
+        if (delta !== 0) {
+          if (this.onDrag) this.onDrag(delta)
+          else this.#resize(delta)
+          this.requestRender()
+        }
         event.stopPropagation()
         return
       }
@@ -119,13 +168,33 @@ export class Divider extends Renderable {
     this.requestRender()
   }
 
+  /**
+   * A line, plus a tee at each end.
+   *
+   * The tee lands one cell *outside* this divider when its end meets another
+   * divider rather than the window's outer border — because the cell that needs
+   * the junction glyph belongs to that other divider, which has already drawn a
+   * plain line through it. Dividers render in tree order and a perpendicular one
+   * is always nested deeper, so the correction lands after the line it corrects.
+   *
+   * Two dividers never actually cross: the split tree alternates axes, so one is
+   * always contained by a side of the other. Hence tees, and never a ┼.
+   */
   protected override renderSelf(buffer: OptimizedBuffer): void {
-    const fg = this.#hovered || this.#dragging ? HOVER : IDLE
-    const glyph = this.axis === "row" ? "│" : "─"
-    if (this.axis === "row") {
-      for (let y = 0; y < this.height; y++) buffer.setCell(this.x, this.y + y, glyph, fg, BG)
-    } else {
-      for (let x = 0; x < this.width; x++) buffer.setCell(this.x + x, this.y, glyph, fg, BG)
-    }
+    const fg = this.#hovered || this.#dragging ? HOVER : this.adjacentToFocus ? FOCUS : IDLE
+    const vertical = this.axis === "row"
+    const length = vertical ? this.height : this.width
+    const at = (i: number) =>
+      vertical
+        ? ([this.x, this.y + i] as const)
+        : ([this.x + i, this.y] as const)
+
+    for (let i = 0; i < length; i++) buffer.setCell(...at(i), vertical ? "│" : "─", fg, BG)
+
+    if (!this.tees) return
+    const [sx, sy] = at(this.capStart ? 0 : -1)
+    buffer.setCell(sx, sy, vertical ? "┬" : "├", fg, BG)
+    const [ex, ey] = at(this.capEnd ? length - 1 : length)
+    buffer.setCell(ex, ey, vertical ? "┴" : "┤", fg, BG)
   }
 }

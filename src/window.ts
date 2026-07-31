@@ -2,7 +2,7 @@ import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/cor
 import { TerminalPane } from "./pane.ts"
 import { Agent } from "./agent.ts"
 import { rollUp } from "./space.ts"
-import { Divider, getWeight, setWeight } from "./divider.ts"
+import { Divider, getWeight, setWeight, getDirection, setDirection } from "./divider.ts"
 
 export type SplitDirection = "row" | "column"
 
@@ -121,7 +121,10 @@ export class Window {
   }
 
   #makeDivider(direction: SplitDirection): Divider {
-    return new Divider(this.#ctx, { id: `divider-${nextId++}`, axis: direction })
+    const divider = new Divider(this.#ctx, { id: `divider-${nextId++}`, axis: direction })
+    // It is a segment of the pane frame, so its ends finish as junctions.
+    divider.tees = true
+    return divider
   }
 
   #makePane(agent: Agent): TerminalPane {
@@ -146,8 +149,82 @@ export class Window {
   focus(pane: TerminalPane) {
     this.#focused = pane
     for (const p of this.#panes) p.active = p === pane
+    this.#refreshChrome()
     this.onChange?.()
     this.#ctx.requestRender()
+  }
+
+  /**
+   * Is there anything on the given side of this node, anywhere up the tree?
+   *
+   * Siblings are always separated by a divider, so "a sibling precedes me on
+   * this axis" is the same question as "is a divider drawn on that side of me".
+   * Walking up matters: a pane can be flush against the left of its own split
+   * box while that box sits to the right of a divider two levels up.
+   */
+  #hasNeighbour(node: Renderable, axis: SplitDirection, direction: -1 | 1): boolean {
+    let current: Renderable = node
+    while (current !== this.root) {
+      const parent = current.parent as BoxRenderable | null
+      if (!parent) return false
+      if (getDirection(parent) === axis) {
+        const siblings = parent.getChildren()
+        const i = siblings.indexOf(current)
+        if (direction < 0 ? i > 0 : i < siblings.length - 1) return true
+      }
+      current = parent
+    }
+    return false
+  }
+
+  /**
+   * Recompute who draws which border, and which divider is next to the focus.
+   *
+   * Every pane draws the sides that face the window's outer edge; a side facing
+   * another pane belongs to the divider between them, so the frame stays one
+   * cell thick at every seam.
+   */
+  #refreshChrome() {
+    for (const pane of this.#panes) {
+      pane.edges = {
+        left: !this.#hasNeighbour(pane, "row", -1),
+        right: !this.#hasNeighbour(pane, "row", 1),
+        top: !this.#hasNeighbour(pane, "column", -1),
+        bottom: !this.#hasNeighbour(pane, "column", 1),
+      }
+    }
+    for (const divider of this.#dividers()) {
+      // A divider's ends meet the window's outer border exactly where it has no
+      // neighbour of its own across the perpendicular axis.
+      const cross: SplitDirection = divider.axis === "row" ? "column" : "row"
+      divider.capStart = !this.#hasNeighbour(divider, cross, -1)
+      divider.capEnd = !this.#hasNeighbour(divider, cross, 1)
+      divider.adjacentToFocus = this.#focused ? this.#touches(divider, this.#focused) : false
+    }
+  }
+
+  #dividers(root: Renderable = this.root, out: Divider[] = []): Divider[] {
+    for (const child of root.getChildren()) {
+      if (child instanceof Divider) out.push(child)
+      else if (!(child instanceof TerminalPane)) this.#dividers(child, out)
+    }
+    return out
+  }
+
+  /** True when the pane sits immediately on either side of the divider — the
+   *  shared border is that pane's border too, so it highlights with it. */
+  #touches(divider: Divider, pane: TerminalPane): boolean {
+    const parent = divider.parent as BoxRenderable | null
+    if (!parent) return false
+    const siblings = parent.getChildren()
+    const i = siblings.indexOf(divider)
+    const contains = (node: Renderable | undefined): boolean => {
+      if (!node) return false
+      if (node === pane) return true
+      if (node instanceof TerminalPane) return false
+      return node.getChildren().some(contains)
+    }
+    return contains(siblings[i - 1]) || contains(siblings[i + 1])
   }
 
   focusNext(step = 1) {
@@ -186,7 +263,7 @@ export class Window {
     // otherwise leave the new pane a sliver a cell or two wide.
     const share = getWeight(target) / 2
 
-    if (parent.flexDirection === direction && parent !== this.root) {
+    if (getDirection(parent) === direction && parent !== this.root) {
       const at = parent.getChildren().indexOf(target) + 1
       setWeight(target, share)
       setWeight(pane, share)
@@ -194,17 +271,15 @@ export class Window {
       parent.add(pane, at + 1)
     } else if (parent === this.root && parent.getChildrenCount() === 1) {
       // Root still holds a single pane, so it can simply adopt the axis.
-      parent.flexDirection = direction
+      setDirection(parent, direction)
       setWeight(target, share)
       setWeight(pane, share)
       parent.add(this.#makeDivider(direction))
       parent.add(pane)
     } else {
       const index = parent.getChildren().indexOf(target)
-      const box = new BoxRenderable(this.#ctx, {
-        id: `split-${nextId++}`,
-        flexDirection: direction,
-      })
+      const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` })
+      setDirection(box, direction)
       // The box stands in for the pane it replaces, so it inherits its weight;
       // inside it, the two panes start even.
       setWeight(box, getWeight(target))
@@ -270,6 +345,9 @@ export class Window {
       if (this.#panes.length) this.focus(this.#panes[Math.min(i, this.#panes.length - 1)]!)
       else this.onChange?.()
     }
+    // Survivors have gained edges the closed pane's divider used to cover, and
+    // a collapsed split box changes what is adjacent to what.
+    this.#refreshChrome()
     this.#ctx.requestRender()
   }
 

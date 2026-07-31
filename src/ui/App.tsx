@@ -1,13 +1,12 @@
 /** @jsxImportSource @opentui/solid */
-import { Show, createMemo } from "solid-js"
-import type { BoxRenderable } from "@opentui/core"
+import { Show } from "solid-js"
+import type { BoxRenderable, Renderable } from "@opentui/core"
 import type { Window } from "../window.ts"
 import { Sidebar } from "./Sidebar.tsx"
 import { WindowTabs } from "./WindowTabs.tsx"
 import { Help, type HelpGroup } from "./Help.tsx"
 import { Prompt, type PromptRequest } from "./Prompt.tsx"
 import { Settings, type SettingsSection } from "./Settings.tsx"
-import { theme } from "./theme.ts"
 import type { AppState } from "./state.ts"
 import type { Config } from "../config.ts"
 
@@ -21,6 +20,11 @@ export interface AppProps {
   paneHost: BoxRenderable
   size: { width: number; height: number }
 
+  /** The draggable edge between sidebar and panes. A Divider instance rather
+   *  than a component: it needs to claim the pointer on press, which only the
+   *  renderable can do. */
+  sidebarHandle: Renderable
+  sidebarWidth: number
   sidebarOpen: boolean
   sidebarFocused: boolean
   selected: number
@@ -44,48 +48,32 @@ export function App(props: AppProps) {
   const windows = () => space()?.windows ?? []
 
   // herdr's layout: no app-wide bar. The window list is one row at the top of
-  // the pane area, beside the sidebar rather than above it. Hidden when a
-  // single window makes it pure decoration.
-  const showTabs = () => windows().length > 1
-
+  // the pane area, beside the sidebar rather than above it. Always present, even
+  // at one window — a tab bar that appears and disappears shifts the whole pane
+  // area by a row, and it is where the prefix indicator lives.
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
       <Show when={props.sidebarOpen}>
         <Sidebar
           app={props.app}
-          width={props.config.sidebar.width}
+          width={props.sidebarWidth}
           selected={props.selected}
           hovered={props.hovered}
           focused={props.sidebarFocused}
           onHover={props.onHover}
           onActivate={props.onActivate}
         />
+        {props.sidebarHandle}
       </Show>
 
       <box style={{ flexGrow: 1, flexDirection: "column" }}>
-        <Show
-          when={showTabs()}
-          fallback={
-            // With one window there is no list worth showing, but the prefix
-            // indicator still needs somewhere to live.
-            <Show when={props.pending.length > 0}>
-              <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
-                <box style={{ flexGrow: 1, height: 1, backgroundColor: theme.mantle }} />
-                <text style={{ bg: theme.mauve, fg: theme.base, flexShrink: 0 }}>
-                  {` ${props.pending.join(" ")} `}
-                </text>
-              </box>
-            </Show>
-          }
-        >
-          <WindowTabs
-            app={props.app}
-            windows={windows()}
-            active={props.app.activeWindow()}
-            pending={props.pending}
-            onSelect={props.onSelectWindow}
-          />
-        </Show>
+        <WindowTabs
+          app={props.app}
+          windows={windows()}
+          active={props.app.activeWindow()}
+          pending={props.pending}
+          onSelect={props.onSelectWindow}
+        />
         {props.paneHost}
       </box>
 

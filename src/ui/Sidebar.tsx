@@ -161,7 +161,13 @@ function SidebarRow(props: SidebarProps & { row: Exclude<Row, { kind: "branch" }
     props.app.tick()
     // Numbered like a tmux window, because ^a 1..9 selects by that number.
     if (row.kind === "window") return `${row.window.number}:${row.window.title}`
-    return row.agent.title
+    // What the pane used to say in its own header bar, which is gone: the tree
+    // is the one place that names things now. The foreground command is the
+    // more useful half when there is one — a shell's OSC title is its cwd,
+    // which the space row already tells you.
+    const agent = row.agent
+    const command = agent.foregroundCommand
+    return command && !agent.title.includes(command) ? `${agent.title} · ${command}` : agent.title
   }
 
   const indicators = () => {
