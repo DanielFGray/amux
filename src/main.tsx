@@ -20,13 +20,23 @@ import {
   helpGroups,
   nextKeys,
   formatSequence,
+  leaderBytes,
+  DEFAULT_LEADER,
   type CommandSpec,
+  type Conflict,
+  type Keys,
 } from "./bindings.ts"
 import { loadConfig, saveConfig, applyConfig, type Config } from "./config.ts"
 import { createAppState } from "./ui/state.ts"
 import { sidebarTargets } from "./ui/Sidebar.tsx"
 import { App, type Overlay } from "./ui/App.tsx"
-import { SETTINGS_SECTIONS, settingsFields, type SettingsSection } from "./ui/Settings.tsx"
+import {
+  SETTINGS_SECTIONS,
+  settingsFields,
+  keybindTargets,
+  keybindLine,
+  type SettingsSection,
+} from "./ui/Settings.tsx"
 import type { PromptRequest } from "./ui/Prompt.tsx"
 
 const config = await loadConfig()
@@ -131,6 +141,9 @@ const [promptRequest, setPromptRequest] = createSignal<PromptRequest | null>(nul
 const [settingsSection, setSettingsSection] = createSignal<SettingsSection>("sidebar")
 const [settingsSelected, setSettingsSelected] = createSignal(0)
 const [settingsDirty, setSettingsDirty] = createSignal(false)
+/** True while the keybind editor is waiting for the keystroke to record. */
+const [capturing, setCapturing] = createSignal(false)
+const [conflicts, setConflicts] = createSignal<Conflict[]>([])
 /** The keybind tab's scroll container, so ↑↓ can drive a list that is much
  *  longer than the window. */
 let keybindList: ScrollBoxRenderable | null = null
@@ -290,6 +303,59 @@ function editSetting(delta: number) {
   setSettingsDirty(true)
 }
 
+/**
+ * Put a new set of keys into effect.
+ *
+ * One path for every change — the prefix, a rebind, a reset — because the
+ * keymap has to be rebuilt for any of them and the conflict report is only
+ * true for the set that was actually applied.
+ */
+function setKeys(next: Keys) {
+  setConfigState((c) => ({ ...c, keys: next }))
+  setConflicts(bindings.apply(next))
+  setSettingsDirty(true)
+}
+
+/** The command a keybind row edits, or null for the prefix row. */
+function keybindTarget(index = settingsSelected()): string | null | undefined {
+  return keybindTargets(groups())[index]
+}
+
+/** Record the next keystroke as the selected row's binding. */
+function captureBinding() {
+  const targets = keybindTargets(groups())
+  const index = settingsSelected()
+  if (index >= targets.length) return
+  const command = targets[index]!
+  setCapturing(true)
+  bindings.capture((event, key) => {
+    setCapturing(false)
+    // Escape backs out — a binding on escape would swallow the one key every
+    // overlay in the app relies on.
+    if (event.name === "escape") return
+    const keys = configState().keys
+    if (command === null) setKeys({ ...keys, leader: key })
+    // Recorded under the prefix, which is what every binding in the app is:
+    // an unprefixed one would eat that key from every shell running in a pane.
+    else setKeys({ ...keys, bindings: { ...keys.bindings, [command]: [`<leader>${key}`] } })
+  })
+}
+
+/** Back to what the command shipped with, or to nothing at all. */
+function resetBinding(unbind: boolean) {
+  const command = keybindTarget()
+  const keys = configState().keys
+  if (command === undefined) return
+  if (command === null) {
+    if (unbind) return // The app is unreachable without a prefix.
+    return setKeys({ ...keys, leader: DEFAULT_LEADER })
+  }
+  const next = { ...keys.bindings }
+  if (unbind) next[command] = []
+  else delete next[command]
+  setKeys({ ...keys, bindings: next })
+}
+
 const COMMANDS: CommandSpec[] = [
   // Panes — splits keep the tmux-ish | and -, which read better than " and %.
   {
@@ -427,6 +493,18 @@ const COMMANDS: CommandSpec[] = [
       if (w?.focused) w.killAgent(w.focused.agent)
     },
   },
+  {
+    name: "agent.next-blocked",
+    key: "<leader>a",
+    desc: "jump to the next blocked agent",
+    group: "agents",
+    run: () => {
+      const agent = spaces.nextBlocked()
+      if (!agent) return
+      const index = targets().findIndex((target) => target.kind === "agent" && target.agent === agent)
+      if (index !== -1) setSelected(index)
+    },
+  },
 
   // Spaces.
   {
@@ -476,6 +554,7 @@ const COMMANDS: CommandSpec[] = [
     run: () => {
       if (overlay() === "settings" && settingsSection() === "keybinds") return setOverlay("none")
       setSettingsSection("keybinds")
+      setSettingsSelected(0)
       setOverlay("settings")
     },
   },
@@ -497,10 +576,18 @@ const COMMANDS: CommandSpec[] = [
   },
   {
     name: "app.send-prefix",
-    key: "<leader>ctrl+a",
-    desc: "send a literal ctrl+a",
+    // The prefix twice, written as the token so it follows a rebind — and sent
+    // as whatever bytes that prefix actually produces.
+    key: "<leader><leader>",
+    desc: "send a literal prefix key",
     group: "global",
-    run: () => activeWin()?.focused?.write("\x01"),
+    // Not offered in the editor: its sequence is the prefix, and the prefix
+    // row already edits that.
+    fixed: true,
+    run: () => {
+      const bytes = leaderBytes(bindings.leader())
+      if (bytes) activeWin()?.focused?.write(bytes)
+    },
   },
   { name: "app.quit", key: "<leader>q", desc: "quit", group: "global", run: () => shutdown() },
 ]
@@ -566,25 +653,52 @@ function cycleSettingsSection(step: 1 | -1) {
   setSettingsSelected(0)
 }
 
+/** Move the keybind selection and keep it on screen. */
+function moveKeybind(delta: number) {
+  const count = keybindTargets(groups()).length
+  const index = Math.max(0, Math.min(count - 1, settingsSelected() + delta))
+  setSettingsSelected(index)
+  const box = keybindList
+  if (!box) return
+  // The list is several screens long, so follow the selection rather than
+  // leaving it to be moved off the top of a window it cannot scroll itself.
+  const line = keybindLine(groups(), index)
+  const height = box.viewport?.height ?? box.height
+  if (line < box.scrollTop) box.scrollTop = line
+  else if (line >= box.scrollTop + height) box.scrollTop = line - height + 1
+}
+
+function keybindsKey(event: KeyEvent) {
+  switch (event.name) {
+    case "tab":
+      return cycleSettingsSection(event.shift ? -1 : 1)
+    case "j":
+    case "down":
+      return moveKeybind(1)
+    case "k":
+    case "up":
+      return moveKeybind(-1)
+    case "pagedown":
+      return moveKeybind(10)
+    case "pageup":
+      return moveKeybind(-10)
+    case "return":
+    case "enter":
+      return captureBinding()
+    case "u":
+      return resetBinding(false)
+    case "d":
+      return resetBinding(true)
+    case "s":
+      void saveConfig(configState()).then(() => setSettingsDirty(false))
+      return
+  }
+}
+
 function settingsKey(event: KeyEvent) {
   const fields = settingsFields(configState(), settingsSection())
-  // The keybind tab has no editable fields — its up/down scrolls the list,
-  // which is several screens long.
-  if (settingsSection() === "keybinds") {
-    if (event.name === "tab") return cycleSettingsSection(event.shift ? -1 : 1)
-    const step =
-      event.name === "j" || event.name === "down"
-        ? 1
-        : event.name === "k" || event.name === "up"
-          ? -1
-          : event.name === "pagedown"
-            ? 10
-            : event.name === "pageup"
-              ? -10
-              : 0
-    if (step) keybindList?.scrollBy(step)
-    return
-  }
+  // The keybind tab edits sequences rather than values, so it has its own keys.
+  if (settingsSection() === "keybinds") return keybindsKey(event)
   switch (event.name) {
     case "tab":
       return cycleSettingsSection(event.shift ? -1 : 1)
@@ -604,19 +718,33 @@ function settingsKey(event: KeyEvent) {
   }
 }
 
-const keymap = createBindings(renderer, COMMANDS, { onUnhandled })
+const bindings = createBindings(renderer, COMMANDS, { keys: config.keys, onUnhandled })
+setConflicts(bindings.conflicts())
 
 // Only source of truth for the hint line and the which-key panel: what the
 // keymap will actually do next, so a rebinding shows up in both without
 // touching this file.
-keymap.on("pendingSequence", (sequence) => setPendingParts(sequence))
+bindings.keymap.on("pendingSequence", (sequence) => setPendingParts(sequence))
 
 const pending = createMemo(() =>
-  pendingParts().length ? [formatSequence(pendingParts())] : [],
+  pendingParts().length ? [formatSequence(pendingParts(), configState().keys.leader)] : [],
 )
-const hints = createMemo(() => nextKeys(keymap, COMMANDS, pendingParts()))
+const hints = createMemo(() => nextKeys(bindings, COMMANDS, pendingParts()))
 
-const groups = helpGroups(keymap, COMMANDS)
+// Recomputed whenever the keys change, since that is what the list is *for*:
+// the reference and the editor are the same rows, read back out of the keymap
+// that was just rebuilt.
+const groups = createMemo(() => helpGroups(bindings, COMMANDS, configState().keys))
+
+/** How one command's binding reads, for chrome that names a key. Empty when it
+ *  has none — the sidebar hint says so rather than naming a dead key. */
+function commandKeys(name: string): string {
+  for (const group of groups()) {
+    const entry = group.entries.find((e) => e.name === name)
+    if (entry) return entry.keys === "unbound" ? "" : entry.keys
+  }
+  return ""
+}
 
 /** Refresh every space's branch/ahead-behind. Polled because git state changes
  *  behind our back with nothing to notify us. */
@@ -667,6 +795,7 @@ await render(
       sidebarWidth={configState().sidebar.width}
       sidebarOpen={sidebarOpen()}
       sidebarFocused={sidebarFocused()}
+      sidebarToggleKeys={commandKeys("sidebar.toggle")}
       selected={selected()}
       hovered={hovered()}
       onHover={setHovered}
@@ -678,7 +807,12 @@ await render(
         app.refresh()
       }}
       overlay={overlay()}
-      helpGroups={groups}
+      helpGroups={groups()}
+      // From the config rather than the keymap: a plain method call would not
+      // re-render the list when the prefix changes.
+      leader={configState().keys.leader}
+      conflicts={conflicts()}
+      capturing={capturing()}
       settingsSection={settingsSection()}
       settingsSelected={settingsSelected()}
       settingsDirty={settingsDirty()}

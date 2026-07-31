@@ -3,7 +3,7 @@ import { For, Show, createMemo } from "solid-js"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { theme } from "./theme.ts"
 import type { Config } from "../config.ts"
-import type { HelpGroup } from "../bindings.ts"
+import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts"
 
 export const SETTINGS_SECTIONS = ["sidebar", "behaviour", "keybinds"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
@@ -43,17 +43,102 @@ export function settingsFields(config: Config, section: SettingsSection): Field[
 }
 
 /**
- * Settings, and the keybind reference on its own tab.
+ * A rebindable row on the keybinds tab.
+ *
+ * The prefix is one of them — index 0, no command behind it — because from the
+ * user's side it is just another key they can change, and giving it its own
+ * corner of the UI would only hide it.
+ */
+export interface KeybindRow {
+  /** Command name, or null for the prefix row. */
+  name: string | null
+  keys: string
+  desc: string
+  custom: boolean
+}
+
+export interface KeybindGroup {
+  group: string
+  /** `index` is the selection index; null for a row that cannot be edited. */
+  entries: (KeybindRow & { index: number | null })[]
+}
+
+/**
+ * Every row the keybind editor can land on, in display order.
+ *
+ * The one enumeration both the renderer and the key handler count from, so a
+ * selection index cannot mean one row on screen and another when acted on.
+ */
+export function keybindTargets(groups: HelpGroup[]): (string | null)[] {
+  return [null, ...groups.flatMap((g) => g.entries.filter((e) => !e.fixed).map((e) => e.name))]
+}
+
+export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup[] {
+  const targets = keybindTargets(groups)
+  const row = (entry: HelpEntry) => ({
+    index: entry.fixed ? null : targets.indexOf(entry.name),
+    name: entry.name,
+    keys: entry.keys,
+    desc: entry.desc,
+    custom: entry.custom,
+  })
+  return [
+    {
+      group: "prefix",
+      entries: [
+        {
+          index: 0,
+          name: null,
+          keys: formatKey(leader, leader),
+          desc: "prefix, pressed before every binding",
+          custom: false,
+        },
+      ],
+    },
+    ...groups.map((g) => ({ group: g.group, entries: g.entries.map(row) })),
+  ]
+}
+
+/**
+ * Which line of the scrollable list a selection index sits on.
+ *
+ * The list is several screens long, so the caller keeps the selected row in
+ * view — and it can only do that if it knows where the row was drawn. Mirrors
+ * the layout below: one line per group heading, one per entry, one blank
+ * between groups.
+ */
+export function keybindLine(groups: HelpGroup[], index: number): number {
+  let line = 0
+  for (const group of keybindGroups(groups, "")) {
+    line++
+    for (const entry of group.entries) {
+      if (entry.index === index) return line
+      line++
+    }
+    line++
+  }
+  return 0
+}
+
+/**
+ * Settings, and the keybinds on their own tab.
  *
  * There used to be a separate help window rendering exactly this list from
  * exactly this data. Two overlays showing the same thing is one overlay too
- * many to teach, so `^a ?` opens this window on the keybinds tab instead.
+ * many to teach, so `^a ?` opens this window on the keybinds tab instead — and
+ * since the list is generated from the live keymap, the reference and the
+ * editor are necessarily the same screen.
  */
 export function Settings(props: {
   config: Config
   section: SettingsSection
   selected: number
   groups: HelpGroup[]
+  leader: string
+  /** Sequences claimed by two commands. Reported, never fatal. */
+  conflicts: Conflict[]
+  /** Set while waiting for the keystroke that becomes a binding. */
+  capturing: boolean
   width: number
   height: number
   dirty: boolean
@@ -62,6 +147,7 @@ export function Settings(props: {
   onKeybindList?: (box: ScrollBoxRenderable) => void
 }) {
   const fields = createMemo(() => settingsFields(props.config, props.section))
+  const rows = createMemo(() => keybindGroups(props.groups, props.leader))
 
   return (
     <box
@@ -100,19 +186,36 @@ export function Settings(props: {
         when={props.section !== "keybinds"}
         fallback={
           <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
-            <For each={props.groups}>
+            <For each={rows()}>
               {(group) => (
                 <box style={{ flexDirection: "column", flexShrink: 0 }}>
                   <text style={{ fg: theme.mauve, height: 1, flexShrink: 0 }}>{group.group}</text>
                   <For each={group.entries}>
-                    {(entry) => (
-                      <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-                        <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
-                          {`  ${entry.keys}`}
-                        </text>
-                        <text style={{ fg: theme.text, flexGrow: 1 }}>{entry.desc}</text>
-                      </box>
-                    )}
+                    {(entry) => {
+                      const active = () => entry.index === props.selected
+                      return (
+                        <box
+                          style={{
+                            flexDirection: "row",
+                            height: 1,
+                            flexShrink: 0,
+                            backgroundColor: active() ? theme.surface1 : theme.base,
+                          }}
+                        >
+                          <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
+                            {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
+                          </text>
+                          <text
+                            style={{
+                              fg: entry.index === null ? theme.overlay1 : theme.text,
+                              flexGrow: 1,
+                            }}
+                          >
+                            {entry.desc + (entry.custom ? " *" : "")}
+                          </text>
+                        </box>
+                      )
+                    }}
                   </For>
                   <text style={{ height: 1, flexShrink: 0 }}> </text>
                 </box>
@@ -143,11 +246,24 @@ export function Settings(props: {
         </box>
       </Show>
 
+      {/* A collision is not fatal — one of the two commands is simply dead — so
+          it is said here rather than being allowed to stop the app. */}
+      <Show when={props.section === "keybinds" && props.conflicts.length > 0}>
+        <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>
+          {props.conflicts
+            .map((c) => `${c.sequence} → ${c.commands.join(", ")}`)
+            .join(" · ")
+            .slice(0, 66)}
+        </text>
+      </Show>
+
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
         {(props.dirty ? "● unsaved · " : "") +
-          (props.section === "keybinds"
-            ? "⇥ section · ↑↓ scrolls · esc closes"
-            : "⇥ section · ↑↓ field · ←→ change · s saves · esc closes")}
+          (props.section !== "keybinds"
+            ? "⇥ section · ↑↓ field · ←→ change · s saves · esc closes"
+            : props.capturing
+              ? "press the key to bind · esc cancels"
+              : "↑↓ row · ⏎ rebind · u default · d unbind · s saves")}
       </text>
     </box>
   )

@@ -34,6 +34,7 @@ async function setup() {
         selected={selected()}
         hovered={hovered()}
         focused={false}
+        toggleKeys="^a b"
         onHover={setHovered}
         onActivate={(i) => activated.push(i)}
       />

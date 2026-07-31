@@ -149,6 +149,28 @@ export function rollUp(agents: readonly Agent[]): AgentState {
 }
 
 /**
+ * The next blocked agent after `from` in a stable order, or the first one when
+ * nothing is focused — scanning forward and wrapping around.
+ *
+ * Starting *after* `from` is what makes repeated presses walk the set: the
+ * agent you are looking at is already on screen, so it is not the one the next
+ * press is looking for. The full wrap keeps a lone blocked agent reachable,
+ * where landing on it again is a no-op rather than a jump.
+ *
+ * Returns null when no agent is blocked.
+ */
+export function nextBlockedAfter(order: readonly Agent[], from: Agent | null): Agent | null {
+  const n = order.length
+  if (!n) return null
+  const start = from ? order.indexOf(from) + 1 : 0
+  for (let step = 0; step < n; step++) {
+    const agent = order[(start + step) % n]!
+    if (agent.state === "blocked") return agent
+  }
+  return null
+}
+
+/**
  * The set of spaces and which one is on screen.
  *
  * Only the active space's container is mounted, so an inactive space keeps its
@@ -224,6 +246,30 @@ export class SpaceSet {
 
   find(agent: Agent): Space | null {
     return this.#spaces.find((s) => s.agents.includes(agent)) ?? null
+  }
+
+  /**
+   * Jump to the next blocked agent and bring it on screen — the herding loop.
+   *
+   * The agent worth your attention is the one waiting on a human, so a single
+   * press walks the blocked set across every space instead of tabbing through
+   * panes. Order is stable: spaces in creation order, then windows, then spawn
+   * order within a window, so repeated presses advance rather than bouncing
+   * between two. Navigation is the same as clicking the sidebar row — the
+   * agent's space is activated, its window selected, and it is revealed (or
+   * focused) even when no pane shows it. Returns the agent, or null when
+   * nothing is blocked.
+   */
+  nextBlocked(from: Agent | null = this.activeWindow?.focused?.agent ?? null): Agent | null {
+    const target = nextBlockedAfter(this.allAgents, from)
+    if (!target) return null
+    const space = this.find(target)
+    const window = space?.windows.find((w) => w.agents.includes(target))
+    if (!space || !window) return null
+    this.activate(space)
+    space.selectWindow(window)
+    window.reveal(target)
+    return target
   }
 
   remove(space: Space) {

@@ -1,8 +1,12 @@
 import { test, expect } from "bun:test"
+import { which } from "bun"
 import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
+import { mkdtemp, chmod } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { Divider } from "./divider.ts"
-import { SpaceSet, rollUp, type Space } from "./space.ts"
+import { SpaceSet, rollUp, nextBlockedAfter, type Space } from "./space.ts"
 import type { Window } from "./window.ts"
 import type { Agent, AgentState } from "./agent.ts"
 
@@ -44,6 +48,125 @@ async function setup(): Promise<Harness> {
     },
   }
 }
+
+/**
+ * A stand-in for an agent CLI: a copy of bash under an agent's name, so a test
+ * can drive what ends up on its screen. A copy rather than a wrapper script,
+ * because state detection reads the foreground process's argv — see the note in
+ * detect.test.ts.
+ */
+async function fakeAgent(name: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "herdr-space-"))
+  const path = join(dir, name)
+  const bash = which("bash")
+  if (!bash) throw new Error("no bash on PATH to impersonate")
+  await Bun.write(path, Bun.file(bash))
+  await chmod(path, 0o755)
+  return path
+}
+
+/** Poll until the agent's screen scan reports blocked; fail loudly otherwise. */
+async function waitForBlocked(agent: Agent, tries = 20): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    if (agent.state === "blocked") return
+    await Bun.sleep(100)
+  }
+  throw new Error(`agent ${agent.name} never read as blocked`)
+}
+
+/** Spawn a detached fake agent and put a confirmation prompt on its screen. */
+async function blockedAgent(window: Window, name: string): Promise<Agent> {
+  const agent = window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"])
+  await Bun.sleep(300)
+  agent.write("printf 'Do you want to proceed?\\n'\n")
+  await waitForBlocked(agent)
+  return agent
+}
+
+test("nextBlockedAfter walks the blocked set in a stable order, wrapping", () => {
+  const stub = (state: AgentState) => ({ state }) as unknown as Agent
+  const idle = stub("idle")
+  const blocked1 = stub("blocked")
+  const blocked2 = stub("blocked")
+  const order = [idle, blocked1, idle, blocked2]
+
+  expect(nextBlockedAfter([], null)).toBeNull()
+  expect(nextBlockedAfter([stub("idle"), stub("working")], null)).toBeNull()
+
+  // Nothing focused: the first blocked agent in order wins.
+  expect(nextBlockedAfter(order, null)).toBe(blocked1)
+  // From an idle agent: the next blocked one after it.
+  expect(nextBlockedAfter(order, idle)).toBe(blocked1)
+  // From a blocked agent: the NEXT one, never the one you are already looking at.
+  expect(nextBlockedAfter(order, blocked1)).toBe(blocked2)
+  // The last press wraps around to the first blocked agent again.
+  expect(nextBlockedAfter(order, blocked2)).toBe(blocked1)
+  // A lone blocked agent stays reachable from itself — a no-op, not a jump.
+  expect(nextBlockedAfter([idle, blocked1], blocked1)).toBe(blocked1)
+})
+
+test("nextBlocked returns null when no agent is blocked", async () => {
+  const s = await setup()
+  try {
+    expect(s.spaces.nextBlocked()).toBeNull()
+  } finally {
+    await s.dispose()
+  }
+})
+
+test("nextBlocked activates the agent's space and window, walking in a stable order", async () => {
+  const s = await setup()
+  try {
+    // Creation order is the walk order: A's shell, then B's blocked, then C's.
+    // Focus stays on A's shell pane, so the presses land B, C, then wrap to B
+    // — never bouncing between the last two.
+    const otherB = s.spaces.create("B", process.cwd())
+    const winB = otherB.newWindow()
+    winB.init("shell")
+    const blockedB = await blockedAgent(winB, "claude-b")
+
+    const otherC = s.spaces.create("C", process.cwd())
+    const winC = otherC.newWindow()
+    winC.init("shell")
+    const blockedC = await blockedAgent(winC, "claude-c")
+
+    expect(s.spaces.nextBlocked()).toBe(blockedB)
+    expect(s.spaces.active).toBe(otherB)
+    expect(otherB.active).toBe(winB)
+    expect(winB.focused?.agent).toBe(blockedB)
+
+    expect(s.spaces.nextBlocked()).toBe(blockedC)
+    expect(s.spaces.active).toBe(otherC)
+    expect(otherC.active).toBe(winC)
+    expect(winC.focused?.agent).toBe(blockedC)
+
+    expect(s.spaces.nextBlocked()).toBe(blockedB)
+    expect(s.spaces.active).toBe(otherB)
+  } finally {
+    await s.dispose()
+  }
+})
+
+test("a detached blocked agent is revealed and focused by nextBlocked", async () => {
+  const s = await setup()
+  try {
+    const other = s.spaces.create("other", process.cwd())
+    const win = other.newWindow()
+    win.init("shell")
+    const blocked = await blockedAgent(win, "claude-detached")
+
+    expect(blocked.viewers).toBe(0)
+    expect(win.detached).toContain(blocked)
+
+    expect(s.spaces.nextBlocked()).toBe(blocked)
+    expect(blocked.viewers).toBe(1)
+    expect(win.detached).not.toContain(blocked)
+    expect(win.focused?.agent).toBe(blocked)
+    expect(s.spaces.active).toBe(other)
+  } finally {
+    await s.dispose()
+  }
+})
 
 test("an agent with no view is detached but keeps running", async () => {
   const s = await setup()

@@ -10,7 +10,7 @@ import { Prompt, type PromptRequest } from "./Prompt.tsx"
 import { Settings, type SettingsSection } from "./Settings.tsx"
 import type { AppState } from "./state.ts"
 import type { Config } from "../config.ts"
-import type { HelpGroup, HintGroup } from "../bindings.ts"
+import type { Conflict, HelpGroup, HintGroup } from "../bindings.ts"
 
 export type Overlay = "none" | "settings"
 
@@ -29,6 +29,8 @@ export interface AppProps {
   sidebarWidth: number
   sidebarOpen: boolean
   sidebarFocused: boolean
+  /** The sidebar's own toggle binding, as it currently reads. */
+  sidebarToggleKeys: string
   selected: number
   hovered: number | null
   onHover: (index: number | null) => void
@@ -41,9 +43,15 @@ export interface AppProps {
   onSelectWindow: (window: Window) => void
   overlay: Overlay
   helpGroups: HelpGroup[]
+  /** The prefix in effect, so the keybind list renders `<leader>` as it is
+   *  currently bound rather than as it shipped. */
+  leader: string
+  conflicts: Conflict[]
   settingsSection: SettingsSection
   settingsSelected: number
   settingsDirty: boolean
+  /** Waiting for the keystroke that becomes a binding. */
+  capturing: boolean
   onKeybindList?: (box: ScrollBoxRenderable) => void
   prompt: PromptRequest | null
 }
@@ -72,6 +80,7 @@ export function App(props: AppProps) {
           selected={props.selected}
           hovered={props.hovered}
           focused={props.sidebarFocused}
+          toggleKeys={props.sidebarToggleKeys}
           onHover={props.onHover}
           onActivate={props.onActivate}
         />
@@ -110,6 +119,9 @@ export function App(props: AppProps) {
           section={props.settingsSection}
           selected={props.settingsSelected}
           groups={props.helpGroups}
+          leader={props.leader}
+          conflicts={props.conflicts}
+          capturing={props.capturing}
           width={props.size.width}
           height={props.size.height}
           dirty={props.settingsDirty}

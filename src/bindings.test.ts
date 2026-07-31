@@ -1,6 +1,14 @@
 import { test, expect } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
-import { createBindings, helpGroups, type CommandSpec } from "./bindings.ts"
+import {
+  createBindings,
+  formatKey,
+  helpGroups,
+  keyToBinding,
+  keysFor,
+  leaderBytes,
+  type CommandSpec,
+} from "./bindings.ts"
 
 /**
  * A binding whose key string the parser rejects is not an error anyone sees —
@@ -16,8 +24,8 @@ test("every declared sequence compiles, including multi-char key names", async (
       { name: "t.arrow", key: "<leader>left", desc: "arrow", group: "t", run: () => {} },
       { name: "t.brace", key: ["<leader>{", "<leader>}"], desc: "brace", group: "t", run: () => {} },
     ]
-    const keymap = createBindings(t.renderer, commands, { onUnhandled: () => true })
-    const entries = helpGroups(keymap, commands)[0]!.entries
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
+    const entries = helpGroups(bindings, commands)[0]!.entries
 
     expect(entries.map((e) => e.keys)).toEqual(["^a h", "^a left", "^a { / ^a }"])
   } finally {
@@ -25,16 +33,28 @@ test("every declared sequence compiles, including multi-char key names", async (
   }
 })
 
-test("two commands on one sequence is refused rather than silently resolved", async () => {
+/**
+ * Two commands on one sequence is reported, not silently resolved.
+ *
+ * Only the first-registered of the pair ever fires while both keep reading back
+ * as bound. This used to throw, which was right while the table was static;
+ * now that the user can rebind anything onto anything it has to be something
+ * the settings window can say out loud instead of a crash on startup.
+ */
+test("a sequence claimed by two commands is reported as a conflict", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 })
   try {
     const commands: CommandSpec[] = [
       { name: "pane.up", key: "<leader>k", desc: "focus up", group: "t", run: () => {} },
       { name: "agent.kill", key: "<leader>k", desc: "kill agent", group: "t", run: () => {} },
     ]
-    expect(() => createBindings(t.renderer, commands, { onUnhandled: () => true })).toThrow(
-      /\^a k -> pane\.up, agent\.kill/,
-    )
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
+
+    expect(bindings.conflicts()).toEqual([{ sequence: "^a k", commands: ["pane.up", "agent.kill"] }])
+    // Moving one of them off the shared key clears it.
+    expect(
+      bindings.apply({ leader: "ctrl+a", bindings: { "agent.kill": ["<leader>shift+k"] } }),
+    ).toEqual([])
   } finally {
     t.renderer.destroy()
   }
@@ -61,7 +81,7 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
         run: () => fired.push("S"),
       },
     ]
-    const keymap = createBindings(t.renderer, commands, { onUnhandled: () => true })
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
 
     t.mockInput.pressKey("a", { ctrl: true })
     t.mockInput.pressKey("s")
@@ -70,7 +90,7 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
     expect(fired).toEqual(["s", "S"])
 
     // Written shift+s, shown as the key you actually press.
-    expect(helpGroups(keymap, commands)[0]!.entries.map((e) => e.keys)).toEqual(["^a s", "^a S"])
+    expect(helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys)).toEqual(["^a s", "^a S"])
   } finally {
     t.renderer.destroy()
   }
@@ -105,7 +125,7 @@ test("a command hidden from help still dispatches", async () => {
         run: () => fired.push("2"),
       },
     ]
-    const keymap = createBindings(t.renderer, commands, { onUnhandled: () => true })
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
 
     t.mockInput.pressKey("a", { ctrl: true })
     t.mockInput.pressKey("2")
@@ -114,10 +134,189 @@ test("a command hidden from help still dispatches", async () => {
     expect(fired).toEqual(["2", "1"])
 
     // ...while staying out of the listing it is hidden from.
-    expect(helpGroups(keymap, commands)[0]!.entries).toEqual([
-      { keys: "^a 1", desc: "select 1..9" },
+    expect(helpGroups(bindings, commands)[0]!.entries).toEqual([
+      { name: "t.shown", keys: "^a 1", desc: "select 1..9", custom: false, fixed: false },
     ])
   } finally {
     t.renderer.destroy()
   }
+})
+
+/**
+ * A rebound command answers to the new keys and only the new keys.
+ *
+ * The keymap compiles bindings once at layer registration, so applying a new
+ * set has to tear the layer down and build it again — a patch would leave the
+ * old sequence live and give the command two ways in, one of them a surprise.
+ */
+test("an override replaces a command's default sequences", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 })
+  try {
+    const fired: string[] = []
+    const commands: CommandSpec[] = [
+      { name: "t.zoom", key: "<leader>z", desc: "zoom", group: "t", run: () => fired.push("z") },
+    ]
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
+    bindings.apply({ leader: "ctrl+a", bindings: { "t.zoom": ["<leader>f"] } })
+
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressKey("z")
+    expect(fired).toEqual([])
+
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressKey("f")
+    expect(fired).toEqual(["z"])
+    expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^a f")
+  } finally {
+    t.renderer.destroy()
+  }
+})
+
+/** An empty override is how a command is left with no key at all. */
+test("an empty override unbinds the command", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 })
+  try {
+    const fired: string[] = []
+    const commands: CommandSpec[] = [
+      { name: "t.quit", key: "<leader>q", desc: "quit", group: "t", run: () => fired.push("q") },
+    ]
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
+    bindings.apply({ leader: "ctrl+a", bindings: { "t.quit": [] } })
+
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressKey("q")
+    expect(fired).toEqual([])
+    expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("unbound")
+  } finally {
+    t.renderer.destroy()
+  }
+})
+
+/**
+ * Moving the prefix moves every binding with it.
+ *
+ * That is the whole reason the leader stays a token instead of being written
+ * out as `ctrl+a` in each key string: one change, and both dispatch and the
+ * printed sequences follow.
+ */
+test("rebinding the prefix moves every binding and how they read", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 })
+  try {
+    const fired: string[] = []
+    const commands: CommandSpec[] = [
+      { name: "t.new", key: "<leader>c", desc: "new", group: "t", run: () => fired.push("c") },
+    ]
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
+    bindings.apply({ leader: "ctrl+b", bindings: {} })
+
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressKey("c")
+    expect(fired).toEqual([])
+
+    t.mockInput.pressKey("b", { ctrl: true })
+    t.mockInput.pressKey("c")
+    expect(fired).toEqual(["c"])
+    expect(bindings.leader()).toBe("ctrl+b")
+    expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^b c")
+  } finally {
+    t.renderer.destroy()
+  }
+})
+
+/**
+ * Recording a binding has to see keys that are already bound.
+ *
+ * Pressing the prefix while the editor is waiting must hand back the prefix,
+ * not arm a sequence — which is why the capture runs ahead of dispatch rather
+ * than off the unhandled-key path.
+ */
+test("capture takes the next keystroke, bound or not, and skips modifiers", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 })
+  try {
+    const fired: string[] = []
+    const commands: CommandSpec[] = [
+      { name: "t.new", key: "<leader>c", desc: "new", group: "t", run: () => fired.push("c") },
+    ]
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
+
+    const seen: string[] = []
+    bindings.capture((_event, key) => seen.push(key))
+    t.mockInput.pressKey("a", { ctrl: true })
+    expect(seen).toEqual(["ctrl+a"])
+    // Consumed by the capture, so it never armed the prefix.
+    t.mockInput.pressKey("c")
+    expect(fired).toEqual([])
+
+    // And the capture is over after one key.
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressKey("c")
+    expect(fired).toEqual(["c"])
+    expect(seen).toEqual(["ctrl+a"])
+  } finally {
+    t.renderer.destroy()
+  }
+})
+
+test("a keystroke reads back as the string that binds it", () => {
+  const key = (over: Record<string, unknown>) =>
+    keyToBinding({
+      name: "x",
+      ctrl: false,
+      meta: false,
+      shift: false,
+      option: false,
+      sequence: "",
+      raw: "",
+      number: false,
+      eventType: "press",
+      ...over,
+    } as never)
+
+  expect(key({})).toBe("x")
+  expect(key({ ctrl: true })).toBe("ctrl+x")
+  expect(key({ name: "X", shift: true })).toBe("shift+x")
+  expect(key({ name: "left", shift: true })).toBe("shift+left")
+  // Shift on punctuation is how the character was produced, not a modifier of it.
+  expect(key({ name: "|", shift: true })).toBe("|")
+  // Nothing to bind: a bare modifier, or a release.
+  expect(key({ name: "shift" })).toBeNull()
+  expect(key({ eventType: "release" })).toBeNull()
+})
+
+test("the prefix passthrough sends the bytes of whatever prefix is set", () => {
+  expect(leaderBytes("ctrl+a")).toBe("\x01")
+  expect(leaderBytes("ctrl+b")).toBe("\x02")
+  expect(leaderBytes("`")).toBe("`")
+})
+
+test("invalid leaders fall back without disabling the keymap", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 })
+  try {
+    const fired: string[] = []
+    const commands: CommandSpec[] = [
+      { name: "t.quit", key: "<leader>q", desc: "quit", group: "t", run: () => fired.push("q") },
+    ]
+    const bindings = createBindings(t.renderer, commands, {
+      keys: { leader: "not-a-key", bindings: {} },
+      onUnhandled: () => true,
+    })
+
+    expect(bindings.leader()).toBe("ctrl+a")
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressKey("q")
+    expect(fired).toEqual(["q"])
+  } finally {
+    t.renderer.destroy()
+  }
+})
+
+test("formatting a leader token never recurses", () => {
+  expect(formatKey("<leader>", "<leader>")).toBe("<leader>")
+})
+
+test("keysFor prefers the override, including an empty one", () => {
+  const cmd: CommandSpec = { name: "t.a", key: ["<leader>a", "<leader>b"], desc: "a", group: "t", run() {} }
+  expect(keysFor(cmd, { leader: "ctrl+a", bindings: {} })).toEqual(["<leader>a", "<leader>b"])
+  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": ["<leader>z"] } })).toEqual(["<leader>z"])
+  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": [] } })).toEqual([])
 })

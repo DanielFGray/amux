@@ -45,6 +45,9 @@ export interface SidebarProps {
   selected: number
   hovered: number | null
   focused: boolean
+  /** How the toggle binding reads right now, e.g. "^a b". Passed in rather
+   *  than written here, because it is rebindable. */
+  toggleKeys: string
   onHover: (index: number | null) => void
   onActivate: (index: number) => void
 }
@@ -116,7 +119,11 @@ export function Sidebar(props: SidebarProps) {
       </scrollbox>
 
       <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>
-        {props.focused ? "jk select · ↵ open · x kill" : "^a b toggles sidebar"}
+        {props.focused
+          ? "jk select · ↵ open · x kill"
+          : props.toggleKeys
+            ? `${props.toggleKeys} toggles sidebar`
+            : "sidebar toggle is unbound"}
       </text>
     </box>
   )

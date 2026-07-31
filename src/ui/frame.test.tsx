@@ -60,6 +60,7 @@ async function screen(
         sidebarWidth={SIDEBAR}
         sidebarOpen={open}
         sidebarFocused={false}
+        sidebarToggleKeys="^a b"
         selected={0}
         hovered={null}
         onHover={() => {}}
@@ -69,6 +70,9 @@ async function screen(
         onSelectWindow={() => {}}
         overlay={extra.overlay ?? "none"}
         helpGroups={[]}
+        leader="ctrl+a"
+        conflicts={[]}
+        capturing={false}
         settingsSection="sidebar"
         settingsSelected={0}
         settingsDirty={false}
