@@ -35,7 +35,7 @@ export function WindowTabs(props: {
    *  which arrives from the agent's OSC title after the tab first renders. */
   const label = (window: Window) => {
     props.app.tick()
-    return `${window.number}:${window.title}`
+    return window.label
   }
 
   return (

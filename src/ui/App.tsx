@@ -2,15 +2,17 @@
 import { Show } from "solid-js"
 import type { BoxRenderable, Renderable } from "@opentui/core"
 import type { Window } from "../window.ts"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { Sidebar } from "./Sidebar.tsx"
 import { WindowTabs } from "./WindowTabs.tsx"
-import { Help, type HelpGroup } from "./Help.tsx"
+import { Hints } from "./Hints.tsx"
 import { Prompt, type PromptRequest } from "./Prompt.tsx"
 import { Settings, type SettingsSection } from "./Settings.tsx"
 import type { AppState } from "./state.ts"
 import type { Config } from "../config.ts"
+import type { HelpGroup, HintGroup } from "../bindings.ts"
 
-export type Overlay = "none" | "help" | "settings"
+export type Overlay = "none" | "settings"
 
 export interface AppProps {
   app: AppState
@@ -34,18 +36,24 @@ export interface AppProps {
 
   /** Key sequence in progress, e.g. ["^a"]. Drives the prefix indicator. */
   pending: string[]
+  /** What that sequence can still become. Empty unless one is in progress. */
+  hints: HintGroup[]
   onSelectWindow: (window: Window) => void
   overlay: Overlay
   helpGroups: HelpGroup[]
   settingsSection: SettingsSection
   settingsSelected: number
   settingsDirty: boolean
+  onKeybindList?: (box: ScrollBoxRenderable) => void
   prompt: PromptRequest | null
 }
 
 export function App(props: AppProps) {
   const space = () => props.app.active()
   const windows = () => space()?.windows ?? []
+  /** Where the pane area starts, so transient chrome lines up with it rather
+   *  than covering the tree. */
+  const paneLeft = () => (props.sidebarOpen ? props.sidebarWidth : 0)
 
   // herdr's layout: no app-wide bar. The window list is one row at the top of
   // the pane area, beside the sidebar rather than above it. Always present, even
@@ -83,9 +91,19 @@ export function App(props: AppProps) {
         </box>
       </box>
 
-      <Show when={props.overlay === "help"}>
-        <Help groups={props.helpGroups} width={props.size.width} height={props.size.height} />
+      {/* Only while a sequence is half-typed, and never over a modal — an
+          overlay that is already answering "what now?" does not need a second
+          one on top of it. */}
+      <Show when={props.hints.length > 0 && props.overlay === "none" && !props.prompt}>
+        <Hints
+          groups={props.hints}
+          pending={props.pending.join(" ")}
+          left={paneLeft()}
+          width={props.size.width - paneLeft()}
+          height={props.size.height}
+        />
       </Show>
+
       <Show when={props.overlay === "settings"}>
         <Settings
           config={props.config}
@@ -95,6 +113,7 @@ export function App(props: AppProps) {
           width={props.size.width}
           height={props.size.height}
           dirty={props.settingsDirty}
+          onKeybindList={props.onKeybindList}
         />
       </Show>
       <Show when={props.prompt} keyed>

@@ -46,6 +46,11 @@ export class Window {
   #shell: string[]
   /** Directory agents spawn in — the owning space's attached directory. */
   #cwd: string | undefined
+  /** The pane filling the window on its own, and everything needed to put the
+   *  layout back exactly as it was. See #zoom. */
+  #zoomed: TerminalPane | null = null
+  #zoomSlot: { parent: BoxRenderable; index: number; weight: number } | null = null
+  #zoomTree: Renderable[] = []
   onChange?: () => void
   /** Fired after an agent's process exits and its views have been closed. The
    *  app uses it to decide what to show next; it is deliberately not the same
@@ -74,6 +79,17 @@ export class Window {
     if (this.customName) return this.customName
     const agent = this.#focused?.agent ?? this.#agents[0]
     return agent?.title ?? "window"
+  }
+
+  /** How the window reads in the tab bar and the sidebar. Both show the same
+   *  string, including the zoom marker, so neither can drift from the other. */
+  get label(): string {
+    return `${this.number}:${this.title}${this.#zoomed ? " Z" : ""}`
+  }
+
+  /** True while one pane is filling the window on its own. */
+  get zoomed(): boolean {
+    return this.#zoomed !== null
   }
 
   /** Every agent, including ones no pane is currently showing. This is what
@@ -161,11 +177,73 @@ export class Window {
   }
 
   focus(pane: TerminalPane) {
+    // Looking at another pane means you are done with the zoom, which is also
+    // what tmux's select-pane does. Zoom survives switching *windows*, though:
+    // that is navigation, not a change of mind about this layout.
+    if (this.#zoomed && pane !== this.#zoomed) this.#unzoom()
     this.#focused = pane
     for (const p of this.#panes) p.active = p === pane
     this.#refreshChrome()
     this.onChange?.()
     this.#ctx.requestRender()
+  }
+
+  /**
+   * Toggle the focused pane filling the whole window.
+   *
+   * The split tree is lifted off the root wholesale and the pane hung there in
+   * its place, rather than the layout being rebuilt around a maximised pane.
+   * Detached renderables cost nothing — they are out of yoga and out of the hit
+   * grid — and every weight, divider and nesting level survives untouched, so
+   * unzooming restores the layout exactly instead of approximately.
+   *
+   * Splitting, closing or swapping while zoomed drops the zoom first: those all
+   * reshape the tree that is currently parked off to one side, and reasoning
+   * about a layout you cannot see is how panes go missing.
+   */
+  zoom() {
+    if (this.#zoomed) {
+      this.#unzoom()
+    } else {
+      const pane = this.#focused
+      // Zooming the only pane changes nothing but would still show a marker.
+      if (!pane || this.#panes.length < 2) return
+      const parent = pane.parent as BoxRenderable | null
+      if (!parent) return
+
+      this.#zoomSlot = {
+        parent,
+        index: parent.getChildren().indexOf(pane),
+        weight: getWeight(pane),
+      }
+      // Everything the root holds *except* the pane being zoomed: when the pane
+      // hangs straight off the root it is one of those children itself, and
+      // parking it alongside the tree would restore it twice.
+      this.#zoomTree = this.root.getChildren().filter((child) => child !== pane)
+      parent.remove(pane)
+      for (const child of this.#zoomTree) this.root.remove(child)
+      setWeight(pane, 1)
+      this.root.add(pane)
+      this.#zoomed = pane
+    }
+    this.#refreshChrome()
+    this.onChange?.()
+    this.#ctx.requestRender()
+  }
+
+  #unzoom() {
+    const pane = this.#zoomed
+    const slot = this.#zoomSlot
+    this.#zoomed = null
+    this.#zoomSlot = null
+    const tree = this.#zoomTree
+    this.#zoomTree = []
+    if (!pane || !slot) return
+
+    this.root.remove(pane)
+    for (const child of tree) this.root.add(child)
+    setWeight(pane, slot.weight)
+    slot.parent.add(pane, slot.index)
   }
 
   /**
@@ -320,6 +398,7 @@ export class Window {
    * with the pane, which is what makes repeated presses walk it along.
    */
   swap(step: 1 | -1) {
+    if (this.#zoomed) this.#unzoom()
     const from = this.#focused
     if (!from || this.#panes.length < 2) return
     const i = this.#panes.indexOf(from)
@@ -371,6 +450,8 @@ export class Window {
    * the tree stays a proper h/v alternation instead of a flat list.
    */
   split(direction: SplitDirection, agent?: Agent, name?: string): TerminalPane | null {
+    // Splitting reshapes the parked tree; do it with the layout on screen.
+    if (this.#zoomed) this.#unzoom()
     const target = this.#focused
     if (!target) {
       if (!agent) return this.init(name)
@@ -440,6 +521,10 @@ export class Window {
   close(pane: TerminalPane) {
     const i = this.#panes.indexOf(pane)
     if (i === -1) return
+    // Unzoom first, whichever pane is going: while zoomed the tree is off the
+    // root, and unpicking a pane out of a detached tree is how you end up
+    // restoring a layout that no longer contains anything.
+    if (this.#zoomed) this.#unzoom()
     this.#panes.splice(i, 1)
 
     const parent = pane.parent as BoxRenderable | null

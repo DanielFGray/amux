@@ -9,6 +9,7 @@ import { frame } from "../window.ts"
 import { loadConfig } from "../config.ts"
 import { createAppState } from "./state.ts"
 import { App } from "./App.tsx"
+import type { HintGroup } from "../bindings.ts"
 
 const WIDTH = 60
 const HEIGHT = 14
@@ -21,7 +22,11 @@ afterEach(() => {
 })
 
 /** Mount the real App around a real split tree and return the drawn frame. */
-async function screen(open: boolean, build: (win: ReturnType<SpaceSet["create"]>) => void) {
+async function screen(
+  open: boolean,
+  build: (win: ReturnType<SpaceSet["create"]>) => void,
+  extra: Partial<{ hints: HintGroup[]; overlay: "none" | "settings" }> = {},
+) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
   const spaces = new SpaceSet(t.renderer, paneHost, ["bash"])
@@ -59,9 +64,10 @@ async function screen(open: boolean, build: (win: ReturnType<SpaceSet["create"]>
         hovered={null}
         onHover={() => {}}
         onActivate={() => {}}
-        pending={[]}
+        pending={["^a"]}
+        hints={extra.hints ?? []}
         onSelectWindow={() => {}}
-        overlay="none"
+        overlay={extra.overlay ?? "none"}
         helpGroups={[]}
         settingsSection="sidebar"
         settingsSelected={0}
@@ -115,4 +121,27 @@ test("closing the sidebar hands the left border back to the panes", async () => 
 
   expect(rows[1]![0]).toBe("┌")
   expect(rows[HEIGHT - 1]![0]).toBe("└")
+})
+
+const HINTS: HintGroup[] = [{ group: "panes", entries: [{ keys: ["z"], desc: "zoom" }] }]
+
+test("the hint panel starts at the pane area, not over the sidebar tree", async () => {
+  const rows = await screen(true, (space) => space.newWindow().init(), { hints: HINTS })
+
+  // The panel's own top border replaces the frame's, one row below the tabs.
+  expect(rows[1]!.slice(0, SIDEBAR)).not.toContain("┌")
+  expect(rows[1]![SIDEBAR]).toBe("┌")
+  expect(rows.join("\n")).toContain("z zoom")
+  // The tree is still readable underneath it.
+  expect(rows.join("\n")).toContain("proj")
+})
+
+test("the hint panel stays out of the way of an open overlay", async () => {
+  const rows = await screen(true, (space) => space.newWindow().init(), {
+    hints: HINTS,
+    overlay: "settings",
+  })
+
+  expect(rows.join("\n")).not.toContain("z zoom")
+  expect(rows.join("\n")).toContain("settings")
 })

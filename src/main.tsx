@@ -1,5 +1,10 @@
 /** @jsxImportSource @opentui/solid */
-import { createCliRenderer, BoxRenderable, type KeyEvent } from "@opentui/core"
+import {
+  createCliRenderer,
+  BoxRenderable,
+  type KeyEvent,
+  type ScrollBoxRenderable,
+} from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createSignal, createMemo } from "solid-js"
 import { basename, resolve } from "node:path"
@@ -10,7 +15,13 @@ import { frame, type Window } from "./window.ts"
 import type { Agent } from "./agent.ts"
 import { readGit } from "./git.ts"
 import { encodeKey } from "./keys.ts"
-import { createBindings, helpGroups, formatSequence, type CommandSpec } from "./bindings.ts"
+import {
+  createBindings,
+  helpGroups,
+  nextKeys,
+  formatSequence,
+  type CommandSpec,
+} from "./bindings.ts"
 import { loadConfig, saveConfig, applyConfig, type Config } from "./config.ts"
 import { createAppState } from "./ui/state.ts"
 import { sidebarTargets } from "./ui/Sidebar.tsx"
@@ -112,11 +123,17 @@ const [sidebarFocused, setSidebarFocused] = createSignal(false)
 const [selected, setSelected] = createSignal(0)
 const [hovered, setHovered] = createSignal<number | null>(null)
 const [overlay, setOverlay] = createSignal<Overlay>("none")
-const [pending, setPending] = createSignal<string[]>([])
+// The raw compiled parts, not a formatted string: the which-key panel has to
+// match them against every binding's sequence to work out what is still
+// reachable, and a display string cannot be matched back.
+const [pendingParts, setPendingParts] = createSignal<readonly { display: string }[]>([])
 const [promptRequest, setPromptRequest] = createSignal<PromptRequest | null>(null)
 const [settingsSection, setSettingsSection] = createSignal<SettingsSection>("sidebar")
 const [settingsSelected, setSettingsSelected] = createSignal(0)
 const [settingsDirty, setSettingsDirty] = createSignal(false)
+/** The keybind tab's scroll container, so ↑↓ can drive a list that is much
+ *  longer than the window. */
+let keybindList: ScrollBoxRenderable | null = null
 const [size, setSize] = createSignal({ width: renderer.width, height: renderer.height })
 renderer.on("resize", (width: number, height: number) => setSize({ width, height }))
 
@@ -313,6 +330,13 @@ const COMMANDS: CommandSpec[] = [
     run: () => activeWin()?.focusDirection(direction),
   })),
   {
+    name: "pane.zoom",
+    key: "<leader>z",
+    desc: "zoom the focused pane (Z in the tab)",
+    group: "panes",
+    run: () => activeWin()?.zoom(),
+  },
+  {
     name: "pane.swap-previous",
     key: "<leader>{",
     desc: "swap pane with the previous one",
@@ -382,7 +406,10 @@ const COMMANDS: CommandSpec[] = [
   ...Array.from({ length: 9 }, (_, i) => ({
     name: `window.select-${i + 1}`,
     key: `<leader>${i + 1}`,
-    desc: i === 0 ? "select window 1..9" : "",
+    desc: i === 0 ? "select window 1..9" : `select window ${i + 1}`,
+    // Listed once, on the first; see CommandSpec.hidden for why this is a flag
+    // and not an empty description.
+    hidden: i > 0,
     group: "windows",
     run: () => void spaces.active?.selectNumber(i + 1),
   })),
@@ -390,7 +417,9 @@ const COMMANDS: CommandSpec[] = [
   // Agents.
   {
     name: "agent.kill",
-    key: "<leader>k",
+    // shift+k: plain ^a k is directional pane focus, and killing an agent is
+    // not something to put one keystroke away from "move up" anyway.
+    key: "<leader>shift+k",
     desc: "stop the focused agent",
     group: "agents",
     run: () => {
@@ -442,14 +471,29 @@ const COMMANDS: CommandSpec[] = [
     key: ["<leader>?", "<leader>/"],
     desc: "keybinds",
     group: "global",
-    run: () => setOverlay((o) => (o === "help" ? "none" : "help")),
+    // The same window as settings, on its keybinds tab. Two overlays rendering
+    // the same list from the same data was one overlay too many to teach.
+    run: () => {
+      if (overlay() === "settings" && settingsSection() === "keybinds") return setOverlay("none")
+      setSettingsSection("keybinds")
+      setOverlay("settings")
+    },
   },
   {
     name: "app.settings",
-    key: "<leader>S",
+    // shift+s, not "S": a bare capital compiles to the same sequence as the
+    // lowercase one, so this was silently shadowed by space.new's ^a s.
+    key: "<leader>shift+s",
     desc: "settings",
     group: "global",
-    run: () => setOverlay((o) => (o === "settings" ? "none" : "settings")),
+    run: () => {
+      if (overlay() === "settings") return setOverlay("none")
+      // Opening settings should land on settings, not on wherever ^a ? left the
+      // tab last time.
+      if (settingsSection() === "keybinds") setSettingsSection("sidebar")
+      setSettingsSelected(0)
+      setOverlay("settings")
+    },
   },
   {
     name: "app.send-prefix",
@@ -514,18 +558,36 @@ function sidebarKey(event: KeyEvent) {
   }
 }
 
+function cycleSettingsSection(step: 1 | -1) {
+  const i = SETTINGS_SECTIONS.indexOf(settingsSection())
+  setSettingsSection(
+    SETTINGS_SECTIONS[(i + step + SETTINGS_SECTIONS.length) % SETTINGS_SECTIONS.length]!,
+  )
+  setSettingsSelected(0)
+}
+
 function settingsKey(event: KeyEvent) {
   const fields = settingsFields(configState(), settingsSection())
+  // The keybind tab has no editable fields — its up/down scrolls the list,
+  // which is several screens long.
+  if (settingsSection() === "keybinds") {
+    if (event.name === "tab") return cycleSettingsSection(event.shift ? -1 : 1)
+    const step =
+      event.name === "j" || event.name === "down"
+        ? 1
+        : event.name === "k" || event.name === "up"
+          ? -1
+          : event.name === "pagedown"
+            ? 10
+            : event.name === "pageup"
+              ? -10
+              : 0
+    if (step) keybindList?.scrollBy(step)
+    return
+  }
   switch (event.name) {
-    case "tab": {
-      const step = event.shift ? -1 : 1
-      const i = SETTINGS_SECTIONS.indexOf(settingsSection())
-      setSettingsSection(
-        SETTINGS_SECTIONS[(i + step + SETTINGS_SECTIONS.length) % SETTINGS_SECTIONS.length]!,
-      )
-      setSettingsSelected(0)
-      return
-    }
+    case "tab":
+      return cycleSettingsSection(event.shift ? -1 : 1)
     case "j":
     case "down":
       return setSettingsSelected((s) => Math.min(Math.max(0, fields.length - 1), s + 1))
@@ -544,11 +606,15 @@ function settingsKey(event: KeyEvent) {
 
 const keymap = createBindings(renderer, COMMANDS, { onUnhandled })
 
-// Only source of truth for the hint line: what the keymap will actually do
-// next, so a rebinding shows up here without touching this file.
-keymap.on("pendingSequence", (sequence) => {
-  setPending(sequence.length ? [formatSequence(sequence)] : [])
-})
+// Only source of truth for the hint line and the which-key panel: what the
+// keymap will actually do next, so a rebinding shows up in both without
+// touching this file.
+keymap.on("pendingSequence", (sequence) => setPendingParts(sequence))
+
+const pending = createMemo(() =>
+  pendingParts().length ? [formatSequence(pendingParts())] : [],
+)
+const hints = createMemo(() => nextKeys(keymap, COMMANDS, pendingParts()))
 
 const groups = helpGroups(keymap, COMMANDS)
 
@@ -606,6 +672,7 @@ await render(
       onHover={setHovered}
       onActivate={activateSelection}
       pending={pending()}
+      hints={hints()}
       onSelectWindow={(w) => {
         spaces.active?.selectWindow(w)
         app.refresh()
@@ -615,6 +682,9 @@ await render(
       settingsSection={settingsSection()}
       settingsSelected={settingsSelected()}
       settingsDirty={settingsDirty()}
+      onKeybindList={(box) => {
+        keybindList = box
+      }}
       prompt={promptRequest()}
     />
   ),

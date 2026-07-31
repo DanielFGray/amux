@@ -1,8 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createMemo } from "solid-js"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { theme } from "./theme.ts"
 import type { Config } from "../config.ts"
-import type { HelpGroup } from "./Help.tsx"
+import type { HelpGroup } from "../bindings.ts"
 
 export const SETTINGS_SECTIONS = ["sidebar", "behaviour", "keybinds"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
@@ -41,6 +42,13 @@ export function settingsFields(config: Config, section: SettingsSection): Field[
   }
 }
 
+/**
+ * Settings, and the keybind reference on its own tab.
+ *
+ * There used to be a separate help window rendering exactly this list from
+ * exactly this data. Two overlays showing the same thing is one overlay too
+ * many to teach, so `^a ?` opens this window on the keybinds tab instead.
+ */
 export function Settings(props: {
   config: Config
   section: SettingsSection
@@ -49,6 +57,9 @@ export function Settings(props: {
   width: number
   height: number
   dirty: boolean
+  /** Handed the keybind list's scroll container so the app can drive it from
+   *  the keyboard — the list is longer than the window by some margin. */
+  onKeybindList?: (box: ScrollBoxRenderable) => void
 }) {
   const fields = createMemo(() => settingsFields(props.config, props.section))
 
@@ -88,7 +99,7 @@ export function Settings(props: {
       <Show
         when={props.section !== "keybinds"}
         fallback={
-          <scrollbox style={{ flexGrow: 1 }}>
+          <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
             <For each={props.groups}>
               {(group) => (
                 <box style={{ flexDirection: "column", flexShrink: 0 }}>
@@ -103,6 +114,7 @@ export function Settings(props: {
                       </box>
                     )}
                   </For>
+                  <text style={{ height: 1, flexShrink: 0 }}> </text>
                 </box>
               )}
             </For>
@@ -133,7 +145,9 @@ export function Settings(props: {
 
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
         {(props.dirty ? "● unsaved · " : "") +
-          "⇥ section · ↑↓ field · ←→ change · s saves · esc closes"}
+          (props.section === "keybinds"
+            ? "⇥ section · ↑↓ scrolls · esc closes"
+            : "⇥ section · ↑↓ field · ←→ change · s saves · esc closes")}
       </text>
     </box>
   )
