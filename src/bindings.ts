@@ -119,6 +119,9 @@ export function helpGroups(
 
   const groups = new Map<string, { keys: string; desc: string }[]>()
   for (const cmd of commands) {
+    // An empty desc means "covered by a sibling entry" — the way ^a 1..9 is
+    // one line rather than nine.
+    if (!cmd.desc) continue
     const active = bindings.get(cmd.name) ?? []
     // Render the compiled sequence, not the source string, so a binding
     // displays as the keys the user actually presses.

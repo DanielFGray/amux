@@ -1,5 +1,6 @@
 import { createSignal, createMemo, type Accessor } from "solid-js"
 import type { SpaceSet, Space } from "../space.ts"
+import type { Window } from "../window.ts"
 import type { Agent } from "../agent.ts"
 import type { TerminalPane } from "../pane.ts"
 
@@ -9,6 +10,8 @@ export const POLL_MS = 100
 export interface AppState {
   spaces: Accessor<readonly Space[]>
   active: Accessor<Space | null>
+  /** The window keystrokes land in. */
+  activeWindow: Accessor<Window | null>
   focusedPane: Accessor<TerminalPane | null>
   allAgents: Accessor<Agent[]>
   /** Advances on a timer. Read this in anything that displays polled state. */
@@ -57,14 +60,35 @@ export function createAppState(spaces: SpaceSet): AppState {
 
   return {
     spaces: spacesList,
-    active: createMemo(() => {
-      revision()
-      return spaces.active
-    }),
-    focusedPane: createMemo(() => {
-      revision()
-      return spaces.active?.workspace.focused ?? null
-    }),
+    // equals:false on every memo that returns a domain OBJECT. Solid dedupes
+    // by identity, and these return the same Space/Window/pane instance across
+    // revisions even when its contents changed — so a dependent reading
+    // `active().windows` would never see a window added. The array-returning
+    // memos below build a fresh array each time and notify on their own.
+    active: createMemo(
+      () => {
+        revision()
+        return spaces.active
+      },
+      undefined,
+      { equals: false },
+    ),
+    activeWindow: createMemo(
+      () => {
+        revision()
+        return spaces.activeWindow
+      },
+      undefined,
+      { equals: false },
+    ),
+    focusedPane: createMemo(
+      () => {
+        revision()
+        return spaces.activeWindow?.focused ?? null
+      },
+      undefined,
+      { equals: false },
+    ),
     allAgents: createMemo(() => {
       revision()
       return spaces.allAgents

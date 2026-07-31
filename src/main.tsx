@@ -5,6 +5,7 @@ import { createSignal, createMemo } from "solid-js"
 import { basename, resolve } from "node:path"
 
 import { SpaceSet, type Space } from "./space.ts"
+import type { Window } from "./window.ts"
 import type { Agent } from "./agent.ts"
 import { readGit } from "./git.ts"
 import { encodeKey } from "./keys.ts"
@@ -40,25 +41,31 @@ const spaces = new SpaceSet(renderer, paneHost, SHELL)
 const app = createAppState(spaces)
 
 /**
- * What to show after an agent's process exits and its views have closed.
+ * What to do after an agent's process exits and its views have closed.
  *
  * Only exits trigger this. Closing a view with ^a x is a deliberate detach —
  * the agent keeps running and the user wants it out of the way — so reopening
  * it there would fight the user. An exit is different: the pane went away
- * because the process ended, which can leave the space with nothing on screen
- * and nowhere for keystrokes to go.
+ * because the process ended, which can leave nothing on screen and nowhere for
+ * keystrokes to go.
  *
- * tmux closes the window when its last pane dies, and the session with the last
- * window. Same here, with one exception: an agent still running is never
- * discarded silently, so if any survive we show one instead.
+ * The cascade is tmux's: the window closes when its last pane dies, the space
+ * when its last window closes, and the app with the last space. The one
+ * exception is that a still-running agent is never discarded silently — if the
+ * window has one detached, it is shown instead of being killed with the window.
  */
-function afterAgentExit(_agent: Agent, space: Space) {
-  if (space !== spaces.active || space.workspace.panes.length > 0) return
-  const live = space.agents.find((a) => a.state !== "done")
+function afterAgentExit(_agent: Agent, window: Window, space: Space) {
+  if (window.panes.length > 0) return
+
+  const live = window.agents.find((a) => a.state !== "done")
   if (live) {
-    space.workspace.reveal(live)
+    window.reveal(live)
     return
   }
+
+  space.closeWindow(window)
+  if (space.windows.length > 0) return
+
   spaces.remove(space)
   // Nothing running and no space left: an empty screen would just be a dead
   // end, so exiting is the honest outcome.
@@ -81,7 +88,7 @@ const [size, setSize] = createSignal({ width: renderer.width, height: renderer.h
 renderer.on("resize", (width: number, height: number) => setSize({ width, height }))
 
 const targets = createMemo(() => sidebarTargets(app.spaces()))
-const activeWs = () => spaces.active?.workspace ?? null
+const activeWin = () => spaces.activeWindow
 
 /** Open a modal prompt and resolve with the field values, or null on cancel. */
 function ask(title: string, fields: PromptRequest["fields"]): Promise<string[] | null> {
@@ -109,7 +116,7 @@ async function newSpace() {
   const target = resolve(dir?.trim() || cwd)
   const space = spaces.create(name?.trim() || basename(target), target)
   spaces.activate(space)
-  space.workspace.init("shell")
+  space.newWindow().init("shell")
   void refreshGit()
 }
 
@@ -120,6 +127,18 @@ async function renameSpace() {
   const name = answers?.[0]?.trim()
   if (!name) return
   space.name = name
+  app.refresh()
+}
+
+async function renameWindow() {
+  const window = spaces.activeWindow
+  if (!window) return
+  const answers = await ask("Rename window", [
+    { label: "Name", value: window.customName ?? "", placeholder: window.title },
+  ])
+  if (!answers) return
+  // Clearing the field hands the name back to whatever the window is running.
+  window.customName = answers[0]?.trim() || null
   app.refresh()
 }
 
@@ -136,15 +155,20 @@ function activateSelection(index = selected()) {
   if (!target) return
   setSelected(index)
   if (target.space !== spaces.active) spaces.activate(target.space)
-  if (target.kind === "agent") target.space.workspace.reveal(target.agent)
+  if (target.kind !== "space") target.space.selectWindow(target.window)
+  if (target.kind === "agent") target.window.reveal(target.agent)
   setSidebarFocused(false)
   app.refresh()
 }
 
 function killSelection() {
   const target = targets()[selected()]
-  if (target?.kind !== "agent") return
-  target.space.workspace.killAgent(target.agent)
+  if (!target) return
+  // Kill what the row actually represents, so x means the same thing at every
+  // level of the tree.
+  if (target.kind === "agent") target.window.killAgent(target.agent)
+  else if (target.kind === "window") target.space.closeWindow(target.window)
+  else spaces.remove(target.space)
   app.refresh()
 }
 
@@ -164,7 +188,7 @@ function toggleSidebar() {
 }
 
 function selectFocusedAgent() {
-  const agent = spaces.active?.workspace.focused?.agent
+  const agent = spaces.activeWindow?.focused?.agent
   if (!agent) return
   const i = targets().findIndex((t) => t.kind === "agent" && t.agent === agent)
   if (i !== -1) setSelected(i)
@@ -188,54 +212,102 @@ function editSetting(delta: number) {
 }
 
 const COMMANDS: CommandSpec[] = [
+  // Panes — splits keep the tmux-ish | and -, which read better than " and %.
   {
     name: "pane.split-row",
     key: ["<leader>|", "<leader>\\"],
     desc: "split left/right",
     group: "panes",
-    run: () => void activeWs()?.split("row"),
+    run: () => void activeWin()?.split("row"),
   },
   {
     name: "pane.split-column",
     key: "<leader>-",
     desc: "split top/bottom",
     group: "panes",
-    run: () => void activeWs()?.split("column"),
+    run: () => void activeWin()?.split("column"),
   },
   {
     name: "pane.next",
-    key: "<leader>n",
-    desc: "focus next pane",
+    key: "<leader>o",
+    desc: "next pane",
     group: "panes",
-    run: () => activeWs()?.focusNext(1),
-  },
-  {
-    name: "pane.previous",
-    key: "<leader>p",
-    desc: "focus previous pane",
-    group: "panes",
-    run: () => activeWs()?.focusNext(-1),
+    run: () => activeWin()?.focusNext(1),
   },
   {
     name: "pane.close",
     key: "<leader>x",
-    desc: "close view (agent keeps running)",
+    desc: "close pane (agent keeps running)",
     group: "panes",
     run: () => {
-      const ws = activeWs()
-      if (ws?.focused) ws.close(ws.focused)
+      const w = activeWin()
+      if (w?.focused) w.close(w.focused)
     },
   },
+
+  // Windows.
+  {
+    name: "window.new",
+    key: "<leader>c",
+    desc: "new window",
+    group: "windows",
+    run: () => void spaces.active?.newWindow().init("shell"),
+  },
+  {
+    name: "window.next",
+    key: "<leader>n",
+    desc: "next window",
+    group: "windows",
+    run: () => spaces.active?.cycleWindow(1),
+  },
+  {
+    name: "window.previous",
+    key: "<leader>p",
+    desc: "previous window",
+    group: "windows",
+    run: () => spaces.active?.cycleWindow(-1),
+  },
+  {
+    name: "window.rename",
+    key: "<leader>,",
+    desc: "rename window",
+    group: "windows",
+    run: () => void renameWindow(),
+  },
+  {
+    name: "window.close",
+    key: "<leader>&",
+    desc: "kill window and its agents",
+    group: "windows",
+    run: () => {
+      const space = spaces.active
+      const w = space?.active
+      if (space && w) space.closeWindow(w)
+    },
+  },
+  // 1..9 select by the window's own number, which is why that number is stable
+  // rather than a position in the list.
+  ...Array.from({ length: 9 }, (_, i) => ({
+    name: `window.select-${i + 1}`,
+    key: `<leader>${i + 1}`,
+    desc: i === 0 ? "select window 1..9" : "",
+    group: "windows",
+    run: () => void spaces.active?.selectNumber(i + 1),
+  })),
+
+  // Agents.
   {
     name: "agent.kill",
     key: "<leader>k",
     desc: "stop the focused agent",
     group: "agents",
     run: () => {
-      const ws = activeWs()
-      if (ws?.focused) ws.killAgent(ws.focused.agent)
+      const w = activeWin()
+      if (w?.focused) w.killAgent(w.focused.agent)
     },
   },
+
+  // Spaces.
   {
     name: "space.new",
     key: "<leader>s",
@@ -252,18 +324,20 @@ const COMMANDS: CommandSpec[] = [
   },
   {
     name: "space.next",
-    key: "<leader>]",
+    key: "<leader>)",
     desc: "next space",
     group: "spaces",
     run: () => spaces.cycle(1),
   },
   {
     name: "space.previous",
-    key: "<leader>[",
+    key: "<leader>(",
     desc: "previous space",
     group: "spaces",
     run: () => spaces.cycle(-1),
   },
+
+  // App.
   {
     name: "sidebar.toggle",
     key: "<leader>b",
@@ -280,7 +354,7 @@ const COMMANDS: CommandSpec[] = [
   },
   {
     name: "app.settings",
-    key: "<leader>,",
+    key: "<leader>S",
     desc: "settings",
     group: "global",
     run: () => setOverlay((o) => (o === "settings" ? "none" : "settings")),
@@ -290,7 +364,7 @@ const COMMANDS: CommandSpec[] = [
     key: "<leader>ctrl+a",
     desc: "send a literal ctrl+a",
     group: "global",
-    run: () => activeWs()?.focused?.write("\x01"),
+    run: () => activeWin()?.focused?.write("\x01"),
   },
   { name: "app.quit", key: "<leader>q", desc: "quit", group: "global", run: () => shutdown() },
 ]
@@ -320,7 +394,7 @@ function onUnhandled(event: KeyEvent): boolean {
     return true
   }
   const bytes = encodeKey(event)
-  if (bytes !== null) activeWs()?.focused?.write(bytes)
+  if (bytes !== null) activeWin()?.focused?.write(bytes)
   return true
 }
 
@@ -416,7 +490,7 @@ for (const sig of Object.keys(SIGNAL_EXIT)) {
 process.once("exit", () => spaces.disposeAll())
 
 const first = spaces.create(basename(process.cwd()) || "space", process.cwd())
-first.workspace.init("shell")
+first.newWindow().init("shell")
 void refreshGit()
 const gitTimer = setInterval(() => void refreshGit(), 5000)
 gitTimer.unref?.()
@@ -435,6 +509,10 @@ await render(
       onHover={setHovered}
       onActivate={activateSelection}
       pending={pending()}
+      onSelectWindow={(w) => {
+        spaces.active?.selectWindow(w)
+        app.refresh()
+      }}
       overlay={overlay()}
       helpGroups={groups}
       settingsSection={settingsSection()}

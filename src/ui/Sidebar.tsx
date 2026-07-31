@@ -3,6 +3,7 @@ import { createMemo, For, Show } from "solid-js"
 import { SPINNER_FRAMES, STATE_GLYPH, type AgentState } from "../detect.ts"
 import type { Agent } from "../agent.ts"
 import type { Space } from "../space.ts"
+import type { Window } from "../window.ts"
 import type { AppState } from "./state.ts"
 import { theme } from "./theme.ts"
 
@@ -12,12 +13,14 @@ export const SIDEBAR_WIDTH = 30
  *  selection index counts only these — the keyboard and the mouse agree. */
 export type SidebarTarget =
   | { kind: "space"; space: Space }
-  | { kind: "agent"; space: Space; agent: Agent }
+  | { kind: "window"; space: Space; window: Window }
+  | { kind: "agent"; space: Space; window: Window; agent: Agent }
 
 type Row =
   | { kind: "space"; space: Space; index: number }
   | { kind: "branch"; space: Space }
-  | { kind: "agent"; space: Space; agent: Agent; index: number }
+  | { kind: "window"; space: Space; window: Window; index: number }
+  | { kind: "agent"; space: Space; window: Window; agent: Agent; index: number }
 
 /** Flatten the tree once. Used by the view and by the app's key handling, so
  *  "row 3" means the same thing to both. */
@@ -25,7 +28,10 @@ export function sidebarTargets(spaces: readonly Space[]): SidebarTarget[] {
   const out: SidebarTarget[] = []
   for (const space of spaces) {
     out.push({ kind: "space", space })
-    for (const agent of space.agents) out.push({ kind: "agent", space, agent })
+    for (const window of space.windows) {
+      out.push({ kind: "window", space, window })
+      for (const agent of window.agents) out.push({ kind: "agent", space, window, agent })
+    }
   }
   return out
 }
@@ -57,7 +63,12 @@ export function Sidebar(props: SidebarProps) {
     for (const space of props.app.spaces()) {
       out.push({ kind: "space", space, index: index++ })
       if (space.branch) out.push({ kind: "branch", space })
-      for (const agent of space.agents) out.push({ kind: "agent", space, agent, index: index++ })
+      for (const window of space.windows) {
+        out.push({ kind: "window", space, window, index: index++ })
+        for (const agent of window.agents) {
+          out.push({ kind: "agent", space, window, agent, index: index++ })
+        }
+      }
     }
     return out
   })
@@ -114,7 +125,12 @@ export function Sidebar(props: SidebarProps) {
 function SidebarRow(props: SidebarProps & { row: Exclude<Row, { kind: "branch" }> }) {
   const state = () => {
     props.app.tick()
-    return props.row.kind === "space" ? props.row.space.state : props.row.agent.state
+    const row = props.row
+    return row.kind === "space"
+      ? row.space.state
+      : row.kind === "window"
+        ? row.window.state
+        : row.agent.state
   }
 
   const glyph = () => {
@@ -130,21 +146,22 @@ function SidebarRow(props: SidebarProps & { row: Exclude<Row, { kind: "branch" }
         ? theme.overlay0
         : theme.mantle
 
-  // Marks what is on screen right now: the active space, and within it the
-  // agent behind the focused pane.
-  const marker = () =>
-    props.row.kind === "space"
-      ? props.row.space === props.app.active()
-        ? "▸"
-        : " "
-      : props.app.focusedPane()?.agent === props.row.agent
-        ? "▸"
-        : " "
+  // Marks what is on screen right now, at each level: the active space, its
+  // active window, and the agent behind the focused pane.
+  const marker = () => {
+    const row = props.row
+    if (row.kind === "space") return row.space === props.app.active() ? "▸" : " "
+    if (row.kind === "window") return row.space.active === row.window ? "▸" : " "
+    return props.app.focusedPane()?.agent === row.agent ? "▸" : " "
+  }
 
   const label = () => {
-    if (props.row.kind === "space") return props.row.space.name
+    const row = props.row
+    if (row.kind === "space") return row.space.name
     props.app.tick()
-    return props.row.agent.title
+    // Numbered like a tmux window, because ^a 1..9 selects by that number.
+    if (row.kind === "window") return `${row.window.number}:${row.window.title}`
+    return row.agent.title
   }
 
   const indicators = () => {
@@ -155,11 +172,17 @@ function SidebarRow(props: SidebarProps & { row: Exclude<Row, { kind: "branch" }
   }
 
   const labelColor = () => {
-    if (props.row.kind === "space") return theme.mauve
+    const row = props.row
+    if (row.kind === "space") return theme.mauve
+    if (row.kind === "window") return theme.blue
     props.app.tick()
-    const a = props.row.agent
+    const a = row.agent
     return a.state === "done" ? theme.overlay1 : a.unseen ? theme.peach : theme.text
   }
+
+  // space at column 0, window indented one, agents two — the nesting is the
+  // only thing telling you which window an agent belongs to.
+  const indent = () => (props.row.kind === "space" ? 0 : props.row.kind === "window" ? 1 : 2)
 
   return (
     <box
@@ -168,7 +191,7 @@ function SidebarRow(props: SidebarProps & { row: Exclude<Row, { kind: "branch" }
         flexShrink: 0,
         flexDirection: "row",
         backgroundColor: background(),
-        paddingLeft: props.row.kind === "agent" ? 1 : 0,
+        paddingLeft: indent(),
       }}
       onMouseDown={() => props.onActivate(props.row.index)}
       // "over" fires once on entry and every position after that is "move";

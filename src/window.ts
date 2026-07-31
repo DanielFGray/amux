@@ -1,21 +1,31 @@
 import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/core"
 import { TerminalPane } from "./pane.ts"
 import { Agent } from "./agent.ts"
+import { rollUp } from "./space.ts"
+import { Divider, getWeight, setWeight } from "./divider.ts"
 
 export type SplitDirection = "row" | "column"
 
 let nextId = 0
 
 /**
- * A tmux-style split tree.
+ * A window: one split tree of panes, and the agents behind them.
+ *
+ * The middle level of the tmux hierarchy — a space holds windows, a window
+ * holds panes. Agents belong to the window they were started in, so closing a
+ * window is what ends its agents rather than merely hiding them.
  *
  * Layout itself is delegated to opentui: every split is a flex Box, so yoga
  * computes the geometry and — because hit-testing is a byproduct of rendering —
  * clicking and hovering keep working through arbitrary nesting with no
  * coordinate math of our own.
  */
-export class Workspace {
+export class Window {
   readonly root: BoxRenderable
+  /** Stable 1-based number for ^a 1..9, kept even as siblings come and go. */
+  readonly number: number
+  /** Set by rename; otherwise the window shows what it is running. */
+  customName: string | null = null
   #ctx: RenderContext
   #panes: TerminalPane[] = []
   #agents: Agent[] = []
@@ -29,12 +39,13 @@ export class Workspace {
    *  as "a pane closed", because closing a view by hand is a detach, not an end. */
   onAgentExit?: (agent: Agent) => void
 
-  constructor(ctx: RenderContext, shell: string[], cwd?: string) {
+  constructor(ctx: RenderContext, shell: string[], cwd: string | undefined, number: number) {
     this.#ctx = ctx
     this.#shell = shell
     this.#cwd = cwd
+    this.number = number
     this.root = new BoxRenderable(ctx, {
-      id: "workspace",
+      id: `window-${number}-${nextId++}`,
       flexDirection: "row",
       flexGrow: 1,
     })
@@ -44,10 +55,23 @@ export class Workspace {
     return this.#panes
   }
 
+  /** Tab label: the given name, else whatever the focused pane is showing —
+   *  the same "what is this actually running" cue tmux gives a window. */
+  get title(): string {
+    if (this.customName) return this.customName
+    const agent = this.#focused?.agent ?? this.#agents[0]
+    return agent?.title ?? "window"
+  }
+
   /** Every agent, including ones no pane is currently showing. This is what
    *  the sidebar lists. */
   get agents(): readonly Agent[] {
     return this.#agents
+  }
+
+  /** Most urgent state among this window's agents, for its sidebar row. */
+  get state() {
+    return rollUp(this.#agents)
   }
 
   /** Agents with no viewport open — running, but off-screen. */
@@ -96,13 +120,16 @@ export class Workspace {
     return this.#focused
   }
 
+  #makeDivider(direction: SplitDirection): Divider {
+    return new Divider(this.#ctx, { id: `divider-${nextId++}`, axis: direction })
+  }
+
   #makePane(agent: Agent): TerminalPane {
     const pane = new TerminalPane(this.#ctx, {
       id: `pane-${nextId++}`,
       agent,
-      flexGrow: 1,
-      flexBasis: 0,
     })
+    setWeight(pane, 1)
     pane.onFocusRequest = (p) => this.focus(p)
     this.#panes.push(pane)
     return pane
@@ -152,22 +179,40 @@ export class Workspace {
 
     const pane = this.#makePane(agent ?? this.spawn(name))
 
+    // Every sibling pair is separated by a draggable divider, which is also
+    // the visible border between panes.
+    // The newcomer takes half of what it is splitting, tmux-style. Splitting a
+    // pane that was resized to a weight of 69 against a fresh weight of 1 would
+    // otherwise leave the new pane a sliver a cell or two wide.
+    const share = getWeight(target) / 2
+
     if (parent.flexDirection === direction && parent !== this.root) {
-      parent.add(pane, parent.getChildren().indexOf(target) + 1)
+      const at = parent.getChildren().indexOf(target) + 1
+      setWeight(target, share)
+      setWeight(pane, share)
+      parent.add(this.#makeDivider(direction), at)
+      parent.add(pane, at + 1)
     } else if (parent === this.root && parent.getChildrenCount() === 1) {
       // Root still holds a single pane, so it can simply adopt the axis.
       parent.flexDirection = direction
+      setWeight(target, share)
+      setWeight(pane, share)
+      parent.add(this.#makeDivider(direction))
       parent.add(pane)
     } else {
       const index = parent.getChildren().indexOf(target)
       const box = new BoxRenderable(this.#ctx, {
         id: `split-${nextId++}`,
         flexDirection: direction,
-        flexGrow: 1,
-        flexBasis: 0,
       })
+      // The box stands in for the pane it replaces, so it inherits its weight;
+      // inside it, the two panes start even.
+      setWeight(box, getWeight(target))
       parent.remove(target)
+      setWeight(target, 1)
+      setWeight(pane, 1)
       box.add(target)
+      box.add(this.#makeDivider(direction))
       box.add(pane)
       parent.add(box, index)
     }
@@ -194,7 +239,18 @@ export class Workspace {
     this.#panes.splice(i, 1)
 
     const parent = pane.parent as BoxRenderable | null
-    parent?.remove(pane)
+    if (parent) {
+      // Take the divider that separated this pane from a neighbour with it,
+      // or the tree is left with a border floating against nothing.
+      const siblings = parent.getChildren()
+      const at = siblings.indexOf(pane)
+      const divider = (siblings[at + 1] ?? siblings[at - 1]) as Renderable | undefined
+      if (divider instanceof Divider) {
+        parent.remove(divider)
+        divider.destroy()
+      }
+      parent.remove(pane)
+    }
     pane.destroyRecursively()
 
     if (parent && parent !== this.root && parent.getChildrenCount() === 1) {
