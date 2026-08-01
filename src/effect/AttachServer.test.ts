@@ -85,3 +85,26 @@ test("native attach server routes output and releases clients on close", async (
   result.server.stop(true)
   await rm(root, { recursive: true, force: true })
 })
+
+test("idle timeout releases an accepted client", async () => {
+  const root = await mkdtemp(join(tmpdir(), "herdr-attach-timeout-"))
+  const path = join(root, "attach.sock")
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      let detached = 0
+      const server = yield* startAttachServer({
+        path,
+        idleTimeoutSeconds: 1,
+        onDetach: () => Effect.sync(() => { detached += 1 }),
+      })
+      const socket = yield* Effect.promise(() => connect(path, () => {}))
+      yield* Effect.promise(() => Bun.sleep(1_300))
+      return { detached, server, socket }
+    }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
+  )
+
+  expect(result.detached).toBe(1)
+  result.socket.end()
+  result.server.stop(true)
+  await rm(root, { recursive: true, force: true })
+})

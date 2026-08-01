@@ -331,9 +331,20 @@ export class SessionDaemon {
     this.#server?.stop()
     this.#server = null
     await this.#disposeHost()
-    await unlink(this.paths.socket).catch(() => {})
-    await rm(this.paths.lease, { force: true }).catch(() => {})
-    await this.#releaseLock()
+    // `close` preserves the session for restart, so publish the detached
+    // marker after the attach scope has been torn down rather than leaving a
+    // stale attachment for metadata-only readers.
+    let persistError: unknown
+    try {
+      await this.#persist()
+    } catch (error) {
+      persistError = error
+    } finally {
+      await unlink(this.paths.socket).catch(() => {})
+      await rm(this.paths.lease, { force: true }).catch(() => {})
+      await this.#releaseLock()
+    }
+    if (persistError) throw persistError
   }
 
   /**

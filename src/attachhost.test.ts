@@ -14,6 +14,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionDaemon } from "./daemon.ts"
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./effect/AttachProtocol.ts"
+import { loadSession } from "./session.ts"
 
 const dirs: string[] = []
 const daemons: SessionDaemon[] = []
@@ -196,6 +197,19 @@ test("stopping the daemon closes the attach socket and its sessions", async () =
     Bun.sleep(2000).then(() => "orphaned" as const),
   ])
   expect(exited).toBe("exited")
+})
+
+test("closing a daemon persists that the preserved session is detached", async () => {
+  const daemon = await started("close-detached")
+  const attached = await client(daemon.paths.attach, "watcher")
+  await settle()
+
+  await daemon.close()
+  daemons.splice(daemons.indexOf(daemon), 1)
+  attached.socket.end()
+
+  const home = dirs[dirs.length - 1]!
+  expect((await loadSession("close-detached", { HOME: home, XDG_STATE_HOME: join(home, "state") }))?.attached).toBe(false)
 })
 
 test("the daemon tracks when the attached client was last seen", async () => {

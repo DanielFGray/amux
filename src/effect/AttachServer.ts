@@ -55,6 +55,7 @@ interface ClientState {
   connection: string
   scope: Scope.CloseableScope | null
   processing: Promise<void>
+  idleTimer: Timer | null
 }
 
 const reason = (cause: Cause.Cause<unknown>): string => {
@@ -87,6 +88,8 @@ export const startAttachServer = (
 
     const closeClient = (socket: Bun.Socket<ClientState>) => {
       const state = socket.data
+      if (state.idleTimer) clearTimeout(state.idleTimer)
+      state.idleTimer = null
       const client = state.client
       const connection = state.connection
       const scope = state.scope
@@ -187,22 +190,33 @@ export const startAttachServer = (
         )
       })
 
+    const resetIdleTimer = (socket: Bun.Socket<ClientState>) => {
+      const state = socket.data
+      if (state.idleTimer) clearTimeout(state.idleTimer)
+      const seconds = options.idleTimeoutSeconds ?? 60
+      state.idleTimer = setTimeout(() => {
+        closeClient(socket)
+        socket.end()
+      }, seconds * 1000)
+      state.idleTimer.unref?.()
+    }
+
     const listener = yield* Effect.acquireRelease(
       Effect.try({
         try: () =>
           Bun.listen<ClientState>({
             unix: options.path,
-            data: { buffer: "", client: null, connection: "", scope: null, processing: Promise.resolve() },
+            data: { buffer: "", client: null, connection: "", scope: null, processing: Promise.resolve(), idleTimer: null },
             socket: {
               binaryType: "buffer",
               open(socket) {
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
-                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, processing: Promise.resolve() }
-                socket.timeout(options.idleTimeoutSeconds ?? 60)
+                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, processing: Promise.resolve(), idleTimer: null }
+                resetIdleTimer(socket)
               },
               data(socket, data) {
-                socket.timeout(options.idleTimeoutSeconds ?? 60)
+                resetIdleTimer(socket)
                 const state = socket.data
                 // Bun may invoke data callbacks concurrently. Keep complete
                 // frames from one connection in wire order so resize->sync
@@ -228,10 +242,6 @@ export const startAttachServer = (
               },
               error(socket) {
                 closeClient(socket)
-              },
-              timeout(socket) {
-                closeClient(socket)
-                socket.end()
               },
             },
           }),
