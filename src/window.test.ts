@@ -1,32 +1,17 @@
 import { test, expect, afterEach } from "bun:test"
-import { BoxRenderable } from "@opentui/core"
-import { createTestRenderer } from "@opentui/core/testing"
-import { SpaceSet } from "./space.ts"
 import { setWeight } from "./divider.ts"
-import type { Window } from "./window.ts"
+import { createHarness } from "./harness.ts"
 import type { TerminalPane } from "./pane.ts"
 
-const SHELL = ["bash"]
-const cleanup: (() => void)[] = []
-afterEach(() => {
-  for (const fn of cleanup.splice(0)) fn()
+const cleanup: (() => Promise<void>)[] = []
+afterEach(async () => {
+  for (const fn of cleanup.splice(0)) await fn()
 })
 
-async function setup(): Promise<{ window: Window; layout: () => Promise<void> }> {
-  const t = await createTestRenderer({ width: 80, height: 24 })
-  const host = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  t.renderer.root.add(host)
-  const spaces = new SpaceSet(t.renderer, host, SHELL)
-  const space = spaces.create("proj", process.cwd())
-  const window = space.newWindow()
-  window.init()
-  cleanup.push(() => {
-    spaces.disposeAll()
-    t.renderer.destroy()
-  })
-  // Geometry comes from yoga, which only runs on a frame — and directional
-  // focus is entirely geometric, so nothing here means anything until it has.
-  return { window, layout: () => t.renderOnce() }
+async function setup() {
+  const harness = await createHarness()
+  cleanup.push(harness.dispose)
+  return harness
 }
 
 test("a pane is named after the command it runs, not a generic 'shell'", async () => {

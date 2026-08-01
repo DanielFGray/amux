@@ -1,8 +1,6 @@
 import { test, expect } from "bun:test"
-import { BoxRenderable } from "@opentui/core"
-import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { Divider } from "./divider.ts"
-import { SpaceSet, type Space } from "./space.ts"
+import { createHarness } from "./harness.ts"
 import type { Window } from "./window.ts"
 import type { Agent } from "./agent.ts"
 import type { TerminalPane } from "./pane.ts"
@@ -11,41 +9,18 @@ import { sidebarTargets } from "./ui/Sidebar.tsx"
 
 const SHELL = ["bash"]
 
-interface Harness {
-  t: TestRendererSetup
-  spaces: SpaceSet
-  space: Space
-  win: Window
-  dispose: () => Promise<void>
-}
-
-/** Real PTYs and a real ghostty VT behind a real renderer — these assert the
- *  domain, so no view is mounted beyond the split trees the windows build. */
-async function setup(): Promise<Harness> {
-  const t = await createTestRenderer({ width: 100, height: 30 })
-  const paneHost = new BoxRenderable(t.renderer, {
-    id: "pane-host",
-    flexDirection: "row",
-    flexGrow: 1,
+/** These assert the domain, so no view is mounted beyond the split trees the
+ *  windows build. `win` rather than `window` throughout, which is why the
+ *  shared harness is aliased rather than destructured. */
+async function setup() {
+  const harness = await createHarness({
+    width: 100,
+    height: 30,
+    shell: SHELL,
+    hostDirection: "row",
+    init: "shell",
   })
-  t.renderer.root.add(paneHost)
-
-  const spaces = new SpaceSet(t.renderer, paneHost, SHELL)
-  const space = spaces.create("proj", process.cwd())
-  const win = space.newWindow()
-  win.init("shell")
-
-  return {
-    t,
-    spaces,
-    space,
-    win,
-    async dispose() {
-      spaces.disposeAll()
-      await Bun.sleep(50) // let PTY pumps observe the kill and settle
-      t.renderer.destroy()
-    },
-  }
+  return { ...harness, win: harness.window }
 }
 
 /** The agent's on-screen text, so a move's effect on terminal state is read

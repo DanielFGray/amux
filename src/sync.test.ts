@@ -1,42 +1,22 @@
 import { test, expect, spyOn, afterEach } from "bun:test"
-import { BoxRenderable } from "@opentui/core"
-import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
-import { SpaceSet } from "./space.ts"
 import { setWeight } from "./divider.ts"
 import { createBindings } from "./bindings.ts"
+import { createHarness } from "./harness.ts"
 import { encodeKey } from "./keys.ts"
 import { RenderState } from "./ghostty.ts"
-import type { Window } from "./window.ts"
 import { Agent } from "./agent.ts"
 
-const SHELL = ["bash"]
-
-const cleanup: (() => void)[] = []
+const cleanup: (() => Promise<void>)[] = []
 const spies: ReturnType<typeof spyOn>[] = []
-afterEach(() => {
+afterEach(async () => {
   for (const s of spies.splice(0)) s.mockRestore()
-  for (const fn of cleanup.splice(0)) fn()
+  for (const fn of cleanup.splice(0)) await fn()
 })
 
-async function setup(opts?: { init?: boolean }): Promise<{
-  t: TestRendererSetup
-  spaces: SpaceSet
-  window: Window
-  layout: () => Promise<void>
-}> {
-  const t = await createTestRenderer({ width: 80, height: 24 })
-  const host = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  t.renderer.root.add(host)
-  const spaces = new SpaceSet(t.renderer, host, SHELL)
-  const space = spaces.create("proj", process.cwd())
-  const window = space.newWindow()
-  if (opts?.init !== false) window.init()
-  cleanup.push(() => {
-    spaces.disposeAll()
-    t.renderer.destroy()
-  })
-  // Geometry comes from yoga, which only runs on a frame.
-  return { t, spaces, window, layout: () => t.renderOnce() }
+async function setup(opts?: { init?: boolean }) {
+  const harness = await createHarness({ init: opts?.init })
+  cleanup.push(harness.dispose)
+  return harness
 }
 
 /** Intercept every child-input write and record which agent got which bytes. */
