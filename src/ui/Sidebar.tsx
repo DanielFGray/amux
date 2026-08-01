@@ -169,12 +169,13 @@ function SidebarRow(props: SidebarProps & { row: Exclude<Row, { kind: "branch" }
     // Numbered like a tmux window, because ^a 1..9 selects by that number.
     if (row.kind === "window") return row.window.label
     // What the pane used to say in its own header bar, which is gone: the tree
-    // is the one place that names things now. The foreground command is the
-    // more useful half when there is one — a shell's OSC title is its cwd,
-    // which the space row already tells you.
+    // is the one place that names things now. The foreground command leads when
+    // there is one, because it is the higher-value signal and a 30-col sidebar
+    // truncates the tail of every row — a shell's OSC title is a long cwd the
+    // space row already tells you, so it is the part that is allowed to be cut.
     const agent = row.agent
     const command = agent.foregroundCommand
-    return command && !agent.title.includes(command) ? `${agent.title} · ${command}` : agent.title
+    return command && !agent.title.startsWith(command) ? `${command} · ${agent.title}` : agent.title
   }
 
   const indicators = () => {

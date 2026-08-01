@@ -207,6 +207,37 @@ test("an agent whose daemon attachment is lost stays in the sidebar as idle, not
   }
 })
 
+/**
+ * The bug this guards against: an agent row's label is "command · title", and
+ * the text renderable truncates at the row's right edge — so the *command* must
+ * lead, or a shell's long OSC title (a cwd, which the space row already shows)
+ * eats the whole label area and the command is always truncated away.
+ */
+test("a long OSC title is truncated so the foreground command stays visible", async () => {
+  const s = await setup()
+  try {
+    const agent = s.win.agents[0]!
+    // Put a process in the foreground so the row has a command to show. The
+    // shell needs a moment to be running before it will execute what we type.
+    agent.write("sleep 30\n")
+    await waitFor(() => agent.foregroundCommand === "sleep", "the foreground command")
+    // A shell-style OSC title, longer than the 25-char label area at 30 cols.
+    agent.term.write(new TextEncoder().encode("\x1b]2;dan@host:~/build/opentui-herdr\x07"))
+
+    // waitForFrame, not waitForFrame's predicate: the mutation lands between two
+    // of the sidebar's POLL_MS repaints, and waitForFrame gives up as soon as
+    // the renderer is momentarily idle — which is exactly that gap. Poll the
+    // rendered buffer until a repaint has caught up with the title change.
+    await waitFor(() => s.t.captureCharFrame().includes("sleep ·"), "the command to lead the label")
+    const frame = s.t.captureCharFrame()
+    // The command leads the label, so truncation cuts the title tail, not it.
+    expect(frame).toContain("sleep · dan@")
+    expect(frame).not.toContain("dan@host:~/build/opentui-herdr · sleep")
+  } finally {
+    await s.dispose()
+  }
+})
+
 test("hover follows the pointer between rows, not just on entry", async () => {
   const s = await setup()
   try {
