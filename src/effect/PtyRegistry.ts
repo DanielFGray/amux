@@ -1,5 +1,15 @@
-import { Deferred, Effect, Exit, FiberMap, Mailbox, Ref, Schema as S, Scope, Stream } from "effect"
-import { readPty, spawnPty } from "../pty.ts"
+import {
+  Deferred,
+  Effect,
+  FiberMap,
+  Mailbox,
+  Match,
+  Ref,
+  Schema as S,
+  Scope,
+  Stream,
+} from "effect";
+import { readPty, spawnPty } from "../pty.ts";
 
 export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   operation: S.String,
@@ -7,32 +17,41 @@ export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
 }) {}
 
 export interface PtySpec {
-  readonly id: string
-  readonly cmd: readonly string[]
-  readonly cwd?: string
-  readonly cols: number
-  readonly rows: number
+  readonly id: string;
+  readonly cmd: readonly string[];
+  readonly cwd?: string;
+  readonly cols: number;
+  readonly rows: number;
 }
 
 export interface ManagedPty {
-  readonly id: string
-  readonly output: Stream.Stream<Uint8Array, PtyError>
-  readonly exit: Effect.Effect<number | null, PtyError>
-  readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>
-  readonly resize: (cols: number, rows: number) => Effect.Effect<void, PtyError>
-  readonly kill: Effect.Effect<void, PtyError>
+  readonly id: string;
+  readonly output: Stream.Stream<Uint8Array, PtyError>;
+  readonly exit: Effect.Effect<number | null, PtyError>;
+  readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
+  readonly resize: (cols: number, rows: number) => Effect.Effect<void, PtyError>;
+  readonly kill: Effect.Effect<void, PtyError>;
 }
 
 type PtyCommand =
-  | { readonly _tag: "write"; readonly data: string | Uint8Array; readonly done: Deferred.Deferred<void, PtyError> }
-  | { readonly _tag: "resize"; readonly cols: number; readonly rows: number; readonly done: Deferred.Deferred<void, PtyError> }
-  | { readonly _tag: "kill"; readonly done: Deferred.Deferred<void, PtyError> }
+  | {
+      readonly _tag: "write";
+      readonly data: string | Uint8Array;
+      readonly done: Deferred.Deferred<void, PtyError>;
+    }
+  | {
+      readonly _tag: "resize";
+      readonly cols: number;
+      readonly rows: number;
+      readonly done: Deferred.Deferred<void, PtyError>;
+    }
+  | { readonly _tag: "kill"; readonly done: Deferred.Deferred<void, PtyError> };
 
 const asPtyError = (operation: string, error: unknown): PtyError =>
   new PtyError({
     operation,
     message: error instanceof Error ? error.message : String(error),
-  })
+  });
 
 /**
  * Scoped ownership for daemon-side PTYs.
@@ -42,9 +61,11 @@ const asPtyError = (operation: string, error: unknown): PtyError =>
  * turns raw PTY output into a supervised Effect stream.
  */
 export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
-  effect: Effect.gen(function* () {
-    const sessions = yield* Ref.make<ReadonlySet<string>>(new Set())
-    const commandPumps = yield* FiberMap.make<string>()
+  // scoped, not effect: the command pumps are a FiberMap that has to be
+  // finalized, and the scope that owns it is the registry's own lifetime.
+  scoped: Effect.gen(function* () {
+    const sessions = yield* Ref.make<ReadonlySet<string>>(new Set());
+    const commandPumps = yield* FiberMap.make<string>();
 
     const spawn = (spec: PtySpec): Effect.Effect<ManagedPty, PtyError, Scope.Scope> =>
       Effect.gen(function* () {
@@ -60,50 +81,62 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
           }),
           (owned) =>
             Effect.sync(() => {
-              owned.kill()
-              owned.close()
+              owned.kill();
+              owned.close();
             }).pipe(
-              Effect.zipRight(Ref.update(sessions, (current) => {
-                const next = new Set(current)
-                next.delete(spec.id)
-                return next
-              })),
+              Effect.zipRight(
+                Ref.update(sessions, (current) => {
+                  const next = new Set(current);
+                  next.delete(spec.id);
+                  return next;
+                }),
+              ),
             ),
-        )
+        );
 
-        yield* Ref.update(sessions, (current) => new Set(current).add(spec.id))
+        yield* Ref.update(sessions, (current) => new Set(current).add(spec.id));
 
-        const commands = yield* Mailbox.make<PtyCommand>({ capacity: 256, strategy: "suspend" })
+        const commands = yield* Mailbox.make<PtyCommand>({ capacity: 256, strategy: "suspend" });
         const runCommand = (command: PtyCommand) => {
-          const operation = command._tag === "write"
-            ? Effect.sync(() => pty.write(command.data))
-            : command._tag === "resize"
-              ? Effect.sync(() => pty.resize(command.cols, command.rows))
-              : Effect.sync(() => pty.kill())
+          const operation = Match.valueTags(command, {
+            write: (command) => Effect.sync(() => pty.write(command.data)),
+            resize: (command) => Effect.sync(() => pty.resize(command.cols, command.rows)),
+            kill: () => Effect.sync(() => pty.kill()),
+          });
           return operation.pipe(
             Effect.mapError((error) => asPtyError(command._tag, error)),
             Effect.exit,
             Effect.flatMap((exit) => Deferred.done(command.done, exit)),
             Effect.zipRight(command._tag === "kill" ? commands.end : Effect.void),
-          )
-        }
-        yield* FiberMap.run(commandPumps, spec.id, Mailbox.toStream(commands).pipe(Stream.runForEach(runCommand)))
+          );
+        };
+        yield* FiberMap.run(
+          commandPumps,
+          spec.id,
+          Mailbox.toStream(commands).pipe(Stream.runForEach(runCommand)),
+        );
 
         const offer = (command: PtyCommand): Effect.Effect<void, PtyError> =>
           commands.offer(command).pipe(
-            Effect.flatMap((accepted) => accepted
-              ? Effect.void
-              : Effect.fail(new PtyError({ operation: command._tag, message: "pty command pump is closed" }))),
-          )
+            Effect.flatMap((accepted) =>
+              accepted
+                ? Effect.void
+                : Effect.fail(
+                    new PtyError({
+                      operation: command._tag,
+                      message: "pty command pump is closed",
+                    }),
+                  ),
+            ),
+          );
 
-        const commandResult = <A>(
+        const commandResult = Effect.fnUntraced(function* (
           command: (done: Deferred.Deferred<void, PtyError>) => PtyCommand,
-        ): Effect.Effect<void, PtyError> =>
-          Effect.gen(function* () {
-            const done = yield* Deferred.make<void, PtyError>()
-            yield* offer(command(done))
-            yield* Deferred.await(done)
-          })
+        ) {
+          const done = yield* Deferred.make<void, PtyError>();
+          yield* offer(command(done));
+          yield* Deferred.await(done);
+        });
 
         return {
           id: spec.id,
@@ -115,12 +148,12 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
           write: (data) => commandResult((done) => ({ _tag: "write", data, done })),
           resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
           kill: commandResult((done) => ({ _tag: "kill", done })),
-        } satisfies ManagedPty
-      })
+        } satisfies ManagedPty;
+      });
 
     return {
       spawn,
       sessions: Ref.get(sessions),
-    }
+    };
   }),
 }) {}

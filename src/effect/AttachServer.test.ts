@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AttachHub } from "./AttachHub.ts"
-import { encodeAttachFrame } from "./AttachProtocol.ts"
+import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts"
 import { startAttachServer } from "./AttachServer.ts"
 
 const connect = (path: string, onData: (text: string) => void) =>
@@ -27,12 +27,12 @@ test("native attach server routes output and releases clients on close", async (
   const result = await Effect.runPromise(
     Effect.gen(function* () {
       const hub = yield* AttachHub
-      const input: string[] = []
+      const input: Array<{ client: string; frame: AttachFrame }> = []
       const server = yield* startAttachServer({
         path,
         idleTimeoutSeconds: 60,
         onFrame: (client, frame) =>
-          Effect.sync(() => input.push(`${client}:${frame._tag}`)),
+          Effect.sync(() => input.push({ client, frame })),
       })
       const messages: string[] = []
       const first = yield* Effect.promise(() => connect(path, (message) => messages.push(message)))
@@ -62,11 +62,26 @@ test("native attach server routes output and releases clients on close", async (
     }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
   )
 
-  expect(result.messages.join("")).toContain('"_tag":"output"')
-  expect(result.messages.join("")).toContain('"agent":"agent-1"')
-  expect(result.messages.join("")).toContain('"_tag":"pong"')
-  expect(result.input).toEqual(["test-client:input"])
-  expect(result.secondMessages.join("")).toContain("already attached")
+  const messages = decodeAttachFrames(result.messages.join("")).frames
+  const secondMessages = decodeAttachFrames(result.secondMessages.join("")).frames
+  expect(messages).toContainEqual({
+    _tag: "output",
+    agent: "agent-1",
+    data: new Uint8Array([1, 2, 3]),
+  })
+  expect(messages).toContainEqual({ _tag: "pong", nonce: "heartbeat-1" })
+  expect(result.input).toContainEqual({
+    client: "test-client",
+    frame: {
+      _tag: "input",
+      agent: "agent-1",
+      data: new Uint8Array([13]),
+    },
+  })
+  expect(secondMessages).toContainEqual({
+    _tag: "error",
+    message: "client 'test-client' is already attached",
+  })
   result.server.stop(true)
   await rm(root, { recursive: true, force: true })
 })

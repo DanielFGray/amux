@@ -1,18 +1,69 @@
 import { mkdir, open, readFile, rm, unlink } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { randomUUID } from "node:crypto"
+import { Effect, ManagedRuntime } from "effect"
+import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts"
+import type { AttachServerError } from "./effect/AttachServer.ts"
+import type { ManagedPty, PtySpec } from "./effect/PtyRegistry.ts"
 import {
   loadSession, processAlive, readLease, removeSession, saveSession,
   sessionPaths, writeLease, type SessionLease, type SessionState,
 } from "./session.ts"
 
-export type DaemonCommand = "ping" | "attach" | "detach" | "status" | "stop"
-export interface DaemonRequest { command: DaemonCommand; client?: string }
-export interface DaemonResponse { ok: boolean; error?: string; session?: SessionState; attached?: boolean }
+export type DaemonCommand =
+  | "ping" | "attach" | "detach" | "status" | "stop" | "spawn" | "kill" | "save"
 
-/** A single owner for one session's lifecycle and persistence. PTY ownership is
- * deliberately represented by the callbacks: the UI can provide its existing
- * Agent bridge without making the storage format depend on ghostty internals. */
+/**
+ * A request to start an agent, in the shape the wire can carry.
+ *
+ * The same fields as PtySpec, except that the caller chooses the id: the layout
+ * the client is about to persist is written in terms of agent ids, so an id the
+ * daemon invented would have to be round-tripped back before anything could
+ * refer to it.
+ */
+export interface DaemonSpawn { id: string; cmd: string[]; cwd?: string; cols: number; rows: number }
+
+export interface DaemonRequest {
+  command: DaemonCommand
+  client?: string
+  /** The agent to start, for `spawn`. */
+  spawn?: DaemonSpawn
+  /** The agent to stop, for `kill`. */
+  agent?: string
+  /**
+   * The workspace to record, for `save`.
+   *
+   * The client knows the shape of the workspace and the daemon owns the file,
+   * so the client sends what it sees and never writes session.json itself.
+   * That is what keeps a single writer while the daemon is also updating
+   * attachment state underneath it.
+   */
+  workspace?: Pick<SessionState, "spaces"> & { activeSpace?: string | null }
+}
+
+export interface DaemonResponse {
+  ok: boolean
+  error?: string
+  session?: SessionState
+  attached?: boolean
+  /** Agents with a live process right now. Not the same as the agents in
+   *  `session`, which include ones that have already exited. */
+  agents?: string[]
+}
+
+/**
+ * A single owner for one session's lifecycle, persistence, and PTYs.
+ *
+ * There are two sockets and they do different jobs. The RPC socket answers
+ * questions about the session and hangs up. The attach socket *is* an
+ * attachment: a client holds it open, PTY bytes flow both ways over it, and its
+ * EOF is how the daemon learns the client died — which request/response RPC
+ * structurally could not tell it.
+ *
+ * The PTYs live in an Effect scope owned by this object (see AttachHost), not
+ * by any client and not by the UI process. That is what makes closing the
+ * terminal a detach rather than a kill.
+ */
 export class SessionDaemon {
   readonly id: string
   readonly paths: ReturnType<typeof sessionPaths>
@@ -23,6 +74,8 @@ export class SessionDaemon {
   #save: Promise<void> = Promise.resolve()
   #lockPath: string
   #env: NodeJS.ProcessEnv
+  #runtime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError> | null = null
+  #host: AttachHostService | null = null
 
   private constructor(id: string, state: SessionState, env: NodeJS.ProcessEnv) {
     this.id = id
@@ -80,21 +133,107 @@ export class SessionDaemon {
 
   get state(): SessionState { return structuredClone(this.#state) }
 
+  /**
+   * Record the workspace the client is showing.
+   *
+   * The daemon owns the file, so the UI hands it a snapshot (see snapshot.ts)
+   * rather than writing session.json behind its back — which is what makes the
+   * write atomic and single-writer even while a client is attaching. What is
+   * stored is metadata only; it is not, and does not pretend to be, the
+   * terminals' contents.
+   */
+  async saveWorkspace(workspace: Pick<SessionState, "spaces"> & { activeSpace?: string | null }): Promise<void> {
+    this.#state.spaces = structuredClone(workspace.spaces)
+    this.#state.activeSpace = workspace.activeSpace ?? null
+    await this.#persist()
+  }
+
   async start(): Promise<void> {
     if (this.#server) return
     const lease: SessionLease = { version: 1, session: this.id, pid: process.pid, socket: this.paths.socket, startedAt: Date.now(), heartbeatAt: Date.now() }
     try {
       await this.#persist()
       await writeLease(lease, this.#env)
+      await this.#startAttachHost()
       try { await unlink(this.paths.socket) } catch (error: any) { if (error.code !== "ENOENT") throw error }
       this.#server = Bun.serve({ unix: this.paths.socket, fetch: async (request) => this.#fetch(request) })
       this.#heartbeat = setInterval(() => void writeLease({ ...lease, heartbeatAt: Date.now() }), 1000)
       this.#heartbeat.unref?.()
     } catch (error) {
+      await this.#disposeHost()
       await this.#releaseLock()
       throw error
     }
   }
+
+  /**
+   * Bring up the PTY/attach plane before the RPC socket exists.
+   *
+   * Order matters: once /rpc answers, a client is entitled to believe the
+   * session is usable, and a session whose attach socket is not listening yet
+   * is not. Building the runtime here also means a socket that cannot be bound
+   * fails `start` — the caller then releases the lock rather than leaving a
+   * half-live daemon holding it.
+   */
+  async #startAttachHost(): Promise<void> {
+    try { await unlink(this.paths.attach) } catch (error: any) { if (error.code !== "ENOENT") throw error }
+    const runtime = ManagedRuntime.make(layerAttachHost({
+      path: this.paths.attach,
+      // The stream is the authority on attachment, but the *rule* is the
+      // daemon's, and it is the same rule the RPC command obeys.
+      onAttach: (client) => Effect.suspend(() =>
+        this.#claim(client)
+          ? Effect.promise(() => this.#persist())
+          : Effect.fail(new Error("session is already attached")),
+      ),
+      onDetach: (client) => Effect.suspend(() => {
+        this.#release(client)
+        return Effect.promise(() => this.#persist())
+      }),
+    }))
+    this.#runtime = runtime
+    this.#host = await runtime.runPromise(AttachHost)
+  }
+
+  /** Take the attachment for `client`, or report that someone else holds it.
+   *  Re-claiming as the current owner succeeds: a reconnect is not a conflict. */
+  #claim(client: string): boolean {
+    if (this.#attachedClient && this.#attachedClient !== client) return false
+    this.#attachedClient = client
+    this.#state.attached = true
+    return true
+  }
+
+  /** Give up the attachment, but only if `client` is the one holding it — a
+   *  late EOF from a replaced connection must not detach its successor. */
+  #release(client: string): boolean {
+    if (this.#attachedClient !== client) return false
+    this.#attachedClient = null
+    this.#state.attached = false
+    return true
+  }
+
+  /** Start an agent the daemon owns. It outlives every client by construction:
+   *  see the note on AttachHost.spawn. */
+  spawnAgent(spec: PtySpec): Promise<ManagedPty> {
+    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"))
+    return this.#runtime.runPromise(this.#host.spawn(spec))
+  }
+
+  /** Stop an agent. Clients learn about it from the exit frame, exactly as they
+   *  would for a process that ended on its own. */
+  killAgent(id: string): Promise<void> {
+    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"))
+    return this.#runtime.runPromise(this.#host.kill(id))
+  }
+
+  /** Agent ids with a live process behind them. */
+  liveAgents(): Promise<readonly string[]> {
+    if (!this.#host || !this.#runtime) return Promise.resolve([])
+    return this.#runtime.runPromise(this.#host.live)
+  }
+
+  get attachedClient(): string | null { return this.#attachedClient }
 
   async #fetch(request: Request): Promise<Response> {
     if (request.method !== "POST" || new URL(request.url).pathname !== "/rpc") return new Response("not found", { status: 404 })
@@ -107,20 +246,41 @@ export class SessionDaemon {
   async handle(request: DaemonRequest): Promise<DaemonResponse> {
     switch (request.command) {
       case "ping": return { ok: true, attached: this.#state.attached }
-      case "status": return { ok: true, session: this.state, attached: this.#state.attached }
+      case "status": return { ok: true, session: this.state, attached: this.#state.attached, agents: [...(await this.liveAgents())] }
       case "attach":
         if (!request.client) return { ok: false, error: "attach requires a client id" }
-        if (this.#attachedClient && this.#attachedClient !== request.client) return { ok: false, error: "session is already attached" }
-        this.#attachedClient = request.client
-        this.#state.attached = true
+        if (!this.#claim(request.client)) return { ok: false, error: "session is already attached" }
         await this.#persist()
         return { ok: true, attached: true }
       case "detach":
-        if (!request.client || this.#attachedClient !== request.client) return { ok: false, error: "client does not own the attachment" }
-        this.#attachedClient = null
-        this.#state.attached = false
+        if (!request.client || !this.#release(request.client)) return { ok: false, error: "client does not own the attachment" }
         await this.#persist()
         return { ok: true, attached: false }
+      // Spawn and kill are control, not data: they change what agents exist,
+      // which is a fact about the session rather than a byte in a stream. Bytes
+      // go over the attach socket; the shape of the session goes over RPC,
+      // where a failure has somewhere to be reported.
+      case "spawn": {
+        if (!request.spawn) return { ok: false, error: "spawn requires an agent spec" }
+        try {
+          await this.spawnAgent(request.spawn)
+          return { ok: true, agents: [...(await this.liveAgents())] }
+        } catch (error) { return { ok: false, error: String(error) } }
+      }
+      case "kill": {
+        if (!request.agent) return { ok: false, error: "kill requires an agent id" }
+        try {
+          await this.killAgent(request.agent)
+          return { ok: true, agents: [...(await this.liveAgents())] }
+        } catch (error) { return { ok: false, error: String(error) } }
+      }
+      case "save": {
+        if (!request.workspace) return { ok: false, error: "save requires a workspace" }
+        try {
+          await this.saveWorkspace(request.workspace)
+          return { ok: true }
+        } catch (error) { return { ok: false, error: String(error) } }
+      }
       case "stop": await this.stop(); return { ok: true }
       default: return { ok: false, error: "unknown command" }
     }
@@ -131,6 +291,7 @@ export class SessionDaemon {
     this.#heartbeat = null
     this.#server?.stop()
     this.#server = null
+    await this.#disposeHost()
     await removeSession(this.id, this.#env)
     await this.#releaseLock()
   }
@@ -141,9 +302,28 @@ export class SessionDaemon {
     this.#heartbeat = null
     this.#server?.stop()
     this.#server = null
+    await this.#disposeHost()
     await unlink(this.paths.socket).catch(() => {})
     await rm(this.paths.lease, { force: true }).catch(() => {})
     await this.#releaseLock()
+  }
+
+  /**
+   * Tear down the PTY plane.
+   *
+   * Disposing the runtime closes the host scope, which runs PtyRegistry's
+   * finalizers: every agent is killed and every master fd closed. There is no
+   * kinder option — the PTYs are children of this process, so a daemon that
+   * exits without this leaves them orphaned rather than saved.
+   */
+  async #disposeHost(): Promise<void> {
+    const runtime = this.#runtime
+    this.#runtime = null
+    this.#host = null
+    this.#attachedClient = null
+    this.#state.attached = false
+    await runtime?.dispose().catch(() => {})
+    await unlink(this.paths.attach).catch(() => {})
   }
 
   async #releaseLock() {
@@ -160,8 +340,8 @@ export class SessionDaemon {
 }
 
 /** Client used by CLI commands and tests; HTTP keeps framing and errors explicit. */
-export function daemonRequest(id: string, body: DaemonRequest): Promise<DaemonResponse> {
-  const socketPath = sessionPaths(id).socket
+export function daemonRequest(id: string, body: DaemonRequest, env?: NodeJS.ProcessEnv): Promise<DaemonResponse> {
+  const socketPath = sessionPaths(id, env).socket
   return new Promise((resolve, reject) => {
     const request = httpRequest({ socketPath, path: "/rpc", method: "POST", headers: { "content-type": "application/json" } }, (response) => {
       let text = ""

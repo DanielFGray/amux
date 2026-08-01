@@ -9,21 +9,7 @@ const { symbols } = cc({
   symbols: {
     oh_scroll_viewport: { args: [T.u64, T.i32, T.i64], returns: T.void },
     oh_capture_range: {
-      args: [
-        T.u64,
-        T.i32,
-        T.u32,
-        T.u32,
-        T.i32,
-        T.u32,
-        T.u32,
-        T.i32,
-        T.u8,
-        T.u8,
-        T.ptr,
-        T.u64,
-        T.ptr,
-      ],
+      args: [T.u64, T.ptr, T.ptr, T.u64, T.ptr],
       returns: T.i32,
     },
     oh_set_selection: { args: [T.u64, T.u32, T.u32, T.u32, T.u32], returns: T.i32 },
@@ -59,6 +45,39 @@ export interface CaptureRange {
 }
 
 /**
+ * Byte layout of OhCaptureRequest in shim.c: seven 4-byte fields, then two
+ * flags and two bytes of tail padding. Kept in one place because the two sides
+ * only agree by convention — nothing checks this at compile time.
+ */
+const Request = {
+  startTag: 0,
+  startX: 4,
+  startY: 8,
+  endTag: 12,
+  endX: 16,
+  endY: 20,
+  emit: 24,
+  unwrap: 28,
+  trim: 29,
+  bytes: 32,
+} as const
+
+function encodeRequest(range: CaptureRange): Uint8Array {
+  const req = new Uint8Array(Request.bytes)
+  const view = new DataView(req.buffer)
+  view.setInt32(Request.startTag, range.startTag, true)
+  view.setUint32(Request.startX, range.startX, true)
+  view.setUint32(Request.startY, range.startY, true)
+  view.setInt32(Request.endTag, range.endTag, true)
+  view.setUint32(Request.endX, range.endX, true)
+  view.setUint32(Request.endY, range.endY, true)
+  view.setInt32(Request.emit, Emit.plain, true)
+  req[Request.unwrap] = 0 // keep soft-wrapped rows wrapped
+  req[Request.trim] = 1 // drop trailing whitespace, as tmux does
+  return req
+}
+
+/**
  * Format the range [start..end] (inclusive, both axes) as plain text.
  *
  * Returns the captured bytes. Rows are joined with newlines; trailing
@@ -66,19 +85,12 @@ export interface CaptureRange {
  * trimmed by the formatter's `trim` option.
  */
 export function captureRange(terminal: number, range: CaptureRange): Uint8Array {
+  const req = encodeRequest(range)
   const run = (buf: Uint8Array | null) => {
     const written = new BigUint64Array(1)
     const r = symbols.oh_capture_range(
       BigInt(terminal),
-      range.startTag,
-      range.startX,
-      range.startY,
-      range.endTag,
-      range.endX,
-      range.endY,
-      Emit.plain,
-      0,
-      1,
+      ptr(req),
       buf ? ptr(buf) : null,
       buf ? BigInt(buf.length) : 0n,
       ptr(written),

@@ -27,6 +27,10 @@ export interface Pty {
    *  every read so a pump that outlived its agent can never touch an fd that
    *  has been closed and reused by a newer agent. */
   readonly closed: boolean
+  /** True once the child process has exited, which is not the same as the
+   *  master being closed: bytes the child wrote just before exiting are still
+   *  in the terminal's buffer and are still ours to read. See readPty. */
+  readonly exited: boolean
   /** Foreground process group of the terminal, or -1. Equal to the child's own
    *  pgid when the shell sits at a prompt; a different pgid means a command is
    *  running in the foreground. This is how we tell "idle" from "working". */
@@ -96,18 +100,31 @@ export function spawnPty(
   // closed flips on the first close (whichever path gets there first) and is
   // what readPty checks, so a stale pump can never read a reused fd.
   let closed = false
+  let exited = false
   const closeMaster = () => {
     if (closed) return
     closed = true
     libc.close(master)
   }
 
+  /** How long the master stays open after the child exits, so a reader can
+   *  collect what the child wrote on its way out. Reads are memory-speed; this
+   *  only has to outlast one poll interval of readPty. */
+  const DRAIN_GRACE_MS = 100
+
   const proc = Bun.spawn(launch, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env, TERM: "xterm-256color" },
     stdio: [slave, slave, slave],
     onExit() {
-      closeMaster()
+      // Closing the master here would be closing it mid-sentence: a command
+      // that prints and immediately exits has its output still sitting in the
+      // terminal buffer, and closing discards it. Mark the exit — which is what
+      // readPty uses to know a drained buffer means the end — and close on a
+      // short delay as the backstop against leaking the fd if nobody reads.
+      exited = true
+      const timer = setTimeout(closeMaster, DRAIN_GRACE_MS)
+      timer.unref?.()
     },
   })
   // parent doesn't need the slave end once the child holds it
@@ -118,6 +135,9 @@ export function spawnPty(
     proc,
     get closed() {
       return closed
+    },
+    get exited() {
+      return exited
     },
     foregroundPgid() {
       return libc.tcgetpgrp(master)
@@ -192,13 +212,33 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
     } catch (e: any) {
       // EAGAIN = nothing to read yet; EBADF/EIO = closed or child exited.
       if (pty.closed) return
+      // Nothing to read right now. If the child is already gone, "nothing to
+      // read" means the buffer is drained and this really is the end;
+      // otherwise it is just a quiet terminal.
       if (e.code === "EAGAIN") {
+        if (pty.exited) return
         await Bun.sleep(4)
         continue
       }
       return
     }
-    if (n <= 0) return
+    // A zero-length read is NOT end-of-file on a pty master. It is what Linux
+    // reports while no process holds the slave, and there is such a window at
+    // every spawn: the parent closes its copy of the slave as soon as Bun.spawn
+    // returns, and setsid's child has not necessarily inherited it yet. Ending
+    // the stream here loses every byte the agent will ever produce — invisible
+    // for a command that writes instantly and total for one that takes a moment
+    // to start, which is most agent CLIs.
+    //
+    // The authority on "the child is gone" is pty.closed, set from the process's
+    // own exit, and the loop is bounded by it. Real EOF on a master arrives as
+    // EIO, which the catch above already treats as the end.
+    if (n === 0) {
+      if (pty.exited) return
+      await Bun.sleep(4)
+      continue
+    }
+    if (n < 0) return
     yield new Uint8Array(buf.subarray(0, n))
   }
 }

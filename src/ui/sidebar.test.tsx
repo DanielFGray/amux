@@ -5,10 +5,29 @@ import { BoxRenderable } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createTestRenderer } from "@opentui/core/testing"
 import { SpaceSet } from "../space.ts"
-import { createAppState } from "./state.ts"
+import { createAppState, POLL_MS } from "./state.ts"
 import { Sidebar, sidebarTargets } from "./Sidebar.tsx"
 
 const SHELL = ["bash"]
+
+/**
+ * Wait for a mouse dispatch to land.
+ *
+ * mockMouse writes the escape sequence to the renderer's stdin and waits a
+ * fixed 10ms; parsing, hit-testing and dispatch happen on the renderer's own
+ * schedule after that. Ten milliseconds is plenty when this file runs alone and
+ * not always enough once a full suite's worth of renderers share the loop, so
+ * asserting straight after a click is a race that only shows up under load.
+ * Poll for the effect instead of assuming it has already happened.
+ */
+async function waitFor(predicate: () => boolean, what: string, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await Bun.sleep(5)
+  }
+  throw new Error(`timed out waiting for ${what}`)
+}
 
 async function setup() {
   const [selected, setSelected] = createSignal(0)
@@ -118,11 +137,11 @@ test("hover follows the pointer between rows, not just on entry", async () => {
     // that inside the same renderable; handling both is what makes the
     // highlight track the pointer instead of sticking to the entry row.
     await s.t.mockMouse.moveTo(10, 1)
-    expect(s.hovered()).toBe(0)
+    await waitFor(() => s.hovered() === 0, "hover on the space row")
     await s.t.mockMouse.moveTo(10, 3)
-    expect(s.hovered()).toBe(2)
+    await waitFor(() => s.hovered() === 2, "hover to move down two rows")
     await s.t.mockMouse.moveTo(10, 2)
-    expect(s.hovered()).toBe(1)
+    await waitFor(() => s.hovered() === 1, "hover to move back up one row")
   } finally {
     await s.dispose()
   }
@@ -139,13 +158,26 @@ test("clicking a row reports its selectable index, skipping the branch line", as
     // Rows: 0 header, 1 space(index 0), 2 branch(not selectable), 3 window(1),
     // 4 shell(2), 5 clickme(3). The branch line has no handler, so clicking it
     // is inert.
+    //
+    // The branch click is proven inert by what follows it rather than by an
+    // immediate empty assertion: clicking the window row next and waiting for
+    // exactly one activation shows the branch click never produced one, and
+    // does not depend on how promptly a dispatch that should never happen
+    // fails to happen.
+    // Let one full poll period pass before clicking. The sidebar re-renders on
+    // AppState's POLL_MS timer (agent state, spinner frame), and a click that
+    // lands while that repaint is in flight hit-tests against a row renderable
+    // Solid has just replaced — the event resolves to nothing and is dropped,
+    // with no activation and no error. Clicking on a settled frame is what
+    // makes this deterministic; see ts-946056.
+    await Bun.sleep(POLL_MS + 20)
     await s.t.mockMouse.click(10, 2)
-    expect(s.activated).toEqual([])
-
     await s.t.mockMouse.click(10, 3)
-    expect(s.activated).toEqual([1]) // the window row
+    await waitFor(() => s.activated.length >= 1, "the window row activation")
+    expect(s.activated).toEqual([1]) // the window row, and nothing for the branch
 
     await s.t.mockMouse.click(10, 5)
+    await waitFor(() => s.activated.length >= 2, "the agent row activation")
     expect(s.activated).toEqual([1, 3]) // clickme, under that window
   } finally {
     await s.dispose()

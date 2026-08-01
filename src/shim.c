@@ -94,38 +94,64 @@ extern int ghostty_formatter_format_buf(void *formatter, uint8_t *buf,
                                         size_t buf_len, size_t *out_written);
 extern void ghostty_formatter_free(void *formatter);
 
-int oh_capture_range(GhosttyTerminal terminal, int32_t start_tag,
-                     uint32_t start_x, uint32_t start_y, int32_t end_tag,
-                     uint32_t end_x, uint32_t end_y, int32_t emit,
-                     uint8_t unwrap, uint8_t trim, uint8_t *buf,
-                     uint64_t buf_len, uint64_t *out_written) {
-  OhPoint start;
-  OhPoint end;
-  start.tag = start_tag;
-  start.value[0] = ((uint64_t)start_y << 32) | (uint64_t)start_x;
+/* The capture request, passed as one pointer rather than as loose scalars.
+ *
+ * This used to be thirteen arguments. Bun's FFI mis-passed them once the call
+ * stub was optimised under load: end_x — the sixth integer argument, the last
+ * one SysV puts in a register — arrived as 0, so every capture ended at column
+ * 0 of its last row and dropped that row's tail. It reproduced only in a full
+ * test run, because a capture whose last row is blank loses nothing visible.
+ * One pointer argument cannot be miscounted, so the boundary stays narrow no
+ * matter how many fields the request grows. */
+typedef struct {
+  int32_t start_tag;
+  uint32_t start_x;
+  uint32_t start_y;
+  int32_t end_tag;
+  uint32_t end_x;
+  uint32_t end_y;
+  int32_t emit;
+  uint8_t unwrap;
+  uint8_t trim;
+  uint8_t pad[2];
+} OhCaptureRequest;
+
+int oh_capture_range(GhosttyTerminal terminal, const OhCaptureRequest *req,
+                     uint8_t *buf, uint64_t buf_len, uint64_t *out_written) {
+  if (req == 0) return -2; /* GHOSTTY_INVALID_VALUE */
+
+  /* Zeroed, not merely assigned field by field. These are sized/versioned
+     structs with reserved and optional members: anything left unset is stack
+     garbage that ghostty reads as a real option. */
+  OhPoint start = {0};
+  OhPoint end = {0};
+  start.tag = req->start_tag;
+  start.value[0] = ((uint64_t)req->start_y << 32) | (uint64_t)req->start_x;
   start.value[1] = 0;
-  end.tag = end_tag;
-  end.value[0] = ((uint64_t)end_y << 32) | (uint64_t)end_x;
+  end.tag = req->end_tag;
+  end.value[0] = ((uint64_t)req->end_y << 32) | (uint64_t)req->end_x;
   end.value[1] = 0;
 
-  OhGridRef start_ref;
-  OhGridRef end_ref;
+  OhGridRef start_ref = {0};
+  OhGridRef end_ref = {0};
+  start_ref.size = sizeof(start_ref);
+  end_ref.size = sizeof(end_ref);
   int r = ghostty_terminal_grid_ref(terminal, start, &start_ref);
   if (r != 0) return r;
   r = ghostty_terminal_grid_ref(terminal, end, &end_ref);
   if (r != 0) return r;
 
-  OhSelection sel;
+  OhSelection sel = {0};
   sel.size = sizeof(sel);
   sel.start = start_ref;
   sel.end = end_ref;
   sel.rectangle = 0;
 
-  OhFormatterOptions opts;
+  OhFormatterOptions opts = {0};
   opts.size = sizeof(opts);
-  opts.emit = emit;
-  opts.unwrap = unwrap;
-  opts.trim = trim;
+  opts.emit = req->emit;
+  opts.unwrap = req->unwrap;
+  opts.trim = req->trim;
   opts.extra.size = sizeof(opts.extra);
   opts.extra.screen.size = sizeof(opts.extra.screen);
   opts.selection = &sel;
@@ -144,8 +170,8 @@ int oh_capture_range(GhosttyTerminal terminal, int32_t start_tag,
  * instead of trying to express the sized structs through Bun FFI. */
 int oh_set_selection(GhosttyTerminal terminal, uint32_t start_x,
                      uint32_t start_y, uint32_t end_x, uint32_t end_y) {
-  OhPoint start;
-  OhPoint end;
+  OhPoint start = {0};
+  OhPoint end = {0};
   start.tag = 2;
   start.value[0] = ((uint64_t)start_y << 32) | (uint64_t)start_x;
   start.value[1] = 0;
@@ -153,14 +179,16 @@ int oh_set_selection(GhosttyTerminal terminal, uint32_t start_x,
   end.value[0] = ((uint64_t)end_y << 32) | (uint64_t)end_x;
   end.value[1] = 0;
 
-  OhGridRef start_ref;
-  OhGridRef end_ref;
+  OhGridRef start_ref = {0};
+  OhGridRef end_ref = {0};
+  start_ref.size = sizeof(start_ref);
+  end_ref.size = sizeof(end_ref);
   int r = ghostty_terminal_grid_ref(terminal, start, &start_ref);
   if (r != 0) return r;
   r = ghostty_terminal_grid_ref(terminal, end, &end_ref);
   if (r != 0) return r;
 
-  OhSelection sel;
+  OhSelection sel = {0};
   sel.size = sizeof(sel);
   sel.start = start_ref;
   sel.end = end_ref;

@@ -21,6 +21,17 @@ export interface PersistedWindow {
   name: string | null
   focusedAgent: string | null
   agents: PersistedAgent[]
+  /**
+   * The split arrangement, as an encoded layout string (see layout.ts).
+   *
+   * A flat agent list cannot express arrangement, so without this a restored
+   * window could only guess at one. Absent or null means "no arrangement was
+   * recorded" — restore falls back to a preset rather than refusing.
+   *
+   * Zoom is deliberately not here: it is a transient view of a layout, not a
+   * layout, the same reason exportLayout reads through it.
+   */
+  layout?: string | null
 }
 
 export interface PersistedSpace {
@@ -38,6 +49,9 @@ export interface SessionState {
   updatedAt: number
   attached: boolean
   spaces: PersistedSpace[]
+  /** Space that was on screen, by id. Absent means "none recorded", and a
+   *  restore falls back to the first space. */
+  activeSpace?: string | null
 }
 
 export interface SessionLease {
@@ -56,6 +70,16 @@ export interface SessionPaths {
   lease: string
   lock: string
   socket: string
+  /**
+   * The attach stream socket, separate from the RPC one.
+   *
+   * Two sockets because they are two different things: `socket` answers a
+   * request and hangs up, while `attach` is a connection whose lifetime *is*
+   * the attachment — its EOF is how the daemon learns a client died. Putting
+   * both on one listener would mean a one-shot status call could not be told
+   * from an attachment going away.
+   */
+  attach: string
 }
 
 export function sessionRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -64,7 +88,7 @@ export function sessionRoot(env: NodeJS.ProcessEnv = process.env): string {
 
 export function sessionPaths(id: string, env: NodeJS.ProcessEnv = process.env): SessionPaths {
   const root = join(sessionRoot(env), id)
-  return { root, state: join(root, "session.json"), backup: join(root, "session.json.prev"), lease: join(root, "lease.json"), lock: join(root, "daemon.lock"), socket: join(root, "daemon.sock") }
+  return { root, state: join(root, "session.json"), backup: join(root, "session.json.prev"), lease: join(root, "lease.json"), lock: join(root, "daemon.lock"), socket: join(root, "daemon.sock"), attach: join(root, "attach.sock") }
 }
 
 function validState(value: unknown): value is SessionState {

@@ -2,8 +2,16 @@ import { BoxRenderable, type RenderContext } from "@opentui/core"
 import { Window } from "./window.ts"
 import type { Agent, AgentState } from "./agent.ts"
 import type { TerminalPane } from "./pane.ts"
+import type { SpawnBackend } from "./backend.ts"
 
 let nextSpaceId = 0
+
+/** Keep the generator ahead of every id restore brought back, so a space
+ *  created after a restore cannot collide with one that came out of the file. */
+function reserveSpaceId(id: string) {
+  const n = /^space-(\d+)$/.exec(id)
+  if (n) nextSpaceId = Math.max(nextSpaceId, Number(n[1]) + 1)
+}
 
 /**
  * A named working context with a directory attached.
@@ -14,7 +22,7 @@ let nextSpaceId = 0
  * agents while contributing nothing to yoga or the hit grid.
  */
 export class Space {
-  readonly id = `space-${nextSpaceId++}`
+  readonly id: string
   readonly root: BoxRenderable
   name: string
   dir: string
@@ -27,6 +35,8 @@ export class Space {
 
   #ctx: RenderContext
   #shell: string[]
+  /** Where agents in this space get their processes; see window.ts. */
+  #backend: SpawnBackend | undefined
   #windows: Window[] = []
   #active: Window | null = null
   #nextNumber = 1
@@ -36,9 +46,15 @@ export class Space {
   onCopy?: (text: string) => boolean | void
   onCopyError?: (error: Error) => void
 
-  constructor(ctx: RenderContext, opts: { name: string; dir: string; shell: string[] }) {
+  constructor(
+    ctx: RenderContext,
+    opts: { name: string; dir: string; shell: string[]; id?: string; backend?: SpawnBackend },
+  ) {
     this.#ctx = ctx
     this.#shell = opts.shell
+    this.#backend = opts.backend
+    this.id = opts.id ?? `space-${nextSpaceId++}`
+    if (opts.id) reserveSpaceId(opts.id)
     this.name = opts.name
     this.dir = opts.dir
     this.root = new BoxRenderable(ctx, {
@@ -71,9 +87,17 @@ export class Space {
     return rollUp(this.agents)
   }
 
-  /** Create a window and switch to it. */
-  newWindow(name?: string): Window {
-    const window = new Window(this.#ctx, this.#shell, this.dir, this.#nextNumber++)
+  /**
+   * Create a window and switch to it.
+   *
+   * `number` is only passed by restore, which must bring a window back under
+   * the number the user knows it by — `^a 3` has to keep meaning the same
+   * window across a restart. The counter is pushed past any number claimed that
+   * way, so a window created afterwards still gets a free one.
+   */
+  newWindow(name?: string, number?: number): Window {
+    if (number !== undefined) this.#nextNumber = Math.max(this.#nextNumber, number + 1)
+    const window = new Window(this.#ctx, this.#shell, this.dir, number ?? this.#nextNumber++, this.#backend)
     if (name) window.customName = name
     window.onChange = () => this.onChange?.()
     window.onAgentExit = (agent) => this.onAgentExit?.(agent, window, this)
@@ -221,6 +245,8 @@ export class SpaceSet {
   #ctx: RenderContext
   #host: BoxRenderable
   #shell: string[]
+  /** Where agents get their processes; see the note in window.ts. */
+  #backend: SpawnBackend | undefined
   #spaces: Space[] = []
   #active: Space | null = null
   onChange?: () => void
@@ -228,10 +254,11 @@ export class SpaceSet {
   onCopy?: (text: string) => boolean | void
   onCopyError?: (error: Error) => void
 
-  constructor(ctx: RenderContext, host: BoxRenderable, shell: string[]) {
+  constructor(ctx: RenderContext, host: BoxRenderable, shell: string[], backend?: SpawnBackend) {
     this.#ctx = ctx
     this.#host = host
     this.#shell = shell
+    this.#backend = backend
   }
 
   get spaces(): readonly Space[] {
@@ -252,8 +279,8 @@ export class SpaceSet {
     return this.#spaces.flatMap((s) => s.agents)
   }
 
-  create(name: string, dir = process.cwd()): Space {
-    const space = new Space(this.#ctx, { name, dir, shell: this.#shell })
+  create(name: string, dir = process.cwd(), id?: string): Space {
+    const space = new Space(this.#ctx, { name, dir, shell: this.#shell, id, backend: this.#backend })
     space.onChange = () => this.onChange?.()
     space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space)
     space.onCopy = this.onCopy

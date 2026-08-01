@@ -1,4 +1,4 @@
-import { Effect, ExecutionStrategy, Exit, FiberMap, Runtime, Scope, Stream } from "effect"
+import { Cause, Effect, ExecutionStrategy, Exit, FiberMap, Match, Runtime, Scope, Stream } from "effect"
 import { AttachHub } from "./AttachHub.ts"
 import {
   decodeAttachFrames,
@@ -13,6 +13,24 @@ export interface AttachServerOptions {
   /** Seconds without inbound traffic before the attach is considered dead. */
   readonly idleTimeoutSeconds?: number
   readonly onFrame?: (client: string, frame: AttachFrame) => Effect.Effect<void, unknown>
+  /**
+   * Called when a client's hello has been accepted by the hub, before any
+   * output is forwarded. Failing it rejects the attachment: the client is sent
+   * the error and disconnected, and its subscription is torn down.
+   *
+   * This is the hook that lets an owner outside the data plane — the daemon's
+   * single-attachment rule — have the final say on who is attached, without the
+   * transport needing to know what that rule is.
+   */
+  readonly onAttach?: (client: string) => Effect.Effect<void, unknown>
+  /**
+   * Called when an accepted client goes away, for any reason: clean EOF, socket
+   * error, or idle timeout. Together with onAttach this makes the *stream* the
+   * authority on attachment state — a client that dies without detaching is
+   * indistinguishable from one that never attached, which is exactly the
+   * property request/response RPC could not provide.
+   */
+  readonly onDetach?: (client: string) => Effect.Effect<void, unknown>
 }
 
 interface ClientState {
@@ -21,8 +39,10 @@ interface ClientState {
   scope: Scope.CloseableScope | null
 }
 
-const isClientFrame = (frame: AttachFrame): frame is Exclude<AttachFrame, { _tag: "hello" }> =>
-  frame._tag !== "hello"
+const reason = (cause: Cause.Cause<unknown>): string => {
+  const error = Cause.squash(cause)
+  return error instanceof Error ? error.message : String(error)
+}
 
 /**
  * Native Bun Unix-socket adapter for the Effect attach protocol.
@@ -40,65 +60,99 @@ export const startAttachServer = (
     const clientFibers = yield* FiberMap.make<string>()
     const runClient = yield* FiberMap.runtime(clientFibers)<never>()
 
-    const run = (effect: Effect.Effect<void, unknown>) => Runtime.runFork(Runtime.defaultRuntime)(effect)
+    // The ambient runtime, not the default one: fibers forked for socket
+    // callbacks then inherit this scope's services, logger and fiber refs, and
+    // are interrupted when it closes instead of outliving it as orphans.
+    const runtime = yield* Effect.runtime<never>()
+    const run = (effect: Effect.Effect<void, unknown>) =>
+      Runtime.runFork(runtime)(Effect.catchAllCause(effect, () => Effect.void))
 
     const closeClient = (socket: Bun.Socket<ClientState>) => {
       const state = socket.data
-      if (state.client) {
-        run(FiberMap.remove(clientFibers, state.client))
-      }
-      if (state.scope) {
-        const scope = state.scope
-        state.scope = null
-        run(Scope.close(scope, Exit.succeed(undefined)))
-      }
+      const client = state.client
+      const scope = state.scope
       state.client = null
+      state.scope = null
+      if (!client && !scope) return
+      run(
+        // Order matters, and it is the reverse of the obvious one. onDetach is
+        // what tells the owner the session is free, so everything that would
+        // refuse a new client must already be undone when it runs — the hub's
+        // registration of this client id is released by closing the scope. The
+        // other way round leaves a window where the daemon says "not attached"
+        // and the hub still says "that id is taken", and a client reconnecting
+        // promptly under its own id lands in it.
+        Effect.gen(function* () {
+          if (client) yield* FiberMap.remove(clientFibers, client)
+          if (scope) yield* Scope.close(scope, Exit.succeed(undefined))
+          if (client) yield* options.onDetach?.(client) ?? Effect.void
+        }),
+      )
     }
 
-    const handleFrame = (socket: Bun.Socket<ClientState>, frame: AttachFrame): Effect.Effect<void, unknown> =>
+    /** Accept a hello, or tell the client why it was refused and hang up. */
+    const attach = (socket: Bun.Socket<ClientState>, client: string) =>
       Effect.gen(function* () {
-        const state = socket.data
-        if (frame._tag === "hello") {
-          if (state.client) {
-            socket.write(encodeAttachFrame({ _tag: "error", message: "hello already received" }))
-            return
-          }
+        const child = yield* Scope.fork(root, ExecutionStrategy.sequential)
+        const accepted = yield* Scope.extend(hub.subscribe(client), child).pipe(
+          // The hub decides whether this id is free; the owner decides whether
+          // anyone may attach at all. Both must pass before a byte is sent, and
+          // both unwind through the same child scope if either refuses.
+          Effect.tap(() => options.onAttach?.(client) ?? Effect.void),
+          Effect.exit,
+        )
 
-          const child = yield* Scope.fork(root, ExecutionStrategy.sequential)
-          const subscription = yield* Scope.extend(hub.subscribe(frame.client), child).pipe(
-            Effect.catchAll((error) =>
-              Effect.sync(() => {
-                socket.write(encodeAttachFrame({ _tag: "error", message: error.message }))
-                socket.end()
-              }).pipe(Effect.flatMap(() => Effect.fail(error))),
-            ),
-          )
-          state.client = frame.client
-          state.scope = child
-          yield* runClient(frame.client, Stream.runForEach(subscription.frames, (outgoing) =>
-            Effect.sync(() => {
-              // A negative write means the peer is closed or its kernel buffer
-              // is full. The queue remains bounded; drain-aware socket writing
-              // is the next transport hardening slice.
-              socket.write(encodeAttachFrame(outgoing))
-            }),
-          ))
-          return
-        }
-
-        if (!state.client) {
-          socket.write(encodeAttachFrame({ _tag: "error", message: "hello is required first" }))
+        if (Exit.isFailure(accepted)) {
+          yield* Scope.close(child, Exit.succeed(undefined))
+          socket.write(encodeAttachFrame({ _tag: "error", message: reason(accepted.cause) }))
           socket.end()
           return
         }
 
-        if (frame._tag === "ping") {
-          socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }))
-          return
-        }
-
-        if (isClientFrame(frame)) yield* options.onFrame?.(state.client, frame) ?? Effect.void
+        socket.data.client = client
+        socket.data.scope = child
+        // Deliberately not awaited: a Fiber is an Effect, so yielding it here
+        // would park the frame loop on the client's output stream and drop
+        // every frame batched behind this hello in the same read.
+        runClient(client, Stream.runForEach(accepted.value.frames, (outgoing) =>
+          Effect.sync(() => {
+            // A negative write means the peer is closed or its kernel buffer
+            // is full. The queue remains bounded; drain-aware socket writing
+            // is the next transport hardening slice.
+            socket.write(encodeAttachFrame(outgoing))
+          }),
+        ))
       })
+
+    const handleFrame = (socket: Bun.Socket<ClientState>, frame: AttachFrame): Effect.Effect<void, unknown> =>
+      Match.value(frame).pipe(
+        Match.tag("hello", (hello) =>
+          Effect.gen(function* () {
+            if (socket.data.client) {
+              socket.write(encodeAttachFrame({ _tag: "error", message: "hello already received" }))
+              return
+            }
+            yield* attach(socket, hello.client)
+          })),
+        Match.tag("ping", (ping) =>
+          Effect.sync(() => {
+            if (!socket.data.client) {
+              socket.write(encodeAttachFrame({ _tag: "error", message: "hello is required first" }))
+              socket.end()
+              return
+            }
+            socket.write(encodeAttachFrame({ _tag: "pong", nonce: ping.nonce }))
+          })),
+        Match.orElse((clientFrame) =>
+          Effect.gen(function* () {
+            if (!socket.data.client) {
+              socket.write(encodeAttachFrame({ _tag: "error", message: "hello is required first" }))
+              socket.end()
+              return
+            }
+            yield* options.onFrame?.(socket.data.client, clientFrame) ?? Effect.void
+          })),
+      )
 
     const listener = yield* Effect.acquireRelease(
       Effect.try({

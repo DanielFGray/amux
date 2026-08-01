@@ -31,6 +31,8 @@ import {
   type Keys,
 } from "./bindings.ts"
 import { loadConfig, saveConfig, applyConfig, type Config } from "./config.ts"
+import { SessionClient } from "./client.ts"
+import { restoreSession, snapshotSpace } from "./snapshot.ts"
 import { createAppState } from "./ui/state.ts"
 import { sidebarTargets } from "./ui/Sidebar.tsx"
 import { App, type Overlay } from "./ui/App.tsx"
@@ -70,10 +72,74 @@ const paneHost = new BoxRenderable(renderer, {
   flexGrow: 1,
 })
 
-const spaces = new SpaceSet(renderer, paneHost, SHELL)
+/**
+ * The session this client is a view of.
+ *
+ * The processes are not ours. They belong to a daemon that is started on demand
+ * and outlives us, which is what makes closing this terminal a detach rather
+ * than a massacre — and what makes running the program again put the same
+ * agents back on screen, still running, rather than re-running their commands.
+ *
+ * Everything downstream is unchanged by that: agents get their bytes from a
+ * SpawnBackend, and whether that backend is a local PTY or a socket to the
+ * daemon is a fact none of the UI knows or asks.
+ */
+const SESSION_ID = process.env.HERDR_SESSION || "default"
+const session = await SessionClient.connect(SESSION_ID)
+
+const spaces = new SpaceSet(renderer, paneHost, SHELL, session.backend())
 spaces.onCopy = (text) => renderer.copyToClipboardOSC52(text)
 spaces.onCopyError = (error) => console.error(error.message)
 const app = createAppState(spaces)
+
+/**
+ * Session persistence.
+ *
+ * The workspace is written out as metadata — spaces, windows, their split
+ * arrangements and what each agent was started with — and read back at the next
+ * launch. Terminal contents are NOT in it and cannot be; see snapshot.ts for
+ * what that does and does not restore.
+ *
+ * The daemon writes the file, not us: it is already writing attachment state
+ * into the same file, and two writers would race over it. We send what we see.
+ *
+ * Writes are debounced because onChange fires on every keystroke that changes a
+ * title, and coalesced through a chain so two saves can never interleave. The
+ * chaining onto whatever onChange was already there is the same idiom
+ * createAppState uses: this is one more observer, not the owner.
+ */
+const SAVE_DEBOUNCE_MS = 500
+
+let saveTimer: Timer | null = null
+let saving: Promise<void> = Promise.resolve()
+
+function persistSession(): Promise<void> {
+  const workspace = {
+    spaces: spaces.spaces.map(snapshotSpace),
+    activeSpace: spaces.active?.id ?? null,
+  }
+  saving = saving.then(() => session.save(workspace)).catch((error) => {
+    // A session that cannot be written is worth saying once, not worth taking
+    // the app down for: everything still running keeps running.
+    console.error(`could not save session '${SESSION_ID}': ${String(error)}`)
+  })
+  return saving
+}
+
+function scheduleSave() {
+  if (saveTimer) return
+  saveTimer = setTimeout(() => {
+    saveTimer = null
+    void persistSession()
+  }, SAVE_DEBOUNCE_MS)
+  saveTimer.unref?.()
+}
+
+const previousOnChange = spaces.onChange
+spaces.onChange = () => {
+  previousOnChange?.()
+  scheduleSave()
+}
 
 /**
  * What to do after an agent's process exits and its views have closed.
@@ -104,7 +170,7 @@ function afterAgentExit(_agent: Agent, window: Window, space: Space) {
   spaces.remove(space)
   // Nothing running and no space left: an empty screen would just be a dead
   // end, so exiting is the honest outcome.
-  if (spaces.spaces.length === 0) shutdown()
+  if (spaces.spaces.length === 0) void shutdown()
 }
 spaces.onAgentExit = afterAgentExit
 
@@ -280,18 +346,9 @@ spaces.onChange = () => {
 }
 
 function toggleSidebar() {
-  // closed -> open+focused, open+focused -> closed, open+unfocused -> focus it.
-  if (!sidebarOpen()) {
-    setSidebarOpen(true)
-    setSidebarFocused(true)
-    selectFocusedAgent()
-  } else if (sidebarFocused()) {
-    setSidebarOpen(false)
-    setSidebarFocused(false)
-  } else {
-    setSidebarFocused(true)
-    selectFocusedAgent()
-  }
+  const open = !sidebarOpen()
+  setSidebarOpen(open)
+  if (!open) setSidebarFocused(false)
   syncSidebarFrame()
 }
 
@@ -785,7 +842,7 @@ const COMMANDS: CommandSpec[] = [
       if (bytes) activeWin()?.write(bytes)
     },
   },
-  { name: "app.quit", key: "<leader>q", desc: "quit", group: "global", run: () => shutdown() },
+  { name: "app.quit", key: "<leader>q", desc: "quit", group: "global", run: () => void shutdown() },
 ]
 
 /**
@@ -975,8 +1032,20 @@ async function refreshGit() {
   }
 }
 
-function shutdown() {
-  spaces.disposeAll()
+/**
+ * Leave, without taking the agents with us.
+ *
+ * This is a detach, and it is the behaviour the daemon exists to provide:
+ * spaces are NOT disposed, because disposing an agent kills its process, and
+ * the process is the one thing that must survive. The workspace is recorded
+ * first so the next client rebuilds the same arrangement over the same
+ * still-running agents.
+ *
+ * Ending the session for real is `session.stop()`, not this.
+ */
+async function shutdown() {
+  await persistSession()
+  session.close()
   app.dispose()
   renderer.destroy()
   process.exit(0)
@@ -984,16 +1053,28 @@ function shutdown() {
 const SIGNAL_EXIT: Record<string, number> = { SIGHUP: 129, SIGINT: 130, SIGQUIT: 131, SIGTERM: 143 }
 for (const sig of Object.keys(SIGNAL_EXIT)) {
   process.once(sig, () => {
-    spaces.disposeAll()
+    // A signal is still a detach. There is no time to save, but the daemon
+    // learns we are gone from the socket closing under us, which is exactly the
+    // case its EOF handling was built for.
+    session.close()
     process.exit(SIGNAL_EXIT[sig])
   })
 }
-process.once("exit", () => spaces.disposeAll())
+process.once("exit", () => session.close())
 
 // Before the first window exists, so its panes are built with the right edges.
 syncSidebarFrame()
-const first = spaces.create(basename(process.cwd()) || "space", process.cwd())
-first.newWindow().init()
+// The daemon's workspace is restored in place of the default space. Nothing was
+// saved on a first run, and a session whose spaces were all closed is the same
+// thing: either way the fallback is one space on the current directory.
+//
+// Agents the daemon is still running are adopted rather than re-run — the
+// backend knows which ones those are — so a reattach puts the live processes
+// back under the same window numbers and the same split arrangement.
+if (!session.session || restoreSession(spaces, session.session).length === 0) {
+  const first = spaces.create(basename(process.cwd()) || "space", process.cwd())
+  first.newWindow().init()
+}
 syncSidebarFrame()
 void refreshGit()
 const gitTimer = setInterval(() => void refreshGit(), 5000)

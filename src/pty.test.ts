@@ -92,9 +92,34 @@ test("a dead pump never reads an fd reused by a newer pty", async () => {
   await outB.done
 })
 
-test("a child that exits on its own closes the pty exactly once", async () => {
+test("a child that exits on its own closes the pty exactly once, after its output is drained", async () => {
   const p = spawnPty(["sh", "-c", "exit 0"], { cols: 80, rows: 24 })
   const out = collect(p)
   await out.done
+  // Reading stops as soon as the child is gone and the buffer is empty, but the
+  // master deliberately outlives that moment: closing it on exit would discard
+  // whatever the child printed on its way out.
+  expect(p.exited).toBe(true)
+  await waitFor(() => p.closed)
   expect(p.closed).toBe(true)
+  // Idempotent no matter how many paths reach it.
+  p.close()
+  expect(p.closed).toBe(true)
+})
+
+test("output written immediately before exiting is not lost", async () => {
+  const p = spawnPty(["sh", "-c", "printf 'last-words\\n'; exit 0"], { cols: 80, rows: 24 })
+  const out = collect(p)
+  await out.done
+  expect(out.text()).toContain("last-words")
+})
+
+test("output that only arrives after a delay is not mistaken for end-of-file", async () => {
+  // A zero-length read at spawn means "no process holds the slave yet", not
+  // "the child is done". Treating it as EOF loses everything a slow-starting
+  // agent ever prints.
+  const p = spawnPty(["sh", "-c", "sleep 0.3; printf 'late\\n'"], { cols: 80, rows: 24 })
+  const out = collect(p)
+  await out.done
+  expect(out.text()).toContain("late")
 })

@@ -1,5 +1,5 @@
 import { Terminal, RenderState } from "./ghostty.ts"
-import { spawnPty, readPty, type Pty } from "./pty.ts"
+import { localPty, exitedBackend, type AgentBackend, type SpawnBackend } from "./backend.ts"
 import { scrollViewport, ScrollTo } from "./shim.ts"
 import {
   splitActivity,
@@ -36,26 +36,58 @@ export interface AgentOptions {
   cwd?: string
   cols?: number
   rows?: number
+  /**
+   * Keep an identity that already exists, instead of minting a new one.
+   *
+   * Only restore passes this. A layout is stored as agent ids, so an agent that
+   * comes back under a fresh id is an agent its own window's saved arrangement
+   * no longer mentions.
+   */
+  id?: string
+  /** Where the process comes from. Defaults to a PTY in this process. */
+  backend?: SpawnBackend
+  /**
+   * Restore an agent whose process is already over.
+   *
+   * Nothing is started and no exit is announced — the exit happened in a
+   * previous life, and firing onExit here would cascade "an agent just
+   * finished" through an app that has been running for two seconds.
+   */
+  exited?: { code: number | null }
 }
 
 let nextAgentId = 0
 
+/** Keep the generator ahead of every id restore has brought back, so a fresh
+ *  agent can never collide with a persisted one. */
+function reserveAgentId(id: string) {
+  const n = /^agent-(\d+)$/.exec(id)
+  if (n) nextAgentId = Math.max(nextAgentId, Number(n[1]) + 1)
+}
+
 /**
  * A running process and its terminal state.
  *
- * Agents are the real entities: they own the PTY and the emulator, they keep
- * running whether or not anything is displaying them, and they outlive the
- * panes that view them. A TerminalPane is only a viewport.
+ * Agents are the real entities: they own the emulator and the process behind
+ * it, they keep running whether or not anything is displaying them, and they
+ * outlive the panes that view them. A TerminalPane is only a viewport.
+ *
+ * "The process behind it" is an AgentBackend rather than a PTY directly — see
+ * backend.ts. A local PTY is the default and the only one the UI creates today;
+ * the seam is what lets a daemon-owned PTY and a restored tombstone be the same
+ * kind of thing to everything above.
  */
 export class Agent {
-  readonly id = `agent-${nextAgentId++}`
+  readonly id: string
   readonly name: string
   readonly cmd: string[]
+  readonly cwd: string | undefined
   readonly term: Terminal
   readonly startedAt = Date.now()
 
-  #pty: Pty
+  #backend: AgentBackend
   #exited = false
+  #detached = false
   #exitCode: number | null = null
   #lastOutputAt = 0
   #viewers = 0
@@ -80,25 +112,41 @@ export class Agent {
   onScroll?: (agent: Agent) => void
 
   constructor(opts: AgentOptions) {
+    this.id = opts.id ?? `agent-${nextAgentId++}`
+    if (opts.id) reserveAgentId(opts.id)
     this.name = opts.name ?? commandName(opts.cmd)
     this.cmd = opts.cmd
+    this.cwd = opts.cwd
     this.#spawnedAs = identifyAgent(opts.cmd.join(" "))
     const cols = opts.cols ?? 80
     const rows = opts.rows ?? 24
     this.term = new Terminal(cols, rows)
-    this.#pty = spawnPty(opts.cmd, { cols, rows, cwd: opts.cwd })
+    if (opts.exited) {
+      // A tombstone: everything it can still answer, nothing running behind it.
+      this.#backend = exitedBackend(opts.exited.code)
+      this.#exited = true
+      this.#exitCode = opts.exited.code
+      return
+    }
+    this.#backend = (opts.backend ?? localPty)({ id: this.id, cmd: opts.cmd, cwd: opts.cwd, cols, rows })
     this.#pump()
   }
 
   async #pump() {
-    for await (const chunk of readPty(this.#pty)) {
+    for await (const chunk of this.#backend.read()) {
       this.term.write(chunk)
       this.#lastOutputAt = Date.now()
       if (this.#viewers === 0) this.#unseen = true
       this.onOutput?.(this)
     }
+    this.#detached = this.#backend.detached
+    if (this.#detached) return
     this.#exited = true
-    this.#exitCode = this.#pty.proc.exitCode ?? 0
+    // Not `?? 0`: a backend that reports no exit code does not mean the process
+    // succeeded. A daemon-owned agent whose attachment was lost is still
+    // running somewhere, and calling that a clean exit would persist a
+    // tombstone for something that never died. See backend.ts.
+    this.#exitCode = this.#backend.exitCode
     this.onExit?.(this)
   }
 
@@ -117,6 +165,11 @@ export class Agent {
 
   get exited() {
     return this.#exited
+  }
+
+  /** True when the daemon attachment ended without the process exiting. */
+  get detached() {
+    return this.#detached
   }
 
   get exitCode() {
@@ -159,8 +212,8 @@ export class Agent {
    *  15 bytes and hides the script behind a `node`/`bun` wrapper, so identifying
    *  an agent has to read the command line. */
   #foregroundCmdline(): string {
-    const fg = this.#pty.foregroundPgid()
-    if (fg <= 0 || fg === this.#pty.sessionId()) return ""
+    const fg = this.#backend.foregroundPgid()
+    if (fg <= 0 || fg === this.#backend.sessionId()) return ""
     try {
       const raw = require("node:fs").readFileSync(`/proc/${fg}/cmdline`, "utf8") as string
       return raw.split("\0").filter(Boolean).join(" ")
@@ -190,6 +243,7 @@ export class Agent {
    */
   get state(): AgentState {
     if (this.#exited) return "done"
+    if (this.#detached) return "idle"
     if (!this.agentKind) return "idle"
     if (splitActivity(this.term.title).spinning) return "working"
     if (this.#blocked()) return "blocked"
@@ -226,8 +280,8 @@ export class Agent {
     const now = Date.now()
     if (now - this.#commAt >= AGENT_POLL_MS) {
       this.#commAt = now
-      const fg = this.#pty.foregroundPgid()
-      if (fg <= 0 || fg === this.#pty.sessionId()) {
+      const fg = this.#backend.foregroundPgid()
+      if (fg <= 0 || fg === this.#backend.sessionId()) {
         this.#comm = ""
       } else {
         try {
@@ -259,7 +313,7 @@ export class Agent {
 
   write(data: string | Uint8Array) {
     this.scrollToBottom()
-    this.#pty.write(data)
+    this.#backend.write(data)
   }
 
   /** Views share one terminal, so resize is last-writer-wins. See notes in
@@ -267,7 +321,7 @@ export class Agent {
   resize(cols: number, rows: number) {
     if (cols === this.term.cols && rows === this.term.rows) return
     this.term.resize(cols, rows)
-    this.#pty.resize(cols, rows)
+    this.#backend.resize(cols, rows)
   }
 
   scrollBy(rows: number) {
@@ -283,7 +337,7 @@ export class Agent {
   }
 
   kill() {
-    this.#pty.kill()
+    this.#backend.kill()
   }
 
   dispose() {

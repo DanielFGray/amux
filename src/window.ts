@@ -1,6 +1,7 @@
 import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/core"
 import { TerminalPane } from "./pane.ts"
-import { Agent } from "./agent.ts"
+import { Agent, type AgentOptions } from "./agent.ts"
+import type { SpawnBackend } from "./backend.ts"
 import { rollUp } from "./space.ts"
 import { Divider, getWeight, setWeight, getDirection, setDirection } from "./divider.ts"
 import {
@@ -75,10 +76,26 @@ export class Window {
   onCopy?: (text: string) => boolean | void
   onCopyError?: (error: Error) => void
 
-  constructor(ctx: RenderContext, shell: string[], cwd: string | undefined, number: number) {
+  /**
+   * Where agents started here get their processes. Undefined means a local PTY.
+   *
+   * Carried alongside #shell because it answers the same kind of question — not
+   * "what does this window contain" but "what does starting something in it
+   * mean" — and every path that creates an agent already goes through here.
+   */
+  #backend: SpawnBackend | undefined
+
+  constructor(
+    ctx: RenderContext,
+    shell: string[],
+    cwd: string | undefined,
+    number: number,
+    backend?: SpawnBackend,
+  ) {
     this.#ctx = ctx
     this.#shell = shell
     this.#cwd = cwd
+    this.#backend = backend
     this.number = number
     this.root = new BoxRenderable(ctx, {
       id: `window-${number}-${nextId++}`,
@@ -164,7 +181,20 @@ export class Window {
   /** Start an agent without opening a view onto it. The name defaults to the
    *  command being run — "zsh", not a generic "shell". */
   spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Agent {
-    const agent = new Agent({ name, cmd, cwd })
+    return this.startAgent({ name, cmd, cwd })
+  }
+
+  /**
+   * Bring up an agent from full options and take ownership of it.
+   *
+   * What spawn is in terms of: restore needs the options spawn's three
+   * positional arguments cannot carry — a persisted id, a size, and the fact
+   * that this one's process is already over and must not be run again.
+   */
+  startAgent(opts: AgentOptions): Agent {
+    // The window's backend is a default, not an override: restore passes its
+    // own per-agent choice, and a tombstone must keep having no backend at all.
+    const agent = new Agent({ backend: this.#backend, ...opts })
     this.#bind(agent)
     this.#agents.push(agent)
     this.onChange?.()
