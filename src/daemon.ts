@@ -7,7 +7,7 @@ import type { AttachServerError } from "./effect/AttachServer.ts"
 import type { ManagedPty, PtySpec } from "./effect/PtyRegistry.ts"
 import {
   loadSession, processAlive, readLease, removeSession, saveSession,
-  sessionPaths, writeLease, type SessionLease, type SessionState,
+  sessionPaths, writeLease, type SessionAttachment, type SessionLease, type SessionState,
 } from "./session.ts"
 
 export type DaemonCommand =
@@ -46,9 +46,9 @@ export interface DaemonResponse {
   error?: string
   session?: SessionState
   attached?: boolean
-  /** Epoch ms the current attachment began; absent when detached. */
+  /** Earliest start among current attachments; absent when detached. */
   attachedSince?: number
-  /** Epoch ms the attached client was last heard from on the attach stream. */
+  /** Most recent activity among current attachments. */
   attachLastSeen?: number
   /** Agents with a live process right now. Not the same as the agents in
    *  `session`, which include ones that have already exited. */
@@ -74,12 +74,8 @@ export class SessionDaemon {
   #state: SessionState
   #server: ReturnType<typeof Bun.serve> | null = null
   #heartbeat: Timer | null = null
-  #attachedClient: string | null = null
-  #attachedConnection: string | null = null
-  /** Epoch ms the current attachment began, or null while detached. */
-  #attachedSince: number | null = null
-  /** Epoch ms the attached client was last heard from on the attach stream. */
-  #attachLastSeen: number | null = null
+  /** Attachments are keyed by transport connection so each socket has its own liveness. */
+  #attachments = new Map<string, SessionAttachment>()
   #save: Promise<void> = Promise.resolve()
   #lockPath: string
   #env: NodeJS.ProcessEnv
@@ -192,15 +188,15 @@ export class SessionDaemon {
     try { await unlink(this.paths.attach) } catch (error: any) { if (error.code !== "ENOENT") throw error }
     const runtime = ManagedRuntime.make(layerAttachHost({
       path: this.paths.attach,
-      // The stream is the authority on attachment, but the *rule* is the
-      // daemon's, and it is the same rule the RPC command obeys.
-       onAttach: (client, connection) => Effect.suspend(() =>
-         this.#claim(client, connection)
+      // The stream is the authority on attachment; the daemon records every
+      // accepted connection rather than imposing an exclusive owner.
+      onAttach: (client, connection) => Effect.suspend(() =>
+        this.#claim(client, connection)
           ? Effect.promise(() => this.#persist())
-          : Effect.fail(new Error("session is already attached")),
+          : Effect.fail(new Error("attachment is already registered")),
       ),
-       onDetach: (client, connection) => Effect.suspend(() => {
-         this.#release(client, connection)
+      onDetach: (client, connection) => Effect.suspend(() => {
+        this.#release(client, connection)
         return Effect.promise(() => this.#persist())
       }),
        onActivity: (client, connection) => Effect.sync(() => this.#touch(client, connection)),
@@ -209,44 +205,39 @@ export class SessionDaemon {
     this.#host = await runtime.runPromise(AttachHost)
   }
 
-  /** Take the attachment for `client`, or report that someone else holds it.
-   *  Re-claiming as the current owner succeeds: a reconnect is not a conflict. */
+  /** Register one transport connection as an independent attachment. */
   #claim(client: string, connection: string): boolean {
-    if (this.#attachedClient && this.#attachedClient !== client) return false
-    this.#attachedClient = client
-    this.#attachedConnection = connection
+    if (this.#attachments.has(connection)) return false
+    const now = Date.now()
+    this.#attachments.set(connection, { client, attachedSince: now, attachLastSeen: now })
     this.#state.attached = true
-    // A claim is proof the client is here; a reconnect preserves "attached
-    // since" but always refreshes "last seen".
-    if (this.#attachedSince === null) this.#attachedSince = Date.now()
-    this.#attachLastSeen = Date.now()
     return true
   }
 
-  /** Give up the attachment, but only if `client` is the one holding it — a
-   *  late EOF from a replaced connection must not detach its successor. */
+  /** Release only this connection; other clients remain attached. */
   #release(client: string, connection: string): boolean {
-    if (this.#attachedClient !== client || this.#attachedConnection !== connection) return false
-    this.#attachedClient = null
-    this.#attachedConnection = null
-    this.#state.attached = false
-    this.#attachedSince = null
-    this.#attachLastSeen = null
+    const attachment = this.#attachments.get(connection)
+    if (!attachment || attachment.client !== client) return false
+    this.#attachments.delete(connection)
+    this.#state.attached = this.#attachments.size > 0
     return true
   }
 
-  /** Record that the attached client is alive. Guarded by identity for the same
-   *  reason #release is: a frame arriving after a replacement must not refresh
-   *  the new owner's liveness under the old one's name. */
+  /** Refresh only this connection's liveness. */
   #touch(client: string, connection: string): void {
-    if (this.#attachedClient === client && this.#attachedConnection === connection) this.#attachLastSeen = Date.now()
+    const attachment = this.#attachments.get(connection)
+    if (attachment?.client === client) attachment.attachLastSeen = Date.now()
   }
 
-  /** The attachment's freshness for status and ping; absent while detached. */
-  #attachInfo(): Pick<DaemonResponse, "attachedSince" | "attachLastSeen"> {
+  /** Aggregate status plus per-client detail for the lease heartbeat. */
+  #attachInfo(): Pick<SessionLease, "attachedSince" | "attachLastSeen" | "attachments"> {
+    const attachments = [...this.#attachments.values()]
     return {
-      ...(this.#attachedSince !== null ? { attachedSince: this.#attachedSince } : {}),
-      ...(this.#attachLastSeen !== null ? { attachLastSeen: this.#attachLastSeen } : {}),
+      ...(attachments.length ? {
+        attachedSince: Math.min(...attachments.map(({ attachedSince }) => attachedSince)),
+        attachLastSeen: Math.max(...attachments.map(({ attachLastSeen }) => attachLastSeen)),
+        attachments: attachments.map((attachment) => ({ ...attachment })),
+      } : {}),
     }
   }
 
@@ -270,7 +261,18 @@ export class SessionDaemon {
     return this.#runtime.runPromise(this.#host.live)
   }
 
-  get attachedClient(): string | null { return this.#attachedClient }
+  /** Every client currently attached, in the order they arrived. */
+  get attachedClients(): string[] { return [...this.#attachments.values()].map((a) => a.client) }
+
+  /**
+   * The earliest-arrived attachment, or null when nothing is attached.
+   *
+   * Only meaningful when at most one client is attached, which is the common
+   * case and what the single-client status paths want. With several attached
+   * this is arrival order, not ownership — there is no owner any more. Use
+   * `attachedClients` when more than one may be present.
+   */
+  get attachedClient(): string | null { return this.#attachments.values().next().value?.client ?? null }
 
   async #fetch(request: Request): Promise<Response> {
     if (request.method !== "POST" || new URL(request.url).pathname !== "/rpc") return new Response("not found", { status: 404 })
@@ -359,10 +361,7 @@ export class SessionDaemon {
     const runtime = this.#runtime
     this.#runtime = null
     this.#host = null
-    this.#attachedClient = null
-    this.#attachedConnection = null
-    this.#attachedSince = null
-    this.#attachLastSeen = null
+    this.#attachments.clear()
     this.#state.attached = false
     await runtime?.dispose().catch(() => {})
     await unlink(this.paths.attach).catch(() => {})

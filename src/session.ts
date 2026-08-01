@@ -61,10 +61,18 @@ export interface SessionLease {
   socket: string
   startedAt: number
   heartbeatAt: number
-  /** Epoch ms the current attach client claimed the session; absent when detached. */
+  /** Earliest claim time among current attachments; absent when detached. */
   attachedSince?: number
-  /** Epoch ms the attached client was last heard from on the attach stream. */
+  /** Most recent activity time among current attachments. */
   attachLastSeen?: number
+  /** Per-client liveness, since one dead attachment must not hide the others. */
+  attachments?: SessionAttachment[]
+}
+
+export interface SessionAttachment {
+  client: string
+  attachedSince: number
+  attachLastSeen: number
 }
 
 export interface SessionPaths {

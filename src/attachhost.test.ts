@@ -111,24 +111,27 @@ test("hello is honoured alongside frames batched behind it in one write", async 
   attached.socket.end()
 })
 
-test("a second client is refused while one holds the attachment, and admitted after EOF", async () => {
-  const daemon = await started("exclusive")
+test("multiple clients hold independent attachments", async () => {
+  const daemon = await started("shared")
   const first = await client(daemon.paths.attach, "one")
   await settle()
 
   const second = await client(daemon.paths.attach, "two")
   await settle()
-  expect(second.frames.map((f) => f._tag)).toContain("error")
-  expect(JSON.stringify(second.frames)).toContain("already attached")
-  expect(daemon.attachedClient).toBe("one")
+  expect(second.frames.some((f) => f._tag === "error")).toBe(false)
+  // Both, not "whichever arrived first": there is no owner to name any more.
+  expect(daemon.attachedClients.sort()).toEqual(["one", "two"])
 
   first.socket.end()
   await settle()
-  const third = await client(daemon.paths.attach, "three")
+  // The survivor keeps the session attached, and it is specifically the one
+  // that did NOT leave — asserting `attached` alone would also pass if the
+  // release had wiped both and something else had re-attached.
+  expect(daemon.attachedClients).toEqual(["two"])
+  expect(daemon.state.attached).toBe(true)
+  second.socket.end()
   await settle()
-  expect(third.frames.some((f) => f._tag === "error")).toBe(false)
-  expect(daemon.attachedClient).toBe("three")
-  third.socket.end()
+  expect(daemon.attachedClient).toBeNull()
 })
 
 test("a reconnect with the same client id cannot be released by the old socket", async () => {

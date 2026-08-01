@@ -34,9 +34,8 @@ export interface AttachServerOptions {
    * output is forwarded. Failing it rejects the attachment: the client is sent
    * the error and disconnected, and its subscription is torn down.
    *
-   * This is the hook that lets an owner outside the data plane — the daemon's
-   * single-attachment rule — have the final say on who is attached, without the
-   * transport needing to know what that rule is.
+   * This is the hook that lets an owner outside the data plane record or reject
+   * an attachment, without the transport needing to know that policy.
    */
   readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, unknown>
   /**

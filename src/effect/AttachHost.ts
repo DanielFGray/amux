@@ -26,7 +26,7 @@ export interface AttachHostOptions {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
   readonly path: string;
   readonly idleTimeoutSeconds?: number;
-  /** Veto and record an attachment; failing rejects the client's hello. */
+  /** Record or reject an attachment; failing rejects the client's hello. */
   readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
   /** An accepted client went away — EOF, error, or idle timeout. */
   readonly onDetach?: (client: string, connection: string) => Effect.Effect<void, unknown>;

@@ -78,6 +78,35 @@ test("an agent's bytes travel to the daemon and its output comes back", async ()
   expect(await daemon.liveAgents()).toContain(agent.id)
 })
 
+test("two clients share output and input, and one can leave without detaching the other", async () => {
+  const { daemon, env } = await session("shared-attach")
+  const first = await attach("shared-attach", env, "first")
+  const second = await attach("shared-attach", env, "second")
+
+  const firstAgent = new Agent({ cmd: ["cat"], backend: first.backend() })
+  const secondAgent = new Agent({ id: firstAgent.id, cmd: ["cat"], backend: second.backend() })
+  agents.push(firstAgent, secondAgent)
+
+  firstAgent.write("first-input\n")
+  await until(() => screen(firstAgent).includes("first-input") && screen(secondAgent).includes("first-input"), "both clients to see first input")
+  secondAgent.write("second-input\n")
+  await until(() => screen(firstAgent).includes("second-input") && screen(secondAgent).includes("second-input"), "both clients to see second input")
+
+  // The second adoption is targeted replay, not a broadcast: it receives the
+  // existing screen while the first client's view remains live and unchanged.
+  expect(screen(secondAgent)).toContain("first-input")
+  first.close()
+  // Wait for the daemon to actually PROCESS the EOF, not merely for `attached`
+  // to be true — it was already true before the close, so waiting on it would
+  // return instantly and prove nothing about the release path.
+  await until(() => daemon.attachedClients.length === 1, "the daemon to notice the first client leave")
+  expect(daemon.attachedClients).toEqual(["second"])
+
+  secondAgent.write("still-shared\n")
+  await until(() => screen(secondAgent).includes("still-shared"), "the remaining client to keep working")
+  expect((await daemon.handle({ command: "ping" })).attached).toBe(true)
+})
+
 test("an agent outlives the client, and the next client adopts it", async () => {
   const { daemon, env } = await session("outlives")
   const first = await attach("outlives", env)
