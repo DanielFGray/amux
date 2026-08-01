@@ -32,3 +32,8 @@ test("multiple frames and an incomplete tail are decoded independently", () => {
   ])
   expect(result.rest).toBe('{"_tag":"hello","client":"later"')
 })
+
+test("heartbeat frames round-trip without special client state", () => {
+  const encoded = encodeAttachFrame({ _tag: "ping", nonce: "17" })
+  expect(decodeAttachFrames(encoded).frames).toEqual([{ _tag: "ping", nonce: "17" }])
+})

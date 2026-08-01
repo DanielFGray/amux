@@ -44,6 +44,7 @@ test("native attach server routes output and releases clients on close", async (
         agent: "agent-1",
         data: new Uint8Array([13]),
       }))
+      first.write(encodeAttachFrame({ _tag: "ping", nonce: "heartbeat-1" }))
       yield* Effect.promise(() => Bun.sleep(25))
 
       const secondMessages: string[] = []
@@ -62,6 +63,7 @@ test("native attach server routes output and releases clients on close", async (
 
   expect(result.messages.join("")).toContain('"_tag":"output"')
   expect(result.messages.join("")).toContain('"agent":"agent-1"')
+  expect(result.messages.join("")).toContain('"_tag":"pong"')
   expect(result.input).toEqual(["test-client:input"])
   expect(result.secondMessages.join("")).toContain("already attached")
   result.server.stop(true)

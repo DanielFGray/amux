@@ -35,7 +35,17 @@ const ErrorFrame = S.Struct({
   message: S.String,
 })
 
-export const AttachFrame = S.Union(Hello, Output, Input, Resize, Exit, ErrorFrame)
+const Ping = S.Struct({
+  _tag: S.Literal("ping"),
+  nonce: S.String,
+})
+
+const Pong = S.Struct({
+  _tag: S.Literal("pong"),
+  nonce: S.String,
+})
+
+export const AttachFrame = S.Union(Hello, Output, Input, Resize, Exit, ErrorFrame, Ping, Pong)
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()("AttachProtocolError", {

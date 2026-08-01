@@ -90,6 +90,11 @@ export const startAttachServer = (
           return
         }
 
+        if (frame._tag === "ping") {
+          socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }))
+          return
+        }
+
         if (isClientFrame(frame)) yield* options.onFrame?.(state.client, frame) ?? Effect.void
       })
 
