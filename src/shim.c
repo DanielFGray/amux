@@ -165,6 +165,51 @@ int oh_capture_range(GhosttyTerminal terminal, const OhCaptureRequest *req,
   return r;
 }
 
+/* Serialize the terminal's active screen as VT that a fresh terminal can
+ * consume to resume identical state.
+ *
+ * This is ghostty's own TerminalFormatter in VT mode with the mode and
+ * screen-style extras enabled: modes (which includes the alternate-screen
+ * switch), cursor position, the SGR style at the cursor, scrolling region,
+ * tabstops, pwd (OSC 7) and keyboard modes. Together these reconstruct the
+ * screen including its mode state, so an application on the alternate screen
+ * is replayed onto a client terminal that re-enters the alternate screen —
+ * which a raw byte-suffix replay cannot do. The palette is deliberately not
+ * emitted (OSC 4): the replay target applies its own theme, and both ends
+ * share ghostty defaults. Selection is NULL, which formats the whole active
+ * screen (the replay terminal keeps no scrollback, so that is just the
+ * screen). */
+int oh_format_screen(GhosttyTerminal terminal, uint8_t *buf, uint64_t buf_len,
+                     uint64_t *out_written) {
+  OhFormatterOptions opts = {0};
+  opts.size = sizeof(opts);
+  opts.emit = 1; /* GHOSTTY_FORMATTER_FORMAT_VT */
+  opts.unwrap = 0;
+  opts.trim = 1;
+  opts.extra.size = sizeof(opts.extra);
+  opts.extra.palette = 0;
+  opts.extra.modes = 1;
+  opts.extra.scrolling_region = 1;
+  opts.extra.tabstops = 1;
+  opts.extra.pwd = 1;
+  opts.extra.keyboard = 1;
+  opts.extra.screen.size = sizeof(opts.extra.screen);
+  opts.extra.screen.cursor = 1;
+  opts.extra.screen.style = 1;
+  opts.extra.screen.hyperlink = 1;
+  opts.extra.screen.protection = 1;
+  opts.extra.screen.kitty_keyboard = 1;
+  opts.extra.screen.charsets = 1;
+
+  void *formatter = 0;
+  int r = ghostty_formatter_terminal_new(0, &formatter, terminal, opts);
+  if (r != 0) return r;
+  r = ghostty_formatter_format_buf(formatter, buf, (size_t)buf_len,
+                                   (size_t *)out_written);
+  ghostty_formatter_free(formatter);
+  return r;
+}
+
 /* Install the host selection in ghostty's active screen. The selection option
  * takes resolved grid references, so build those from SCREEN coordinates here
  * instead of trying to express the sized structs through Bun FFI. */

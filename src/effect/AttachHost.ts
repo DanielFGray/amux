@@ -27,9 +27,14 @@ export interface AttachHostOptions {
   readonly path: string;
   readonly idleTimeoutSeconds?: number;
   /** Veto and record an attachment; failing rejects the client's hello. */
-  readonly onAttach?: (client: string) => Effect.Effect<void, unknown>;
+  readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
   /** An accepted client went away — EOF, error, or idle timeout. */
-  readonly onDetach?: (client: string) => Effect.Effect<void, unknown>;
+  readonly onDetach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
+  /** Any inbound frame from an accepted client, pings included — the stream's
+   *  proof that an attachment is still live. */
+  readonly onActivity?: (client: string, connection: string) => Effect.Effect<void, unknown>;
+  /** A client adopted an agent and wants its screen replayed to it alone. */
+  readonly onSync?: (client: string, connection: string, agent: string) => Effect.Effect<void, unknown>;
 }
 
 export interface AttachHostService {
@@ -64,6 +69,10 @@ const make = (
       idleTimeoutSeconds: options.idleTimeoutSeconds,
       onAttach: options.onAttach,
       onDetach: options.onDetach,
+      onActivity: options.onActivity,
+      // The screen models live here, so replay is the data plane's job unless
+      // an owner outside it says otherwise.
+       onSync: options.onSync ?? ((_client, _connection, agent) => supervisor.sync(_client, agent)),
       // An input or resize naming an agent that is already gone is a benign
       // race — the client had a keystroke in flight when the process exited —
       // not a protocol violation. Logging it keeps the attachment alive;

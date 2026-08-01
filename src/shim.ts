@@ -14,6 +14,7 @@ const { symbols } = cc({
     },
     oh_set_selection: { args: [T.u64, T.u32, T.u32, T.u32, T.u32], returns: T.i32 },
     oh_clear_selection: { args: [T.u64], returns: T.i32 },
+    oh_format_screen: { args: [T.u64, T.ptr, T.u64, T.ptr], returns: T.i32 },
   },
 })
 
@@ -91,6 +92,32 @@ export function captureRange(terminal: number, range: CaptureRange): Uint8Array 
     const r = symbols.oh_capture_range(
       BigInt(terminal),
       ptr(req),
+      buf ? ptr(buf) : null,
+      buf ? BigInt(buf.length) : 0n,
+      ptr(written),
+    )
+    return { r, n: Number(written[0]) }
+  }
+
+  const probe = run(null)
+  if (probe.r !== Result.outOfSpace) return new Uint8Array(0)
+  const buf = new Uint8Array(probe.n)
+  const fill = run(buf)
+  return fill.r === Result.success ? buf.subarray(0, fill.n) : new Uint8Array(0)
+}
+
+/**
+ * Serialize the terminal's active screen as VT bytes that reconstruct the same
+ * state in a fresh terminal: mode switches (alternate screen included), the
+ * screen content with SGR styling, cursor position, and the rest of the
+ * formatter's terminal extras. Used to replay an adopted agent's screen to a
+ * reattaching client ahead of its live output.
+ */
+export function formatScreen(terminal: number): Uint8Array {
+  const run = (buf: Uint8Array | null) => {
+    const written = new BigUint64Array(1)
+    const r = symbols.oh_format_screen(
+      BigInt(terminal),
       buf ? ptr(buf) : null,
       buf ? BigInt(buf.length) : 0n,
       ptr(written),

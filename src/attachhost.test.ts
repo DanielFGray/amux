@@ -130,6 +130,23 @@ test("a second client is refused while one holds the attachment, and admitted af
   third.socket.end()
 })
 
+test("a reconnect with the same client id cannot be released by the old socket", async () => {
+  const daemon = await started("same-client-reconnect")
+  const first = await client(daemon.paths.attach, "stable")
+  await settle()
+
+  first.socket.end()
+  const second = await client(daemon.paths.attach, "stable")
+  await settle()
+
+  expect(daemon.attachedClient).toBe("stable")
+  expect(second.frames.some((frame) => frame._tag === "error")).toBe(false)
+  second.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "replacement-alive" }))
+  await settle()
+  expect(second.frames).toContainEqual({ _tag: "pong", nonce: "replacement-alive" })
+  second.socket.end()
+})
+
 test("client death is reflected in the persisted session, not just in memory", async () => {
   const daemon = await started("persisted")
   const attached = await client(daemon.paths.attach, "transient")
@@ -179,4 +196,31 @@ test("stopping the daemon closes the attach socket and its agents", async () => 
     Bun.sleep(2000).then(() => "orphaned" as const),
   ])
   expect(exited).toBe("exited")
+})
+
+test("the daemon tracks when the attached client was last seen", async () => {
+  const daemon = await started("last-seen")
+  const attached = await client(daemon.paths.attach, "watcher")
+  await settle()
+
+  const claimed = await daemon.handle({ command: "ping" })
+  expect(claimed.ok).toBe(true)
+  expect(claimed.attachedSince).toBeGreaterThan(0)
+  expect(claimed.attachLastSeen).toBeGreaterThan(0)
+
+  // Any inbound frame refreshes last-seen — a heartbeat above all, because an
+  // attached UI showing an idle agent sends nothing else for hours.
+  const before = (await daemon.handle({ command: "ping" })).attachLastSeen!
+  attached.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "keepalive" }))
+  await settle(25)
+  const after = (await daemon.handle({ command: "ping" })).attachLastSeen!
+  expect(after).toBeGreaterThan(before)
+
+  // Detach clears the freshness along with the attachment itself.
+  attached.socket.end()
+  await settle()
+  const released = await daemon.handle({ command: "ping" })
+  expect(released.attached).toBe(false)
+  expect(released.attachedSince).toBeUndefined()
+  expect(released.attachLastSeen).toBeUndefined()
 })

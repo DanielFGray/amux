@@ -19,6 +19,7 @@ const { symbols: g } = dlopen(LIB, {
   ghostty_terminal_vt_write: { args: [P, P, U64], returns: V },
   ghostty_terminal_resize: { args: [P, U16, U16, U32, U32], returns: I },
   ghostty_terminal_get: { args: [P, I, P], returns: I },
+  ghostty_terminal_mode_get: { args: [P, U16, P], returns: I },
 
   ghostty_render_state_new: { args: [P, P], returns: I },
   ghostty_render_state_free: { args: [P], returns: V },
@@ -77,6 +78,9 @@ const WIDE_WIDE = 1;
 const TERMINAL_DATA_SCROLLBAR = 9;
 const TERMINAL_DATA_TITLE = 12;
 const TERMINAL_DATA_PWD = 13;
+
+/** The 1049 mode: alternate screen + save cursor + clear on enter. */
+export const MODE_ALT_SCREEN = 1049;
 
 const STATE_DIRTY = 3;
 const STATE_OPTION_DIRTY = 0;
@@ -141,6 +145,7 @@ export class Terminal {
   }
 
   resize(cols: number, rows: number) {
+    if (this.#freed) return;
     check("terminal_resize", g.ghostty_terminal_resize(asPtr(this.#h), cols, rows, 0, 0));
     this.#cols = cols;
     this.#rows = rows;
@@ -159,6 +164,21 @@ export class Terminal {
   /** Title set by the child via OSC 0 / OSC 2, or "" if never set. */
   get title(): string {
     return this.#string(TERMINAL_DATA_TITLE);
+  }
+
+  /**
+   * Whether a terminal mode is currently set.
+   *
+   * Modes are the packed 16-bit identifiers of modes.zig: the numeric value
+   * with bit 15 as the ANSI/private flag (see MODE_ALT_SCREEN). The one
+   * surface the UI needs to read directly is the alternate screen, to prove a
+   * replayed screen actually landed on it.
+   */
+  mode(mode: number): boolean {
+    if (this.#freed) return false;
+    const out = new Uint8Array(1);
+    if (g.ghostty_terminal_mode_get(asPtr(this.#h), mode, ptr(out)) !== OK) return false;
+    return out[0] !== 0;
   }
 
   /** Working directory reported via OSC 7, or "" if never set. */

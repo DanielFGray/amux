@@ -61,6 +61,10 @@ export interface SessionLease {
   socket: string
   startedAt: number
   heartbeatAt: number
+  /** Epoch ms the current attach client claimed the session; absent when detached. */
+  attachedSince?: number
+  /** Epoch ms the attached client was last heard from on the attach stream. */
+  attachLastSeen?: number
 }
 
 export interface SessionPaths {

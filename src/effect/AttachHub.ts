@@ -62,6 +62,21 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
         yield* Effect.forEach(queues.values(), (queue) => Queue.offer(queue, frame), { discard: true })
       })
 
-    return { subscribe, publish }
+    /**
+     * Send a frame to one client's queue only.
+     *
+     * The replay an adopting client asks for belongs to it alone: broadcasting
+     * it would rewind every other client's view of the same agent. Offering to
+     * a specific queue keeps the frame ordered against that client's live
+     * output, which is exactly what a full-state replay needs.
+     */
+    const publishTo = (client: string, frame: AttachFrame): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const queue = (yield* Ref.get(clients)).get(client)
+        if (!queue) return
+        yield* Queue.offer(queue, frame)
+      })
+
+    return { subscribe, publish, publishTo }
   }),
 }) {}

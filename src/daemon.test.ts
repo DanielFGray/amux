@@ -45,20 +45,6 @@ test("cleanup leaves a locked startup session for its owner", async () => {
   expect(await loadSession("starting", e)).not.toBeNull()
 })
 
-test("attachment is exclusive, survives daemon restart, and requires its owner to detach", async () => {
-  const e = await env()
-  const first = await SessionDaemon.open("attach", e)
-  await first.start()
-  expect((await first.handle({ command: "attach", client: "one" })).ok).toBe(true)
-  expect((await first.handle({ command: "attach", client: "two" })).ok).toBe(false)
-  expect((await first.handle({ command: "detach", client: "two" })).ok).toBe(false)
-
-  await first.close()
-  const second = await SessionDaemon.open("attach", e)
-  expect(second.state.attached).toBe(false)
-  await second.close()
-})
-
 // The workspace is what makes a restart worth surviving: without it a restored
 // session knows a shell was running and nothing about where it sat.
 test("a saved workspace survives closing and reopening the daemon", async () => {
@@ -107,14 +93,4 @@ test("stopping a daemon discards the workspace it was keeping", async () => {
   await daemon.saveWorkspace({ spaces: [{ id: "space-0", name: "p", dir: "/tmp", activeWindow: null, windows: [] }] })
   await daemon.stop()
   expect(await loadSession("discard", e)).toBeNull()
-})
-
-test("a dead one-shot client cannot be mistaken for a detached client", async () => {
-  const e = await env()
-  const daemon = await SessionDaemon.open("client-death", e)
-  await daemon.handle({ command: "attach", client: "process-that-died" })
-  // The current HTTP RPC has no durable client connection to observe death.
-  // Keeping the lease is safer than allowing a replacement to steal the PTY.
-  expect((await daemon.handle({ command: "attach", client: "replacement" })).ok).toBe(false)
-  await daemon.close()
 })

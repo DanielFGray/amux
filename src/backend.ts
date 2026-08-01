@@ -160,6 +160,11 @@ export function daemonBackend(
       // An adopted agent was sized by whoever had it last. This client's
       // viewport is the current truth, so say so before drawing anything.
       session.attach.resize(opts.id, opts.cols, opts.rows)
+      // And ask for its screen: this client was not there for the bytes that
+      // drew it, so without a replay the pane stays blank until the program
+      // next redraws. The resize frame precedes the sync, and the daemon
+      // serializes at the resize it just applied.
+      session.attach.sync(opts.id)
     } else {
       session.spawn(opts).then(
         () => {

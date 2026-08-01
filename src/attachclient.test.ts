@@ -16,6 +16,7 @@ import { Agent } from "./agent.ts"
 import { SessionClient } from "./client.ts"
 import { SessionDaemon } from "./daemon.ts"
 import { captureVisible } from "./capture.ts"
+import { MODE_ALT_SCREEN } from "./ghostty.ts"
 import { processAlive, readLease } from "./session.ts"
 
 const dirs: string[] = []
@@ -194,6 +195,74 @@ test("a spawn the daemon never receives becomes a dead agent, not a hung one", a
 
   await until(() => agent.exited, "the failed spawn to close the agent")
   expect(screen(agent)).toContain("could not start")
+})
+
+test("a client whose daemon stops sees a detach, not a process exit", async () => {
+  const { daemon, env } = await session("daemon-dies")
+  const client = await attach("daemon-dies", env)
+
+  const agent = new Agent({ cmd: ["cat"], backend: client.backend() })
+  agents.push(agent)
+  agent.write("before-death\n")
+  await until(() => screen(agent).includes("before-death"), "the client's echo")
+
+  // Explicit stop ends the daemon, its socket and its agents in one move. No
+  // exit frame is in flight, so the client learns about it the same way it
+  // would learn about a crash — as an attachment ending, never as a clean
+  // exit. A stop and a crash only diverge on the next RPC: stop removed the
+  // session, a crash left it restorable.
+  await daemon.stop()
+  daemons.splice(daemons.indexOf(daemon), 1)
+
+  await until(() => agent.detached, "the client to notice the daemon went away")
+  expect(agent.exited).toBe(false)
+  expect(agent.exitCode).toBeNull()
+  expect(agent.state).toBe("idle")
+})
+
+test("a reattaching client sees an adopted agent's screen without it redrawing", async () => {
+  const { daemon, env } = await session("replay-screen")
+  const first = await attach("replay-screen", env)
+
+  const agent = new Agent({ cmd: ["cat"], backend: first.backend() })
+  agents.push(agent)
+  agent.write("left-on-screen\n")
+  await until(() => screen(agent).includes("left-on-screen"), "the first client's echo")
+
+  first.close()
+  await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
+
+  const second = await attach("replay-screen", env)
+  const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend() })
+  agents.push(readopted)
+
+  // cat never redraws. The old line can reach this fresh pane only through the
+  // daemon's replay; without it the pane stays blank until some later echo.
+  await until(() => screen(readopted).includes("left-on-screen"), "the replayed screen")
+  expect(await daemon.liveAgents()).toContain(agent.id)
+})
+
+test("an alternate-screen app's view is replayed intact to a reattaching client", async () => {
+  const { daemon, env } = await session("replay-alt")
+  const first = await attach("replay-alt", env)
+
+  const cmd = ["sh", "-c", "printf '\\033[?1049h\\033[2J\\033[2;2Halt-mode-view'; sleep 30"]
+  const agent = new Agent({ cmd, backend: first.backend() })
+  agents.push(agent)
+  await until(() => screen(agent).includes("alt-mode-view"), "the app to draw its alternate screen")
+  expect(agent.term.mode(MODE_ALT_SCREEN)).toBe(true)
+
+  first.close()
+  await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
+
+  const second = await attach("replay-alt", env)
+  const readopted = new Agent({ id: agent.id, cmd, backend: second.backend() })
+  agents.push(readopted)
+
+  // The content alone could have landed on the wrong screen; the mode check is
+  // the discriminator. A raw byte-suffix replay would fail exactly here.
+  await until(() => screen(readopted).includes("alt-mode-view"), "the replayed alternate screen")
+  expect(readopted.term.mode(MODE_ALT_SCREEN)).toBe(true)
 })
 
 /**

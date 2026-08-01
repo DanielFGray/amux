@@ -19,33 +19,35 @@ path, or set `GHOSTTY_VT_LIB` to the full shared-library path.
 
 ## Sessions
 
-The current daemon owns session metadata only. `src/main.tsx` still owns each
-live PTY and ghostty terminal, so closing the UI terminates those processes and
-restart cannot restore their running state. Do not use this daemon as if it were
-already a multiplexer server.
-
-Start the metadata daemon with `bun run daemon [session-id]`; clients use the
-Unix socket under `$XDG_STATE_HOME/opentui-herdr/sessions/<session-id>/`.
-`attach` and `detach` are single-client lifecycle markers, `status` is for
-inspection, and `stop` removes the session metadata. Supply a stable client id
-to both attach and detach, for example `bun run session -- attach work tui-1`
-and `bun run session -- detach work tui-1`; a second client is rejected. State is
-versioned JSON in `session.json`; writes go through a temporary file and rename,
-with the prior generation retained as `session.json.prev` for recovery after a
-hard kill. The daemon directory also has an atomic ownership lock and a lease
+The daemon owns the PTYs, not just the metadata: `Agent`s are built on
+daemon-owned processes, so closing a client detaches it and the processes keep
+running, and a later client reattaches to them. Start the daemon with
+`bun run daemon [session-id]`; clients use the Unix socket under
+`$XDG_STATE_HOME/opentui-herdr/sessions/<session-id>/`. `attach` and `detach`
+are not RPC operations: attachment ownership belongs to the live attach socket.
+Use `status` for inspection and `stop` to remove the session. The client presents
+a stable ID on the attach stream so reconnects can be distinguished from a
+second client; a second client is rejected.
+State is versioned JSON in `session.json`, written via a temporary file and
+rename. The daemon directory also has an atomic ownership lock and a lease
 containing its PID and heartbeat.
 
-The next integration task is to move `Agent` behind a daemon-owned PTY service:
-define framed attach streams for PTY output/input/resize and terminal snapshots,
-then make `main.tsx` hydrate spaces/windows/agents from persisted metadata. Only
-after that should client disconnect mean detach rather than process exit; the
-integration must also cover daemon restart, SIGWINCH ordering, orphan cleanup,
-and concurrent attach rejection.
+Two sockets do different jobs. The RPC socket answers questions about the
+session and hangs up; the attach socket *is* an attachment — a client holds it
+open and PTY bytes flow both ways over it as newline-framed JSON frames
+(`output`, `input`, `resize`, `exit`, `ping`/`pong`, plus `sync`). Its EOF is
+how the daemon learns the client died. The daemon runs a ghostty terminal per
+agent as a screen model; when a client adopts an agent it sends `sync`, and the
+daemon answers with the agent's current screen serialized as VT (modes
+included, alternate screen and all) before the live bytes, so a reattaching
+pane is not blank until the program next redraws.
 
 The daemon migration uses Effect only at this boundary. `src/effect/PtyRegistry.ts`
-owns scoped PTY acquisition and release, while `AttachProtocol.ts` and
-`AttachHub.ts` define Schema-validated frames and bounded per-client queues. The
-renderer, Solid state, Ghostty FFI, and pane layout remain imperative by design.
+owns scoped PTY acquisition and release, `AttachProtocol.ts` and `AttachHub.ts`
+define Schema-validated frames and bounded per-client queues, and
+`PtySupervisor.ts` owns the per-agent screen models that make replay possible.
+The renderer, Solid state, Ghostty FFI, and pane layout remain imperative by
+design.
 
 ## Keys
 

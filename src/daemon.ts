@@ -11,7 +11,7 @@ import {
 } from "./session.ts"
 
 export type DaemonCommand =
-  | "ping" | "attach" | "detach" | "status" | "stop" | "spawn" | "kill" | "save"
+  | "ping" | "status" | "stop" | "spawn" | "kill" | "save"
 
 /**
  * A request to start an agent, in the shape the wire can carry.
@@ -46,6 +46,10 @@ export interface DaemonResponse {
   error?: string
   session?: SessionState
   attached?: boolean
+  /** Epoch ms the current attachment began; absent when detached. */
+  attachedSince?: number
+  /** Epoch ms the attached client was last heard from on the attach stream. */
+  attachLastSeen?: number
   /** Agents with a live process right now. Not the same as the agents in
    *  `session`, which include ones that have already exited. */
   agents?: string[]
@@ -71,6 +75,11 @@ export class SessionDaemon {
   #server: ReturnType<typeof Bun.serve> | null = null
   #heartbeat: Timer | null = null
   #attachedClient: string | null = null
+  #attachedConnection: string | null = null
+  /** Epoch ms the current attachment began, or null while detached. */
+  #attachedSince: number | null = null
+  /** Epoch ms the attached client was last heard from on the attach stream. */
+  #attachLastSeen: number | null = null
   #save: Promise<void> = Promise.resolve()
   #lockPath: string
   #env: NodeJS.ProcessEnv
@@ -157,7 +166,11 @@ export class SessionDaemon {
       await this.#startAttachHost()
       try { await unlink(this.paths.socket) } catch (error: any) { if (error.code !== "ENOENT") throw error }
       this.#server = Bun.serve({ unix: this.paths.socket, fetch: async (request) => this.#fetch(request) })
-      this.#heartbeat = setInterval(() => void writeLease({ ...lease, heartbeatAt: Date.now() }), 1000)
+      this.#heartbeat = setInterval(() => void writeLease({
+        ...lease,
+        heartbeatAt: Date.now(),
+        ...this.#attachInfo(),
+      }, this.#env), 1000)
       this.#heartbeat.unref?.()
     } catch (error) {
       await this.#disposeHost()
@@ -181,15 +194,16 @@ export class SessionDaemon {
       path: this.paths.attach,
       // The stream is the authority on attachment, but the *rule* is the
       // daemon's, and it is the same rule the RPC command obeys.
-      onAttach: (client) => Effect.suspend(() =>
-        this.#claim(client)
+       onAttach: (client, connection) => Effect.suspend(() =>
+         this.#claim(client, connection)
           ? Effect.promise(() => this.#persist())
           : Effect.fail(new Error("session is already attached")),
       ),
-      onDetach: (client) => Effect.suspend(() => {
-        this.#release(client)
+       onDetach: (client, connection) => Effect.suspend(() => {
+         this.#release(client, connection)
         return Effect.promise(() => this.#persist())
       }),
+       onActivity: (client, connection) => Effect.sync(() => this.#touch(client, connection)),
     }))
     this.#runtime = runtime
     this.#host = await runtime.runPromise(AttachHost)
@@ -197,20 +211,43 @@ export class SessionDaemon {
 
   /** Take the attachment for `client`, or report that someone else holds it.
    *  Re-claiming as the current owner succeeds: a reconnect is not a conflict. */
-  #claim(client: string): boolean {
+  #claim(client: string, connection: string): boolean {
     if (this.#attachedClient && this.#attachedClient !== client) return false
     this.#attachedClient = client
+    this.#attachedConnection = connection
     this.#state.attached = true
+    // A claim is proof the client is here; a reconnect preserves "attached
+    // since" but always refreshes "last seen".
+    if (this.#attachedSince === null) this.#attachedSince = Date.now()
+    this.#attachLastSeen = Date.now()
     return true
   }
 
   /** Give up the attachment, but only if `client` is the one holding it — a
    *  late EOF from a replaced connection must not detach its successor. */
-  #release(client: string): boolean {
-    if (this.#attachedClient !== client) return false
+  #release(client: string, connection: string): boolean {
+    if (this.#attachedClient !== client || this.#attachedConnection !== connection) return false
     this.#attachedClient = null
+    this.#attachedConnection = null
     this.#state.attached = false
+    this.#attachedSince = null
+    this.#attachLastSeen = null
     return true
+  }
+
+  /** Record that the attached client is alive. Guarded by identity for the same
+   *  reason #release is: a frame arriving after a replacement must not refresh
+   *  the new owner's liveness under the old one's name. */
+  #touch(client: string, connection: string): void {
+    if (this.#attachedClient === client && this.#attachedConnection === connection) this.#attachLastSeen = Date.now()
+  }
+
+  /** The attachment's freshness for status and ping; absent while detached. */
+  #attachInfo(): Pick<DaemonResponse, "attachedSince" | "attachLastSeen"> {
+    return {
+      ...(this.#attachedSince !== null ? { attachedSince: this.#attachedSince } : {}),
+      ...(this.#attachLastSeen !== null ? { attachLastSeen: this.#attachLastSeen } : {}),
+    }
   }
 
   /** Start an agent the daemon owns. It outlives every client by construction:
@@ -245,17 +282,8 @@ export class SessionDaemon {
 
   async handle(request: DaemonRequest): Promise<DaemonResponse> {
     switch (request.command) {
-      case "ping": return { ok: true, attached: this.#state.attached }
-      case "status": return { ok: true, session: this.state, attached: this.#state.attached, agents: [...(await this.liveAgents())] }
-      case "attach":
-        if (!request.client) return { ok: false, error: "attach requires a client id" }
-        if (!this.#claim(request.client)) return { ok: false, error: "session is already attached" }
-        await this.#persist()
-        return { ok: true, attached: true }
-      case "detach":
-        if (!request.client || !this.#release(request.client)) return { ok: false, error: "client does not own the attachment" }
-        await this.#persist()
-        return { ok: true, attached: false }
+      case "ping": return { ok: true, attached: this.#state.attached, ...this.#attachInfo() }
+      case "status": return { ok: true, session: this.state, attached: this.#state.attached, ...this.#attachInfo(), agents: [...(await this.liveAgents())] }
       // Spawn and kill are control, not data: they change what agents exist,
       // which is a fact about the session rather than a byte in a stream. Bytes
       // go over the attach socket; the shape of the session goes over RPC,
@@ -321,6 +349,9 @@ export class SessionDaemon {
     this.#runtime = null
     this.#host = null
     this.#attachedClient = null
+    this.#attachedConnection = null
+    this.#attachedSince = null
+    this.#attachLastSeen = null
     this.#state.attached = false
     await runtime?.dispose().catch(() => {})
     await unlink(this.paths.attach).catch(() => {})

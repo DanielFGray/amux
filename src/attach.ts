@@ -194,6 +194,15 @@ export class AttachClient {
     this.#send({ _tag: "resize", agent, cols, rows })
   }
 
+  /**
+   * Ask the daemon to replay this agent's current screen to us, ahead of its
+   * live output. Sent when adopting an agent whose process is already running;
+   * without it the pane would be blank until the program next redraws.
+   */
+  sync(agent: string): void {
+    this.#send({ _tag: "sync", agent })
+  }
+
   /** Round-trip the daemon. Resolves false if the attachment ends first. */
   ping(timeoutMs = 5_000): Promise<boolean> {
     if (this.#closed) return Promise.resolve(false)

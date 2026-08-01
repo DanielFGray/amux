@@ -24,6 +24,20 @@ const Resize = S.Struct({
   rows: S.Int,
 })
 
+/**
+ * Ask the daemon to replay an agent's current screen to this client.
+ *
+ * Sent once when a client adopts an agent the daemon is already running. The
+ * daemon answers with an `output` frame carrying the serialized screen (modes
+ * and content) ahead of the agent's live bytes, so a reattaching client's
+ * pane is not blank until the program next redraws. Only adopted agents need
+ * it: a freshly spawned agent's bytes reach the client from the first one.
+ */
+const Sync = S.Struct({
+  _tag: S.Literal("sync"),
+  agent: S.String,
+})
+
 const Exit = S.Struct({
   _tag: S.Literal("exit"),
   agent: S.String,
@@ -45,7 +59,7 @@ const Pong = S.Struct({
   nonce: S.String,
 })
 
-export const AttachFrame = S.Union(Hello, Output, Input, Resize, Exit, ErrorFrame, Ping, Pong)
+export const AttachFrame = S.Union(Hello, Output, Input, Resize, Sync, Exit, ErrorFrame, Ping, Pong)
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()("AttachProtocolError", {
