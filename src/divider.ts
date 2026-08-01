@@ -51,6 +51,77 @@ export function setWeight(r: object, weight: number): void {
 }
 
 /**
+ * The window's frame, as a query a divider can merge its own line against.
+ *
+ * A divider draws its line, its capped ends, and the tee one cell past an
+ * uncapped end — and it asks the frame which lines run through each of those
+ * cells before it picks a glyph. The answer is pure geometry, so a cell that
+ * two dividers both claim gets the same glyph from either of them no matter
+ * which draws last.
+ */
+export interface JunctionFrame {
+  /** Whether a vertical frame line runs through or ends at the cell. */
+  vertical(x: number, y: number): boolean
+  /** Whether a horizontal frame line runs through or ends at the cell. */
+  horizontal(x: number, y: number): boolean
+}
+
+const UP = 1
+const DOWN = 2
+const LEFT = 4
+const RIGHT = 8
+
+/** Junction glyphs by which arms reach the cell: up, down, left, right. */
+const JUNCTION: Record<number, string> = {
+  [UP | DOWN]: "│",
+  [LEFT | RIGHT]: "─",
+  [DOWN | LEFT | RIGHT]: "┬",
+  [UP | LEFT | RIGHT]: "┴",
+  [UP | DOWN | RIGHT]: "├",
+  [UP | DOWN | LEFT]: "┤",
+  [UP | DOWN | LEFT | RIGHT]: "┼",
+  [UP | RIGHT]: "└",
+  [UP | LEFT]: "┘",
+  [DOWN | RIGHT]: "┌",
+  [DOWN | LEFT]: "┐",
+}
+
+/**
+ * The glyph a cell wants, given the arms that reach it.
+ *
+ * The arms come from the divider's own continuation along its axis plus the
+ * frame's lines on the perpendicular sides. A cell on a divider's line always
+ * keeps its own axis (the line runs through it); an end cell loses the arm
+ * pointing past the cap, so the perpendicular frame line turns it into a tee.
+ * A cell no arms explain (a lone line ending in nothing) falls back to a plain
+ * dash so the frame can never show a hole where a border belongs.
+ */
+function junctionGlyph(
+  vertical: boolean,
+  index: number | null,
+  length: number,
+  frame: JunctionFrame,
+  x: number,
+  y: number,
+): string {
+  let arms: number
+  if (vertical) {
+    const up = (index !== null && index > 0) || frame.vertical(x, y - 1)
+    const down = (index !== null && index < length - 1) || frame.vertical(x, y + 1)
+    const left = frame.horizontal(x - 1, y)
+    const right = frame.horizontal(x + 1, y)
+    arms = (up ? UP : 0) | (down ? DOWN : 0) | (left ? LEFT : 0) | (right ? RIGHT : 0)
+  } else {
+    const left = (index !== null && index > 0) || frame.horizontal(x - 1, y)
+    const right = (index !== null && index < length - 1) || frame.horizontal(x + 1, y)
+    const up = frame.vertical(x, y - 1)
+    const down = frame.vertical(x, y + 1)
+    arms = (up ? UP : 0) | (down ? DOWN : 0) | (left ? LEFT : 0) | (right ? RIGHT : 0)
+  }
+  return JUNCTION[arms] ?? (arms & (UP | DOWN) ? "│" : "─")
+}
+
+/**
  * The draggable border between two panes.
  *
  * A real renderable rather than a hit-tested edge of a pane: OpenTUI resolves
@@ -80,6 +151,13 @@ export class Divider extends Renderable {
   /** True when the focused pane is on one side of this divider — the shared
    *  border is the focused pane's border too, so it highlights with it. */
   adjacentToFocus = false
+  /**
+   * The frame this divider is a segment of, asked once per frame for every
+   * cell it draws. Set by Window, which is the only thing that knows the tree;
+   * a bare divider (the sidebar handle) leaves it unset and falls back to
+   * drawing a plain line with corner ends.
+   */
+  junction?: () => JunctionFrame
   #hovered = false
   #dragging = false
 
@@ -180,16 +258,26 @@ export class Divider extends Renderable {
   }
 
   /**
-   * A line, plus a tee at each end.
+   * A line, plus a junction at each end.
    *
-   * The tee lands one cell *outside* this divider when its end meets another
-   * divider rather than the window's outer border — because the cell that needs
-   * the junction glyph belongs to that other divider, which has already drawn a
-   * plain line through it. Dividers render in tree order and a perpendicular one
-   * is always nested deeper, so the correction lands after the line it corrects.
+   * Every cell is resolved against the window's frame geometry, not painted
+   * from a hardcoded tee. The arms of a junction cell are the frame lines that
+   * reach it: the divider's own continuation along its axis, and whatever the
+   * frame has on the perpendicular sides. So the glyph a cell shows is what
+   * the geometry demands — a tee where one seam meets another, a ┼ where two
+   * seams meet a crossing seam at the same cell — regardless of which divider
+   * draws last. Draw order is exactly what made the old hardcoded tees wrong:
+   * a perpendicular divider's plain line would overwrite one of the two tees
+   * that land on the same cell, leaving whichever came last instead of the ┼.
    *
-   * Two dividers never actually cross: the split tree alternates axes, so one is
-   * always contained by a side of the other. Hence tees, and never a ┼.
+   * A capped end's junction is its own first/last cell. An uncapped end tees
+   * one cell *outside* the divider, into the perpendicular line that runs
+   * there (another divider, a pane border, or the sidebar seam) — that cell
+   * belongs to that other line, and it draws the same merged glyph from the
+   * same geometry, so the correction survives whichever wrote first.
+   *
+   * The sidebar handle is a bare line with corner ends: nothing shares its
+   * cells, so it keeps the simple path.
    */
   protected override renderSelf(buffer: OptimizedBuffer): void {
     const fg = this.#hovered || this.#dragging ? HOVER : this.adjacentToFocus ? FOCUS : IDLE
@@ -200,14 +288,29 @@ export class Divider extends Renderable {
         ? ([this.x, this.y + i] as const)
         : ([this.x + i, this.y] as const)
 
-    for (let i = 0; i < length; i++) buffer.setCell(...at(i), vertical ? "│" : "─", fg, BG)
+    const frame = this.junction?.()
+    if (!frame || this.outer) {
+      for (let i = 0; i < length; i++) buffer.setCell(...at(i), vertical ? "│" : "─", fg, BG)
+      if (!this.tees) return
+      const [sx, sy] = at(this.capStart ? 0 : -1)
+      buffer.setCell(sx, sy, this.outer ? "┌" : vertical ? "┬" : "├", fg, BG)
+      const [ex, ey] = at(this.capEnd ? length - 1 : length)
+      buffer.setCell(ex, ey, this.outer ? (vertical ? "└" : "┐") : vertical ? "┴" : "┤", fg, BG)
+      return
+    }
 
+    for (let i = 0; i < length; i++) {
+      const [x, y] = at(i)
+      buffer.setCell(x, y, junctionGlyph(vertical, i, length, frame, x, y), fg, BG)
+    }
     if (!this.tees) return
-    // An outer edge has no frame continuing past it, so it turns a corner where
-    // an interior divider would tee into the pane on the other side.
-    const [sx, sy] = at(this.capStart ? 0 : -1)
-    buffer.setCell(sx, sy, this.outer ? "┌" : vertical ? "┬" : "├", fg, BG)
-    const [ex, ey] = at(this.capEnd ? length - 1 : length)
-    buffer.setCell(ex, ey, this.outer ? (vertical ? "└" : "┐") : vertical ? "┴" : "┤", fg, BG)
+    if (!this.capStart) {
+      const [x, y] = at(-1)
+      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG)
+    }
+    if (!this.capEnd) {
+      const [x, y] = at(length)
+      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG)
+    }
   }
 }

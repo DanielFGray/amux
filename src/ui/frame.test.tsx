@@ -72,6 +72,11 @@ async function screen(
         helpGroups={[]}
         leader="ctrl+a"
         conflicts={[]}
+        paletteEntries={[]}
+        paletteQuery=""
+        paletteSelected={0}
+        onPaletteInput={() => {}}
+        onPaletteSubmit={() => {}}
         capturing={false}
         settingsSection="sidebar"
         settingsSelected={0}
@@ -127,6 +132,47 @@ test("closing the sidebar hands the left border back to the panes", async () => 
 
   expect(rows[1]![0]).toBe("┌")
   expect(rows[HEIGHT - 1]![0]).toBe("└")
+})
+
+/** Split both halves of a row split vertically at the same height, so the two
+ *  horizontal seams land on the same row and both meet the vertical seam. */
+function cross(space: ReturnType<SpaceSet["create"]>) {
+  const win = space.newWindow()
+  win.init()
+  win.split("row")
+  const left = win.panes[0]!
+  const right = win.panes[1]!
+  win.focus(left)
+  win.split("column")
+  win.focus(right)
+  win.split("column")
+}
+
+test("a seam crossing the pane frame's seam draws a ┼, not the last tee", async () => {
+  const rows = await screen(false, cross)
+
+  // The vertical seam meets the top border at its ┬; below it, on the row
+  // where both horizontal seams converge, the same cell is a ┼ — the glyph the
+  // geometry demands, whichever divider drew it last.
+  const col = rows[1]!.indexOf("┬")
+  expect(col).toBeGreaterThan(0)
+  expect(rows[7]![col]).toBe("┼")
+  // The frame still caps the vertical seam at top and bottom.
+  expect(rows[HEIGHT - 1]![col]).toBe("┴")
+})
+
+test("the ┼ also lands on the sidebar seam when the sidebar is open", async () => {
+  const rows = await screen(true, cross)
+
+  const col = rows[1]!.indexOf("┬")
+  expect(col).toBeGreaterThan(SIDEBAR)
+  // The crossing cell is a ┼, and the two horizontal seams tee into the
+  // sidebar handle exactly once, keeping the single-line seam intact.
+  expect(rows[7]![col]).toBe("┼")
+  const seam = rows.map((row) => row[SIDEBAR])
+  expect(seam.filter((c) => c === "├")).toHaveLength(1)
+  expect(seam.filter((c) => c === "┌")).toHaveLength(1)
+  expect(seam.filter((c) => c === "└")).toHaveLength(1)
 })
 
 const HINTS: HintGroup[] = [{ group: "panes", entries: [{ keys: ["z"], desc: "zoom" }] }]

@@ -3,7 +3,7 @@ import { TerminalPane } from "./pane.ts"
 import { Agent, type AgentOptions } from "./agent.ts"
 import type { SpawnBackend } from "./backend.ts"
 import { rollUp } from "./space.ts"
-import { Divider, getWeight, setWeight, getDirection, setDirection } from "./divider.ts"
+import { Divider, getWeight, setWeight, getDirection, setDirection, type JunctionFrame } from "./divider.ts"
 import {
   collapse,
   makeLayout,
@@ -270,6 +270,9 @@ export class Window {
     const divider = new Divider(this.#ctx, { id: `divider-${nextId++}`, axis: direction })
     // It is a segment of the pane frame, so its ends finish as junctions.
     divider.tees = true
+    // Every cell it draws is merged against the frame's geometry, so a seam
+    // meeting a seam at one cell draws a ┼ rather than the last tee to land.
+    divider.junction = () => this.#junctionFrame()
     // Dragging a seam moves the window off whatever preset built it, so the
     // next select-layout advances rather than rebuilding what is on screen.
     divider.onResized = () => {
@@ -444,6 +447,68 @@ export class Window {
       else if (!(child instanceof TerminalPane)) this.#dividers(child, out)
     }
     return out
+  }
+
+  /**
+   * The window's frame, as a query for junction cells.
+   *
+   * Layout is final by the time anything draws, so a divider resolves every
+   * cell it touches — its own line, its capped ends, and the tee one cell past
+   * an uncapped end — against the frame lines that actually pass through it.
+   * A frame cell is a divider's rect, a pane border it owns, or (with the
+   * sidebar open) the handle column beside the pane area. Uncapped ends are
+   * presence too: the tee one cell past a divider lands on a cell the line on
+   * the far side also claims, and both sides must agree it is a junction.
+   *
+   * Two dividers never share a cell along their own axis (the split tree
+   * alternates), so at most one line crosses another at a junction cell. What
+   * *can* collide is a crossing seam meeting two collinear seams at one cell —
+   * the ┼ case — and resolving the glyph from geometry instead of paint order
+   * is what makes that cell right from either drawer.
+   */
+  #junctionFrame(): JunctionFrame {
+    const dividers = this.#dividers()
+    const panes = this.#panes
+    // The sidebar handle is the left border of the pane area: one column out
+    // from the leftmost pane, spanning the pane area's rows. Its cells count
+    // as a vertical frame line so horizontal dividers tee into the seam
+    // correctly without knowing the handle exists.
+    const handleX = frame.externalLeft && panes.length > 0
+      ? Math.min(...dividers.map((d) => d.x), ...panes.map((p) => p.x)) - 1
+      : null
+    const handleTop = panes.length > 0 ? Math.min(...panes.map((p) => p.y)) : 0
+    const handleBottom = panes.length > 0 ? Math.max(...panes.map((p) => p.y + p.height)) : 0
+
+    const vertical = (x: number, y: number): boolean => {
+      if (handleX !== null && x === handleX && y >= handleTop && y < handleBottom) return true
+      for (const d of dividers) {
+        if (d.axis !== "row") continue
+        if (d.x === x && y >= d.y && y < d.y + d.height) return true
+        if (d.tees && !d.capStart && d.x === x && y === d.y - 1) return true
+        if (d.tees && !d.capEnd && d.x === x && y === d.y + d.height) return true
+      }
+      for (const p of panes) {
+        if (p.edges.left && p.x === x && y >= p.y && y < p.y + p.height) return true
+        if (p.edges.right && p.x + p.width - 1 === x && y >= p.y && y < p.y + p.height) return true
+      }
+      return false
+    }
+
+    const horizontal = (x: number, y: number): boolean => {
+      for (const d of dividers) {
+        if (d.axis !== "column") continue
+        if (d.y === y && x >= d.x && x < d.x + d.width) return true
+        if (d.tees && !d.capStart && d.y === y && x === d.x - 1) return true
+        if (d.tees && !d.capEnd && d.y === y && x === d.x + d.width) return true
+      }
+      for (const p of panes) {
+        if (p.edges.top && p.y === y && x >= p.x && x < p.x + p.width) return true
+        if (p.edges.bottom && p.y + p.height - 1 === y && x >= p.x && x < p.x + p.width) return true
+      }
+      return false
+    }
+
+    return { vertical, horizontal }
   }
 
   /** True when the pane sits immediately on either side of the divider — the
