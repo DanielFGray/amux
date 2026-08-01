@@ -3,6 +3,7 @@ import { TerminalPane } from "./pane.ts"
 import { Agent } from "./agent.ts"
 import { rollUp } from "./space.ts"
 import { Divider, getWeight, setWeight, getDirection, setDirection } from "./divider.ts"
+import { collapse, makeLayout, type Layout, type LayoutNode } from "./layout.ts"
 
 export type SplitDirection = "row" | "column"
 
@@ -679,6 +680,53 @@ export class Window {
     // empty — and an empty window needs the app told, so it can close it or
     // decide what to show next.
     if (this.#panes.length === 0) this.onChange?.()
+  }
+
+  /**
+   * This window's arrangement, as data that can be stored and rebuilt.
+   *
+   * Reads *through* a zoom rather than capturing it. Zoom parks the real tree
+   * off the root and hangs one pane there instead, so exporting the live root
+   * while zoomed would record a single-pane window and quietly destroy the
+   * layout on the next restore. Zoom is a transient view of a layout, not a
+   * layout, and is deliberately not persisted — the same reason it is absent
+   * from Space's persisted form.
+   *
+   * Dividers are skipped: one sits between every adjacent sibling pair, so the
+   * rebuild derives them rather than reading them back.
+   */
+  exportLayout(): Layout {
+    const slot = this.#zoomSlot
+    const zoomed = this.#zoomed
+
+    // The children a node *would* have with no zoom in effect: the root's real
+    // children are parked in #zoomTree, and the zoomed pane belongs back in the
+    // slot it was lifted out of.
+    const childrenOf = (node: BoxRenderable): Renderable[] => {
+      const base = zoomed && node === this.root ? [...this.#zoomTree] : [...node.getChildren()]
+      if (zoomed && slot && node === slot.parent) base.splice(slot.index, 0, zoomed)
+      return base
+    }
+
+    const weightOf = (node: Renderable): number =>
+      zoomed && slot && node === zoomed ? slot.weight : getWeight(node)
+
+    const walk = (node: Renderable): LayoutNode | null => {
+      if (node instanceof TerminalPane) {
+        return { type: "pane", agent: node.agent.id, weight: weightOf(node) }
+      }
+      if (!(node instanceof BoxRenderable)) return null
+      const children = childrenOf(node)
+        .map(walk)
+        .filter((child): child is LayoutNode => child !== null)
+      if (children.length === 0) return null
+      return { type: "split", direction: getDirection(node), weight: weightOf(node), children }
+    }
+
+    // collapse() does the rest: a single-pane window walks to a one-child split,
+    // and closing a pane can leave husks that the live tree renders identically.
+    // makeLayout drops a focus whose pane did not survive that collapse.
+    return makeLayout(collapse(walk(this.root)), this.#focused?.agent.id)
   }
 
   /** Kill every agent and free its terminal. Used by app shutdown so no child
