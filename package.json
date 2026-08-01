@@ -20,6 +20,7 @@
     "@opentui/core": "^0.4.5",
     "@opentui/keymap": "0.4.5",
     "@opentui/solid": "0.4.5",
+    "effect": "3.22.0",
     "solid-js": "^1.9.14"
   }
 }
