@@ -396,9 +396,16 @@ export function daemonRequest(id: string, body: DaemonRequest, env?: NodeJS.Proc
   })
 }
 
-export async function startDaemon(id = process.argv[2] || randomUUID()): Promise<void> {
+/**
+ * Open and start a daemon, and hand it back still running.
+ *
+ * No signal handling here: the caller owns the lifetime and is the one that
+ * knows how it wants to be torn down. daemon-main.ts holds it in a scope, so
+ * SIGTERM and SIGINT release it through the same path as any other exit rather
+ * than through two handlers that could only race `stop()` against `exit()`.
+ */
+export async function startDaemon(id = process.argv[2] || randomUUID()): Promise<SessionDaemon> {
   const daemon = await SessionDaemon.open(id)
   await daemon.start()
-  process.once("SIGTERM", () => void daemon.stop().finally(() => process.exit(143)))
-  process.once("SIGINT", () => void daemon.stop().finally(() => process.exit(130)))
+  return daemon
 }
