@@ -7,6 +7,8 @@ import {
   keyToBinding,
   keysFor,
   leaderBytes,
+  filterPaletteEntries,
+  paletteEntries,
   type CommandSpec,
 } from "./bindings.ts"
 
@@ -167,6 +169,29 @@ test("an override replaces a command's default sequences", async () => {
     t.mockInput.pressKey("f")
     expect(fired).toEqual(["z"])
     expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^a f")
+  } finally {
+    t.renderer.destroy()
+  }
+})
+
+test("palette entries read live bindings and fuzzy-match metadata", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 })
+  try {
+    const fired: string[] = []
+    const commands: CommandSpec[] = [
+      { name: "pane.split-row", key: "<leader>|", desc: "split left/right", group: "panes", run: () => fired.push("split") },
+      { name: "window.select-layout.tiled", desc: "arrange panes", hidden: true, group: "windows", run: () => {} },
+    ]
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
+    expect(paletteEntries(bindings, commands)).toEqual([
+      { name: "pane.split-row", group: "panes", keys: "^a |", desc: "split left/right" },
+      { name: "window.select-layout.tiled", group: "windows", keys: "unbound", desc: "arrange panes" },
+    ])
+    expect(filterPaletteEntries(paletteEntries(bindings, commands), "pane.s").map((e) => e.name)).toEqual([
+      "pane.split-row",
+    ])
+    expect(bindings.dispatch("pane.split-row")).toBe(true)
+    expect(fired).toEqual(["split"])
   } finally {
     t.renderer.destroy()
   }

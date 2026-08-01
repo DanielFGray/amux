@@ -30,6 +30,8 @@ import {
   type CommandSpec,
   type Conflict,
   type Keys,
+  filterPaletteEntries,
+  paletteEntries,
 } from "./bindings.ts"
 import { loadConfig, saveConfig, applyConfig, type Config } from "./config.ts"
 import { SessionClient } from "./client.ts"
@@ -268,6 +270,8 @@ const [settingsDirty, setSettingsDirty] = createSignal(false)
 /** True while the keybind editor is waiting for the keystroke to record. */
 const [capturing, setCapturing] = createSignal(false)
 const [conflicts, setConflicts] = createSignal<Conflict[]>([])
+const [paletteQuery, setPaletteQuery] = createSignal("")
+const [paletteSelected, setPaletteSelected] = createSignal(0)
 /** The keybind tab's scroll container, so ↑↓ can drive a list that is much
  *  longer than the window. */
 let keybindList: ScrollBoxRenderable | null = null
@@ -743,8 +747,7 @@ const COMMANDS: CommandSpec[] = [
   },
   {
     name: "pane.send-keys",
-    // tmux's command prompt, via tmux's send-keys.
-    key: "<leader>:",
+    // The command remains available from the palette; prefix+colon now opens it.
     desc: "send keys to the focused pane (tmux send-keys)",
     group: "panes",
     run: sendKeysCommand,
@@ -936,6 +939,17 @@ const COMMANDS: CommandSpec[] = [
     },
   },
   {
+    name: "app.command-palette",
+    key: "<leader>:",
+    desc: "search and run commands",
+    group: "global",
+    run: () => {
+      setPaletteQuery("")
+      setPaletteSelected(0)
+      setOverlay("palette")
+    },
+  },
+  {
     name: "app.settings",
     // shift+s, not "S": a bare capital compiles to the same sequence as the
     // lowercase one, so this was silently shadowed by space.new's ^a s.
@@ -1004,9 +1018,16 @@ function onUnhandled(event: KeyEvent): boolean {
     return true
   }
   if (overlay() !== "none") {
-    if (event.name === "escape" || event.name === "q") setOverlay("none")
-    else if (overlay() === "settings") settingsKey(event)
-    return true
+    if (event.name === "escape") {
+      setOverlay("none")
+      return true
+    }
+    if (overlay() === "settings") {
+      if (event.name === "q") setOverlay("none")
+      else settingsKey(event)
+      return true
+    }
+    return paletteKey(event)
   }
   // Copy mode owns the focused pane's unhandled keys. Bound keys never reach
   // here, so the leader and every ^a sequence keep their normal meaning — and
@@ -1022,6 +1043,26 @@ function onUnhandled(event: KeyEvent): boolean {
   const bytes = encodeKey(event)
   if (bytes !== null) activeWin()?.write(bytes)
   return true
+}
+
+function paletteKey(event: KeyEvent) {
+  const count = filteredPalette().length
+  switch (event.name) {
+    case "up":
+      if (count) setPaletteSelected((s) => Math.max(0, s - 1))
+      return true
+    case "down":
+      if (count) setPaletteSelected((s) => Math.min(count - 1, s + 1))
+      return true
+    case "pageup":
+      if (count) setPaletteSelected((s) => Math.max(0, s - 10))
+      return true
+    case "pagedown":
+      if (count) setPaletteSelected((s) => Math.min(count - 1, s + 10))
+      return true
+  }
+  // Let text and Enter reach the focused input renderable.
+  return false
 }
 
 function sidebarKey(event: KeyEvent) {
@@ -1138,6 +1179,15 @@ const hints = createMemo(() => nextKeys(bindings, COMMANDS, pendingParts()))
 // the reference and the editor are the same rows, read back out of the keymap
 // that was just rebuilt.
 const groups = createMemo(() => helpGroups(bindings, COMMANDS, configState().keys))
+const allPaletteEntries = createMemo(() => paletteEntries(bindings, COMMANDS))
+const filteredPalette = createMemo(() => filterPaletteEntries(allPaletteEntries(), paletteQuery()))
+
+function submitPalette() {
+  const entry = filteredPalette()[paletteSelected()]
+  if (!entry) return
+  setOverlay("none")
+  bindings.dispatch(entry.name)
+}
 
 /** Whether the focused window's tab carries the copy-mode marker. Reads the
  *  copy-mode pane directly and refreshes on app revision, which copy-mode
@@ -1250,6 +1300,14 @@ await render(
       // re-render the list when the prefix changes.
       leader={configState().keys.leader}
       conflicts={conflicts()}
+      paletteEntries={filteredPalette()}
+      paletteQuery={paletteQuery()}
+      paletteSelected={paletteSelected()}
+      onPaletteInput={(value) => {
+        setPaletteQuery(value)
+        setPaletteSelected(0)
+      }}
+      onPaletteSubmit={submitPalette}
       capturing={capturing()}
       settingsSection={settingsSection()}
       settingsSelected={settingsSelected()}

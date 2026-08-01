@@ -194,6 +194,8 @@ export interface Conflict {
  */
 export interface Bindings {
   keymap: AppKeymap
+  /** Execute a registered command through the keymap's command dispatcher. */
+  dispatch: (name: string) => boolean
   /** The prefix in effect. Display code needs it to render `<leader>`. */
   leader(): string
   /** Sequences claimed by more than one command as of the last apply. */
@@ -302,6 +304,9 @@ export function createBindings(
 
   const bindings: Bindings = {
     keymap,
+    dispatch(name) {
+      return keymap.dispatchCommand(name).ok
+    },
     leader: () => leader,
     conflicts: () => conflicts,
     apply,
@@ -382,6 +387,51 @@ export interface HelpEntry {
 export interface HelpGroup {
   group: string
   entries: HelpEntry[]
+}
+
+export interface PaletteEntry {
+  name: string
+  group: string
+  keys: string
+  desc: string
+}
+
+/** All registered commands, including commands intentionally hidden from help. */
+export function paletteEntries(bindings: Bindings, commands: CommandSpec[]): PaletteEntry[] {
+  const active = bindings.keymap.getCommandBindings({
+    visibility: "registered",
+    commands: commands.map((c) => c.name),
+  })
+  return commands.map((cmd) => ({
+    name: cmd.name,
+    group: cmd.group,
+    keys: (active.get(cmd.name) ?? [])
+      .map((binding) => formatSequence(binding.sequence, bindings.leader()))
+      .join(" / ") || "unbound",
+    desc: cmd.desc,
+  }))
+}
+
+/** Case-insensitive subsequence matching with stable relevance ordering. */
+export function filterPaletteEntries(entries: PaletteEntry[], query: string): PaletteEntry[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return entries
+  return entries
+    .map((entry, index) => {
+      const text = `${entry.name} ${entry.desc} ${entry.group}`.toLowerCase()
+      let cursor = 0
+      let score = 0
+      for (const char of needle) {
+        const found = text.indexOf(char, cursor)
+        if (found === -1) return null
+        score += found - cursor
+        cursor = found + 1
+      }
+      return { entry, score, index }
+    })
+    .filter((match): match is { entry: PaletteEntry; score: number; index: number } => match !== null)
+    .sort((a, b) => a.score - b.score || a.index - b.index)
+    .map((match) => match.entry)
 }
 
 /** One reachable command: the single key that gets you there, and what it does. */

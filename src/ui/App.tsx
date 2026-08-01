@@ -12,8 +12,10 @@ import { Settings, type SettingsSection } from "./Settings.tsx"
 import type { AppState } from "./state.ts"
 import type { Config } from "../config.ts"
 import type { Conflict, HelpGroup, HintGroup } from "../bindings.ts"
+import type { PaletteEntry } from "../bindings.ts"
+import { CommandPalette } from "./CommandPalette.tsx"
 
-export type Overlay = "none" | "settings"
+export type Overlay = "none" | "settings" | "palette"
 
 export interface AppProps {
   app: AppState
@@ -48,6 +50,11 @@ export interface AppProps {
    *  currently bound rather than as it shipped. */
   leader: string
   conflicts: Conflict[]
+  paletteEntries: PaletteEntry[]
+  paletteQuery: string
+  paletteSelected: number
+  onPaletteInput: (value: string) => void
+  onPaletteSubmit: () => void
   settingsSection: SettingsSection
   settingsSelected: number
   settingsDirty: boolean
@@ -134,6 +141,16 @@ export function App(props: AppProps) {
           height={props.size.height}
           dirty={props.settingsDirty}
           onKeybindList={props.onKeybindList}
+        />
+      </Show>
+      <Show when={props.overlay === "palette"}>
+        <CommandPalette
+          entries={props.paletteEntries}
+          query={props.paletteQuery}
+          selected={props.paletteSelected}
+          width={props.size.width}
+          onInput={props.onPaletteInput}
+          onSubmit={props.onPaletteSubmit}
         />
       </Show>
       <Show when={props.prompt} keyed>
