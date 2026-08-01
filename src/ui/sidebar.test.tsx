@@ -1,14 +1,29 @@
 /** @jsxImportSource @opentui/solid */
-import { test, expect } from "bun:test"
+import { afterEach, test, expect } from "bun:test"
 import { createSignal } from "solid-js"
 import { BoxRenderable } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createTestRenderer } from "@opentui/core/testing"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { SpaceSet } from "../space.ts"
 import { createAppState, POLL_MS } from "./state.ts"
 import { Sidebar, sidebarTargets } from "./Sidebar.tsx"
+import { SessionDaemon } from "../daemon.ts"
+import { SessionClient } from "../client.ts"
+import type { SpawnBackend } from "../backend.ts"
 
 const SHELL = ["bash"]
+
+const daemons: SessionDaemon[] = []
+const clients: SessionClient[] = []
+const dirs: string[] = []
+afterEach(async () => {
+  for (const client of clients.splice(0)) client.close()
+  for (const daemon of daemons.splice(0)) await daemon.stop().catch(() => {})
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
+})
 
 /**
  * Wait for a mouse dispatch to land.
@@ -29,7 +44,17 @@ async function waitFor(predicate: () => boolean, what: string, timeoutMs = 2000)
   throw new Error(`timed out waiting for ${what}`)
 }
 
-async function setup() {
+/** waitFor, for predicates that have to ask a process (the daemon). */
+async function waitForAsync(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await Bun.sleep(10)
+  }
+  throw new Error(`timed out waiting for ${what}`)
+}
+
+async function setup(backend?: SpawnBackend) {
   const [selected, setSelected] = createSignal(0)
   const [hovered, setHovered] = createSignal<number | null>(null)
   const activated: number[] = []
@@ -39,7 +64,7 @@ async function setup() {
   // real app hosts the imperative pane tree alongside the reactive chrome.
   const t = await createTestRenderer({ width: 60, height: 20 })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(t.renderer, paneHost, SHELL)
+  const spaces = new SpaceSet(t.renderer, paneHost, SHELL, backend)
   const space = spaces.create("proj", process.cwd())
   const win = space.newWindow()
   win.init("shell")
@@ -113,13 +138,70 @@ test("the branch row appears under its space once git info arrives", async () =>
   }
 })
 
-test("a detached agent shows the detached indicator", async () => {
+test("an agent with no pane open shows the ⇠ indicator", async () => {
   const s = await setup()
   try {
     s.win.spawn("background", ["sleep", "30"])
     s.spaces.onChange?.()
     await s.t.waitForFrame((f: string) => f.includes("⇠"))
     expect(s.t.captureCharFrame()).toContain("background")
+  } finally {
+    await s.dispose()
+  }
+})
+
+/**
+ * The real deployment path, end to end: a daemon owns the process, the client
+ * views it, and the sidebar reads its state through the daemon backend. When
+ * the daemon goes away the *attachment* ends but the process does not, so the
+ * agent must stay rendered as running-but-idle (○), not as finished (✓) — the
+ * exit code is null precisely so the sidebar has something to tell apart, see
+ * backend.ts.
+ */
+test("an agent whose daemon attachment is lost stays in the sidebar as idle, not done", async () => {
+  const home = await mkdtemp(join(tmpdir(), "herdr-sidebar-"))
+  dirs.push(home)
+  const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv
+  const daemon = await SessionDaemon.open("sidebar-detach", env)
+  daemons.push(daemon)
+  await daemon.start()
+  const client = await SessionClient.connect("sidebar-detach", { env, client: "ui", autostart: false })
+  clients.push(client)
+
+  const s = await setup(client.backend())
+  try {
+    const agent = s.win.agents[0]!
+    // The spawn is a round trip over RPC; stopping the daemon before it lands
+    // would end nothing, so first wait for the daemon to own the agent.
+    await waitForAsync(
+      () => daemon.liveAgents().then((ids) => ids.includes(agent.id)),
+      "the daemon to own the agent",
+    )
+    await s.t.waitForFrame((f: string) => f.includes("1 agent"))
+
+    const live = s.t.captureCharFrame()
+    expect(live).toContain("shell")
+    expect(live).toContain("○")
+    expect(live).not.toContain("✓")
+
+    // The daemon dies: its agents are killed by the same move, but from this
+    // client's side it is a lost attachment, never an exit frame.
+    await daemon.stop()
+
+    await waitForAsync(() => agent.detached === true, "the agent to detach")
+    expect(agent.exited).toBe(false)
+    expect(agent.exitCode).toBeNull()
+    expect(agent.state).toBe("idle")
+
+    // The sidebar polls state, so give it a few ticks after the detach; every
+    // repaint must keep showing the agent as idle, never flip it to done.
+    const deadline = Date.now() + 3 * POLL_MS + 50
+    while (Date.now() < deadline) {
+      const frame = s.t.captureCharFrame()
+      expect(frame).not.toContain("✓")
+      await Bun.sleep(10)
+    }
+    expect(s.t.captureCharFrame()).toContain("shell")
   } finally {
     await s.dispose()
   }

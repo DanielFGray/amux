@@ -32,3 +32,17 @@ test("AttachHub rejects duplicate client ids", async () => {
 
   expect(result._tag).toBe("Left")
 })
+
+test("targeted replay requires the live connection token", async () => {
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const hub = yield* AttachHub
+      const subscription = yield* hub.subscribe("same", "new")
+      yield* hub.publishTo("same", "old", { _tag: "hello", client: "stale" })
+      yield* hub.publishTo("same", "new", { _tag: "hello", client: "current" })
+      return yield* Stream.runCollect(subscription.frames.pipe(Stream.take(1)))
+    }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
+  )
+
+  expect([...result]).toEqual([{ _tag: "hello", client: "current" }])
+})

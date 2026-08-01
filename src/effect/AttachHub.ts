@@ -19,9 +19,9 @@ export interface AttachSubscription {
  */
 export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
   effect: Effect.gen(function* () {
-    const clients = yield* Ref.make<ReadonlyMap<string, Queue.Queue<AttachFrame>>>(new Map())
+    const clients = yield* Ref.make<ReadonlyMap<string, { connection: string; queue: Queue.Queue<AttachFrame> }>>(new Map())
 
-    const subscribe = (client: string): Effect.Effect<AttachSubscription, AttachHubError, Scope.Scope> =>
+    const subscribe = (client: string, connection = ""): Effect.Effect<AttachSubscription, AttachHubError, Scope.Scope> =>
       Effect.gen(function* () {
         const queue = yield* Queue.bounded<AttachFrame>(256)
         const registered = yield* Ref.modify(clients, (current) => {
@@ -29,7 +29,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
             return [false, current] as const
           }
           const next = new Map(current)
-          next.set(client, queue)
+          next.set(client, { connection, queue })
           return [true, next] as const
         })
 
@@ -43,7 +43,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
             Effect.zipRight(
               Ref.update(clients, (current) => {
                 const next = new Map(current)
-                next.delete(client)
+                if (next.get(client)?.queue === queue) next.delete(client)
                 return next
               }),
             ),
@@ -59,7 +59,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
     const publish = (frame: AttachFrame): Effect.Effect<void> =>
       Effect.gen(function* () {
         const queues = yield* Ref.get(clients)
-        yield* Effect.forEach(queues.values(), (queue) => Queue.offer(queue, frame), { discard: true })
+        yield* Effect.forEach(queues.values(), ({ queue }) => Queue.offer(queue, frame), { discard: true })
       })
 
     /**
@@ -70,11 +70,11 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
      * a specific queue keeps the frame ordered against that client's live
      * output, which is exactly what a full-state replay needs.
      */
-    const publishTo = (client: string, frame: AttachFrame): Effect.Effect<void> =>
+    const publishTo = (client: string, connection: string, frame: AttachFrame): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const queue = (yield* Ref.get(clients)).get(client)
-        if (!queue) return
-        yield* Queue.offer(queue, frame)
+        const target = (yield* Ref.get(clients)).get(client)
+        if (!target || target.connection !== connection) return
+        yield* Queue.offer(target.queue, frame)
       })
 
     return { subscribe, publish, publishTo }

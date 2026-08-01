@@ -54,6 +54,7 @@ interface ClientState {
   client: string | null
   connection: string
   scope: Scope.CloseableScope | null
+  processing: Promise<void>
 }
 
 const reason = (cause: Cause.Cause<unknown>): string => {
@@ -112,7 +113,7 @@ export const startAttachServer = (
     const attach = (socket: Bun.Socket<ClientState>, client: string) =>
       Effect.gen(function* () {
         const child = yield* Scope.fork(root, ExecutionStrategy.sequential)
-        const accepted = yield* Scope.extend(hub.subscribe(client), child).pipe(
+        const accepted = yield* Scope.extend(hub.subscribe(client, socket.data.connection), child).pipe(
           // The hub decides whether this id is free; the owner decides whether
           // anyone may attach at all. Both must pass before a byte is sent, and
           // both unwind through the same child scope if either refuses.
@@ -191,20 +192,23 @@ export const startAttachServer = (
         try: () =>
           Bun.listen<ClientState>({
             unix: options.path,
-            data: { buffer: "", client: null, connection: "", scope: null },
+            data: { buffer: "", client: null, connection: "", scope: null, processing: Promise.resolve() },
             socket: {
               binaryType: "buffer",
               open(socket) {
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
-                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null }
+                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, processing: Promise.resolve() }
                 socket.timeout(options.idleTimeoutSeconds ?? 60)
               },
               data(socket, data) {
                 socket.timeout(options.idleTimeoutSeconds ?? 60)
-                run(
+                const state = socket.data
+                // Bun may invoke data callbacks concurrently. Keep complete
+                // frames from one connection in wire order so resize->sync
+                // adoption cannot serialize the old dimensions.
+                state.processing = state.processing.then(() => Runtime.runPromise(runtime)(
                   Effect.gen(function* () {
-                    const state = socket.data
                     state.buffer += data.toString("utf8")
                     const decoded = decodeAttachFrames(state.buffer)
                     state.buffer = decoded.rest
@@ -217,7 +221,7 @@ export const startAttachServer = (
                       }),
                     ),
                   ),
-                )
+                )).catch(() => {})
               },
               close(socket) {
                 closeClient(socket)

@@ -72,7 +72,7 @@ const make = (
       onActivity: options.onActivity,
       // The screen models live here, so replay is the data plane's job unless
       // an owner outside it says otherwise.
-       onSync: options.onSync ?? ((_client, _connection, agent) => supervisor.sync(_client, agent)),
+       onSync: options.onSync ?? ((client, connection, agent) => supervisor.sync(client, connection, agent)),
       // An input or resize naming an agent that is already gone is a benign
       // race — the client had a keystroke in flight when the process exited —
       // not a protocol violation. Logging it keeps the attachment alive;

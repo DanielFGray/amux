@@ -134,12 +134,12 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
       }),
 
       /** Replay an adopted agent's screen to the client that asked for it. */
-      sync: Effect.fnUntraced(function* (client: string, id: string) {
+      sync: Effect.fnUntraced(function* (client: string, connection: string, id: string) {
         const screen = (yield* Ref.get(replays)).get(id);
         if (!screen) return;
         const data = yield* Effect.sync(() => formatScreen(screen.handle));
         if (data.length === 0) return;
-        yield* hub.publishTo(client, { _tag: "output", agent: id, data } satisfies AttachFrame);
+        yield* hub.publishTo(client, connection, { _tag: "output", agent: id, data } satisfies AttachFrame);
       }),
 
       live: Ref.get(agents).pipe(Effect.map((current) => [...current.keys()])),
