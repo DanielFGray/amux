@@ -1,7 +1,7 @@
-import { Effect, Fiber, FiberMap, Layer, Stream } from "effect"
+import { Effect, Fiber, FiberMap, Layer, Ref, Stream } from "effect"
 import { AttachHub } from "./AttachHub.ts"
 import { type AttachFrame } from "./AttachProtocol.ts"
-import { PtyRegistry, type ManagedPty, type PtyError, type PtySpec } from "./PtyRegistry.ts"
+import { PtyError, PtyRegistry, type ManagedPty, type PtySpec } from "./PtyRegistry.ts"
 
 /**
  * Connects daemon-owned PTYs to the attach data plane.
@@ -15,10 +15,12 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
     const registry = yield* PtyRegistry
     const hub = yield* AttachHub
     const pumps = yield* FiberMap.make<string>()
+    const agents = yield* Ref.make<ReadonlyMap<string, ManagedPty>>(new Map())
 
     const spawn = (spec: PtySpec): Effect.Effect<ManagedPty, PtyError, import("effect/Scope").Scope> =>
       Effect.gen(function* () {
         const pty = yield* registry.spawn(spec)
+        yield* Ref.update(agents, (current) => new Map(current).set(spec.id, pty))
         yield* FiberMap.run(
           pumps,
           spec.id,
@@ -42,12 +44,28 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
               ),
             )
             yield* Fiber.join(exitFiber)
+            yield* Ref.update(agents, (current) => {
+              const next = new Map(current)
+              next.delete(spec.id)
+              return next
+            })
           }),
         )
         return pty
       })
 
-    return { spawn }
+    const handle = (frame: AttachFrame): Effect.Effect<void, PtyError> =>
+      Effect.gen(function* () {
+        if (frame._tag !== "input" && frame._tag !== "resize") return
+        const pty = (yield* Ref.get(agents)).get(frame.agent)
+        if (!pty) {
+          return yield* Effect.fail(new PtyError({ operation: frame._tag, message: `unknown agent '${frame.agent}'` }))
+        }
+        if (frame._tag === "input") yield* pty.write(frame.data)
+        else yield* pty.resize(frame.cols, frame.rows)
+      })
+
+    return { spawn, handle }
   }),
 }) {}
 

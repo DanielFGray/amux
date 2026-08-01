@@ -12,7 +12,7 @@ export interface AttachServerOptions {
   readonly path: string
   /** Seconds without inbound traffic before the attach is considered dead. */
   readonly idleTimeoutSeconds?: number
-  readonly onFrame?: (client: string, frame: AttachFrame) => Effect.Effect<void, never>
+  readonly onFrame?: (client: string, frame: AttachFrame) => Effect.Effect<void, unknown>
 }
 
 interface ClientState {
