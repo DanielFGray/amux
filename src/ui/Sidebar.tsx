@@ -98,7 +98,7 @@ export function Sidebar(props: SidebarProps) {
           (blocked() ? ` · ${blocked()}!` : "")}
       </text>
 
-      <scrollbox style={{ flexGrow: 1 }}>
+      <scrollbox style={{ flexGrow: 1 }} horizontalScrollbarOptions={{ visible: false }}>
         <For each={rows()}>
           {(row) => (
             <Show

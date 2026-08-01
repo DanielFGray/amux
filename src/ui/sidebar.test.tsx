@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { afterEach, test, expect } from "bun:test"
 import { createSignal } from "solid-js"
-import { BoxRenderable } from "@opentui/core"
+import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { render } from "@opentui/solid"
 import { createTestRenderer } from "@opentui/core/testing"
 import { mkdtemp, rm } from "node:fs/promises"
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SpaceSet } from "../space.ts"
 import { createAppState, POLL_MS } from "./state.ts"
-import { Sidebar, sidebarTargets } from "./Sidebar.tsx"
+import { Sidebar, sidebarTargets, SIDEBAR_WIDTH } from "./Sidebar.tsx"
 import { SessionDaemon } from "../daemon.ts"
 import { SessionClient } from "../client.ts"
 import type { SpawnBackend } from "../backend.ts"
@@ -340,5 +340,120 @@ test("breaking a pane re-renders it under its new window", async () => {
     expect(s.space.active?.number).toBe(2)
   } finally {
     await s.dispose()
+  }
+})
+
+/** The scrollbox Solid created for the sidebar. */
+function findScrollBox(root: unknown): ScrollBoxRenderable | null {
+  if (!root) return null
+  const renderable = root as { constructor?: { name?: string }; getChildren?: () => unknown[] }
+  if (renderable.constructor?.name === "ScrollBoxRenderable") return root as ScrollBoxRenderable
+  for (const child of renderable.getChildren?.() ?? []) {
+    const found = findScrollBox(child)
+    if (found) return found
+  }
+  return null
+}
+
+/**
+ * The bug this guards against: the scrollbox's horizontal scrollbar is laid out
+ * as a one-row flex child before its visibility recalculates, so on the first
+ * pass the viewport reads one row short of the tree. A tree that exactly fits
+ * then looks like overflow, and the vertical scrollbar flashes a full-column
+ * thumb in the seam-adjacent column — a stray vertical mark against the frame.
+ * The sidebar never scrolls horizontally (rows truncate at the sidebar width),
+ * so hiding the horizontal scrollbar keeps the viewport full-height from the
+ * first layout pass.
+ */
+test("a tree that fits shows no scrollbar thumb beside the seam, even on the first frame", async () => {
+  const s = await setup()
+  try {
+    // No waitForFrame, no waitForVisualIdle: the phantom thumb lives in the
+    // first layout pass and is gone by the time the layout settles.
+    await s.t.renderOnce()
+    const frame = s.t.captureCharFrame()
+    const seamColumn = SIDEBAR_WIDTH - 1
+    const thumb = frame
+      .split("\n")
+      .map((l, i) => ({ i, c: l[seamColumn] ?? "" }))
+      .filter((x) => x.c !== " " && x.c !== "")
+    expect(thumb).toEqual([])
+    const scrollBox = findScrollBox(s.t.renderer.root)
+    expect(scrollBox?.verticalScrollBar.visible).toBe(false)
+  } finally {
+    await s.dispose()
+  }
+})
+
+/**
+ * The other half of the same contract: the fix hides a scrollbar that is never
+ * used, but the vertical scrollbar must still appear while the tree really
+ * overflows, and disappear again once it fits. A tree this tall needs a
+ * height-constrained sidebar, or the scrollbox grows with its content and never
+ * has anything to scroll.
+ */
+test("the seam shows a thumb only while the tree overflows", async () => {
+  const [selected, setSelected] = createSignal(0)
+  const [hovered, setHovered] = createSignal<number | null>(null)
+
+  const t = await createTestRenderer({ width: 60, height: 20 })
+  const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
+  const spaces = new SpaceSet(t.renderer, paneHost, SHELL)
+  const space = spaces.create("proj", process.cwd())
+  const win = space.newWindow()
+  win.init("shell")
+  const app = createAppState(spaces)
+
+  // A row-flex wrapper stretches the sidebar to a fixed height, the way the
+  // real app's pane row does, so the scrollbox viewport cannot grow with the
+  // tree.
+  await render(
+    () => (
+      <box style={{ width: SIDEBAR_WIDTH, height: 20, flexDirection: "row" }}>
+        <Sidebar
+          app={app}
+          width={SIDEBAR_WIDTH}
+          selected={selected()}
+          hovered={hovered()}
+          focused={false}
+          toggleKeys="^a b"
+          onHover={setHovered}
+          onActivate={() => {}}
+        />
+      </box>
+    ),
+    t.renderer,
+  )
+
+  try {
+    const scrollBar = () => findScrollBox(t.renderer.root)?.verticalScrollBar
+
+    await t.waitForVisualIdle()
+    expect(scrollBar()?.visible).toBe(false)
+
+    // The viewport is 18 rows (20 minus header and footer); push the tree past
+    // it and the scrollbar must come up. The header's agent count is the frame
+    // signal to wait on — a spawned label sits below the fold once it scrolls.
+    const seamChars = (frame: string) =>
+      frame
+        .split("\n")
+        .map((l) => l[SIDEBAR_WIDTH - 1] ?? "")
+        .filter((c) => c !== " " && c !== "")
+    for (let i = 0; i < 18; i++) win.spawn(`g${i}`, ["sleep", "30"])
+    spaces.onChange?.()
+    await waitFor(() => t.captureCharFrame().includes("19 agents"), "the grown tree to render")
+    expect(scrollBar()?.visible).toBe(true)
+
+    // Kill the extras; the tree fits again and the thumb must go.
+    for (let i = 0; i < 18; i++) win.killAgent(win.agents[win.agents.length - 1]!)
+    spaces.onChange?.()
+    await waitFor(() => t.captureCharFrame().includes("1 agent"), "the tree to shrink back")
+    expect(scrollBar()?.visible).toBe(false)
+    expect(seamChars(t.captureCharFrame()).join("")).not.toMatch(/[█▀▄▌▐]/)
+  } finally {
+    spaces.disposeAll()
+    app.dispose()
+    await Bun.sleep(50)
+    t.renderer.destroy()
   }
 })
