@@ -42,6 +42,11 @@ after that should client disconnect mean detach rather than process exit; the
 integration must also cover daemon restart, SIGWINCH ordering, orphan cleanup,
 and concurrent attach rejection.
 
+The daemon migration uses Effect only at this boundary. `src/effect/PtyRegistry.ts`
+owns scoped PTY acquisition and release, while `AttachProtocol.ts` and
+`AttachHub.ts` define Schema-validated frames and bounded per-client queues. The
+renderer, Solid state, Ghostty FFI, and pane layout remain imperative by design.
+
 ## Keys
 
 `^a ?` opens the keybind list, which is also the keybind editor: `⏎` records a
