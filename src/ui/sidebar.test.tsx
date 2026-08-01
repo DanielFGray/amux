@@ -277,13 +277,12 @@ test("clicking a row reports its selectable index, skipping the branch line", as
     // exactly one activation shows the branch click never produced one, and
     // does not depend on how promptly a dispatch that should never happen
     // fails to happen.
-    // Let one full poll period pass before clicking. The sidebar re-renders on
-    // AppState's POLL_MS timer (agent state, spinner frame), and a click that
-    // lands while that repaint is in flight hit-tests against a row renderable
-    // Solid has just replaced — the event resolves to nothing and is dropped,
-    // with no activation and no error. Clicking on a settled frame is what
-    // makes this deterministic; see ts-946056.
-    await Bun.sleep(POLL_MS + 20)
+    // The sidebar can repaint while the POLL_MS timer updates agent state. A
+    // click during that repaint can hit-test against a row renderable Solid
+    // has just replaced; the event then resolves to nothing and is dropped.
+    // Synchronize with the renderer rather than guessing how long a repaint
+    // takes; see ts-946056.
+    await s.t.waitForVisualIdle()
     await s.t.mockMouse.click(10, 2)
     await s.t.mockMouse.click(10, 3)
     await waitFor(() => s.activated.length >= 1, "the window row activation")
