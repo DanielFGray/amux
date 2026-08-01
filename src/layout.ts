@@ -138,6 +138,87 @@ export function prune(layout: Layout, alive: (agent: string) => boolean): Layout
   return makeLayout(root, layout.focus)
 }
 
+/**
+ * The named arrangements tmux's select-layout offers, in its cycle order.
+ *
+ * A preset discards the current shape and rebuilds it from the pane *list*,
+ * which is why it lives here rather than on Window: it is a function from
+ * agents to a tree, and needs nothing from the renderer.
+ */
+export const LAYOUT_PRESETS = [
+  "even-horizontal",
+  "even-vertical",
+  "main-horizontal",
+  "main-vertical",
+  "tiled",
+] as const
+
+export type LayoutPreset = (typeof LAYOUT_PRESETS)[number]
+
+export function isLayoutPreset(value: unknown): value is LayoutPreset {
+  return typeof value === "string" && (LAYOUT_PRESETS as readonly string[]).includes(value)
+}
+
+/** tmux's next-layout: step through the presets, starting the cycle over from
+ *  a window whose layout was built by hand and matches no preset. */
+export function nextPreset(current: LayoutPreset | null): LayoutPreset {
+  const i = current ? LAYOUT_PRESETS.indexOf(current) : -1
+  return LAYOUT_PRESETS[(i + 1) % LAYOUT_PRESETS.length]!
+}
+
+const pane = (agent: string, weight = 1): LayoutPane => ({ type: "pane", agent, weight })
+
+const split = (direction: SplitDirection, children: LayoutNode[], weight = 1): LayoutNode =>
+  children.length === 1 ? { ...children[0]!, weight } : { type: "split", direction, weight, children }
+
+/**
+ * Build one of the named layouts over a list of agents.
+ *
+ * Agents keep their given order, so cycling layouts rearranges the same panes
+ * rather than shuffling them — the property that makes next-layout usable at
+ * all. Sizes come out even: a preset is a deliberate discard of hand-tuned
+ * weights, which is the point of asking for one.
+ *
+ * Everything is passed through collapse(), so degenerate cases (one agent, a
+ * main layout with nothing beside the main pane, a single-row tiling) come back
+ * as the flat tree the live window would actually build.
+ */
+export function presetLayout(agents: string[], preset: LayoutPreset, focus?: string): Layout {
+  if (agents.length === 0) return makeLayout(null)
+  const [first, ...rest] = agents as [string, ...string[]]
+
+  const build = (): LayoutNode => {
+    switch (preset) {
+      case "even-horizontal":
+        return split("row", agents.map((agent) => pane(agent)))
+      case "even-vertical":
+        return split("column", agents.map((agent) => pane(agent)))
+      // The main pane takes half; tmux sizes it in cells, which we cannot do
+      // here because a layout is resolution-independent.
+      case "main-horizontal":
+        return split("column", [pane(first), split("row", rest.map((a) => pane(a)))])
+      case "main-vertical":
+        return split("row", [pane(first), split("column", rest.map((a) => pane(a)))])
+      case "tiled":
+        return tiled(agents)
+    }
+  }
+
+  return makeLayout(collapse(rest.length === 0 ? pane(first) : build()), focus)
+}
+
+/** A grid as square as the count allows, filled row by row — tmux layout-set.c,
+ *  where a short final row simply spreads across the full width. */
+function tiled(agents: string[]): LayoutNode {
+  let columns = Math.floor(Math.sqrt(agents.length))
+  if (columns * columns < agents.length) columns++
+  const rows: LayoutNode[] = []
+  for (let i = 0; i < agents.length; i += columns) {
+    rows.push(split("row", agents.slice(i, i + columns).map((agent) => pane(agent))))
+  }
+  return split("column", rows)
+}
+
 export class LayoutFormatError extends Error {}
 
 /** Serialize for session.json or the wire. Stable key order, so two equal

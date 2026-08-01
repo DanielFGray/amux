@@ -7,8 +7,11 @@ import {
   encodeLayout,
   layoutAgents,
   layoutPanes,
+  nextPreset,
   parseLayout,
+  presetLayout,
   prune,
+  LAYOUT_PRESETS,
   type Layout,
   type LayoutNode,
 } from "./layout.ts"
@@ -160,4 +163,88 @@ test("the error names where in the tree the problem is", () => {
       root: { type: "split", direction: "row", children: [pane("a"), { type: "pane" }] },
     }),
   ).toThrow(/root\.children\[1\]/)
+})
+
+// Presets.
+
+/** The tree's shape, ignoring weights — what a preset is actually choosing. */
+const shape = (node: LayoutNode | null): unknown => {
+  if (!node) return null
+  if (node.type === "pane") return node.agent
+  return { [node.direction]: node.children.map(shape) }
+}
+
+const ids = (n: number) => Array.from({ length: n }, (_, i) => String.fromCharCode(97 + i))
+
+test("even-horizontal is one row, even-vertical one column", () => {
+  expect(shape(presetLayout(ids(3), "even-horizontal").root)).toEqual({ row: ["a", "b", "c"] })
+  expect(shape(presetLayout(ids(3), "even-vertical").root)).toEqual({ column: ["a", "b", "c"] })
+})
+
+test("a main layout puts the first agent opposite the rest", () => {
+  expect(shape(presetLayout(ids(4), "main-vertical").root)).toEqual({
+    row: ["a", { column: ["b", "c", "d"] }],
+  })
+  expect(shape(presetLayout(ids(4), "main-horizontal").root)).toEqual({
+    column: ["a", { row: ["b", "c", "d"] }],
+  })
+})
+
+test("a main layout with a single other pane collapses to a plain split", () => {
+  // Otherwise the rebuild would nest a one-child box the live tree never builds.
+  expect(shape(presetLayout(ids(2), "main-vertical").root)).toEqual({ row: ["a", "b"] })
+})
+
+test("tiled grows as square as the count allows, filling row by row", () => {
+  expect(shape(presetLayout(ids(1), "tiled").root)).toEqual("a")
+  expect(shape(presetLayout(ids(2), "tiled").root)).toEqual({ row: ["a", "b"] })
+  expect(shape(presetLayout(ids(4), "tiled").root)).toEqual({
+    column: [{ row: ["a", "b"] }, { row: ["c", "d"] }],
+  })
+  // A short final row simply spreads across the width, as tmux's does.
+  expect(shape(presetLayout(ids(5), "tiled").root)).toEqual({
+    column: [{ row: ["a", "b", "c"] }, { row: ["d", "e"] }],
+  })
+})
+
+test("every preset keeps the agents, in order, exactly once", () => {
+  for (const preset of LAYOUT_PRESETS) {
+    for (const n of [1, 2, 3, 5, 8]) {
+      expect(layoutAgents(presetLayout(ids(n), preset))).toEqual(ids(n))
+    }
+  }
+})
+
+test("every preset alternates axes, so the live tree can rebuild it", () => {
+  // Window.split only nests on an axis change; a same-axis nesting is a shape
+  // that could be exported but never built, so no preset may emit one.
+  const check = (node: LayoutNode, parent?: "row" | "column") => {
+    if (node.type === "pane") return
+    expect(node.direction).not.toBe(parent)
+    for (const child of node.children) check(child, node.direction)
+  }
+  for (const preset of LAYOUT_PRESETS) {
+    for (const n of [1, 2, 3, 4, 5, 9]) {
+      const root = presetLayout(ids(n), preset).root
+      if (root) check(root)
+    }
+  }
+})
+
+test("a preset keeps the focus when the agent is still there, drops it otherwise", () => {
+  expect(presetLayout(ids(3), "tiled", "b").focus).toBe("b")
+  expect(presetLayout(ids(3), "tiled", "zz").focus).toBeUndefined()
+})
+
+test("no agents is an empty layout, not a crash", () => {
+  expect(presetLayout([], "tiled").root).toBeNull()
+})
+
+test("nextPreset walks the cycle and restarts from a hand-built layout", () => {
+  expect(nextPreset(null)).toBe(LAYOUT_PRESETS[0])
+  const seen = [nextPreset(null)]
+  for (let i = 1; i < LAYOUT_PRESETS.length; i++) seen.push(nextPreset(seen[i - 1]!))
+  expect(seen).toEqual([...LAYOUT_PRESETS])
+  // And wraps.
+  expect(nextPreset(LAYOUT_PRESETS[LAYOUT_PRESETS.length - 1]!)).toBe(LAYOUT_PRESETS[0])
 })

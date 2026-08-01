@@ -93,6 +93,12 @@ export class Divider extends Renderable {
    */
   onDrag?: (delta: number) => void
 
+  /** Fired after a drag has actually moved the neighbours' weights. Distinct
+   *  from onDrag, which *replaces* that resize; this only reports it, so a
+   *  window can notice its layout no longer matches the preset it was built
+   *  from without reimplementing the resize. */
+  onResized?: () => void
+
   constructor(
     ctx: RenderContext,
     options: { id: string; axis: "row" | "column"; onDrag?: (delta: number) => void },
@@ -169,6 +175,7 @@ export class Divider extends Renderable {
     // we want without needing to know the container's size.
     setWeight(before, next)
     setWeight(after, total - next)
+    this.onResized?.()
     this.requestRender()
   }
 

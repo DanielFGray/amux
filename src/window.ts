@@ -3,7 +3,15 @@ import { TerminalPane } from "./pane.ts"
 import { Agent } from "./agent.ts"
 import { rollUp } from "./space.ts"
 import { Divider, getWeight, setWeight, getDirection, setDirection } from "./divider.ts"
-import { collapse, makeLayout, type Layout, type LayoutNode } from "./layout.ts"
+import {
+  collapse,
+  makeLayout,
+  presetLayout,
+  prune,
+  type Layout,
+  type LayoutNode,
+  type LayoutPreset,
+} from "./layout.ts"
 
 export type SplitDirection = "row" | "column"
 
@@ -56,6 +64,9 @@ export class Window {
    *  synchronize-panes. Treated like zoom: a transient interactive mode, shown
    *  in the tab, never persisted or configured. */
   #sync = false
+  /** The named layout this window currently matches, cleared by anything that
+   *  reshapes or resizes the tree. See preset. */
+  #preset: LayoutPreset | null = null
   onChange?: () => void
   /** Fired after an agent's process exits and its views have been closed. The
    *  app uses it to decide what to show next; it is deliberately not the same
@@ -229,6 +240,11 @@ export class Window {
     const divider = new Divider(this.#ctx, { id: `divider-${nextId++}`, axis: direction })
     // It is a segment of the pane frame, so its ends finish as junctions.
     divider.tees = true
+    // Dragging a seam moves the window off whatever preset built it, so the
+    // next select-layout advances rather than rebuilding what is on screen.
+    divider.onResized = () => {
+      this.#preset = null
+    }
     return divider
   }
 
@@ -529,6 +545,7 @@ export class Window {
   split(direction: SplitDirection, agent?: Agent, name?: string): TerminalPane | null {
     // Splitting reshapes the parked tree; do it with the layout on screen.
     if (this.#zoomed) this.#unzoom()
+    this.#preset = null
     const target = this.#focused
     if (!target) {
       if (!agent) return this.init(name)
@@ -611,6 +628,7 @@ export class Window {
     const i = this.#panes.indexOf(pane)
     if (i === -1) return null
     this.#panes.splice(i, 1)
+    this.#preset = null
 
     const parent = pane.parent as BoxRenderable | null
     if (parent) {
@@ -727,6 +745,138 @@ export class Window {
     // and closing a pane can leave husks that the live tree renders identically.
     // makeLayout drops a focus whose pane did not survive that collapse.
     return makeLayout(collapse(walk(this.root)), this.#focused?.agent.id)
+  }
+
+  /**
+   * Rebuild the window's arrangement from a layout.
+   *
+   * Panes are viewports, so an apply rearranges them rather than recreating
+   * them: a pane already showing an agent is reused, keeping its terminal,
+   * scrollback and scroll position across the move. Only slots the current
+   * panes cannot fill get new ones, and panes the layout has no slot for are
+   * closed — their agents survive as detached, exactly as pane.close leaves
+   * them.
+   *
+   * Panes naming an agent this window does not own are pruned first, because a
+   * layout routinely outlives its processes (a session restored a day later,
+   * a layout string pasted from another window). Pruning to nothing is a
+   * refusal rather than a way to empty the window: it returns false with the
+   * layout untouched, so a stale string cannot silently destroy what is here.
+   */
+  applyLayout(layout: Layout): boolean {
+    const byId = new Map(this.#agents.map((agent) => [agent.id, agent]))
+    const wanted = prune(layout, (id) => byId.has(id))
+    if (!wanted.root) return false
+
+    // The tree about to be dismantled is the parked one while zoomed.
+    if (this.#zoomed) this.#unzoom()
+    // An arbitrary layout matches no preset; selectLayout re-stamps it after.
+    this.#preset = null
+
+    // Reuse by agent, in pane order, so two panes on one agent stay two panes
+    // and each keeps its own scroll position.
+    const spare = new Map<string, TerminalPane[]>()
+    for (const pane of this.#dismantle()) {
+      const list = spare.get(pane.agent.id)
+      if (list) list.push(pane)
+      else spare.set(pane.agent.id, [pane])
+    }
+    this.#panes.length = 0
+
+    const take = (id: string): TerminalPane => {
+      const reused = spare.get(id)?.shift()
+      if (!reused) return this.#makePane(byId.get(id)!)
+      this.#panes.push(reused)
+      return reused
+    }
+
+    const build = (node: LayoutNode): Renderable => {
+      if (node.type === "pane") {
+        const pane = take(node.agent)
+        setWeight(pane, node.weight)
+        return pane
+      }
+      const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` })
+      setDirection(box, node.direction)
+      setWeight(box, node.weight)
+      fill(box, node)
+      return box
+    }
+
+    // Dividers are derived, never serialized: one sits between every adjacent
+    // pair, which is the invariant split() maintains and refreshChrome reads.
+    const fill = (box: BoxRenderable, node: Extract<LayoutNode, { type: "split" }>) => {
+      node.children.forEach((child, i) => {
+        if (i > 0) box.add(this.#makeDivider(node.direction))
+        box.add(build(child))
+      })
+    }
+
+    // A split at the root goes *into* the root box rather than under a fresh
+    // one: the root carries the outermost axis itself (see split), and an extra
+    // level here would be a shape exportLayout immediately collapses away.
+    if (wanted.root.type === "split") {
+      setDirection(this.root, wanted.root.direction)
+      fill(this.root, wanted.root)
+    } else {
+      this.root.add(build(wanted.root))
+    }
+
+    // Whatever the layout had no slot for is a closed view, not a killed agent.
+    for (const leftover of spare.values()) for (const pane of leftover) pane.destroyRecursively()
+
+    this.#focused = null
+    const focus = wanted.focus ? this.#panes.find((p) => p.agent.id === wanted.focus) : undefined
+    this.focus(focus ?? this.#panes[0]!)
+    this.#refreshChrome()
+    this.onChange?.()
+    this.#ctx.requestRender()
+    return true
+  }
+
+  /**
+   * Strip the window back to bare panes, returning them.
+   *
+   * Boxes and dividers are the derived half of the tree, so they are destroyed
+   * rather than reused; the panes are the part that owns state worth keeping.
+   * Children are copied before removal — removing while iterating the live
+   * child list skips every other one.
+   */
+  #dismantle(): TerminalPane[] {
+    const panes: TerminalPane[] = []
+    const walk = (box: BoxRenderable) => {
+      for (const child of [...box.getChildren()]) {
+        box.remove(child)
+        if (child instanceof TerminalPane) panes.push(child)
+        else if (child instanceof Divider) child.destroy()
+        else if (child instanceof BoxRenderable) {
+          walk(child)
+          child.destroy()
+        }
+      }
+    }
+    walk(this.root)
+    return panes
+  }
+
+  /**
+   * Rearrange the current panes into one of the named layouts, tmux's
+   * select-layout. The pane order is kept, so cycling walks through
+   * arrangements of the same panes instead of shuffling them, and focus stays
+   * on the pane the user was in.
+   */
+  selectLayout(preset: LayoutPreset): boolean {
+    if (this.#panes.length === 0) return false
+    const agents = this.#panes.map((pane) => pane.agent.id)
+    const applied = this.applyLayout(presetLayout(agents, preset, this.#focused?.agent.id))
+    if (applied) this.#preset = preset
+    return applied
+  }
+
+  /** The preset this window was last arranged by, or null once a split, close
+   *  or drag has moved it off that arrangement. Drives next-layout's cycle. */
+  get preset(): LayoutPreset | null {
+    return this.#preset
   }
 
   /** Kill every agent and free its terminal. Used by app shutdown so no child

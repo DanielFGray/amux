@@ -13,6 +13,7 @@ import { writeFileSync } from "node:fs"
 import { Divider } from "./divider.ts"
 import { SpaceSet, type Space } from "./space.ts"
 import { frame, type Window } from "./window.ts"
+import { nextPreset, LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts"
 import type { Agent } from "./agent.ts"
 import { readGit } from "./git.ts"
 import { encodeKey } from "./keys.ts"
@@ -635,6 +636,26 @@ const COMMANDS: CommandSpec[] = [
       if (space && w) space.closeWindow(w)
     },
   },
+  {
+    // tmux's next-layout, on tmux's own binding.
+    name: "window.next-layout",
+    key: "<leader>space",
+    desc: "cycle through the preset layouts",
+    group: "windows",
+    run: () => {
+      const w = activeWin()
+      w?.selectLayout(nextPreset(w.preset))
+    },
+  },
+  // Each preset is addressable on its own, so a keymap can bind one directly
+  // and a command layer can name it — tmux's select-layout <name>.
+  ...LAYOUT_PRESETS.map((preset: LayoutPreset, i) => ({
+    name: `window.select-layout.${preset}`,
+    desc: i === 0 ? "arrange panes in a preset layout" : `arrange panes: ${preset}`,
+    hidden: i > 0,
+    group: "windows",
+    run: () => void activeWin()?.selectLayout(preset),
+  })),
   {
     name: "window.synchronize-panes",
     key: "<leader>y",
