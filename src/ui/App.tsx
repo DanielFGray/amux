@@ -58,6 +58,9 @@ export interface AppProps {
   captureView: CaptureView | null
   /** Compile error from the prompt's last submit, for the prompt to show. */
   promptError?: string
+  /** True while the focused window's pane is in keyboard copy mode, for the
+   *  tab bar's marker. */
+  copying: boolean
 }
 
 export function App(props: AppProps) {
@@ -96,6 +99,7 @@ export function App(props: AppProps) {
           windows={windows()}
           active={props.app.activeWindow()}
           pending={props.pending}
+          copying={props.copying}
           onSelect={props.onSelectWindow}
         />
         <box style={{ flexGrow: 1, flexDirection: "row" }}>

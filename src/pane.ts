@@ -92,6 +92,10 @@ export class TerminalPane extends Renderable {
   onFocusRequest?: (pane: TerminalPane) => void
   onCopy?: (text: string) => boolean | void
   onCopyError?: (error: Error) => void
+  /** Fired when the mouse takes over the pane: a drag selection claims the
+   *  terminal's selection slot, or a sequence routed to a mouse-reporting child
+   *  hands the mouse to that program. Copy mode steps out on either. */
+  onCopyModeInterrupt?: (() => void) | null
 
   #runs: Run[] = []
   #cachedCursor: CursorInfo | null = null
@@ -198,6 +202,9 @@ export class TerminalPane extends Renderable {
 
     const point = this.#point(x, y)
     if (event.type === "down" && (event.modifiers.shift || !seq)) {
+      // A drag selection claims the terminal's selection slot; whatever modal
+      // owns it now (keyboard copy mode) must step out first.
+      this.onCopyModeInterrupt?.()
       this.#selecting = true
       this.#selectionAnchor = point
       this.#selectionEnd = point
@@ -243,6 +250,10 @@ export class TerminalPane extends Renderable {
     }
 
     if (seq) {
+      // The child negotiated mouse reporting, so this event is routed to it
+      // rather than to a local selection. Whatever modal owns the pane now
+      // (keyboard copy mode) must step out before the child gets the mouse.
+      this.onCopyModeInterrupt?.()
       this.agent.write(seq)
       this.#haveCache = false
       event.stopPropagation()
@@ -268,7 +279,13 @@ export class TerminalPane extends Renderable {
       endX: end.x,
       endY: end.y,
     })
-    const text = new TextDecoder().decode(bytes)
+    this.copyText(new TextDecoder().decode(bytes))
+  }
+
+  /** Hand a string to the copy chain (OSC 52 to the host terminal). The one
+   *  path both mouse-drag selection and keyboard copy mode use, so a rejected
+   *  write reports the same way from either. */
+  copyText(text: string) {
     if (!text || !this.onCopy) return
     try {
       if (this.onCopy(text) === false) this.onCopyError?.(new Error("clipboard rejected OSC 52"))

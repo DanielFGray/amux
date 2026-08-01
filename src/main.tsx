@@ -15,6 +15,7 @@ import { SpaceSet, type Space } from "./space.ts"
 import { frame, type Window } from "./window.ts"
 import { nextPreset, LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts"
 import type { Agent } from "./agent.ts"
+import type { TerminalPane } from "./pane.ts"
 import { readGit } from "./git.ts"
 import { encodeKey } from "./keys.ts"
 import { pickSendTarget, sendKeys, type SendTarget } from "./send.ts"
@@ -51,6 +52,7 @@ import {
   type CaptureTarget,
 } from "./capture.ts"
 import { Capture, type CaptureView } from "./ui/Capture.tsx"
+import { CopyMode } from "./copy.ts"
 
 const config = await loadConfig()
 // Push the loaded values into the copy imperative code reads.
@@ -91,6 +93,41 @@ const spaces = new SpaceSet(renderer, paneHost, SHELL, session.backend())
 spaces.onCopy = (text) => renderer.copyToClipboardOSC52(text)
 spaces.onCopyError = (error) => console.error(error.message)
 const app = createAppState(spaces)
+
+/**
+ * Keyboard copy mode: the pane's read-only review layer. One instance for the
+ * whole app, entered on whatever pane is focused. The mode renders through the
+ * pane's existing selection machinery and copies through the same chain the
+ * mouse drag does, so nothing here owns a second copy path.
+ */
+const copyMode = new CopyMode()
+copyMode.onStateChange = () => app.refresh()
+// The search prompt reuses the app's modal prompt; resolve feeds the query back
+// into the mode. A blank query or a cancel leaves the search untouched.
+copyMode.onSearchRequest = (dir) => {
+  setPromptError("")
+  setPromptRequest({
+    title: dir === "forward" ? "search forward" : "search backward",
+    footer: "smartcase: case-insensitive unless the pattern has a capital",
+    fields: [{ label: "pattern", placeholder: "text to find" }],
+    resolve: (values) => {
+      const query = values?.[0] ?? ""
+      setPromptRequest(null)
+      if (query) copyMode.search(query, dir)
+    },
+  })
+}
+// Output that lands while the mode rides the live bottom re-pins the cursor to
+// the newest row, so the highlight follows the screen instead of stranding in
+// history. A no-op whenever the mode is parked or inactive — and never allowed
+// to touch a pane that has left the tree: a tick landing between a structural
+// change and its notification must not invalidate a view being torn down.
+const copyTimer = setInterval(() => {
+  const pane = copyMode.pane
+  if (pane && !paneStillMounted(pane)) return
+  copyMode.reconcile()
+}, 100)
+copyTimer.unref?.()
 
 /**
  * Session persistence.
@@ -164,6 +201,10 @@ function afterAgentExit(_agent: Agent, window: Window, space: Space) {
     return
   }
 
+  // Closing the window — and possibly the whole space — frees the agents'
+  // terminals, so any copy mode sitting on a pane in this space must end
+  // first: the mode's own exit clears the selection through that terminal.
+  exitCopyModeFor(space.windows.flatMap((w) => w.panes))
   space.closeWindow(window)
   if (space.windows.length > 0) return
 
@@ -312,10 +353,18 @@ function killSelection() {
   const target = targets()[selected()]
   if (!target) return
   // Kill what the row actually represents, so x means the same thing at every
-  // level of the tree.
-  if (target.kind === "agent") target.window.killAgent(target.agent)
-  else if (target.kind === "window") target.space.closeWindow(target.window)
-  else spaces.remove(target.space)
+  // level of the tree. The copy-mode pane is stepped down first — the teardown
+  // below can free its terminal, and nothing can catch a segfault.
+  if (target.kind === "agent") {
+    exitCopyModeFor(target.window.panes.filter((p) => p.agent === target.agent))
+    target.window.killAgent(target.agent)
+  } else if (target.kind === "window") {
+    exitCopyModeFor(target.window.panes)
+    target.space.closeWindow(target.window)
+  } else {
+    exitCopyModeFor(target.space.windows.flatMap((w) => w.panes))
+    spaces.remove(target.space)
+  }
   app.refresh()
 }
 
@@ -342,7 +391,43 @@ function syncSidebarFrame() {
 const notifyChange = spaces.onChange
 spaces.onChange = () => {
   notifyChange?.()
+  // A pane closing is a structural change; if it was the copy-mode pane, the
+  // mode must step down rather than keep a handle on a destroyed view. Guarded
+  // on the mode being active, since this runs on every output chunk.
+  //
+  // This is the safety net, not the first line of defence: the pane-destroying
+  // commands step the mode down BEFORE they tear anything down (see
+  // exitCopyModeFor), because here the pane may already be destroyed and its
+  // terminal may already be freed. Reaching this with a freed terminal is the
+  // one case left, and it does not happen: every path that frees a terminal
+  // goes through a command that exits first, and agent exits never free theirs.
+  const copyPane = copyMode.active ? copyMode.pane : null
+  if (copyPane && !paneStillMounted(copyPane)) copyMode.exit()
   syncSidebarBorder()
+}
+
+/** Whether a pane still has a viewport anywhere, for the copy-mode orphan
+ *  check above. Pane views close without ending their agent, so the terminal
+ *  survives — but refresh() on a destroyed renderable does not. */
+function paneStillMounted(pane: TerminalPane): boolean {
+  return spaces.spaces.some((s) => s.windows.some((w) => w.panes.includes(pane)))
+}
+
+/**
+ * End copy mode before a structural change destroys its pane.
+ *
+ * Copy mode is pane-scoped and survives focus moves, so only the pane it sits
+ * on matters — closing an unrelated pane or window leaves the review in place.
+ * This must run BEFORE the teardown, never after: the mode's own exit clears
+ * the selection through the pane's terminal, and that call is only safe while
+ * the terminal is alive. A freed terminal cannot be caught — the FFI call
+ * segfaults before the try/catch inside CopyMode.exit can see it.
+ */
+function exitCopyModeFor(panes: TerminalPane | readonly TerminalPane[] | null) {
+  const pane = copyMode.pane
+  if (!pane || !panes) return
+  const affected = Array.isArray(panes) ? panes.includes(pane) : panes === pane
+  if (affected) copyMode.exit()
 }
 
 function toggleSidebar() {
@@ -429,6 +514,19 @@ function resetBinding(unbind: boolean) {
   if (unbind) next[command] = []
   else delete next[command]
   setKeys({ ...keys, bindings: next })
+}
+
+/**
+ * Enter keyboard copy mode on the focused pane.
+ *
+ * The mode reads only — it scrolls the viewport and drives the terminal's
+ * selection highlight, and never writes a byte to the child, so the process
+ * keeps running and its output stays live underneath the review.
+ */
+function enterCopyMode() {
+  const pane = spaces.activeWindow?.focused
+  if (!pane) return
+  copyMode.enter(pane)
 }
 
 /**
@@ -622,7 +720,10 @@ const COMMANDS: CommandSpec[] = [
     group: "panes",
     run: () => {
       const w = activeWin()
-      if (w?.focused) w.close(w.focused)
+      if (w?.focused) {
+        exitCopyModeFor(w.focused)
+        w.close(w.focused)
+      }
     },
   },
   {
@@ -632,6 +733,13 @@ const COMMANDS: CommandSpec[] = [
     desc: "capture the focused pane (s saves)",
     group: "panes",
     run: openCapture,
+  },
+  {
+    name: "pane.copy-mode",
+    key: "<leader>[",
+    desc: "copy mode: review pane history (v selects, y copies)",
+    group: "panes",
+    run: enterCopyMode,
   },
   {
     name: "pane.send-keys",
@@ -690,7 +798,10 @@ const COMMANDS: CommandSpec[] = [
     run: () => {
       const space = spaces.active
       const w = space?.active
-      if (space && w) space.closeWindow(w)
+      if (space && w) {
+        exitCopyModeFor(w.panes)
+        space.closeWindow(w)
+      }
     },
   },
   {
@@ -701,7 +812,10 @@ const COMMANDS: CommandSpec[] = [
     group: "windows",
     run: () => {
       const w = activeWin()
-      w?.selectLayout(nextPreset(w.preset))
+      if (w) {
+        exitCopyModeFor(w.panes)
+        w.selectLayout(nextPreset(w.preset))
+      }
     },
   },
   // Each preset is addressable on its own, so a keymap can bind one directly
@@ -711,7 +825,13 @@ const COMMANDS: CommandSpec[] = [
     desc: i === 0 ? "arrange panes in a preset layout" : `arrange panes: ${preset}`,
     hidden: i > 0,
     group: "windows",
-    run: () => void activeWin()?.selectLayout(preset),
+    run: () => {
+      const w = activeWin()
+      if (w) {
+        exitCopyModeFor(w.panes)
+        w.selectLayout(preset)
+      }
+    },
   })),
   {
     name: "window.synchronize-panes",
@@ -743,7 +863,11 @@ const COMMANDS: CommandSpec[] = [
     group: "agents",
     run: () => {
       const w = activeWin()
-      if (w?.focused) w.killAgent(w.focused.agent)
+      const pane = w?.focused
+      if (pane) {
+        exitCopyModeFor(w.panes.filter((p) => p.agent === pane.agent))
+        w.killAgent(pane.agent)
+      }
     },
   },
   {
@@ -884,6 +1008,13 @@ function onUnhandled(event: KeyEvent): boolean {
     else if (overlay() === "settings") settingsKey(event)
     return true
   }
+  // Copy mode owns the focused pane's unhandled keys. Bound keys never reach
+  // here, so the leader and every ^a sequence keep their normal meaning — and
+  // a pane that is not in copy mode still gets its child's keystrokes, which
+  // is how copy mode survives a ^a pane-focus away from it.
+  if (copyMode.active && copyMode.pane === spaces.activeWindow?.focused) {
+    return copyMode.onKey(event)
+  }
   if (sidebarFocused()) {
     sidebarKey(event)
     return true
@@ -1008,6 +1139,14 @@ const hints = createMemo(() => nextKeys(bindings, COMMANDS, pendingParts()))
 // that was just rebuilt.
 const groups = createMemo(() => helpGroups(bindings, COMMANDS, configState().keys))
 
+/** Whether the focused window's tab carries the copy-mode marker. Reads the
+ *  copy-mode pane directly and refreshes on app revision, which copy-mode
+ *  entry and exit bump through onStateChange. */
+const copying = createMemo(() => {
+  const pane = copyMode.pane
+  return pane !== null && (spaces.activeWindow?.panes.includes(pane) ?? false)
+})
+
 /** How one command's binding reads, for chrome that names a key. Empty when it
  *  has none — the sidebar hint says so rather than naming a dead key. */
 function commandKeys(name: string): string {
@@ -1044,6 +1183,9 @@ async function refreshGit() {
  * Ending the session for real is `session.stop()`, not this.
  */
 async function shutdown() {
+  // Leaving the app; end the mode while its pane is still alive so nothing
+  // below can touch a view that is being torn down.
+  if (copyMode.active) copyMode.exit()
   await persistSession()
   session.close()
   app.dispose()
@@ -1118,6 +1260,7 @@ await render(
       prompt={promptRequest()}
       promptError={promptError()}
       captureView={captureView()}
+      copying={copying()}
     />
   ),
   renderer,

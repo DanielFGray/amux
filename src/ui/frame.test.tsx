@@ -78,6 +78,7 @@ async function screen(
         settingsDirty={false}
         prompt={null}
         captureView={null}
+        copying={false}
       />
     ),
     t.renderer,

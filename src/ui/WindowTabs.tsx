@@ -22,6 +22,8 @@ export function WindowTabs(props: {
   active: Window | null
   /** Key sequence in progress, e.g. ["^a"]. */
   pending: string[]
+  /** True while the focused window's pane is in keyboard copy mode. */
+  copying: boolean
   onSelect: (window: Window) => void
 }) {
   const glyph = (window: Window) => {
@@ -78,6 +80,10 @@ export function WindowTabs(props: {
 
       {/* Fills the rest of the row so the tabs stay left-aligned. */}
       <box style={{ flexGrow: 1, height: 1, backgroundColor: theme.mantle }} />
+
+      <Show when={props.copying}>
+        <text style={{ bg: theme.green, fg: theme.base, flexShrink: 0 }}> copy </text>
+      </Show>
 
       <Show when={props.pending.length > 0}>
         <text style={{ bg: theme.mauve, fg: theme.base, flexShrink: 0 }}>
