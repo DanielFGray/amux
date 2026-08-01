@@ -8,22 +8,23 @@ import { PtyError, PtyRegistry, type ManagedPty, type PtySpec } from "./PtyRegis
 /**
  * Connects daemon-owned PTYs to the attach data plane.
  *
- * A single FiberMap entry supervises each agent's output and exit publication.
- * The PTY itself remains scoped by PtyRegistry, outside any client scope, so a
- * UI disconnect cannot kill the agent.
+ * A single FiberMap entry supervises each session's output and exit
+ * publication. The PTY itself remains scoped by PtyRegistry, outside any
+ * client scope, so a UI disconnect cannot kill the session.
  */
 export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySupervisor", {
-  // scoped for the same reason as PtyRegistry: the per-agent output pumps are a
-  // FiberMap, and they belong to the supervisor rather than to any caller.
+  // scoped for the same reason as PtyRegistry: the per-session output pumps are
+  // a FiberMap, and they belong to the supervisor rather than to any caller.
   scoped: Effect.gen(function* () {
     const registry = yield* PtyRegistry;
     const hub = yield* AttachHub;
-    const agents = yield* Ref.make<ReadonlyMap<string, ManagedPty>>(new Map());
-    // The daemon-side screen model per agent. A reattaching client has none of
-    // an adopted agent's history, so its pane would be blank until the program
-    // next redraws; this terminal is what lets the daemon answer an adoption
-    // with the agent's current screen. scrollback 0: only the active screen is
-    // ever needed, and an emulator per agent is cost enough without history.
+    const sessions = yield* Ref.make<ReadonlyMap<string, ManagedPty>>(new Map());
+    // The daemon-side screen model per session. A reattaching client has none
+    // of an adopted session's history, so its pane would be blank until the
+    // program next redraws; this terminal is what lets the daemon answer an
+    // adoption with the session's current screen. scrollback 0: only the
+    // active screen is ever needed, and an emulator per session is cost enough
+    // without history.
     const replays = yield* Ref.make<ReadonlyMap<string, Terminal>>(new Map());
     yield* Effect.addFinalizer(() =>
       Ref.get(replays).pipe(
@@ -57,7 +58,7 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
         // to both the hub and the screen model, so the model must exist first.
         const screen = new Terminal(spec.cols, spec.rows, 0);
         yield* Ref.update(replays, (current) => new Map(current).set(spec.id, screen));
-        yield* Ref.update(agents, (current) => new Map(current).set(spec.id, pty));
+        yield* Ref.update(sessions, (current) => new Map(current).set(spec.id, pty));
         yield* FiberMap.run(
           pumps,
           spec.id,
@@ -71,13 +72,13 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
                   screen.write(chunk);
                   yield* hub.publish({
                     _tag: "output",
-                    agent: spec.id,
+                    session: spec.id,
                     data: new Uint8Array(chunk),
                   } satisfies AttachFrame);
                 }),
               ),
-              // A read that fails is the end of this agent's output, not the
-              // end of the agent as far as clients are concerned: they still
+              // A read that fails is the end of this session's output, not the
+              // end of the session as far as clients are concerned: they still
               // need the exit frame below to stop showing it as running.
               Effect.catchAll((error) =>
                 Effect.logDebug(`pty output ended: ${error.operation}: ${error.message}`),
@@ -88,16 +89,16 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
             // alongside it. The process exits before its last bytes have been
             // read — that is what the drain in readPty is for — so a forked
             // exit publication overtakes them, and a client that trusts frame
-            // order would blank the pane and then receive output for an agent
+            // order would blank the pane and then receive output for a session
             // it had already buried.
             const code = yield* pty.exit.pipe(Effect.orElseSucceed(() => null));
-            yield* hub.publish({ _tag: "exit", agent: spec.id, code } satisfies AttachFrame);
-            yield* Ref.update(agents, (current) => {
+            yield* hub.publish({ _tag: "exit", session: spec.id, code } satisfies AttachFrame);
+            yield* Ref.update(sessions, (current) => {
               const next = new Map(current);
               next.delete(spec.id);
               return next;
             });
-            // A dead agent cannot be adopted, so its screen model is done too.
+            // A dead session cannot be adopted, so its screen model is done too.
             yield* dropScreen(spec.id);
           }),
         );
@@ -108,11 +109,11 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
         yield* Match.value(frame).pipe(
           Match.tag("input", "resize", (command) =>
             Effect.gen(function* () {
-              const pty = (yield* Ref.get(agents)).get(command.agent);
+              const pty = (yield* Ref.get(sessions)).get(command.session);
               if (!pty) {
                 return yield* new PtyError({
                   operation: command._tag,
-                  message: `unknown agent '${command.agent}'`,
+                  message: `unknown session '${command.session}'`,
                 });
               }
               if (command._tag === "resize") {
@@ -121,7 +122,7 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
                 // that is already the right size. The model resize is
                 // synchronous; the PTY resize goes through the pty's command
                 // pump, so the ordering is safe by construction.
-                (yield* Ref.get(replays)).get(command.agent)?.resize(command.cols, command.rows);
+                (yield* Ref.get(replays)).get(command.session)?.resize(command.cols, command.rows);
               }
               yield* Match.value(command).pipe(
                 Match.tag("input", (input) => pty.write(input.data)),
@@ -133,21 +134,21 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
         );
       }),
 
-      /** Replay an adopted agent's screen to the client that asked for it. */
+      /** Replay an adopted session's screen to the client that asked for it. */
       sync: Effect.fnUntraced(function* (client: string, connection: string, id: string) {
         const screen = (yield* Ref.get(replays)).get(id);
         if (!screen) return;
         const data = yield* Effect.sync(() => formatScreen(screen.handle));
         if (data.length === 0) return;
-        yield* hub.publishTo(client, connection, { _tag: "output", agent: id, data } satisfies AttachFrame);
+        yield* hub.publishTo(client, connection, { _tag: "output", session: id, data } satisfies AttachFrame);
       }),
 
-      live: Ref.get(agents).pipe(Effect.map((current) => [...current.keys()])),
+      live: Ref.get(sessions).pipe(Effect.map((current) => [...current.keys()])),
 
       kill: Effect.fnUntraced(function* (id: string) {
-        const pty = (yield* Ref.get(agents)).get(id);
+        const pty = (yield* Ref.get(sessions)).get(id);
         if (!pty)
-          return yield* new PtyError({ operation: "kill", message: `unknown agent '${id}'` });
+          return yield* new PtyError({ operation: "kill", message: `unknown session '${id}'` });
         yield* pty.kill;
       }),
     };

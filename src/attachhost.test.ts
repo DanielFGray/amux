@@ -3,7 +3,7 @@
  *
  * These are the properties that separate a multiplexer from a terminal grid, so
  * they are tested against the actual socket and actual PTYs rather than against
- * the services in isolation: an agent must outlive the client that started it,
+ * the services in isolation: a session must outlive the client that started it,
  * and a client that dies without saying goodbye must still be noticed.
  */
 
@@ -63,7 +63,7 @@ const text = (frames: AttachFrame[]) =>
     .map((frame) => Buffer.from(frame.data).toString("utf8"))
     .join("")
 
-test("an agent outlives the client that was watching it", async () => {
+test("a session outlives the client that was watching it", async () => {
   const daemon = await started("survives")
   const pty = await daemon.spawnAgent({
     id: "agent-1",
@@ -98,7 +98,7 @@ test("hello is honoured alongside frames batched behind it in one write", async 
     "batcher",
     encodeAttachFrame({
       _tag: "input",
-      agent: "agent-1",
+      session: "agent-1",
       data: new TextEncoder().encode("echoed\n"),
     }),
   )
@@ -158,14 +158,14 @@ test("client death is reflected in the persisted session, not just in memory", a
   expect(daemon.state.attached).toBe(false)
 })
 
-test("an input naming a dead agent is ignored rather than dropping the attachment", async () => {
+test("an input naming a dead session is ignored rather than dropping the attachment", async () => {
   const daemon = await started("stale-input")
   const attached = await client(daemon.paths.attach, "racer")
   await settle()
 
   attached.socket.write(encodeAttachFrame({
     _tag: "input",
-    agent: "agent-that-never-was",
+    session: "agent-that-never-was",
     data: new TextEncoder().encode("x"),
   }))
   await settle()
@@ -179,7 +179,7 @@ test("an input naming a dead agent is ignored rather than dropping the attachmen
   attached.socket.end()
 })
 
-test("stopping the daemon closes the attach socket and its agents", async () => {
+test("stopping the daemon closes the attach socket and its sessions", async () => {
   const daemon = await started("teardown")
   const pty = await daemon.spawnAgent({ id: "agent-1", cmd: ["sleep", "30"], cols: 80, rows: 24 })
   const path = daemon.paths.attach

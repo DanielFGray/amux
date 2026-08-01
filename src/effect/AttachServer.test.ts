@@ -37,12 +37,12 @@ test("native attach server routes output and releases clients on close", async (
       const messages: string[] = []
       const first = yield* Effect.promise(() => connect(path, (message) => messages.push(message)))
       yield* Effect.promise(() => Bun.sleep(25))
-      yield* hub.publish({ _tag: "output", agent: "agent-1", data: new Uint8Array([1, 2, 3]) })
+      yield* hub.publish({ _tag: "output", session: "agent-1", data: new Uint8Array([1, 2, 3]) })
       yield* Effect.promise(() => Bun.sleep(25))
 
       first.write(encodeAttachFrame({
         _tag: "input",
-        agent: "agent-1",
+        session: "agent-1",
         data: new Uint8Array([13]),
       }))
       first.write(encodeAttachFrame({ _tag: "ping", nonce: "heartbeat-1" }))
@@ -66,7 +66,7 @@ test("native attach server routes output and releases clients on close", async (
   const secondMessages = decodeAttachFrames(result.secondMessages.join("")).frames
   expect(messages).toContainEqual({
     _tag: "output",
-    agent: "agent-1",
+    session: "agent-1",
     data: new Uint8Array([1, 2, 3]),
   })
   expect(messages).toContainEqual({ _tag: "pong", nonce: "heartbeat-1" })
@@ -74,7 +74,7 @@ test("native attach server routes output and releases clients on close", async (
     client: "test-client",
     frame: {
       _tag: "input",
-      agent: "agent-1",
+      session: "agent-1",
       data: new Uint8Array([13]),
     },
   })

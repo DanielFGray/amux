@@ -2,9 +2,9 @@
  * The client end of the daemon's attach stream.
  *
  * The daemon owns the PTYs; this is how a UI process borrows them. One socket
- * carries every agent's bytes in both directions, tagged by agent id, so the
- * number of attached agents costs no extra file descriptors and their frames
- * stay in a single order.
+ * carries every session's bytes in both directions, tagged by session id, so
+ * the number of attached sessions costs no extra file descriptors and their
+ * frames stay in a single order.
  *
  * Deliberately plain TypeScript, not Effect. Effect owns the daemon's data
  * plane, where scopes and supervision are what make PTY ownership correct; the
@@ -23,7 +23,8 @@ import {
  * Seconds between heartbeats.
  *
  * The server drops a client that has said nothing for its idle timeout (60s by
- * default), and an attached UI showing an idle agent legitimately sends nothing
+ * default), and an attached UI showing an idle session legitimately sends
+ * nothing
  * for hours. Comfortably under half the timeout, so a single lost ping is not a
  * disconnection.
  */
@@ -33,14 +34,14 @@ const PING_SECONDS = 20
 const HELLO_TIMEOUT_MS = 5_000
 
 /**
- * Frames held for an agent nobody has subscribed to yet, per agent.
+ * Frames held for a session nobody has subscribed to yet, per session.
  *
  * Spawning is two steps — ask the daemon over RPC, then subscribe here — and
  * the process starts writing between them. Without this, the first line of
- * every agent's output would be dropped exactly when it matters most (a shell
- * prompt, a banner). Bounded because an agent that is never subscribed to is a
- * leak otherwise: past the limit the oldest frames go, which is the same thing
- * a terminal does to its scrollback.
+ * every session's output would be dropped exactly when it matters most (a
+ * shell prompt, a banner). Bounded because a session that is never subscribed
+ * to is a leak otherwise: past the limit the oldest frames go, which is the
+ * same thing a terminal does to its scrollback.
  */
 const QUEUE_LIMIT = 256
 
@@ -58,7 +59,7 @@ export interface AgentSink {
   /** The process ended. */
   onExit(code: number | null): void
   /**
-   * The attachment ended while this agent was still running.
+   * The attachment ended while this session was still running.
    *
    * Deliberately not the same call as `onExit`: no more bytes are coming, but
    * the process is alive and another client — or this one, after reconnecting —
@@ -84,11 +85,11 @@ export class AttachClient {
 
   /**
    * The attachment ended: the socket closed, the daemon went away, or the
-   * connection errored. Every agent is still whatever it was — this says
+   * connection errored. Every session is still whatever it was — this says
    * nothing about the processes, only about our view of them.
    */
   onClose?: (error: Error | null) => void
-  /** An out-of-band error frame from the daemon, outside any one agent. */
+  /** An out-of-band error frame from the daemon, outside any one session. */
   onError?: (message: string) => void
 
   private constructor(client: string, socket: Bun.Socket<undefined>) {
@@ -166,41 +167,42 @@ export class AttachClient {
   }
 
   /**
-   * Start receiving one agent's frames, and replay whatever arrived before now.
+   * Start receiving one session's frames, and replay whatever arrived before
+   * now.
    *
-   * Returns an unsubscribe. Frames for an agent with no sink are queued rather
+   * Returns an unsubscribe. Frames for a session with no sink are queued rather
    * than dropped, so subscribing after the process has already spoken — which
    * is the normal case, not an edge one — loses nothing.
    */
-  subscribe(agent: string, sink: AgentSink): () => void {
-    this.#sinks.set(agent, sink)
-    const queued = this.#queued.get(agent)
-    this.#queued.delete(agent)
+  subscribe(session: string, sink: AgentSink): () => void {
+    this.#sinks.set(session, sink)
+    const queued = this.#queued.get(session)
+    this.#queued.delete(session)
     for (const frame of queued ?? []) this.#dispatch(frame, sink)
     return () => {
-      if (this.#sinks.get(agent) === sink) this.#sinks.delete(agent)
+      if (this.#sinks.get(session) === sink) this.#sinks.delete(session)
     }
   }
 
-  input(agent: string, data: string | Uint8Array): void {
+  input(session: string, data: string | Uint8Array): void {
     this.#send({
       _tag: "input",
-      agent,
+      session,
       data: typeof data === "string" ? new TextEncoder().encode(data) : data,
     })
   }
 
-  resize(agent: string, cols: number, rows: number): void {
-    this.#send({ _tag: "resize", agent, cols, rows })
+  resize(session: string, cols: number, rows: number): void {
+    this.#send({ _tag: "resize", session, cols, rows })
   }
 
   /**
-   * Ask the daemon to replay this agent's current screen to us, ahead of its
-   * live output. Sent when adopting an agent whose process is already running;
+   * Ask the daemon to replay this session's current screen to us, ahead of its
+   * live output. Sent when adopting a session whose process is already running;
    * without it the pane would be blank until the program next redraws.
    */
-  sync(agent: string): void {
-    this.#send({ _tag: "sync", agent })
+  sync(session: string): void {
+    this.#send({ _tag: "sync", session })
   }
 
   /** Round-trip the daemon. Resolves false if the attachment ends first. */
@@ -221,8 +223,8 @@ export class AttachClient {
     })
   }
 
-  /** Detach. The daemon sees EOF and releases the attachment; the agents keep
-   *  running, which is the entire point of there being a daemon. */
+  /** Detach. The daemon sees EOF and releases the attachment; the sessions
+   *  keep running, which is the entire point of there being a daemon. */
   close(): void {
     if (this.#closed) return
     this.#socket.end()
@@ -269,18 +271,18 @@ export class AttachClient {
     }
     if (frame._tag !== "output" && frame._tag !== "exit") return
 
-    const sink = this.#sinks.get(frame.agent)
+    const sink = this.#sinks.get(frame.session)
     if (sink) {
       this.#dispatch(frame, sink)
       return
     }
-    const queue = this.#queued.get(frame.agent) ?? []
+    const queue = this.#queued.get(frame.session) ?? []
     // Output and exit share one queue so replay keeps their order: an exit
     // delivered ahead of the bytes that preceded it would blank a pane and
     // then write to it.
     if (queue.length >= QUEUE_LIMIT) queue.shift()
     queue.push(frame)
-    this.#queued.set(frame.agent, queue)
+    this.#queued.set(frame.session, queue)
   }
 
   #dispatch(frame: AttachFrame, sink: AgentSink): void {

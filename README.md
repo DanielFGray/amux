@@ -37,15 +37,21 @@ session and hangs up; the attach socket *is* an attachment — a client holds it
 open and PTY bytes flow both ways over it as newline-framed JSON frames
 (`output`, `input`, `resize`, `exit`, `ping`/`pong`, plus `sync`). Its EOF is
 how the daemon learns the client died. The daemon runs a ghostty terminal per
-agent as a screen model; when a client adopts an agent it sends `sync`, and the
-daemon answers with the agent's current screen serialized as VT (modes
+session as a screen model; when a client adopts a session it sends `sync`, and
+the daemon answers with the session's current screen serialized as VT (modes
 included, alternate screen and all) before the live bytes, so a reattaching
 pane is not blank until the program next redraws.
+
+Surviving vocabulary (the attach protocol was renamed off `agent`): a
+*session* is a daemon-owned backend instance — a supervised PTY today, an LLM
+coding-agent session later — and every attach-frame field named `session`
+identifies one; a *pane* is a view of a session in a layout; *agent* means an
+LLM coding agent, never the supervised PTY.
 
 The daemon migration uses Effect only at this boundary. `src/effect/PtyRegistry.ts`
 owns scoped PTY acquisition and release, `AttachProtocol.ts` and `AttachHub.ts`
 define Schema-validated frames and bounded per-client queues, and
-`PtySupervisor.ts` owns the per-agent screen models that make replay possible.
+`PtySupervisor.ts` owns the per-session screen models that make replay possible.
 The renderer, Solid state, Ghostty FFI, and pane layout remain imperative by
 design.
 

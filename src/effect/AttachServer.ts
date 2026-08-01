@@ -15,11 +15,11 @@ export interface AttachServerOptions {
   readonly idleTimeoutSeconds?: number
   readonly onFrame?: (client: string, frame: AttachFrame) => Effect.Effect<void, unknown>
   /**
-   * A client adopted an agent and asked for its screen to be replayed to it
-   * alone. The owner serializes the agent's current screen and answers with
-   * `publishTo`, keeping the replay ordered ahead of the agent's live output.
+   * A client adopted a session and asked for its screen to be replayed to it
+   * alone. The owner serializes the session's current screen and answers with
+   * `publishTo`, keeping the replay ordered ahead of the session's live output.
    */
-  readonly onSync?: (client: string, connection: string, agent: string) => Effect.Effect<void, unknown>
+  readonly onSync?: (client: string, connection: string, session: string) => Effect.Effect<void, unknown>
   /**
    * Called once per inbound frame from an accepted client — pings included,
    * which is exactly what onFrame does not see. This is the transport's proof
@@ -173,7 +173,7 @@ export const startAttachServer = (
                 socket.end()
                 return
               }
-              yield* options.onSync?.(socket.data.client, socket.data.connection, sync.agent) ?? Effect.void
+              yield* options.onSync?.(socket.data.client, socket.data.connection, sync.session) ?? Effect.void
             })),
           Match.orElse((clientFrame) =>
             Effect.gen(function* () {

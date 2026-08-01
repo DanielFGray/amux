@@ -8,11 +8,11 @@
  *
  * That answer is the whole point of the daemon. `PtySupervisor.spawn` requires
  * a Scope, and *which* scope it gets is the difference between a multiplexer
- * and a terminal grid: give it a client's scope and every agent dies when the
- * UI disconnects. Here it is given the host's, so the only things that end a
- * PTY are the process exiting, an explicit kill, or the daemon itself going
- * away. `spawn` below has no Scope in its signature at all, which makes the
- * wrong thing impossible to write rather than merely discouraged.
+ * and a terminal grid: give it a client's scope and every session dies when
+ * the UI disconnects. Here it is given the host's, so the only things that end
+ * a session are the process exiting, an explicit kill, or the daemon itself
+ * going away. `spawn` below has no Scope in its signature at all, which makes
+ * the wrong thing impossible to write rather than merely discouraged.
  */
 
 import { Context, Effect, Layer, Scope } from "effect";
@@ -33,22 +33,23 @@ export interface AttachHostOptions {
   /** Any inbound frame from an accepted client, pings included — the stream's
    *  proof that an attachment is still live. */
   readonly onActivity?: (client: string, connection: string) => Effect.Effect<void, unknown>;
-  /** A client adopted an agent and wants its screen replayed to it alone. */
-  readonly onSync?: (client: string, connection: string, agent: string) => Effect.Effect<void, unknown>;
+  /** A client adopted a session and wants its screen replayed to it alone. */
+  readonly onSync?: (client: string, connection: string, session: string) => Effect.Effect<void, unknown>;
 }
 
 export interface AttachHostService {
   /**
-   * Start an agent owned by the daemon, not by whoever asked for it.
+   * Start a session owned by the daemon, not by whoever asked for it.
    *
    * No Scope parameter: the host's scope is already bound in. A caller cannot
-   * accidentally tie an agent's life to a request, a connection, or a client.
+   * accidentally tie a session's life to a request, a connection, or a client.
    */
   readonly spawn: (spec: PtySpec) => Effect.Effect<ManagedPty, PtyError>;
-  /** Stop one agent. Its exit frame reaches clients the usual way, through the
-   *  supervisor's pump, so a kill and a natural exit look identical to them. */
+  /** Stop one session. Its exit frame reaches clients the usual way, through
+   *  the supervisor's pump, so a kill and a natural exit look identical to
+   *  them. */
   readonly kill: (id: string) => Effect.Effect<void, PtyError>;
-  /** The agent ids currently running, for a client deciding what to adopt. */
+  /** The session ids currently running, for a client deciding what to adopt. */
   readonly live: Effect.Effect<readonly string[]>;
   /** Send a frame to every attached client. */
   readonly publish: (frame: AttachFrame) => Effect.Effect<void>;
@@ -72,11 +73,12 @@ const make = (
       onActivity: options.onActivity,
       // The screen models live here, so replay is the data plane's job unless
       // an owner outside it says otherwise.
-       onSync: options.onSync ?? ((client, connection, agent) => supervisor.sync(client, connection, agent)),
-      // An input or resize naming an agent that is already gone is a benign
+       onSync: options.onSync ?? ((client, connection, session) => supervisor.sync(client, connection, session)),
+      // An input or resize naming a session that is already gone is a benign
       // race — the client had a keystroke in flight when the process exited —
       // not a protocol violation. Logging it keeps the attachment alive;
-      // failing here would tear down the socket and every other agent with it.
+      // failing here would tear down the socket and every other session with
+      // it.
       onFrame: (_client, frame) =>
         supervisor
           .handle(frame)

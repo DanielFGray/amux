@@ -66,8 +66,8 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
      * Send a frame to one client's queue only.
      *
      * The replay an adopting client asks for belongs to it alone: broadcasting
-     * it would rewind every other client's view of the same agent. Offering to
-     * a specific queue keeps the frame ordered against that client's live
+     * it would rewind every other client's view of the same session. Offering
+     * to a specific queue keeps the frame ordered against that client's live
      * output, which is exactly what a full-state replay needs.
      */
     const publishTo = (client: string, connection: string, frame: AttachFrame): Effect.Effect<void> =>

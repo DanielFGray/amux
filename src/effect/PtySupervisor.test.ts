@@ -5,7 +5,7 @@ import { type AttachFrame } from "./AttachProtocol.ts";
 import { PtySupervisor } from "./PtySupervisor.ts";
 
 /**
- * Frames up to and including the agent's exit.
+ * Frames up to and including the session's exit.
  *
  * Taking a fixed count would encode an assumption the PTY does not owe us: how
  * many reads a given burst of output arrives in. A terminal echoes typed input
@@ -41,8 +41,8 @@ test("PtySupervisor publishes owned PTY output and exit frames", async () => {
 
   expect(output(frames)).toContain("hello");
   // Exit is last, always: a client that trusts frame order must never be told
-  // an agent is gone while output for it is still in flight.
-  expect(frames.at(-1)).toEqual({ _tag: "exit", agent: "supervised-agent", code: 7 });
+  // a session is gone while output for it is still in flight.
+  expect(frames.at(-1)).toEqual({ _tag: "exit", session: "supervised-agent", code: 7 });
   expect(frames.slice(0, -1).every((frame) => frame._tag === "output")).toBe(true);
 });
 
@@ -60,7 +60,7 @@ test("PtySupervisor routes input through the managed PTY", async () => {
       });
       yield* supervisor.handle({
         _tag: "input",
-        agent: "input-agent",
+        session: "input-agent",
         data: new Uint8Array([104, 105, 10]),
       });
       return yield* untilExit(subscription.frames);
@@ -68,5 +68,5 @@ test("PtySupervisor routes input through the managed PTY", async () => {
   );
 
   expect(output(frames)).toContain("got:hi");
-  expect(frames.at(-1)).toEqual({ _tag: "exit", agent: "input-agent", code: 0 });
+  expect(frames.at(-1)).toEqual({ _tag: "exit", session: "input-agent", code: 0 });
 });
