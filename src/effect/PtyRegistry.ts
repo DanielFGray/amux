@@ -17,6 +17,7 @@ export interface PtySpec {
 export interface ManagedPty {
   readonly id: string
   readonly output: Stream.Stream<Uint8Array, PtyError>
+  readonly exit: Effect.Effect<number | null, PtyError>
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>
   readonly resize: (cols: number, rows: number) => Effect.Effect<void, PtyError>
   readonly kill: Effect.Effect<void, PtyError>
@@ -107,6 +108,10 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
         return {
           id: spec.id,
           output: Stream.fromAsyncIterable(readPty(pty), (error) => asPtyError("read", error)),
+          exit: Effect.tryPromise({
+            try: () => pty.proc.exited.then((code) => code),
+            catch: (error) => asPtyError("exit", error),
+          }),
           write: (data) => commandResult((done) => ({ _tag: "write", data, done })),
           resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
           kill: commandResult((done) => ({ _tag: "kill", done })),

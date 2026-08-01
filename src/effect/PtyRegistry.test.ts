@@ -13,14 +13,16 @@ const program = Effect.gen(function* () {
 
   yield* pty.write("hello\n")
   const output = yield* Stream.runCollect(pty.output)
-  return [...output]
+  const exit = yield* pty.exit
+  return { output: [...output], exit }
 }).pipe(Effect.provide(PtyRegistry.Default), Effect.scoped)
 
 test("PtyRegistry exposes PTY output and writes within a scope", async () => {
   const result = await Effect.runPromise(program)
-  const text = new TextDecoder().decode(Buffer.concat(result.map((chunk) => Buffer.from(chunk))))
+  const text = new TextDecoder().decode(Buffer.concat(result.output.map((chunk) => Buffer.from(chunk))))
   expect(text).toContain("ready")
   expect(text).toContain("got:hello")
+  expect(result.exit).toBe(0)
 })
 
 test("PtyRegistry releases sessions when the scope closes", async () => {
