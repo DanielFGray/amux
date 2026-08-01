@@ -1,4 +1,4 @@
-import { Effect, Ref, Schema as S, Scope, Stream } from "effect"
+import { Deferred, Effect, Exit, FiberMap, Mailbox, Ref, Schema as S, Scope, Stream } from "effect"
 import { readPty, spawnPty } from "../pty.ts"
 
 export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
@@ -22,6 +22,11 @@ export interface ManagedPty {
   readonly kill: Effect.Effect<void, PtyError>
 }
 
+type PtyCommand =
+  | { readonly _tag: "write"; readonly data: string | Uint8Array; readonly done: Deferred.Deferred<void, PtyError> }
+  | { readonly _tag: "resize"; readonly cols: number; readonly rows: number; readonly done: Deferred.Deferred<void, PtyError> }
+  | { readonly _tag: "kill"; readonly done: Deferred.Deferred<void, PtyError> }
+
 const asPtyError = (operation: string, error: unknown): PtyError =>
   new PtyError({
     operation,
@@ -38,6 +43,7 @@ const asPtyError = (operation: string, error: unknown): PtyError =>
 export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
   effect: Effect.gen(function* () {
     const sessions = yield* Ref.make<ReadonlySet<string>>(new Set())
+    const commandPumps = yield* FiberMap.make<string>()
 
     const spawn = (spec: PtySpec): Effect.Effect<ManagedPty, PtyError, Scope.Scope> =>
       Effect.gen(function* () {
@@ -55,24 +61,55 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
             Effect.sync(() => {
               owned.kill()
               owned.close()
-            }).pipe(Effect.zipRight(Ref.update(sessions, (current) => {
-              const next = new Set(current)
-              next.delete(spec.id)
-              return next
-            }))),
+            }).pipe(
+              Effect.zipRight(Ref.update(sessions, (current) => {
+                const next = new Set(current)
+                next.delete(spec.id)
+                return next
+              })),
+            ),
         )
 
         yield* Ref.update(sessions, (current) => new Set(current).add(spec.id))
 
-        const operation = <A>(name: string, run: () => A): Effect.Effect<A, PtyError> =>
-          Effect.try({ try: run, catch: (error) => asPtyError(name, error) })
+        const commands = yield* Mailbox.make<PtyCommand>({ capacity: 256, strategy: "suspend" })
+        const runCommand = (command: PtyCommand) => {
+          const operation = command._tag === "write"
+            ? Effect.sync(() => pty.write(command.data))
+            : command._tag === "resize"
+              ? Effect.sync(() => pty.resize(command.cols, command.rows))
+              : Effect.sync(() => pty.kill())
+          return operation.pipe(
+            Effect.mapError((error) => asPtyError(command._tag, error)),
+            Effect.exit,
+            Effect.flatMap((exit) => Deferred.done(command.done, exit)),
+            Effect.zipRight(command._tag === "kill" ? commands.end : Effect.void),
+          )
+        }
+        yield* FiberMap.run(commandPumps, spec.id, Mailbox.toStream(commands).pipe(Stream.runForEach(runCommand)))
+
+        const offer = (command: PtyCommand): Effect.Effect<void, PtyError> =>
+          commands.offer(command).pipe(
+            Effect.flatMap((accepted) => accepted
+              ? Effect.void
+              : Effect.fail(new PtyError({ operation: command._tag, message: "pty command pump is closed" }))),
+          )
+
+        const commandResult = <A>(
+          command: (done: Deferred.Deferred<void, PtyError>) => PtyCommand,
+        ): Effect.Effect<void, PtyError> =>
+          Effect.gen(function* () {
+            const done = yield* Deferred.make<void, PtyError>()
+            yield* offer(command(done))
+            yield* Deferred.await(done)
+          })
 
         return {
           id: spec.id,
           output: Stream.fromAsyncIterable(readPty(pty), (error) => asPtyError("read", error)),
-          write: (data) => operation("write", () => pty.write(data)),
-          resize: (cols, rows) => operation("resize", () => pty.resize(cols, rows)),
-          kill: operation("kill", () => pty.kill()),
+          write: (data) => commandResult((done) => ({ _tag: "write", data, done })),
+          resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
+          kill: commandResult((done) => ({ _tag: "kill", done })),
         } satisfies ManagedPty
       })
 
