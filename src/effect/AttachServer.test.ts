@@ -30,6 +30,7 @@ test("native attach server routes output and releases clients on close", async (
       const input: string[] = []
       const server = yield* startAttachServer({
         path,
+        idleTimeoutSeconds: 60,
         onFrame: (client, frame) =>
           Effect.sync(() => input.push(`${client}:${frame._tag}`)),
       })

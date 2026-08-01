@@ -10,6 +10,8 @@ export class AttachServerError extends Error {}
 
 export interface AttachServerOptions {
   readonly path: string
+  /** Seconds without inbound traffic before the attach is considered dead. */
+  readonly idleTimeoutSeconds?: number
   readonly onFrame?: (client: string, frame: AttachFrame) => Effect.Effect<void, never>
 }
 
@@ -110,8 +112,10 @@ export const startAttachServer = (
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
                 socket.data = { buffer: "", client: null, scope: null }
+                socket.timeout(options.idleTimeoutSeconds ?? 60)
               },
               data(socket, data) {
+                socket.timeout(options.idleTimeoutSeconds ?? 60)
                 run(
                   Effect.gen(function* () {
                     const state = socket.data
@@ -134,6 +138,10 @@ export const startAttachServer = (
               },
               error(socket) {
                 closeClient(socket)
+              },
+              timeout(socket) {
+                closeClient(socket)
+                socket.end()
               },
             },
           }),
