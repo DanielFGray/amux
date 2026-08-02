@@ -28,7 +28,7 @@ export interface Config {
     whichKeyDelay: number
   }
   /** Prefix key and per-command overrides. Only commands the user has actually
-   *  rebound appear here, so the defaults stay free to change. */
+   * rebound appear here, so the defaults stay free to change. */
   keys: Keys
 }
 
@@ -39,49 +39,73 @@ export const DEFAULT_CONFIG: Config = {
   keys: { leader: DEFAULT_LEADER, bindings: {} },
 }
 
+export const CONFIG_LIMITS = {
+  sidebarWidth: { min: 16, max: 60 },
+  scrollRows: { min: 1, max: 20 },
+  paneGap: { min: 0, max: 8 },
+  whichKeyDelay: { min: 0, max: 5 },
+} as const
+
 const CONFIG_DIR =
   process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config")
 export const CONFIG_PATH = join(CONFIG_DIR, "opentui-herdr", "config.json")
 
-/** Merge one level deep so a config written by an older version keeps working
- *  when new sections or keys are added. */
-function merge(base: Config, loaded: unknown): Config {
-  if (!loaded || typeof loaded !== "object") return base
-  const out = structuredClone(base)
-  for (const [section, values] of Object.entries(loaded as Record<string, unknown>)) {
-    if (!(section in out) || !values || typeof values !== "object") continue
-    Object.assign((out as Record<string, any>)[section], values)
-  }
-  out.keys = sanitizeKeys(out.keys)
-  return out
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
-/**
- * Keep a hand-edited `keys` section from breaking the keymap.
- *
- * This is the one section people will write by hand, and the values go straight
- * into binding compilation — a number where a sequence belongs would otherwise
- * take the app out at startup. Anything unrecognisable falls back to the
- * default rather than being reported: the file is not a program.
- */
+function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
+  return Math.max(min, Math.min(max, Math.floor(value)))
+}
+
+/** Decode known fields so old files get defaults and unknown values stay inert. */
+export function decodeConfig(loaded: unknown): Config {
+  if (!isRecord(loaded)) return structuredClone(DEFAULT_CONFIG)
+
+  const sidebar = isRecord(loaded.sidebar) ? loaded.sidebar : {}
+  const behaviour = isRecord(loaded.behaviour) ? loaded.behaviour : {}
+  const appearance = isRecord(loaded.appearance) ? loaded.appearance : {}
+  return {
+    sidebar: {
+      width: boundedNumber(sidebar.width, DEFAULT_CONFIG.sidebar.width, CONFIG_LIMITS.sidebarWidth.min, CONFIG_LIMITS.sidebarWidth.max),
+      open: typeof sidebar.open === "boolean" ? sidebar.open : DEFAULT_CONFIG.sidebar.open,
+      agentsOnly: typeof sidebar.agentsOnly === "boolean" ? sidebar.agentsOnly : DEFAULT_CONFIG.sidebar.agentsOnly,
+    },
+    behaviour: {
+      scrollRows: boundedNumber(behaviour.scrollRows, DEFAULT_CONFIG.behaviour.scrollRows, CONFIG_LIMITS.scrollRows.min, CONFIG_LIMITS.scrollRows.max),
+      shell: typeof behaviour.shell === "string" ? behaviour.shell : DEFAULT_CONFIG.behaviour.shell,
+    },
+    appearance: {
+      paneGap: boundedNumber(appearance.paneGap, DEFAULT_CONFIG.appearance.paneGap, CONFIG_LIMITS.paneGap.min, CONFIG_LIMITS.paneGap.max),
+      whichKeyHints: typeof appearance.whichKeyHints === "boolean" ? appearance.whichKeyHints : DEFAULT_CONFIG.appearance.whichKeyHints,
+      whichKeyDelay: boundedNumber(appearance.whichKeyDelay, DEFAULT_CONFIG.appearance.whichKeyDelay, CONFIG_LIMITS.whichKeyDelay.min, CONFIG_LIMITS.whichKeyDelay.max),
+    },
+    keys: sanitizeKeys(loaded.keys),
+  }
+}
+
+/** Keep hand-edited key bindings from breaking keymap compilation. */
 function sanitizeKeys(keys: unknown): Keys {
-  const raw = (keys ?? {}) as Partial<Keys>
+  const raw = isRecord(keys) ? keys : {}
   const leader = typeof raw.leader === "string" && raw.leader.trim() ? raw.leader : DEFAULT_LEADER
   const bindings: Record<string, string[]> = {}
-  for (const [name, value] of Object.entries(raw.bindings ?? {})) {
-    // An empty array is meaningful — it is how a command is left unbound.
+  const rawBindings = isRecord(raw.bindings) ? raw.bindings : {}
+  for (const [name, value] of Object.entries(rawBindings)) {
+    // An empty array is meaningful: it deliberately leaves a command unbound.
     if (!Array.isArray(value)) continue
-    bindings[name] = value.filter((key): key is string => typeof key === "string" && key.length > 0)
+    Object.defineProperty(bindings, name, {
+      value: value.filter((key): key is string => typeof key === "string" && key.length > 0),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
   }
   return { leader, bindings }
 }
 
 /**
  * Live copy of the settings that imperative code reads at the point of use.
- *
- * The Solid chrome takes config through props, but a pane is a plain
- * Renderable several layers below any component — threading a preference down
- * to it would mean plumbing config through Workspace and Space for no gain.
  * Kept in sync by applyConfig() whenever the config changes.
  */
 export const runtime = {
@@ -90,17 +114,23 @@ export const runtime = {
 }
 
 export function applyConfig(config: Config): void {
-  runtime.scrollRows = config.behaviour.scrollRows
-  runtime.paneGap = Math.max(0, Math.floor(config.appearance.paneGap))
+  const decoded = decodeConfig(config)
+  runtime.scrollRows = decoded.behaviour.scrollRows
+  runtime.paneGap = decoded.appearance.paneGap
 }
 
 export async function loadConfig(path = CONFIG_PATH): Promise<Config> {
   try {
     const file = Bun.file(path)
     if (!(await file.exists())) return structuredClone(DEFAULT_CONFIG)
-    return merge(DEFAULT_CONFIG, await file.json())
-  } catch {
-    // A corrupt config must not stop the app from starting.
+    const raw = await file.json()
+    if (!isRecord(raw)) {
+      console.warn(`Ignoring malformed config at ${path}: expected a JSON object`)
+      return structuredClone(DEFAULT_CONFIG)
+    }
+    return decodeConfig(raw)
+  } catch (error) {
+    console.warn(`Ignoring unreadable config at ${path}: ${error instanceof Error ? error.message : String(error)}`)
     return structuredClone(DEFAULT_CONFIG)
   }
 }
