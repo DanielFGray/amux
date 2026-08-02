@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test"
-import { createHarness } from "./harness.ts"
+import { createHarness, run } from "./harness.ts"
 import { RenderState } from "./ghostty.ts"
 import { encodeLayout, decodeLayout, layoutAgents } from "./layout.ts"
 import {
@@ -48,7 +48,7 @@ function screenTail(agent: Agent): string {
 test("a window snapshot records its agents and the arrangement of them", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
 
   const saved = snapshotWindow(window)
@@ -72,8 +72,8 @@ test("a snapshot records an agent's command, directory and terminal size", async
 
 test("a space snapshot records which window was selected", async () => {
   const { space, layout } = await setup()
-  const second = space.newWindow("build")
-  second.init()
+  const second = run(space.newWindow("build"))
+  run(second.init())
   await layout()
 
   const saved = snapshotSpace(space)
@@ -87,7 +87,7 @@ test("a space snapshot records which window was selected", async () => {
 test("agents with no pane open are recorded, and are absent from the layout", async () => {
   const { window, layout } = await setup()
   const kept = window.panes[0]!
-  const detached = window.split("row")!
+  const detached = run(window.splitSpawn("row"))!
   await layout()
   const hidden = detached.agent
   window.close(detached)
@@ -102,13 +102,13 @@ test("agents with no pane open are recorded, and are absent from the layout", as
 
 test("a restored window comes back with the same panes in the same shape", async () => {
   const source = await setup()
-  source.window.split("row")
-  source.window.split("column")
+  run(source.window.splitSpawn("row"))
+  run(source.window.splitSpawn("column"))
   await source.layout()
   const saved = snapshotSpace(source.space)
 
   const target = source.takeOver()
-  restoreSpaces(target, [saved])
+  run(restoreSpaces(target, [saved]))
   await source.layout()
 
   const restored = target.spaces[0]!.windows[0]!
@@ -123,14 +123,14 @@ test("a restored window comes back with the same panes in the same shape", async
 // records survives being rebuilt from it, so restoring twice cannot drift.
 test("snapshotting a restored workspace reproduces the snapshot it came from", async () => {
   const source = await setup()
-  source.window.split("row")
-  source.window.split("column")
-  source.space.newWindow("second").init()
+  run(source.window.splitSpawn("row"))
+  run(source.window.splitSpawn("column"))
+  run(source.space.newWindow("second")).init()
   await source.layout()
   const before = snapshotSession(source.spaces, session([]))
 
   const target = source.takeOver()
-  restoreSession(target, before)
+  run(restoreSession(target, before))
   await source.layout()
 
   const after = snapshotSession(target, session([]))
@@ -140,34 +140,34 @@ test("snapshotting a restored workspace reproduces the snapshot it came from", a
 
 test("window numbers survive, and a window made afterwards does not reuse one", async () => {
   const source = await setup()
-  source.space.newWindow().init()
-  source.space.newWindow().init()
+  run(source.space.newWindow()).init()
+  run(source.space.newWindow()).init()
   await source.layout()
   const saved = snapshotSpace(source.space)
   expect(saved.windows.map((w) => w.number)).toEqual([1, 2, 3])
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   expect(space!.windows.map((w) => w.number)).toEqual([1, 2, 3])
-  expect(space!.newWindow().number).toBe(4)
+  expect(run(space!.newWindow()).number).toBe(4)
 })
 
 test("the focused pane and the selected window come back", async () => {
   const source = await setup()
   const first = source.window.panes[0]!
-  source.window.split("row")
+  run(source.window.splitSpawn("row"))
   await source.layout()
   source.window.focus(first)
-  const second = source.space.newWindow()
-  second.init()
+  const second = run(source.space.newWindow())
+  run(second.init())
   source.space.selectWindow(source.window)
   await source.layout()
   const saved = snapshotSpace(source.space)
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   expect(space!.active?.number).toBe(1)
@@ -176,29 +176,29 @@ test("the focused pane and the selected window come back", async () => {
 
 test("the active space comes back, not merely the first one restored", async () => {
   const source = await setup()
-  const other = source.spaces.create("other", process.cwd())
-  other.newWindow().init()
+  const other = run(source.spaces.create("other", process.cwd()))
+  run(other.newWindow()).init()
   source.spaces.activate(other)
   await source.layout()
   const saved = snapshotSession(source.spaces, session([]))
   expect(saved.activeSpace).toBe(other.id)
 
   const target = source.takeOver()
-  restoreSession(target, saved)
+  run(restoreSession(target, saved))
   await source.layout()
   expect(target.active?.name).toBe("other")
 })
 
 test("two panes on one agent are still two panes after a restore", async () => {
   const source = await setup()
-  const shared = source.window.spawn("shared", ["sleep", "30"])
+  const shared = run(source.window.spawn("shared", ["sleep", "30"]))
   source.window.split("row", shared)
   source.window.split("row", shared)
   await source.layout()
   const saved = snapshotSpace(source.space)
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   const restored = space!.windows[0]!
@@ -209,12 +209,12 @@ test("two panes on one agent are still two panes after a restore", async () => {
 // believes it has 80 columns inside a 40-column pane wraps everything wrongly.
 test("a restored agent's terminal is sized to the pane it lands in", async () => {
   const source = await setup()
-  source.window.split("row")
+  run(source.window.splitSpawn("row"))
   await source.layout()
   const saved = snapshotSpace(source.space)
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   const restored = space!.windows[0]!
@@ -229,7 +229,7 @@ test("a restored agent's terminal is sized to the pane it lands in", async () =>
 test("an agent that had exited comes back as a tombstone, not a second run", async () => {
   const source = await setup()
   const target = source.takeOver()
-  restoreSpaces(target, [
+  run(restoreSpaces(target, [
     {
       id: "space-0",
       name: "proj",
@@ -255,7 +255,7 @@ test("an agent that had exited comes back as a tombstone, not a second run", asy
         },
       ],
     },
-  ])
+  ]))
   await source.layout()
   // Long enough that a process, had one been started, would have printed.
   await Bun.sleep(200)
@@ -287,7 +287,7 @@ test("a window restores its live agents even when one of them is a tombstone", a
   })
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   const window = space!.windows[0]!
@@ -300,7 +300,7 @@ test("a window restores its live agents even when one of them is a tombstone", a
 test("a tombstone named by the saved layout still gets no pane", async () => {
   const source = await setup()
   const alive = source.window.panes[0]!.agent
-  const doomed = source.window.split("row")!.agent
+  const doomed = run(source.window.splitSpawn("row"))!.agent
   await source.layout()
   const saved = snapshotSpace(source.space)
   // The layout still mentions both, but one is recorded as already finished.
@@ -310,7 +310,7 @@ test("a tombstone named by the saved layout still gets no pane", async () => {
   dead.exitCode = 1
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   const window = space!.windows[0]!
@@ -323,14 +323,14 @@ test("a tombstone named by the saved layout still gets no pane", async () => {
 
 test("a session file with no layout recorded still restores every agent", async () => {
   const source = await setup()
-  source.window.split("row")
+  run(source.window.splitSpawn("row"))
   await source.layout()
   const saved = snapshotSpace(source.space)
   const ids = saved.windows[0]!.agents.map((a) => a.id)
   delete saved.windows[0]!.layout
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   expect(space!.windows[0]!.panes.map((p) => p.agent.id)).toEqual(ids)
@@ -338,14 +338,14 @@ test("a session file with no layout recorded still restores every agent", async 
 
 test("a layout string that no longer parses falls back rather than losing the window", async () => {
   const source = await setup()
-  source.window.split("row")
+  run(source.window.splitSpawn("row"))
   await source.layout()
   const saved = snapshotSpace(source.space)
   const ids = saved.windows[0]!.agents.map((a) => a.id)
   saved.windows[0]!.layout = "{ this was hand-edited"
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   expect(space!.windows[0]!.panes.map((p) => p.agent.id)).toEqual(ids)
@@ -353,7 +353,7 @@ test("a layout string that no longer parses falls back rather than losing the wi
 
 test("a layout naming an agent that did not come back restores the ones that did", async () => {
   const source = await setup()
-  source.window.split("row")
+  run(source.window.splitSpawn("row"))
   await source.layout()
   const saved = snapshotSpace(source.space)
   const kept = saved.windows[0]!.agents[0]!.id
@@ -362,7 +362,7 @@ test("a layout naming an agent that did not come back restores the ones that did
   saved.windows[0]!.agents.length = 1
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
 
   expect(space!.windows[0]!.panes.map((p) => p.agent.id)).toEqual([kept])
@@ -373,7 +373,7 @@ test("a layout naming an agent that did not come back restores the ones that did
 test("an agent created after a restore cannot collide with a restored id", async () => {
   const source = await setup()
   const target = source.takeOver()
-  restoreSpaces(target, [
+  run(restoreSpaces(target, [
     {
       id: "space-99",
       name: "proj",
@@ -391,14 +391,14 @@ test("an agent created after a restore cannot collide with a restored id", async
         },
       ],
     },
-  ])
+  ]))
   await source.layout()
 
   const window = target.spaces[0]!.windows[0]!
-  const fresh = window.spawn(undefined, ["sleep", "30"])
+  const fresh = run(window.spawn(undefined, ["sleep", "30"]))
   expect(fresh.id).not.toBe("agent-9000")
   expect(target.spaces[0]!.id).toBe("space-99")
-  expect(target.create("later", process.cwd()).id).not.toBe("space-99")
+  expect(run(target.create("later", process.cwd())).id).not.toBe("space-99")
 })
 
 // The documented limit.
@@ -415,7 +415,7 @@ test("a restored agent runs its command again and does NOT get its screen back",
   expect(JSON.stringify(saved)).not.toContain("snapshot-marker-42")
 
   const target = source.takeOver()
-  const [space] = restoreSpaces(target, [saved])
+  const [space] = run(restoreSpaces(target, [saved]))
   await source.layout()
   await Bun.sleep(400)
 

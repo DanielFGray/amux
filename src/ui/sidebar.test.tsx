@@ -1,4 +1,5 @@
 /** @jsxImportSource @opentui/solid */
+import { scopedSpaceSet } from "../harness.ts"
 import { afterEach, test, expect } from "bun:test"
 import { Effect } from "effect"
 import { createSignal } from "solid-js"
@@ -68,10 +69,10 @@ async function setup(backend?: SpawnBackend, agentsOnly = false) {
   // real app hosts the imperative pane tree alongside the reactive chrome.
   const t = await createTestRenderer({ width: 60, height: 20 })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(workspaceEnv(t.renderer, { shell: SHELL, backend }), paneHost)
-  const space = spaces.create("proj", process.cwd())
-  const win = space.newWindow()
-  win.init("shell")
+  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer, { shell: SHELL, backend }), paneHost)
+  const space = Effect.runSync(spaces.create("proj", process.cwd()))
+  const win = Effect.runSync(space.newWindow())
+  Effect.runSync(win.init("shell"))
   const app = createAppState(spaces)
 
   await render(
@@ -107,7 +108,6 @@ async function setup(backend?: SpawnBackend, agentsOnly = false) {
     setSelected,
     activated,
     async dispose() {
-      spaces.disposeAll()
       app.dispose()
       await Bun.sleep(50)
       t.renderer.destroy()
@@ -118,9 +118,9 @@ async function setup(backend?: SpawnBackend, agentsOnly = false) {
 test("agents-only filtering removes plain panes and empty parents", async () => {
   const s = await setup(undefined, true)
   try {
-    s.win.spawn("claude", ["claude"])
-    const empty = s.space.newWindow("empty")
-    empty.init("shell")
+    Effect.runSync(s.win.spawn("claude", ["claude"]))
+    const empty = Effect.runSync(s.space.newWindow("empty"))
+    Effect.runSync(empty.init("shell"))
     s.spaces.onChange?.()
 
     await s.t.waitForFrame((f) => f.includes("claude"))
@@ -185,7 +185,7 @@ test("the branch row appears under its space once git info arrives", async () =>
 test("an agent with no pane open shows the ⇠ indicator", async () => {
   const s = await setup()
   try {
-    s.win.spawn("background", ["sleep", "30"])
+    Effect.runSync(s.win.spawn("background", ["sleep", "30"]))
     s.spaces.onChange?.()
     await s.t.waitForFrame((f: string) => f.includes("⇠"))
     expect(s.t.captureCharFrame()).toContain("background")
@@ -285,8 +285,8 @@ test("a long OSC title is truncated so the foreground command stays visible", as
 test("hover follows the pointer between rows, not just on entry", async () => {
   const s = await setup()
   try {
-    s.win.spawn("alpha", ["sleep", "30"])
-    s.win.spawn("beta", ["sleep", "30"])
+    Effect.runSync(s.win.spawn("alpha", ["sleep", "30"]))
+    Effect.runSync(s.win.spawn("beta", ["sleep", "30"]))
     s.spaces.onChange?.()
     await s.t.waitForFrame((f: string) => f.includes("beta"))
 
@@ -308,7 +308,7 @@ test("clicking a row reports its selectable index, skipping the branch line", as
   const s = await setup()
   try {
     s.space.branch = "main"
-    s.win.spawn("clickme", ["sleep", "30"])
+    Effect.runSync(s.win.spawn("clickme", ["sleep", "30"]))
     s.spaces.onChange?.()
     await s.t.waitForFrame((f: string) => f.includes("clickme"))
 
@@ -344,9 +344,9 @@ test("clicking a row reports its selectable index, skipping the branch line", as
 test("windows nest between the space and its agents", async () => {
   const s = await setup()
   try {
-    s.win.spawn("alpha", ["sleep", "30"])
-    const second = s.space.newWindow("build")
-    second.init("shell")
+    Effect.runSync(s.win.spawn("alpha", ["sleep", "30"]))
+    const second = Effect.runSync(s.space.newWindow("build"))
+    Effect.runSync(second.init("shell"))
     s.spaces.onChange?.()
 
     await s.t.waitForFrame((f: string) => f.includes("2:build"))
@@ -370,12 +370,12 @@ test("windows nest between the space and its agents", async () => {
 test("breaking a pane re-renders it under its new window", async () => {
   const s = await setup()
   try {
-    s.win.split("row") // the newcomer (bash) takes focus, so the tab reads 1:bash
+    Effect.runSync(s.win.splitSpawn("row")) // the newcomer (bash) takes focus, so the tab reads 1:bash
     await s.t.waitForFrame((f: string) => f.includes("1:bash"))
 
     // No manual refresh: breakPane must drive the repaint itself, the way any
     // structural change does — this is the "tabs update" half of the contract.
-    s.space.breakPane(s.win.panes[1]!)
+    await Effect.runPromise(s.space.breakPane(s.win.panes[1]!))
 
     // The broken-out pane now hangs under a fresh 2:, and the source window
     // collapsed back to its surviving shell.
@@ -443,10 +443,10 @@ test("the seam shows a thumb only while the tree overflows", async () => {
 
   const t = await createTestRenderer({ width: 60, height: 20 })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(workspaceEnv(t.renderer, { shell: SHELL }), paneHost)
-  const space = spaces.create("proj", process.cwd())
-  const win = space.newWindow()
-  win.init("shell")
+  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer, { shell: SHELL }), paneHost)
+  const space = Effect.runSync(spaces.create("proj", process.cwd()))
+  const win = Effect.runSync(space.newWindow())
+  Effect.runSync(win.init("shell"))
   const app = createAppState(spaces)
 
   // A row-flex wrapper stretches the sidebar to a fixed height, the way the
@@ -485,19 +485,18 @@ test("the seam shows a thumb only while the tree overflows", async () => {
         .split("\n")
         .map((l) => l[SIDEBAR_WIDTH - 1] ?? "")
         .filter((c) => c !== " " && c !== "")
-    for (let i = 0; i < 18; i++) win.spawn(`g${i}`, ["sleep", "30"])
+    for (let i = 0; i < 18; i++) Effect.runSync(win.spawn(`g${i}`, ["sleep", "30"]))
     spaces.onChange?.()
     await waitFor(() => t.captureCharFrame().includes("19 agents"), "the grown tree to render")
     expect(scrollBar()?.visible).toBe(true)
 
     // Kill the extras; the tree fits again and the thumb must go.
-    for (let i = 0; i < 18; i++) win.killAgent(win.agents[win.agents.length - 1]!)
+    for (let i = 0; i < 18; i++) await Effect.runPromise(win.killAgent(win.agents[win.agents.length - 1]!))
     spaces.onChange?.()
     await waitFor(() => t.captureCharFrame().includes("1 agent"), "the tree to shrink back")
     expect(scrollBar()?.visible).toBe(false)
     expect(seamChars(t.captureCharFrame()).join("")).not.toMatch(/[█▀▄▌▐]/)
   } finally {
-    spaces.disposeAll()
     app.dispose()
     await Bun.sleep(50)
     t.renderer.destroy()

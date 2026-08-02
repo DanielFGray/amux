@@ -1,6 +1,6 @@
 import { test, expect, afterEach } from "bun:test"
 import { setWeight } from "./divider.ts"
-import { createHarness } from "./harness.ts"
+import { createHarness, run } from "./harness.ts"
 import { encodeLayout, decodeLayout, layoutAgents, type LayoutNode } from "./layout.ts"
 
 const cleanup: (() => Promise<void>)[] = []
@@ -33,16 +33,16 @@ test("a single-pane window exports as one pane, not a one-child split", async ()
 test("the exported tree matches the nesting the splits actually built", async () => {
   const { window, layout } = await setup()
   // left | (topRight over bottomRight)
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   expect(shape(window.exportLayout().root)).toEqual({ row: ["pane", { column: ["pane", "pane"] }] })
 })
 
 test("every pane appears exactly once, in left-to-right order", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   const ids = window.panes.map((p) => p.agent.id)
   expect(layoutAgents(window.exportLayout()).sort()).toEqual([...ids].sort())
@@ -50,7 +50,7 @@ test("every pane appears exactly once, in left-to-right order", async () => {
 
 test("the focused pane is recorded", async () => {
   const { window, layout } = await setup()
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
   window.focus(second)
   expect(window.exportLayout().focus).toBe(second.agent.id)
@@ -59,7 +59,7 @@ test("the focused pane is recorded", async () => {
 test("resized weights survive the export", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  window.split("row")
+  run(window.splitSpawn("row"))
   await layout()
   setWeight(first, 7)
   const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>
@@ -71,8 +71,8 @@ test("resized weights survive the export", async () => {
 // single-pane window and destroy the layout on the next restore.
 test("exporting while zoomed records the underlying layout, not the zoomed view", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   const before = window.exportLayout()
 
@@ -86,7 +86,7 @@ test("exporting while zoomed records the underlying layout, not the zoomed view"
 test("a zoomed pane keeps the weight it had in the layout, not its zoom weight", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  window.split("row")
+  run(window.splitSpawn("row"))
   await layout()
   setWeight(first, 5)
   window.focus(first)
@@ -99,8 +99,8 @@ test("a zoomed pane keeps the weight it had in the layout, not its zoom weight",
 
 test("unzooming leaves the export unchanged, so zoom is invisible to persistence", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   const before = window.exportLayout()
 
@@ -114,8 +114,8 @@ test("unzooming leaves the export unchanged, so zoom is invisible to persistence
 
 test("a live layout survives a round trip through the wire format", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   const exported = window.exportLayout()
   expect(decodeLayout(encodeLayout(exported))).toEqual(exported)
@@ -123,8 +123,8 @@ test("a live layout survives a round trip through the wire format", async () => 
 
 test("closing a pane leaves no husk in the exported tree", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  const third = window.split("column")!
+  run(window.splitSpawn("row"))
+  const third = run(window.splitSpawn("column"))!
   await layout()
   window.close(third)
   await layout()

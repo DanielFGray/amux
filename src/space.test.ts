@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { Divider } from "./divider.ts"
 import { applyConfig, DEFAULT_CONFIG } from "./config.ts"
 import { rollUp, nextBlockedAfter } from "./space.ts"
-import { createHarness } from "./harness.ts"
+import { createHarness, run, runAsync } from "./harness.ts"
 import type { Window } from "./window.ts"
 import type { Agent, AgentState } from "./agent.ts"
 
@@ -54,7 +54,7 @@ async function waitForBlocked(agent: Agent, tries = 20): Promise<void> {
 
 /** Spawn a detached fake agent and put a confirmation prompt on its screen. */
 async function blockedAgent(window: Window, name: string): Promise<Agent> {
-  const agent = window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"])
+  const agent = run(window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]))
   await Bun.sleep(300)
   agent.write("printf 'Do you want to proceed?\\n'\n")
   await waitForBlocked(agent)
@@ -98,14 +98,14 @@ test("nextBlocked activates the agent's space and window, walking in a stable or
     // Creation order is the walk order: A's shell, then B's blocked, then C's.
     // Focus stays on A's shell pane, so the presses land B, C, then wrap to B
     // — never bouncing between the last two.
-    const otherB = s.spaces.create("B", process.cwd())
-    const winB = otherB.newWindow()
-    winB.init("shell")
+    const otherB = run(s.spaces.create("B", process.cwd()))
+    const winB = run(otherB.newWindow())
+    run(winB.init("shell"))
     const blockedB = await blockedAgent(winB, "claude-b")
 
-    const otherC = s.spaces.create("C", process.cwd())
-    const winC = otherC.newWindow()
-    winC.init("shell")
+    const otherC = run(s.spaces.create("C", process.cwd()))
+    const winC = run(otherC.newWindow())
+    run(winC.init("shell"))
     const blockedC = await blockedAgent(winC, "claude-c")
 
     expect(s.spaces.nextBlocked()).toBe(blockedB)
@@ -128,9 +128,9 @@ test("nextBlocked activates the agent's space and window, walking in a stable or
 test("a detached blocked agent is revealed and focused by nextBlocked", async () => {
   const s = await setup()
   try {
-    const other = s.spaces.create("other", process.cwd())
-    const win = other.newWindow()
-    win.init("shell")
+    const other = run(s.spaces.create("other", process.cwd()))
+    const win = run(other.newWindow())
+    run(win.init("shell"))
     const blocked = await blockedAgent(win, "claude-detached")
 
     expect(blocked.viewers).toBe(0)
@@ -149,7 +149,7 @@ test("a detached blocked agent is revealed and focused by nextBlocked", async ()
 test("an agent with no view is detached but keeps running", async () => {
   const s = await setup()
   try {
-    const bg = s.win.spawn("background", ["sleep", "30"])
+    const bg = run(s.win.spawn("background", ["sleep", "30"]))
     expect(bg.viewers).toBe(0)
     expect(s.win.detached).toContain(bg)
 
@@ -164,7 +164,7 @@ test("an agent with no view is detached but keeps running", async () => {
 test("output on a detached agent marks it unseen", async () => {
   const s = await setup()
   try {
-    const chatter = s.win.spawn("chatter", ["sh", "-c", "echo hello-from-detached; sleep 5"])
+    const chatter = run(s.win.spawn("chatter", ["sh", "-c", "echo hello-from-detached; sleep 5"]))
     await Bun.sleep(400)
     expect(chatter.unseen).toBe(true)
     // Opening a view is what clears it.
@@ -178,9 +178,9 @@ test("output on a detached agent marks it unseen", async () => {
 test("killing an agent removes it and leaves the others alone", async () => {
   const s = await setup()
   try {
-    const killme = s.win.spawn("killme", ["sleep", "30"])
-    const keep = s.win.spawn("keep", ["sleep", "30"])
-    s.win.killAgent(killme)
+    const killme = run(s.win.spawn("killme", ["sleep", "30"]))
+    const keep = run(s.win.spawn("keep", ["sleep", "30"]))
+    await runAsync(s.win.killAgent(killme))
     expect(s.win.agents).not.toContain(killme)
     expect(s.win.agents).toContain(keep)
   } finally {
@@ -193,7 +193,7 @@ test("scrolled reflects the real viewport, including past both edges", async () 
   try {
     // Real scrollback is required: `scrolled` is read back from ghostty's
     // viewport, so scrolling a terminal with no history is correctly a no-op.
-    const bg = s.win.spawn("scrolly", ["sh", "-c", "seq 1 200; sleep 30"])
+    const bg = run(s.win.spawn("scrolly", ["sh", "-c", "seq 1 200; sleep 30"]))
     await Bun.sleep(400)
     expect(bg.scrolled).toBe(false)
 
@@ -219,10 +219,10 @@ test("scrolled reflects the real viewport, including past both edges", async () 
 test("each space keeps its own windows and layouts across activation", async () => {
   const s = await setup()
   try {
-    const other = s.spaces.create("other", process.cwd())
-    const otherWin = other.newWindow()
-    otherWin.init("shell")
-    otherWin.split("row")
+    const other = run(s.spaces.create("other", process.cwd()))
+    const otherWin = run(other.newWindow())
+    run(otherWin.init("shell"))
+    run(otherWin.splitSpawn("row"))
     expect(otherWin.panes.length).toBe(2)
     expect(s.win.panes.length).toBe(1)
 
@@ -272,7 +272,7 @@ test("a roll-up reports the most urgent state present, and 'done' never wins", (
 test("a pane closes when its agent's process exits, and the agent stays as done", async () => {
   const s = await setup()
   try {
-    const pane = s.win.split("row", s.win.spawn("shortlived", ["sh", "-c", "echo bye; exit 0"]))
+    const pane = s.win.split("row", run(s.win.spawn("shortlived", ["sh", "-c", "echo bye; exit 0"])))
     expect(pane).not.toBeNull()
     expect(s.win.panes.length).toBe(2)
 
@@ -292,7 +292,7 @@ test("a pane closes when its agent's process exits, and the agent stays as done"
 test("a finished agent does not make its space look finished", async () => {
   const s = await setup()
   try {
-    s.win.spawn("shortlived", ["sh", "-c", "exit 0"])
+    run(s.win.spawn("shortlived", ["sh", "-c", "exit 0"]))
     await Bun.sleep(500)
     // One agent is done, the seeded shell is still alive at its prompt.
     expect(s.win.agents.some((a) => a.state === "done")).toBe(true)
@@ -305,10 +305,10 @@ test("a finished agent does not make its space look finished", async () => {
 test("windows keep separate agents and layouts within one space", async () => {
   const s = await setup()
   try {
-    s.win.spawn("alpha", ["sleep", "30"])
-    const second = s.space.newWindow("build")
-    second.init("shell")
-    second.split("row")
+    run(s.win.spawn("alpha", ["sleep", "30"]))
+    const second = run(s.space.newWindow("build"))
+    run(second.init("shell"))
+    run(second.splitSpawn("row"))
 
     expect(s.space.windows.length).toBe(2)
     expect(s.space.active).toBe(second)
@@ -328,15 +328,15 @@ test("windows keep separate agents and layouts within one space", async () => {
 test("windows are selectable by their stable number", async () => {
   const s = await setup()
   try {
-    const second = s.space.newWindow()
-    second.init("shell")
-    const third = s.space.newWindow()
-    third.init("shell")
+    const second = run(s.space.newWindow())
+    run(second.init("shell"))
+    const third = run(s.space.newWindow())
+    run(third.init("shell"))
     expect([s.win.number, second.number, third.number]).toEqual([1, 2, 3])
 
     // Closing a middle window must not renumber the others, or ^a 3 would
     // start selecting a different window than it did a moment ago.
-    s.space.closeWindow(second)
+    await runAsync(s.space.closeWindow(second))
     expect(s.space.selectNumber(3)).toBe(true)
     expect(s.space.active).toBe(third)
     expect(s.space.selectNumber(2)).toBe(false)
@@ -348,12 +348,12 @@ test("windows are selectable by their stable number", async () => {
 test("closing a window stops the agents that live in it", async () => {
   const s = await setup()
   try {
-    const second = s.space.newWindow()
-    second.init("shell")
-    const doomed = second.spawn("doomed", ["sleep", "60"])
+    const second = run(s.space.newWindow())
+    run(second.init("shell"))
+    const doomed = run(second.spawn("doomed", ["sleep", "60"]))
     expect(doomed.exited).toBe(false)
 
-    s.space.closeWindow(second)
+    await runAsync(s.space.closeWindow(second))
     await Bun.sleep(300)
     expect(s.space.windows).not.toContain(second)
     expect(s.space.agents).not.toContain(doomed)
@@ -379,7 +379,7 @@ test("a window's title falls back to what it is running", async () => {
 test("splitting inserts a draggable divider that resizes its neighbours", async () => {
   const s = await setup()
   try {
-    const pane = s.win.split("row")
+    const pane = run(s.win.splitSpawn("row"))
     expect(pane).not.toBeNull()
 
     const children = s.win.root.getChildren()
@@ -412,7 +412,7 @@ test("splitting inserts a draggable divider that resizes its neighbours", async 
 test("a divider cannot be dragged past its neighbour", async () => {
   const s = await setup()
   try {
-    s.win.split("row")
+    run(s.win.splitSpawn("row"))
     const children = s.win.root.getChildren()
     const divider = children[1] as any
     await s.t.renderOnce()
@@ -434,7 +434,7 @@ test("a divider cannot be dragged past its neighbour", async () => {
 test("closing a pane takes its divider with it", async () => {
   const s = await setup()
   try {
-    const pane = s.win.split("row")!
+    const pane = run(s.win.splitSpawn("row"))!
     expect(s.win.root.getChildren().length).toBe(3)
 
     s.win.close(pane)
@@ -450,7 +450,7 @@ test("closing a pane takes its divider with it", async () => {
 test("splitting a resized pane gives the newcomer half of it, not a sliver", async () => {
   const s = await setup()
   try {
-    s.win.split("row")
+    run(s.win.splitSpawn("row"))
     await s.t.renderOnce()
     const rootKids = () => s.win.root.getChildren() as any[]
 
@@ -463,7 +463,7 @@ test("splitting a resized pane gives the newcomer half of it, not a sliver", asy
     await s.t.renderOnce()
     const [leftBefore, , rightBefore] = rootKids().map((k) => k.width)
 
-    s.win.split("row")
+    run(s.win.splitSpawn("row"))
     await s.t.renderOnce()
 
     // The outer split is untouched...
@@ -491,7 +491,7 @@ test("a pane draws only the edges facing the window, never one a divider covers"
 
     // Split left/right: the seam between them belongs to the divider, so
     // neither pane draws a border there and the frame stays one cell thick.
-    const right = s.win.split("row")!
+    const right = run(s.win.splitSpawn("row"))!
     const left = s.win.panes[0]!
     expect(left.edges).toEqual({ top: true, right: false, bottom: true, left: true })
     expect(right.edges).toEqual({ top: true, right: true, bottom: true, left: false })
@@ -499,7 +499,7 @@ test("a pane draws only the edges facing the window, never one a divider covers"
     // Split the right pane top/bottom. Its halves inherit the missing left
     // edge from the box that replaced it — the walk has to go up the tree, not
     // just look at immediate siblings.
-    const bottom = s.win.split("column")!
+    const bottom = run(s.win.splitSpawn("column"))!
     expect(right.edges).toEqual({ top: true, right: true, bottom: false, left: false })
     expect(bottom.edges).toEqual({ top: false, right: true, bottom: true, left: false })
 
@@ -515,7 +515,7 @@ test("pane gaps give each pane a complete border and remain draggable", async ()
   const s = await setup()
   applyConfig({ ...DEFAULT_CONFIG, appearance: { paneGap: 2 } })
   try {
-    s.win.split("row")
+    run(s.win.splitSpawn("row"))
     await s.t.renderOnce()
     const children = s.win.root.getChildren() as any[]
     const [left, divider, right] = children
@@ -545,14 +545,14 @@ test("pane gaps give each pane a complete border and remain draggable", async ()
 test("a divider caps its ends against the frame and tees into other dividers", async () => {
   const s = await setup()
   try {
-    s.win.split("row")
+    run(s.win.splitSpawn("row"))
     const vertical = s.win.root.getChildren()[1] as Divider
     // Runs the full height of the window, so both ends meet the outer border.
     expect([vertical.capStart, vertical.capEnd]).toEqual([true, true])
 
     // A horizontal split of the right-hand pane sits inside it: its left end
     // runs into the vertical divider rather than the frame.
-    s.win.split("column")
+    run(s.win.splitSpawn("column"))
     const box = s.win.root.getChildren()[2] as BoxRenderable
     const horizontal = box.getChildren()[1] as Divider
     expect(horizontal.axis).toBe("column")
@@ -565,7 +565,7 @@ test("a divider caps its ends against the frame and tees into other dividers", a
 test("the focused pane's shared border highlights with it", async () => {
   const s = await setup()
   try {
-    const right = s.win.split("row")!
+    const right = run(s.win.splitSpawn("row"))!
     const divider = s.win.root.getChildren()[1] as Divider
     // The seam is the focused pane's border too, so it lights up with it.
     expect(divider.adjacentToFocus).toBe(true)
@@ -577,7 +577,7 @@ test("the focused pane's shared border highlights with it", async () => {
     // Focus a pane in a nested box: the divider two levels up is no longer
     // touching the focused pane directly, but it still bounds the subtree.
     s.win.focus(right)
-    const deep = s.win.split("column")!
+    const deep = run(s.win.splitSpawn("column"))!
     expect(divider.adjacentToFocus).toBe(true)
     const inner = (s.win.root.getChildren()[2] as BoxRenderable).getChildren()[1] as Divider
     expect(inner.adjacentToFocus).toBe(true)

@@ -1,3 +1,4 @@
+import { run, runAsync, scopedSpaceSet } from "./harness.ts"
 import { test, expect, afterEach } from "bun:test"
 import { MouseEvent, BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
@@ -827,11 +828,11 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
 async function makeWindow(count: number) {
   const t = await createTestRenderer({ width: 80, height: 24 })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(workspaceEnv(t.renderer), paneHost)
-  const space = spaces.create("proj", process.cwd())
-  const win = space.newWindow()
+  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost)
+  const space = run(spaces.create("proj", process.cwd()))
+  const win = run(space.newWindow())
   const agents = Array.from({ length: count }, () =>
-    win.startAgent({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 }),
+    run(win.startAgent({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 })),
   )
   const panes = agents.map((agent, i) => win.split(i === 0 ? "row" : "column", agent)!)
   return { t, spaces, space, win, agents, panes }
@@ -873,7 +874,6 @@ function trackInvalidateAfterDestroy(pane: TerminalPane) {
 test("closing a window ends copy mode before its terminal is freed", async () => {
   const { t, spaces, space, win, panes } = await makeWindow(2)
   cleanup.push(() => {
-    spaces.disposeAll()
     t.renderer.destroy()
   })
   const paneA = panes[0]!
@@ -891,7 +891,7 @@ test("closing a window ends copy mode before its terminal is freed", async () =>
 
   // The same exit-before-teardown main.tsx's window.close / killSelection apply.
   stepDown(win.panes)
-  space.closeWindow(win)
+  await runAsync(space.closeWindow(win))
 
   expect(paneA.isDestroyed).toBe(true)
   expect(mode.active).toBe(false)
@@ -901,7 +901,6 @@ test("closing a window ends copy mode before its terminal is freed", async () =>
 test("replacing the layout ends copy mode before leftover panes are destroyed", async () => {
   const { t, spaces, space, win, panes, agents } = await makeWindow(3)
   cleanup.push(() => {
-    spaces.disposeAll()
     t.renderer.destroy()
   })
   const paneA = panes[0]!

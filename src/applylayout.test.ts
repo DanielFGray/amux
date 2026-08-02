@@ -1,7 +1,7 @@
 import { test, expect, afterEach } from "bun:test"
 import { getWeight, setWeight } from "./divider.ts"
 import { Divider } from "./divider.ts"
-import { createHarness } from "./harness.ts"
+import { createHarness, run } from "./harness.ts"
 import { RenderState } from "./ghostty.ts"
 import { encodeLayout, decodeLayout, layoutAgents, makeLayout, type LayoutNode } from "./layout.ts"
 import type { Agent } from "./agent.ts"
@@ -37,8 +37,8 @@ function screenTail(agent: Agent): string {
 
 test("applying what was exported is a fixed point", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   const exported = window.exportLayout()
 
@@ -49,8 +49,8 @@ test("applying what was exported is a fixed point", async () => {
 
 test("a layout survives the wire format and rebuilds the same tree", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   const saved = encodeLayout(window.exportLayout())
 
@@ -69,7 +69,7 @@ test("a layout survives the wire format and rebuilds the same tree", async () =>
 test("panes are reused, keeping their terminal and its output", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   const agent = second.agent
   agent.write("echo applylayout-marker-7\n")
   await Bun.sleep(300)
@@ -97,8 +97,8 @@ test("panes are reused, keeping their terminal and its output", async () => {
 
 test("the rebuilt tree gets the dividers it needs, and no more", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  window.split("row")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("row"))
   await layout()
   window.selectLayout("even-horizontal")
   await layout()
@@ -114,7 +114,7 @@ test("the rebuilt tree gets the dividers it needs, and no more", async () => {
 test("weights in the layout become real geometry", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
 
   window.applyLayout(
@@ -138,7 +138,7 @@ test("weights in the layout become real geometry", async () => {
 test("the focus recorded in the layout is restored", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
   window.focus(second)
   const exported = window.exportLayout()
@@ -152,7 +152,7 @@ test("the focus recorded in the layout is restored", async () => {
 test("a layout with no focus still leaves a pane focused", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  window.split("row")
+  run(window.splitSpawn("row"))
   await layout()
   const { root } = window.exportLayout()
 
@@ -166,7 +166,7 @@ test("a layout with no focus still leaves a pane focused", async () => {
 test("panes naming an agent this window does not own are pruned away", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
 
   const applied = window.applyLayout(
@@ -193,7 +193,7 @@ test("panes naming an agent this window does not own are pruned away", async () 
 test("a layout naming nothing this window owns is refused, changing nothing", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
   const before = window.exportLayout()
 
@@ -216,7 +216,7 @@ test("an empty layout is refused rather than closing every pane", async () => {
 test("a pane the layout has no slot for is closed, but its agent survives", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   const dropped = second.agent
   await layout()
 
@@ -235,7 +235,7 @@ test("a pane the layout has no slot for is closed, but its agent survives", asyn
 // is how a rebuild ends up restoring a layout that contains nothing.
 test("applying a layout drops a zoom first", async () => {
   const { window, layout } = await setup()
-  window.split("row")
+  run(window.splitSpawn("row"))
   await layout()
   window.zoom()
   expect(window.zoomed).toBe(true)
@@ -249,7 +249,7 @@ test("applying a layout drops a zoom first", async () => {
 
 test("two panes on one agent stay two panes across a rebuild", async () => {
   const { window, layout } = await setup()
-  const shared = window.spawn("shared", ["sleep", "30"])
+  const shared = run(window.spawn("shared", ["sleep", "30"]))
   window.split("row", shared)
   window.split("row", shared)
   await layout()
@@ -266,8 +266,8 @@ test("two panes on one agent stay two panes across a rebuild", async () => {
 
 test("a preset rearranges the same panes, in the same order", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   const before = window.panes.map((p) => p.agent.id)
 
@@ -280,8 +280,8 @@ test("a preset rearranges the same panes, in the same order", async () => {
 test("even-horizontal actually gives the panes equal widths", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  window.split("row")
-  window.split("column")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
   await layout()
   // Drag one well off centre so an approximate result would show.
   setWeight(first, 20)
@@ -296,8 +296,8 @@ test("even-horizontal actually gives the panes equal widths", async () => {
 
 test("a preset keeps the focused pane focused", async () => {
   const { window, layout } = await setup()
-  window.split("row")
-  const third = window.split("column")!
+  run(window.splitSpawn("row"))
+  const third = run(window.splitSpawn("column"))!
   await layout()
   window.focus(third)
 
@@ -308,7 +308,7 @@ test("a preset keeps the focused pane focused", async () => {
 
 test("a window remembers the preset it was arranged by, and forgets it when reshaped", async () => {
   const { window, layout } = await setup()
-  window.split("row")
+  run(window.splitSpawn("row"))
   await layout()
   // Built by hand, so it matches no preset.
   expect(window.preset).toBeNull()
@@ -317,7 +317,7 @@ test("a window remembers the preset it was arranged by, and forgets it when resh
   expect(window.preset).toBe("tiled")
 
   // Splitting moves it off that arrangement.
-  window.split("row")
+  run(window.splitSpawn("row"))
   expect(window.preset).toBeNull()
 
   window.selectLayout("even-vertical")
@@ -329,7 +329,7 @@ test("a window remembers the preset it was arranged by, and forgets it when resh
 
 test("dragging a seam forgets the preset, so next-layout advances", async () => {
   const { window, layout } = await setup()
-  window.split("row")
+  run(window.splitSpawn("row"))
   await layout()
   window.selectLayout("even-horizontal")
   await layout()

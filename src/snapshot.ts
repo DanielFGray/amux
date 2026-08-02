@@ -32,6 +32,7 @@
  * exits.
  */
 
+import { Effect } from "effect"
 import { decodeLayout, encodeLayout, presetLayout, prune, type Layout } from "./layout.ts"
 import type { SpawnBackend } from "./backend.ts"
 import type { Agent } from "./agent.ts"
@@ -128,19 +129,21 @@ export function restoreSpaces(
   spaces: SpaceSet,
   persisted: readonly PersistedSpace[],
   options: RestoreOptions = {},
-): Space[] {
-  const created: Space[] = []
-  for (const saved of persisted) {
-    const space = spaces.create(saved.name, saved.dir, saved.id)
-    created.push(space)
-    for (const savedWindow of saved.windows) {
-      restoreWindow(space, savedWindow, options)
+): Effect.Effect<Space[]> {
+  return Effect.gen(function* () {
+    const created: Space[] = []
+    for (const saved of persisted) {
+      const space = yield* spaces.create(saved.name, saved.dir, saved.id)
+      created.push(space)
+      for (const savedWindow of saved.windows) {
+        yield* restoreWindow(space, savedWindow, options)
+      }
+      const active = saved.activeWindow
+      const window = active === null ? undefined : space.windows.find((w) => w.number === active)
+      if (window) space.selectWindow(window)
     }
-    const active = saved.activeWindow
-    const window = active === null ? undefined : space.windows.find((w) => w.number === active)
-    if (window) space.selectWindow(window)
-  }
-  return created
+    return created
+  })
 }
 
 /** Rebuild a whole session, including which space was on screen. */
@@ -148,11 +151,13 @@ export function restoreSession(
   spaces: SpaceSet,
   state: SessionState,
   options: RestoreOptions = {},
-): Space[] {
-  const created = restoreSpaces(spaces, state.spaces, options)
-  const active = state.activeSpace ? created.find((s) => s.id === state.activeSpace) : undefined
-  if (active) spaces.activate(active)
-  return created
+): Effect.Effect<Space[]> {
+  return Effect.gen(function* () {
+    const created = yield* restoreSpaces(spaces, state.spaces, options)
+    const active = state.activeSpace ? created.find((s) => s.id === state.activeSpace) : undefined
+    if (active) spaces.activate(active)
+    return created
+  })
 }
 
 /** Rebuild one window into `space`, agents first and then the arrangement. */
@@ -160,28 +165,30 @@ export function restoreWindow(
   space: Space,
   saved: PersistedWindow,
   options: RestoreOptions = {},
-): Window {
-  const window = space.newWindow(saved.name ?? undefined, saved.number)
-  for (const agent of saved.agents) {
-    window.startAgent({
-      id: agent.id,
-      name: agent.name,
-      cmd: agent.cmd,
-      cwd: agent.cwd,
-      cols: agent.cols,
-      rows: agent.rows,
-      // A dead agent is restored as a tombstone rather than re-run. Its own
-      // backend is fixed by that, so the option deliberately does not reach it.
-      ...(agent.exited ? { exited: { code: agent.exitCode } } : { backend: options.backend }),
-    })
-  }
+): Effect.Effect<Window> {
+  return Effect.gen(function* () {
+    const window = yield* space.newWindow(saved.name ?? undefined, saved.number)
+    for (const agent of saved.agents) {
+      yield* window.startAgent({
+        id: agent.id,
+        name: agent.name,
+        cmd: agent.cmd,
+        cwd: agent.cwd,
+        cols: agent.cols,
+        rows: agent.rows,
+        // A dead agent is restored as a tombstone rather than re-run. Its own
+        // backend is fixed by that, so the option deliberately does not reach it.
+        ...(agent.exited ? { exited: { code: agent.exitCode } } : { backend: options.backend }),
+      })
+    }
 
-  // Only the live agents get panes: an exited one has no view in the running
-  // app either, and applyLayout would happily build it one.
-  const live = window.agents.filter((a) => !a.exited).map((a) => a.id)
-  const focus = live.includes(saved.focusedAgent ?? "") ? saved.focusedAgent! : undefined
-  if (live.length > 0) window.applyLayout(restoredLayout(saved, live, focus))
-  return window
+    // Only the live agents get panes: an exited one has no view in the running
+    // app either, and applyLayout would happily build it one.
+    const live = window.agents.filter((a) => !a.exited).map((a) => a.id)
+    const focus = live.includes(saved.focusedAgent ?? "") ? saved.focusedAgent! : undefined
+    if (live.length > 0) window.applyLayout(restoredLayout(saved, live, focus))
+    return window
+  })
 }
 
 /**

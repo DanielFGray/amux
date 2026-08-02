@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test"
 import { Divider } from "./divider.ts"
-import { createHarness } from "./harness.ts"
+import { createHarness, run, runAsync } from "./harness.ts"
 import type { Window } from "./window.ts"
 import type { Agent } from "./agent.ts"
 import type { TerminalPane } from "./pane.ts"
@@ -36,13 +36,13 @@ function screenTail(agent: Agent): string {
 test("break moves the pane and its running agent into a new window, unchanged", async () => {
   const s = await setup()
   try {
-    const right = s.win.split("row")!
+    const right = run(s.win.splitSpawn("row"))!
     const agent = right.agent
     agent.write("echo breakpane-marker-42\n")
     await Bun.sleep(300)
     expect(screenTail(agent)).toContain("breakpane-marker-42")
 
-    const win2 = s.space.breakPane(right)!
+    const win2 = (await runAsync(s.space.breakPane(right)))!
 
     // The same Agent — same process, same PTY, same terminal — not a relaunch.
     expect(win2.panes).toEqual([right])
@@ -77,11 +77,11 @@ test("break collapses the source layout: dividers and empty boxes go", async () 
   const s = await setup()
   try {
     const left = s.win.panes[0]!
-    const right = s.win.split("row")!
-    const bottomRight = s.win.split("column")! // splits right into a nested box
+    const right = run(s.win.splitSpawn("row"))!
+    const bottomRight = run(s.win.splitSpawn("column"))! // splits right into a nested box
     expect(s.win.panes).toHaveLength(3)
 
-    s.space.breakPane(bottomRight)
+    await runAsync(s.space.breakPane(bottomRight))
 
     // The nested box collapsed back into the root: pane, divider, pane.
     const kids = s.win.root.getChildren()
@@ -111,7 +111,7 @@ test("breaking the only pane closes the emptied source window", async () => {
   const s = await setup()
   try {
     const pane = s.win.panes[0]!
-    const win2 = s.space.breakPane(pane)!
+    const win2 = (await runAsync(s.space.breakPane(pane)))!
 
     expect(s.space.windows).not.toContain(s.win)
     expect(s.space.windows).toEqual([win2])
@@ -125,10 +125,10 @@ test("breaking the only pane closes the emptied source window", async () => {
 test("a detached agent left in the source window survives the break", async () => {
   const s = await setup()
   try {
-    const sleepy = s.win.spawn("background", ["sleep", "30"])
+    const sleepy = run(s.win.spawn("background", ["sleep", "30"]))
     const pane = s.win.panes[0]!
 
-    const win2 = s.space.breakPane(pane)!
+    const win2 = (await runAsync(s.space.breakPane(pane)))!
 
     // The window kept its detached, still-running agent instead of closing.
     expect(s.space.windows).toContain(s.win)
@@ -149,9 +149,9 @@ test("a moved agent's exit closes its pane in the NEW window and reports it", as
       exits.push({ agent, window })
     }
 
-    s.win.split("row") // stays behind in the source window
-    const pane = s.win.split("row", s.win.spawn("shortlived", ["sh", "-c", "sleep 1; echo bye"]))!
-    const win2 = s.space.breakPane(pane)!
+    run(s.win.splitSpawn("row")) // stays behind in the source window
+    const pane = s.win.split("row", run(s.win.spawn("shortlived", ["sh", "-c", "sleep 1; echo bye"])))!
+    const win2 = (await runAsync(s.space.breakPane(pane)))!
     const agent = pane.agent
 
     await Bun.sleep(2200)
@@ -172,12 +172,12 @@ test("break drops a zoom before moving the pane", async () => {
   const s = await setup()
   try {
     const a = s.win.panes[0]!
-    const b = s.win.split("row")!
+    const b = run(s.win.splitSpawn("row"))!
     s.win.focus(a)
     s.win.zoom()
     expect(s.win.zoomed).toBe(true)
 
-    const win2 = s.space.breakPane(a)!
+    const win2 = (await runAsync(s.space.breakPane(a)))!
 
     expect(s.win.zoomed).toBe(false)
     expect(s.win.panes).toEqual([b])
@@ -197,10 +197,10 @@ test("a broken-out pane answers to its new window, not the old one", async () =>
   const s = await setup()
   try {
     const left = s.win.panes[0]!
-    const right = s.win.split("row")!
+    const right = run(s.win.splitSpawn("row"))!
     s.win.focus(left)
 
-    const win2 = s.space.breakPane(right)!
+    const win2 = (await runAsync(s.space.breakPane(right)))!
 
     // The pane came over focused; a click must route to its new window.
     expect(win2.focused).toBe(right)
@@ -208,7 +208,7 @@ test("a broken-out pane answers to its new window, not the old one", async () =>
     // answers to win2 (focus moves, clicks land) while the source window
     // kept its own focus untouched. split already hands focus to the new
     // pane, so the "somewhere else" is simply the split it just made.
-    win2.split("row")
+    run(win2.splitSpawn("row"))
     expect(win2.focused).not.toBe(right)
     right.onFocusRequest!(right)
     expect(win2.focused).toBe(right)
@@ -221,10 +221,10 @@ test("a broken-out pane answers to its new window, not the old one", async () =>
 test("break updates what the sidebar and the tab list would show", async () => {
   const s = await setup()
   try {
-    const right = s.win.split("row")!
+    const right = run(s.win.splitSpawn("row"))!
     const agent = right.agent
 
-    const win2 = s.space.breakPane(right)!
+    const win2 = (await runAsync(s.space.breakPane(right)))!
 
     const targets = sidebarTargets(s.spaces.spaces)
     const windowRow = targets.find((t) => t.kind === "window" && t.window === win2)
@@ -250,11 +250,11 @@ test("break updates what the sidebar and the tab list would show", async () => {
 test("breakPane refuses a pane that is not in this space", async () => {
   const s = await setup()
   try {
-    const other = s.spaces.create("other", process.cwd())
-    const otherWin = other.newWindow()
-    otherWin.init("shell")
+    const other = run(s.spaces.create("other", process.cwd()))
+    const otherWin = run(other.newWindow())
+    run(otherWin.init("shell"))
 
-    expect(s.space.breakPane(otherWin.panes[0] as TerminalPane)).toBeNull()
+    expect(await runAsync(s.space.breakPane(otherWin.panes[0] as TerminalPane))).toBeNull()
     expect(s.space.windows).toEqual([s.win])
   } finally {
     await s.dispose()

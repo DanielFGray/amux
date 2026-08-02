@@ -1,6 +1,6 @@
 import { test, expect, afterEach } from "bun:test"
 import { setWeight } from "./divider.ts"
-import { createHarness } from "./harness.ts"
+import { createHarness, run } from "./harness.ts"
 import type { TerminalPane } from "./pane.ts"
 
 const cleanup: (() => Promise<void>)[] = []
@@ -24,8 +24,8 @@ test("focusDirection crosses nesting levels rather than walking siblings", async
   // left | (topRight over bottomRight) — the classic case where the pane to the
   // right of `left` is two levels down and sibling-walking picks the wrong one.
   const left = window.panes[0]!
-  const right = window.split("row")!
-  const bottomRight = window.split("column")!
+  const right = run(window.splitSpawn("row"))!
+  const bottomRight = run(window.splitSpawn("column"))!
   await layout()
 
   const at = (p: TerminalPane) => `${p.x},${p.y}`
@@ -51,8 +51,8 @@ test("focusDirection crosses nesting levels rather than walking siblings", async
 test("zoom fills the window with one pane and restores the layout exactly", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const right = window.split("row")!
-  const bottomRight = window.split("column")!
+  const right = run(window.splitSpawn("row"))!
+  const bottomRight = run(window.splitSpawn("column"))!
   await layout()
 
   const before = window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`)
@@ -79,7 +79,7 @@ test("zoom fills the window with one pane and restores the layout exactly", asyn
 test("zoom survives a resize and an uneven split's weights", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
 
   // Drag the seam well off centre, so an approximate restore would show.
@@ -99,13 +99,13 @@ test("zoom survives a resize and an uneven split's weights", async () => {
 
 test("reshaping the layout while zoomed drops the zoom rather than the panes", async () => {
   const { window, layout } = await setup()
-  window.split("row")
+  run(window.splitSpawn("row"))
   await layout()
 
   // Splitting.
   window.zoom()
   expect(window.zoomed).toBe(true)
-  const third = window.split("row")!
+  const third = run(window.splitSpawn("row"))!
   expect(window.zoomed).toBe(false)
   expect(window.panes).toHaveLength(3)
   await layout()
@@ -126,7 +126,7 @@ test("reshaping the layout while zoomed drops the zoom rather than the panes", a
 test("focusing another pane unzooms, but switching away and back does not", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
 
   window.focus(second)
@@ -145,7 +145,7 @@ test("focusing another pane unzooms, but switching away and back does not", asyn
 test("swap exchanges two panes' places while each slot keeps its size", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   await layout()
 
   const slots = [first.x, second.x]

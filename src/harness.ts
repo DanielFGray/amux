@@ -16,9 +16,56 @@
 
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
+import { Context, Effect, Exit, Scope } from "effect";
 import { SpaceSet, type Space } from "./space.ts";
 import type { Window } from "./window.ts";
-import { workspaceEnv } from "./env.ts"
+import { workspaceEnv, type WorkspaceEnv } from "./env.ts"
+
+/**
+ * Run one of the workspace's Effect-returning methods and hand back its value.
+ *
+ * Everything that starts or stops a process is an Effect now; everything that
+ * moves rectangles around is still a plain call. This is the seam between the
+ * two, and it is synchronous on purpose — a suite asserting on geometry reads
+ * the same as it did before, with `run(...)` marking exactly the calls that
+ * have a lifetime attached.
+ *
+ * Exported standalone as well as on the harness so a suite can adopt it with
+ * one import rather than threading it through every destructuring.
+ */
+export const run = <A>(effect: Effect.Effect<A>): A => Effect.runSync(effect);
+
+/**
+ * Run a releasing method, which cannot be synchronous.
+ *
+ * Acquisition is sync — building an agent is a constructor and a scope entry.
+ * RELEASE is not, and cannot be made so: `Agent.release` interrupts the pump
+ * fiber before freeing the terminal under it, and interrupting a running fiber
+ * means waiting for it to finish unwinding. That await is the entire point of
+ * Phase 3 having made the pump a fiber; without it, teardown races a writer
+ * that is mid-write into an FFI handle being freed.
+ *
+ * So `killAgent`, `closeWindow`, `remove`, `breakPane` and scope close are
+ * awaited, and everything else stays a plain call.
+ */
+export const runAsync = <A>(effect: Effect.Effect<A>): Promise<A> => Effect.runPromise(effect);
+
+/**
+ * A SpaceSet and the call that ends it, for suites that mount their own
+ * renderer rather than taking the whole harness.
+ *
+ * They used to write `new SpaceSet(...)` and remember `disposeAll()` in a
+ * cleanup hook. The scope is what remembers now; this keeps the two-line shape
+ * those suites had.
+ */
+export function scopedSpaceSet(
+  env: Context.Context<WorkspaceEnv>,
+  host: BoxRenderable,
+): { spaces: SpaceSet; dispose: () => Promise<void> } {
+  const scope = Effect.runSync(Scope.make());
+  const spaces = Effect.runSync(Scope.extend(SpaceSet.make(env, host), scope));
+  return { spaces, dispose: () => runAsync(Scope.close(scope, Exit.void)) };
+}
 
 export interface Harness {
   t: TestRendererSetup;
@@ -33,6 +80,8 @@ export interface Harness {
    * this has been awaited at least once.
    */
   layout: () => Promise<void>;
+  /** The module-level `run`, on the harness for convenience. */
+  run: <A>(effect: Effect.Effect<A>) => A;
   /**
    * Replace the mounted workspace with a fresh, empty one and return it.
    *
@@ -77,36 +126,45 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   t.renderer.root.add(host);
 
   const shell = options.shell ?? ["bash"];
-  const spaces = new SpaceSet(workspaceEnv(t.renderer, { shell }), host);
-  const space = spaces.create("proj", process.cwd());
-  const window = space.newWindow();
-  if (options.init !== false) {
-    window.init(typeof options.init === "string" ? options.init : undefined);
-  }
 
-  const all: SpaceSet[] = [spaces];
+  // One scope over the whole harness. Every SpaceSet it hands out is built in
+  // here, so `dispose` closing it is what ends the PTYs — the suites no longer
+  // reach for disposeAll, and a suite that forgets to dispose leaks nothing it
+  // did not already leak through the renderer.
+  const scope = Effect.runSync(Scope.make());
+  const build = () =>
+    Effect.runSync(
+      Scope.extend(SpaceSet.make(workspaceEnv(t.renderer, { shell }), mounted), scope),
+    );
+
   let mounted: BoxRenderable = host;
+  let hosts = 0;
+  const spaces = build();
+  const space = run(spaces.create("proj", process.cwd()));
+  const window = run(space.newWindow());
+  if (options.init !== false) {
+    run(window.init(typeof options.init === "string" ? options.init : undefined));
+  }
 
   return {
     t,
     spaces,
     space,
     window,
+    run,
     layout: () => t.renderOnce(),
     takeOver() {
       t.renderer.root.remove(mounted);
       mounted = new BoxRenderable(t.renderer, {
-        id: `pane-host-${all.length}`,
+        id: `pane-host-${++hosts}`,
         flexGrow: 1,
         ...(options.hostDirection ? { flexDirection: options.hostDirection } : {}),
       });
       t.renderer.root.add(mounted);
-      const next = new SpaceSet(workspaceEnv(t.renderer, { shell }), mounted);
-      all.push(next);
-      return next;
+      return build();
     },
     async dispose() {
-      for (const set of all) set.disposeAll();
+      await runAsync(Scope.close(scope, Exit.void));
       // A pane renders straight out of its agent's terminal, so the renderer
       // must not go while a pump is still mid-read — that is a use-after-free
       // into ghostty rather than an exception.

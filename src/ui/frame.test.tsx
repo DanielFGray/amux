@@ -1,10 +1,12 @@
 /** @jsxImportSource @opentui/solid */
+import { scopedSpaceSet } from "../harness.ts"
+import { Effect } from "effect"
 import { test, expect, afterEach } from "bun:test"
 import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { Divider } from "../divider.ts"
-import { SpaceSet } from "../space.ts"
+import { SpaceSet, type Space } from "../space.ts"
 import { frame } from "../window.ts"
 import { loadConfig } from "../config.ts"
 import { createAppState } from "./state.ts"
@@ -25,15 +27,14 @@ afterEach(() => {
 /** Mount the real App around a real split tree and return the drawn frame. */
 async function screen(
   open: boolean,
-  build: (win: ReturnType<SpaceSet["create"]>) => void,
+  build: (win: Space) => void,
   extra: Partial<{ hints: HintGroup[]; overlay: "none" | "settings" }> = {},
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(workspaceEnv(t.renderer), paneHost)
+  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost)
   const app = createAppState(spaces)
   cleanup.push(() => {
-    spaces.disposeAll()
     app.dispose()
     t.renderer.destroy()
   })
@@ -45,7 +46,7 @@ async function screen(
   handle.capEnd = true
 
   frame.externalLeft = open
-  const space = spaces.create("proj", process.cwd())
+  const space = Effect.runSync(spaces.create("proj", process.cwd()))
   build(space)
   spaces.refreshChrome()
 
@@ -96,7 +97,7 @@ async function screen(
 
 test("the sidebar seam is a single line that is also the pane frame's left border", async () => {
   const rows = await screen(true, (space) => {
-    space.newWindow().init()
+    Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()))
   })
 
   // Row 0 is the window tab bar; the frame starts under it.
@@ -114,9 +115,9 @@ test("the sidebar seam is a single line that is also the pane frame's left borde
 
 test("a horizontal split tees into the sidebar seam instead of stopping short", async () => {
   const rows = await screen(true, (space) => {
-    const win = space.newWindow()
-    win.init()
-    win.split("column")
+    const win = Effect.runSync(space.newWindow())
+    Effect.runSync(win.init())
+    Effect.runSync(win.splitSpawn("column"))
   })
 
   const seam = rows.map((row) => row[SIDEBAR])
@@ -128,7 +129,7 @@ test("a horizontal split tees into the sidebar seam instead of stopping short", 
 
 test("closing the sidebar hands the left border back to the panes", async () => {
   const rows = await screen(false, (space) => {
-    space.newWindow().init()
+    Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()))
   })
 
   expect(rows[1]![0]).toBe("┌")
@@ -137,16 +138,16 @@ test("closing the sidebar hands the left border back to the panes", async () => 
 
 /** Split both halves of a row split vertically at the same height, so the two
  *  horizontal seams land on the same row and both meet the vertical seam. */
-function cross(space: ReturnType<SpaceSet["create"]>) {
-  const win = space.newWindow()
-  win.init()
-  win.split("row")
+function cross(space: Space) {
+  const win = Effect.runSync(space.newWindow())
+  Effect.runSync(win.init())
+  Effect.runSync(win.splitSpawn("row"))
   const left = win.panes[0]!
   const right = win.panes[1]!
   win.focus(left)
-  win.split("column")
+  Effect.runSync(win.splitSpawn("column"))
   win.focus(right)
-  win.split("column")
+  Effect.runSync(win.splitSpawn("column"))
 }
 
 test("a seam crossing the pane frame's seam draws a ┼, not the last tee", async () => {
@@ -179,7 +180,7 @@ test("the ┼ also lands on the sidebar seam when the sidebar is open", async ()
 const HINTS: HintGroup[] = [{ group: "panes", entries: [{ keys: ["z"], desc: "zoom" }] }]
 
 test("the hint panel starts at the pane area, not over the sidebar tree", async () => {
-  const rows = await screen(true, (space) => space.newWindow().init(), { hints: HINTS })
+  const rows = await screen(true, (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())), { hints: HINTS })
 
   // The panel's own top border replaces the frame's, one row below the tabs.
   expect(rows[1]!.slice(0, SIDEBAR)).not.toContain("┌")
@@ -190,7 +191,7 @@ test("the hint panel starts at the pane area, not over the sidebar tree", async 
 })
 
 test("the hint panel stays out of the way of an open overlay", async () => {
-  const rows = await screen(true, (space) => space.newWindow().init(), {
+  const rows = await screen(true, (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())), {
     hints: HINTS,
     overlay: "settings",
   })

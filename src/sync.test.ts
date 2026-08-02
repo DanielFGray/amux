@@ -1,7 +1,7 @@
 import { test, expect, spyOn, afterEach } from "bun:test"
 import { setWeight } from "./divider.ts"
 import { createBindings } from "./bindings.ts"
-import { createHarness } from "./harness.ts"
+import { createHarness, run } from "./harness.ts"
 import { encodeKey } from "./keys.ts"
 import { RenderState } from "./ghostty.ts"
 import { Agent } from "./agent.ts"
@@ -73,8 +73,8 @@ test("sync starts off, toggles per window, and marks the tab", async () => {
 test("input goes to the focused pane alone, then to every pane once sync is on", async () => {
   const { window, layout } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
-  const third = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
+  const third = run(window.splitSpawn("row"))!
   window.focus(second)
   await layout()
 
@@ -117,7 +117,7 @@ test("input goes to the focused pane alone, then to every pane once sync is on",
 
 test("binary and control bytes fan out untouched", async () => {
   const { window } = await setup()
-  window.split("row")
+  run(window.splitSpawn("row"))
   window.toggleSync()
   const writes = captureAgentWrites()
   try {
@@ -139,7 +139,7 @@ test("binary and control bytes fan out untouched", async () => {
 
 test("the prefix and bound herdr controls are consumed and never broadcast", async () => {
   const { t, window } = await setup()
-  window.split("row")
+  run(window.splitSpawn("row"))
   const writes = captureAgentWrites()
   try {
     const fired: string[] = []
@@ -185,8 +185,8 @@ test("the prefix and bound herdr controls are consumed and never broadcast", asy
 
 test("a detached agent receives no broadcast until a view is opened on it", async () => {
   const { window } = await setup()
-  const visible = window.split("row")!
-  const hidden = window.spawn("hidden", ["sleep", "30"])
+  const visible = run(window.splitSpawn("row"))!
+  const hidden = run(window.spawn("hidden", ["sleep", "30"]))
   window.toggleSync()
   const writes = captureAgentWrites()
   try {
@@ -210,7 +210,7 @@ test("a detached agent receives no broadcast until a view is opened on it", asyn
 
 test("two panes viewing one agent are one process: broadcast writes it once", async () => {
   const { window } = await setup()
-  const shared = window.spawn("shared", ["sleep", "30"])
+  const shared = run(window.spawn("shared", ["sleep", "30"]))
   window.split("row", shared)
   window.split("row", shared)
   expect(window.panes.filter((p) => p.agent === shared)).toHaveLength(2)
@@ -227,7 +227,7 @@ test("two panes viewing one agent are one process: broadcast writes it once", as
 test("the fan-out set follows the layout: a split joins, a close leaves, a new window starts unsynced", async () => {
   const { window, spaces } = await setup()
   const first = window.panes[0]!
-  const second = window.split("row")!
+  const second = run(window.splitSpawn("row"))!
   window.toggleSync()
   const writes = captureAgentWrites()
   try {
@@ -241,8 +241,8 @@ test("the fan-out set follows the layout: a split joins, a close leaves, a new w
     expect(writes.agents()).toEqual([first.agent])
 
     // A new window starts unsynced, whatever the old one was doing.
-    const other = spaces.active!.newWindow()
-    other.init()
+    const other = run(spaces.active!.newWindow())
+    run(other.init())
     expect(other.sync).toBe(false)
     writes.clear()
     other.write("c")
@@ -254,7 +254,7 @@ test("the fan-out set follows the layout: a split joins, a close leaves, a new w
 
 test("pane-local mouse stays pane-local even while synced", async () => {
   const { window, layout } = await setup()
-  const right = window.split("row")!
+  const right = run(window.splitSpawn("row"))!
   window.toggleSync()
   // Negotiate SGR mouse reporting on the right pane's terminal, the way a
   // full-screen app would, so the click produces bytes at all.
@@ -281,8 +281,8 @@ test("pane-local mouse stays pane-local even while synced", async () => {
 
 test("broadcast input actually reaches every child process", async () => {
   const { window } = await setup({ init: false })
-  const a = window.spawn("a", ["cat"])
-  const b = window.spawn("b", ["cat"])
+  const a = run(window.spawn("a", ["cat"]))
+  const b = run(window.spawn("b", ["cat"]))
   window.split("row", a)
   window.split("row", b)
   window.toggleSync()

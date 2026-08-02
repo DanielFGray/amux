@@ -2,7 +2,7 @@ import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/cor
 import { TerminalPane } from "./pane.ts"
 import { Agent, type AgentOptions } from "./agent.ts"
 import type { SpawnBackend } from "./backend.ts"
-import { Context } from "effect"
+import { Context, Effect, Exit, Scope } from "effect"
 import { RenderCtx, Shell, Backend, type WorkspaceEnv } from "./env.ts"
 import { rollUp } from "./space.ts"
 import { Divider, getWeight, setWeight, getDirection, setDirection, type JunctionFrame } from "./divider.ts"
@@ -92,6 +92,19 @@ export class Window {
    */
   #backend: SpawnBackend
 
+  /**
+   * One scope per agent, rather than one scope for the window.
+   *
+   * The obvious arrangement — fork every agent's scope from the window's — is
+   * wrong here, because break-pane MOVES an agent to another window and Effect
+   * scopes cannot be re-parented. An agent forked from its old window's scope
+   * would be killed when that window closed, despite now living somewhere else.
+   * Independent scopes held in a map make the transfer a map entry moving
+   * between two windows (see relinquishAgent/adopt), and make killAgent the
+   * closing of exactly one of them.
+   */
+  #scopes = new Map<Agent, Scope.CloseableScope>()
+
   constructor(env: Context.Context<WorkspaceEnv>, cwd: string | undefined, number: number) {
     this.#env = env
     this.#ctx = Context.get(env, RenderCtx)
@@ -180,9 +193,27 @@ export class Window {
     }
   }
 
+  /**
+   * A window whose agents are released when the surrounding scope closes.
+   *
+   * The lifetime-correct way to make one: nothing has to remember to call
+   * disposeAll, because closing the scope that made the window is what ends the
+   * processes in it.
+   */
+  static make(
+    env: Context.Context<WorkspaceEnv>,
+    cwd: string | undefined,
+    number: number,
+  ): Effect.Effect<Window, never, Scope.Scope> {
+    return Effect.acquireRelease(
+      Effect.sync(() => new Window(env, cwd, number)),
+      (window) => window.release,
+    )
+  }
+
   /** Start an agent without opening a view onto it. The name defaults to the
    *  command being run — "zsh", not a generic "shell". */
-  spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Agent {
+  spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Effect.Effect<Agent> {
     return this.startAgent({ name, cmd, cwd })
   }
 
@@ -193,36 +224,72 @@ export class Window {
    * positional arguments cannot carry — a persisted id, a size, and the fact
    * that this one's process is already over and must not be run again.
    */
-  startAgent(opts: AgentOptions): Agent {
-    // The window's backend is a default, not an override: restore passes its
-    // own per-agent choice, and a tombstone must keep having no backend at all.
-    // Spread order is what encodes that — opts wins where it says anything.
-    const agent = new Agent({ backend: this.#backend, ...opts })
-    this.#bind(agent)
-    this.#agents.push(agent)
-    this.onChange?.()
-    return agent
+  startAgent(opts: AgentOptions): Effect.Effect<Agent> {
+    return Effect.gen(this, function* () {
+      const scope = yield* Scope.make()
+      // The window's backend is a default, not an override: restore passes its
+      // own per-agent choice, and a tombstone must keep having no backend at all.
+      // Spread order is what encodes that — opts wins where it says anything.
+      const agent = yield* Agent.make({ backend: this.#backend, ...opts }).pipe(
+        Scope.extend(scope),
+      )
+      this.#scopes.set(agent, scope)
+      this.#bind(agent)
+      this.#agents.push(agent)
+      this.onChange?.()
+      return agent
+    })
   }
 
-  /** Stop owning an agent without stopping it — the moving half of a break.
-   *  Its hooks are re-pointed at its new window by that window's #bind, so a
-   *  lone agent answers to exactly one window at a time. */
-  relinquishAgent(agent: Agent): boolean {
+  /**
+   * Stop owning an agent without stopping it — the moving half of a break.
+   *
+   * Its hooks are re-pointed at its new window by that window's #bind, so a
+   * lone agent answers to exactly one window at a time. The agent's scope
+   * leaves with it and is handed to `adopt`; keeping it here would kill a
+   * running agent the moment this window closed.
+   *
+   * Returns the scope to transfer, or null when the agent is not ours.
+   */
+  relinquishAgent(agent: Agent): Scope.CloseableScope | null {
     const i = this.#agents.indexOf(agent)
-    if (i === -1) return false
+    if (i === -1) return null
     this.#agents.splice(i, 1)
+    const scope = this.#scopes.get(agent) ?? null
+    this.#scopes.delete(agent)
     this.onChange?.()
-    return true
+    return scope
   }
 
   /** Permanently stop an agent and close any views of it. */
-  killAgent(agent: Agent) {
-    for (const p of [...this.#panes]) if (p.agent === agent) this.close(p)
-    const i = this.#agents.indexOf(agent)
-    if (i !== -1) this.#agents.splice(i, 1)
-    agent.dispose()
-    this.onChange?.()
-    this.#ctx.requestRender()
+  killAgent(agent: Agent): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      for (const p of [...this.#panes]) if (p.agent === agent) this.close(p)
+      const i = this.#agents.indexOf(agent)
+      if (i !== -1) this.#agents.splice(i, 1)
+      yield* this.#releaseAgent(agent)
+      this.onChange?.()
+      this.#ctx.requestRender()
+    })
+  }
+
+  /**
+   * Close an agent's scope, which is what frees its PTY and terminal.
+   *
+   * Every agent this window owns has one — `startAgent` makes it and `adopt`
+   * requires it — so a miss here means the agent was never really ours. It is
+   * released anyway rather than left running, but the two cases stay distinct:
+   * a fallback that quietly does the same work would make a lost scope
+   * invisible, and a leaked scope is exactly the bug worth seeing.
+   */
+  #releaseAgent(agent: Agent): Effect.Effect<void> {
+    const scope = this.#scopes.get(agent)
+    this.#scopes.delete(agent)
+    if (scope) return Scope.close(scope, Exit.void)
+    return Effect.andThen(
+      Effect.logWarning(`agent ${agent.id} released without a scope`),
+      agent.release,
+    )
   }
 
   get focused() {
@@ -298,8 +365,15 @@ export class Window {
   }
 
   /** Seed the workspace with a single agent and a view onto it. */
-  init(name?: string): TerminalPane {
-    const pane = this.#makePane(this.spawn(name))
+  init(name?: string): Effect.Effect<TerminalPane> {
+    return this.spawn(name).pipe(Effect.map((agent) => this.mount(agent)))
+  }
+
+  /** Put a pane for an existing agent at the root of an empty window. The
+   *  synchronous half of init, and what split falls back to when there is no
+   *  pane to split. */
+  mount(agent: Agent): TerminalPane {
+    const pane = this.#makePane(agent)
     this.root.add(pane)
     this.focus(pane)
     return pane
@@ -642,23 +716,17 @@ export class Window {
    * inserted as a sibling; otherwise the pane is swapped for a nested Box so
    * the tree stays a proper h/v alternation instead of a flat list.
    */
-  split(direction: SplitDirection, agent?: Agent, name?: string): TerminalPane | null {
+  split(direction: SplitDirection, agent: Agent): TerminalPane | null {
     // Splitting reshapes the parked tree; do it with the layout on screen.
     if (this.#zoomed) this.#unzoom()
     this.#preset = null
     const target = this.#focused
-    if (!target) {
-      if (!agent) return this.init(name)
-      const pane = this.#makePane(agent)
-      this.root.add(pane)
-      this.focus(pane)
-      return pane
-    }
+    if (!target) return this.mount(agent)
 
     const parent = target.parent as BoxRenderable | null
     if (!parent) return null
 
-    const pane = this.#makePane(agent ?? this.spawn(name))
+    const pane = this.#makePane(agent)
 
     // Every sibling pair is separated by a draggable divider, which is also
     // the visible border between panes.
@@ -698,6 +766,22 @@ export class Window {
 
     this.focus(pane)
     return pane
+  }
+
+  /**
+   * Split, starting a new agent to fill the new pane.
+   *
+   * The acquiring half of split, kept separate from it deliberately. `split`
+   * itself is tree surgery over renderables — total, synchronous, and covered
+   * by geometry tests that have no business awaiting anything. Only the spawn
+   * needs a lifetime, so only the spawn is an Effect, and the two compose.
+   *
+   * The unsplittable case is checked BEFORE spawning, so a window that cannot
+   * take a split does not leave a live process behind with no pane on it.
+   */
+  splitSpawn(direction: SplitDirection, name?: string): Effect.Effect<TerminalPane | null> {
+    if (this.#focused && !this.#focused.parent) return Effect.succeed(null)
+    return this.spawn(name).pipe(Effect.map((agent) => this.split(direction, agent)))
   }
 
   /** Open an existing agent in a new split — the way a detached agent gets a
@@ -780,8 +864,13 @@ export class Window {
    *  ownership moves, so the agent's hooks are re-pointed here and an exit
    *  closes the pane in the window it now lives in. The caller detaches first,
    *  so the pane arrives unmounted and with no other owner. */
-  adopt(agent: Agent, pane: TerminalPane) {
+  adopt(agent: Agent, pane: TerminalPane, scope: Scope.CloseableScope) {
     this.#agents.push(agent)
+    // The scope comes from the window that relinquished it — see the note on
+    // #scopes for why it travels rather than being re-forked here. Required,
+    // not optional: an agent in a window without a scope is one nothing will
+    // ever release, and making that unrepresentable is cheaper than detecting it.
+    this.#scopes.set(agent, scope)
     this.#bind(agent)
     this.#panes.push(pane)
     setWeight(pane, 1)
@@ -979,16 +1068,18 @@ export class Window {
     return this.#preset
   }
 
-  /** Kill every agent and free its terminal. Used by app shutdown so no child
-   *  process is orphaned; idempotent, safe to call from an exit path.
+  /** Kill every agent and free its terminal. The finalizer `Window.make`
+   *  installs, so nothing calls it by hand; idempotent, safe on an exit path.
    *
    *  Panes come down FIRST. A pane renders straight out of its agent's
    *  terminal, so freeing the terminal under a still-mounted pane is a
    *  use-after-free into ghostty — a segfault on the next frame, not an
    *  exception. */
-  disposeAll() {
-    for (const pane of [...this.#panes]) this.close(pane)
-    for (const agent of [...this.#agents]) agent.dispose()
-    this.#agents.length = 0
+  get release(): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      for (const pane of [...this.#panes]) this.close(pane)
+      for (const agent of [...this.#agents]) yield* this.#releaseAgent(agent)
+      this.#agents.length = 0
+    })
   }
 }

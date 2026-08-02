@@ -95,6 +95,17 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const SHELL = [config.behaviour.shell || process.env.SHELL || "bash"]
   const SESSION_ID = session.id
 
+  /**
+   * Run one of the workspace's Effect-returning methods here and now.
+   *
+   * Deliberately synchronous, and deliberately temporary. A CommandSpec's `run`
+   * is a `() => void` callback, so a command that spawns has nowhere to yield
+   * to; ts-8b3867 (Phase 6) turns `run` into `Effect<void>` and every call
+   * below becomes a `yield*` instead. Until then this is the one place the two
+   * worlds meet, rather than a runtime threaded through the command table.
+   */
+  const run = <A,>(effect: Effect.Effect<A>): A => Effect.runSync(effect)
+
   const spaces = new SpaceSet(workspaceEnv(renderer, { shell: SHELL, backend: session.backend() }), paneHost)
   spaces.onCopy = (text) => renderer.copyToClipboardOSC52(text)
   spaces.onCopyError = (error) => console.error(error.message)
@@ -318,9 +329,9 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     const [name, dir] = answers
     // An empty field means "keep the default" rather than "make it blank".
     const target = resolve(dir?.trim() || cwd)
-    const space = spaces.create(name?.trim() || basename(target), target)
+    const space = run(spaces.create(name?.trim() || basename(target), target))
     spaces.activate(space)
-    space.newWindow().init()
+    run(Effect.flatMap(space.newWindow(), (w) => w.init()))
     void refreshGit()
   }
 
@@ -688,14 +699,14 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: ["<leader>|", "<leader>\\"],
       desc: "split left/right",
       group: "panes",
-      run: () => void activeWin()?.split("row"),
+      run: () => void run(activeWin()?.splitSpawn("row") ?? Effect.succeed(null)),
     },
     {
       name: "pane.split-column",
       key: "<leader>-",
       desc: "split top/bottom",
       group: "panes",
-      run: () => void activeWin()?.split("column"),
+      run: () => void run(activeWin()?.splitSpawn("column") ?? Effect.succeed(null)),
     },
     {
       name: "pane.next",
@@ -794,7 +805,10 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>c",
       desc: "new window",
       group: "windows",
-      run: () => void spaces.active?.newWindow().init(),
+      run: () => {
+        const space = spaces.active
+        if (space) run(Effect.flatMap(space.newWindow(), (w) => w.init()))
+      },
     },
     {
       name: "window.next",
@@ -1279,9 +1293,9 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   // Agents the daemon is still running are adopted rather than re-run — the
   // backend knows which ones those are — so a reattach puts the live processes
   // back under the same window numbers and the same split arrangement.
-  if (!session.session || restoreSession(spaces, session.session).length === 0) {
-    const first = spaces.create(basename(process.cwd()) || "space", process.cwd())
-    first.newWindow().init()
+  if (!session.session || run(restoreSession(spaces, session.session)).length === 0) {
+    const first = run(spaces.create(basename(process.cwd()) || "space", process.cwd()))
+    run(Effect.flatMap(first.newWindow(), (w) => w.init()))
   }
   syncSidebarFrame()
   void refreshGit()

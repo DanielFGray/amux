@@ -1,5 +1,5 @@
 import { BoxRenderable, type RenderContext } from "@opentui/core"
-import { Context } from "effect"
+import { Context, Effect, Exit, Scope } from "effect"
 import { Window } from "./window.ts"
 import type { Agent, AgentState } from "./agent.ts"
 import type { TerminalPane } from "./pane.ts"
@@ -39,6 +39,10 @@ export class Space {
   #env: Context.Context<WorkspaceEnv>
   #ctx: RenderContext
   #windows: Window[] = []
+  /** One scope per window, for the same reason Window keeps one per agent:
+   *  closeWindow must end exactly one window, and a window will eventually be
+   *  movable between spaces (ts-e10c3a), which a forked child scope forbids. */
+  #scopes = new Map<Window, Scope.CloseableScope>()
   #active: Window | null = null
   #nextNumber = 1
 
@@ -92,17 +96,23 @@ export class Space {
    * window across a restart. The counter is pushed past any number claimed that
    * way, so a window created afterwards still gets a free one.
    */
-  newWindow(name?: string, number?: number): Window {
-    if (number !== undefined) this.#nextNumber = Math.max(this.#nextNumber, number + 1)
-    const window = new Window(this.#env, this.dir, number ?? this.#nextNumber++)
-    if (name) window.customName = name
-    window.onChange = () => this.onChange?.()
-    window.onAgentExit = (agent) => this.onAgentExit?.(agent, window, this)
-    window.onCopy = this.onCopy
-    window.onCopyError = this.onCopyError
-    this.#windows.push(window)
-    this.selectWindow(window)
-    return window
+  newWindow(name?: string, number?: number): Effect.Effect<Window> {
+    return Effect.gen(this, function* () {
+      if (number !== undefined) this.#nextNumber = Math.max(this.#nextNumber, number + 1)
+      const scope = yield* Scope.make()
+      const window = yield* Window.make(this.#env, this.dir, number ?? this.#nextNumber++).pipe(
+        Scope.extend(scope),
+      )
+      this.#scopes.set(window, scope)
+      if (name) window.customName = name
+      window.onChange = () => this.onChange?.()
+      window.onAgentExit = (agent) => this.onAgentExit?.(agent, window, this)
+      window.onCopy = this.onCopy
+      window.onCopyError = this.onCopyError
+      this.#windows.push(window)
+      this.selectWindow(window)
+      return window
+    })
   }
 
   selectWindow(window: Window) {
@@ -151,20 +161,28 @@ export class Space {
    * tmux's session_select after a break. Returns the new window, or null when
    * the pane is not in this space.
    */
-  breakPane(pane: TerminalPane): Window | null {
-    const source = this.#windows.find((w) => w.panes.includes(pane))
-    if (!source) return null
-    const agent = pane.agent
-    if (!source.detachPane(pane)) return null
-    source.relinquishAgent(agent)
+  breakPane(pane: TerminalPane): Effect.Effect<Window | null> {
+    return Effect.gen(this, function* () {
+      const source = this.#windows.find((w) => w.panes.includes(pane))
+      if (!source) return null
+      const agent = pane.agent
+      // Ownership is checked BEFORE anything is mutated. The agent's scope has
+      // to travel with it — the source window may be closed below, and closing
+      // it must not end a process that now lives elsewhere — so a break that
+      // could not hand the scope over has to be refused while it is still a
+      // no-op, rather than half-done with a detached pane nothing will release.
+      if (!source.agents.includes(agent)) return null
+      if (!source.detachPane(pane)) return null
+      const scope = source.relinquishAgent(agent)!
 
-    const window = this.newWindow()
-    window.adopt(agent, pane)
+      const window = yield* this.newWindow()
+      window.adopt(agent, pane, scope)
 
-    if (source.panes.length === 0 && !source.agents.some((a) => a.state !== "done")) {
-      this.closeWindow(source)
-    }
-    return window
+      if (source.panes.length === 0 && !source.agents.some((a) => a.state !== "done")) {
+        yield* this.closeWindow(source)
+      }
+      return window
+    })
   }
 
   /** Redraw every window's borders after `frame.externalLeft` changed. */
@@ -173,28 +191,51 @@ export class Space {
   }
 
   /** Close a window and everything running in it. */
-  closeWindow(window: Window) {
-    const i = this.#windows.indexOf(window)
-    if (i === -1) return
-    this.#windows.splice(i, 1)
-    if (this.#active === window) {
-      this.root.remove(window.root)
-      this.#active = null
-      const next = this.#windows[Math.min(i, this.#windows.length - 1)]
-      if (next) this.selectWindow(next)
-    }
-    window.disposeAll()
-    this.onChange?.()
-    this.#ctx.requestRender()
+  closeWindow(window: Window): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      const i = this.#windows.indexOf(window)
+      if (i === -1) return
+      this.#windows.splice(i, 1)
+      if (this.#active === window) {
+        this.root.remove(window.root)
+        this.#active = null
+        const next = this.#windows[Math.min(i, this.#windows.length - 1)]
+        if (next) this.selectWindow(next)
+      }
+      yield* this.#releaseWindow(window)
+      this.onChange?.()
+      this.#ctx.requestRender()
+    })
   }
 
-  dispose() {
-    // Unmount before disposing: the active window's panes are still in the
-    // render tree and would draw from terminals that are being freed.
-    if (this.#active) this.root.remove(this.#active.root)
-    for (const w of this.#windows) w.disposeAll()
-    this.#windows.length = 0
-    this.#active = null
+  #releaseWindow(window: Window): Effect.Effect<void> {
+    const scope = this.#scopes.get(window)
+    this.#scopes.delete(window)
+    return scope ? Scope.close(scope, Exit.void) : window.release
+  }
+
+  /**
+   * A space whose windows are released when the surrounding scope closes.
+   */
+  static make(
+    env: Context.Context<WorkspaceEnv>,
+    opts: { name: string; dir: string; id?: string },
+  ): Effect.Effect<Space, never, Scope.Scope> {
+    return Effect.acquireRelease(
+      Effect.sync(() => new Space(env, opts)),
+      (space) => space.release,
+    )
+  }
+
+  get release(): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      // Unmount before disposing: the active window's panes are still in the
+      // render tree and would draw from terminals that are being freed.
+      if (this.#active) this.root.remove(this.#active.root)
+      for (const w of [...this.#windows]) yield* this.#releaseWindow(w)
+      this.#windows.length = 0
+      this.#active = null
+    })
   }
 }
 
@@ -243,6 +284,7 @@ export class SpaceSet {
   #ctx: RenderContext
   #host: BoxRenderable
   #spaces: Space[] = []
+  #scopes = new Map<Space, Scope.CloseableScope>()
   #active: Space | null = null
   onChange?: () => void
   onAgentExit?: (agent: Agent, window: Window, space: Space) => void
@@ -273,16 +315,20 @@ export class SpaceSet {
     return this.#spaces.flatMap((s) => s.agents)
   }
 
-  create(name: string, dir = process.cwd(), id?: string): Space {
-    const space = new Space(this.#env, { name, dir, id })
-    space.onChange = () => this.onChange?.()
-    space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space)
-    space.onCopy = this.onCopy
-    space.onCopyError = this.onCopyError
-    this.#spaces.push(space)
-    if (!this.#active) this.activate(space)
-    else this.onChange?.()
-    return space
+  create(name: string, dir = process.cwd(), id?: string): Effect.Effect<Space> {
+    return Effect.gen(this, function* () {
+      const scope = yield* Scope.make()
+      const space = yield* Space.make(this.#env, { name, dir, id }).pipe(Scope.extend(scope))
+      this.#scopes.set(space, scope)
+      space.onChange = () => this.onChange?.()
+      space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space)
+      space.onCopy = this.onCopy
+      space.onCopyError = this.onCopyError
+      this.#spaces.push(space)
+      if (!this.#active) this.activate(space)
+      else this.onChange?.()
+      return space
+    })
   }
 
   activate(space: Space) {
@@ -338,25 +384,52 @@ export class SpaceSet {
     return target
   }
 
-  remove(space: Space) {
-    const i = this.#spaces.indexOf(space)
-    if (i === -1) return
-    this.#spaces.splice(i, 1)
-    if (this.#active === space) {
-      this.#host.remove(space.root)
-      this.#active = null
-      const next = this.#spaces[Math.min(i, this.#spaces.length - 1)]
-      if (next) this.activate(next)
-    }
-    space.dispose()
-    this.onChange?.()
-    this.#ctx.requestRender()
+  remove(space: Space): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      const i = this.#spaces.indexOf(space)
+      if (i === -1) return
+      this.#spaces.splice(i, 1)
+      if (this.#active === space) {
+        this.#host.remove(space.root)
+        this.#active = null
+        const next = this.#spaces[Math.min(i, this.#spaces.length - 1)]
+        if (next) this.activate(next)
+      }
+      yield* this.#releaseSpace(space)
+      this.onChange?.()
+      this.#ctx.requestRender()
+    })
   }
 
-  disposeAll() {
-    if (this.#active) this.#host.remove(this.#active.root)
-    for (const s of [...this.#spaces]) s.dispose()
-    this.#spaces.length = 0
-    this.#active = null
+  #releaseSpace(space: Space): Effect.Effect<void> {
+    const scope = this.#scopes.get(space)
+    this.#scopes.delete(space)
+    return scope ? Scope.close(scope, Exit.void) : space.release
+  }
+
+  /**
+   * A workspace whose spaces — and so every window, agent and PTY under them —
+   * are released when the surrounding scope closes.
+   *
+   * This is the root of the lifetime chain: one scope at the top of the app
+   * ends every child process, in the right order, on any exit path.
+   */
+  static make(
+    env: Context.Context<WorkspaceEnv>,
+    host: BoxRenderable,
+  ): Effect.Effect<SpaceSet, never, Scope.Scope> {
+    return Effect.acquireRelease(
+      Effect.sync(() => new SpaceSet(env, host)),
+      (spaces) => spaces.release,
+    )
+  }
+
+  get release(): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      if (this.#active) this.#host.remove(this.#active.root)
+      for (const s of [...this.#spaces]) yield* this.#releaseSpace(s)
+      this.#spaces.length = 0
+      this.#active = null
+    })
   }
 }

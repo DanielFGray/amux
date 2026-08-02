@@ -1,3 +1,4 @@
+import { run, runAsync, scopedSpaceSet } from "./harness.ts"
 import { test, expect } from "bun:test"
 import { afterEach } from "bun:test"
 import { BoxRenderable } from "@opentui/core"
@@ -61,15 +62,15 @@ test("drag selection copies through the pane and survives pane borders", async (
   const t = await createTestRenderer({ width: 30, height: 8 })
   const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 })
   t.renderer.root.add(host)
-  const spaces = new SpaceSet(workspaceEnv(t.renderer), host)
+  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host)
   const copied: string[] = []
   spaces.onCopy = (text) => { copied.push(text); return true }
-  const space = spaces.create("test", process.cwd())
-  const window = space.newWindow()
-  const pane = window.init()
+  const space = run(spaces.create("test", process.cwd()))
+  const window = run(space.newWindow())
+  const pane = run(window.init())
   pane.agent.term.write(bytes("drag"))
   await t.renderOnce()
   await t.mockMouse.drag(pane.x + 1, pane.y + 1, pane.x + 4, pane.y + 1)
   expect(copied).toEqual(["drag"])
-  cleanup.push(() => { spaces.disposeAll(); t.renderer.destroy() })
+  cleanup.push(async () => { await disposeSpaces(); t.renderer.destroy() })
 })

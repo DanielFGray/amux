@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test"
-import { createHarness } from "./harness.ts"
+import { createHarness, run } from "./harness.ts"
 import { setWeight } from "./divider.ts"
 import type { Window } from "./window.ts"
 
@@ -25,13 +25,13 @@ function dividerColumn(rows: string[]): number {
  *  horizontal seams land on the same row and both meet the vertical seam —
  *  the cell where the three lines converge wants a ┼. */
 function cross(win: Window) {
-  win.split("row")
+  run(win.splitSpawn("row"))
   const left = win.panes[0]!
   const right = win.panes[1]!
   win.focus(left)
-  win.split("column")
+  run(win.splitSpawn("column"))
   win.focus(right)
-  win.split("column")
+  run(win.splitSpawn("column"))
 }
 
 test("two aligned horizontal seams meeting the vertical seam draw a ┼", async () => {
@@ -58,13 +58,13 @@ test("two aligned vertical seams meeting the horizontal seam draw a ┼", async 
   const { window, layout, t } = await setup()
   // The mirror image: split horizontally, then split each half vertically at
   // the same column, so both vertical seams converge on the horizontal seam.
-  window.split("column")
+  run(window.splitSpawn("column"))
   const top = window.panes[0]!
   const bottom = window.panes[1]!
   window.focus(top)
-  window.split("row")
+  run(window.splitSpawn("row"))
   window.focus(bottom)
-  window.split("row")
+  run(window.splitSpawn("row"))
   await layout()
   await t.renderOnce()
 
@@ -87,13 +87,13 @@ test("a tee stays a tee when the two seams do not align", async () => {
   // Three panes stacked on the left beside one pane on the right: two
   // horizontal seams at different rows both tee into the vertical seam, and
   // neither has a line continuing on the far side, so both are ┤ not ┼.
-  window.split("row")
+  run(window.splitSpawn("row"))
   const left = window.panes[0]!
   window.focus(left)
-  window.split("column")
+  run(window.splitSpawn("column"))
   const under = window.panes[2]!
   window.focus(under)
-  window.split("column")
+  run(window.splitSpawn("column"))
   await layout()
   await t.renderOnce()
 
@@ -110,10 +110,10 @@ test("a classic tee draws a tee, not a ┼", async () => {
   const { window, layout, t } = await setup()
   // One pane left of a vertical stack: the vertical seam is a continuous line
   // and the horizontal seam tees into it from the right. No crossing, so no ┼.
-  window.split("row")
+  run(window.splitSpawn("row"))
   const left = window.panes[0]!
   window.focus(left)
-  window.split("column")
+  run(window.splitSpawn("column"))
   await layout()
   await t.renderOnce()
 
@@ -152,11 +152,11 @@ test("a 3-by-2 grid draws a ┼ at every seam crossing", async () => {
   const { window, layout, t } = await setup()
   // Three panes across, then each one split horizontally at the same height:
   // the horizontal seam crosses both vertical seams, so two cells want a ┼.
-  window.split("row")
-  window.split("row")
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("row"))
   for (const p of [...window.panes]) {
     window.focus(p)
-    window.split("column")
+    run(window.splitSpawn("column"))
   }
   await layout()
   await t.renderOnce()
