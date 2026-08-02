@@ -62,6 +62,10 @@ export class Window {
   #panes: TerminalPane[] = []
   #agents: Agent[] = []
   #focused: TerminalPane | null = null
+  /** The pane that was focused before the current one, for last-pane. See
+   *  focus() for how it moves, and #project for the one rule that keeps it
+   *  from ever naming a pane that no longer exists. */
+  #last: TerminalPane | null = null
   #shell: string[]
   /** Handed on to the panes and dividers this window builds. */
   #env: Context.Context<WorkspaceEnv>
@@ -403,11 +407,34 @@ export class Window {
     // what tmux's select-pane does. Zoom survives switching *windows*, though:
     // that is navigation, not a change of mind about this layout.
     if (this.#zoomed && pane !== this.#zoomed) this.#unzoom()
-    this.#focused = pane
+    // The pane being left becomes last-pane's other endpoint, the way tmux's
+    // window_set_active_pane records a last pane on every select. Re-focusing
+    // the pane already on screen — a window switch landing back on its own
+    // focus — is not a change of mind, so it leaves the pair alone.
+    if (pane !== this.#focused) {
+      this.#last = this.#focused
+      this.#focused = pane
+    }
     for (const p of this.#panes) p.active = p === pane
     this.#refreshChrome()
     this.onChange?.()
     this.#ctx.requestRender()
+  }
+
+  /**
+   * Switch focus to the previously focused pane — tmux's last-pane.
+   *
+   * Repeated presses toggle between the two most recent panes: every focus
+   * move records the pane being left as #last, so selecting #last then selects
+   * the pane that was left, and so on back. A pane closed since it was last
+   * is skipped rather than focused — the membership check is what keeps a
+   * destroyed renderable unreachable, with the eager clear in #project as the
+   * primary guard.
+   */
+  lastPane() {
+    const last = this.#last
+    if (!last || !this.#panes.includes(last)) return
+    this.focus(last)
   }
 
   /**
@@ -1034,12 +1061,27 @@ export class Window {
       this.root.add(build(wanted.root))
     }
 
-    this.#focused = null
     // Through the slot, not by searching for the id: focus names a slot, and
     // the pane filling it may have kept an id of its own.
     const focus = wanted.focus ? filled.get(wanted.focus) : undefined
     const next = focus ?? this.#panes[0]
-    if (next) this.focus(next)
+    if (next) {
+      // Deliberately NOT clearing #focused first, the way this used to: focus()
+      // records the pane being left as #last, and a rebuild that moves focus is
+      // a change of mind exactly like a selection — tmux's window_set_active_pane
+      // does this bookkeeping after a split, a close or an arrange too. The one
+      // exception is a rebuild that keeps the same pane focused, which focus()
+      // sees as no change and leaves the pair alone.
+      this.focus(next)
+    } else {
+      // An empty window has no focus and nothing for last-pane to toggle to.
+      this.#focused = null
+    }
+    // A rebuild can evict the pane #last names — a close, a swap, an
+    // applyLayout — and last-pane must never be able to reach a destroyed
+    // renderable. Panes only ever leave #panes through here, so this is the
+    // one place the pair needs revalidating.
+    if (this.#last && !this.#panes.includes(this.#last)) this.#last = null
     this.#refreshChrome()
     this.onChange?.()
     this.#ctx.requestRender()

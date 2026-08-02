@@ -44,6 +44,10 @@ export class Space {
    *  movable between spaces (ts-e10c3a), which a forked child scope forbids. */
   #scopes = new Map<Window, Scope.CloseableScope>()
   #active: Window | null = null
+  /** The window that was active before the current one, for last-window. See
+   *  selectWindow() for how it moves, and closeWindow() for the rule that
+   *  keeps it from ever naming a window that no longer exists. */
+  #last: Window | null = null
   #nextNumber = 1
 
   onChange?: () => void
@@ -121,12 +125,29 @@ export class Space {
     if (this.#active === window) return
     // Detach rather than destroy, so the window keeps its split tree.
     if (this.#active) this.root.remove(this.#active.root)
+    // The window being left becomes last-window's other endpoint, the way
+    // tmux's session_set_current records a last window on every select.
+    this.#last = this.#active
     this.#active = window
     this.root.add(window.root)
     const pane = window.focused ?? window.panes[0]
     if (pane) window.focus(pane)
     this.onChange?.()
     this.#ctx.requestRender()
+  }
+
+  /**
+   * Select the previously active window — tmux's last-window.
+   *
+   * Repeated presses toggle between the two most recent windows, the way
+   * last-pane toggles between panes. A window closed since it was last is
+   * skipped rather than selected: closeWindow() clears it, and this check
+   * keeps the promise even if something else left a stale reference behind.
+   */
+  selectLastWindow() {
+    const last = this.#last
+    if (!last || !this.#windows.includes(last)) return
+    this.selectWindow(last)
   }
 
   /** Select by 1-based number, the way `^a 1..9` does. */
@@ -201,8 +222,24 @@ export class Space {
       if (this.#active === window) {
         this.root.remove(window.root)
         this.#active = null
-        const next = this.#windows[Math.min(i, this.#windows.length - 1)]
-        if (next) this.selectWindow(next)
+        // Land on the window that was active before this one — the way tmux's
+        // session_detach prefers last over a neighbour when the current window
+        // dies — falling back to a neighbour when there was none. #active is
+        // already null here, so selectWindow records an empty #last rather
+        // than letting the pair's other endpoint be a window that is gone.
+        const next =
+          (this.#last && this.#windows.includes(this.#last) ? this.#last : null) ??
+          this.#windows[Math.min(i, this.#windows.length - 1)] ??
+          null
+        if (next) {
+          this.selectWindow(next)
+        } else {
+          this.#last = null
+        }
+      } else if (this.#last === window) {
+        // The toggle's other endpoint is gone: no closed window may stay
+        // reachable from last-window.
+        this.#last = null
       }
       yield* this.#releaseWindow(window)
       this.onChange?.()

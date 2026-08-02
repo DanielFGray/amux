@@ -682,3 +682,85 @@ test("the focused pane's shared border highlights with it", async () => {
     await s.dispose()
   }
 })
+
+test("selectLastWindow toggles between the two most recent windows", async () => {
+  const s = await setup()
+  try {
+    const second = run(s.space.newWindow())
+    run(second.init("shell"))
+    const third = run(s.space.newWindow())
+    run(third.init("shell"))
+    // newWindow selects what it creates: active is third, last is second.
+    s.space.selectWindow(s.win)
+    s.space.selectWindow(third)
+    expect(s.space.active).toBe(third)
+
+    s.space.selectLastWindow()
+    expect(s.space.active).toBe(s.win)
+    s.space.selectLastWindow()
+    expect(s.space.active).toBe(third)
+  } finally {
+    await s.dispose()
+  }
+})
+
+test("a closed last window is skipped, not selected", async () => {
+  const s = await setup()
+  try {
+    const second = run(s.space.newWindow())
+    run(second.init("shell"))
+    const third = run(s.space.newWindow())
+    run(third.init("shell"))
+
+    s.space.selectWindow(s.win)
+    s.space.selectWindow(third)
+    s.space.selectWindow(second)
+    expect(s.space.active).toBe(second)
+
+    await runAsync(s.space.closeWindow(third))
+    // Closing an unrelated window leaves the active one alone...
+    expect(s.space.active).toBe(second)
+    // ...but the pair's other endpoint is gone, so the toggle has nothing to do.
+    s.space.selectLastWindow()
+    expect(s.space.active).toBe(second)
+  } finally {
+    await s.dispose()
+  }
+})
+
+test("closing the active window lands on the last window and clears the pair", async () => {
+  const s = await setup()
+  try {
+    const second = run(s.space.newWindow())
+    run(second.init("shell"))
+    // second is active and s.win is last — the pair that closing second
+    // collapses into a single window.
+    await runAsync(s.space.closeWindow(second))
+    expect(s.space.active).toBe(s.win)
+
+    // The toggle's other endpoint was the window that died; there is nothing
+    // to toggle to until a new pair forms.
+    s.space.selectLastWindow()
+    expect(s.space.active).toBe(s.win)
+  } finally {
+    await s.dispose()
+  }
+})
+
+test("closing the active window falls back to a neighbour when there is no last", async () => {
+  const s = await setup()
+  try {
+    const second = run(s.space.newWindow())
+    run(second.init("shell"))
+    const third = run(s.space.newWindow())
+    run(third.init("shell"))
+    // active = third, last = second. Closing the LAST clears it; closing the
+    // ACTIVE then has no last to land on and picks the neighbour instead.
+    await runAsync(s.space.closeWindow(second))
+    expect(s.space.active).toBe(third)
+    await runAsync(s.space.closeWindow(third))
+    expect(s.space.active).toBe(s.win)
+  } finally {
+    await s.dispose()
+  }
+})

@@ -275,3 +275,77 @@ test("resizeFocus while zoomed does nothing and leaves the parked layout intact"
   await layout()
   expect(window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`)).toEqual(before)
 })
+
+test("lastPane toggles between the two most recent panes", async () => {
+  const { window } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+
+  window.focus(first)
+  window.focus(second)
+  expect(window.focused).toBe(second)
+
+  window.lastPane()
+  expect(window.focused).toBe(first)
+  window.lastPane()
+  expect(window.focused).toBe(second)
+})
+
+test("a split records the pane it split as last, the way tmux does", async () => {
+  const { window } = await setup()
+  const first = window.panes[0]!
+
+  // Splitting moves focus to the newcomer, so the pane you were on is last.
+  const second = run(window.splitSpawn("row"))!
+  expect(window.focused).toBe(second)
+  window.lastPane()
+  expect(window.focused).toBe(first)
+})
+
+test("lastPane skips a pane that has been closed", async () => {
+  const { window } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+  const third = run(window.splitSpawn("row"))!
+
+  // Walk first -> third -> second, so the pane being left each time is last.
+  window.focus(first)
+  window.focus(third)
+  window.focus(second)
+  expect(window.focused).toBe(second)
+
+  // third was last. Closing it must not change the focus or leave a dead last
+  // that the toggle would reach into.
+  window.close(third)
+  expect(window.focused).toBe(second)
+  window.lastPane()
+  expect(window.focused).toBe(second)
+})
+
+test("closing the focused pane clears the pair rather than leaving a dead last", async () => {
+  const { window } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+
+  window.focus(first)
+  window.focus(second)
+  window.close(second)
+  expect(window.focused).toBe(first)
+  window.lastPane()
+  expect(window.focused).toBe(first)
+})
+
+test("lastPane drops the zoom when it leaves the zoomed pane", async () => {
+  const { window } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+
+  window.focus(first)
+  window.focus(second)
+  window.zoom()
+  expect(window.zoomed).toBe(true)
+
+  window.lastPane()
+  expect(window.zoomed).toBe(false)
+  expect(window.focused).toBe(first)
+})

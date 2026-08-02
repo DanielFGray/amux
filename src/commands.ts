@@ -88,6 +88,11 @@ const PaneSplit = define("pane.split", { axis: Axis }, {
   capability: "agent",
 })
 const PaneNext = define("pane.next", {}, { desc: "focus the next pane", group: "panes", capability: "agent" })
+const PaneLast = define("pane.last", {}, {
+  desc: "toggle to the last-focused pane",
+  group: "panes",
+  capability: "agent",
+})
 const PaneFocus = define("pane.focus", { direction: Direction }, {
   desc: "focus the pane in a direction",
   group: "panes",
@@ -143,6 +148,11 @@ const WindowNew = define("window.new", {}, { desc: "new window", group: "windows
 const WindowNext = define("window.next", {}, { desc: "next window", group: "windows", capability: "agent" })
 const WindowPrevious = define("window.previous", {}, {
   desc: "previous window",
+  group: "windows",
+  capability: "agent",
+})
+const WindowLast = define("window.last", {}, {
+  desc: "toggle to the last window",
   group: "windows",
   capability: "agent",
 })
@@ -246,6 +256,7 @@ const AppQuit = define("app.quit", {}, { desc: "quit", group: "global", capabili
 export const COMMAND_DEFS = [
   PaneSplit,
   PaneNext,
+  PaneLast,
   PaneFocus,
   PaneResize,
   PaneZoom,
@@ -258,6 +269,7 @@ export const COMMAND_DEFS = [
   WindowNew,
   WindowNext,
   WindowPrevious,
+  WindowLast,
   WindowSelect,
   WindowRename,
   WindowClose,

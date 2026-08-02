@@ -803,6 +803,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     // runs, not when the table is built.
     "pane.split": ({ axis }) => Effect.suspend(() => activeWin()?.splitSpawn(axis) ?? Effect.void),
     "pane.next": () => Effect.sync(() => activeWin()?.focusNext(1)),
+    "pane.last": () => Effect.sync(() => activeWin()?.lastPane()),
     "pane.focus": ({ direction }) => Effect.sync(() => activeWin()?.focusDirection(direction)),
     "pane.resize": ({ direction }) => Effect.sync(() => activeWin()?.resizeFocus(direction)),
     "pane.zoom": () => Effect.sync(() => activeWin()?.zoom()),
@@ -839,6 +840,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       }),
     "window.next": () => Effect.sync(() => spaces.active?.cycleWindow(1)),
     "window.previous": () => Effect.sync(() => spaces.active?.cycleWindow(-1)),
+    "window.last": () => Effect.sync(() => spaces.active?.selectLastWindow()),
     "window.select": ({ space, number }) =>
       Effect.flatMap(findSpace(space), (found) => Effect.sync(() => void found?.selectNumber(number))),
     "window.rename": ({ name, ...target }) =>
@@ -1017,20 +1019,23 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       desc: "split top/bottom",
     }),
     bind("pane.next", "<leader>o", command("pane.next"), { desc: "next pane" }),
+    // tmux's last-pane: toggle to the pane you were just on.
+    bind("pane.last", "<leader>;", command("pane.last"), { desc: "toggle to the last-focused pane" }),
     // Directional focus, tmux's select-pane. One command with a direction, four
     // bindings that supply one each: two sequences per direction read better in
-    // the help as four rows than as one row listing eight keys.
+    // the help as four rows than as one row listing eight keys. right has no
+    // letter because ^a l is tmux's last-window, which took the spot.
     ...(
       [
         ["left", "h"],
         ["down", "j"],
         ["up", "k"],
-        ["right", "l"],
+        ["right", null],
       ] as const
     ).map(([direction, letter]) =>
       bind(
         `pane.focus-${direction}`,
-        [`<leader>${letter}`, `<leader>${direction}`],
+        letter === null ? `<leader>${direction}` : [`<leader>${letter}`, `<leader>${direction}`],
         command("pane.focus", { direction }),
         { desc: `focus pane ${direction}` },
       ),
@@ -1085,6 +1090,9 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     bind("window.new", "<leader>c", command("window.new")),
     bind("window.next", "<leader>n", command("window.next")),
     bind("window.previous", "<leader>p", command("window.previous")),
+    // tmux's last-window, on tmux's own binding — which is also why focus-right
+    // no longer answers to ^a l.
+    bind("window.last", "<leader>l", command("window.last"), { desc: "toggle to the last window" }),
     bindPrompt("window.rename", "<leader>,", promptRenameWindow, "rename window"),
     bind("window.close", "<leader>&", command("window.close"), {
       desc: "kill window and its agents",

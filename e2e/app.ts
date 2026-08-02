@@ -70,6 +70,12 @@ export interface App {
    */
   shape(): Promise<string>
   /**
+   * The same session file, unparsed beyond JSON — for checks that need more
+   * than the shape string's counts: which window is active, or which pane a
+   * window's layout says is focused.
+   */
+  session(): Promise<Record<string, any> | null>
+  /**
    * Poll until something is true, or fail saying what never happened.
    *
    * The alternative is a sleep long enough to cover the worst case, which is
@@ -132,8 +138,12 @@ export async function launch(
   // launch as "0sp 0win 0ag" perhaps one run in two. Name the file.
   const sessionFile = join(state, "opentui-herdr", "sessions", session, "session.json")
 
+  async function readSession(): Promise<Record<string, any> | null> {
+    return await Bun.file(sessionFile).json().catch(() => null)
+  }
+
   async function shape(): Promise<string> {
-    const saved = await Bun.file(sessionFile).json().catch(() => null)
+    const saved = await readSession()
     if (!saved?.spaces) return "(no session file)"
     const windows = saved.spaces.flatMap((s: { windows: unknown[] }) => s.windows)
     const agents = windows.flatMap((w: { agents: unknown[] }) => w.agents)
@@ -180,6 +190,7 @@ export async function launch(
       pty.write(bytes)
     },
     shape,
+    session: readSession,
     config: () => Bun.file(configPath).json().catch(() => null),
     async stop() {
       pty.kill()
