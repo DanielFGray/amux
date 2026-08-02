@@ -181,7 +181,18 @@ class AttachClientImpl implements AttachClientShape {
       queue = Effect.runSync(Queue.sliding<AttachFrame>(QUEUE_LIMIT))
       this.#queued.set(session, queue)
     }
-    return Stream.fromQueue(queue)
+    return Stream.fromQueue(queue).pipe(
+      Stream.tap((frame) => frame._tag === "exit"
+        ? Effect.sync(() => {
+            // The exit is taken before this runs, so every preceding output is
+            // already safe to release. Keep the identity check: a later stream
+            // may have installed a replacement queue while this one was ending.
+            if (this.#queued.get(session) !== queue) return
+            this.#queued.delete(session)
+            Effect.runFork(Queue.shutdown(queue!))
+          })
+        : Effect.void),
+    )
   }
 
   input(session: string, data: string | Uint8Array): void {

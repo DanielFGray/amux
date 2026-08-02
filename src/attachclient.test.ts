@@ -14,11 +14,14 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Agent } from "./agent.ts"
+import { AttachClient } from "./attach.ts"
 import { SessionClient, type SessionClientShape } from "./client.ts"
 import { SessionDaemon } from "./daemon.ts"
 import { captureVisible } from "./capture.ts"
 import { MODE_ALT_SCREEN } from "./ghostty.ts"
 import { processAlive, readLease, SessionEnv } from "./session.ts"
+import { Stream } from "effect"
+import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./effect/AttachProtocol.ts"
 
 const dirs: string[] = []
 const daemons: SessionDaemon[] = []
@@ -173,6 +176,80 @@ test("output written immediately before exit arrives before the exit frame", asy
   await until(() => agent.exited, "the short-lived agent to exit")
   expect(screen(agent)).toContain("last-bytes")
   expect(agent.exitCode).toBe(9)
+})
+
+test("an exited session queue is reclaimed only after its exit is consumed", async () => {
+  const { daemon, env } = await session("reclaim-queue")
+  const client = await AttachClient.connect({ path: daemon.paths.attach, client: "queue-test" })
+
+  const firstFrames: string[] = []
+  const firstDone = Effect.runPromise(Stream.runForEach(client.stream("agent-1"), (frame) =>
+    Effect.sync(() => firstFrames.push(frame._tag)),
+  ))
+  const first = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf first; exit 3"], cols: 80, rows: 24 })
+  await first.exit
+  await Promise.race([
+    firstDone,
+    Bun.sleep(2_000).then(() => { throw new Error("the session stream did not finish after its exit") }),
+  ])
+  expect(firstFrames.at(-1)).toBe("exit")
+
+  const secondDone = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.take(1))))
+  const second = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf second; exit 4"], cols: 80, rows: 24 })
+  await second.exit
+  const frames = await Promise.race([
+    secondDone,
+    Bun.sleep(2_000).then(() => { throw new Error("the replacement session did not receive output") }),
+  ])
+  expect([...frames].some((frame) => frame._tag === "output" && Buffer.from(frame.data).toString().includes("second"))).toBe(true)
+  client.close()
+})
+
+test("an unsubscribed session keeps the newest frames when its queue overflows", async () => {
+  const home = await mkdtemp(join(tmpdir(), "herdr-overflow-"))
+  dirs.push(home)
+  const path = join(home, "attach.sock")
+  let peer: Bun.Socket<undefined> | null = null
+  let buffer = ""
+  const listener = Bun.listen<undefined>({
+    unix: path,
+    data: undefined,
+    socket: {
+      binaryType: "buffer",
+      open(socket) { peer = socket },
+      data(socket, data) {
+        buffer += data.toString("utf8")
+        const decoded = decodeAttachFrames(buffer)
+        buffer = decoded.rest
+        if (decoded.frames.some((frame) => frame._tag === "ping")) {
+          const ping = decoded.frames.find((frame): frame is Extract<AttachFrame, { _tag: "ping" }> => frame._tag === "ping")!
+          socket.write(encodeAttachFrame({ _tag: "pong", nonce: ping.nonce }))
+        }
+      },
+    },
+  })
+  const client = await AttachClient.connect({ path, client: "overflow-test" })
+  peer!.write(
+    Array.from({ length: 300 }, (_, index) => encodeAttachFrame({
+      _tag: "output",
+      session: "agent-1",
+      data: new TextEncoder().encode(`frame-${String(index).padStart(3, "0")}\n`),
+    })).join("") + encodeAttachFrame({ _tag: "exit", session: "agent-1", code: 0 }),
+  )
+
+  await Bun.sleep(100)
+  const frames = await Promise.race([
+    Effect.runPromise(Stream.runCollect(client.stream("agent-1"))),
+    Bun.sleep(2_000).then(() => { throw new Error("the overflowing session stream did not finish") }),
+  ])
+  const output = [...frames]
+    .filter((frame) => frame._tag === "output")
+    .map((frame) => Buffer.from(frame.data).toString())
+    .join("")
+  expect(output).not.toContain("frame-000")
+  expect(output).toContain("frame-299")
+  client.close()
+  listener.stop(true)
 })
 
 test("killing through the daemon ends the agent here too", async () => {
