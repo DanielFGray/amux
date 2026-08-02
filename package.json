@@ -8,7 +8,10 @@
     "daemon": "bun src/daemon-main.ts",
     "session": "bun src/session-cli.ts",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "e2e": "bun e2e/boot.ts && bun e2e/workspace.ts",
+    "e2e:boot": "bun e2e/boot.ts",
+    "e2e:workspace": "bun e2e/workspace.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

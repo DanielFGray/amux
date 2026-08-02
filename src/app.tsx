@@ -106,6 +106,23 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
    */
   const run = <A,>(effect: Effect.Effect<A>): A => Effect.runSync(effect)
 
+  /**
+   * Start a releasing effect and let it finish on its own.
+   *
+   * Releasing cannot be `run`: closing an agent's scope interrupts its pump
+   * fiber before freeing the terminal, and interrupting a running fiber means
+   * waiting for it to unwind — `runSync` throws on it. A key handler has
+   * nowhere to await, so it forks.
+   *
+   * Which makes the SHAPE of a caller matter: anything that reads the tree
+   * after a release must do so inside the same effect, not after this call.
+   * Forking only guarantees the effect starts. Every site below that used to
+   * be a bare statement was silently doing nothing at all (ts-456094), and the
+   * fix is not to sprinkle this everywhere — it is that ts-8b3867 makes a
+   * command's `run` an Effect, so the sequencing is the caller's to `yield*`.
+   */
+  const fork = (effect: Effect.Effect<unknown>): void => void Effect.runFork(effect)
+
   const spaces = new SpaceSet(workspaceEnv(renderer, { shell: SHELL, backend: session.backend() }), paneHost)
   spaces.onCopy = (text) => renderer.copyToClipboardOSC52(text)
   spaces.onCopyError = (error) => console.error(error.message)
@@ -222,13 +239,18 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     // terminals, so any copy mode sitting on a pane in this space must end
     // first: the mode's own exit clears the selection through that terminal.
     exitCopyModeFor(space.windows.flatMap((w) => w.panes))
-    space.closeWindow(window)
-    if (space.windows.length > 0) return
-
-    spaces.remove(space)
-    // Nothing running and no space left: an empty screen would just be a dead
-    // end, so exiting is the honest outcome.
-    if (spaces.spaces.length === 0) void shutdown()
+    // One effect, not three forks: each step's condition is read from the tree
+    // the previous step just changed, so the sequencing has to be inside.
+    fork(
+      Effect.gen(function* () {
+        yield* space.closeWindow(window)
+        if (space.windows.length > 0) return
+        yield* spaces.remove(space)
+        // Nothing running and no space left: an empty screen would just be a
+        // dead end, so exiting is the honest outcome.
+        if (spaces.spaces.length === 0) shutdown()
+      }),
+    )
   }
   spaces.onAgentExit = afterAgentExit
 
@@ -384,13 +406,13 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     // below can free its terminal, and nothing can catch a segfault.
     if (target.kind === "agent") {
       exitCopyModeFor(target.window.panes.filter((p) => p.agent === target.agent))
-      target.window.killAgent(target.agent)
+      fork(target.window.killAgent(target.agent))
     } else if (target.kind === "window") {
       exitCopyModeFor(target.window.panes)
-      target.space.closeWindow(target.window)
+      fork(target.space.closeWindow(target.window))
     } else {
       exitCopyModeFor(target.space.windows.flatMap((w) => w.panes))
-      spaces.remove(target.space)
+      fork(spaces.remove(target.space))
     }
     app.refresh()
   }
@@ -795,7 +817,8 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       group: "panes",
       run: () => {
         const w = activeWin()
-        if (w?.focused) spaces.active?.breakPane(w.focused)
+        const space = spaces.active
+        if (w?.focused && space) fork(space.breakPane(w.focused))
       },
     },
 
@@ -841,7 +864,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         const w = space?.active
         if (space && w) {
           exitCopyModeFor(w.panes)
-          space.closeWindow(w)
+          fork(space.closeWindow(w))
         }
       },
     },
@@ -907,7 +930,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         const pane = w?.focused
         if (pane) {
           exitCopyModeFor(w.panes.filter((p) => p.agent === pane.agent))
-          w.killAgent(pane.agent)
+          fork(w.killAgent(pane.agent))
         }
       },
     },
