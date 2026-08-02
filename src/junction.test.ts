@@ -90,8 +90,9 @@ test("a tee stays a tee when the two seams do not align", async () => {
   run(window.splitSpawn("row"))
   const left = window.panes[0]!
   window.focus(left)
-  run(window.splitSpawn("column"))
-  const under = window.panes[2]!
+  // The pane the split returns, rather than an index into `panes`: that list is
+  // in tree order now, so "the one just created" is not a position.
+  const under = run(window.splitSpawn("column"))!
   window.focus(under)
   run(window.splitSpawn("column"))
   await layout()

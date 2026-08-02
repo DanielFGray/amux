@@ -118,6 +118,93 @@ function redistribute(children: LayoutNode[], weight: number): LayoutNode[] {
 }
 
 /**
+ * Rewrite panes by their position in pane order.
+ *
+ * Position and not agent id: two panes can show the same agent — that is what
+ * revealing an agent twice leaves behind, and what a layout with a repeated id
+ * means — and only position tells them apart. Returning null from `fn` removes
+ * that pane; the caller collapses whatever husk that leaves.
+ *
+ * A position no pane has is therefore not an error to raise but a rewrite that
+ * never fires, which is what leaves an out-of-range edit as a no-op rather than
+ * as a throw halfway through building a tree.
+ */
+function rewritePanes(
+  root: LayoutNode | null,
+  fn: (pane: LayoutPane, at: number) => LayoutNode | null,
+): LayoutNode | null {
+  let seen = 0
+  const walk = (node: LayoutNode): LayoutNode | null => {
+    if (node.type === "pane") return fn(node, seen++)
+    const children = node.children.map(walk).filter((child): child is LayoutNode => child !== null)
+    return children.length ? { ...node, children } : null
+  }
+  return root ? walk(root) : null
+}
+
+/**
+ * Split the pane at `index`, putting `agent` in the new half.
+ *
+ * The arrangement as a *transformation of data* rather than surgery on a
+ * renderable tree — Window.split does the same thing to Boxes and Dividers, and
+ * this is the part of it that a headless process could do.
+ *
+ * The weights work out without a special case, which is the pleasant surprise
+ * here. The pane becomes an even two-child split standing in its own slot, and
+ * collapse() flattens that into a same-axis parent by scaling the children to
+ * the space the husk occupied — so each half comes out at half the original
+ * weight, which is exactly the "newcomer takes half" rule tmux follows and
+ * Window.split used to write out by hand. Splitting a pane the user had dragged
+ * to a weight of 69 gives two panes of 34.5, not a 69 against a fresh 1.
+ *
+ * Focus moves to the new pane, as it does in tmux. It is named by agent id like
+ * every other focus, so splitting to show an agent this window is ALREADY
+ * showing leaves the focus ambiguous — the first pane showing it wins. That is
+ * the modelling gap pane identity closes (ep-ceb468 phase 2); until then
+ * Window.split finds the newcomer by position instead.
+ */
+export function splitLayout(
+  layout: Layout,
+  index: number,
+  direction: SplitDirection,
+  agent: string,
+): Layout {
+  const root = rewritePanes(layout.root, (target, at) =>
+    at !== index
+      ? target
+      : {
+          type: "split",
+          direction,
+          weight: target.weight,
+          children: [
+            { ...target, weight: 1 },
+            { type: "pane", agent, weight: 1 },
+          ],
+        },
+  )
+  return makeLayout(collapse(root), agent)
+}
+
+/**
+ * Exchange the agents in two panes.
+ *
+ * Slots keep their weights and the agents move between them, which is what
+ * tmux's swap-pane does and what Window.swap arrived at the long way round: it
+ * moved the renderables and then handed each the other's weight. Focus is an
+ * agent id, so it follows the agent to its new slot for free.
+ */
+export function swapLayout(layout: Layout, from: number, to: number): Layout {
+  const panes = layoutPanes(layout.root)
+  const a = panes[from]
+  const b = panes[to]
+  if (!a || !b || from === to) return layout
+  const root = rewritePanes(layout.root, (pane, at) =>
+    at === from ? { ...pane, agent: b.agent } : at === to ? { ...pane, agent: a.agent } : pane,
+  )
+  return makeLayout(collapse(root), layout.focus)
+}
+
+/**
  * Remove panes whose agent is gone, keeping the rest of the shape.
  *
  * Restore has to cope with a layout outliving its processes: a session saved

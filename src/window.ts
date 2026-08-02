@@ -9,9 +9,12 @@ import { Divider, getWeight, setWeight, getDirection, setDirection, type Junctio
 import { runtime } from "./config.ts"
 import {
   collapse,
+  layoutPanes,
   makeLayout,
   presetLayout,
   prune,
+  splitLayout,
+  swapLayout,
   type Layout,
   type LayoutNode,
   type LayoutPreset,
@@ -534,6 +537,24 @@ export class Window {
     return this.#focused ? !this.#hasNeighbour(this.#focused, "row", -1) : false
   }
 
+  /**
+   * The panes in tree order — left to right, depth first.
+   *
+   * The order a Layout lists them in, which is what makes a position in one the
+   * same position in the other. NOT the same as `#panes`: that is creation
+   * order, and a split used to insert into the middle of the tree while pushing
+   * onto the end of the list. Every arrangement now goes through applyLayout,
+   * which rebuilds `#panes` in this order, so the two agree — but the tree is
+   * the one that defines it.
+   */
+  #paneOrder(root: Renderable = this.root, out: TerminalPane[] = []): TerminalPane[] {
+    for (const child of root.getChildren()) {
+      if (child instanceof TerminalPane) out.push(child)
+      else if (child instanceof BoxRenderable) this.#paneOrder(child, out)
+    }
+    return out
+  }
+
   #dividers(root: Renderable = this.root, out: Divider[] = []): Divider[] {
     for (const child of root.getChildren()) {
       if (child instanceof Divider) out.push(child)
@@ -681,46 +702,14 @@ export class Window {
   swap(step: 1 | -1) {
     if (this.#zoomed) this.#unzoom()
     const from = this.#focused
-    if (!from || this.#panes.length < 2) return
-    const i = this.#panes.indexOf(from)
-    const j = (i + step + this.#panes.length) % this.#panes.length
-    const to = this.#panes[j]!
-
-    const parentA = from.parent as BoxRenderable | null
-    const parentB = to.parent as BoxRenderable | null
-    if (!parentA || !parentB) return
-
-    const weightA = getWeight(from)
-    const weightB = getWeight(to)
-
-    if (parentA === parentB) {
-      const children = parentA.getChildren()
-      const [firstAt, secondAt] = [children.indexOf(from), children.indexOf(to)].sort((a, b) => a - b)
-      const first = children[firstAt!] as Renderable
-      const second = children[secondAt!] as Renderable
-      // Remove the later one first: taking the earlier one out would shift the
-      // index we still need.
-      parentA.remove(second)
-      parentA.remove(first)
-      parentA.add(second, firstAt!)
-      parentA.add(first, secondAt!)
-    } else {
-      const atA = parentA.getChildren().indexOf(from)
-      const atB = parentB.getChildren().indexOf(to)
-      parentA.remove(from)
-      parentB.remove(to)
-      parentA.add(to, atA)
-      parentB.add(from, atB)
-    }
-
-    setWeight(from, weightB)
-    setWeight(to, weightA)
-    // Keep pane order matching the layout, so another press keeps going the
-    // same way instead of swapping back.
-    this.#panes[i] = to
-    this.#panes[j] = from
-    this.#refreshChrome()
-    this.focus(from)
+    const order = this.#paneOrder()
+    if (!from || order.length < 2) return
+    const i = order.indexOf(from)
+    if (i === -1) return
+    const j = (i + step + order.length) % order.length
+    // Swapping panes inside a preset arrangement leaves it that arrangement:
+    // even-horizontal with two panes exchanged is still even-horizontal.
+    this.applyLayout(swapLayout(this.exportLayout(), i, j), this.#preset)
   }
 
   /**
@@ -733,52 +722,26 @@ export class Window {
   split(direction: SplitDirection, agent: Agent): TerminalPane | null {
     // Splitting reshapes the parked tree; do it with the layout on screen.
     if (this.#zoomed) this.#unzoom()
-    this.#preset = null
     const target = this.#focused
     if (!target) return this.mount(agent)
+    // A focused pane that is not in the tree has no slot to split. The tree is
+    // the only thing that can say so — the layout below is derived from it, and
+    // a pane it never walked is simply absent rather than reported.
+    if (!target.parent) return null
 
-    const parent = target.parent as BoxRenderable | null
-    if (!parent) return null
+    const at = this.#paneOrder().indexOf(target)
+    if (at === -1) return null
+    if (!this.applyLayout(splitLayout(this.exportLayout(), at, direction, agent.id))) return null
 
-    const pane = this.#makePane(agent)
-
-    // Every sibling pair is separated by a draggable divider, which is also
-    // the visible border between panes.
-    // The newcomer takes half of what it is splitting, tmux-style. Splitting a
-    // pane that was resized to a weight of 69 against a fresh weight of 1 would
-    // otherwise leave the new pane a sliver a cell or two wide.
-    const share = getWeight(target) / 2
-
-    if (getDirection(parent) === direction && parent !== this.root) {
-      const at = parent.getChildren().indexOf(target) + 1
-      setWeight(target, share)
-      setWeight(pane, share)
-      parent.add(this.#makeDivider(direction), at)
-      parent.add(pane, at + 1)
-    } else if (parent === this.root && parent.getChildrenCount() === 1) {
-      // Root still holds a single pane, so it can simply adopt the axis.
-      setDirection(parent, direction)
-      setWeight(target, share)
-      setWeight(pane, share)
-      parent.add(this.#makeDivider(direction))
-      parent.add(pane)
-    } else {
-      const index = parent.getChildren().indexOf(target)
-      const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` })
-      setDirection(box, direction)
-      // The box stands in for the pane it replaces, so it inherits its weight;
-      // inside it, the two panes start even.
-      setWeight(box, getWeight(target))
-      parent.remove(target)
-      setWeight(target, 1)
-      setWeight(pane, 1)
-      box.add(target)
-      box.add(this.#makeDivider(direction))
-      box.add(pane)
-      parent.add(box, index)
-    }
-
-    this.focus(pane)
+    // The newcomer sits immediately after the pane it split, and collapse()
+    // preserves order, so its position is known rather than searched for.
+    //
+    // Found by position and not by agent id, which matters when the agent is
+    // one this window is already showing: a layout names panes by their agent,
+    // so it cannot tell the two apart and its focus would land on the first.
+    // See ep-ceb468 phase 2 — pane identity is the modelling gap here.
+    const pane = this.#paneOrder()[at + 1] ?? null
+    if (pane) this.focus(pane)
     return pane
   }
 
@@ -966,15 +929,17 @@ export class Window {
    * refusal rather than a way to empty the window: it returns false with the
    * layout untouched, so a stale string cannot silently destroy what is here.
    */
-  applyLayout(layout: Layout): boolean {
+  applyLayout(layout: Layout, preset: LayoutPreset | null = null): boolean {
     const byId = new Map(this.#agents.map((agent) => [agent.id, agent]))
     const wanted = prune(layout, (id) => byId.has(id))
     if (!wanted.root) return false
 
     // The tree about to be dismantled is the parked one while zoomed.
     if (this.#zoomed) this.#unzoom()
-    // An arbitrary layout matches no preset; selectLayout re-stamps it after.
-    this.#preset = null
+    // An arbitrary layout matches no preset, so that is the default. A caller
+    // that knows better says so: select-layout builds its arrangement FROM a
+    // preset, and swapping two panes inside one leaves it that preset.
+    this.#preset = preset
 
     // Reuse by agent, in pane order, so two panes on one agent stay two panes
     // and each keeps its own scroll position.
@@ -1071,9 +1036,7 @@ export class Window {
   selectLayout(preset: LayoutPreset): boolean {
     if (this.#panes.length === 0) return false
     const agents = this.#panes.map((pane) => pane.agent.id)
-    const applied = this.applyLayout(presetLayout(agents, preset, this.#focused?.agent.id))
-    if (applied) this.#preset = preset
-    return applied
+    return this.applyLayout(presetLayout(agents, preset, this.#focused?.agent.id), preset)
   }
 
   /** The preset this window was last arranged by, or null once a split, close

@@ -11,6 +11,8 @@ import {
   parseLayout,
   presetLayout,
   prune,
+  splitLayout,
+  swapLayout,
   LAYOUT_PRESETS,
   type Layout,
   type LayoutNode,
@@ -247,4 +249,82 @@ test("nextPreset walks the cycle and restarts from a hand-built layout", () => {
   expect(seen).toEqual([...LAYOUT_PRESETS])
   // And wraps.
   expect(nextPreset(LAYOUT_PRESETS[LAYOUT_PRESETS.length - 1]!)).toBe(LAYOUT_PRESETS[0])
+})
+
+/**
+ * Splitting, as a transformation of data.
+ *
+ * The half of Window.split that needs no renderer — and, once the daemon owns
+ * the model (ep-ceb468), the whole of it.
+ */
+test("a split replaces a pane with itself and the newcomer", () => {
+  const after = splitLayout(layout(pane("a")), 0, "row", "b")
+  expect(after.root).toEqual(split("row", [pane("a"), pane("b")]))
+  // tmux moves you into the pane you just made.
+  expect(after.focus).toBe("b")
+})
+
+/**
+ * The weights, which is the whole reason this can be written as one case.
+ *
+ * A pane dragged to 69 against a sibling at 31 must not split into 69 and a
+ * fresh 1 — the newcomer would be a sliver a cell or two wide. Window.split
+ * used to compute `weight / 2` by hand for the sibling case and inherit-then-
+ * even for the nested one; here the nested even split is the only thing built,
+ * and collapse()'s redistribution turns it into halves.
+ */
+test("splitting a resized pane gives the newcomer half of it", () => {
+  const before = layout(split("row", [pane("a", 69), pane("b", 31)]), "b")
+  const after = splitLayout(before, 1, "row", "c")
+
+  // Flat, because the axis did not change: three panes in a row, which is what
+  // tmux shows after two horizontal splits.
+  expect(after.root).toEqual(split("row", [pane("a", 69), pane("b", 15.5), pane("c", 15.5)]))
+})
+
+test("splitting across the axis nests, and the new split inherits the slot", () => {
+  const before = layout(split("row", [pane("a", 3), pane("b", 1)]), "a")
+  const after = splitLayout(before, 0, "column", "c")
+
+  expect(after.root).toEqual(
+    split("row", [split("column", [pane("a"), pane("c")], 3), pane("b", 1)]),
+  )
+})
+
+test("a split names a pane by position, so two panes on one agent are distinct", () => {
+  const before = layout(split("row", [pane("a"), pane("a")]), "a")
+  const after = splitLayout(before, 1, "column", "b")
+
+  expect(after.root).toEqual(
+    split("row", [pane("a"), split("column", [pane("a"), pane("b")])]),
+  )
+})
+
+test("a split at a position no pane has changes nothing", () => {
+  const before = layout(split("row", [pane("a"), pane("b")]), "a")
+  expect(splitLayout(before, 7, "row", "c").root).toEqual(before.root)
+})
+
+/**
+ * Swapping moves the agents, not the slots.
+ *
+ * The sizes belong to the arrangement and the agents move through it, which is
+ * what tmux's swap-pane does — Window.swap arrives at the same place the long
+ * way round, by moving renderables and then handing each the other's weight.
+ */
+test("a swap exchanges two panes' agents and leaves the weights alone", () => {
+  const before = layout(split("row", [pane("a", 3), split("column", [pane("b"), pane("c", 2)])]), "a")
+  const after = swapLayout(before, 0, 2)
+
+  expect(after.root).toEqual(
+    split("row", [pane("c", 3), split("column", [pane("b"), pane("a", 2)])]),
+  )
+  // Focus is an agent id, so it followed `a` into its new slot for nothing.
+  expect(after.focus).toBe("a")
+})
+
+test("a swap with itself, or with a pane that is not there, changes nothing", () => {
+  const before = layout(split("row", [pane("a"), pane("b")]), "a")
+  expect(swapLayout(before, 0, 0)).toEqual(before)
+  expect(swapLayout(before, 0, 5)).toEqual(before)
 })

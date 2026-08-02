@@ -495,17 +495,20 @@ test("splitting a resized pane gives the newcomer half of it, not a sliver", asy
     run(s.win.splitSpawn("row"))
     await s.t.renderOnce()
 
-    // The outer split is untouched...
-    const [leftAfter, , rightAfter] = rootKids().map((k) => k.width)
-    expect(leftAfter).toBe(leftBefore)
-    expect(rightAfter).toBe(rightBefore)
+    // Splitting along the axis the parent already runs on makes a SIBLING, not
+    // a nested box: three panes in a row, tmux's arrangement after two
+    // horizontal splits. The live tree used to nest here and its own export did
+    // not — collapse() flattens a same-axis child — so a window saved and
+    // restored changed shape. The model is the shape now.
+    const widths = rootKids().map((k) => k.width)
+    expect(rootKids()).toHaveLength(5)
 
+    // The pane that was not split keeps its size...
+    const [leftAfter, , splitAfter, , newcomer] = widths
+    expect(leftAfter).toBe(leftBefore)
     // ...and the new pane took half of the pane it split, not a cell or two.
-    const box = rootKids()[2]
-    const inner = (box.getChildren() as any[]).map((k) => k.width)
-    expect(inner.length).toBe(3)
-    expect(inner[0]).toBeGreaterThan(rightBefore / 3)
-    expect(inner[2]).toBeGreaterThan(rightBefore / 3)
+    expect(splitAfter).toBeGreaterThan(rightBefore / 3)
+    expect(newcomer).toBeGreaterThan(rightBefore / 3)
   } finally {
     await s.dispose()
   }
