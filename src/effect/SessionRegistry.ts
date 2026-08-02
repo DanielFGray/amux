@@ -39,6 +39,21 @@ export interface ManagedSession {
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
   readonly resize: (cols: number, rows: number) => Effect.Effect<void, PtyError>;
   readonly kill: Effect.Effect<void, PtyError>;
+  /** What is in the foreground of this session's tty right now. Only the
+   *  daemon can answer: the tty's foreground process group is read through
+   *  the master, which lives here. See the `foreground` attach frame. */
+  readonly foreground: () => SessionForeground;
+}
+
+/** The foreground of a session's tty, as the owner sees it. A session with no
+ *  process behind it (an agent stub) reports -1 for both. */
+export interface SessionForeground {
+  /** Foreground process group of the controlling tty, or -1. Equal to `sid`
+   *  while a shell sits at a prompt; a different value means a command is
+   *  running in the foreground. */
+  readonly pgid: number;
+  /** Session id = the session leader's pid, or -1 when it is not knowable. */
+  readonly sid: number;
 }
 
 type SessionCommand =
@@ -64,6 +79,7 @@ interface Backend {
   resize(cols: number, rows: number): void;
   kill(): Promise<void>;
   close(): void;
+  foreground(): SessionForeground;
 }
 
 function ptyBackend(spec: SessionSpec): Backend {
@@ -85,6 +101,10 @@ function ptyBackend(spec: SessionSpec): Backend {
     resize: (cols, rows) => pty.resize(cols, rows),
     kill: () => pty.kill(),
     close: () => pty.close(),
+    // The two questions only the tty owner can answer — read through the
+    // master fd this process holds. sessionId() caches its value internally,
+    // so repeated reads are one syscall each.
+    foreground: () => ({ pgid: pty.foregroundPgid(), sid: pty.sessionId() }),
   };
 }
 
@@ -118,6 +138,8 @@ function agentStubBackend(): Backend {
     resize: () => {},
     kill: async () => finish(),
     close: () => finish(),
+    // Nothing runs behind a stub, so nothing is in the foreground.
+    foreground: () => ({ pgid: -1, sid: -1 }),
   };
 }
 
@@ -243,6 +265,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
           // Kill must not wait behind a write whose child stopped reading.
           kill: Effect.promise(() => backend.kill()),
+          foreground: () => backend.foreground(),
         } satisfies ManagedSession;
       });
 

@@ -20,6 +20,7 @@ import { Context, Effect, Layer, Scope } from "effect";
 import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame } from "./AttachProtocol.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
+import { PasteBuffers } from "./BufferStore.ts";
 import { SessionSupervisor } from "./SessionSupervisor.ts";
 import type { ManagedSession, PtyError, SessionSpec } from "./SessionRegistry.ts";
 
@@ -54,6 +55,18 @@ export interface AttachHostService {
   readonly live: Effect.Effect<readonly string[]>;
   /** Send a frame to every attached client. */
   readonly publish: (frame: AttachFrame) => Effect.Effect<void>;
+  /**
+   * Write a server-owned buffer into a session, bracketed when the child asked
+   * for it. The daemon-side paste path: the RPC paste-buffer verb reads a
+   * buffer and hands it here.
+   */
+  readonly paste: (id: string, data: Uint8Array) => Effect.Effect<void, PtyError>;
+  /**
+   * The server's paste buffer stack. Owned here because it belongs to the
+   * PTY plane: it dies with the daemon's attach scope, exactly as tmux's
+   * buffers die with the server.
+   */
+  readonly buffers: PasteBuffers;
 }
 
 export class AttachHost extends Context.Tag("AttachHost")<AttachHost, AttachHostService>() {}
@@ -95,6 +108,9 @@ const make = (
       kill: supervisor.kill,
       live: supervisor.live,
       publish: hub.publish,
+      paste: (id, data) => supervisor.paste(id, data),
+      // One stack per daemon, living as long as the attach plane does.
+      buffers: new PasteBuffers(),
     };
   });
 

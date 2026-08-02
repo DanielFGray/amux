@@ -48,6 +48,27 @@ const Sync = S.Struct({
   session: S.String,
 })
 
+/**
+ * The daemon's answer to "what is in the foreground of this session's tty".
+ *
+ * The daemon owns the PTY, so only it can ask the tty which process group is
+ * in the foreground (tcgetpgrp) and what its session id is (tcgetsid); a
+ * client reading the same tty gets -1. Sent whenever either value changes —
+ * and once when the session starts, so a client that spawns or adopts a
+ * session is told the current state without having to ask. The client keeps
+ * reading /proc for the actual cmdline: pids are a global namespace, the
+ * foreground pgid is not.
+ */
+const Foreground = S.Struct({
+  _tag: S.Literal("foreground"),
+  session: S.String,
+  /** Foreground process group of the controlling tty, or -1. Equal to the
+   *  session id while a shell sits at a prompt. */
+  pgid: S.Int,
+  /** Session id = the session leader's pid, or -1 when it is not knowable. */
+  sid: S.Int,
+})
+
 const Exit = S.Struct({
   _tag: S.Literal("exit"),
   session: S.String,
@@ -69,7 +90,7 @@ const Pong = S.Struct({
   nonce: S.String,
 })
 
-export const AttachFrame = S.Union(Hello, Output, Input, Resize, Sync, Exit, ErrorFrame, Ping, Pong)
+export const AttachFrame = S.Union(Hello, Output, Input, Resize, Sync, Exit, Foreground, ErrorFrame, Ping, Pong)
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()("AttachProtocolError", {

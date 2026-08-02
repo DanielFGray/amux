@@ -93,6 +93,21 @@ test("the wire decodes into a command, and rejects one it cannot type", () => {
   expect(rejects({ _tag: "window.rename" })).toBe(true)
 })
 
+test("the buffer verbs carry their stack arguments over the wire", () => {
+  const rejects = (input: unknown) =>
+    Either.isLeft(Effect.runSync(Effect.either(decodeCommand(input))))
+  expect(Effect.runSync(decodeCommand({ _tag: "buffer.set", data: "x" }))).toEqual(
+    command("buffer.set", { data: "x" }),
+  )
+  expect(Effect.runSync(decodeCommand({ _tag: "buffer.paste", name: "clip" }))).toEqual(
+    command("buffer.paste", { name: "clip" }),
+  )
+  expect(Effect.runSync(decodeCommand({ _tag: "buffer.choose" }))).toEqual(command("buffer.choose"))
+  // A buffer verb's name is optional, exactly like a tmux -b flag.
+  expect(Effect.runSync(decodeCommand({ _tag: "buffer.delete" }))).toEqual(command("buffer.delete"))
+  expect(rejects({ _tag: "buffer.set" })).toBe(true)
+})
+
 /**
  * Capability is what stops ts-538b30 handing an agent the whole table.
  *

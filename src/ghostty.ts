@@ -82,6 +82,11 @@ const TERMINAL_DATA_PWD = 13;
 /** The 1049 mode: alternate screen + save cursor + clear on enter. */
 export const MODE_ALT_SCREEN = 1049;
 
+/** The 2004 mode: bracketed paste. When the child enables it, a paste must
+ *  arrive wrapped in the bracketed-paste escapes or the shell/editor will
+ *  interpret newlines as Enter and indent as typing. */
+export const MODE_BRACKETED_PASTE = 2004;
+
 const STATE_DIRTY = 3;
 const STATE_OPTION_DIRTY = 0;
 const STATE_CURSOR_VISUAL_STYLE = 10;

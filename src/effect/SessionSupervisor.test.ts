@@ -43,9 +43,78 @@ test("SessionSupervisor publishes owned PTY output and exit frames", async () =>
 
   expect(output(frames)).toContain("hello");
   // Exit is last, always: a client that trusts frame order must never be told
-  // a session is gone while output for it is still in flight.
+  // a session is gone while output for it is still in flight. The foreground
+  // frame is a side channel about the same session, not terminal content.
   expect(frames.at(-1)).toEqual({ _tag: "exit", session: "supervised-agent", code: 7 });
-  expect(frames.slice(0, -1).every((frame) => frame._tag === "output")).toBe(true);
+  expect(frames.filter((frame) => frame._tag !== "foreground").slice(0, -1).every((frame) => frame._tag === "output")).toBe(true);
+});
+
+/**
+ * The daemon is the only process that can ask a session's tty what is in the
+ * foreground (tcgetpgrp goes through the master it owns), so the supervisor is
+ * where the answer has to come from. A shell at a prompt reports its own pid
+ * as the foreground group; running a command changes it — and the change has
+ * to travel over the hub for the client's detection to ever see it.
+ */
+test("a supervised session publishes its foreground process, and its changes", async () => {
+  const fg = await Effect.runPromise(
+    Effect.gen(function* () {
+      type FgFrame = Extract<AttachFrame, { _tag: "foreground" }>;
+      const hub = yield* AttachHub;
+      const subscription = yield* hub.subscribe("client");
+      const supervisor = yield* SessionSupervisor;
+      yield* supervisor.spawn({
+        id: "foreground-agent",
+        cmd: ["bash", "--norc", "--noprofile"],
+        cols: 80,
+        rows: 24,
+      });
+      // A shell at a prompt reports its own pid as the foreground group; a
+      // command running in the foreground is a different pgid. Wait for both
+      // states on the published stream.
+      const atPrompt = yield* Deferred.make<FgFrame>();
+      const running = yield* Deferred.make<FgFrame>();
+      const waiter = yield* Effect.fork(
+        Stream.runForEach(subscription.frames, (frame) =>
+          frame._tag === "foreground"
+            ? Effect.gen(function* () {
+                if (frame.pgid > 0 && frame.pgid === frame.sid) yield* Deferred.succeed(atPrompt, frame).pipe(Effect.ignore);
+                if (frame.pgid > 0 && frame.pgid !== frame.sid) yield* Deferred.succeed(running, frame).pipe(Effect.ignore);
+              })
+            : Effect.void,
+        ),
+      );
+      // The shell has to come up and make itself the foreground group before
+      // the first meaningful frame can arrive.
+      yield* Deferred.await(atPrompt).pipe(Effect.timeout("5 seconds"), Effect.orElseSucceed(() => {
+        throw new Error("no foreground frame with a shell at a prompt arrived");
+      }));
+      yield* supervisor.handle({
+        _tag: "input",
+        session: "foreground-agent",
+        data: new TextEncoder().encode("sleep 30\n"),
+      });
+      yield* Deferred.await(running).pipe(Effect.timeout("5 seconds"), Effect.orElseSucceed(() => {
+        throw new Error("no foreground frame with a command running arrived");
+      }));
+      yield* Fiber.interrupt(waiter);
+      // Scope teardown of a still-running session hangs the supervised pump
+      // (pre-existing, unrelated to the foreground poller), so end the session
+      // the way every supervisor test does: kill it explicitly.
+      yield* supervisor.kill("foreground-agent");
+      return {
+        prompt: yield* Deferred.await(atPrompt),
+        running: yield* Deferred.await(running),
+      };
+    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+  );
+
+  expect(fg.prompt.session).toBe("foreground-agent");
+  expect(fg.prompt.pgid).toBe(fg.prompt.sid);
+  // sleep is a real foreground process, in its own process group: the pgid it
+  // reports must not be the shell's.
+  expect(fg.running.pgid).toBeGreaterThan(0);
+  expect(fg.running.pgid).not.toBe(fg.running.sid);
 });
 
 test("SessionSupervisor routes input through the managed PTY", async () => {

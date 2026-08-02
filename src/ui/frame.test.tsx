@@ -86,6 +86,7 @@ async function screen(
         settingsDirty={false}
         prompt={null}
         captureView={null}
+        chooseView={null}
         copying={false}
       />
     ),

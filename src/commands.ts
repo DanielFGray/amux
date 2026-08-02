@@ -143,6 +143,41 @@ const PaneCopyMode = define("pane.copy-mode", {}, {
   capability: "local",
 })
 
+// Buffers — tmux's paste-buffer family. The stack itself lives on the daemon,
+// next to the PTYs it pastes into; these verbs are the surfaces' door to it.
+// paste and choose need a screen (the focused pane / an overlay), the rest are
+// pure server operations and therefore scriptable.
+const BufferSet = define("buffer.set", { name: Schema.optional(Schema.String), data: Schema.String }, {
+  desc: "set a paste buffer (a copy pushes onto the stack automatically)",
+  group: "buffers",
+  capability: "remote",
+})
+const BufferPaste = define("buffer.paste", { name: Schema.optional(Schema.String) }, {
+  desc: "paste the top paste buffer into the focused pane",
+  group: "buffers",
+  capability: "local",
+})
+const BufferList = define("buffer.list", {}, {
+  desc: "list the paste buffers",
+  group: "buffers",
+  capability: "remote",
+})
+const BufferDelete = define("buffer.delete", { name: Schema.optional(Schema.String) }, {
+  desc: "delete the top paste buffer (or a named one)",
+  group: "buffers",
+  capability: "remote",
+})
+const BufferShow = define("buffer.show", { name: Schema.optional(Schema.String) }, {
+  desc: "show a paste buffer's contents",
+  group: "buffers",
+  capability: "remote",
+})
+const BufferChoose = define("buffer.choose", {}, {
+  desc: "choose a paste buffer to paste",
+  group: "buffers",
+  capability: "local",
+})
+
 // Windows.
 const WindowNew = define("window.new", {}, { desc: "new window", group: "windows", capability: "agent" })
 const WindowNext = define("window.next", {}, { desc: "next window", group: "windows", capability: "agent" })
@@ -266,6 +301,12 @@ export const COMMAND_DEFS = [
   PaneSendKeys,
   PaneCapture,
   PaneCopyMode,
+  BufferSet,
+  BufferPaste,
+  BufferList,
+  BufferDelete,
+  BufferShow,
+  BufferChoose,
   WindowNew,
   WindowNext,
   WindowPrevious,

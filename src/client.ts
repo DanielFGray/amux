@@ -3,6 +3,7 @@ import { Data, Effect, Layer, Schedule } from "effect"
 import { AttachClient } from "./attach.ts"
 import { daemonBackend, type BackendOptions, type DaemonSession, type SpawnBackend } from "./backend.ts"
 import { daemonRequest, type DaemonResponse } from "./daemon.ts"
+import type { BufferEntry } from "./effect/BufferStore.ts"
 import { readLease, processAlive, sessionPaths, SessionEnv, type SessionState } from "./session.ts"
 
 const START_TIMEOUT_MS = 10_000
@@ -25,6 +26,13 @@ export interface SessionClientShape extends DaemonSession {
   readonly close: () => void
   readonly stop: () => Effect.Effect<void, unknown, never>
   readonly save: (workspace: Pick<SessionState, "spaces"> & { activeSpace?: string | null }) => Effect.Effect<void, unknown, never>
+  /** tmux's buffer verbs, all server-side: the stack lives in the daemon
+   *  beside the PTYs, so a copy and a paste work with no client attached. */
+  readonly setBuffer: (name: string | undefined, data: string) => Effect.Effect<string, unknown, never>
+  readonly pasteBuffer: (name: string | undefined, target: string, deleteAfter?: boolean) => Effect.Effect<void, unknown, never>
+  readonly listBuffers: () => Effect.Effect<readonly BufferEntry[], unknown, never>
+  readonly deleteBuffer: (name: string | undefined) => Effect.Effect<void, unknown, never>
+  readonly showBuffer: (name: string | undefined) => Effect.Effect<string, unknown, never>
 }
 
 export class SessionClient extends Effect.Service<SessionClientShape>()("SessionClient", {
@@ -77,6 +85,27 @@ const make = (id: string, options: SessionClientOptions): Effect.Effect<SessionC
       kill: (agent: string) => daemonRequest(id, { command: "kill", agent }).pipe(Effect.provideService(SessionEnv, env), Effect.catchAll(() => Effect.void), Effect.asVoid),
       save: (workspace: Pick<SessionState, "spaces"> & { activeSpace?: string | null }) => daemonRequest(id, { command: "save", workspace }).pipe(Effect.provideService(SessionEnv, env),
         Effect.flatMap((response) => response.ok ? Effect.void : Effect.fail(new SessionClientError({ message: response.error ?? "save refused" }))),
+      ),
+      setBuffer: (name: string | undefined, data: string) => daemonRequest(id, { command: "set-buffer", bufferName: name, bufferData: data }).pipe(Effect.provideService(SessionEnv, env),
+        Effect.flatMap((response) => response.ok
+          ? Effect.succeed(response.bufferName ?? name ?? "")
+          : Effect.fail(new SessionClientError({ message: response.error ?? "set-buffer refused" }))),
+      ),
+      pasteBuffer: (name: string | undefined, target: string, deleteAfter = false) => daemonRequest(id, { command: "paste-buffer", bufferName: name, bufferTarget: target, bufferDelete: deleteAfter }).pipe(Effect.provideService(SessionEnv, env),
+        Effect.flatMap((response) => response.ok ? Effect.void : Effect.fail(new SessionClientError({ message: response.error ?? "paste-buffer refused" }))),
+      ),
+      listBuffers: () => daemonRequest(id, { command: "list-buffers" }).pipe(Effect.provideService(SessionEnv, env),
+        Effect.flatMap((response) => response.ok
+          ? Effect.succeed(response.buffers ?? [])
+          : Effect.fail(new SessionClientError({ message: response.error ?? "list-buffers refused" }))),
+      ),
+      deleteBuffer: (name: string | undefined) => daemonRequest(id, { command: "delete-buffer", bufferName: name }).pipe(Effect.provideService(SessionEnv, env),
+        Effect.flatMap((response) => response.ok ? Effect.void : Effect.fail(new SessionClientError({ message: response.error ?? "delete-buffer refused" }))),
+      ),
+      showBuffer: (name: string | undefined) => daemonRequest(id, { command: "show-buffer", bufferName: name }).pipe(Effect.provideService(SessionEnv, env),
+        Effect.flatMap((response) => response.ok
+          ? Effect.succeed(response.bufferData ?? "")
+          : Effect.fail(new SessionClientError({ message: response.error ?? "show-buffer refused" }))),
       ),
       close: () => attach.close(),
       stop: () => daemonRequest(id, { command: "stop" }).pipe(Effect.provideService(SessionEnv, env), Effect.catchAll(() => Effect.void), Effect.asVoid),

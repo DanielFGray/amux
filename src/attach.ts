@@ -306,7 +306,7 @@ class AttachClientImpl implements AttachClientShape {
       this.onError?.(frame.message)
       return
     }
-    if (frame._tag !== "output" && frame._tag !== "exit") return
+    if (frame._tag !== "output" && frame._tag !== "exit" && frame._tag !== "foreground") return
 
     let entry = this.#queued.get(frame.session)
     // Exit closes a generation. The first later frame starts a new one even

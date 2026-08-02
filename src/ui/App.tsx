@@ -8,6 +8,7 @@ import { WindowTabs } from "./WindowTabs.tsx"
 import { Hints } from "./Hints.tsx"
 import { Prompt, type PromptRequest } from "./Prompt.tsx"
 import { Capture, type CaptureView } from "./Capture.tsx"
+import { BufferChoose, type BufferChooseView } from "./BufferChoose.tsx"
 import { Settings, type SettingsSection } from "./Settings.tsx"
 import type { AppState } from "./state.ts"
 import type { Config } from "../config.ts"
@@ -64,6 +65,8 @@ export interface AppProps {
   onKeybindList?: (box: ScrollBoxRenderable) => void
   prompt: PromptRequest | null
   captureView: CaptureView | null
+  /** The choose-buffer overlay, when it is up. */
+  chooseView: BufferChooseView | null
   /** Compile error from the prompt's last submit, for the prompt to show. */
   promptError?: string
   /** True while the focused window's pane is in keyboard copy mode, for the
@@ -173,6 +176,11 @@ export function App(props: AppProps) {
       <Show when={props.captureView} keyed>
         {(view: CaptureView) => (
           <Capture view={view} width={props.size.width} height={props.size.height} />
+        )}
+      </Show>
+      <Show when={props.chooseView} keyed>
+        {(view: BufferChooseView) => (
+          <BufferChoose view={view} width={props.size.width} height={props.size.height} />
         )}
       </Show>
     </box>

@@ -1,9 +1,33 @@
 import { Deferred, Effect, FiberMap, Layer, Match, Ref, Scope, Stream } from "effect";
-import { Terminal } from "../ghostty.ts";
+import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
 import { type AttachFrame } from "./AttachProtocol.ts";
-import { PtyError, SessionRegistry, type ManagedSession, type SessionSpec } from "./SessionRegistry.ts";
+import { PtyError, SessionRegistry, type ManagedSession, type SessionForeground, type SessionSpec } from "./SessionRegistry.ts";
+
+const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
+const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
+
+/**
+ * How often a session's foreground process group is re-read on the daemon
+ * side.
+ *
+ * Mirrors the client's AGENT_POLL_MS: a process starting is a human-paced
+ * event, and the sidebar's cache is re-read at that same cadence. Reading
+ * tcgetpgrp is one cheap syscall per live session, so polling is not a cost
+ * worth being clever about — the alternative (an event from the pty) does not
+ * exist.
+ */
+const FOREGROUND_POLL_MS = 500;
+
+/** Wrap bytes in the bracketed-paste escapes, for a child that asked for them. */
+const bracketPaste = (data: Uint8Array): Uint8Array => {
+  const out = new Uint8Array(BRACKETED_PASTE_START.length + data.length + BRACKETED_PASTE_END.length);
+  out.set(BRACKETED_PASTE_START);
+  out.set(data, BRACKETED_PASTE_START.length);
+  out.set(BRACKETED_PASTE_END, BRACKETED_PASTE_START.length + data.length);
+  return out;
+};
 
 /**
  * Connects daemon-owned sessions — pty or agent — to the attach data plane.
@@ -158,6 +182,44 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               ),
             ),
           );
+          // Tell clients what is in the foreground, and keep telling them.
+          // This is how the client's own foreground detection comes alive for
+          // a daemon-owned session: a client cannot tcgetpgrp a tty it does
+          // not own, so it would otherwise read -1 forever and never see an
+          // agent started from a shell. The initial frame is published
+          // unconditionally — a client that spawns this session has no other
+          // way to learn the current state — and afterwards only a change is
+          // worth a frame. A client that ADOPTS the session later gets the
+          // current value from the sync handler instead. Published to every
+          // attached client, like output: each of them needs the same fact
+          // about the same tty.
+          yield* FiberMap.run(
+            pumps,
+            `foreground:${spec.id}`,
+            Effect.gen(function* () {
+              const publish = (fg: SessionForeground) =>
+                hub.publish({
+                  _tag: "foreground",
+                  session: spec.id,
+                  pgid: fg.pgid,
+                  sid: fg.sid,
+                } satisfies AttachFrame);
+              let last = yield* Effect.sync(() => session.foreground());
+              yield* publish(last);
+              // The loop outlives the pump by design of the FiberMap, so it
+              // must stop itself: dropSession removes this session from the
+              // map, and a session that is no longer current has no tty left
+              // worth reporting on.
+              while (yield* Ref.get(sessions).pipe(Effect.map((current) => current.get(spec.id) === session))) {
+                yield* Effect.sleep(FOREGROUND_POLL_MS);
+                const next = yield* Effect.sync(() => session.foreground());
+                if (next.pgid !== last.pgid || next.sid !== last.sid) {
+                  last = next;
+                  yield* publish(next);
+                }
+              }
+            }),
+          );
         }).pipe(
           Effect.tapError(() => dropSession(spec.id, session, screen).pipe(
             Effect.zipRight(session.kill.pipe(Effect.ignore)),
@@ -198,10 +260,49 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
 
       /** Replay an adopted session's screen to the client that asked for it. */
       sync: Effect.fnUntraced(function* (client: string, connection: string, id: string) {
+        const session = (yield* Ref.get(sessions)).get(id);
+        // "Bring me up to date" includes which process is in the foreground.
+        // The poller only publishes changes, so an adopting client would stay
+        // blind until the next one without this — exactly the reattach case a
+        // session outliving its client exists for.
+        if (session) {
+          const fg = yield* Effect.sync(() => session.foreground());
+          yield* hub.publishTo(client, connection, {
+            _tag: "foreground",
+            session: id,
+            pgid: fg.pgid,
+            sid: fg.sid,
+          } satisfies AttachFrame);
+        }
         const screen = (yield* Ref.get(replays)).get(id);
         if (!screen) return;
         const data = yield* Effect.sync(() => formatScreen(screen.handle));
         yield* hub.publishTo(client, connection, { _tag: "output", session: id, data } satisfies AttachFrame);
+      }),
+
+      /**
+       * Write a server-owned buffer into a session, the way tmux paste-buffer
+       * does.
+       *
+       * The bytes are written on the daemon's side of the PTY, so a paste needs
+       * no attached client — that is the whole point of the buffers living on
+       * the server. When the child has enabled bracketed paste (DECSET 2004),
+       * the bytes arrive wrapped, exactly as tmux wraps them, so a paste into
+       * vim or a shell does not reflow or run lines as it lands. The mode is
+       * read from the session's own screen model, which is the emulator's
+       * answer rather than a guess.
+       */
+      paste: Effect.fnUntraced(function* (id: string, data: Uint8Array) {
+        const session = (yield* Ref.get(sessions)).get(id);
+        if (!session) {
+          return yield* new PtyError({
+            operation: "paste",
+            message: `unknown session '${id}'`,
+          });
+        }
+        const screen = (yield* Ref.get(replays)).get(id);
+        const bytes = screen?.mode(MODE_BRACKETED_PASTE) ? bracketPaste(data) : data;
+        yield* session.write(bytes);
       }),
 
       live: Ref.get(sessions).pipe(Effect.map((current) => [...current.keys()])),

@@ -37,3 +37,10 @@ test("heartbeat frames round-trip without special client state", () => {
   const encoded = encodeAttachFrame({ _tag: "ping", nonce: "17" })
   expect(decodeAttachFrames(encoded).frames).toEqual([{ _tag: "ping", nonce: "17" }])
 })
+
+test("foreground frames carry a negative pgid and sid across the wire", () => {
+  const encoded = encodeAttachFrame({ _tag: "foreground", session: "agent-1", pgid: -1, sid: -1 })
+  expect(decodeAttachFrames(encoded).frames).toEqual([
+    { _tag: "foreground", session: "agent-1", pgid: -1, sid: -1 },
+  ])
+})

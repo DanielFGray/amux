@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { Data, Effect, ManagedRuntime } from "effect"
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts"
 import type { AttachServerError } from "./effect/AttachServer.ts"
+import type { BufferEntry } from "./effect/BufferStore.ts"
 import type { ManagedSession, SessionSpec } from "./effect/SessionRegistry.ts"
 import {
   isSessionId, loadSession, processAlive, readLease, removeSession, saveSession, SessionEnv,
@@ -12,10 +13,16 @@ import {
 
 export type DaemonCommand =
   | "ping" | "status" | "stop" | "spawn" | "kill" | "save"
+  | "set-buffer" | "paste-buffer" | "list-buffers" | "delete-buffer" | "show-buffer"
 
 export class SessionDaemonError extends Data.TaggedError("SessionDaemonError")<{
   message: string
 }> {}
+
+/** A failure's message, without the Effect error tag the tagged errors also
+ *  carry (String() of one prints "BufferError: no buffers"). */
+const describe = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
 
 /**
  * A request to start an agent, in the shape the wire can carry.
@@ -43,6 +50,18 @@ export interface DaemonRequest {
    * attachment state underneath it.
    */
   workspace?: Pick<SessionState, "spaces"> & { activeSpace?: string | null }
+  /**
+   * The buffer a buffer verb acts on, for set-buffer/paste-buffer/
+   * delete-buffer/show-buffer. Absent means "the top of the stack" except for
+   * set-buffer, where it means "a new numbered buffer".
+   */
+  bufferName?: string
+  /** The data to store, for set-buffer. */
+  bufferData?: string
+  /** The session to write into, for paste-buffer (the focused pane's agent). */
+  bufferTarget?: string
+  /** paste-buffer -d: drop the buffer after pasting it. */
+  bufferDelete?: boolean
 }
 
 export interface DaemonResponse {
@@ -57,6 +76,12 @@ export interface DaemonResponse {
   /** Agents with a live process right now. Not the same as the agents in
    *  `session`, which include ones that have already exited. */
   agents?: string[]
+  /** list-buffers: the paste buffer stack, top first. */
+  buffers?: readonly BufferEntry[]
+  /** set-buffer: the name the data landed in. */
+  bufferName?: string
+  /** show-buffer: the buffer's contents, decoded as text. */
+  bufferData?: string
 }
 
 /**
@@ -271,6 +296,46 @@ export class SessionDaemon {
     return this.#runtime.runPromise(this.#host.live)
   }
 
+  /**
+   * The paste buffer stack's verbs, tmux's set-buffer family.
+   *
+   * The stack is server state, living beside the PTYs in the attach host, so a
+   * copy and a paste both work with no client attached at all — the daemon
+   * writes the bytes into its own PTY. These are thin doors into the host;
+   * see the buffer verbs in handle() for the wire shape.
+   */
+  setBuffer(name: string | undefined, data: string): Promise<string> {
+    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"))
+    return Promise.resolve(this.#host.buffers.set(name, data))
+  }
+
+  pasteBuffer(name: string | undefined, target: string, deleteAfter: boolean): Promise<void> {
+    const host = this.#host
+    if (!host || !this.#runtime) return Promise.reject(new Error("daemon is not started"))
+    return this.#runtime.runPromise(Effect.gen(function* () {
+      const bytes = host.buffers.show(name)
+      yield* host.paste(target, bytes)
+      // The delete happens only after the paste went through: -d must not
+      // lose a buffer because the write failed.
+      if (deleteAfter) host.buffers.delete(name)
+    }))
+  }
+
+  listBuffers(): Promise<readonly BufferEntry[]> {
+    if (!this.#host || !this.#runtime) return Promise.resolve([])
+    return Promise.resolve(this.#host.buffers.list())
+  }
+
+  deleteBuffer(name: string | undefined): Promise<void> {
+    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"))
+    return Promise.resolve(this.#host.buffers.delete(name))
+  }
+
+  showBuffer(name: string | undefined): Promise<string> {
+    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"))
+    return Promise.resolve(new TextDecoder().decode(this.#host.buffers.show(name)))
+  }
+
   /** Every client currently attached, in the order they arrived. */
   get attachedClients(): string[] { return [...this.#attachments.values()].map((a) => a.client) }
 
@@ -320,6 +385,39 @@ export class SessionDaemon {
           await this.saveWorkspace(request.workspace)
           return { ok: true }
         } catch (error) { return { ok: false, error: String(error) } }
+      }
+      // The buffer verbs are the tmux paste-buffer family over the socket:
+      // the stack lives here, so copy/paste work over ssh and from a script
+      // with no client attached at all.
+      case "set-buffer": {
+        if (request.bufferData === undefined) return { ok: false, error: "set-buffer requires data" }
+        try {
+          const name = await this.setBuffer(request.bufferName, request.bufferData)
+          return { ok: true, bufferName: name }
+        } catch (error) { return { ok: false, error: describe(error) } }
+      }
+      case "paste-buffer": {
+        if (!request.bufferTarget) return { ok: false, error: "paste-buffer requires a target session" }
+        try {
+          await this.pasteBuffer(request.bufferName, request.bufferTarget, request.bufferDelete === true)
+          return { ok: true }
+        } catch (error) { return { ok: false, error: describe(error) } }
+      }
+      case "list-buffers": {
+        try {
+          return { ok: true, buffers: await this.listBuffers() }
+        } catch (error) { return { ok: false, error: describe(error) } }
+      }
+      case "delete-buffer": {
+        try {
+          await this.deleteBuffer(request.bufferName)
+          return { ok: true }
+        } catch (error) { return { ok: false, error: describe(error) } }
+      }
+      case "show-buffer": {
+        try {
+          return { ok: true, bufferData: await this.showBuffer(request.bufferName) }
+        } catch (error) { return { ok: false, error: describe(error) } }
       }
       case "stop": await this.stop(); return { ok: true }
       default: return { ok: false, error: "unknown command" }

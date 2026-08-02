@@ -144,6 +144,19 @@ export function daemonBackend(
     let exitCode: number | null = null
 
     /**
+     * Foreground process group and session id, as reported by the daemon.
+     *
+     * The daemon owns the tty, so only it can answer tcgetpgrp/tcgetsid; it
+     * publishes a `foreground` frame when the answer changes (and once when a
+     * session starts). This cache is what the frame lands in, so
+     * `foregroundPgid()` stays synchronous for Agent's polling getters and
+     * returns -1 only until the first frame arrives — the same shape a local
+     * PTY has before its shell is up.
+     */
+    let foregroundPgid = -1
+    let foregroundSid = -1
+
+    /**
      * Output waiting to be drawn.
      *
      * A Mailbox rather than a Queue because ending it still yields what it is
@@ -167,7 +180,12 @@ export function daemonBackend(
           ? output.offer(frame.data)
           : frame._tag === "exit"
             ? Effect.sync(() => end(frame.code))
-            : Effect.void,
+            : frame._tag === "foreground"
+              ? Effect.sync(() => {
+                  foregroundPgid = frame.pgid
+                  foregroundSid = frame.sid
+                })
+              : Effect.void,
       ).pipe(Effect.ensuring(Effect.sync(() => {
         if (!closed) {
           detached = true
@@ -242,11 +260,12 @@ export function daemonBackend(
       write: (data) => once(() => session.attach.input(opts.id, data)),
       resize: (cols, rows) => once(() => session.attach.resize(opts.id, cols, rows)),
       kill: () => once(() => void Effect.runPromise(session.kill(opts.id)).catch(() => {})),
-      // Process inspection reads /proc through the controlling tty, and the tty
-      // is in the daemon. -1 is the answer every caller already handles, and it
-      // is the honest one: this process cannot see that tty.
-      foregroundPgid: () => -1,
-      sessionId: () => -1,
+      // The tty is in the daemon; these answer from its `foreground` frames
+      // rather than from this process's view of the tty (which is -1). A
+      // caller that reads /proc/<pgid> is reading a global namespace, so the
+      // pgid alone is enough — the cmdline never needs to cross the wire.
+      foregroundPgid: () => foregroundPgid,
+      sessionId: () => foregroundSid,
     }
   }
 }

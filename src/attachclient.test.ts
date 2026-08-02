@@ -10,9 +10,10 @@
 
 import { afterEach, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { which } from "bun"
 import { Agent } from "./agent.ts"
 import { snapshotAgent } from "./snapshot.ts"
 import { AttachClient } from "./attach.ts"
@@ -164,6 +165,100 @@ test("a process that ends reports its exit code through the stream", async () =>
   expect(agent.exitCode).toBe(7)
 })
 
+/**
+ * A stand-in for an agent CLI: a copy of bash under an agent's name, so a test
+ * can run it and detection can read its argv from /proc.
+ *
+ * A copy rather than a wrapper script, because detection reads the foreground
+ * process's argv — a script that `exec`s bash leaves nothing behind with the
+ * agent's name on it, which is exactly the right answer for a wrapper and the
+ * wrong shape for a fixture.
+ */
+async function fakeAgent(name: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "herdr-daemon-agent-"))
+  dirs.push(dir)
+  const path = join(dir, name)
+  const bash = which("bash")
+  if (!bash) throw new Error("no bash on PATH to impersonate")
+  await Bun.write(path, Bun.file(bash))
+  await chmod(path, 0o755)
+  return path
+}
+
+/**
+ * The bug ts-572660 guards against: the daemon owns the tty, so the client
+ * cannot ask it what is in the foreground — and the daemon backend reported -1
+ * forever, blinding detection for every daemon-owned pane. An agent started
+ * from a shell in such a pane was invisible to the agents-only filter, and the
+ * row's "command · title" label had an empty command half.
+ *
+ * The daemon now reports the foreground pgid and session id over the attach
+ * stream; the client keeps reading /proc (pids are a global namespace) exactly
+ * as it does for a local PTY. At a prompt the pgid equals the session id, so a
+ * shell is still "no command"; running the fake agent changes the pgid, and
+ * detection must pick it up from its argv.
+ */
+test("an agent started from a shell is detected through the daemon backend", async () => {
+  const { env } = await session("foreground-detection")
+  const client = await attach("foreground-detection", env)
+
+  const claude = await fakeAgent("claude")
+  const agent = new Agent({
+    name: "shell",
+    cmd: ["bash", "--norc", "--noprofile"],
+    backend: client.backend(),
+  })
+  agents.push(agent)
+
+  // A fresh shell at a prompt has no foreground command to name: its pgid is
+  // its own session id, and detection must not mistake the shell for an agent.
+  await until(() => agent.foregroundCommand === "", "the shell at a prompt to report no command")
+  expect(agent.agentKind).toBe(null)
+
+  agent.write(`${claude} --norc --noprofile\n`)
+  await until(() => agent.agentKind === "claude", "the foreground agent to be detected")
+  expect(agent.foregroundCommand).toBe("claude")
+  // The visible consequence of the fix: the agents-only filter would keep this
+  // pane now.
+  expect(agent.agentKind).toBe("claude")
+})
+
+/**
+ * The other half of ts-572660: the daemon exists so a session outlives its
+ * client, so detection must survive a reconnect too. A session that was
+ * running an agent before the UI died is quiescent afterwards — nothing
+ * changes, so a change-only poller would never wake the readopted client. The
+ * daemon's sync reply to an adoption is the only thing that can carry the
+ * current foreground, and it must.
+ */
+test("a reattaching client detects an agent already in the foreground", async () => {
+  const { daemon, env } = await session("foreground-adopt")
+  const first = await attach("foreground-adopt", env, "first")
+
+  const claude = await fakeAgent("claude")
+  const agent = new Agent({
+    name: "shell",
+    cmd: ["bash", "--norc", "--noprofile"],
+    backend: first.backend(),
+  })
+  agents.push(agent)
+  await until(() => agent.foregroundCommand === "", "the shell at a prompt to report no command")
+  agent.write(`${claude} --norc --noprofile\n`)
+  await until(() => agent.agentKind === "claude", "the foreground agent to be detected")
+
+  first.close()
+  await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
+
+  const second = await attach("foreground-adopt", env, "second")
+  const readopted = new Agent({ id: agent.id, cmd: ["bash", "--norc", "--noprofile"], backend: second.backend() })
+  agents.push(readopted)
+
+  // Nothing changes on this session after adoption — no keystroke, no output,
+  // no foreground switch. The daemon's sync reply must carry the answer.
+  await until(() => readopted.agentKind === "claude", "the adopted agent to be detected")
+  expect(readopted.foregroundCommand).toBe("claude")
+})
+
 test("output written immediately before exit arrives before the exit frame", async () => {
   const { env } = await session("drain-order")
   const client = await attach("drain-order", env)
@@ -195,7 +290,10 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
   ])
   expect(firstFrames.at(-1)).toBe("exit")
 
-  const secondDone = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.take(1))))
+  // A foreground frame can now lead a session's frames (the daemon reports the
+  // shell's pgid as soon as it owns the tty), so "the first frame is output"
+  // is not a contract any more — collect through the exit instead.
+  const secondDone = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.takeUntil((frame) => frame._tag === "exit"))))
   const second = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf second; exit 4"], cols: 80, rows: 24 })
   await Effect.runPromise(second.exit)
   const frames = await Promise.race([
@@ -216,7 +314,7 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
   // unconsumed terminal frame reach the client before opening the replacement.
   await Bun.sleep(50)
 
-  const replacement = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.take(2))))
+  const replacement = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.takeUntil((frame) => frame._tag === "exit"))))
   const second = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf second; exit 4"], cols: 80, rows: 24 })
   await Effect.runPromise(second.exit)
   const frames = await Promise.race([

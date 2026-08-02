@@ -66,7 +66,9 @@ import {
   type CaptureTarget,
 } from "./capture.ts"
 import { Capture, type CaptureView } from "./ui/Capture.tsx"
+import { BufferChoose, type BufferChooseView } from "./ui/BufferChoose.tsx"
 import { CopyMode } from "./copy.ts"
+import type { BufferEntry } from "./effect/BufferStore.ts"
 import { workspaceEnv } from "./env.ts"
 
 export interface AppOptions {
@@ -116,6 +118,10 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
    */
   const run = <A,>(effect: Effect.Effect<A>): A => Effect.runSync(effect)
 
+  /** A failure's message, whatever shape the socket threw it in. */
+  const errorMessage = (error: unknown): string =>
+    error instanceof Error ? error.message : String(error)
+
   /**
    * Start a releasing effect and let it finish on its own.
    *
@@ -138,7 +144,18 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const fork = (effect: Effect.Effect<unknown>): void => void Effect.runFork(effect)
 
   const spaces = new SpaceSet(workspaceEnv(renderer, { shell: SHELL, backend: session.backend() }), paneHost)
-  spaces.onCopy = (text) => renderer.copyToClipboardOSC52(text)
+  // Copy goes to the clipboard AND the server's buffer stack — tmux's model,
+  // and what makes copy/paste work over ssh, between panes, and from a
+  // script: the stack lives beside the daemon's PTYs, so paste needs no
+  // attached client. The clipboard keeps its old verdict (a rejected OSC 52
+  // is still a rejection); the push is best-effort and fire-and-forget, the
+  // same as the clipboard write itself.
+  spaces.onCopy = (text) => {
+    void Effect.runPromise(session.setBuffer(undefined, text)).catch((error) =>
+      console.error(`could not push paste buffer: ${String(error)}`),
+    )
+    return renderer.copyToClipboardOSC52(text)
+  }
   spaces.onCopyError = (error) => console.error(error.message)
   const app = createAppState(spaces)
 
@@ -318,6 +335,8 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
    *  the request so a reject does not recreate it and wipe the user's input. */
   const [promptError, setPromptError] = createSignal<string>("")
   const [captureView, setCaptureView] = createSignal<CaptureView | null>(null)
+  /** The choose-buffer overlay, when it is up. */
+  const [chooseView, setChooseView] = createSignal<BufferChooseView | null>(null)
   const [settingsSection, setSettingsSection] = createSignal<SettingsSection>("sidebar")
   const [settingsSelected, setSettingsSelected] = createSignal(0)
   const [settingsDirty, setSettingsDirty] = createSignal(false)
@@ -674,6 +693,47 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   }
 
   /**
+   * Open tmux's choose-buffer: the server's paste buffer stack as a picker.
+   *
+   * The list is whatever the daemon holds, so it is fetched here and then
+   * owned by the overlay; a delete re-fetches the stack so the list stays
+   * honest. Pasting targets the focused pane, exactly like buffer.paste.
+   */
+  function openChooseBuffer(buffers: readonly BufferEntry[]) {
+    setChooseView({
+      buffers: [...buffers],
+      selected: 0,
+      onPaste: (name) => {
+        const pane = spaces.activeWindow?.focused
+        if (pane) {
+          void Effect.runPromise(session.pasteBuffer(name, pane.agent.id)).catch((error) =>
+            console.error(`could not paste buffer '${name}': ${String(error)}`),
+          )
+        }
+        setChooseView(null)
+      },
+      onDelete: (name) => {
+        void Effect.runPromise(
+          session.deleteBuffer(name).pipe(Effect.zipRight(session.listBuffers())),
+        )
+          .then((buffers) => {
+            setChooseView((view) =>
+              view
+                ? {
+                    ...view,
+                    buffers: [...buffers],
+                    selected: Math.min(view.selected, Math.max(0, buffers.length - 1)),
+                  }
+                : view,
+            )
+          })
+          .catch((error) => console.error(`could not delete buffer '${name}': ${String(error)}`))
+      },
+      onClose: () => setChooseView(null),
+    })
+  }
+
+  /**
    * The pane send-keys targets: the focused pane, or the sidebar's selected
    * agent when nothing is focused. Selected agents are revealed first — a row is
    * only a "selected pane" once it has a viewport keystrokes can land in.
@@ -830,6 +890,46 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       }),
     "pane.capture": () => Effect.sync(openCapture),
     "pane.copy-mode": () => Effect.sync(enterCopyMode),
+
+    // The tmux paste-buffer family. The stack lives on the daemon; these
+    // handlers are the local doors to it — the same RPC a script uses, minus
+    // the parts that need a screen (the focused pane, the picker overlay).
+    // The session methods fail with whatever the socket threw, so the message
+    // is pulled out before it becomes a CommandError.
+    "buffer.set": ({ name, data }) =>
+      session.setBuffer(name, data).pipe(
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        Effect.asVoid,
+      ),
+    "buffer.paste": ({ name }) =>
+      Effect.gen(function* () {
+        const pane = spaces.activeWindow?.focused
+        if (!pane) return yield* Effect.fail(new CommandError({ message: "no pane to paste into" }))
+        yield* session.pasteBuffer(name, pane.agent.id).pipe(
+          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        )
+      }),
+    "buffer.list": () =>
+      session.listBuffers().pipe(
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        Effect.asVoid,
+      ),
+    "buffer.delete": ({ name }) =>
+      session.deleteBuffer(name).pipe(
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      ),
+    "buffer.show": ({ name }) =>
+      session.showBuffer(name).pipe(
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        Effect.asVoid,
+      ),
+    "buffer.choose": () =>
+      Effect.gen(function* () {
+        const buffers = yield* session.listBuffers().pipe(
+          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        )
+        openChooseBuffer(buffers)
+      }),
 
     "window.new": () =>
       Effect.gen(function* () {
@@ -1076,6 +1176,14 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     bind("pane.copy-mode", "<leader>[", command("pane.copy-mode"), {
       desc: "copy mode: review pane history (v selects, y copies)",
     }),
+    // tmux's own paste-buffer and choose-buffer bindings: ^a ] pastes the top
+    // of the server-side stack into the focused pane, ^a = picks one.
+    bind("buffer.paste", "<leader>]", command("buffer.paste"), {
+      desc: "paste the top paste buffer into the focused pane",
+    }),
+    bind("buffer.choose", "<leader>=", command("buffer.choose"), {
+      desc: "choose a paste buffer (enter pastes, d deletes)",
+    }),
     // Available from the palette; prefix+colon opens it.
     bindPrompt(
       "pane.send-keys",
@@ -1184,6 +1292,31 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       if (event.name === "s") view.onSave()
       else if (event.name === "f") view.onToggleSpan()
       else if (event.name === "escape") view.onClose()
+      return true
+    }
+    if (chooseView()) {
+      // The choose-buffer picker is its own modal: ↑↓ picks, enter pastes the
+      // selection into the focused pane, d deletes it, escape closes. With no
+      // buffers there is nothing to pick, so only escape does anything.
+      const view = chooseView()!
+      const count = view.buffers.length
+      if (event.name === "j" || event.name === "down") {
+        setChooseView((v) => (v ? { ...v, selected: Math.min(count - 1, v.selected + 1) } : v))
+      } else if (event.name === "k" || event.name === "up") {
+        setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v))
+      } else if (event.name === "pagedown") {
+        setChooseView((v) => (v ? { ...v, selected: Math.min(count - 1, v.selected + 10) } : v))
+      } else if (event.name === "pageup") {
+        setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v))
+      } else if (event.name === "return" || event.name === "enter") {
+        const name = view.buffers[view.selected]?.name
+        if (name) view.onPaste(name)
+      } else if (event.name === "d") {
+        const name = view.buffers[view.selected]?.name
+        if (name) view.onDelete(name)
+      } else if (event.name === "escape") {
+        view.onClose()
+      }
       return true
     }
     if (overlay() !== "none") {
@@ -1472,6 +1605,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       prompt={promptRequest()}
       promptError={promptError()}
       captureView={captureView()}
+      chooseView={chooseView()}
       copying={copying()}
     />
   )

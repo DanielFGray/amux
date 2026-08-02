@@ -12,11 +12,9 @@
  */
 
 import { expect, test } from "bun:test"
-import { MODE_ALT_SCREEN, Terminal } from "./ghostty.ts"
+import { MODE_ALT_SCREEN, MODE_BRACKETED_PASTE, Terminal } from "./ghostty.ts"
 import { formatScreen } from "./shim.ts"
 import { captureVisible } from "./capture.ts"
-
-const MODE_BRACKETED_PASTE = 2004
 
 /** Feed `vt` into a screen, serialize it, and apply the replay to a fresh one. */
 function roundTrip(vt: string, cols = 40, rows = 10) {
