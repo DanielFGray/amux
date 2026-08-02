@@ -18,6 +18,7 @@ import {
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts"
+import { Deferred, Effect, Layer, Queue, Stream } from "effect"
 
 /**
  * Seconds between heartbeats.
@@ -42,6 +43,13 @@ const HELLO_TIMEOUT_MS = 5_000
  * shell prompt, a banner). Bounded because a session that is never subscribed
  * to is a leak otherwise: past the limit the oldest frames go, which is the
  * same thing a terminal does to its scrollback.
+ *
+ * Sliding, specifically, not `Queue.bounded`. A bounded queue does not drop —
+ * it suspends the offer until a taker makes room. Offers here are fire and
+ * forget, so against a session nobody subscribes to every frame past the limit
+ * would park a fibre that retains it, which is the unbounded growth this
+ * constant exists to prevent, and the queue would hold the OLDEST frames while
+ * the newest waited behind them.
  */
 const QUEUE_LIMIT = 256
 
@@ -54,24 +62,22 @@ export interface AttachClientOptions {
   pingSeconds?: number
 }
 
-export interface AgentSink {
-  onOutput(data: Uint8Array): void
-  /** The process ended. */
-  onExit(code: number | null): void
-  /**
-   * The attachment ended while this session was still running.
-   *
-   * Deliberately not the same call as `onExit`: no more bytes are coming, but
-   * the process is alive and another client — or this one, after reconnecting —
-   * can pick it up. Collapsing the two would make a detach indistinguishable
-   * from a death, which is the distinction the daemon exists to provide.
-   */
-  onDetach(): void
-}
-
 export class AttachError extends Error {}
 
-export class AttachClient {
+export interface AttachClientShape {
+  readonly client: string
+  readonly closed: boolean
+  stream(session: string): Stream.Stream<AttachFrame>
+  input(session: string, data: string | Uint8Array): void
+  resize(session: string, cols: number, rows: number): void
+  sync(session: string): void
+  ping(timeoutMs?: number): Promise<boolean>
+  close(): void
+  onClose?: (error: Error | null) => void
+  onError?: (message: string) => void
+}
+
+class AttachClientImpl implements AttachClientShape {
   readonly client: string
   #socket: Bun.Socket<undefined>
   #buffer = ""
@@ -79,9 +85,8 @@ export class AttachClient {
   #heartbeat: Timer | null = null
   /** Outstanding round trips, called with false when the attachment ends
    *  instead of being left pending forever. */
-  #pongs = new Map<string, (answered: boolean) => void>()
-  #sinks = new Map<string, AgentSink>()
-  #queued = new Map<string, AttachFrame[]>()
+  #pongs = new Map<string, Deferred.Deferred<boolean>>()
+  #queued = new Map<string, Queue.Queue<AttachFrame>>()
 
   /**
    * The attachment ended: the socket closed, the daemon went away, or the
@@ -106,9 +111,9 @@ export class AttachClient {
    * trip is exactly the acknowledgement we need, and it costs one frame that
    * the heartbeat would have sent anyway.
    */
-  static connect(options: AttachClientOptions): Promise<AttachClient> {
-    return new Promise<AttachClient>((resolve, reject) => {
-      let attached: AttachClient | null = null
+  static connect(options: AttachClientOptions): Promise<AttachClientImpl> {
+    return new Promise<AttachClientImpl>((resolve, reject) => {
+      let attached: AttachClientImpl | null = null
       let settled = false
       const fail = (error: Error) => {
         if (settled) return
@@ -131,8 +136,10 @@ export class AttachClient {
             // complete frame in a read, so batching them saves a round trip and
             // exercises the same path a real client's first keystrokes take.
             const nonce = `hello-${Math.random().toString(36).slice(2)}`
-            attached = new AttachClient(options.client, socket)
-            attached.#pongs.set(nonce, (answered) => {
+            attached = new AttachClientImpl(options.client, socket)
+            const pong = Effect.runSync(Deferred.make<boolean>())
+            attached.#pongs.set(nonce, pong)
+            void Effect.runPromise(Deferred.await(pong).pipe(Effect.timeout(HELLO_TIMEOUT_MS), Effect.orElseSucceed(() => false))).then((answered) => {
               if (settled || !answered) return
               settled = true
               clearTimeout(timer)
@@ -166,22 +173,15 @@ export class AttachClient {
     return this.#closed
   }
 
-  /**
-   * Start receiving one session's frames, and replay whatever arrived before
-   * now.
-   *
-   * Returns an unsubscribe. Frames for a session with no sink are queued rather
-   * than dropped, so subscribing after the process has already spoken — which
-   * is the normal case, not an edge one — loses nothing.
-   */
-  subscribe(session: string, sink: AgentSink): () => void {
-    this.#sinks.set(session, sink)
-    const queued = this.#queued.get(session)
-    this.#queued.delete(session)
-    for (const frame of queued ?? []) this.#dispatch(frame, sink)
-    return () => {
-      if (this.#sinks.get(session) === sink) this.#sinks.delete(session)
+  /** A bounded stream is created before the RPC spawn, so no output can race
+   *  subscription. The queue is the pre-subscribe buffer, not a second cache. */
+  stream(session: string): Stream.Stream<AttachFrame> {
+    let queue = this.#queued.get(session)
+    if (!queue) {
+      queue = Effect.runSync(Queue.sliding<AttachFrame>(QUEUE_LIMIT))
+      this.#queued.set(session, queue)
     }
+    return Stream.fromQueue(queue)
   }
 
   input(session: string, data: string | Uint8Array): void {
@@ -209,18 +209,10 @@ export class AttachClient {
   ping(timeoutMs = 5_000): Promise<boolean> {
     if (this.#closed) return Promise.resolve(false)
     const nonce = `ping-${Math.random().toString(36).slice(2)}`
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => {
-        this.#pongs.delete(nonce)
-        resolve(false)
-      }, timeoutMs)
-      timer.unref?.()
-      this.#pongs.set(nonce, (answered) => {
-        clearTimeout(timer)
-        resolve(answered)
-      })
-      this.#send({ _tag: "ping", nonce })
-    })
+    const pong = Effect.runSync(Deferred.make<boolean>())
+    this.#pongs.set(nonce, pong)
+    this.#send({ _tag: "ping", nonce })
+    return Effect.runPromise(Deferred.await(pong).pipe(Effect.timeout(timeoutMs), Effect.orElseSucceed(() => false))).finally(() => this.#pongs.delete(nonce))
   }
 
   /** Detach. The daemon sees EOF and releases the attachment; the sessions
@@ -261,7 +253,8 @@ export class AttachClient {
 
   #route(frame: AttachFrame): void {
     if (frame._tag === "pong") {
-      this.#pongs.get(frame.nonce)?.(true)
+      const pong = this.#pongs.get(frame.nonce)
+      if (pong) Effect.runSync(Deferred.succeed(pong, true))
       this.#pongs.delete(frame.nonce)
       return
     }
@@ -271,23 +264,12 @@ export class AttachClient {
     }
     if (frame._tag !== "output" && frame._tag !== "exit") return
 
-    const sink = this.#sinks.get(frame.session)
-    if (sink) {
-      this.#dispatch(frame, sink)
-      return
-    }
-    const queue = this.#queued.get(frame.session) ?? []
+    const queue = this.#queued.get(frame.session) ?? Effect.runSync(Queue.sliding<AttachFrame>(QUEUE_LIMIT))
     // Output and exit share one queue so replay keeps their order: an exit
     // delivered ahead of the bytes that preceded it would blank a pane and
     // then write to it.
-    if (queue.length >= QUEUE_LIMIT) queue.shift()
-    queue.push(frame)
+    void Effect.runPromise(Queue.offer(queue, frame))
     this.#queued.set(frame.session, queue)
-  }
-
-  #dispatch(frame: AttachFrame, sink: AgentSink): void {
-    if (frame._tag === "output") sink.onOutput(frame.data)
-    else if (frame._tag === "exit") sink.onExit(frame.code)
   }
 
   #finish(error: Error | null): void {
@@ -295,14 +277,35 @@ export class AttachClient {
     this.#closed = true
     if (this.#heartbeat) clearInterval(this.#heartbeat)
     this.#heartbeat = null
-    for (const resolve of this.#pongs.values()) resolve(false)
+    for (const pong of this.#pongs.values()) Effect.runSync(Deferred.succeed(pong, false))
     this.#pongs.clear()
-    // Every subscriber is told individually as well as through onClose: a sink
-    // is what a pane's byte stream is built on, and it has to be ended rather
-    // than left waiting for output that can no longer arrive.
-    for (const sink of [...this.#sinks.values()]) sink.onDetach()
-    this.#sinks.clear()
+    for (const queue of this.#queued.values()) Effect.runFork(Queue.shutdown(queue))
     this.#queued.clear()
     this.onClose?.(error)
+  }
+}
+
+/** Scoped service wrapper. The socket is acquired and released with the layer,
+ * so a client cannot outlive the scope that owns its attachment. */
+export class AttachClient extends Effect.Service<AttachClientShape>()("AttachClient", {
+  scoped: (options: AttachClientOptions) => Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () => AttachClientImpl.connect(options),
+      catch: (error) => new AttachError(String(error)),
+    }),
+    (client) => Effect.sync(() => client.close()),
+  ),
+}) {
+  static layer(options: AttachClientOptions) {
+    return Layer.scoped(AttachClient, Effect.acquireRelease(
+      Effect.tryPromise({ try: () => AttachClientImpl.connect(options), catch: (error) => new AttachError(String(error)) }),
+      (client) => Effect.sync(() => client.close()),
+    ))
+  }
+
+  /** Promise adapter used by the SessionClient constructor. New callers should
+   * provide `AttachClient.layer` over the whole use span. */
+  static connect(options: AttachClientOptions): Promise<AttachClientShape> {
+    return AttachClientImpl.connect(options)
   }
 }

@@ -5,6 +5,7 @@ import { Deferred, Effect, Exit } from "effect"
 
 import { loadConfig, applyConfig } from "./config.ts"
 import { SessionClient } from "./client.ts"
+import { SessionEnv } from "./session.ts"
 import { createApp } from "./app.tsx"
 
 /**
@@ -89,14 +90,14 @@ const program = Effect.gen(function* () {
   let persist: (() => Promise<void>) | null = null
 
   const session = yield* Effect.acquireRelease(
-    Effect.promise(() => SessionClient.connect(SESSION_ID)),
+    SessionClient.connect(SESSION_ID),
     // Detach, never kill: record where the workspace got to, then drop the
     // socket. The daemon keeps the agents running either way, so a failed save
     // must not stop us letting go of the connection.
     (s) =>
       Effect.gen(function* () {
         if (persist) yield* Effect.promise(persist).pipe(Effect.ignore)
-        yield* Effect.sync(() => s.close())
+        yield* Effect.sync(() => s.attach.close())
       }),
   )
 
@@ -120,4 +121,4 @@ const program = Effect.gen(function* () {
   yield* Deferred.await(quit)
 })
 
-BunRuntime.runMain(Effect.scoped(program))
+BunRuntime.runMain(Effect.scoped(program).pipe(Effect.provideService(SessionEnv, process.env)))

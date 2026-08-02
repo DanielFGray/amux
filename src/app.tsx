@@ -7,6 +7,7 @@ import {
 } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import { createSignal, createMemo } from "solid-js"
+import { Effect } from "effect"
 import { basename, join, resolve } from "node:path"
 import { writeFileSync } from "node:fs"
 
@@ -34,7 +35,7 @@ import {
   paletteEntries,
 } from "./bindings.ts"
 import { saveConfig, applyConfig, type Config } from "./config.ts"
-import type { SessionClient } from "./client.ts"
+import type { SessionClientShape } from "./client.ts"
 import { restoreSession, snapshotSpace } from "./snapshot.ts"
 import { createAppState } from "./ui/state.ts"
 import { sidebarTargets } from "./ui/Sidebar.tsx"
@@ -62,7 +63,7 @@ export interface AppOptions {
    *  renderer owns it and the Effect program owns the renderer. */
   readonly paneHost: BoxRenderable
   readonly config: Config
-  readonly session: SessionClient
+  readonly session: SessionClientShape
   /** Ask the program to exit. The app does not own the process, the renderer or
    *  the session, so leaving is a request rather than a teardown. */
   readonly quit: () => void
@@ -159,7 +160,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       spaces: spaces.spaces.map(snapshotSpace),
       activeSpace: spaces.active?.id ?? null,
     }
-    saving = saving.then(() => session.save(workspace)).catch((error) => {
+    saving = saving.then(() => Effect.runPromise(session.save(workspace))).catch((error) => {
       // A session that cannot be written is worth saying once, not worth taking
       // the app down for: everything still running keeps running.
       console.error(`could not save session '${SESSION_ID}': ${String(error)}`)

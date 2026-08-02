@@ -1,6 +1,13 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { homedir } from "node:os"
+import { Context, Effect } from "effect"
+
+export class SessionEnv extends Context.Reference<SessionEnv>()("SessionEnv", {
+  defaultValue: () => process.env,
+}) {}
+
+export class SessionId extends Context.Tag("SessionId")<SessionId, string>() {}
 
 /** On-disk format. Additive changes must bump neither version nor consumers. */
 export const SESSION_VERSION = 1
@@ -94,13 +101,15 @@ export interface SessionPaths {
   attach: string
 }
 
-export function sessionRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "opentui-herdr", "sessions")
+export function sessionRoot(): Effect.Effect<string, never, SessionEnv> {
+  return Effect.map(SessionEnv, (env) => join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "opentui-herdr", "sessions"))
 }
 
-export function sessionPaths(id: string, env: NodeJS.ProcessEnv = process.env): SessionPaths {
-  const root = join(sessionRoot(env), id)
-  return { root, state: join(root, "session.json"), backup: join(root, "session.json.prev"), lease: join(root, "lease.json"), lock: join(root, "daemon.lock"), socket: join(root, "daemon.sock"), attach: join(root, "attach.sock") }
+export function sessionPaths(id: string): Effect.Effect<SessionPaths, never, SessionEnv> {
+  return Effect.map(sessionRoot(), (root) => {
+    const path = join(root, id)
+    return { root: path, state: join(path, "session.json"), backup: join(path, "session.json.prev"), lease: join(path, "lease.json"), lock: join(path, "daemon.lock"), socket: join(path, "daemon.sock"), attach: join(path, "attach.sock") }
+  })
 }
 
 function validState(value: unknown): value is SessionState {
@@ -112,37 +121,42 @@ async function jsonFile<T>(path: string): Promise<T | null> {
   try { return JSON.parse(await readFile(path, "utf8")) as T } catch { return null }
 }
 
-export async function loadSession(id: string, env?: NodeJS.ProcessEnv): Promise<SessionState | null> {
-  const paths = sessionPaths(id, env)
-  const current = await jsonFile<SessionState>(paths.state)
-  if (validState(current)) return current
-  const backup = await jsonFile<SessionState>(paths.backup)
-  if (validState(backup)) return backup
-  return null
+export function loadSession(id: string): Effect.Effect<SessionState | null, never, SessionEnv> {
+  return Effect.gen(function* () {
+    const paths = yield* sessionPaths(id)
+    const current = yield* Effect.promise(() => jsonFile<SessionState>(paths.state))
+    if (validState(current)) return current
+    const backup = yield* Effect.promise(() => jsonFile<SessionState>(paths.backup))
+    return validState(backup) ? backup : null
+  })
 }
 
 /** Atomic replace. The previous valid generation remains available after a crash. */
-export async function saveSession(state: SessionState, env?: NodeJS.ProcessEnv): Promise<void> {
-  if (!validState(state)) throw new Error("invalid session state")
-  const paths = sessionPaths(state.id, env)
-  await mkdir(paths.root, { recursive: true, mode: 0o700 })
-  const temp = `${paths.state}.${process.pid}.tmp`
-  const bytes = JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt: Date.now() }, null, 2) + "\n"
-  await writeFile(temp, bytes, { mode: 0o600 })
-  try { await rename(paths.state, paths.backup) } catch (error: any) { if (error.code !== "ENOENT") throw error }
-  await rename(temp, paths.state)
+export function saveSession(state: SessionState): Effect.Effect<void, unknown, SessionEnv> {
+  return Effect.gen(function* () {
+    if (!validState(state)) return yield* Effect.fail(new Error("invalid session state"))
+    const paths = yield* sessionPaths(state.id)
+    yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }))
+    const temp = `${paths.state}.${process.pid}.tmp`
+    const bytes = JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt: Date.now() }, null, 2) + "\n"
+    yield* Effect.promise(() => writeFile(temp, bytes, { mode: 0o600 }))
+    yield* Effect.promise(async () => { try { await rename(paths.state, paths.backup) } catch (error: any) { if (error.code !== "ENOENT") throw error } })
+    yield* Effect.promise(() => rename(temp, paths.state))
+  })
 }
 
-export async function writeLease(lease: SessionLease, env?: NodeJS.ProcessEnv): Promise<void> {
-  const paths = sessionPaths(lease.session, env)
-  await mkdir(paths.root, { recursive: true, mode: 0o700 })
-  const temp = `${paths.lease}.${process.pid}.tmp`
-  await writeFile(temp, JSON.stringify(lease) + "\n", { mode: 0o600 })
-  await rename(temp, paths.lease)
+export function writeLease(lease: SessionLease): Effect.Effect<void, unknown, SessionEnv> {
+  return Effect.gen(function* () {
+    const paths = yield* sessionPaths(lease.session)
+    yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }))
+    const temp = `${paths.lease}.${process.pid}.tmp`
+    yield* Effect.promise(() => writeFile(temp, JSON.stringify(lease) + "\n", { mode: 0o600 }))
+    yield* Effect.promise(() => rename(temp, paths.lease))
+  })
 }
 
-export async function readLease(id: string, env?: NodeJS.ProcessEnv): Promise<SessionLease | null> {
-  return jsonFile<SessionLease>(sessionPaths(id, env).lease)
+export function readLease(id: string): Effect.Effect<SessionLease | null, never, SessionEnv> {
+  return Effect.flatMap(sessionPaths(id), (paths) => Effect.promise(() => jsonFile<SessionLease>(paths.lease)))
 }
 
 export function processAlive(pid: number): boolean {
@@ -150,29 +164,36 @@ export function processAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (error: any) { return error.code === "EPERM" }
 }
 
-export async function removeSession(id: string, env?: NodeJS.ProcessEnv): Promise<void> {
-  await rm(sessionPaths(id, env).root, { recursive: true, force: true })
+export function removeSession(id: string): Effect.Effect<void, unknown, SessionEnv> {
+  return Effect.flatMap(sessionPaths(id), (paths) => Effect.promise(() => rm(paths.root, { recursive: true, force: true })))
 }
 
 /** Remove only sessions whose lease is absent, malformed, or owned by a dead pid. */
-export async function cleanupStaleSessions(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
-  const root = sessionRoot(env)
-  let entries: string[]
-  try { entries = await readdir(root) } catch (error: any) { if (error.code === "ENOENT") return []; throw error }
-  const removed: string[] = []
-  for (const id of entries) {
+export function cleanupStaleSessions(): Effect.Effect<string[], unknown, SessionEnv> {
+  return Effect.gen(function* () {
+    const root = yield* sessionRoot()
+    let entries: string[]
+    try { entries = yield* Effect.promise(() => readdir(root)) } catch (error: any) { if (error.code === "ENOENT") return []; return yield* Effect.fail(error) }
+    const removed: string[] = []
+    for (const id of entries) {
     // A lock is the stronger startup signal than the lease: there is a small
     // window between acquiring it and publishing the first lease heartbeat.
     // Leave locked sessions for SessionDaemon.open to adjudicate.
-    try { await stat(sessionPaths(id, env).lock); continue } catch (error: any) { if (error.code !== "ENOENT") throw error }
-    const lease = await readLease(id, env)
+    const paths = yield* sessionPaths(id)
+    const locked = yield* Effect.tryPromise({ try: () => stat(paths.lock), catch: (error) => error }).pipe(
+      Effect.map(() => true),
+      Effect.catchAll((error: any) => error.code === "ENOENT" ? Effect.succeed(false) : Effect.fail(error)),
+    )
+    if (locked) continue
+    const lease = yield* readLease(id)
     if (lease && processAlive(lease.pid)) continue
-    await removeSession(id, env)
+    yield* removeSession(id)
     removed.push(id)
   }
-  return removed
+    return removed
+  })
 }
 
-export async function sessionExists(id: string, env?: NodeJS.ProcessEnv): Promise<boolean> {
-  try { await stat(sessionPaths(id, env).root); return true } catch { return false }
+export function sessionExists(id: string): Effect.Effect<boolean, never, SessionEnv> {
+  return Effect.flatMap(sessionPaths(id), (paths) => Effect.promise(() => stat(paths.root)).pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false))))
 }

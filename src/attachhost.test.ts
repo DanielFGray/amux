@@ -14,10 +14,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionDaemon } from "./daemon.ts"
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./effect/AttachProtocol.ts"
-import { loadSession } from "./session.ts"
+import { loadSession, SessionEnv } from "./session.ts"
 
 const dirs: string[] = []
 const daemons: SessionDaemon[] = []
+const run = <A>(effect: Effect.Effect<A, unknown, SessionEnv>, env: NodeJS.ProcessEnv) => Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, env)))
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.stop().catch(() => {})
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
@@ -27,7 +28,7 @@ async function started(id: string) {
   const home = await mkdtemp(join(tmpdir(), "herdr-attach-host-"))
   dirs.push(home)
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") }
-  const daemon = await SessionDaemon.open(id, env)
+  const daemon = await run(SessionDaemon.open(id), env)
   daemons.push(daemon)
   await daemon.start()
   return daemon
@@ -212,7 +213,7 @@ test("closing a daemon persists that the preserved session is detached", async (
   attached.socket.end()
 
   const home = dirs[dirs.length - 1]!
-  expect((await loadSession("close-detached", { HOME: home, XDG_STATE_HOME: join(home, "state") }))?.attached).toBe(false)
+  expect((await run(loadSession("close-detached"), { HOME: home, XDG_STATE_HOME: join(home, "state") }))?.attached).toBe(false)
 })
 
 test("the daemon tracks when the attached client was last seen", async () => {

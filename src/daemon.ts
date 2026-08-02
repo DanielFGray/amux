@@ -1,17 +1,21 @@
 import { mkdir, open, readFile, rm, unlink } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { randomUUID } from "node:crypto"
-import { Effect, ManagedRuntime } from "effect"
+import { Data, Effect, ManagedRuntime } from "effect"
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts"
 import type { AttachServerError } from "./effect/AttachServer.ts"
 import type { ManagedPty, PtySpec } from "./effect/PtyRegistry.ts"
 import {
-  loadSession, processAlive, readLease, removeSession, saveSession,
-  sessionPaths, writeLease, type SessionAttachment, type SessionLease, type SessionState,
+  loadSession, processAlive, readLease, removeSession, saveSession, SessionEnv,
+  sessionPaths, writeLease, type SessionAttachment, type SessionLease, type SessionState, type SessionPaths,
 } from "./session.ts"
 
 export type DaemonCommand =
   | "ping" | "status" | "stop" | "spawn" | "kill" | "save"
+
+export class SessionDaemonError extends Data.TaggedError("SessionDaemonError")<{
+  message: string
+}> {}
 
 /**
  * A request to start an agent, in the shape the wire can carry.
@@ -70,7 +74,7 @@ export interface DaemonResponse {
  */
 export class SessionDaemon {
   readonly id: string
-  readonly paths: ReturnType<typeof sessionPaths>
+  readonly paths: SessionPaths
   #state: SessionState
   #server: ReturnType<typeof Bun.serve> | null = null
   #heartbeat: Timer | null = null
@@ -82,31 +86,34 @@ export class SessionDaemon {
   #runtime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError> | null = null
   #host: AttachHostService | null = null
 
-  private constructor(id: string, state: SessionState, env: NodeJS.ProcessEnv) {
+  private constructor(id: string, state: SessionState, env: NodeJS.ProcessEnv, paths: SessionPaths) {
     this.id = id
-    this.paths = sessionPaths(id, env)
+    this.paths = paths
     this.#lockPath = this.paths.lock
     this.#env = env
     this.#state = state
   }
 
-  static async open(id = "default", env: NodeJS.ProcessEnv = process.env): Promise<SessionDaemon> {
-    const paths = sessionPaths(id, env)
-    await mkdir(paths.root, { recursive: true, mode: 0o700 })
-    const lock = await SessionDaemon.acquireLock(id, paths.lock, env)
-    try {
-      const existing = await readLease(id, env)
-      if (existing && processAlive(existing.pid)) throw new Error(`session '${id}' is already owned by pid ${existing.pid}`)
-      const state = await loadSession(id, env) ?? { version: 1, id, createdAt: Date.now(), updatedAt: Date.now(), attached: false, spaces: [] }
-      state.attached = false
-      const daemon = new SessionDaemon(id, state, env)
-      daemon.#lock = lock
-      return daemon
-    } catch (error) {
-      await lock.close()
-      await rm(paths.lock, { force: true }).catch(() => {})
-      throw error
-    }
+  static open(id = "default"): Effect.Effect<SessionDaemon, unknown, SessionEnv> {
+    return Effect.gen(function* () {
+      const env = yield* SessionEnv
+      const paths = yield* sessionPaths(id)
+      yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }))
+      const lock = yield* Effect.promise(() => SessionDaemon.acquireLock(id, paths.lock, env))
+      try {
+        const existing = yield* readLease(id)
+        if (existing && processAlive(existing.pid)) return yield* Effect.fail(new Error(`session '${id}' is already owned by pid ${existing.pid}`))
+        const state = (yield* loadSession(id)) ?? { version: 1, id, createdAt: Date.now(), updatedAt: Date.now(), attached: false, spaces: [] }
+        state.attached = false
+        const daemon = new SessionDaemon(id, state, env, paths)
+        daemon.#lock = lock
+        return daemon
+      } catch (error) {
+        yield* Effect.promise(() => lock.close())
+        yield* Effect.promise(() => rm(paths.lock, { force: true }).catch(() => {}))
+        return yield* Effect.fail(error)
+      }
+    })
   }
 
   #lock: Awaited<ReturnType<typeof open>> | null = null
@@ -127,7 +134,7 @@ export class SessionDaemon {
           // A directory or malformed file is a stale marker; lease validation
           // below still protects a running daemon from being removed.
         }
-        const lease = await readLease(id, env)
+        const lease = await Effect.runPromise(readLease(id).pipe(Effect.provideService(SessionEnv, env)))
         if (lease && processAlive(lease.pid)) throw new Error(`session '${id}' is already owned by pid ${lease.pid}`)
         // Recover a lock left by a dead daemon, including the old directory
         // marker written by the previous metadata-only implementation.
@@ -158,15 +165,15 @@ export class SessionDaemon {
     const lease: SessionLease = { version: 1, session: this.id, pid: process.pid, socket: this.paths.socket, startedAt: Date.now(), heartbeatAt: Date.now() }
     try {
       await this.#persist()
-      await writeLease(lease, this.#env)
+      await Effect.runPromise(writeLease(lease).pipe(Effect.provideService(SessionEnv, this.#env)))
       await this.#startAttachHost()
       try { await unlink(this.paths.socket) } catch (error: any) { if (error.code !== "ENOENT") throw error }
       this.#server = Bun.serve({ unix: this.paths.socket, fetch: async (request) => this.#fetch(request) })
-      this.#heartbeat = setInterval(() => void writeLease({
+      this.#heartbeat = setInterval(() => void Effect.runPromise(writeLease({
         ...lease,
         heartbeatAt: Date.now(),
         ...this.#attachInfo(),
-      }, this.#env), 1000)
+      }).pipe(Effect.provideService(SessionEnv, this.#env))), 1000)
       this.#heartbeat.unref?.()
     } catch (error) {
       await this.#disposeHost()
@@ -322,7 +329,7 @@ export class SessionDaemon {
     this.#server?.stop()
     this.#server = null
     await this.#disposeHost()
-    await removeSession(this.id, this.#env)
+    await Effect.runPromise(removeSession(this.id).pipe(Effect.provideService(SessionEnv, this.#env)))
     await this.#releaseLock()
   }
 
@@ -374,25 +381,27 @@ export class SessionDaemon {
   }
 
   #persist(): Promise<void> {
-    const next = this.#save.then(() => saveSession(this.#state, this.#env))
+    const next = this.#save.then(() => Effect.runPromise(saveSession(this.#state).pipe(Effect.provideService(SessionEnv, this.#env))))
     this.#save = next.catch(() => {})
     return next
   }
 }
 
 /** Client used by CLI commands and tests; HTTP keeps framing and errors explicit. */
-export function daemonRequest(id: string, body: DaemonRequest, env?: NodeJS.ProcessEnv): Promise<DaemonResponse> {
-  const socketPath = sessionPaths(id, env).socket
-  return new Promise((resolve, reject) => {
-    const request = httpRequest({ socketPath, path: "/rpc", method: "POST", headers: { "content-type": "application/json" } }, (response) => {
-      let text = ""
-      response.setEncoding("utf8")
-      response.on("data", (chunk) => text += chunk)
-      response.on("end", () => { try { resolve(JSON.parse(text)) } catch (error) { reject(error) } })
-    })
-    request.on("error", reject)
-    request.end(JSON.stringify(body))
-  })
+export function daemonRequest(id: string, body: DaemonRequest): Effect.Effect<DaemonResponse, unknown, SessionEnv> {
+  return Effect.flatMap(sessionPaths(id), (paths) => Effect.tryPromise({
+    try: () => new Promise((resolve, reject) => {
+      const request = httpRequest({ socketPath: paths.socket, path: "/rpc", method: "POST", headers: { "content-type": "application/json" } }, (response) => {
+        let text = ""
+        response.setEncoding("utf8")
+        response.on("data", (chunk) => text += chunk)
+        response.on("end", () => { try { resolve(JSON.parse(text) as DaemonResponse) } catch (error) { reject(error) } })
+      })
+      request.on("error", reject)
+      request.end(JSON.stringify(body))
+    }),
+    catch: (error) => error,
+  }))
 }
 
 /**
@@ -404,7 +413,7 @@ export function daemonRequest(id: string, body: DaemonRequest, env?: NodeJS.Proc
  * than through two handlers that could only race `stop()` against `exit()`.
  */
 export async function startDaemon(id = process.argv[2] || randomUUID()): Promise<SessionDaemon> {
-  const daemon = await SessionDaemon.open(id)
+  const daemon = await Effect.runPromise(SessionDaemon.open(id).pipe(Effect.provideService(SessionEnv, process.env)))
   await daemon.start()
   return daemon
 }

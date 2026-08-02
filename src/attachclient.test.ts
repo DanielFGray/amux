@@ -9,20 +9,22 @@
  */
 
 import { afterEach, expect, test } from "bun:test"
+import { Effect } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Agent } from "./agent.ts"
-import { SessionClient } from "./client.ts"
+import { SessionClient, type SessionClientShape } from "./client.ts"
 import { SessionDaemon } from "./daemon.ts"
 import { captureVisible } from "./capture.ts"
 import { MODE_ALT_SCREEN } from "./ghostty.ts"
-import { processAlive, readLease } from "./session.ts"
+import { processAlive, readLease, SessionEnv } from "./session.ts"
 
 const dirs: string[] = []
 const daemons: SessionDaemon[] = []
-const clients: SessionClient[] = []
+const clients: SessionClientShape[] = []
 const agents: Agent[] = []
+const run = <A>(effect: Effect.Effect<A, unknown, SessionEnv>, env: NodeJS.ProcessEnv) => Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, env)))
 
 afterEach(async () => {
   for (const agent of agents.splice(0)) agent.dispose()
@@ -35,7 +37,7 @@ async function session(id: string) {
   const home = await mkdtemp(join(tmpdir(), "herdr-client-"))
   dirs.push(home)
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv
-  const daemon = await SessionDaemon.open(id, env)
+  const daemon = await run(SessionDaemon.open(id), env)
   daemons.push(daemon)
   await daemon.start()
   return { daemon, env }
@@ -43,7 +45,7 @@ async function session(id: string) {
 
 /** Attach as a client of an already-running daemon. */
 async function attach(id: string, env: NodeJS.ProcessEnv, client = "ui") {
-  const connected = await SessionClient.connect(id, { env, client, autostart: false })
+  const connected = await run(SessionClient.connect(id, { client, autostart: false }), env)
   clients.push(connected)
   return connected
 }
@@ -312,9 +314,9 @@ test("a daemon started on demand keeps agents between two separate clients", asy
   const env = { ...process.env, HOME: home, XDG_STATE_HOME: join(home, "state") }
   const id = "autostart"
 
-  const first = await SessionClient.connect(id, { env, client: "first" })
+  const first = await run(SessionClient.connect(id, { client: "first" }), env)
   try {
-    const lease = await readLease(id, env)
+    const lease = await run(readLease(id), env)
     expect(lease?.pid).toBeGreaterThan(0)
     expect(lease!.pid).not.toBe(process.pid)
 
@@ -325,15 +327,15 @@ test("a daemon started on demand keeps agents between two separate clients", asy
     first.close()
 
     // A second client, with no memory of the first, finds the agent still there.
-    const second = await SessionClient.connect(id, { env, client: "second" })
+    const second = await run(SessionClient.connect(id, { client: "second" }), env)
     expect(second.live).toContain(agent.id)
     const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend() })
     agents.push(readopted)
     readopted.write("still-alive\n")
     await until(() => screen(readopted).includes("still-alive"), "the adopted agent's echo")
-    await second.stop()
+    await run(second.stop(), env)
   } finally {
-    const lease = await readLease(id, env)
+    const lease = await run(readLease(id), env)
     if (lease && processAlive(lease.pid)) process.kill(lease.pid, "SIGKILL")
   }
 })
@@ -342,10 +344,10 @@ test("a workspace saved through the daemon is visible to a later client", async 
   const { daemon, env } = await session("saved")
   const client = await attach("saved", env)
 
-  await client.save({
+  await run(client.save({
     spaces: [{ id: "space-1", name: "proj", dir: "/tmp", activeWindow: 1, windows: [] }],
     activeSpace: "space-1",
-  })
+  }), env)
 
   // And a client attaching later is handed that same workspace to rebuild from.
   client.close()

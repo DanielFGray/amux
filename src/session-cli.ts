@@ -1,4 +1,6 @@
 import { daemonRequest } from "./daemon.ts"
+import { SessionEnv } from "./session.ts"
+import { Effect } from "effect"
 
 const [command, id = "default"] = process.argv.slice(2)
 if (!command || !["status", "stop"].includes(command)) {
@@ -7,9 +9,9 @@ if (!command || !["status", "stop"].includes(command)) {
 }
 
 try {
-  const result = await daemonRequest(id, {
+  const result = await Effect.runPromise(daemonRequest(id, {
     command: command as "status" | "stop",
-  })
+  }).pipe(Effect.provideService(SessionEnv, process.env)))
   process.stdout.write(JSON.stringify(result, null, 2) + "\n")
   process.exit(result.ok ? 0 : 1)
 } catch (error) {

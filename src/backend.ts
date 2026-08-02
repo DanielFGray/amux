@@ -14,7 +14,8 @@
  */
 
 import { spawnPty, readPty } from "./pty.ts"
-import type { AttachClient } from "./attach.ts"
+import { Effect, Fiber, Stream } from "effect"
+import type { AttachClientShape } from "./attach.ts"
 
 export interface AgentBackend {
   /** True once the stream is over: the process exited, or the attachment was
@@ -90,9 +91,11 @@ export const localPty: SpawnBackend = (opts) => {
  * spawn still has somewhere to report itself.
  */
 export interface DaemonSession {
-  readonly attach: AttachClient
-  spawn(spec: BackendOptions): Promise<void>
-  kill(id: string): Promise<void>
+  readonly attach: AttachClientShape
+  stream(agent: string): Stream.Stream<import("./effect/AttachProtocol.ts").AttachFrame>
+  spawn(spec: BackendOptions): Effect.Effect<void, unknown, never>
+  kill(id: string): Effect.Effect<void, unknown, never>
+  save(workspace: Pick<import("./session.ts").SessionState, "spaces"> & { activeSpace?: string | null }): Effect.Effect<void, unknown, never>
 }
 
 /**
@@ -131,20 +134,21 @@ export function daemonBackend(
       nudge()
     }
 
-    const unsubscribe = session.attach.subscribe(opts.id, {
-      onOutput: (data) => {
-        chunks.push(data)
-        nudge()
-      },
-      onExit: end,
-      // Detach is not death, but it is the end of what this backend can see.
-      // Null rather than 0: an exit code we do not have is not an exit code of
-      // zero, and the sidebar renders the difference.
-      onDetach: () => {
-        detached = true
-        end(null)
-      },
-    })
+    const streamFiber = Effect.runFork(
+      Stream.runForEach(session.attach.stream(opts.id), (frame) => Effect.sync(() => {
+        if (frame._tag === "output") {
+          chunks.push(frame.data)
+          nudge()
+        } else if (frame._tag === "exit") {
+          end(frame.code)
+        }
+      })).pipe(Effect.ensuring(Effect.sync(() => {
+        if (!closed) {
+          detached = true
+          end(null)
+        }
+      }))),
+    )
 
     // Frames naming an agent the daemon has not started yet are dropped on the
     // floor by design (they are the tail of a dying agent's keystrokes), so
@@ -166,7 +170,7 @@ export function daemonBackend(
       // serializes at the resize it just applied.
       session.attach.sync(opts.id)
     } else {
-      session.spawn(opts).then(
+        Effect.runPromise(session.spawn(opts)).then(
         () => {
           started = true
           for (const action of backlog.splice(0)) action()
@@ -202,12 +206,12 @@ export function daemonBackend(
             })
           }
         } finally {
-          unsubscribe()
+          Effect.runFork(Fiber.interrupt(streamFiber))
         }
       },
       write: (data) => once(() => session.attach.input(opts.id, data)),
       resize: (cols, rows) => once(() => session.attach.resize(opts.id, cols, rows)),
-      kill: () => once(() => void session.kill(opts.id).catch(() => {})),
+      kill: () => once(() => void Effect.runPromise(session.kill(opts.id)).catch(() => {})),
       // Process inspection reads /proc through the controlling tty, and the tty
       // is in the daemon. -1 is the answer every caller already handles, and it
       // is the honest one: this process cannot see that tty.

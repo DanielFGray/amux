@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { afterEach, test, expect } from "bun:test"
+import { Effect } from "effect"
 import { createSignal } from "solid-js"
 import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { render } from "@opentui/solid"
@@ -11,14 +12,16 @@ import { SpaceSet } from "../space.ts"
 import { createAppState, POLL_MS } from "./state.ts"
 import { Sidebar, sidebarTargets, SIDEBAR_WIDTH } from "./Sidebar.tsx"
 import { SessionDaemon } from "../daemon.ts"
-import { SessionClient } from "../client.ts"
+import { SessionClient, type SessionClientShape } from "../client.ts"
+import { SessionEnv } from "../session.ts"
 import type { SpawnBackend } from "../backend.ts"
 
 const SHELL = ["bash"]
 
 const daemons: SessionDaemon[] = []
-const clients: SessionClient[] = []
+const clients: SessionClientShape[] = []
 const dirs: string[] = []
+const run = <A,>(effect: Effect.Effect<A, unknown, SessionEnv>, env: NodeJS.ProcessEnv) => Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, env)))
 afterEach(async () => {
   for (const client of clients.splice(0)) client.close()
   for (const daemon of daemons.splice(0)) await daemon.stop().catch(() => {})
@@ -162,10 +165,10 @@ test("an agent whose daemon attachment is lost stays in the sidebar as idle, not
   const home = await mkdtemp(join(tmpdir(), "herdr-sidebar-"))
   dirs.push(home)
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv
-  const daemon = await SessionDaemon.open("sidebar-detach", env)
+  const daemon = await run(SessionDaemon.open("sidebar-detach"), env)
   daemons.push(daemon)
   await daemon.start()
-  const client = await SessionClient.connect("sidebar-detach", { env, client: "ui", autostart: false })
+  const client = await run(SessionClient.connect("sidebar-detach", { client: "ui", autostart: false }), env)
   clients.push(client)
 
   const s = await setup(client.backend())

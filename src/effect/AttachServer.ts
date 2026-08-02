@@ -1,4 +1,4 @@
-import { Cause, Effect, ExecutionStrategy, Exit, FiberMap, Match, Runtime, Scope, Stream } from "effect"
+import { Cause, Data, Effect, ExecutionStrategy, Exit, FiberMap, Match, Runtime, Scope, Stream } from "effect"
 import { randomUUID } from "node:crypto"
 import { AttachHub } from "./AttachHub.ts"
 import {
@@ -7,7 +7,9 @@ import {
   type AttachFrame,
 } from "./AttachProtocol.ts"
 
-export class AttachServerError extends Error {}
+export class AttachServerError extends Data.TaggedError("AttachServerError")<{
+  message: string
+}> {}
 
 export interface AttachServerOptions {
   readonly path: string
@@ -244,7 +246,7 @@ export const startAttachServer = (
               },
             },
           }),
-        catch: (error) => new AttachServerError(String(error)),
+        catch: (error) => new AttachServerError({ message: String(error) }),
       }),
       (server) => Effect.sync(() => server.stop(true)),
     )
