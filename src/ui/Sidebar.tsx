@@ -92,12 +92,6 @@ export function Sidebar(props: SidebarProps) {
         backgroundColor: theme.mantle,
       }}
     >
-      <text style={{ bg: theme.surface0, fg: theme.subtext0, height: 1 }}>
-        {`${spaceCount()} space${spaceCount() === 1 ? "" : "s"} · ` +
-          `${agents().length} agent${agents().length === 1 ? "" : "s"}` +
-          (blocked() ? ` · ${blocked()}!` : "")}
-      </text>
-
       <scrollbox style={{ flexGrow: 1 }} horizontalScrollbarOptions={{ visible: false }}>
         <For each={rows()}>
           {(row) => (
@@ -117,6 +111,15 @@ export function Sidebar(props: SidebarProps) {
           )}
         </For>
       </scrollbox>
+
+      {/* flexShrink 0 like the footer below it: the scrollbox above grows into
+          every row it is allowed to, and a one-row summary that may shrink is a
+          one-row summary that renders as nothing. */}
+      <text style={{ bg: theme.surface0, fg: theme.subtext0, height: 1, flexShrink: 0 }}>
+        {`${spaceCount()} space${spaceCount() === 1 ? "" : "s"} · ` +
+          `${agents().length} agent${agents().length === 1 ? "" : "s"}` +
+          (blocked() ? ` · ${blocked()}!` : "")}
+      </text>
 
       <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>
         {props.focused
