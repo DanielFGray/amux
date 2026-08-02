@@ -54,3 +54,11 @@ test("saving swaps the footer for the written confirmation", async () => {
   expect(f).toContain("esc closes")
   expect(f).not.toContain("will save")
 })
+
+test("a failed save stays actionable in the popup", async () => {
+  const f = await frame(view({ error: "could not save capture to /readonly/out.txt: permission denied" }))
+  expect(f).toContain("could not save capture")
+  expect(f).toContain("permission denied")
+  expect(f).toContain("s saves")
+  expect(f).not.toContain("saved 2 rows")
+})

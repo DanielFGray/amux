@@ -144,3 +144,14 @@ test("a conflict is reported rather than hidden", async () => {
   expect(frame).toContain("^a k")
   expect(frame).toContain("agent.kill")
 })
+
+test("a failed settings save is visible while the dirty marker remains", async () => {
+  const frame = await draw({
+    dirty: true,
+    error: "could not save settings: permission denied",
+  })
+
+  expect(frame).toContain("could not save settings")
+  expect(frame).toContain("permission denied")
+  expect(frame).toContain("unsaved")
+})

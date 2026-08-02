@@ -161,6 +161,8 @@ export function Settings(props: {
   width: number
   height: number
   dirty: boolean
+  /** Error from the last settings save attempt. */
+  error?: string
   /** Handed the keybind list's scroll container so the app can drive it from
    *  the keyboard — the list is longer than the window by some margin. */
   onKeybindList?: (box: ScrollBoxRenderable) => void
@@ -274,6 +276,9 @@ export function Settings(props: {
             .join(" · ")
             .slice(0, 66)}
         </text>
+      </Show>
+      <Show when={props.error}>
+        {(error: () => string) => <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{error()}</text>}
       </Show>
 
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>

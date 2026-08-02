@@ -58,6 +58,8 @@ export interface AppProps {
   settingsSection: SettingsSection
   settingsSelected: number
   settingsDirty: boolean
+  /** Error from the last settings save attempt. */
+  settingsError?: string
   /** Waiting for the keystroke that becomes a binding. */
   capturing: boolean
   onKeybindList?: (box: ScrollBoxRenderable) => void
@@ -151,6 +153,7 @@ export function App(props: AppProps) {
           width={props.size.width}
           height={props.size.height}
           dirty={props.settingsDirty}
+          error={props.settingsError}
           onKeybindList={props.onKeybindList}
         />
       </Show>

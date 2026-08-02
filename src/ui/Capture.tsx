@@ -11,6 +11,8 @@ export interface CaptureView {
   span: CaptureSpan
   /** True once the file has been written to `path`. */
   saved: boolean
+  /** Failure from the last save attempt, if any. */
+  error?: string
   onToggleSpan: () => void
   onSave: () => void
   onClose: () => void
@@ -64,6 +66,9 @@ export function Capture(props: { view: CaptureView; width: number; height: numbe
           {`saved ${rows()} rows to ${props.view.path}`}
         </Show>
       </text>
+      <Show when={props.view.error}>
+        {(error: () => string) => <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{error()}</text>}
+      </Show>
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
         {props.view.saved ? "esc closes" : "s saves · f toggles span · esc discards"}
       </text>

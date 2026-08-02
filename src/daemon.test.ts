@@ -100,6 +100,20 @@ test("stopping a daemon discards the workspace it was keeping", async () => {
   expect(await run(loadSession("discard"), e)).toBeNull()
 })
 
+test("stopping waits for an in-flight workspace save before removing metadata", async () => {
+  const e = await env()
+  const daemon = await open("stop-save-race", e)
+  await daemon.start()
+
+  const save = daemon.saveWorkspace({
+    spaces: [{ id: "space-0", name: "p", dir: "/tmp", activeWindow: null, windows: [] }],
+  })
+  const stop = daemon.stop()
+  await Promise.all([save, stop])
+
+  expect(await run(loadSession("stop-save-race"), e)).toBeNull()
+})
+
 test("a blocked daemon write does not starve timers, RPC, or shutdown", async () => {
   const e = await env()
   const daemon = await open("responsive", e)

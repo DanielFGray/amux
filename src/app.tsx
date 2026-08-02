@@ -9,7 +9,7 @@ import type { JSX } from "@opentui/solid"
 import { createSignal, createMemo, createEffect } from "solid-js"
 import { Effect } from "effect"
 import { basename, join, resolve } from "node:path"
-import { writeFileSync } from "node:fs"
+import { writeFile } from "node:fs/promises"
 
 import { Divider } from "./divider.ts"
 import { SpaceSet, type Space } from "./space.ts"
@@ -272,6 +272,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         width: Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, c.sidebar.width + delta)),
       },
     }))
+    setSettingsError("")
     setSettingsDirty(true)
   }
 
@@ -310,6 +311,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const [settingsSection, setSettingsSection] = createSignal<SettingsSection>("sidebar")
   const [settingsSelected, setSettingsSelected] = createSignal(0)
   const [settingsDirty, setSettingsDirty] = createSignal(false)
+  const [settingsError, setSettingsError] = createSignal("")
   /** True while the keybind editor is waiting for the keystroke to record. */
   const [capturing, setCapturing] = createSignal(false)
   const [conflicts, setConflicts] = createSignal<Conflict[]>([])
@@ -497,6 +499,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       ...c,
       sidebar: { ...c.sidebar, agentsOnly: !c.sidebar.agentsOnly },
     }))
+    setSettingsError("")
     setSettingsDirty(true)
   }
 
@@ -531,6 +534,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       }
     }
     setConfigState(next)
+    setSettingsError("")
     applyConfig(next)
     if (section === "appearance") spaces.refreshChrome()
     if (section === "appearance") updateHintVisibility(pendingParts(), next.appearance)
@@ -546,6 +550,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
    */
   function setKeys(next: Keys) {
     setConfigState((c) => ({ ...c, keys: next }))
+    setSettingsError("")
     setConflicts(bindings.apply(next))
     setSettingsDirty(true)
   }
@@ -656,8 +661,18 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         saved: false,
         onToggleSpan: () => open(span === "scrollback" ? "visible" : "scrollback"),
         onSave: () => {
-          writeFileSync(path, content)
-          setCaptureView((view) => (view ? { ...view, saved: true } : view))
+          void writeFile(path, content)
+            .then(() => setCaptureView((view) => (view ? { ...view, saved: true, error: undefined } : view)))
+            .catch((error: unknown) => {
+              setCaptureView((view) =>
+                view
+                  ? {
+                      ...view,
+                      error: `could not save capture to ${path}: ${error instanceof Error ? error.message : String(error)}`,
+                    }
+                  : view,
+              )
+            })
         },
         onClose: () => setCaptureView(null),
       })
@@ -1218,7 +1233,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       case "d":
         return resetBinding(true)
       case "s":
-        void saveConfig(configState()).then(() => setSettingsDirty(false))
+        void saveSettings()
         return
     }
   }
@@ -1241,8 +1256,18 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       case "right":
         return editSetting(1)
       case "s":
-        void saveConfig(configState()).then(() => setSettingsDirty(false))
+        void saveSettings()
         return
+    }
+  }
+
+  async function saveSettings() {
+    try {
+      await saveConfig(configState())
+      setSettingsDirty(false)
+      setSettingsError("")
+    } catch (error) {
+      setSettingsError(`could not save settings: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -1399,6 +1424,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       settingsSection={settingsSection()}
       settingsSelected={settingsSelected()}
       settingsDirty={settingsDirty()}
+      settingsError={settingsError()}
       onKeybindList={(box) => {
         keybindList = box
       }}

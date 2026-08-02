@@ -332,6 +332,9 @@ export class SessionDaemon {
     this.#server?.stop()
     this.#server = null
     await this.#disposeHost()
+    // Attachment callbacks can enqueue a metadata write while the host is
+    // being torn down. Remove the session only after that chain has settled.
+    await this.#save
     await Effect.runPromise(removeSession(this.id).pipe(Effect.provideService(SessionEnv, this.#env)))
     await this.#releaseLock()
   }
