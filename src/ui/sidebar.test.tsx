@@ -10,7 +10,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SpaceSet } from "../space.ts"
 import { createAppState, POLL_MS } from "./state.ts"
-import { Sidebar, sidebarTargets, SIDEBAR_WIDTH } from "./Sidebar.tsx"
+import { Sidebar, sidebarTargets, SIDEBAR_WIDTH, clampSidebarSelection } from "./Sidebar.tsx"
 import { SessionDaemon } from "../daemon.ts"
 import { SessionClient, type SessionClientShape } from "../client.ts"
 import { SessionEnv } from "../session.ts"
@@ -57,7 +57,7 @@ async function waitForAsync(predicate: () => boolean | Promise<boolean>, what: s
   throw new Error(`timed out waiting for ${what}`)
 }
 
-async function setup(backend?: SpawnBackend) {
+async function setup(backend?: SpawnBackend, agentsOnly = false) {
   const [selected, setSelected] = createSignal(0)
   const [hovered, setHovered] = createSignal<number | null>(null)
   const activated: number[] = []
@@ -87,6 +87,7 @@ async function setup(backend?: SpawnBackend) {
           selected={selected()}
           hovered={hovered()}
           focused={false}
+          agentsOnly={agentsOnly}
           toggleKeys="^a b"
           onHover={setHovered}
           onActivate={(i) => activated.push(i)}
@@ -112,6 +113,35 @@ async function setup(backend?: SpawnBackend) {
     },
   }
 }
+
+test("agents-only filtering removes plain panes and empty parents", async () => {
+  const s = await setup(undefined, true)
+  try {
+    s.win.spawn("claude", ["claude"])
+    const empty = s.space.newWindow("empty")
+    empty.init("shell")
+    s.spaces.onChange?.()
+
+    await s.t.waitForFrame((f) => f.includes("claude"))
+    const frame = s.t.captureCharFrame()
+    expect(frame).toContain("claude")
+    expect(frame).not.toContain("2:empty")
+    const targets = sidebarTargets(s.spaces.spaces, true)
+    expect(targets.map((target) => target.kind)).toEqual([
+      "space",
+      "window",
+      "agent",
+    ])
+    expect(targets.at(-1)).toMatchObject({ kind: "agent", agent: { title: "claude" } })
+  } finally {
+    await s.dispose()
+  }
+})
+
+test("selection is clamped when polled rows disappear", () => {
+  expect(clampSidebarSelection(4, 2)).toBe(1)
+  expect(clampSidebarSelection(4, 0)).toBe(0)
+})
 
 test("renders the space/agent tree with a state glyph per row", async () => {
   const s = await setup()
@@ -430,6 +460,7 @@ test("the seam shows a thumb only while the tree overflows", async () => {
           selected={selected()}
           hovered={hovered()}
           focused={false}
+          agentsOnly={false}
           toggleKeys="^a b"
           onHover={setHovered}
           onActivate={() => {}}

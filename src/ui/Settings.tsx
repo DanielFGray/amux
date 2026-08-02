@@ -23,6 +23,7 @@ export function settingsFields(config: Config, section: SettingsSection): Field[
       return [
         { label: "Width", value: String(config.sidebar.width), hint: "columns · ←/→ adjusts" },
         { label: "Open at start", value: config.sidebar.open ? "yes" : "no", hint: "←/→ toggles" },
+        { label: "Agents only", value: config.sidebar.agentsOnly ? "yes" : "no", hint: "←/→ toggles" },
       ]
     case "behaviour":
       return [

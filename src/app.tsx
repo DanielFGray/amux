@@ -6,7 +6,7 @@ import {
   type ScrollBoxRenderable,
 } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
-import { createSignal, createMemo } from "solid-js"
+import { createSignal, createMemo, createEffect } from "solid-js"
 import { Effect } from "effect"
 import { basename, join, resolve } from "node:path"
 import { writeFileSync } from "node:fs"
@@ -38,7 +38,7 @@ import { saveConfig, applyConfig, type Config } from "./config.ts"
 import type { SessionClientShape } from "./client.ts"
 import { restoreSession, snapshotSpace } from "./snapshot.ts"
 import { createAppState } from "./ui/state.ts"
-import { sidebarTargets } from "./ui/Sidebar.tsx"
+import { clampSidebarSelection, sidebarTargets } from "./ui/Sidebar.tsx"
 import { App, type Overlay } from "./ui/App.tsx"
 import {
   SETTINGS_SECTIONS,
@@ -281,7 +281,15 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const [size, setSize] = createSignal({ width: renderer.width, height: renderer.height })
   renderer.on("resize", (width: number, height: number) => setSize({ width, height }))
 
-  const targets = createMemo(() => sidebarTargets(app.spaces()))
+  const targets = createMemo(() => {
+    // agentKind is polled, so keyboard targets must refresh with the rendered rows.
+    app.tick()
+    return sidebarTargets(app.spaces(), configState().sidebar.agentsOnly)
+  })
+  createEffect(() => {
+    const count = targets().length
+    setSelected((current) => clampSidebarSelection(current, count))
+  })
   const activeWin = () => spaces.activeWindow
 
   /** Open a modal prompt and resolve with the field values, or null on cancel. */
@@ -444,6 +452,14 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     syncSidebarFrame()
   }
 
+  function toggleAgentsOnly() {
+    setConfigState((c) => ({
+      ...c,
+      sidebar: { ...c.sidebar, agentsOnly: !c.sidebar.agentsOnly },
+    }))
+    setSettingsDirty(true)
+  }
+
   function selectFocusedAgent() {
     const agent = spaces.activeWindow?.focused?.agent
     if (!agent) return
@@ -459,7 +475,8 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       if (field === 0) {
         next.sidebar.width = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, next.sidebar.width + delta))
       }
-      else next.sidebar.open = !next.sidebar.open
+      else if (field === 1) next.sidebar.open = !next.sidebar.open
+      else next.sidebar.agentsOnly = !next.sidebar.agentsOnly
     } else if (section === "behaviour") {
       if (field === 0) {
         next.behaviour.scrollRows = Math.max(1, Math.min(20, next.behaviour.scrollRows + delta))
@@ -929,6 +946,12 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       desc: "toggle sidebar",
       group: "global",
       run: toggleSidebar,
+    },
+    {
+      name: "sidebar.toggle-agents-only",
+      desc: "show only panes running agent CLIs",
+      group: "global",
+      run: toggleAgentsOnly,
     },
     {
       name: "app.help",
