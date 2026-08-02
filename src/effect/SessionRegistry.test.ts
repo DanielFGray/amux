@@ -1,9 +1,9 @@
 import { Effect, Fiber, Stream } from "effect"
 import { expect, test } from "bun:test"
-import { PtyRegistry } from "./PtyRegistry.ts"
+import { SessionRegistry } from "./SessionRegistry.ts"
 
 const program = Effect.gen(function* () {
-  const registry = yield* PtyRegistry
+  const registry = yield* SessionRegistry
   const pty = yield* registry.spawn({
     id: "effect-pty",
     cmd: ["bash", "-c", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\""],
@@ -15,9 +15,9 @@ const program = Effect.gen(function* () {
   const output = yield* Stream.runCollect(pty.output)
   const exit = yield* pty.exit
   return { output: [...output], exit }
-}).pipe(Effect.provide(PtyRegistry.Default), Effect.scoped)
+}).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped)
 
-test("PtyRegistry exposes PTY output and writes within a scope", async () => {
+test("SessionRegistry exposes PTY output and writes within a scope", async () => {
   const result = await Effect.runPromise(program)
   const text = new TextDecoder().decode(Buffer.concat(result.output.map((chunk) => Buffer.from(chunk))))
   expect(text).toContain("ready")
@@ -25,13 +25,13 @@ test("PtyRegistry exposes PTY output and writes within a scope", async () => {
   expect(result.exit).toBe(0)
 })
 
-test("PtyRegistry releases sessions when the scope closes", async () => {
+test("SessionRegistry releases sessions when the scope closes", async () => {
   const result = await Effect.runPromise(
     Effect.gen(function* () {
-      const registry = yield* PtyRegistry
+      const registry = yield* SessionRegistry
       yield* registry.spawn({ id: "scoped-pty", cmd: ["sleep", "10"], cols: 80, rows: 24 })
       return yield* registry.sessions
-    }).pipe(Effect.provide(PtyRegistry.Default), Effect.scoped),
+    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
   )
 
   expect(result).toEqual(new Set(["scoped-pty"]))
@@ -41,7 +41,7 @@ test("a non-reading child cannot wedge writes, kill, or another session", async 
   const result = await Promise.race([
     Effect.runPromise(
       Effect.gen(function* () {
-      const registry = yield* PtyRegistry
+      const registry = yield* SessionRegistry
       const blocked = yield* registry.spawn({
         id: "blocked-pty",
         cmd: ["sh", "-c", "sleep 30"],
@@ -66,7 +66,7 @@ test("a non-reading child cannot wedge writes, kill, or another session", async 
       const pendingResult = yield* Fiber.join(pendingWrite)
       expect(pendingResult._tag).toBe("Failure")
       return new TextDecoder().decode(Buffer.concat([...output].map((chunk) => Buffer.from(chunk))))
-      }).pipe(Effect.provide(PtyRegistry.Default), Effect.scoped),
+      }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
     ),
     Bun.sleep(3000).then(() => { throw new Error("registry responsiveness deadline exceeded") }),
   ])
@@ -78,7 +78,7 @@ test("interrupting a registry write cancels the PTY operation", async () => {
   const result = await Promise.race([
     Effect.runPromise(
       Effect.gen(function* () {
-        const registry = yield* PtyRegistry
+        const registry = yield* SessionRegistry
         const pty = yield* registry.spawn({
           id: "interruptible-pty",
           cmd: ["sh", "-c", "sleep 30"],
@@ -91,7 +91,7 @@ test("interrupting a registry write cancels the PTY operation", async () => {
         const exit = yield* Fiber.await(write)
         yield* pty.kill
         return exit._tag
-      }).pipe(Effect.provide(PtyRegistry.Default), Effect.scoped),
+      }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
     ),
     Bun.sleep(3000).then(() => { throw new Error("interruptibility deadline exceeded") }),
   ])
@@ -102,7 +102,7 @@ test("interrupting a registry write cancels the PTY operation", async () => {
 test("duplicate reservations fail and failed spawns release the id", async () => {
   const result = await Effect.runPromise(
     Effect.gen(function* () {
-      const registry = yield* PtyRegistry
+      const registry = yield* SessionRegistry
       const first = yield* Effect.fork(Effect.exit(registry.spawn({
         id: "duplicate-pty",
         cmd: ["sh", "-c", "sleep 30"],
@@ -137,8 +137,33 @@ test("duplicate reservations fail and failed spawns release the id", async () =>
       const duplicate = firstResult._tag === "Success" ? firstResult.value : second._tag === "Success" ? second.value : undefined
       if (duplicate) yield* duplicate.kill.pipe(Effect.ignore)
       return yield* registry.sessions
-    }).pipe(Effect.provide(PtyRegistry.Default), Effect.scoped),
+    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
   )
 
   expect(result).toEqual(new Set(["duplicate-pty"]))
+})
+
+test("an agent-kind session registers, lists, and is killed through the same path as a pty", async () => {
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const registry = yield* SessionRegistry
+      const agent = yield* registry.spawn({
+        kind: "agent",
+        id: "stub-agent",
+        cmd: [],
+        cols: 80,
+        rows: 24,
+      })
+      expect(agent.kind).toBe("agent")
+      const listed = yield* registry.sessions
+      expect(listed).toEqual(new Set(["stub-agent"]))
+
+      yield* agent.kill;
+      const exit = yield* agent.exit
+      expect(exit).toBeNull()
+      return yield* registry.sessions
+    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
+  )
+
+  expect(result).toEqual(new Set())
 })

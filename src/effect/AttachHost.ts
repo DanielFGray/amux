@@ -2,11 +2,12 @@
  * The daemon's data plane, assembled and given a lifetime.
  *
  * Every piece of this existed already — the hub fans frames out, the registry
- * owns PTYs, the supervisor pumps them, the server speaks the protocol over a
- * socket — but nothing put them in one scope and nothing decided how long that
- * scope lives. This does, and the answer is: as long as the daemon.
+ * owns sessions (pty or agent), the supervisor pumps them, the server speaks
+ * the protocol over a socket — but nothing put them in one scope and nothing
+ * decided how long that scope lives. This does, and the answer is: as long
+ * as the daemon.
  *
- * That answer is the whole point of the daemon. `PtySupervisor.spawn` requires
+ * That answer is the whole point of the daemon. `SessionSupervisor.spawn` requires
  * a Scope, and *which* scope it gets is the difference between a multiplexer
  * and a terminal grid: give it a client's scope and every session dies when
  * the UI disconnects. Here it is given the host's, so the only things that end
@@ -19,8 +20,8 @@ import { Context, Effect, Layer, Scope } from "effect";
 import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame } from "./AttachProtocol.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
-import { PtySupervisor } from "./PtySupervisor.ts";
-import type { ManagedPty, PtyError, PtySpec } from "./PtyRegistry.ts";
+import { SessionSupervisor } from "./SessionSupervisor.ts";
+import type { ManagedSession, PtyError, SessionSpec } from "./SessionRegistry.ts";
 
 export interface AttachHostOptions {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
@@ -44,7 +45,7 @@ export interface AttachHostService {
    * No Scope parameter: the host's scope is already bound in. A caller cannot
    * accidentally tie a session's life to a request, a connection, or a client.
    */
-  readonly spawn: (spec: PtySpec) => Effect.Effect<ManagedPty, PtyError>;
+  readonly spawn: (spec: SessionSpec) => Effect.Effect<ManagedSession, PtyError>;
   /** Stop one session. Its exit frame reaches clients the usual way, through
    *  the supervisor's pump, so a kill and a natural exit look identical to
    *  them. */
@@ -59,10 +60,10 @@ export class AttachHost extends Context.Tag("AttachHost")<AttachHost, AttachHost
 
 const make = (
   options: AttachHostOptions,
-): Effect.Effect<AttachHostService, AttachServerError, Scope.Scope | AttachHub | PtySupervisor> =>
+): Effect.Effect<AttachHostService, AttachServerError, Scope.Scope | AttachHub | SessionSupervisor> =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
-    const supervisor = yield* PtySupervisor;
+    const supervisor = yield* SessionSupervisor;
     const host = yield* Effect.scope;
 
     yield* startAttachServer({
@@ -100,15 +101,15 @@ const make = (
 /**
  * The whole data plane as one layer.
  *
- * AttachHub is provided once at the bottom so the supervisor publishing PTY
- * output and the server subscribing clients to it are talking to the same hub —
- * layer memoization is doing load-bearing work here, not just saving an
- * allocation.
+ * AttachHub is provided once at the bottom so the supervisor publishing
+ * session output and the server subscribing clients to it are talking to the
+ * same hub — layer memoization is doing load-bearing work here, not just
+ * saving an allocation.
  */
 export const layerAttachHost = (
   options: AttachHostOptions,
 ): Layer.Layer<AttachHost, AttachServerError> =>
   Layer.scoped(AttachHost, make(options)).pipe(
-    Layer.provide(PtySupervisor.Live),
+    Layer.provide(SessionSupervisor.Live),
     Layer.provide(AttachHub.Default),
   );

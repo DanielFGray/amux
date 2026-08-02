@@ -3,22 +3,24 @@ import { Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
 import { type AttachFrame } from "./AttachProtocol.ts";
-import { PtyError, PtyRegistry, type ManagedPty, type PtySpec } from "./PtyRegistry.ts";
+import { PtyError, SessionRegistry, type ManagedSession, type SessionSpec } from "./SessionRegistry.ts";
 
 /**
- * Connects daemon-owned PTYs to the attach data plane.
+ * Connects daemon-owned sessions — pty or agent — to the attach data plane.
  *
  * A single FiberMap entry supervises each session's output and exit
- * publication. The PTY itself remains scoped by PtyRegistry, outside any
- * client scope, so a UI disconnect cannot kill the session.
+ * publication. The backend itself remains scoped by SessionRegistry, outside
+ * any client scope, so a UI disconnect cannot kill the session. Nothing here
+ * branches on kind: a pty and a stub agent session are adopted, killed and
+ * replayed through the identical path.
  */
-export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySupervisor", {
-  // scoped for the same reason as PtyRegistry: the per-session output pumps are
+export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("SessionSupervisor", {
+  // scoped for the same reason as SessionRegistry: the per-session output pumps are
   // a FiberMap, and they belong to the supervisor rather than to any caller.
   scoped: Effect.gen(function* () {
-    const registry = yield* PtyRegistry;
+    const registry = yield* SessionRegistry;
     const hub = yield* AttachHub;
-    const sessions = yield* Ref.make<ReadonlyMap<string, ManagedPty>>(new Map());
+    const sessions = yield* Ref.make<ReadonlyMap<string, ManagedSession>>(new Map());
     const completions = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<void>>>(new Map());
     const reservations = yield* Ref.make<ReadonlySet<string>>(new Set());
     // The daemon-side screen model per session. A reattaching client has none
@@ -61,10 +63,10 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
         return next;
       });
 
-    const dropSession = (id: string, pty: ManagedPty, screen?: Terminal) =>
+    const dropSession = (id: string, session: ManagedSession, screen?: Terminal) =>
       Effect.gen(function* () {
         yield* Ref.update(sessions, (current) => {
-          if (current.get(id) !== pty) return current;
+          if (current.get(id) !== session) return current;
           const next = new Map(current);
           next.delete(id);
           return next;
@@ -80,7 +82,7 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
       });
 
     return {
-      spawn: Effect.fnUntraced(function* (spec: PtySpec) {
+      spawn: Effect.fnUntraced(function* (spec: SessionSpec) {
         const reserved = yield* Ref.modify(reservations, (current) => {
           if (current.has(spec.id)) return [false, current] as const;
           return [true, new Set(current).add(spec.id)] as const;
@@ -91,9 +93,10 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
             message: `session '${spec.id}' is already live or starting`,
           });
         }
-        const pty = yield* registry.spawn(spec).pipe(Effect.tapError(() => releaseReservation(spec.id)));
-        // Sized before the pump runs: the first chunk the PTY produces is fed
-        // to both the hub and the screen model, so the model must exist first.
+        const session = yield* registry.spawn(spec).pipe(Effect.tapError(() => releaseReservation(spec.id)));
+        // Sized before the pump runs: the first chunk the backend produces is
+        // fed to both the hub and the screen model, so the model must exist
+        // first.
         let screen: Terminal | undefined;
         yield* Effect.gen(function* () {
           screen = yield* Effect.sync(() => new Terminal(spec.cols, spec.rows, 0));
@@ -111,17 +114,17 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
                   : Effect.void,
               ),
             );
-          const complete = dropSession(spec.id, pty, screen).pipe(
+          const complete = dropSession(spec.id, session, screen).pipe(
             Effect.zipRight(Deferred.succeed(completion, void 0)),
           );
           yield* Ref.update(replays, (current) => new Map(current).set(spec.id, screen!));
-          yield* Ref.update(sessions, (current) => new Map(current).set(spec.id, pty));
+          yield* Ref.update(sessions, (current) => new Map(current).set(spec.id, session));
           yield* Ref.update(completions, (current) => new Map(current).set(spec.id, completion));
           yield* FiberMap.run(
             pumps,
             spec.id,
             Effect.gen(function* () {
-              yield* pty.output.pipe(
+              yield* session.output.pipe(
                 Stream.runForEach((chunk) =>
                   Effect.gen(function* () {
                     // readPty reuses its backing buffer, so the screen model must
@@ -136,18 +139,18 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
                   }),
                 ),
                 Effect.catchAll((error) =>
-                  Effect.logDebug(`pty output ended: ${error.operation}: ${error.message}`),
+                  Effect.logDebug(`session output ended: ${error.operation}: ${error.message}`),
                 ),
               );
-              const code = yield* pty.exit.pipe(Effect.orElseSucceed(() => null));
+              const code = yield* session.exit.pipe(Effect.orElseSucceed(() => null));
               yield* publishExit(code);
               yield* complete;
             }).pipe(
               Effect.ensuring(
                 Effect.uninterruptible(
-                  pty.kill.pipe(
+                  session.kill.pipe(
                     Effect.ignore,
-                    Effect.zipRight(pty.exit.pipe(Effect.orElseSucceed(() => null))),
+                    Effect.zipRight(session.exit.pipe(Effect.orElseSucceed(() => null))),
                     Effect.zipRight(publishExit(null)),
                     Effect.zipRight(complete),
                   ),
@@ -156,36 +159,36 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
             ),
           );
         }).pipe(
-          Effect.tapError(() => dropSession(spec.id, pty, screen).pipe(
-            Effect.zipRight(pty.kill.pipe(Effect.ignore)),
-            Effect.zipRight(pty.exit.pipe(Effect.ignore)),
+          Effect.tapError(() => dropSession(spec.id, session, screen).pipe(
+            Effect.zipRight(session.kill.pipe(Effect.ignore)),
+            Effect.zipRight(session.exit.pipe(Effect.ignore)),
           )),
         );
-        return pty;
+        return session;
       }),
 
       handle: Effect.fnUntraced(function* (frame: AttachFrame) {
         yield* Match.value(frame).pipe(
           Match.tag("input", "resize", (command) =>
             Effect.gen(function* () {
-              const pty = (yield* Ref.get(sessions)).get(command.session);
-              if (!pty) {
+              const session = (yield* Ref.get(sessions)).get(command.session);
+              if (!session) {
                 return yield* new PtyError({
                   operation: command._tag,
                   message: `unknown session '${command.session}'`,
                 });
               }
               if (command._tag === "resize") {
-                // Size the screen model before the PTY: the child redraws in
-                // response to SIGWINCH, and the redraw must land on a model
-                // that is already the right size. The model resize is
-                // synchronous; the PTY resize goes through the pty's command
+                // Size the screen model before the backend: a pty's child
+                // redraws in response to SIGWINCH, and the redraw must land on
+                // a model that is already the right size. The model resize is
+                // synchronous; the backend resize goes through its command
                 // pump, so the ordering is safe by construction.
                 (yield* Ref.get(replays)).get(command.session)?.resize(command.cols, command.rows);
               }
               yield* Match.value(command).pipe(
-                Match.tag("input", (input) => pty.write(input.data)),
-                Match.tag("resize", (resize) => pty.resize(resize.cols, resize.rows)),
+                Match.tag("input", (input) => session.write(input.data)),
+                Match.tag("resize", (resize) => session.resize(resize.cols, resize.rows)),
                 Match.exhaustive,
               );
             })),
@@ -204,15 +207,15 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
       live: Ref.get(sessions).pipe(Effect.map((current) => [...current.keys()])),
 
       kill: Effect.fnUntraced(function* (id: string) {
-        const pty = (yield* Ref.get(sessions)).get(id);
-        if (!pty)
+        const session = (yield* Ref.get(sessions)).get(id);
+        if (!session)
           return yield* new PtyError({ operation: "kill", message: `unknown session '${id}'` });
         const completion = (yield* Ref.get(completions)).get(id);
-        yield* pty.kill;
+        yield* session.kill;
         if (completion) yield* Deferred.await(completion);
       }),
     };
   }),
 }) {
-  static Live = PtySupervisor.Default.pipe(Layer.provide(PtyRegistry.Default));
+  static Live = SessionSupervisor.Default.pipe(Layer.provide(SessionRegistry.Default));
 }

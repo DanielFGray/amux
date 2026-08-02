@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto"
 import { Data, Effect, ManagedRuntime } from "effect"
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts"
 import type { AttachServerError } from "./effect/AttachServer.ts"
-import type { ManagedPty, PtySpec } from "./effect/PtyRegistry.ts"
+import type { ManagedSession, SessionSpec } from "./effect/SessionRegistry.ts"
 import {
   isSessionId, loadSession, processAlive, readLease, removeSession, saveSession, SessionEnv,
   sessionPaths, writeLease, type SessionAttachment, type SessionLease, type SessionState, type SessionPaths,
@@ -20,7 +20,7 @@ export class SessionDaemonError extends Data.TaggedError("SessionDaemonError")<{
 /**
  * A request to start an agent, in the shape the wire can carry.
  *
- * The same fields as PtySpec, except that the caller chooses the id: the layout
+ * The same fields as SessionSpec, except that the caller chooses the id: the layout
  * the client is about to persist is written in terms of agent ids, so an id the
  * daemon invented would have to be round-tripped back before anything could
  * refer to it.
@@ -253,7 +253,7 @@ export class SessionDaemon {
 
   /** Start an agent the daemon owns. It outlives every client by construction:
    *  see the note on AttachHost.spawn. */
-  spawnAgent(spec: PtySpec): Promise<ManagedPty> {
+  spawnAgent(spec: SessionSpec): Promise<ManagedSession> {
     if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"))
     return this.#runtime.runPromise(this.#host.spawn(spec))
   }
@@ -365,7 +365,7 @@ export class SessionDaemon {
   /**
    * Tear down the PTY plane.
    *
-   * Disposing the runtime closes the host scope, which runs PtyRegistry's
+   * Disposing the runtime closes the host scope, which runs SessionRegistry's
    * finalizers: every agent is killed and every master fd closed. There is no
    * kinder option — the PTYs are children of this process, so a daemon that
    * exits without this leaves them orphaned rather than saved.

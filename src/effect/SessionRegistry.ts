@@ -16,7 +16,14 @@ export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   message: S.String,
 }) {}
 
-export interface PtySpec {
+/** What runs behind a session. A pty is a real process today; an agent is a
+ *  stub until the out-of-process LLM backend (ts-a3d8cf) lands. */
+export type SessionKind = "pty" | "agent";
+
+export interface SessionSpec {
+  /** Defaults to "pty": every caller that predates agent sessions is silently
+   *  still asking for one. */
+  readonly kind?: SessionKind;
   readonly id: string;
   readonly cmd: readonly string[];
   readonly cwd?: string;
@@ -24,8 +31,9 @@ export interface PtySpec {
   readonly rows: number;
 }
 
-export interface ManagedPty {
+export interface ManagedSession {
   readonly id: string;
+  readonly kind: SessionKind;
   readonly output: Stream.Stream<Uint8Array, PtyError>;
   readonly exit: Effect.Effect<number | null, PtyError>;
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
@@ -33,7 +41,7 @@ export interface ManagedPty {
   readonly kill: Effect.Effect<void, PtyError>;
 }
 
-type PtyCommand =
+type SessionCommand =
   | {
       readonly _tag: "resize";
       readonly cols: number;
@@ -42,7 +50,78 @@ type PtyCommand =
     }
   | { readonly _tag: "kill"; readonly done: Deferred.Deferred<void, PtyError> };
 
-type Reservation = { readonly token: symbol; readonly pty?: ReturnType<typeof spawnPty> };
+/**
+ * What the registry needs from whatever is behind a session, independent of
+ * kind. A real Pty satisfies this structurally; the agent stub below
+ * satisfies it by construction. Nothing past this boundary knows which one
+ * it has.
+ */
+interface Backend {
+  readonly output: AsyncIterable<Uint8Array>;
+  /** Resolves once the backend has fully terminated, with its exit code. */
+  readonly wait: Promise<number | null>;
+  write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>;
+  resize(cols: number, rows: number): void;
+  kill(): Promise<void>;
+  close(): void;
+}
+
+function ptyBackend(spec: SessionSpec): Backend {
+  const pty = spawnPty([...spec.cmd], {
+    cols: spec.cols,
+    rows: spec.rows,
+    cwd: spec.cwd,
+  });
+  return {
+    output: readPty(pty),
+    // A getter, not a field: `pty.wait` itself begins termination as a side
+    // effect of being read (see pty.ts), so evaluating it here eagerly would
+    // kill the child the instant a backend is constructed instead of when
+    // something actually awaits exit.
+    get wait() {
+      return pty.wait.then(() => pty.proc.exitCode);
+    },
+    write: (data, signal) => pty.write(data, signal),
+    resize: (cols, rows) => pty.resize(cols, rows),
+    kill: () => pty.kill(),
+    close: () => pty.close(),
+  };
+}
+
+/**
+ * A registrable session with no process behind it.
+ *
+ * Until the real out-of-process agent backend exists, this is what lets an
+ * agent-kind session be spawned, listed, focused and killed through exactly
+ * the same registry/supervisor paths as a pty — so nothing downstream has to
+ * special-case the kind to be exercised. It produces no output and accepts
+ * no input; it just holds the id live until kill() or close() ends it, with
+ * no exit code because nothing exited.
+ */
+function agentStubBackend(): Backend {
+  let resolveWait!: (code: number | null) => void;
+  const wait = new Promise<number | null>((resolve) => {
+    resolveWait = resolve;
+  });
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    resolveWait(null);
+  };
+  return {
+    output: (async function* () {
+      await wait;
+    })(),
+    wait,
+    write: async () => {},
+    resize: () => {},
+    kill: async () => finish(),
+    close: () => finish(),
+  };
+}
+
+type Reservation = { readonly token: symbol; readonly backend?: Backend };
 
 const asPtyError = (operation: string, error: unknown): PtyError =>
   new PtyError({
@@ -51,22 +130,24 @@ const asPtyError = (operation: string, error: unknown): PtyError =>
   });
 
 /**
- * Scoped ownership for daemon-side PTYs.
+ * Scoped ownership for daemon-side sessions, pty or agent.
  *
- * The registry deliberately stops at the PTY boundary. Ghostty emulation and
- * pane rendering remain imperative; this service owns process lifetime and
- * turns raw PTY output into a supervised Effect stream.
+ * The registry deliberately stops at the backend boundary. Ghostty emulation
+ * and pane rendering remain imperative; this service owns process lifetime
+ * and turns raw backend output into a supervised Effect stream, whatever the
+ * backend behind a given session id turns out to be.
  */
-export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
+export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionRegistry", {
   // scoped, not effect: the command pumps are a FiberMap that has to be
   // finalized, and the scope that owns it is the registry's own lifetime.
   scoped: Effect.gen(function* () {
-    // The token prevents a late exit from an old PTY from releasing a reused id.
+    // The token prevents a late exit from an old backend from releasing a reused id.
     const sessions = yield* Ref.make<ReadonlyMap<string, Reservation>>(new Map());
     const commandPumps = yield* FiberMap.make<string>();
 
-    const spawn = (spec: PtySpec): Effect.Effect<ManagedPty, PtyError, Scope.Scope> =>
+    const spawn = (spec: SessionSpec): Effect.Effect<ManagedSession, PtyError, Scope.Scope> =>
       Effect.gen(function* () {
+        const kind: SessionKind = spec.kind ?? "pty";
         const token = Symbol(spec.id);
         const reserved = yield* Ref.modify(sessions, (current) => {
           const existing = current.get(spec.id);
@@ -90,14 +171,9 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
           next.delete(spec.id);
           return next;
         });
-        const pty = yield* Effect.acquireRelease(
+        const backend = yield* Effect.acquireRelease(
           Effect.try({
-            try: () =>
-              spawnPty([...spec.cmd], {
-                cols: spec.cols,
-                rows: spec.rows,
-                cwd: spec.cwd,
-              }),
+            try: () => (kind === "agent" ? agentStubBackend() : ptyBackend(spec)),
             catch: (error) => asPtyError("spawn", error),
           }).pipe(Effect.tapError(() => release)),
            (owned) => Effect.uninterruptible(Effect.promise(() => owned.kill()).pipe(
@@ -108,14 +184,14 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
         yield* Ref.update(sessions, (current) => {
           if (current.get(spec.id)?.token !== token) return current;
           const next = new Map(current);
-          next.set(spec.id, { token, pty });
+          next.set(spec.id, { token, backend });
           return next;
         });
-        const commands = yield* Mailbox.make<PtyCommand>({ capacity: 256, strategy: "suspend" });
-        const runCommand = (command: PtyCommand) => {
+        const commands = yield* Mailbox.make<SessionCommand>({ capacity: 256, strategy: "suspend" });
+        const runCommand = (command: SessionCommand) => {
           const operation = Match.valueTags(command, {
-            resize: (command) => Effect.sync(() => pty.resize(command.cols, command.rows)),
-             kill: () => Effect.promise(() => pty.kill()),
+            resize: (command) => Effect.sync(() => backend.resize(command.cols, command.rows)),
+             kill: () => Effect.promise(() => backend.kill()),
           });
           return operation.pipe(
             Effect.mapError((error) => asPtyError(command._tag, error)),
@@ -130,7 +206,7 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
           Mailbox.toStream(commands).pipe(Stream.runForEach(runCommand)),
         );
 
-        const offer = (command: PtyCommand): Effect.Effect<void, PtyError> =>
+        const offer = (command: SessionCommand): Effect.Effect<void, PtyError> =>
           commands.offer(command).pipe(
             Effect.flatMap((accepted) =>
               accepted
@@ -138,14 +214,14 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
                 : Effect.fail(
                     new PtyError({
                       operation: command._tag,
-                      message: "pty command pump is closed",
+                      message: "session command pump is closed",
                     }),
                   ),
             ),
           );
 
         const commandResult = Effect.fnUntraced(function* (
-          command: (done: Deferred.Deferred<void, PtyError>) => PtyCommand,
+          command: (done: Deferred.Deferred<void, PtyError>) => SessionCommand,
         ) {
           const done = yield* Deferred.make<void, PtyError>();
           yield* offer(command(done));
@@ -154,19 +230,20 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
 
         return {
           id: spec.id,
-          output: Stream.fromAsyncIterable(readPty(pty), (error) => asPtyError("read", error)),
+          kind,
+          output: Stream.fromAsyncIterable(backend.output, (error) => asPtyError("read", error)),
            exit: Effect.tryPromise({
-             try: () => pty.wait.then(() => pty.proc.exitCode),
+             try: () => backend.wait,
             catch: (error) => asPtyError("exit", error),
           }).pipe(Effect.ensuring(release)),
           write: (data) => Effect.tryPromise({
-            try: (signal) => pty.write(data, signal),
+            try: (signal) => backend.write(data, signal),
             catch: (error) => asPtyError("write", error),
           }),
           resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
           // Kill must not wait behind a write whose child stopped reading.
-          kill: Effect.promise(() => pty.kill()),
-        } satisfies ManagedPty;
+          kill: Effect.promise(() => backend.kill()),
+        } satisfies ManagedSession;
       });
 
     return {
