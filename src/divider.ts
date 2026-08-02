@@ -162,6 +162,7 @@ export class Divider extends Renderable {
   #hovered = false
   #dragging = false
   #paneGap = 0
+  #spaced = false
 
   /**
    * Where the drag goes instead of the neighbours' flex weights.
@@ -196,9 +197,21 @@ export class Divider extends Renderable {
 
   /** Update the target's width when the appearance setting changes. */
   setPaneGap(gap: number): void {
-    this.#paneGap = Math.max(0, Math.floor(gap))
-    if (this.axis === "row") this.width = this.#paneGap || 1
-    else this.height = this.#paneGap || 1
+    // Terminal cells are taller than they are wide. At the first gap level a
+    // column is enough to separate side-by-side panes, while a whole blank row
+    // makes top/bottom panes look disproportionately far apart. Larger levels
+    // retain the same visual correction.
+    const requested = Math.max(0, Math.floor(gap))
+    this.#spaced = requested > 0
+    this.#paneGap = this.axis === "column" ? Math.max(0, requested - 1) : requested
+    if (this.axis === "row") this.width = this.#spaced ? this.#paneGap : 1
+    else {
+      // OpenTUI keeps renderables at least one cell high. Reclaim that
+      // implementation floor with a negative trailing margin when the visual
+      // gap is zero, so the divider remains draggable without adding a row.
+      this.height = Math.max(1, this.#paneGap)
+      this.marginBottom = this.#spaced && this.#paneGap === 0 ? -1 : 0
+    }
   }
 
   protected override onMouseEvent(event: MouseEvent): void {
@@ -290,7 +303,7 @@ export class Divider extends Renderable {
    * cells, so it keeps the simple path.
    */
   protected override renderSelf(buffer: OptimizedBuffer): void {
-    if (this.#paneGap > 0) {
+    if (this.#spaced) {
       for (let y = this.y; y < this.y + this.height; y++) {
         for (let x = this.x; x < this.x + this.width; x++) {
           buffer.setCell(x, y, " ", IDLE, BG)

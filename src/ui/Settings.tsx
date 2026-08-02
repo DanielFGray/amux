@@ -46,12 +46,17 @@ export function settingsFields(config: Config, section: SettingsSection): Field[
           hint: "0 merged · 1 borders · 2+ cells · ←/→ adjusts",
         },
         {
+          label: "Single-pane border",
+          value: config.appearance.singlePaneBorder ? "yes" : "no",
+          hint: "←/→ toggles",
+        },
+        {
           label: "Which-key hints",
           value: config.appearance.whichKeyHints ? "yes" : "no",
           hint: "←/→ toggles",
         },
         {
-          label: "Hint delay",
+          label: "Which-key delay",
           value: `${config.appearance.whichKeyDelay}s`,
           hint: "seconds · ←/→ adjusts",
         },

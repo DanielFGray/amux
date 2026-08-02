@@ -26,6 +26,8 @@ export interface Config {
     whichKeyHints: boolean
     /** Seconds of inactivity before the which-key panel appears. */
     whichKeyDelay: number
+    /** Whether a window with one pane draws its outer border. */
+    singlePaneBorder: boolean
   }
   /** Prefix key and per-command overrides. Only commands the user has actually
    * rebound appear here, so the defaults stay free to change. */
@@ -35,7 +37,7 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   sidebar: { width: 30, open: true, agentsOnly: false },
   behaviour: { scrollRows: 3, shell: "" },
-  appearance: { paneGap: 0, whichKeyHints: true, whichKeyDelay: 0 },
+  appearance: { paneGap: 0, whichKeyHints: true, whichKeyDelay: 0, singlePaneBorder: true },
   keys: { leader: DEFAULT_LEADER, bindings: {} },
 }
 
@@ -80,6 +82,7 @@ export function decodeConfig(loaded: unknown): Config {
       paneGap: boundedNumber(appearance.paneGap, DEFAULT_CONFIG.appearance.paneGap, CONFIG_LIMITS.paneGap.min, CONFIG_LIMITS.paneGap.max),
       whichKeyHints: typeof appearance.whichKeyHints === "boolean" ? appearance.whichKeyHints : DEFAULT_CONFIG.appearance.whichKeyHints,
       whichKeyDelay: boundedNumber(appearance.whichKeyDelay, DEFAULT_CONFIG.appearance.whichKeyDelay, CONFIG_LIMITS.whichKeyDelay.min, CONFIG_LIMITS.whichKeyDelay.max),
+      singlePaneBorder: typeof appearance.singlePaneBorder === "boolean" ? appearance.singlePaneBorder : DEFAULT_CONFIG.appearance.singlePaneBorder,
     },
     keys: sanitizeKeys(loaded.keys),
   }
@@ -111,12 +114,14 @@ function sanitizeKeys(keys: unknown): Keys {
 export const runtime = {
   scrollRows: DEFAULT_CONFIG.behaviour.scrollRows,
   paneGap: DEFAULT_CONFIG.appearance.paneGap,
+  singlePaneBorder: DEFAULT_CONFIG.appearance.singlePaneBorder,
 }
 
 export function applyConfig(config: Config): void {
   const decoded = decodeConfig(config)
   runtime.scrollRows = decoded.behaviour.scrollRows
   runtime.paneGap = decoded.appearance.paneGap
+  runtime.singlePaneBorder = decoded.appearance.singlePaneBorder
 }
 
 export async function loadConfig(path = CONFIG_PATH): Promise<Config> {

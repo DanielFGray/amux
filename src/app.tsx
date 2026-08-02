@@ -520,6 +520,8 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         next.appearance.paneGap = Math.max(0, Math.min(8, next.appearance.paneGap + delta))
       } else if (field === 1) {
         next.appearance.whichKeyHints = !next.appearance.whichKeyHints
+      } else if (field === 2) {
+        next.appearance.singlePaneBorder = !next.appearance.singlePaneBorder
       } else {
         next.appearance.whichKeyDelay = Math.max(0, Math.min(5, next.appearance.whichKeyDelay + delta))
       }

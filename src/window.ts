@@ -500,14 +500,15 @@ export class Window {
    */
   #refreshChrome() {
     const gap = runtime.paneGap > 0
+    const showOuterBorder = runtime.singlePaneBorder || this.#panes.length > 1
     for (const pane of this.#panes) {
       pane.edges = {
         // frame.externalLeft: the sidebar handle owns that column, so no pane
         // draws a left border while the sidebar is open.
-        left: gap ? !frame.externalLeft : !frame.externalLeft && !this.#hasNeighbour(pane, "row", -1),
-        right: gap || !this.#hasNeighbour(pane, "row", 1),
-        top: gap || !this.#hasNeighbour(pane, "column", -1),
-        bottom: gap || !this.#hasNeighbour(pane, "column", 1),
+        left: showOuterBorder && (gap ? !frame.externalLeft : !frame.externalLeft && !this.#hasNeighbour(pane, "row", -1)),
+        right: showOuterBorder && (gap || !this.#hasNeighbour(pane, "row", 1)),
+        top: showOuterBorder && (gap || !this.#hasNeighbour(pane, "column", -1)),
+        bottom: showOuterBorder && (gap || !this.#hasNeighbour(pane, "column", 1)),
       }
     }
     for (const divider of this.#dividers()) {
