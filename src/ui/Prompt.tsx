@@ -54,6 +54,14 @@ export function Prompt(props: {
     else props.request.resolve(values())
   }
 
+  // Tab moves focus to the next field. The textarea renderable has no tab
+  // binding of its own, so without this the footer's "⇥ field" hint lies and
+  // tab does nothing at all.
+  const nextField = () => {
+    if (field() < props.request.fields.length - 1) setField(field() + 1)
+    else setField(0)
+  }
+
   return (
     <box
       style={{
@@ -83,6 +91,16 @@ export function Prompt(props: {
                     value={values()[i()] ?? ""}
                     placeholder={spec.placeholder ?? ""}
                     focused={field() === i()}
+                    onKeyDown={(key) => {
+                      // The textarea renderable does not bind tab, so an
+                      // unbound tab would be silently dropped before it ever
+                      // reached the app. Intercept it here and move focus, then
+                      // stop the event so nothing downstream treats it as input.
+                      if (key.name === "tab" && field() === i()) {
+                        nextField()
+                        key.preventDefault()
+                      }
+                    }}
                     style={{
                       flexShrink: 0,
                       backgroundColor: field() === i() ? theme.surface1 : theme.surface0,
