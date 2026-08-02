@@ -5,7 +5,126 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AttachHub } from "./AttachHub.ts"
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts"
-import { startAttachServer } from "./AttachServer.ts"
+import { createAttachWriter, startAttachServer } from "./AttachServer.ts"
+import { createSocketWriter } from "../attach-write.ts"
+
+const concatenate = (parts: Uint8Array[]) => {
+  const result = new Uint8Array(parts.reduce((size, part) => size + part.length, 0))
+  let offset = 0
+  for (const part of parts) {
+    result.set(part, offset)
+    offset += part.length
+  }
+  return result
+}
+
+test("attach writer resumes partial writes without interleaving frames", async () => {
+  const writes: Uint8Array[] = []
+  const limits = [2, 1, 7, 3, 1000]
+  const writer = createAttachWriter({
+    write(data, offset = 0, length = (data as Uint8Array).byteLength - offset) {
+      const bytes = data as Uint8Array
+      const count = Math.min(length, limits.shift() ?? 1000)
+      writes.push(new Uint8Array(bytes.buffer, bytes.byteOffset + offset, count).slice())
+      return count
+    },
+  }, () => { throw new Error("unexpected overload") })
+
+  expect(writer.send({ _tag: "output", session: "one", data: new Uint8Array([1]) })).toBe(true)
+  expect(writer.send({ _tag: "output", session: "two", data: new Uint8Array([2]) })).toBe(true)
+  for (let index = 0; index < 10; index++) writer.drain()
+  const wire = new TextDecoder().decode(concatenate(writes))
+  const received = decodeAttachFrames(wire).frames
+  expect(received).toEqual([
+    { _tag: "output", session: "one", data: new Uint8Array([1]) },
+    { _tag: "output", session: "two", data: new Uint8Array([2]) },
+  ])
+})
+
+test("attach writer waits for drain after zero and closes on -1 or throw", () => {
+  const bytes = new TextEncoder().encode("abcdef")
+  const calls: number[] = []
+  const limits = [0, 2, -1]
+  let closed = 0
+  const writer = createSocketWriter({
+    write(_data, _offset, length) {
+      calls.push(length)
+      const result = limits.shift()!
+      if (result === -1) return -1
+      return result
+    },
+  }, () => { closed += 1 })
+
+  expect(writer.send(bytes)).toBe(true)
+  expect(calls).toEqual([6])
+  writer.drain()
+  expect(calls).toEqual([6, 6])
+  writer.drain()
+  expect(calls).toEqual([6, 6, 4])
+  expect(writer.closed).toBe(true)
+  expect(closed).toBe(1)
+  writer.drain()
+  expect(calls).toHaveLength(3)
+
+  let thrown = 0
+  const throwing = createSocketWriter({
+    write() { throw new Error("closed") },
+  }, () => { thrown += 1 })
+  expect(throwing.send(bytes)).toBe(false)
+  expect(throwing.closed).toBe(true)
+  expect(thrown).toBe(1)
+})
+
+test("attach writer pauses on zero and closes only at byte overflow", () => {
+  let overloaded = 0
+  const slow = createAttachWriter({ write: () => 0 }, () => { overloaded += 1 }, 1024)
+  const fastBytes: Uint8Array[] = []
+  const fast = createAttachWriter({
+    write(data, offset = 0, length = (data as Uint8Array).byteLength - offset) {
+      const bytes = data as Uint8Array
+      fastBytes.push(new Uint8Array(bytes.buffer, bytes.byteOffset + offset, length).slice())
+      return length
+    },
+  }, () => { throw new Error("fast client overloaded") })
+
+  expect(slow.send({ _tag: "output", session: "slow", data: new Uint8Array([1]) })).toBe(true)
+  expect(slow.closed).toBe(false)
+  slow.drain()
+  expect(slow.closed).toBe(false)
+  expect(slow.send({ _tag: "output", session: "slow", data: new Uint8Array(1024) })).toBe(false)
+  expect(slow.closed).toBe(true)
+  expect(overloaded).toBe(1)
+  expect(fast.send({ _tag: "output", session: "fast", data: new Uint8Array([2]) })).toBe(true)
+  expect(decodeAttachFrames(new TextDecoder().decode(concatenate(fastBytes))).frames).toEqual([
+    { _tag: "output", session: "fast", data: new Uint8Array([2]) },
+  ])
+})
+
+test("one blocked session handler does not stall another session on the same socket", async () => {
+  const root = await mkdtemp(join(tmpdir(), "herdr-attach-lanes-"))
+  const path = join(root, "attach.sock")
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const server = yield* startAttachServer({
+        path,
+        onFrame: (_client, frame) => frame._tag === "input" && frame.session === "slow"
+          ? Effect.sleep(200)
+          : Effect.void,
+      })
+      const messages: string[] = []
+      const socket = yield* Effect.promise(() => connect(path, (message) => messages.push(message)))
+      socket.write(encodeAttachFrame({ _tag: "input", session: "slow", data: new Uint8Array([1]) }))
+      socket.write(encodeAttachFrame({ _tag: "ping", nonce: "fast" }))
+      yield* Effect.promise(() => Bun.sleep(25))
+      socket.end()
+      return { messages, server }
+    }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
+  )
+
+  expect(decodeAttachFrames(result.messages.join("")).frames).toContainEqual({ _tag: "pong", nonce: "fast" })
+  result.server.stop(true)
+  await rm(root, { recursive: true, force: true })
+})
 
 const connect = (path: string, onData: (text: string) => void) =>
   Bun.connect({

@@ -206,7 +206,7 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
   client.close()
 })
 
-test("an unsubscribed session keeps the newest frames when its queue overflows", async () => {
+test("an unsubscribed session disconnects rather than silently dropping frames", async () => {
   const home = await mkdtemp(join(tmpdir(), "herdr-overflow-"))
   dirs.push(home)
   const path = join(home, "attach.sock")
@@ -239,16 +239,8 @@ test("an unsubscribed session keeps the newest frames when its queue overflows",
   )
 
   await Bun.sleep(100)
-  const frames = await Promise.race([
-    Effect.runPromise(Stream.runCollect(client.stream("agent-1"))),
-    Bun.sleep(2_000).then(() => { throw new Error("the overflowing session stream did not finish") }),
-  ])
-  const output = [...frames]
-    .filter((frame) => frame._tag === "output")
-    .map((frame) => Buffer.from(frame.data).toString())
-    .join("")
-  expect(output).not.toContain("frame-000")
-  expect(output).toContain("frame-299")
+  await until(() => client.closed, "the overflowing client to disconnect")
+  expect(client.closed).toBe(true)
   client.close()
   listener.stop(true)
 })

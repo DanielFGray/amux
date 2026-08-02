@@ -1,6 +1,7 @@
 import { Cause, Data, Effect, ExecutionStrategy, Exit, FiberMap, Match, Runtime, Scope, Stream } from "effect"
 import { randomUUID } from "node:crypto"
 import { AttachHub } from "./AttachHub.ts"
+import { createSocketWriter } from "../attach-write.ts"
 import {
   decodeAttachFrames,
   encodeAttachFrame,
@@ -57,6 +58,26 @@ interface ClientState {
   scope: Scope.CloseableScope | null
   processing: Promise<void>
   idleTimer: Timer | null
+  writer: { readonly closed: boolean; send(frame: AttachFrame): boolean; drain(): void; close(): void } | null
+  lanes: Map<string, Promise<void>>
+}
+
+export const createAttachWriter = (
+  socket: Pick<Bun.Socket, "write">,
+  onOverload: () => void,
+  maxPendingBytes?: number,
+) => {
+  const writer = createSocketWriter(
+    socket as { write(data: Uint8Array, offset: number, length: number): number },
+    onOverload,
+    maxPendingBytes,
+  )
+  return {
+    get closed() { return writer.closed },
+    send: (frame: AttachFrame) => writer.send(new TextEncoder().encode(encodeAttachFrame(frame))),
+    drain: () => writer.drain(),
+    close: () => writer.close(),
+  }
 }
 
 const reason = (cause: Cause.Cause<unknown>): string => {
@@ -96,6 +117,7 @@ export const startAttachServer = (
       const scope = state.scope
       state.client = null
       state.scope = null
+      state.writer?.close()
       if (!client && !scope) return
       run(
         // Order matters, and it is the reverse of the obvious one. onDetach is
@@ -113,11 +135,24 @@ export const startAttachServer = (
       )
     }
 
+    // Error rejection is intentionally abrupt: once a protocol error is known,
+    // do not claim the queued error frame was delivered before ending a
+    // potentially partial socket write.
+    const terminate = (socket: Bun.Socket<ClientState>, frame?: AttachFrame) => {
+      if (frame) socket.data.writer?.send(frame)
+      socket.data.writer?.close()
+      closeClient(socket)
+      socket.end()
+    }
+
     /** Accept a hello, or tell the client why it was refused and hang up. */
     const attach = (socket: Bun.Socket<ClientState>, client: string) =>
       Effect.gen(function* () {
         const child = yield* Scope.fork(root, ExecutionStrategy.sequential)
-        const accepted = yield* Scope.extend(hub.subscribe(client, socket.data.connection), child).pipe(
+        const accepted = yield* Scope.extend(hub.subscribe(client, socket.data.connection, () => {
+          closeClient(socket)
+          socket.end()
+        }), child).pipe(
           // The hub decides whether this id is free; the owner decides whether
           // anyone may attach at all. Both must pass before a byte is sent, and
           // both unwind through the same child scope if either refuses.
@@ -127,8 +162,7 @@ export const startAttachServer = (
 
         if (Exit.isFailure(accepted)) {
           yield* Scope.close(child, Exit.succeed(undefined))
-          socket.write(encodeAttachFrame({ _tag: "error", message: reason(accepted.cause) }))
-          socket.end()
+          terminate(socket, { _tag: "error", message: reason(accepted.cause) })
           return
         }
 
@@ -139,11 +173,13 @@ export const startAttachServer = (
         // every frame batched behind this hello in the same read.
         runClient(client, Stream.runForEach(accepted.value.frames, (outgoing) =>
           Effect.sync(() => {
-            // A negative write means the peer is closed or its kernel buffer
-            // is full. The queue remains bounded; drain-aware socket writing
-            // is the next transport hardening slice.
-            socket.write(encodeAttachFrame(outgoing))
+            socket.data.writer?.send(outgoing)
           }),
+        ).pipe(
+          Effect.ensuring(Effect.sync(() => {
+            closeClient(socket)
+            socket.end()
+          })),
         ))
       })
 
@@ -156,7 +192,7 @@ export const startAttachServer = (
           Match.tag("hello", (hello) =>
             Effect.gen(function* () {
               if (socket.data.client) {
-                socket.write(encodeAttachFrame({ _tag: "error", message: "hello already received" }))
+                socket.data.writer?.send({ _tag: "error", message: "hello already received" })
                 return
               }
               yield* attach(socket, hello.client)
@@ -164,32 +200,52 @@ export const startAttachServer = (
           Match.tag("ping", (ping) =>
             Effect.sync(() => {
               if (!socket.data.client) {
-                socket.write(encodeAttachFrame({ _tag: "error", message: "hello is required first" }))
-                socket.end()
+                terminate(socket, { _tag: "error", message: "hello is required first" })
                 return
               }
-              socket.write(encodeAttachFrame({ _tag: "pong", nonce: ping.nonce }))
+              socket.data.writer?.send({ _tag: "pong", nonce: ping.nonce })
             })),
           Match.tag("sync", (sync) =>
             Effect.gen(function* () {
               if (!socket.data.client) {
-                socket.write(encodeAttachFrame({ _tag: "error", message: "hello is required first" }))
-                socket.end()
+                terminate(socket, { _tag: "error", message: "hello is required first" })
                 return
               }
-              yield* options.onSync?.(socket.data.client, socket.data.connection, sync.session) ?? Effect.void
+              yield* hub.beginReplay(socket.data.client, socket.data.connection)
+              yield* (options.onSync?.(socket.data.client, socket.data.connection, sync.session) ?? Effect.void).pipe(
+                Effect.ensuring(hub.endReplay(socket.data.client, socket.data.connection)),
+              )
             })),
           Match.orElse((clientFrame) =>
             Effect.gen(function* () {
               if (!socket.data.client) {
-                socket.write(encodeAttachFrame({ _tag: "error", message: "hello is required first" }))
-                socket.end()
+                terminate(socket, { _tag: "error", message: "hello is required first" })
                 return
               }
               yield* options.onFrame?.(socket.data.client, clientFrame) ?? Effect.void
             })),
         )
       })
+
+    const laneFor = (frame: AttachFrame): string =>
+      frame._tag === "input" || frame._tag === "resize" || frame._tag === "sync"
+        ? `session:${frame.session}`
+        : frame._tag === "hello" ? "handshake" : "connection"
+
+    const dispatchFrame = (socket: Bun.Socket<ClientState>, frame: AttachFrame) => {
+      const state = socket.data
+      const lane = laneFor(frame)
+      const previous = state.lanes.get(lane) ?? Promise.resolve()
+      const handshake = lane === "handshake" ? Promise.resolve() : state.lanes.get("handshake") ?? Promise.resolve()
+      const current = Promise.all([previous, handshake]).then(() => Runtime.runPromise(runtime)(handleFrame(socket, frame))).catch((error) => {
+        if (state.writer?.closed) return
+        terminate(socket, { _tag: "error", message: String(error) })
+      })
+      state.lanes.set(lane, current)
+      void current.finally(() => {
+        if (state.lanes.get(lane) === current) state.lanes.delete(lane)
+      })
+    }
 
     const resetIdleTimer = (socket: Bun.Socket<ClientState>) => {
       const state = socket.data
@@ -207,13 +263,17 @@ export const startAttachServer = (
         try: () =>
           Bun.listen<ClientState>({
             unix: options.path,
-            data: { buffer: "", client: null, connection: "", scope: null, processing: Promise.resolve(), idleTimer: null },
+            data: { buffer: "", client: null, connection: "", scope: null, processing: Promise.resolve(), idleTimer: null, writer: null, lanes: new Map() },
             socket: {
               binaryType: "buffer",
               open(socket) {
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
-                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, processing: Promise.resolve(), idleTimer: null }
+                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, processing: Promise.resolve(), idleTimer: null, writer: null, lanes: new Map() }
+                socket.data.writer = createAttachWriter(socket, () => {
+                  closeClient(socket)
+                  socket.end()
+                })
                 resetIdleTimer(socket)
               },
               data(socket, data) {
@@ -227,12 +287,11 @@ export const startAttachServer = (
                     state.buffer += data.toString("utf8")
                     const decoded = decodeAttachFrames(state.buffer)
                     state.buffer = decoded.rest
-                    for (const frame of decoded.frames) yield* handleFrame(socket, frame)
+                    for (const frame of decoded.frames) dispatchFrame(socket, frame)
                   }).pipe(
                     Effect.catchAll((error) =>
                       Effect.sync(() => {
-                        socket.write(encodeAttachFrame({ _tag: "error", message: String(error) }))
-                        socket.end()
+                        terminate(socket, { _tag: "error", message: String(error) })
                       }),
                     ),
                   ),
@@ -243,6 +302,9 @@ export const startAttachServer = (
               },
               error(socket) {
                 closeClient(socket)
+              },
+              drain(socket) {
+                socket.data.writer?.drain()
               },
             },
           }),

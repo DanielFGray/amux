@@ -19,6 +19,7 @@ import {
   type AttachFrame,
 } from "./effect/AttachProtocol.ts"
 import { Deferred, Effect, Layer, Queue, Stream } from "effect"
+import { createSocketWriter, type SocketWriter } from "./attach-write.ts"
 
 /**
  * Seconds between heartbeats.
@@ -41,15 +42,9 @@ const HELLO_TIMEOUT_MS = 5_000
  * the process starts writing between them. Without this, the first line of
  * every session's output would be dropped exactly when it matters most (a
  * shell prompt, a banner). Bounded because a session that is never subscribed
- * to is a leak otherwise: past the limit the oldest frames go, which is the
- * same thing a terminal does to its scrollback.
- *
- * Sliding, specifically, not `Queue.bounded`. A bounded queue does not drop —
- * it suspends the offer until a taker makes room. Offers here are fire and
- * forget, so against a session nobody subscribes to every frame past the limit
- * would park a fibre that retains it, which is the unbounded growth this
- * constant exists to prevent, and the queue would hold the OLDEST frames while
- * the newest waited behind them.
+ * to is a leak otherwise. If the limit is reached, the attachment closes
+ * rather than silently losing terminal bytes; a later attachment can request
+ * a fresh screen with sync.
  */
 const QUEUE_LIMIT = 256
 
@@ -80,13 +75,14 @@ export interface AttachClientShape {
 class AttachClientImpl implements AttachClientShape {
   readonly client: string
   #socket: Bun.Socket<undefined>
+  #writer: SocketWriter
   #buffer = ""
   #closed = false
   #heartbeat: Timer | null = null
   /** Outstanding round trips, called with false when the attachment ends
    *  instead of being left pending forever. */
   #pongs = new Map<string, Deferred.Deferred<boolean>>()
-  #queued = new Map<string, Queue.Queue<AttachFrame>>()
+  #queued = new Map<string, { queue: Queue.Queue<AttachFrame>; active: number; terminal: boolean }>()
 
   /**
    * The attachment ended: the socket closed, the daemon went away, or the
@@ -100,6 +96,10 @@ class AttachClientImpl implements AttachClientShape {
   private constructor(client: string, socket: Bun.Socket<undefined>) {
     this.client = client
     this.#socket = socket
+    this.#writer = createSocketWriter(socket, () => {
+      this.#finish(new AttachError("attach client is too slow"))
+      socket.end()
+    })
   }
 
   /**
@@ -122,7 +122,10 @@ class AttachClientImpl implements AttachClientShape {
       }
 
       const timer = setTimeout(
-        () => fail(new AttachError(`attach to ${options.path} timed out`)),
+        () => {
+          attached?.close()
+          fail(new AttachError(`attach to ${options.path} timed out`))
+        },
         HELLO_TIMEOUT_MS,
       )
       timer.unref?.()
@@ -146,10 +149,10 @@ class AttachClientImpl implements AttachClientShape {
               attached!.#startHeartbeat(options.pingSeconds ?? PING_SECONDS)
               resolve(attached!)
             })
-            socket.write(
+            attached.#writer.send(new TextEncoder().encode(
               encodeAttachFrame({ _tag: "hello", client: options.client }) +
                 encodeAttachFrame({ _tag: "ping", nonce }),
-            )
+            ))
           },
           data(_socket, data) {
             if (attached) attached.#receive(data.toString("utf8"), fail)
@@ -164,6 +167,9 @@ class AttachClientImpl implements AttachClientShape {
             fail(error)
             if (attached) attached.#finish(error)
           },
+          drain() {
+            if (attached) attached.#writer.drain()
+          },
         },
       }).catch(fail)
     })
@@ -176,22 +182,34 @@ class AttachClientImpl implements AttachClientShape {
   /** A bounded stream is created before the RPC spawn, so no output can race
    *  subscription. The queue is the pre-subscribe buffer, not a second cache. */
   stream(session: string): Stream.Stream<AttachFrame> {
-    let queue = this.#queued.get(session)
-    if (!queue) {
-      queue = Effect.runSync(Queue.sliding<AttachFrame>(QUEUE_LIMIT))
-      this.#queued.set(session, queue)
+    let entry = this.#queued.get(session)
+    if (!entry || (entry.terminal && entry.active === 0)) {
+      if (entry) Effect.runFork(Queue.shutdown(entry.queue))
+      entry = { queue: Effect.runSync(Queue.bounded<AttachFrame>(QUEUE_LIMIT)), active: 0, terminal: false }
+      this.#queued.set(session, entry)
     }
+    entry.active += 1
+    const queue = entry.queue
     return Stream.fromQueue(queue).pipe(
       Stream.tap((frame) => frame._tag === "exit"
         ? Effect.sync(() => {
             // The exit is taken before this runs, so every preceding output is
             // already safe to release. Keep the identity check: a later stream
             // may have installed a replacement queue while this one was ending.
-            if (this.#queued.get(session) !== queue) return
+            if (this.#queued.get(session)?.queue !== queue) return
             this.#queued.delete(session)
-            Effect.runFork(Queue.shutdown(queue!))
+            Effect.runFork(Queue.shutdown(queue))
           })
         : Effect.void),
+      Stream.ensuring(Effect.sync(() => {
+        const current = this.#queued.get(session)
+        if (current?.queue !== queue) return
+        current.active -= 1
+        if (current.terminal && current.active === 0) {
+          this.#queued.delete(session)
+          Effect.runFork(Queue.shutdown(queue))
+        }
+      })),
     )
   }
 
@@ -236,7 +254,7 @@ class AttachClientImpl implements AttachClientShape {
 
   #send(frame: AttachFrame): void {
     if (this.#closed) return
-    this.#socket.write(encodeAttachFrame(frame))
+    this.#writer.send(new TextEncoder().encode(encodeAttachFrame(frame)))
   }
 
   #startHeartbeat(seconds: number): void {
@@ -275,22 +293,35 @@ class AttachClientImpl implements AttachClientShape {
     }
     if (frame._tag !== "output" && frame._tag !== "exit") return
 
-    const queue = this.#queued.get(frame.session) ?? Effect.runSync(Queue.sliding<AttachFrame>(QUEUE_LIMIT))
-    // Output and exit share one queue so replay keeps their order: an exit
-    // delivered ahead of the bytes that preceded it would blank a pane and
-    // then write to it.
-    void Effect.runPromise(Queue.offer(queue, frame))
-    this.#queued.set(frame.session, queue)
+    const entry = this.#queued.get(frame.session) ?? {
+      queue: Effect.runSync(Queue.bounded<AttachFrame>(QUEUE_LIMIT)), active: 0, terminal: false,
+    }
+    const queue = entry.queue
+    // Output and exit share one queue so replay keeps their order. Never slide
+    // terminal frames: an overflow invalidates this attachment and reattach
+    // will obtain a fresh screen through sync.
+    if (!queue.unsafeOffer(frame)) {
+      this.#finish(new AttachError("attach receive queue is overloaded"))
+      this.#socket.end()
+      return
+    }
+    entry.terminal ||= frame._tag === "exit"
+    this.#queued.set(frame.session, entry)
+    if (frame._tag === "exit" && entry.active === 0) {
+      this.#queued.delete(frame.session)
+      Effect.runFork(Queue.shutdown(queue))
+    }
   }
 
   #finish(error: Error | null): void {
     if (this.#closed) return
     this.#closed = true
+    this.#writer.close()
     if (this.#heartbeat) clearInterval(this.#heartbeat)
     this.#heartbeat = null
     for (const pong of this.#pongs.values()) Effect.runSync(Deferred.succeed(pong, false))
     this.#pongs.clear()
-    for (const queue of this.#queued.values()) Effect.runFork(Queue.shutdown(queue))
+    for (const { queue } of this.#queued.values()) Effect.runFork(Queue.shutdown(queue))
     this.#queued.clear()
     this.onClose?.(error)
   }
