@@ -22,17 +22,18 @@ export interface AttachSubscription {
  */
 export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
   effect: Effect.gen(function* () {
-    const clients = yield* Ref.make<ReadonlyMap<string, { connection: string; queue: Queue.Queue<AttachFrame>; pendingBytes: number; replaying: boolean; deferred: AttachFrame[]; deferredBytes: number; onOverflow?: () => void }>>(new Map())
+    const clients = yield* Ref.make<ReadonlyMap<string, { connection: string; queue: Queue.Queue<AttachFrame>; pendingBytes: number; replaying: boolean; replayPending: number; replayLock: Effect.Semaphore; deferred: AttachFrame[]; deferredBytes: number; onOverflow?: () => void }>>(new Map())
 
     const subscribe = (client: string, connection = "", onOverflow?: () => void): Effect.Effect<AttachSubscription, AttachHubError, Scope.Scope> =>
       Effect.gen(function* () {
         const queue = yield* Queue.bounded<AttachFrame>(256)
+        const replayLock = yield* Effect.makeSemaphore(1)
         const registered = yield* Ref.modify(clients, (current) => {
           if (current.has(client)) {
             return [false, current] as const
           }
           const next = new Map(current)
-          next.set(client, { connection, queue, pendingBytes: 0, replaying: false, deferred: [], deferredBytes: 0, onOverflow })
+          next.set(client, { connection, queue, pendingBytes: 0, replaying: false, replayPending: 0, replayLock, deferred: [], deferredBytes: 0, onOverflow })
           return [true, next] as const
         })
 
@@ -70,7 +71,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
         const queues = yield* Ref.get(clients)
         const size = frameBytes(frame)
         for (const [client, target] of queues) {
-          if (target.replaying) {
+          if (target.replaying || target.replayPending > 0) {
             if (target.pendingBytes + target.deferredBytes + size <= MAX_PENDING_BYTES) {
               target.deferred.push(frame)
               target.deferredBytes += size
@@ -103,12 +104,8 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
       Effect.gen(function* () {
         const target = (yield* Ref.get(clients)).get(client)
         if (!target || target.connection !== connection) return
-        const frames = [frame, ...target.deferred]
-        const size = frames.reduce((total, item) => total + frameBytes(item), 0)
-        target.replaying = false
-        target.deferred = []
-        target.deferredBytes = 0
-        if (target.pendingBytes + size > MAX_PENDING_BYTES || !frames.every((item) => target.queue.unsafeOffer(item))) {
+        const size = frameBytes(frame)
+        if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(frame)) {
           yield* Queue.shutdown(target.queue)
           yield* Ref.update(clients, (current) => {
             const next = new Map(current)
@@ -122,7 +119,10 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
     const beginReplay = (client: string, connection: string): Effect.Effect<void> =>
       Effect.gen(function* () {
         const target = (yield* Ref.get(clients)).get(client)
-        if (target?.connection === connection) target.replaying = true
+        if (target?.connection !== connection) return
+        target.replayPending += 1
+        yield* target.replayLock.take(1)
+        target.replaying = true
       })
 
     const endReplay = (client: string, connection: string): Effect.Effect<void> =>
@@ -131,6 +131,11 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
         if (!target || target.connection !== connection || !target.replaying) return
         const size = target.deferredBytes
         const frames = target.deferred
+        target.replayPending = Math.max(0, target.replayPending - 1)
+        if (target.replayPending > 0) {
+          yield* target.replayLock.release(1)
+          return
+        }
         target.replaying = false
         target.deferred = []
         target.deferredBytes = 0
@@ -143,6 +148,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
           })
           target.onOverflow?.()
         } else target.pendingBytes += size
+        yield* target.replayLock.release(1)
       })
 
     return { subscribe, publish, publishTo, beginReplay, endReplay }

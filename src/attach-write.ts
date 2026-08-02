@@ -3,6 +3,7 @@ export interface SocketWriter {
   send(value: Uint8Array): boolean
   drain(): void
   close(): void
+  closeAfterFlush(onFlushed: () => void): void
 }
 
 const MAX_PENDING_BYTES = 4 * 1024 * 1024
@@ -19,6 +20,8 @@ export const createSocketWriter = (
   let closed = false
   let pumping = false
   let waitingDrain = false
+  let closing = false
+  let flushed: (() => void) | null = null
 
   const fail = () => {
     if (closed) return
@@ -60,6 +63,12 @@ export const createSocketWriter = (
           return
         }
       }
+      if (!closed && closing && pending.length === 0) {
+        const callback = flushed
+        flushed = null
+        closed = true
+        callback?.()
+      }
     } finally {
       pumping = false
     }
@@ -68,7 +77,7 @@ export const createSocketWriter = (
   return {
     get closed() { return closed },
     send(bytes) {
-      if (closed) return false
+      if (closed || closing) return false
       if (pendingBytes + bytes.length > maxPendingBytes) {
         fail()
         return false
@@ -84,9 +93,16 @@ export const createSocketWriter = (
       pump()
     },
     close() {
+      closing = true
       closed = true
       pending.length = 0
       pendingBytes = 0
+    },
+    closeAfterFlush(onFlushed) {
+      if (closed) return
+      closing = true
+      flushed = onFlushed
+      pump()
     },
   }
 }

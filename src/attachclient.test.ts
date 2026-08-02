@@ -206,6 +206,27 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
   client.close()
 })
 
+test("an unconsumed exit cannot poison a same-id replacement session", async () => {
+  const { daemon } = await session("reclaim-unconsumed")
+  const client = await AttachClient.connect({ path: daemon.paths.attach, client: "unconsumed-test" })
+
+  const first = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf first; exit 3"], cols: 80, rows: 24 })
+  await first.exit
+
+  const replacement = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.take(2))))
+  const second = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf second; exit 4"], cols: 80, rows: 24 })
+  await second.exit
+  const frames = await Promise.race([
+    replacement,
+    Bun.sleep(2_000).then(() => { throw new Error("the replacement session did not finish") }),
+  ])
+
+  expect([...frames].at(-1)?._tag).toBe("exit")
+  expect([...frames].every((frame) => frame._tag !== "exit" || frame.code === 4)).toBe(true)
+  expect([...frames].some((frame) => frame._tag === "output" && Buffer.from(frame.data).toString().includes("second"))).toBe(true)
+  client.close()
+})
+
 test("an unsubscribed session disconnects rather than silently dropping frames", async () => {
   const home = await mkdtemp(join(tmpdir(), "herdr-overflow-"))
   dirs.push(home)

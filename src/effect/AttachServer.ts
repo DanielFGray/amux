@@ -58,8 +58,9 @@ interface ClientState {
   scope: Scope.CloseableScope | null
   processing: Promise<void>
   idleTimer: Timer | null
-  writer: { readonly closed: boolean; send(frame: AttachFrame): boolean; drain(): void; close(): void } | null
+  writer: { readonly closed: boolean; send(frame: AttachFrame): boolean; drain(): void; close(): void; closeAfterFlush(onFlushed: () => void): void } | null
   lanes: Map<string, Promise<void>>
+  closed: boolean
 }
 
 export const createAttachWriter = (
@@ -77,6 +78,7 @@ export const createAttachWriter = (
     send: (frame: AttachFrame) => writer.send(new TextEncoder().encode(encodeAttachFrame(frame))),
     drain: () => writer.drain(),
     close: () => writer.close(),
+    closeAfterFlush: (onFlushed: () => void) => writer.closeAfterFlush(onFlushed),
   }
 }
 
@@ -110,6 +112,7 @@ export const startAttachServer = (
 
     const closeClient = (socket: Bun.Socket<ClientState>) => {
       const state = socket.data
+      state.closed = true
       if (state.idleTimer) clearTimeout(state.idleTimer)
       state.idleTimer = null
       const client = state.client
@@ -135,43 +138,64 @@ export const startAttachServer = (
       )
     }
 
-    // Error rejection is intentionally abrupt: once a protocol error is known,
-    // do not claim the queued error frame was delivered before ending a
-    // potentially partial socket write.
     const terminate = (socket: Bun.Socket<ClientState>, frame?: AttachFrame) => {
-      if (frame) socket.data.writer?.send(frame)
-      socket.data.writer?.close()
-      closeClient(socket)
-      socket.end()
+      const writer = socket.data.writer
+      if (!frame || !writer || writer.closed || !writer.send(frame)) {
+        writer?.close()
+        closeClient(socket)
+        socket.end()
+        return
+      }
+      // Keep the error frame's suffix ahead of socket shutdown. A protocol
+      // error is useful only if the peer receives one complete frame.
+      writer.closeAfterFlush(() => {
+        closeClient(socket)
+        socket.end()
+      })
     }
 
     /** Accept a hello, or tell the client why it was refused and hang up. */
     const attach = (socket: Bun.Socket<ClientState>, client: string) =>
       Effect.gen(function* () {
         const child = yield* Scope.fork(root, ExecutionStrategy.sequential)
-        const accepted = yield* Scope.extend(hub.subscribe(client, socket.data.connection, () => {
+        const subscribed = yield* Scope.extend(hub.subscribe(client, socket.data.connection, () => {
           closeClient(socket)
           socket.end()
-        }), child).pipe(
-          // The hub decides whether this id is free; the owner decides whether
-          // anyone may attach at all. Both must pass before a byte is sent, and
-          // both unwind through the same child scope if either refuses.
-          Effect.tap(() => options.onAttach?.(client, socket.data.connection) ?? Effect.void),
-          Effect.exit,
-        )
+        }), child).pipe(Effect.exit)
 
-        if (Exit.isFailure(accepted)) {
+        if (Exit.isFailure(subscribed)) {
           yield* Scope.close(child, Exit.succeed(undefined))
-          terminate(socket, { _tag: "error", message: reason(accepted.cause) })
+          terminate(socket, { _tag: "error", message: reason(subscribed.cause) })
           return
         }
 
+        // Install the subscription's ownership before the asynchronous owner
+        // hook. A close during that hook can therefore release this exact
+        // generation instead of leaving an orphaned hub registration.
+        if (socket.data.closed) {
+          yield* Scope.close(child, Exit.succeed(undefined))
+          return
+        }
         socket.data.client = client
         socket.data.scope = child
+        const attached = yield* (options.onAttach?.(client, socket.data.connection) ?? Effect.void).pipe(Effect.exit)
+        if (Exit.isFailure(attached)) {
+          if (socket.data.scope === child) {
+            yield* Scope.close(child, Exit.succeed(undefined))
+            socket.data.client = null
+            socket.data.scope = null
+          }
+          terminate(socket, { _tag: "error", message: reason(attached.cause) })
+          return
+        }
+        if (socket.data.closed || socket.data.scope !== child) {
+          yield* Scope.close(child, Exit.succeed(undefined))
+          return
+        }
         // Deliberately not awaited: a Fiber is an Effect, so yielding it here
         // would park the frame loop on the client's output stream and drop
         // every frame batched behind this hello in the same read.
-        runClient(client, Stream.runForEach(accepted.value.frames, (outgoing) =>
+        runClient(client, Stream.runForEach(subscribed.value.frames, (outgoing) =>
           Effect.sync(() => {
             socket.data.writer?.send(outgoing)
           }),
@@ -263,13 +287,13 @@ export const startAttachServer = (
         try: () =>
           Bun.listen<ClientState>({
             unix: options.path,
-            data: { buffer: "", client: null, connection: "", scope: null, processing: Promise.resolve(), idleTimer: null, writer: null, lanes: new Map() },
+            data: { buffer: "", client: null, connection: "", scope: null, processing: Promise.resolve(), idleTimer: null, writer: null, lanes: new Map(), closed: false },
             socket: {
               binaryType: "buffer",
               open(socket) {
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
-                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, processing: Promise.resolve(), idleTimer: null, writer: null, lanes: new Map() }
+                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, processing: Promise.resolve(), idleTimer: null, writer: null, lanes: new Map(), closed: false }
                 socket.data.writer = createAttachWriter(socket, () => {
                   closeClient(socket)
                   socket.end()

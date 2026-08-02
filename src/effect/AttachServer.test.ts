@@ -75,6 +75,33 @@ test("attach writer waits for drain after zero and closes on -1 or throw", () =>
   expect(thrown).toBe(1)
 })
 
+test("attach writer closes after a partial error frame is fully flushed", () => {
+  const writes: Uint8Array[] = []
+  const limits = [3, 0, 100]
+  let closed = 0
+  let flushed = 0
+  const writer = createAttachWriter({
+    write(data, offset = 0, length = (data as Uint8Array).byteLength - offset) {
+      const bytes = data as Uint8Array
+      const count = Math.min(length, limits.shift() ?? 100)
+      writes.push(new Uint8Array(bytes.buffer, bytes.byteOffset + offset, count).slice())
+      return count
+    },
+  }, () => { closed += 1 })
+
+  expect(writer.send({ _tag: "error", message: "rejected" })).toBe(true)
+  writer.closeAfterFlush(() => { flushed += 1 })
+  expect(flushed).toBe(0)
+  writer.drain()
+  expect(flushed).toBe(0)
+  writer.drain()
+  expect(flushed).toBe(1)
+  expect(closed).toBe(0)
+  expect(decodeAttachFrames(new TextDecoder().decode(concatenate(writes))).frames).toEqual([
+    { _tag: "error", message: "rejected" },
+  ])
+})
+
 test("attach writer pauses on zero and closes only at byte overflow", () => {
   let overloaded = 0
   const slow = createAttachWriter({ write: () => 0 }, () => { overloaded += 1 }, 1024)
@@ -224,6 +251,35 @@ test("idle timeout releases an accepted client", async () => {
 
   expect(result.detached).toBe(1)
   result.socket.end()
+  result.server.stop(true)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("close during asynchronous acceptance detaches and permits reconnect", async () => {
+  const root = await mkdtemp(join(tmpdir(), "herdr-attach-accept-race-"))
+  const path = join(root, "attach.sock")
+  let attached = 0
+  let detached = 0
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const server = yield* startAttachServer({
+        path,
+        onAttach: () => Effect.sleep(100).pipe(Effect.tap(() => Effect.sync(() => { attached += 1 }))),
+        onDetach: () => Effect.sync(() => { detached += 1 }),
+      })
+      const first = yield* Effect.promise(() => connect(path, () => {}))
+      yield* Effect.promise(() => Bun.sleep(10))
+      first.end()
+      yield* Effect.promise(() => Bun.sleep(150))
+      const second = yield* Effect.promise(() => connect(path, () => {}))
+      yield* Effect.promise(() => Bun.sleep(25))
+      second.end()
+      return { attached, detached, server }
+    }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
+  )
+
+  expect(result.attached).toBe(1)
+  expect(result.detached).toBe(1)
   result.server.stop(true)
   await rm(root, { recursive: true, force: true })
 })

@@ -46,3 +46,28 @@ test("targeted replay requires the live connection token", async () => {
 
   expect([...result]).toEqual([{ _tag: "hello", client: "current" }])
 })
+
+test("concurrent sync barriers keep every replay ahead of live output", async () => {
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const hub = yield* AttachHub
+      const subscription = yield* hub.subscribe("same", "connection")
+      yield* hub.beginReplay("same", "connection")
+      const second = yield* Effect.fork(hub.beginReplay("same", "connection"))
+      yield* Effect.yieldNow()
+      yield* hub.publish({ _tag: "output", session: "s", data: new Uint8Array([0]) })
+      yield* hub.publishTo("same", "connection", { _tag: "output", session: "s", data: new Uint8Array([1]) })
+      yield* hub.endReplay("same", "connection")
+      yield* second.await
+      yield* hub.publishTo("same", "connection", { _tag: "output", session: "s", data: new Uint8Array([2]) })
+      yield* hub.endReplay("same", "connection")
+      return yield* Stream.runCollect(subscription.frames.pipe(Stream.take(3)))
+    }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
+  )
+
+  expect([...result]).toEqual([
+    { _tag: "output", session: "s", data: new Uint8Array([1]) },
+    { _tag: "output", session: "s", data: new Uint8Array([2]) },
+    { _tag: "output", session: "s", data: new Uint8Array([0]) },
+  ])
+})
