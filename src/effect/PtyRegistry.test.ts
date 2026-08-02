@@ -98,3 +98,47 @@ test("interrupting a registry write cancels the PTY operation", async () => {
 
   expect(result).toBe("Failure")
 })
+
+test("duplicate reservations fail and failed spawns release the id", async () => {
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const registry = yield* PtyRegistry
+      const first = yield* Effect.fork(Effect.exit(registry.spawn({
+        id: "duplicate-pty",
+        cmd: ["sh", "-c", "sleep 30"],
+        cols: 80,
+        rows: 24,
+      })))
+      const second = yield* Effect.exit(registry.spawn({
+        id: "duplicate-pty",
+        cmd: ["sh", "-c", "sleep 30"],
+        cols: 80,
+        rows: 24,
+      }))
+      const firstResult = yield* Fiber.join(first)
+      expect([firstResult._tag, second._tag].sort()).toEqual(["Failure", "Success"])
+      expect(String(firstResult._tag === "Failure" ? firstResult : second)).toContain("already live or starting")
+
+      const failed = yield* Effect.exit(registry.spawn({
+        id: "failed-pty",
+        cmd: ["true"],
+        cwd: "/definitely-not-a-real-directory",
+        cols: 80,
+        rows: 24,
+      }))
+      expect(failed._tag).toBe("Failure")
+      const retry = yield* registry.spawn({
+        id: "failed-pty",
+        cmd: ["sh", "-c", "exit 0"],
+        cols: 80,
+        rows: 24,
+      })
+      yield* retry.exit
+      const duplicate = firstResult._tag === "Success" ? firstResult.value : second._tag === "Success" ? second.value : undefined
+      if (duplicate) yield* duplicate.kill.pipe(Effect.ignore)
+      return yield* registry.sessions
+    }).pipe(Effect.provide(PtyRegistry.Default), Effect.scoped),
+  )
+
+  expect(result).toEqual(new Set(["duplicate-pty"]))
+})

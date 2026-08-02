@@ -42,6 +42,8 @@ type PtyCommand =
     }
   | { readonly _tag: "kill"; readonly done: Deferred.Deferred<void, PtyError> };
 
+type Reservation = { readonly token: symbol; readonly pty?: ReturnType<typeof spawnPty> };
+
 const asPtyError = (operation: string, error: unknown): PtyError =>
   new PtyError({
     operation,
@@ -59,11 +61,33 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
   // scoped, not effect: the command pumps are a FiberMap that has to be
   // finalized, and the scope that owns it is the registry's own lifetime.
   scoped: Effect.gen(function* () {
-    const sessions = yield* Ref.make<ReadonlySet<string>>(new Set());
+    // The token prevents a late exit from an old PTY from releasing a reused id.
+    const sessions = yield* Ref.make<ReadonlyMap<string, Reservation>>(new Map());
     const commandPumps = yield* FiberMap.make<string>();
 
     const spawn = (spec: PtySpec): Effect.Effect<ManagedPty, PtyError, Scope.Scope> =>
       Effect.gen(function* () {
+        const token = Symbol(spec.id);
+        const reserved = yield* Ref.modify(sessions, (current) => {
+          const existing = current.get(spec.id);
+          if (existing && !existing.pty?.exited) return [false, current] as const;
+          const next = new Map(current);
+          next.set(spec.id, { token });
+          return [true, next] as const;
+        });
+        if (!reserved) {
+          return yield* new PtyError({
+            operation: "spawn",
+            message: `session '${spec.id}' is already live or starting`,
+          });
+        }
+
+        const release = Ref.update(sessions, (current) => {
+          if (current.get(spec.id)?.token !== token) return current;
+          const next = new Map(current);
+          next.delete(spec.id);
+          return next;
+        });
         const pty = yield* Effect.acquireRelease(
           Effect.try({
             try: () =>
@@ -73,24 +97,18 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
                 cwd: spec.cwd,
               }),
             catch: (error) => asPtyError("spawn", error),
-          }),
-          (owned) =>
-            Effect.sync(() => {
-              owned.kill();
-              owned.close();
-            }).pipe(
-              Effect.zipRight(
-                Ref.update(sessions, (current) => {
-                  const next = new Set(current);
-                  next.delete(spec.id);
-                  return next;
-                }),
-              ),
-            ),
+          }).pipe(Effect.tapError(() => release)),
+          (owned) => Effect.sync(() => {
+            owned.kill();
+            owned.close();
+          }).pipe(Effect.zipRight(release)),
         );
-
-        yield* Ref.update(sessions, (current) => new Set(current).add(spec.id));
-
+        yield* Ref.update(sessions, (current) => {
+          if (current.get(spec.id)?.token !== token) return current;
+          const next = new Map(current);
+          next.set(spec.id, { token, pty });
+          return next;
+        });
         const commands = yield* Mailbox.make<PtyCommand>({ capacity: 256, strategy: "suspend" });
         const runCommand = (command: PtyCommand) => {
           const operation = Match.valueTags(command, {
@@ -138,7 +156,7 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
           exit: Effect.tryPromise({
             try: () => pty.proc.exited.then((code) => code),
             catch: (error) => asPtyError("exit", error),
-          }),
+          }).pipe(Effect.ensuring(release)),
           write: (data) => Effect.tryPromise({
             try: (signal) => pty.write(data, signal),
             catch: (error) => asPtyError("write", error),
@@ -151,7 +169,7 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
 
     return {
       spawn,
-      sessions: Ref.get(sessions),
+      sessions: Ref.get(sessions).pipe(Effect.map((current) => new Set(current.keys()))),
     };
   }),
 }) {}

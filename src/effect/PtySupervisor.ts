@@ -19,6 +19,7 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
     const registry = yield* PtyRegistry;
     const hub = yield* AttachHub;
     const sessions = yield* Ref.make<ReadonlyMap<string, ManagedPty>>(new Map());
+    const reservations = yield* Ref.make<ReadonlySet<string>>(new Set());
     // The daemon-side screen model per session. A reattaching client has none
     // of an adopted session's history, so its pane would be blank until the
     // program next redraws; this terminal is what lets the daemon answer an
@@ -39,68 +40,89 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
     // interrupts pumps before freeing the terminals they may still touch.
     const pumps = yield* FiberMap.make<string>();
 
-    const dropScreen = (id: string) =>
+    const dropScreen = (id: string, expected?: Terminal) =>
       Effect.gen(function* () {
-        const screen = (yield* Ref.get(replays)).get(id);
-        if (!screen) return;
-        screen.free();
-        yield* Ref.update(replays, (current) => {
+        const screen = yield* Ref.modify(replays, (current) => {
+          const screen = current.get(id);
+          if (!screen || (expected && screen !== expected)) return [undefined, current] as const;
+          const next = new Map(current);
+          next.delete(id);
+          return [screen, next] as const;
+        });
+        if (screen) screen.free();
+      });
+
+    const releaseReservation = (id: string) =>
+      Ref.update(reservations, (current) => {
+        if (!current.has(id)) return current;
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+
+    const dropSession = (id: string, pty: ManagedPty, screen?: Terminal) =>
+      Effect.gen(function* () {
+        yield* Ref.update(sessions, (current) => {
+          if (current.get(id) !== pty) return current;
           const next = new Map(current);
           next.delete(id);
           return next;
         });
+        yield* dropScreen(id, screen);
+        yield* releaseReservation(id);
       });
 
     return {
       spawn: Effect.fnUntraced(function* (spec: PtySpec) {
-        const pty = yield* registry.spawn(spec);
+        const reserved = yield* Ref.modify(reservations, (current) => {
+          if (current.has(spec.id)) return [false, current] as const;
+          return [true, new Set(current).add(spec.id)] as const;
+        });
+        if (!reserved) {
+          return yield* new PtyError({
+            operation: "spawn",
+            message: `session '${spec.id}' is already live or starting`,
+          });
+        }
+        const pty = yield* registry.spawn(spec).pipe(Effect.tapError(() => releaseReservation(spec.id)));
         // Sized before the pump runs: the first chunk the PTY produces is fed
         // to both the hub and the screen model, so the model must exist first.
-        const screen = new Terminal(spec.cols, spec.rows, 0);
-        yield* Ref.update(replays, (current) => new Map(current).set(spec.id, screen));
-        yield* Ref.update(sessions, (current) => new Map(current).set(spec.id, pty));
-        yield* FiberMap.run(
-          pumps,
-          spec.id,
-          Effect.gen(function* () {
-            yield* pty.output.pipe(
-              Stream.runForEach((chunk) =>
-                Effect.gen(function* () {
-                  // readPty reuses its backing buffer, so the screen model must
-                  // take its bytes before the frame's copy does: the write is
-                  // synchronous, then the copy is owned by the queued frame.
-                  screen.write(chunk);
-                  yield* hub.publish({
-                    _tag: "output",
-                    session: spec.id,
-                    data: new Uint8Array(chunk),
-                  } satisfies AttachFrame);
-                }),
-              ),
-              // A read that fails is the end of this session's output, not the
-              // end of the session as far as clients are concerned: they still
-              // need the exit frame below to stop showing it as running.
-              Effect.catchAll((error) =>
-                Effect.logDebug(`pty output ended: ${error.operation}: ${error.message}`),
-              ),
-            );
-
-            // Published only once the output stream is exhausted, never
-            // alongside it. The process exits before its last bytes have been
-            // read — that is what the drain in readPty is for — so a forked
-            // exit publication overtakes them, and a client that trusts frame
-            // order would blank the pane and then receive output for a session
-            // it had already buried.
-            const code = yield* pty.exit.pipe(Effect.orElseSucceed(() => null));
-            yield* hub.publish({ _tag: "exit", session: spec.id, code } satisfies AttachFrame);
-            yield* Ref.update(sessions, (current) => {
-              const next = new Map(current);
-              next.delete(spec.id);
-              return next;
-            });
-            // A dead session cannot be adopted, so its screen model is done too.
-            yield* dropScreen(spec.id);
-          }),
+        let screen: Terminal | undefined;
+        yield* Effect.gen(function* () {
+          screen = yield* Effect.sync(() => new Terminal(spec.cols, spec.rows, 0));
+          yield* Ref.update(replays, (current) => new Map(current).set(spec.id, screen!));
+          yield* Ref.update(sessions, (current) => new Map(current).set(spec.id, pty));
+          yield* FiberMap.run(
+            pumps,
+            spec.id,
+            Effect.gen(function* () {
+              yield* pty.output.pipe(
+                Stream.runForEach((chunk) =>
+                  Effect.gen(function* () {
+                    // readPty reuses its backing buffer, so the screen model must
+                    // take its bytes before the frame's copy does: the write is
+                    // synchronous, then the copy is owned by the queued frame.
+                    screen!.write(chunk);
+                    yield* hub.publish({
+                      _tag: "output",
+                      session: spec.id,
+                      data: new Uint8Array(chunk),
+                    } satisfies AttachFrame);
+                  }),
+                ),
+                Effect.catchAll((error) =>
+                  Effect.logDebug(`pty output ended: ${error.operation}: ${error.message}`),
+                ),
+              );
+              const code = yield* pty.exit.pipe(Effect.orElseSucceed(() => null));
+              yield* hub.publish({ _tag: "exit", session: spec.id, code } satisfies AttachFrame);
+            }).pipe(Effect.ensuring(dropSession(spec.id, pty, screen))),
+          );
+        }).pipe(
+          Effect.tapError(() => dropSession(spec.id, pty, screen).pipe(
+            Effect.zipRight(pty.kill.pipe(Effect.ignore)),
+            Effect.zipRight(pty.exit.pipe(Effect.ignore)),
+          )),
         );
         return pty;
       }),
