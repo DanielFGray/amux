@@ -201,6 +201,15 @@ export function daemonBackend(
       Effect.runPromise(session.spawn(opts)).then(
         () => Effect.runSync(Deferred.succeed(started, undefined)),
         (error) => {
+          // A stale live snapshot can race the authoritative daemon spawn. The
+          // daemon rejects the duplicate; this client adopts the already-owned
+          // PTY instead of turning a successful session into a tombstone.
+          if (String(error).includes("already live or starting")) {
+            Effect.runSync(Deferred.succeed(started, undefined))
+            session.attach.resize(opts.id, opts.cols, opts.rows)
+            session.attach.sync(opts.id)
+            return
+          }
           // A spawn that never happened has no process to exit, so the agent
           // becomes a tombstone carrying the reason rather than a pane waiting
           // forever on bytes that are not coming. Interrupting the gate rather
