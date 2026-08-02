@@ -133,6 +133,12 @@ test("agents-only filtering removes plain panes and empty parents", async () => 
       "agent",
     ])
     expect(targets.at(-1)).toMatchObject({ kind: "agent", agent: { title: "claude" } })
+
+    // A selection left on a removed shell row must be brought back into the
+    // filtered target list before activation can resolve it.
+    const staleSelection = targets.length + 1
+    const clamped = clampSidebarSelection(staleSelection, targets.length)
+    expect(targets[clamped]).toBeDefined()
   } finally {
     await s.dispose()
   }
