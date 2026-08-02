@@ -14,7 +14,7 @@
  */
 
 import { spawnPty, readPty } from "./pty.ts"
-import { Effect, Fiber, Stream } from "effect"
+import { Deferred, Effect, Fiber, Mailbox, Stream } from "effect"
 import type { AttachClientShape } from "./attach.ts"
 
 export interface AgentBackend {
@@ -26,8 +26,8 @@ export interface AgentBackend {
   readonly detached: boolean
   /** Exit status once closed, null while running or when it is not knowable. */
   readonly exitCode: number | null
-  /** Output bytes, ending when the backend closes. Iterated exactly once. */
-  read(): AsyncIterable<Uint8Array>
+  /** Output bytes, ending when the backend closes. Run exactly once. */
+  readonly stream: Stream.Stream<Uint8Array>
   write(data: string | Uint8Array): void
   resize(cols: number, rows: number): void
   kill(): void
@@ -59,6 +59,18 @@ export interface BackendOptions {
   rows: number
 }
 
+/**
+ * Output chunks held for a daemon-owned agent before the UI draws them.
+ *
+ * Generous, because the cost of dropping here is visible corruption rather than
+ * a dropped frame: a terminal's bytes are a stream, and losing a chunk out of
+ * the middle leaves a half-parsed escape sequence. Bounded all the same,
+ * because a pane the renderer has stopped reading must not grow without limit —
+ * past this the writer backs up into the attach socket, which is where the
+ * decision to drop belongs.
+ */
+const OUTPUT_LIMIT = 1024
+
 /** How an Agent obtains its backend. Swapping this is the whole point. */
 export type SpawnBackend = (opts: BackendOptions) => AgentBackend
 
@@ -73,7 +85,11 @@ export const localPty: SpawnBackend = (opts) => {
     get exitCode() {
       return pty.proc.exitCode
     },
-    read: () => readPty(pty),
+    // Suspended so the generator is not created until something runs the
+    // stream: constructing a backend must not start draining the master.
+    stream: Stream.suspend(() => Stream.fromAsyncIterable(readPty(pty), (error) => error)).pipe(
+      Stream.orDie,
+    ),
     write: (data) => pty.write(data),
     resize: (cols, rows) => pty.resize(cols, rows),
     kill: () => pty.kill(),
@@ -116,33 +132,36 @@ export function daemonBackend(
   live: ReadonlySet<string> = new Set(),
 ): SpawnBackend {
   return (opts) => {
-    const chunks: Uint8Array[] = []
-    let wake: (() => void) | null = null
     let closed = false
     let detached = false
     let exitCode: number | null = null
-    const nudge = () => {
-      const resume = wake
-      wake = null
-      resume?.()
-    }
+
+    /**
+     * Output waiting to be drawn.
+     *
+     * A Mailbox rather than a Queue because ending it still yields what it is
+     * holding: the bytes a program writes immediately before exiting are the
+     * ones that say why, and `Queue.shutdown` would discard them. Bounded, so a
+     * UI that stalls cannot grow this without limit — which the array it
+     * replaces could, and did.
+     */
+    const output = Effect.runSync(Mailbox.make<Uint8Array>(OUTPUT_LIMIT))
 
     const end = (code: number | null) => {
       if (closed) return
       closed = true
       exitCode = code
-      nudge()
+      Effect.runFork(output.end)
     }
 
     const streamFiber = Effect.runFork(
-      Stream.runForEach(session.attach.stream(opts.id), (frame) => Effect.sync(() => {
-        if (frame._tag === "output") {
-          chunks.push(frame.data)
-          nudge()
-        } else if (frame._tag === "exit") {
-          end(frame.code)
-        }
-      })).pipe(Effect.ensuring(Effect.sync(() => {
+      Stream.runForEach(session.attach.stream(opts.id), (frame) =>
+        frame._tag === "output"
+          ? output.offer(frame.data)
+          : frame._tag === "exit"
+            ? Effect.sync(() => end(frame.code))
+            : Effect.void,
+      ).pipe(Effect.ensuring(Effect.sync(() => {
         if (!closed) {
           detached = true
           end(null)
@@ -150,17 +169,19 @@ export function daemonBackend(
       }))),
     )
 
-    // Frames naming an agent the daemon has not started yet are dropped on the
-    // floor by design (they are the tail of a dying agent's keystrokes), so
-    // anything said before the spawn round trip completes has to wait here.
-    let started = live.has(opts.id)
-    const backlog: Array<() => void> = []
-    const once = (action: () => void) => {
-      if (started) action()
-      else backlog.push(action)
-    }
+    /**
+     * Resolved once this agent exists in the daemon.
+     *
+     * Frames naming an agent the daemon has not started yet are dropped on the
+     * floor by design (they are the tail of a dying agent's keystrokes), so
+     * anything said before the spawn round trip completes has to wait for this.
+     */
+    const started = Effect.runSync(Deferred.make<void>())
+    const once = (action: () => void) =>
+      Effect.runFork(Deferred.await(started).pipe(Effect.andThen(Effect.sync(action))))
 
-    if (started) {
+    if (live.has(opts.id)) {
+      Effect.runSync(Deferred.succeed(started, undefined))
       // An adopted agent was sized by whoever had it last. This client's
       // viewport is the current truth, so say so before drawing anything.
       session.attach.resize(opts.id, opts.cols, opts.rows)
@@ -170,17 +191,18 @@ export function daemonBackend(
       // serializes at the resize it just applied.
       session.attach.sync(opts.id)
     } else {
-        Effect.runPromise(session.spawn(opts)).then(
-        () => {
-          started = true
-          for (const action of backlog.splice(0)) action()
-        },
+      Effect.runPromise(session.spawn(opts)).then(
+        () => Effect.runSync(Deferred.succeed(started, undefined)),
         (error) => {
-          backlog.length = 0
           // A spawn that never happened has no process to exit, so the agent
           // becomes a tombstone carrying the reason rather than a pane waiting
-          // forever on bytes that are not coming.
-          chunks.push(new TextEncoder().encode(`\r\n[daemon] could not start: ${String(error)}\r\n`))
+          // forever on bytes that are not coming. Interrupting the gate rather
+          // than completing it discards whatever was queued behind it: there is
+          // nothing to send it to.
+          Effect.runFork(Deferred.interrupt(started))
+          Effect.runFork(
+            output.offer(new TextEncoder().encode(`\r\n[daemon] could not start: ${String(error)}\r\n`)),
+          )
           end(null)
         },
       )
@@ -196,19 +218,11 @@ export function daemonBackend(
       get exitCode() {
         return exitCode
       },
-      async *read() {
-        try {
-          for (;;) {
-            while (chunks.length > 0) yield chunks.shift()!
-            if (closed) return
-            await new Promise<void>((resolve) => {
-              wake = resolve
-            })
-          }
-        } finally {
-          Effect.runFork(Fiber.interrupt(streamFiber))
-        }
-      },
+      // The frame reader outlives nothing: when whoever is drawing this stops,
+      // the fiber forwarding frames into the mailbox goes with it.
+      stream: Mailbox.toStream(output).pipe(
+        Stream.ensuring(Fiber.interrupt(streamFiber)),
+      ),
       write: (data) => once(() => session.attach.input(opts.id, data)),
       resize: (cols, rows) => once(() => session.attach.resize(opts.id, cols, rows)),
       kill: () => once(() => void Effect.runPromise(session.kill(opts.id)).catch(() => {})),
@@ -235,7 +249,7 @@ export function exitedBackend(exitCode: number | null): AgentBackend {
     closed: true,
     detached: false,
     exitCode,
-    async *read() {},
+    stream: Stream.empty,
     write() {},
     resize() {},
     kill() {},

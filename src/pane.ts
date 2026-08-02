@@ -14,6 +14,7 @@ import {
   Dirty,
   type CursorInfo,
 } from "./ghostty.ts"
+import { Effect, Exit, Scope } from "effect"
 import type { Agent } from "./agent.ts"
 import { runtime } from "./config.ts"
 import { STATE_GLYPH } from "./detect.ts"
@@ -81,8 +82,12 @@ const OPENTUI_TO_GHOSTTY_BUTTON: Record<number, number> = {
  */
 export class TerminalPane extends Renderable {
   readonly agent: Agent
-  #state = new RenderState()
-  #mouse = new MouseEncoder()
+  /** Owns this pane's FFI handles, so closing it frees them all — see the note
+   *  on Agent's scope. A pane is destroyed from OpenTUI's tree rather than from
+   *  an Effect, so the scope is closed by destroySelf rather than by a parent. */
+  #scope = Effect.runSync(Scope.make())
+  #state = this.#own(() => new RenderState(), (state) => state.free())
+  #mouse = this.#own(() => new MouseEncoder(), (mouse) => mouse.free())
 
   /** Whether this pane is the workspace's active viewport. Named `active`, not
    *  `focused`: Renderable already exposes a read-only `focused` accessor for
@@ -410,11 +415,20 @@ export class TerminalPane extends Renderable {
     }
   }
 
+  /** Allocate an FFI handle into this pane's scope. See Agent's #own. */
+  #own<A>(acquire: () => A, free: (handle: A) => void): A {
+    return Effect.runSync(
+      Scope.extend(
+        Effect.acquireRelease(Effect.sync(acquire), (handle) => Effect.sync(() => free(handle))),
+        this.#scope,
+      ),
+    )
+  }
+
   protected override destroySelf(): void {
     // Closes the view only; the agent keeps running.
     this.agent.removeViewer()
-    this.#mouse.free()
-    this.#state.free()
+    Effect.runFork(Scope.close(this.#scope, Exit.void))
     super.destroySelf()
   }
 }

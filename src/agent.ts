@@ -1,3 +1,4 @@
+import { Effect, Exit, Fiber, Scope, Stream } from "effect"
 import { Terminal, RenderState } from "./ghostty.ts"
 import { localPty, exitedBackend, type AgentBackend, type SpawnBackend } from "./backend.ts"
 import { scrollViewport, ScrollTo } from "./shim.ts"
@@ -103,6 +104,18 @@ export class Agent {
   #runningAt = 0
   #comm = ""
   #commAt = 0
+  /** The fiber drawing backend output into `term`. Null for a tombstone, which
+   *  has nothing to draw. Interrupted before the terminal is freed. */
+  #pumpFiber: Fiber.RuntimeFiber<void> | null = null
+  /**
+   * Owns every FFI handle this agent allocates.
+   *
+   * The handles are C allocations that leak if nothing frees them and corrupt
+   * the heap if something frees them twice, and they used to be freed by
+   * dispose() remembering to name each one. Closing a scope cannot forget.
+   */
+  #scope = Effect.runSync(Scope.make())
+  #disposed = false
 
   /** Bumped whenever output arrives, so views can invalidate caches. */
   onOutput?: (agent: Agent) => void
@@ -120,7 +133,7 @@ export class Agent {
     this.#spawnedAs = identifyAgent(opts.cmd.join(" "))
     const cols = opts.cols ?? 80
     const rows = opts.rows ?? 24
-    this.term = new Terminal(cols, rows)
+    this.term = this.#own(() => new Terminal(cols, rows), (t) => t.free())
     if (opts.exited) {
       // A tombstone: everything it can still answer, nothing running behind it.
       this.#backend = exitedBackend(opts.exited.code)
@@ -129,25 +142,94 @@ export class Agent {
       return
     }
     this.#backend = (opts.backend ?? localPty)({ id: this.id, cmd: opts.cmd, cwd: opts.cwd, cols, rows })
-    this.#pump()
+    this.#pumpFiber = this.#pump()
   }
 
-  async #pump() {
-    for await (const chunk of this.#backend.read()) {
-      this.term.write(chunk)
-      this.#lastOutputAt = Date.now()
-      if (this.#viewers === 0) this.#unseen = true
-      this.onOutput?.(this)
-    }
-    this.#detached = this.#backend.detached
-    if (this.#detached) return
-    this.#exited = true
-    // Not `?? 0`: a backend that reports no exit code does not mean the process
-    // succeeded. A daemon-owned agent whose attachment was lost is still
-    // running somewhere, and calling that a clean exit would persist a
-    // tombstone for something that never died. See backend.ts.
-    this.#exitCode = this.#backend.exitCode
-    this.onExit?.(this)
+  /**
+   * Allocate an FFI handle into this agent's scope.
+   *
+   * runSync is honest here rather than a shortcut: these constructors are
+   * synchronous C calls, so there is nothing to await, and the alternative is
+   * making every caller of `new Agent` an Effect before the rest of the app is
+   * ready to be one. The scope is what matters; how it is entered is not.
+   */
+  #own<A>(acquire: () => A, free: (handle: A) => void): A {
+    return Effect.runSync(
+      Scope.extend(
+        Effect.acquireRelease(Effect.sync(acquire), (handle) => Effect.sync(() => free(handle))),
+        this.#scope,
+      ),
+    )
+  }
+
+  /**
+   * An agent whose handles are released when the surrounding scope closes.
+   *
+   * The lifetime-correct way to make one. `new Agent` still works and still
+   * needs dispose(); this is what the call sites become as they convert.
+   */
+  static make(opts: AgentOptions): Effect.Effect<Agent, never, Scope.Scope> {
+    return Effect.acquireRelease(
+      Effect.sync(() => new Agent(opts)),
+      (agent) => agent.release,
+    )
+  }
+
+  /**
+   * Stop this agent and free what it holds, in that order.
+   *
+   * The order is the point. Interrupting the pump first means no fiber is
+   * holding a chunk it is about to write into a terminal that is being freed
+   * underneath it — a race the handles' own freed-guards currently absorb, but
+   * absorbing a race is not the same as not having one.
+   */
+  get release(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.#disposed) return Effect.void
+      this.#disposed = true
+      this.kill()
+      return (this.#pumpFiber ? Fiber.interrupt(this.#pumpFiber) : Effect.void).pipe(
+        Effect.andThen(Scope.close(this.#scope, Exit.void)),
+      )
+    })
+  }
+
+  /**
+   * Draw the backend's output into the terminal until it ends.
+   *
+   * Forked rather than called: an `async` method nobody holds a handle to
+   * cannot be stopped, and this one writes into an FFI handle that disposal
+   * frees. Holding the fiber means teardown can interrupt the writer first and
+   * free second, instead of racing it.
+   */
+  #pump(): Fiber.RuntimeFiber<void> {
+    return Effect.runFork(
+      Stream.runForEach(this.#backend.stream, (chunk) =>
+        Effect.sync(() => {
+          this.term.write(chunk)
+          this.#lastOutputAt = Date.now()
+          if (this.#viewers === 0) this.#unseen = true
+          this.onOutput?.(this)
+        }),
+      ).pipe(
+        // onExit belongs to the stream ending, not to the fiber ending: an
+        // interrupted pump is a pane being torn down, and announcing an exit
+        // there would tombstone an agent that is still running.
+        Effect.andThen(
+          Effect.sync(() => {
+            this.#detached = this.#backend.detached
+            if (this.#detached) return
+            this.#exited = true
+            // Not `?? 0`: a backend that reports no exit code does not mean the
+            // process succeeded. A daemon-owned agent whose attachment was lost
+            // is still running somewhere, and calling that a clean exit would
+            // persist a tombstone for something that never died. See backend.ts.
+            this.#exitCode = this.#backend.exitCode
+            this.onExit?.(this)
+          }),
+        ),
+      ),
+    )
   }
 
   /** Title reported by the child via OSC 0/2, falling back to the given name.
@@ -266,7 +348,11 @@ export class Agent {
     }
     this.#blockedAt = now
     this.#blockedSeenOutput = this.#lastOutputAt
-    this.#detect ??= new RenderState()
+    // A disposed agent's handles are freed; scanning one would read released
+    // memory. The last answer it gave is still the true one — nothing has
+    // arrived since to change it.
+    if (this.#disposed) return this.#blockedCache
+    this.#detect ??= this.#own(() => new RenderState(), (state) => state.free())
     this.#detect.update(this.term)
     this.#blockedCache = looksBlocked(this.#detect.tailText(BLOCKED_SCAN_ROWS))
     return this.#blockedCache
@@ -340,10 +426,14 @@ export class Agent {
     this.#backend.kill()
   }
 
+  /**
+   * Synchronous teardown, for the call sites that are not Effects yet.
+   *
+   * Prefer `Agent.make`, which needs no teardown call at all. This stays until
+   * the last of them converts; it runs the same finalizers, just without a
+   * scope to hang them on.
+   */
   dispose() {
-    this.kill()
-    this.#detect?.free()
-    this.#detect = null
-    this.term.free()
+    Effect.runFork(this.release)
   }
 }
