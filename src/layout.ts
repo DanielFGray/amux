@@ -19,15 +19,33 @@
 
 import type { SplitDirection } from "./window.ts"
 
-/** The format written into session.json and any exported string. */
-export const LAYOUT_VERSION = 1
+/** The format written into session.json and any exported string. Version 2
+ *  gave panes identity of their own; see PaneRef and migrateV1. */
+export const LAYOUT_VERSION = 2
 
 export type LayoutNode = LayoutPane | LayoutSplit
 
-export interface LayoutPane {
-  type: "pane"
-  /** Agent.id. A layout is a shape plus an assignment of agents to slots. */
+/**
+ * A pane's identity, and what it is a viewport onto.
+ *
+ * Two panes can show the same agent — that is what revealing an agent twice
+ * leaves behind — so an agent id cannot name a pane, and until v2 a layout had
+ * no way to say which of the two had focus or which one a command meant. The
+ * pane id is the missing half: `agent` says what you are looking at, `id` says
+ * which viewport you are looking through.
+ *
+ * Ids are unique across the whole process rather than within a window, because
+ * break-pane moves a pane between windows and its identity has to survive that.
+ * They are what a control API targets, the way tmux addresses panes by `%3`.
+ */
+export interface PaneRef {
+  id: string
+  /** Agent.id. */
   agent: string
+}
+
+export interface LayoutPane extends PaneRef {
+  type: "pane"
   /** Flex weight, relative to siblings. See divider.ts getWeight. */
   weight: number
 }
@@ -44,8 +62,31 @@ export interface Layout {
   version: typeof LAYOUT_VERSION
   /** Absent for a window with no panes, which is a real state during teardown. */
   root: LayoutNode | null
-  /** Agent.id of the pane that had focus, if it is still in the tree. */
+  /** PaneRef.id of the pane that had focus, if it is still in the tree. */
   focus?: string
+}
+
+let nextPaneId = 0
+
+/**
+ * Mint a pane id.
+ *
+ * Here rather than next to TerminalPane because identity belongs to the model:
+ * a pane in a headless daemon is a LayoutPane and nothing else, and it still
+ * has to be nameable. The renderer borrows the id it is given as its own tree
+ * id, so a pane has one identifier rather than a model id and a view id that
+ * could drift.
+ */
+export function newPaneId(): string {
+  return `pane-${nextPaneId++}`
+}
+
+/** Keep the generator ahead of every id a decoded layout brought back, so a
+ *  fresh pane can never collide with a persisted one. Called from parseNode,
+ *  which is the one door layouts from outside this process come through. */
+function reservePaneId(id: string) {
+  const n = /^pane-(\d+)$/.exec(id)
+  if (n) nextPaneId = Math.max(nextPaneId, Number(n[1]) + 1)
 }
 
 /** Every pane in the tree, left to right, depth first — the order `^a o` walks. */
@@ -73,7 +114,7 @@ export function layoutAgents(layout: Layout): string[] {
  * layouts must serialize to equal strings.
  */
 export function makeLayout(root: LayoutNode | null, focus?: string): Layout {
-  const present = focus !== undefined && layoutPanes(root).some((pane) => pane.agent === focus)
+  const present = focus !== undefined && layoutPanes(root).some((pane) => pane.id === focus)
   return present ? { version: LAYOUT_VERSION, root, focus } : { version: LAYOUT_VERSION, root }
 }
 
@@ -157,17 +198,15 @@ function rewritePanes(
  * Window.split used to write out by hand. Splitting a pane the user had dragged
  * to a weight of 69 gives two panes of 34.5, not a 69 against a fresh 1.
  *
- * Focus moves to the new pane, as it does in tmux. It is named by agent id like
- * every other focus, so splitting to show an agent this window is ALREADY
- * showing leaves the focus ambiguous — the first pane showing it wins. That is
- * the modelling gap pane identity closes (ep-ceb468 phase 2); until then
- * Window.split finds the newcomer by position instead.
+ * Focus moves to the new pane, as it does in tmux — named by its own pane id,
+ * so splitting to show an agent this window is already showing lands on the
+ * newcomer rather than on the first pane that happens to share its agent.
  */
 export function splitLayout(
   layout: Layout,
   index: number,
   direction: SplitDirection,
-  agent: string,
+  pane: PaneRef,
 ): Layout {
   const root = rewritePanes(layout.root, (target, at) =>
     at !== index
@@ -178,28 +217,34 @@ export function splitLayout(
           weight: target.weight,
           children: [
             { ...target, weight: 1 },
-            { type: "pane", agent, weight: 1 },
+            { type: "pane", ...pane, weight: 1 },
           ],
         },
   )
-  return makeLayout(collapse(root), agent)
+  return makeLayout(collapse(root), pane.id)
 }
 
 /**
- * Exchange the agents in two panes.
+ * Exchange the panes in two slots.
  *
- * Slots keep their weights and the agents move between them, which is what
+ * Slots keep their weights and the panes move between them, which is what
  * tmux's swap-pane does and what Window.swap arrived at the long way round: it
- * moved the renderables and then handed each the other's weight. Focus is an
- * agent id, so it follows the agent to its new slot for free.
+ * moved the renderables and then handed each the other's weight. A pane keeps
+ * its identity through the move, so focus needs no adjusting — it still names
+ * the pane the user was in, wherever that pane now sits.
  */
 export function swapLayout(layout: Layout, from: number, to: number): Layout {
   const panes = layoutPanes(layout.root)
   const a = panes[from]
   const b = panes[to]
   if (!a || !b || from === to) return layout
+  const move = (pane: LayoutPane, into: LayoutPane): LayoutPane => ({
+    ...pane,
+    id: into.id,
+    agent: into.agent,
+  })
   const root = rewritePanes(layout.root, (pane, at) =>
-    at === from ? { ...pane, agent: b.agent } : at === to ? { ...pane, agent: a.agent } : pane,
+    at === from ? move(pane, b) : at === to ? move(pane, a) : pane,
   )
   return makeLayout(collapse(root), layout.focus)
 }
@@ -253,41 +298,45 @@ export function nextPreset(current: LayoutPreset | null): LayoutPreset {
   return LAYOUT_PRESETS[(i + 1) % LAYOUT_PRESETS.length]!
 }
 
-const pane = (agent: string, weight = 1): LayoutPane => ({ type: "pane", agent, weight })
+const pane = (ref: PaneRef, weight = 1): LayoutPane => ({ type: "pane", ...ref, weight })
 
 const split = (direction: SplitDirection, children: LayoutNode[], weight = 1): LayoutNode =>
   children.length === 1 ? { ...children[0]!, weight } : { type: "split", direction, weight, children }
 
 /**
- * Build one of the named layouts over a list of agents.
+ * Build one of the named layouts over a list of panes.
  *
- * Agents keep their given order, so cycling layouts rearranges the same panes
+ * Panes keep their given order, so cycling layouts rearranges the same panes
  * rather than shuffling them — the property that makes next-layout usable at
  * all. Sizes come out even: a preset is a deliberate discard of hand-tuned
  * weights, which is the point of asking for one.
  *
- * Everything is passed through collapse(), so degenerate cases (one agent, a
+ * Everything is passed through collapse(), so degenerate cases (one pane, a
  * main layout with nothing beside the main pane, a single-row tiling) come back
  * as the flat tree the live window would actually build.
  */
-export function presetLayout(agents: string[], preset: LayoutPreset, focus?: string): Layout {
-  if (agents.length === 0) return makeLayout(null)
-  const [first, ...rest] = agents as [string, ...string[]]
+export function presetLayout(
+  panes: readonly PaneRef[],
+  preset: LayoutPreset,
+  focus?: string,
+): Layout {
+  if (panes.length === 0) return makeLayout(null)
+  const [first, ...rest] = panes as [PaneRef, ...PaneRef[]]
 
   const build = (): LayoutNode => {
     switch (preset) {
       case "even-horizontal":
-        return split("row", agents.map((agent) => pane(agent)))
+        return split("row", panes.map((ref) => pane(ref)))
       case "even-vertical":
-        return split("column", agents.map((agent) => pane(agent)))
+        return split("column", panes.map((ref) => pane(ref)))
       // The main pane takes half; tmux sizes it in cells, which we cannot do
       // here because a layout is resolution-independent.
       case "main-horizontal":
-        return split("column", [pane(first), split("row", rest.map((a) => pane(a)))])
+        return split("column", [pane(first), split("row", rest.map((r) => pane(r)))])
       case "main-vertical":
-        return split("row", [pane(first), split("column", rest.map((a) => pane(a)))])
+        return split("row", [pane(first), split("column", rest.map((r) => pane(r)))])
       case "tiled":
-        return tiled(agents)
+        return tiled(panes)
     }
   }
 
@@ -296,12 +345,12 @@ export function presetLayout(agents: string[], preset: LayoutPreset, focus?: str
 
 /** A grid as square as the count allows, filled row by row — tmux layout-set.c,
  *  where a short final row simply spreads across the full width. */
-function tiled(agents: string[]): LayoutNode {
-  let columns = Math.floor(Math.sqrt(agents.length))
-  if (columns * columns < agents.length) columns++
+function tiled(panes: readonly PaneRef[]): LayoutNode {
+  let columns = Math.floor(Math.sqrt(panes.length))
+  if (columns * columns < panes.length) columns++
   const rows: LayoutNode[] = []
-  for (let i = 0; i < agents.length; i += columns) {
-    rows.push(split("row", agents.slice(i, i + columns).map((agent) => pane(agent))))
+  for (let i = 0; i < panes.length; i += columns) {
+    rows.push(split("row", panes.slice(i, i + columns).map((ref) => pane(ref))))
   }
   return split("column", rows)
 }
@@ -317,7 +366,9 @@ export function encodeLayout(layout: Layout): string {
 
 function order(node: LayoutNode | null): LayoutNode | null {
   if (!node) return null
-  if (node.type === "pane") return { type: "pane", agent: node.agent, weight: node.weight }
+  if (node.type === "pane") {
+    return { type: "pane", id: node.id, agent: node.agent, weight: node.weight }
+  }
   return {
     type: "split",
     direction: node.direction,
@@ -345,18 +396,41 @@ export function decodeLayout(text: string): Layout {
 
 export function parseLayout(value: unknown): Layout {
   if (!value || typeof value !== "object") throw new LayoutFormatError("layout must be an object")
-  const raw = value as Partial<Layout>
+  const raw = value as Omit<Partial<Layout>, "version"> & { version?: unknown }
+  if (raw.version === 1) return migrateV1(value)
   if (raw.version !== LAYOUT_VERSION) {
     throw new LayoutFormatError(`unsupported layout version ${String(raw.version)}`)
   }
   const root = raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root")
   if (raw.focus !== undefined && typeof raw.focus !== "string") {
-    throw new LayoutFormatError("focus must be an agent id")
+    throw new LayoutFormatError("focus must be a pane id")
   }
   return makeLayout(collapse(root), raw.focus)
 }
 
-function parseNode(value: unknown, at: string): LayoutNode {
+/**
+ * Read a layout written before panes had identity.
+ *
+ * A v1 pane is an agent in a slot, so the arrangement survives exactly and the
+ * identities are simply new — nothing is lost, because there was nothing there
+ * to lose. Focus was an agent id and becomes the first pane showing that agent,
+ * which is what v1 could express and all it ever meant.
+ *
+ * The alternative was refusing the version, which would silently discard the
+ * arrangement of every window in a saved session — the restore path treats an
+ * unparseable layout as "none recorded" and falls back to a preset.
+ */
+function migrateV1(value: unknown): Layout {
+  const raw = value as { root?: unknown; focus?: unknown }
+  const root =
+    raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root", newPaneId)
+  const focus = layoutPanes(root).find((pane) => pane.agent === raw.focus)?.id
+  return makeLayout(collapse(root), focus)
+}
+
+/** `mint` supplies an id for a pane that has none, which is only ever the v1
+ *  migration: a v2 pane without one is malformed rather than old. */
+function parseNode(value: unknown, at: string, mint?: () => string): LayoutNode {
   if (!value || typeof value !== "object") throw new LayoutFormatError(`${at} must be an object`)
   const raw = value as Record<string, unknown>
   const weight = parseWeight(raw.weight, at)
@@ -365,7 +439,10 @@ function parseNode(value: unknown, at: string): LayoutNode {
     if (typeof raw.agent !== "string" || !raw.agent) {
       throw new LayoutFormatError(`${at} pane needs an agent id`)
     }
-    return { type: "pane", agent: raw.agent, weight }
+    const id = typeof raw.id === "string" && raw.id ? raw.id : mint?.()
+    if (!id) throw new LayoutFormatError(`${at} pane needs a pane id`)
+    reservePaneId(id)
+    return { type: "pane", id, agent: raw.agent, weight }
   }
 
   if (raw.type === "split") {
@@ -379,7 +456,7 @@ function parseNode(value: unknown, at: string): LayoutNode {
       type: "split",
       direction: raw.direction,
       weight,
-      children: raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`)),
+      children: raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`, mint)),
     }
   }
 

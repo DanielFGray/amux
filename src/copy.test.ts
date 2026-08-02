@@ -926,11 +926,11 @@ test("replacing the layout ends copy mode before leftover panes are destroyed", 
         direction: "column",
         weight: 1,
         children: [
-          { type: "pane", agent: agentB.id, weight: 1 },
-          { type: "pane", agent: agentC.id, weight: 1 },
+          { type: "pane", id: panes[1]!.id, agent: agentB.id, weight: 1 },
+          { type: "pane", id: panes[2]!.id, agent: agentC.id, weight: 1 },
         ],
       },
-      agentB.id,
+      panes[1]!.id,
     ),
   )
 

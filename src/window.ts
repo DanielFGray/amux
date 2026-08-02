@@ -11,12 +11,14 @@ import {
   collapse,
   layoutPanes,
   makeLayout,
+  newPaneId,
   presetLayout,
   prune,
   splitLayout,
   swapLayout,
   type Layout,
   type LayoutNode,
+  type LayoutPane,
   type LayoutPreset,
 } from "./layout.ts"
 
@@ -368,11 +370,10 @@ export class Window {
     return divider
   }
 
-  #makePane(agent: Agent): TerminalPane {
-    const pane = new TerminalPane(this.#ctx, {
-      id: `pane-${nextId++}`,
-      agent,
-    })
+  /** `id` is the pane's model identity (layout.ts newPaneId), used as the
+   *  renderable's tree id too so a pane has one identifier rather than two. */
+  #makePane(agent: Agent, id = newPaneId()): TerminalPane {
+    const pane = new TerminalPane(this.#ctx, { id, agent })
     setWeight(pane, 1)
     pane.onFocusRequest = (p) => this.focus(p)
     pane.onCopy = this.onCopy
@@ -731,18 +732,15 @@ export class Window {
 
     const at = this.#paneOrder().indexOf(target)
     if (at === -1) return null
-    if (!this.applyLayout(splitLayout(this.exportLayout(), at, direction, agent.id))) return null
 
-    // The newcomer sits immediately after the pane it split, and collapse()
-    // preserves order, so its position is known rather than searched for.
-    //
-    // Found by position and not by agent id, which matters when the agent is
-    // one this window is already showing: a layout names panes by their agent,
-    // so it cannot tell the two apart and its focus would land on the first.
-    // See ep-ceb468 phase 2 — pane identity is the modelling gap here.
-    const pane = this.#paneOrder()[at + 1] ?? null
-    if (pane) this.focus(pane)
-    return pane
+    // The newcomer is named before it exists, so the layout can say which pane
+    // to focus even when it shows an agent this window is already showing. The
+    // apply builds it under that id and focuses it, which is why nothing here
+    // has to find the new pane by position afterwards.
+    const id = newPaneId()
+    const next = splitLayout(this.exportLayout(), at, direction, { id, agent: agent.id })
+    if (!this.applyLayout(next)) return null
+    return this.#panes.find((pane) => pane.id === id) ?? null
   }
 
   /**
@@ -897,7 +895,7 @@ export class Window {
 
     const walk = (node: Renderable): LayoutNode | null => {
       if (node instanceof TerminalPane) {
-        return { type: "pane", agent: node.agent.id, weight: weightOf(node) }
+        return { type: "pane", id: node.id, agent: node.agent.id, weight: weightOf(node) }
       }
       if (!(node instanceof BoxRenderable)) return null
       const children = childrenOf(node)
@@ -910,18 +908,27 @@ export class Window {
     // collapse() does the rest: a single-pane window walks to a one-child split,
     // and closing a pane can leave husks that the live tree renders identically.
     // makeLayout drops a focus whose pane did not survive that collapse.
-    return makeLayout(collapse(walk(this.root)), this.#focused?.agent.id)
+    return makeLayout(collapse(walk(this.root)), this.#focused?.id)
   }
 
   /**
    * Rebuild the window's arrangement from a layout.
    *
    * Panes are viewports, so an apply rearranges them rather than recreating
-   * them: a pane already showing an agent is reused, keeping its terminal,
-   * scrollback and scroll position across the move. Only slots the current
-   * panes cannot fill get new ones, and panes the layout has no slot for are
-   * closed — their agents survive as detached, exactly as pane.close leaves
-   * them.
+   * them: a pane the layout names is put in the slot that names it, keeping its
+   * terminal, scrollback and scroll position across the move. Only slots the
+   * current panes cannot fill get new ones, and panes the layout has no slot
+   * for are closed — their agents survive as detached, exactly as pane.close
+   * leaves them.
+   *
+   * A slot naming a pane this window does not have is a layout from somewhere
+   * else — a string pasted from another window, or a session restored into a
+   * fresh process. Those slots fall back to matching on the agent, and the pane
+   * that fills one keeps its OWN id rather than taking the layout's: a pane id
+   * names a live viewport that other things may already be holding, so it is
+   * not something an incoming layout gets to reassign. tmux draws the same
+   * line — a layout string it did not write is an arrangement, not a set of
+   * pane identities.
    *
    * Panes naming an agent this window does not own are pruned first, because a
    * layout routinely outlives its processes (a session restored a day later,
@@ -941,26 +948,41 @@ export class Window {
     // preset, and swapping two panes inside one leaves it that preset.
     this.#preset = preset
 
-    // Reuse by agent, in pane order, so two panes on one agent stay two panes
-    // and each keeps its own scroll position.
-    const spare = new Map<string, TerminalPane[]>()
-    for (const pane of this.#dismantle()) {
-      const list = spare.get(pane.agent.id)
-      if (list) list.push(pane)
-      else spare.set(pane.agent.id, [pane])
-    }
+    // Who fills which slot is decided before anything is built, in two passes.
+    // A slot naming a pane that exists must get that pane, so those are claimed
+    // first — one interleaved pass would let an earlier slot take, on agent
+    // alone, the very pane a later slot named outright.
+    const spare = new Set(this.#dismantle())
     this.#panes.length = 0
+    const filled = new Map<string, TerminalPane>()
 
-    const take = (id: string): TerminalPane => {
-      const reused = spare.get(id)?.shift()
-      if (!reused) return this.#makePane(byId.get(id)!)
+    const claim = (slot: LayoutPane, match: (pane: TerminalPane) => boolean) => {
+      if (filled.has(slot.id)) return
+      for (const pane of spare) {
+        if (!match(pane)) continue
+        filled.set(slot.id, pane)
+        spare.delete(pane)
+        return
+      }
+    }
+    const slots = layoutPanes(wanted.root)
+    for (const slot of slots) claim(slot, (pane) => pane.id === slot.id)
+    for (const slot of slots) claim(slot, (pane) => pane.agent.id === slot.agent)
+
+    const take = (slot: LayoutPane): TerminalPane => {
+      const reused = filled.get(slot.id)
+      if (!reused) {
+        const made = this.#makePane(byId.get(slot.agent)!, slot.id)
+        filled.set(slot.id, made)
+        return made
+      }
       this.#panes.push(reused)
       return reused
     }
 
     const build = (node: LayoutNode): Renderable => {
       if (node.type === "pane") {
-        const pane = take(node.agent)
+        const pane = take(node)
         setWeight(pane, node.weight)
         return pane
       }
@@ -991,10 +1013,12 @@ export class Window {
     }
 
     // Whatever the layout had no slot for is a closed view, not a killed agent.
-    for (const leftover of spare.values()) for (const pane of leftover) pane.destroyRecursively()
+    for (const leftover of spare) leftover.destroyRecursively()
 
     this.#focused = null
-    const focus = wanted.focus ? this.#panes.find((p) => p.agent.id === wanted.focus) : undefined
+    // Through the slot, not by searching for the id: focus names a slot, and
+    // the pane filling it may have kept an id of its own.
+    const focus = wanted.focus ? filled.get(wanted.focus) : undefined
     this.focus(focus ?? this.#panes[0]!)
     this.#refreshChrome()
     this.onChange?.()
@@ -1035,8 +1059,8 @@ export class Window {
    */
   selectLayout(preset: LayoutPreset): boolean {
     if (this.#panes.length === 0) return false
-    const agents = this.#panes.map((pane) => pane.agent.id)
-    return this.applyLayout(presetLayout(agents, preset, this.#focused?.agent.id), preset)
+    const panes = this.#panes.map((pane) => ({ id: pane.id, agent: pane.agent.id }))
+    return this.applyLayout(presetLayout(panes, preset, this.#focused?.id), preset)
   }
 
   /** The preset this window was last arranged by, or null once a split, close

@@ -37,7 +37,7 @@
  */
 
 import { Effect } from "effect"
-import { decodeLayout, encodeLayout, presetLayout, prune, type Layout } from "./layout.ts"
+import { decodeLayout, encodeLayout, newPaneId, presetLayout, prune, type Layout } from "./layout.ts"
 import type { SpawnBackend } from "./backend.ts"
 import type { Agent } from "./agent.ts"
 import type { Window } from "./window.ts"
@@ -80,7 +80,6 @@ export function snapshotWindow(window: Window): PersistedWindow {
   return {
     number: window.number,
     name: window.customName,
-    focusedAgent: window.focused?.agent.id ?? null,
     agents: window.agents.map(snapshotAgent),
     layout: encodeLayout(window.exportLayout()),
   }
@@ -189,8 +188,7 @@ export function restoreWindow(
     // Only the live agents get panes: an exited one has no view in the running
     // app either, and applyLayout would happily build it one.
     const live = window.agents.filter((a) => !a.exited).map((a) => a.id)
-    const focus = live.includes(saved.focusedAgent ?? "") ? saved.focusedAgent! : undefined
-    if (live.length > 0) window.applyLayout(restoredLayout(saved, live, focus))
+    if (live.length > 0) window.applyLayout(restoredLayout(saved, live))
     return window
   })
 }
@@ -205,19 +203,23 @@ export function restoreWindow(
  * A layout that no longer parses is a corrupted or hand-edited field, not a
  * reason to lose the session: the agents are all still there and an arrangement
  * can always be invented. Same for one that prunes away to nothing.
+ *
+ * Focus rides along inside the layout and is not recorded beside it. It used to
+ * be, as PersistedWindow.focusedAgent, because a layout could only name the
+ * focused pane by its agent and two panes on one agent were indistinguishable;
+ * panes carry their own identity now (layout.ts PaneRef), so the layout says it
+ * exactly and a second copy could only ever disagree with it. makeLayout
+ * already drops a focus whose pane did not survive the prune.
+ *
+ * The invented fallback gets fresh pane ids: those panes are being created here
+ * and now, and nothing else has ever named them.
  */
-function restoredLayout(
-  saved: PersistedWindow,
-  live: string[],
-  focus: string | undefined,
-): Layout {
+function restoredLayout(saved: PersistedWindow, live: string[]): Layout {
   const alive = new Set(live)
   const recorded = saved.layout ? parseOrNull(saved.layout) : null
   const pruned = recorded ? prune(recorded, (id) => alive.has(id)) : null
-  const layout = pruned?.root ? pruned : presetLayout(live, FALLBACK_PRESET, focus)
-  // focusedAgent is the authoritative record of focus; the layout's own copy is
-  // a duplicate of it, and only stands when the recorded focus did not survive.
-  return focus ? { ...layout, focus } : layout
+  if (pruned?.root) return pruned
+  return presetLayout(live.map((agent) => ({ id: newPaneId(), agent })), FALLBACK_PRESET)
 }
 
 function parseOrNull(encoded: string): Layout | null {

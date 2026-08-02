@@ -81,8 +81,8 @@ test("panes are reused, keeping their terminal and its output", async () => {
       direction: "column",
       weight: 1,
       children: [
-        { type: "pane", agent: agent.id, weight: 1 },
-        { type: "pane", agent: first.agent.id, weight: 1 },
+        { type: "pane", id: second.id, agent: agent.id, weight: 1 },
+        { type: "pane", id: first.id, agent: first.agent.id, weight: 1 },
       ],
     }),
   )
@@ -123,8 +123,8 @@ test("weights in the layout become real geometry", async () => {
       direction: "row",
       weight: 1,
       children: [
-        { type: "pane", agent: first.agent.id, weight: 3 },
-        { type: "pane", agent: second.agent.id, weight: 1 },
+        { type: "pane", id: first.id, agent: first.agent.id, weight: 3 },
+        { type: "pane", id: second.id, agent: second.agent.id, weight: 1 },
       ],
     }),
   )
@@ -175,9 +175,9 @@ test("panes naming an agent this window does not own are pruned away", async () 
       direction: "row",
       weight: 1,
       children: [
-        { type: "pane", agent: first.agent.id, weight: 1 },
-        { type: "pane", agent: "agent-that-never-existed", weight: 1 },
-        { type: "pane", agent: second.agent.id, weight: 1 },
+        { type: "pane", id: first.id, agent: first.agent.id, weight: 1 },
+        { type: "pane", id: "pane-that-never-existed", agent: "agent-that-never-existed", weight: 1 },
+        { type: "pane", id: second.id, agent: second.agent.id, weight: 1 },
       ],
     }),
   )
@@ -198,7 +198,7 @@ test("a layout naming nothing this window owns is refused, changing nothing", as
   const before = window.exportLayout()
 
   const applied = window.applyLayout(
-    makeLayout({ type: "pane", agent: "nobody", weight: 1 }),
+    makeLayout({ type: "pane", id: "nobody-pane", agent: "nobody", weight: 1 }),
   )
 
   expect(applied).toBe(false)
@@ -220,7 +220,7 @@ test("a pane the layout has no slot for is closed, but its agent survives", asyn
   const dropped = second.agent
   await layout()
 
-  window.applyLayout(makeLayout({ type: "pane", agent: first.agent.id, weight: 1 }))
+  window.applyLayout(makeLayout({ type: "pane", id: first.id, agent: first.agent.id, weight: 1 }))
   await layout()
 
   expect(window.panes).toEqual([first])
@@ -260,6 +260,83 @@ test("two panes on one agent stay two panes across a rebuild", async () => {
 
   expect(window.panes.filter((p) => p.agent === shared)).toHaveLength(2)
   expect(layoutAgents(window.exportLayout()).filter((id) => id === shared.id)).toHaveLength(2)
+})
+
+/**
+ * The case pane identity exists for.
+ *
+ * Two panes showing one agent agree on everything an agent id can say. Before
+ * panes had ids of their own the layout could not tell the rebuild which of
+ * them to focus, and `split` had to find its newcomer positionally afterwards
+ * because the layout it had just applied could not name it.
+ */
+test("splitting to show an agent the window already shows focuses the new pane", async () => {
+  const { window, layout } = await setup()
+  const shared = run(window.spawn("shared", ["sleep", "30"]))
+  const first = window.split("row", shared)!
+  await layout()
+
+  const second = window.split("row", shared)!
+  await layout()
+
+  expect(second).not.toBe(first)
+  expect(second.agent).toBe(shared)
+  expect(window.focused).toBe(second)
+  expect(window.exportLayout().focus).toBe(second.id)
+})
+
+test("each of two panes on one agent keeps its own scroll position", async () => {
+  const { window, layout } = await setup()
+  const shared = run(window.spawn("shared", ["sleep", "30"]))
+  const a = window.split("row", shared)!
+  const b = window.split("row", shared)!
+  await layout()
+
+  const before = window.exportLayout()
+  expect(window.applyLayout(before)).toBe(true)
+  await layout()
+
+  // Same pane objects in the same slots — a rebuild that matched on the agent
+  // alone could put b where a was, and each pane's scrollback goes with it.
+  expect(window.panes.filter((p) => p === a || p === b)).toEqual([a, b])
+  expect(window.exportLayout()).toEqual(before)
+})
+
+/**
+ * A layout from somewhere else: the agents are ours, the pane ids are not.
+ *
+ * The arrangement is honoured and the panes are reused on the agent, but they
+ * keep the identity they already had — a live pane's id is not something an
+ * incoming string gets to reassign, since anything else holding that id would
+ * silently start meaning a different viewport.
+ */
+test("a layout naming panes this window does not have reuses them by agent", async () => {
+  const { window, layout } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+  await layout()
+
+  const applied = window.applyLayout(
+    makeLayout(
+      {
+        type: "split",
+        direction: "column",
+        weight: 1,
+        children: [
+          { type: "pane", id: "pane-from-elsewhere-1", agent: second.agent.id, weight: 1 },
+          { type: "pane", id: "pane-from-elsewhere-2", agent: first.agent.id, weight: 1 },
+        ],
+      },
+      "pane-from-elsewhere-1",
+    ),
+  )
+  await layout()
+
+  expect(applied).toBe(true)
+  expect(window.panes).toEqual([second, first])
+  expect(window.panes.map((p) => p.id)).toEqual([second.id, first.id])
+  // Focus was given as a slot, and lands on whichever pane filled that slot.
+  expect(window.focused).toBe(second)
 })
 
 // Presets over the live tree.

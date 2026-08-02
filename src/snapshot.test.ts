@@ -54,9 +54,10 @@ test("a window snapshot records its agents and the arrangement of them", async (
   const saved = snapshotWindow(window)
   expect(saved.number).toBe(window.number)
   expect(saved.agents.map((a) => a.id)).toEqual([first.agent.id, second.agent.id])
-  expect(saved.focusedAgent).toBe(second.agent.id)
-  // The flat list cannot say how they were placed; the layout string can.
+  // The flat list cannot say how they were placed, nor which of them was
+  // focused; the layout string says both, and is the only record of either.
   expect(layoutAgents(decodeLayout(saved.layout!))).toEqual([first.agent.id, second.agent.id])
+  expect(decodeLayout(saved.layout!).focus).toBe(second.id)
 })
 
 test("a snapshot records an agent's command, directory and terminal size", async () => {
@@ -117,6 +118,33 @@ test("a restored window comes back with the same panes in the same shape", async
     source.window.panes.map((p) => p.agent.id),
   )
   expect(encodeLayout(restored.exportLayout())).toBe(saved.windows[0]!.layout!)
+})
+
+/**
+ * Focus is in the layout and nowhere else, and it survives being the second of
+ * two panes onto one agent — the case the old `focusedAgent` field could not
+ * describe at all, since both panes answered to the same name.
+ */
+test("a restored window focuses the pane that had focus, not merely its agent", async () => {
+  const source = await setup()
+  const shared = run(source.window.spawn("shared", ["sleep", "30"]))
+  source.window.split("row", shared)
+  const focused = source.window.split("row", shared)!
+  await source.layout()
+  expect(source.window.focused).toBe(focused)
+  const saved = snapshotSpace(source.space)
+
+  const target = source.takeOver()
+  run(restoreSpaces(target, [saved]))
+  await source.layout()
+
+  const restored = target.spaces[0]!.windows[0]!
+  const onShared = restored.panes.filter((p) => p.agent.id === shared.id)
+  expect(onShared).toHaveLength(2)
+  // Pane ids survive the round trip, so the SECOND one is focused rather than
+  // whichever pane showing that agent happened to come first.
+  expect(restored.focused).toBe(onShared[1]!)
+  expect(restored.focused!.id).toBe(focused.id)
 })
 
 // The strongest statement of the format's completeness: everything a snapshot
@@ -239,7 +267,6 @@ test("an agent that had exited comes back as a tombstone, not a second run", asy
         {
           number: 1,
           name: null,
-          focusedAgent: null,
           layout: null,
           agents: [
             {
@@ -383,7 +410,6 @@ test("an agent created after a restore cannot collide with a restored id", async
         {
           number: 1,
           name: null,
-          focusedAgent: "agent-9000",
           layout: null,
           agents: [
             { id: "agent-9000", name: "sh", cmd: ["sleep", "30"], cols: 80, rows: 24, exited: false, exitCode: null },

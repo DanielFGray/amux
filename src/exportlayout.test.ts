@@ -25,6 +25,7 @@ test("a single-pane window exports as one pane, not a one-child split", async ()
   const exported = window.exportLayout()
   expect(exported.root).toEqual({
     type: "pane",
+    id: window.panes[0]!.id,
     agent: window.panes[0]!.agent.id,
     weight: expect.any(Number),
   })
@@ -53,7 +54,7 @@ test("the focused pane is recorded", async () => {
   const second = run(window.splitSpawn("row"))!
   await layout()
   window.focus(second)
-  expect(window.exportLayout().focus).toBe(second.agent.id)
+  expect(window.exportLayout().focus).toBe(second.id)
 })
 
 test("resized weights survive the export", async () => {

@@ -59,7 +59,6 @@ export interface PersistedAgent {
 export interface PersistedWindow {
   number: number
   name: string | null
-  focusedAgent: string | null
   agents: PersistedAgent[]
   /**
    * The split arrangement, as an encoded layout string (see layout.ts).
@@ -67,6 +66,13 @@ export interface PersistedWindow {
    * A flat agent list cannot express arrangement, so without this a restored
    * window could only guess at one. Absent or null means "no arrangement was
    * recorded" — restore falls back to a preset rather than refusing.
+   *
+   * Which pane had focus is in here too, rather than beside it. It used to be a
+   * `focusedAgent` field, because a layout could only name a pane by its agent
+   * and so could not distinguish two panes showing one agent; panes carry their
+   * own ids now, so the layout says it exactly and a field next to it could
+   * only disagree. An older session file still carrying one is read as a v1
+   * layout and loses nothing: v1's focus recorded the same agent.
    *
    * Zoom is deliberately not here: it is a transient view of a layout, not a
    * layout, the same reason exportLayout reads through it.

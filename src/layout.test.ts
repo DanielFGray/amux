@@ -7,6 +7,7 @@ import {
   encodeLayout,
   layoutAgents,
   layoutPanes,
+  newPaneId,
   nextPreset,
   parseLayout,
   presetLayout,
@@ -18,7 +19,14 @@ import {
   type LayoutNode,
 } from "./layout.ts"
 
-const pane = (agent: string, weight = 1): LayoutNode => ({ type: "pane", agent, weight })
+/** Panes are named after the agent they show, since most cases here have one
+ *  pane per agent; the cases that do not say so explicitly. */
+const pane = (agent: string, weight = 1, id = agent): LayoutNode => ({
+  type: "pane",
+  id,
+  agent,
+  weight,
+})
 const split = (
   direction: "row" | "column",
   children: LayoutNode[],
@@ -105,7 +113,7 @@ test("pruning keeps a focus that did survive", () => {
 // A focus naming a pane that is not in the tree would leave a rebuilt window
 // with nothing focused, so it is dropped at the boundary rather than carried.
 test("a focus not present in the tree is dropped on parse", () => {
-  const parsed = parseLayout({ version: 1, root: pane("a"), focus: "ghost" })
+  const parsed = parseLayout({ version: LAYOUT_VERSION, root: pane("a"), focus: "ghost" })
   expect(parsed.focus).toBeUndefined()
 })
 
@@ -115,8 +123,8 @@ test("an empty layout round-trips", () => {
 
 test("a missing weight defaults to an even share", () => {
   const parsed = parseLayout({
-    version: 1,
-    root: { type: "split", direction: "row", children: [{ type: "pane", agent: "a" }] },
+    version: LAYOUT_VERSION,
+    root: { type: "split", direction: "row", children: [{ type: "pane", id: "a", agent: "a" }] },
   })
   expect(parsed.root).toEqual(pane("a", 1))
 })
@@ -130,38 +138,99 @@ test("an unsupported version is refused rather than guessed at", () => {
 })
 
 test("a pane without an agent id is refused", () => {
-  expect(() => parseLayout({ version: 1, root: { type: "pane", weight: 1 } })).toThrow(
+  expect(() => parseLayout({ version: LAYOUT_VERSION, root: { type: "pane", weight: 1 } })).toThrow(
     /needs an agent id/,
   )
 })
 
+test("a pane without a pane id is refused", () => {
+  expect(() =>
+    parseLayout({ version: LAYOUT_VERSION, root: { type: "pane", agent: "a", weight: 1 } }),
+  ).toThrow(/needs a pane id/)
+})
+
+/**
+ * Version 1 is every layout written before panes had identity.
+ *
+ * Refusing it would be worse than it sounds: restore treats an unparseable
+ * layout as "none recorded" and falls back to a preset, so a version bump alone
+ * would silently rearrange every window in a saved session. A v1 pane is an
+ * agent in a slot and nothing more, so the arrangement carries over exactly and
+ * the identities are simply new.
+ */
+test("a version 1 layout is read, keeping its arrangement", () => {
+  const parsed = parseLayout({
+    version: 1,
+    root: {
+      type: "split",
+      direction: "row",
+      children: [
+        { type: "pane", agent: "a", weight: 3 },
+        { type: "pane", agent: "b", weight: 1 },
+      ],
+    },
+  })
+  expect(layoutAgents(parsed)).toEqual(["a", "b"])
+  expect(layoutPanes(parsed.root).map((p) => p.weight)).toEqual([3, 1])
+  // Minted, and distinct: identity is what v1 was missing.
+  const [first, second] = layoutPanes(parsed.root)
+  expect(first!.id).not.toBe(second!.id)
+})
+
+test("a version 1 focus was an agent, and becomes the pane showing it", () => {
+  const parsed = parseLayout({
+    version: 1,
+    root: {
+      type: "split",
+      direction: "row",
+      children: [
+        { type: "pane", agent: "a", weight: 1 },
+        { type: "pane", agent: "b", weight: 1 },
+      ],
+    },
+    focus: "b",
+  })
+  expect(parsed.focus).toBe(layoutPanes(parsed.root)[1]!.id)
+})
+
+// Otherwise a restored session's pane ids and the ones a later split mints
+// would collide, and two different panes would answer to one name.
+test("parsing reserves the pane ids it read, so fresh ones cannot collide", () => {
+  const minted = Number(/\d+/.exec(newPaneId())![0])
+  parseLayout({
+    version: LAYOUT_VERSION,
+    root: { type: "pane", id: `pane-${minted + 500}`, agent: "a", weight: 1 },
+  })
+  expect(Number(/\d+/.exec(newPaneId())![0])).toBeGreaterThan(minted + 500)
+})
+
 test("a split without a valid direction is refused", () => {
   expect(() =>
-    parseLayout({ version: 1, root: { type: "split", direction: "sideways", children: [pane("a")] } }),
+    parseLayout({ version: LAYOUT_VERSION, root: { type: "split", direction: "sideways", children: [pane("a")] } }),
   ).toThrow(/direction/)
 })
 
 test("a split with no children is refused", () => {
   expect(() =>
-    parseLayout({ version: 1, root: { type: "split", direction: "row", children: [] } }),
+    parseLayout({ version: LAYOUT_VERSION, root: { type: "split", direction: "row", children: [] } }),
   ).toThrow(/needs children/)
 })
 
 // A zero or negative weight renders as a pane with no cells, which reads as a
 // pane that silently vanished.
 test("a non-positive weight is refused", () => {
-  expect(() => parseLayout({ version: 1, root: pane("a", 0) })).toThrow(/positive number/)
-  expect(() => parseLayout({ version: 1, root: pane("a", -3) })).toThrow(/positive number/)
+  expect(() => parseLayout({ version: LAYOUT_VERSION, root: pane("a", 0) })).toThrow(/positive number/)
+  expect(() => parseLayout({ version: LAYOUT_VERSION, root: pane("a", -3) })).toThrow(/positive number/)
 })
 
 test("an unknown node type is refused", () => {
-  expect(() => parseLayout({ version: 1, root: { type: "tabs", weight: 1 } })).toThrow(/unknown type/)
+  expect(() => parseLayout({ version: LAYOUT_VERSION, root: { type: "tabs", weight: 1 } })).toThrow(/unknown type/)
 })
 
 test("the error names where in the tree the problem is", () => {
   expect(() =>
     parseLayout({
-      version: 1,
+      version: LAYOUT_VERSION,
       root: { type: "split", direction: "row", children: [pane("a"), { type: "pane" }] },
     }),
   ).toThrow(/root\.children\[1\]/)
@@ -177,34 +246,35 @@ const shape = (node: LayoutNode | null): unknown => {
 }
 
 const ids = (n: number) => Array.from({ length: n }, (_, i) => String.fromCharCode(97 + i))
+const refs = (n: number) => ids(n).map((agent) => ({ id: agent, agent }))
 
 test("even-horizontal is one row, even-vertical one column", () => {
-  expect(shape(presetLayout(ids(3), "even-horizontal").root)).toEqual({ row: ["a", "b", "c"] })
-  expect(shape(presetLayout(ids(3), "even-vertical").root)).toEqual({ column: ["a", "b", "c"] })
+  expect(shape(presetLayout(refs(3), "even-horizontal").root)).toEqual({ row: ["a", "b", "c"] })
+  expect(shape(presetLayout(refs(3), "even-vertical").root)).toEqual({ column: ["a", "b", "c"] })
 })
 
 test("a main layout puts the first agent opposite the rest", () => {
-  expect(shape(presetLayout(ids(4), "main-vertical").root)).toEqual({
+  expect(shape(presetLayout(refs(4), "main-vertical").root)).toEqual({
     row: ["a", { column: ["b", "c", "d"] }],
   })
-  expect(shape(presetLayout(ids(4), "main-horizontal").root)).toEqual({
+  expect(shape(presetLayout(refs(4), "main-horizontal").root)).toEqual({
     column: ["a", { row: ["b", "c", "d"] }],
   })
 })
 
 test("a main layout with a single other pane collapses to a plain split", () => {
   // Otherwise the rebuild would nest a one-child box the live tree never builds.
-  expect(shape(presetLayout(ids(2), "main-vertical").root)).toEqual({ row: ["a", "b"] })
+  expect(shape(presetLayout(refs(2), "main-vertical").root)).toEqual({ row: ["a", "b"] })
 })
 
 test("tiled grows as square as the count allows, filling row by row", () => {
-  expect(shape(presetLayout(ids(1), "tiled").root)).toEqual("a")
-  expect(shape(presetLayout(ids(2), "tiled").root)).toEqual({ row: ["a", "b"] })
-  expect(shape(presetLayout(ids(4), "tiled").root)).toEqual({
+  expect(shape(presetLayout(refs(1), "tiled").root)).toEqual("a")
+  expect(shape(presetLayout(refs(2), "tiled").root)).toEqual({ row: ["a", "b"] })
+  expect(shape(presetLayout(refs(4), "tiled").root)).toEqual({
     column: [{ row: ["a", "b"] }, { row: ["c", "d"] }],
   })
   // A short final row simply spreads across the width, as tmux's does.
-  expect(shape(presetLayout(ids(5), "tiled").root)).toEqual({
+  expect(shape(presetLayout(refs(5), "tiled").root)).toEqual({
     column: [{ row: ["a", "b", "c"] }, { row: ["d", "e"] }],
   })
 })
@@ -212,7 +282,7 @@ test("tiled grows as square as the count allows, filling row by row", () => {
 test("every preset keeps the agents, in order, exactly once", () => {
   for (const preset of LAYOUT_PRESETS) {
     for (const n of [1, 2, 3, 5, 8]) {
-      expect(layoutAgents(presetLayout(ids(n), preset))).toEqual(ids(n))
+      expect(layoutAgents(presetLayout(refs(n), preset))).toEqual(ids(n))
     }
   }
 })
@@ -227,15 +297,15 @@ test("every preset alternates axes, so the live tree can rebuild it", () => {
   }
   for (const preset of LAYOUT_PRESETS) {
     for (const n of [1, 2, 3, 4, 5, 9]) {
-      const root = presetLayout(ids(n), preset).root
+      const root = presetLayout(refs(n), preset).root
       if (root) check(root)
     }
   }
 })
 
 test("a preset keeps the focus when the agent is still there, drops it otherwise", () => {
-  expect(presetLayout(ids(3), "tiled", "b").focus).toBe("b")
-  expect(presetLayout(ids(3), "tiled", "zz").focus).toBeUndefined()
+  expect(presetLayout(refs(3), "tiled", "b").focus).toBe("b")
+  expect(presetLayout(refs(3), "tiled", "zz").focus).toBeUndefined()
 })
 
 test("no agents is an empty layout, not a crash", () => {
@@ -258,7 +328,7 @@ test("nextPreset walks the cycle and restarts from a hand-built layout", () => {
  * the model (ep-ceb468), the whole of it.
  */
 test("a split replaces a pane with itself and the newcomer", () => {
-  const after = splitLayout(layout(pane("a")), 0, "row", "b")
+  const after = splitLayout(layout(pane("a")), 0, "row", { id: "b", agent: "b" })
   expect(after.root).toEqual(split("row", [pane("a"), pane("b")]))
   // tmux moves you into the pane you just made.
   expect(after.focus).toBe("b")
@@ -275,7 +345,7 @@ test("a split replaces a pane with itself and the newcomer", () => {
  */
 test("splitting a resized pane gives the newcomer half of it", () => {
   const before = layout(split("row", [pane("a", 69), pane("b", 31)]), "b")
-  const after = splitLayout(before, 1, "row", "c")
+  const after = splitLayout(before, 1, "row", { id: "c", agent: "c" })
 
   // Flat, because the axis did not change: three panes in a row, which is what
   // tmux shows after two horizontal splits.
@@ -284,7 +354,7 @@ test("splitting a resized pane gives the newcomer half of it", () => {
 
 test("splitting across the axis nests, and the new split inherits the slot", () => {
   const before = layout(split("row", [pane("a", 3), pane("b", 1)]), "a")
-  const after = splitLayout(before, 0, "column", "c")
+  const after = splitLayout(before, 0, "column", { id: "c", agent: "c" })
 
   expect(after.root).toEqual(
     split("row", [split("column", [pane("a"), pane("c")], 3), pane("b", 1)]),
@@ -292,34 +362,53 @@ test("splitting across the axis nests, and the new split inherits the slot", () 
 })
 
 test("a split names a pane by position, so two panes on one agent are distinct", () => {
-  const before = layout(split("row", [pane("a"), pane("a")]), "a")
-  const after = splitLayout(before, 1, "column", "b")
+  const before = layout(split("row", [pane("a", 1, "p1"), pane("a", 1, "p2")]), "p1")
+  const after = splitLayout(before, 1, "column", { id: "p3", agent: "b" })
 
   expect(after.root).toEqual(
-    split("row", [pane("a"), split("column", [pane("a"), pane("b")])]),
+    split("row", [pane("a", 1, "p1"), split("column", [pane("a", 1, "p2"), pane("b", 1, "p3")])]),
   )
+})
+
+/**
+ * The reason panes have identity at all.
+ *
+ * Splitting to show an agent the window is ALREADY showing produces two panes
+ * that agree on everything an agent id can say. Focus has to land on the one
+ * just made, and before pane ids a layout simply could not express which that
+ * was — Window.split worked around it by finding the newcomer positionally,
+ * and restore focused whichever pane came first.
+ */
+test("focus names the pane a split just made, not another showing the same agent", () => {
+  const before = layout(pane("a", 1, "p1"), "p1")
+  const after = splitLayout(before, 0, "row", { id: "p2", agent: "a" })
+
+  expect(layoutPanes(after.root).map((p) => p.id)).toEqual(["p1", "p2"])
+  expect(layoutPanes(after.root).map((p) => p.agent)).toEqual(["a", "a"])
+  expect(after.focus).toBe("p2")
 })
 
 test("a split at a position no pane has changes nothing", () => {
   const before = layout(split("row", [pane("a"), pane("b")]), "a")
-  expect(splitLayout(before, 7, "row", "c").root).toEqual(before.root)
+  expect(splitLayout(before, 7, "row", { id: "c", agent: "c" }).root).toEqual(before.root)
 })
 
 /**
- * Swapping moves the agents, not the slots.
+ * Swapping moves the panes, not the slots.
  *
- * The sizes belong to the arrangement and the agents move through it, which is
+ * The sizes belong to the arrangement and the panes move through it, which is
  * what tmux's swap-pane does — Window.swap arrives at the same place the long
  * way round, by moving renderables and then handing each the other's weight.
  */
-test("a swap exchanges two panes' agents and leaves the weights alone", () => {
+test("a swap exchanges two panes and leaves the weights alone", () => {
   const before = layout(split("row", [pane("a", 3), split("column", [pane("b"), pane("c", 2)])]), "a")
   const after = swapLayout(before, 0, 2)
 
   expect(after.root).toEqual(
     split("row", [pane("c", 3), split("column", [pane("b"), pane("a", 2)])]),
   )
-  // Focus is an agent id, so it followed `a` into its new slot for nothing.
+  // A pane keeps its identity through the move, so the focus needed no fixing
+  // up: it still names the pane the user was in, now in the other slot.
   expect(after.focus).toBe("a")
 })
 
