@@ -5,6 +5,7 @@ import { mkdtemp, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Divider } from "./divider.ts"
+import { applyConfig, DEFAULT_CONFIG } from "./config.ts"
 import { rollUp, nextBlockedAfter } from "./space.ts"
 import { createHarness } from "./harness.ts"
 import type { Window } from "./window.ts"
@@ -506,6 +507,37 @@ test("a pane draws only the edges facing the window, never one a divider covers"
     s.win.close(bottom)
     expect(right.edges).toEqual({ top: true, right: true, bottom: true, left: false })
   } finally {
+    await s.dispose()
+  }
+})
+
+test("pane gaps give each pane a complete border and remain draggable", async () => {
+  const s = await setup()
+  applyConfig({ ...DEFAULT_CONFIG, appearance: { paneGap: 2 } })
+  try {
+    s.win.split("row")
+    await s.t.renderOnce()
+    const children = s.win.root.getChildren() as any[]
+    const [left, divider, right] = children
+    expect(divider.width).toBe(2)
+    expect(left.edges).toEqual({ top: true, right: true, bottom: true, left: true })
+    expect(right.edges).toEqual({ top: true, right: true, bottom: true, left: true })
+    expect(left.x + left.width).toBe(divider.x)
+    expect(divider.x + divider.width).toBe(right.x)
+    const rows = s.t.captureCharFrame().split("\n")
+    expect(rows
+      .slice(divider.y, divider.y + divider.height)
+      .some((row) => row.slice(divider.x, divider.x + divider.width) !== "  ")).toBe(false)
+
+    const total = left.width + right.width
+    divider.onMouseEvent({ type: "down", x: divider.x, y: divider.y, button: 0, stopPropagation() {} })
+    divider.onMouseEvent({ type: "drag", x: divider.x - 5, y: divider.y, button: 0, stopPropagation() {} })
+    await s.t.renderOnce()
+    expect(left.width + right.width).toBe(total)
+    expect(left.width).toBeLessThan(total / 2)
+  } finally {
+    applyConfig(DEFAULT_CONFIG)
+    s.win.refreshChrome()
     await s.dispose()
   }
 })

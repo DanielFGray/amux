@@ -1,4 +1,5 @@
 import { Renderable, RGBA, type MouseEvent, type OptimizedBuffer, type RenderContext } from "@opentui/core"
+import { runtime } from "./config.ts"
 
 const IDLE = RGBA.fromInts(69, 71, 90, 255) // surface1
 const FOCUS = RGBA.fromInts(137, 180, 250, 255) // blue
@@ -160,6 +161,7 @@ export class Divider extends Renderable {
   junction?: () => JunctionFrame
   #hovered = false
   #dragging = false
+  #paneGap = 0
 
   /**
    * Where the drag goes instead of the neighbours' flex weights.
@@ -189,6 +191,14 @@ export class Divider extends Renderable {
     })
     this.axis = options.axis
     this.onDrag = options.onDrag
+    this.setPaneGap(runtime.paneGap)
+  }
+
+  /** Update the target's width when the appearance setting changes. */
+  setPaneGap(gap: number): void {
+    this.#paneGap = Math.max(0, Math.floor(gap))
+    if (this.axis === "row") this.width = this.#paneGap || 1
+    else this.height = this.#paneGap || 1
   }
 
   protected override onMouseEvent(event: MouseEvent): void {
@@ -280,6 +290,14 @@ export class Divider extends Renderable {
    * cells, so it keeps the simple path.
    */
   protected override renderSelf(buffer: OptimizedBuffer): void {
+    if (this.#paneGap > 0) {
+      for (let y = this.y; y < this.y + this.height; y++) {
+        for (let x = this.x; x < this.x + this.width; x++) {
+          buffer.setCell(x, y, " ", IDLE, BG)
+        }
+      }
+      return
+    }
     const fg = this.#hovered || this.#dragging ? HOVER : this.adjacentToFocus ? FOCUS : IDLE
     const vertical = this.axis === "row"
     const length = vertical ? this.height : this.width

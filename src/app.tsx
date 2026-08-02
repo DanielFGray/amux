@@ -464,9 +464,12 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       if (field === 0) {
         next.behaviour.scrollRows = Math.max(1, Math.min(20, next.behaviour.scrollRows + delta))
       }
+    } else if (section === "appearance") {
+      next.appearance.paneGap = Math.max(0, Math.min(8, next.appearance.paneGap + delta))
     }
     setConfigState(next)
     applyConfig(next)
+    if (section === "appearance") spaces.refreshChrome()
     setSettingsDirty(true)
   }
 

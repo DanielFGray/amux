@@ -4,6 +4,7 @@ import { Agent, type AgentOptions } from "./agent.ts"
 import type { SpawnBackend } from "./backend.ts"
 import { rollUp } from "./space.ts"
 import { Divider, getWeight, setWeight, getDirection, setDirection, type JunctionFrame } from "./divider.ts"
+import { runtime } from "./config.ts"
 import {
   collapse,
   makeLayout,
@@ -403,17 +404,19 @@ export class Window {
    * cell thick at every seam.
    */
   #refreshChrome() {
+    const gap = runtime.paneGap > 0
     for (const pane of this.#panes) {
       pane.edges = {
         // frame.externalLeft: the sidebar handle owns that column, so no pane
         // draws a left border while the sidebar is open.
-        left: !frame.externalLeft && !this.#hasNeighbour(pane, "row", -1),
-        right: !this.#hasNeighbour(pane, "row", 1),
-        top: !this.#hasNeighbour(pane, "column", -1),
-        bottom: !this.#hasNeighbour(pane, "column", 1),
+        left: gap ? !frame.externalLeft : !frame.externalLeft && !this.#hasNeighbour(pane, "row", -1),
+        right: gap || !this.#hasNeighbour(pane, "row", 1),
+        top: gap || !this.#hasNeighbour(pane, "column", -1),
+        bottom: gap || !this.#hasNeighbour(pane, "column", 1),
       }
     }
     for (const divider of this.#dividers()) {
+      divider.setPaneGap(runtime.paneGap)
       // A divider's ends meet the window's outer border exactly where it has no
       // neighbour of its own across the perpendicular axis.
       const cross: SplitDirection = divider.axis === "row" ? "column" : "row"
