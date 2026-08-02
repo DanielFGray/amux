@@ -18,7 +18,18 @@ import { SessionEnv } from "../session.ts"
 import type { SpawnBackend } from "../backend.ts"
 import { workspaceEnv } from "../env.ts"
 
-const SHELL = ["bash"]
+/**
+ * A shell with nobody's dotfiles in it.
+ *
+ * A row's label is the agent's OSC title, falling back to its name until the
+ * child reports one — so a bash that loads an rc setting `\033]0;user@host:cwd`
+ * silently renames every row this file asserts on, a few hundred milliseconds
+ * after it starts. The checks that assert quickly passed; the one that waits for
+ * a daemon to die failed every time, and would have started failing for the
+ * others the moment they grew a wait. These tests are about the sidebar, not
+ * about whose prompt is installed on the machine running them.
+ */
+const SHELL = ["bash", "--norc", "--noprofile"]
 
 const daemons: SessionDaemon[] = []
 const clients: SessionClientShape[] = []
