@@ -94,6 +94,7 @@ export function App(props: AppProps) {
           selected={props.selected}
           hovered={props.hovered}
           focused={props.sidebarFocused}
+          agentsOnly={props.config.sidebar.agentsOnly}
           toggleKeys={props.sidebarToggleKeys}
           onHover={props.onHover}
           onActivate={props.onActivate}

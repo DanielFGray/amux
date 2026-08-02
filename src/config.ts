@@ -7,6 +7,8 @@ export interface Config {
     width: number
     /** Whether the sidebar starts open. */
     open: boolean
+    /** Whether to show only panes running a recognised agent CLI. */
+    agentsOnly: boolean
   }
   behaviour: {
     /** Rows a wheel notch scrolls in a pane's scrollback. */
@@ -24,7 +26,7 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  sidebar: { width: 30, open: true },
+  sidebar: { width: 30, open: true, agentsOnly: false },
   behaviour: { scrollRows: 3, shell: "" },
   appearance: { paneGap: 0 },
   keys: { leader: DEFAULT_LEADER, bindings: {} },

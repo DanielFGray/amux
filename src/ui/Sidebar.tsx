@@ -16,6 +16,10 @@ export type SidebarTarget =
   | { kind: "window"; space: Space; window: Window }
   | { kind: "agent"; space: Space; window: Window; agent: Agent }
 
+export function clampSidebarSelection(selected: number, count: number): number {
+  return count === 0 ? 0 : Math.min(selected, count - 1)
+}
+
 type Row =
   | { kind: "space"; space: Space; index: number }
   | { kind: "branch"; space: Space }
@@ -24,13 +28,18 @@ type Row =
 
 /** Flatten the tree once. Used by the view and by the app's key handling, so
  *  "row 3" means the same thing to both. */
-export function sidebarTargets(spaces: readonly Space[]): SidebarTarget[] {
+export function sidebarTargets(spaces: readonly Space[], agentsOnly = false): SidebarTarget[] {
   const out: SidebarTarget[] = []
   for (const space of spaces) {
+    const windows = agentsOnly
+      ? space.windows.filter((window) => window.agents.some((agent) => agent.agentKind !== null))
+      : space.windows
+    if (agentsOnly && windows.length === 0) continue
     out.push({ kind: "space", space })
-    for (const window of space.windows) {
+    for (const window of windows) {
+      const agents = agentsOnly ? window.agents.filter((agent) => agent.agentKind !== null) : window.agents
       out.push({ kind: "window", space, window })
-      for (const agent of window.agents) out.push({ kind: "agent", space, window, agent })
+      for (const agent of agents) out.push({ kind: "agent", space, window, agent })
     }
   }
   return out
@@ -45,6 +54,7 @@ export interface SidebarProps {
   selected: number
   hovered: number | null
   focused: boolean
+  agentsOnly: boolean
   /** How the toggle binding reads right now, e.g. "^a b". Passed in rather
    *  than written here, because it is rebindable. */
   toggleKeys: string
@@ -61,14 +71,22 @@ export interface SidebarProps {
  */
 export function Sidebar(props: SidebarProps) {
   const rows = createMemo(() => {
+    if (props.agentsOnly) props.app.tick()
     const out: Row[] = []
     let index = 0
     for (const space of props.app.spaces()) {
+      const windows = props.agentsOnly
+        ? space.windows.filter((window) => window.agents.some((agent) => agent.agentKind !== null))
+        : space.windows
+      if (props.agentsOnly && windows.length === 0) continue
       out.push({ kind: "space", space, index: index++ })
       if (space.branch) out.push({ kind: "branch", space })
-      for (const window of space.windows) {
+      for (const window of windows) {
+        const agents = props.agentsOnly
+          ? window.agents.filter((agent) => agent.agentKind !== null)
+          : window.agents
         out.push({ kind: "window", space, window, index: index++ })
-        for (const agent of window.agents) {
+        for (const agent of agents) {
           out.push({ kind: "agent", space, window, agent, index: index++ })
         }
       }
