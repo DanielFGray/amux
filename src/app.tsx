@@ -56,6 +56,7 @@ import {
 } from "./capture.ts"
 import { Capture, type CaptureView } from "./ui/Capture.tsx"
 import { CopyMode } from "./copy.ts"
+import { workspaceEnv } from "./env.ts"
 
 export interface AppOptions {
   readonly renderer: CliRenderer
@@ -94,7 +95,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const SHELL = [config.behaviour.shell || process.env.SHELL || "bash"]
   const SESSION_ID = session.id
 
-  const spaces = new SpaceSet(renderer, paneHost, SHELL, session.backend())
+  const spaces = new SpaceSet(workspaceEnv(renderer, { shell: SHELL, backend: session.backend() }), paneHost)
   spaces.onCopy = (text) => renderer.copyToClipboardOSC52(text)
   spaces.onCopyError = (error) => console.error(error.message)
   const app = createAppState(spaces)

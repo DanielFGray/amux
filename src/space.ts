@@ -1,8 +1,9 @@
 import { BoxRenderable, type RenderContext } from "@opentui/core"
+import { Context } from "effect"
 import { Window } from "./window.ts"
 import type { Agent, AgentState } from "./agent.ts"
 import type { TerminalPane } from "./pane.ts"
-import type { SpawnBackend } from "./backend.ts"
+import { RenderCtx, type WorkspaceEnv } from "./env.ts"
 
 let nextSpaceId = 0
 
@@ -33,10 +34,10 @@ export class Space {
   ahead = 0
   behind = 0
 
+  /** Passed down to every window this space opens, unread here beyond the
+   *  renderer — a space is a container, not a thing that starts processes. */
+  #env: Context.Context<WorkspaceEnv>
   #ctx: RenderContext
-  #shell: string[]
-  /** Where agents in this space get their processes; see window.ts. */
-  #backend: SpawnBackend | undefined
   #windows: Window[] = []
   #active: Window | null = null
   #nextNumber = 1
@@ -46,18 +47,14 @@ export class Space {
   onCopy?: (text: string) => boolean | void
   onCopyError?: (error: Error) => void
 
-  constructor(
-    ctx: RenderContext,
-    opts: { name: string; dir: string; shell: string[]; id?: string; backend?: SpawnBackend },
-  ) {
-    this.#ctx = ctx
-    this.#shell = opts.shell
-    this.#backend = opts.backend
+  constructor(env: Context.Context<WorkspaceEnv>, opts: { name: string; dir: string; id?: string }) {
+    this.#env = env
+    this.#ctx = Context.get(env, RenderCtx)
     this.id = opts.id ?? `space-${nextSpaceId++}`
     if (opts.id) reserveSpaceId(opts.id)
     this.name = opts.name
     this.dir = opts.dir
-    this.root = new BoxRenderable(ctx, {
+    this.root = new BoxRenderable(this.#ctx, {
       id: `space-root-${this.id}`,
       flexDirection: "row",
       flexGrow: 1,
@@ -97,7 +94,7 @@ export class Space {
    */
   newWindow(name?: string, number?: number): Window {
     if (number !== undefined) this.#nextNumber = Math.max(this.#nextNumber, number + 1)
-    const window = new Window(this.#ctx, this.#shell, this.dir, number ?? this.#nextNumber++, this.#backend)
+    const window = new Window(this.#env, this.dir, number ?? this.#nextNumber++)
     if (name) window.customName = name
     window.onChange = () => this.onChange?.()
     window.onAgentExit = (agent) => this.onAgentExit?.(agent, window, this)
@@ -242,11 +239,9 @@ export function nextBlockedAfter(order: readonly Agent[], from: Agent | null): A
  * windows, their layouts and their agents entirely off the layout tree.
  */
 export class SpaceSet {
+  #env: Context.Context<WorkspaceEnv>
   #ctx: RenderContext
   #host: BoxRenderable
-  #shell: string[]
-  /** Where agents get their processes; see the note in window.ts. */
-  #backend: SpawnBackend | undefined
   #spaces: Space[] = []
   #active: Space | null = null
   onChange?: () => void
@@ -254,11 +249,10 @@ export class SpaceSet {
   onCopy?: (text: string) => boolean | void
   onCopyError?: (error: Error) => void
 
-  constructor(ctx: RenderContext, host: BoxRenderable, shell: string[], backend?: SpawnBackend) {
-    this.#ctx = ctx
+  constructor(env: Context.Context<WorkspaceEnv>, host: BoxRenderable) {
+    this.#env = env
+    this.#ctx = Context.get(env, RenderCtx)
     this.#host = host
-    this.#shell = shell
-    this.#backend = backend
   }
 
   get spaces(): readonly Space[] {
@@ -280,7 +274,7 @@ export class SpaceSet {
   }
 
   create(name: string, dir = process.cwd(), id?: string): Space {
-    const space = new Space(this.#ctx, { name, dir, shell: this.#shell, id, backend: this.#backend })
+    const space = new Space(this.#env, { name, dir, id })
     space.onChange = () => this.onChange?.()
     space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space)
     space.onCopy = this.onCopy

@@ -6,6 +6,7 @@ import { RenderState, Terminal } from "./ghostty.ts"
 import { captureRange } from "./shim.ts"
 import { clearSelection, setSelection } from "./shim.ts"
 import { SpaceSet } from "./space.ts"
+import { workspaceEnv } from "./env.ts"
 
 const bytes = (value: string) => new TextEncoder().encode(value)
 const cleanup: (() => void)[] = []
@@ -60,7 +61,7 @@ test("drag selection copies through the pane and survives pane borders", async (
   const t = await createTestRenderer({ width: 30, height: 8 })
   const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 })
   t.renderer.root.add(host)
-  const spaces = new SpaceSet(t.renderer, host, ["bash"])
+  const spaces = new SpaceSet(workspaceEnv(t.renderer), host)
   const copied: string[] = []
   spaces.onCopy = (text) => { copied.push(text); return true }
   const space = spaces.create("test", process.cwd())

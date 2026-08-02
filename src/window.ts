@@ -2,6 +2,8 @@ import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/cor
 import { TerminalPane } from "./pane.ts"
 import { Agent, type AgentOptions } from "./agent.ts"
 import type { SpawnBackend } from "./backend.ts"
+import { Context } from "effect"
+import { RenderCtx, Shell, Backend, type WorkspaceEnv } from "./env.ts"
 import { rollUp } from "./space.ts"
 import { Divider, getWeight, setWeight, getDirection, setDirection, type JunctionFrame } from "./divider.ts"
 import { runtime } from "./config.ts"
@@ -55,6 +57,8 @@ export class Window {
   #agents: Agent[] = []
   #focused: TerminalPane | null = null
   #shell: string[]
+  /** Handed on to the panes and dividers this window builds. */
+  #env: Context.Context<WorkspaceEnv>
   /** Directory agents spawn in — the owning space's attached directory. */
   #cwd: string | undefined
   /** The pane filling the window on its own, and everything needed to put the
@@ -78,27 +82,24 @@ export class Window {
   onCopyError?: (error: Error) => void
 
   /**
-   * Where agents started here get their processes. Undefined means a local PTY.
+   * Where agents started here get their processes.
    *
-   * Carried alongside #shell because it answers the same kind of question — not
-   * "what does this window contain" but "what does starting something in it
-   * mean" — and every path that creates an agent already goes through here.
+   * Read from context alongside #shell because it answers the same kind of
+   * question — not "what does this window contain" but "what does starting
+   * something in it mean" — and every path that creates an agent goes through
+   * here. It is always a real backend now: "run it locally" is the Backend
+   * reference's default rather than the absence of an answer.
    */
-  #backend: SpawnBackend | undefined
+  #backend: SpawnBackend
 
-  constructor(
-    ctx: RenderContext,
-    shell: string[],
-    cwd: string | undefined,
-    number: number,
-    backend?: SpawnBackend,
-  ) {
-    this.#ctx = ctx
-    this.#shell = shell
+  constructor(env: Context.Context<WorkspaceEnv>, cwd: string | undefined, number: number) {
+    this.#env = env
+    this.#ctx = Context.get(env, RenderCtx)
+    this.#shell = Context.get(env, Shell)
+    this.#backend = Context.get(env, Backend)
     this.#cwd = cwd
-    this.#backend = backend
     this.number = number
-    this.root = new BoxRenderable(ctx, {
+    this.root = new BoxRenderable(this.#ctx, {
       id: `window-${number}-${nextId++}`,
       flexDirection: "row",
       flexGrow: 1,
@@ -195,6 +196,7 @@ export class Window {
   startAgent(opts: AgentOptions): Agent {
     // The window's backend is a default, not an override: restore passes its
     // own per-agent choice, and a tombstone must keep having no backend at all.
+    // Spread order is what encodes that — opts wins where it says anything.
     const agent = new Agent({ backend: this.#backend, ...opts })
     this.#bind(agent)
     this.#agents.push(agent)

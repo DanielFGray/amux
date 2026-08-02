@@ -15,6 +15,7 @@ import { SessionDaemon } from "../daemon.ts"
 import { SessionClient, type SessionClientShape } from "../client.ts"
 import { SessionEnv } from "../session.ts"
 import type { SpawnBackend } from "../backend.ts"
+import { workspaceEnv } from "../env.ts"
 
 const SHELL = ["bash"]
 
@@ -67,7 +68,7 @@ async function setup(backend?: SpawnBackend) {
   // real app hosts the imperative pane tree alongside the reactive chrome.
   const t = await createTestRenderer({ width: 60, height: 20 })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(t.renderer, paneHost, SHELL, backend)
+  const spaces = new SpaceSet(workspaceEnv(t.renderer, { shell: SHELL, backend }), paneHost)
   const space = spaces.create("proj", process.cwd())
   const win = space.newWindow()
   win.init("shell")
@@ -412,7 +413,7 @@ test("the seam shows a thumb only while the tree overflows", async () => {
 
   const t = await createTestRenderer({ width: 60, height: 20 })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(t.renderer, paneHost, SHELL)
+  const spaces = new SpaceSet(workspaceEnv(t.renderer, { shell: SHELL }), paneHost)
   const space = spaces.create("proj", process.cwd())
   const win = space.newWindow()
   win.init("shell")

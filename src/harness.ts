@@ -18,6 +18,7 @@ import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { SpaceSet, type Space } from "./space.ts";
 import type { Window } from "./window.ts";
+import { workspaceEnv } from "./env.ts"
 
 export interface Harness {
   t: TestRendererSetup;
@@ -76,7 +77,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   t.renderer.root.add(host);
 
   const shell = options.shell ?? ["bash"];
-  const spaces = new SpaceSet(t.renderer, host, shell);
+  const spaces = new SpaceSet(workspaceEnv(t.renderer, { shell }), host);
   const space = spaces.create("proj", process.cwd());
   const window = space.newWindow();
   if (options.init !== false) {
@@ -100,7 +101,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
         ...(options.hostDirection ? { flexDirection: options.hostDirection } : {}),
       });
       t.renderer.root.add(mounted);
-      const next = new SpaceSet(t.renderer, mounted, shell);
+      const next = new SpaceSet(workspaceEnv(t.renderer, { shell }), mounted);
       all.push(next);
       return next;
     },

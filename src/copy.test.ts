@@ -8,6 +8,7 @@ import { createBindings, type CommandSpec } from "./bindings.ts"
 import { RenderState, Terminal } from "./ghostty.ts"
 import { SpaceSet } from "./space.ts"
 import { makeLayout } from "./layout.ts"
+import { workspaceEnv } from "./env.ts"
 
 const bytes = (value: string) => new TextEncoder().encode(value)
 
@@ -826,7 +827,7 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
 async function makeWindow(count: number) {
   const t = await createTestRenderer({ width: 80, height: 24 })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(t.renderer, paneHost, ["bash"])
+  const spaces = new SpaceSet(workspaceEnv(t.renderer), paneHost)
   const space = spaces.create("proj", process.cwd())
   const win = space.newWindow()
   const agents = Array.from({ length: count }, () =>

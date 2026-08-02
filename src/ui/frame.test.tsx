@@ -10,6 +10,7 @@ import { loadConfig } from "../config.ts"
 import { createAppState } from "./state.ts"
 import { App } from "./App.tsx"
 import type { HintGroup } from "../bindings.ts"
+import { workspaceEnv } from "../env.ts"
 
 const WIDTH = 60
 const HEIGHT = 14
@@ -29,7 +30,7 @@ async function screen(
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  const spaces = new SpaceSet(t.renderer, paneHost, ["bash"])
+  const spaces = new SpaceSet(workspaceEnv(t.renderer), paneHost)
   const app = createAppState(spaces)
   cleanup.push(() => {
     spaces.disposeAll()
