@@ -249,6 +249,37 @@ export function swapLayout(layout: Layout, from: number, to: number): Layout {
 }
 
 /**
+ * Take the pane at `index` out of the arrangement.
+ *
+ * The survivors keep their relative proportions and grow into the freed space,
+ * which is what tmux's layout_close_pane does — and here it needs no arithmetic
+ * at all, because weights are relative to siblings. Two panes left at 0.25 and
+ * 0.5 simply become a third and two thirds of the row. The one case that WOULD
+ * have needed a fixup, a lone survivor stranded at its old half share, is the
+ * one collapse() already handles by giving it the husk's weight.
+ *
+ * Focus moves to the pane that took its place, or to the last one when the
+ * closed pane was at the end — tmux's rule, and the reason it is decided here
+ * rather than by the caller: after the collapse there is no longer an index to
+ * count from, only pane ids.
+ *
+ * Closing the last pane leaves an empty layout. That is a real state, not an
+ * error: a window with nothing in it is what the app closes.
+ */
+export function closeLayout(layout: Layout, index: number): Layout {
+  const target = layoutPanes(layout.root)[index]
+  if (!target) return layout
+
+  const root = collapse(rewritePanes(layout.root, (pane, at) => (at === index ? null : pane)))
+  const survivors = layoutPanes(root)
+  const focus =
+    layout.focus === target.id
+      ? survivors[Math.min(index, survivors.length - 1)]?.id
+      : layout.focus
+  return makeLayout(root, focus)
+}
+
+/**
  * Remove panes whose agent is gone, keeping the rest of the shape.
  *
  * Restore has to cope with a layout outliving its processes: a session saved

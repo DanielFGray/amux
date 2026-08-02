@@ -8,6 +8,7 @@ import { rollUp } from "./space.ts"
 import { Divider, getWeight, setWeight, getDirection, setDirection, type JunctionFrame } from "./divider.ts"
 import { runtime } from "./config.ts"
 import {
+  closeLayout,
   collapse,
   layoutPanes,
   makeLayout,
@@ -771,12 +772,15 @@ export class Window {
   }
 
   /**
-   * Remove a pane from the layout and hand it over, without destroying it or
-   * touching its agent — the source half of a break-pane. The process keeps
-   * running and its terminal keeps its state; only ownership moves.
+   * Take a pane out of the layout and hand it over, alive — the source half of
+   * a break-pane. The process keeps running and its terminal keeps its state;
+   * only ownership moves.
    *
-   * The same tree surgery as close(): the pane's divider goes with it, and any
-   * split box left holding a single child is collapsed back into its parent.
+   * The same eviction `close` performs, stopping one step earlier. Both take
+   * the pane out of the arrangement and let the survivors grow into the space;
+   * they differ only in what happens to the pane that fell out, which is why
+   * #project hands it back rather than deciding.
+   *
    * Returns the pane, or null when this window does not hold it.
    */
   detachPane(pane: TerminalPane): TerminalPane | null {
@@ -784,54 +788,12 @@ export class Window {
     // root, and unpicking a pane out of a detached tree is how you end up
     // restoring a layout that no longer contains anything.
     if (this.#zoomed) this.#unzoom()
-    const i = this.#panes.indexOf(pane)
-    if (i === -1) return null
-    this.#panes.splice(i, 1)
-    this.#preset = null
-
-    const parent = pane.parent as BoxRenderable | null
-    if (parent) {
-      // Take the divider that separated this pane from a neighbour with it,
-      // or the tree is left with a border floating against nothing.
-      const siblings = parent.getChildren()
-      const at = siblings.indexOf(pane)
-      const divider = (siblings[at + 1] ?? siblings[at - 1]) as Renderable | undefined
-      if (divider instanceof Divider) {
-        parent.remove(divider)
-        divider.destroy()
-      }
-      parent.remove(pane)
-    }
-
-    if (parent && parent !== this.root && parent.getChildrenCount() === 1) {
-      const [only] = parent.getChildren()
-      const grand = parent.parent as BoxRenderable | null
-      if (grand && only) {
-        const index = grand.getChildren().indexOf(parent)
-        parent.remove(only)
-        grand.remove(parent)
-        grand.add(only as Renderable, index)
-        parent.destroy()
-      }
-    }
-
-    // Redistribute the freed space the way tmux's layout_close_pane does: the
-    // survivors keep their relative proportions but now share the whole window.
-    // Re-writing the weights is also what forces yoga to re-lay them out —
-    // OpenTUI treats flexGrow as a fraction of the container, so a lone
-    // survivor left at its old 0.5 share would otherwise render half-width.
-    const total = this.#panes.reduce((sum, p) => sum + getWeight(p), 0)
-    for (const p of this.#panes) setWeight(p, total > 0 ? getWeight(p) / total : 1)
-
-    if (this.#focused === pane) {
-      this.#focused = null
-      if (this.#panes.length) this.focus(this.#panes[Math.min(i, this.#panes.length - 1)]!)
-    }
-    // Survivors have gained edges the removed pane's divider used to cover,
-    // and a collapsed split box changes what is adjacent to what.
-    this.#refreshChrome()
-    this.#ctx.requestRender()
-    return pane
+    const at = this.#paneOrder().indexOf(pane)
+    if (at === -1) return null
+    // Losing a pane moves the window off whatever preset it matched: the
+    // arrangement now has one fewer pane than the preset describes.
+    const [evicted] = this.#project(closeLayout(this.exportLayout(), at), null)
+    return evicted ?? null
   }
 
   /** Adopt a pane and its agent, detached from another window — break-pane's
@@ -854,11 +816,12 @@ export class Window {
     this.focus(pane)
   }
 
-  /** Close a pane and collapse any split box left holding a single child. */
+  /** Close a pane: take it out of the layout, then destroy the view. The agent
+   *  survives as detached, which is what makes this a close and not a kill. */
   close(pane: TerminalPane) {
     if (!this.detachPane(pane)) return
     pane.destroyRecursively()
-    // detachPane refocused a survivor (which notified) or left the window
+    // #project refocused a survivor (which notified) or left the window
     // empty — and an empty window needs the app told, so it can close it or
     // decide what to show next.
     if (this.#panes.length === 0) this.onChange?.()
@@ -935,12 +898,32 @@ export class Window {
    * a layout string pasted from another window). Pruning to nothing is a
    * refusal rather than a way to empty the window: it returns false with the
    * layout untouched, so a stale string cannot silently destroy what is here.
+   *
+   * That refusal is about INPUT, which is why it lives here and not in
+   * #project. A layout arriving from outside can be stale or hand-edited and
+   * has to earn its way in; one this window derived from itself a moment ago
+   * (a split, a close) has nothing to validate and may legitimately be empty.
    */
   applyLayout(layout: Layout, preset: LayoutPreset | null = null): boolean {
-    const byId = new Map(this.#agents.map((agent) => [agent.id, agent]))
-    const wanted = prune(layout, (id) => byId.has(id))
+    const wanted = prune(layout, (id) => this.#agents.some((agent) => agent.id === id))
     if (!wanted.root) return false
+    // Whatever the layout had no slot for is a closed view, not a killed agent.
+    for (const evicted of this.#project(wanted, preset)) evicted.destroyRecursively()
+    return true
+  }
 
+  /**
+   * Rebuild the tree from a layout that is already known good, returning the
+   * panes it had no slot for.
+   *
+   * The projection half of applyLayout, split out because eviction is a
+   * decision rather than a fact: applying a layout means the pane it dropped
+   * was closed, while break-pane means that same pane is being handed to
+   * another window alive. One rebuild, and the caller says what becomes of what
+   * falls out of it.
+   */
+  #project(wanted: Layout, preset: LayoutPreset | null): TerminalPane[] {
+    const byId = new Map(this.#agents.map((agent) => [agent.id, agent]))
     // The tree about to be dismantled is the parked one while zoomed.
     if (this.#zoomed) this.#unzoom()
     // An arbitrary layout matches no preset, so that is the default. A caller
@@ -965,7 +948,7 @@ export class Window {
         return
       }
     }
-    const slots = layoutPanes(wanted.root)
+    const slots = wanted.root ? layoutPanes(wanted.root) : []
     for (const slot of slots) claim(slot, (pane) => pane.id === slot.id)
     for (const slot of slots) claim(slot, (pane) => pane.agent.id === slot.agent)
 
@@ -1005,25 +988,26 @@ export class Window {
     // A split at the root goes *into* the root box rather than under a fresh
     // one: the root carries the outermost axis itself (see split), and an extra
     // level here would be a shape exportLayout immediately collapses away.
-    if (wanted.root.type === "split") {
+    if (wanted.root === null) {
+      // Nothing to build: closing the last pane empties the window, which is a
+      // state it really has until the app decides to close it.
+    } else if (wanted.root.type === "split") {
       setDirection(this.root, wanted.root.direction)
       fill(this.root, wanted.root)
     } else {
       this.root.add(build(wanted.root))
     }
 
-    // Whatever the layout had no slot for is a closed view, not a killed agent.
-    for (const leftover of spare) leftover.destroyRecursively()
-
     this.#focused = null
     // Through the slot, not by searching for the id: focus names a slot, and
     // the pane filling it may have kept an id of its own.
     const focus = wanted.focus ? filled.get(wanted.focus) : undefined
-    this.focus(focus ?? this.#panes[0]!)
+    const next = focus ?? this.#panes[0]
+    if (next) this.focus(next)
     this.#refreshChrome()
     this.onChange?.()
     this.#ctx.requestRender()
-    return true
+    return [...spare]
   }
 
   /**
