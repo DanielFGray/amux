@@ -100,3 +100,35 @@ test("a modal palette consumes a click instead of bubbling to its host", async (
 
   expect(hostClicks).toBe(0)
 })
+
+test("selection keeps the command palette row visible while moving down", async () => {
+  const t = await createTestRenderer({ width: 90, height: 20 })
+  cleanup.push(() => t.renderer.destroy())
+  const [selected, setSelected] = createSignal(0)
+  const manyEntries: PaletteEntry[] = Array.from({ length: 30 }, (_, index) => ({
+    name: `command-${index}`,
+    group: "test",
+    keys: `^a ${index}`,
+    desc: `description-${index}`,
+  }))
+  await render(
+    () => (
+      <CommandPalette
+        entries={manyEntries}
+        query=""
+        selected={selected()}
+        width={90}
+        onInput={() => {}}
+        onSubmit={() => {}}
+      />
+    ),
+    t.renderer,
+  )
+  await t.renderOnce()
+  setSelected(20)
+  await t.renderOnce()
+
+  const frame = t.captureCharFrame()
+  expect(frame).toContain("command-20")
+  expect(frame).not.toContain("command-0")
+})

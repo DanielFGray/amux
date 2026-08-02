@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show } from "solid-js"
+import { createEffect, For, Show } from "solid-js"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { theme } from "./theme.ts"
 import type { PaletteEntry } from "../bindings.ts"
 
@@ -11,6 +12,17 @@ export function CommandPalette(props: {
   onInput: (value: string) => void
   onSubmit: () => void
 }) {
+  let list: ScrollBoxRenderable | undefined
+
+  createEffect(() => {
+    const box = list
+    const selected = props.selected
+    if (!box || selected < 0) return
+    const height = box.viewport?.height ?? box.height
+    if (selected < box.scrollTop) box.scrollTop = selected
+    else if (selected >= box.scrollTop + height) box.scrollTop = selected - height + 1
+  })
+
   return (
     <box
       style={{
@@ -38,7 +50,7 @@ export function CommandPalette(props: {
         onSubmit={props.onSubmit}
       />
       <Show when={props.entries.length > 0} fallback={<text style={{ fg: theme.overlay1, height: 1 }}>no matching commands</text>}>
-        <scrollbox style={{ flexGrow: 1, flexShrink: 1 }}>
+        <scrollbox ref={(value) => { list = value }} style={{ flexGrow: 1, flexShrink: 1 }}>
           <For each={props.entries}>
             {(entry, index) => (
               <box
