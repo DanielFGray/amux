@@ -1,10 +1,14 @@
 import { daemonRequest } from "./daemon.ts"
-import { SessionEnv } from "./session.ts"
+import { isSessionId, SessionEnv } from "./session.ts"
 import { Effect } from "effect"
 
 const [command, id = "default"] = process.argv.slice(2)
 if (!command || !["status", "stop"].includes(command)) {
   console.error("usage: bun src/session-cli.ts <status|stop> [session-id]")
+  process.exit(2)
+}
+if (!isSessionId(id)) {
+  console.error(`invalid session id ${JSON.stringify(id)}`)
   process.exit(2)
 }
 

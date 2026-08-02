@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { Context, Effect } from "effect"
+import { Context, Data, Effect } from "effect"
 
 export class SessionEnv extends Context.Reference<SessionEnv>()("SessionEnv", {
   defaultValue: () => process.env,
@@ -11,6 +11,39 @@ export class SessionId extends Context.Tag("SessionId")<SessionId, string>() {}
 
 /** On-disk format. Additive changes must bump neither version nor consumers. */
 export const SESSION_VERSION = 1
+
+/**
+ * A session id becomes a single directory name under the sessions root, so it
+ * must be a bounded, filename-safe, single path component: generous enough for
+ * "default", UUIDs, and human names, small enough to fit any filesystem's
+ * component limit with room to spare.
+ */
+export const MAX_SESSION_ID_LENGTH = 128
+
+export class SessionIdError extends Data.TaggedError("SessionIdError")<{
+  message: string
+}> {}
+
+/**
+ * Whether `id` is safe to use as a session's directory name.
+ *
+ * The whole string must be a single component made of ASCII letters, digits,
+ * `.`, `_`, or `-`. The special components `.` and `..` are rejected, while
+ * other dot-prefixed names remain valid filename-safe ids. Path separators and
+ * control characters are not in the set, so they can never reach a path. The
+ * checks are explicit charcode tests rather than a regex because `/^[...]+$/`
+ * matches before a trailing newline in JavaScript, and that is exactly the
+ * kind of control character this function exists to reject.
+ */
+export function isSessionId(id: string): boolean {
+  if (id.length === 0 || id.length > MAX_SESSION_ID_LENGTH || id === "." || id === "..") return false
+  for (let i = 0; i < id.length; i++) {
+    const c = id.charCodeAt(i)
+    const safe = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 45 || c === 46 || c === 95
+    if (!safe) return false
+  }
+  return true
+}
 
 export interface PersistedAgent {
   id: string
@@ -105,8 +138,12 @@ export function sessionRoot(): Effect.Effect<string, never, SessionEnv> {
   return Effect.map(SessionEnv, (env) => join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "opentui-herdr", "sessions"))
 }
 
-export function sessionPaths(id: string): Effect.Effect<SessionPaths, never, SessionEnv> {
-  return Effect.map(sessionRoot(), (root) => {
+export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdError, SessionEnv> {
+  return Effect.gen(function* () {
+    if (!isSessionId(id)) {
+      return yield* Effect.fail(new SessionIdError({ message: `invalid session id ${JSON.stringify(id)}` }))
+    }
+    const root = yield* sessionRoot()
     const path = join(root, id)
     return { root: path, state: join(path, "session.json"), backup: join(path, "session.json.prev"), lease: join(path, "lease.json"), lock: join(path, "daemon.lock"), socket: join(path, "daemon.sock"), attach: join(path, "attach.sock") }
   })
@@ -121,7 +158,7 @@ async function jsonFile<T>(path: string): Promise<T | null> {
   try { return JSON.parse(await readFile(path, "utf8")) as T } catch { return null }
 }
 
-export function loadSession(id: string): Effect.Effect<SessionState | null, never, SessionEnv> {
+export function loadSession(id: string): Effect.Effect<SessionState | null, SessionIdError, SessionEnv> {
   return Effect.gen(function* () {
     const paths = yield* sessionPaths(id)
     const current = yield* Effect.promise(() => jsonFile<SessionState>(paths.state))
@@ -155,7 +192,7 @@ export function writeLease(lease: SessionLease): Effect.Effect<void, unknown, Se
   })
 }
 
-export function readLease(id: string): Effect.Effect<SessionLease | null, never, SessionEnv> {
+export function readLease(id: string): Effect.Effect<SessionLease | null, SessionIdError, SessionEnv> {
   return Effect.flatMap(sessionPaths(id), (paths) => Effect.promise(() => jsonFile<SessionLease>(paths.lease)))
 }
 
@@ -176,6 +213,10 @@ export function cleanupStaleSessions(): Effect.Effect<string[], unknown, Session
     try { entries = yield* Effect.promise(() => readdir(root)) } catch (error: any) { if (error.code === "ENOENT") return []; return yield* Effect.fail(error) }
     const removed: string[] = []
     for (const id of entries) {
+    // Never resolve an entry that is not a valid session id: a name with a
+    // separator or a dot-component would turn this readdir into a path that
+    // exists somewhere else, and a tampered entry is not our session to remove.
+    if (!isSessionId(id)) continue
     // A lock is the stronger startup signal than the lease: there is a small
     // window between acquiring it and publishing the first lease heartbeat.
     // Leave locked sessions for SessionDaemon.open to adjudicate.
@@ -195,5 +236,7 @@ export function cleanupStaleSessions(): Effect.Effect<string[], unknown, Session
 }
 
 export function sessionExists(id: string): Effect.Effect<boolean, never, SessionEnv> {
-  return Effect.flatMap(sessionPaths(id), (paths) => Effect.promise(() => stat(paths.root)).pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false))))
+  return Effect.flatMap(sessionPaths(id), (paths) => Effect.tryPromise(() => stat(paths.root)).pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false)))).pipe(
+    Effect.catchAll(() => Effect.succeed(false)),
+  )
 }

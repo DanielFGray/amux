@@ -5,7 +5,7 @@ import { Deferred, Effect, Exit } from "effect"
 
 import { loadConfig, applyConfig } from "./config.ts"
 import { SessionClient } from "./client.ts"
-import { SessionEnv } from "./session.ts"
+import { isSessionId, SessionEnv } from "./session.ts"
 import { createApp } from "./app.tsx"
 
 /**
@@ -77,6 +77,11 @@ const program = Effect.gen(function* () {
    * daemon is a fact none of the UI knows or asks.
    */
   const SESSION_ID = process.env.HERDR_SESSION || "default"
+  if (!isSessionId(SESSION_ID)) {
+    // Fail before anything touches the filesystem; the id becomes a directory
+    // name under the sessions root, and an unvalidated one could escape it.
+    return yield* Effect.fail(new Error(`invalid HERDR_SESSION ${JSON.stringify(SESSION_ID)}`))
+  }
 
   /**
    * Set once the app exists, so the session's finalizer can record the

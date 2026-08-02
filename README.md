@@ -23,7 +23,10 @@ The daemon owns the PTYs, not just the metadata: `Agent`s are built on
 daemon-owned processes, so closing a client detaches it and the processes keep
 running, and a later client reattaches to them. Start the daemon with
 `bun run daemon [session-id]`; clients use the Unix socket under
-`$XDG_STATE_HOME/opentui-herdr/sessions/<session-id>/`. `attach` and `detach`
+`$XDG_STATE_HOME/opentui-herdr/sessions/<session-id>/`. A session id is a
+single filename-safe component: `[A-Za-z0-9._-]+` except `.` and `..`, at most
+128 characters — no path separators or control characters (the id becomes a
+directory name, so it is validated before any filesystem access). `attach` and `detach`
 are not RPC operations: attachment ownership belongs to the live attach socket.
 Use `status` for inspection and `stop` to remove the session. The client presents
 a stable ID on the attach stream so reconnects can be distinguished from a

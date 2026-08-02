@@ -86,7 +86,7 @@ const make = (id: string, options: SessionClientOptions): Effect.Effect<SessionC
 
 export function daemonAlive(id: string): Effect.Effect<boolean, never, SessionEnv> {
   return Effect.gen(function* () {
-    const lease = yield* readLease(id)
+    const lease = yield* readLease(id).pipe(Effect.catchAll(() => Effect.succeed(null)))
     if (!lease || !processAlive(lease.pid)) return false
     return yield* daemonRequest(id, { command: "ping" }).pipe(Effect.map((response) => response.ok), Effect.catchAll(() => Effect.succeed(false)))
   })

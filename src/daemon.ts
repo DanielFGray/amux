@@ -6,7 +6,7 @@ import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/At
 import type { AttachServerError } from "./effect/AttachServer.ts"
 import type { ManagedPty, PtySpec } from "./effect/PtyRegistry.ts"
 import {
-  loadSession, processAlive, readLease, removeSession, saveSession, SessionEnv,
+  isSessionId, loadSession, processAlive, readLease, removeSession, saveSession, SessionEnv,
   sessionPaths, writeLease, type SessionAttachment, type SessionLease, type SessionState, type SessionPaths,
 } from "./session.ts"
 
@@ -96,6 +96,9 @@ export class SessionDaemon {
 
   static open(id = "default"): Effect.Effect<SessionDaemon, unknown, SessionEnv> {
     return Effect.gen(function* () {
+      if (!isSessionId(id)) {
+        return yield* Effect.fail(new SessionDaemonError({ message: `invalid session id ${JSON.stringify(id)}` }))
+      }
       const env = yield* SessionEnv
       const paths = yield* sessionPaths(id)
       yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }))
