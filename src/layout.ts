@@ -19,9 +19,8 @@
 
 import type { SplitDirection } from "./window.ts"
 
-/** The format written into session.json and any exported string. Version 2
- *  gave panes identity of their own; see PaneRef and migrateV1. */
-export const LAYOUT_VERSION = 2
+/** The format written into session.json and any exported string. */
+export const LAYOUT_VERSION = 1
 
 export type LayoutNode = LayoutPane | LayoutSplit
 
@@ -396,8 +395,7 @@ export function decodeLayout(text: string): Layout {
 
 export function parseLayout(value: unknown): Layout {
   if (!value || typeof value !== "object") throw new LayoutFormatError("layout must be an object")
-  const raw = value as Omit<Partial<Layout>, "version"> & { version?: unknown }
-  if (raw.version === 1) return migrateV1(value)
+  const raw = value as Partial<Layout>
   if (raw.version !== LAYOUT_VERSION) {
     throw new LayoutFormatError(`unsupported layout version ${String(raw.version)}`)
   }
@@ -408,29 +406,7 @@ export function parseLayout(value: unknown): Layout {
   return makeLayout(collapse(root), raw.focus)
 }
 
-/**
- * Read a layout written before panes had identity.
- *
- * A v1 pane is an agent in a slot, so the arrangement survives exactly and the
- * identities are simply new — nothing is lost, because there was nothing there
- * to lose. Focus was an agent id and becomes the first pane showing that agent,
- * which is what v1 could express and all it ever meant.
- *
- * The alternative was refusing the version, which would silently discard the
- * arrangement of every window in a saved session — the restore path treats an
- * unparseable layout as "none recorded" and falls back to a preset.
- */
-function migrateV1(value: unknown): Layout {
-  const raw = value as { root?: unknown; focus?: unknown }
-  const root =
-    raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root", newPaneId)
-  const focus = layoutPanes(root).find((pane) => pane.agent === raw.focus)?.id
-  return makeLayout(collapse(root), focus)
-}
-
-/** `mint` supplies an id for a pane that has none, which is only ever the v1
- *  migration: a v2 pane without one is malformed rather than old. */
-function parseNode(value: unknown, at: string, mint?: () => string): LayoutNode {
+function parseNode(value: unknown, at: string): LayoutNode {
   if (!value || typeof value !== "object") throw new LayoutFormatError(`${at} must be an object`)
   const raw = value as Record<string, unknown>
   const weight = parseWeight(raw.weight, at)
@@ -439,10 +415,11 @@ function parseNode(value: unknown, at: string, mint?: () => string): LayoutNode 
     if (typeof raw.agent !== "string" || !raw.agent) {
       throw new LayoutFormatError(`${at} pane needs an agent id`)
     }
-    const id = typeof raw.id === "string" && raw.id ? raw.id : mint?.()
-    if (!id) throw new LayoutFormatError(`${at} pane needs a pane id`)
-    reservePaneId(id)
-    return { type: "pane", id, agent: raw.agent, weight }
+    if (typeof raw.id !== "string" || !raw.id) {
+      throw new LayoutFormatError(`${at} pane needs a pane id`)
+    }
+    reservePaneId(raw.id)
+    return { type: "pane", id: raw.id, agent: raw.agent, weight }
   }
 
   if (raw.type === "split") {
@@ -456,7 +433,7 @@ function parseNode(value: unknown, at: string, mint?: () => string): LayoutNode 
       type: "split",
       direction: raw.direction,
       weight,
-      children: raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`, mint)),
+      children: raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`)),
     }
   }
 

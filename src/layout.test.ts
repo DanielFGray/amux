@@ -149,50 +149,6 @@ test("a pane without a pane id is refused", () => {
   ).toThrow(/needs a pane id/)
 })
 
-/**
- * Version 1 is every layout written before panes had identity.
- *
- * Refusing it would be worse than it sounds: restore treats an unparseable
- * layout as "none recorded" and falls back to a preset, so a version bump alone
- * would silently rearrange every window in a saved session. A v1 pane is an
- * agent in a slot and nothing more, so the arrangement carries over exactly and
- * the identities are simply new.
- */
-test("a version 1 layout is read, keeping its arrangement", () => {
-  const parsed = parseLayout({
-    version: 1,
-    root: {
-      type: "split",
-      direction: "row",
-      children: [
-        { type: "pane", agent: "a", weight: 3 },
-        { type: "pane", agent: "b", weight: 1 },
-      ],
-    },
-  })
-  expect(layoutAgents(parsed)).toEqual(["a", "b"])
-  expect(layoutPanes(parsed.root).map((p) => p.weight)).toEqual([3, 1])
-  // Minted, and distinct: identity is what v1 was missing.
-  const [first, second] = layoutPanes(parsed.root)
-  expect(first!.id).not.toBe(second!.id)
-})
-
-test("a version 1 focus was an agent, and becomes the pane showing it", () => {
-  const parsed = parseLayout({
-    version: 1,
-    root: {
-      type: "split",
-      direction: "row",
-      children: [
-        { type: "pane", agent: "a", weight: 1 },
-        { type: "pane", agent: "b", weight: 1 },
-      ],
-    },
-    focus: "b",
-  })
-  expect(parsed.focus).toBe(layoutPanes(parsed.root)[1]!.id)
-})
-
 // Otherwise a restored session's pane ids and the ones a later split mints
 // would collide, and two different panes would answer to one name.
 test("parsing reserves the pane ids it read, so fresh ones cannot collide", () => {

@@ -68,7 +68,7 @@ test("a saved workspace survives closing and reopening the daemon", async () => 
           {
             number: 2,
             name: "build",
-            layout: '{"version":1,"root":{"type":"pane","agent":"agent-1","weight":1}}',
+            layout: '{"version":1,"root":{"type":"pane","id":"pane-1","agent":"agent-1","weight":1}}',
             agents: [
               { id: "agent-1", name: "bash", cmd: ["bash"], cols: 80, rows: 24, exited: false, exitCode: null },
             ],
