@@ -63,7 +63,6 @@ async function screen(
         sidebarHandle={handle}
         sidebarWidth={SIDEBAR}
         sidebarOpen={sidebarOpen()}
-        sidebarFocused={false}
         selected={0}
         hovered={null}
         onHover={() => {}}

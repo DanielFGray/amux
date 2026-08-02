@@ -31,7 +31,6 @@ export interface AppProps {
   sidebarHandle: Renderable
   sidebarWidth: number
   sidebarOpen: boolean
-  sidebarFocused: boolean
   selected: number
   hovered: number | null
   onHover: (index: number | null) => void
@@ -105,7 +104,6 @@ export function App(props: AppProps) {
             width={props.sidebarWidth}
             selected={props.selected}
             hovered={props.hovered}
-            focused={props.sidebarFocused}
             agentsOnly={props.config.sidebar.agentsOnly}
             onHover={props.onHover}
             onActivate={props.onActivate}

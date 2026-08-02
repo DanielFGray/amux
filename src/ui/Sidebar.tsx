@@ -53,7 +53,6 @@ export interface SidebarProps {
   width: number
   selected: number
   hovered: number | null
-  focused: boolean
   agentsOnly: boolean
   onHover: (index: number | null) => void
   onActivate: (index: number) => void
@@ -140,12 +139,6 @@ export function Sidebar(props: SidebarProps) {
           `${agents().length} agent${agents().length === 1 ? "" : "s"}` +
           (blocked() ? ` · ${blocked()}!` : "")}
       </text>
-
-      <Show when={props.focused}>
-        <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>
-          jk · ↵ open · prefix+b
-        </text>
-      </Show>
     </box>
   )
 }

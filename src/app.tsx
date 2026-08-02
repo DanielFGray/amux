@@ -304,7 +304,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   sidebarHandle.capEnd = true
 
   const [sidebarOpen, setSidebarOpen] = createSignal(config.sidebar.open)
-  const [sidebarFocused, setSidebarFocused] = createSignal(false)
   const [selected, setSelected] = createSignal(0)
   const [hovered, setHovered] = createSignal<number | null>(null)
   const [overlay, setOverlay] = createSignal<Overlay>("none")
@@ -414,12 +413,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     )
   })
 
-  function moveSelection(delta: number) {
-    const count = targets().length
-    if (!count) return
-    setSelected((s) => Math.max(0, Math.min(count - 1, s + delta)))
-  }
-
   /** Act on the sidebar selection: a space row switches space, an agent row
    *  focuses or opens a view of it. */
   function activateSelection(index = selected()) {
@@ -429,28 +422,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     if (target.space !== spaces.active) spaces.activate(target.space)
     if (target.kind !== "space") target.space.selectWindow(target.window)
     if (target.kind === "agent") target.window.reveal(target.agent)
-    setSidebarFocused(false)
     app.refresh()
-  }
-
-  /**
-   * The sidebar's `x`: kill what the selected row represents.
-   *
-   * Three commands aimed at a row instead of at the active window, which is the
-   * whole reason commands take a target. This used to be a second copy of
-   * agent.kill / window.close / space.close — same three operations, written
-   * twice, and only one copy stepped copy mode down before freeing a terminal.
-   */
-  function killSelection() {
-    const target = targets()[selected()]
-    if (!target) return
-    const cmd =
-      target.kind === "agent"
-        ? command("agent.kill", { agent: target.agent.id })
-        : target.kind === "window"
-          ? command("window.close", { space: target.space.id, window: target.window.number })
-          : command("space.close", { space: target.space.id })
-    runDetached(cmd._tag, commands.run(cmd))
   }
 
   /**
@@ -516,9 +488,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   }
 
   function toggleSidebar() {
-    const open = !sidebarOpen()
-    setSidebarOpen(open)
-    if (!open) setSidebarFocused(false)
+    setSidebarOpen(!sidebarOpen())
     syncSidebarFrame()
   }
 
@@ -529,13 +499,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     }))
     setSettingsError("")
     setSettingsDirty(true)
-  }
-
-  function selectFocusedAgent() {
-    const agent = spaces.activeWindow?.focused?.agent
-    if (!agent) return
-    const i = targets().findIndex((t) => t.kind === "agent" && t.agent === agent)
-    if (i !== -1) setSelected(i)
   }
 
   function editSetting(delta: number) {
@@ -1214,10 +1177,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     if (copyMode.active && copyMode.pane === spaces.activeWindow?.focused) {
       return copyMode.onKey(event)
     }
-    if (sidebarFocused()) {
-      sidebarKey(event)
-      return true
-    }
     const bytes = encodeKey(event)
     if (bytes !== null) activeWin()?.write(bytes)
     return true
@@ -1241,30 +1200,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     }
     // Let text and Enter reach the focused input renderable.
     return false
-  }
-
-  function sidebarKey(event: KeyEvent) {
-    switch (event.name) {
-      case "j":
-      case "down":
-        return moveSelection(1)
-      case "k":
-      case "up":
-        return moveSelection(-1)
-      case "g":
-      case "home":
-        return setSelected(0)
-      case "G":
-      case "end":
-        return setSelected(Math.max(0, targets().length - 1))
-      case "return":
-      case "enter":
-        return activateSelection()
-      case "x":
-        return killSelection()
-      case "escape":
-        return setSidebarFocused(false)
-    }
   }
 
   function cycleSettingsSection(step: 1 | -1) {
@@ -1473,7 +1408,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       sidebarHandle={sidebarHandle}
       sidebarWidth={configState().sidebar.width}
       sidebarOpen={sidebarOpen()}
-      sidebarFocused={sidebarFocused()}
       selected={selected()}
       hovered={hovered()}
       onHover={setHovered}
