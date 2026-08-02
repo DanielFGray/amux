@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
-import { SessionDaemon } from "./daemon.ts"
+import { daemonRequest, SessionDaemon } from "./daemon.ts"
 import { cleanupStaleSessions, loadSession, sessionPaths, writeLease, SessionEnv } from "./session.ts"
 
 const dirs: string[] = []
@@ -98,4 +98,39 @@ test("stopping a daemon discards the workspace it was keeping", async () => {
   await daemon.saveWorkspace({ spaces: [{ id: "space-0", name: "p", dir: "/tmp", activeWindow: null, windows: [] }] })
   await daemon.stop()
   expect(await run(loadSession("discard"), e)).toBeNull()
+})
+
+test("a blocked daemon write does not starve timers, RPC, or shutdown", async () => {
+  const e = await env()
+  const daemon = await open("responsive", e)
+  await daemon.start()
+  try {
+    const pty = await daemon.spawnAgent({
+      id: "blocked",
+      cmd: ["sh", "-c", "sleep 30"],
+      cols: 80,
+      rows: 24,
+    })
+    const write = Effect.runPromise(pty.write("x".repeat(16 * 1024 * 1024)))
+    let timerRan = false
+    setTimeout(() => { timerRan = true }, 25)
+    const response = await Promise.race([
+      run(daemonRequest("responsive", { command: "ping" }), e),
+      Bun.sleep(1000).then(() => { throw new Error("RPC deadline exceeded") }),
+    ])
+    expect(response.ok).toBe(true)
+    await Bun.sleep(40)
+    expect(timerRan).toBe(true)
+    await daemon.killAgent("blocked")
+    const writeResult = await Promise.race([
+      write.then(() => "succeeded", (error) => String(error)),
+      Bun.sleep(1000).then(() => "deadline exceeded"),
+    ])
+    expect(writeResult).toContain("interrupted")
+  } finally {
+    await Promise.race([
+      daemon.stop(),
+      Bun.sleep(1000).then(() => { throw new Error("daemon stop deadline exceeded") }),
+    ])
+  }
 })

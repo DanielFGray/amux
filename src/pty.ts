@@ -40,7 +40,7 @@ export interface Pty {
    *  not the shell's. */
   sessionId(): number
   resize(cols: number, rows: number): void
-  write(data: string | Uint8Array): void
+  write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>
   kill(): void
   /** Idempotent: the master fd is closed exactly once no matter how many of
    *  {process exit, kill, dispose, shutdown} fire. */
@@ -101,6 +101,7 @@ export function spawnPty(
   // what readPty checks, so a stale pump can never read a reused fd.
   let closed = false
   let exited = false
+  let writeTail = Promise.resolve()
   const closeMaster = () => {
     if (closed) return
     closed = true
@@ -149,28 +150,34 @@ export function spawnPty(
       if (closed) return
       libc.ioctl(master, TIOCSWINSZ, ptr(winsize(rows, cols)))
     },
-    write(data) {
-      if (closed) return
-      const buf = typeof data === "string" ? new TextEncoder().encode(data) : data
-      // The master is O_NONBLOCK, so a single write can complete partially or
-      // hit EAGAIN when the child's input queue is full. Loop until every byte
-      // is in: the child is effectively wedged if this ever spins long, and
-      // dropping bytes would silently corrupt the session.
-      let off = 0
-      while (off < buf.length) {
-        let n: number
-        try {
-          n = require("node:fs").writeSync(master, buf, off, buf.length - off, null)
-        } catch (e: any) {
-          if (e.code === "EAGAIN") {
-            Bun.sleepSync(1)
-            continue
+    write(data, signal) {
+      const buf = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data)
+      const write = writeTail.then(async () => {
+        if (closed || signal?.aborted) throw new Error("pty write interrupted")
+        // The master is O_NONBLOCK, so a single write can complete partially or
+        // hit EAGAIN when the child's input queue is full. Yield between retries:
+        // a non-reading child must never block the event loop.
+        let off = 0
+        while (off < buf.length) {
+          if (closed || signal?.aborted) throw new Error("pty write interrupted")
+          let n: number
+          try {
+            n = require("node:fs").writeSync(master, buf, off, buf.length - off, null)
+          } catch (e: any) {
+            if (closed || signal?.aborted) throw new Error("pty write interrupted")
+            if (e.code === "EAGAIN") {
+              await Bun.sleep(1)
+              continue
+            }
+            throw e
           }
-          throw e
+          if (n <= 0) throw new Error("pty write stalled")
+          off += n
         }
-        if (n <= 0) throw new Error("pty write stalled")
-        off += n
-      }
+      })
+      // Keep later writes ordered even when this one fails or is interrupted.
+      writeTail = write.catch(() => {})
+      return write
     },
     kill() {
       if (closed) return

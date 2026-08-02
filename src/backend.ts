@@ -90,7 +90,14 @@ export const localPty: SpawnBackend = (opts) => {
     stream: Stream.suspend(() => Stream.fromAsyncIterable(readPty(pty), (error) => error)).pipe(
       Stream.orDie,
     ),
-    write: (data) => pty.write(data),
+    write: (data) => {
+      // Input is intentionally fire-and-forget at the Agent boundary, but a
+      // live PTY failure must not disappear silently. Interruption during
+      // close/kill is expected; all other failures are actionable diagnostics.
+      void pty.write(data).catch((error) => {
+        if (!pty.closed) console.error("local PTY write failed", error)
+      })
+    },
     resize: (cols, rows) => pty.resize(cols, rows),
     kill: () => pty.kill(),
     foregroundPgid: () => pty.foregroundPgid(),

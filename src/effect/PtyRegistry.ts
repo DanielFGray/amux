@@ -35,11 +35,6 @@ export interface ManagedPty {
 
 type PtyCommand =
   | {
-      readonly _tag: "write";
-      readonly data: string | Uint8Array;
-      readonly done: Deferred.Deferred<void, PtyError>;
-    }
-  | {
       readonly _tag: "resize";
       readonly cols: number;
       readonly rows: number;
@@ -99,7 +94,6 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
         const commands = yield* Mailbox.make<PtyCommand>({ capacity: 256, strategy: "suspend" });
         const runCommand = (command: PtyCommand) => {
           const operation = Match.valueTags(command, {
-            write: (command) => Effect.sync(() => pty.write(command.data)),
             resize: (command) => Effect.sync(() => pty.resize(command.cols, command.rows)),
             kill: () => Effect.sync(() => pty.kill()),
           });
@@ -145,9 +139,13 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
             try: () => pty.proc.exited.then((code) => code),
             catch: (error) => asPtyError("exit", error),
           }),
-          write: (data) => commandResult((done) => ({ _tag: "write", data, done })),
+          write: (data) => Effect.tryPromise({
+            try: (signal) => pty.write(data, signal),
+            catch: (error) => asPtyError("write", error),
+          }),
           resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
-          kill: commandResult((done) => ({ _tag: "kill", done })),
+          // Kill must not wait behind a write whose child stopped reading.
+          kill: Effect.sync(() => pty.kill()),
         } satisfies ManagedPty;
       });
 

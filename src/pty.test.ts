@@ -123,3 +123,35 @@ test("output that only arrives after a delay is not mistaken for end-of-file", a
   await out.done
   expect(out.text()).toContain("late")
 })
+
+test("aborting a blocked write stops its owned retries", async () => {
+  const p = spawnPty(["sh", "-c", "sleep 30"], { cols: 80, rows: 24 })
+  const controller = new AbortController()
+  const write = p.write("x".repeat(16 * 1024 * 1024), controller.signal)
+  await Bun.sleep(25)
+  controller.abort()
+  const result = await Promise.race([
+    write.then(() => "succeeded", (error) => String(error)),
+    Bun.sleep(1000).then(() => "deadline exceeded"),
+  ])
+  expect(result).toContain("interrupted")
+  p.kill()
+  await p.proc.exited
+  expect(p.closed).toBe(true)
+  await expect(p.write("late")).rejects.toThrow("interrupted")
+})
+
+test("writes copy input and retain FIFO ordering", async () => {
+  const p = spawnPty(["cat"], { cols: 80, rows: 24 })
+  const out = collect(p)
+  const second = new Uint8Array([66, 66, 66])
+  const first = p.write("AAA")
+  const later = p.write(second)
+  second.fill(67)
+  await first
+  await later
+  await waitFor(() => out.text().includes("AAABBB"))
+  expect(out.text()).toContain("AAABBB")
+  p.kill()
+  await out.done
+})
