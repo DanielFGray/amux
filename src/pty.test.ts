@@ -46,7 +46,7 @@ test("input round-trips through the pty", async () => {
   const out = collect(p)
   p.write("hello-pty\n")
   await waitFor(() => out.text().includes("hello-pty"))
-  p.kill()
+  await p.kill()
   await out.done
   expect(p.closed).toBe(true)
 })
@@ -56,7 +56,7 @@ test("close() is idempotent and stops the pump", async () => {
   const out = collect(p)
   p.close()
   p.close()
-  p.kill() // must not throw on an already-closed master
+  await p.kill() // must not throw on an already-closed master
   await out.done
   expect(p.closed).toBe(true)
 })
@@ -66,15 +66,56 @@ test("kill terminates the whole session, background jobs included", async () => 
   await waitFor(() => p.sessionId() > 0)
   const session = p.sessionId()
   await waitFor(() => sessionPids(session).length >= 3) // shell + bg + fg sleeps
-  p.kill()
+  await p.kill()
   await waitFor(() => sessionPids(session).length === 0)
   expect(p.closed).toBe(true)
+})
+
+test("kill escalates a session whose children trap HUP and TERM", async () => {
+  const p = spawnPty([
+    "bash",
+    "-c",
+    "trap '' HUP TERM; (trap '' HUP TERM; printf CHILD_READY\\n; sleep 30) & wait",
+  ], { cols: 80, rows: 24 })
+  const out = collect(p)
+  await waitFor(() => p.sessionId() > 0)
+  const session = p.sessionId()
+  await waitFor(() => sessionPids(session).length >= 2)
+  await waitFor(() => out.text().includes("CHILD_READY"))
+
+  const started = Date.now()
+  await p.kill()
+  await out.done
+
+  expect(Date.now() - started).toBeLessThan(2_000)
+  expect(sessionPids(session)).toHaveLength(0)
+  expect(p.closed).toBe(true)
+})
+
+test("kill drains output written by a termination trap before closing", async () => {
+  const p = spawnPty([
+    "bash",
+    "-c",
+    "trap 'printf DYING_OUTPUT\\n' TERM; printf READY\\n; while :; do sleep 30; done",
+  ], { cols: 80, rows: 24 })
+  const out = collect(p)
+  await waitFor(() => out.text().includes("READY"))
+  await p.kill()
+  await out.done
+  expect(out.text()).toContain("DYING_OUTPUT")
+})
+
+test("concurrent kill callers share one terminal operation", async () => {
+  const p = spawnPty(["sh", "-c", "sleep 30"], { cols: 80, rows: 24 })
+  await Promise.all([p.kill(), p.kill()])
+  expect(p.closed).toBe(true)
+  await p.proc.exited
 })
 
 test("a dead pump never reads an fd reused by a newer pty", async () => {
   const a = spawnPty(["cat"], { cols: 80, rows: 24 })
   const outA = collect(a)
-  a.kill()
+  await a.kill()
   await outA.done
   await a.proc.exited // child gone, so its slave fd is free and a.master is reusable
 
@@ -88,7 +129,7 @@ test("a dead pump never reads an fd reused by a newer pty", async () => {
   await waitFor(() => outB.text().includes("SECRET"))
   await Bun.sleep(50)
   expect(outA.text()).not.toContain("SECRET")
-  b.kill()
+  await b.kill()
   await outB.done
 })
 
@@ -135,7 +176,7 @@ test("aborting a blocked write stops its owned retries", async () => {
     Bun.sleep(1000).then(() => "deadline exceeded"),
   ])
   expect(result).toContain("interrupted")
-  p.kill()
+  await p.kill()
   await p.proc.exited
   expect(p.closed).toBe(true)
   await expect(p.write("late")).rejects.toThrow("interrupted")
@@ -152,6 +193,6 @@ test("writes copy input and retain FIFO ordering", async () => {
   await later
   await waitFor(() => out.text().includes("AAABBB"))
   expect(out.text()).toContain("AAABBB")
-  p.kill()
+  await p.kill()
   await out.done
 })

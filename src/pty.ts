@@ -14,6 +14,9 @@ const TIOCSWINSZ = 0x5414n
 const F_GETFL = 3
 const F_SETFL = 4
 const O_NONBLOCK = 0o4000
+/** A trapped TERM must not make daemon shutdown unbounded. */
+const TERMINATE_GRACE_MS = 200
+const KILL_SETTLE_MS = 500
 
 /** struct winsize { u16 row, col, xpixel, ypixel } */
 function winsize(rows: number, cols: number): Uint16Array {
@@ -31,6 +34,8 @@ export interface Pty {
    *  master being closed: bytes the child wrote just before exiting are still
    *  in the terminal's buffer and are still ours to read. See readPty. */
   readonly exited: boolean
+  /** Resolves after the entire process session has terminated and the master closed. */
+  readonly wait: Promise<void>
   /** Foreground process group of the terminal, or -1. Equal to the child's own
    *  pgid when the shell sits at a prompt; a different pgid means a command is
    *  running in the foreground. This is how we tell "idle" from "working". */
@@ -41,7 +46,8 @@ export interface Pty {
   sessionId(): number
   resize(cols: number, rows: number): void
   write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>
-  kill(): void
+  /** Signal the session and wait until every member has reached a terminal state. */
+  kill(): Promise<void>
   /** Idempotent: the master fd is closed exactly once no matter how many of
    *  {process exit, kill, dispose, shutdown} fire. */
   close(): void
@@ -50,13 +56,15 @@ export interface Pty {
 /** PIDs of every process in a session, so kill() can take down background jobs
  *  the shell left in other process groups instead of orphaning them.
  *  Linux-only (/proc); the setsid launch path is already Linux-only. */
-function sessionPids(session: number): number[] {
-  const pids: number[] = []
+type SessionMember = { pid: number; state: string }
+
+function sessionMembers(session: number): SessionMember[] {
+  const members: SessionMember[] = []
   let entries: string[]
   try {
     entries = require("node:fs").readdirSync("/proc")
   } catch {
-    return pids
+    return members
   }
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue
@@ -65,12 +73,18 @@ function sessionPids(session: number): number[] {
       // spaces and parens, so find the closing paren and index from there.
       const stat = require("node:fs").readFileSync(`/proc/${entry}/stat`, "utf8")
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
-      if (Number(fields[3]) === session) pids.push(Number(entry))
+      if (Number(fields[3]) === session) members.push({ pid: Number(entry), state: fields[0]! })
     } catch {
       // raced with process exit; ignore
     }
   }
-  return pids
+  return members
+}
+
+function liveSessionMembers(session: number): SessionMember[] {
+  // Zombies are no longer executing and cannot produce output. They remain in
+  // /proc until their parent reaps them, so they must not prevent termination.
+  return sessionMembers(session).filter(({ state }) => state !== "Z" && state !== "X")
 }
 
 export function spawnPty(
@@ -102,6 +116,9 @@ export function spawnPty(
   let closed = false
   let exited = false
   let writeTail = Promise.resolve()
+  let killPromise: Promise<void> | undefined
+  let session: number | undefined
+  let beginTermination: (immediate: boolean) => Promise<void>
   const closeMaster = () => {
     if (closed) return
     closed = true
@@ -118,20 +135,74 @@ export function spawnPty(
     env: { ...process.env, ...opts.env, TERM: "xterm-256color" },
     stdio: [slave, slave, slave],
     onExit() {
-      // Closing the master here would be closing it mid-sentence: a command
-      // that prints and immediately exits has its output still sitting in the
-      // terminal buffer, and closing discards it. Mark the exit — which is what
-      // readPty uses to know a drained buffer means the end — and close on a
-      // short delay as the backstop against leaking the fd if nobody reads.
+      // The leader can exit while a background member remains in the session.
+      // Marking only the leader as done would publish exit and release the id
+      // while that member could still write or outlive the daemon.
       exited = true
-      const timer = setTimeout(closeMaster, DRAIN_GRACE_MS)
-      timer.unref?.()
+      void beginTermination(false)
     },
   })
   // parent doesn't need the slave end once the child holds it
   libc.close(slave)
+  // Cache the SID while the master is unquestionably valid. A fast leader can
+  // exit before a caller gets a chance to call sessionId(), but its children
+  // still belong to this session and remain our termination responsibility.
+  const initialSession = libc.tcgetsid(master)
+  if (initialSession > 0) session = initialSession
 
-  return {
+  beginTermination = (immediate) => {
+    if (killPromise) return killPromise
+    killPromise = (async () => {
+      const sid = session ?? libc.tcgetsid(master)
+      if (sid > 0) session = sid
+      const signal = (name: "SIGTERM" | "SIGKILL") => {
+        if (sid > 0) {
+            // Enumerate rather than signal one process group: background jobs
+            // can use separate groups while remaining in this session.
+            for (const { pid } of liveSessionMembers(sid)) {
+              try { process.kill(pid, name) } catch { /* raced with exit */ }
+            }
+        } else {
+          try { proc.kill(name) } catch { /* raced with exit */ }
+        }
+      }
+
+      if (!immediate) await Bun.sleep(DRAIN_GRACE_MS)
+      signal("SIGTERM")
+      await Promise.race([proc.exited, Bun.sleep(TERMINATE_GRACE_MS)])
+      const deadline = Date.now() + KILL_SETTLE_MS
+      while (sid > 0 && liveSessionMembers(sid).length > 0 && Date.now() < deadline) {
+        // Re-scan on every pass. A TERM trap can fork a replacement, and a
+        // single snapshot would leave that replacement behind.
+        signal("SIGKILL")
+        await Bun.sleep(10)
+      }
+      if (sid > 0) {
+        signal("SIGKILL")
+        while (liveSessionMembers(sid).length > 0 && Date.now() < deadline) {
+          signal("SIGKILL")
+          await Bun.sleep(10)
+        }
+      } else {
+        try { proc.kill("SIGKILL") } catch { /* raced with exit */ }
+        await Promise.race([proc.exited, Bun.sleep(KILL_SETTLE_MS)])
+      }
+      const processTerminated = await Promise.race([
+        proc.exited.then(() => true),
+        Bun.sleep(KILL_SETTLE_MS).then(() => false),
+      ])
+      if (!processTerminated) throw new Error("pty leader did not terminate before deadline")
+      if (sid > 0 && liveSessionMembers(sid).length > 0) {
+        throw new Error(`pty session ${sid} did not terminate before deadline`)
+      }
+      closeMaster()
+    })()
+    return killPromise
+  }
+
+  // The callback above is installed before this assignment, but Bun invokes
+  // onExit asynchronously after spawn returns.
+  const result = {
     master,
     proc,
     get closed() {
@@ -140,23 +211,26 @@ export function spawnPty(
     get exited() {
       return exited
     },
+    get wait() {
+      return killPromise ?? beginTermination(false)
+    },
     foregroundPgid() {
       return libc.tcgetpgrp(master)
     },
     sessionId() {
-      return libc.tcgetsid(master)
+      if (session !== undefined) return session
+      const value = libc.tcgetsid(master)
+      if (value > 0) session = value
+      return value
     },
-    resize(cols, rows) {
+    resize(cols: number, rows: number) {
       if (closed) return
       libc.ioctl(master, TIOCSWINSZ, ptr(winsize(rows, cols)))
     },
-    write(data, signal) {
+    write(data: string | Uint8Array, signal?: AbortSignal) {
       const buf = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data)
       const write = writeTail.then(async () => {
         if (closed || signal?.aborted) throw new Error("pty write interrupted")
-        // The master is O_NONBLOCK, so a single write can complete partially or
-        // hit EAGAIN when the child's input queue is full. Yield between retries:
-        // a non-reading child must never block the event loop.
         let off = 0
         while (off < buf.length) {
           if (closed || signal?.aborted) throw new Error("pty write interrupted")
@@ -175,37 +249,19 @@ export function spawnPty(
           off += n
         }
       })
-      // Keep later writes ordered even when this one fails or is interrupted.
       writeTail = write.catch(() => {})
       return write
     },
     kill() {
-      if (closed) return
-      const session = libc.tcgetsid(master)
-      if (session > 0) {
-        // Signal the whole session so neither the foreground command nor a
-        // background job is left orphaned; closing the master below then sends
-        // SIGHUP to the session's controlling terminal as a backstop.
-        for (const pid of sessionPids(session)) {
-          try {
-            process.kill(pid, "SIGTERM")
-          } catch {
-            // already gone
-          }
-        }
-      } else {
-        try {
-          proc.kill()
-        } catch {
-          // already gone
-        }
-      }
-      closeMaster()
+      return beginTermination(true)
     },
     close() {
-      closeMaster()
+      // Closing the master sends HUP and discards buffered output. All callers
+      // therefore enter the same drain-aware termination operation instead.
+      void beginTermination(true)
     },
   }
+  return result
 }
 
 /** Async iterator over raw PTY output bytes. */
@@ -219,11 +275,9 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
     } catch (e: any) {
       // EAGAIN = nothing to read yet; EBADF/EIO = closed or child exited.
       if (pty.closed) return
-      // Nothing to read right now. If the child is already gone, "nothing to
-      // read" means the buffer is drained and this really is the end;
-      // otherwise it is just a quiet terminal.
+      // Nothing to read right now. The session terminator keeps the master
+      // open while residual members may still produce output.
       if (e.code === "EAGAIN") {
-        if (pty.exited) return
         await Bun.sleep(4)
         continue
       }
@@ -241,7 +295,6 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
     // own exit, and the loop is bounded by it. Real EOF on a master arrives as
     // EIO, which the catch above already treats as the end.
     if (n === 0) {
-      if (pty.exited) return
       await Bun.sleep(4)
       continue
     }

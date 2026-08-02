@@ -1,4 +1,4 @@
-import { Effect, FiberMap, Layer, Match, Ref, Scope, Stream } from "effect";
+import { Deferred, Effect, FiberMap, Layer, Match, Ref, Scope, Stream } from "effect";
 import { Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
@@ -19,6 +19,7 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
     const registry = yield* PtyRegistry;
     const hub = yield* AttachHub;
     const sessions = yield* Ref.make<ReadonlyMap<string, ManagedPty>>(new Map());
+    const completions = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<void>>>(new Map());
     const reservations = yield* Ref.make<ReadonlySet<string>>(new Set());
     // The daemon-side screen model per session. A reattaching client has none
     // of an adopted session's history, so its pane would be blank until the
@@ -68,6 +69,12 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
           next.delete(id);
           return next;
         });
+        yield* Ref.update(completions, (current) => {
+          if (!current.has(id)) return current;
+          const next = new Map(current);
+          next.delete(id);
+          return next;
+        });
         yield* dropScreen(id, screen);
         yield* releaseReservation(id);
       });
@@ -90,8 +97,26 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
         let screen: Terminal | undefined;
         yield* Effect.gen(function* () {
           screen = yield* Effect.sync(() => new Terminal(spec.cols, spec.rows, 0));
+          const completion = yield* Deferred.make<void>();
+          let exitPublished = false;
+          const publishExit = (code: number | null) =>
+            Effect.sync(() => {
+              if (exitPublished) return false;
+              exitPublished = true;
+              return true;
+            }).pipe(
+              Effect.flatMap((shouldPublish) =>
+                shouldPublish
+                  ? hub.publish({ _tag: "exit", session: spec.id, code } satisfies AttachFrame)
+                  : Effect.void,
+              ),
+            );
+          const complete = dropSession(spec.id, pty, screen).pipe(
+            Effect.zipRight(Deferred.succeed(completion, void 0)),
+          );
           yield* Ref.update(replays, (current) => new Map(current).set(spec.id, screen!));
           yield* Ref.update(sessions, (current) => new Map(current).set(spec.id, pty));
+          yield* Ref.update(completions, (current) => new Map(current).set(spec.id, completion));
           yield* FiberMap.run(
             pumps,
             spec.id,
@@ -115,8 +140,20 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
                 ),
               );
               const code = yield* pty.exit.pipe(Effect.orElseSucceed(() => null));
-              yield* hub.publish({ _tag: "exit", session: spec.id, code } satisfies AttachFrame);
-            }).pipe(Effect.ensuring(dropSession(spec.id, pty, screen))),
+              yield* publishExit(code);
+              yield* complete;
+            }).pipe(
+              Effect.ensuring(
+                Effect.uninterruptible(
+                  pty.kill.pipe(
+                    Effect.ignore,
+                    Effect.zipRight(pty.exit.pipe(Effect.orElseSucceed(() => null))),
+                    Effect.zipRight(publishExit(null)),
+                    Effect.zipRight(complete),
+                  ),
+                ),
+              ),
+            ),
           );
         }).pipe(
           Effect.tapError(() => dropSession(spec.id, pty, screen).pipe(
@@ -171,7 +208,9 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
         const pty = (yield* Ref.get(sessions)).get(id);
         if (!pty)
           return yield* new PtyError({ operation: "kill", message: `unknown session '${id}'` });
+        const completion = (yield* Ref.get(completions)).get(id);
         yield* pty.kill;
+        if (completion) yield* Deferred.await(completion);
       }),
     };
   }),

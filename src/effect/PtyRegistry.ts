@@ -70,7 +70,9 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
         const token = Symbol(spec.id);
         const reserved = yield* Ref.modify(sessions, (current) => {
           const existing = current.get(spec.id);
-          if (existing && !existing.pty?.exited) return [false, current] as const;
+           // The leader may have exited while session members still run. The
+           // reservation lasts until the whole-session termination barrier.
+           if (existing) return [false, current] as const;
           const next = new Map(current);
           next.set(spec.id, { token });
           return [true, next] as const;
@@ -98,10 +100,10 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
               }),
             catch: (error) => asPtyError("spawn", error),
           }).pipe(Effect.tapError(() => release)),
-          (owned) => Effect.sync(() => {
-            owned.kill();
-            owned.close();
-          }).pipe(Effect.zipRight(release)),
+           (owned) => Effect.uninterruptible(Effect.promise(() => owned.kill()).pipe(
+             Effect.ensuring(Effect.sync(() => owned.close())),
+             Effect.ensuring(release),
+           )),
         );
         yield* Ref.update(sessions, (current) => {
           if (current.get(spec.id)?.token !== token) return current;
@@ -113,7 +115,7 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
         const runCommand = (command: PtyCommand) => {
           const operation = Match.valueTags(command, {
             resize: (command) => Effect.sync(() => pty.resize(command.cols, command.rows)),
-            kill: () => Effect.sync(() => pty.kill()),
+             kill: () => Effect.promise(() => pty.kill()),
           });
           return operation.pipe(
             Effect.mapError((error) => asPtyError(command._tag, error)),
@@ -153,8 +155,8 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
         return {
           id: spec.id,
           output: Stream.fromAsyncIterable(readPty(pty), (error) => asPtyError("read", error)),
-          exit: Effect.tryPromise({
-            try: () => pty.proc.exited.then((code) => code),
+           exit: Effect.tryPromise({
+             try: () => pty.wait.then(() => pty.proc.exitCode),
             catch: (error) => asPtyError("exit", error),
           }).pipe(Effect.ensuring(release)),
           write: (data) => Effect.tryPromise({
@@ -163,7 +165,7 @@ export class PtyRegistry extends Effect.Service<PtyRegistry>()("PtyRegistry", {
           }),
           resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
           // Kill must not wait behind a write whose child stopped reading.
-          kill: Effect.sync(() => pty.kill()),
+          kill: Effect.promise(() => pty.kill()),
         } satisfies ManagedPty;
       });
 

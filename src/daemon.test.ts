@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
@@ -132,5 +132,46 @@ test("a blocked daemon write does not starve timers, RPC, or shutdown", async ()
       daemon.stop(),
       Bun.sleep(1000).then(() => { throw new Error("daemon stop deadline exceeded") }),
     ])
+  }
+})
+
+test("daemon shutdown is bounded when session children trap termination signals", async () => {
+  const e = await env()
+  const daemon = await open("trapped-shutdown", e)
+  await daemon.start()
+  const marker = join(e.HOME!, "children")
+  await daemon.spawnAgent({
+    id: "trapped",
+    cmd: ["bash", "-c", `trap '' HUP TERM; printf '%s\\n' "$BASHPID" > ${marker}; (trap '' HUP TERM; printf '%s\\n' "$BASHPID" >> ${marker}; sleep 30) & wait`],
+    cols: 80,
+    rows: 24,
+  })
+  const readyUntil = Date.now() + 2_000
+  while (Date.now() < readyUntil) {
+    try {
+      if ((await readFile(marker, "utf8")).trim().split("\n").length >= 2) break
+    } catch {}
+    await Bun.sleep(10)
+  }
+  const pids = (await readFile(marker, "utf8")).trim().split("\n").map(Number)
+  expect(pids).toHaveLength(2)
+
+  const started = Date.now()
+  await Promise.race([
+    daemon.stop(),
+    Bun.sleep(2_000).then(() => { throw new Error("bounded daemon shutdown deadline exceeded") }),
+  ])
+  expect(Date.now() - started).toBeLessThan(2_000)
+  for (const pid of pids) {
+    const goneUntil = Date.now() + 2_000
+    while (Date.now() < goneUntil) {
+      try {
+        await readFile(`/proc/${pid}/stat`)
+        await Bun.sleep(10)
+      } catch {
+        break
+      }
+    }
+    await expect(readFile(`/proc/${pid}/stat`)).rejects.toThrow()
   }
 })

@@ -1,4 +1,4 @@
-import { Chunk, Effect, Fiber, Stream } from "effect";
+import { Chunk, Deferred, Effect, Fiber, Stream } from "effect";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
@@ -116,4 +116,70 @@ test("exit cleanup releases the session and replay terminal for reuse", async ()
   );
 
   expect(live).toEqual(["reusable-agent"]);
+});
+
+test("killing a trapped session publishes one exit and removes it", async () => {
+  const frames = await Effect.runPromise(
+    Effect.gen(function* () {
+      const hub = yield* AttachHub;
+      const subscription = yield* hub.subscribe("client");
+      const supervisor = yield* PtySupervisor;
+      yield* supervisor.spawn({
+        id: "trapped-agent",
+        cmd: ["bash", "-c", "trap '' HUP TERM; (trap '' HUP TERM; printf CHILD_READY\\n; sleep 30) & wait"],
+        cols: 80,
+        rows: 24,
+      });
+      const ready = yield* Deferred.make<void>();
+      const collector = yield* Effect.fork(
+        Stream.runCollect(subscription.frames.pipe(
+          Stream.tap((frame) =>
+            frame._tag === "output" && new TextDecoder().decode(frame.data).includes("CHILD_READY")
+              ? Deferred.succeed(ready, void 0)
+              : Effect.void,
+          ),
+          Stream.takeUntil((frame) => frame._tag === "exit"),
+        )),
+      );
+      yield* Deferred.await(ready);
+      yield* supervisor.kill("trapped-agent");
+      const received = Chunk.toReadonlyArray(yield* Fiber.join(collector));
+      expect(yield* supervisor.live).toEqual([]);
+      return received;
+    }).pipe(Effect.provide(PtySupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+  );
+
+  expect(frames.filter((frame) => frame._tag === "exit")).toHaveLength(1);
+  expect(frames.at(-1)?._tag).toBe("exit");
+});
+
+test("concurrent supervisor kills publish one exit and permit same-id reuse", async () => {
+  const frames = await Effect.runPromise(
+    Effect.gen(function* () {
+      const hub = yield* AttachHub;
+      const subscription = yield* hub.subscribe("client");
+      const supervisor = yield* PtySupervisor;
+      yield* supervisor.spawn({ id: "concurrent-agent", cmd: ["sleep", "30"], cols: 80, rows: 24 });
+      const received: AttachFrame[] = [];
+      const exitSeen = yield* Deferred.make<void>();
+      const collector = yield* Effect.fork(Stream.runForEach(subscription.frames, (frame) =>
+        Effect.sync(() => received.push(frame)).pipe(
+          Effect.zipRight(frame._tag === "exit" ? Deferred.succeed(exitSeen, void 0) : Effect.void),
+        ),
+      ));
+      yield* Effect.all([
+        supervisor.kill("concurrent-agent"),
+        supervisor.kill("concurrent-agent"),
+      ], { concurrency: "unbounded" });
+      yield* Deferred.await(exitSeen);
+      yield* Effect.sleep(50);
+      yield* Fiber.interrupt(collector);
+      expect(received.filter((frame) => frame._tag === "exit")).toHaveLength(1);
+      expect(yield* supervisor.live).toEqual([]);
+      yield* supervisor.spawn({ id: "concurrent-agent", cmd: ["true"], cols: 80, rows: 24 });
+      return received;
+    }).pipe(Effect.provide(PtySupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+  );
+
+  expect(frames.filter((frame) => frame._tag === "exit")).toHaveLength(1);
 });
