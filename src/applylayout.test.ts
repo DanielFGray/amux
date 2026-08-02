@@ -316,6 +316,10 @@ test("a layout naming panes this window does not have reuses them by agent", asy
   const second = run(window.splitSpawn("row"))!
   await layout()
 
+  // Read before the apply: the whole claim is that these do not change, and
+  // comparing against them afterwards would compare them to themselves.
+  const ids: [string, string] = [first.id, second.id]
+
   const applied = window.applyLayout(
     makeLayout(
       {
@@ -334,9 +338,43 @@ test("a layout naming panes this window does not have reuses them by agent", asy
 
   expect(applied).toBe(true)
   expect(window.panes).toEqual([second, first])
-  expect(window.panes.map((p) => p.id)).toEqual([second.id, first.id])
+  expect([first.id, second.id]).toEqual(ids)
+  expect(window.panes.map((p) => p.id)).toEqual([ids[1], ids[0]])
   // Focus was given as a slot, and lands on whichever pane filled that slot.
   expect(window.focused).toBe(second)
+})
+
+/**
+ * Why the reuse runs in two passes rather than one.
+ *
+ * Both panes here show one agent, so either satisfies either slot on the agent
+ * alone — but the second slot names one of them outright. Deciding slot by slot
+ * would let the first slot take that very pane and leave the second with the
+ * other, quietly swapping two panes whose scrollbacks differ. Claiming every
+ * exact match first is what makes the named slot win.
+ */
+test("a slot naming a pane outright beats an earlier slot matching on the agent", async () => {
+  const { window, layout } = await setup()
+  const shared = run(window.spawn("shared", ["sleep", "30"]))
+  const a = window.split("row", shared)!
+  const b = window.split("row", shared)!
+  await layout()
+
+  window.applyLayout(
+    makeLayout({
+      type: "split",
+      direction: "row",
+      weight: 1,
+      children: [
+        { type: "pane", id: "pane-from-elsewhere", agent: shared.id, weight: 1 },
+        { type: "pane", id: a.id, agent: shared.id, weight: 1 },
+      ],
+    }),
+  )
+  await layout()
+
+  // `a` goes to the slot that named it; the anonymous slot takes what is left.
+  expect(window.panes).toEqual([b, a])
 })
 
 // Presets over the live tree.
