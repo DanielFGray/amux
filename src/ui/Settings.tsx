@@ -35,7 +35,7 @@ export function settingsFields(config: Config, section: SettingsSection): Field[
         {
           label: "Shell",
           value: config.behaviour.shell || "$SHELL",
-          hint: "used for new agents",
+          hint: "read-only · used for new agents",
         },
       ]
     case "appearance":
@@ -186,6 +186,7 @@ export function Settings(props: {
         zIndex: 200,
       }}
       title=" settings "
+      onMouseDown={(event) => event.stopPropagation()}
     >
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
         <For each={SETTINGS_SECTIONS}>

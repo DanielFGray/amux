@@ -50,6 +50,7 @@ export function Capture(props: { view: CaptureView; width: number; height: numbe
         zIndex: 250,
       }}
       title=" capture "
+      onMouseDown={(event) => event.stopPropagation()}
     >
       <text style={{ fg: theme.green, height: 1, flexShrink: 0 }}>{props.view.title}</text>
       <text style={{ height: 1, flexShrink: 0 }}> </text>

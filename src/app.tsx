@@ -40,6 +40,7 @@ import { restoreSession, snapshotSpace } from "./snapshot.ts"
 import { createAppState } from "./ui/state.ts"
 import { clampSidebarSelection, sidebarTargets } from "./ui/Sidebar.tsx"
 import { App, type Overlay } from "./ui/App.tsx"
+import { hintVisibility } from "./ui/Hints.tsx"
 import {
   SETTINGS_SECTIONS,
   settingsFields,
@@ -1286,12 +1287,12 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   ) {
     clearHintTimer()
     setPendingParts(sequence)
-    if (!sequence.length || !appearance.whichKeyHints) {
+    const visibility = hintVisibility(sequence.length, appearance.whichKeyHints, appearance.whichKeyDelay)
+    if (!visibility.visible && visibility.delayMs === 0) {
       setHintsVisible(false)
       return
     }
-    const delay = Math.max(0, appearance.whichKeyDelay) * 1000
-    if (delay === 0) {
+    if (visibility.visible) {
       setHintsVisible(true)
       return
     }
@@ -1299,7 +1300,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     hintTimer = setTimeout(() => {
       hintTimer = null
       if (pendingParts().length) setHintsVisible(true)
-    }, delay)
+    }, visibility.delayMs)
     hintTimer.unref?.()
   }
 

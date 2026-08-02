@@ -138,7 +138,7 @@ export function Sidebar(props: SidebarProps) {
 
       <Show when={props.focused}>
         <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>
-          jk select · ↵ open · x kill
+          jk · ↵ open · prefix+b
         </text>
       </Show>
     </box>

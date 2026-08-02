@@ -27,6 +27,7 @@ export function CommandPalette(props: {
         zIndex: 300,
       }}
       title=" command palette "
+      onMouseDown={(event) => event.stopPropagation()}
     >
       <input
         value={props.query}

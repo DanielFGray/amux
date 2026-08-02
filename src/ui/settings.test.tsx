@@ -82,6 +82,17 @@ test("appearance settings expose which-key visibility and delay", () => {
   expect(fields.slice(1).map((field) => field.value)).toEqual(["no", "1s"])
 })
 
+test("the shell setting is displayed as intentionally read-only", () => {
+  const shell = settingsFields(
+    { ...DEFAULT_CONFIG, behaviour: { ...DEFAULT_CONFIG.behaviour, shell: "/bin/fish" } },
+    "behaviour",
+  )[1]!
+
+  expect(shell.value).toBe("/bin/fish")
+  expect(shell.hint).toContain("read-only")
+  expect(shell.hint).toContain("new agents")
+})
+
 async function draw(over: Partial<Parameters<typeof Settings>[0]> = {}) {
   const t = await createTestRenderer({ width: 80, height: 20 })
   cleanup.push(() => t.renderer.destroy())

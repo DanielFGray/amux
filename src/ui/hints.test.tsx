@@ -4,7 +4,7 @@ import { Effect } from "effect"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { createBindings, nextKeys, type CommandSpec } from "../bindings.ts"
-import { Hints } from "./Hints.tsx"
+import { Hints, hintVisibility } from "./Hints.tsx"
 
 const cleanup: (() => void)[] = []
 afterEach(() => {
@@ -52,6 +52,13 @@ test("nextKeys narrows as the sequence advances, and is empty before it starts",
   // One key in on a two-key binding: only that branch survives.
   const deep = nextKeys(km, COMMANDS, seq("<leader>", "g"))
   expect(deep).toEqual([{ group: "global", entries: [{ keys: ["g"], desc: "deep" }] }])
+})
+
+test("which-key visibility transitions are deterministic for empty, disabled, immediate and delayed states", () => {
+  expect(hintVisibility(0, true, 1)).toEqual({ visible: false, delayMs: 0 })
+  expect(hintVisibility(1, false, 1)).toEqual({ visible: false, delayMs: 0 })
+  expect(hintVisibility(1, true, 0)).toEqual({ visible: true, delayMs: 0 })
+  expect(hintVisibility(1, true, 0.5)).toEqual({ visible: false, delayMs: 500 })
 })
 
 test("the panel draws the reachable keys under the sequence so far", async () => {

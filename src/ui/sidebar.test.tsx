@@ -59,7 +59,7 @@ async function waitForAsync(predicate: () => boolean | Promise<boolean>, what: s
   throw new Error(`timed out waiting for ${what}`)
 }
 
-async function setup(backend?: SpawnBackend, agentsOnly = false) {
+async function setup(backend?: SpawnBackend, agentsOnly = false, focused = false) {
   const [selected, setSelected] = createSignal(0)
   const [hovered, setHovered] = createSignal<number | null>(null)
   const activated: number[] = []
@@ -88,7 +88,7 @@ async function setup(backend?: SpawnBackend, agentsOnly = false) {
           width={30}
           selected={selected()}
           hovered={hovered()}
-          focused={false}
+          focused={focused}
           agentsOnly={agentsOnly}
           onHover={setHovered}
           onActivate={(i) => activated.push(i)}
@@ -155,6 +155,16 @@ test("renders the space/agent tree with a state glyph per row", async () => {
     expect(frame).toContain("1 space · 1 agent")
     expect(frame).toMatch(/[○●✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
     expect(frame).not.toContain("toggles sidebar")
+  } finally {
+    await s.dispose()
+  }
+})
+
+test("focused sidebar advertises the prefix binding that toggles it", async () => {
+  const s = await setup(undefined, false, true)
+  try {
+    await s.t.waitForFrame((f: string) => f.includes("prefix+b"))
+    expect(s.t.captureCharFrame()).toContain("prefix+b")
   } finally {
     await s.dispose()
   }

@@ -13,6 +13,13 @@ interface Line {
   entries: { keys: string; desc: string }[]
 }
 
+/** Decide the visible/delayed state before the app arms its timer. */
+export function hintVisibility(sequenceLength: number, enabled: boolean, delaySeconds: number) {
+  if (sequenceLength === 0 || !enabled) return { visible: false, delayMs: 0 }
+  const delayMs = Math.max(0, delaySeconds) * 1000
+  return { visible: delayMs === 0, delayMs }
+}
+
 /**
  * Pack a group's entries into lines that fit, keeping each entry whole.
  *

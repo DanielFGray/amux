@@ -68,6 +68,7 @@ export function Prompt(props: {
         padding: 1,
         zIndex: 300,
       }}
+      onMouseDown={(event) => event.stopPropagation()}
     >
       <text style={{ fg: theme.blue, height: 1, flexShrink: 0 }}>{props.request.title}</text>
       <Show
