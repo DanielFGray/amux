@@ -5,7 +5,7 @@ import { theme } from "./theme.ts"
 import type { Config } from "../config.ts"
 import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts"
 
-export const SETTINGS_SECTIONS = ["sidebar", "behaviour", "keybinds"] as const
+export const SETTINGS_SECTIONS = ["sidebar", "appearance", "behaviour", "keybinds"] as const
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 
 /** One editable row. `values` drives left/right cycling; keybinds has none. */
@@ -37,6 +37,12 @@ export function settingsFields(config: Config, section: SettingsSection): Field[
           hint: "used for new agents",
         },
       ]
+    case "appearance":
+      return [{
+        label: "Pane gap",
+        value: String(config.appearance.paneGap),
+        hint: "cells between panes · ←/→ adjusts",
+      }]
     case "keybinds":
       return []
   }

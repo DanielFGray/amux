@@ -14,6 +14,10 @@ export interface Config {
     /** Shell used for new agents. Empty means $SHELL. */
     shell: string
   }
+  appearance: {
+    /** Cells between adjacent pane borders. Zero keeps merged dividers. */
+    paneGap: number
+  }
   /** Prefix key and per-command overrides. Only commands the user has actually
    *  rebound appear here, so the defaults stay free to change. */
   keys: Keys
@@ -22,6 +26,7 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   sidebar: { width: 30, open: true },
   behaviour: { scrollRows: 3, shell: "" },
+  appearance: { paneGap: 0 },
   keys: { leader: DEFAULT_LEADER, bindings: {} },
 }
 
@@ -72,10 +77,12 @@ function sanitizeKeys(keys: unknown): Keys {
  */
 export const runtime = {
   scrollRows: DEFAULT_CONFIG.behaviour.scrollRows,
+  paneGap: DEFAULT_CONFIG.appearance.paneGap,
 }
 
 export function applyConfig(config: Config): void {
   runtime.scrollRows = config.behaviour.scrollRows
+  runtime.paneGap = Math.max(0, Math.floor(config.appearance.paneGap))
 }
 
 export async function loadConfig(path = CONFIG_PATH): Promise<Config> {
