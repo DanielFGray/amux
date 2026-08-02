@@ -41,6 +41,18 @@ test("formatScreen carries the alternate screen across a replay", () => {
   expect(captureVisible(target)).toBe(captureVisible(source))
 })
 
+test("a primary-screen replay leaves an old alternate screen behind", () => {
+  const source = new Terminal(40, 10, 0)
+  source.write(new TextEncoder().encode("primary-content"))
+  const target = new Terminal(40, 10, 0)
+  target.write(new TextEncoder().encode("\x1b[?1049h\x1b[2Jstale-alt"))
+  target.write(formatScreen(source.handle))
+
+  expect(source.mode(MODE_ALT_SCREEN)).toBe(false)
+  expect(target.mode(MODE_ALT_SCREEN)).toBe(false)
+  expect(captureVisible(target)).toBe(captureVisible(source))
+})
+
 test("formatScreen replays modes a byte suffix cannot", () => {
   const { source, target } = roundTrip("\x1b[?2004h\x1b[?1049hhello")
   expect(source.mode(MODE_BRACKETED_PASTE)).toBe(true)

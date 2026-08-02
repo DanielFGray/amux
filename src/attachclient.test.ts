@@ -504,6 +504,49 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
   expect(await daemon.liveAgents()).toContain(agent.id)
 })
 
+test("an adopted agent is resized before its screen replay", async () => {
+  const { daemon, env } = await session("replay-resize")
+  const first = await attach("replay-resize", env, "first")
+  const agent = new Agent({ cmd: ["cat"], backend: first.backend(), cols: 80, rows: 24 })
+  agents.push(agent)
+  agent.write("resized-replay\n")
+  await until(() => screen(agent).includes("resized-replay"), "the first client's echo")
+
+  first.close()
+  await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
+
+  const second = await attach("replay-resize", env, "second")
+  const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend(), cols: 40, rows: 10 })
+  agents.push(readopted)
+
+  await until(() => screen(readopted).includes("resized-replay"), "the resized replay")
+  expect(readopted.term.cols).toBe(40)
+  expect(readopted.term.rows).toBe(10)
+})
+
+test("daemon replay keeps only the current screen, with no scrollback", async () => {
+  const { daemon, env } = await session("replay-no-scrollback")
+  const first = await attach("replay-no-scrollback", env, "first")
+  const agent = new Agent({
+    cmd: ["sh", "-c", "printf 'old-1\\nold-2\\nold-3\\nold-4\\nold-5\\nold-6\\nold-7\\nold-8\\nold-9\\nold-10\\nlast\\n'; sleep 30"],
+    backend: first.backend(),
+    cols: 40,
+    rows: 4,
+  })
+  agents.push(agent)
+  await until(() => screen(agent).includes("last"), "the daemon terminal to receive the final line")
+  expect(screen(agent)).not.toContain("old-3")
+
+  first.close()
+  await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
+  const second = await attach("replay-no-scrollback", env, "second")
+  const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend(), cols: 40, rows: 4 })
+  agents.push(readopted)
+
+  await until(() => screen(readopted).includes("last"), "the current screen replay")
+  expect(screen(readopted)).not.toContain("old-3")
+})
+
 test("an alternate-screen app's view is replayed intact to a reattaching client", async () => {
   const { daemon, env } = await session("replay-alt")
   const first = await attach("replay-alt", env)

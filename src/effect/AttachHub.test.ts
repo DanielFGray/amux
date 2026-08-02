@@ -71,3 +71,29 @@ test("concurrent sync barriers keep every replay ahead of live output", async ()
     { _tag: "output", session: "s", data: new Uint8Array([0]) },
   ])
 })
+
+test("a replay that cannot fit the bounded queue evicts the client", async () => {
+  let overflow = 0
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const hub = yield* AttachHub
+      yield* hub.subscribe("slow", "connection", () => { overflow += 1 })
+      for (let index = 0; index < 256; index++) {
+        yield* hub.publish({ _tag: "output", session: "s", data: new Uint8Array([index]) })
+      }
+      yield* hub.publishTo("slow", "connection", {
+        _tag: "output",
+        session: "s",
+        data: new Uint8Array([255]),
+      })
+      return yield* hub.publishTo("slow", "connection", {
+        _tag: "output",
+        session: "s",
+        data: new Uint8Array([254]),
+      })
+    }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
+  )
+
+  expect(result).toBeUndefined()
+  expect(overflow).toBe(1)
+})

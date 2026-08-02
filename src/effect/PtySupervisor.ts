@@ -198,7 +198,6 @@ export class PtySupervisor extends Effect.Service<PtySupervisor>()("PtySuperviso
         const screen = (yield* Ref.get(replays)).get(id);
         if (!screen) return;
         const data = yield* Effect.sync(() => formatScreen(screen.handle));
-        if (data.length === 0) return;
         yield* hub.publishTo(client, connection, { _tag: "output", session: id, data } satisfies AttachFrame);
       }),
 

@@ -129,7 +129,16 @@ export function formatScreen(terminal: number): Uint8Array {
   if (probe.r !== Result.outOfSpace) return new Uint8Array(0)
   const buf = new Uint8Array(probe.n)
   const fill = run(buf)
-  return fill.r === Result.success ? buf.subarray(0, fill.n) : new Uint8Array(0)
+  if (fill.r !== Result.success) return new Uint8Array(0)
+
+  // A formatter omits modes that already match defaults. Normalize the target
+  // first so replay also works when a previous occupant left it in alt-screen
+  // or left stale rows below the new screen contents.
+  const prefix = new TextEncoder().encode("\x1b[?1049l\x1b[2J\x1b[H")
+  const result = new Uint8Array(prefix.length + fill.n)
+  result.set(prefix)
+  result.set(buf.subarray(0, fill.n), prefix.length)
+  return result
 }
 
 export function setSelection(
