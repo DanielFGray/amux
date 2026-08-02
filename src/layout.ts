@@ -28,10 +28,10 @@ export type LayoutNode = LayoutPane | LayoutSplit
  * A pane's identity, and what it is a viewport onto.
  *
  * Two panes can show the same agent — that is what revealing an agent twice
- * leaves behind — so an agent id cannot name a pane, and until v2 a layout had
- * no way to say which of the two had focus or which one a command meant. The
- * pane id is the missing half: `agent` says what you are looking at, `id` says
- * which viewport you are looking through.
+ * leaves behind — so an agent id cannot name a pane, and a layout that had only
+ * agent ids could not say which of the two had focus, or which one a command
+ * meant. The pane id is the missing half: `agent` says what you are looking at,
+ * `id` says which viewport you are looking through.
  *
  * Ids are unique across the whole process rather than within a window, because
  * break-pane moves a pane between windows and its identity has to survive that.

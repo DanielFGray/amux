@@ -2,6 +2,7 @@ import { test, expect } from "bun:test"
 import {
   LAYOUT_VERSION,
   LayoutFormatError,
+  closeLayout,
   collapse,
   decodeLayout,
   encodeLayout,
@@ -366,6 +367,61 @@ test("a swap exchanges two panes and leaves the weights alone", () => {
   // A pane keeps its identity through the move, so the focus needed no fixing
   // up: it still names the pane the user was in, now in the other slot.
   expect(after.focus).toBe("a")
+})
+
+/**
+ * Closing, as a transformation of data.
+ *
+ * The arithmetic detachPane used to do by hand turns out to be nothing at all:
+ * weights are relative to siblings, so survivors grow into the freed space
+ * without being touched.
+ */
+test("closing a pane leaves the survivors' proportions alone", () => {
+  const before = layout(split("row", [pane("a", 1), pane("b", 2), pane("c", 3)]), "a")
+  const after = closeLayout(before, 1)
+  expect(after.root).toEqual(split("row", [pane("a", 1), pane("c", 3)]))
+})
+
+// The case that DID need a fixup imperatively: OpenTUI reads a weight as a
+// fraction of the container, so a lone survivor left at its old half share
+// renders half-width. collapse() already gives it the husk's weight.
+test("the last survivor of a split inherits the whole slot", () => {
+  const before = layout(split("row", [pane("a", 0.5), pane("b", 0.5)]), "a")
+  expect(closeLayout(before, 1).root).toEqual(pane("a", 1))
+})
+
+test("closing collapses the husk it leaves, so the tree stays rebuildable", () => {
+  const before = layout(split("row", [pane("a"), split("column", [pane("b"), pane("c")])]), "a")
+  // The column is down to one child, which is the column's parent's child now.
+  expect(closeLayout(before, 1).root).toEqual(split("row", [pane("a"), pane("c")]))
+})
+
+test("closing the focused pane moves focus to the one that took its place", () => {
+  const before = layout(split("row", [pane("a"), pane("b"), pane("c")]), "b")
+  expect(closeLayout(before, 1).focus).toBe("c")
+})
+
+// tmux's rule: there is no successor at the end, so focus falls back a place.
+test("closing the last pane in order moves focus to the new last one", () => {
+  const before = layout(split("row", [pane("a"), pane("b"), pane("c")]), "c")
+  expect(closeLayout(before, 2).focus).toBe("b")
+})
+
+test("closing an unfocused pane leaves the focus where it was", () => {
+  const before = layout(split("row", [pane("a"), pane("b"), pane("c")]), "c")
+  expect(closeLayout(before, 0).focus).toBe("c")
+})
+
+// A window with nothing in it is a state it really has — the app closes it.
+test("closing the only pane leaves an empty layout, not a husk", () => {
+  const after = closeLayout(layout(pane("a"), "a"), 0)
+  expect(after.root).toBeNull()
+  expect(after.focus).toBeUndefined()
+})
+
+test("closing at a position no pane has changes nothing", () => {
+  const before = layout(split("row", [pane("a"), pane("b")]), "a")
+  expect(closeLayout(before, 7)).toEqual(before)
 })
 
 test("a swap with itself, or with a pane that is not there, changes nothing", () => {
