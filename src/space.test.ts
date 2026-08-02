@@ -292,6 +292,7 @@ test("a roll-up reports the most urgent state present, and 'done' never wins", (
   expect(rollUp([])).toBe("done")
   expect(rollUp([stub("idle"), stub("working"), stub("done")])).toBe("working")
   expect(rollUp([stub("working"), stub("blocked")])).toBe("blocked")
+  expect(rollUp([stub("idle"), stub("detached")])).toBe("detached")
   // One finished agent must not make a space with live agents look finished.
   expect(rollUp([stub("done"), stub("idle")])).toBe("idle")
   expect(rollUp([stub("done"), stub("done")])).toBe("done")
@@ -539,9 +540,36 @@ test("a pane draws only the edges facing the window, never one a divider covers"
   }
 })
 
+test("pane gap one separates borders without widening the divider", async () => {
+  const s = await setup()
+  try {
+    const right = run(s.win.splitSpawn("row"))!
+    const left = s.win.panes[0]!
+    const divider = s.win.root.getChildren()[1] as Divider
+
+    // Zero is the merged-border mode: the divider owns the shared seam.
+    expect(divider.width).toBe(1)
+    expect(left.edges.right).toBe(false)
+    expect(right.edges.left).toBe(false)
+
+    applyConfig({ ...DEFAULT_CONFIG, appearance: { ...DEFAULT_CONFIG.appearance, paneGap: 1 } })
+    s.win.refreshChrome()
+
+    // One restores both pane borders but keeps the divider at its existing
+    // single-cell width; wider spacing starts at values above one.
+    expect(divider.width).toBe(1)
+    expect(left.edges.right).toBe(true)
+    expect(right.edges.left).toBe(true)
+  } finally {
+    applyConfig(DEFAULT_CONFIG)
+    s.win.refreshChrome()
+    await s.dispose()
+  }
+})
+
 test("pane gaps give each pane a complete border and remain draggable", async () => {
   const s = await setup()
-  applyConfig({ ...DEFAULT_CONFIG, appearance: { paneGap: 2 } })
+  applyConfig({ ...DEFAULT_CONFIG, appearance: { ...DEFAULT_CONFIG.appearance, paneGap: 2 } })
   try {
     run(s.win.splitSpawn("row"))
     await s.t.renderOnce()

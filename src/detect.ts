@@ -10,7 +10,7 @@
  * here.
  */
 
-export type AgentState = "idle" | "working" | "blocked" | "done"
+export type AgentState = "idle" | "working" | "blocked" | "detached" | "done"
 
 /**
  * Executable names that mean "this is an agent CLI", mapped to a short label.
@@ -151,5 +151,6 @@ export const STATE_GLYPH: Record<AgentState, string> = {
   blocked: "●",
   working: "⠹", // replaced with the live spinner frame when rendering
   idle: "○",
+  detached: "⊘",
   done: "✓",
 }

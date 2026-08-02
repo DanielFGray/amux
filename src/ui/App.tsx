@@ -32,8 +32,6 @@ export interface AppProps {
   sidebarWidth: number
   sidebarOpen: boolean
   sidebarFocused: boolean
-  /** The sidebar's own toggle binding, as it currently reads. */
-  sidebarToggleKeys: string
   selected: number
   hovered: number | null
   onHover: (index: number | null) => void
@@ -43,6 +41,8 @@ export interface AppProps {
   pending: string[]
   /** What that sequence can still become. Empty unless one is in progress. */
   hints: HintGroup[]
+  /** Whether the transient which-key panel has passed its display delay. */
+  hintsVisible: boolean
   onSelectWindow: (window: Window) => void
   overlay: Overlay
   helpGroups: HelpGroup[]
@@ -87,19 +87,29 @@ export function App(props: AppProps) {
   // the frame does, or its corners land in the wrong cells.
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
-      <Show when={props.sidebarOpen}>
-        <Sidebar
-          app={props.app}
-          width={props.sidebarWidth}
-          selected={props.selected}
-          hovered={props.hovered}
-          focused={props.sidebarFocused}
-          agentsOnly={props.config.sidebar.agentsOnly}
-          toggleKeys={props.sidebarToggleKeys}
-          onHover={props.onHover}
-          onActivate={props.onActivate}
-        />
-      </Show>
+      {/* Keep the sidebar slot in the root child list while toggling its width.
+          Reparenting the main pane box when the sidebar returns can leave its
+          first border at the old sibling geometry for one render. */}
+      <box
+        style={{
+          width: props.sidebarOpen ? props.sidebarWidth : 0,
+          height: "100%",
+          flexShrink: 0,
+        }}
+      >
+        <Show when={props.sidebarOpen}>
+          <Sidebar
+            app={props.app}
+            width={props.sidebarWidth}
+            selected={props.selected}
+            hovered={props.hovered}
+            focused={props.sidebarFocused}
+            agentsOnly={props.config.sidebar.agentsOnly}
+            onHover={props.onHover}
+            onActivate={props.onActivate}
+          />
+        </Show>
+      </box>
 
       <box style={{ flexGrow: 1, flexDirection: "column" }}>
         <WindowTabs
@@ -119,7 +129,7 @@ export function App(props: AppProps) {
       {/* Only while a sequence is half-typed, and never over a modal — an
           overlay that is already answering "what now?" does not need a second
           one on top of it. */}
-      <Show when={props.hints.length > 0 && props.overlay === "none" && !props.prompt}>
+      <Show when={props.hintsVisible && props.hints.length > 0 && props.overlay === "none" && !props.prompt}>
         <Hints
           groups={props.hints}
           pending={props.pending.join(" ")}

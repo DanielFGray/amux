@@ -4,7 +4,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { DEFAULT_CONFIG } from "../config.ts"
 import type { HelpGroup } from "../bindings.ts"
-import { Settings, keybindGroups, keybindLine, keybindTargets } from "./Settings.tsx"
+import { Settings, keybindGroups, keybindLine, keybindTargets, settingsFields } from "./Settings.tsx"
 
 const cleanup: (() => void)[] = []
 afterEach(() => {
@@ -63,6 +63,23 @@ test("a selection index maps to its line in the scrolled list", () => {
   expect(keybindLine(GROUPS, 1)).toBe(4)
   expect(keybindLine(GROUPS, 2)).toBe(5)
   expect(keybindLine(GROUPS, 3)).toBe(8)
+})
+
+test("pane gap setting explains the border mode at zero and one", () => {
+  const field = settingsFields(DEFAULT_CONFIG, "appearance")[0]!
+  expect(field.hint).toContain("0 merged")
+  expect(field.hint).toContain("1 borders")
+})
+
+test("appearance settings expose which-key visibility and delay", () => {
+  const fields = settingsFields(
+    {
+      ...DEFAULT_CONFIG,
+      appearance: { ...DEFAULT_CONFIG.appearance, whichKeyHints: false, whichKeyDelay: 1 },
+    },
+    "appearance",
+  )
+  expect(fields.slice(1).map((field) => field.value)).toEqual(["no", "1s"])
 })
 
 async function draw(over: Partial<Parameters<typeof Settings>[0]> = {}) {

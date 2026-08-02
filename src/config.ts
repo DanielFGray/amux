@@ -17,8 +17,15 @@ export interface Config {
     shell: string
   }
   appearance: {
-    /** Cells between adjacent pane borders. Zero keeps merged dividers. */
+    /**
+     * Pane separation mode: zero merges shared borders, one restores each pane's
+     * border without widening the divider, and larger values add cells.
+     */
     paneGap: number
+    /** Whether the transient which-key panel is shown after a prefix. */
+    whichKeyHints: boolean
+    /** Seconds of inactivity before the which-key panel appears. */
+    whichKeyDelay: number
   }
   /** Prefix key and per-command overrides. Only commands the user has actually
    *  rebound appear here, so the defaults stay free to change. */
@@ -28,7 +35,7 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   sidebar: { width: 30, open: true, agentsOnly: false },
   behaviour: { scrollRows: 3, shell: "" },
-  appearance: { paneGap: 0 },
+  appearance: { paneGap: 0, whichKeyHints: true, whichKeyDelay: 0 },
   keys: { leader: DEFAULT_LEADER, bindings: {} },
 }
 

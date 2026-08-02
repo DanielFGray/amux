@@ -39,11 +39,23 @@ export function settingsFields(config: Config, section: SettingsSection): Field[
         },
       ]
     case "appearance":
-      return [{
-        label: "Pane gap",
-        value: String(config.appearance.paneGap),
-        hint: "cells between panes · ←/→ adjusts",
-      }]
+      return [
+        {
+          label: "Pane gap",
+          value: String(config.appearance.paneGap),
+          hint: "0 merged · 1 borders · 2+ cells · ←/→ adjusts",
+        },
+        {
+          label: "Which-key hints",
+          value: config.appearance.whichKeyHints ? "yes" : "no",
+          hint: "←/→ toggles",
+        },
+        {
+          label: "Hint delay",
+          value: `${config.appearance.whichKeyDelay}s`,
+          hint: "seconds · ←/→ adjusts",
+        },
+      ]
     case "keybinds":
       return []
   }

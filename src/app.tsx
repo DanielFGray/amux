@@ -300,6 +300,8 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   // match them against every binding's sequence to work out what is still
   // reachable, and a display string cannot be matched back.
   const [pendingParts, setPendingParts] = createSignal<readonly { display: string }[]>([])
+  const [hintsVisible, setHintsVisible] = createSignal(false)
+  let hintTimer: ReturnType<typeof setTimeout> | null = null
   const [promptRequest, setPromptRequest] = createSignal<PromptRequest | null>(null)
   /** Compile error from the send-keys prompt's last submit. Kept separate from
    *  the request so a reject does not recreate it and wipe the user's input. */
@@ -520,11 +522,18 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         next.behaviour.scrollRows = Math.max(1, Math.min(20, next.behaviour.scrollRows + delta))
       }
     } else if (section === "appearance") {
-      next.appearance.paneGap = Math.max(0, Math.min(8, next.appearance.paneGap + delta))
+      if (field === 0) {
+        next.appearance.paneGap = Math.max(0, Math.min(8, next.appearance.paneGap + delta))
+      } else if (field === 1) {
+        next.appearance.whichKeyHints = !next.appearance.whichKeyHints
+      } else {
+        next.appearance.whichKeyDelay = Math.max(0, Math.min(5, next.appearance.whichKeyDelay + delta))
+      }
     }
     setConfigState(next)
     applyConfig(next)
     if (section === "appearance") spaces.refreshChrome()
+    if (section === "appearance") updateHintVisibility(pendingParts(), next.appearance)
     setSettingsDirty(true)
   }
 
@@ -1240,10 +1249,39 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const bindings = createBindings(renderer, COMMANDS, { keys: config.keys, onUnhandled })
   setConflicts(bindings.conflicts())
 
+  function clearHintTimer() {
+    if (!hintTimer) return
+    clearTimeout(hintTimer)
+    hintTimer = null
+  }
+
+  function updateHintVisibility(
+    sequence: readonly { display: string }[],
+    appearance = configState().appearance,
+  ) {
+    clearHintTimer()
+    setPendingParts(sequence)
+    if (!sequence.length || !appearance.whichKeyHints) {
+      setHintsVisible(false)
+      return
+    }
+    const delay = Math.max(0, appearance.whichKeyDelay) * 1000
+    if (delay === 0) {
+      setHintsVisible(true)
+      return
+    }
+    setHintsVisible(false)
+    hintTimer = setTimeout(() => {
+      hintTimer = null
+      if (pendingParts().length) setHintsVisible(true)
+    }, delay)
+    hintTimer.unref?.()
+  }
+
   // Only source of truth for the hint line and the which-key panel: what the
   // keymap will actually do next, so a rebinding shows up in both without
   // touching this file.
-  bindings.keymap.on("pendingSequence", (sequence) => setPendingParts(sequence))
+  bindings.keymap.on("pendingSequence", updateHintVisibility)
 
   const pending = createMemo(() =>
     pendingParts().length ? [formatSequence(pendingParts(), configState().keys.leader)] : [],
@@ -1271,16 +1309,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     const pane = copyMode.pane
     return pane !== null && (spaces.activeWindow?.panes.includes(pane) ?? false)
   })
-
-  /** How one command's binding reads, for chrome that names a key. Empty when it
-   *  has none — the sidebar hint says so rather than naming a dead key. */
-  function commandKeys(name: string): string {
-    for (const group of groups()) {
-      const entry = group.entries.find((e) => e.name === name)
-      if (entry) return entry.keys === "unbound" ? "" : entry.keys
-    }
-    return ""
-  }
 
   /** Refresh every space's branch/ahead-behind. Polled because git state changes
    *  behind our back with nothing to notify us. */
@@ -1342,13 +1370,13 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       sidebarWidth={configState().sidebar.width}
       sidebarOpen={sidebarOpen()}
       sidebarFocused={sidebarFocused()}
-      sidebarToggleKeys={commandKeys("sidebar.toggle")}
       selected={selected()}
       hovered={hovered()}
       onHover={setHovered}
       onActivate={activateSelection}
       pending={pending()}
       hints={hints()}
+      hintsVisible={hintsVisible()}
       onSelectWindow={(w) => {
         spaces.active?.selectWindow(w)
         app.refresh()
@@ -1394,6 +1422,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     if (copyMode.active) copyMode.exit()
     clearInterval(copyTimer)
     clearInterval(gitTimer)
+    clearHintTimer()
     if (saveTimer) clearTimeout(saveTimer)
     app.dispose()
   }

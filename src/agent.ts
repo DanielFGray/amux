@@ -325,7 +325,7 @@ export class Agent {
    */
   get state(): AgentState {
     if (this.#exited) return "done"
-    if (this.#detached) return "idle"
+    if (this.#detached) return "detached"
     if (!this.agentKind) return "idle"
     if (splitActivity(this.term.title).spinning) return "working"
     if (this.#blocked()) return "blocked"

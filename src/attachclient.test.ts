@@ -14,6 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Agent } from "./agent.ts"
+import { snapshotAgent } from "./snapshot.ts"
 import { AttachClient } from "./attach.ts"
 import { SessionClient, type SessionClientShape } from "./client.ts"
 import { SessionDaemon } from "./daemon.ts"
@@ -135,7 +136,7 @@ test("an agent outlives the client, and the next client adopts it", async () => 
   expect(exited).toBe(false)
   expect(agent.exitCode).toBeNull()
   expect(agent.detached).toBe(true)
-  expect(agent.state).toBe("idle")
+  expect(agent.state).toBe("detached")
 
   const second = await attach("outlives", env)
   expect(second.live).toContain(agent.id)
@@ -325,7 +326,8 @@ test("a client whose daemon stops sees a detach, not a process exit", async () =
   await until(() => agent.detached, "the client to notice the daemon went away")
   expect(agent.exited).toBe(false)
   expect(agent.exitCode).toBeNull()
-  expect(agent.state).toBe("idle")
+  expect(agent.state).toBe("detached")
+  expect(snapshotAgent(agent).exited).toBe(false)
 })
 
 test("a reattaching client sees an adopted agent's screen without it redrawing", async () => {

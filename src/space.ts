@@ -81,8 +81,10 @@ export class Space {
   /**
    * The space's state icon is the most urgent state among its agents: an agent
    * waiting on you matters more than one that is merely busy, which matters
-   * more than an idle prompt. "done" is last, so a space with one live idle
-   * agent and one finished agent reads as idle, not finished.
+   * more than an idle prompt. A detached agent is surfaced above idle because
+   * the UI cannot know whether it is waiting or still working without an
+   * attachment. "done" is last, so a space with one live idle agent and one
+   * finished agent reads as idle, not finished.
    */
   get state(): AgentState {
     return rollUp(this.agents)
@@ -241,7 +243,7 @@ export class Space {
 
 /** Ranked by how much it wants your attention. Shared by spaces and windows. */
 export function rollUp(agents: readonly Agent[]): AgentState {
-  const RANK: Record<AgentState, number> = { blocked: 3, working: 2, idle: 1, done: 0 }
+  const RANK: Record<AgentState, number> = { blocked: 4, working: 3, detached: 2, idle: 1, done: 0 }
   let best: AgentState = "done"
   for (const a of agents) {
     const s = a.state

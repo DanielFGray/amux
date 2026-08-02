@@ -90,7 +90,6 @@ async function setup(backend?: SpawnBackend, agentsOnly = false) {
           hovered={hovered()}
           focused={false}
           agentsOnly={agentsOnly}
-          toggleKeys="^a b"
           onHover={setHovered}
           onActivate={(i) => activated.push(i)}
         />
@@ -155,6 +154,7 @@ test("renders the space/agent tree with a state glyph per row", async () => {
     // And it is still rendered, below the tree rather than above it.
     expect(frame).toContain("1 space · 1 agent")
     expect(frame).toMatch(/[○●✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
+    expect(frame).not.toContain("toggles sidebar")
   } finally {
     await s.dispose()
   }
@@ -221,11 +221,11 @@ test("an agent with no pane open shows the ⇠ indicator", async () => {
  * The real deployment path, end to end: a daemon owns the process, the client
  * views it, and the sidebar reads its state through the daemon backend. When
  * the daemon goes away the *attachment* ends but the process does not, so the
- * agent must stay rendered as running-but-idle (○), not as finished (✓) — the
+ * agent must stay rendered as detached (⊘), not as idle (○) or finished (✓) — the
  * exit code is null precisely so the sidebar has something to tell apart, see
  * backend.ts.
  */
-test("an agent whose daemon attachment is lost stays in the sidebar as idle, not done", async () => {
+test("an agent whose daemon attachment is lost is distinct from idle and done", async () => {
   const home = await mkdtemp(join(tmpdir(), "herdr-sidebar-"))
   dirs.push(home)
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv
@@ -258,13 +258,15 @@ test("an agent whose daemon attachment is lost stays in the sidebar as idle, not
     await waitForAsync(() => agent.detached === true, "the agent to detach")
     expect(agent.exited).toBe(false)
     expect(agent.exitCode).toBeNull()
-    expect(agent.state).toBe("idle")
+    expect(agent.state).toBe("detached")
 
     // The sidebar polls state, so give it a few ticks after the detach; every
-    // repaint must keep showing the agent as idle, never flip it to done.
+    // Repaint must keep showing it as detached, never flip it to idle or done.
+    await waitFor(() => s.t.captureCharFrame().includes("⊘"), "the detached glyph to render")
     const deadline = Date.now() + 3 * POLL_MS + 50
     while (Date.now() < deadline) {
       const frame = s.t.captureCharFrame()
+      expect(frame).toContain("⊘")
       expect(frame).not.toContain("✓")
       await Bun.sleep(10)
     }
@@ -485,7 +487,6 @@ test("the seam shows a thumb only while the tree overflows", async () => {
           hovered={hovered()}
           focused={false}
           agentsOnly={false}
-          toggleKeys="^a b"
           onHover={setHovered}
           onActivate={() => {}}
         />

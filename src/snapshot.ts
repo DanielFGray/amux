@@ -30,6 +30,10 @@
  * command already had its turn, and some of them are not idempotent. It gets no
  * pane, which is the same state the live app leaves an agent in the moment it
  * exits.
+ *
+ * A detached daemon agent is deliberately not persisted as a state value. It is
+ * still live (`exited: false`) and the daemon backend determines whether this
+ * client is attached after restore.
  */
 
 import { Effect } from "effect"

@@ -5,6 +5,7 @@ import { test, expect, afterEach } from "bun:test"
 import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
+import { createSignal } from "solid-js"
 import { Divider } from "../divider.ts"
 import { SpaceSet, type Space } from "../space.ts"
 import { frame } from "../window.ts"
@@ -28,7 +29,7 @@ afterEach(() => {
 async function screen(
   open: boolean,
   build: (win: Space) => void,
-  extra: Partial<{ hints: HintGroup[]; overlay: "none" | "settings" }> = {},
+  extra: Partial<{ hints: HintGroup[]; hintsVisible: boolean; overlay: "none" | "settings"; reopen: boolean }> = {},
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
@@ -46,6 +47,7 @@ async function screen(
   handle.capEnd = true
 
   frame.externalLeft = open
+  const [sidebarOpen, setSidebarOpen] = createSignal(open)
   const space = Effect.runSync(spaces.create("proj", process.cwd()))
   build(space)
   spaces.refreshChrome()
@@ -60,15 +62,15 @@ async function screen(
         size={{ width: WIDTH, height: HEIGHT }}
         sidebarHandle={handle}
         sidebarWidth={SIDEBAR}
-        sidebarOpen={open}
+        sidebarOpen={sidebarOpen()}
         sidebarFocused={false}
-        sidebarToggleKeys="^a b"
         selected={0}
         hovered={null}
         onHover={() => {}}
         onActivate={() => {}}
         pending={["^a"]}
         hints={extra.hints ?? []}
+        hintsVisible={extra.hintsVisible ?? true}
         onSelectWindow={() => {}}
         overlay={extra.overlay ?? "none"}
         helpGroups={[]}
@@ -92,6 +94,17 @@ async function screen(
   )
   await t.renderOnce()
   await t.renderOnce()
+  if (extra.reopen) {
+    frame.externalLeft = false
+    setSidebarOpen(false)
+    spaces.refreshChrome()
+    await t.renderOnce()
+    frame.externalLeft = true
+    setSidebarOpen(true)
+    spaces.refreshChrome()
+    await t.renderOnce()
+    await t.renderOnce()
+  }
   return t.captureCharFrame().split("\n")
 }
 
@@ -134,6 +147,18 @@ test("closing the sidebar hands the left border back to the panes", async () => 
 
   expect(rows[1]![0]).toBe("┌")
   expect(rows[HEIGHT - 1]![0]).toBe("└")
+})
+
+test("re-enabling the sidebar keeps the pane frame behind its handle", async () => {
+  const rows = await screen(
+    true,
+    (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())),
+    { reopen: true },
+  )
+
+  expect(rows[1]![SIDEBAR]).toBe("┌")
+  expect(rows[Math.floor(HEIGHT / 2)]![SIDEBAR]).toBe("│")
+  expect(rows[HEIGHT - 1]![SIDEBAR]).toBe("└")
 })
 
 /** Split both halves of a row split vertically at the same height, so the two
@@ -198,4 +223,14 @@ test("the hint panel stays out of the way of an open overlay", async () => {
 
   expect(rows.join("\n")).not.toContain("z zoom")
   expect(rows.join("\n")).toContain("settings")
+})
+
+test("the hint panel can be hidden while the prefix remains active", async () => {
+  const rows = await screen(
+    true,
+    (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())),
+    { hints: HINTS, hintsVisible: false },
+  )
+
+  expect(rows.join("\n")).not.toContain("z zoom")
 })
