@@ -188,6 +188,34 @@ test("killing an agent removes it and leaves the others alone", async () => {
   }
 })
 
+/**
+ * ts-8d06b3: a killed agent is reported exactly as an exited one is.
+ *
+ * The app's cascade — window closes with its last agent, space with its last
+ * window — hangs off this notification, so an unreported kill left an empty
+ * window behind that you could still cycle to. The two paths have to raise the
+ * same event or they drift apart again.
+ */
+test("killing an agent reports it the way an exit does", async () => {
+  const s = await setup()
+  try {
+    const killme = run(s.win.spawn("killme", ["sleep", "30"]))
+    const seen: { agent: Agent; remaining: number }[] = []
+    s.space.onAgentExit = (agent, window) =>
+      // Captured from inside the handler: the cascade decides what to do by
+      // asking what is left, so the removal must already have happened.
+      seen.push({ agent, remaining: window.agents.length })
+
+    const before = s.win.agents.length
+    await runAsync(s.win.killAgent(killme))
+
+    expect(seen.map((s) => s.agent)).toEqual([killme])
+    expect(seen[0]!.remaining).toBe(before - 1)
+  } finally {
+    await s.dispose()
+  }
+})
+
 test("scrolled reflects the real viewport, including past both edges", async () => {
   const s = await setup()
   try {

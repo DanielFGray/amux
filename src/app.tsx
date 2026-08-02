@@ -216,13 +216,14 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   }
 
   /**
-   * What to do after an agent's process exits and its views have closed.
+   * What to do after an agent is finished and its views have closed.
    *
-   * Only exits trigger this. Closing a view with ^a x is a deliberate detach —
-   * the agent keeps running and the user wants it out of the way — so reopening
-   * it there would fight the user. An exit is different: the pane went away
-   * because the process ended, which can leave nothing on screen and nowhere for
-   * keystrokes to go.
+   * An agent ending triggers this, whether it ended on its own or was killed
+   * with ^a K — the two are the same event from here, and letting them diverge
+   * is what left ^a K with an empty window (ts-8d06b3). What does NOT trigger
+   * it is closing a view with ^a x: that is a deliberate detach, the agent keeps
+   * running, and reopening it would fight the user. The difference that matters
+   * is whether anything is still running, not who ended it.
    *
    * The cascade is tmux's: the window closes when its last pane dies, the space
    * when its last window closes, and the app with the last space. The one

@@ -261,7 +261,20 @@ export class Window {
     return scope
   }
 
-  /** Permanently stop an agent and close any views of it. */
+  /**
+   * Permanently stop an agent and close any views of it.
+   *
+   * Reports the agent as gone, exactly as a process ending does. A kill and an
+   * exit differ only in who started it: either way the agent is finished, its
+   * panes are shut, and the window may now be empty — so both have to reach the
+   * same cascade, or the app closes a window when the shell exits and keeps an
+   * identical empty one when you kill it (ts-8d06b3, where ^a K left a tab you
+   * could still cycle to that showed nothing).
+   *
+   * Fired last, so the handler reads a tree with the agent already out of it —
+   * the "is anything still running here" question it asks has to see the answer
+   * after this kill, not before.
+   */
   killAgent(agent: Agent): Effect.Effect<void> {
     return Effect.gen(this, function* () {
       for (const p of [...this.#panes]) if (p.agent === agent) this.close(p)
@@ -270,6 +283,7 @@ export class Window {
       yield* this.#releaseAgent(agent)
       this.onChange?.()
       this.#ctx.requestRender()
+      this.onAgentExit?.(agent)
     })
   }
 

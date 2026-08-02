@@ -48,6 +48,15 @@ const split = await step(`${LEADER}|`, "^a | split")
 const broken = await step(`${LEADER}!`, "^a ! break pane")
 const killed = await step(`${LEADER}K`, "^a K kill agent")
 
+// Killing the LAST agent runs the cascade to its end: the window closes, then
+// the space, then the app itself. That escalation is the point of ts-8d06b3 —
+// it is what typing `exit` in the only shell already did, and a kill has to
+// mean the same thing — but it is also the most surprising thing in this file,
+// so it is checked rather than assumed. Last step: nothing survives it.
+await app.press(`${LEADER}K`)
+const emptied = await app.shape()
+console.log(`${"^a K kill last agent".padEnd(26)} -> ${emptied}`)
+
 await app.stop()
 
 if (footerAgreed.length) console.log(`\nfooter disagreed after: ${footerAgreed.join(", ")}`)
@@ -57,10 +66,10 @@ report([
   ["kill window takes its agent with it", closed === "1sp 1win 1ag"],
   ["split adds an agent to the window", split === "1sp 1win 2ag"],
   ["break moves the pane into a window of its own", broken === "1sp 2win 2ag"],
-  // The window left behind is EXPECTED here, and is filed as ts-8d06b3:
-  // killAgent does not join the exit cascade, so killing the last agent in a
-  // window leaves that window empty. Asserted as it is rather than as it ought
-  // to be, so this check keeps testing what it is about; ts-8d06b3 flips it.
-  ["kill agent removes the agent (leaves its window: ts-8d06b3)", killed === "1sp 2win 1ag"],
+  // ts-8d06b3: killing the last agent in a window takes the window with it,
+  // exactly as the agent exiting on its own would. This asserted the window
+  // being left behind until killAgent joined the exit cascade.
+  ["kill agent takes its emptied window with it", killed === "1sp 1win 1ag"],
+  ["killing the last agent empties the workspace and quits", emptied === "0sp 0win 0ag"],
   ["the sidebar footer agrees with the session file at every step", footerAgreed.length === 0],
 ])
