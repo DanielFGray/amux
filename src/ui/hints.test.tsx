@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { test, expect, afterEach } from "bun:test"
+import { Effect } from "effect"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { createBindings, nextKeys, type CommandSpec } from "../bindings.ts"
@@ -11,13 +12,13 @@ afterEach(() => {
 })
 
 const COMMANDS: CommandSpec[] = [
-  { name: "pane.split", key: ["<leader>|", "<leader>\\"], desc: "split", group: "panes", run() {} },
-  { name: "pane.zoom", key: "<leader>z", desc: "zoom", group: "panes", run() {} },
-  { name: "window.new", key: "<leader>c", desc: "new window", group: "windows", run() {} },
+  { name: "pane.split", key: ["<leader>|", "<leader>\\"], desc: "split", group: "panes", run: Effect.void },
+  { name: "pane.zoom", key: "<leader>z", desc: "zoom", group: "panes", run: Effect.void },
+  { name: "window.new", key: "<leader>c", desc: "new window", group: "windows", run: Effect.void },
   // A sibling covered by another entry: hidden, so no hint of its own.
-  { name: "window.two", key: "<leader>2", desc: "select 2", hidden: true, group: "windows", run() {} },
+  { name: "window.two", key: "<leader>2", desc: "select 2", hidden: true, group: "windows", run: Effect.void },
   // Two keys deep, so it must not show up until the leader has been pressed.
-  { name: "app.deep", key: "<leader>gg", desc: "deep", group: "global", run() {} },
+  { name: "app.deep", key: "<leader>gg", desc: "deep", group: "global", run: Effect.void },
 ]
 
 async function keymap() {

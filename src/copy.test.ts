@@ -1,5 +1,6 @@
 import { run, runAsync, scopedSpaceSet } from "./harness.ts"
 import { test, expect, afterEach } from "bun:test"
+import { Effect } from "effect"
 import { MouseEvent, BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Agent } from "./agent.ts"
@@ -766,14 +767,14 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
       key: "<leader>[",
       desc: "copy mode",
       group: "panes",
-      run: () => mode.enter(pane),
+      run: Effect.sync(() => mode.enter(pane)),
     },
     {
       name: "pane.focus-left",
       key: "<leader>h",
       desc: "focus left",
       group: "panes",
-      run: () => focusLeft++,
+      run: Effect.sync(() => focusLeft++),
     },
   ]
   const bindings = createBindings(t.renderer, commands, {

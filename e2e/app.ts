@@ -41,12 +41,25 @@ export interface App {
    * the app's own account of its state rather than a rendering of it.
    */
   shape(): Promise<string>
+  /** The config as the app last wrote it, or null if it never has. */
+  config(): Promise<Record<string, any> | null>
   stop(): Promise<void>
 }
 
-export async function launch(session: string, opts: { cols?: number; rows?: number } = {}): Promise<App> {
+export async function launch(
+  session: string,
+  opts: {
+    cols?: number
+    rows?: number
+    /** Written before launch, so a check can start from a config rather than
+     *  having to reach one through the settings window. */
+    config?: unknown
+  } = {},
+): Promise<App> {
   const home = await mkdtemp(join(tmpdir(), `herdr-${session}-`))
   const state = join(home, "state")
+  const configPath = join(home, "config", "opentui-herdr", "config.json")
+  if (opts.config !== undefined) await Bun.write(configPath, JSON.stringify(opts.config, null, 2) + "\n")
   const env = {
     ...process.env,
     // A throwaway HOME so a real session file, config or shell rc can neither
@@ -97,6 +110,7 @@ export async function launch(session: string, opts: { cols?: number; rows?: numb
       }
       return "(no session file)"
     },
+    config: () => Bun.file(configPath).json().catch(() => null),
     async stop() {
       pty.kill()
       await reader.catch(() => {})

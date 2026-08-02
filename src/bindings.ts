@@ -1,3 +1,4 @@
+import { Cause, Effect, Exit } from "effect"
 import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core"
 import { createOpenTuiKeymap } from "@opentui/keymap/opentui"
 import {
@@ -166,7 +167,17 @@ export interface CommandSpec {
   /** Left out of the keybind editor. The prefix passthrough is the case: its
    *  sequence is the prefix twice, and rebinding it separately is nonsense. */
   fixed?: boolean
-  run: () => void
+  /**
+   * What the command does, as a value rather than a callback.
+   *
+   * The effect is built once, when the table is built, so anything it reads
+   * from the workspace has to be read *inside* it — `Effect.sync`,
+   * `Effect.suspend`, `Effect.gen`. That is the point: a command whose body is
+   * an Effect can `yield*` the workspace's Effect-returning methods, so a
+   * forgotten step is a type error instead of a statement that quietly does
+   * nothing (ts-456094, where eight commands did exactly that).
+   */
+  run: Effect.Effect<void>
 }
 
 /** The sequences a command answers to right now: the user's, or its own. */
@@ -207,6 +218,28 @@ export interface Bindings {
    * binding. Modifiers alone do not end the capture. Returns a canceller.
    */
   capture(onKey: (event: KeyEvent, binding: string) => void): () => void
+}
+
+/**
+ * Run a command's effect and let it finish on its own.
+ *
+ * Forked rather than `runSync`, because closing an agent interrupts its pump
+ * fiber before freeing the terminal and `runSync` refuses to wait on an
+ * interrupt. Forking still runs an effect's synchronous prefix *immediately*,
+ * so a command that only touches the tree stays as synchronous as it was when
+ * `run` was a plain callback — which is what dispatch's predicate contract
+ * needs, and why this does not have to become async.
+ *
+ * A command declares no error channel, so anything it raises is a defect, and a
+ * defect in a forked fiber goes unnoticed unless somebody observes it. This
+ * observes it. Interruption is not a failure worth reporting: it is what
+ * shutting down looks like from in here.
+ */
+function runCommand(cmd: CommandSpec): void {
+  Effect.runFork(cmd.run).addObserver((exit) => {
+    if (Exit.isSuccess(exit) || Cause.isInterruptedOnly(exit.cause)) return
+    console.error(`command ${cmd.name} failed: ${Cause.pretty(exit.cause)}`)
+  })
 }
 
 /**
@@ -292,9 +325,7 @@ export function createBindings(
         name: cmd.name,
         desc: cmd.desc,
         group: cmd.group,
-        run: () => {
-          cmd.run()
-        },
+        run: () => runCommand(cmd),
       })),
     })
 

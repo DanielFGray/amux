@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test"
+import { Effect } from "effect"
 import { createTestRenderer } from "@opentui/core/testing"
 import {
   createBindings,
@@ -22,9 +23,9 @@ test("every declared sequence compiles, including multi-char key names", async (
   const t = await createTestRenderer({ width: 40, height: 10 })
   try {
     const commands: CommandSpec[] = [
-      { name: "t.letter", key: "<leader>h", desc: "letter", group: "t", run: () => {} },
-      { name: "t.arrow", key: "<leader>left", desc: "arrow", group: "t", run: () => {} },
-      { name: "t.brace", key: ["<leader>{", "<leader>}"], desc: "brace", group: "t", run: () => {} },
+      { name: "t.letter", key: "<leader>h", desc: "letter", group: "t", run: Effect.void },
+      { name: "t.arrow", key: "<leader>left", desc: "arrow", group: "t", run: Effect.void },
+      { name: "t.brace", key: ["<leader>{", "<leader>}"], desc: "brace", group: "t", run: Effect.void },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
     const entries = helpGroups(bindings, commands)[0]!.entries
@@ -47,8 +48,8 @@ test("a sequence claimed by two commands is reported as a conflict", async () =>
   const t = await createTestRenderer({ width: 40, height: 10 })
   try {
     const commands: CommandSpec[] = [
-      { name: "pane.up", key: "<leader>k", desc: "focus up", group: "t", run: () => {} },
-      { name: "agent.kill", key: "<leader>k", desc: "kill agent", group: "t", run: () => {} },
+      { name: "pane.up", key: "<leader>k", desc: "focus up", group: "t", run: Effect.void },
+      { name: "agent.kill", key: "<leader>k", desc: "kill agent", group: "t", run: Effect.void },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
 
@@ -74,13 +75,13 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
   try {
     const fired: string[] = []
     const commands: CommandSpec[] = [
-      { name: "t.lower", key: "<leader>s", desc: "lower", group: "t", run: () => fired.push("s") },
+      { name: "t.lower", key: "<leader>s", desc: "lower", group: "t", run: Effect.sync(() => fired.push("s")) },
       {
         name: "t.upper",
         key: "<leader>shift+s",
         desc: "upper",
         group: "t",
-        run: () => fired.push("S"),
+        run: Effect.sync(() => fired.push("S")),
       },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
@@ -116,7 +117,7 @@ test("a command hidden from help still dispatches", async () => {
         key: "<leader>1",
         desc: "select 1..9",
         group: "t",
-        run: () => fired.push("1"),
+        run: Effect.sync(() => fired.push("1")),
       },
       {
         name: "t.hidden",
@@ -124,7 +125,7 @@ test("a command hidden from help still dispatches", async () => {
         desc: "select 2",
         hidden: true,
         group: "t",
-        run: () => fired.push("2"),
+        run: Effect.sync(() => fired.push("2")),
       },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
@@ -156,7 +157,7 @@ test("an override replaces a command's default sequences", async () => {
   try {
     const fired: string[] = []
     const commands: CommandSpec[] = [
-      { name: "t.zoom", key: "<leader>z", desc: "zoom", group: "t", run: () => fired.push("z") },
+      { name: "t.zoom", key: "<leader>z", desc: "zoom", group: "t", run: Effect.sync(() => fired.push("z")) },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
     bindings.apply({ leader: "ctrl+a", bindings: { "t.zoom": ["<leader>f"] } })
@@ -179,8 +180,8 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
   try {
     const fired: string[] = []
     const commands: CommandSpec[] = [
-      { name: "pane.split-row", key: "<leader>|", desc: "split left/right", group: "panes", run: () => fired.push("split") },
-      { name: "window.select-layout.tiled", desc: "arrange panes", hidden: true, group: "windows", run: () => {} },
+      { name: "pane.split-row", key: "<leader>|", desc: "split left/right", group: "panes", run: Effect.sync(() => fired.push("split")) },
+      { name: "window.select-layout.tiled", desc: "arrange panes", hidden: true, group: "windows", run: Effect.void },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
     expect(paletteEntries(bindings, commands)).toEqual([
@@ -203,7 +204,7 @@ test("an empty override unbinds the command", async () => {
   try {
     const fired: string[] = []
     const commands: CommandSpec[] = [
-      { name: "t.quit", key: "<leader>q", desc: "quit", group: "t", run: () => fired.push("q") },
+      { name: "t.quit", key: "<leader>q", desc: "quit", group: "t", run: Effect.sync(() => fired.push("q")) },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
     bindings.apply({ leader: "ctrl+a", bindings: { "t.quit": [] } })
@@ -229,7 +230,7 @@ test("rebinding the prefix moves every binding and how they read", async () => {
   try {
     const fired: string[] = []
     const commands: CommandSpec[] = [
-      { name: "t.new", key: "<leader>c", desc: "new", group: "t", run: () => fired.push("c") },
+      { name: "t.new", key: "<leader>c", desc: "new", group: "t", run: Effect.sync(() => fired.push("c")) },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
     bindings.apply({ leader: "ctrl+b", bindings: {} })
@@ -260,7 +261,7 @@ test("capture takes the next keystroke, bound or not, and skips modifiers", asyn
   try {
     const fired: string[] = []
     const commands: CommandSpec[] = [
-      { name: "t.new", key: "<leader>c", desc: "new", group: "t", run: () => fired.push("c") },
+      { name: "t.new", key: "<leader>c", desc: "new", group: "t", run: Effect.sync(() => fired.push("c")) },
     ]
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
 
@@ -319,7 +320,7 @@ test("invalid leaders fall back without disabling the keymap", async () => {
   try {
     const fired: string[] = []
     const commands: CommandSpec[] = [
-      { name: "t.quit", key: "<leader>q", desc: "quit", group: "t", run: () => fired.push("q") },
+      { name: "t.quit", key: "<leader>q", desc: "quit", group: "t", run: Effect.sync(() => fired.push("q")) },
     ]
     const bindings = createBindings(t.renderer, commands, {
       keys: { leader: "not-a-key", bindings: {} },
@@ -340,7 +341,7 @@ test("formatting a leader token never recurses", () => {
 })
 
 test("keysFor prefers the override, including an empty one", () => {
-  const cmd: CommandSpec = { name: "t.a", key: ["<leader>a", "<leader>b"], desc: "a", group: "t", run() {} }
+  const cmd: CommandSpec = { name: "t.a", key: ["<leader>a", "<leader>b"], desc: "a", group: "t", run: Effect.void }
   expect(keysFor(cmd, { leader: "ctrl+a", bindings: {} })).toEqual(["<leader>a", "<leader>b"])
   expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": ["<leader>z"] } })).toEqual(["<leader>z"])
   expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": [] } })).toEqual([])

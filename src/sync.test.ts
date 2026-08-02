@@ -1,4 +1,5 @@
 import { test, expect, spyOn, afterEach } from "bun:test"
+import { Effect } from "effect"
 import { setWeight } from "./divider.ts"
 import { createBindings } from "./bindings.ts"
 import { createHarness, run } from "./harness.ts"
@@ -149,10 +150,10 @@ test("the prefix and bound herdr controls are consumed and never broadcast", asy
         key: "<leader>y",
         desc: "toggle sync",
         group: "windows",
-        run: () => {
+        run: Effect.sync(() => {
           fired.push("sync")
           window.toggleSync()
-        },
+        }),
       },
     ]
     const bindings = createBindings(t.renderer, commands, {

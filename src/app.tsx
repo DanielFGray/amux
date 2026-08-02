@@ -98,11 +98,10 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   /**
    * Run one of the workspace's Effect-returning methods here and now.
    *
-   * Deliberately synchronous, and deliberately temporary. A CommandSpec's `run`
-   * is a `() => void` callback, so a command that spawns has nowhere to yield
-   * to; ts-8b3867 (Phase 6) turns `run` into `Effect<void>` and every call
-   * below becomes a `yield*` instead. Until then this is the one place the two
-   * worlds meet, rather than a runtime threaded through the command table.
+   * Commands no longer need this — a CommandSpec's `run` is an Effect, so it
+   * yields. What is left are the callers that are not commands and cannot be:
+   * boot, and the prompt flows, which are `async` because they await an answer
+   * from a Solid signal rather than from Effect.
    */
   const run = <A,>(effect: Effect.Effect<A>): A => Effect.runSync(effect)
 
@@ -111,15 +110,19 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
    *
    * Releasing cannot be `run`: closing an agent's scope interrupts its pump
    * fiber before freeing the terminal, and interrupting a running fiber means
-   * waiting for it to unwind — `runSync` throws on it. A key handler has
-   * nowhere to await, so it forks.
+   * waiting for it to unwind — `runSync` throws on it. A callback has nowhere
+   * to await, so it forks.
    *
    * Which makes the SHAPE of a caller matter: anything that reads the tree
    * after a release must do so inside the same effect, not after this call.
-   * Forking only guarantees the effect starts. Every site below that used to
-   * be a bare statement was silently doing nothing at all (ts-456094), and the
-   * fix is not to sprinkle this everywhere — it is that ts-8b3867 makes a
-   * command's `run` an Effect, so the sequencing is the caller's to `yield*`.
+   * Forking only guarantees the effect starts, which is how ts-456094's eight
+   * dropped Effects hid for as long as they did.
+   *
+   * The two remaining callers are the agent-exit cascade and the sidebar's `x`,
+   * neither of which is a command today. The sidebar's is a duplicate of
+   * agent.kill / window.close / space.close aimed at the selected row instead
+   * of the active one, and it collapses into those the moment commands take
+   * arguments — the Schema half of ts-8b3867.
    */
   const fork = (effect: Effect.Effect<unknown>): void => void Effect.runFork(effect)
 
@@ -721,21 +724,23 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: ["<leader>|", "<leader>\\"],
       desc: "split left/right",
       group: "panes",
-      run: () => void run(activeWin()?.splitSpawn("row") ?? Effect.succeed(null)),
+      // Suspended, not `sync`: the window has to be read when the key is
+      // pressed, not when the table is built.
+      run: Effect.suspend(() => activeWin()?.splitSpawn("row") ?? Effect.void),
     },
     {
       name: "pane.split-column",
       key: "<leader>-",
       desc: "split top/bottom",
       group: "panes",
-      run: () => void run(activeWin()?.splitSpawn("column") ?? Effect.succeed(null)),
+      run: Effect.suspend(() => activeWin()?.splitSpawn("column") ?? Effect.void),
     },
     {
       name: "pane.next",
       key: "<leader>o",
       desc: "next pane",
       group: "panes",
-      run: () => activeWin()?.focusNext(1),
+      run: Effect.sync(() => activeWin()?.focusNext(1)),
     },
     // Directional focus, tmux's select-pane. Two sequences per direction rather
     // than two commands, so the help shows both against one entry.
@@ -751,41 +756,41 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: [`<leader>${letter}`, `<leader>${direction}`],
       desc: `focus pane ${direction}`,
       group: "panes",
-      run: () => activeWin()?.focusDirection(direction),
+      run: Effect.sync(() => activeWin()?.focusDirection(direction)),
     })),
     {
       name: "pane.zoom",
       key: "<leader>z",
       desc: "zoom the focused pane (Z in the tab)",
       group: "panes",
-      run: () => activeWin()?.zoom(),
+      run: Effect.sync(() => activeWin()?.zoom()),
     },
     {
       name: "pane.swap-previous",
       key: "<leader>{",
       desc: "swap pane with the previous one",
       group: "panes",
-      run: () => activeWin()?.swap(-1),
+      run: Effect.sync(() => activeWin()?.swap(-1)),
     },
     {
       name: "pane.swap-next",
       key: "<leader>}",
       desc: "swap pane with the next one",
       group: "panes",
-      run: () => activeWin()?.swap(1),
+      run: Effect.sync(() => activeWin()?.swap(1)),
     },
     {
       name: "pane.close",
       key: "<leader>x",
       desc: "close pane (agent keeps running)",
       group: "panes",
-      run: () => {
+      run: Effect.sync(() => {
         const w = activeWin()
         if (w?.focused) {
           exitCopyModeFor(w.focused)
           w.close(w.focused)
         }
-      },
+      }),
     },
     {
       name: "pane.capture",
@@ -793,21 +798,21 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>shift+c",
       desc: "capture the focused pane (s saves)",
       group: "panes",
-      run: openCapture,
+      run: Effect.sync(openCapture),
     },
     {
       name: "pane.copy-mode",
       key: "<leader>[",
       desc: "copy mode: review pane history (v selects, y copies)",
       group: "panes",
-      run: enterCopyMode,
+      run: Effect.sync(enterCopyMode),
     },
     {
       name: "pane.send-keys",
       // The command remains available from the palette; prefix+colon now opens it.
       desc: "send keys to the focused pane (tmux send-keys)",
       group: "panes",
-      run: sendKeysCommand,
+      run: Effect.sync(sendKeysCommand),
     },
     {
       // The binding tmux itself gives break-pane.
@@ -815,11 +820,11 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>!",
       desc: "break the focused pane into its own window",
       group: "panes",
-      run: () => {
+      run: Effect.gen(function* () {
         const w = activeWin()
         const space = spaces.active
-        if (w?.focused && space) fork(space.breakPane(w.focused))
-      },
+        if (w?.focused && space) yield* space.breakPane(w.focused)
+      }),
     },
 
     // Windows.
@@ -828,45 +833,48 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>c",
       desc: "new window",
       group: "windows",
-      run: () => {
+      run: Effect.gen(function* () {
         const space = spaces.active
-        if (space) run(Effect.flatMap(space.newWindow(), (w) => w.init()))
-      },
+        if (!space) return
+        const window = yield* space.newWindow()
+        yield* window.init()
+      }),
     },
     {
       name: "window.next",
       key: "<leader>n",
       desc: "next window",
       group: "windows",
-      run: () => spaces.active?.cycleWindow(1),
+      run: Effect.sync(() => spaces.active?.cycleWindow(1)),
     },
     {
       name: "window.previous",
       key: "<leader>p",
       desc: "previous window",
       group: "windows",
-      run: () => spaces.active?.cycleWindow(-1),
+      run: Effect.sync(() => spaces.active?.cycleWindow(-1)),
     },
     {
       name: "window.rename",
       key: "<leader>,",
       desc: "rename window",
       group: "windows",
-      run: () => void renameWindow(),
+      // The prompt is still fused into the command; ts-8b3867 splits collecting
+      // the name (a keybinding) from renaming with it (the command).
+      run: Effect.promise(renameWindow),
     },
     {
       name: "window.close",
       key: "<leader>&",
       desc: "kill window and its agents",
       group: "windows",
-      run: () => {
+      run: Effect.gen(function* () {
         const space = spaces.active
         const w = space?.active
-        if (space && w) {
-          exitCopyModeFor(w.panes)
-          fork(space.closeWindow(w))
-        }
-      },
+        if (!space || !w) return
+        exitCopyModeFor(w.panes)
+        yield* space.closeWindow(w)
+      }),
     },
     {
       // tmux's next-layout, on tmux's own binding.
@@ -874,13 +882,13 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>space",
       desc: "cycle through the preset layouts",
       group: "windows",
-      run: () => {
+      run: Effect.sync(() => {
         const w = activeWin()
         if (w) {
           exitCopyModeFor(w.panes)
           w.selectLayout(nextPreset(w.preset))
         }
-      },
+      }),
     },
     // Each preset is addressable on its own, so a keymap can bind one directly
     // and a command layer can name it — tmux's select-layout <name>.
@@ -889,20 +897,20 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       desc: i === 0 ? "arrange panes in a preset layout" : `arrange panes: ${preset}`,
       hidden: i > 0,
       group: "windows",
-      run: () => {
+      run: Effect.sync(() => {
         const w = activeWin()
         if (w) {
           exitCopyModeFor(w.panes)
           w.selectLayout(preset)
         }
-      },
+      }),
     })),
     {
       name: "window.synchronize-panes",
       key: "<leader>y",
       desc: "toggle synchronize-panes (input to every pane)",
       group: "windows",
-      run: () => activeWin()?.toggleSync(),
+      run: Effect.sync(() => activeWin()?.toggleSync()),
     },
     // 1..9 select by the window's own number, which is why that number is stable
     // rather than a position in the list.
@@ -914,7 +922,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       // and not an empty description.
       hidden: i > 0,
       group: "windows",
-      run: () => void spaces.active?.selectNumber(i + 1),
+      run: Effect.sync(() => void spaces.active?.selectNumber(i + 1)),
     })),
 
     // Agents.
@@ -925,26 +933,25 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>shift+k",
       desc: "stop the focused agent",
       group: "agents",
-      run: () => {
+      run: Effect.gen(function* () {
         const w = activeWin()
         const pane = w?.focused
-        if (pane) {
-          exitCopyModeFor(w.panes.filter((p) => p.agent === pane.agent))
-          fork(w.killAgent(pane.agent))
-        }
-      },
+        if (!w || !pane) return
+        exitCopyModeFor(w.panes.filter((p) => p.agent === pane.agent))
+        yield* w.killAgent(pane.agent)
+      }),
     },
     {
       name: "agent.next-blocked",
       key: "<leader>a",
       desc: "jump to the next blocked agent",
       group: "agents",
-      run: () => {
+      run: Effect.sync(() => {
         const agent = spaces.nextBlocked()
         if (!agent) return
         const index = targets().findIndex((target) => target.kind === "agent" && target.agent === agent)
         if (index !== -1) setSelected(index)
-      },
+      }),
     },
 
     // Spaces.
@@ -953,28 +960,28 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>s",
       desc: "new space",
       group: "spaces",
-      run: () => void newSpace(),
+      run: Effect.promise(newSpace),
     },
     {
       name: "space.rename",
       key: "<leader>r",
       desc: "rename space",
       group: "spaces",
-      run: () => void renameSpace(),
+      run: Effect.promise(renameSpace),
     },
     {
       name: "space.next",
       key: "<leader>)",
       desc: "next space",
       group: "spaces",
-      run: () => spaces.cycle(1),
+      run: Effect.sync(() => spaces.cycle(1)),
     },
     {
       name: "space.previous",
       key: "<leader>(",
       desc: "previous space",
       group: "spaces",
-      run: () => spaces.cycle(-1),
+      run: Effect.sync(() => spaces.cycle(-1)),
     },
 
     // App.
@@ -983,13 +990,13 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>b",
       desc: "toggle sidebar",
       group: "global",
-      run: toggleSidebar,
+      run: Effect.sync(toggleSidebar),
     },
     {
       name: "sidebar.toggle-agents-only",
       desc: "show only panes running agent CLIs",
       group: "global",
-      run: toggleAgentsOnly,
+      run: Effect.sync(toggleAgentsOnly),
     },
     {
       name: "app.help",
@@ -998,23 +1005,23 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       group: "global",
       // The same window as settings, on its keybinds tab. Two overlays rendering
       // the same list from the same data was one overlay too many to teach.
-      run: () => {
+      run: Effect.sync(() => {
         if (overlay() === "settings" && settingsSection() === "keybinds") return setOverlay("none")
         setSettingsSection("keybinds")
         setSettingsSelected(0)
         setOverlay("settings")
-      },
+      }),
     },
     {
       name: "app.command-palette",
       key: "<leader>:",
       desc: "search and run commands",
       group: "global",
-      run: () => {
+      run: Effect.sync(() => {
         setPaletteQuery("")
         setPaletteSelected(0)
         setOverlay("palette")
-      },
+      }),
     },
     {
       name: "app.settings",
@@ -1023,14 +1030,14 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       key: "<leader>shift+s",
       desc: "settings",
       group: "global",
-      run: () => {
+      run: Effect.sync(() => {
         if (overlay() === "settings") return setOverlay("none")
         // Opening settings should land on settings, not on wherever ^a ? left the
         // tab last time.
         if (settingsSection() === "keybinds") setSettingsSection("sidebar")
         setSettingsSelected(0)
         setOverlay("settings")
-      },
+      }),
     },
     {
       name: "app.send-prefix",
@@ -1042,12 +1049,12 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       // Not offered in the editor: its sequence is the prefix, and the prefix
       // row already edits that.
       fixed: true,
-      run: () => {
+      run: Effect.sync(() => {
         const bytes = leaderBytes(bindings.leader())
         if (bytes) activeWin()?.write(bytes)
-      },
+      }),
     },
-    { name: "app.quit", key: "<leader>q", desc: "quit", group: "global", run: () => void shutdown() },
+    { name: "app.quit", key: "<leader>q", desc: "quit", group: "global", run: Effect.sync(shutdown) },
   ]
 
   /**
