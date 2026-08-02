@@ -188,7 +188,7 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
     Effect.sync(() => firstFrames.push(frame._tag)),
   ))
   const first = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf first; exit 3"], cols: 80, rows: 24 })
-  await first.exit
+  await Effect.runPromise(first.exit)
   await Promise.race([
     firstDone,
     Bun.sleep(2_000).then(() => { throw new Error("the session stream did not finish after its exit") }),
@@ -197,7 +197,7 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
 
   const secondDone = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.take(1))))
   const second = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf second; exit 4"], cols: 80, rows: 24 })
-  await second.exit
+  await Effect.runPromise(second.exit)
   const frames = await Promise.race([
     secondDone,
     Bun.sleep(2_000).then(() => { throw new Error("the replacement session did not receive output") }),
@@ -211,11 +211,14 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
   const client = await AttachClient.connect({ path: daemon.paths.attach, client: "unconsumed-test" })
 
   const first = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf first; exit 3"], cols: 80, rows: 24 })
-  await first.exit
+  await Effect.runPromise(first.exit)
+  // The PTY exit and its daemon publication are separate events. Let the
+  // unconsumed terminal frame reach the client before opening the replacement.
+  await Bun.sleep(50)
 
   const replacement = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.take(2))))
   const second = await daemon.spawnAgent({ id: "agent-1", cmd: ["sh", "-c", "printf second; exit 4"], cols: 80, rows: 24 })
-  await second.exit
+  await Effect.runPromise(second.exit)
   const frames = await Promise.race([
     replacement,
     Bun.sleep(2_000).then(() => { throw new Error("the replacement session did not finish") }),
@@ -225,6 +228,97 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
   expect([...frames].every((frame) => frame._tag !== "exit" || frame.code === 4)).toBe(true)
   expect([...frames].some((frame) => frame._tag === "output" && Buffer.from(frame.data).toString().includes("second"))).toBe(true)
   client.close()
+})
+
+test("rotates generations at exit without losing ordered frames in one chunk", async () => {
+  const home = await mkdtemp(join(tmpdir(), "herdr-generations-"))
+  dirs.push(home)
+  const path = join(home, "attach.sock")
+  let peer: Bun.Socket<undefined> | null = null
+  let buffer = ""
+  const listener = Bun.listen<undefined>({
+    unix: path,
+    data: undefined,
+    socket: {
+      binaryType: "buffer",
+      open(socket) { peer = socket },
+      data(socket, data) {
+        buffer += data.toString("utf8")
+        const decoded = decodeAttachFrames(buffer)
+        buffer = decoded.rest
+        for (const frame of decoded.frames) {
+          if (frame._tag === "ping") socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }))
+        }
+      },
+    },
+  })
+  const client = await AttachClient.connect({ path, client: "generation-test" })
+
+  const firstDone = Effect.runPromise(Stream.runCollect(client.stream("agent-1")))
+  await Bun.sleep(0)
+  peer!.write(
+    encodeAttachFrame({ _tag: "output", session: "agent-1", data: new TextEncoder().encode("first") }) +
+      encodeAttachFrame({ _tag: "exit", session: "agent-1", code: 3 }) +
+      encodeAttachFrame({ _tag: "output", session: "agent-1", data: new TextEncoder().encode("replacement") }),
+  )
+  const firstFrames = [...await firstDone]
+  expect(firstFrames.map((frame) => frame._tag)).toEqual(["output", "exit"])
+  expect(firstFrames.at(-1)?._tag).toBe("exit")
+
+  const replacementDone = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.take(2))))
+  await Bun.sleep(0)
+  peer!.write(encodeAttachFrame({ _tag: "exit", session: "agent-1", code: 4 }))
+  const replacementFrames = [...await replacementDone]
+  const replacementOutput = replacementFrames[0]
+  expect(replacementOutput?._tag).toBe("output")
+  if (replacementOutput?._tag === "output") expect(Buffer.from(replacementOutput.data).toString()).toBe("replacement")
+  expect(replacementFrames.at(-1)?._tag).toBe("exit")
+
+  client.close()
+  listener.stop(true)
+})
+
+test("an unacquired stream does not retain a terminal generation", async () => {
+  const home = await mkdtemp(join(tmpdir(), "herdr-unacquired-"))
+  dirs.push(home)
+  const path = join(home, "attach.sock")
+  let peer: Bun.Socket<undefined> | null = null
+  let buffer = ""
+  const listener = Bun.listen<undefined>({
+    unix: path,
+    data: undefined,
+    socket: {
+      binaryType: "buffer",
+      open(socket) { peer = socket },
+      data(socket, data) {
+        buffer += data.toString("utf8")
+        const decoded = decodeAttachFrames(buffer)
+        buffer = decoded.rest
+        for (const frame of decoded.frames) {
+          if (frame._tag === "ping") socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }))
+        }
+      },
+    },
+  })
+  const client = await AttachClient.connect({ path, client: "unacquired-test" })
+  const unused = client.stream("agent-1")
+
+  peer!.write(
+    encodeAttachFrame({ _tag: "output", session: "agent-1", data: new TextEncoder().encode("stale") }) +
+      encodeAttachFrame({ _tag: "exit", session: "agent-1", code: 3 }) +
+      encodeAttachFrame({ _tag: "output", session: "agent-1", data: new TextEncoder().encode("fresh") }),
+  )
+  await expect(client.ping(1_000)).resolves.toBe(true)
+  void unused
+  const replacement = Effect.runPromise(Stream.runCollect(client.stream("agent-1").pipe(Stream.take(1))))
+  const frames = [...await replacement]
+  expect(frames).toHaveLength(1)
+  const freshOutput = frames[0]
+  expect(freshOutput?._tag).toBe("output")
+  if (freshOutput?._tag === "output") expect(Buffer.from(freshOutput.data).toString()).toBe("fresh")
+
+  client.close()
+  listener.stop(true)
 })
 
 test("an unsubscribed session disconnects rather than silently dropping frames", async () => {
@@ -263,6 +357,51 @@ test("an unsubscribed session disconnects rather than silently dropping frames",
   await until(() => client.closed, "the overflowing client to disconnect")
   expect(client.closed).toBe(true)
   client.close()
+  listener.stop(true)
+})
+
+test("a delayed handshake closes its socket and rejects on timeout", async () => {
+  const home = await mkdtemp(join(tmpdir(), "herdr-handshake-timeout-"))
+  dirs.push(home)
+  const path = join(home, "attach.sock")
+  let closed = 0
+  const listener = Bun.listen<undefined>({
+    unix: path,
+    data: undefined,
+    socket: {
+      binaryType: "buffer",
+      open() {},
+      data() {},
+      close() { closed += 1 },
+    },
+  })
+
+  await expect(AttachClient.connect({ path, client: "delayed", helloTimeoutMs: 30 })).rejects.toThrow("timed out")
+  await until(() => closed === 1, "the delayed handshake socket to close")
+  listener.stop(true)
+})
+
+test("a handshake error closes the transport without leaving a client", async () => {
+  const home = await mkdtemp(join(tmpdir(), "herdr-handshake-error-"))
+  dirs.push(home)
+  const path = join(home, "attach.sock")
+  let closed = 0
+  const listener = Bun.listen<undefined>({
+    unix: path,
+    data: undefined,
+    socket: {
+      binaryType: "buffer",
+      open(socket) {
+        socket.write(encodeAttachFrame({ _tag: "error", message: "rejected" }))
+        socket.end()
+      },
+      data() {},
+      close() { closed += 1 },
+    },
+  })
+
+  await expect(AttachClient.connect({ path, client: "rejected", helloTimeoutMs: 100 })).rejects.toThrow("daemon closed")
+  await until(() => closed === 1, "the rejected handshake socket to close")
   listener.stop(true)
 })
 

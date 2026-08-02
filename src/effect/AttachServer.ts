@@ -273,6 +273,7 @@ export const startAttachServer = (
 
     const resetIdleTimer = (socket: Bun.Socket<ClientState>) => {
       const state = socket.data
+      if (state.closed) return
       if (state.idleTimer) clearTimeout(state.idleTimer)
       const seconds = options.idleTimeoutSeconds ?? 60
       state.idleTimer = setTimeout(() => {
