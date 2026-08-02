@@ -804,6 +804,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     "pane.split": ({ axis }) => Effect.suspend(() => activeWin()?.splitSpawn(axis) ?? Effect.void),
     "pane.next": () => Effect.sync(() => activeWin()?.focusNext(1)),
     "pane.focus": ({ direction }) => Effect.sync(() => activeWin()?.focusDirection(direction)),
+    "pane.resize": ({ direction }) => Effect.sync(() => activeWin()?.resizeFocus(direction)),
     "pane.zoom": () => Effect.sync(() => activeWin()?.zoom()),
     "pane.swap": ({ to }) => Effect.sync(() => activeWin()?.swap(to === "next" ? 1 : -1)),
     "pane.close": () =>
@@ -1032,6 +1033,23 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         [`<leader>${letter}`, `<leader>${direction}`],
         command("pane.focus", { direction }),
         { desc: `focus pane ${direction}` },
+      ),
+    ),
+    // Keyboard resize, tmux's resize-pane. ctrl+arrow because the plain arrows
+    // already move focus, exactly the way tmux ships both under one prefix.
+    ...(
+      [
+        ["left", "ctrl+left"],
+        ["down", "ctrl+down"],
+        ["up", "ctrl+up"],
+        ["right", "ctrl+right"],
+      ] as const
+    ).map(([direction, key]) =>
+      bind(
+        `pane.resize-${direction}`,
+        `<leader>${key}`,
+        command("pane.resize", { direction }),
+        { desc: `resize pane ${direction}` },
       ),
     ),
     bind("pane.zoom", "<leader>z", command("pane.zoom"), {

@@ -477,18 +477,31 @@ export class Window {
    * box while that box sits to the right of a divider two levels up.
    */
   #hasNeighbour(node: Renderable, axis: SplitDirection, direction: -1 | 1): boolean {
+    return this.#sideSibling(node, axis, direction) !== null
+  }
+
+  /**
+   * The sibling on the given side of this node, anywhere up the tree.
+   *
+   * The walk #hasNeighbour makes, returning what it found instead of merely
+   * reporting that one exists. Because dividers sit between every adjacent
+   * sibling pair, the thing found on a pane's side is the divider drawn there —
+   * which is exactly what a keyboard resize wants to nudge.
+   */
+  #sideSibling(node: Renderable, axis: SplitDirection, direction: -1 | 1): Renderable | null {
     let current: Renderable = node
     while (current !== this.root) {
       const parent = current.parent as BoxRenderable | null
-      if (!parent) return false
+      if (!parent) return null
       if (getDirection(parent) === axis) {
         const siblings = parent.getChildren()
         const i = siblings.indexOf(current)
-        if (direction < 0 ? i > 0 : i < siblings.length - 1) return true
+        const at = i + direction
+        if (at >= 0 && at < siblings.length) return siblings[at]!
       }
       current = parent
     }
-    return false
+    return null
   }
 
   /**
@@ -693,6 +706,28 @@ export class Window {
       }
     }
     if (best) this.focus(best)
+  }
+
+  /**
+   * Nudge the divider on the given side of the focused pane.
+   *
+   * tmux's resize-pane: the seam between the focused pane and whatever is on
+   * that side is moved one cell, growing the focused pane at its neighbour's
+   * expense. The divider's own resize clamps to MIN_CELLS, so a pane already
+   * squeezed to its minimum simply refuses to move rather than being stranded
+   * at zero cells. The walk up the tree makes a nested pane move the divider
+   * that actually borders it: in left | (top-right over bottom-right), resizing
+   * the top-right pane left moves the OUTER divider, exactly as dragging it
+   * would.
+   */
+  resizeFocus(direction: Direction) {
+    const pane = this.#focused
+    if (!pane || this.#panes.length < 2) return
+    const axis: SplitDirection = direction === "left" || direction === "right" ? "row" : "column"
+    const dir: -1 | 1 = direction === "left" || direction === "up" ? -1 : 1
+    const divider = this.#sideSibling(pane, axis, dir)
+    if (!(divider instanceof Divider)) return
+    divider.resize(dir)
   }
 
   /**

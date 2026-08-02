@@ -100,6 +100,80 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
 })
 
 /**
+ * ctrl+arrow is how resize is told apart from focus on the same key, the way
+ * tmux ships resize-pane and select-pane under one prefix. The two bindings
+ * must compile to different sequences and each fire only its own command.
+ * All four directions are checked because a sequence the parser rejects is a
+ * binding that reads back fine and dies silently (lrn-42d64b).
+ */
+test("ctrl+arrow is a distinct binding from the bare arrow", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 })
+  try {
+    const fired: string[] = []
+    const commands: CommandSpec[] = [
+      {
+        name: "pane.focus-left",
+        key: "<leader>left",
+        desc: "focus pane left",
+        group: "panes",
+        run: Effect.sync(() => fired.push("focus")),
+      },
+      {
+        name: "pane.resize-left",
+        key: "<leader>ctrl+left",
+        desc: "resize pane left",
+        group: "panes",
+        run: Effect.sync(() => fired.push("resize")),
+      },
+      {
+        name: "pane.resize-right",
+        key: "<leader>ctrl+right",
+        desc: "resize pane right",
+        group: "panes",
+        run: Effect.sync(() => fired.push("resize-right")),
+      },
+      {
+        name: "pane.resize-up",
+        key: "<leader>ctrl+up",
+        desc: "resize pane up",
+        group: "panes",
+        run: Effect.sync(() => fired.push("resize-up")),
+      },
+      {
+        name: "pane.resize-down",
+        key: "<leader>ctrl+down",
+        desc: "resize pane down",
+        group: "panes",
+        run: Effect.sync(() => fired.push("resize-down")),
+      },
+    ]
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true })
+
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressArrow("left", { ctrl: true })
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressArrow("left", {})
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressArrow("right", { ctrl: true })
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressArrow("up", { ctrl: true })
+    t.mockInput.pressKey("a", { ctrl: true })
+    t.mockInput.pressArrow("down", { ctrl: true })
+    expect(fired).toEqual(["resize", "focus", "resize-right", "resize-up", "resize-down"])
+
+    expect(helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys)).toEqual([
+      "^a left",
+      "^a ^left",
+      "^a ^right",
+      "^a ^up",
+      "^a ^down",
+    ])
+  } finally {
+    t.renderer.destroy()
+  }
+})
+
+/**
  * A command hidden from help must still run.
  *
  * `^a 2`..`^a 9` were dead for exactly this reason: hiding them was done with

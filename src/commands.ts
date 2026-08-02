@@ -93,6 +93,11 @@ const PaneFocus = define("pane.focus", { direction: Direction }, {
   group: "panes",
   capability: "agent",
 })
+const PaneResize = define("pane.resize", { direction: Direction }, {
+  desc: "resize the focused pane",
+  group: "panes",
+  capability: "agent",
+})
 const PaneZoom = define("pane.zoom", {}, {
   desc: "zoom the focused pane",
   group: "panes",
@@ -242,6 +247,7 @@ export const COMMAND_DEFS = [
   PaneSplit,
   PaneNext,
   PaneFocus,
+  PaneResize,
   PaneZoom,
   PaneSwap,
   PaneClose,

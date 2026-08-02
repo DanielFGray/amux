@@ -163,3 +163,115 @@ test("swap exchanges two panes' places while each slot keeps its size", async ()
   expect(second.x).toBe(slots[0]!)
   expect(window.panes.map((p) => p.agent)).toEqual([secondAgent, firstAgent])
 })
+
+test("resizeFocus nudges the divider on the focused pane's side", async () => {
+  const { window, layout } = await setup()
+  const left = window.panes[0]!
+  const right = run(window.splitSpawn("row"))!
+  await layout()
+  const before = [left.width, right.width]
+
+  // The focused pane grows toward the requested direction: the divider on that
+  // side moves one cell, shrinking the neighbour by the same amount.
+  window.focus(right)
+  window.resizeFocus("left")
+  await layout()
+  expect([left.width, right.width]).toEqual([before[0]! - 1, before[1]! + 1])
+
+  // And back the other way, from the other pane, returns to the start.
+  window.focus(left)
+  window.resizeFocus("right")
+  await layout()
+  expect([left.width, right.width]).toEqual(before)
+})
+
+test("resizeFocus up and down moves a horizontal divider", async () => {
+  const { window, layout } = await setup()
+  const top = window.panes[0]!
+  const bottom = run(window.splitSpawn("column"))!
+  await layout()
+  const before = [top.height, bottom.height]
+
+  window.focus(bottom)
+  window.resizeFocus("up")
+  await layout()
+  expect([top.height, bottom.height]).toEqual([before[0]! - 1, before[1]! + 1])
+})
+
+test("resizeFocus stops at the minimum pane size rather than stranding a neighbour", async () => {
+  const { window, layout } = await setup()
+  const left = window.panes[0]!
+  const right = run(window.splitSpawn("row"))!
+  await layout()
+  const total = left.width + right.width
+  window.focus(left)
+
+  // Far more presses than there are cells: the clamp, not the loop, is what
+  // stops it.
+  for (let i = 0; i < 100; i++) {
+    window.resizeFocus("right")
+    await layout()
+  }
+  expect(right.width).toBe(3) // MIN_CELLS
+  expect(left.width + right.width).toBe(total)
+})
+
+test("resizeFocus moves the outer divider when the focused pane is nested", async () => {
+  const { window, layout } = await setup()
+  // left | (topRight over bottomRight) — the focused pane's left divider is
+  // two levels up, the same walk #hasNeighbour makes.
+  const left = window.panes[0]!
+  const right = run(window.splitSpawn("row"))!
+  window.focus(right)
+  const bottomRight = run(window.splitSpawn("column"))!
+  await layout()
+
+  const before = { left: left.width, right: right.width, bottom: bottomRight.width }
+  window.focus(right)
+  window.resizeFocus("left")
+  await layout()
+
+  // The outer seam moved: the left pane shrank and the whole column — both
+  // right-hand panes — grew into the space.
+  expect(left.width).toBe(before.left - 1)
+  expect(right.width).toBe(before.right + 1)
+  expect(bottomRight.width).toBe(before.bottom + 1)
+})
+
+test("resizeFocus with nothing on that side does nothing", async () => {
+  const { window, layout } = await setup()
+  const left = window.panes[0]!
+  const right = run(window.splitSpawn("row"))!
+  await layout()
+  const before = [left.width, right.width]
+
+  // The left pane is flush against the window edge on three sides.
+  window.focus(left)
+  window.resizeFocus("left")
+  window.resizeFocus("up")
+  window.resizeFocus("down")
+  await layout()
+  expect([left.width, right.width]).toEqual(before)
+})
+
+test("resizeFocus while zoomed does nothing and leaves the parked layout intact", async () => {
+  const { window, layout } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+  await layout()
+  const before = window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`)
+
+  window.focus(second)
+  window.zoom()
+  await layout()
+  expect(window.zoomed).toBe(true)
+
+  window.resizeFocus("left")
+  window.resizeFocus("right")
+  await layout()
+  expect(window.zoomed).toBe(true)
+
+  window.zoom()
+  await layout()
+  expect(window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`)).toEqual(before)
+})

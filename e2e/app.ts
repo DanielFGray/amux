@@ -52,6 +52,16 @@ export interface App {
    */
   press(keys: string): Promise<void>
   /**
+   * Write raw bytes straight to the app in a single write.
+   *
+   * A multi-byte key (an arrow, a modified key) must arrive in one chunk or the
+   * streaming parser splits it on the escape timeout. `press` writes one
+   * character per write for the prefix's sake, which is exactly the wrong thing
+   * for `\x1b[1;5D` — so a check that needs a real ctrl+arrow builds the
+   * sequence itself and sends it whole.
+   */
+  send(bytes: string): void
+  /**
    * The workspace as the app last persisted it — spaces, windows and agents.
    *
    * The session file rather than the screen: a command that silently did
@@ -165,6 +175,9 @@ export async function launch(
       // scope close interrupts the agent's pump fiber before freeing its
       // terminal, so the write that follows is not immediate.
       await Bun.sleep(1500)
+    },
+    send(bytes) {
+      pty.write(bytes)
     },
     shape,
     config: () => Bun.file(configPath).json().catch(() => null),

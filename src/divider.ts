@@ -249,7 +249,7 @@ export class Divider extends Renderable {
         const delta = this.axis === "row" ? event.x - this.x : event.y - this.y
         if (delta !== 0) {
           if (this.onDrag) this.onDrag(delta)
-          else this.#resize(delta)
+          else this.resize(delta)
           this.requestRender()
         }
         event.stopPropagation()
@@ -258,7 +258,18 @@ export class Divider extends Renderable {
     }
   }
 
-  #resize(delta: number) {
+  /**
+   * Move the seam by `delta` cells, growing the neighbour on one side at the
+   * other's expense.
+   *
+   * The shared bottom of the mouse drag and the keyboard nudge: a drag hands it
+   * the pointer's offset from the seam, the keyboard hands it a fixed step.
+   * Both are self-correcting against a dropped event, because the target is
+   * recomputed from the current geometry rather than accumulated. The clamp
+   * keeps either neighbour at MIN_CELLS, so a pane already squeezed to its
+   * minimum simply refuses to move.
+   */
+  resize(delta: number) {
     const parent = this.parent
     if (!parent) return
     const siblings = parent.getChildren()

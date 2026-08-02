@@ -79,11 +79,15 @@ test("the wire decodes into a command, and rejects one it cannot type", () => {
   )
   // Optional targets stay optional over the wire.
   expect(Effect.runSync(decodeCommand({ _tag: "agent.kill" }))).toEqual(command("agent.kill"))
+  expect(Effect.runSync(decodeCommand({ _tag: "pane.resize", direction: "left" }))).toEqual(
+    command("pane.resize", { direction: "left" }),
+  )
 
   const rejects = (input: unknown) =>
     Either.isLeft(Effect.runSync(Effect.either(decodeCommand(input))))
   expect(rejects({ _tag: "window.select", number: "two" })).toBe(true)
   expect(rejects({ _tag: "pane.split", axis: "diagonal" })).toBe(true)
+  expect(rejects({ _tag: "pane.resize", direction: "diagonal" })).toBe(true)
   expect(rejects({ _tag: "no.such.command" })).toBe(true)
   // A verb that takes an argument cannot be invoked without it.
   expect(rejects({ _tag: "window.rename" })).toBe(true)
