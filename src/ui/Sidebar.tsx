@@ -102,6 +102,11 @@ export function Sidebar(props: SidebarProps) {
     <box
       style={{
         width: props.width,
+        // Height, not just width: the scrollbox below grows, and in a
+        // height-unconstrained box it grows past the bottom of the screen and
+        // takes the footer with it (lrn-b41100). The app's real sidebar had no
+        // summary line at all until this was pinned.
+        height: "100%",
         flexShrink: 0,
         flexDirection: "column",
         backgroundColor: theme.mantle,

@@ -34,6 +34,16 @@ import {
   filterPaletteEntries,
   paletteEntries,
 } from "./bindings.ts"
+import {
+  COMMAND_META,
+  CommandError,
+  command,
+  makeCommands,
+  runDetached,
+  type Command,
+  type CommandHandlers,
+  type CommandTag,
+} from "./commands.ts"
 import { saveConfig, applyConfig, type Config } from "./config.ts"
 import type { SessionClientShape } from "./client.ts"
 import { restoreSession, snapshotSpace } from "./snapshot.ts"
@@ -335,58 +345,74 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   })
   const activeWin = () => spaces.activeWindow
 
-  /** Open a modal prompt and resolve with the field values, or null on cancel. */
-  function ask(title: string, fields: PromptRequest["fields"]): Promise<string[] | null> {
-    return new Promise((resolveAsk) => {
+  /**
+   * Open a modal prompt and answer with the field values, or null on cancel.
+   *
+   * An Effect rather than a Promise because its callers are the prompt-driven
+   * *bindings*, and a binding's body is an Effect that ends in a command. The
+   * synchronous prefix still puts the prompt on screen in the keypress that
+   * asked for it; only the answer waits.
+   */
+  function ask(title: string, fields: PromptRequest["fields"]): Effect.Effect<string[] | null> {
+    return Effect.async<string[] | null>((resume) => {
       setPromptError("")
       setPromptRequest({
         title,
         fields,
         resolve: (values) => {
           setPromptRequest(null)
-          resolveAsk(values)
+          resume(Effect.succeed(values))
         },
       })
+      // Interrupting the binding takes the prompt down with it rather than
+      // leaving a modal nobody is waiting on.
+      return Effect.sync(() => setPromptRequest(null))
     })
   }
 
-  async function newSpace() {
+  /**
+   * The prompt-driven bindings: collect an argument, then invoke the command
+   * that takes it.
+   *
+   * This is tmux's `command-prompt -I "#W" "rename-window '%%'"` — the prompt
+   * is a property of the keybinding, not of the verb. `window.rename { name }`
+   * is a command a socket or an agent can invoke; asking a human to type the
+   * name is what `^a ,` adds on top of it.
+   */
+  const promptNewSpace = Effect.gen(function* () {
     const cwd = spaces.active?.dir ?? process.cwd()
-    const answers = await ask("New space", [
+    const answers = yield* ask("New space", [
       { label: "Name", value: basename(cwd), placeholder: "space name" },
       { label: "Directory", value: cwd, placeholder: "path" },
     ])
     if (!answers) return
-    const [name, dir] = answers
-    // An empty field means "keep the default" rather than "make it blank".
-    const target = resolve(dir?.trim() || cwd)
-    const space = run(spaces.create(name?.trim() || basename(target), target))
-    spaces.activate(space)
-    run(Effect.flatMap(space.newWindow(), (w) => w.init()))
-    void refreshGit()
-  }
+    // Empty fields are left out entirely: "keep the default" is the command's
+    // own answer to an absent argument, not a second rule written here.
+    yield* commands.run(command("space.new", { name: answers[0], dir: answers[1] }))
+  })
 
-  async function renameSpace() {
+  const promptRenameSpace = Effect.gen(function* () {
     const space = spaces.active
     if (!space) return
-    const answers = await ask("Rename space", [{ label: "Name", value: space.name }])
-    const name = answers?.[0]?.trim()
-    if (!name) return
-    space.name = name
-    app.refresh()
-  }
+    const answers = yield* ask("Rename space", [{ label: "Name", value: space.name }])
+    if (!answers) return
+    yield* commands.run(command("space.rename", { space: space.id, name: answers[0] ?? "" }))
+  })
 
-  async function renameWindow() {
-    const window = spaces.activeWindow
-    if (!window) return
-    const answers = await ask("Rename window", [
+  const promptRenameWindow = Effect.gen(function* () {
+    const space = spaces.active
+    const window = space?.active
+    if (!space || !window) return
+    const answers = yield* ask("Rename window", [
       { label: "Name", value: window.customName ?? "", placeholder: window.title },
     ])
     if (!answers) return
-    // Clearing the field hands the name back to whatever the window is running.
-    window.customName = answers[0]?.trim() || null
-    app.refresh()
-  }
+    // Named rather than left implicit: the answer arrives whenever the user
+    // finishes typing, and "the active window" may have moved by then.
+    yield* commands.run(
+      command("window.rename", { space: space.id, window: window.number, name: answers[0] ?? "" }),
+    )
+  })
 
   function moveSelection(delta: number) {
     const count = targets().length
@@ -407,23 +433,24 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     app.refresh()
   }
 
+  /**
+   * The sidebar's `x`: kill what the selected row represents.
+   *
+   * Three commands aimed at a row instead of at the active window, which is the
+   * whole reason commands take a target. This used to be a second copy of
+   * agent.kill / window.close / space.close — same three operations, written
+   * twice, and only one copy stepped copy mode down before freeing a terminal.
+   */
   function killSelection() {
     const target = targets()[selected()]
     if (!target) return
-    // Kill what the row actually represents, so x means the same thing at every
-    // level of the tree. The copy-mode pane is stepped down first — the teardown
-    // below can free its terminal, and nothing can catch a segfault.
-    if (target.kind === "agent") {
-      exitCopyModeFor(target.window.panes.filter((p) => p.agent === target.agent))
-      fork(target.window.killAgent(target.agent))
-    } else if (target.kind === "window") {
-      exitCopyModeFor(target.window.panes)
-      fork(target.space.closeWindow(target.window))
-    } else {
-      exitCopyModeFor(target.space.windows.flatMap((w) => w.panes))
-      fork(spaces.remove(target.space))
-    }
-    app.refresh()
+    const cmd =
+      target.kind === "agent"
+        ? command("agent.kill", { agent: target.agent.id })
+        : target.kind === "window"
+          ? command("window.close", { space: target.space.id, window: target.window.number })
+          : command("space.close", { space: target.space.id })
+    runDetached(cmd._tag, commands.run(cmd))
   }
 
   /**
@@ -718,7 +745,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
    * command to retype — while a missing target is a plain notice. Injected bytes
    * go to the pane's own write path, so app bindings never see them.
    */
-  function sendKeysCommand() {
+  const promptSendKeys = Effect.sync(() => {
     const target = sendKeysTarget()
     if (!target) {
       setPromptError("")
@@ -735,41 +762,298 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       title: `send-keys → ${target.describe()}`,
       footer: "keys: Enter, Escape, ctrl+a, space · text: 'ls -la' Enter · esc cancel",
       fields: [{ label: "keys", placeholder: "e.g. 'ls -la' Enter" }],
+      // Not `ask`: a rejected input keeps this prompt open with the reason in
+      // it, so the resolver has to see the command's failure rather than close
+      // over the answer. Cancelling closes — escape used to be answered with
+      // "nothing to send", which read as a rejection of a value nobody typed.
       resolve: (values) => {
-        const error = sendKeys(target, values?.[0] ?? "", parseKeyStrokes.bind(null, bindings.keymap))
-        if (error) setPromptError(error.message)
+        if (values === null) return setPromptRequest(null)
+        const failure = Effect.runSync(
+          commands.run(command("pane.send-keys", { keys: values[0] ?? "" })).pipe(
+            Effect.match({ onFailure: (error) => error.message, onSuccess: () => null }),
+          ),
+        )
+        if (failure) setPromptError(failure)
         else setPromptRequest(null)
       },
     })
+  })
+
+  /**
+   * Which window, space or agent a command is aimed at.
+   *
+   * An absent target means the active one, which is what a keypress means. A
+   * target that is named and not found is a failure rather than a shrug: over
+   * the socket that is a typo worth an answer, whereas `^a z` with no window at
+   * all has always been a no-op and stays one.
+   */
+  function findSpace(id: string | undefined): Effect.Effect<Space | null, CommandError> {
+    if (id === undefined) return Effect.succeed(spaces.active)
+    const space = spaces.spaces.find((s) => s.id === id)
+    return space ? Effect.succeed(space) : Effect.fail(new CommandError({ message: `no space '${id}'` }))
+  }
+
+  function findWindow(target: {
+    space?: string | undefined
+    window?: number | undefined
+  }): Effect.Effect<{ space: Space; window: Window } | null, CommandError> {
+    return Effect.flatMap(findSpace(target.space), (space) => {
+      if (!space) return Effect.succeed(null)
+      if (target.window === undefined) {
+        return Effect.succeed(space.active ? { space, window: space.active } : null)
+      }
+      const window = space.windows.find((w) => w.number === target.window)
+      return window
+        ? Effect.succeed({ space, window })
+        : Effect.fail(new CommandError({ message: `no window ${target.window} in '${space.name}'` }))
+    })
+  }
+
+  function findAgent(id: string | undefined): Effect.Effect<{ window: Window; agent: Agent } | null, CommandError> {
+    if (id === undefined) {
+      const window = activeWin()
+      const agent = window?.focused?.agent
+      return Effect.succeed(window && agent ? { window, agent } : null)
+    }
+    for (const space of spaces.spaces) {
+      for (const window of space.windows) {
+        const agent = window.agents.find((a) => a.id === id)
+        if (agent) return Effect.succeed({ window, agent })
+      }
+    }
+    return Effect.fail(new CommandError({ message: `no agent '${id}'` }))
+  }
+
+  /**
+   * What each verb does.
+   *
+   * Total over the command union, so declaring a command and forgetting to
+   * implement it is a type error. Every surface — the keymap below, the sidebar,
+   * and the control socket in ts-14b665 — reaches these through `commands.run`,
+   * which is the point: there is one definition of what `agent.kill` means and
+   * one place it can be got wrong.
+   */
+  const handlers: CommandHandlers = {
+    // Suspended rather than `sync`: the window has to be read when the command
+    // runs, not when the table is built.
+    "pane.split": ({ axis }) => Effect.suspend(() => activeWin()?.splitSpawn(axis) ?? Effect.void),
+    "pane.next": () => Effect.sync(() => activeWin()?.focusNext(1)),
+    "pane.focus": ({ direction }) => Effect.sync(() => activeWin()?.focusDirection(direction)),
+    "pane.zoom": () => Effect.sync(() => activeWin()?.zoom()),
+    "pane.swap": ({ to }) => Effect.sync(() => activeWin()?.swap(to === "next" ? 1 : -1)),
+    "pane.close": () =>
+      Effect.sync(() => {
+        const w = activeWin()
+        if (!w?.focused) return
+        exitCopyModeFor(w.focused)
+        w.close(w.focused)
+      }),
+    "pane.break": () =>
+      Effect.gen(function* () {
+        const w = activeWin()
+        const space = spaces.active
+        if (w?.focused && space) yield* space.breakPane(w.focused)
+      }),
+    "pane.send-keys": ({ keys }) =>
+      Effect.suspend(() => {
+        const target = sendKeysTarget()
+        if (!target) return Effect.fail(new CommandError({ message: "no pane to send to" }))
+        const error = sendKeys(target, keys, parseKeyStrokes.bind(null, bindings.keymap))
+        return error ? Effect.fail(new CommandError({ message: error.message })) : Effect.void
+      }),
+    "pane.capture": () => Effect.sync(openCapture),
+    "pane.copy-mode": () => Effect.sync(enterCopyMode),
+
+    "window.new": () =>
+      Effect.gen(function* () {
+        const space = spaces.active
+        if (!space) return
+        const window = yield* space.newWindow()
+        yield* window.init()
+      }),
+    "window.next": () => Effect.sync(() => spaces.active?.cycleWindow(1)),
+    "window.previous": () => Effect.sync(() => spaces.active?.cycleWindow(-1)),
+    "window.select": ({ space, number }) =>
+      Effect.flatMap(findSpace(space), (found) => Effect.sync(() => void found?.selectNumber(number))),
+    "window.rename": ({ name, ...target }) =>
+      Effect.flatMap(findWindow(target), (found) =>
+        Effect.sync(() => {
+          if (!found) return
+          // Clearing the name hands the title back to whatever the window is
+          // running, which is the only way to undo a rename.
+          found.window.customName = name.trim() || null
+          app.refresh()
+        }),
+      ),
+    "window.close": (target) =>
+      Effect.gen(function* () {
+        const found = yield* findWindow(target)
+        if (!found) return
+        exitCopyModeFor(found.window.panes)
+        yield* found.space.closeWindow(found.window)
+        app.refresh()
+      }),
+    "window.next-layout": () =>
+      Effect.sync(() => {
+        const w = activeWin()
+        if (!w) return
+        exitCopyModeFor(w.panes)
+        w.selectLayout(nextPreset(w.preset))
+      }),
+    "window.select-layout": ({ preset }) =>
+      Effect.sync(() => {
+        const w = activeWin()
+        if (!w) return
+        exitCopyModeFor(w.panes)
+        w.selectLayout(preset)
+      }),
+    "window.synchronize-panes": () => Effect.sync(() => activeWin()?.toggleSync()),
+
+    "agent.kill": ({ agent }) =>
+      Effect.gen(function* () {
+        const found = yield* findAgent(agent)
+        if (!found) return
+        // Before the teardown, never after: the mode's exit clears the selection
+        // through the pane's terminal, and a freed terminal cannot be caught.
+        exitCopyModeFor(found.window.panes.filter((p) => p.agent === found.agent))
+        yield* found.window.killAgent(found.agent)
+        app.refresh()
+      }),
+    "agent.next-blocked": () =>
+      Effect.sync(() => {
+        const agent = spaces.nextBlocked()
+        if (!agent) return
+        const index = targets().findIndex((target) => target.kind === "agent" && target.agent === agent)
+        if (index !== -1) setSelected(index)
+      }),
+
+    "space.new": ({ name, dir }) =>
+      Effect.gen(function* () {
+        // An absent or empty field means "the default" rather than "blank".
+        const cwd = spaces.active?.dir ?? process.cwd()
+        const target = resolve(dir?.trim() || cwd)
+        const space = yield* spaces.create(name?.trim() || basename(target), target)
+        spaces.activate(space)
+        const window = yield* space.newWindow()
+        yield* window.init()
+        void refreshGit()
+      }),
+    "space.rename": ({ space, name }) =>
+      Effect.flatMap(findSpace(space), (found) =>
+        Effect.sync(() => {
+          if (!found || !name.trim()) return
+          found.name = name.trim()
+          app.refresh()
+        }),
+      ),
+    "space.close": ({ space }) =>
+      Effect.gen(function* () {
+        const found = yield* findSpace(space)
+        if (!found) return
+        exitCopyModeFor(found.windows.flatMap((w) => w.panes))
+        yield* spaces.remove(found)
+        app.refresh()
+      }),
+    "space.next": () => Effect.sync(() => spaces.cycle(1)),
+    "space.previous": () => Effect.sync(() => spaces.cycle(-1)),
+
+    "sidebar.toggle": () => Effect.sync(toggleSidebar),
+    "sidebar.toggle-agents-only": () => Effect.sync(toggleAgentsOnly),
+    "app.help": () =>
+      Effect.sync(() => {
+        // The same window as settings, on its keybinds tab. Two overlays
+        // rendering the same list from the same data was one overlay too many
+        // to teach.
+        if (overlay() === "settings" && settingsSection() === "keybinds") return setOverlay("none")
+        setSettingsSection("keybinds")
+        setSettingsSelected(0)
+        setOverlay("settings")
+      }),
+    "app.command-palette": () =>
+      Effect.sync(() => {
+        setPaletteQuery("")
+        setPaletteSelected(0)
+        setOverlay("palette")
+      }),
+    "app.settings": () =>
+      Effect.sync(() => {
+        if (overlay() === "settings") return setOverlay("none")
+        // Opening settings should land on settings, not on wherever ^a ? left
+        // the tab last time.
+        if (settingsSection() === "keybinds") setSettingsSection("sidebar")
+        setSettingsSelected(0)
+        setOverlay("settings")
+      }),
+    "app.send-prefix": () =>
+      Effect.sync(() => {
+        const bytes = leaderBytes(bindings.leader())
+        if (bytes) activeWin()?.write(bytes)
+      }),
+    "app.quit": () => Effect.sync(shutdown),
+  }
+
+  const commands = makeCommands(handlers)
+
+  /**
+   * One keybinding: a name, the keys that reach it, and the command it invokes
+   * with its arguments supplied.
+   *
+   * `desc` and `group` come from the command unless the binding says otherwise,
+   * because a binding that supplies an argument often reads better than the verb
+   * does — `^a |` is "split left/right", not "split the focused pane".
+   */
+  function bind(
+    name: string,
+    key: string | string[] | undefined,
+    cmd: Command,
+    opts: { desc?: string; hidden?: boolean; fixed?: boolean } = {},
+  ): CommandSpec {
+    const meta = COMMAND_META[cmd._tag]
+    return {
+      name,
+      ...(key === undefined ? {} : { key }),
+      desc: opts.desc ?? meta.desc,
+      group: meta.group,
+      hidden: opts.hidden,
+      fixed: opts.fixed,
+      run: commands.run(cmd),
+    }
+  }
+
+  /**
+   * A binding that has to collect its argument before it can invoke anything.
+   *
+   * Named after the command it ends in, because that is what it runs; the
+   * prompt is the part that only makes sense in front of a screen.
+   */
+  function bindPrompt(
+    tag: CommandTag,
+    key: string | string[] | undefined,
+    open: Effect.Effect<void, CommandError>,
+    desc?: string,
+  ): CommandSpec {
+    const meta = COMMAND_META[tag]
+    return {
+      name: tag,
+      ...(key === undefined ? {} : { key }),
+      desc: desc ?? meta.desc,
+      group: meta.group,
+      run: open,
+    }
   }
 
   const COMMANDS: CommandSpec[] = [
     // Panes — splits keep the tmux-ish | and -, which read better than " and %.
-    {
-      name: "pane.split-row",
-      key: ["<leader>|", "<leader>\\"],
+    bind("pane.split-row", ["<leader>|", "<leader>\\"], command("pane.split", { axis: "row" }), {
       desc: "split left/right",
-      group: "panes",
-      // Suspended, not `sync`: the window has to be read when the key is
-      // pressed, not when the table is built.
-      run: Effect.suspend(() => activeWin()?.splitSpawn("row") ?? Effect.void),
-    },
-    {
-      name: "pane.split-column",
-      key: "<leader>-",
+    }),
+    bind("pane.split-column", "<leader>-", command("pane.split", { axis: "column" }), {
       desc: "split top/bottom",
-      group: "panes",
-      run: Effect.suspend(() => activeWin()?.splitSpawn("column") ?? Effect.void),
-    },
-    {
-      name: "pane.next",
-      key: "<leader>o",
-      desc: "next pane",
-      group: "panes",
-      run: Effect.sync(() => activeWin()?.focusNext(1)),
-    },
-    // Directional focus, tmux's select-pane. Two sequences per direction rather
-    // than two commands, so the help shows both against one entry.
+    }),
+    bind("pane.next", "<leader>o", command("pane.next"), { desc: "next pane" }),
+    // Directional focus, tmux's select-pane. One command with a direction, four
+    // bindings that supply one each: two sequences per direction read better in
+    // the help as four rows than as one row listing eight keys.
     ...(
       [
         ["left", "h"],
@@ -777,310 +1061,104 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         ["up", "k"],
         ["right", "l"],
       ] as const
-    ).map(([direction, letter]) => ({
-      name: `pane.focus-${direction}`,
-      key: [`<leader>${letter}`, `<leader>${direction}`],
-      desc: `focus pane ${direction}`,
-      group: "panes",
-      run: Effect.sync(() => activeWin()?.focusDirection(direction)),
-    })),
-    {
-      name: "pane.zoom",
-      key: "<leader>z",
+    ).map(([direction, letter]) =>
+      bind(
+        `pane.focus-${direction}`,
+        [`<leader>${letter}`, `<leader>${direction}`],
+        command("pane.focus", { direction }),
+        { desc: `focus pane ${direction}` },
+      ),
+    ),
+    bind("pane.zoom", "<leader>z", command("pane.zoom"), {
       desc: "zoom the focused pane (Z in the tab)",
-      group: "panes",
-      run: Effect.sync(() => activeWin()?.zoom()),
-    },
-    {
-      name: "pane.swap-previous",
-      key: "<leader>{",
+    }),
+    bind("pane.swap-previous", "<leader>{", command("pane.swap", { to: "previous" }), {
       desc: "swap pane with the previous one",
-      group: "panes",
-      run: Effect.sync(() => activeWin()?.swap(-1)),
-    },
-    {
-      name: "pane.swap-next",
-      key: "<leader>}",
+    }),
+    bind("pane.swap-next", "<leader>}", command("pane.swap", { to: "next" }), {
       desc: "swap pane with the next one",
-      group: "panes",
-      run: Effect.sync(() => activeWin()?.swap(1)),
-    },
-    {
-      name: "pane.close",
-      key: "<leader>x",
+    }),
+    bind("pane.close", "<leader>x", command("pane.close"), {
       desc: "close pane (agent keeps running)",
-      group: "panes",
-      run: Effect.sync(() => {
-        const w = activeWin()
-        if (w?.focused) {
-          exitCopyModeFor(w.focused)
-          w.close(w.focused)
-        }
-      }),
-    },
-    {
-      name: "pane.capture",
-      // shift+c: plain ^a c is new window, and this is near pane.close's ^a x.
-      key: "<leader>shift+c",
+    }),
+    // shift+c: plain ^a c is new window, and this is near pane.close's ^a x.
+    bind("pane.capture", "<leader>shift+c", command("pane.capture"), {
       desc: "capture the focused pane (s saves)",
-      group: "panes",
-      run: Effect.sync(openCapture),
-    },
-    {
-      name: "pane.copy-mode",
-      key: "<leader>[",
+    }),
+    bind("pane.copy-mode", "<leader>[", command("pane.copy-mode"), {
       desc: "copy mode: review pane history (v selects, y copies)",
-      group: "panes",
-      run: Effect.sync(enterCopyMode),
-    },
-    {
-      name: "pane.send-keys",
-      // The command remains available from the palette; prefix+colon now opens it.
-      desc: "send keys to the focused pane (tmux send-keys)",
-      group: "panes",
-      run: Effect.sync(sendKeysCommand),
-    },
-    {
-      // The binding tmux itself gives break-pane.
-      name: "pane.break",
-      key: "<leader>!",
-      desc: "break the focused pane into its own window",
-      group: "panes",
-      run: Effect.gen(function* () {
-        const w = activeWin()
-        const space = spaces.active
-        if (w?.focused && space) yield* space.breakPane(w.focused)
-      }),
-    },
+    }),
+    // Available from the palette; prefix+colon opens it.
+    bindPrompt(
+      "pane.send-keys",
+      undefined,
+      promptSendKeys,
+      "send keys to the focused pane (tmux send-keys)",
+    ),
+    // The binding tmux itself gives break-pane.
+    bind("pane.break", "<leader>!", command("pane.break")),
 
     // Windows.
-    {
-      name: "window.new",
-      key: "<leader>c",
-      desc: "new window",
-      group: "windows",
-      run: Effect.gen(function* () {
-        const space = spaces.active
-        if (!space) return
-        const window = yield* space.newWindow()
-        yield* window.init()
-      }),
-    },
-    {
-      name: "window.next",
-      key: "<leader>n",
-      desc: "next window",
-      group: "windows",
-      run: Effect.sync(() => spaces.active?.cycleWindow(1)),
-    },
-    {
-      name: "window.previous",
-      key: "<leader>p",
-      desc: "previous window",
-      group: "windows",
-      run: Effect.sync(() => spaces.active?.cycleWindow(-1)),
-    },
-    {
-      name: "window.rename",
-      key: "<leader>,",
-      desc: "rename window",
-      group: "windows",
-      // The prompt is still fused into the command; ts-8b3867 splits collecting
-      // the name (a keybinding) from renaming with it (the command).
-      run: Effect.promise(renameWindow),
-    },
-    {
-      name: "window.close",
-      key: "<leader>&",
+    bind("window.new", "<leader>c", command("window.new")),
+    bind("window.next", "<leader>n", command("window.next")),
+    bind("window.previous", "<leader>p", command("window.previous")),
+    bindPrompt("window.rename", "<leader>,", promptRenameWindow, "rename window"),
+    bind("window.close", "<leader>&", command("window.close"), {
       desc: "kill window and its agents",
-      group: "windows",
-      run: Effect.gen(function* () {
-        const space = spaces.active
-        const w = space?.active
-        if (!space || !w) return
-        exitCopyModeFor(w.panes)
-        yield* space.closeWindow(w)
-      }),
-    },
-    {
-      // tmux's next-layout, on tmux's own binding.
-      name: "window.next-layout",
-      key: "<leader>space",
-      desc: "cycle through the preset layouts",
-      group: "windows",
-      run: Effect.sync(() => {
-        const w = activeWin()
-        if (w) {
-          exitCopyModeFor(w.panes)
-          w.selectLayout(nextPreset(w.preset))
-        }
-      }),
-    },
-    // Each preset is addressable on its own, so a keymap can bind one directly
-    // and a command layer can name it — tmux's select-layout <name>.
-    ...LAYOUT_PRESETS.map((preset: LayoutPreset, i) => ({
-      name: `window.select-layout.${preset}`,
-      desc: i === 0 ? "arrange panes in a preset layout" : `arrange panes: ${preset}`,
-      hidden: i > 0,
-      group: "windows",
-      run: Effect.sync(() => {
-        const w = activeWin()
-        if (w) {
-          exitCopyModeFor(w.panes)
-          w.selectLayout(preset)
-        }
-      }),
-    })),
-    {
-      name: "window.synchronize-panes",
-      key: "<leader>y",
-      desc: "toggle synchronize-panes (input to every pane)",
-      group: "windows",
-      run: Effect.sync(() => activeWin()?.toggleSync()),
-    },
+    }),
+    // tmux's next-layout, on tmux's own binding.
+    bind("window.next-layout", "<leader>space", command("window.next-layout")),
+    // Each preset is addressable on its own, so a keymap can bind one directly —
+    // tmux's select-layout <name>. One command, five bindings.
+    ...LAYOUT_PRESETS.map((preset: LayoutPreset, i) =>
+      bind(
+        `window.select-layout.${preset}`,
+        undefined,
+        command("window.select-layout", { preset }),
+        i === 0 ? {} : { desc: `arrange panes: ${preset}`, hidden: true },
+      ),
+    ),
+    bind("window.synchronize-panes", "<leader>y", command("window.synchronize-panes")),
     // 1..9 select by the window's own number, which is why that number is stable
-    // rather than a position in the list.
-    ...Array.from({ length: 9 }, (_, i) => ({
-      name: `window.select-${i + 1}`,
-      key: `<leader>${i + 1}`,
-      desc: i === 0 ? "select window 1..9" : `select window ${i + 1}`,
-      // Listed once, on the first; see CommandSpec.hidden for why this is a flag
-      // and not an empty description.
-      hidden: i > 0,
-      group: "windows",
-      run: Effect.sync(() => void spaces.active?.selectNumber(i + 1)),
-    })),
+    // rather than a position in the list. Nine bindings supplying an argument to
+    // one command, which is exactly tmux's `bind-key 1 select-window -t 1`.
+    ...Array.from({ length: 9 }, (_, i) =>
+      bind(`window.select-${i + 1}`, `<leader>${i + 1}`, command("window.select", { number: i + 1 }), {
+        desc: i === 0 ? "select window 1..9" : `select window ${i + 1}`,
+        // Listed once, on the first; see CommandSpec.hidden for why this is a
+        // flag and not an empty description.
+        hidden: i > 0,
+      }),
+    ),
 
     // Agents.
-    {
-      name: "agent.kill",
-      // shift+k: plain ^a k is directional pane focus, and killing an agent is
-      // not something to put one keystroke away from "move up" anyway.
-      key: "<leader>shift+k",
-      desc: "stop the focused agent",
-      group: "agents",
-      run: Effect.gen(function* () {
-        const w = activeWin()
-        const pane = w?.focused
-        if (!w || !pane) return
-        exitCopyModeFor(w.panes.filter((p) => p.agent === pane.agent))
-        yield* w.killAgent(pane.agent)
-      }),
-    },
-    {
-      name: "agent.next-blocked",
-      key: "<leader>a",
+    // shift+k: plain ^a k is directional pane focus, and killing an agent is not
+    // something to put one keystroke away from "move up" anyway.
+    bind("agent.kill", "<leader>shift+k", command("agent.kill"), { desc: "stop the focused agent" }),
+    bind("agent.next-blocked", "<leader>a", command("agent.next-blocked"), {
       desc: "jump to the next blocked agent",
-      group: "agents",
-      run: Effect.sync(() => {
-        const agent = spaces.nextBlocked()
-        if (!agent) return
-        const index = targets().findIndex((target) => target.kind === "agent" && target.agent === agent)
-        if (index !== -1) setSelected(index)
-      }),
-    },
+    }),
 
     // Spaces.
-    {
-      name: "space.new",
-      key: "<leader>s",
-      desc: "new space",
-      group: "spaces",
-      run: Effect.promise(newSpace),
-    },
-    {
-      name: "space.rename",
-      key: "<leader>r",
-      desc: "rename space",
-      group: "spaces",
-      run: Effect.promise(renameSpace),
-    },
-    {
-      name: "space.next",
-      key: "<leader>)",
-      desc: "next space",
-      group: "spaces",
-      run: Effect.sync(() => spaces.cycle(1)),
-    },
-    {
-      name: "space.previous",
-      key: "<leader>(",
-      desc: "previous space",
-      group: "spaces",
-      run: Effect.sync(() => spaces.cycle(-1)),
-    },
+    bindPrompt("space.new", "<leader>s", promptNewSpace),
+    bindPrompt("space.rename", "<leader>r", promptRenameSpace, "rename space"),
+    bind("space.next", "<leader>)", command("space.next")),
+    bind("space.previous", "<leader>(", command("space.previous")),
+    bind("space.close", undefined, command("space.close")),
 
     // App.
-    {
-      name: "sidebar.toggle",
-      key: "<leader>b",
-      desc: "toggle sidebar",
-      group: "global",
-      run: Effect.sync(toggleSidebar),
-    },
-    {
-      name: "sidebar.toggle-agents-only",
-      desc: "show only panes running agent CLIs",
-      group: "global",
-      run: Effect.sync(toggleAgentsOnly),
-    },
-    {
-      name: "app.help",
-      key: ["<leader>?", "<leader>/"],
-      desc: "keybinds",
-      group: "global",
-      // The same window as settings, on its keybinds tab. Two overlays rendering
-      // the same list from the same data was one overlay too many to teach.
-      run: Effect.sync(() => {
-        if (overlay() === "settings" && settingsSection() === "keybinds") return setOverlay("none")
-        setSettingsSection("keybinds")
-        setSettingsSelected(0)
-        setOverlay("settings")
-      }),
-    },
-    {
-      name: "app.command-palette",
-      key: "<leader>:",
-      desc: "search and run commands",
-      group: "global",
-      run: Effect.sync(() => {
-        setPaletteQuery("")
-        setPaletteSelected(0)
-        setOverlay("palette")
-      }),
-    },
-    {
-      name: "app.settings",
-      // shift+s, not "S": a bare capital compiles to the same sequence as the
-      // lowercase one, so this was silently shadowed by space.new's ^a s.
-      key: "<leader>shift+s",
-      desc: "settings",
-      group: "global",
-      run: Effect.sync(() => {
-        if (overlay() === "settings") return setOverlay("none")
-        // Opening settings should land on settings, not on wherever ^a ? left the
-        // tab last time.
-        if (settingsSection() === "keybinds") setSettingsSection("sidebar")
-        setSettingsSelected(0)
-        setOverlay("settings")
-      }),
-    },
-    {
-      name: "app.send-prefix",
-      // The prefix twice, written as the token so it follows a rebind — and sent
-      // as whatever bytes that prefix actually produces.
-      key: "<leader><leader>",
-      desc: "send a literal prefix key",
-      group: "global",
-      // Not offered in the editor: its sequence is the prefix, and the prefix
-      // row already edits that.
-      fixed: true,
-      run: Effect.sync(() => {
-        const bytes = leaderBytes(bindings.leader())
-        if (bytes) activeWin()?.write(bytes)
-      }),
-    },
-    { name: "app.quit", key: "<leader>q", desc: "quit", group: "global", run: Effect.sync(shutdown) },
+    bind("sidebar.toggle", "<leader>b", command("sidebar.toggle"), { desc: "toggle sidebar" }),
+    bind("sidebar.toggle-agents-only", undefined, command("sidebar.toggle-agents-only")),
+    bind("app.help", ["<leader>?", "<leader>/"], command("app.help")),
+    bind("app.command-palette", "<leader>:", command("app.command-palette")),
+    // shift+s, not "S": a bare capital compiles to the same sequence as the
+    // lowercase one, so this was silently shadowed by space.new's ^a s.
+    bind("app.settings", "<leader>shift+s", command("app.settings")),
+    // The prefix twice, written as the token so it follows a rebind — and sent
+    // as whatever bytes that prefix actually produces. Not offered in the
+    // editor: its sequence is the prefix, and the prefix row already edits that.
+    bind("app.send-prefix", "<leader><leader>", command("app.send-prefix"), { fixed: true }),
+    bind("app.quit", "<leader>q", command("app.quit")),
   ]
 
   /**

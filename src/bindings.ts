@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit } from "effect"
+import type { Effect } from "effect"
 import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core"
 import { createOpenTuiKeymap } from "@opentui/keymap/opentui"
 import {
@@ -9,6 +9,7 @@ import {
 } from "@opentui/keymap/addons"
 import type { Keymap } from "@opentui/keymap"
 import type { KeyStroke } from "./keys.ts"
+import { runDetached, type CommandError } from "./commands.ts"
 
 export type AppKeymap = Keymap<Renderable, KeyEvent>
 
@@ -147,6 +148,17 @@ export function leaderBytes(leader: string): string {
   return leader.length === 1 ? leader : ""
 }
 
+/**
+ * One keybinding: a name, the keys that reach it, and what it invokes.
+ *
+ * NOT the same thing as a command. A command is a verb with arguments
+ * (commands.ts); a binding is one addressable way to run it with the arguments
+ * baked in, which is why `^a 1..9` is nine bindings over a single
+ * `window.select { number }` — tmux writes the same thing as
+ * `bind-key 1 select-window -t 1`. The name is the binding's identity: it is
+ * what the keybind editor rebinds and what a config file records, so it stays
+ * `window.select-3` even though the command it runs is `window.select`.
+ */
 export interface CommandSpec {
   /** Dotted name, e.g. "pane.split-row". The namespace doubles as the help group. */
   name: string
@@ -168,16 +180,25 @@ export interface CommandSpec {
    *  sequence is the prefix twice, and rebinding it separately is nonsense. */
   fixed?: boolean
   /**
-   * What the command does, as a value rather than a callback.
+   * What pressing the keys does, as a value rather than a callback.
+   *
+   * Almost always `commands.run(command(...))` — the binding names a verb and
+   * supplies its arguments. The exceptions are the bindings that have to
+   * *collect* an argument first: `^a ,` opens a prompt and then invokes
+   * `window.rename { name }`, which is tmux's
+   * `command-prompt -I "#W" "rename-window '%%'"`. Those are effects that end
+   * in a command rather than commands themselves, because a modal prompt is a
+   * thing you do to a screen, not a verb a socket can invoke.
    *
    * The effect is built once, when the table is built, so anything it reads
    * from the workspace has to be read *inside* it — `Effect.sync`,
-   * `Effect.suspend`, `Effect.gen`. That is the point: a command whose body is
-   * an Effect can `yield*` the workspace's Effect-returning methods, so a
-   * forgotten step is a type error instead of a statement that quietly does
-   * nothing (ts-456094, where eight commands did exactly that).
+   * `Effect.suspend`, `Effect.gen`. `Commands.run` suspends for exactly this
+   * reason. A body that is an Effect can `yield*` the workspace's
+   * Effect-returning methods, so a forgotten step is a type error instead of a
+   * statement that quietly does nothing (ts-456094, where eight commands did
+   * exactly that).
    */
-  run: Effect.Effect<void>
+  run: Effect.Effect<void, CommandError>
 }
 
 /** The sequences a command answers to right now: the user's, or its own. */
@@ -218,28 +239,6 @@ export interface Bindings {
    * binding. Modifiers alone do not end the capture. Returns a canceller.
    */
   capture(onKey: (event: KeyEvent, binding: string) => void): () => void
-}
-
-/**
- * Run a command's effect and let it finish on its own.
- *
- * Forked rather than `runSync`, because closing an agent interrupts its pump
- * fiber before freeing the terminal and `runSync` refuses to wait on an
- * interrupt. Forking still runs an effect's synchronous prefix *immediately*,
- * so a command that only touches the tree stays as synchronous as it was when
- * `run` was a plain callback — which is what dispatch's predicate contract
- * needs, and why this does not have to become async.
- *
- * A command declares no error channel, so anything it raises is a defect, and a
- * defect in a forked fiber goes unnoticed unless somebody observes it. This
- * observes it. Interruption is not a failure worth reporting: it is what
- * shutting down looks like from in here.
- */
-function runCommand(cmd: CommandSpec): void {
-  Effect.runFork(cmd.run).addObserver((exit) => {
-    if (Exit.isSuccess(exit) || Cause.isInterruptedOnly(exit.cause)) return
-    console.error(`command ${cmd.name} failed: ${Cause.pretty(exit.cause)}`)
-  })
 }
 
 /**
@@ -325,7 +324,7 @@ export function createBindings(
         name: cmd.name,
         desc: cmd.desc,
         group: cmd.group,
-        run: () => runCommand(cmd),
+        run: () => runDetached(cmd.name, cmd.run),
       })),
     })
 
