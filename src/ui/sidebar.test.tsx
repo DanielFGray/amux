@@ -75,16 +75,23 @@ async function setup(backend?: SpawnBackend) {
 
   await render(
     () => (
-      <Sidebar
-        app={app}
-        width={30}
-        selected={selected()}
-        hovered={hovered()}
-        focused={false}
-        toggleKeys="^a b"
-        onHover={setHovered}
-        onActivate={(i) => activated.push(i)}
-      />
+      // Height-constrained exactly as App.tsx constrains it. Mounted bare, the
+      // sidebar is the render root with no height to fill, so its flexGrow
+      // scrollbox takes every row and anything below it is pushed off-screen —
+      // which silently hid the footer here, and would hide anything else the
+      // sidebar ever puts at its bottom.
+      <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
+        <Sidebar
+          app={app}
+          width={30}
+          selected={selected()}
+          hovered={hovered()}
+          focused={false}
+          toggleKeys="^a b"
+          onHover={setHovered}
+          onActivate={(i) => activated.push(i)}
+        />
+      </box>
     ),
     t.renderer,
   )
@@ -109,10 +116,13 @@ async function setup(backend?: SpawnBackend) {
 test("renders the space/agent tree with a state glyph per row", async () => {
   const s = await setup()
   try {
-    await s.t.waitForFrame((f: string) => f.includes("1 space"))
+    await s.t.waitForFrame((f: string) => f.includes("proj"))
     const frame = s.t.captureCharFrame()
+    // The tree now starts on the first row: the summary that used to sit above
+    // it is what this change moved out of the way.
+    expect(frame.split("\n")[0]).toContain("proj")
+    // And it is still rendered, below the tree rather than above it.
     expect(frame).toContain("1 space · 1 agent")
-    expect(frame).toContain("proj")
     expect(frame).toMatch(/[○●✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
   } finally {
     await s.dispose()
@@ -180,7 +190,7 @@ test("an agent whose daemon attachment is lost stays in the sidebar as idle, not
       () => daemon.liveAgents().then((ids) => ids.includes(agent.id)),
       "the daemon to own the agent",
     )
-    await s.t.waitForFrame((f: string) => f.includes("1 agent"))
+    await s.t.waitForFrame((f: string) => f.includes("shell"))
 
     const live = s.t.captureCharFrame()
     expect(live).toContain("shell")
@@ -252,11 +262,11 @@ test("hover follows the pointer between rows, not just on entry", async () => {
     // OpenTUI emits "over" once on entry and "move" for every position after
     // that inside the same renderable; handling both is what makes the
     // highlight track the pointer instead of sticking to the entry row.
-    await s.t.mockMouse.moveTo(10, 1)
+    await s.t.mockMouse.moveTo(10, 0)
     await waitFor(() => s.hovered() === 0, "hover on the space row")
-    await s.t.mockMouse.moveTo(10, 3)
-    await waitFor(() => s.hovered() === 2, "hover to move down two rows")
     await s.t.mockMouse.moveTo(10, 2)
+    await waitFor(() => s.hovered() === 2, "hover to move down two rows")
+    await s.t.mockMouse.moveTo(10, 1)
     await waitFor(() => s.hovered() === 1, "hover to move back up one row")
   } finally {
     await s.dispose()
@@ -271,8 +281,8 @@ test("clicking a row reports its selectable index, skipping the branch line", as
     s.spaces.onChange?.()
     await s.t.waitForFrame((f: string) => f.includes("clickme"))
 
-    // Rows: 0 header, 1 space(index 0), 2 branch(not selectable), 3 window(1),
-    // 4 shell(2), 5 clickme(3). The branch line has no handler, so clicking it
+    // Rows: 0 space(index 0), 1 branch(not selectable), 2 window(1),
+    // 3 shell(2), 4 clickme(3). The branch line has no handler, so clicking it
     // is inert.
     //
     // The branch click is proven inert by what follows it rather than by an
@@ -286,12 +296,13 @@ test("clicking a row reports its selectable index, skipping the branch line", as
     // Synchronize with the renderer rather than guessing how long a repaint
     // takes; see ts-946056.
     await s.t.waitForVisualIdle()
+    await s.t.mockMouse.click(10, 1)
+    await s.t.waitForVisualIdle()
     await s.t.mockMouse.click(10, 2)
-    await s.t.mockMouse.click(10, 3)
     await waitFor(() => s.activated.length >= 1, "the window row activation")
     expect(s.activated).toEqual([1]) // the window row, and nothing for the branch
 
-    await s.t.mockMouse.click(10, 5)
+    await s.t.mockMouse.click(10, 4)
     await waitFor(() => s.activated.length >= 2, "the agent row activation")
     expect(s.activated).toEqual([1, 3]) // clickme, under that window
   } finally {
@@ -434,8 +445,8 @@ test("the seam shows a thumb only while the tree overflows", async () => {
     await t.waitForVisualIdle()
     expect(scrollBar()?.visible).toBe(false)
 
-    // The viewport is 18 rows (20 minus header and footer); push the tree past
-    // it and the scrollbar must come up. The header's agent count is the frame
+    // The viewport is 18 rows (20 minus summary and footer); push the tree past
+    // it and the scrollbar must come up. The summary's agent count is the frame
     // signal to wait on — a spawned label sits below the fold once it scrolls.
     const seamChars = (frame: string) =>
       frame
