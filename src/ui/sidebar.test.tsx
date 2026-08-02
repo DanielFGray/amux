@@ -160,6 +160,29 @@ test("renders the space/agent tree with a state glyph per row", async () => {
   }
 })
 
+/**
+ * The footer counts what the tree shows.
+ *
+ * ts-9beb5d: the tree gained its second window and the header its second tab,
+ * while the footer went on saying "1 agent". A summary that disagrees with the
+ * rows directly above it is worse than no summary, and the blocked count is the
+ * whole premise of ^a a — a badge that never appears is the failure mode that
+ * matters.
+ */
+test("the footer counter follows the tree", async () => {
+  const s = await setup()
+  try {
+    await s.t.waitForFrame((f: string) => f.includes("1 space · 1 agent"))
+
+    const second = Effect.runSync(s.space.newWindow())
+    Effect.runSync(second.init("shell"))
+
+    await s.t.waitForFrame((f: string) => f.includes("1 space · 2 agents"))
+  } finally {
+    await s.dispose()
+  }
+})
+
 test("the branch row appears under its space once git info arrives", async () => {
   const s = await setup()
   try {

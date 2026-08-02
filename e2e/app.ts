@@ -14,6 +14,8 @@
  * something that changes app wiring.
  */
 import { spawnPty, readPty, type Pty } from "../src/pty.ts"
+import { Terminal } from "../src/ghostty.ts"
+import { captureVisible } from "../src/capture.ts"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
@@ -26,6 +28,22 @@ export const LEADER = "\x01"
 export interface App {
   /** Everything the app has drawn since launch, escape codes and all. */
   output(): string
+  /**
+   * What is ON SCREEN, as plain text.
+   *
+   * Not `output()` filtered — `output()` is a byte stream from a *diffing*
+   * renderer, and asking it what the screen says gives wrong answers with total
+   * confidence. The sidebar footer reads "1 space · 1 agent", but it is emitted
+   * as "1 space ·", a cursor jump, then " 1 agent", so the string is not in the
+   * stream even on the very first draw; and when the count later goes to 2 the
+   * renderer emits a single cell. Grepping the stream for "2 agents" therefore
+   * finds nothing whether the app is right or wrong, which is how ts-9beb5d got
+   * filed against a footer that was updating correctly the whole time.
+   *
+   * So the bytes go through the same VT the app runs its own panes on, and this
+   * reads that terminal's screen. A check gets to ask what a user would see.
+   */
+  screen(): string
   /**
    * Type, one keystroke per write with a gap between them.
    *
@@ -41,6 +59,14 @@ export interface App {
    * the app's own account of its state rather than a rendering of it.
    */
   shape(): Promise<string>
+  /**
+   * Poll until something is true, or fail saying what never happened.
+   *
+   * The alternative is a sleep long enough to cover the worst case, which is
+   * both slower than it needs to be and still wrong under load — boot was
+   * `Bun.sleep(3500)` and it raced the app's first save.
+   */
+  until(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs?: number): Promise<void>
   /** The config as the app last wrote it, or null if it never has. */
   config(): Promise<Record<string, any> | null>
   stop(): Promise<void>
@@ -74,22 +100,62 @@ export async function launch(
     HERDR_SESSION: session,
     TERM: "xterm-256color",
   }
-  const pty = spawnPty(["bun", join(REPO, "src/main.tsx")], {
-    cols: opts.cols ?? 100,
-    rows: opts.rows ?? 30,
-    cwd: REPO,
-    env,
-  })
+  const cols = opts.cols ?? 100
+  const rows = opts.rows ?? 30
+  const pty = spawnPty(["bun", join(REPO, "src/main.tsx")], { cols, rows, cwd: REPO, env })
   let out = ""
+  const term = new Terminal(cols, rows)
   const reader = (async () => {
-    for await (const chunk of readPty(pty)) out += Buffer.from(chunk).toString("utf8")
+    for await (const chunk of readPty(pty)) {
+      out += Buffer.from(chunk).toString("utf8")
+      term.write(chunk)
+    }
   })()
 
-  // Long enough for the renderer, the first agent's shell and the first draw.
-  await Bun.sleep(3500)
+  // THE session file, not "whichever json turns up first".
+  //
+  // This used to glob `**/*.json` and take the first one with a `spaces` key,
+  // and the directory holds `session.json.prev` as well — the backup, which
+  // right after boot still holds the empty workspace of the very first write.
+  // Glob order is filesystem order, so a check read either the live file or a
+  // stale snapshot depending on the day, and `e2e/boot.ts` failed its second
+  // launch as "0sp 0win 0ag" perhaps one run in two. Name the file.
+  const sessionFile = join(state, "opentui-herdr", "sessions", session, "session.json")
+
+  async function shape(): Promise<string> {
+    const saved = await Bun.file(sessionFile).json().catch(() => null)
+    if (!saved?.spaces) return "(no session file)"
+    const windows = saved.spaces.flatMap((s: { windows: unknown[] }) => s.windows)
+    const agents = windows.flatMap((w: { agents: unknown[] }) => w.agents)
+    return `${saved.spaces.length}sp ${windows.length}win ${agents.length}ag`
+  }
+
+  async function until(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (await predicate()) return
+      await Bun.sleep(100)
+    }
+    throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`)
+  }
+
+  // Booted means drawn AND saved, because checks read both. This was
+  // `Bun.sleep(3500)` — long enough on an idle machine, and under load the
+  // session file did not exist yet, which surfaced as a crashed harness rather
+  // than as a slow boot. Wait for the thing itself.
+  //
+  // "Has an agent", specifically. Not "a file exists" and not "the shape isn't
+  // 0sp": the app saves an empty workspace first and fills it in a moment
+  // later, and before either of those `shape()` says "(no session file)" —
+  // which satisfies any predicate phrased as a negation, so the wait returned
+  // on its first poll and the check then read the empty write.
+  await until(async () => /\s[1-9]\d*ag$/.test(await shape()), "the workspace to have an agent")
+  await until(() => captureVisible(term).includes(" · "), "the sidebar to draw its footer")
 
   return {
     output: () => out,
+    screen: () => captureVisible(term),
+    until,
     async press(keys) {
       for (const k of keys) {
         pty.write(k)
@@ -100,20 +166,14 @@ export async function launch(
       // terminal, so the write that follows is not immediate.
       await Bun.sleep(1500)
     },
-    async shape() {
-      for await (const file of new Bun.Glob("**/*.json").scan({ cwd: state, absolute: true })) {
-        const saved = await Bun.file(file).json().catch(() => null)
-        if (!saved?.spaces) continue
-        const windows = saved.spaces.flatMap((s: { windows: unknown[] }) => s.windows)
-        const agents = windows.flatMap((w: { agents: unknown[] }) => w.agents)
-        return `${saved.spaces.length}sp ${windows.length}win ${agents.length}ag`
-      }
-      return "(no session file)"
-    },
+    shape,
     config: () => Bun.file(configPath).json().catch(() => null),
     async stop() {
       pty.kill()
       await reader.catch(() => {})
+      // After the reader, never before: the pump can be holding a chunk, and a
+      // write into a freed terminal corrupts ghostty's heap rather than faulting.
+      term.free()
       await rm(home, { recursive: true, force: true })
     },
   }
