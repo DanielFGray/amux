@@ -79,7 +79,7 @@ test("appearance settings expose which-key visibility and delay", () => {
     },
     "appearance",
   )
-  expect(fields.slice(1).map((field) => field.value)).toEqual(["no", "yes", "1s"])
+  expect(fields.slice(1).map((field) => field.value)).toEqual(["yes", "no", "1s"])
 })
 
 test("the shell setting is displayed as intentionally read-only", () => {
