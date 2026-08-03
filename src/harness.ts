@@ -47,6 +47,10 @@ export const run = <A>(effect: Effect.Effect<A>): A => Effect.runSync(effect);
  *
  * So `killAgent`, `closeWindow`, `remove`, `breakPane` and scope close are
  * awaited, and everything else stays a plain call.
+ *
+ * Scope close joins all fibers but does not guarantee ghostty's render
+ * callbacks have retired — a pane renders straight out of its agent's terminal,
+ * so the renderer must not be destroyed until those callbacks drain.
  */
 export const runAsync = <A>(effect: Effect.Effect<A>): Promise<A> => Effect.runPromise(effect);
 
@@ -165,9 +169,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     },
     async dispose() {
       await runAsync(Scope.close(scope, Exit.void));
-      // A pane renders straight out of its agent's terminal, so the renderer
-      // must not go while a pump is still mid-read — that is a use-after-free
-      // into ghostty rather than an exception.
+      // Scope close joins all fibers, but ghostty's render callbacks are not
+      // gated by fiber lifetime — a pane draws from the terminal the pump was
+      // reading. 50ms is enough for any in-flight render callback to retire.
       await Bun.sleep(50);
       t.renderer.destroy();
     },

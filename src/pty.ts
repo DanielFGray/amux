@@ -29,7 +29,13 @@ export interface Pty {
    *  master being closed: bytes the child wrote just before exiting are still
    *  in the terminal's buffer and are still ours to read. See readPty. */
   readonly exited: boolean
-  /** Resolves after the entire process session has terminated and the master closed. */
+   /** Resolves after the entire process session has terminated and the master
+    *  closed.
+    *
+    *  **Destructive:** merely reading this property begins termination
+    *  (SIGTERM after 100ms, then SIGKILL). It exists to be read exactly once
+    *  by the exit path after output has ended; inspecting it for any other
+    *  reason will kill the child. */
   readonly wait: Promise<void>
   /** Foreground process group of the terminal, or -1. Equal to the child's own
    *  pgid when the shell sits at a prompt; a different pgid means a command is
@@ -140,15 +146,10 @@ export function spawnPty(
       if (!immediate) await Bun.sleep(DRAIN_GRACE_MS)
       signal("SIGTERM")
       await Promise.race([processExited, Bun.sleep(TERMINATE_GRACE_MS)])
-      const deadline = Date.now() + KILL_SETTLE_MS
-      while (sid > 0 && liveSessionMembers(sid).length > 0 && Date.now() < deadline) {
+      if (sid > 0) {
         // Re-scan on every pass. A TERM trap can fork a replacement, and a
         // single snapshot would leave that replacement behind.
-        signal("SIGKILL")
-        await Bun.sleep(10)
-      }
-      if (sid > 0) {
-        signal("SIGKILL")
+        const deadline = Date.now() + KILL_SETTLE_MS
         while (liveSessionMembers(sid).length > 0 && Date.now() < deadline) {
           signal("SIGKILL")
           await Bun.sleep(10)

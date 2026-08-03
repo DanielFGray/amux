@@ -4,10 +4,13 @@
  * The obvious signal — is a foreground process group running? — is useless for
  * agent CLIs. `claude` and `codex` are a single long-lived foreground process,
  * so a pgid comparison says "working" for the entire session, whether the model
- * is thinking or the prompt has been sitting idle for an hour. herdr solves
- * this by reading the agent's own activity spinner out of its OSC title, and
- * matching known "waiting for you" prompts against the screen. Same approach
- * here.
+ * is thinking or the prompt has been sitting idle for an hour.
+ *
+ * herdr solves this two ways. Where it can, it installs lifecycle hooks that
+ * authoritatively report idle/working/blocked; for agents it cannot hook, it
+ * falls back to reading the activity spinner out of an OSC title and matching
+ * known "waiting for you" prompts against the screen. That fallback is the one
+ * we project here — a supervised PTY has no hooks to lean on.
  */
 
 export type AgentState = "idle" | "working" | "blocked" | "detached" | "done"

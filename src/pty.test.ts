@@ -77,6 +77,41 @@ test("native exec preserves argv, cwd, environment and exit status", async () =>
   expect(p.exitCode).toBe(7)
 })
 
+test("environment variables override process.env and inherit unset values", async () => {
+  const originalPath = process.env.PATH
+  const p = spawnPty(
+    ["/bin/sh", "-c", "printf '%s\\n%s\\n' \"$PATH\" \"$OH_INHERITED\""],
+    { cols: 80, rows: 24, env: { PATH: "/custom/path", OH_INHERITED: "inherited" } },
+  )
+  const out = collect(p)
+  await p.processExited
+  await out.done
+  expect(out.text()).toContain("/custom/path")
+  expect(out.text()).toContain("inherited")
+  expect(out.text()).not.toContain(originalPath!)
+})
+
+test("TERM is forced to xterm-256color regardless of caller environment", async () => {
+  const originalTerm = process.env.TERM
+  process.env.TERM = "dumb"
+  try {
+    const p = spawnPty(["sh", "-c", "printf '%s\\n' \"$TERM\""], { cols: 80, rows: 24 })
+    const out = collect(p)
+    await p.processExited
+    await out.done
+    expect(out.text()).toContain("xterm-256color")
+    expect(out.text()).not.toContain("dumb")
+  } finally {
+    if (originalTerm !== undefined) process.env.TERM = originalTerm
+  }
+})
+
+test("environment with NUL bytes is refused", async () => {
+  expect(() =>
+    spawnPty(["sh"], { cols: 80, rows: 24, env: { BAD: "value\0with\0nuls" } }),
+  ).toThrow(/NUL/)
+})
+
 test("close() is idempotent and stops the pump", async () => {
   const p = spawnPty(["cat"], { cols: 80, rows: 24 })
   const out = collect(p)
