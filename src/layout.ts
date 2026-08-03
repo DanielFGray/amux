@@ -1,10 +1,9 @@
 /**
  * A window's split tree, as data.
  *
- * The renderable tree in window.ts is the live layout, but it cannot be stored,
- * compared, or sent anywhere: it is Boxes, Dividers and panes wired to agents
- * and a renderer. This is the same shape reduced to what actually defines a
- * layout — nesting, axis, relative sizes, and which agent sits in each leaf.
+ * Window owns this model; Boxes, Dividers and panes are a projection wired to
+ * agents and a renderer. The model contains everything that defines an
+ * arrangement: nesting, axis, relative sizes, and which agent sits in each leaf.
  *
  * Two things need it. Session restore (ts-fa1fdf) has to rebuild a window tree
  * from session.json, and there is nothing else to rebuild *from*: the persisted
@@ -50,7 +49,7 @@ export interface PaneRef {
 
 export interface LayoutPane extends PaneRef {
   type: "pane"
-  /** Flex weight, relative to siblings. See divider.ts getWeight. */
+  /** Flex weight, relative to siblings. */
   weight: number
 }
 
@@ -226,6 +225,21 @@ export function splitLayout(
         },
   )
   return makeLayout(collapse(root), pane.id)
+}
+
+/** Append a pane to the root row, preserving the existing slots and weights. */
+export function appendPane(layout: Layout, ref: PaneRef): Layout {
+  const pane: LayoutPane = { type: "pane", ...ref, weight: 1 }
+  if (!layout.root) return makeLayout(pane, ref.id)
+  const root = layout.root.type === "split" && layout.root.direction === "row"
+    ? { ...layout.root, children: [...layout.root.children, pane] }
+    : {
+        type: "split" as const,
+        direction: "row" as const,
+        weight: 1,
+        children: [{ ...layout.root, weight: 1 }, pane],
+      }
+  return makeLayout(root, ref.id)
 }
 
 /**

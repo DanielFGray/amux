@@ -1,7 +1,7 @@
 import { test, expect, afterEach } from "bun:test"
 import { createHarness, run } from "./harness.ts"
-import { setWeight } from "./divider.ts"
 import type { Window } from "./window.ts"
+import { Divider } from "./divider.ts"
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -136,9 +136,8 @@ test("the ┼ follows the seam when a drag moves the vertical divider", async ()
   // Drag the vertical seam well off centre: the two horizontal seams stay
   // aligned on the same row, so the ┼ has to move with the seam, resolved
   // fresh from geometry rather than carried over from the old layout.
-  const [boxL, , boxR] = window.root.getChildren()
-  setWeight(boxL as object, 3)
-  setWeight(boxR as object, 1)
+  const divider = window.root.getChildren()[1] as Divider
+  divider.onDrag!(15)
   await layout()
   await t.renderOnce()
 

@@ -1,7 +1,6 @@
 import { test, expect, afterEach } from "bun:test"
-import { setWeight } from "./divider.ts"
 import { createHarness, run } from "./harness.ts"
-import { encodeLayout, decodeLayout, layoutAgents, type LayoutNode } from "./layout.ts"
+import { encodeLayout, decodeLayout, layoutAgents, makeLayout, type LayoutNode } from "./layout.ts"
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -62,7 +61,15 @@ test("resized weights survive the export", async () => {
   const first = window.panes[0]!
   run(window.splitSpawn("row"))
   await layout()
-  setWeight(first, 7)
+  window.applyLayout(makeLayout({
+    type: "split",
+    direction: "row",
+    weight: 1,
+    children: [
+      { type: "pane", id: first.id, agent: first.agent.id, weight: 7 },
+      { type: "pane", id: window.panes[1]!.id, agent: window.panes[1]!.agent.id, weight: 1 },
+    ],
+  }))
   const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>
   const exported = root.children.find((c) => c.type === "pane" && c.agent === first.agent.id)
   expect(exported?.weight).toBe(7)
@@ -89,7 +96,13 @@ test("a zoomed pane keeps the weight it had in the layout, not its zoom weight",
   const first = window.panes[0]!
   run(window.splitSpawn("row"))
   await layout()
-  setWeight(first, 5)
+  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>
+  window.applyLayout(makeLayout({
+    ...root,
+    children: root.children.map((child) => child.type === "pane" && child.id === first.id
+      ? { ...child, weight: 5 }
+      : child),
+  }))
   window.focus(first)
   const before = window.exportLayout()
 

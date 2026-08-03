@@ -6,47 +6,13 @@ const FOCUS = RGBA.fromInts(137, 180, 250, 255) // blue
 const HOVER = RGBA.fromInts(203, 166, 247, 255) // mauve
 const BG = RGBA.fromInts(30, 30, 46, 255) // base
 
-/** Smallest a pane may be squeezed to, so a divider can never be dragged past
- *  its neighbour and strand it at zero cells. */
-const MIN_CELLS = 3
-
-/**
- * Flex weights, tracked alongside the renderable.
- *
- * OpenTUI exposes `flexGrow` as a setter with no getter, so a weight cannot be
- * read back off a renderable once set. Splitting has to know the weight of the
- * pane it is dividing — otherwise a pane resized to a weight of 69 gets split
- * against a new pane weighted 1, and the newcomer renders as a sliver.
- */
-const WEIGHTS = new WeakMap<object, number>()
-
-export function getWeight(r: object): number {
-  return WEIGHTS.get(r) ?? 1
-}
-
-/**
- * Flex direction, tracked the same way and for the same reason.
- *
- * `flexDirection` is another setter with no getter. Reading it back gives
- * `undefined`, so any `parent.flexDirection === "row"` test is silently always
- * false — which is how a pane came to draw its own border right next to the
- * divider that was already drawing one.
- */
-const DIRECTIONS = new WeakMap<object, "row" | "column">()
-
-export function getDirection(r: object): "row" | "column" {
-  // Boxes are created row-wise unless told otherwise, matching yoga's default.
-  return DIRECTIONS.get(r) ?? "row"
-}
-
 export function setDirection(r: object, direction: "row" | "column"): void {
-  DIRECTIONS.set(r, direction)
   ;(r as { flexDirection: string }).flexDirection = direction
 }
 
+/** Project a model weight into OpenTUI's write-only flex properties. */
 export function setWeight(r: object, weight: number): void {
   const w = Math.max(0.0001, weight)
-  WEIGHTS.set(r, w)
   ;(r as { flexGrow: number; flexBasis: number }).flexGrow = w
   ;(r as { flexGrow: number; flexBasis: number }).flexBasis = 0
 }
@@ -130,9 +96,9 @@ function junctionGlyph(
  * math of ours and cannot drift from what was drawn — the same property that
  * makes clicking panes reliable through arbitrary nesting.
  *
- * Resizing works on the neighbours' flex weights. Panes are laid out with
- * flexBasis 0 and a flexGrow weight, so setting the two weights to the desired
- * cell counts gives exactly that split of their shared space.
+ * A divider reports drag deltas to its owner. Window applies those deltas to
+ * its Layout first and then projects the resulting weights; the sidebar uses
+ * the same gesture to update its explicit width.
  */
 export class Divider extends Renderable {
   /** Axis of the parent split: "row" means a vertical bar between left/right
@@ -173,12 +139,6 @@ export class Divider extends Renderable {
    * handling, which is the part that is actually fiddly.
    */
   onDrag?: (delta: number) => void
-
-  /** Fired after a drag has actually moved the neighbours' weights. Distinct
-   *  from onDrag, which *replaces* that resize; this only reports it, so a
-   *  window can notice its layout no longer matches the preset it was built
-   *  from without reimplementing the resize. */
-  onResized?: () => void
 
   constructor(
     ctx: RenderContext,
@@ -248,47 +208,13 @@ export class Divider extends Renderable {
         // a running total of per-event deltas would.
         const delta = this.axis === "row" ? event.x - this.x : event.y - this.y
         if (delta !== 0) {
-          if (this.onDrag) this.onDrag(delta)
-          else this.resize(delta)
+          this.onDrag?.(delta)
           this.requestRender()
         }
         event.stopPropagation()
         return
       }
     }
-  }
-
-  /**
-   * Move the seam by `delta` cells, growing the neighbour on one side at the
-   * other's expense.
-   *
-   * The shared bottom of the mouse drag and the keyboard nudge: a drag hands it
-   * the pointer's offset from the seam, the keyboard hands it a fixed step.
-   * Both are self-correcting against a dropped event, because the target is
-   * recomputed from the current geometry rather than accumulated. The clamp
-   * keeps either neighbour at MIN_CELLS, so a pane already squeezed to its
-   * minimum simply refuses to move.
-   */
-  resize(delta: number) {
-    const parent = this.parent
-    if (!parent) return
-    const siblings = parent.getChildren()
-    const index = siblings.indexOf(this)
-    const before = siblings[index - 1]
-    const after = siblings[index + 1]
-    if (!before || !after) return
-
-    const size = (r: any) => (this.axis === "row" ? r.width : r.height)
-    const total = size(before) + size(after)
-    const next = Math.max(MIN_CELLS, Math.min(total - MIN_CELLS, size(before) + delta))
-    if (next === size(before)) return
-
-    // Weights are proportional, so using cell counts directly gives the split
-    // we want without needing to know the container's size.
-    setWeight(before, next)
-    setWeight(after, total - next)
-    this.onResized?.()
-    this.requestRender()
   }
 
   /**

@@ -5,11 +5,11 @@ import type { SpawnBackend } from "./backend.ts"
 import { Context, Effect, Exit, Scope } from "effect"
 import { RenderCtx, Shell, Backend, type WorkspaceEnv } from "./env.ts"
 import { rollUp } from "./space.ts"
-import { Divider, getWeight, setWeight, getDirection, setDirection, type JunctionFrame } from "./divider.ts"
+import { Divider, setWeight, setDirection, type JunctionFrame } from "./divider.ts"
 import { runtime } from "./options.ts"
 import {
+  appendPane,
   closeLayout,
-  collapse,
   layoutPanes,
   makeLayout,
   newPaneId,
@@ -24,6 +24,16 @@ import {
   type LayoutPreset,
   type WindowState,
 } from "./layout.ts"
+import {
+  dividerHasNeighbour,
+  dividerTouchesPane,
+  paneHasNeighbour,
+  paneInDirection,
+  resizeDivider,
+  resizePane,
+  type LayoutPath,
+  type LayoutSize,
+} from "./geometry.ts"
 
 export type SplitDirection = "row" | "column"
 
@@ -63,6 +73,9 @@ export class Window {
   #ctx: RenderContext
   #panes: TerminalPane[] = []
   #agents: Agent[] = []
+  /** The arrangement is authoritative here; renderables are only its projection. */
+  #layout: Layout = makeLayout(null)
+  #dividerRefs = new WeakMap<Divider, { path: LayoutPath; index: number }>()
   /**
    * Everything about this window that is not its arrangement: focus,
    * last-pane, zoom, sync and preset, all as pane ids and flags.
@@ -380,18 +393,18 @@ export class Window {
     this.#ctx.requestRender()
   }
 
-  #makeDivider(direction: SplitDirection): Divider {
-    const divider = new Divider(this.#ctx, { id: `divider-${nextId++}`, axis: direction })
+  #makeDivider(direction: SplitDirection, path: LayoutPath, index: number): Divider {
+    const divider = new Divider(this.#ctx, {
+      id: `divider-${nextId++}`,
+      axis: direction,
+      onDrag: (delta) => this.#resizeDivider(path, index, delta),
+    })
+    this.#dividerRefs.set(divider, { path, index })
     // It is a segment of the pane frame, so its ends finish as junctions.
     divider.tees = true
     // Every cell it draws is merged against the frame's geometry, so a seam
     // meeting a seam at one cell draws a ┼ rather than the last tee to land.
     divider.junction = () => this.#junctionFrame()
-    // Dragging a seam moves the window off whatever preset built it, so the
-    // next select-layout advances rather than rebuilding what is on screen.
-    divider.onResized = () => {
-      this.#state.preset = null
-    }
     return divider
   }
 
@@ -417,11 +430,9 @@ export class Window {
    *  synchronous half of init, and what split falls back to when there is no
    *  pane to split. */
   mount(agent: Agent): TerminalPane {
-    const pane = this.#makePane(agent)
-    this.#panes.push(pane)
-    this.root.add(pane)
-    this.focus(pane)
-    return pane
+    const id = newPaneId()
+    this.#mount(makeLayout({ type: "pane", id, agent: agent.id, weight: 1 }, id), null)
+    return this.#pane(id)!
   }
 
   focus(pane: TerminalPane) {
@@ -436,6 +447,7 @@ export class Window {
     if (pane.id !== this.#state.focus) {
       this.#state.last = this.#state.focus
       this.#state.focus = pane.id
+      this.#layout = makeLayout(this.#layout.root, pane.id)
     }
     for (const p of this.#panes) p.active = p === pane
     this.#refreshChrome()
@@ -502,40 +514,13 @@ export class Window {
     this.#mount(zoom.from, this.#state.preset)
   }
 
-  /**
-   * Is there anything on the given side of this node, anywhere up the tree?
-   *
-   * Siblings are always separated by a divider, so "a sibling precedes me on
-   * this axis" is the same question as "is a divider drawn on that side of me".
-   * Walking up matters: a pane can be flush against the left of its own split
-   * box while that box sits to the right of a divider two levels up.
-   */
-  #hasNeighbour(node: Renderable, axis: SplitDirection, direction: -1 | 1): boolean {
-    return this.#sideSibling(node, axis, direction) !== null
-  }
-
-  /**
-   * The sibling on the given side of this node, anywhere up the tree.
-   *
-   * The walk #hasNeighbour makes, returning what it found instead of merely
-   * reporting that one exists. Because dividers sit between every adjacent
-   * sibling pair, the thing found on a pane's side is the divider drawn there —
-   * which is exactly what a keyboard resize wants to nudge.
-   */
-  #sideSibling(node: Renderable, axis: SplitDirection, direction: -1 | 1): Renderable | null {
-    let current: Renderable = node
-    while (current !== this.root) {
-      const parent = current.parent as BoxRenderable | null
-      if (!parent) return null
-      if (getDirection(parent) === axis) {
-        const siblings = parent.getChildren()
-        const i = siblings.indexOf(current)
-        const at = i + direction
-        if (at >= 0 && at < siblings.length) return siblings[at]!
-      }
-      current = parent
+  /** Model-derived neighbour query shared by pane borders and divider caps. */
+  #hasNeighbour(node: TerminalPane | Divider, axis: SplitDirection, direction: -1 | 1): boolean {
+    if (node instanceof TerminalPane) {
+      return paneHasNeighbour(this.#layout, node.id, axis, direction)
     }
-    return null
+    const ref = this.#dividerRefs.get(node)
+    return ref ? dividerHasNeighbour(this.#layout, ref.path, axis, direction) : false
   }
 
   /**
@@ -662,17 +647,8 @@ export class Window {
   /** True when the pane sits immediately on either side of the divider — the
    *  shared border is that pane's border too, so it highlights with it. */
   #touches(divider: Divider, pane: TerminalPane): boolean {
-    const parent = divider.parent as BoxRenderable | null
-    if (!parent) return false
-    const siblings = parent.getChildren()
-    const i = siblings.indexOf(divider)
-    const contains = (node: Renderable | undefined): boolean => {
-      if (!node) return false
-      if (node === pane) return true
-      if (node instanceof TerminalPane) return false
-      return node.getChildren().some(contains)
-    }
-    return contains(siblings[i - 1]) || contains(siblings[i + 1])
+    const ref = this.#dividerRefs.get(divider)
+    return ref ? dividerTouchesPane(this.#layout, ref.path, ref.index, pane.id) : false
   }
 
   focusNext(step = 1) {
@@ -699,31 +675,7 @@ export class Window {
   focusDirection(direction: Direction) {
     const from = this.focused
     if (!from || this.#panes.length < 2) return
-    const horizontal = direction === "left" || direction === "right"
-    const backwards = direction === "left" || direction === "up"
-
-    const start = (p: TerminalPane) => (horizontal ? p.x : p.y)
-    const end = (p: TerminalPane) => (horizontal ? p.x + p.width : p.y + p.height)
-    const crossStart = (p: TerminalPane) => (horizontal ? p.y : p.x)
-    const crossEnd = (p: TerminalPane) => (horizontal ? p.y + p.height : p.x + p.width)
-
-    let best: TerminalPane | null = null
-    let bestGap = Infinity
-    let bestOverlap = 0
-    for (const pane of this.#panes) {
-      if (pane === from) continue
-      const gap = backwards ? start(from) - end(pane) : start(pane) - end(from)
-      // Negative means the two overlap on this axis: not on that side at all.
-      if (gap < 0 || gap > bestGap) continue
-      const overlap =
-        Math.min(crossEnd(from), crossEnd(pane)) - Math.max(crossStart(from), crossStart(pane))
-      if (overlap <= 0) continue
-      if (gap < bestGap || overlap > bestOverlap) {
-        best = pane
-        bestGap = gap
-        bestOverlap = overlap
-      }
-    }
+    const best = this.#pane(paneInDirection(this.#layout, this.#layoutSize(), from.id, direction))
     if (best) this.focus(best)
   }
 
@@ -741,12 +693,40 @@ export class Window {
    */
   resizeFocus(direction: Direction) {
     const pane = this.focused
-    if (!pane || this.#panes.length < 2) return
-    const axis: SplitDirection = direction === "left" || direction === "right" ? "row" : "column"
-    const dir: -1 | 1 = direction === "left" || direction === "up" ? -1 : 1
-    const divider = this.#sideSibling(pane, axis, dir)
-    if (!(divider instanceof Divider)) return
-    divider.resize(dir)
+    if (!pane || this.#panes.length < 2 || this.#state.zoom) return
+    this.#setResizedLayout(resizePane(this.#layout, this.#layoutSize(), pane.id, direction))
+  }
+
+  #layoutSize(): LayoutSize {
+    return { cols: this.root.width, rows: this.root.height }
+  }
+
+  #resizeDivider(path: LayoutPath, index: number, delta: number) {
+    if (this.#state.zoom) return
+    this.#setResizedLayout(resizeDivider(this.#layout, this.#layoutSize(), path, index, delta))
+  }
+
+  #setResizedLayout(layout: Layout) {
+    if (layout === this.#layout) return
+    this.#layout = layout
+    this.#state.preset = null
+    this.#projectWeights()
+    this.onChange?.()
+    this.#ctx.requestRender()
+  }
+
+  /** Project model weights without rebuilding dividers during pointer capture. */
+  #projectWeights() {
+    const project = (box: BoxRenderable, split: Extract<LayoutNode, { type: "split" }>) => {
+      const renderables = box.getChildren().filter((child) => !(child instanceof Divider))
+      split.children.forEach((child, index) => {
+        const renderable = renderables[index]
+        if (!renderable) return
+        setWeight(renderable, child.weight)
+        if (child.type === "split" && renderable instanceof BoxRenderable) project(renderable, child)
+      })
+    }
+    if (this.#layout.root?.type === "split") project(this.root, this.#layout.root)
   }
 
   /**
@@ -802,8 +782,8 @@ export class Window {
    * Split, starting a new agent to fill the new pane.
    *
    * The acquiring half of split, kept separate from it deliberately. `split`
-   * itself is tree surgery over renderables — total, synchronous, and covered
-   * by geometry tests that have no business awaiting anything. Only the spawn
+   * itself is a synchronous Layout transform and projection, covered by
+   * geometry tests that have no business awaiting anything. Only the spawn
    * needs a lifetime, so only the spawn is an Effect, and the two compose.
    *
    * The unsplittable case is checked BEFORE spawning, so a window that cannot
@@ -872,10 +852,8 @@ export class Window {
     this.#scopes.set(agent, scope)
     this.#bind(agent)
     this.#panes.push(pane)
-    setWeight(pane, 1)
     pane.onFocusRequest = (p) => this.focus(p)
-    this.root.add(pane)
-    this.focus(pane)
+    this.#mount(appendPane(this.#layout, { id: pane.id, agent: agent.id }), null)
   }
 
   /** Close a pane: take it out of the layout, then destroy the view. The agent
@@ -892,37 +870,13 @@ export class Window {
   /**
    * This window's arrangement, as data that can be stored and rebuilt.
    *
-   * Under a zoom this is the layout the zoom captured, not the single-pane tree
-   * on screen. Zoom is a transient view OF a layout rather than a layout, so it
-   * must be invisible here — exporting what is mounted would record a
-   * one-pane window and quietly destroy the arrangement on the next restore.
-   * It is deliberately not persisted, the same reason it is absent from Space's
-   * persisted form. The capture is exact rather than approximate because a zoom
-   * mounts no dividers, so nothing can reshape the arrangement while it is on.
-   *
-   * Dividers are skipped: one sits between every adjacent sibling pair, so the
-   * rebuild derives them rather than reading them back.
+   * The model remains resident while zoom merely changes its projection to one
+   * pane, so export never has to infer an arrangement from mounted renderables.
+   * Dividers are absent from the model because one is derivable between every
+   * adjacent sibling pair.
    */
   exportLayout(): Layout {
-    if (this.#state.zoom) return this.#state.zoom.from
-
-    const walk = (node: Renderable): LayoutNode | null => {
-      if (node instanceof TerminalPane) {
-        return { type: "pane", id: node.id, agent: node.agent.id, weight: getWeight(node) }
-      }
-      if (!(node instanceof BoxRenderable)) return null
-      const children = node
-        .getChildren()
-        .map(walk)
-        .filter((child): child is LayoutNode => child !== null)
-      if (children.length === 0) return null
-      return { type: "split", direction: getDirection(node), weight: getWeight(node), children }
-    }
-
-    // collapse() does the rest: a single-pane window walks to a one-child split,
-    // and closing a pane can leave husks that the live tree renders identically.
-    // makeLayout drops a focus whose pane did not survive that collapse.
-    return makeLayout(collapse(walk(this.root)), this.#state.focus ?? undefined)
+    return this.#layout
   }
 
   /**
@@ -1028,25 +982,41 @@ export class Window {
       this.#panes.push(pane)
     }
 
-    const build = (node: LayoutNode): Renderable => {
+    // An imported layout may name foreign pane IDs. The live pane keeps its own
+    // identity, and the resident model records that resolved identity once,
+    // before any renderables are built from it.
+    const requestedFocus = wanted.focus ? filled.get(wanted.focus) : undefined
+    const next = requestedFocus ?? this.#panes[0]
+    const panesById = new Map<string, TerminalPane>()
+    const materialize = (node: LayoutNode): LayoutNode => {
       if (node.type === "pane") {
         const pane = filled.get(node.id)!
+        panesById.set(pane.id, pane)
+        return { ...node, id: pane.id, agent: pane.agent.id }
+      }
+      return { ...node, children: node.children.map(materialize) }
+    }
+    this.#layout = makeLayout(wanted.root ? materialize(wanted.root) : null, next?.id)
+
+    const build = (node: LayoutNode, path: LayoutPath): Renderable => {
+      if (node.type === "pane") {
+        const pane = panesById.get(node.id)!
         setWeight(pane, node.weight)
         return pane
       }
       const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` })
       setDirection(box, node.direction)
       setWeight(box, node.weight)
-      fill(box, node)
+      fill(box, node, path)
       return box
     }
 
     // Dividers are derived, never serialized: one sits between every adjacent
     // pair, which is the invariant split() maintains and refreshChrome reads.
-    const fill = (box: BoxRenderable, node: Extract<LayoutNode, { type: "split" }>) => {
+    const fill = (box: BoxRenderable, node: Extract<LayoutNode, { type: "split" }>, path: LayoutPath) => {
       node.children.forEach((child, i) => {
-        if (i > 0) box.add(this.#makeDivider(node.direction))
-        box.add(build(child))
+        if (i > 0) box.add(this.#makeDivider(node.direction, path, i - 1))
+        box.add(build(child, [...path, i]))
       })
     }
 
@@ -1059,25 +1029,21 @@ export class Window {
       // One pane, no dividers, and every other pane left unmounted. Nothing
       // else has to be remembered for the way back: `zoom.from` is the whole
       // arrangement, and projecting it again is what restores it.
-      const pane = filled.get(zoom.pane)
+      const pane = panesById.get(zoom.pane)
       if (pane) {
         setWeight(pane, 1)
         this.root.add(pane)
       }
-    } else if (wanted.root === null) {
+    } else if (this.#layout.root === null) {
       // Nothing to build: closing the last pane empties the window, which is a
       // state it really has until the app decides to close it.
-    } else if (wanted.root.type === "split") {
-      setDirection(this.root, wanted.root.direction)
-      fill(this.root, wanted.root)
+    } else if (this.#layout.root.type === "split") {
+      setDirection(this.root, this.#layout.root.direction)
+      fill(this.root, this.#layout.root, [])
     } else {
-      this.root.add(build(wanted.root))
+      this.root.add(build(this.#layout.root, []))
     }
 
-    // Through the slot, not by searching for the id: focus names a slot, and
-    // the pane filling it may have kept an id of its own.
-    const focus = wanted.focus ? filled.get(wanted.focus) : undefined
-    const next = focus ?? this.#panes[0]
     if (next) {
       // Deliberately NOT clearing the focus first, the way this used to:
       // focus() records the pane being left as last-pane, and a rebuild that
@@ -1089,6 +1055,7 @@ export class Window {
     } else {
       // An empty window has no focus and nothing for last-pane to toggle to.
       this.#state.focus = null
+      this.#layout = makeLayout(this.#layout.root)
     }
     this.#refreshChrome()
     this.onChange?.()

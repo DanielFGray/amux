@@ -1,7 +1,7 @@
 import { test, expect, afterEach } from "bun:test"
-import { setWeight } from "./divider.ts"
 import { createHarness, run } from "./harness.ts"
 import type { TerminalPane } from "./pane.ts"
+import { makeLayout } from "./layout.ts"
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -82,9 +82,16 @@ test("zoom survives a resize and an uneven split's weights", async () => {
   const second = run(window.splitSpawn("row"))!
   await layout()
 
-  // Drag the seam well off centre, so an approximate restore would show.
-  setWeight(first, 50)
-  setWeight(second, 10)
+  // Apply an uneven model, so an approximate restore would show.
+  window.applyLayout(makeLayout({
+    type: "split",
+    direction: "row",
+    weight: 1,
+    children: [
+      { type: "pane", id: first.id, agent: first.agent.id, weight: 5 },
+      { type: "pane", id: second.id, agent: second.agent.id, weight: 1 },
+    ],
+  }))
   await layout()
   const widths = [first.width, second.width]
 

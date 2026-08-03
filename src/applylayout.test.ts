@@ -1,5 +1,4 @@
 import { test, expect, afterEach } from "bun:test"
-import { getWeight, setWeight } from "./divider.ts"
 import { Divider } from "./divider.ts"
 import { createHarness, run } from "./harness.ts"
 import { RenderState } from "./ghostty.ts"
@@ -130,7 +129,8 @@ test("weights in the layout become real geometry", async () => {
   )
   await layout()
 
-  expect(getWeight(first)).toBe(3)
+  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>
+  expect(root.children[0]!.weight).toBe(3)
   // Roughly 3:1 across the window, less the divider column.
   expect(first.width).toBeGreaterThan(second.width * 2)
 })
@@ -398,10 +398,6 @@ test("even-horizontal actually gives the panes equal widths", async () => {
   run(window.splitSpawn("row"))
   run(window.splitSpawn("column"))
   await layout()
-  // Drag one well off centre so an approximate result would show.
-  setWeight(first, 20)
-  await layout()
-
   window.selectLayout("even-horizontal")
   await layout()
 
@@ -450,9 +446,17 @@ test("dragging a seam forgets the preset, so next-layout advances", async () => 
   await layout()
   expect(window.preset).toBe("even-horizontal")
 
+  const before = window.exportLayout()
+  const widths = window.panes.map((pane) => pane.width)
   const divider = window.root.getChildren().find((k) => k instanceof Divider) as Divider
-  divider.onResized!()
+  divider.onDrag!(-1)
+
+  // The drag changes the resident model synchronously; the next frame is only
+  // its projection catching up, not an export scraping weights back out.
+  expect(window.exportLayout()).not.toEqual(before)
   expect(window.preset).toBeNull()
+  await layout()
+  expect(window.panes.map((pane) => pane.width)).toEqual([widths[0]! - 1, widths[1]! + 1])
 })
 
 test("a preset on a single pane is a no-op that still reports success", async () => {

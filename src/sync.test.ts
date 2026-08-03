@@ -1,6 +1,5 @@
 import { test, expect, spyOn, afterEach } from "bun:test"
 import { Effect } from "effect"
-import { setWeight } from "./divider.ts"
 import { createBindings } from "./bindings.ts"
 import { createHarness, run } from "./harness.ts"
 import { encodeKey } from "./keys.ts"
@@ -81,8 +80,7 @@ test("input goes to the focused pane alone, then to every pane once sync is on",
 
   // Give the panes different sizes — a broadcast is byte delivery into each
   // child's own terminal, so geometry must not change the fan-out.
-  setWeight(first, 3)
-  setWeight(second, 1)
+  window.resizeFocus("left")
   await layout()
 
   const writes = captureAgentWrites()
