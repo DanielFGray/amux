@@ -105,19 +105,20 @@ export class Divider extends Renderable {
    *  neighbours, "column" a horizontal one between top/bottom. */
   readonly axis: "row" | "column"
   /** Whether this divider is part of a pane frame and should finish its ends
-   *  with a junction. The sidebar handle is a bare line and sets this false. */
+   *  with a junction. */
   tees = false
   /** Whether each end meets the window's outer border rather than another
    *  divider. Set by Window, which is the only thing that knows the tree. */
   capStart = false
   capEnd = false
-  /** True when the divider is the frame's outer edge — the sidebar handle,
-   *  which is the left border of the panes beside it. Nothing is drawn on its
+  /** True when the divider is the frame's outer edge. Nothing is drawn on its
    *  far side, so its ends are corners rather than tees. */
   outer = false
   /** True when the focused pane is on one side of this divider — the shared
    *  border is the focused pane's border too, so it highlights with it. */
   adjacentToFocus = false
+  /** A resize target with no visual divider of its own. */
+  hitboxOnly = false
   /**
    * The frame this divider is a segment of, asked once per frame for every
    * cell it draws. Set by Window, which is the only thing that knows the tree;
@@ -240,6 +241,7 @@ export class Divider extends Renderable {
    * cells, so it keeps the simple path.
    */
   protected override renderSelf(buffer: OptimizedBuffer): void {
+    if (this.hitboxOnly) return
     if (this.#spaced) {
       for (let y = this.y; y < this.y + this.height; y++) {
         for (let x = this.x; x < this.x + this.width; x++) {

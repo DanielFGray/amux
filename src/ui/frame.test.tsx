@@ -19,8 +19,8 @@ const WIDTH = 60
 const HEIGHT = 14
 const SIDEBAR = 16
 
-/** The options these tests vary: the sidebar's presence and the column its seam
- *  lands in. Everything else stays at its declared default. */
+/** The options these tests vary: the sidebar's presence and the pane frame's
+ *  column. The resize handle is independent of that frame. */
 const sidebar = (open: boolean) =>
   resolveOptions({ "sidebar.open": open, "sidebar.width": SIDEBAR })
 
@@ -50,8 +50,12 @@ async function screen(
   handle.outer = true
   handle.capStart = true
   handle.capEnd = true
+  handle.hitboxOnly = true
+  handle.position = "absolute"
+  handle.setPosition({ top: 0, right: 0, bottom: 0 })
+  handle.zIndex = 1
 
-  frame.externalLeft = open
+  frame.externalLeft = false
   const [options, setOptions] = createSignal(sidebar(open))
   const space = Effect.runSync(spaces.create("proj", process.cwd()))
   build(space)
@@ -101,7 +105,7 @@ async function screen(
     setOptions(sidebar(false))
     spaces.refreshChrome()
     await t.renderOnce()
-    frame.externalLeft = true
+    frame.externalLeft = false
     setOptions(sidebar(true))
     spaces.refreshChrome()
     await t.renderOnce()

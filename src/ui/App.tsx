@@ -26,9 +26,8 @@ export interface AppProps {
   paneHost: BoxRenderable
   size: { width: number; height: number }
 
-  /** The draggable edge between sidebar and panes, which doubles as the pane
-   *  frame's left border. A Divider instance rather than a component: it needs
-   *  to claim the pointer on press, which only the renderable can do. */
+  /** The invisible resize hitbox over the sidebar's rightmost column. A Divider
+   *  instance rather than a component: it needs to claim the pointer on press. */
   sidebarHandle: Renderable
   selected: number
   hovered: number | null
@@ -86,9 +85,8 @@ export function App(props: AppProps) {
   // at one window — a tab bar that appears and disappears shifts the whole pane
   // area by a row, and it is where the prefix indicator lives.
   //
-  // The sidebar handle sits *below* the tab row rather than beside it, because
-  // it is the pane frame's left border: it has to start and end exactly where
-  // the frame does, or its corners land in the wrong cells.
+  // The resize hitbox lives inside the sidebar, so the pane tree has no extra
+  // divider column and its frame remains independent of sidebar resizing.
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
       {/* Keep the sidebar slot in the root child list while toggling its width.
@@ -99,6 +97,7 @@ export function App(props: AppProps) {
           width: sidebarOpen() ? sidebarWidth() : 0,
           height: "100%",
           flexShrink: 0,
+          position: "relative",
         }}
       >
         <Show when={sidebarOpen()}>
@@ -111,6 +110,7 @@ export function App(props: AppProps) {
             onHover={props.onHover}
             onActivate={props.onActivate}
           />
+          {props.sidebarHandle}
         </Show>
       </box>
 
