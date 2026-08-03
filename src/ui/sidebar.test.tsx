@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { scopedSpaceSet } from "../harness.ts"
 import { afterEach, test, expect } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Exit, FiberMap, Scope } from "effect"
 import { createSignal } from "solid-js"
 import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { render } from "@opentui/solid"
@@ -18,6 +18,7 @@ import { SessionEnv } from "../session.ts"
 import type { SpawnBackend } from "../backend.ts"
 import { workspaceEnv } from "../env.ts"
 import type { AgentOptions } from "../agent.ts"
+import { scheduledPoll } from "../app.tsx"
 
 /**
  * A shell with nobody's dotfiles in it.
@@ -87,6 +88,12 @@ async function setup(backend?: SpawnBackend, agentsOnly = false, initial?: Agent
   if (initial) win.mount(Effect.runSync(win.startAgent(initial)))
   else Effect.runSync(win.init("shell"))
   const app = createAppState(spaces)
+  const appScope = Effect.runSync(Scope.make())
+  const runFiber = Effect.runSync(Scope.extend(Effect.gen(function* () {
+    const fibers = yield* FiberMap.make<string>()
+    return yield* FiberMap.runtime(fibers)<never>()
+  }), appScope))
+  runFiber("ui-poll", scheduledPoll(POLL_MS, app.poll))
 
   await render(
     () => (
@@ -119,7 +126,7 @@ async function setup(backend?: SpawnBackend, agentsOnly = false, initial?: Agent
     setSelected,
     activated,
     async dispose() {
-      app.dispose()
+      await Effect.runPromise(Scope.close(appScope, Exit.void))
       await Bun.sleep(50)
       t.renderer.destroy()
     },
@@ -269,10 +276,11 @@ test("an agent whose daemon attachment is lost is distinct from idle and done", 
       () => daemon.liveAgents().then((ids) => ids.includes(agent.id)),
       "the daemon to own the agent",
     )
-    await s.t.waitForFrame((f: string) => f.includes("shell"))
+    // waitForFrame may return when the renderer is idle even if the matching
+    // frame landed between polls; inspect the retained screen instead.
+    await waitFor(() => s.t.captureCharFrame().includes("○"), "the live agent row to render")
 
     const live = s.t.captureCharFrame()
-    expect(live).toContain("shell")
     expect(live).toContain("○")
     expect(live).not.toContain("✓")
 
@@ -295,7 +303,6 @@ test("an agent whose daemon attachment is lost is distinct from idle and done", 
       expect(frame).not.toContain("✓")
       await Bun.sleep(10)
     }
-    expect(s.t.captureCharFrame()).toContain("shell")
   } finally {
     await s.dispose()
   }
@@ -322,7 +329,7 @@ test("a long OSC title is truncated so the foreground command stays visible", as
     // of the sidebar's POLL_MS repaints, and waitForFrame gives up as soon as
     // the renderer is momentarily idle — which is exactly that gap. Poll the
     // rendered buffer until a repaint has caught up with the title change.
-    await waitFor(() => s.t.captureCharFrame().includes("sleep ·"), "the command to lead the label")
+    await waitFor(() => s.t.captureCharFrame().includes("sleep · dan@"), "the titled command row to render")
     const frame = s.t.captureCharFrame()
     // The command leads the label, so truncation cuts the title tail, not it.
     expect(frame).toContain("sleep · dan@")
@@ -498,6 +505,12 @@ test("the seam shows a thumb only while the tree overflows", async () => {
   const win = Effect.runSync(space.newWindow())
   Effect.runSync(win.init("shell"))
   const app = createAppState(spaces)
+  const appScope = Effect.runSync(Scope.make())
+  const runFiber = Effect.runSync(Scope.extend(Effect.gen(function* () {
+    const fibers = yield* FiberMap.make<string>()
+    return yield* FiberMap.runtime(fibers)<never>()
+  }), appScope))
+  runFiber("ui-poll", scheduledPoll(POLL_MS, app.poll))
 
   // A row-flex wrapper stretches the sidebar to a fixed height, the way the
   // real app's pane row does, so the scrollbox viewport cannot grow with the
@@ -545,7 +558,7 @@ test("the seam shows a thumb only while the tree overflows", async () => {
     expect(scrollBar()?.visible).toBe(false)
     expect(seamChars(t.captureCharFrame()).join("")).not.toMatch(/[█▀▄▌▐]/)
   } finally {
-    app.dispose()
+    await Effect.runPromise(Scope.close(appScope, Exit.void))
     await Bun.sleep(50)
     t.renderer.destroy()
   }

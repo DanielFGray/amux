@@ -1,187 +1,107 @@
 /** @jsxImportSource @opentui/solid */
 import { Show } from "solid-js"
-import type { BoxRenderable, Renderable } from "@opentui/core"
-import type { Window } from "../window.ts"
-import type { ScrollBoxRenderable } from "@opentui/core"
-import { Sidebar } from "./Sidebar.tsx"
-import { WindowTabs } from "./WindowTabs.tsx"
-import { Hints } from "./Hints.tsx"
-import { Prompt, type PromptRequest } from "./Prompt.tsx"
-import { Capture, type CaptureView } from "./Capture.tsx"
-import { BufferChoose, type BufferChooseView } from "./BufferChoose.tsx"
-import { Settings, type SettingsSection } from "./Settings.tsx"
-import type { AppState } from "./state.ts"
-import type { Options } from "../options.ts"
-import type { Conflict, HelpGroup, HintGroup } from "../bindings.ts"
-import type { PaletteEntry } from "../bindings.ts"
-import { CommandPalette } from "./CommandPalette.tsx"
-
-export type Overlay = "none" | "settings" | "palette"
+import type { BoxRenderable } from "@opentui/core"
+import type { Anchor, DockSide, Regions } from "./regions.tsx"
 
 export interface AppProps {
-  app: AppState
-  options: Options
+  /** Every panel on screen. The app declares them; this file only decides
+   *  where a region lands and how big it is. */
+  regions: Regions
   /** The imperative pane tree, adopted as a child so splits keep their own
-   *  layout code and their cell-blitting renderables untouched. */
+   *  layout code and their cell-blitting renderables untouched. It is the one
+   *  thing here that is not a panel: it is the mux, not a view of it. */
   paneHost: BoxRenderable
   size: { width: number; height: number }
-
-  /** The invisible resize hitbox over the sidebar's rightmost column. A Divider
-   *  instance rather than a component: it needs to claim the pointer on press. */
-  sidebarHandle: Renderable
-  selected: number
-  hovered: number | null
-  onHover: (index: number | null) => void
-  onActivate: (index: number) => void
-
-  /** Key sequence in progress, e.g. ["^a"]. Drives the prefix indicator. */
-  pending: string[]
-  /** What that sequence can still become. Empty unless one is in progress. */
-  hints: HintGroup[]
-  /** Whether the transient which-key panel has passed its display delay. */
-  hintsVisible: boolean
-  onSelectWindow: (window: Window) => void
-  overlay: Overlay
-  helpGroups: HelpGroup[]
-  /** The prefix in effect, so the keybind list renders `<leader>` as it is
-   *  currently bound rather than as it shipped. */
-  leader: string
-  conflicts: Conflict[]
-  paletteEntries: PaletteEntry[]
-  paletteQuery: string
-  paletteSelected: number
-  onPaletteInput: (value: string) => void
-  onPaletteSubmit: () => void
-  settingsSection: SettingsSection
-  settingsSelected: number
-  settingsDirty: boolean
-  /** Error from the last settings save attempt. */
-  settingsError?: string
-  /** Waiting for the keystroke that becomes a binding. */
-  capturing: boolean
-  onKeybindList?: (box: ScrollBoxRenderable) => void
-  prompt: PromptRequest | null
-  captureView: CaptureView | null
-  /** The choose-buffer overlay, when it is up. */
-  chooseView: BufferChooseView | null
-  /** Compile error from the prompt's last submit, for the prompt to show. */
-  promptError?: string
-  /** True while the focused window's pane is in keyboard copy mode, for the
-   *  tab bar's marker. */
-  copying: boolean
+  /** Breathing room around the pane tree. On the pane host alone: a dock is
+   *  chrome and sits flush against the edge it is docked to. */
+  padding?: number
 }
 
+/**
+ * The screen, as regions.
+ *
+ * Two nested frames. The outer one is the app: its docks span the whole screen.
+ * The inner one is the pane area, and its docks sit beside the outer docks
+ * rather than above them — which is where herdr's window list lives, one row at
+ * the top of the pane area next to the sidebar, and why a dock declares an
+ * anchor rather than only a side.
+ *
+ * A dock's resize handle is an invisible hitbox over the dock's own inner edge,
+ * so the panes keep drawing all four of their own borders and resizing a dock
+ * costs the pane area no cell.
+ */
 export function App(props: AppProps) {
-  const space = () => props.app.active()
-  const windows = () => space()?.windows ?? []
-  const sidebarOpen = () => props.options["sidebar.open"]
-  const sidebarWidth = () => props.options["sidebar.width"]
   /** Where the pane area starts, so transient chrome lines up with it rather
-   *  than covering the tree. */
-  const paneLeft = () => (sidebarOpen() ? sidebarWidth() : 0)
+   *  than covering the docks. */
+  const paneLeft = () =>
+    props.regions.thickness("left", "app") + props.regions.thickness("left", "center")
+  const Slot = props.regions.Slot
 
-  // herdr's layout: no app-wide bar. The window list is one row at the top of
-  // the pane area, beside the sidebar rather than above it. Always present, even
-  // at one window — a tab bar that appears and disappears shifts the whole pane
-  // area by a row, and it is where the prefix indicator lives.
-  //
-  // The resize hitbox lives inside the sidebar, so the pane tree has no extra
-  // divider column and its frame remains independent of sidebar resizing.
   return (
-    <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
-      {/* Keep the sidebar slot in the root child list while toggling its width.
-          Reparenting the main pane box when the sidebar returns can leave its
-          first border at the old sibling geometry for one render. */}
+    <box style={{ width: "100%", height: "100%", flexDirection: "column" }}>
+      <Dock regions={props.regions} side="top" anchor="app" />
+
+      <box style={{ flexGrow: 1, flexDirection: "row" }}>
+        <Dock regions={props.regions} side="left" anchor="app" />
+
+        <box style={{ flexGrow: 1, flexDirection: "column" }}>
+          <Dock regions={props.regions} side="top" anchor="center" />
+
+          <box style={{ flexGrow: 1, flexDirection: "row" }}>
+            <Dock regions={props.regions} side="left" anchor="center" />
+            <box style={{ flexGrow: 1, flexDirection: "row", padding: props.padding ?? 0 }}>
+              {props.paneHost}
+            </box>
+            <Dock regions={props.regions} side="right" anchor="center" />
+          </box>
+
+          <Dock regions={props.regions} side="bottom" anchor="center" />
+        </box>
+
+        <Dock regions={props.regions} side="right" anchor="app" />
+      </box>
+
+      <Dock regions={props.regions} side="bottom" anchor="app" />
+
+      <Slot
+        name="float"
+        left={paneLeft()}
+        width={props.size.width - paneLeft()}
+        height={props.size.height}
+      />
+      <Slot name="overlay" width={props.size.width} height={props.size.height} />
+    </box>
+  )
+}
+
+/**
+ * One edge dock: an ordered stack of panels, as thick as the thickest of them,
+ * with its resize handle over its own inner edge.
+ *
+ * The box stays in its parent's child list for as long as anything is
+ * registered here, even at thickness zero. Reparenting the pane box when a dock
+ * comes back can leave its first border at the old sibling geometry for one
+ * render.
+ */
+function Dock(props: { regions: Regions; side: DockSide; anchor: Anchor }) {
+  const Slot = props.regions.Slot
+  const across = () => props.side === "left" || props.side === "right"
+  const size = () => props.regions.thickness(props.side, props.anchor)
+
+  return (
+    <Show when={props.regions.declared(props.side, props.anchor)}>
       <box
         style={{
-          width: sidebarOpen() ? sidebarWidth() : 0,
-          height: "100%",
+          ...(across() ? { width: size(), height: "100%" } : { height: size(), width: "100%" }),
           flexShrink: 0,
+          flexDirection: "column",
+          // The drag handle is positioned against this box.
           position: "relative",
         }}
       >
-        <Show when={sidebarOpen()}>
-          <Sidebar
-            app={props.app}
-            width={sidebarWidth()}
-            selected={props.selected}
-            hovered={props.hovered}
-            agentsOnly={props.options["sidebar.agentsOnly"]}
-            onHover={props.onHover}
-            onActivate={props.onActivate}
-          />
-          {props.sidebarHandle}
-        </Show>
+        <Slot name={`${props.side}.${props.anchor}`} side={props.side} anchor={props.anchor} />
+        {props.regions.divider(props.side, props.anchor)}
       </box>
-
-      <box style={{ flexGrow: 1, flexDirection: "column" }}>
-        <WindowTabs
-          app={props.app}
-          windows={windows()}
-          active={props.app.activeWindow()}
-          pending={props.pending}
-          copying={props.copying}
-          onSelect={props.onSelectWindow}
-        />
-        <box style={{ flexGrow: 1, flexDirection: "row", padding: props.options["appearance.padding"] ? 1 : 0 }}>
-          {props.paneHost}
-        </box>
-      </box>
-
-      {/* Only while a sequence is half-typed, and never over a modal — an
-          overlay that is already answering "what now?" does not need a second
-          one on top of it. */}
-      <Show when={props.hintsVisible && props.hints.length > 0 && props.overlay === "none" && !props.prompt}>
-        <Hints
-          groups={props.hints}
-          pending={props.pending.join(" ")}
-          left={paneLeft()}
-          width={props.size.width - paneLeft()}
-          height={props.size.height}
-        />
-      </Show>
-
-      <Show when={props.overlay === "settings"}>
-        <Settings
-          options={props.options}
-          section={props.settingsSection}
-          selected={props.settingsSelected}
-          groups={props.helpGroups}
-          leader={props.leader}
-          conflicts={props.conflicts}
-          capturing={props.capturing}
-          width={props.size.width}
-          height={props.size.height}
-          dirty={props.settingsDirty}
-          error={props.settingsError}
-          onKeybindList={props.onKeybindList}
-        />
-      </Show>
-      <Show when={props.overlay === "palette"}>
-        <CommandPalette
-          entries={props.paletteEntries}
-          query={props.paletteQuery}
-          selected={props.paletteSelected}
-          width={props.size.width}
-          onInput={props.onPaletteInput}
-          onSubmit={props.onPaletteSubmit}
-        />
-      </Show>
-      <Show when={props.prompt} keyed>
-        {(request: PromptRequest) => (
-          <Prompt request={request} width={props.size.width} error={props.promptError} />
-        )}
-      </Show>
-      <Show when={props.captureView} keyed>
-        {(view: CaptureView) => (
-          <Capture view={view} width={props.size.width} height={props.size.height} />
-        )}
-      </Show>
-      <Show when={props.chooseView} keyed>
-        {(view: BufferChooseView) => (
-          <BufferChoose view={view} width={props.size.width} height={props.size.height} />
-        )}
-      </Show>
-    </box>
+    </Show>
   )
 }

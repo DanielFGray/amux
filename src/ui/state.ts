@@ -20,7 +20,8 @@ export interface AppState {
   frame: Accessor<number>
   /** Bump after any structural change (space/agent/pane added or removed). */
   refresh: () => void
-  dispose: () => void
+  /** Advance every view of state that must be polled. */
+  poll: () => void
 }
 
 /**
@@ -33,8 +34,8 @@ export interface AppState {
  * - *Polled* — an agent's state, its foreground command, the spinner frame.
  *   There is nothing to push from: the state lives in the kernel (the pty's
  *   foreground pgid) or on the agent's screen, and ghostty deliberately offers
- *   no notification for scroll position either. A timer is the honest model,
- *   not a workaround.
+ *   no notification for scroll position either. The app's one polling timer
+ *   calls `poll()` alongside its other fixed-cadence work.
  *
  * Views read `tick()` alongside a getter to opt into the polled refresh.
  */
@@ -43,15 +44,13 @@ export function createAppState(spaces: SpaceSet): AppState {
   const [tick, setTick] = createSignal(0)
 
   const refresh = () => setRevision((r) => r + 1)
+  const poll = () => setTick((t) => t + 1)
 
   const previous = spaces.onChange
   spaces.onChange = () => {
     previous?.()
     refresh()
   }
-
-  const timer = setInterval(() => setTick((t) => t + 1), POLL_MS)
-  timer.unref?.()
 
   const spacesList = createMemo(() => {
     revision()
@@ -96,8 +95,6 @@ export function createAppState(spaces: SpaceSet): AppState {
     tick,
     frame: tick,
     refresh,
-    dispose() {
-      clearInterval(timer)
-    },
+    poll,
   }
 }

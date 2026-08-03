@@ -6,12 +6,11 @@ import {
   type ScrollBoxRenderable,
 } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
-import { createSignal, createMemo, createEffect, on } from "solid-js"
-import { Effect, Fiber, Scope, Stream } from "effect"
+import { Show, createSignal, createMemo, createEffect, on } from "solid-js"
+import { Effect, Exit, FiberMap, Scope, Stream } from "effect"
 import { basename, join, resolve } from "node:path"
 import { writeFile } from "node:fs/promises"
 
-import { Divider } from "./divider.ts"
 import { projectWorkspace, SpaceSet } from "./space.ts"
 import { frame } from "./window.ts"
 import { nextPreset, LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts"
@@ -59,18 +58,22 @@ import {
 } from "./options.ts"
 import type { SessionClientShape } from "./client.ts"
 import type { WorkspaceSnapshot } from "./workspace.ts"
-import { createAppState } from "./ui/state.ts"
-import { clampSidebarSelection, sidebarTargets } from "./ui/Sidebar.tsx"
-import { App, type Overlay } from "./ui/App.tsx"
-import { hintVisibility } from "./ui/Hints.tsx"
+import { createAppState, POLL_MS } from "./ui/state.ts"
+import { Sidebar, clampSidebarSelection, sidebarTargets } from "./ui/Sidebar.tsx"
+import { App } from "./ui/App.tsx"
+import { createRegions } from "./ui/regions.tsx"
+import { WindowTabs } from "./ui/WindowTabs.tsx"
+import { CommandPalette } from "./ui/CommandPalette.tsx"
+import { Prompt, type PromptRequest } from "./ui/Prompt.tsx"
+import { Hints, hintVisibility } from "./ui/Hints.tsx"
 import {
+  Settings,
   SETTINGS_SECTIONS,
   settingsFields,
   keybindTargets,
   keybindLine,
   type SettingsSection,
 } from "./ui/Settings.tsx"
-import type { PromptRequest } from "./ui/Prompt.tsx"
 import {
   captureSpan,
   pickCaptureTarget,
@@ -106,6 +109,13 @@ interface ManagedAppHandle extends AppHandle {
   readonly release: Effect.Effect<void>
 }
 
+/** A synchronous launcher captured from the app's scoped FiberMap. */
+export type AppFiberRunner = (key: string, effect: Effect.Effect<void>) => void
+
+/** The two modals that share one slot, because opening either closes the
+ *  other: they are the same window in the user's head. */
+export type Overlay = "none" | "settings" | "palette"
+
 /**
  * Everything above the renderer: the workspace, the key bindings, the overlays
  * and the commands that drive them.
@@ -119,21 +129,74 @@ interface ManagedAppHandle extends AppHandle {
 export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, Scope.Scope> {
   const SHELL = [resolveOptions(options.config.options)["behaviour.shell"] || process.env.SHELL || "bash"]
   return Effect.gen(function* () {
+    const fiberScope = yield* Scope.make()
+    yield* Effect.addFinalizer(() => Scope.close(fiberScope, Exit.void))
+    const fibers = yield* Scope.extend(FiberMap.make<string>(), fiberScope)
+    const runFiber = yield* FiberMap.runtime(fibers)<never>()
     const spaces = yield* SpaceSet.make(
       workspaceEnv(options.renderer, { shell: SHELL, backend: options.session.backend() }),
       options.paneHost,
     )
     return yield* Effect.acquireRelease(
-      Effect.sync(() => buildApp(options, spaces, SHELL)),
+      Effect.sync(() => buildApp(options, spaces, SHELL, fiberScope, runFiber)),
       (app) => app.release,
     )
   })
+}
+
+/** Replace the pending which-key delay inside the app's scoped fiber map. */
+export function scheduleHintVisibility(
+  runFiber: AppFiberRunner,
+  delayMs: number,
+  hasPendingSequence: () => boolean,
+  show: () => void,
+) {
+  runFiber(
+    "hint-delay",
+    Effect.sleep(`${delayMs} millis`).pipe(
+      Effect.andThen(Effect.sync(() => {
+        if (hasPendingSequence()) show()
+      })),
+    ),
+  )
+}
+
+/**
+ * A periodic callback whose timer is owned by the fiber that runs this effect:
+ * interrupting the fiber, or closing the scope that holds it, clears the timer.
+ *
+ * Deliberately a platform timer rather than `Effect.repeat(_, Schedule)` or a
+ * sleep loop. The UI's poll is the one loop that must cost nothing while the
+ * user is not doing anything, and on Bun a scheduled *fiber* wakeup in an
+ * otherwise idle process is 20-50x dearer than a timer callback — measured on
+ * an empty process at 2Hz: 0.34% CPU for setInterval against 1.0-1.8% for
+ * Effect.forever/Schedule.spaced/Schedule.fixed. Worse, the fiber's cost per
+ * wakeup GROWS with the gap between wakeups (each long gap buys JSC a full GC
+ * cycle a tighter cadence keeps amortised), so slowing the poll down to save
+ * work spends more of it, not less.
+ */
+export function scheduledPoll(intervalMs: number, run: () => void): Effect.Effect<void> {
+  return Effect.async<never>(() => {
+    const timer = setInterval(run, intervalMs)
+    timer.unref?.()
+    return Effect.sync(() => clearInterval(timer))
+  })
+}
+
+/** Consume daemon models in stream order under the app's supervised fiber. */
+export function runModelProjections<A>(
+  models: Stream.Stream<A>,
+  project: (model: A) => Promise<void>,
+): Effect.Effect<void> {
+  return Stream.runForEach(models, (model) => Effect.promise(() => project(model)))
 }
 
 function buildApp(
   { renderer, paneHost, config, session, quit }: AppOptions,
   spaces: SpaceSet,
   SHELL: string[],
+  fiberScope: Scope.CloseableScope,
+  runFiber: AppFiberRunner,
 ): ManagedAppHandle {
   const initialFrameExternalLeft = frame.externalLeft
 
@@ -171,7 +234,7 @@ function buildApp(
    * whole app, entered on whatever pane is focused. The mode renders through the
    * pane's existing selection machinery and copies through the same chain the
    * mouse drag does, so nothing here owns a second copy path.
-   */
+  */
   const copyMode = new CopyMode()
   copyMode.onStateChange = () => app.refresh()
   // The search prompt reuses the app's modal prompt; resolve feeds the query back
@@ -194,12 +257,14 @@ function buildApp(
   // history. A no-op whenever the mode is parked or inactive — and never allowed
   // to touch a pane that has left the tree: a tick landing between a structural
   // change and its notification must not invalidate a view being torn down.
-  const copyTimer = setInterval(() => {
-    const pane = copyMode.pane
-    if (pane && !paneStillMounted(pane)) return
-    copyMode.reconcile()
-  }, 100)
-  copyTimer.unref?.()
+  runFiber(
+    "ui-poll",
+    scheduledPoll(POLL_MS, () => {
+      app.poll()
+      const pane = copyMode.pane
+      if (!pane || paneStillMounted(pane)) copyMode.reconcile()
+    }),
+  )
 
   let projectedRevision = -1
   let projection = Promise.resolve()
@@ -225,8 +290,9 @@ function buildApp(
       .catch((error) => console.error(`could not project workspace revision ${model.revision}: ${String(error)}`))
     return projection
   }
-  const modelFiber = Effect.runFork(
-    Stream.runForEach(session.models, (model) => Effect.promise(() => project(model))),
+  runFiber(
+    "workspace-models",
+    runModelProjections(session.models, project),
   )
   const workspaceContext = () => ({
     size: { cols: Math.max(1, paneHost.width), rows: Math.max(1, paneHost.height) },
@@ -265,24 +331,8 @@ function buildApp(
     changeOption(name, adjustedValue(OPTIONS[name], options()[name], by))
   }
 
-  // A Divider rather than a component with mouse props: dragging a one-cell
-  // target only works if the pointer is claimed on the press, and that is a
-  // renderable-level concern. See the note in divider.ts.
-  //
-  // The width it drags IS the option the settings window edits, so a drag
-  // survives a save and the two cannot disagree about how narrow is too narrow.
-  const sidebarHandle = new Divider(renderer, {
-    id: "sidebar-divider",
-    axis: "row",
-    onDrag: (delta) => adjustOption("sidebar.width", delta),
-  })
-  // It is the pane frame's left border, not a bare rule between two regions: it
-  // finishes with corners and the panes beside it stop drawing a left edge, so
-  // the seam is one column wide instead of two adjacent lines.
-  sidebarHandle.tees = true
-  sidebarHandle.outer = true
-  sidebarHandle.capStart = true
-  sidebarHandle.capEnd = true
+  /** Where every panel on screen is registered. See registerPanels below. */
+  const regions = createRegions(renderer)
 
   const sidebarOpen = () => options()["sidebar.open"]
   const [selected, setSelected] = createSignal(0)
@@ -293,7 +343,6 @@ function buildApp(
   // reachable, and a display string cannot be matched back.
   const [pendingParts, setPendingParts] = createSignal<readonly { display: string }[]>([])
   const [hintsVisible, setHintsVisible] = createSignal(false)
-  let hintTimer: ReturnType<typeof setTimeout> | null = null
   const [promptRequest, setPromptRequest] = createSignal<PromptRequest | null>(null)
   /** Compile error from the send-keys prompt's last submit. Kept separate from
    *  the request so a reject does not recreate it and wipe the user's input. */
@@ -411,20 +460,14 @@ function buildApp(
   }
 
   /**
-   * Keep the pane frame in step with the sidebar.
+   * Redraw the pane frame under the current docks.
    *
-   * While the sidebar is open its handle is the frame's left border, so every
-   * pane must stop drawing one; closing it hands that side back. And because the
-   * handle *is* the leftmost pane's border, it highlights with that pane rather
-   * than sitting inertly grey next to a focused one.
+   * No dock draws the frame's edges any more: a dock's resize handle is an
+   * invisible hitbox over its own last column, so the panes own all four of
+   * their borders whatever is docked beside them.
    */
-  function syncSidebarBorder() {
-    sidebarHandle.adjacentToFocus = sidebarOpen() && (spaces.activeWindow?.focusAtLeftEdge ?? false)
-  }
-
-  function syncSidebarFrame() {
-    frame.externalLeft = sidebarOpen()
-    syncSidebarBorder()
+  function syncPaneFrame() {
+    frame.externalLeft = false
     spaces.refreshChrome()
   }
 
@@ -433,10 +476,6 @@ function buildApp(
   const notifyChange = spaces.onChange
   spaces.onChange = () => {
     notifyChange?.()
-    // Output already caused a reactive read. If that read exposed a spinner,
-    // wake the idle loop once; subsequent output must not keep postponing the
-    // 100ms tick by repeatedly replacing its fiber.
-    if (needsFastPoll() && !pollingFast) startUiPoll()
     // A pane closing is a structural change; if it was the copy-mode pane, the
     // mode must step down rather than keep a handle on a destroyed view. Guarded
     // on the mode being active, since this runs on every output chunk.
@@ -449,7 +488,6 @@ function buildApp(
     // goes through a command that exits first, and agent exits never free theirs.
     const copyPane = copyMode.active ? copyMode.pane : null
     if (copyPane && !paneStillMounted(copyPane)) copyMode.exit()
-    syncSidebarBorder()
   }
 
   /** Whether a pane still has a viewport anywhere, for the copy-mode orphan
@@ -1108,71 +1146,12 @@ function buildApp(
    * note on preventDefault in bindings.ts.
    */
   function onUnhandled(event: KeyEvent): boolean {
-    if (promptRequest()) {
-      const request = promptRequest()!
-      // A notice is a message, not a form: nothing is focused to hand the key to,
-      // so every key is consumed here and enter/escape dismiss it.
-      if (request.notice) {
-        if (event.name === "escape" || event.name === "return" || event.name === "enter") {
-          request.resolve(null)
-        }
-        return true
-      }
-      // Escape cancels; everything else belongs to the focused input, so leave
-      // the event alone and let focus routing deliver it.
-      if (event.name === "escape") {
-        request.resolve(null)
-        return true
-      }
-      return false
-    }
-    if (captureView()) {
-      // The capture popup is its own modal: s writes the file, f re-captures
-      // the other span, escape backs out without saving. Everything else stays
-      // with the popup.
-      const view = captureView()!
-      if (event.name === "s") view.onSave()
-      else if (event.name === "f") view.onToggleSpan()
-      else if (event.name === "escape") view.onClose()
-      return true
-    }
-    if (chooseView()) {
-      // The choose-buffer picker is its own modal: ↑↓ picks, enter pastes the
-      // selection into the focused pane, d deletes it, escape closes. With no
-      // buffers there is nothing to pick, so only escape does anything.
-      const view = chooseView()!
-      const count = view.buffers.length
-      if (event.name === "j" || event.name === "down") {
-        setChooseView((v) => (v ? { ...v, selected: Math.min(count - 1, v.selected + 1) } : v))
-      } else if (event.name === "k" || event.name === "up") {
-        setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v))
-      } else if (event.name === "pagedown") {
-        setChooseView((v) => (v ? { ...v, selected: Math.min(count - 1, v.selected + 10) } : v))
-      } else if (event.name === "pageup") {
-        setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v))
-      } else if (event.name === "return" || event.name === "enter") {
-        const name = view.buffers[view.selected]?.name
-        if (name) view.onPaste(name)
-      } else if (event.name === "d") {
-        const name = view.buffers[view.selected]?.name
-        if (name) view.onDelete(name)
-      } else if (event.name === "escape") {
-        view.onClose()
-      }
-      return true
-    }
-    if (overlay() !== "none") {
-      if (event.name === "escape") {
-        setOverlay("none")
-        return true
-      }
-      if (overlay() === "settings") {
-        if (event.name === "q") setOverlay("none")
-        else settingsKey(event)
-        return true
-      }
-      return paletteKey(event)
-    }
+    // Whatever modal is on top owns the keys the keymap did not claim. Each
+    // overlay panel carries its own key handling, so there is no chain here and
+    // no priority order written twice: the panel drawn last is the panel asked
+    // first, both from its `order`.
+    const modal = regions.topOverlay()
+    if (modal) return modal.keys?.(event) ?? true
     // Copy mode owns the focused pane's unhandled keys. Bound keys never reach
     // here, so the leader and every ^a sequence keep their normal meaning — and
     // a pane that is not in copy mode still gets its child's keystrokes, which
@@ -1293,14 +1272,8 @@ function buildApp(
   const bindings = createBindings(renderer, COMMANDS, { keys: config.keys, onUnhandled })
   setConflicts(bindings.conflicts())
 
-  function clearHintTimer() {
-    if (!hintTimer) return
-    clearTimeout(hintTimer)
-    hintTimer = null
-  }
-
   function updateHintVisibility(sequence: readonly { display: string }[]) {
-    clearHintTimer()
+    runFiber("hint-delay", Effect.void)
     setPendingParts(sequence)
     const visibility = hintVisibility(
       sequence.length,
@@ -1343,7 +1316,7 @@ function buildApp(
     // Before the redraw: pane borders and wheel scrolling read these values
     // imperatively, from renderables with no path back into this graph.
     applyOptions(options())
-    syncSidebarFrame()
+    syncPaneFrame()
   })
 
   // The keymap's own event covers the sequence changing; this covers the two
@@ -1384,9 +1357,9 @@ function buildApp(
 
   /** Refresh every space's branch/ahead-behind. Polled because git state changes
    *  behind our back with nothing to notify us. */
-  async function refreshGit() {
+  const refreshGit = Effect.gen(function* () {
     for (const space of spaces.spaces) {
-      const info = await readGit(space.dir)
+      const info = yield* Effect.promise(() => readGit(space.dir))
       if (info.branch === space.branch && info.ahead === space.ahead && info.behind === space.behind)
         continue
       space.branch = info.branch
@@ -1394,13 +1367,7 @@ function buildApp(
       space.behind = info.behind
       app.refresh()
     }
-  }
-
-  let gitRefresh = Promise.resolve()
-  const refreshGitNow = () => {
-    gitRefresh = gitRefresh.then(refreshGit)
-    return gitRefresh
-  }
+  })
 
   /** Ask the owning Effect program to close its scope. Backend ownership makes
    * that release kill local PTYs and merely detach daemon projections. */
@@ -1408,8 +1375,260 @@ function buildApp(
     quit()
   }
 
+  /**
+   * Everything herdr puts on screen, as panels.
+   *
+   * The app registers its own views through the registry a plugin will, so
+   * there is one way for a panel to exist rather than a built-in layout with a
+   * plugin API bolted beside it. Nothing outside this file can register yet.
+   *
+   * A panel is a value: where it goes, how big it is, when it is up, what it
+   * draws and — for a modal — what it does with the keys the keymap did not
+   * claim. The overlays' `order` is the modal stack, so the one drawn on top is
+   * the one asked about a keystroke first.
+   */
+  function registerPanels(): () => void {
+    const disposers = [
+      regions.register({
+        id: "herdr.sidebar",
+        region: "left",
+        // The whole screen, not the pane area: the tree is taller than the
+        // panes and the window list sits beside it.
+        anchor: "app",
+        title: "spaces",
+        visible: sidebarOpen,
+        size: () => options()["sidebar.width"],
+        // The width it drags IS the option the settings window edits, so a drag
+        // survives a save and the two cannot disagree about how narrow is too
+        // narrow.
+        resizable: true,
+        onResize: (delta) => adjustOption("sidebar.width", delta),
+        component: () => (
+          <Sidebar
+            app={app}
+            width={options()["sidebar.width"]}
+            selected={selected()}
+            hovered={hovered()}
+            agentsOnly={options()["sidebar.agentsOnly"]}
+            onHover={setHovered}
+            onActivate={activateSelection}
+          />
+        ),
+      }),
+      regions.register({
+        id: "herdr.windows",
+        region: "top",
+        // The pane area, not the app: herdr has no app-wide bar, and a tab row
+        // above the sidebar is a different program.
+        anchor: "center",
+        title: "windows",
+        // Always present, even at one window — a tab bar that appears and
+        // disappears shifts the whole pane area by a row, and it is where the
+        // prefix indicator lives.
+        size: () => 1,
+        component: () => (
+          <WindowTabs
+            app={app}
+            windows={app.active()?.windows ?? []}
+            active={app.activeWindow()}
+            pending={pending()}
+            copying={copying()}
+            onSelect={(w) => {
+              const space = spaces.active
+              if (space) {
+                runProjectedCommand(command("window.select", { space: space.id, number: w.number }))
+              }
+            }}
+          />
+        ),
+      }),
+      regions.register({
+        id: "herdr.settings",
+        region: "overlay",
+        order: 10,
+        title: "settings",
+        visible: () => overlay() === "settings",
+        keys: (event) => {
+          if (event.name === "escape" || event.name === "q") setOverlay("none")
+          else settingsKey(event)
+          return true
+        },
+        component: (props) => (
+          <Settings
+            options={options()}
+            section={settingsSection()}
+            selected={settingsSelected()}
+            groups={groups()}
+            leader={configState().keys.leader}
+            conflicts={conflicts()}
+            capturing={capturing()}
+            width={props.width}
+            height={props.height}
+            dirty={settingsDirty()}
+            error={settingsError()}
+            onKeybindList={(box) => {
+              keybindList = box
+            }}
+          />
+        ),
+      }),
+      regions.register({
+        id: "herdr.palette",
+        region: "overlay",
+        // Same rung as settings: one signal holds both, so they cannot be up at
+        // the same time.
+        order: 10,
+        title: "commands",
+        visible: () => overlay() === "palette",
+        keys: (event) => {
+          if (event.name === "escape") {
+            setOverlay("none")
+            return true
+          }
+          return paletteKey(event)
+        },
+        component: (props) => (
+          <CommandPalette
+            entries={filteredPalette()}
+            query={paletteQuery()}
+            selected={paletteSelected()}
+            width={props.width}
+            onInput={(value) => {
+              setPaletteQuery(value)
+              setPaletteSelected(0)
+            }}
+            onSubmit={submitPalette}
+          />
+        ),
+      }),
+      regions.register({
+        id: "herdr.buffers",
+        region: "overlay",
+        order: 20,
+        title: "buffers",
+        visible: () => chooseView() !== null,
+        // ↑↓ picks, enter pastes the selection into the focused pane, d deletes
+        // it, escape closes. With no buffers there is nothing to pick, so only
+        // escape does anything.
+        keys: (event) => {
+          const view = chooseView()
+          if (!view) return true
+          const count = view.buffers.length
+          if (event.name === "j" || event.name === "down") {
+            setChooseView((v) => (v ? { ...v, selected: Math.min(count - 1, v.selected + 1) } : v))
+          } else if (event.name === "k" || event.name === "up") {
+            setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v))
+          } else if (event.name === "pagedown") {
+            setChooseView((v) => (v ? { ...v, selected: Math.min(count - 1, v.selected + 10) } : v))
+          } else if (event.name === "pageup") {
+            setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v))
+          } else if (event.name === "return" || event.name === "enter") {
+            const name = view.buffers[view.selected]?.name
+            if (name) view.onPaste(name)
+          } else if (event.name === "d") {
+            const name = view.buffers[view.selected]?.name
+            if (name) view.onDelete(name)
+          } else if (event.name === "escape") {
+            view.onClose()
+          }
+          return true
+        },
+        component: (props) => (
+          <Show when={chooseView()} keyed>
+            {(view: BufferChooseView) => (
+              <BufferChoose view={view} width={props.width} height={props.height} />
+            )}
+          </Show>
+        ),
+      }),
+      regions.register({
+        id: "herdr.capture",
+        region: "overlay",
+        order: 30,
+        title: "capture",
+        visible: () => captureView() !== null,
+        // s writes the file, f re-captures the other span, escape backs out
+        // without saving. Everything else stays with the popup.
+        keys: (event) => {
+          const view = captureView()
+          if (!view) return true
+          if (event.name === "s") view.onSave()
+          else if (event.name === "f") view.onToggleSpan()
+          else if (event.name === "escape") view.onClose()
+          return true
+        },
+        component: (props) => (
+          <Show when={captureView()} keyed>
+            {(view: CaptureView) => (
+              <Capture view={view} width={props.width} height={props.height} />
+            )}
+          </Show>
+        ),
+      }),
+      regions.register({
+        id: "herdr.prompt",
+        region: "overlay",
+        // Top of the stack: a prompt is opened *by* the overlays below it, and
+        // the answer it is waiting for is the only thing the keyboard is for
+        // while it is up.
+        order: 40,
+        title: "prompt",
+        visible: () => promptRequest() !== null,
+        keys: (event) => {
+          const request = promptRequest()
+          if (!request) return true
+          // A notice is a message, not a form: nothing is focused to hand the
+          // key to, so every key is consumed here and enter/escape dismiss it.
+          if (request.notice) {
+            if (event.name === "escape" || event.name === "return" || event.name === "enter") {
+              request.resolve(null)
+            }
+            return true
+          }
+          // Escape cancels; everything else belongs to the focused input, so
+          // leave the event alone and let focus routing deliver it.
+          if (event.name === "escape") {
+            request.resolve(null)
+            return true
+          }
+          return false
+        },
+        component: (props) => (
+          <Show when={promptRequest()} keyed>
+            {(request: PromptRequest) => (
+              <Prompt request={request} width={props.width} error={promptError()} />
+            )}
+          </Show>
+        ),
+      }),
+      regions.register({
+        id: "herdr.hints",
+        region: "float",
+        title: "which-key",
+        // Only while a sequence is half-typed, and never over a modal — an
+        // overlay that is already answering "what now?" does not need a second
+        // one on top of it.
+        visible: () => hintsVisible() && hints().length > 0 && regions.topOverlay() === null,
+        component: (props) => (
+          <Hints
+            groups={hints()}
+            pending={pending().join(" ")}
+            left={props.left}
+            width={props.width}
+            height={props.height}
+          />
+        ),
+      }),
+    ]
+    return () => {
+      for (const dispose of disposers) dispose()
+    }
+  }
+
+  const disposePanels = registerPanels()
+
   // Before the first window exists, so its panes are built with the right edges.
-  syncSidebarFrame()
+  syncPaneFrame()
   // Initial status is the reconnect snapshot; later generations arrive on the
   // model stream. The client never invents a fallback workspace of its own.
   const initialWorkspace = session.workspace()
@@ -1422,76 +1641,37 @@ function buildApp(
         runProjectedCommand(command("pane.resize-divider", { path: [...path], index, delta }))
     }
   }
-  syncSidebarFrame()
-  void refreshGitNow()
-  const gitTimer = setInterval(() => void refreshGitNow(), 5000)
-  gitTimer.unref?.()
+  syncPaneFrame()
+  // Keyed, so a refresh still running when the next one is due is replaced
+  // rather than queued behind it: a git call that hangs must not build a
+  // backlog of scans of state it has already been superseded by.
+  const refreshGitNow = () => runFiber("git-refresh", refreshGit)
+  refreshGitNow()
+  runFiber("git-poll", scheduledPoll(5000, refreshGitNow))
   const View = () => (
     <App
-      app={app}
-      options={options()}
+      regions={regions}
       paneHost={paneHost}
       size={size()}
-      sidebarHandle={sidebarHandle}
-      selected={selected()}
-      hovered={hovered()}
-      onHover={setHovered}
-      onActivate={activateSelection}
-      pending={pending()}
-      hints={hints()}
-      hintsVisible={hintsVisible()}
-      onSelectWindow={(w) => {
-        const space = spaces.active
-        if (space) runProjectedCommand(command("window.select", { space: space.id, number: w.number }))
-      }}
-      overlay={overlay()}
-      helpGroups={groups()}
-      // From the config rather than the keymap: a plain method call would not
-      // re-render the list when the prefix changes.
-      leader={configState().keys.leader}
-      conflicts={conflicts()}
-      paletteEntries={filteredPalette()}
-      paletteQuery={paletteQuery()}
-      paletteSelected={paletteSelected()}
-      onPaletteInput={(value) => {
-        setPaletteQuery(value)
-        setPaletteSelected(0)
-      }}
-      onPaletteSubmit={submitPalette}
-      capturing={capturing()}
-      settingsSection={settingsSection()}
-      settingsSelected={settingsSelected()}
-      settingsDirty={settingsDirty()}
-      settingsError={settingsError()}
-      onKeybindList={(box) => {
-        keybindList = box
-      }}
-      prompt={promptRequest()}
-      promptError={promptError()}
-      captureView={captureView()}
-      chooseView={chooseView()}
-      copying={copying()}
+      padding={options()["appearance.padding"] ? 1 : 0}
     />
   )
 
   const release = Effect.gen(function* () {
     disposed = true
+    // Stop supervised callbacks before releasing anything they can touch.
+    yield* Scope.close(fiberScope, Exit.void)
+    // A projection already handed to a Promise cannot be interrupted. Let it
+    // finish before releasing any UI object it can still refresh.
+    yield* Effect.promise(() => projection)
     // While the pane is still alive: the mode's exit clears the selection
     // through the pane's terminal, and a freed terminal cannot be caught.
     if (copyMode.active) copyMode.exit()
-    clearInterval(copyTimer)
-    clearInterval(gitTimer)
-    clearHintTimer()
     frame.externalLeft = initialFrameExternalLeft
     spaces.refreshChrome()
     disposePendingSequence()
+    disposePanels()
     bindings.dispose()
-    app.dispose()
-    yield* Fiber.interrupt(modelFiber)
-    // A projection already handed to a Promise cannot be interrupted. Let it
-    // finish while terminals are alive; the SpaceSet finalizer runs after us.
-    yield* Effect.promise(() => projection)
-    yield* Effect.promise(() => gitRefresh)
   })
 
   return { View, release }

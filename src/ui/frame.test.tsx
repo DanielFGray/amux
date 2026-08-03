@@ -6,12 +6,16 @@ import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { createSignal } from "solid-js"
-import { Divider } from "../divider.ts"
 import { SpaceSet, type Space } from "../space.ts"
 import { frame } from "../window.ts"
 import { resolveOptions } from "../options.ts"
 import { createAppState } from "./state.ts"
 import { App } from "./App.tsx"
+import { createRegions } from "./regions.tsx"
+import { Sidebar } from "./Sidebar.tsx"
+import { WindowTabs } from "./WindowTabs.tsx"
+import { Settings } from "./Settings.tsx"
+import { Hints } from "./Hints.tsx"
 import type { HintGroup } from "../bindings.ts"
 import { workspaceEnv } from "../env.ts"
 
@@ -34,26 +38,15 @@ afterEach(() => {
 async function screen(
   open: boolean,
   build: (win: Space) => void,
-  extra: Partial<{ hints: HintGroup[]; hintsVisible: boolean; overlay: "none" | "settings"; reopen: boolean }> = {},
+  extra: Partial<{ hints: HintGroup[]; hintsVisible: boolean; overlay: boolean; reopen: boolean }> = {},
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT })
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
   const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost)
   const app = createAppState(spaces)
   cleanup.push(() => {
-    app.dispose()
     t.renderer.destroy()
   })
-
-  const handle = new Divider(t.renderer, { id: "sidebar-divider", axis: "row" })
-  handle.tees = true
-  handle.outer = true
-  handle.capStart = true
-  handle.capEnd = true
-  handle.hitboxOnly = true
-  handle.position = "absolute"
-  handle.setPosition({ top: 0, right: 0, bottom: 0 })
-  handle.zIndex = 1
 
   frame.externalLeft = false
   const [options, setOptions] = createSignal(sidebar(open))
@@ -61,51 +54,99 @@ async function screen(
   build(space)
   spaces.refreshChrome()
 
+  // The same panels the app registers, minus the ones no check here draws.
+  const regions = createRegions(t.renderer)
+  cleanup.push(
+    regions.register({
+      id: "test.sidebar",
+      region: "left",
+      anchor: "app",
+      visible: () => options()["sidebar.open"],
+      size: () => options()["sidebar.width"],
+      resizable: true,
+      onResize: () => {},
+      component: () => (
+        <Sidebar
+          app={app}
+          width={options()["sidebar.width"]}
+          selected={0}
+          hovered={null}
+          agentsOnly={false}
+          onHover={() => {}}
+          onActivate={() => {}}
+        />
+      ),
+    }),
+  )
+  cleanup.push(
+    regions.register({
+      id: "test.windows",
+      region: "top",
+      anchor: "center",
+      size: () => 1,
+      component: () => (
+        <WindowTabs
+          app={app}
+          windows={app.active()?.windows ?? []}
+          active={app.activeWindow()}
+          pending={["^a"]}
+          copying={false}
+          onSelect={() => {}}
+        />
+      ),
+    }),
+  )
+  cleanup.push(
+    regions.register({
+      id: "test.settings",
+      region: "overlay",
+      visible: () => extra.overlay ?? false,
+      component: (props) => (
+        <Settings
+          options={options()}
+          section="sidebar"
+          selected={0}
+          groups={[]}
+          leader="ctrl+a"
+          conflicts={[]}
+          capturing={false}
+          width={props.width}
+          height={props.height}
+          dirty={false}
+        />
+      ),
+    }),
+  )
+  cleanup.push(
+    regions.register({
+      id: "test.hints",
+      region: "float",
+      visible: () =>
+        (extra.hintsVisible ?? true) && (extra.hints ?? []).length > 0 && regions.topOverlay() === null,
+      component: (props) => (
+        <Hints
+          groups={extra.hints ?? []}
+          pending="^a"
+          left={props.left}
+          width={props.width}
+          height={props.height}
+        />
+      ),
+    }),
+  )
+
   await render(
     () => (
-      <App
-        app={app}
-        options={options()}
-        paneHost={paneHost}
-        size={{ width: WIDTH, height: HEIGHT }}
-        sidebarHandle={handle}
-        selected={0}
-        hovered={null}
-        onHover={() => {}}
-        onActivate={() => {}}
-        pending={["^a"]}
-        hints={extra.hints ?? []}
-        hintsVisible={extra.hintsVisible ?? true}
-        onSelectWindow={() => {}}
-        overlay={extra.overlay ?? "none"}
-        helpGroups={[]}
-        leader="ctrl+a"
-        conflicts={[]}
-        paletteEntries={[]}
-        paletteQuery=""
-        paletteSelected={0}
-        onPaletteInput={() => {}}
-        onPaletteSubmit={() => {}}
-        capturing={false}
-        settingsSection="sidebar"
-        settingsSelected={0}
-        settingsDirty={false}
-        prompt={null}
-        captureView={null}
-        chooseView={null}
-        copying={false}
-      />
+      <App regions={regions} paneHost={paneHost} size={{ width: WIDTH, height: HEIGHT }} />
     ),
     t.renderer,
   )
   await t.renderOnce()
   await t.renderOnce()
   if (extra.reopen) {
-    frame.externalLeft = false
     setOptions(sidebar(false))
     spaces.refreshChrome()
     await t.renderOnce()
-    frame.externalLeft = false
     setOptions(sidebar(true))
     spaces.refreshChrome()
     await t.renderOnce()
@@ -224,7 +265,7 @@ test("the hint panel starts at the pane area, not over the sidebar tree", async 
 test("the hint panel stays out of the way of an open overlay", async () => {
   const rows = await screen(true, (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())), {
     hints: HINTS,
-    overlay: "settings",
+    overlay: true,
   })
 
   expect(rows.join("\n")).not.toContain("z zoom")
