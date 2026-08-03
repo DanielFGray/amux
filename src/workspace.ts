@@ -376,9 +376,10 @@ export function applyWorkspaceCommand(
       break
     }
     case "pane.close": {
-      const target = activeWindow()?.window
-      if (!target?.state.focus) break
-      closePane(target, target.state.focus)
+      const found = activeWindow()
+      if (!found?.window?.state.focus) break
+      closePane(found.window, found.window.state.focus)
+      afterPaneRemoved(next, found.space, found.window, actions)
       break
     }
     case "pane.break": {
@@ -401,7 +402,7 @@ export function applyWorkspaceCommand(
       }
       found.space.windows.push(created)
       found.space.state = selectWindowState(found.space.state, found.space.windows.map((item) => item.number), number)
-      if (!found.window.layout.root && found.window.agents.length === 0) removeWindow(next, found.space, found.window, actions)
+      afterPaneRemoved(next, found.space, found.window, actions)
       break
     }
     case "pane.send-keys": {
@@ -622,6 +623,28 @@ function closePane(window: WorkspaceWindow, id: string): void {
   window.state.focus = window.layout.focus ?? null
   window.state.zoom = null
   window.state.preset = null
+}
+
+/** When a pane leaves a window without its agent dying, the window may become
+ *  empty. A window with no panes has no focus and silently swallows keyboard
+ *  input — so either reveal a surviving live agent or close the window. */
+function afterPaneRemoved(
+  workspace: WorkspaceSnapshot,
+  space: WorkspaceSpace,
+  window: WorkspaceWindow,
+  actions: WorkspaceAction[],
+): void {
+  if (window.layout.root) return
+  const live = window.agents.find((agent) => !agent.exited)
+  if (live) {
+    const used = new Set(workspace.spaces.flatMap((s) =>
+      s.windows.flatMap((w) => layoutPanes(w.layout.root).map((pane) => pane.id))))
+    const pane = allocateId("pane", used)
+    window.layout = makeLayout({ type: "pane", id: pane, agent: live.id, weight: 1 }, pane)
+    window.state.focus = pane
+  } else {
+    removeWindow(workspace, space, window, actions)
+  }
 }
 
 function normalizeWindowState(window: WorkspaceWindow): void {

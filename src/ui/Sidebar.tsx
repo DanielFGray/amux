@@ -37,7 +37,9 @@ export function sidebarTargets(spaces: readonly Space[], agentsOnly = false): Si
     if (agentsOnly && windows.length === 0) continue
     out.push({ kind: "space", space })
     for (const window of windows) {
-      const agents = agentsOnly ? window.agents.filter((agent) => agent.agentKind !== null) : window.agents
+      const agents = agentsOnly
+        ? window.agents.filter((agent) => agent.agentKind !== null)
+        : window.agents.filter((agent) => !agent.exited)
       out.push({ kind: "window", space, window })
       for (const agent of agents) out.push({ kind: "agent", space, window, agent })
     }
@@ -80,7 +82,7 @@ export function Sidebar(props: SidebarProps) {
       for (const window of windows) {
         const agents = props.agentsOnly
           ? window.agents.filter((agent) => agent.agentKind !== null)
-          : window.agents
+          : window.agents.filter((agent) => !agent.exited)
         out.push({ kind: "window", space, window, index: index++ })
         for (const agent of agents) {
           out.push({ kind: "agent", space, window, agent, index: index++ })
@@ -90,7 +92,7 @@ export function Sidebar(props: SidebarProps) {
     return out
   })
 
-  const agents = () => props.app.allAgents()
+  const agents = () => props.app.allAgents().filter((a) => !a.exited)
   const blocked = () => {
     props.app.tick()
     return agents().filter((a) => a.state === "blocked").length

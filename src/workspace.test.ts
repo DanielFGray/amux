@@ -34,7 +34,7 @@ const base = (layout: string): SessionState => ({
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" }
 
-test("persisted adoption rejects malformed layouts while internal close may become empty", () => {
+test("pane.close reveals a live agent when the window would become empty", () => {
   expect(() => workspaceFromSession(base("not json"))).toThrow("layout is not JSON")
   const adopted = workspaceFromSession(base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}'))
   const window = adopted.spaces[0]!.windows[0]!
@@ -43,7 +43,10 @@ test("persisted adoption rejects malformed layouts while internal close may beco
   const closed = applyWorkspaceCommand(adopted, command("pane.close"), context)
   expect(closed.changed).toBe(true)
   expect(closed.snapshot.revision).toBe(1)
-  expect(closed.snapshot.spaces[0]!.windows[0]!.layout.root).toBeNull()
+  // agent-a exited:false, so it is re-revealed rather than leaving the window empty
+  const after = closed.snapshot.spaces[0]!.windows[0]!
+  expect(after.layout.root).not.toBeNull()
+  expect(after.state.focus).not.toBeNull()
 })
 
 test("transient window state stays live but is omitted from persistence", () => {
@@ -102,6 +105,34 @@ test("new identities are UUID-based, unique, and disjoint from adopted ids", () 
   expect(agents.slice(1).every((id) => /^agent-[0-9a-f-]{36}$/.test(id))).toBe(true)
   expect(new Set(panes).size).toBeGreaterThanOrEqual(2)
   expect(agents).not.toContain("pane-adopted")
+})
+
+test("pane.close transfers focus to a survivor when the focused pane is closed", () => {
+  const saved = base('{"version":1,"root":{"type":"split","direction":"column","children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1},{"type":"pane","id":"pane-c","agent":"agent-c","weight":1}]},"focus":"pane-b"}')
+  saved.spaces[0]!.windows[0]!.agents.push(
+    { id: "agent-b", name: "sh", cmd: ["sh"], cols: 80, rows: 24, exited: false, exitCode: null },
+    { id: "agent-c", name: "sh", cmd: ["sh"], cols: 80, rows: 24, exited: false, exitCode: null },
+  )
+  const adopted = workspaceFromSession(saved)
+  const closed = applyWorkspaceCommand(structuredClone(adopted), command("pane.close"), context)
+  const window = closed.snapshot.spaces[0]!.windows[0]!
+  // pane-b was at index 1 in [pane-a, pane-b, pane-c]. focus → pane-c.
+  expect(window.state.focus).toBe("pane-c")
+  expect(window.layout.focus).toBe("pane-c")
+})
+
+test("pane.close on the last pane reveals a live agent", () => {
+  const saved = base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}')
+  saved.spaces[0]!.windows[0]!.agents.push(
+    { id: "agent-b", name: "sleep", cmd: ["sleep", "30"], cols: 80, rows: 24, exited: false, exitCode: null },
+  )
+  const adopted = workspaceFromSession(saved)
+  const closed = applyWorkspaceCommand(adopted, command("pane.close"), context)
+  const window = closed.snapshot.spaces[0]!.windows[0]!
+  // The window has live agents (agent-a detached, agent-b detached).
+  // afterPaneRemoved reveals the first live one.
+  expect(window.layout.root).not.toBeNull()
+  expect(window.state.focus).not.toBeNull()
 })
 
 test("space.new uses node path resolution and basename semantics", () => {
