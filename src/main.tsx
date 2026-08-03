@@ -106,18 +106,13 @@ const program = Effect.gen(function* () {
 
   const quit = yield* Deferred.make<void>()
 
-  const app = yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      createApp({
-        renderer,
-        paneHost,
-        config,
-        session,
-        quit: () => Deferred.unsafeDone(quit, Exit.void),
-      }),
-    ),
-    (a) => Effect.sync(() => a.dispose()),
-  )
+  const app = yield* createApp({
+    renderer,
+    paneHost,
+    config,
+    session,
+    quit: () => Deferred.unsafeDone(quit, Exit.void),
+  })
   yield* Effect.promise(() => render(app.View, renderer))
   yield* Deferred.await(quit)
 })

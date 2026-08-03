@@ -19,6 +19,12 @@ import { SpaceSet } from "./space.ts"
 import { workspaceEnv } from "./env.ts"
 import type { SpawnBackend } from "./backend.ts"
 import { run, runAsync } from "./harness.ts"
+import { createApp } from "./app.tsx"
+import { DEFAULT_CONFIG } from "./config.ts"
+import { makeLayout, windowState } from "./layout.ts"
+import { spaceSetState, spaceState } from "./space-model.ts"
+import type { SessionClientShape } from "./client.ts"
+import type { WorkspaceSnapshot } from "./workspace.ts"
 
 /**
  * A backend that starts nothing and remembers WHICH agents were killed.
@@ -163,3 +169,112 @@ test("a broken-out pane survives its source window closing", async () => {
     await f.cleanup()
   }
 })
+
+test("scoped app release detaches daemon projections and terminates local owners", async () => {
+  for (const ownership of ["daemon", "local"] as const) {
+    const t = await createTestRenderer({ width: 60, height: 20 })
+    const host = new BoxRenderable(t.renderer, { id: `pane-host-${ownership}`, flexGrow: 1 })
+    const closed: string[] = []
+    const killed: string[] = []
+    const backend: SpawnBackend = (opts) => {
+      let isClosed = false
+      return {
+        stream: Stream.never,
+        write() {},
+        resize() {},
+        close() {
+          if (isClosed) return
+          isClosed = true
+          closed.push(opts.id)
+          if (ownership === "local") killed.push(opts.id)
+        },
+        kill() {
+          if (!isClosed) killed.push(opts.id)
+          isClosed = true
+        },
+        get closed() { return isClosed },
+        get detached() { return ownership === "daemon" && isClosed },
+        exitCode: null,
+        foregroundPgid: () => -1,
+        sessionId: () => -1,
+      }
+    }
+    const workspace = lifecycleWorkspace(`agent-${ownership}`)
+    const session = lifecycleSession(workspace, backend)
+    const scope = Effect.runSync(Scope.make())
+
+    try {
+      run(Scope.extend(createApp({
+        renderer: t.renderer,
+        paneHost: host,
+        config: { ...structuredClone(DEFAULT_CONFIG), options: { "sidebar.open": false } },
+        session,
+        quit() {},
+      }), scope))
+      expect(host.getChildren()).toHaveLength(1)
+
+      await runAsync(Scope.close(scope, Exit.void))
+
+      expect(closed).toEqual([`agent-${ownership}`])
+      expect(killed).toEqual(ownership === "local" ? [`agent-${ownership}`] : [])
+      // The terminal is freed only after its entire renderable window has been
+      // removed. A subsequent frame therefore has no path back to that handle.
+      expect(host.getChildren()).toHaveLength(0)
+      await t.renderOnce()
+    } finally {
+      await runAsync(Scope.close(scope, Exit.void))
+      t.renderer.destroy()
+    }
+  }
+})
+
+function lifecycleWorkspace(agent: string): WorkspaceSnapshot {
+  const pane = `pane-${agent}`
+  const layout = makeLayout({ type: "pane", id: pane, agent, weight: 1 }, pane)
+  return {
+    revision: 1,
+    state: { ...spaceSetState(), activeSpace: "space-lifecycle" },
+    spaces: [{
+      id: "space-lifecycle",
+      name: "lifecycle",
+      dir: process.cwd(),
+      state: { ...spaceState(), activeWindow: 1 },
+      windows: [{
+        number: 1,
+        name: null,
+        state: { ...windowState(), focus: pane },
+        layout,
+        agents: [{
+          id: agent,
+          name: agent,
+          cmd: ["sleep", "30"],
+          cols: 40,
+          rows: 10,
+          exited: false,
+          exitCode: null,
+        }],
+      }],
+    }],
+  }
+}
+
+function lifecycleSession(workspace: WorkspaceSnapshot, spawn: SpawnBackend): SessionClientShape {
+  return {
+    id: "lifecycle",
+    session: null,
+    live: new Set(workspace.spaces.flatMap((space) =>
+      space.windows.flatMap((window) => window.agents.map((agent) => agent.id)))),
+    workspace: () => structuredClone(workspace),
+    models: Stream.never,
+    backend: () => spawn,
+    runWorkspace: () => Effect.succeed(structuredClone(workspace)),
+    close() {},
+    stop: () => Effect.void,
+    setBuffer: () => Effect.succeed("buffer"),
+    pasteBuffer: () => Effect.void,
+    listBuffers: () => Effect.succeed([]),
+    deleteBuffer: () => Effect.void,
+    showBuffer: () => Effect.succeed(""),
+    attach: {} as SessionClientShape["attach"],
+  }
+}

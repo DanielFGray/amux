@@ -239,6 +239,8 @@ export interface Bindings {
    * binding. Modifiers alone do not end the capture. Returns a canceller.
    */
   capture(onKey: (event: KeyEvent, binding: string) => void): () => void
+  /** Remove every layer and interceptor installed on the renderer. */
+  dispose(): void
 }
 
 /**
@@ -277,7 +279,7 @@ export function createBindings(
   // Ahead of dispatch, so recording a binding can record keys that are
   // themselves bound — including the prefix, which would otherwise arm a
   // sequence instead of being read.
-  keymap.intercept(
+  const disposeCapture = keymap.intercept(
     "key",
     (ctx) => {
       if (!capturing) return
@@ -295,7 +297,7 @@ export function createBindings(
   // A multiplexer is a pass-through: anything not claimed by a binding belongs
   // to the child. This fires after dispatch, so bound keys and keys that are
   // mid-sequence are already accounted for and never reach a shell.
-  keymap.intercept("key:after", (ctx) => {
+  const disposeUnhandled = keymap.intercept("key:after", (ctx) => {
     if (ctx.handled) return
     // preventDefault only when the app really took the key. A focused
     // Renderable skips any event whose default was prevented, so blanket
@@ -345,6 +347,15 @@ export function createBindings(
       return () => {
         if (capturing === onKey) capturing = null
       }
+    },
+    dispose() {
+      capturing = null
+      disposeLayer?.()
+      disposeLayer = null
+      disposeLeader?.()
+      disposeLeader = null
+      disposeCapture()
+      disposeUnhandled()
     },
   }
 

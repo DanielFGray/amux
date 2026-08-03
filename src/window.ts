@@ -1149,7 +1149,7 @@ export class Window {
     return this.#state.preset
   }
 
-  /** Kill every agent and free its terminal. The finalizer `Window.make`
+  /** Release every agent and free its terminal. The finalizer `Window.make`
    *  installs, so nothing calls it by hand; idempotent, safe on an exit path.
    *
    *  Panes come down FIRST. A pane renders straight out of its agent's

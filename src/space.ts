@@ -470,8 +470,9 @@ export class SpaceSet {
    * A workspace whose spaces — and so every window, agent and PTY under them —
    * are released when the surrounding scope closes.
    *
-   * This is the root of the lifetime chain: one scope at the top of the app
-   * ends every child process, in the right order, on any exit path.
+   * This is the root of the lifetime chain. One scope releases every local
+   * projection in the right order; each backend decides whether release ends
+   * its owned PTY or detaches from a daemon-owned one.
    */
   static make(
     env: Context.Context<WorkspaceEnv>,

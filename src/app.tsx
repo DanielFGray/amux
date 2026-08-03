@@ -7,7 +7,7 @@ import {
 } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import { createSignal, createMemo, createEffect, on } from "solid-js"
-import { Effect, Fiber, Stream } from "effect"
+import { Effect, Fiber, Scope, Stream } from "effect"
 import { basename, join, resolve } from "node:path"
 import { writeFile } from "node:fs/promises"
 
@@ -100,7 +100,10 @@ export interface AppHandle {
    *  the signals below are read inside it, and evaluating them any earlier
    *  would hand `render` a dead snapshot. */
   readonly View: () => JSX.Element
-  readonly dispose: () => void
+}
+
+interface ManagedAppHandle extends AppHandle {
+  readonly release: Effect.Effect<void>
 }
 
 /**
@@ -113,8 +116,26 @@ export interface AppHandle {
  * is a callback: exiting is a request, and the teardown that follows is the
  * caller's, in one place, on every path including a signal.
  */
-export function createApp({ renderer, paneHost, config, session, quit }: AppOptions): AppHandle {
-  const SHELL = [resolveOptions(config.options)["behaviour.shell"] || process.env.SHELL || "bash"]
+export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, Scope.Scope> {
+  const SHELL = [resolveOptions(options.config.options)["behaviour.shell"] || process.env.SHELL || "bash"]
+  return Effect.gen(function* () {
+    const spaces = yield* SpaceSet.make(
+      workspaceEnv(options.renderer, { shell: SHELL, backend: options.session.backend() }),
+      options.paneHost,
+    )
+    return yield* Effect.acquireRelease(
+      Effect.sync(() => buildApp(options, spaces, SHELL)),
+      (app) => app.release,
+    )
+  })
+}
+
+function buildApp(
+  { renderer, paneHost, config, session, quit }: AppOptions,
+  spaces: SpaceSet,
+  SHELL: string[],
+): ManagedAppHandle {
+  const initialFrameExternalLeft = frame.externalLeft
 
   /**
    * Run one of the workspace's Effect-returning methods here and now.
@@ -130,7 +151,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const errorMessage = (error: unknown): string =>
     error instanceof Error ? error.message : String(error)
 
-  const spaces = new SpaceSet(workspaceEnv(renderer, { shell: SHELL, backend: session.backend() }), paneHost)
   // Copy goes to the clipboard AND the server's buffer stack — tmux's model,
   // and what makes copy/paste work over ssh, between panes, and from a
   // script: the stack lives beside the daemon's PTYs, so paste needs no
@@ -183,8 +203,10 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
 
   let projectedRevision = -1
   let projection = Promise.resolve()
+  let disposed = false
   let runProjectedCommand: (value: Command) => void = () => {}
   const project = (model: WorkspaceSnapshot): Promise<void> => {
+    if (disposed) return Promise.resolve()
     if (model.revision <= projectedRevision) return projection
     projectedRevision = model.revision
     projection = projection
@@ -1300,7 +1322,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   // Only source of truth for the hint line and the which-key panel: what the
   // keymap will actually do next, so a rebinding shows up in both without
   // touching this file.
-  bindings.keymap.on("pendingSequence", updateHintVisibility)
+  const disposePendingSequence = bindings.keymap.on("pendingSequence", updateHintVisibility)
 
   /**
    * Put the options into effect.
@@ -1369,21 +1391,14 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     }
   }
 
-  /**
-   * Leave, without taking the agents with us.
-   *
-   * This is a detach, and it is the behaviour the daemon exists to provide:
-   * spaces are NOT disposed, because disposing an agent kills its process, and
-   * the process is the one thing that must survive. The workspace is recorded
-   * first so the next client rebuilds the same arrangement over the same
-   * still-running agents.
-   *
-   * Ending the session for real is `session.stop()`, not this.
-   *
-   * All this does now is ask. The recording, the socket and the renderer are
-   * released by main.tsx's finalizers, which is what lets a SIGTERM save the
-   * workspace — the thing this could never do while it was the only exit path.
-   */
+  let gitRefresh = Promise.resolve()
+  const refreshGitNow = () => {
+    gitRefresh = gitRefresh.then(refreshGit)
+    return gitRefresh
+  }
+
+  /** Ask the owning Effect program to close its scope. Backend ownership makes
+   * that release kill local PTYs and merely detach daemon projections. */
   function shutdown() {
     quit()
   }
@@ -1403,8 +1418,8 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     }
   }
   syncSidebarFrame()
-  void refreshGit()
-  const gitTimer = setInterval(() => void refreshGit(), 5000)
+  void refreshGitNow()
+  const gitTimer = setInterval(() => void refreshGitNow(), 5000)
   gitTimer.unref?.()
   const View = () => (
     <App
@@ -1454,23 +1469,25 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     />
   )
 
-  /**
-   * Stop everything this function started.
-   *
-   * Deliberately NOT a detach: the spaces are left alone, because disposing an
-   * agent kills its process. Only our own observers and timers go, and the
-   * workspace is already durable in the daemon before its revision is published.
-   */
-  function dispose() {
+  const release = Effect.gen(function* () {
+    disposed = true
     // While the pane is still alive: the mode's exit clears the selection
     // through the pane's terminal, and a freed terminal cannot be caught.
     if (copyMode.active) copyMode.exit()
     clearInterval(copyTimer)
     clearInterval(gitTimer)
     clearHintTimer()
-    Effect.runFork(Fiber.interrupt(modelFiber))
+    frame.externalLeft = initialFrameExternalLeft
+    spaces.refreshChrome()
+    disposePendingSequence()
+    bindings.dispose()
     app.dispose()
-  }
+    yield* Fiber.interrupt(modelFiber)
+    // A projection already handed to a Promise cannot be interrupted. Let it
+    // finish while terminals are alive; the SpaceSet finalizer runs after us.
+    yield* Effect.promise(() => projection)
+    yield* Effect.promise(() => gitRefresh)
+  })
 
-  return { View, dispose }
+  return { View, release }
 }
