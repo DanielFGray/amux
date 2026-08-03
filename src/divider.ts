@@ -130,6 +130,7 @@ export class Divider extends Renderable {
   #dragging = false
   #paneGap = 0
   #spaced = false
+  #dragSentPos = 0
 
   /**
    * Where the drag goes instead of the neighbours' flex weights.
@@ -187,6 +188,7 @@ export class Divider extends Renderable {
         return
       case "down":
         this.#dragging = true
+        this.#dragSentPos = this.axis === "row" ? this.x : this.y
         // Claim the pointer now, rather than letting OpenTUI decide on the
         // first drag event. It captures whatever the pointer is over at that
         // moment, and a divider is one cell wide — move quickly and the first
@@ -204,11 +206,17 @@ export class Divider extends Renderable {
         event.stopPropagation()
         return
       case "drag": {
-        // Where the pointer is relative to where the divider currently sits.
-        // Self-correcting, so a dropped event cannot accumulate drift the way
-        // a running total of per-event deltas would.
-        const delta = this.axis === "row" ? event.x - this.x : event.y - this.y
+        // Local echo: compute the delta from the position we last sent, not
+        // from the divider's current rendered position. In projection mode
+        // (daemon), `this.x` stalls until the daemon round-trip lands, so
+        // `event.x - this.x` would send a cumulative delta that grows with
+        // each unconfirmed event — quadratic overshoot. Advancing
+        // `#dragSentPos` by the delta we send keeps each event incremental
+        // and converges to `this.x` when the daemon generation arrives.
+        const axisVal = this.axis === "row" ? event.x : event.y
+        const delta = axisVal - this.#dragSentPos
         if (delta !== 0) {
+          this.#dragSentPos += delta
           this.onDrag?.(delta)
           this.requestRender()
         }
