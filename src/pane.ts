@@ -16,7 +16,7 @@ import {
 } from "./ghostty.ts"
 import { Effect, Exit, Scope } from "effect"
 import type { Agent } from "./agent.ts"
-import { runtime } from "./config.ts"
+import { runtime } from "./options.ts"
 import { STATE_GLYPH } from "./detect.ts"
 import { captureRange } from "./shim.ts"
 import { clearSelection, setSelection } from "./shim.ts"
@@ -247,7 +247,7 @@ export class TerminalPane extends Renderable {
     // Full-screen apps (vim, htop) want the wheel themselves. A plain shell
     // does not, and there the wheel should walk our scrollback instead.
     if (!seq && event.type === "scroll") {
-      const rows = runtime.scrollRows
+      const rows = runtime["behaviour.scrollRows"]
       this.agent.scrollBy(event.scroll?.direction === "up" ? -rows : rows)
       this.invalidate()
       event.stopPropagation()

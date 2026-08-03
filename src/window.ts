@@ -6,7 +6,7 @@ import { Context, Effect, Exit, Scope } from "effect"
 import { RenderCtx, Shell, Backend, type WorkspaceEnv } from "./env.ts"
 import { rollUp } from "./space.ts"
 import { Divider, getWeight, setWeight, getDirection, setDirection, type JunctionFrame } from "./divider.ts"
-import { runtime } from "./config.ts"
+import { runtime } from "./options.ts"
 import {
   closeLayout,
   collapse,
@@ -546,8 +546,8 @@ export class Window {
    * cell thick at every seam.
    */
   #refreshChrome() {
-    const gap = runtime.paneGap > 0
-    const showOuterBorder = runtime.singlePaneBorder || this.#panes.length > 1
+    const gap = runtime["appearance.paneGap"] > 0
+    const showOuterBorder = runtime["appearance.singlePaneBorder"] || this.#panes.length > 1
     const focused = this.focused
     for (const pane of this.#panes) {
       pane.edges = {
@@ -560,7 +560,7 @@ export class Window {
       }
     }
     for (const divider of this.#dividers()) {
-      divider.setPaneGap(runtime.paneGap)
+      divider.setPaneGap(runtime["appearance.paneGap"])
       // A divider's ends meet the window's outer border exactly where it has no
       // neighbour of its own across the perpendicular axis.
       const cross: SplitDirection = divider.axis === "row" ? "column" : "row"

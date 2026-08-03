@@ -3,7 +3,8 @@ import { render } from "@opentui/solid"
 import { BunRuntime } from "@effect/platform-bun"
 import { Deferred, Effect, Exit } from "effect"
 
-import { loadConfig, applyConfig } from "./config.ts"
+import { loadConfig } from "./config.ts"
+import { applyOptions, resolveOptions } from "./options.ts"
 import { SessionClient } from "./client.ts"
 import { isSessionId, SessionEnv } from "./session.ts"
 import { createApp } from "./app.tsx"
@@ -27,7 +28,7 @@ import { createApp } from "./app.tsx"
 const program = Effect.gen(function* () {
   const config = yield* Effect.promise(() => loadConfig())
   // Push the loaded values into the copy imperative code reads.
-  applyConfig(config)
+  applyOptions(resolveOptions(config.options))
 
   const renderer = yield* Effect.acquireRelease(
     Effect.promise(() =>

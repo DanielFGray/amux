@@ -6,7 +6,7 @@ import {
   type ScrollBoxRenderable,
 } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
-import { createSignal, createMemo, createEffect } from "solid-js"
+import { createSignal, createMemo, createEffect, on } from "solid-js"
 import { Effect } from "effect"
 import { basename, join, resolve } from "node:path"
 import { writeFile } from "node:fs/promises"
@@ -44,7 +44,20 @@ import {
   type CommandHandlers,
   type CommandTag,
 } from "./commands.ts"
-import { saveConfig, applyConfig, type Config } from "./config.ts"
+import { saveConfig, type Config } from "./config.ts"
+import {
+  OPTIONS,
+  adjustedValue,
+  applyOptions,
+  clearOption,
+  coerceOption,
+  optionSpec,
+  resolveOptions,
+  writeOption,
+  type OptionName,
+  type OptionSpec,
+  type OptionValue,
+} from "./options.ts"
 import type { SessionClientShape } from "./client.ts"
 import { restoreSession, snapshotSpace } from "./snapshot.ts"
 import { createAppState } from "./ui/state.ts"
@@ -105,7 +118,7 @@ export interface AppHandle {
  * caller's, in one place, on every path including a signal.
  */
 export function createApp({ renderer, paneHost, config, session, quit }: AppOptions): AppHandle {
-  const SHELL = [config.behaviour.shell || process.env.SHELL || "bash"]
+  const SHELL = [resolveOptions(config.options)["behaviour.shell"] || process.env.SHELL || "bash"]
   const SESSION_ID = session.id
 
   /**
@@ -287,30 +300,39 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   spaces.onAgentExit = afterAgentExit
 
   const [configState, setConfigState] = createSignal<Config>(config)
+  /** Every option resolved against its declared default — what the app reads.
+   *  The config itself holds only what the user changed. */
+  const options = createMemo(() => resolveOptions(configState().options))
 
-  /** Sidebar width lives in the config so the drag and the settings window are
-   *  editing the same number, and dragging it survives a save. */
-  const SIDEBAR_MIN = 16
-  const SIDEBAR_MAX = 60
-  function resizeSidebar(delta: number) {
-    setConfigState((c) => ({
-      ...c,
-      sidebar: {
-        ...c.sidebar,
-        width: Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, c.sidebar.width + delta)),
-      },
-    }))
+  /**
+   * Put a new value into an option.
+   *
+   * The one path for any change: a key, the settings window, a drag, the socket.
+   * The clamping and the default-is-not-stored rule live in the table, so this
+   * only decides what the change means for the screen — unsaved, and the last
+   * save's error no longer describes what is on it.
+   */
+  function changeOption(name: OptionName, value: OptionValue) {
+    setConfigState((c) => ({ ...c, options: writeOption(c.options, name, value) }))
     setSettingsError("")
     setSettingsDirty(true)
+  }
+
+  /** Move an option relative to where it is: ←/→ in settings, and the drag. */
+  function adjustOption(name: OptionName, by: number) {
+    changeOption(name, adjustedValue(OPTIONS[name], options()[name], by))
   }
 
   // A Divider rather than a component with mouse props: dragging a one-cell
   // target only works if the pointer is claimed on the press, and that is a
   // renderable-level concern. See the note in divider.ts.
+  //
+  // The width it drags IS the option the settings window edits, so a drag
+  // survives a save and the two cannot disagree about how narrow is too narrow.
   const sidebarHandle = new Divider(renderer, {
     id: "sidebar-divider",
     axis: "row",
-    onDrag: resizeSidebar,
+    onDrag: (delta) => adjustOption("sidebar.width", delta),
   })
   // It is the pane frame's left border, not a bare rule between two regions: it
   // finishes with corners and the panes beside it stop drawing a left edge, so
@@ -320,7 +342,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   sidebarHandle.capStart = true
   sidebarHandle.capEnd = true
 
-  const [sidebarOpen, setSidebarOpen] = createSignal(config.sidebar.open)
+  const sidebarOpen = () => options()["sidebar.open"]
   const [selected, setSelected] = createSignal(0)
   const [hovered, setHovered] = createSignal<number | null>(null)
   const [overlay, setOverlay] = createSignal<Overlay>("none")
@@ -355,7 +377,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const targets = createMemo(() => {
     // agentKind is polled, so keyboard targets must refresh with the rendered rows.
     app.tick()
-    return sidebarTargets(app.spaces(), configState().sidebar.agentsOnly)
+    return sidebarTargets(app.spaces(), options()["sidebar.agentsOnly"])
   })
   createEffect(() => {
     const count = targets().length
@@ -506,51 +528,9 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     if (affected) copyMode.exit()
   }
 
-  function toggleSidebar() {
-    setSidebarOpen(!sidebarOpen())
-    syncSidebarFrame()
-  }
-
-  function toggleAgentsOnly() {
-    setConfigState((c) => ({
-      ...c,
-      sidebar: { ...c.sidebar, agentsOnly: !c.sidebar.agentsOnly },
-    }))
-    setSettingsError("")
-    setSettingsDirty(true)
-  }
-
-  function editSetting(delta: number) {
-    const next = structuredClone(configState())
-    const section = settingsSection()
-    const field = settingsSelected()
-    if (section === "sidebar") {
-      if (field === 0) {
-        next.sidebar.width = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, next.sidebar.width + delta))
-      }
-      else if (field === 1) next.sidebar.open = !next.sidebar.open
-      else next.sidebar.agentsOnly = !next.sidebar.agentsOnly
-    } else if (section === "behaviour") {
-      if (field === 0) {
-        next.behaviour.scrollRows = Math.max(1, Math.min(20, next.behaviour.scrollRows + delta))
-      }
-    } else if (section === "appearance") {
-      if (field === 0) {
-        next.appearance.paneGap = Math.max(0, Math.min(8, next.appearance.paneGap + delta))
-      } else if (field === 1) {
-        next.appearance.singlePaneBorder = !next.appearance.singlePaneBorder
-      } else if (field === 2) {
-        next.appearance.whichKeyHints = !next.appearance.whichKeyHints
-      } else {
-        next.appearance.whichKeyDelay = Math.max(0, Math.min(5, next.appearance.whichKeyDelay + delta))
-      }
-    }
-    setConfigState(next)
-    setSettingsError("")
-    applyConfig(next)
-    if (section === "appearance") spaces.refreshChrome()
-    if (section === "appearance") updateHintVisibility(pendingParts(), next.appearance)
-    setSettingsDirty(true)
+  /** The option the settings window's selection is sitting on, if any. */
+  function selectedOption(): OptionName | undefined {
+    return settingsFields(options(), settingsSection())[settingsSelected()]?.name
   }
 
   /**
@@ -849,6 +829,13 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     return Effect.fail(new CommandError({ message: `no agent '${id}'` }))
   }
 
+  /** The declaration behind an option name, or a refusal naming it. */
+  function knownOption(name: string): Effect.Effect<{ spec: OptionSpec; option: OptionName }, CommandError> {
+    const spec = optionSpec(name)
+    if (!spec) return Effect.fail(new CommandError({ message: `no option '${name}'` }))
+    return Effect.succeed({ spec, option: name as OptionName })
+  }
+
   /**
    * What each verb does.
    *
@@ -1025,8 +1012,38 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     "space.next": () => Effect.sync(() => spaces.cycle(1)),
     "space.previous": () => Effect.sync(() => spaces.cycle(-1)),
 
-    "sidebar.toggle": () => Effect.sync(toggleSidebar),
-    "sidebar.toggle-agents-only": () => Effect.sync(toggleAgentsOnly),
+    // The name arrives as a string from every surface, so it is checked here
+    // rather than trusted: the table is what says whether it exists and what it
+    // will accept, and a refusal is a value the caller can show.
+    "config.set": ({ name, value }) =>
+      Effect.gen(function* () {
+        const { spec, option } = yield* knownOption(name)
+        const coerced = coerceOption(spec, value)
+        if (coerced === undefined) {
+          return yield* new CommandError({ message: `${name} does not take ${JSON.stringify(value)}` })
+        }
+        changeOption(option, coerced)
+      }),
+    "config.toggle": ({ name }) =>
+      Effect.gen(function* () {
+        const { spec, option } = yield* knownOption(name)
+        if (spec.kind !== "boolean") {
+          return yield* new CommandError({ message: `${name} is not a yes/no option` })
+        }
+        changeOption(option, !options()[option])
+      }),
+    "config.adjust": ({ name, by }) =>
+      Effect.gen(function* () {
+        const { option } = yield* knownOption(name)
+        adjustOption(option, by)
+      }),
+    "config.reset": ({ name }) =>
+      Effect.gen(function* () {
+        const { option } = yield* knownOption(name)
+        setConfigState((c) => ({ ...c, options: clearOption(c.options, option) }))
+        setSettingsError("")
+        setSettingsDirty(true)
+      }),
     "app.help": () =>
       Effect.sync(() => {
         // The same window as settings, on its keybinds tab. Two overlays
@@ -1074,14 +1091,14 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     name: string,
     key: string | string[] | undefined,
     cmd: Command,
-    opts: { desc?: string; hidden?: boolean; fixed?: boolean } = {},
+    opts: { desc?: string; group?: string; hidden?: boolean; fixed?: boolean } = {},
   ): CommandSpec {
     const meta = COMMAND_META[cmd._tag]
     return {
       name,
       ...(key === undefined ? {} : { key }),
       desc: opts.desc ?? meta.desc,
-      group: meta.group,
+      group: opts.group ?? meta.group,
       hidden: opts.hidden,
       fixed: opts.fixed,
       run: commands.run(cmd),
@@ -1246,8 +1263,19 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     bind("space.close", undefined, command("space.close")),
 
     // App.
-    bind("sidebar.toggle", "<leader>b", command("sidebar.toggle"), { desc: "toggle sidebar" }),
-    bind("sidebar.toggle-agents-only", undefined, command("sidebar.toggle-agents-only")),
+    // A binding names the option; there is no `sidebar.toggle` verb behind it.
+    // The name is still the binding's identity, so the keybind editor and the
+    // palette read exactly as they did when it was a command of its own.
+    bind("sidebar.toggle", "<leader>b", command("config.toggle", { name: "sidebar.open" }), {
+      desc: "toggle sidebar",
+      group: "global",
+    }),
+    bind(
+      "sidebar.toggle-agents-only",
+      undefined,
+      command("config.toggle", { name: "sidebar.agentsOnly" }),
+      { desc: "show only panes running agent CLIs", group: "global" },
+    ),
     bind("app.help", ["<leader>?", "<leader>/"], command("app.help")),
     bind("app.command-palette", "<leader>:", command("app.command-palette")),
     // shift+s, not "S": a bare capital compiles to the same sequence as the
@@ -1414,7 +1442,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   }
 
   function settingsKey(event: KeyEvent) {
-    const fields = settingsFields(configState(), settingsSection())
+    const fields = settingsFields(options(), settingsSection())
     // The keybind tab edits sequences rather than values, so it has its own keys.
     if (settingsSection() === "keybinds") return keybindsKey(event)
     switch (event.name) {
@@ -1427,9 +1455,11 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       case "up":
         return setSettingsSelected((s) => Math.max(0, s - 1))
       case "left":
-        return editSetting(-1)
-      case "right":
-        return editSetting(1)
+      case "right": {
+        const option = selectedOption()
+        if (option) adjustOption(option, event.name === "right" ? 1 : -1)
+        return
+      }
       case "s":
         void saveSettings()
         return
@@ -1455,13 +1485,14 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     hintTimer = null
   }
 
-  function updateHintVisibility(
-    sequence: readonly { display: string }[],
-    appearance = configState().appearance,
-  ) {
+  function updateHintVisibility(sequence: readonly { display: string }[]) {
     clearHintTimer()
     setPendingParts(sequence)
-    const visibility = hintVisibility(sequence.length, appearance.whichKeyHints, appearance.whichKeyDelay)
+    const visibility = hintVisibility(
+      sequence.length,
+      options()["appearance.whichKeyHints"],
+      options()["appearance.whichKeyDelay"],
+    )
     if (!visibility.visible && visibility.delayMs === 0) {
       setHintsVisible(false)
       return
@@ -1482,6 +1513,32 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   // keymap will actually do next, so a rebinding shows up in both without
   // touching this file.
   bindings.keymap.on("pendingSequence", updateHintVisibility)
+
+  /**
+   * Put the options into effect.
+   *
+   * Reactive rather than a callback fired at each place a setting is changed,
+   * which is what it used to be: the settings window ran refreshChrome and
+   * re-evaluated the which-key timer itself, so a change arriving from anywhere
+   * else — a keybinding, the socket, a drag — reached the value but not the
+   * screen. Anything that depends on an option belongs in here, where the
+   * dependency is the option itself and not the act of editing it.
+   */
+  createEffect(() => {
+    // Before the redraw: pane borders and wheel scrolling read these values
+    // imperatively, from renderables with no path back into this graph.
+    applyOptions(options())
+    syncSidebarFrame()
+  })
+
+  // The keymap's own event covers the sequence changing; this covers the two
+  // options that decide what to do with it.
+  createEffect(
+    on(
+      () => [options()["appearance.whichKeyHints"], options()["appearance.whichKeyDelay"]],
+      () => updateHintVisibility(pendingParts()),
+    ),
+  )
 
   const pending = createMemo(() =>
     pendingParts().length ? [formatSequence(pendingParts(), configState().keys.leader)] : [],
@@ -1563,12 +1620,10 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const View = () => (
     <App
       app={app}
-      config={configState()}
+      options={options()}
       paneHost={paneHost}
       size={size()}
       sidebarHandle={sidebarHandle}
-      sidebarWidth={configState().sidebar.width}
-      sidebarOpen={sidebarOpen()}
       selected={selected()}
       hovered={hovered()}
       onHover={setHovered}

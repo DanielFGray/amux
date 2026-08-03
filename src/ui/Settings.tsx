@@ -2,68 +2,49 @@
 import { For, Show, createMemo } from "solid-js"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { theme } from "./theme.ts"
-import type { Config } from "../config.ts"
+import {
+  OPTIONS,
+  editHint,
+  formatOption,
+  leafOf,
+  optionSections,
+  optionsIn,
+  type OptionName,
+  type Options,
+} from "../options.ts"
 import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts"
 
-export const SETTINGS_SECTIONS = ["sidebar", "appearance", "behaviour", "keybinds"] as const
+/** The option sections, plus the keybinds tab — which is not a section of the
+ *  options table because a binding is not an option. */
+export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "keybinds"]
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
 
-/** One editable row. `values` drives left/right cycling; keybinds has none. */
+/** One row of the settings window. */
 interface Field {
+  /** What `config.set` takes, so acting on a row needs nothing but the row. */
+  name: OptionName
+  /** The name without its section, which the tab above already says. */
   label: string
   value: string
   hint: string
 }
 
-/** Fields per section, derived from the live config so the window always shows
- *  what is actually in effect rather than a snapshot taken when it opened. */
-export function settingsFields(config: Config, section: SettingsSection): Field[] {
-  switch (section) {
-    case "sidebar":
-      return [
-        { label: "Width", value: String(config.sidebar.width), hint: "columns · ←/→ adjusts" },
-        { label: "Open at start", value: config.sidebar.open ? "yes" : "no", hint: "←/→ toggles" },
-        { label: "Agents only", value: config.sidebar.agentsOnly ? "yes" : "no", hint: "←/→ toggles" },
-      ]
-    case "behaviour":
-      return [
-        {
-          label: "Scroll rows",
-          value: String(config.behaviour.scrollRows),
-          hint: "rows per wheel notch · ←/→ adjusts",
-        },
-        {
-          label: "Shell",
-          value: config.behaviour.shell || "$SHELL",
-          hint: "read-only · used for new agents",
-        },
-      ]
-    case "appearance":
-      return [
-        {
-          label: "Pane gap",
-          value: String(config.appearance.paneGap),
-          hint: "0 merged · 1 borders · 2+ cells · ←/→ adjusts",
-        },
-        {
-          label: "Single-pane border",
-          value: config.appearance.singlePaneBorder ? "yes" : "no",
-          hint: "←/→ toggles",
-        },
-        {
-          label: "Which-key hints",
-          value: config.appearance.whichKeyHints ? "yes" : "no",
-          hint: "←/→ toggles",
-        },
-        {
-          label: "Which-key delay",
-          value: `${config.appearance.whichKeyDelay}s`,
-          hint: "seconds · ←/→ adjusts",
-        },
-      ]
-    case "keybinds":
-      return []
-  }
+/**
+ * The rows of a section, projected from the options table.
+ *
+ * Read from the live values rather than a snapshot taken when the window
+ * opened, so a change made from anywhere — a key, the socket — shows here.
+ */
+export function settingsFields(options: Options, section: SettingsSection): Field[] {
+  return optionsIn(section).map((name) => {
+    const spec = OPTIONS[name]
+    return {
+      name,
+      label: leafOf(name),
+      value: formatOption(spec, options[name]),
+      hint: `${spec.desc} · ${editHint(spec)}`,
+    }
+  })
 }
 
 /**
@@ -154,7 +135,7 @@ export function keybindLine(groups: HelpGroup[], index: number): number {
  * editor are necessarily the same screen.
  */
 export function Settings(props: {
-  config: Config
+  options: Options
   section: SettingsSection
   selected: number
   groups: HelpGroup[]
@@ -172,7 +153,7 @@ export function Settings(props: {
    *  the keyboard — the list is longer than the window by some margin. */
   onKeybindList?: (box: ScrollBoxRenderable) => void
 }) {
-  const fields = createMemo(() => settingsFields(props.config, props.section))
+  const fields = createMemo(() => settingsFields(props.options, props.section))
   const rows = createMemo(() => keybindGroups(props.groups, props.leader))
 
   return (

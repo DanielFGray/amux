@@ -1,52 +1,27 @@
 import { mkdir } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { DEFAULT_LEADER, type Keys } from "./bindings.ts"
+import { type OptionDeltas } from "./options.ts"
 
+/**
+ * The file, and nothing else.
+ *
+ * Both halves record only what the user changed: options.ts explains why for
+ * settings, and the same rule has always held for bindings. What an option
+ * *is* — its type, default, bounds and description — lives in options.ts, so
+ * adding one does not touch this module.
+ */
 export interface Config {
-  sidebar: {
-    width: number
-    /** Whether the sidebar starts open. */
-    open: boolean
-    /** Whether to show only panes running a recognised agent CLI. */
-    agentsOnly: boolean
-  }
-  behaviour: {
-    /** Rows a wheel notch scrolls in a pane's scrollback. */
-    scrollRows: number
-    /** Shell used for new agents. Empty means $SHELL. */
-    shell: string
-  }
-  appearance: {
-    /**
-     * Pane separation mode: zero merges shared borders, one restores each pane's
-     * border without widening the divider, and larger values add cells.
-     */
-    paneGap: number
-    /** Whether the transient which-key panel is shown after a prefix. */
-    whichKeyHints: boolean
-    /** Seconds of inactivity before the which-key panel appears. */
-    whichKeyDelay: number
-    /** Whether a window with one pane draws its outer border. */
-    singlePaneBorder: boolean
-  }
+  options: OptionDeltas
   /** Prefix key and per-command overrides. Only commands the user has actually
    * rebound appear here, so the defaults stay free to change. */
   keys: Keys
 }
 
 export const DEFAULT_CONFIG: Config = {
-  sidebar: { width: 30, open: true, agentsOnly: false },
-  behaviour: { scrollRows: 3, shell: "" },
-  appearance: { paneGap: 0, whichKeyHints: true, whichKeyDelay: 0, singlePaneBorder: true },
+  options: {},
   keys: { leader: DEFAULT_LEADER, bindings: {} },
 }
-
-export const CONFIG_LIMITS = {
-  sidebarWidth: { min: 16, max: 60 },
-  scrollRows: { min: 1, max: 20 },
-  paneGap: { min: 0, max: 8 },
-  whichKeyDelay: { min: 0, max: 5 },
-} as const
 
 const CONFIG_DIR =
   process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config")
@@ -56,34 +31,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
-function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
-  return Math.max(min, Math.min(max, Math.floor(value)))
-}
-
-/** Decode known fields so old files get defaults and unknown values stay inert. */
+/**
+ * Read a loaded file into a Config.
+ *
+ * Option values are NOT validated here. They are stored as written and resolved
+ * against the table on read (resolveOptions), which is what lets an entry
+ * belonging to a name this build does not know survive a save instead of being
+ * dropped by the decoder that failed to recognise it.
+ */
 export function decodeConfig(loaded: unknown): Config {
   if (!isRecord(loaded)) return structuredClone(DEFAULT_CONFIG)
-
-  const sidebar = isRecord(loaded.sidebar) ? loaded.sidebar : {}
-  const behaviour = isRecord(loaded.behaviour) ? loaded.behaviour : {}
-  const appearance = isRecord(loaded.appearance) ? loaded.appearance : {}
   return {
-    sidebar: {
-      width: boundedNumber(sidebar.width, DEFAULT_CONFIG.sidebar.width, CONFIG_LIMITS.sidebarWidth.min, CONFIG_LIMITS.sidebarWidth.max),
-      open: typeof sidebar.open === "boolean" ? sidebar.open : DEFAULT_CONFIG.sidebar.open,
-      agentsOnly: typeof sidebar.agentsOnly === "boolean" ? sidebar.agentsOnly : DEFAULT_CONFIG.sidebar.agentsOnly,
-    },
-    behaviour: {
-      scrollRows: boundedNumber(behaviour.scrollRows, DEFAULT_CONFIG.behaviour.scrollRows, CONFIG_LIMITS.scrollRows.min, CONFIG_LIMITS.scrollRows.max),
-      shell: typeof behaviour.shell === "string" ? behaviour.shell : DEFAULT_CONFIG.behaviour.shell,
-    },
-    appearance: {
-      paneGap: boundedNumber(appearance.paneGap, DEFAULT_CONFIG.appearance.paneGap, CONFIG_LIMITS.paneGap.min, CONFIG_LIMITS.paneGap.max),
-      whichKeyHints: typeof appearance.whichKeyHints === "boolean" ? appearance.whichKeyHints : DEFAULT_CONFIG.appearance.whichKeyHints,
-      whichKeyDelay: boundedNumber(appearance.whichKeyDelay, DEFAULT_CONFIG.appearance.whichKeyDelay, CONFIG_LIMITS.whichKeyDelay.min, CONFIG_LIMITS.whichKeyDelay.max),
-      singlePaneBorder: typeof appearance.singlePaneBorder === "boolean" ? appearance.singlePaneBorder : DEFAULT_CONFIG.appearance.singlePaneBorder,
-    },
+    options: isRecord(loaded.options) ? { ...loaded.options } : {},
     keys: sanitizeKeys(loaded.keys),
   }
 }
@@ -105,23 +64,6 @@ function sanitizeKeys(keys: unknown): Keys {
     })
   }
   return { leader, bindings }
-}
-
-/**
- * Live copy of the settings that imperative code reads at the point of use.
- * Kept in sync by applyConfig() whenever the config changes.
- */
-export const runtime = {
-  scrollRows: DEFAULT_CONFIG.behaviour.scrollRows,
-  paneGap: DEFAULT_CONFIG.appearance.paneGap,
-  singlePaneBorder: DEFAULT_CONFIG.appearance.singlePaneBorder,
-}
-
-export function applyConfig(config: Config): void {
-  const decoded = decodeConfig(config)
-  runtime.scrollRows = decoded.behaviour.scrollRows
-  runtime.paneGap = decoded.appearance.paneGap
-  runtime.singlePaneBorder = decoded.appearance.singlePaneBorder
 }
 
 export async function loadConfig(path = CONFIG_PATH): Promise<Config> {

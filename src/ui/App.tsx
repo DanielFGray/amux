@@ -11,7 +11,7 @@ import { Capture, type CaptureView } from "./Capture.tsx"
 import { BufferChoose, type BufferChooseView } from "./BufferChoose.tsx"
 import { Settings, type SettingsSection } from "./Settings.tsx"
 import type { AppState } from "./state.ts"
-import type { Config } from "../config.ts"
+import type { Options } from "../options.ts"
 import type { Conflict, HelpGroup, HintGroup } from "../bindings.ts"
 import type { PaletteEntry } from "../bindings.ts"
 import { CommandPalette } from "./CommandPalette.tsx"
@@ -20,7 +20,7 @@ export type Overlay = "none" | "settings" | "palette"
 
 export interface AppProps {
   app: AppState
-  config: Config
+  options: Options
   /** The imperative pane tree, adopted as a child so splits keep their own
    *  layout code and their cell-blitting renderables untouched. */
   paneHost: BoxRenderable
@@ -30,8 +30,6 @@ export interface AppProps {
    *  frame's left border. A Divider instance rather than a component: it needs
    *  to claim the pointer on press, which only the renderable can do. */
   sidebarHandle: Renderable
-  sidebarWidth: number
-  sidebarOpen: boolean
   selected: number
   hovered: number | null
   onHover: (index: number | null) => void
@@ -77,9 +75,11 @@ export interface AppProps {
 export function App(props: AppProps) {
   const space = () => props.app.active()
   const windows = () => space()?.windows ?? []
+  const sidebarOpen = () => props.options["sidebar.open"]
+  const sidebarWidth = () => props.options["sidebar.width"]
   /** Where the pane area starts, so transient chrome lines up with it rather
    *  than covering the tree. */
-  const paneLeft = () => (props.sidebarOpen ? props.sidebarWidth : 0)
+  const paneLeft = () => (sidebarOpen() ? sidebarWidth() : 0)
 
   // herdr's layout: no app-wide bar. The window list is one row at the top of
   // the pane area, beside the sidebar rather than above it. Always present, even
@@ -96,18 +96,18 @@ export function App(props: AppProps) {
           first border at the old sibling geometry for one render. */}
       <box
         style={{
-          width: props.sidebarOpen ? props.sidebarWidth : 0,
+          width: sidebarOpen() ? sidebarWidth() : 0,
           height: "100%",
           flexShrink: 0,
         }}
       >
-        <Show when={props.sidebarOpen}>
+        <Show when={sidebarOpen()}>
           <Sidebar
             app={props.app}
-            width={props.sidebarWidth}
+            width={sidebarWidth()}
             selected={props.selected}
             hovered={props.hovered}
-            agentsOnly={props.config.sidebar.agentsOnly}
+            agentsOnly={props.options["sidebar.agentsOnly"]}
             onHover={props.onHover}
             onActivate={props.onActivate}
           />
@@ -124,7 +124,7 @@ export function App(props: AppProps) {
           onSelect={props.onSelectWindow}
         />
         <box style={{ flexGrow: 1, flexDirection: "row" }}>
-          <Show when={props.sidebarOpen}>{props.sidebarHandle}</Show>
+          <Show when={sidebarOpen()}>{props.sidebarHandle}</Show>
           {props.paneHost}
         </box>
       </box>
@@ -144,7 +144,7 @@ export function App(props: AppProps) {
 
       <Show when={props.overlay === "settings"}>
         <Settings
-          config={props.config}
+          options={props.options}
           section={props.settingsSection}
           selected={props.settingsSelected}
           groups={props.helpGroups}

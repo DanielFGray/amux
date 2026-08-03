@@ -5,7 +5,7 @@ import { mkdtemp, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Divider } from "./divider.ts"
-import { applyConfig, DEFAULT_CONFIG } from "./config.ts"
+import { applyOptions, resolveOptions } from "./options.ts"
 import { rollUp, nextBlockedAfter } from "./space.ts"
 import { createHarness, run, runAsync } from "./harness.ts"
 import type { Window } from "./window.ts"
@@ -555,7 +555,7 @@ test("pane gap one separates borders without widening the divider", async () => 
     expect(left.edges.right).toBe(false)
     expect(right.edges.left).toBe(false)
 
-    applyConfig({ ...DEFAULT_CONFIG, appearance: { ...DEFAULT_CONFIG.appearance, paneGap: 1 } })
+    applyOptions(resolveOptions({ "appearance.paneGap": 1 }))
     s.win.refreshChrome()
 
     // One restores both pane borders but keeps the divider at its existing
@@ -564,7 +564,7 @@ test("pane gap one separates borders without widening the divider", async () => 
     expect(left.edges.right).toBe(true)
     expect(right.edges.left).toBe(true)
   } finally {
-    applyConfig(DEFAULT_CONFIG)
+    applyOptions(resolveOptions({}))
     s.win.refreshChrome()
     await s.dispose()
   }
@@ -576,7 +576,7 @@ test("pane gap one separates columns without adding a blank row", async () => {
     run(s.win.splitSpawn("column"))
     const divider = (s.win.root.getChildren()[1] as Divider)
 
-    applyConfig({ ...DEFAULT_CONFIG, appearance: { ...DEFAULT_CONFIG.appearance, paneGap: 1 } })
+    applyOptions(resolveOptions({ "appearance.paneGap": 1 }))
     s.win.refreshChrome()
     await s.t.renderOnce()
 
@@ -584,7 +584,7 @@ test("pane gap one separates columns without adding a blank row", async () => {
     const panes = [...s.win.panes].sort((a, b) => a.y - b.y)
     expect(panes[1]!.y).toBe(panes[0]!.y + panes[0]!.height)
   } finally {
-    applyConfig(DEFAULT_CONFIG)
+    applyOptions(resolveOptions({}))
     s.win.refreshChrome()
     await s.dispose()
   }
@@ -593,7 +593,7 @@ test("pane gap one separates columns without adding a blank row", async () => {
 test("single-pane borders can be hidden without affecting split windows", async () => {
   const s = await setup()
   try {
-    applyConfig({ ...DEFAULT_CONFIG, appearance: { ...DEFAULT_CONFIG.appearance, singlePaneBorder: false } })
+    applyOptions(resolveOptions({ "appearance.singlePaneBorder": false }))
     s.win.refreshChrome()
     expect(s.win.panes[0]!.edges).toEqual({ top: false, right: false, bottom: false, left: false })
 
@@ -601,7 +601,7 @@ test("single-pane borders can be hidden without affecting split windows", async 
     expect(s.win.panes.every((pane) => pane.edges.top && pane.edges.bottom)).toBe(true)
     expect(s.win.panes.every((pane) => pane.edges.left || pane.edges.right)).toBe(true)
   } finally {
-    applyConfig(DEFAULT_CONFIG)
+    applyOptions(resolveOptions({}))
     s.win.refreshChrome()
     await s.dispose()
   }
@@ -609,7 +609,7 @@ test("single-pane borders can be hidden without affecting split windows", async 
 
 test("pane gaps give each pane a complete border and remain draggable", async () => {
   const s = await setup()
-  applyConfig({ ...DEFAULT_CONFIG, appearance: { ...DEFAULT_CONFIG.appearance, paneGap: 2 } })
+  applyOptions(resolveOptions({ "appearance.paneGap": 2 }))
   try {
     run(s.win.splitSpawn("row"))
     await s.t.renderOnce()
@@ -632,7 +632,7 @@ test("pane gaps give each pane a complete border and remain draggable", async ()
     expect(left.width + right.width).toBe(total)
     expect(left.width).toBeLessThan(total / 2)
   } finally {
-    applyConfig(DEFAULT_CONFIG)
+    applyOptions(resolveOptions({}))
     s.win.refreshChrome()
     await s.dispose()
   }

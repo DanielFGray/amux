@@ -1,5 +1,5 @@
 import { Renderable, RGBA, type MouseEvent, type OptimizedBuffer, type RenderContext } from "@opentui/core"
-import { runtime } from "./config.ts"
+import { runtime } from "./options.ts"
 
 const IDLE = RGBA.fromInts(69, 71, 90, 255) // surface1
 const FOCUS = RGBA.fromInts(137, 180, 250, 255) // blue
@@ -192,7 +192,7 @@ export class Divider extends Renderable {
     })
     this.axis = options.axis
     this.onDrag = options.onDrag
-    this.setPaneGap(runtime.paneGap)
+    this.setPaneGap(runtime["appearance.paneGap"])
   }
 
   /** Update the target's width when the appearance setting changes. */

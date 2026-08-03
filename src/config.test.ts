@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { CONFIG_LIMITS, DEFAULT_CONFIG, decodeConfig, loadConfig, saveConfig } from "./config.ts"
+import { DEFAULT_CONFIG, decodeConfig, loadConfig, saveConfig } from "./config.ts"
+import { resolveOptions } from "./options.ts"
 
 const temporaryDirectories: string[] = []
 
@@ -16,41 +17,40 @@ async function temporaryConfig(): Promise<string> {
   return join(directory, "config.json")
 }
 
-test("malformed fields cannot inject runtime config types or unbounded dimensions", () => {
+test("malformed key bindings cannot break keymap compilation", () => {
   const config = decodeConfig({
-    sidebar: { width: 999, open: "yes", agentsOnly: null },
-    behaviour: { scrollRows: 999, shell: 42 },
-    appearance: { paneGap: 999, whichKeyHints: [], whichKeyDelay: 999 },
     keys: { leader: 7, bindings: { safe: ["ctrl+x", 4], "__proto__": ["ctrl+p"] } },
   })
 
-  expect(config).toEqual({
-    ...DEFAULT_CONFIG,
-    sidebar: { ...DEFAULT_CONFIG.sidebar, width: CONFIG_LIMITS.sidebarWidth.max },
-    behaviour: { ...DEFAULT_CONFIG.behaviour, scrollRows: CONFIG_LIMITS.scrollRows.max },
-    appearance: {
-      ...DEFAULT_CONFIG.appearance,
-      paneGap: CONFIG_LIMITS.paneGap.max,
-      whichKeyDelay: CONFIG_LIMITS.whichKeyDelay.max,
-    },
-    keys: { leader: DEFAULT_CONFIG.keys.leader, bindings: { safe: ["ctrl+x"], "__proto__": ["ctrl+p"] } },
+  expect(config.keys).toEqual({
+    leader: DEFAULT_CONFIG.keys.leader,
+    bindings: { safe: ["ctrl+x"], "__proto__": ["ctrl+p"] },
   })
 })
 
-test("missing fields in an older config receive current defaults", () => {
-  expect(decodeConfig({ sidebar: { open: false }, behaviour: { shell: "zsh" } })).toEqual({
-    ...DEFAULT_CONFIG,
-    sidebar: { ...DEFAULT_CONFIG.sidebar, open: false },
-    behaviour: { ...DEFAULT_CONFIG.behaviour, shell: "zsh" },
-  })
+test("options are stored as written and judged on the way out", () => {
+  // Nothing is rejected at decode, because the decoder is not what knows the
+  // bounds — and an entry it refused would be an entry a later build could not
+  // read back.
+  const config = decodeConfig({ options: { "sidebar.width": 999, "behaviour.shell": 42 } })
+  expect(config.options).toEqual({ "sidebar.width": 999, "behaviour.shell": 42 })
+
+  const options = resolveOptions(config.options)
+  expect(options["sidebar.width"]).toBe(60)
+  expect(options["behaviour.shell"]).toBe("")
 })
 
-test("valid config survives save and load", async () => {
+test("an empty file is every default", () => {
+  expect(decodeConfig({})).toEqual(DEFAULT_CONFIG)
+  expect(resolveOptions(decodeConfig({}).options)["sidebar.width"]).toBe(30)
+})
+
+test("a changed config survives save and load", async () => {
   const path = await temporaryConfig()
   const config = decodeConfig({
-    sidebar: { width: 42, open: false, agentsOnly: true },
-    behaviour: { scrollRows: 7, shell: "zsh" },
-    appearance: { paneGap: 2, whichKeyHints: false, whichKeyDelay: 3 },
+    // The last is an option this build does not declare — a plugin's, or one
+    // from a newer release. It has to come back out of the file unchanged.
+    options: { "sidebar.width": 42, "appearance.paneGap": 2, "clock.format": "%H:%M" },
     keys: { leader: "ctrl+b", bindings: { "app.quit": ["<leader>q"] } },
   })
 

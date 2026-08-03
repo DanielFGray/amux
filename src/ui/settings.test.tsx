@@ -2,7 +2,7 @@
 import { test, expect, afterEach } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
-import { DEFAULT_CONFIG } from "../config.ts"
+import { optionsIn, resolveOptions } from "../options.ts"
 import type { HelpGroup } from "../bindings.ts"
 import { Settings, keybindGroups, keybindLine, keybindTargets, settingsFields } from "./Settings.tsx"
 
@@ -66,27 +66,31 @@ test("a selection index maps to its line in the scrolled list", () => {
 })
 
 test("pane gap setting explains the border mode at zero and one", () => {
-  const field = settingsFields(DEFAULT_CONFIG, "appearance")[0]!
+  const field = settingsFields(resolveOptions({}), "appearance")[0]!
   expect(field.hint).toContain("0 merged")
   expect(field.hint).toContain("1 borders")
 })
 
-test("appearance settings expose which-key visibility and delay", () => {
+// The row is a projection of the table, so a section holds exactly the options
+// declared into it, in declaration order, and nothing has to be added here when
+// one is added there.
+test("a section's rows are its options, named as config.set takes them", () => {
   const fields = settingsFields(
-    {
-      ...DEFAULT_CONFIG,
-      appearance: { ...DEFAULT_CONFIG.appearance, whichKeyHints: false, whichKeyDelay: 1 },
-    },
+    resolveOptions({ "appearance.whichKeyHints": false, "appearance.whichKeyDelay": 1 }),
     "appearance",
   )
-  expect(fields.slice(1).map((field) => field.value)).toEqual(["yes", "no", "1s"])
+  expect(fields.map((field) => field.name)).toEqual(optionsIn("appearance"))
+  expect(fields.map((field) => field.label)).toEqual([
+    "paneGap",
+    "singlePaneBorder",
+    "whichKeyHints",
+    "whichKeyDelay",
+  ])
+  expect(fields.map((field) => field.value)).toEqual(["0", "yes", "no", "1"])
 })
 
 test("the shell setting is displayed as intentionally read-only", () => {
-  const shell = settingsFields(
-    { ...DEFAULT_CONFIG, behaviour: { ...DEFAULT_CONFIG.behaviour, shell: "/bin/fish" } },
-    "behaviour",
-  )[1]!
+  const shell = settingsFields(resolveOptions({ "behaviour.shell": "/bin/fish" }), "behaviour")[1]!
 
   expect(shell.value).toBe("/bin/fish")
   expect(shell.hint).toContain("read-only")
@@ -99,7 +103,7 @@ async function draw(over: Partial<Parameters<typeof Settings>[0]> = {}) {
   await render(
     () => (
       <Settings
-        config={DEFAULT_CONFIG}
+        options={resolveOptions({})}
         section="keybinds"
         selected={0}
         groups={GROUPS}

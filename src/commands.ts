@@ -259,18 +259,46 @@ const SpacePrevious = define("space.previous", {}, {
   capability: "agent",
 })
 
+/**
+ * Settings, as verbs.
+ *
+ * Changing an option is a command and not a key handler in the settings window,
+ * which is what makes one act reachable from every surface at once: scriptable
+ * over the socket, bindable to a key, and offerable to an agent. It is also why
+ * there is no `sidebar.toggle` command — that is `config.toggle sidebar.open`,
+ * and a bespoke verb per option is the thing a name plus a table replaces.
+ *
+ * `set` and `adjust` are both here because the two callers genuinely differ: a
+ * script names the value it wants, while ←/→ and a dragged divider only know
+ * which way to move. Clamping the result to the option's bounds is the table's
+ * job in both cases.
+ */
+const ConfigSet = define("config.set", {
+  name: Schema.String,
+  value: Schema.Union(Schema.String, Schema.Number, Schema.Boolean),
+}, {
+  desc: "set an option",
+  group: "config",
+  capability: "remote",
+})
+const ConfigToggle = define("config.toggle", { name: Schema.String }, {
+  desc: "flip a yes/no option",
+  group: "config",
+  capability: "remote",
+})
+const ConfigAdjust = define("config.adjust", { name: Schema.String, by: Schema.Int }, {
+  desc: "move a numeric option by a step",
+  group: "config",
+  capability: "remote",
+})
+const ConfigReset = define("config.reset", { name: Schema.String }, {
+  desc: "put an option back to its default",
+  group: "config",
+  capability: "remote",
+})
+
 // The app itself. These drive overlays and the local terminal, so they are the
 // bulk of what `local` is for.
-const SidebarToggle = define("sidebar.toggle", {}, {
-  desc: "toggle the sidebar",
-  group: "global",
-  capability: "local",
-})
-const SidebarAgentsOnly = define("sidebar.toggle-agents-only", {}, {
-  desc: "show only panes running agent CLIs",
-  group: "global",
-  capability: "local",
-})
 const AppHelp = define("app.help", {}, { desc: "keybinds", group: "global", capability: "local" })
 const AppPalette = define("app.command-palette", {}, {
   desc: "search and run commands",
@@ -324,8 +352,10 @@ export const COMMAND_DEFS = [
   SpaceClose,
   SpaceNext,
   SpacePrevious,
-  SidebarToggle,
-  SidebarAgentsOnly,
+  ConfigSet,
+  ConfigToggle,
+  ConfigAdjust,
+  ConfigReset,
   AppHelp,
   AppPalette,
   AppSettings,

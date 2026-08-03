@@ -9,7 +9,7 @@ import { createSignal } from "solid-js"
 import { Divider } from "../divider.ts"
 import { SpaceSet, type Space } from "../space.ts"
 import { frame } from "../window.ts"
-import { loadConfig } from "../config.ts"
+import { resolveOptions } from "../options.ts"
 import { createAppState } from "./state.ts"
 import { App } from "./App.tsx"
 import type { HintGroup } from "../bindings.ts"
@@ -18,6 +18,11 @@ import { workspaceEnv } from "../env.ts"
 const WIDTH = 60
 const HEIGHT = 14
 const SIDEBAR = 16
+
+/** The options these tests vary: the sidebar's presence and the column its seam
+ *  lands in. Everything else stays at its declared default. */
+const sidebar = (open: boolean) =>
+  resolveOptions({ "sidebar.open": open, "sidebar.width": SIDEBAR })
 
 const cleanup: (() => void)[] = []
 afterEach(() => {
@@ -47,22 +52,19 @@ async function screen(
   handle.capEnd = true
 
   frame.externalLeft = open
-  const [sidebarOpen, setSidebarOpen] = createSignal(open)
+  const [options, setOptions] = createSignal(sidebar(open))
   const space = Effect.runSync(spaces.create("proj", process.cwd()))
   build(space)
   spaces.refreshChrome()
 
-  const config = await loadConfig()
   await render(
     () => (
       <App
         app={app}
-        config={config}
+        options={options()}
         paneHost={paneHost}
         size={{ width: WIDTH, height: HEIGHT }}
         sidebarHandle={handle}
-        sidebarWidth={SIDEBAR}
-        sidebarOpen={sidebarOpen()}
         selected={0}
         hovered={null}
         onHover={() => {}}
@@ -96,11 +98,11 @@ async function screen(
   await t.renderOnce()
   if (extra.reopen) {
     frame.externalLeft = false
-    setSidebarOpen(false)
+    setOptions(sidebar(false))
     spaces.refreshChrome()
     await t.renderOnce()
     frame.externalLeft = true
-    setSidebarOpen(true)
+    setOptions(sidebar(true))
     spaces.refreshChrome()
     await t.renderOnce()
     await t.renderOnce()
