@@ -369,8 +369,9 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
 
       kill: Effect.fnUntraced(function* (id: string) {
         const session = (yield* Ref.get(sessions)).get(id);
-        if (!session)
-          return yield* new PtyError({ operation: "kill", message: `unknown session '${id}'` });
+        // If the process exited between the workspace-level kill decision
+        // and this call, the session is already gone — which is success.
+        if (!session) return;
         const termination = (yield* Ref.get(terminations)).get(id);
         yield* session.kill;
         if (termination) yield* Deferred.await(termination);

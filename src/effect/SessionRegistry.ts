@@ -202,10 +202,11 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
             try: () => (kind === "agent" ? agentStubBackend() : ptyBackend(spec)),
             catch: (error) => asPtyError("spawn", error),
           }).pipe(Effect.tapError(() => release)),
-           (owned) => Effect.uninterruptible(Effect.promise(() => owned.kill()).pipe(
-             Effect.ensuring(Effect.sync(() => owned.close())),
-             Effect.ensuring(release),
-           )),
+         (owned) => Effect.uninterruptible(Effect.tryPromise(() => owned.kill()).pipe(
+            Effect.catchAll(() => Effect.void),
+            Effect.ensuring(Effect.sync(() => owned.close())),
+            Effect.ensuring(release),
+          )),
         );
         yield* Ref.update(sessions, (current) => {
           if (current.get(spec.id)?.token !== token) return current;
@@ -217,7 +218,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
         const runCommand = (command: SessionCommand) => {
           const operation = Match.valueTags(command, {
             resize: (command) => Effect.sync(() => backend.resize(command.cols, command.rows)),
-             kill: () => Effect.promise(() => backend.kill()),
+             kill: () => Effect.tryPromise(() => backend.kill()),
           });
           return operation.pipe(
             Effect.mapError((error) => asPtyError(command._tag, error)),
@@ -275,8 +276,10 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           resize: (cols, rows) => isTerminalSize(cols, rows)
             ? commandResult((done) => ({ _tag: "resize", cols, rows, done }))
             : Effect.fail(new PtyError({ operation: "resize", message: "invalid terminal size" })),
-          // Kill must not wait behind a write whose child stopped reading.
-          kill: Effect.promise(() => backend.kill()),
+         // Kill must not wait behind a write whose child stopped reading.
+         kill: Effect.tryPromise(() => backend.kill()).pipe(
+           Effect.catchAll((error) => Effect.fail(asPtyError("kill", error))),
+         ),
           foreground: () => backend.foreground(),
         } satisfies ManagedSession;
       });
