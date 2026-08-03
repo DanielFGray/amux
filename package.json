@@ -8,13 +8,8 @@
     "daemon": "bun src/daemon-main.ts",
     "session": "bun src/session-cli.ts",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
-    "e2e": "bun e2e/boot.ts && bun e2e/workspace.ts && bun e2e/keybind.ts && bun e2e/resize.ts && bun e2e/lastpane.ts",
-    "e2e:boot": "bun e2e/boot.ts",
-    "e2e:workspace": "bun e2e/workspace.ts",
-    "e2e:keybind": "bun e2e/keybind.ts",
-    "e2e:resize": "bun e2e/resize.ts",
-    "e2e:lastpane": "bun e2e/lastpane.ts"
+    "test": "bun test src",
+    "e2e": "bun test e2e"
   },
   "devDependencies": {
     "@types/bun": "latest"

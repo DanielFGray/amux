@@ -204,12 +204,30 @@ export async function launch(
 }
 
 /** Report a list of checks and exit non-zero if any failed. */
-export function report(checks: readonly (readonly [string, boolean])[]): never {
-  console.log()
-  for (const [what, ok] of checks) console.log(`${ok ? "PASS" : "FAIL"}  ${what}`)
-  const failed = checks.filter(([, ok]) => !ok).length
-  console.log(`\n${checks.length - failed}/${checks.length} passed`)
-  process.exit(failed === 0 ? 0 : 1)
+/**
+ * Per-test timeout for anything that drives the real app.
+ *
+ * bun's default is five seconds, which every check here would blow through on
+ * the launch alone — a real app on a real PTY, spawning a real shell. It has to
+ * clear `until`'s own timeout with room to spare, or a step that is merely slow
+ * fails as "test timed out" and says nothing about which wait was the slow one.
+ */
+export const E2E_TIMEOUT = 60_000
+
+/**
+ * The column of the tee where a divider meets the window's top frame line, or
+ * -1 when no divider is drawn.
+ *
+ * The marker for anything that moves or removes a seam. A tee is a pure border
+ * glyph, so unlike a column of spaces or a box character a shell could print,
+ * it cannot be faked by whatever the child happens to have on screen.
+ */
+export function teeColumn(screen: string): number {
+  for (const line of screen.split("\n")) {
+    const at = line.indexOf("┬")
+    if (at !== -1) return at
+  }
+  return -1
 }
 
 export type { Pty }
