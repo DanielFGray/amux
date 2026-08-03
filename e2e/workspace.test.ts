@@ -41,6 +41,10 @@ function footerFor(shape: string): string {
 /** Press, then hold BOTH accounts of the workspace to the same shape. */
 async function step(keys: string, want: string) {
   await app.press(keys)
+  await app.until(
+    async () => (await app.shape()) === want && app.screen().includes(footerFor(want)),
+    `the workspace and sidebar to reach ${want}`,
+  )
   const shape = await app.shape()
   expect(shape).toBe(want)
   expect(app.screen()).toContain(footerFor(shape))
@@ -77,5 +81,6 @@ test("kill agent takes its emptied window with it", async () => {
 // there is no footer left to agree with.
 test("killing the last agent empties the workspace and quits", async () => {
   await app.press(`${LEADER}K`)
+  await app.until(async () => (await app.shape()) === "0sp 0win 0ag", "the empty workspace to persist")
   expect(await app.shape()).toBe("0sp 0win 0ag")
 }, E2E_TIMEOUT)

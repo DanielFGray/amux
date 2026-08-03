@@ -8,10 +8,9 @@
  * and dropped it, so ^a &, ^a ! and the sidebar's kill did nothing at all, with
  * 343 green tests and a clean typecheck.
  *
- * These checks are deliberately NOT `bun test`. They spawn a process, sleep for
- * a debounce and read a file — seconds each, and flaky under load in a way a
- * unit test must never be. `bun run e2e` is a thing you run before landing
- * something that changes app wiring.
+ * These checks drive processes and persisted state, so they belong in the e2e
+ * suite rather than the unit suite. `bun run e2e` is a thing you run before
+ * landing something that changes app wiring.
  */
 import { spawnPty, readPty, type Pty } from "../src/pty.ts"
 import { Terminal } from "../src/ghostty.ts"
@@ -21,6 +20,7 @@ import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
 const REPO = dirname(import.meta.dir)
+const KEY_GAP_MS = 50
 
 /** ctrl+a, the default prefix. */
 export const LEADER = "\x01"
@@ -178,13 +178,11 @@ export async function launch(
     until,
     async press(keys) {
       for (const k of keys) {
-        pty.write(k)
-        await Bun.sleep(250)
+        await pty.write(k)
+        // PTY writes are a byte stream, not event-framed. Leave enough time for
+        // the keymap to consume one key before the next write completes a chord.
+        await Bun.sleep(KEY_GAP_MS)
       }
-      // Past the 500ms save debounce, with room for a release to unwind: a
-      // scope close interrupts the agent's pump fiber before freeing its
-      // terminal, so the write that follows is not immediate.
-      await Bun.sleep(1500)
     },
     send(bytes) {
       pty.write(bytes)
@@ -193,13 +191,45 @@ export async function launch(
     session: readSession,
     config: () => Bun.file(configPath).json().catch(() => null),
     async stop() {
-      pty.kill()
+      await pty.kill()
       await reader.catch(() => {})
       // After the reader, never before: the pump can be holding a chunk, and a
       // write into a freed terminal corrupts ghostty's heap rather than faulting.
       term.free()
+      await stopDaemon(join(state, "opentui-herdr", "sessions", session, "lease.json"))
       await rm(home, { recursive: true, force: true })
     },
+  }
+}
+
+/** Stop the detached daemon and wait for its scoped finalizers to release its PTYs. */
+async function stopDaemon(leasePath: string): Promise<void> {
+  const lease = await Bun.file(leasePath)
+    .json()
+    .catch(() => null)
+  const pid = lease?.pid
+  if (!Number.isInteger(pid) || pid <= 0) return
+
+  try {
+    process.kill(pid, "SIGTERM")
+  } catch {
+    return
+  }
+
+  const deadline = Date.now() + 3_000
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0)
+      await Bun.sleep(10)
+    } catch {
+      return
+    }
+  }
+
+  try {
+    process.kill(pid, "SIGKILL")
+  } catch {
+    /* exited after the deadline */
   }
 }
 

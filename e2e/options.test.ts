@@ -52,7 +52,10 @@ test("only the option that was changed is written", () => {
 
 test("the sidebar closes because the option is what it was reading", async () => {
   await app.press(`${LEADER}S`) // leave the settings window
-  await app.until(() => !app.screen().includes(" · "), "the sidebar to go with its option")
+  await app.until(
+    () => !app.screen().includes(" settings ") && !app.screen().includes(" · "),
+    "the settings window to close with the sidebar hidden",
+  )
 }, E2E_TIMEOUT)
 
 test("^a b puts it back, and the file empties rather than pinning the default", async () => {
@@ -60,6 +63,7 @@ test("^a b puts it back, and the file empties rather than pinning the default", 
   await app.until(() => app.screen().includes(" · "), "the sidebar to come back")
 
   await app.press(`${LEADER}S`)
+  await app.until(() => app.screen().includes(" settings "), "the settings window to open")
   await app.press("s")
   await app.until(async () => Object.keys((await app.config())?.options ?? {}).length === 0, "the entry to be dropped")
   expect((await app.config())?.options).toEqual({})

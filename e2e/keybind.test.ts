@@ -31,6 +31,7 @@ beforeAll(async () => {
   configured = await launch("e2e-keybind-config", { config: REBOUND })
   beforeSplit = await configured.shape()
   await configured.press(`${LEADER}g`)
+  await configured.until(async () => (await configured.shape()) === "1sp 1win 2ag", "the rebound split to persist")
   afterSplit = await configured.shape()
 
   // The settings window's keybind tab: row 0 is the prefix, so j lands on the
@@ -38,14 +39,28 @@ beforeAll(async () => {
   // keystroke, u resets the row, s writes the config.
   edited = await launch("e2e-keybind-edit")
   await edited.press(`${LEADER}?`)
+  await edited.until(
+    () => edited.screen().includes(" settings ") && edited.screen().includes("split left/right"),
+    "the keybind settings to open",
+  )
   await edited.press("j")
   await edited.press("\r")
+  await edited.until(() => edited.screen().includes("press a key…"), "pane.split-row to enter key capture")
   await edited.press("g")
   await edited.press("s")
+  await edited.until(
+    async () => (await edited.config())?.keys?.bindings?.["pane.split-row"]?.[0] === "<leader>g",
+    "the captured binding to be saved",
+  )
   captured = await edited.config()
 
   await edited.press("u")
+  await edited.until(() => edited.screen().includes("unsaved"), "pane.split-row to return to its default")
   await edited.press("s")
+  await edited.until(
+    async () => !Object.hasOwn((await edited.config())?.keys?.bindings ?? {}, "pane.split-row"),
+    "the reset binding to be saved",
+  )
   reset = await edited.config()
 }, E2E_TIMEOUT)
 

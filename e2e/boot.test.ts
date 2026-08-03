@@ -25,7 +25,10 @@ function crashed(out: string): string | null {
 
 async function boot(session: string, type?: string) {
   const app = await launch(session)
-  if (type) await app.press(type)
+  if (type) {
+    app.send(type)
+    await app.until(() => app.output().includes(MARKER), "the shell marker to appear")
+  }
   const out = app.output()
   const shape = await app.shape()
   await app.stop()
