@@ -123,8 +123,7 @@ export function App(props: AppProps) {
           copying={props.copying}
           onSelect={props.onSelectWindow}
         />
-        <box style={{ flexGrow: 1, flexDirection: "row" }}>
-          <Show when={sidebarOpen()}>{props.sidebarHandle}</Show>
+        <box style={{ flexGrow: 1, flexDirection: "row", padding: props.options["appearance.padding"] ? 1 : 0 }}>
           {props.paneHost}
         </box>
       </box>

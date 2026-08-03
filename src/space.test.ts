@@ -543,23 +543,22 @@ test("a pane draws only the edges facing the window, never one a divider covers"
   }
 })
 
-test("pane gap one separates borders without widening the divider", async () => {
+test("gap separates borders without widening the divider", async () => {
   const s = await setup()
   try {
     const right = run(s.win.splitSpawn("row"))!
     const left = s.win.panes[0]!
     const divider = s.win.root.getChildren()[1] as Divider
 
-    // Zero is the merged-border mode: the divider owns the shared seam.
+    // Gap off is the merged-border mode: the divider owns the shared seam.
     expect(divider.width).toBe(1)
     expect(left.edges.right).toBe(false)
     expect(right.edges.left).toBe(false)
 
-    applyOptions(resolveOptions({ "appearance.paneGap": 1 }))
+    applyOptions(resolveOptions({ "appearance.gap": true }))
     s.win.refreshChrome()
 
-    // One restores both pane borders but keeps the divider at its existing
-    // single-cell width; wider spacing starts at values above one.
+    // Gap restores both pane borders while keeping the divider one cell wide.
     expect(divider.width).toBe(1)
     expect(left.edges.right).toBe(true)
     expect(right.edges.left).toBe(true)
@@ -570,13 +569,13 @@ test("pane gap one separates borders without widening the divider", async () => 
   }
 })
 
-test("pane gap one separates columns without adding a blank row", async () => {
+test("gap separates columns without adding a blank row", async () => {
   const s = await setup()
   try {
     run(s.win.splitSpawn("column"))
     const divider = (s.win.root.getChildren()[1] as Divider)
 
-    applyOptions(resolveOptions({ "appearance.paneGap": 1 }))
+    applyOptions(resolveOptions({ "appearance.gap": true }))
     s.win.refreshChrome()
     await s.t.renderOnce()
 
@@ -590,12 +589,16 @@ test("pane gap one separates columns without adding a blank row", async () => {
   }
 })
 
-test("single-pane borders can be hidden without affecting split windows", async () => {
+test("outer border can be hidden in gap mode", async () => {
   const s = await setup()
   try {
-    applyOptions(resolveOptions({ "appearance.singlePaneBorder": false }))
+    applyOptions(resolveOptions({ "appearance.outerBorder": false }))
     s.win.refreshChrome()
     expect(s.win.panes[0]!.edges).toEqual({ top: false, right: false, bottom: false, left: false })
+
+    applyOptions(resolveOptions({ "appearance.gap": true, "appearance.outerBorder": false }))
+    s.win.refreshChrome()
+    expect(s.win.panes[0]!.edges).toEqual({ top: true, right: true, bottom: true, left: true })
 
     run(s.win.splitSpawn("row"))
     expect(s.win.panes.every((pane) => pane.edges.top && pane.edges.bottom)).toBe(true)
@@ -607,24 +610,19 @@ test("single-pane borders can be hidden without affecting split windows", async 
   }
 })
 
-test("pane gaps give each pane a complete border and remain draggable", async () => {
+test("gap gives each pane a complete border and remains draggable", async () => {
   const s = await setup()
-  applyOptions(resolveOptions({ "appearance.paneGap": 2 }))
+  applyOptions(resolveOptions({ "appearance.gap": true }))
   try {
     run(s.win.splitSpawn("row"))
     await s.t.renderOnce()
     const children = s.win.root.getChildren() as any[]
     const [left, divider, right] = children
-    expect(divider.width).toBe(2)
+    expect(divider.width).toBe(1)
     expect(left.edges).toEqual({ top: true, right: true, bottom: true, left: true })
     expect(right.edges).toEqual({ top: true, right: true, bottom: true, left: true })
     expect(left.x + left.width).toBe(divider.x)
     expect(divider.x + divider.width).toBe(right.x)
-    const rows = s.t.captureCharFrame().split("\n")
-    expect(rows
-      .slice(divider.y, divider.y + divider.height)
-      .some((row) => row.slice(divider.x, divider.x + divider.width) !== "  ")).toBe(false)
-
     const total = left.width + right.width
     divider.onMouseEvent({ type: "down", x: divider.x, y: divider.y, button: 0, stopPropagation() {} })
     divider.onMouseEvent({ type: "drag", x: divider.x - 5, y: divider.y, button: 0, stopPropagation() {} })

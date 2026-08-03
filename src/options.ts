@@ -50,17 +50,20 @@ export const OPTIONS = {
     desc: "list only panes running a recognised agent CLI",
   },
 
-  "appearance.paneGap": {
-    kind: "number",
-    default: 0,
-    min: 0,
-    max: 8,
-    desc: "0 merged · 1 borders · 2+ cells",
+  "appearance.gap": {
+    kind: "boolean",
+    default: false,
+    desc: "separate pane borders",
   },
-  "appearance.singlePaneBorder": {
+  "appearance.outerBorder": {
     kind: "boolean",
     default: true,
-    desc: "border a window holding one pane",
+    desc: "show the outside border when gap is enabled",
+  },
+  "appearance.padding": {
+    kind: "boolean",
+    default: false,
+    desc: "pad the main frame by one cell",
   },
   "appearance.whichKeyHints": {
     kind: "boolean",

@@ -433,6 +433,10 @@ function buildApp(
   const notifyChange = spaces.onChange
   spaces.onChange = () => {
     notifyChange?.()
+    // Output already caused a reactive read. If that read exposed a spinner,
+    // wake the idle loop once; subsequent output must not keep postponing the
+    // 100ms tick by repeatedly replacing its fiber.
+    if (needsFastPoll() && !pollingFast) startUiPoll()
     // A pane closing is a structural change; if it was the copy-mode pane, the
     // mode must step down rather than keep a handle on a destroyed view. Guarded
     // on the mode being active, since this runs on every output chunk.
@@ -1312,11 +1316,12 @@ function buildApp(
       return
     }
     setHintsVisible(false)
-    hintTimer = setTimeout(() => {
-      hintTimer = null
-      if (pendingParts().length) setHintsVisible(true)
-    }, visibility.delayMs)
-    hintTimer.unref?.()
+    scheduleHintVisibility(
+      runFiber,
+      visibility.delayMs,
+      () => pendingParts().length > 0,
+      () => setHintsVisible(true),
+    )
   }
 
   // Only source of truth for the hint line and the which-key panel: what the

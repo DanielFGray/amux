@@ -15,7 +15,6 @@ import {
 test("a hand-edited file cannot put a value into the app the UI would refuse", () => {
   const options = resolveOptions({
     "sidebar.width": 999,
-    "appearance.paneGap": -4,
     "behaviour.scrollRows": 2.7,
     "sidebar.open": "yes",
     "appearance.whichKeyDelay": null,
@@ -23,7 +22,6 @@ test("a hand-edited file cannot put a value into the app the UI would refuse", (
   })
 
   expect(options["sidebar.width"]).toBe(OPTIONS["sidebar.width"].max)
-  expect(options["appearance.paneGap"]).toBe(OPTIONS["appearance.paneGap"].min)
   expect(options["behaviour.scrollRows"]).toBe(2)
   // Wrong type is not clamped into range, it is not a value at all.
   expect(options["sidebar.open"]).toBe(OPTIONS["sidebar.open"].default)

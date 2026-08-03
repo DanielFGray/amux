@@ -50,7 +50,7 @@ test("a changed config survives save and load", async () => {
   const config = decodeConfig({
     // The last is an option this build does not declare — a plugin's, or one
     // from a newer release. It has to come back out of the file unchanged.
-    options: { "sidebar.width": 42, "appearance.paneGap": 2, "clock.format": "%H:%M" },
+    options: { "sidebar.width": 42, "appearance.gap": true, "clock.format": "%H:%M" },
     keys: { leader: "ctrl+b", bindings: { "app.quit": ["<leader>q"] } },
   })
 

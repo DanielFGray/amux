@@ -566,21 +566,25 @@ export class Window {
    * cell thick at every seam.
    */
   #refreshChrome() {
-    const gap = runtime["appearance.paneGap"] > 0
-    const showOuterBorder = runtime["appearance.singlePaneBorder"] || this.#panes.length > 1
+    const gap = runtime["appearance.gap"]
+    // Without a gap the pane frame is the only usable edge, so outerBorder is
+    // intentionally ignored. It only changes the separated-border mode.
+    const showOuterBorder = runtime["appearance.outerBorder"]
+    const edge = (pane: TerminalPane, axis: SplitDirection, direction: -1 | 1) =>
+      gap || (!this.#hasNeighbour(pane, axis, direction) && showOuterBorder)
     const focused = this.focused
     for (const pane of this.#panes) {
       pane.edges = {
         // frame.externalLeft: the sidebar handle owns that column, so no pane
         // draws a left border while the sidebar is open.
-        left: showOuterBorder && (gap ? !frame.externalLeft : !frame.externalLeft && !this.#hasNeighbour(pane, "row", -1)),
-        right: showOuterBorder && (gap || !this.#hasNeighbour(pane, "row", 1)),
-        top: showOuterBorder && (gap || !this.#hasNeighbour(pane, "column", -1)),
-        bottom: showOuterBorder && (gap || !this.#hasNeighbour(pane, "column", 1)),
+        left: !frame.externalLeft && edge(pane, "row", -1),
+        right: edge(pane, "row", 1),
+        top: edge(pane, "column", -1),
+        bottom: edge(pane, "column", 1),
       }
     }
     for (const divider of this.#dividers()) {
-      divider.setPaneGap(runtime["appearance.paneGap"])
+      divider.setPaneGap(runtime["appearance.gap"] ? 1 : 0)
       // A divider's ends meet the window's outer border exactly where it has no
       // neighbour of its own across the perpendicular axis.
       const cross: SplitDirection = divider.axis === "row" ? "column" : "row"

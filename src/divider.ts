@@ -153,7 +153,7 @@ export class Divider extends Renderable {
     })
     this.axis = options.axis
     this.onDrag = options.onDrag
-    this.setPaneGap(runtime["appearance.paneGap"])
+    this.setPaneGap(runtime["appearance.gap"] ? 1 : 0)
   }
 
   /** Update the target's width when the appearance setting changes. */

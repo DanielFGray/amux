@@ -65,10 +65,9 @@ test("a selection index maps to its line in the scrolled list", () => {
   expect(keybindLine(GROUPS, 3)).toBe(8)
 })
 
-test("pane gap setting explains the border mode at zero and one", () => {
+test("gap setting explains separated borders", () => {
   const field = settingsFields(resolveOptions({}), "appearance")[0]!
-  expect(field.hint).toContain("0 merged")
-  expect(field.hint).toContain("1 borders")
+  expect(field.hint).toContain("separate pane borders")
 })
 
 // The row is a projection of the table, so a section holds exactly the options
@@ -81,12 +80,13 @@ test("a section's rows are its options, named as config.set takes them", () => {
   )
   expect(fields.map((field) => field.name)).toEqual(optionsIn("appearance"))
   expect(fields.map((field) => field.label)).toEqual([
-    "paneGap",
-    "singlePaneBorder",
+    "gap",
+    "outerBorder",
+    "padding",
     "whichKeyHints",
     "whichKeyDelay",
   ])
-  expect(fields.map((field) => field.value)).toEqual(["0", "yes", "no", "1"])
+  expect(fields.map((field) => field.value)).toEqual(["no", "yes", "no", "no", "1"])
 })
 
 test("the shell setting is displayed as intentionally read-only", () => {
