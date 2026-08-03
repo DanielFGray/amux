@@ -190,7 +190,7 @@ export class TerminalPane extends Renderable {
     if (x < 0 || y < 0 || x >= this.agent.term.cols || y >= this.agent.term.rows) return
 
     const action =
-      event.type === "down"
+      event.type === "down" || event.type === "scroll"
         ? MouseAction.press
         : event.type === "up"
           ? MouseAction.release
@@ -339,15 +339,27 @@ export class TerminalPane extends Renderable {
     const x1 = this.x + this.width - 1
     const y1 = this.y + this.height - 1
 
-    if (top) for (let x = x0; x <= x1; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG)
+    if (top) {
+      const title = this.agent.term.title
+      if (title && runtime["appearance.gap"] && this.width >= title.length + 4) {
+        if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG)
+        else buffer.setCell(x0, y0, "─", fg, DEFAULT_BG)
+        buffer.drawText(` ${title} `, x0 + 1, y0, fg, DEFAULT_BG)
+        const dashStart = x0 + 3 + title.length
+        const dashEnd = right ? x1 - 1 : x1
+        for (let x = dashStart; x <= dashEnd; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG)
+      } else {
+        for (let x = x0; x <= x1; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG)
+      }
+    }
     if (bottom) for (let x = x0; x <= x1; x++) buffer.setCell(x, y1, "─", fg, DEFAULT_BG)
     if (left) for (let y = y0; y <= y1; y++) buffer.setCell(x0, y, "│", fg, DEFAULT_BG)
     if (right) for (let y = y0; y <= y1; y++) buffer.setCell(x1, y, "│", fg, DEFAULT_BG)
 
-    if (top && left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG)
     if (top && right) buffer.setCell(x1, y0, "┐", fg, DEFAULT_BG)
     if (bottom && left) buffer.setCell(x0, y1, "└", fg, DEFAULT_BG)
     if (bottom && right) buffer.setCell(x1, y1, "┘", fg, DEFAULT_BG)
+    if (top && left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG)
   }
 
   /** Walk the grid once and batch contiguous same-style cells into runs.
