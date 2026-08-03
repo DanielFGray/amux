@@ -51,6 +51,32 @@ test("input round-trips through the pty", async () => {
   expect(p.closed).toBe(true)
 })
 
+test("forkpty child owns the controlling terminal session", async () => {
+  const p = spawnPty(["sh", "-c", "printf '%s %s %s\\n' \"$$\" \"$(ps -o sid= -p $$)\" \"$(ps -o tpgid= -p $$)\""], {
+    cols: 80,
+    rows: 24,
+  })
+  const out = collect(p)
+  await out.done
+  const [child, sid, foreground] = out.text().trim().split(/\s+/).map(Number)
+  expect(child).toBe(p.pid)
+  expect(sid).toBe(p.pid)
+  expect(foreground).toBe(p.pid)
+  expect(p.sessionId()).toBe(p.pid)
+})
+
+test("native exec preserves argv, cwd, environment and exit status", async () => {
+  const p = spawnPty(
+    ["sh", "-c", "printf '%s|%s|%s\\n' \"$1\" \"$OH_PTY_TEST\" \"$PWD\"; exit 7", "sh", "two words"],
+    { cols: 80, rows: 24, cwd: "/tmp", env: { OH_PTY_TEST: "native env" } },
+  )
+  const out = collect(p)
+  await p.processExited
+  await out.done
+  expect(out.text()).toContain("two words|native env|/tmp")
+  expect(p.exitCode).toBe(7)
+})
+
 test("close() is idempotent and stops the pump", async () => {
   const p = spawnPty(["cat"], { cols: 80, rows: 24 })
   const out = collect(p)
@@ -109,7 +135,7 @@ test("concurrent kill callers share one terminal operation", async () => {
   const p = spawnPty(["sh", "-c", "sleep 30"], { cols: 80, rows: 24 })
   await Promise.all([p.kill(), p.kill()])
   expect(p.closed).toBe(true)
-  await p.proc.exited
+  await p.processExited
 })
 
 test("a dead pump never reads an fd reused by a newer pty", async () => {
@@ -117,7 +143,7 @@ test("a dead pump never reads an fd reused by a newer pty", async () => {
   const outA = collect(a)
   await a.kill()
   await outA.done
-  await a.proc.exited // child gone, so its slave fd is free and a.master is reusable
+  await a.processExited // child gone, so its slave fd is free and a.master is reusable
 
   const b = spawnPty(["cat"], { cols: 80, rows: 24 })
   // Assert the reuse we're guarding against actually happened, so the test
@@ -177,7 +203,7 @@ test("aborting a blocked write stops its owned retries", async () => {
   ])
   expect(result).toContain("interrupted")
   await p.kill()
-  await p.proc.exited
+  await p.processExited
   expect(p.closed).toBe(true)
   await expect(p.write("late")).rejects.toThrow("interrupted")
 })

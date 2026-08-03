@@ -60,11 +60,11 @@ test("a non-reading child cannot wedge writes, kill, or another session", async 
       })
       const output = yield* Stream.runCollect(other.output)
 
-      // This must interrupt the pending write instead of waiting behind it in
-      // the blocked session's command mailbox.
+      // Shutdown owns this cancellation and must not report it as a failed
+      // daemon operation or wait behind the blocked write.
       yield* blocked.kill
       const pendingResult = yield* Fiber.join(pendingWrite)
-      expect(pendingResult._tag).toBe("Failure")
+      expect(pendingResult._tag).toBe("Success")
       return new TextDecoder().decode(Buffer.concat([...output].map((chunk) => Buffer.from(chunk))))
       }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
     ),

@@ -9,7 +9,7 @@ import {
   Scope,
   Stream,
 } from "effect";
-import { readPty, spawnPty } from "../pty.ts";
+import { PtyWriteInterrupted, readPty, spawnPty } from "../pty.ts";
 
 export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   operation: S.String,
@@ -95,7 +95,7 @@ function ptyBackend(spec: SessionSpec): Backend {
     // kill the child the instant a backend is constructed instead of when
     // something actually awaits exit.
     get wait() {
-      return pty.wait.then(() => pty.proc.exitCode);
+      return pty.wait.then(() => pty.exitCode);
     },
     write: (data, signal) => pty.write(data, signal),
     resize: (cols, rows) => pty.resize(cols, rows),
@@ -260,8 +260,14 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           }).pipe(Effect.ensuring(release)),
           write: (data) => Effect.tryPromise({
             try: (signal) => backend.write(data, signal),
-            catch: (error) => asPtyError("write", error),
-          }),
+            catch: (error) => error,
+          }).pipe(
+            Effect.catchAll((error) =>
+              error instanceof PtyWriteInterrupted && error.reason === "shutdown"
+                ? Effect.void
+                : Effect.fail(asPtyError("write", error)),
+            ),
+          ),
           resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
           // Kill must not wait behind a write whose child stopped reading.
           kill: Effect.promise(() => backend.kill()),

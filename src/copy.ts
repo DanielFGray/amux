@@ -2,7 +2,7 @@ import { dlopen, FFIType as T, ptr } from "bun:ffi"
 import type { KeyEvent } from "@opentui/core"
 import type { TerminalPane } from "./pane.ts"
 import { captureRows } from "./capture.ts"
-import { LIB_DIR } from "./ghostty.ts"
+import { LIB_DIR } from "./ghostty-library.ts"
 import {
   ScrollTo,
   captureRange,

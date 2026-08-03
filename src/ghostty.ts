@@ -1,9 +1,8 @@
 import { dlopen, FFIType as T, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
+import { LIB } from "./ghostty-library.ts";
+import { terminalNew } from "./shim.ts";
 
-export const LIB_DIR =
-  process.env.GHOSTTY_VT_LIB_DIR ?? "/home/dan/build/herdr/vendor/libghostty-vt/zig-out/lib";
-
-const LIB = process.env.GHOSTTY_VT_LIB ?? `${LIB_DIR}/libghostty-vt.so.0.1.0`;
+export { LIB_DIR } from "./ghostty-library.ts";
 
 const P = T.ptr,
   I = T.i32,
@@ -14,7 +13,6 @@ const P = T.ptr,
   V = T.void;
 
 const { symbols: g } = dlopen(LIB, {
-  ghostty_terminal_new: { args: [P, P, U64, U64], returns: I },
   ghostty_terminal_free: { args: [P], returns: V },
   ghostty_terminal_vt_write: { args: [P, P, U64], returns: V },
   ghostty_terminal_resize: { args: [P, U16, U16, U32, U32], returns: I },
@@ -57,12 +55,6 @@ const { symbols: g } = dlopen(LIB, {
 });
 
 const OK = 0;
-/** GhosttyTerminalOptions is 16B / all-INTEGER, so SysV + AAPCS64 pass it in
- *  two registers. Bun FFI has no struct-by-value, so we declare two u64s.
- *  NOTE: Windows x64 passes 16B structs by reference — needs a shim there. */
-const packOptions = (cols: number, rows: number, scrollback: number) =>
-  [BigInt(cols) | (BigInt(rows) << 16n), BigInt(scrollback)] as const;
-
 const STATE_ROW_ITERATOR = 4;
 const ROW_DATA_CELLS = 3;
 const ROW_DATA_SELECTION = 4;
@@ -116,8 +108,7 @@ export class Terminal {
 
   constructor(cols: number, rows: number, scrollback = 10_000) {
     const out = handle();
-    const [a, b] = packOptions(cols, rows, scrollback);
-    check("terminal_new", g.ghostty_terminal_new(null, ptr(out), a, b));
+    check("terminal_new", terminalNew(out, cols, rows, scrollback));
     this.#h = Number(out[0]);
     this.#cols = cols;
     this.#rows = rows;

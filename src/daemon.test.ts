@@ -139,7 +139,8 @@ test("a blocked daemon write does not starve timers, RPC, or shutdown", async ()
       write.then(() => "succeeded", (error) => String(error)),
       Bun.sleep(1000).then(() => "deadline exceeded"),
     ])
-    expect(writeResult).toContain("interrupted")
+    // Session shutdown owns this cancellation; it is not a failed daemon operation.
+    expect(writeResult).toBe("succeeded")
   } finally {
     await Promise.race([
       daemon.stop(),

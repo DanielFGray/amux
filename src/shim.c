@@ -8,6 +8,183 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef struct {
+  uint16_t cols;
+  uint16_t rows;
+  size_t scrollback;
+} GhosttyTerminalOptions;
+
+_Static_assert(sizeof(GhosttyTerminalOptions) == 16,
+               "GhosttyTerminalOptions ABI changed");
+_Static_assert(offsetof(GhosttyTerminalOptions, scrollback) == 8,
+               "GhosttyTerminalOptions layout changed");
+
+extern int ghostty_terminal_new(const void *allocator, void **terminal,
+                                GhosttyTerminalOptions options);
+
+int oh_terminal_new(void **terminal, const GhosttyTerminalOptions *options) {
+  if (options == 0) return -2;
+  return ghostty_terminal_new(0, terminal, *options);
+}
+
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <termios.h>
+#include <unistd.h>
+
+extern char **environ;
+extern pid_t forkpty(int *master, char *name, const struct termios *termios,
+                     const struct winsize *size);
+
+typedef struct {
+  const char *argv;
+  uint64_t argv_len;
+  const char *env;
+  uint64_t env_len;
+  const char *cwd;
+  uint16_t rows;
+  uint16_t cols;
+} OhSpawnPtyRequest;
+
+static char **oh_block_vector(const char *block, uint64_t len) {
+  size_t count = 0;
+  for (uint64_t i = 0; i < len; i++)
+    if (block[i] == '\0') count++;
+  char **values = calloc(count + 1, sizeof(char *));
+  if (values == 0) return 0;
+  size_t next = 0;
+  for (uint64_t i = 0; i < len; i++) {
+    if (i == 0 || block[i - 1] == '\0') values[next++] = (char *)&block[i];
+  }
+  return values;
+}
+
+static void oh_child_error(int error) {
+  const char *message;
+  switch (error) {
+    case EACCES: message = "Permission denied\n"; break;
+    case E2BIG: message = "Argument list too long\n"; break;
+    case ENOEXEC: message = "Exec format error\n"; break;
+    case ENOMEM: message = "Cannot allocate memory\n"; break;
+    case ENOTDIR: message = "Not a directory\n"; break;
+    case ENOENT: message = "No such file or directory\n"; break;
+    default: message = "Could not execute command\n"; break;
+  }
+  size_t length = 0;
+  while (message[length] != '\0') length++;
+  while (length > 0) {
+    ssize_t written = write(STDERR_FILENO, message, length);
+    if (written > 0) {
+      message += written;
+      length -= (size_t)written;
+    } else if (written < 0 && errno == EINTR) {
+      continue;
+    } else {
+      break;
+    }
+  }
+}
+
+int oh_spawn_pty(const OhSpawnPtyRequest *req, int32_t out[2]) {
+  if (req == 0 || out == 0 || req->argv == 0 || req->argv_len == 0 ||
+      req->env == 0 || req->env_len == 0)
+    return EINVAL;
+
+  char **argv = oh_block_vector(req->argv, req->argv_len);
+  char **env = oh_block_vector(req->env, req->env_len);
+  if (argv == 0 || env == 0) {
+    free(argv);
+    free(env);
+    return ENOMEM;
+  }
+
+  int cwd = -1;
+  if (req->cwd != 0) {
+    cwd = open(req->cwd, O_RDONLY | O_DIRECTORY);
+    if (cwd < 0) {
+      int error = errno;
+      free(argv);
+      free(env);
+      return error;
+    }
+  }
+
+  struct winsize size = {0};
+  size.ws_row = req->rows;
+  size.ws_col = req->cols;
+  int master = -1;
+  pid_t pid = forkpty(&master, 0, 0, &size);
+  if (pid == 0) {
+    if (cwd >= 0 && fchdir(cwd) != 0) goto child_error;
+    if (cwd >= 0) close(cwd);
+    environ = env;
+    execvp(argv[0], argv);
+child_error: {
+      int error = errno;
+      oh_child_error(error);
+      _exit(127);
+    }
+  }
+
+  int fork_error = errno;
+  if (cwd >= 0) close(cwd);
+  free(argv);
+  free(env);
+  if (pid < 0) return fork_error;
+
+  int flags = fcntl(master, F_GETFL, 0);
+  if (flags < 0 || fcntl(master, F_SETFL, flags | O_NONBLOCK) < 0) {
+    int error = errno;
+    kill(pid, SIGKILL);
+    (void)waitpid(pid, 0, 0);
+    close(master);
+    return error;
+  }
+  out[0] = (int32_t)pid;
+  out[1] = master;
+  return 0;
+}
+
+int oh_wait_pid(int32_t pid, int32_t *exit_code) {
+  int status = 0;
+  pid_t result;
+  do {
+    result = waitpid((pid_t)pid, &status, WNOHANG);
+  } while (result < 0 && errno == EINTR);
+  if (result < 0) return -errno;
+  if (result == 0) return 0;
+  if (WIFEXITED(status)) *exit_code = WEXITSTATUS(status);
+  else if (WIFSIGNALED(status)) *exit_code = 128 + WTERMSIG(status);
+  else *exit_code = 1;
+  return 1;
+}
+
+int oh_resize_pty(int fd, uint16_t rows, uint16_t cols) {
+  struct winsize size = {0};
+  size.ws_row = rows;
+  size.ws_col = cols;
+  return ioctl(fd, TIOCSWINSZ, &size);
+}
+
+int oh_tcgetpgrp(int fd) { return (int)tcgetpgrp(fd); }
+int oh_close_fd(int fd) { return close(fd); }
+const char *oh_error_message(int error) { return strerror(error); }
+#else
+int oh_spawn_pty(const void *req, int32_t out[2]) { return 38; }
+int oh_wait_pid(int32_t pid, int32_t *exit_code) { return -38; }
+int oh_resize_pty(int fd, uint16_t rows, uint16_t cols) { return -1; }
+int oh_tcgetpgrp(int fd) { return -1; }
+int oh_close_fd(int fd) { return -1; }
+const char *oh_error_message(int error) { return "unsupported operation"; }
+#endif
+
 typedef uint64_t GhosttyTerminal;
 typedef struct {
   int32_t tag;

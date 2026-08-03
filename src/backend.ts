@@ -83,7 +83,7 @@ export const localPty: SpawnBackend = (opts) => {
     },
     detached: false,
     get exitCode() {
-      return pty.proc.exitCode
+      return pty.exitCode
     },
     // Suspended so the generator is not created until something runs the
     // stream: constructing a backend must not start draining the master.
