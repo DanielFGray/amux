@@ -467,3 +467,117 @@ test("a preset on a single pane is a no-op that still reports success", async ()
   expect(window.panes).toEqual([only])
   expect(only.width).toBe(window.root.width)
 })
+
+test("a single-pane window exports as one pane, not a one-child split", async () => {
+  const { window } = await setup()
+  const exported = window.exportLayout()
+  expect(exported.root).toEqual({
+    type: "pane",
+    id: window.panes[0]!.id,
+    agent: window.panes[0]!.agent.id,
+    weight: expect.any(Number),
+  })
+})
+
+test("the exported tree matches the nesting the splits actually built", async () => {
+  const { window, layout } = await setup()
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
+  await layout()
+  expect(shape(window.exportLayout().root)).toEqual({ row: ["pane", { column: ["pane", "pane"] }] })
+})
+
+test("every pane appears exactly once in the export, in left-to-right order", async () => {
+  const { window, layout } = await setup()
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
+  await layout()
+  const ids = window.panes.map((p) => p.agent.id)
+  expect(layoutAgents(window.exportLayout()).sort()).toEqual([...ids].sort())
+})
+
+test("the focused pane is recorded in the export", async () => {
+  const { window, layout } = await setup()
+  const second = run(window.splitSpawn("row"))!
+  await layout()
+  window.focus(second)
+  expect(window.exportLayout().focus).toBe(second.id)
+})
+
+test("resized weights survive the export", async () => {
+  const { window, layout } = await setup()
+  const first = window.panes[0]!
+  run(window.splitSpawn("row"))
+  await layout()
+  window.applyLayout(makeLayout({
+    type: "split",
+    direction: "row",
+    weight: 1,
+    children: [
+      { type: "pane", id: first.id, agent: first.agent.id, weight: 7 },
+      { type: "pane", id: window.panes[1]!.id, agent: window.panes[1]!.agent.id, weight: 1 },
+    ],
+  }))
+  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>
+  const exported = root.children.find((c) => c.type === "pane" && c.agent === first.agent.id)
+  expect(exported?.weight).toBe(7)
+})
+
+test("exporting while zoomed records the underlying layout, not the zoomed view", async () => {
+  const { window, layout } = await setup()
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
+  await layout()
+  const before = window.exportLayout()
+
+  window.zoom()
+  await layout()
+  expect(window.zoomed).toBe(true)
+
+  expect(window.exportLayout()).toEqual(before)
+})
+
+test("a zoomed pane keeps the weight it had in the layout, not its zoom weight", async () => {
+  const { window, layout } = await setup()
+  const first = window.panes[0]!
+  run(window.splitSpawn("row"))
+  await layout()
+  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>
+  window.applyLayout(makeLayout({
+    ...root,
+    children: root.children.map((child) => child.type === "pane" && child.id === first.id
+      ? { ...child, weight: 5 }
+      : child),
+  }))
+  window.focus(first)
+  const before = window.exportLayout()
+
+  window.zoom()
+  await layout()
+  expect(window.exportLayout()).toEqual(before)
+})
+
+test("unzooming leaves the export unchanged, so zoom is invisible to persistence", async () => {
+  const { window, layout } = await setup()
+  run(window.splitSpawn("row"))
+  run(window.splitSpawn("column"))
+  await layout()
+  const before = window.exportLayout()
+
+  window.zoom()
+  await layout()
+  window.zoom()
+  await layout()
+
+  expect(window.exportLayout()).toEqual(before)
+})
+
+test("closing a pane leaves no husk in the exported tree", async () => {
+  const { window, layout } = await setup()
+  run(window.splitSpawn("row"))
+  const third = run(window.splitSpawn("column"))!
+  await layout()
+  window.close(third)
+  await layout()
+  expect(shape(window.exportLayout().root)).toEqual({ row: ["pane", "pane"] })
+})
