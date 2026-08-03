@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
-import { renameSync } from "node:fs"
-import { join } from "node:path"
+import { closeSync, fsyncSync, openSync, renameSync, unlinkSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { Context, Data, Effect } from "effect"
 import { decodeLayout, layoutPanes } from "./layout.ts"
@@ -145,7 +145,7 @@ export interface SessionPaths {
 }
 
 export function sessionRoot(): Effect.Effect<string, never, SessionEnv> {
-  return Effect.map(SessionEnv, (env) => join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "opentui-herdr", "sessions"))
+  return Effect.map(SessionEnv, (env) => join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "amux", "sessions"))
 }
 
 export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdError, SessionEnv> {
@@ -169,7 +169,6 @@ export function parseSessionState(value: unknown, expectedId?: string): SessionS
   const spaces = value.spaces as unknown[]
   if (spaces.length > MAX_SPACES) throw new Error("session has too many spaces")
   const spaceIds = new Set<string>()
-  const agentIds = new Set<string>()
   const paneIds = new Set<string>()
   let windowCount = 0
   let agentCount = 0
@@ -195,14 +194,13 @@ export function parseSessionState(value: unknown, expectedId?: string): SessionS
       if (agentCount > MAX_AGENTS) throw new Error("session has too many agents")
       const owned = new Map<string, boolean>()
       for (const entry of candidate.agents) {
-        if (!record(entry) || !nonEmptyString(entry.id) || agentIds.has(entry.id) ||
+        if (!record(entry) || !nonEmptyString(entry.id) || owned.has(entry.id) ||
           typeof entry.name !== "string" || !Array.isArray(entry.cmd) || entry.cmd.length === 0 ||
           !entry.cmd.every(nonEmptyString) || !(entry.cwd === undefined || typeof entry.cwd === "string") ||
           !isTerminalSize(entry.cols, entry.rows) || typeof entry.exited !== "boolean" ||
           !(entry.exitCode === null || Number.isInteger(entry.exitCode))) {
           throw new Error("invalid persisted agent")
         }
-        agentIds.add(entry.id)
         owned.set(entry.id, entry.exited)
       }
       if (candidate.layout) {
@@ -274,6 +272,16 @@ export function saveSession(state: SessionState): Effect.Effect<void, unknown, S
       try: (signal) => writeFile(temp, bytes, { mode: 0o600, signal }),
       catch: (error) => error,
     })
+    yield* Effect.try({
+      try: () => {
+        const fd = openSync(temp, "r+")
+        try { fsyncSync(fd) } finally { closeSync(fd) }
+      },
+      catch: (error) => {
+        try { unlinkSync(temp) } catch {}
+        return error
+      },
+    })
     // The commit has no cancellable filesystem API. Keep it synchronous so an
     // interrupted fiber is either before the commit or after it; it can never
     // abandon a rename Promise that installs this generation after shutdown.
@@ -281,6 +289,8 @@ export function saveSession(state: SessionState): Effect.Effect<void, unknown, S
       try: () => {
         try { renameSync(paths.state, paths.backup) } catch (error: any) { if (error.code !== "ENOENT") throw error }
         renameSync(temp, paths.state)
+        const dirFd = openSync(dirname(paths.state), "r")
+        try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
       },
       catch: (error) => error,
     })
