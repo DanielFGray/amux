@@ -6,11 +6,9 @@
  * the number of attached sessions costs no extra file descriptors and their
  * frames stay in a single order.
  *
- * Deliberately plain TypeScript, not Effect. Effect owns the daemon's data
- * plane, where scopes and supervision are what make PTY ownership correct; the
- * UI side is an imperative renderer and a socket, and giving it a runtime would
- * buy nothing. The protocol is shared (see effect/AttachProtocol.ts) precisely
- * so the two ends cannot drift apart while the transports differ.
+ * Socket callbacks remain imperative so Bun can deliver frames in their
+ * original order. Effect owns the connection lifetime around them: handshake
+ * timeout, heartbeat, and release are all children of one connection scope.
  */
 
 import {
@@ -18,7 +16,7 @@ import {
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts"
-import { Deferred, Effect, Layer, Option, Queue, Stream } from "effect"
+import { Deferred, Effect, Exit, Layer, Option, Queue, Runtime, Schedule, Scope, Stream } from "effect"
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts"
 import { parseWorkspace, type WorkspaceSnapshot } from "./workspace.ts"
 
@@ -80,10 +78,13 @@ export interface AttachClientShape {
 class AttachClientImpl implements AttachClientShape {
   readonly client: string
   #socket: Bun.Socket<undefined>
+  #runtime: Runtime.Runtime<never>
   #writer: SocketWriter
   #buffer = ""
   #closed = false
-  #heartbeat: Timer | null = null
+  #closedSignal = Effect.runSync(Deferred.make<void>())
+  #releaseScope: (() => void) | null = null
+  #handshake: { nonce: string; accept: () => void } | null
   /** Outstanding round trips, called with false when the attachment ends
    *  instead of being left pending forever. */
   #pongs = new Map<string, Deferred.Deferred<boolean>>()
@@ -99,9 +100,16 @@ class AttachClientImpl implements AttachClientShape {
   /** An out-of-band error frame from the daemon, outside any one session. */
   onError?: (message: string) => void
 
-  private constructor(client: string, socket: Bun.Socket<undefined>) {
+  private constructor(
+    client: string,
+    socket: Bun.Socket<undefined>,
+    runtime: Runtime.Runtime<never>,
+    handshake: { nonce: string; accept: () => void },
+  ) {
     this.client = client
     this.#socket = socket
+    this.#runtime = runtime
+    this.#handshake = handshake
     this.#writer = createSocketWriter(socket, () => {
       this.#finish(new AttachError("attach client is too slow"))
       socket.end()
@@ -117,81 +125,101 @@ class AttachClientImpl implements AttachClientShape {
    * trip is exactly the acknowledgement we need, and it costs one frame that
    * the heartbeat would have sent anyway.
    */
-  static connect(options: AttachClientOptions): Promise<AttachClientImpl> {
-    return new Promise<AttachClientImpl>((resolve, reject) => {
-      const helloTimeoutMs = options.helloTimeoutMs ?? HELLO_TIMEOUT_MS
-      let attached: AttachClientImpl | null = null
-      let socketRef: Bun.Socket<undefined> | null = null
-      let settled = false
-      const fail = (error: Error) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        if (attached) attached.#finish(error)
-        socketRef?.end()
-        reject(error)
-      }
+  static scoped(options: AttachClientOptions): Effect.Effect<AttachClientImpl, AttachError, Scope.Scope> {
+    const helloTimeoutMs = options.helloTimeoutMs ?? HELLO_TIMEOUT_MS
+    return Effect.runtime<never>().pipe(Effect.flatMap((runtime) => {
+      const acquire = Effect.async<AttachClientImpl, AttachError>((resume) => {
+        let attached: AttachClientImpl | null = null
+        let socketRef: Bun.Socket<undefined> | null = null
+        let settled = false
+        const fail = (error: Error) => {
+          if (settled) return
+          settled = true
+          if (attached) attached.#finish(error)
+          socketRef?.end()
+          resume(Effect.fail(error instanceof AttachError ? error : new AttachError(String(error))))
+        }
 
-      const timer = setTimeout(
-        () => {
-          fail(new AttachError(`attach to ${options.path} timed out`))
-        },
-        helloTimeoutMs,
-      )
-      timer.unref?.()
-
-      Bun.connect<undefined>({
-        unix: options.path,
-        socket: {
-          binaryType: "buffer",
-          open(socket) {
-            socketRef = socket
-            // Bun can deliver open after the promise has already timed out.
-            // Do not let that late transport become an unattached daemon claim.
-            if (settled) {
-              socket.end()
-              return
-            }
-            // Hello and the probing ping in one write: the server decodes every
-            // complete frame in a read, so batching them saves a round trip and
-            // exercises the same path a real client's first keystrokes take.
-            const nonce = `hello-${Math.random().toString(36).slice(2)}`
-            attached = new AttachClientImpl(options.client, socket)
-            const pong = Effect.runSync(Deferred.make<boolean>())
-            attached.#pongs.set(nonce, pong)
-            void Effect.runPromise(Deferred.await(pong).pipe(Effect.timeout(helloTimeoutMs), Effect.orElseSucceed(() => false))).then((answered) => {
-              if (settled) return
-              if (!answered) {
-                fail(new AttachError(`attach to ${options.path} timed out`))
+        void Bun.connect<undefined>({
+          unix: options.path,
+          socket: {
+            binaryType: "buffer",
+            open(socket) {
+              socketRef = socket
+              // Bun can deliver open after the promise has already timed out.
+              // Do not let that late transport become an unattached daemon claim.
+              if (settled) {
+                socket.end()
                 return
               }
-              settled = true
-              clearTimeout(timer)
-              attached!.#startHeartbeat(options.pingSeconds ?? PING_SECONDS)
-              resolve(attached!)
-            })
-            if (!attached.#writer.send(new TextEncoder().encode(
-              encodeAttachFrame({ _tag: "hello", client: options.client }) +
-                encodeAttachFrame({ _tag: "ping", nonce }),
-            ))) fail(new AttachError("attach handshake could not write"))
+              // Hello and the probing ping in one write: the server decodes every
+              // complete frame in a read, so batching them saves a round trip and
+              // exercises the same path a real client's first keystrokes take.
+              const nonce = `hello-${Math.random().toString(36).slice(2)}`
+              attached = new AttachClientImpl(options.client, socket, runtime, { nonce, accept: () => {
+                if (settled) return
+                settled = true
+                resume(Effect.succeed(attached!))
+              } })
+              if (!attached.#writer.send(new TextEncoder().encode(
+                encodeAttachFrame({ _tag: "hello", client: options.client }) +
+                  encodeAttachFrame({ _tag: "ping", nonce }),
+              ))) fail(new AttachError("attach handshake could not write"))
+            },
+            data(_socket, data) {
+              if (attached) attached.#receive(data.toString("utf8"), fail)
+            },
+            close() {
+              if (!settled) fail(new AttachError("daemon closed the attachment before accepting it"))
+              else if (attached) attached.#finish(null)
+            },
+            error(_socket, error) {
+              if (!settled) fail(error)
+              else if (attached) attached.#finish(error)
+            },
+            drain() {
+              if (attached) attached.#writer.drain()
+            },
           },
-          data(_socket, data) {
-            if (attached) attached.#receive(data.toString("utf8"), fail)
-          },
-          close() {
-            if (!settled) fail(new AttachError("daemon closed the attachment before accepting it"))
-            else if (attached) attached.#finish(null)
-          },
-          error(_socket, error) {
-            if (!settled) fail(error)
-            else if (attached) attached.#finish(error)
-          },
-          drain() {
-            if (attached) attached.#writer.drain()
-          },
-        },
-      }).catch(fail)
-    })
+        }).catch(fail)
+
+        return Effect.sync(() => {
+          if (settled) return
+          settled = true
+          if (attached) attached.#finish(new AttachError("attach handshake interrupted"))
+          socketRef?.end()
+        })
+      }).pipe(
+        Effect.timeoutFail({
+          duration: helloTimeoutMs,
+          onTimeout: () => new AttachError(`attach to ${options.path} timed out`),
+        }),
+      )
+
+      // A handshake is allowed to time out; ordinary acquireRelease masks
+      // interruption during acquisition and would therefore mask this deadline.
+      let acquired: AttachClientImpl | null = null
+      return Effect.acquireReleaseInterruptible(
+        acquire.pipe(Effect.tap((client) => Effect.sync(() => { acquired = client }))),
+        () => Effect.sync(() => acquired?.close()),
+      ).pipe(
+        Effect.tap((client) => client.#heartbeatEffect(options.pingSeconds ?? PING_SECONDS).pipe(Effect.forkScoped)),
+      )
+    }))
+  }
+
+  static connect(options: AttachClientOptions): Promise<AttachClientImpl> {
+    return Effect.runPromise(Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const client = yield* AttachClientImpl.scoped(options).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.tapError(() => Scope.close(scope, Exit.void)),
+      )
+      client.#setScopeRelease(() => {
+        void Effect.runPromise(Scope.close(scope, Exit.void))
+      })
+      return client
+    }))
   }
 
   get closed(): boolean {
@@ -201,10 +229,10 @@ class AttachClientImpl implements AttachClientShape {
   /** Select and claim a queue when the stream is acquired, not when the Stream
    *  value is constructed. An unused Stream therefore has no lifecycle claim. */
   stream(session: string): Stream.Stream<AttachFrame> {
-    return Stream.unwrap(Effect.sync(() => {
+    return Stream.unwrap(Effect.gen(this, function* () {
       let entry = this.#queued.get(session)
       if (!entry || entry.terminal) {
-        if (entry?.terminal) Effect.runFork(Queue.shutdown(entry.queue))
+        if (entry?.terminal) yield* Queue.shutdown(entry.queue)
         entry = { queue: Effect.runSync(Queue.bounded<AttachFrame>(QUEUE_LIMIT)), active: 0, terminal: false }
         this.#queued.set(session, entry)
       }
@@ -214,17 +242,17 @@ class AttachClientImpl implements AttachClientShape {
         if (done) return Effect.succeed(Option.none())
         return Queue.take(queue).pipe(Effect.map((frame) => Option.some([frame, frame._tag === "exit"] as const)))
       }).pipe(
-        Stream.ensuring(Effect.sync(() => {
+        Stream.ensuring(Effect.suspend(() => {
           const current = this.#queued.get(session)
           if (current?.queue !== queue) {
-            Effect.runFork(Queue.shutdown(queue))
-            return
+            return Queue.shutdown(queue)
           }
           current.active -= 1
           if (current.terminal && current.active === 0) {
             this.#queued.delete(session)
-            Effect.runFork(Queue.shutdown(queue))
+            return Queue.shutdown(queue)
           }
+          return Effect.void
         })),
       )
     }))
@@ -278,11 +306,19 @@ class AttachClientImpl implements AttachClientShape {
     this.#writer.send(new TextEncoder().encode(encodeAttachFrame(frame)))
   }
 
-  #startHeartbeat(seconds: number): void {
-    this.#heartbeat = setInterval(() => {
-      this.#send({ _tag: "ping", nonce: `beat-${Date.now()}` })
-    }, seconds * 1000)
-    this.#heartbeat.unref?.()
+  #heartbeatEffect(seconds: number): Effect.Effect<void> {
+    const beat = Effect.sync(() => this.#send({ _tag: "ping", nonce: `beat-${Date.now()}` }))
+    return beat.pipe(
+      Effect.repeat(Schedule.spaced(`${seconds} seconds`)),
+      Effect.delay(`${seconds} seconds`),
+      Effect.raceFirst(Deferred.await(this.#closedSignal)),
+      Effect.asVoid,
+    )
+  }
+
+  #setScopeRelease(release: () => void): void {
+    if (this.#closed) release()
+    else this.#releaseScope = release
   }
 
   #receive(chunk: string, onProtocolError: (error: Error) => void): void {
@@ -305,6 +341,12 @@ class AttachClientImpl implements AttachClientShape {
 
   #route(frame: AttachFrame): void {
     if (frame._tag === "pong") {
+      if (this.#handshake?.nonce === frame.nonce) {
+        const accept = this.#handshake.accept
+        this.#handshake = null
+        accept()
+        return
+      }
       const pong = this.#pongs.get(frame.nonce)
       if (pong) Effect.runSync(Deferred.succeed(pong, true))
       this.#pongs.delete(frame.nonce)
@@ -334,7 +376,7 @@ class AttachClientImpl implements AttachClientShape {
     // Exit closes a generation. The first later frame starts a new one even
     // when replacement stream() has not been called yet.
     if (entry?.terminal) {
-      if (entry.active === 0) Effect.runFork(Queue.shutdown(entry.queue))
+      if (entry.active === 0) this.#shutdownQueue(entry.queue)
       entry = { queue: Effect.runSync(Queue.bounded<AttachFrame>(QUEUE_LIMIT)), active: 0, terminal: false }
       this.#queued.set(frame.session, entry)
     }
@@ -357,7 +399,7 @@ class AttachClientImpl implements AttachClientShape {
       // generation has no consumer and must not retain stale exit state.
       if (entry.active === 0) {
         this.#queued.delete(frame.session)
-        Effect.runFork(Queue.shutdown(queue))
+        this.#shutdownQueue(queue)
       }
     }
   }
@@ -365,34 +407,32 @@ class AttachClientImpl implements AttachClientShape {
   #finish(error: Error | null): void {
     if (this.#closed) return
     this.#closed = true
+    const releaseScope = this.#releaseScope
+    this.#releaseScope = null
+    this.#handshake = null
     this.#writer.close()
-    if (this.#heartbeat) clearInterval(this.#heartbeat)
-    this.#heartbeat = null
+    Effect.runSync(Deferred.succeed(this.#closedSignal, undefined))
     for (const pong of this.#pongs.values()) Effect.runSync(Deferred.succeed(pong, false))
     this.#pongs.clear()
-    for (const { queue } of this.#queued.values()) Effect.runFork(Queue.shutdown(queue))
-    Effect.runFork(Queue.shutdown(this.#workspace))
+    for (const { queue } of this.#queued.values()) this.#shutdownQueue(queue)
+    this.#shutdownQueue(this.#workspace)
     this.#queued.clear()
     this.onClose?.(error)
+    releaseScope?.()
+  }
+
+  #shutdownQueue<A>(queue: Queue.Queue<A>): void {
+    Runtime.runSync(this.#runtime)(Queue.shutdown(queue))
   }
 }
 
 /** Scoped service wrapper. The socket is acquired and released with the layer,
  * so a client cannot outlive the scope that owns its attachment. */
 export class AttachClient extends Effect.Service<AttachClientShape>()("AttachClient", {
-  scoped: (options: AttachClientOptions) => Effect.acquireRelease(
-    Effect.tryPromise({
-      try: () => AttachClientImpl.connect(options),
-      catch: (error) => new AttachError(String(error)),
-    }),
-    (client) => Effect.sync(() => client.close()),
-  ),
+  scoped: (options: AttachClientOptions) => AttachClientImpl.scoped(options),
 }) {
   static layer(options: AttachClientOptions) {
-    return Layer.scoped(AttachClient, Effect.acquireRelease(
-      Effect.tryPromise({ try: () => AttachClientImpl.connect(options), catch: (error) => new AttachError(String(error)) }),
-      (client) => Effect.sync(() => client.close()),
-    ))
+    return Layer.scoped(AttachClient, AttachClientImpl.scoped(options))
   }
 
   /** Promise adapter used by the SessionClient constructor. New callers should

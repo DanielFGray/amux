@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Clock, Effect, Exit, Scope } from "effect"
 import { expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -142,7 +142,7 @@ test("one blocked session handler does not stall another session on the same soc
       const socket = yield* Effect.promise(() => connect(path, (message) => messages.push(message)))
       socket.write(encodeAttachFrame({ _tag: "input", session: "slow", data: new Uint8Array([1]) }))
       socket.write(encodeAttachFrame({ _tag: "ping", nonce: "fast" }))
-      yield* Effect.promise(() => Bun.sleep(25))
+      yield* waitUntil(() => messages.join("").includes("fast"))
       socket.end()
       return { messages, server }
     }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
@@ -153,7 +153,7 @@ test("one blocked session handler does not stall another session on the same soc
   await rm(root, { recursive: true, force: true })
 })
 
-const connect = (path: string, onData: (text: string) => void) =>
+const connect = (path: string, onData: (text: string) => void, onClose?: () => void) =>
   Bun.connect({
     unix: path,
     socket: {
@@ -164,8 +164,19 @@ const connect = (path: string, onData: (text: string) => void) =>
       data(_socket, data) {
         onData(data.toString("utf8"))
       },
+      close() {
+        onClose?.()
+      },
     },
   })
+
+const waitUntil = (predicate: () => boolean, timeout = 500) => Effect.promise(async () => {
+  const deadline = Date.now() + timeout
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("condition was not met")
+    await Bun.sleep(5)
+  }
+})
 
 test("native attach server routes output and releases clients on close", async () => {
   const root = await mkdtemp(join(tmpdir(), "herdr-attach-"))
@@ -232,7 +243,7 @@ test("native attach server routes output and releases clients on close", async (
   await rm(root, { recursive: true, force: true })
 })
 
-test("idle timeout releases an accepted client", async () => {
+test("inbound traffic resets the idle deadline", async () => {
   const root = await mkdtemp(join(tmpdir(), "herdr-attach-timeout-"))
   const path = join(root, "attach.sock")
   const result = await Effect.runPromise(
@@ -240,46 +251,200 @@ test("idle timeout releases an accepted client", async () => {
       let detached = 0
       const server = yield* startAttachServer({
         path,
-        idleTimeoutSeconds: 1,
+        idleTimeoutSeconds: 0.2,
         onDetach: () => Effect.sync(() => { detached += 1 }),
       })
       const socket = yield* Effect.promise(() => connect(path, () => {}))
-      yield* Effect.promise(() => Bun.sleep(1_300))
-      return { detached, server, socket }
+      yield* Effect.promise(() => Bun.sleep(120))
+      socket.write(encodeAttachFrame({ _tag: "ping", nonce: "still-here" }))
+      yield* Effect.promise(() => Bun.sleep(120))
+      const detachedBeforeResetDeadline = detached
+      yield* Effect.promise(() => Bun.sleep(120))
+      return { detached, detachedBeforeResetDeadline, server, socket }
     }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
   )
 
+  expect(result.detachedBeforeResetDeadline).toBe(0)
   expect(result.detached).toBe(1)
   result.socket.end()
   result.server.stop(true)
   await rm(root, { recursive: true, force: true })
 })
 
-test("close during asynchronous acceptance detaches and permits reconnect", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-accept-race-"))
+test("closing cancels the idle deadline and detaches exactly once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "herdr-attach-timeout-close-"))
   const path = join(root, "attach.sock")
-  let attached = 0
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      let detached = 0
+      const server = yield* startAttachServer({
+        path,
+        idleTimeoutSeconds: 0.1,
+        onDetach: () => Effect.sync(() => { detached += 1 }),
+      })
+      const socket = yield* Effect.promise(() => connect(path, () => {}))
+      yield* Effect.promise(() => Bun.sleep(20))
+      socket.end()
+      yield* Effect.promise(() => Bun.sleep(40))
+      const detachedOnClose = detached
+      yield* Effect.promise(() => Bun.sleep(120))
+      return { detached, detachedOnClose, server }
+    }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
+  )
+
+  expect(result.detachedOnClose).toBe(1)
+  expect(result.detached).toBe(1)
+  result.server.stop(true)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("inbound traffic interrupts the replaced idle deadline", async () => {
+  const root = await mkdtemp(join(tmpdir(), "herdr-attach-deadline-interrupt-"))
+  const path = join(root, "attach.sock")
+  let sleeps = 0
+  let interrupted = 0
+  const clock = {
+    ...Clock.make(),
+    sleep: () => Effect.async<void>(() => {
+      sleeps += 1
+      return Effect.sync(() => { interrupted += 1 })
+    }),
+  }
+
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const server = yield* startAttachServer({ path })
+      const socket = yield* Effect.promise(() => connect(path, () => {}))
+      yield* waitUntil(() => sleeps >= 1)
+      const beforePing = interrupted
+      socket.write(encodeAttachFrame({ _tag: "ping", nonce: "replace" }))
+      yield* waitUntil(() => interrupted > beforePing && sleeps >= 2)
+      return { interruptedBeforeClose: interrupted, server, socket }
+    }).pipe(
+      Effect.withClock(clock),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
+  )
+
+  expect(result.interruptedBeforeClose).toBeGreaterThan(0)
+  result.socket.end()
+  result.server.stop(true)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("client close interrupts a blocked frame callback before detach", async () => {
+  const root = await mkdtemp(join(tmpdir(), "herdr-attach-frame-close-"))
+  const path = join(root, "attach.sock")
+  let started = 0
+  let finalized = 0
+  let postClose = 0
   let detached = 0
   const result = await Effect.runPromise(
     Effect.gen(function* () {
       const server = yield* startAttachServer({
         path,
-        onAttach: () => Effect.sleep(100).pipe(Effect.tap(() => Effect.sync(() => { attached += 1 }))),
+        onFrame: () => Effect.sync(() => { started += 1 }).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Effect.sync(() => { finalized += 1 })),
+          Effect.andThen(Effect.sync(() => { postClose += 1 })),
+        ),
+        onDetach: () => Effect.sync(() => { detached += 1 }),
+      })
+      const socket = yield* Effect.promise(() => connect(path, () => {}))
+      yield* Effect.promise(() => Bun.sleep(20))
+      socket.write(encodeAttachFrame({ _tag: "input", session: "blocked", data: new Uint8Array([1]) }))
+      yield* waitUntil(() => started === 1)
+      socket.end()
+      yield* waitUntil(() => finalized === 1 && detached === 1)
+      return { detached, finalized, postClose, server }
+    }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
+  )
+
+  expect(result.finalized).toBe(1)
+  expect(result.detached).toBe(1)
+  expect(result.postClose).toBe(0)
+  result.server.stop(true)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("server close delivers remote EOF and joins detach cleanup exactly once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "herdr-attach-server-close-"))
+  const path = join(root, "attach.sock")
+  let started = 0
+  let finalized = 0
+  let postClose = 0
+  let detached = 0
+  let detachFinished = 0
+  let remoteClosed = 0
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const serverScope = yield* Scope.make()
+      yield* Scope.extend(startAttachServer({
+        path,
+        onSync: () => Effect.sync(() => { started += 1 }).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Effect.sync(() => { finalized += 1 })),
+          Effect.andThen(Effect.sync(() => { postClose += 1 })),
+        ),
+        onDetach: () => Effect.sync(() => { detached += 1 }).pipe(
+          Effect.andThen(Effect.sleep(20)),
+          Effect.andThen(Effect.sync(() => { detachFinished += 1 })),
+        ),
+      }), serverScope)
+      const socket = yield* Effect.promise(() => connect(path, () => {}, () => { remoteClosed += 1 }))
+      yield* Effect.promise(() => Bun.sleep(20))
+      socket.write(encodeAttachFrame({ _tag: "sync", session: "blocked" }))
+      yield* waitUntil(() => started === 1)
+      yield* Scope.close(serverScope, Exit.succeed(undefined))
+      yield* waitUntil(() => remoteClosed === 1)
+      socket.end()
+      yield* Effect.promise(() => Bun.sleep(50))
+    }).pipe(Effect.provide(AttachHub.Default)),
+  )
+
+  expect(finalized).toBe(1)
+  expect(detached).toBe(1)
+  expect(detachFinished).toBe(1)
+  expect(remoteClosed).toBe(1)
+  expect(postClose).toBe(0)
+  await rm(root, { recursive: true, force: true })
+})
+
+test("close interrupts asynchronous acceptance and permits reconnect", async () => {
+  const root = await mkdtemp(join(tmpdir(), "herdr-attach-accept-race-"))
+  const path = join(root, "attach.sock")
+  let attached = 0
+  let attachFinalized = 0
+  let attempts = 0
+  let detached = 0
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const server = yield* startAttachServer({
+        path,
+        onAttach: () => Effect.suspend(() => {
+          attempts += 1
+          return attempts === 1
+            ? Effect.never.pipe(Effect.ensuring(Effect.sync(() => { attachFinalized += 1 })))
+            : Effect.sync(() => { attached += 1 })
+        }),
         onDetach: () => Effect.sync(() => { detached += 1 }),
       })
       const first = yield* Effect.promise(() => connect(path, () => {}))
-      yield* Effect.promise(() => Bun.sleep(10))
+      yield* waitUntil(() => attempts === 1)
       first.end()
-      yield* Effect.promise(() => Bun.sleep(150))
+      yield* waitUntil(() => attachFinalized === 1 && detached === 1)
       const second = yield* Effect.promise(() => connect(path, () => {}))
-      yield* Effect.promise(() => Bun.sleep(25))
+      yield* waitUntil(() => attached === 1)
       second.end()
-      return { attached, detached, server }
+      yield* waitUntil(() => detached === 2)
+      return { attached, attachFinalized, detached, server }
     }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
   )
 
   expect(result.attached).toBe(1)
-  expect(result.detached).toBe(1)
+  expect(result.attachFinalized).toBe(1)
+  expect(result.detached).toBe(2)
   result.server.stop(true)
   await rm(root, { recursive: true, force: true })
 })

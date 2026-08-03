@@ -478,19 +478,122 @@ test("a delayed handshake closes its socket and rejects on timeout", async () =>
   dirs.push(home)
   const path = join(home, "attach.sock")
   let closed = 0
+  let latePongs = 0
+  let settlements = 0
+  let resurrected: import("./attach.ts").AttachClientShape | null = null
+  let buffer = ""
   const listener = Bun.listen<undefined>({
     unix: path,
     data: undefined,
     socket: {
       binaryType: "buffer",
       open() {},
-      data() {},
+      data(socket, data) {
+        buffer += data.toString("utf8")
+        const decoded = decodeAttachFrames(buffer)
+        buffer = decoded.rest
+        for (const frame of decoded.frames) {
+          if (frame._tag !== "ping") continue
+          void Bun.sleep(80).then(() => {
+            latePongs += 1
+            socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }))
+          })
+        }
+      },
       close() { closed += 1 },
     },
   })
 
-  await expect(AttachClient.connect({ path, client: "delayed", helloTimeoutMs: 30 })).rejects.toThrow("timed out")
-  await until(() => closed === 1, "the delayed handshake socket to close")
+  const acquire = (client: string) => Effect.gen(function* () {
+    return yield* AttachClient
+  }).pipe(
+    Effect.provide(AttachClient.layer({ path, client, helloTimeoutMs: 30 })),
+    Effect.scoped,
+    Effect.runPromise,
+  ).then(
+    (connected) => {
+      settlements += 1
+      resurrected = connected
+      return connected
+    },
+    (error) => {
+      settlements += 1
+      throw error
+    },
+  )
+
+  const originalConnect = Bun.connect
+  Bun.connect = ((options: any) => originalConnect({
+    ...options,
+    socket: {
+      ...options.socket,
+      open(socket: Bun.Socket<unknown>) {
+        void Bun.sleep(80).then(() => options.socket.open(socket))
+      },
+    },
+  })) as typeof Bun.connect
+  try {
+    await expect(acquire("late-open")).rejects.toThrow("timed out")
+  } finally {
+    Bun.connect = originalConnect
+  }
+  await until(() => closed === 1, "the socket delivered by the late open callback to close")
+
+  await expect(acquire("late-pong")).rejects.toThrow("timed out")
+  await until(() => closed === 2, "the delayed pong handshake socket to close")
+  await until(() => latePongs === 1, "the late pong callback to run")
+  await Bun.sleep(20)
+  expect(settlements).toBe(2)
+  expect(closed).toBe(2)
+  expect(resurrected).toBeNull()
+  listener.stop(true)
+})
+
+test("the connection scope emits heartbeats and stops them when released", async () => {
+  const home = await mkdtemp(join(tmpdir(), "herdr-heartbeat-"))
+  dirs.push(home)
+  const path = join(home, "attach.sock")
+  let buffer = ""
+  let beats = 0
+  let closes = 0
+  let finalized = 0
+  let client: import("./attach.ts").AttachClientShape | null = null
+  const listener = Bun.listen<undefined>({
+    unix: path,
+    data: undefined,
+    socket: {
+      binaryType: "buffer",
+      open() {},
+      data(socket, data) {
+        buffer += data.toString("utf8")
+        const decoded = decodeAttachFrames(buffer)
+        buffer = decoded.rest
+        for (const frame of decoded.frames) {
+          if (frame._tag !== "ping") continue
+          if (frame.nonce.startsWith("beat-")) beats += 1
+          socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }))
+        }
+      },
+      close() { closes += 1 },
+    },
+  })
+
+  await Effect.runPromise(Effect.gen(function* () {
+    client = yield* AttachClient
+    client.onClose = () => { finalized += 1 }
+    yield* Effect.promise(() => until(() => beats >= 2, "the client heartbeat", 1_000))
+  }).pipe(
+    Effect.provide(AttachClient.layer({ path, client: "heartbeat", pingSeconds: 0.02 })),
+    Effect.scoped,
+  ))
+
+  await until(() => closes === 1, "the scoped attachment to close")
+  const releasedAt = beats
+  await Bun.sleep(80)
+  expect(beats).toBe(releasedAt)
+  expect(finalized).toBe(1)
+  client!.close()
+  expect(finalized).toBe(1)
   listener.stop(true)
 })
 

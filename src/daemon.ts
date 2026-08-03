@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, rm, unlink } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { randomUUID } from "node:crypto"
-import { Data, Effect, Fiber, ManagedRuntime } from "effect"
+import { Cause, Clock, Data, Effect, Exit, Fiber, ManagedRuntime, Schedule, Scope } from "effect"
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts"
 import type { PreparedSession } from "./effect/SessionSupervisor.ts"
 import { MAX_RPC_BYTES } from "./limits.ts"
@@ -105,7 +105,8 @@ export class SessionDaemon {
   #state: SessionState
   #workspace: WorkspaceSnapshot
   #server: ReturnType<typeof Bun.serve> | null = null
-  #heartbeat: Timer | null = null
+  #heartbeat: Fiber.RuntimeFiber<unknown, never> | null = null
+  #heartbeatError: string | null = null
   /** Attachments are keyed by transport connection so each socket has its own liveness. */
   #attachments = new Map<string, SessionAttachment>()
   #lockPath: string
@@ -121,6 +122,8 @@ export class SessionDaemon {
   #writeState: (state: SessionState) => Effect.Effect<void, unknown>
   #activeSave: Fiber.RuntimeFiber<void, unknown> | null = null
   #cancelPersistence = false
+  #scope: Scope.CloseableScope
+  #termination: Promise<void> | null = null
   readonly stopped: Promise<void>
   #resolveStopped!: () => void
 
@@ -132,6 +135,7 @@ export class SessionDaemon {
     this.#state = state
     this.#workspace = workspaceFromSession(state)
     this.#writeState = options.saveState ?? ((next) => saveSession(next).pipe(Effect.provideService(SessionEnv, env)))
+    this.#scope = Effect.runSync(Scope.make())
     this.stopped = new Promise((resolve) => { this.#resolveStopped = resolve })
     this.#shutdown = new Promise((resolve) => { this.#resolveShutdown = resolve })
   }
@@ -208,15 +212,14 @@ export class SessionDaemon {
       }
       try { await unlink(this.paths.socket) } catch (error: any) { if (error.code !== "ENOENT") throw error }
       this.#server = Bun.serve({ unix: this.paths.socket, fetch: async (request) => this.#fetch(request) })
-      this.#heartbeat = setInterval(() => void Effect.runPromise(writeLease({
-        ...lease,
-        heartbeatAt: Date.now(),
-        ...this.#attachInfo(),
-      }).pipe(Effect.provideService(SessionEnv, this.#env))), 1000)
-      this.#heartbeat.unref?.()
+      const heartbeat = Effect.sleep("1 second").pipe(
+        Effect.andThen(Effect.repeat(this.#heartbeatBeat(lease), Schedule.fixed("1 second"))),
+      )
+      this.#heartbeat = await this.#fork(heartbeat)
     } catch (error) {
       await this.#disposeHost()
       await this.#releaseLock()
+      await Effect.runPromise(Scope.close(this.#scope, Exit.void))
       throw error
     }
   }
@@ -296,6 +299,28 @@ export class SessionDaemon {
         attachments: attachments.map((attachment) => ({ ...attachment })),
       } : {}),
     }
+  }
+
+  /** Lease metadata is a view of the model, so it takes its snapshot only when
+   * its turn in the model queue begins. The scheduled effect awaits this whole
+   * operation, which keeps fixed cadence without overlapping lease writes. */
+  #heartbeatBeat(lease: SessionLease): Effect.Effect<void, never> {
+    return Effect.promise(() => this.#enqueueModelChange(() => {
+      if (this.#closing) return
+      return this.#run(Effect.gen(this, function* () {
+        const heartbeatAt = yield* Clock.currentTimeMillis
+        yield* writeLease({ ...lease, heartbeatAt, ...this.#attachInfo() }).pipe(
+          Effect.provideService(SessionEnv, this.#env),
+        )
+        this.#heartbeatError = null
+      }))
+    })).pipe(
+      Effect.catchAllCause((cause) => Cause.isInterruptedOnly(cause)
+        ? Effect.interrupt
+        : Effect.sync(() => {
+          this.#heartbeatError = `lease heartbeat failed: ${Cause.pretty(cause)}`
+        })),
+    )
   }
 
   /** Start an agent the daemon owns. It outlives every client by construction:
@@ -515,9 +540,10 @@ export class SessionDaemon {
       case "ping": return { ok: true, attached: this.#state.attached, ...this.#attachInfo() }
       case "status": {
         const persistenceError = this.#durableObligations.values().next().value as string | undefined
+        const healthError = persistenceError ?? this.#heartbeatError ?? undefined
         return {
-          ok: persistenceError === undefined,
-          ...(persistenceError ? { error: persistenceError } : {}),
+          ok: healthError === undefined,
+          ...(healthError ? { error: healthError } : {}),
           session: this.state,
           workspace: this.workspace,
           attached: this.#state.attached,
@@ -575,47 +601,52 @@ export class SessionDaemon {
   }
 
   async stop(): Promise<void> {
-    this.#closing = true
-    this.#resolveShutdown()
-    this.#heartbeat && clearInterval(this.#heartbeat)
-    this.#heartbeat = null
-    this.#server?.stop()
-    this.#server = null
-    await this.#drainMutationsForShutdown()
-    await this.#disposeHost()
-    await this.#mutations
-    await Effect.runPromise(removeSession(this.id).pipe(Effect.provideService(SessionEnv, this.#env)))
-    await this.#releaseLock()
-    this.#resolveStopped()
+    return this.#terminate("stop")
   }
 
   /** Release the daemon process while preserving metadata for a restart. */
   async close(): Promise<void> {
+    return this.#terminate("close")
+  }
+
+  #terminate(mode: "stop" | "close"): Promise<void> {
+    if (this.#termination) return this.#termination
     this.#closing = true
     this.#resolveShutdown()
-    this.#heartbeat && clearInterval(this.#heartbeat)
-    this.#heartbeat = null
-    this.#server?.stop()
-    this.#server = null
-    await this.#drainMutationsForShutdown()
-    await this.#disposeHost()
-    await this.#mutations
-    let persistError: unknown
+    this.#termination = this.#runTermination(mode)
+    return this.#termination
+  }
+
+  async #runTermination(mode: "stop" | "close"): Promise<void> {
+    let failure: unknown
     try {
-      await this.#enqueueModelChange(async () => {
-        const state = { ...this.#state, attached: false, updatedAt: Date.now() }
-        await this.#persistState(state, { allowClosing: true, timeoutMs: SHUTDOWN_SAVE_TIMEOUT_MS })
-        this.#attachments.clear()
-        this.#state = state
-      })
+      await this.#stopHeartbeat()
+      this.#server?.stop()
+      this.#server = null
+      await this.#drainMutationsForShutdown()
+      await this.#disposeHost()
+      await this.#mutations
+
+      if (mode === "stop") {
+        await Effect.runPromise(removeSession(this.id).pipe(Effect.provideService(SessionEnv, this.#env)))
+      } else {
+        await this.#enqueueModelChange(async () => {
+          const state = { ...this.#state, attached: false, updatedAt: Date.now() }
+          await this.#persistState(state, { allowClosing: true, timeoutMs: SHUTDOWN_SAVE_TIMEOUT_MS })
+          this.#attachments.clear()
+          this.#state = state
+        })
+      }
     } catch (error) {
-      persistError = error
+      failure = error
     } finally {
       await unlink(this.paths.socket).catch(() => {})
       await rm(this.paths.lease, { force: true }).catch(() => {})
       await this.#releaseLock()
+      await Effect.runPromise(Scope.close(this.#scope, Exit.void))
+      this.#resolveStopped()
     }
-    if (persistError) throw persistError
+    if (failure) throw failure
   }
 
   /**
@@ -645,20 +676,25 @@ export class SessionDaemon {
     if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
   }
 
+  async #stopHeartbeat(): Promise<void> {
+    const fiber = this.#heartbeat
+    this.#heartbeat = null
+    if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
+  }
+
   /** Let an ordinary in-flight mutation finish, but cancel and join persistence
    * once the shutdown budget is exhausted. The queue itself is still awaited;
    * no mutation or write is abandoned in the background. */
   async #drainMutationsForShutdown(): Promise<void> {
-    const timer = setTimeout(() => {
-      this.#cancelPersistence = true
-      void this.#interruptPersistence()
-    }, SHUTDOWN_SAVE_TIMEOUT_MS)
-    timer.unref?.()
-    try {
-      await this.#mutations
-    } finally {
-      clearTimeout(timer)
-    }
+    const drained = await this.#run(Effect.promise(() => this.#mutations).pipe(
+      Effect.as(true),
+      Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`),
+      Effect.orElseSucceed(() => false),
+    ))
+    if (drained) return
+    this.#cancelPersistence = true
+    await this.#interruptPersistence()
+    await this.#mutations
   }
 
   async #persistState(
@@ -666,16 +702,14 @@ export class SessionDaemon {
     options: { allowClosing?: boolean; timeoutMs?: number } = {},
   ): Promise<void> {
     if (this.#cancelPersistence && !options.allowClosing) throw new Error("daemon is shutting down")
-    const fiber = Effect.runFork(Effect.scoped(this.#writeState(state)))
+    const write = options.timeoutMs === undefined
+      ? this.#writeState(state)
+      : this.#writeState(state).pipe(Effect.timeout(`${options.timeoutMs} millis`))
+    const fiber = await this.#fork(write)
     this.#activeSave = fiber
-    const timer = options.timeoutMs === undefined ? null : setTimeout(() => {
-      Effect.runFork(Fiber.interrupt(fiber))
-    }, options.timeoutMs)
-    timer?.unref?.()
     try {
       await Effect.runPromise(Fiber.join(fiber))
     } finally {
-      if (timer) clearTimeout(timer)
       if (this.#activeSave === fiber) this.#activeSave = null
     }
   }
@@ -699,13 +733,28 @@ export class SessionDaemon {
         } catch (error) {
           this.#durableObligations.set(obligation, `${reason} is waiting for durable storage: ${describe(error)}`)
           if (this.#closing) throw error
-          await Promise.race([Bun.sleep(delay), this.#shutdown])
+          await this.#run(Effect.raceFirst(
+            Effect.sleep(`${delay} millis`),
+            Effect.promise(() => this.#shutdown),
+          ))
           delay = Math.min(delay * 2, 1_000)
         }
       }
     } finally {
       this.#durableObligations.delete(obligation)
     }
+  }
+
+  /** Native daemon callbacks only bridge far enough to fork work into the
+   * daemon scope; the child fiber, its Clock sleeps, and its finalizers all
+   * remain owned by that scope. */
+  #fork<A, E>(effect: Effect.Effect<A, E>): Promise<Fiber.RuntimeFiber<A, E>> {
+    return Effect.runPromise(Effect.forkIn(effect, this.#scope))
+  }
+
+  async #run<A, E>(effect: Effect.Effect<A, E>): Promise<A> {
+    const fiber = await this.#fork(effect)
+    return Effect.runPromise(Fiber.join(fiber))
   }
 }
 

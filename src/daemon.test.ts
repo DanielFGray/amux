@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Stream } from "effect"
 import { daemonRequest, SessionDaemon, type SessionDaemonOptions } from "./daemon.ts"
-import { cleanupStaleSessions, loadSession, saveSession, sessionPaths, writeLease, SessionEnv } from "./session.ts"
+import { cleanupStaleSessions, loadSession, readLease, saveSession, sessionPaths, writeLease, SessionEnv } from "./session.ts"
 import { command } from "./commands.ts"
 import { AttachClient } from "./attach.ts"
 
@@ -435,6 +435,115 @@ test("stop interrupts and joins a never-settling destructive persistence operati
   expect(await daemon.liveAgents()).toEqual([])
   expect(await run(loadSession("kill-save-cancel"), e)).toBeNull()
   await expectProcessGone(heldPid)
+})
+
+test("the first heartbeat waits one interval after the startup lease write", async () => {
+  const e = await env()
+  const daemon = await open("heartbeat-first-fire", e)
+  await daemon.start()
+  const initial = await run(readLease("heartbeat-first-fire"), e)
+  expect(initial).not.toBeNull()
+
+  await Bun.sleep(700)
+  expect((await run(readLease("heartbeat-first-fire"), e))?.heartbeatAt).toBe(initial!.heartbeatAt)
+
+  const firstBeatBy = Date.now() + 1_000
+  let heartbeatAt = initial!.heartbeatAt
+  while (heartbeatAt === initial!.heartbeatAt && Date.now() < firstBeatBy) {
+    await Bun.sleep(10)
+    heartbeatAt = (await run(readLease("heartbeat-first-fire"), e))!.heartbeatAt
+  }
+  expect(heartbeatAt).toBeGreaterThan(initial!.heartbeatAt)
+  await daemon.close()
+})
+
+test("a heartbeat queued behind attachment persistence publishes the committed attachment", async () => {
+  const e = await env()
+  let releaseAttach!: () => void
+  const attachGate = new Promise<void>((resolve) => { releaseAttach = resolve })
+  let attachStarted!: () => void
+  const started = new Promise<void>((resolve) => { attachStarted = resolve })
+  let blockAttach = true
+  const daemon = await open("heartbeat-attach-race", e, {
+    saveState: saveEffect(async (state: any) => {
+      if (blockAttach && state.attached) {
+        attachStarted()
+        await attachGate
+      }
+      await run(saveSession(state), e)
+    }),
+  })
+  await daemon.start()
+  const initial = await run(readLease("heartbeat-attach-race"), e)
+  const p = await paths("heartbeat-attach-race", e)
+  const connecting = AttachClient.connect({ path: p.attach, client: "lease-race" })
+  await started
+
+  // The first scheduled beat is now queued behind the blocked attachment.
+  await Bun.sleep(1_100)
+  releaseAttach()
+  const client = await connecting
+  const heartbeatBy = Date.now() + 1_000
+  let lease = await run(readLease("heartbeat-attach-race"), e)
+  while (lease?.heartbeatAt === initial?.heartbeatAt && Date.now() < heartbeatBy) {
+    await Bun.sleep(10)
+    lease = await run(readLease("heartbeat-attach-race"), e)
+  }
+  expect(lease?.attachments).toEqual([expect.objectContaining({ client: "lease-race" })])
+
+  blockAttach = false
+  client.close()
+  await daemon.stop()
+})
+
+test("heartbeat failure is visible and the heartbeat stops with the daemon scope", async () => {
+  const e = await env()
+  const daemon = await open("heartbeat-scope", e)
+  await daemon.start()
+  const p = await paths("heartbeat-scope", e)
+  await rm(p.lease, { force: true })
+  await mkdir(p.lease)
+
+  const failedBy = Date.now() + 3_500
+  let status = await daemon.handle({ command: "status" })
+  while (status.ok && Date.now() < failedBy) {
+    await Bun.sleep(10)
+    status = await daemon.handle({ command: "status" })
+  }
+  expect(status.ok).toBe(false)
+  expect(status.error).toContain("lease heartbeat failed")
+
+  await rm(p.lease, { recursive: true, force: true })
+  const recoveredBy = Date.now() + 3_500
+  while (!(await daemon.handle({ command: "status" })).ok && Date.now() < recoveredBy) await Bun.sleep(10)
+  expect((await daemon.handle({ command: "status" })).ok).toBe(true)
+
+  await daemon.close()
+  await daemon.stopped
+  await Bun.sleep(1_100)
+  expect(await Bun.file(p.lease).exists()).toBe(false)
+})
+
+test("close bounds and interrupts its final persistence obligation", async () => {
+  const e = await env()
+  let armed = false
+  let cancelled = false
+  const daemon = await open("bounded-final-save", e, {
+    saveState: (state) => armed && !state.attached
+      ? Effect.never.pipe(Effect.ensuring(Effect.sync(() => { cancelled = true })))
+      : saveSession(state).pipe(Effect.provideService(SessionEnv, e)),
+  })
+  await daemon.start()
+  armed = true
+
+  const started = Date.now()
+  await expect(daemon.close()).rejects.toThrow()
+  expect(Date.now() - started).toBeLessThan(1_500)
+  expect(cancelled).toBe(true)
+  await daemon.stopped
+
+  const replacement = await open("bounded-final-save", e)
+  await replacement.stop()
 })
 
 test("a transient natural-exit write failure retries before making the exit visible", async () => {

@@ -1,4 +1,4 @@
-import { Cause, Data, Effect, ExecutionStrategy, Exit, FiberMap, Match, Runtime, Scope, Stream } from "effect"
+import { Cause, Data, Duration, Effect, Exit, Fiber, FiberId, FiberMap, Match, Scope, Stream } from "effect"
 import { randomUUID } from "node:crypto"
 import { AttachHub } from "./AttachHub.ts"
 import { createSocketWriter } from "../attach-write.ts"
@@ -57,12 +57,20 @@ interface ClientState {
   client: string | null
   connection: string
   scope: Scope.CloseableScope | null
-  processing: Promise<void>
-  idleTimer: Timer | null
   writer: { readonly closed: boolean; send(frame: AttachFrame): boolean; drain(): void; close(): void; closeAfterFlush(onFlushed: () => void): void } | null
-  lanes: Map<string, Promise<void>>
+  run: ClientRun | null
+  owner: Fiber.RuntimeFiber<void, unknown> | null
+  lanes: Map<string, Fiber.RuntimeFiber<void, unknown>>
+  pending: Buffer[]
+  nextFiber: number
   closed: boolean
 }
+
+type ClientRun = (
+  key: string,
+  effect: Effect.Effect<void, unknown>,
+  options?: { readonly onlyIfMissing?: boolean },
+) => Fiber.RuntimeFiber<void, unknown>
 
 export const createAttachWriter = (
   socket: Pick<Bun.Socket, "write">,
@@ -91,77 +99,44 @@ const reason = (cause: Cause.Cause<unknown>): string => {
 /**
  * Native Bun Unix-socket adapter for the Effect attach protocol.
  *
- * The listener is scoped. Each hello creates a child scope whose finalizers
- * unregister the client and shut down its queue; socket close closes that child
- * scope, which is the ownership/liveness boundary for an attachment.
+ * The listener is scoped. Each socket has an owner fiber whose child fibers
+ * process callbacks, output, and its idle deadline. Owner shutdown joins those
+ * fibers before releasing the client's hub subscription and socket.
  */
 export const startAttachServer = (
   options: AttachServerOptions,
 ): Effect.Effect<Bun.UnixSocketListener<ClientState>, AttachServerError, Scope.Scope | AttachHub> =>
   Effect.gen(function* () {
     const hub = yield* AttachHub
-    const root = yield* Scope.Scope
-    const clientFibers = yield* FiberMap.make<string>()
-    const runClient = yield* FiberMap.runtime(clientFibers)<never>()
+    const connections = yield* FiberMap.make<string, void, unknown>()
+    const runConnection = yield* FiberMap.runtime(connections)<never>()
 
-    // The ambient runtime, not the default one: fibers forked for socket
-    // callbacks then inherit this scope's services, logger and fiber refs, and
-    // are interrupted when it closes instead of outliving it as orphans.
-    const runtime = yield* Effect.runtime<never>()
-    const run = (effect: Effect.Effect<void, unknown>) =>
-      Runtime.runFork(runtime)(Effect.catchAllCause(effect, () => Effect.void))
-
-    const closeClient = (socket: Bun.Socket<ClientState>) => {
+    const requestClose = (socket: Bun.Socket<ClientState>) => {
       const state = socket.data
+      if (state.closed) return
       state.closed = true
-      if (state.idleTimer) clearTimeout(state.idleTimer)
-      state.idleTimer = null
-      const client = state.client
-      const connection = state.connection
-      const scope = state.scope
-      state.client = null
-      state.scope = null
-      state.writer?.close()
-      if (!client && !scope) return
-      run(
-        // Order matters, and it is the reverse of the obvious one. onDetach is
-        // what tells the owner the session is free, so everything that would
-        // refuse a new client must already be undone when it runs — the hub's
-        // registration of this client id is released by closing the scope. The
-        // other way round leaves a window where the daemon says "not attached"
-        // and the hub still says "that id is taken", and a client reconnecting
-        // promptly under its own id lands in it.
-        Effect.gen(function* () {
-          if (client) yield* FiberMap.remove(clientFibers, client)
-          if (scope) yield* Scope.close(scope, Exit.succeed(undefined))
-           if (client) yield* options.onDetach?.(client, connection) ?? Effect.void
-        }),
-      )
+      state.owner?.unsafeInterruptAsFork(FiberId.none)
     }
 
     const terminate = (socket: Bun.Socket<ClientState>, frame?: AttachFrame) => {
       const writer = socket.data.writer
       if (!frame || !writer || writer.closed || !writer.send(frame)) {
-        writer?.close()
-        closeClient(socket)
-        socket.end()
+        requestClose(socket)
         return
       }
       // Keep the error frame's suffix ahead of socket shutdown. A protocol
       // error is useful only if the peer receives one complete frame.
       writer.closeAfterFlush(() => {
-        closeClient(socket)
-        socket.end()
+        requestClose(socket)
       })
     }
 
     /** Accept a hello, or tell the client why it was refused and hang up. */
     const attach = (socket: Bun.Socket<ClientState>, client: string) =>
       Effect.gen(function* () {
-        const child = yield* Scope.fork(root, ExecutionStrategy.sequential)
+        const child = yield* Scope.make()
         const subscribed = yield* Scope.extend(hub.subscribe(client, socket.data.connection, () => {
-          closeClient(socket)
-          socket.end()
+          requestClose(socket)
         }), child).pipe(Effect.exit)
 
         if (Exit.isFailure(subscribed)) {
@@ -170,9 +145,9 @@ export const startAttachServer = (
           return
         }
 
-        // Install the subscription's ownership before the asynchronous owner
-        // hook. A close during that hook can therefore release this exact
-        // generation instead of leaving an orphaned hub registration.
+        // The subscription is installed before onAttach so owner interruption
+        // can always release this generation. Socket close interrupts onAttach;
+        // cleanup then unregisters the hub generation before onDetach.
         if (socket.data.closed) {
           yield* Scope.close(child, Exit.succeed(undefined))
           return
@@ -193,17 +168,13 @@ export const startAttachServer = (
           yield* Scope.close(child, Exit.succeed(undefined))
           return
         }
-        // Deliberately not awaited: a Fiber is an Effect, so yielding it here
-        // would park the frame loop on the client's output stream and drop
-        // every frame batched behind this hello in the same read.
-        runClient(client, Stream.runForEach(subscribed.value.frames, (outgoing) =>
+        socket.data.run?.("output", Stream.runForEach(subscribed.value.frames, (outgoing) =>
           Effect.sync(() => {
-            socket.data.writer?.send(outgoing)
+            if (!socket.data.closed) socket.data.writer?.send(outgoing)
           }),
         ).pipe(
           Effect.ensuring(Effect.sync(() => {
-            closeClient(socket)
-            socket.end()
+            requestClose(socket)
           })),
         ))
       })
@@ -259,78 +230,130 @@ export const startAttachServer = (
 
     const dispatchFrame = (socket: Bun.Socket<ClientState>, frame: AttachFrame) => {
       const state = socket.data
+      if (state.closed || !state.run) return
       const lane = laneFor(frame)
-      const previous = state.lanes.get(lane) ?? Promise.resolve()
-      const handshake = lane === "handshake" ? Promise.resolve() : state.lanes.get("handshake") ?? Promise.resolve()
-      const current = Promise.all([previous, handshake]).then(() => Runtime.runPromise(runtime)(handleFrame(socket, frame))).catch((error) => {
-        if (state.writer?.closed) return
-        terminate(socket, { _tag: "error", message: String(error) })
-      })
+      const dependencies = [state.lanes.get(lane)]
+      if (lane !== "handshake") dependencies.push(state.lanes.get("handshake"))
+      const current = state.run(`frame:${state.nextFiber++}`, Effect.forEach(
+        dependencies,
+        (fiber) => fiber ? Fiber.await(fiber) : Effect.void,
+        { discard: true },
+      ).pipe(
+        Effect.andThen(handleFrame(socket, frame)),
+        Effect.catchAllCause((cause) => Effect.sync(() => {
+          if (!state.closed && !Cause.isInterruptedOnly(cause)) {
+            terminate(socket, { _tag: "error", message: reason(cause) })
+          }
+        })),
+      ))
       state.lanes.set(lane, current)
-      void current.finally(() => {
+      current.addObserver(() => {
         if (state.lanes.get(lane) === current) state.lanes.delete(lane)
       })
     }
 
-    const resetIdleTimer = (socket: Bun.Socket<ClientState>) => {
+    const resetIdleDeadline = (socket: Bun.Socket<ClientState>) => {
       const state = socket.data
-      if (state.closed) return
-      if (state.idleTimer) clearTimeout(state.idleTimer)
+      if (state.closed || !state.run) return
       const seconds = options.idleTimeoutSeconds ?? 60
-      state.idleTimer = setTimeout(() => {
-        closeClient(socket)
-        socket.end()
-      }, seconds * 1000)
-      state.idleTimer.unref?.()
+      state.run("deadline", Effect.sleep(Duration.seconds(seconds)).pipe(
+        Effect.andThen(Effect.sync(() => {
+          if (state.closed) return
+          requestClose(socket)
+        })),
+      ))
     }
+
+    const processData = (socket: Bun.Socket<ClientState>, data: Buffer) => {
+      const state = socket.data
+      if (state.closed || !state.run) return
+      const previous = state.lanes.get("wire")
+      const current = state.run(`wire:${state.nextFiber++}`, (previous ? Fiber.await(previous) : Effect.void).pipe(
+        Effect.andThen(Effect.gen(function* () {
+          if (Buffer.byteLength(state.buffer) + data.byteLength > MAX_ATTACH_FRAME_BYTES) {
+            return yield* new AttachServerError({ message: "attach frame is too large" })
+          }
+          state.buffer += data.toString("utf8")
+          const decoded = decodeAttachFrames(state.buffer)
+          state.buffer = decoded.rest
+          for (const frame of decoded.frames) dispatchFrame(socket, frame)
+        })),
+        Effect.catchAll((error) => Effect.sync(() => {
+          if (!state.closed) terminate(socket, { _tag: "error", message: String(error) })
+        })),
+      ))
+      state.lanes.set("wire", current)
+      current.addObserver(() => {
+        if (state.lanes.get("wire") === current) state.lanes.delete("wire")
+      })
+    }
+
+    const closeClient = (socket: Bun.Socket<ClientState>) => Effect.uninterruptible(
+      Effect.gen(function* () {
+        const state = socket.data
+        const client = state.client
+        const connection = state.connection
+        const scope = state.scope
+        state.run = null
+        state.owner = null
+        state.client = null
+        state.scope = null
+        state.writer?.close()
+        // Child callback/output fibers have already been joined by the inner
+        // scope. End the transport before slower owner hooks can overlap other
+        // host finalizers and expose daemon-shutdown exit frames to this client.
+        // Protocol errors reach here only after closeAfterFlush has drained.
+        socket.terminate()
+        // The hub registration must be gone before onDetach advertises that
+        // this client id can reconnect.
+        if (scope) yield* Scope.close(scope, Exit.succeed(undefined))
+        if (client) yield* (options.onDetach?.(client, connection) ?? Effect.void).pipe(Effect.exit)
+      }),
+    )
+
+    const ownConnection = (socket: Bun.Socket<ClientState>) => Effect.scoped(
+      Effect.gen(function* () {
+        const state = socket.data
+        const fibers = yield* FiberMap.make<string>()
+        state.run = (yield* FiberMap.runtime(fibers)<never>()) as ClientRun
+        // Registered after FiberMap.make, so this runs first when the owner
+        // scope closes. Concurrent host finalizers may publish session exits;
+        // mark the connection closed before output fibers can forward them.
+        yield* Effect.addFinalizer(() => Effect.sync(() => { state.closed = true }))
+        resetIdleDeadline(socket)
+        for (const data of state.pending.splice(0)) processData(socket, data)
+        if (!state.closed) yield* Effect.never
+      }),
+    ).pipe(Effect.ensuring(closeClient(socket)))
 
     const listener = yield* Effect.acquireRelease(
       Effect.try({
         try: () =>
           Bun.listen<ClientState>({
             unix: options.path,
-            data: { buffer: "", client: null, connection: "", scope: null, processing: Promise.resolve(), idleTimer: null, writer: null, lanes: new Map(), closed: false },
+            data: { buffer: "", client: null, connection: "", scope: null, writer: null, run: null, owner: null, lanes: new Map(), pending: [], nextFiber: 0, closed: false },
             socket: {
               binaryType: "buffer",
               open(socket) {
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
-                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, processing: Promise.resolve(), idleTimer: null, writer: null, lanes: new Map(), closed: false }
+                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, writer: null, run: null, owner: null, lanes: new Map(), pending: [], nextFiber: 0, closed: false }
                 socket.data.writer = createAttachWriter(socket, () => {
-                  closeClient(socket)
-                  socket.end()
+                  requestClose(socket)
                 })
-                resetIdleTimer(socket)
+                socket.data.owner = runConnection(socket.data.connection, ownConnection(socket))
               },
               data(socket, data) {
-                resetIdleTimer(socket)
+                resetIdleDeadline(socket)
                 const state = socket.data
-                // Bun may invoke data callbacks concurrently. Keep complete
-                // frames from one connection in wire order so resize->sync
-                // adoption cannot serialize the old dimensions.
-                state.processing = state.processing.then(() => Runtime.runPromise(runtime)(
-                   Effect.gen(function* () {
-                     if (Buffer.byteLength(state.buffer) + data.byteLength > MAX_ATTACH_FRAME_BYTES) {
-                       return yield* new AttachServerError({ message: "attach frame is too large" })
-                     }
-                     state.buffer += data.toString("utf8")
-                    const decoded = decodeAttachFrames(state.buffer)
-                    state.buffer = decoded.rest
-                    for (const frame of decoded.frames) dispatchFrame(socket, frame)
-                  }).pipe(
-                    Effect.catchAll((error) =>
-                      Effect.sync(() => {
-                        terminate(socket, { _tag: "error", message: String(error) })
-                      }),
-                    ),
-                  ),
-                )).catch(() => {})
+                if (state.run) processData(socket, data)
+                else state.pending.push(data)
               },
               close(socket) {
-                closeClient(socket)
+                requestClose(socket)
               },
               error(socket) {
-                closeClient(socket)
+                requestClose(socket)
               },
               drain(socket) {
                 socket.data.writer?.drain()
@@ -341,6 +364,10 @@ export const startAttachServer = (
       }),
       (server) => Effect.sync(() => server.stop(true)),
     )
+
+    // Registered after the listener's release, this clear runs first and joins
+    // every owner. FiberMap's earlier automatic shutdown is then a no-op.
+    yield* Effect.addFinalizer(() => FiberMap.clear(connections))
 
     return listener
   })

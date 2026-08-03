@@ -16,7 +16,7 @@
  * the wrong thing impossible to write rather than merely discouraged.
  */
 
-import { Context, Effect, Layer, Scope } from "effect";
+import { Context, Effect, ExecutionStrategy, Layer, Scope } from "effect";
 import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame } from "./AttachProtocol.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
@@ -84,6 +84,10 @@ const make = (
     const hub = yield* AttachHub;
     const supervisor = yield* SessionSupervisor;
     const host = yield* Effect.scope;
+    // Register session teardown before the server resources below. Host scope
+    // finalizers run in reverse order, so connections close and clients observe
+    // detach before session shutdown can publish process exit frames.
+    const sessions = yield* Scope.fork(host, ExecutionStrategy.sequential);
 
     yield* startAttachServer({
       path: options.path,
@@ -109,8 +113,8 @@ const make = (
           ),
     });
     return {
-      prepare: (spec) => Scope.extend(supervisor.prepare(spec), host),
-      spawn: (spec) => Scope.extend(supervisor.prepare(spec), host).pipe(
+      prepare: (spec) => Scope.extend(supervisor.prepare(spec), sessions),
+      spawn: (spec) => Scope.extend(supervisor.prepare(spec), sessions).pipe(
         Effect.tap((prepared) => prepared.activate),
         Effect.map((prepared) => prepared.session),
       ),
