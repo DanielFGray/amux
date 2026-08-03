@@ -53,7 +53,7 @@ export interface AttachServerOptions {
 }
 
 interface ClientState {
-  buffer: string
+  buffer: Buffer
   client: string | null
   connection: string
   scope: Scope.CloseableScope | null
@@ -270,12 +270,15 @@ export const startAttachServer = (
       const previous = state.lanes.get("wire")
       const current = state.run(`wire:${state.nextFiber++}`, (previous ? Fiber.await(previous) : Effect.void).pipe(
         Effect.andThen(Effect.gen(function* () {
-          if (Buffer.byteLength(state.buffer) + data.byteLength > MAX_ATTACH_FRAME_BYTES) {
+           if (state.buffer.byteLength + data.byteLength > MAX_ATTACH_FRAME_BYTES) {
             return yield* new AttachServerError({ message: "attach frame is too large" })
           }
-          state.buffer += data.toString("utf8")
-          const decoded = decodeAttachFrames(state.buffer)
-          state.buffer = decoded.rest
+          state.buffer = Buffer.concat([state.buffer, data])
+          const lastNewline = state.buffer.lastIndexOf(0x0a)
+          if (lastNewline === -1) return
+          const complete = state.buffer.subarray(0, lastNewline + 1)
+          state.buffer = state.buffer.subarray(lastNewline + 1)
+          const decoded = decodeAttachFrames(complete.toString("utf8"))
           for (const frame of decoded.frames) dispatchFrame(socket, frame)
         })),
         Effect.catchAll((error) => Effect.sync(() => {
@@ -331,13 +334,13 @@ export const startAttachServer = (
         try: () =>
           Bun.listen<ClientState>({
             unix: options.path,
-            data: { buffer: "", client: null, connection: "", scope: null, writer: null, run: null, owner: null, lanes: new Map(), pending: [], nextFiber: 0, closed: false },
+            data: { buffer: Buffer.alloc(0), client: null, connection: "", scope: null, writer: null, run: null, owner: null, lanes: new Map(), pending: [], nextFiber: 0, closed: false },
             socket: {
               binaryType: "buffer",
               open(socket) {
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
-                socket.data = { buffer: "", client: null, connection: randomUUID(), scope: null, writer: null, run: null, owner: null, lanes: new Map(), pending: [], nextFiber: 0, closed: false }
+                socket.data = { buffer: Buffer.alloc(0), client: null, connection: randomUUID(), scope: null, writer: null, run: null, owner: null, lanes: new Map(), pending: [], nextFiber: 0, closed: false }
                 socket.data.writer = createAttachWriter(socket, () => {
                   requestClose(socket)
                 })

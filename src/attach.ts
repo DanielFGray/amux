@@ -80,7 +80,7 @@ class AttachClientImpl implements AttachClientShape {
   #socket: Bun.Socket<undefined>
   #runtime: Runtime.Runtime<never>
   #writer: SocketWriter
-  #buffer = ""
+  #buffer = Buffer.alloc(0)
   #closed = false
   #closedSignal = Effect.runSync(Deferred.make<void>())
   #releaseScope: (() => void) | null = null
@@ -167,7 +167,7 @@ class AttachClientImpl implements AttachClientShape {
               ))) fail(new AttachError("attach handshake could not write"))
             },
             data(_socket, data) {
-              if (attached) attached.#receive(data.toString("utf8"), fail)
+              if (attached) attached.#receive(data, fail)
             },
             close() {
               if (!settled) fail(new AttachError("daemon closed the attachment before accepting it"))
@@ -321,11 +321,15 @@ class AttachClientImpl implements AttachClientShape {
     else this.#releaseScope = release
   }
 
-  #receive(chunk: string, onProtocolError: (error: Error) => void): void {
-    this.#buffer += chunk
+  #receive(chunk: Buffer, onProtocolError: (error: Error) => void): void {
+    this.#buffer = Buffer.concat([this.#buffer, chunk])
+    const lastNewline = this.#buffer.lastIndexOf(0x0a)
+    if (lastNewline === -1) return
+    const complete = this.#buffer.subarray(0, lastNewline + 1)
+    this.#buffer = this.#buffer.subarray(lastNewline + 1)
     let decoded
     try {
-      decoded = decodeAttachFrames(this.#buffer)
+      decoded = decodeAttachFrames(complete.toString("utf8"))
     } catch (error) {
       // A frame we cannot parse means the two ends disagree about the wire
       // format; continuing would silently act on a guess.
@@ -335,7 +339,6 @@ class AttachClientImpl implements AttachClientShape {
       this.#socket.end()
       return
     }
-    this.#buffer = decoded.rest
     for (const frame of decoded.frames) this.#route(frame)
   }
 
