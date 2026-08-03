@@ -9,6 +9,7 @@ import {
   workspaceFromSession,
   workspaceSession,
 } from "./workspace.ts"
+import { layoutPanes } from "./layout.ts"
 import type { SessionState } from "./session.ts"
 
 const base = (layout: string): SessionState => ({
@@ -141,4 +142,262 @@ test("space.new uses node path resolution and basename semantics", () => {
   const created = next.spaces.at(-1)!
   expect(created.dir).toBe(resolve("./tmp/../portable-project"))
   expect(created.name).toBe("portable-project")
+})
+
+// ── helpers for model-level command tests ──
+
+const twoPaneLayout = '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1}]},"focus":"pane-a"}'
+
+function twoPaneSession(): SessionState {
+  const s = base(twoPaneLayout)
+  s.spaces[0]!.windows[0]!.agents.push(
+    { id: "agent-b", name: "sh", cmd: ["sh"], cols: 80, rows: 24, exited: false, exitCode: null },
+  )
+  return s
+}
+
+const dupAgentLayout = '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-a","weight":1}]},"focus":"pane-a"}'
+
+function dupAgentSession(): SessionState {
+  return base(dupAgentLayout)
+}
+
+const threePaneLayout = '{"version":1,"root":{"type":"split","direction":"column","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1},{"type":"pane","id":"pane-c","agent":"agent-c","weight":1}]},"focus":"pane-b"}'
+
+function threePaneSession(): SessionState {
+  const s = base(threePaneLayout)
+  s.spaces[0]!.windows[0]!.agents.push(
+    { id: "agent-b", name: "sh", cmd: ["sh"], cols: 80, rows: 24, exited: false, exitCode: null },
+    { id: "agent-c", name: "sh", cmd: ["sh"], cols: 80, rows: 24, exited: false, exitCode: null },
+  )
+  return s
+}
+
+// ── pane.break ──
+
+test("pane.break moves the focused pane into a new window", () => {
+  const adopted = workspaceFromSession(twoPaneSession())
+  const result = applyWorkspaceCommand(adopted, command("pane.break"), context)
+  expect(result.changed).toBe(true)
+  const space = result.snapshot.spaces[0]!
+  expect(space.windows).toHaveLength(2)
+
+  const origin = space.windows[0]!
+  expect(origin.layout.root).not.toBeNull()
+  const originPanes = JSON.stringify(origin.layout.root)
+  expect(originPanes).toContain("pane-b")
+  expect(originPanes).not.toContain("pane-a")
+
+  const created = space.windows[1]!
+  expect(created.layout.root).toMatchObject({ type: "pane", id: "pane-a", agent: "agent-a" })
+  expect(created.state.focus).toBe("pane-a")
+  expect(created.agents).toHaveLength(1)
+  expect(created.agents[0]!.id).toBe("agent-a")
+
+  expect(result.snapshot.revision).toBe(adopted.revision + 1)
+})
+
+test("pane.break when two panes show the same agent clones the agent to both windows", () => {
+  const adopted = workspaceFromSession(dupAgentSession())
+  const result = applyWorkspaceCommand(adopted, command("pane.break"), context)
+  expect(result.changed).toBe(true)
+  const space = result.snapshot.spaces[0]!
+  expect(space.windows).toHaveLength(2)
+
+  const origin = space.windows[0]!
+  const originPanes = JSON.stringify(origin.layout.root)
+  expect(originPanes).toContain("pane-b")
+  expect(originPanes).not.toContain("pane-a")
+
+  const broken = space.windows[1]!
+  expect(broken.layout.root).toMatchObject({ type: "pane", id: "pane-a", agent: "agent-a" })
+  expect(broken.state.focus).toBe("pane-a")
+
+  expect(origin.agents[0]!.id).toBe("agent-a")
+  expect(broken.agents[0]!.id).toBe("agent-a")
+  expect(origin.agents[0]).not.toBe(broken.agents[0])
+
+  expect(result.snapshot.revision).toBe(adopted.revision + 1)
+})
+
+// ── pane.zoom ──
+
+test("pane.zoom toggles zoom on and off", () => {
+  const adopted = workspaceFromSession(twoPaneSession())
+  const zoomed = applyWorkspaceCommand(adopted, command("pane.zoom"), context)
+  expect(zoomed.changed).toBe(true)
+  expect(zoomed.snapshot.spaces[0]!.windows[0]!.state.zoom).toEqual({
+    pane: "pane-a",
+    from: zoomed.snapshot.spaces[0]!.windows[0]!.state.zoom!.from,
+  })
+  expect(zoomed.snapshot.spaces[0]!.windows[0]!.state.zoom!.from.root).not.toBeNull()
+
+  const unzoomed = applyWorkspaceCommand(zoomed.snapshot, command("pane.zoom"), context)
+  expect(unzoomed.changed).toBe(true)
+  expect(unzoomed.snapshot.spaces[0]!.windows[0]!.state.zoom).toBeNull()
+})
+
+test("pane.zoom on a single-pane window is a no-op", () => {
+  const adopted = workspaceFromSession(base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}'))
+  const result = applyWorkspaceCommand(adopted, command("pane.zoom"), context)
+  expect(result.changed).toBe(false)
+})
+
+// ── pane.swap ──
+
+test("pane.swap next exchanges the focused pane with its neighbour", () => {
+  const adopted = workspaceFromSession(threePaneSession())
+  const result = applyWorkspaceCommand(adopted, command("pane.swap", { to: "next" }), context)
+  expect(result.changed).toBe(true)
+
+  const panes = layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root)
+  expect(panes).toHaveLength(3)
+  // pane-b was focused at index 1; swapped with pane-c at index 2
+  // after swap: pane order is [pane-a (agent-a), pane-c (agent-c), pane-b (agent-b)]
+  expect(panes[0]!.agent).toBe("agent-a")
+  expect(panes[1]!.agent).toBe("agent-c")
+  expect(panes[2]!.agent).toBe("agent-b")
+})
+
+// ── window.next / window.previous ──
+
+test("window.next cycles to the next window", () => {
+  const adopted = workspaceFromSession(base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}'))
+  const with2 = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot
+  expect(with2.spaces[0]!.windows).toHaveLength(2)
+  expect(with2.spaces[0]!.state.activeWindow).toBe(2)
+
+  const next = applyWorkspaceCommand(with2, command("window.next"), context)
+  expect(next.changed).toBe(true)
+  expect(next.snapshot.spaces[0]!.state.activeWindow).toBe(1)
+  expect(next.snapshot.spaces[0]!.state.lastWindow).toBe(2)
+})
+
+test("window.previous cycles to the previous window", () => {
+  const adopted = workspaceFromSession(base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}'))
+  const with2 = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot
+  expect(with2.spaces[0]!.state.activeWindow).toBe(2)
+
+  const prev = applyWorkspaceCommand(with2, command("window.previous"), context)
+  expect(prev.changed).toBe(true)
+  expect(prev.snapshot.spaces[0]!.state.activeWindow).toBe(1)
+})
+
+// ── window.last ──
+
+test("window.last returns to the last focused window", () => {
+  const adopted = workspaceFromSession(base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}'))
+  const with3 = applyWorkspaceCommand(structuredClone(adopted), command("window.new"), context).snapshot
+  const with2next = applyWorkspaceCommand(with3, command("window.next"), context).snapshot
+  expect(with2next.spaces[0]!.state.activeWindow).toBe(1)
+  expect(with2next.spaces[0]!.state.lastWindow).toBe(2)
+
+  const last = applyWorkspaceCommand(with2next, command("window.last"), context)
+  expect(last.changed).toBe(true)
+  expect(last.snapshot.spaces[0]!.state.activeWindow).toBe(2)
+})
+
+// ── space.next / space.previous ──
+
+test("space.next cycles to the next space", () => {
+  const adopted = workspaceFromSession(base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}'))
+  const with2 = applyWorkspaceCommand(adopted, command("space.new", { dir: "/tmp/second" }), context).snapshot
+  expect(with2.spaces).toHaveLength(2)
+  expect(with2.spaces.map((s) => s.id)).toEqual(["space-a", with2.spaces[1]!.id])
+  expect(with2.state.activeSpace).toBe(with2.spaces[1]!.id)
+
+  const next = applyWorkspaceCommand(with2, command("space.next"), context)
+  expect(next.changed).toBe(true)
+  expect(next.snapshot.state.activeSpace).toBe("space-a")
+})
+
+test("space.previous cycles to the previous space", () => {
+  const adopted = workspaceFromSession(base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}'))
+  const with2 = applyWorkspaceCommand(adopted, command("space.new", { dir: "/tmp/second" }), context).snapshot
+  expect(with2.spaces).toHaveLength(2)
+  expect(with2.state.activeSpace).toBe(with2.spaces[1]!.id)
+
+  const prev = applyWorkspaceCommand(with2, command("space.previous"), context)
+  expect(prev.changed).toBe(true)
+  expect(prev.snapshot.state.activeSpace).toBe("space-a")
+})
+
+// ── agent.reveal ──
+
+test("agent.reveal creates a pane for an unrevealed agent", () => {
+  const s = base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}')
+  s.spaces[0]!.windows[0]!.agents.push(
+    { id: "agent-b", name: "sleep", cmd: ["sleep", "30"], cols: 80, rows: 24, exited: false, exitCode: null },
+  )
+  const adopted = workspaceFromSession(s)
+  const result = applyWorkspaceCommand(adopted, command("agent.reveal", { agent: "agent-b" }), context)
+  expect(result.changed).toBe(true)
+
+  const window = result.snapshot.spaces[0]!.windows[0]!
+  const panes = JSON.stringify(window.layout.root)
+  expect(panes).toContain("agent-b")
+  expect(window.state.focus).not.toBeNull()
+})
+
+test("agent.reveal on an already revealed agent just focuses it", () => {
+  const adopted = workspaceFromSession(twoPaneSession())
+  const result = applyWorkspaceCommand(adopted, command("agent.reveal", { agent: "agent-b" }), context)
+  expect(result.changed).toBe(true)
+  const window = result.snapshot.spaces[0]!.windows[0]!
+  const panes = layoutPanes(window.layout.root)
+  expect(panes).toHaveLength(2)
+  expect(window.state.focus).toBe("pane-b")
+})
+
+// ── agent.next-blocked ──
+
+test("agent.next-blocked jumps to the next blocked agent", () => {
+  const s = base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}')
+  s.spaces[0]!.windows[0]!.agents.push(
+    { id: "agent-b", name: "sleep", cmd: ["sleep", "30"], cols: 80, rows: 24, exited: false, exitCode: null },
+  )
+  // Give agent-b its own pane so it can be focused
+  s.spaces[0]!.windows[0]!.layout =
+    '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1}]},"focus":"pane-a"}'
+  const adopted = workspaceFromSession(s)
+  const ctx = { ...context, blockedAgents: ["agent-a", "agent-b"] }
+  const result = applyWorkspaceCommand(adopted, command("agent.next-blocked"), ctx)
+  expect(result.changed).toBe(true)
+  expect(result.snapshot.spaces[0]!.windows[0]!.state.focus).toBe("pane-b")
+})
+
+// ── agent.kill with surviving agent ──
+
+test("agent.kill reveals a surviving live agent when the window becomes empty", () => {
+  const s = base('{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}')
+  s.spaces[0]!.windows[0]!.agents.push(
+    { id: "agent-b", name: "sleep", cmd: ["sleep", "30"], cols: 80, rows: 24, exited: false, exitCode: null },
+  )
+  const adopted = workspaceFromSession(s)
+  const result = applyWorkspaceCommand(adopted, command("agent.kill", { agent: "agent-a" }), context)
+  expect(result.changed).toBe(true)
+  expect(result.actions).toEqual([{ _tag: "kill", agent: "agent-a" }])
+
+  const window = result.snapshot.spaces[0]!.windows[0]!
+  expect(window.layout.root).not.toBeNull()
+  expect(window.layout.root).toMatchObject({ type: "pane", agent: "agent-b" })
+  expect(window.agents).toEqual([{ id: "agent-b", name: "sleep", cmd: ["sleep", "30"], cols: 80, rows: 24, exited: false, exitCode: null }])
+  expect(window.state.focus).not.toBeNull()
+})
+
+// ── pane.resize-divider ──
+
+test("pane.resize-divider adjusts neighbour weights", () => {
+  const adopted = workspaceFromSession(twoPaneSession())
+  const beforeLeft = JSON.stringify(
+    (adopted.spaces[0]!.windows[0]!.layout.root as { type: "split"; children: { weight: number }[] }).children[0]!.weight,
+  )
+  const result = applyWorkspaceCommand(adopted, command("pane.resize-divider", { path: [], index: 0, delta: -5 }), context)
+  expect(result.changed).toBe(true)
+  const afterLeft = JSON.stringify(
+    (result.snapshot.spaces[0]!.windows[0]!.layout.root as { type: "split"; children: { weight: number }[] }).children[0]!.weight,
+  )
+  // The delta is applied in cell-equivalent space (cols: 80), so the weight of the left child should decrease
+  expect(afterLeft).not.toBe(beforeLeft)
+  expect(result.snapshot.spaces[0]!.windows[0]!.state.preset).toBeNull()
 })

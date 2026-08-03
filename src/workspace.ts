@@ -390,13 +390,14 @@ export function applyWorkspaceCommand(
       const agent = found.window.agents.find((item) => item.id === slot?.agent)
       if (!slot || !agent) break
       closePane(found.window, pane)
-      found.window.agents = found.window.agents.filter((item) => item.id !== agent.id)
+      const stillReferenced = layoutPanes(found.window.layout.root).some((p) => p.agent === agent.id)
+      if (!stillReferenced) found.window.agents = found.window.agents.filter((item) => item.id !== agent.id)
       let number: number
       ;[found.space.state, number] = claimWindowNumber(found.space.state)
       const created: WorkspaceWindow = {
         number,
         name: null,
-        agents: [agent],
+        agents: [stillReferenced ? structuredClone(agent) : agent],
         layout: makeLayout({ ...slot, weight: 1 }, slot.id),
         state: { ...windowState(), focus: slot.id },
       }
@@ -473,7 +474,7 @@ export function applyWorkspaceCommand(
       target.window.agents = target.window.agents.filter((agent) => agent.id !== target.agent.id)
       target.window.layout = prune(target.window.layout, (agent) => agent !== target.agent.id)
       target.window.state.focus = target.window.layout.focus ?? null
-      if (!target.window.layout.root && target.window.agents.length === 0) removeWindow(next, target.space, target.window, actions)
+      afterPaneRemoved(next, target.space, target.window, actions)
       break
     }
     case "agent.reveal": {
