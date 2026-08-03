@@ -75,6 +75,7 @@ export function spawnNativePty(
 
   const out = new Int32Array(2)
   const result = symbols.oh_spawn_pty(ptr(request), ptr(out))
+  void argv; void env; void cwd;
   if (result !== 0) {
     const message = symbols.oh_error_message(result)
     const detail = message === null ? `errno ${result}` : new CString(message).toString()

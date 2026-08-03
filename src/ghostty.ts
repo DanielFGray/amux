@@ -61,6 +61,7 @@ const ROW_DATA_CELLS = 3;
 const ROW_DATA_SELECTION = 4;
 const CELL_GRAPHEMES_LEN = 3;
 const CELL_GRAPHEMES_BUF = 4;
+const CELL_GRAPHEMES_UTF8 = 9;
 const CELL_BG_COLOR = 5;
 const CELL_FG_COLOR = 6;
 const CELL_HAS_STYLING = 8;
@@ -117,7 +118,7 @@ export class Terminal {
   }
 
   get handle() {
-    return this.#h;
+    return this.#freed ? 0 : this.#h;
   }
 
   get cols() {
@@ -153,6 +154,7 @@ export class Terminal {
   /** GhosttyString is {ptr, len}; the bytes are borrowed and only valid until
    *  the next vt_write, so decode immediately rather than holding the pointer. */
   #string(kind: number): string {
+    if (this.#freed) return "";
     if (g.ghostty_terminal_get(asPtr(this.#h), kind, ptr(this.#str)) !== OK) return "";
     const p = this.#str[0];
     const len = Number(this.#str[1]);
@@ -196,6 +198,7 @@ export class Terminal {
    * notification; poll it per frame, as Ghostty's own renderer does.
    */
   get scrollbar(): { total: number; offset: number; len: number } {
+    if (this.#freed) return { total: 0, offset: 0, len: 0 };
     if (g.ghostty_terminal_get(asPtr(this.#h), TERMINAL_DATA_SCROLLBAR, ptr(this.#scroll)) !== OK) {
       return { total: 0, offset: 0, len: 0 };
     }
@@ -254,6 +257,7 @@ function encoderSize(cols: number, rows: number): Uint8Array {
 export class MouseEncoder {
   #enc: number;
   #ev: number;
+  #freed = false;
   #buf = new Uint8Array(64);
   #len = new BigUint64Array(1);
   #pos = new Float32Array(2);
@@ -312,6 +316,8 @@ export class MouseEncoder {
   }
 
   free() {
+    if (this.#freed) return;
+    this.#freed = true;
     g.ghostty_mouse_event_free(asPtr(this.#ev));
     g.ghostty_mouse_encoder_free(asPtr(this.#enc));
   }
@@ -362,8 +368,8 @@ export class RenderState {
   #freed = false;
 
   // scratch buffers reused every frame — no per-cell allocation
-  #len = new Uint32Array(1);
-  #cps = new Uint32Array(16);
+  #cps = new Uint8Array(256);
+  #gbuf = new Uint8Array(24);
   #rgb = new Uint8Array(4);
   #styled = new Uint8Array(1);
   #u16 = new Uint16Array(1);
@@ -470,25 +476,19 @@ export class RenderState {
         this.#cellsCur = cells;
         let x = 0;
         while (g.ghostty_render_state_row_cells_next(asPtr(cells))) {
+          const gv = new DataView(this.#gbuf.buffer);
+          gv.setBigUint64(0, BigInt(ptr(this.#cps) as unknown as number), true);
+          gv.setBigUint64(8, BigInt(this.#cps.length), true);
           if (
             g.ghostty_render_state_row_cells_get(
               asPtr(cells),
-              CELL_GRAPHEMES_LEN,
-              ptr(this.#len),
-            ) === OK &&
-            this.#len[0]! > 0
+              CELL_GRAPHEMES_UTF8,
+              ptr(this.#gbuf),
+            ) === OK
           ) {
-            const n = Math.min(this.#len[0]!, this.#cps.length);
-            if (
-              g.ghostty_render_state_row_cells_get(
-                asPtr(cells),
-                CELL_GRAPHEMES_BUF,
-                ptr(this.#cps),
-              ) === OK
-            ) {
-              let text = "";
-              for (let i = 0; i < n; i++)
-                if (this.#cps[i]! > 0) text += String.fromCodePoint(this.#cps[i]!);
+            const utf8Len = Number(gv.getBigUint64(16, true));
+            if (utf8Len > 0) {
+              let text = new TextDecoder().decode(this.#cps.subarray(0, utf8Len));
               // HAS_STYLING lets us skip two FFI calls for the common plain cell
               let fg: number | null = null;
               let bg: number | null = null;
@@ -565,22 +565,24 @@ export class RenderState {
       this.#cellsCur = cells;
       let line = "";
       while (g.ghostty_render_state_row_cells_next(asPtr(cells))) {
+        const gv = new DataView(this.#gbuf.buffer);
+        gv.setBigUint64(0, BigInt(ptr(this.#cps) as unknown as number), true);
+        gv.setBigUint64(8, BigInt(this.#cps.length), true);
         if (
-          g.ghostty_render_state_row_cells_get(asPtr(cells), CELL_GRAPHEMES_LEN, ptr(this.#len)) !==
-            OK ||
-          this.#len[0]! === 0
+          g.ghostty_render_state_row_cells_get(
+            asPtr(cells),
+            CELL_GRAPHEMES_UTF8,
+            ptr(this.#gbuf),
+          ) !== OK
         ) {
           line += " ";
           continue;
         }
-        const n = Math.min(this.#len[0]!, this.#cps.length);
-        if (
-          g.ghostty_render_state_row_cells_get(asPtr(cells), CELL_GRAPHEMES_BUF, ptr(this.#cps)) ===
-          OK
-        ) {
-          for (let i = 0; i < n; i++)
-            if (this.#cps[i]! > 0) line += String.fromCodePoint(this.#cps[i]!);
-        }
+        const utf8Len = Number(gv.getBigUint64(16, true));
+        line +=
+          utf8Len === 0
+            ? " "
+            : new TextDecoder().decode(this.#cps.subarray(0, utf8Len));
       }
       lines.push(line);
     }

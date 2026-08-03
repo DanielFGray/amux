@@ -147,6 +147,13 @@ child_error: {
     close(master);
     return error;
   }
+  if (fcntl(master, F_SETFD, FD_CLOEXEC) < 0) {
+    int error = errno;
+    kill(pid, SIGKILL);
+    (void)waitpid(pid, 0, 0);
+    close(master);
+    return error;
+  }
   out[0] = (int32_t)pid;
   out[1] = master;
   return 0;

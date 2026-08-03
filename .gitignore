@@ -6,6 +6,9 @@ out
 dist
 *.tgz
 
+# vendored native build artifacts (libghostty-vt)
+/vendor
+
 # code coverage
 coverage
 *.lcov
