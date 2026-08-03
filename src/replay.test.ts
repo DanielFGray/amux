@@ -11,17 +11,25 @@
  * alternate screen would be drawn into the wrong screen without them.
  */
 
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { MODE_ALT_SCREEN, MODE_BRACKETED_PASTE, Terminal } from "./ghostty.ts"
 import { formatScreen } from "./shim.ts"
 import { captureVisible } from "./capture.ts"
 
+const terminals: Terminal[] = []
+
+afterEach(() => {
+  for (const t of terminals.splice(0)) t.free()
+})
+
 /** Feed `vt` into a screen, serialize it, and apply the replay to a fresh one. */
 function roundTrip(vt: string, cols = 40, rows = 10) {
   const source = new Terminal(cols, rows, 0)
+  terminals.push(source)
   source.write(new TextEncoder().encode(vt))
   const bytes = formatScreen(source.handle)
   const target = new Terminal(cols, rows, 0)
+  terminals.push(target)
   target.write(bytes)
   return { source, target, bytes }
 }
@@ -41,8 +49,10 @@ test("formatScreen carries the alternate screen across a replay", () => {
 
 test("a primary-screen replay leaves an old alternate screen behind", () => {
   const source = new Terminal(40, 10, 0)
+  terminals.push(source)
   source.write(new TextEncoder().encode("primary-content"))
   const target = new Terminal(40, 10, 0)
+  terminals.push(target)
   target.write(new TextEncoder().encode("\x1b[?1049h\x1b[2Jstale-alt"))
   target.write(formatScreen(source.handle))
 

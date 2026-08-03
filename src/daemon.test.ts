@@ -12,7 +12,7 @@ const dirs: string[] = []
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
 
 async function env() {
-  const home = await mkdtemp(join(tmpdir(), "herdr-daemon-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-daemon-"))
   dirs.push(home)
   return { HOME: home, XDG_STATE_HOME: join(home, "state") }
 }
@@ -93,6 +93,20 @@ test("the daemon-owned workspace survives closing and reopening", async () => {
   // Reopening is not reattaching: a restart leaves nobody holding the session.
   expect(second.state.attached).toBe(false)
   await second.close()
+})
+
+test("a new session starts with a default 80x24 space", async () => {
+  const e = await env()
+  const daemon = await open("default-size", e)
+  await daemon.start()
+  const space = daemon.workspace.spaces[0]!
+  const window = space.windows[0]!
+  expect(window.layout.root).toBeDefined()
+  // The default space is created with 80x24 in daemon.ts:210
+  // The agent is created with that size
+  expect(window.agents[0]?.cols).toBe(80)
+  expect(window.agents[0]?.rows).toBe(24)
+  await daemon.close()
 })
 
 test("concurrent status reads an empty workspace without racing default creation", async () => {

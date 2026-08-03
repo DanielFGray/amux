@@ -65,6 +65,30 @@ test("wide characters survive as their own graphemes", () => {
   expect(captureVisible(t)).toBe("\u30a2\u30a2\u3042x")
 })
 
+test("combining characters render as single graphemes", () => {
+  const t = term()
+  t.write(new TextEncoder().encode("e\u0301"))
+  expect(captureVisible(t)).toBe("e\u0301")
+})
+
+test("emoji with variation selector is one grapheme", () => {
+  const t = term()
+  t.write(new TextEncoder().encode("\u2764\uFE0F"))
+  expect(captureVisible(t)).toBe("\u2764\uFE0F")
+})
+
+test("ZWJ emoji family is one grapheme", () => {
+  const t = term()
+  t.write(new TextEncoder().encode("\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}"))
+  expect(captureVisible(t)).toBe("\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}")
+})
+
+test("mixed wide and combining characters survive capture", () => {
+  const t = term()
+  t.write(new TextEncoder().encode("\u30a2e\u0301\u3042"))
+  expect(captureVisible(t)).toBe("\u30a2e\u0301\u3042")
+})
+
 test("scrolled-out rows are reachable through the scrollback space", () => {
   const t = term(10, 4)
   const lines = ["l0", "l1", "l2", "l3", "l4", "l5", "l6"]
