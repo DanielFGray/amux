@@ -8,6 +8,7 @@ import {
 import type { JSX } from "@opentui/solid"
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js"
 import { Effect, Exit, FiberMap, Scope, Stream } from "effect"
+import { theme } from "./ui/theme.ts"
 import { basename, join, resolve } from "node:path"
 import { writeFile } from "node:fs/promises"
 
@@ -228,6 +229,7 @@ function buildApp(
   }
   spaces.onCopyError = (error) => console.error(error.message)
   const app = createAppState(spaces)
+  session.attach.onClose = () => setDaemonDisconnected(true)
 
   /**
    * Keyboard copy mode: the pane's read-only review layer. One instance for the
@@ -273,10 +275,10 @@ function buildApp(
   const project = (model: WorkspaceSnapshot): Promise<void> => {
     if (disposed) return Promise.resolve()
     if (model.revision <= projectedRevision) return projection
-    projectedRevision = model.revision
     projection = projection
       .then(() => Effect.runPromise(projectWorkspace(spaces, model, session.backend())))
       .then(() => {
+        projectedRevision = model.revision
         for (const space of spaces.spaces) {
           for (const window of space.windows) {
             window.onModelFocus = (pane) => runProjectedCommand(command("pane.select", { pane }))
@@ -362,6 +364,12 @@ function buildApp(
   /** The keybind tab's scroll container, so ↑↓ can drive a list that is much
    *  longer than the window. */
   let keybindList: ScrollBoxRenderable | null = null
+  const [commandError, setCommandError] = createSignal<string | null>(null)
+  function showCommandError(message: string) {
+    setCommandError(message)
+    setTimeout(() => setCommandError(null), 3000)
+  }
+  const [daemonDisconnected, setDaemonDisconnected] = createSignal(false)
   const [size, setSize] = createSignal({ width: renderer.width, height: renderer.height })
   renderer.on("resize", (width: number, height: number) => setSize({ width, height }))
 
@@ -414,12 +422,19 @@ function buildApp(
     const cwd = spaces.active?.dir ?? process.cwd()
     const answers = yield* ask("New space", [
       { label: "Name", value: basename(cwd), placeholder: "space name" },
+      { label: "Branch (worktree)", value: "", placeholder: "branch name" },
       { label: "Directory", value: cwd, placeholder: "path" },
     ])
     if (!answers) return
-    // Empty fields are left out entirely: "keep the default" is the command's
-    // own answer to an absent argument, not a second rule written here.
-    yield* commands.run(command("space.new", { name: answers[0], dir: answers[1] }))
+    const args: Record<string, string> = {}
+    if (answers[0]) args.name = answers[0]
+    const branch = answers[1]?.trim()
+    if (branch) {
+      args.branch = branch
+    } else {
+      args.dir = answers[2] || cwd
+    }
+    yield* commands.run(command("space.new", args))
   })
 
   const promptRenameSpace = Effect.gen(function* () {
@@ -456,7 +471,7 @@ function buildApp(
       : target.kind === "agent"
         ? commands.run(command("agent.reveal", { agent: target.agent.id }))
         : commands.run(command("window.select", { space: target.space.id, number: target.window.number }))
-    runDetached("sidebar.select", effect)
+    runDetached("sidebar.select", effect, showCommandError)
   }
 
   /**
@@ -745,13 +760,12 @@ function buildApp(
       // "nothing to send", which read as a rejection of a value nobody typed.
       resolve: (values) => {
         if (values === null) return setPromptRequest(null)
-        const failure = Effect.runSync(
-          commands.run(command("pane.send-keys", { keys: values[0] ?? "" })).pipe(
-            Effect.match({ onFailure: (error) => error.message, onSuccess: () => null }),
-          ),
+        runDetached(
+          "pane.send-keys",
+          commands.run(command("pane.send-keys", { keys: values[0] ?? "" })),
+          showCommandError,
         )
-        if (failure) setPromptError(failure)
-        else setPromptRequest(null)
+        setPromptRequest(null)
       },
     })
   })
@@ -929,7 +943,7 @@ function buildApp(
   }
 
   const commands = makeCommands(handlers)
-  runProjectedCommand = (value) => runDetached(value._tag, commands.run(value))
+  runProjectedCommand = (value) => runDetached(value._tag, commands.run(value), showCommandError)
 
   /**
    * One keybinding: a name, the keys that reach it, and the command it invokes
@@ -1351,6 +1365,7 @@ function buildApp(
    *  copy-mode pane directly and refreshes on app revision, which copy-mode
    *  entry and exit bump through onStateChange. */
   const copying = createMemo(() => {
+    app.tick()
     const pane = copyMode.pane
     return pane !== null && (spaces.activeWindow?.panes.includes(pane) ?? false)
   })
@@ -1376,7 +1391,7 @@ function buildApp(
   }
 
   /**
-   * Everything herdr puts on screen, as panels.
+   * Everything amux puts on screen, as panels.
    *
    * The app registers its own views through the registry a plugin will, so
    * there is one way for a panel to exist rather than a built-in layout with a
@@ -1390,7 +1405,7 @@ function buildApp(
   function registerPanels(): () => void {
     const disposers = [
       regions.register({
-        id: "herdr.sidebar",
+        id: "amux.sidebar",
         region: "left",
         // The whole screen, not the pane area: the tree is taller than the
         // panes and the window list sits beside it.
@@ -1416,9 +1431,9 @@ function buildApp(
         ),
       }),
       regions.register({
-        id: "herdr.windows",
+        id: "amux.windows",
         region: "top",
-        // The pane area, not the app: herdr has no app-wide bar, and a tab row
+        // The pane area, not the app: amux has no app-wide bar, and a tab row
         // above the sidebar is a different program.
         anchor: "center",
         title: "windows",
@@ -1443,7 +1458,7 @@ function buildApp(
         ),
       }),
       regions.register({
-        id: "herdr.settings",
+        id: "amux.settings",
         region: "overlay",
         order: 10,
         title: "settings",
@@ -1473,7 +1488,7 @@ function buildApp(
         ),
       }),
       regions.register({
-        id: "herdr.palette",
+        id: "amux.palette",
         region: "overlay",
         // Same rung as settings: one signal holds both, so they cannot be up at
         // the same time.
@@ -1502,7 +1517,7 @@ function buildApp(
         ),
       }),
       regions.register({
-        id: "herdr.buffers",
+        id: "amux.buffers",
         region: "overlay",
         order: 20,
         title: "buffers",
@@ -1542,7 +1557,7 @@ function buildApp(
         ),
       }),
       regions.register({
-        id: "herdr.capture",
+        id: "amux.capture",
         region: "overlay",
         order: 30,
         title: "capture",
@@ -1566,7 +1581,7 @@ function buildApp(
         ),
       }),
       regions.register({
-        id: "herdr.prompt",
+        id: "amux.prompt",
         region: "overlay",
         // Top of the stack: a prompt is opened *by* the overlays below it, and
         // the answer it is waiting for is the only thing the keyboard is for
@@ -1602,7 +1617,7 @@ function buildApp(
         ),
       }),
       regions.register({
-        id: "herdr.hints",
+        id: "amux.hints",
         region: "float",
         title: "which-key",
         // Only while a sequence is half-typed, and never over a modal — an
@@ -1617,6 +1632,67 @@ function buildApp(
             width={props.width}
             height={props.height}
           />
+        ),
+      }),
+      regions.register({
+        id: "amux.disconnected",
+        region: "overlay",
+        order: 50,
+        title: "disconnected",
+        visible: () => daemonDisconnected(),
+        keys: (event) => {
+          if (event.name === "escape" || event.name === "q") shutdown()
+          return true
+        },
+        component: (props) => (
+          <box
+            style={{
+              position: "absolute",
+              width: 58,
+              height: 5,
+              flexDirection: "column",
+              backgroundColor: theme.base,
+              border: true,
+              borderColor: theme.red,
+              padding: 1,
+              zIndex: 400,
+              left: Math.max(0, Math.floor((props.width - 58) / 2)),
+              top: Math.max(0, Math.floor((props.height - 5) / 2)),
+            }}
+            title=" daemon disconnected "
+          >
+            <text style={{ fg: theme.red, height: 1 }}>The daemon has stopped.</text>
+            <text style={{ height: 1 }}>Session is gone; every command</text>
+            <text style={{ fg: theme.overlay1, height: 1, marginTop: 1 }}>^a q / q / escape — exit</text>
+          </box>
+        ),
+      }),
+      regions.register({
+        id: "amux.error",
+        region: "overlay",
+        order: 55,
+        title: "error",
+        visible: () => commandError() !== null,
+        keys: () => {
+          setCommandError(null)
+          return true
+        },
+        component: () => (
+          <box
+            style={{
+              position: "absolute",
+              width: "100%",
+              height: 1,
+              backgroundColor: theme.base,
+              border: true,
+              borderColor: theme.red,
+              zIndex: 500,
+              left: 0,
+              bottom: 0,
+            }}
+          >
+            <text style={{ fg: theme.red, height: 1 }}>{commandError() ?? ""}</text>
+          </box>
         ),
       }),
     ]

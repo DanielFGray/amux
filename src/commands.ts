@@ -382,7 +382,12 @@ const AgentNextBlocked = define(
 // Spaces.
 const SpaceNew = define(
   "space.new",
-  { name: Schema.optional(Schema.String), dir: Schema.optional(Schema.String) },
+  {
+    name: Schema.optional(Schema.String),
+    dir: Schema.optional(Schema.String),
+    branch: Schema.optional(Schema.String),
+    base: Schema.optional(Schema.String),
+  },
   {
     desc: "new space",
     group: "spaces",
@@ -653,10 +658,16 @@ export const makeCommands = (handlers: CommandHandlers): Commands => ({
  * observes it. Interruption is not a failure worth reporting: it is what
  * shutting down looks like from in here.
  */
-export function runDetached(label: string, effect: Effect.Effect<void, CommandError>): void {
+export function runDetached(
+  label: string,
+  effect: Effect.Effect<void, CommandError>,
+  onError?: (message: string) => void,
+): void {
   Effect.runFork(effect).addObserver((exit) => {
     if (Exit.isSuccess(exit) || Cause.isInterruptedOnly(exit.cause)) return;
-    console.error(`command ${label} failed: ${Cause.pretty(exit.cause)}`);
+    const message = `command ${label} failed: ${Cause.pretty(exit.cause)}`;
+    console.error(message);
+    onError?.(message);
   });
 }
 

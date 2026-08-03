@@ -64,10 +64,15 @@ const make = (id: string, options: SessionClientOptions): Effect.Effect<SessionC
     const env = yield* SessionEnv
     if (options.autostart !== false) yield* ensureDaemon(id)
     const paths = yield* sessionPaths(id)
-    const attach = yield* Effect.tryPromise({
+    const attach = yield* (Effect.tryPromise({
       try: () => AttachClient.connect({ path: paths.attach, client: options.client ?? `pid-${process.pid}` }),
       catch: (error) => new SessionClientError({ message: String(error) }),
-    })
+    }).pipe(
+      Effect.retry({
+        schedule: Schedule.spaced("200 millis").pipe(Schedule.upTo("5000 millis")),
+        while: (error) => error instanceof SessionClientError && error.message.includes("already attached"),
+      }),
+    ))
     let status: DaemonResponse
     try {
       status = yield* daemonRequest(id, { command: "status" })
@@ -87,10 +92,14 @@ const make = (id: string, options: SessionClientOptions): Effect.Effect<SessionC
     let workspace = initialWorkspace
     let commandQueue: Promise<void> = Promise.resolve()
     const accept = (next: WorkspaceSnapshot) => {
-      if (next.revision > workspace.revision) workspace = next
-      for (const space of next.spaces) {
-        for (const window of space.windows) {
-          for (const agent of window.agents) if (!agent.exited) (service.live as Set<string>).add(agent.id)
+      if (next.revision > workspace.revision) {
+        workspace = next
+        const live = service.live as Set<string>
+        live.clear()
+        for (const space of next.spaces) {
+          for (const window of space.windows) {
+            for (const agent of window.agents) if (!agent.exited) live.add(agent.id)
+          }
         }
       }
       return workspace
