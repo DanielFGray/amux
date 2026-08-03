@@ -27,7 +27,6 @@ import { createApp } from "./app.tsx"
  */
 const program = Effect.gen(function* () {
   const config = yield* Effect.promise(() => loadConfig())
-  // Push the loaded values into the copy imperative code reads.
   applyOptions(resolveOptions(config.options))
 
   const renderer = yield* Effect.acquireRelease(
@@ -36,68 +35,26 @@ const program = Effect.gen(function* () {
         exitOnCtrlC: false,
         targetFps: 60,
         useMouse: true,
-        // Take the renderer's own signal handling away from it. By default it
-        // installs listeners on SIGINT/SIGTERM/SIGQUIT/SIGABRT/SIGHUP/... that
-        // call destroy() the moment a signal lands, which tears the renderable
-        // tree down before anything else can read it — and the workspace is
-        // read OUT of that tree. Measured: a SIGTERM with these left in place
-        // saves the session with `root: null`, having thrown away the very
-        // arrangement it exists to record.
-        //
-        // Nothing is lost by disabling them: their handler is exactly the
-        // destroy() below, and BunRuntime.runMain turns the same signals into
-        // an interrupt, which runs it in the right order instead of first.
         exitSignals: [],
       }),
     ),
     (r) => Effect.sync(() => r.destroy()),
   )
-  // Raw key passthrough needs the OUTER terminal to keep emitting classic escape
-  // sequences — the children speak xterm-256color terminfo and would misparse the
-  // CSI-u forms a kitty-enabled host produces.
   renderer.useKittyKeyboard = false
 
-  // The imperative half: split trees of cell-blitting panes. Solid adopts this
-  // box as a child but never reconciles inside it.
   const paneHost = new BoxRenderable(renderer, {
     id: "pane-host",
     flexDirection: "row",
     flexGrow: 1,
   })
 
-  /**
-   * The session this client is a view of.
-   *
-   * The processes are not ours. They belong to a daemon that is started on demand
-   * and outlives us, which is what makes closing this terminal a detach rather
-   * than a massacre — and what makes running the program again put the same
-   * agents back on screen, still running, rather than re-running their commands.
-   *
-   * Everything downstream is unchanged by that: agents get their bytes from a
-   * SpawnBackend, and whether that backend is a local PTY or a socket to the
-   * daemon is a fact none of the UI knows or asks.
-   */
-  const SESSION_ID = process.env.HERDR_SESSION || "default"
+  const SESSION_ID = process.env.AMUX_SESSION || "default"
   if (!isSessionId(SESSION_ID)) {
-    // Fail before anything touches the filesystem; the id becomes a directory
-    // name under the sessions root, and an unvalidated one could escape it.
-    return yield* Effect.fail(new Error(`invalid HERDR_SESSION ${JSON.stringify(SESSION_ID)}`))
+    return yield* Effect.fail(new Error(`invalid AMUX_SESSION ${JSON.stringify(SESSION_ID)}`))
   }
 
-  /**
-   * Set once the app exists, so the session's finalizer can record the
-   * workspace before dropping the socket.
-   *
-   * A nullable hole rather than a reference to `app` below, because the session
-   * is acquired first and must be released last: if createApp throws, this
-   * finalizer still runs, and reaching for a binding that was never initialised
-   * would turn a startup failure into a defect during teardown.
-   */
   const session = yield* Effect.acquireRelease(
     SessionClient.connect(SESSION_ID),
-    // Detach, never kill: record where the workspace got to, then drop the
-    // socket. The daemon keeps the agents running either way, so a failed save
-    // must not stop us letting go of the connection.
     (s) =>
       Effect.gen(function* () {
         yield* Effect.sync(() => s.attach.close())
@@ -117,4 +74,8 @@ const program = Effect.gen(function* () {
   yield* Deferred.await(quit)
 })
 
-BunRuntime.runMain(Effect.scoped(program).pipe(Effect.provideService(SessionEnv, process.env)))
+BunRuntime.runMain(
+  Effect.scoped(program).pipe(
+    Effect.provideService(SessionEnv, process.env),
+  ),
+)

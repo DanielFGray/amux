@@ -13,12 +13,16 @@ import { startDaemon } from "./daemon.ts"
  * what removes the socket, the lease and the lock; losing that race leaves a
  * session that every later client refuses to attach to.
  */
-const program = Effect.gen(function* () {
-  const daemon = yield* Effect.acquireRelease(
-    Effect.promise(() => startDaemon()),
-    (daemon) => Effect.promise(() => daemon.stop()).pipe(Effect.ignore),
-  )
-  yield* Effect.promise(() => daemon.stopped)
-})
+export function runDaemonMain(id?: string): void {
+  const program = Effect.gen(function* () {
+    const daemon = yield* Effect.acquireRelease(
+      Effect.promise(() => startDaemon(id)),
+      (daemon) => Effect.promise(() => daemon.stop()).pipe(Effect.ignore),
+    )
+    yield* Effect.promise(() => daemon.stopped)
+  })
 
-BunRuntime.runMain(Effect.scoped(program))
+  BunRuntime.runMain(Effect.scoped(program))
+}
+
+if (import.meta.main) runDaemonMain()

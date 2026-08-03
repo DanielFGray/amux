@@ -1,12 +1,25 @@
 {
-  "name": "opentui-herdr",
+  "name": "@danielfgray/amux",
   "module": "src/main.tsx",
+  "version": "0.1.0",
   "type": "module",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux"
+  },
+  "files": ["src", "README.md"],
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "bin": {
+    "amux": "./src/cli.ts"
+  },
   "scripts": {
     "start": "bun src/main.tsx",
     "daemon": "bun src/daemon-main.ts",
     "session": "bun src/session-cli.ts",
+    "cli": "bun src/cli.ts",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test src",
     "e2e": "bun test e2e"
