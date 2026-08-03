@@ -306,7 +306,7 @@ export class Window {
     if (scope) return Scope.close(scope, Exit.void)
     return Effect.andThen(
       Effect.logWarning(`agent ${agent.id} released without a scope`),
-      agent.release,
+      () => agent.release(),
     )
   }
 

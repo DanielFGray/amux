@@ -83,57 +83,41 @@ async function fakeAgent(name: string): Promise<string> {
 test("a plain shell is idle whatever it is running", async () => {
   // The old behaviour reported any foreground process as "working", so opening
   // nvim in a pane put a spinner next to it. Only agents get a state now.
-  const agent = new Agent({ name: "t", cmd: ["bash", "--norc", "--noprofile"] })
-  try {
-    await Bun.sleep(400)
-    expect(agent.state).toBe("idle")
-    agent.write("sleep 3\n")
-    await Bun.sleep(400)
-    expect(agent.state).toBe("idle")
-    // Still visible as a running process — it is only the state that changed.
-    expect(agent.foregroundCommand).toBe("sleep")
-    expect(agent.agentKind).toBe(null)
-  } finally {
-    agent.dispose()
-  }
+  using agent = new Agent({ name: "t", cmd: ["bash", "--norc", "--noprofile"] })
+  await Bun.sleep(400)
+  expect(agent.state).toBe("idle")
+  agent.write("sleep 3\n")
+  await Bun.sleep(400)
+  expect(agent.state).toBe("idle")
+  // Still visible as a running process — it is only the state that changed.
+  expect(agent.foregroundCommand).toBe("sleep")
+  expect(agent.agentKind).toBe(null)
 })
 
 test("a blocked prompt on an agent's screen reads as blocked", async () => {
-  const agent = new Agent({
+  using agent = new Agent({
     name: "t",
     cmd: [await fakeAgent("claude"), "--norc", "--noprofile"],
   })
-  try {
-    await Bun.sleep(300)
-    expect(agent.agentKind).toBe("claude")
-    agent.write("printf 'Do you want to proceed?\\n'\n")
-    await Bun.sleep(500)
-    expect(agent.state).toBe("blocked")
-  } finally {
-    agent.dispose()
-  }
+  await Bun.sleep(300)
+  expect(agent.agentKind).toBe("claude")
+  agent.write("printf 'Do you want to proceed?\\n'\n")
+  await Bun.sleep(500)
+  expect(agent.state).toBe("blocked")
 })
 
 test("an agent started from a shell is picked up from the foreground process", async () => {
   const claude = await fakeAgent("claude")
-  const agent = new Agent({ name: "t", cmd: ["bash", "--norc", "--noprofile"] })
-  try {
-    await Bun.sleep(300)
-    expect(agent.agentKind).toBe(null)
-    agent.write(`${claude} --norc --noprofile\n`)
-    await Bun.sleep(700)
-    expect(agent.agentKind).toBe("claude")
-  } finally {
-    agent.dispose()
-  }
+  using agent = new Agent({ name: "t", cmd: ["bash", "--norc", "--noprofile"] })
+  await Bun.sleep(300)
+  expect(agent.agentKind).toBe(null)
+  agent.write(`${claude} --norc --noprofile\n`)
+  await Bun.sleep(700)
+  expect(agent.agentKind).toBe("claude")
 })
 
 test("an exited agent is done regardless of what is left on screen", async () => {
-  const agent = new Agent({ name: "t", cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"] })
-  try {
-    await Bun.sleep(500)
-    expect(agent.state).toBe("done")
-  } finally {
-    agent.dispose()
-  }
+  using agent = new Agent({ name: "t", cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"] })
+  await Bun.sleep(500)
+  expect(agent.state).toBe("done")
 })

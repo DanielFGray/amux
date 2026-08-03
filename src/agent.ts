@@ -171,7 +171,7 @@ export class Agent {
   static make(opts: AgentOptions): Effect.Effect<Agent, never, Scope.Scope> {
     return Effect.acquireRelease(
       Effect.sync(() => new Agent(opts)),
-      (agent) => agent.release,
+      (agent) => agent.release(),
     )
   }
 
@@ -183,7 +183,7 @@ export class Agent {
    * underneath it — a race the handles' own freed-guards currently absorb, but
    * absorbing a race is not the same as not having one.
    */
-  get release(): Effect.Effect<void> {
+  release(): Effect.Effect<void> {
     return Effect.suspend(() => {
       if (this.#disposed) return Effect.void
       this.#disposed = true
@@ -434,6 +434,10 @@ export class Agent {
    * scope to hang them on.
    */
   dispose() {
-    Effect.runFork(this.release)
+    Effect.runFork(this.release())
+  }
+
+  [Symbol.dispose]() {
+    this.dispose()
   }
 }
