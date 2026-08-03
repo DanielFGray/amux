@@ -25,7 +25,7 @@ afterEach(async () => {
 })
 
 async function started(id: string) {
-  const home = await mkdtemp(join(tmpdir(), "herdr-buffers-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-buffers-"))
   dirs.push(home)
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") }
   const daemon = await Effect.runPromise(SessionDaemon.open(id).pipe(Effect.provideService(SessionEnv, env)))

@@ -25,7 +25,7 @@ afterEach(async () => {
 })
 
 async function started(id: string) {
-  const home = await mkdtemp(join(tmpdir(), "herdr-attach-host-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-attach-host-"))
   dirs.push(home)
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") }
   const daemon = await run(SessionDaemon.open(id), env)

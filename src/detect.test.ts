@@ -71,7 +71,7 @@ test("agent CLIs are recognised by executable name, and nothing else is", () => 
  * wrong shape for a fixture.
  */
 async function fakeAgent(name: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "herdr-detect-"))
+  const dir = await mkdtemp(join(tmpdir(), "amux-detect-"))
   const path = join(dir, name)
   const bash = which("bash")
   if (!bash) throw new Error("no bash on PATH to impersonate")

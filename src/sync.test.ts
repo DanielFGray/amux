@@ -136,7 +136,7 @@ test("binary and control bytes fan out untouched", async () => {
   }
 })
 
-test("the prefix and bound herdr controls are consumed and never broadcast", async () => {
+test("the prefix and bound amux controls are consumed and never broadcast", async () => {
   const { t, window } = await setup()
   run(window.splitSpawn("row"))
   const writes = captureAgentWrites()

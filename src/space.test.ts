@@ -34,7 +34,7 @@ async function setup() {
  * detect.test.ts.
  */
 async function fakeAgent(name: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "herdr-space-"))
+  const dir = await mkdtemp(join(tmpdir(), "amux-space-"))
   const path = join(dir, name)
   const bash = which("bash")
   if (!bash) throw new Error("no bash on PATH to impersonate")

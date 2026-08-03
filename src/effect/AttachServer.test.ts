@@ -128,7 +128,7 @@ test("attach writer pauses on zero and closes only at byte overflow", () => {
 })
 
 test("one blocked session handler does not stall another session on the same socket", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-lanes-"))
+  const root = await mkdtemp(join(tmpdir(), "amux-attach-lanes-"))
   const path = join(root, "attach.sock")
   const result = await Effect.runPromise(
     Effect.gen(function* () {
@@ -179,7 +179,7 @@ const waitUntil = (predicate: () => boolean, timeout = 500) => Effect.promise(as
 })
 
 test("native attach server routes output and releases clients on close", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-"))
+  const root = await mkdtemp(join(tmpdir(), "amux-attach-"))
   const path = join(root, "attach.sock")
   const result = await Effect.runPromise(
     Effect.gen(function* () {
@@ -244,7 +244,7 @@ test("native attach server routes output and releases clients on close", async (
 })
 
 test("inbound traffic resets the idle deadline", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-timeout-"))
+  const root = await mkdtemp(join(tmpdir(), "amux-attach-timeout-"))
   const path = join(root, "attach.sock")
   const result = await Effect.runPromise(
     Effect.gen(function* () {
@@ -272,7 +272,7 @@ test("inbound traffic resets the idle deadline", async () => {
 })
 
 test("closing cancels the idle deadline and detaches exactly once", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-timeout-close-"))
+  const root = await mkdtemp(join(tmpdir(), "amux-attach-timeout-close-"))
   const path = join(root, "attach.sock")
   const result = await Effect.runPromise(
     Effect.gen(function* () {
@@ -299,7 +299,7 @@ test("closing cancels the idle deadline and detaches exactly once", async () => 
 })
 
 test("inbound traffic interrupts the replaced idle deadline", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-deadline-interrupt-"))
+  const root = await mkdtemp(join(tmpdir(), "amux-attach-deadline-interrupt-"))
   const path = join(root, "attach.sock")
   let sleeps = 0
   let interrupted = 0
@@ -334,7 +334,7 @@ test("inbound traffic interrupts the replaced idle deadline", async () => {
 })
 
 test("client close interrupts a blocked frame callback before detach", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-frame-close-"))
+  const root = await mkdtemp(join(tmpdir(), "amux-attach-frame-close-"))
   const path = join(root, "attach.sock")
   let started = 0
   let finalized = 0
@@ -369,7 +369,7 @@ test("client close interrupts a blocked frame callback before detach", async () 
 })
 
 test("server close delivers remote EOF and joins detach cleanup exactly once", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-server-close-"))
+  const root = await mkdtemp(join(tmpdir(), "amux-attach-server-close-"))
   const path = join(root, "attach.sock")
   let started = 0
   let finalized = 0
@@ -412,7 +412,7 @@ test("server close delivers remote EOF and joins detach cleanup exactly once", a
 })
 
 test("close interrupts asynchronous acceptance and permits reconnect", async () => {
-  const root = await mkdtemp(join(tmpdir(), "herdr-attach-accept-race-"))
+  const root = await mkdtemp(join(tmpdir(), "amux-attach-accept-race-"))
   const path = join(root, "attach.sock")
   let attached = 0
   let attachFinalized = 0

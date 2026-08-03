@@ -12,7 +12,7 @@ afterEach(async () => {
 })
 
 async function temporaryConfig(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "herdr-config-"))
+  const directory = await mkdtemp(join(tmpdir(), "amux-config-"))
   temporaryDirectories.push(directory)
   return join(directory, "config.json")
 }

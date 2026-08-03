@@ -1,4 +1,4 @@
-# opentui-herdr
+# amux
 
 TypeScript terminal multiplexer prototype using OpenTUI and libghostty-vt.
 
@@ -25,7 +25,7 @@ and reconcile them into OpenTUI renderables. Closing a client therefore loses
 neither processes nor layout, and a later client projects the current model over
 the still-running sessions. Start the daemon with
 `bun run daemon [session-id]`; clients use the Unix socket under
-`$XDG_STATE_HOME/opentui-herdr/sessions/<session-id>/`. A session id is a
+`$XDG_STATE_HOME/amux/sessions/<session-id>/`. A session id is a
 single filename-safe component: `[A-Za-z0-9._-]+` except `.` and `..`, at most
 128 characters — no path separators or control characters (the id becomes a
 directory name, so it is validated before any filesystem access). `attach` and `detach`
@@ -95,7 +95,7 @@ new key for the selected row, `u` restores the default, `d` unbinds it, and `s`
 saves. The prefix is the first row, so it is rebound the same way as everything
 else — change it and every binding follows.
 
-Settings live in `$XDG_CONFIG_HOME/opentui-herdr/config.json`. Only the keys you
+Settings live in `$XDG_CONFIG_HOME/amux/config.json`. Only the keys you
 have actually changed are written, as full sequences against the `<leader>`
 token:
 

@@ -388,7 +388,7 @@ export class Window {
    * Send bytes to the focused pane — or to every pane when sync is on.
    *
    * The single child-input path. Everything the user aims at a child funnels
-   * through here: unhandled keystrokes and the literal-prefix passthrough. herdr
+   * through here: unhandled keystrokes and the literal-prefix passthrough. amux
    * controls (the keymap's own bindings), overlays, prompts and pane-local mouse
    * events never reach it, so sync mode can only ever replicate input that was
    * meant for a child in the first place.

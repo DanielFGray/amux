@@ -41,7 +41,7 @@ afterEach(async () => {
 })
 
 async function session(id: string) {
-  const home = await mkdtemp(join(tmpdir(), "herdr-client-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-client-"))
   dirs.push(home)
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv
   const daemon = await run(SessionDaemon.open(id), env)
@@ -197,7 +197,7 @@ test("a process that ends reports its exit code through the stream", async () =>
  * wrong shape for a fixture.
  */
 async function fakeAgent(name: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "herdr-daemon-agent-"))
+  const dir = await mkdtemp(join(tmpdir(), "amux-daemon-agent-"))
   dirs.push(dir)
   const path = join(dir, name)
   const bash = which("bash")
@@ -344,7 +344,7 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
 })
 
 test("rotates generations at exit without losing ordered frames in one chunk", async () => {
-  const home = await mkdtemp(join(tmpdir(), "herdr-generations-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-generations-"))
   dirs.push(home)
   const path = join(home, "attach.sock")
   let peer: Bun.Socket<undefined> | null = null
@@ -392,7 +392,7 @@ test("rotates generations at exit without losing ordered frames in one chunk", a
 })
 
 test("an unacquired stream does not retain a terminal generation", async () => {
-  const home = await mkdtemp(join(tmpdir(), "herdr-unacquired-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-unacquired-"))
   dirs.push(home)
   const path = join(home, "attach.sock")
   let peer: Bun.Socket<undefined> | null = null
@@ -435,7 +435,7 @@ test("an unacquired stream does not retain a terminal generation", async () => {
 })
 
 test("an unsubscribed session disconnects rather than silently dropping frames", async () => {
-  const home = await mkdtemp(join(tmpdir(), "herdr-overflow-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-overflow-"))
   dirs.push(home)
   const path = join(home, "attach.sock")
   let peer: Bun.Socket<undefined> | null = null
@@ -474,7 +474,7 @@ test("an unsubscribed session disconnects rather than silently dropping frames",
 })
 
 test("a delayed handshake closes its socket and rejects on timeout", async () => {
-  const home = await mkdtemp(join(tmpdir(), "herdr-handshake-timeout-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-handshake-timeout-"))
   dirs.push(home)
   const path = join(home, "attach.sock")
   let closed = 0
@@ -550,7 +550,7 @@ test("a delayed handshake closes its socket and rejects on timeout", async () =>
 })
 
 test("the connection scope emits heartbeats and stops them when released", async () => {
-  const home = await mkdtemp(join(tmpdir(), "herdr-heartbeat-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-heartbeat-"))
   dirs.push(home)
   const path = join(home, "attach.sock")
   let buffer = ""
@@ -598,7 +598,7 @@ test("the connection scope emits heartbeats and stops them when released", async
 })
 
 test("a handshake error closes the transport without leaving a client", async () => {
-  const home = await mkdtemp(join(tmpdir(), "herdr-handshake-error-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-handshake-error-"))
   dirs.push(home)
   const path = join(home, "attach.sock")
   let closed = 0
@@ -783,7 +783,7 @@ test("an alternate-screen app's view is replayed intact to a reattaching client"
  * the second time is a genuine reattach.
  */
 test("a daemon started on demand keeps agents between two separate clients", async () => {
-  const home = await mkdtemp(join(tmpdir(), "herdr-autostart-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-autostart-"))
   dirs.push(home)
   // A real environment, plus a private state root: the daemon has to spawn
   // programs, and a PATH-less env would fail for reasons that have nothing to

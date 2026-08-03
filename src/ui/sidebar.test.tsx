@@ -251,7 +251,7 @@ test("an agent with no pane open shows the ⇠ indicator", async () => {
  * backend.ts.
  */
 test("an agent whose daemon attachment is lost is distinct from idle and done", async () => {
-  const home = await mkdtemp(join(tmpdir(), "herdr-sidebar-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-sidebar-"))
   dirs.push(home)
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv
   const daemon = await run(SessionDaemon.open("sidebar-detach"), env)
@@ -323,7 +323,7 @@ test("a long OSC title is truncated so the foreground command stays visible", as
     agent.write("sleep 30\n")
     await waitFor(() => agent.foregroundCommand === "sleep", "the foreground command")
     // A shell-style OSC title, longer than the 25-char label area at 30 cols.
-    agent.term.write(new TextEncoder().encode("\x1b]2;dan@host:~/build/opentui-herdr\x07"))
+    agent.term.write(new TextEncoder().encode("\x1b]2;dan@host:~/build/amux\x07"))
 
     // waitForFrame, not waitForFrame's predicate: the mutation lands between two
     // of the sidebar's POLL_MS repaints, and waitForFrame gives up as soon as
@@ -333,7 +333,7 @@ test("a long OSC title is truncated so the foreground command stays visible", as
     const frame = s.t.captureCharFrame()
     // The command leads the label, so truncation cuts the title tail, not it.
     expect(frame).toContain("sleep · dan@")
-    expect(frame).not.toContain("dan@host:~/build/opentui-herdr · sleep")
+    expect(frame).not.toContain("dan@host:~/build/amux · sleep")
   } finally {
     await s.dispose()
   }

@@ -25,7 +25,7 @@ export const DEFAULT_CONFIG: Config = {
 
 const CONFIG_DIR =
   process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config")
-export const CONFIG_PATH = join(CONFIG_DIR, "opentui-herdr", "config.json")
+export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json")
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)

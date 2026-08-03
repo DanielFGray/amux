@@ -170,7 +170,7 @@ test("SessionSupervisor routes input through the managed PTY", async () => {
 });
 
 test("concurrent duplicate spawns create one child and one managed session", async () => {
-  const marker = `/tmp/herdr-duplicate-${randomUUID()}`;
+  const marker = `/tmp/amux-duplicate-${randomUUID()}`;
   const frames = await Effect.runPromise(
     Effect.gen(function* () {
       const hub = yield* AttachHub;

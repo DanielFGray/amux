@@ -18,7 +18,7 @@ export type SendKeyParser = (token: string) => readonly KeyStroke[] | null
 
 /** A pane that can receive injected input. The `write` path is deliberately
  *  the pane's own: bytes go straight to the child's pty, past the app keymap,
- *  so an injected `^a q` can never quit herdr — which is the whole point. */
+ *  so an injected `^a q` can never quit amux — which is the whole point. */
 export interface SendTarget {
   write(bytes: string): void
   /** A human name for the target, for the prompt's title. */

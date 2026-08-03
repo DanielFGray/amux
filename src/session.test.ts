@@ -10,7 +10,7 @@ const dirs: string[] = []
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
 
 async function env() {
-  const home = await mkdtemp(join(tmpdir(), "herdr-session-"))
+  const home = await mkdtemp(join(tmpdir(), "amux-session-"))
   dirs.push(home)
   return { HOME: home, XDG_STATE_HOME: join(home, "state") }
 }
