@@ -1,5 +1,5 @@
 /**
- * Turning the live workspace into session metadata, and back.
+ * Serializing the live workspace model into session metadata, and restoring it.
  *
  * ## What a session file is, and what it is not
  *
@@ -90,7 +90,7 @@ export function snapshotSpace(space: Space): PersistedSpace {
     id: space.id,
     name: space.name,
     dir: space.dir,
-    activeWindow: space.active?.number ?? null,
+    activeWindow: space.activeWindowNumber,
     windows: space.windows.map(snapshotWindow),
   }
 }
@@ -106,7 +106,7 @@ export function snapshotSession(spaces: SpaceSet, base: SessionState): SessionSt
     ...base,
     version: SESSION_VERSION,
     updatedAt: Date.now(),
-    activeSpace: spaces.active?.id ?? null,
+    activeSpace: spaces.activeSpaceId,
     spaces: spaces.spaces.map(snapshotSpace),
   }
 }

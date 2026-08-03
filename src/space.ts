@@ -4,6 +4,17 @@ import { Window } from "./window.ts"
 import type { Agent, AgentState } from "./agent.ts"
 import type { TerminalPane } from "./pane.ts"
 import { RenderCtx, type WorkspaceEnv } from "./env.ts"
+import {
+  activateSpaceState,
+  claimWindowNumber,
+  closeWindowState,
+  removeSpaceState,
+  selectWindowState,
+  spaceSetState,
+  spaceState,
+  type SpaceSetState,
+  type SpaceState,
+} from "./space-model.ts"
 
 let nextSpaceId = 0
 
@@ -18,13 +29,12 @@ function reserveSpaceId(id: string) {
  * A named working context with a directory attached.
  *
  * The top of the tmux hierarchy: a space holds windows, a window holds panes.
- * A space owns its own container, and only its active window's split tree is
- * mounted inside it — so every other window keeps its layout and its running
- * agents while contributing nothing to yoga or the hit grid.
+ * Its state names windows by number and does not depend on the render tree.
+ * SpaceSet projects the active window into its host; every other window keeps
+ * its layout and running agents while contributing nothing to yoga or hit tests.
  */
 export class Space {
   readonly id: string
-  readonly root: BoxRenderable
   name: string
   dir: string
 
@@ -37,18 +47,12 @@ export class Space {
   /** Passed down to every window this space opens, unread here beyond the
    *  renderer — a space is a container, not a thing that starts processes. */
   #env: Context.Context<WorkspaceEnv>
-  #ctx: RenderContext
   #windows: Window[] = []
   /** One scope per window, for the same reason Window keeps one per agent:
    *  closeWindow must end exactly one window, and a window will eventually be
    *  movable between spaces (ts-e10c3a), which a forked child scope forbids. */
   #scopes = new Map<Window, Scope.CloseableScope>()
-  #active: Window | null = null
-  /** The window that was active before the current one, for last-window. See
-   *  selectWindow() for how it moves, and closeWindow() for the rule that
-   *  keeps it from ever naming a window that no longer exists. */
-  #last: Window | null = null
-  #nextNumber = 1
+  #state: SpaceState = spaceState()
 
   onChange?: () => void
   onAgentExit?: (agent: Agent, window: Window, space: Space) => void
@@ -57,16 +61,10 @@ export class Space {
 
   constructor(env: Context.Context<WorkspaceEnv>, opts: { name: string; dir: string; id?: string }) {
     this.#env = env
-    this.#ctx = Context.get(env, RenderCtx)
     this.id = opts.id ?? `space-${nextSpaceId++}`
     if (opts.id) reserveSpaceId(opts.id)
     this.name = opts.name
     this.dir = opts.dir
-    this.root = new BoxRenderable(this.#ctx, {
-      id: `space-root-${this.id}`,
-      flexDirection: "row",
-      flexGrow: 1,
-    })
   }
 
   get windows(): readonly Window[] {
@@ -74,7 +72,12 @@ export class Space {
   }
 
   get active(): Window | null {
-    return this.#active
+    return this.#windows.find((window) => window.number === this.#state.activeWindow) ?? null
+  }
+
+  /** Stable model identity used by persistence and, eventually, the daemon. */
+  get activeWindowNumber(): number | null {
+    return this.#state.activeWindow
   }
 
   /** Every agent across every window in this space. */
@@ -104,9 +107,10 @@ export class Space {
    */
   newWindow(name?: string, number?: number): Effect.Effect<Window> {
     return Effect.gen(this, function* () {
-      if (number !== undefined) this.#nextNumber = Math.max(this.#nextNumber, number + 1)
+      let claimed: number
+      ;[this.#state, claimed] = claimWindowNumber(this.#state, number)
       const scope = yield* Scope.make()
-      const window = yield* Window.make(this.#env, this.dir, number ?? this.#nextNumber++).pipe(
+      const window = yield* Window.make(this.#env, this.dir, claimed).pipe(
         Scope.extend(scope),
       )
       this.#scopes.set(window, scope)
@@ -122,18 +126,12 @@ export class Space {
   }
 
   selectWindow(window: Window) {
-    if (this.#active === window) return
-    // Detach rather than destroy, so the window keeps its split tree.
-    if (this.#active) this.root.remove(this.#active.root)
-    // The window being left becomes last-window's other endpoint, the way
-    // tmux's session_set_current records a last window on every select.
-    this.#last = this.#active
-    this.#active = window
-    this.root.add(window.root)
+    const next = selectWindowState(this.#state, this.#windows.map((candidate) => candidate.number), window.number)
+    if (next === this.#state) return
+    this.#state = next
     const pane = window.focused ?? window.panes[0]
     if (pane) window.focus(pane)
     this.onChange?.()
-    this.#ctx.requestRender()
   }
 
   /**
@@ -145,8 +143,8 @@ export class Space {
    * keeps the promise even if something else left a stale reference behind.
    */
   selectLastWindow() {
-    const last = this.#last
-    if (!last || !this.#windows.includes(last)) return
+    const last = this.#windows.find((window) => window.number === this.#state.lastWindow)
+    if (!last) return
     this.selectWindow(last)
   }
 
@@ -160,7 +158,8 @@ export class Space {
 
   cycleWindow(step = 1) {
     if (this.#windows.length < 2) return
-    const i = this.#active ? this.#windows.indexOf(this.#active) : -1
+    const active = this.active
+    const i = active ? this.#windows.indexOf(active) : -1
     this.selectWindow(this.#windows[(i + step + this.#windows.length) % this.#windows.length]!)
   }
 
@@ -219,31 +218,19 @@ export class Space {
       const i = this.#windows.indexOf(window)
       if (i === -1) return
       this.#windows.splice(i, 1)
-      if (this.#active === window) {
-        this.root.remove(window.root)
-        this.#active = null
-        // Land on the window that was active before this one — the way tmux's
-        // session_detach prefers last over a neighbour when the current window
-        // dies — falling back to a neighbour when there was none. #active is
-        // already null here, so selectWindow records an empty #last rather
-        // than letting the pair's other endpoint be a window that is gone.
-        const next =
-          (this.#last && this.#windows.includes(this.#last) ? this.#last : null) ??
-          this.#windows[Math.min(i, this.#windows.length - 1)] ??
-          null
-        if (next) {
-          this.selectWindow(next)
-        } else {
-          this.#last = null
-        }
-      } else if (this.#last === window) {
-        // The toggle's other endpoint is gone: no closed window may stay
-        // reachable from last-window.
-        this.#last = null
-      }
+      this.#state = closeWindowState(
+        this.#state,
+        this.#windows.map((candidate) => candidate.number),
+        window.number,
+        i,
+      )
+      // SpaceSet observes this synchronously and unmounts the old root before
+      // the window scope frees terminals that root could still render.
+      const active = this.active
+      const pane = active?.focused ?? active?.panes[0]
+      if (active && pane) active.focus(pane)
+      else this.onChange?.()
       yield* this.#releaseWindow(window)
-      this.onChange?.()
-      this.#ctx.requestRender()
     })
   }
 
@@ -268,12 +255,9 @@ export class Space {
 
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      // Unmount before disposing: the active window's panes are still in the
-      // render tree and would draw from terminals that are being freed.
-      if (this.#active) this.root.remove(this.#active.root)
       for (const w of [...this.#windows]) yield* this.#releaseWindow(w)
       this.#windows.length = 0
-      this.#active = null
+      this.#state = spaceState()
     })
   }
 }
@@ -324,7 +308,8 @@ export class SpaceSet {
   #host: BoxRenderable
   #spaces: Space[] = []
   #scopes = new Map<Space, Scope.CloseableScope>()
-  #active: Space | null = null
+  #state: SpaceSetState = spaceSetState()
+  #mounted: Window | null = null
   onChange?: () => void
   onAgentExit?: (agent: Agent, window: Window, space: Space) => void
   onCopy?: (text: string) => boolean | void
@@ -341,12 +326,17 @@ export class SpaceSet {
   }
 
   get active(): Space | null {
-    return this.#active
+    return this.#spaces.find((space) => space.id === this.#state.activeSpace) ?? null
+  }
+
+  /** Stable model identity used by persistence and, eventually, the daemon. */
+  get activeSpaceId(): string | null {
+    return this.#state.activeSpace
   }
 
   /** The window keystrokes currently land in. */
   get activeWindow(): Window | null {
-    return this.#active?.active ?? null
+    return this.active?.active ?? null
   }
 
   /** Every agent across every space — what a global "N agents" count means. */
@@ -359,22 +349,25 @@ export class SpaceSet {
       const scope = yield* Scope.make()
       const space = yield* Space.make(this.#env, { name, dir, id }).pipe(Scope.extend(scope))
       this.#scopes.set(space, scope)
-      space.onChange = () => this.onChange?.()
+      space.onChange = () => {
+        if (space === this.active) this.#project()
+        this.onChange?.()
+      }
       space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space)
       space.onCopy = this.onCopy
       space.onCopyError = this.onCopyError
       this.#spaces.push(space)
-      if (!this.#active) this.activate(space)
+      if (!this.active) this.activate(space)
       else this.onChange?.()
       return space
     })
   }
 
   activate(space: Space) {
-    if (this.#active === space) return
-    if (this.#active) this.#host.remove(this.#active.root)
-    this.#active = space
-    this.#host.add(space.root)
+    const next = activateSpaceState(this.#state, this.#spaces.map((candidate) => candidate.id), space.id)
+    if (next === this.#state) return
+    this.#state = next
+    this.#project()
     // Re-focus so keystrokes land in this space's pane, not the old one's.
     const window = space.active
     const pane = window?.focused ?? window?.panes[0]
@@ -391,7 +384,8 @@ export class SpaceSet {
 
   cycle(step = 1) {
     if (this.#spaces.length < 2) return
-    const i = this.#active ? this.#spaces.indexOf(this.#active) : -1
+    const active = this.active
+    const i = active ? this.#spaces.indexOf(active) : -1
     this.activate(this.#spaces[(i + step + this.#spaces.length) % this.#spaces.length]!)
   }
 
@@ -428,12 +422,13 @@ export class SpaceSet {
       const i = this.#spaces.indexOf(space)
       if (i === -1) return
       this.#spaces.splice(i, 1)
-      if (this.#active === space) {
-        this.#host.remove(space.root)
-        this.#active = null
-        const next = this.#spaces[Math.min(i, this.#spaces.length - 1)]
-        if (next) this.activate(next)
-      }
+      this.#state = removeSpaceState(
+        this.#state,
+        this.#spaces.map((candidate) => candidate.id),
+        space.id,
+        i,
+      )
+      this.#project()
       yield* this.#releaseSpace(space)
       this.onChange?.()
       this.#ctx.requestRender()
@@ -444,6 +439,15 @@ export class SpaceSet {
     const scope = this.#scopes.get(space)
     this.#scopes.delete(space)
     return scope ? Scope.close(scope, Exit.void) : space.release
+  }
+
+  /** Reconcile the one renderable admitted by the workspace model. */
+  #project() {
+    const next = this.activeWindow
+    if (next === this.#mounted) return
+    if (this.#mounted) this.#host.remove(this.#mounted.root)
+    this.#mounted = next
+    if (next) this.#host.add(next.root)
   }
 
   /**
@@ -465,10 +469,12 @@ export class SpaceSet {
 
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      if (this.#active) this.#host.remove(this.#active.root)
+      // Unmount before disposing: mounted panes draw from terminals whose
+      // scopes are about to close.
+      this.#state = spaceSetState()
+      this.#project()
       for (const s of [...this.#spaces]) yield* this.#releaseSpace(s)
       this.#spaces.length = 0
-      this.#active = null
     })
   }
 }
