@@ -67,6 +67,28 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     // interrupts pumps before freeing the terminals they may still touch.
     const pumps = yield* FiberMap.make<string>();
 
+    // A live session's pump is permanently stuck reading session.output: the
+    // stream's iterator.next() call is a plain, unabortable promise, so a
+    // fiber blocked inside it cannot notice interruption until the promise
+    // itself resolves — which only happens once the backend is killed. If
+    // scope teardown relied on interrupting the pump to trigger that kill (as
+    // it used to, via the pump's own Effect.ensuring below), nothing would
+    // ever run: the pump waits on the kill, the kill waits on the pump.
+    // Registered after the pump map, so by LIFO it runs first and kills every
+    // live backend directly, which lets each pump's in-flight read finish on
+    // its own — the map's own interrupt-and-join finalizer then has nothing
+    // left to wait for.
+    yield* Effect.addFinalizer(() =>
+      Ref.get(sessions).pipe(
+        Effect.flatMap((current) =>
+          Effect.forEach([...current.values()], (session) => session.kill.pipe(Effect.ignore), {
+            concurrency: "unbounded",
+            discard: true,
+          }),
+        ),
+      ),
+    );
+
     const dropScreen = (id: string, expected?: Terminal) =>
       Effect.gen(function* () {
         const screen = yield* Ref.modify(replays, (current) => {

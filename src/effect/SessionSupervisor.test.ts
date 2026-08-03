@@ -98,10 +98,7 @@ test("a supervised session publishes its foreground process, and its changes", a
         throw new Error("no foreground frame with a command running arrived");
       }));
       yield* Fiber.interrupt(waiter);
-      // Scope teardown of a still-running session hangs the supervised pump
-      // (pre-existing, unrelated to the foreground poller), so end the session
-      // the way every supervisor test does: kill it explicitly.
-      yield* supervisor.kill("foreground-agent");
+      // Left running: scope teardown below has to kill it on its own.
       return {
         prompt: yield* Deferred.await(atPrompt),
         running: yield* Deferred.await(running),
@@ -115,6 +112,36 @@ test("a supervised session publishes its foreground process, and its changes", a
   // reports must not be the shell's.
   expect(fg.running.pgid).toBeGreaterThan(0);
   expect(fg.running.pgid).not.toBe(fg.running.sid);
+});
+
+/**
+ * session.output is read via Stream.fromAsyncIterable, whose iterator.next()
+ * call is an unabortable promise: a fiber blocked inside it cannot notice
+ * interruption until the promise resolves, which for a live session only
+ * happens once the backend is killed. Scope teardown must kill the backend
+ * itself rather than depend on interrupting the pump to trigger that kill —
+ * otherwise the pump waits on the kill and the kill waits on the pump.
+ */
+test("scope teardown kills a session left running, without an explicit kill", async () => {
+  const outcome = await Effect.runPromise(
+    Effect.gen(function* () {
+      const supervisor = yield* SessionSupervisor;
+      yield* supervisor.spawn({
+        id: "still-running-agent",
+        cmd: ["sleep", "30"],
+        cols: 80,
+        rows: 24,
+      });
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+      Effect.timeout("5 seconds"),
+      Effect.either,
+    ),
+  );
+
+  expect(outcome._tag).toBe("Right");
 });
 
 test("SessionSupervisor routes input through the managed PTY", async () => {
