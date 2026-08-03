@@ -15,6 +15,11 @@
  * Dividers are deliberately absent. One sits between every adjacent sibling
  * pair, so their placement is derivable rather than authored — recording them
  * would let a decoded layout disagree with what the window would build.
+ *
+ * WindowState, at the foot of this file, is the rest of what a window is once
+ * the renderer is taken away: focus, last-pane, zoom, sync and preset. It sits
+ * beside Layout rather than on Window because none of it needs a renderer
+ * either, and a headless window is the two of them together.
  */
 
 import type { SplitDirection } from "./window.ts"
@@ -319,6 +324,60 @@ export type LayoutPreset = (typeof LAYOUT_PRESETS)[number]
 
 export function isLayoutPreset(value: unknown): value is LayoutPreset {
   return typeof value === "string" && (LAYOUT_PRESETS as readonly string[]).includes(value)
+}
+
+/**
+ * A window filled by one pane, and the arrangement to return to.
+ *
+ * Zoom used to be three fields of parked renderables — the pane, the slot it
+ * was lifted out of, and the tree hung off to one side — because the tree was
+ * the only place the arrangement existed, so preserving it meant keeping it
+ * alive somewhere off-screen.
+ *
+ * It can be data instead, and exactly because of what a zoom does to the
+ * screen: a zoomed window mounts one pane and NO DIVIDERS, and a drag is the
+ * only thing that reshapes a tree behind the model's back. So nothing can
+ * change the arrangement while a zoom is in effect, and the layout captured
+ * when it started is still exact when it ends — not an approximation of the
+ * tree, but the same answer the tree would have given.
+ */
+export interface Zoom {
+  /** PaneRef.id of the pane filling the window. */
+  pane: string
+  /** The arrangement to return to, captured when the zoom started. */
+  from: Layout
+}
+
+/**
+ * A window's state apart from its arrangement.
+ *
+ * Everything here is either a pane ID or a flag, so a window in a process with
+ * no renderer can hold all of it — which is the point. Focus and last-pane were
+ * renderable references, and a reference cannot be stored, sent, or held by a
+ * daemon; naming a pane by its id also makes a DANGLING one unrepresentable,
+ * since an id that no pane answers to simply resolves to nothing. That replaces
+ * the rule that every rebuild had to remember to clear a stale last-pane.
+ *
+ * It lives here rather than on Window for the same reason LayoutPreset does:
+ * none of it needs the renderer.
+ */
+export interface WindowState {
+  /** PaneRef.id of the focused pane. */
+  focus: string | null
+  /** PaneRef.id of the pane focused before it — tmux's last-pane. */
+  last: string | null
+  zoom: Zoom | null
+  /** Whether ordinary child input is replicated to every pane — tmux's
+   *  synchronize-panes. A transient interactive mode, shown in the tab, never
+   *  persisted or configured. */
+  sync: boolean
+  /** The named layout this window currently matches, cleared by anything that
+   *  reshapes or resizes the tree. Drives next-layout's cycle. */
+  preset: LayoutPreset | null
+}
+
+export function windowState(): WindowState {
+  return { focus: null, last: null, zoom: null, sync: false, preset: null }
 }
 
 /** tmux's next-layout: step through the presets, starting the cycle over from

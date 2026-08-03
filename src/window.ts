@@ -17,10 +17,12 @@ import {
   prune,
   splitLayout,
   swapLayout,
+  windowState,
   type Layout,
   type LayoutNode,
   type LayoutPane,
   type LayoutPreset,
+  type WindowState,
 } from "./layout.ts"
 
 export type SplitDirection = "row" | "column"
@@ -61,28 +63,20 @@ export class Window {
   #ctx: RenderContext
   #panes: TerminalPane[] = []
   #agents: Agent[] = []
-  #focused: TerminalPane | null = null
-  /** The pane that was focused before the current one, for last-pane. See
-   *  focus() for how it moves, and #project for the one rule that keeps it
-   *  from ever naming a pane that no longer exists. */
-  #last: TerminalPane | null = null
+  /**
+   * Everything about this window that is not its arrangement: focus,
+   * last-pane, zoom, sync and preset, all as pane ids and flags.
+   *
+   * A plain record rather than five private fields, and ids rather than
+   * renderable references, so that the state a headless window would hold is
+   * separable from the tree that draws it. See WindowState in layout.ts.
+   */
+  #state: WindowState = windowState()
   #shell: string[]
   /** Handed on to the panes and dividers this window builds. */
   #env: Context.Context<WorkspaceEnv>
   /** Directory agents spawn in — the owning space's attached directory. */
   #cwd: string | undefined
-  /** The pane filling the window on its own, and everything needed to put the
-   *  layout back exactly as it was. See #zoom. */
-  #zoomed: TerminalPane | null = null
-  #zoomSlot: { parent: BoxRenderable; index: number; weight: number } | null = null
-  #zoomTree: Renderable[] = []
-  /** Whether ordinary child input is replicated to every pane — tmux's
-   *  synchronize-panes. Treated like zoom: a transient interactive mode, shown
-   *  in the tab, never persisted or configured. */
-  #sync = false
-  /** The named layout this window currently matches, cleared by anything that
-   *  reshapes or resizes the tree. See preset. */
-  #preset: LayoutPreset | null = null
   onChange?: () => void
   /** Fired after an agent's process exits and its views have been closed. The
    *  app uses it to decide what to show next; it is deliberately not the same
@@ -137,24 +131,24 @@ export class Window {
    *  the same "what is this actually running" cue tmux gives a window. */
   get title(): string {
     if (this.customName) return this.customName
-    const agent = this.#focused?.agent ?? this.#agents[0]
+    const agent = this.focused?.agent ?? this.#agents[0]
     return agent?.title ?? "window"
   }
 
   /** How the window reads in the tab bar and the sidebar. Both show the same
    *  string, including the zoom marker, so neither can drift from the other. */
   get label(): string {
-    return `${this.number}:${this.title}${this.#zoomed ? " Z" : ""}${this.#sync ? " Y" : ""}`
+    return `${this.number}:${this.title}${this.#state.zoom ? " Z" : ""}${this.#state.sync ? " Y" : ""}`
   }
 
   /** True while one pane is filling the window on its own. */
   get zoomed(): boolean {
-    return this.#zoomed !== null
+    return this.#state.zoom !== null
   }
 
   /** True while ordinary child input is broadcast to every pane in the window. */
   get sync(): boolean {
-    return this.#sync
+    return this.#state.sync
   }
 
   /** Every agent, including ones no pane is currently showing. This is what
@@ -316,8 +310,34 @@ export class Window {
     )
   }
 
-  get focused() {
-    return this.#focused
+  /**
+   * The focused pane, resolved from the id the state holds.
+   *
+   * Derived rather than stored, which is what makes a dangling focus
+   * impossible: a pane that has left the window answers to no id, so this
+   * simply comes back null instead of handing out a destroyed renderable.
+   * Pane ids are minted monotonically and never reused, so a stale id cannot
+   * come back to life as some later pane either.
+   */
+  get focused(): TerminalPane | null {
+    return this.#pane(this.#state.focus)
+  }
+
+  #pane(id: string | null): TerminalPane | null {
+    return id === null ? null : (this.#panes.find((pane) => pane.id === id) ?? null)
+  }
+
+  /**
+   * Where a pane sits in the arrangement — the index splitLayout, swapLayout
+   * and closeLayout all address panes by.
+   *
+   * Read out of the layout rather than by walking the tree, because under a
+   * zoom the tree is down to one pane while the arrangement still has all of
+   * them. The layout is the thing those transforms index into anyway, so
+   * asking it directly is both more correct and answerable in more states.
+   */
+  #slotOf(layout: Layout, pane: TerminalPane): number {
+    return layoutPanes(layout.root).findIndex((slot) => slot.id === pane.id)
   }
 
   /**
@@ -341,7 +361,7 @@ export class Window {
    * the same bytes are simply delivered to each.
    */
   write(bytes: string | Uint8Array) {
-    if (this.#sync) {
+    if (this.#state.sync) {
       const seen = new Set<Agent>()
       for (const pane of this.#panes) {
         if (seen.has(pane.agent)) continue
@@ -350,12 +370,12 @@ export class Window {
       }
       return
     }
-    this.#focused?.write(bytes)
+    this.focused?.write(bytes)
   }
 
   /** Flip synchronize-panes for this window. */
   toggleSync() {
-    this.#sync = !this.#sync
+    this.#state.sync = !this.#state.sync
     this.onChange?.()
     this.#ctx.requestRender()
   }
@@ -370,20 +390,21 @@ export class Window {
     // Dragging a seam moves the window off whatever preset built it, so the
     // next select-layout advances rather than rebuilding what is on screen.
     divider.onResized = () => {
-      this.#preset = null
+      this.#state.preset = null
     }
     return divider
   }
 
   /** `id` is the pane's model identity (layout.ts newPaneId), used as the
-   *  renderable's tree id too so a pane has one identifier rather than two. */
+   *  renderable's tree id too so a pane has one identifier rather than two.
+   *  The caller adds it to `#panes`, because where a pane lands in that list is
+   *  layout order and only the projection knows it. */
   #makePane(agent: Agent, id = newPaneId()): TerminalPane {
     const pane = new TerminalPane(this.#ctx, { id, agent })
     setWeight(pane, 1)
     pane.onFocusRequest = (p) => this.focus(p)
     pane.onCopy = this.onCopy
     pane.onCopyError = this.onCopyError
-    this.#panes.push(pane)
     return pane
   }
 
@@ -397,6 +418,7 @@ export class Window {
    *  pane to split. */
   mount(agent: Agent): TerminalPane {
     const pane = this.#makePane(agent)
+    this.#panes.push(pane)
     this.root.add(pane)
     this.focus(pane)
     return pane
@@ -406,14 +428,14 @@ export class Window {
     // Looking at another pane means you are done with the zoom, which is also
     // what tmux's select-pane does. Zoom survives switching *windows*, though:
     // that is navigation, not a change of mind about this layout.
-    if (this.#zoomed && pane !== this.#zoomed) this.#unzoom()
+    if (this.#state.zoom && pane.id !== this.#state.zoom.pane) this.#unzoom()
     // The pane being left becomes last-pane's other endpoint, the way tmux's
     // window_set_active_pane records a last pane on every select. Re-focusing
     // the pane already on screen — a window switch landing back on its own
     // focus — is not a change of mind, so it leaves the pair alone.
-    if (pane !== this.#focused) {
-      this.#last = this.#focused
-      this.#focused = pane
+    if (pane.id !== this.#state.focus) {
+      this.#state.last = this.#state.focus
+      this.#state.focus = pane.id
     }
     for (const p of this.#panes) p.active = p === pane
     this.#refreshChrome()
@@ -425,55 +447,48 @@ export class Window {
    * Switch focus to the previously focused pane — tmux's last-pane.
    *
    * Repeated presses toggle between the two most recent panes: every focus
-   * move records the pane being left as #last, so selecting #last then selects
-   * the pane that was left, and so on back. A pane closed since it was last
-   * is skipped rather than focused — the membership check is what keeps a
-   * destroyed renderable unreachable, with the eager clear in #project as the
-   * primary guard.
+   * move records the pane being left, so selecting it then selects the pane
+   * that was left, and so on back. A pane closed since it was last simply no
+   * longer answers to that id, so the lookup comes back empty and the press
+   * does nothing — there is no destroyed renderable to guard against, which is
+   * the point of holding an id rather than a reference.
    */
   lastPane() {
-    const last = this.#last
-    if (!last || !this.#panes.includes(last)) return
-    this.focus(last)
+    const last = this.#pane(this.#state.last)
+    if (last) this.focus(last)
   }
 
   /**
    * Toggle the focused pane filling the whole window.
    *
-   * The split tree is lifted off the root wholesale and the pane hung there in
-   * its place, rather than the layout being rebuilt around a maximised pane.
-   * Detached renderables cost nothing — they are out of yoga and out of the hit
-   * grid — and every weight, divider and nesting level survives untouched, so
-   * unzooming restores the layout exactly instead of approximately.
+   * The arrangement is captured as a Layout and the window re-projected with
+   * just the one pane mounted; unzooming projects the capture back. The panes
+   * that leave the screen are not destroyed and not parked in a detached tree —
+   * they stay in `#panes`, unmounted, keeping their terminals and their place
+   * in the sync fan-out, and the projection puts them back in the slots the
+   * captured layout names.
    *
-   * Splitting, closing or swapping while zoomed drops the zoom first: those all
-   * reshape the tree that is currently parked off to one side, and reasoning
-   * about a layout you cannot see is how panes go missing.
+   * That the capture stays exact is not luck. A zoomed window mounts no
+   * dividers, and a drag is the only thing that can reshape a tree without
+   * going through a layout, so nothing is able to change the arrangement while
+   * the zoom is on. Weights, nesting and divider placement all come back
+   * exactly, as they did when the tree itself was parked.
+   *
+   * Splitting, closing or swapping while zoomed drops the zoom: they reshape
+   * the arrangement the zoom was going to return to, so the capture is stale by
+   * definition and the new layout wins.
    */
   zoom() {
-    if (this.#zoomed) {
+    if (this.#state.zoom) {
       this.#unzoom()
     } else {
-      const pane = this.#focused
+      const pane = this.focused
       // Zooming the only pane changes nothing but would still show a marker.
       if (!pane || this.#panes.length < 2) return
-      const parent = pane.parent as BoxRenderable | null
-      if (!parent) return
-
-      this.#zoomSlot = {
-        parent,
-        index: parent.getChildren().indexOf(pane),
-        weight: getWeight(pane),
-      }
-      // Everything the root holds *except* the pane being zoomed: when the pane
-      // hangs straight off the root it is one of those children itself, and
-      // parking it alongside the tree would restore it twice.
-      this.#zoomTree = this.root.getChildren().filter((child) => child !== pane)
-      parent.remove(pane)
-      for (const child of this.#zoomTree) this.root.remove(child)
-      setWeight(pane, 1)
-      this.root.add(pane)
-      this.#zoomed = pane
+      const from = this.exportLayout()
+      if (this.#slotOf(from, pane) === -1) return
+      this.#state.zoom = { pane: pane.id, from }
+      this.#mount(from, this.#state.preset)
     }
     this.#refreshChrome()
     this.onChange?.()
@@ -481,18 +496,10 @@ export class Window {
   }
 
   #unzoom() {
-    const pane = this.#zoomed
-    const slot = this.#zoomSlot
-    this.#zoomed = null
-    this.#zoomSlot = null
-    const tree = this.#zoomTree
-    this.#zoomTree = []
-    if (!pane || !slot) return
-
-    this.root.remove(pane)
-    for (const child of tree) this.root.add(child)
-    setWeight(pane, slot.weight)
-    slot.parent.add(pane, slot.index)
+    const zoom = this.#state.zoom
+    if (!zoom) return
+    this.#state.zoom = null
+    this.#mount(zoom.from, this.#state.preset)
   }
 
   /**
@@ -541,6 +548,7 @@ export class Window {
   #refreshChrome() {
     const gap = runtime.paneGap > 0
     const showOuterBorder = runtime.singlePaneBorder || this.#panes.length > 1
+    const focused = this.focused
     for (const pane of this.#panes) {
       pane.edges = {
         // frame.externalLeft: the sidebar handle owns that column, so no pane
@@ -563,7 +571,7 @@ export class Window {
       divider.capStart =
         !this.#hasNeighbour(divider, cross, -1) && !(frame.externalLeft && cross === "row")
       divider.capEnd = !this.#hasNeighbour(divider, cross, 1)
-      divider.adjacentToFocus = this.#focused ? this.#touches(divider, this.#focused) : false
+      divider.adjacentToFocus = focused ? this.#touches(divider, focused) : false
     }
   }
 
@@ -577,25 +585,8 @@ export class Window {
   /** True when the focused pane sits against the window's left edge, so the
    *  sidebar handle is that pane's border and should highlight with it. */
   get focusAtLeftEdge(): boolean {
-    return this.#focused ? !this.#hasNeighbour(this.#focused, "row", -1) : false
-  }
-
-  /**
-   * The panes in tree order — left to right, depth first.
-   *
-   * The order a Layout lists them in, which is what makes a position in one the
-   * same position in the other. NOT the same as `#panes`: that is creation
-   * order, and a split used to insert into the middle of the tree while pushing
-   * onto the end of the list. Every arrangement now goes through applyLayout,
-   * which rebuilds `#panes` in this order, so the two agree — but the tree is
-   * the one that defines it.
-   */
-  #paneOrder(root: Renderable = this.root, out: TerminalPane[] = []): TerminalPane[] {
-    for (const child of root.getChildren()) {
-      if (child instanceof TerminalPane) out.push(child)
-      else if (child instanceof BoxRenderable) this.#paneOrder(child, out)
-    }
-    return out
+    const focused = this.focused
+    return focused ? !this.#hasNeighbour(focused, "row", -1) : false
   }
 
   #dividers(root: Renderable = this.root, out: Divider[] = []): Divider[] {
@@ -686,7 +677,8 @@ export class Window {
 
   focusNext(step = 1) {
     if (!this.#panes.length) return
-    const i = this.#focused ? this.#panes.indexOf(this.#focused) : -1
+    const focused = this.focused
+    const i = focused ? this.#panes.indexOf(focused) : -1
     const next = (i + step + this.#panes.length) % this.#panes.length
     this.focus(this.#panes[next]!)
   }
@@ -705,7 +697,7 @@ export class Window {
    * are actually looking at rather than the first in the list.
    */
   focusDirection(direction: Direction) {
-    const from = this.#focused
+    const from = this.focused
     if (!from || this.#panes.length < 2) return
     const horizontal = direction === "left" || direction === "right"
     const backwards = direction === "left" || direction === "up"
@@ -748,7 +740,7 @@ export class Window {
    * would.
    */
   resizeFocus(direction: Direction) {
-    const pane = this.#focused
+    const pane = this.focused
     if (!pane || this.#panes.length < 2) return
     const axis: SplitDirection = direction === "left" || direction === "right" ? "row" : "column"
     const dir: -1 | 1 = direction === "left" || direction === "up" ? -1 : 1
@@ -765,16 +757,17 @@ export class Window {
    * with the pane, which is what makes repeated presses walk it along.
    */
   swap(step: 1 | -1) {
-    if (this.#zoomed) this.#unzoom()
-    const from = this.#focused
-    const order = this.#paneOrder()
-    if (!from || order.length < 2) return
-    const i = order.indexOf(from)
+    const from = this.focused
+    if (!from) return
+    const layout = this.exportLayout()
+    const count = layoutPanes(layout.root).length
+    if (count < 2) return
+    const i = this.#slotOf(layout, from)
     if (i === -1) return
-    const j = (i + step + order.length) % order.length
+    const j = (i + step + count) % count
     // Swapping panes inside a preset arrangement leaves it that arrangement:
     // even-horizontal with two panes exchanged is still even-horizontal.
-    this.applyLayout(swapLayout(this.exportLayout(), i, j), this.#preset)
+    this.applyLayout(swapLayout(layout, i, j), this.#state.preset)
   }
 
   /**
@@ -785,16 +778,14 @@ export class Window {
    * the tree stays a proper h/v alternation instead of a flat list.
    */
   split(direction: SplitDirection, agent: Agent): TerminalPane | null {
-    // Splitting reshapes the parked tree; do it with the layout on screen.
-    if (this.#zoomed) this.#unzoom()
-    const target = this.#focused
+    const target = this.focused
     if (!target) return this.mount(agent)
-    // A focused pane that is not in the tree has no slot to split. The tree is
-    // the only thing that can say so — the layout below is derived from it, and
-    // a pane it never walked is simply absent rather than reported.
-    if (!target.parent) return null
 
-    const at = this.#paneOrder().indexOf(target)
+    // A focused pane the arrangement does not contain has no slot to split.
+    // The layout is what answers that — not whether the pane is mounted, which
+    // a zoom makes false for panes that do have slots.
+    const layout = this.exportLayout()
+    const at = this.#slotOf(layout, target)
     if (at === -1) return null
 
     // The newcomer is named before it exists, so the layout can say which pane
@@ -802,7 +793,7 @@ export class Window {
     // apply builds it under that id and focuses it, which is why nothing here
     // has to find the new pane by position afterwards.
     const id = newPaneId()
-    const next = splitLayout(this.exportLayout(), at, direction, { id, agent: agent.id })
+    const next = splitLayout(layout, at, direction, { id, agent: agent.id })
     if (!this.applyLayout(next)) return null
     return this.#panes.find((pane) => pane.id === id) ?? null
   }
@@ -819,7 +810,10 @@ export class Window {
    * take a split does not leave a live process behind with no pane on it.
    */
   splitSpawn(direction: SplitDirection, name?: string): Effect.Effect<TerminalPane | null> {
-    if (this.#focused && !this.#focused.parent) return Effect.succeed(null)
+    const focused = this.focused
+    if (focused && this.#slotOf(this.exportLayout(), focused) === -1) {
+      return Effect.succeed(null)
+    }
     return this.spawn(name).pipe(Effect.map((agent) => this.split(direction, agent)))
   }
 
@@ -847,15 +841,15 @@ export class Window {
    * Returns the pane, or null when this window does not hold it.
    */
   detachPane(pane: TerminalPane): TerminalPane | null {
-    // Unzoom first, whichever pane is going: while zoomed the tree is off the
-    // root, and unpicking a pane out of a detached tree is how you end up
-    // restoring a layout that no longer contains anything.
-    if (this.#zoomed) this.#unzoom()
-    const at = this.#paneOrder().indexOf(pane)
+    // Works zoomed or not: the arrangement is read from the layout, which under
+    // a zoom is the one the zoom captured, and projecting the result is what
+    // drops the zoom. Closing the zoomed pane itself is the same path.
+    const layout = this.exportLayout()
+    const at = this.#slotOf(layout, pane)
     if (at === -1) return null
     // Losing a pane moves the window off whatever preset it matched: the
     // arrangement now has one fewer pane than the preset describes.
-    const [evicted] = this.#project(closeLayout(this.exportLayout(), at), null)
+    const [evicted] = this.#project(closeLayout(layout, at), null)
     return evicted ?? null
   }
 
@@ -865,6 +859,11 @@ export class Window {
    *  closes the pane in the window it now lives in. The caller detaches first,
    *  so the pane arrives unmounted and with no other owner. */
   adopt(agent: Agent, pane: TerminalPane, scope: Scope.CloseableScope) {
+    // The newcomer is hung straight off the root rather than projected, so the
+    // zoom has to come down first: a zoomed window has its other panes
+    // unmounted, and adding a second pane beside the zoomed one would leave
+    // them stranded there with no arrangement on screen to rejoin.
+    this.#unzoom()
     this.#agents.push(agent)
     // The scope comes from the window that relinquished it — see the note on
     // #scopes for why it travels rather than being re-forked here. Required,
@@ -893,48 +892,37 @@ export class Window {
   /**
    * This window's arrangement, as data that can be stored and rebuilt.
    *
-   * Reads *through* a zoom rather than capturing it. Zoom parks the real tree
-   * off the root and hangs one pane there instead, so exporting the live root
-   * while zoomed would record a single-pane window and quietly destroy the
-   * layout on the next restore. Zoom is a transient view of a layout, not a
-   * layout, and is deliberately not persisted — the same reason it is absent
-   * from Space's persisted form.
+   * Under a zoom this is the layout the zoom captured, not the single-pane tree
+   * on screen. Zoom is a transient view OF a layout rather than a layout, so it
+   * must be invisible here — exporting what is mounted would record a
+   * one-pane window and quietly destroy the arrangement on the next restore.
+   * It is deliberately not persisted, the same reason it is absent from Space's
+   * persisted form. The capture is exact rather than approximate because a zoom
+   * mounts no dividers, so nothing can reshape the arrangement while it is on.
    *
    * Dividers are skipped: one sits between every adjacent sibling pair, so the
    * rebuild derives them rather than reading them back.
    */
   exportLayout(): Layout {
-    const slot = this.#zoomSlot
-    const zoomed = this.#zoomed
-
-    // The children a node *would* have with no zoom in effect: the root's real
-    // children are parked in #zoomTree, and the zoomed pane belongs back in the
-    // slot it was lifted out of.
-    const childrenOf = (node: BoxRenderable): Renderable[] => {
-      const base = zoomed && node === this.root ? [...this.#zoomTree] : [...node.getChildren()]
-      if (zoomed && slot && node === slot.parent) base.splice(slot.index, 0, zoomed)
-      return base
-    }
-
-    const weightOf = (node: Renderable): number =>
-      zoomed && slot && node === zoomed ? slot.weight : getWeight(node)
+    if (this.#state.zoom) return this.#state.zoom.from
 
     const walk = (node: Renderable): LayoutNode | null => {
       if (node instanceof TerminalPane) {
-        return { type: "pane", id: node.id, agent: node.agent.id, weight: weightOf(node) }
+        return { type: "pane", id: node.id, agent: node.agent.id, weight: getWeight(node) }
       }
       if (!(node instanceof BoxRenderable)) return null
-      const children = childrenOf(node)
+      const children = node
+        .getChildren()
         .map(walk)
         .filter((child): child is LayoutNode => child !== null)
       if (children.length === 0) return null
-      return { type: "split", direction: getDirection(node), weight: weightOf(node), children }
+      return { type: "split", direction: getDirection(node), weight: getWeight(node), children }
     }
 
     // collapse() does the rest: a single-pane window walks to a one-child split,
     // and closing a pane can leave husks that the live tree renders identically.
     // makeLayout drops a focus whose pane did not survive that collapse.
-    return makeLayout(collapse(walk(this.root)), this.#focused?.id)
+    return makeLayout(collapse(walk(this.root)), this.#state.focus ?? undefined)
   }
 
   /**
@@ -976,23 +964,39 @@ export class Window {
   }
 
   /**
-   * Rebuild the tree from a layout that is already known good, returning the
-   * panes it had no slot for.
+   * Rebuild the window from a new arrangement, returning the panes it had no
+   * slot for.
    *
    * The projection half of applyLayout, split out because eviction is a
    * decision rather than a fact: applying a layout means the pane it dropped
    * was closed, while break-pane means that same pane is being handed to
    * another window alive. One rebuild, and the caller says what becomes of what
    * falls out of it.
+   *
+   * A reshape always drops the zoom. The layout a zoom would return to is the
+   * one being replaced, so keeping it would mean unzooming later into an
+   * arrangement that no longer describes this window.
    */
   #project(wanted: Layout, preset: LayoutPreset | null): TerminalPane[] {
+    this.#state.zoom = null
+    return this.#mount(wanted, preset)
+  }
+
+  /**
+   * Put the window on screen as `wanted` says, under whatever zoom is in force.
+   *
+   * Two passes, because "which panes exist" and "how they are arranged" are
+   * different questions and only the first is settled by the layout alone.
+   * Separating them is what lets a zoom mount one pane without the others being
+   * destroyed or parked somewhere off the tree: they are still panes of this
+   * window, still in `#panes`, still fed by the sync fan-out — just not shown.
+   */
+  #mount(wanted: Layout, preset: LayoutPreset | null): TerminalPane[] {
     const byId = new Map(this.#agents.map((agent) => [agent.id, agent]))
-    // The tree about to be dismantled is the parked one while zoomed.
-    if (this.#zoomed) this.#unzoom()
     // An arbitrary layout matches no preset, so that is the default. A caller
     // that knows better says so: select-layout builds its arrangement FROM a
     // preset, and swapping two panes inside one leaves it that preset.
-    this.#preset = preset
+    this.#state.preset = preset
 
     // Who fills which slot is decided before anything is built, in two passes.
     // A slot naming a pane that exists must get that pane, so those are claimed
@@ -1015,20 +1019,18 @@ export class Window {
     for (const slot of slots) claim(slot, (pane) => pane.id === slot.id)
     for (const slot of slots) claim(slot, (pane) => pane.agent.id === slot.agent)
 
-    const take = (slot: LayoutPane): TerminalPane => {
-      const reused = filled.get(slot.id)
-      if (!reused) {
-        const made = this.#makePane(byId.get(slot.agent)!, slot.id)
-        filled.set(slot.id, made)
-        return made
-      }
-      this.#panes.push(reused)
-      return reused
+    // PASS ONE — which panes exist. Every slot ends up with a pane, reused or
+    // freshly made, and `#panes` comes out in layout order whether or not the
+    // pane is going to be mounted.
+    for (const slot of slots) {
+      const pane = filled.get(slot.id) ?? this.#makePane(byId.get(slot.agent)!, slot.id)
+      filled.set(slot.id, pane)
+      this.#panes.push(pane)
     }
 
     const build = (node: LayoutNode): Renderable => {
       if (node.type === "pane") {
-        const pane = take(node)
+        const pane = filled.get(node.id)!
         setWeight(pane, node.weight)
         return pane
       }
@@ -1048,10 +1050,21 @@ export class Window {
       })
     }
 
-    // A split at the root goes *into* the root box rather than under a fresh
-    // one: the root carries the outermost axis itself (see split), and an extra
-    // level here would be a shape exportLayout immediately collapses away.
-    if (wanted.root === null) {
+    // PASS TWO — how they are arranged. A split at the root goes *into* the
+    // root box rather than under a fresh one: the root carries the outermost
+    // axis itself (see split), and an extra level here would be a shape
+    // exportLayout immediately collapses away.
+    const zoom = this.#state.zoom
+    if (zoom) {
+      // One pane, no dividers, and every other pane left unmounted. Nothing
+      // else has to be remembered for the way back: `zoom.from` is the whole
+      // arrangement, and projecting it again is what restores it.
+      const pane = filled.get(zoom.pane)
+      if (pane) {
+        setWeight(pane, 1)
+        this.root.add(pane)
+      }
+    } else if (wanted.root === null) {
       // Nothing to build: closing the last pane empties the window, which is a
       // state it really has until the app decides to close it.
     } else if (wanted.root.type === "split") {
@@ -1066,22 +1079,17 @@ export class Window {
     const focus = wanted.focus ? filled.get(wanted.focus) : undefined
     const next = focus ?? this.#panes[0]
     if (next) {
-      // Deliberately NOT clearing #focused first, the way this used to: focus()
-      // records the pane being left as #last, and a rebuild that moves focus is
-      // a change of mind exactly like a selection — tmux's window_set_active_pane
-      // does this bookkeeping after a split, a close or an arrange too. The one
-      // exception is a rebuild that keeps the same pane focused, which focus()
-      // sees as no change and leaves the pair alone.
+      // Deliberately NOT clearing the focus first, the way this used to:
+      // focus() records the pane being left as last-pane, and a rebuild that
+      // moves focus is a change of mind exactly like a selection — tmux's
+      // window_set_active_pane does this bookkeeping after a split, a close or
+      // an arrange too. The one exception is a rebuild that keeps the same pane
+      // focused, which focus() sees as no change and leaves the pair alone.
       this.focus(next)
     } else {
       // An empty window has no focus and nothing for last-pane to toggle to.
-      this.#focused = null
+      this.#state.focus = null
     }
-    // A rebuild can evict the pane #last names — a close, a swap, an
-    // applyLayout — and last-pane must never be able to reach a destroyed
-    // renderable. Panes only ever leave #panes through here, so this is the
-    // one place the pair needs revalidating.
-    if (this.#last && !this.#panes.includes(this.#last)) this.#last = null
     this.#refreshChrome()
     this.onChange?.()
     this.#ctx.requestRender()
@@ -1093,16 +1101,22 @@ export class Window {
    *
    * Boxes and dividers are the derived half of the tree, so they are destroyed
    * rather than reused; the panes are the part that owns state worth keeping.
-   * Children are copied before removal — removing while iterating the live
-   * child list skips every other one.
+   *
+   * The panes come from `#panes` rather than from walking the tree, because a
+   * zoom leaves most of them unmounted and a walk would miss exactly those —
+   * reporting the window as having lost the panes it is merely not showing.
+   * Taking them off their parents first also leaves the walk with nothing but
+   * derived nodes to destroy.
    */
   #dismantle(): TerminalPane[] {
-    const panes: TerminalPane[] = []
+    const panes = [...this.#panes]
+    for (const pane of panes) (pane.parent as BoxRenderable | null)?.remove(pane)
     const walk = (box: BoxRenderable) => {
+      // Children are copied before removal — removing while iterating the live
+      // child list skips every other one.
       for (const child of [...box.getChildren()]) {
         box.remove(child)
-        if (child instanceof TerminalPane) panes.push(child)
-        else if (child instanceof Divider) child.destroy()
+        if (child instanceof Divider) child.destroy()
         else if (child instanceof BoxRenderable) {
           walk(child)
           child.destroy()
@@ -1122,13 +1136,13 @@ export class Window {
   selectLayout(preset: LayoutPreset): boolean {
     if (this.#panes.length === 0) return false
     const panes = this.#panes.map((pane) => ({ id: pane.id, agent: pane.agent.id }))
-    return this.applyLayout(presetLayout(panes, preset, this.#focused?.id), preset)
+    return this.applyLayout(presetLayout(panes, preset, this.#state.focus ?? undefined), preset)
   }
 
   /** The preset this window was last arranged by, or null once a split, close
    *  or drag has moved it off that arrangement. Drives next-layout's cycle. */
   get preset(): LayoutPreset | null {
-    return this.#preset
+    return this.#state.preset
   }
 
   /** Kill every agent and free its terminal. The finalizer `Window.make`

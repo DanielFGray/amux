@@ -335,6 +335,70 @@ test("closing the focused pane clears the pair rather than leaving a dead last",
   expect(window.focused).toBe(first)
 })
 
+// A zoom hides panes by not mounting them, rather than by parking them in a
+// tree off to one side. These hold the consequences of that: a hidden pane is
+// still a pane of this window in every way except being drawn.
+
+test("a zoom hides the other panes without giving them up", async () => {
+  const { window, layout } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+  await layout()
+
+  window.focus(second)
+  window.zoom()
+  await layout()
+
+  // Still the window's panes, in the same order, with their agents intact —
+  // only one of them is on screen.
+  expect(window.panes).toEqual([first, second])
+  expect(second.parent).not.toBe(null)
+  expect(first.parent).toBe(null)
+})
+
+test("synchronize-panes still reaches a pane the zoom is hiding", async () => {
+  const { window, layout } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+  await layout()
+
+  const wrote: TerminalPane[] = []
+  for (const pane of window.panes) pane.write = () => void wrote.push(pane)
+
+  window.toggleSync()
+  window.focus(second)
+  window.zoom()
+  window.write("x")
+
+  // A hidden pane is off the screen, not out of the window: its process is
+  // still running and sync is about processes, not about what is drawn.
+  expect(wrote).toEqual([first, second])
+})
+
+test("splitting while zoomed splits the arrangement, not the zoomed view", async () => {
+  const { window, layout } = await setup()
+  const first = window.panes[0]!
+  const second = run(window.splitSpawn("row"))!
+  await layout()
+
+  window.focus(second)
+  window.zoom()
+  const third = run(window.splitSpawn("row"))!
+  await layout()
+
+  // The split landed in the real arrangement rather than in the one-pane tree
+  // that was on screen when the key was pressed: three panes side by side, and
+  // the halved one is the pane that was zoomed.
+  expect(window.zoomed).toBe(false)
+  expect(window.panes).toEqual([first, second, third])
+  expect(third.x).toBeGreaterThan(second.x)
+  // The two halves are even to within the odd cell a split cannot divide, and
+  // together they occupy the slot the zoomed pane held — not the whole window.
+  expect(Math.abs(second.width - third.width)).toBeLessThanOrEqual(1)
+  expect(first.width).toBeGreaterThan(second.width)
+  expect(first.width).toBeGreaterThan(third.width)
+})
+
 test("lastPane drops the zoom when it leaves the zoomed pane", async () => {
   const { window } = await setup()
   const first = window.panes[0]!

@@ -193,6 +193,40 @@ test("break drops a zoom before moving the pane", async () => {
   }
 })
 
+// break-pane always adopts into a window it just made, so this exercises adopt
+// directly. It is the destination half of the same rule the test above holds
+// for the source, and joinp (moving a pane into an EXISTING window) is what
+// will reach it through the app.
+test("adopting into a zoomed window puts the hidden panes back on screen", async () => {
+  const s = await setup()
+  try {
+    const a = s.win.panes[0]!
+    const b = run(s.win.splitSpawn("row"))!
+    s.win.focus(a)
+    s.win.zoom()
+    expect(s.win.zoomed).toBe(true)
+
+    // A live pane from somewhere else, detached from its own window.
+    const other = (await runAsync(s.space.newWindow()))!
+    const moved = run(other.init())!
+    expect(other.detachPane(moved)).toBe(moved)
+    const scope = other.relinquishAgent(moved.agent)!
+
+    s.win.adopt(moved.agent, moved, scope)
+
+    // The newcomer is hung straight off the root, so the zoom has to come down
+    // with it — otherwise a and b would be left unmounted with no arrangement
+    // on screen to rejoin.
+    expect(s.win.zoomed).toBe(false)
+    expect(s.win.panes).toEqual([a, b, moved])
+    s.space.selectWindow(s.win)
+    await s.t.renderOnce()
+    for (const pane of s.win.panes) expect(pane.width).toBeGreaterThan(0)
+  } finally {
+    await s.dispose()
+  }
+})
+
 test("a broken-out pane answers to its new window, not the old one", async () => {
   const s = await setup()
   try {
