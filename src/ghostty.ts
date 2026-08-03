@@ -1,6 +1,7 @@
 import { dlopen, FFIType as T, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
 import { LIB } from "./ghostty-library.ts";
 import { terminalNew } from "./shim.ts";
+import { assertTerminalSize } from "./limits.ts";
 
 export { LIB_DIR } from "./ghostty-library.ts";
 
@@ -107,6 +108,7 @@ export class Terminal {
   #scroll = new BigUint64Array(3);
 
   constructor(cols: number, rows: number, scrollback = 10_000) {
+    assertTerminalSize(cols, rows);
     const out = handle();
     check("terminal_new", terminalNew(out, cols, rows, scrollback));
     this.#h = Number(out[0]);
@@ -142,6 +144,7 @@ export class Terminal {
 
   resize(cols: number, rows: number) {
     if (this.#freed) return;
+    assertTerminalSize(cols, rows);
     check("terminal_resize", g.ghostty_terminal_resize(asPtr(this.#h), cols, rows, 0, 0));
     this.#cols = cols;
     this.#rows = rows;

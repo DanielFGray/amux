@@ -21,7 +21,7 @@ import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame } from "./AttachProtocol.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
-import { SessionSupervisor } from "./SessionSupervisor.ts";
+import { SessionExitObserver, SessionSupervisor, type PreparedSession } from "./SessionSupervisor.ts";
 import type { ManagedSession, PtyError, SessionSpec } from "./SessionRegistry.ts";
 
 export interface AttachHostOptions {
@@ -37,6 +37,8 @@ export interface AttachHostOptions {
   readonly onActivity?: (client: string, connection: string) => Effect.Effect<void, unknown>;
   /** A client adopted a session and wants its screen replayed to it alone. */
   readonly onSync?: (client: string, connection: string, session: string) => Effect.Effect<void, unknown>;
+  /** A supervised backend actually terminated (not merely an observer detaching). */
+  readonly onSessionExit?: (session: string, code: number | null) => Effect.Effect<void, unknown>;
 }
 
 export interface AttachHostService {
@@ -47,6 +49,8 @@ export interface AttachHostService {
    * accidentally tie a session's life to a request, a connection, or a client.
    */
   readonly spawn: (spec: SessionSpec) => Effect.Effect<ManagedSession, PtyError>;
+  /** Start a reversible session whose exit remains private until activated. */
+  readonly prepare: (spec: SessionSpec) => Effect.Effect<PreparedSession, PtyError>;
   /** Stop one session. Its exit frame reaches clients the usual way, through
    *  the supervisor's pump, so a kill and a natural exit look identical to
    *  them. */
@@ -61,6 +65,8 @@ export interface AttachHostService {
    * buffer and hands it here.
    */
   readonly paste: (id: string, data: Uint8Array) => Effect.Effect<void, PtyError>;
+  /** Raw child input used by daemon-side pane.send-keys. */
+  readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
   /**
    * The server's paste buffer stack. Owned here because it belongs to the
    * PTY plane: it dies with the daemon's attach scope, exactly as tmux's
@@ -102,13 +108,21 @@ const make = (
             ),
           ),
     });
-
     return {
-      spawn: (spec) => Scope.extend(supervisor.spawn(spec), host),
+      prepare: (spec) => Scope.extend(supervisor.prepare(spec), host),
+      spawn: (spec) => Scope.extend(supervisor.prepare(spec), host).pipe(
+        Effect.tap((prepared) => prepared.activate),
+        Effect.map((prepared) => prepared.session),
+      ),
       kill: supervisor.kill,
       live: supervisor.live,
       publish: hub.publish,
       paste: (id, data) => supervisor.paste(id, data),
+      write: (id, data) => supervisor.handle({
+        _tag: "input",
+        session: id,
+        data: typeof data === "string" ? new TextEncoder().encode(data) : data,
+      }),
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),
     };
@@ -126,6 +140,10 @@ export const layerAttachHost = (
   options: AttachHostOptions,
 ): Layer.Layer<AttachHost, AttachServerError> =>
   Layer.scoped(AttachHost, make(options)).pipe(
-    Layer.provide(SessionSupervisor.Live),
+    Layer.provide(SessionSupervisor.Live.pipe(
+      Layer.provide(Layer.succeed(SessionExitObserver, {
+        beforePublish: options.onSessionExit ?? (() => Effect.void),
+      })),
+    )),
     Layer.provide(AttachHub.Default),
   );

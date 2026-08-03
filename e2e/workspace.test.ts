@@ -62,8 +62,18 @@ test("split adds an agent to the window", async () => {
   await step(`${LEADER}|`, "1sp 1win 2ag")
 }, E2E_TIMEOUT)
 
-test("break moves the pane into a window of its own", async () => {
+test("daemon pane.break publishes a projection that keeps the moved PTY", async () => {
+  const before = await app.session()
+  const source = before!.spaces[0].windows.find((window: any) => window.number === before!.spaces[0].activeWindow)
+  const focused = JSON.parse(source.layout).focus
+  const movedAgent = JSON.parse(source.layout).root.children.find((pane: any) => pane.id === focused).agent
   await step(`${LEADER}!`, "1sp 2win 2ag")
+  const after = await app.session()
+  const projected = after!.spaces[0].windows.find((window: any) => window.number === after!.spaces[0].activeWindow)
+  expect(projected.agents.map((agent: any) => agent.id)).toEqual([movedAgent])
+  expect(JSON.parse(projected.layout).root.agent).toBe(movedAgent)
+  app.send("printf 'break-still-live\\n'\n")
+  await app.until(() => app.screen().includes("break-still-live"), "the moved pane's PTY to remain alive")
 }, E2E_TIMEOUT)
 
 // ts-8d06b3: killing the last agent in a window takes the window with it,

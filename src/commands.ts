@@ -98,10 +98,24 @@ const PaneFocus = define("pane.focus", { direction: Direction }, {
   group: "panes",
   capability: "agent",
 })
+const PaneSelect = define("pane.select", { pane: Schema.String }, {
+  desc: "focus a pane by id",
+  group: "panes",
+  capability: "agent",
+})
 const PaneResize = define("pane.resize", { direction: Direction }, {
   desc: "resize the focused pane",
   group: "panes",
   capability: "agent",
+})
+const PaneResizeDivider = define("pane.resize-divider", {
+  path: Schema.Array(Schema.Int),
+  index: Schema.Int,
+  delta: Schema.Int,
+}, {
+  desc: "move a layout divider",
+  group: "panes",
+  capability: "remote",
 })
 const PaneZoom = define("pane.zoom", {}, {
   desc: "zoom the focused pane",
@@ -230,6 +244,11 @@ const AgentKill = define("agent.kill", Agent, {
   group: "agents",
   capability: "agent",
 })
+const AgentReveal = define("agent.reveal", { agent: Schema.String }, {
+  desc: "show and focus an agent",
+  group: "agents",
+  capability: "agent",
+})
 const AgentNextBlocked = define("agent.next-blocked", {}, {
   desc: "select the next blocked agent",
   group: "agents",
@@ -239,6 +258,11 @@ const AgentNextBlocked = define("agent.next-blocked", {}, {
 // Spaces.
 const SpaceNew = define("space.new", { name: Schema.optional(Schema.String), dir: Schema.optional(Schema.String) }, {
   desc: "new space",
+  group: "spaces",
+  capability: "agent",
+})
+const SpaceSelect = define("space.select", { space: Schema.String }, {
+  desc: "select a space by id",
   group: "spaces",
   capability: "agent",
 })
@@ -321,7 +345,9 @@ export const COMMAND_DEFS = [
   PaneNext,
   PaneLast,
   PaneFocus,
+  PaneSelect,
   PaneResize,
+  PaneResizeDivider,
   PaneZoom,
   PaneSwap,
   PaneClose,
@@ -346,8 +372,10 @@ export const COMMAND_DEFS = [
   WindowSelectLayout,
   WindowSynchronize,
   AgentKill,
+  AgentReveal,
   AgentNextBlocked,
   SpaceNew,
+  SpaceSelect,
   SpaceRename,
   SpaceClose,
   SpaceNext,

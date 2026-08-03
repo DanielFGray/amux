@@ -1,8 +1,10 @@
 import { mkdir, open, readFile, rm, unlink } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { randomUUID } from "node:crypto"
-import { Data, Effect, ManagedRuntime } from "effect"
+import { Data, Effect, Fiber, ManagedRuntime } from "effect"
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts"
+import type { PreparedSession } from "./effect/SessionSupervisor.ts"
+import { MAX_RPC_BYTES } from "./limits.ts"
 import type { AttachServerError } from "./effect/AttachServer.ts"
 import type { BufferEntry } from "./effect/BufferStore.ts"
 import type { ManagedSession, SessionSpec } from "./effect/SessionRegistry.ts"
@@ -10,9 +12,20 @@ import {
   isSessionId, loadSession, processAlive, readLease, removeSession, saveSession, SessionEnv,
   sessionPaths, writeLease, type SessionAttachment, type SessionLease, type SessionState, type SessionPaths,
 } from "./session.ts"
+import { command, decodeCommand, type Command } from "./commands.ts"
+import {
+  applyWorkspaceCommand,
+  isWorkspaceCommand,
+  markAgentExited,
+  parseWorkspaceCommandContext,
+  workspaceFromSession,
+  workspaceSession,
+  type WorkspaceCommandContext,
+  type WorkspaceSnapshot,
+} from "./workspace.ts"
 
 export type DaemonCommand =
-  | "ping" | "status" | "stop" | "spawn" | "kill" | "save"
+  | "ping" | "status" | "stop" | "workspace-command"
   | "set-buffer" | "paste-buffer" | "list-buffers" | "delete-buffer" | "show-buffer"
 
 export class SessionDaemonError extends Data.TaggedError("SessionDaemonError")<{
@@ -24,32 +37,13 @@ export class SessionDaemonError extends Data.TaggedError("SessionDaemonError")<{
 const describe = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
 
-/**
- * A request to start an agent, in the shape the wire can carry.
- *
- * The same fields as SessionSpec, except that the caller chooses the id: the layout
- * the client is about to persist is written in terms of agent ids, so an id the
- * daemon invented would have to be round-tripped back before anything could
- * refer to it.
- */
-export interface DaemonSpawn { id: string; cmd: string[]; cwd?: string; cols: number; rows: number }
-
 export interface DaemonRequest {
   command: DaemonCommand
-  client?: string
-  /** The agent to start, for `spawn`. */
-  spawn?: DaemonSpawn
-  /** The agent to stop, for `kill`. */
-  agent?: string
-  /**
-   * The workspace to record, for `save`.
-   *
-   * The client knows the shape of the workspace and the daemon owns the file,
-   * so the client sends what it sees and never writes session.json itself.
-   * That is what keeps a single writer while the daemon is also updating
-   * attachment state underneath it.
-   */
-  workspace?: Pick<SessionState, "spaces"> & { activeSpace?: string | null }
+  /** Existing command value executed against the daemon-owned workspace. */
+  workspaceCommand?: unknown
+  /** Commands from an obsolete generation are rejected, never rebased silently. */
+  expectedRevision?: number
+  workspaceContext?: unknown
   /**
    * The buffer a buffer verb acts on, for set-buffer/paste-buffer/
    * delete-buffer/show-buffer. Absent means "the top of the stack" except for
@@ -82,7 +76,15 @@ export interface DaemonResponse {
   bufferName?: string
   /** show-buffer: the buffer's contents, decoded as text. */
   bufferData?: string
+  workspace?: WorkspaceSnapshot
 }
+
+export interface SessionDaemonOptions {
+  /** Persistence seam used by fault-injection tests; production uses saveSession. */
+  readonly saveState?: (state: SessionState) => Effect.Effect<void, unknown>
+}
+
+const SHUTDOWN_SAVE_TIMEOUT_MS = 500
 
 /**
  * A single owner for one session's lifecycle, persistence, and PTYs.
@@ -101,25 +103,40 @@ export class SessionDaemon {
   readonly id: string
   readonly paths: SessionPaths
   #state: SessionState
+  #workspace: WorkspaceSnapshot
   #server: ReturnType<typeof Bun.serve> | null = null
   #heartbeat: Timer | null = null
   /** Attachments are keyed by transport connection so each socket has its own liveness. */
   #attachments = new Map<string, SessionAttachment>()
-  #save: Promise<void> = Promise.resolve()
   #lockPath: string
   #env: NodeJS.ProcessEnv
   #runtime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError> | null = null
   #host: AttachHostService | null = null
+  #mutations: Promise<void> = Promise.resolve()
+  #closing = false
+  #shutdown: Promise<void>
+  #resolveShutdown!: () => void
+  #exitCommits = new Map<string, (code: number | null) => Promise<void>>()
+  #durableObligations = new Map<symbol, string>()
+  #writeState: (state: SessionState) => Effect.Effect<void, unknown>
+  #activeSave: Fiber.RuntimeFiber<void, unknown> | null = null
+  #cancelPersistence = false
+  readonly stopped: Promise<void>
+  #resolveStopped!: () => void
 
-  private constructor(id: string, state: SessionState, env: NodeJS.ProcessEnv, paths: SessionPaths) {
+  private constructor(id: string, state: SessionState, env: NodeJS.ProcessEnv, paths: SessionPaths, options: SessionDaemonOptions) {
     this.id = id
     this.paths = paths
     this.#lockPath = this.paths.lock
     this.#env = env
     this.#state = state
+    this.#workspace = workspaceFromSession(state)
+    this.#writeState = options.saveState ?? ((next) => saveSession(next).pipe(Effect.provideService(SessionEnv, env)))
+    this.stopped = new Promise((resolve) => { this.#resolveStopped = resolve })
+    this.#shutdown = new Promise((resolve) => { this.#resolveShutdown = resolve })
   }
 
-  static open(id = "default"): Effect.Effect<SessionDaemon, unknown, SessionEnv> {
+  static open(id = "default", options: SessionDaemonOptions = {}): Effect.Effect<SessionDaemon, unknown, SessionEnv> {
     return Effect.gen(function* () {
       if (!isSessionId(id)) {
         return yield* Effect.fail(new SessionDaemonError({ message: `invalid session id ${JSON.stringify(id)}` }))
@@ -133,7 +150,7 @@ export class SessionDaemon {
         if (existing && processAlive(existing.pid)) return yield* Effect.fail(new Error(`session '${id}' is already owned by pid ${existing.pid}`))
         const state = (yield* loadSession(id)) ?? { version: 1, id, createdAt: Date.now(), updatedAt: Date.now(), attached: false, spaces: [] }
         state.attached = false
-        const daemon = new SessionDaemon(id, state, env, paths)
+        const daemon = new SessionDaemon(id, state, env, paths, options)
         daemon.#lock = lock
         return daemon
       } catch (error) {
@@ -172,29 +189,23 @@ export class SessionDaemon {
   }
 
   get state(): SessionState { return structuredClone(this.#state) }
-
-  /**
-   * Record the workspace the client is showing.
-   *
-   * The daemon owns the file, so the UI hands it a snapshot (see snapshot.ts)
-   * rather than writing session.json behind its back — which is what makes the
-   * write atomic and single-writer even while a client is attaching. What is
-   * stored is metadata only; it is not, and does not pretend to be, the
-   * terminals' contents.
-   */
-  async saveWorkspace(workspace: Pick<SessionState, "spaces"> & { activeSpace?: string | null }): Promise<void> {
-    this.#state.spaces = structuredClone(workspace.spaces)
-    this.#state.activeSpace = workspace.activeSpace ?? null
-    await this.#persist()
-  }
+  get workspace(): WorkspaceSnapshot { return structuredClone(this.#workspace) }
 
   async start(): Promise<void> {
     if (this.#server) return
     const lease: SessionLease = { version: 1, session: this.id, pid: process.pid, socket: this.paths.socket, startedAt: Date.now(), heartbeatAt: Date.now() }
     try {
-      await this.#persist()
+      await this.#enqueueModelChange(() => this.#persistState(this.#state))
       await Effect.runPromise(writeLease(lease).pipe(Effect.provideService(SessionEnv, this.#env)))
       await this.#startAttachHost()
+      await this.#enqueueModelChange(() => this.#restoreWorkspaceSessions())
+      if (this.#workspace.spaces.length === 0) {
+        await this.runWorkspaceCommand(command("space.new"), this.#workspace.revision, {
+          size: { cols: 80, rows: 24 },
+          shell: [this.#env.SHELL || "bash"],
+          cwd: process.cwd(),
+        })
+      }
       try { await unlink(this.paths.socket) } catch (error: any) { if (error.code !== "ENOENT") throw error }
       this.#server = Bun.serve({ unix: this.paths.socket, fetch: async (request) => this.#fetch(request) })
       this.#heartbeat = setInterval(() => void Effect.runPromise(writeLease({
@@ -226,36 +237,47 @@ export class SessionDaemon {
       // The stream is the authority on attachment; the daemon records every
       // accepted connection rather than imposing an exclusive owner.
       onAttach: (client, connection) => Effect.suspend(() =>
-        this.#claim(client, connection)
-          ? Effect.promise(() => this.#persist())
-          : Effect.fail(new Error("attachment is already registered")),
+        Effect.promise(() => this.#attach(client, connection)),
       ),
-      onDetach: (client, connection) => Effect.suspend(() => {
-        this.#release(client, connection)
-        return Effect.promise(() => this.#persist())
-      }),
+      onDetach: (client, connection) => Effect.suspend(() =>
+        Effect.promise(() => this.#detach(client, connection)),
+      ),
        onActivity: (client, connection) => Effect.sync(() => this.#touch(client, connection)),
+       onSessionExit: (session, code) => Effect.tryPromise({
+         try: () => this.#beforeSessionExit(session, code),
+         catch: (error) => error,
+       }),
     }))
     this.#runtime = runtime
     this.#host = await runtime.runPromise(AttachHost)
   }
 
-  /** Register one transport connection as an independent attachment. */
-  #claim(client: string, connection: string): boolean {
-    if (this.#attachments.has(connection)) return false
-    const now = Date.now()
-    this.#attachments.set(connection, { client, attachedSince: now, attachLastSeen: now })
-    this.#state.attached = true
-    return true
+  /** Attachment metadata is a model mutation and shares its serialization. */
+  #attach(client: string, connection: string): Promise<void> {
+    return this.#enqueueModelChange(async () => {
+      if (this.#attachments.has(connection)) throw new Error("attachment is already registered")
+      const now = Date.now()
+      const attachments = new Map(this.#attachments)
+      attachments.set(connection, { client, attachedSince: now, attachLastSeen: now })
+      const state = { ...this.#state, attached: true, updatedAt: now }
+      await this.#persistState(state)
+      this.#attachments = attachments
+      this.#state = state
+    })
   }
 
   /** Release only this connection; other clients remain attached. */
-  #release(client: string, connection: string): boolean {
-    const attachment = this.#attachments.get(connection)
-    if (!attachment || attachment.client !== client) return false
-    this.#attachments.delete(connection)
-    this.#state.attached = this.#attachments.size > 0
-    return true
+  #detach(client: string, connection: string): Promise<void> {
+    return this.#enqueueModelChange(async () => {
+      const attachment = this.#attachments.get(connection)
+      if (!attachment || attachment.client !== client) return
+      const attachments = new Map(this.#attachments)
+      attachments.delete(connection)
+      const state = { ...this.#state, attached: attachments.size > 0, updatedAt: Date.now() }
+      await this.#persistUntilSuccess(state, "attachment detach")
+      this.#attachments = attachments
+      this.#state = state
+    })
   }
 
   /** Refresh only this connection's liveness. */
@@ -281,6 +303,137 @@ export class SessionDaemon {
   spawnAgent(spec: SessionSpec): Promise<ManagedSession> {
     if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"))
     return this.#runtime.runPromise(this.#host.spawn(spec))
+  }
+
+  async #spawnWorkspaceAgent(spec: SessionSpec): Promise<ManagedSession> {
+    return this.spawnAgent(spec)
+  }
+
+  async #prepareWorkspaceAgent(spec: SessionSpec): Promise<PreparedSession> {
+    if (!this.#host || !this.#runtime) throw new Error("daemon is not started")
+    return this.#runtime.runPromise(this.#host.prepare(spec))
+  }
+
+  async #restoreWorkspaceSessions(): Promise<void> {
+    let next = this.#workspace
+    let changed = false
+    for (const space of next.spaces) {
+      for (const window of space.windows) {
+        for (const agent of window.agents) {
+          if (agent.exited) continue
+          try {
+            await this.#spawnWorkspaceAgent(agent)
+          } catch {
+            next = markAgentExited(next, agent.id, null)
+            changed = true
+          }
+        }
+      }
+    }
+    const state = workspaceSession(next, this.#state)
+    if (changed) await this.#persistState(state)
+    this.#workspace = next
+    this.#state = state
+  }
+
+  /** One serialized authority decides command order and the next revision. */
+  runWorkspaceCommand(
+    value: Command,
+    expectedRevision: number,
+    context: WorkspaceCommandContext,
+  ): Promise<WorkspaceSnapshot> {
+    return this.#enqueueModelChange(async () => {
+      if (expectedRevision !== this.#workspace.revision) {
+        throw new Error(`stale workspace revision ${expectedRevision}; current revision is ${this.#workspace.revision}`)
+      }
+      if (!isWorkspaceCommand(value)) throw new Error(`command '${value._tag}' is not a workspace command`)
+      const mutation = applyWorkspaceCommand(this.#workspace, value, context)
+      const candidateState = workspaceSession(mutation.snapshot, this.#state)
+      const prepared: PreparedSession[] = []
+      let settleExits!: (committed: boolean) => void
+      const exitsSettled = new Promise<boolean>((resolve) => { settleExits = resolve })
+      const killed = mutation.actions.filter((action) => action._tag === "kill").map((action) => action.agent)
+      try {
+        // Prepared PTYs are private acquisitions. Fast exits stop at their
+        // activation gate and abort terminates them without entering this queue.
+        for (const action of mutation.actions) {
+          if (action._tag !== "spawn") continue
+          prepared.push(await this.#prepareWorkspaceAgent(action.agent))
+        }
+        // Destructive exits are externally gated. killAgent waits for process
+        // completion only, never for the callback waiting on this transaction.
+        for (const id of killed) this.#exitCommits.set(id, async (code) => {
+          if (!await exitsSettled) await this.#beforeSessionExit(id, code)
+        })
+        for (const action of mutation.actions) {
+          if (action._tag !== "kill") continue
+          await this.killAgent(action.agent)
+        }
+        for (const action of mutation.actions) {
+          if (action._tag === "input" && this.#host && this.#runtime) {
+            await this.#runtime.runPromise(this.#host.write(action.agent, action.data))
+          }
+        }
+        if (mutation.changed) {
+          // A spawn-only candidate is reversible and may reject on write
+          // failure. Once a process has been destroyed, fail-stop retry is the
+          // only coherent option: neither disk nor process state may roll back.
+          if (killed.length > 0) await this.#persistUntilSuccess(candidateState, "destructive workspace command")
+          else await this.#persistState(candidateState)
+          this.#workspace = mutation.snapshot
+          this.#state = candidateState
+          await this.#publishWorkspace()
+        }
+        settleExits(true)
+        for (const session of prepared) await this.#runtime!.runPromise(session.activate)
+        return this.workspace
+      } catch (error) {
+        settleExits(false)
+        for (const session of prepared) await this.#runtime?.runPromise(session.abort).catch(() => {})
+        throw error
+      } finally {
+        for (const id of killed) this.#exitCommits.delete(id)
+      }
+    })
+  }
+
+  #enqueueModelChange<A>(change: () => A | Promise<A>): Promise<A> {
+    const result = this.#mutations.then(change, change)
+    this.#mutations = result.then(() => {}, () => {})
+    return result
+  }
+
+  async #beforeSessionExit(id: string, code: number | null): Promise<void> {
+    if (this.#closing) return Promise.resolve()
+    const commit = this.#exitCommits.get(id)
+    if (commit) {
+      this.#exitCommits.delete(id)
+      return commit(code)
+    }
+    await this.#enqueueModelChange(() => this.#recordAgentExit(id, code))
+  }
+
+  async #recordAgentExit(id: string, code: number | null): Promise<void> {
+    // Host disposal ends every local PTY, but close() means "restart this
+    // session", not "all of its modeled agents exited". A later daemon respawns
+    // those persisted live agents.
+    if (this.#closing) return
+    const next = markAgentExited(this.#workspace, id, code)
+    if (next === this.#workspace) return
+    const state = workspaceSession(next, this.#state)
+    await this.#persistUntilSuccess(state, `natural exit for '${id}'`)
+    this.#workspace = next
+    this.#state = state
+    await this.#publishWorkspace()
+  }
+
+  async #publishWorkspace(): Promise<void> {
+    if (!this.#host || !this.#runtime) return
+    await this.#runtime.runPromise(this.#host.publish({
+      _tag: "workspace",
+      revision: this.#workspace.revision,
+      state: JSON.stringify(this.#workspace),
+    }))
   }
 
   /** Stop an agent. Clients learn about it from the exit frame, exactly as they
@@ -352,7 +505,7 @@ export class SessionDaemon {
   async #fetch(request: Request): Promise<Response> {
     if (request.method !== "POST" || new URL(request.url).pathname !== "/rpc") return new Response("not found", { status: 404 })
     try {
-      const body = await request.json() as DaemonRequest
+      const body = await boundedJson(request, MAX_RPC_BYTES) as DaemonRequest
       return Response.json(await this.handle(body))
     } catch (error) { return Response.json({ ok: false, error: String(error) }, { status: 400 }) }
   }
@@ -360,31 +513,28 @@ export class SessionDaemon {
   async handle(request: DaemonRequest): Promise<DaemonResponse> {
     switch (request.command) {
       case "ping": return { ok: true, attached: this.#state.attached, ...this.#attachInfo() }
-      case "status": return { ok: true, session: this.state, attached: this.#state.attached, ...this.#attachInfo(), agents: [...(await this.liveAgents())] }
-      // Spawn and kill are control, not data: they change what agents exist,
-      // which is a fact about the session rather than a byte in a stream. Bytes
-      // go over the attach socket; the shape of the session goes over RPC,
-      // where a failure has somewhere to be reported.
-      case "spawn": {
-        if (!request.spawn) return { ok: false, error: "spawn requires an agent spec" }
-        try {
-          await this.spawnAgent(request.spawn)
-          return { ok: true, agents: [...(await this.liveAgents())] }
-        } catch (error) { return { ok: false, error: String(error) } }
+      case "status": {
+        const persistenceError = this.#durableObligations.values().next().value as string | undefined
+        return {
+          ok: persistenceError === undefined,
+          ...(persistenceError ? { error: persistenceError } : {}),
+          session: this.state,
+          workspace: this.workspace,
+          attached: this.#state.attached,
+          ...this.#attachInfo(),
+          agents: [...(await this.liveAgents())],
+        }
       }
-      case "kill": {
-        if (!request.agent) return { ok: false, error: "kill requires an agent id" }
+      case "workspace-command": {
+        if (request.expectedRevision === undefined || !request.workspaceContext) {
+          return { ok: false, error: "workspace-command requires a revision and context", workspace: this.workspace }
+        }
         try {
-          await this.killAgent(request.agent)
-          return { ok: true, agents: [...(await this.liveAgents())] }
-        } catch (error) { return { ok: false, error: String(error) } }
-      }
-      case "save": {
-        if (!request.workspace) return { ok: false, error: "save requires a workspace" }
-        try {
-          await this.saveWorkspace(request.workspace)
-          return { ok: true }
-        } catch (error) { return { ok: false, error: String(error) } }
+          const value = await Effect.runPromise(decodeCommand(request.workspaceCommand))
+          const context = parseWorkspaceCommandContext(request.workspaceContext, this.#workspace)
+          const workspace = await this.runWorkspaceCommand(value, request.expectedRevision, context)
+          return { ok: true, workspace }
+        } catch (error) { return { ok: false, error: describe(error), workspace: this.workspace } }
       }
       // The buffer verbs are the tmux paste-buffer family over the socket:
       // the stack lives here, so copy/paste work over ssh and from a script
@@ -425,31 +575,39 @@ export class SessionDaemon {
   }
 
   async stop(): Promise<void> {
+    this.#closing = true
+    this.#resolveShutdown()
     this.#heartbeat && clearInterval(this.#heartbeat)
     this.#heartbeat = null
     this.#server?.stop()
     this.#server = null
+    await this.#drainMutationsForShutdown()
     await this.#disposeHost()
-    // Attachment callbacks can enqueue a metadata write while the host is
-    // being torn down. Remove the session only after that chain has settled.
-    await this.#save
+    await this.#mutations
     await Effect.runPromise(removeSession(this.id).pipe(Effect.provideService(SessionEnv, this.#env)))
     await this.#releaseLock()
+    this.#resolveStopped()
   }
 
   /** Release the daemon process while preserving metadata for a restart. */
   async close(): Promise<void> {
+    this.#closing = true
+    this.#resolveShutdown()
     this.#heartbeat && clearInterval(this.#heartbeat)
     this.#heartbeat = null
     this.#server?.stop()
     this.#server = null
+    await this.#drainMutationsForShutdown()
     await this.#disposeHost()
-    // `close` preserves the session for restart, so publish the detached
-    // marker after the attach scope has been torn down rather than leaving a
-    // stale attachment for metadata-only readers.
+    await this.#mutations
     let persistError: unknown
     try {
-      await this.#persist()
+      await this.#enqueueModelChange(async () => {
+        const state = { ...this.#state, attached: false, updatedAt: Date.now() }
+        await this.#persistState(state, { allowClosing: true, timeoutMs: SHUTDOWN_SAVE_TIMEOUT_MS })
+        this.#attachments.clear()
+        this.#state = state
+      })
     } catch (error) {
       persistError = error
     } finally {
@@ -472,8 +630,6 @@ export class SessionDaemon {
     const runtime = this.#runtime
     this.#runtime = null
     this.#host = null
-    this.#attachments.clear()
-    this.#state.attached = false
     await runtime?.dispose().catch(() => {})
     await unlink(this.paths.attach).catch(() => {})
   }
@@ -484,11 +640,99 @@ export class SessionDaemon {
     await rm(this.#lockPath, { force: true }).catch(() => {})
   }
 
-  #persist(): Promise<void> {
-    const next = this.#save.then(() => Effect.runPromise(saveSession(this.#state).pipe(Effect.provideService(SessionEnv, this.#env))))
-    this.#save = next.catch(() => {})
-    return next
+  async #interruptPersistence(): Promise<void> {
+    const fiber = this.#activeSave
+    if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
   }
+
+  /** Let an ordinary in-flight mutation finish, but cancel and join persistence
+   * once the shutdown budget is exhausted. The queue itself is still awaited;
+   * no mutation or write is abandoned in the background. */
+  async #drainMutationsForShutdown(): Promise<void> {
+    const timer = setTimeout(() => {
+      this.#cancelPersistence = true
+      void this.#interruptPersistence()
+    }, SHUTDOWN_SAVE_TIMEOUT_MS)
+    timer.unref?.()
+    try {
+      await this.#mutations
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  async #persistState(
+    state: SessionState,
+    options: { allowClosing?: boolean; timeoutMs?: number } = {},
+  ): Promise<void> {
+    if (this.#cancelPersistence && !options.allowClosing) throw new Error("daemon is shutting down")
+    const fiber = Effect.runFork(Effect.scoped(this.#writeState(state)))
+    this.#activeSave = fiber
+    const timer = options.timeoutMs === undefined ? null : setTimeout(() => {
+      Effect.runFork(Fiber.interrupt(fiber))
+    }, options.timeoutMs)
+    timer?.unref?.()
+    try {
+      await Effect.runPromise(Fiber.join(fiber))
+    } finally {
+      if (timer) clearTimeout(timer)
+      if (this.#activeSave === fiber) this.#activeSave = null
+    }
+  }
+
+  /**
+   * Irreversible process changes cannot be rolled back. Keep their terminal
+   * exits gated and retry the sole candidate write until disk recovers. Status
+   * remains available and reports the unhealthy state; model mutations stop
+   * behind this fail-stop barrier rather than diverging from durable state.
+   */
+  async #persistUntilSuccess(state: SessionState, reason: string): Promise<void> {
+    const obligation = Symbol(reason)
+    this.#durableObligations.set(obligation, `${reason} is waiting for durable storage`)
+    let delay = 10
+    try {
+      for (;;) {
+        if (this.#closing) throw new Error(`daemon shut down with outstanding durable obligation: ${reason}`)
+        try {
+          await this.#persistState(state)
+          return
+        } catch (error) {
+          this.#durableObligations.set(obligation, `${reason} is waiting for durable storage: ${describe(error)}`)
+          if (this.#closing) throw error
+          await Promise.race([Bun.sleep(delay), this.#shutdown])
+          delay = Math.min(delay * 2, 1_000)
+        }
+      }
+    } finally {
+      this.#durableObligations.delete(obligation)
+    }
+  }
+}
+
+async function boundedJson(request: Request, limit: number): Promise<unknown> {
+  const declared = Number(request.headers.get("content-length"))
+  if (Number.isFinite(declared) && declared > limit) throw new Error("request body is too large")
+  const reader = request.body?.getReader()
+  if (!reader) return null
+  const chunks: Uint8Array[] = []
+  let length = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    length += value.byteLength
+    if (length > limit) {
+      await reader.cancel()
+      throw new Error("request body is too large")
+    }
+    chunks.push(value)
+  }
+  const bytes = new Uint8Array(length)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return JSON.parse(new TextDecoder().decode(bytes))
 }
 
 /** Client used by CLI commands and tests; HTTP keeps framing and errors explicit. */

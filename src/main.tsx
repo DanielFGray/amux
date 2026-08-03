@@ -17,8 +17,8 @@ import { createApp } from "./app.tsx"
  * space closing, a SIGTERM, or a defect. That last one is the point of the
  * phase — the old code installed signal handlers that could only close the
  * socket and call process.exit, and said so in a comment: there was no time to
- * save. There is now, because the finalizer that saves is the same one a normal
- * exit runs.
+ * preserve layout. The daemon now persists every authoritative model revision,
+ * so client teardown has no workspace snapshot to race or flush.
  *
  * The Deferred is not ceremony. `render` from @opentui/solid resolves after
  * MOUNT, not on exit, so awaiting it would return immediately and close the
@@ -93,8 +93,6 @@ const program = Effect.gen(function* () {
    * finalizer still runs, and reaching for a binding that was never initialised
    * would turn a startup failure into a defect during teardown.
    */
-  let persist: (() => Promise<void>) | null = null
-
   const session = yield* Effect.acquireRelease(
     SessionClient.connect(SESSION_ID),
     // Detach, never kill: record where the workspace got to, then drop the
@@ -102,7 +100,6 @@ const program = Effect.gen(function* () {
     // must not stop us letting go of the connection.
     (s) =>
       Effect.gen(function* () {
-        if (persist) yield* Effect.promise(persist).pipe(Effect.ignore)
         yield* Effect.sync(() => s.attach.close())
       }),
   )
@@ -121,8 +118,6 @@ const program = Effect.gen(function* () {
     ),
     (a) => Effect.sync(() => a.dispose()),
   )
-  persist = app.persist
-
   yield* Effect.promise(() => render(app.View, renderer))
   yield* Deferred.await(quit)
 })

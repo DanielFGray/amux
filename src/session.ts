@@ -1,7 +1,12 @@
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { renameSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { Context, Data, Effect } from "effect"
+import { decodeLayout, layoutPanes } from "./layout.ts"
+import {
+  MAX_AGENTS, MAX_LAYOUT_BYTES, MAX_SESSION_BYTES, MAX_SPACES, MAX_WINDOWS, isTerminalSize,
+} from "./limits.ts"
 
 export class SessionEnv extends Context.Reference<SessionEnv>()("SessionEnv", {
   defaultValue: () => process.env,
@@ -154,24 +159,107 @@ export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdE
   })
 }
 
-function validState(value: unknown): value is SessionState {
-  return !!value && typeof value === "object" && (value as SessionState).version === SESSION_VERSION &&
-    typeof (value as SessionState).id === "string" && Array.isArray((value as SessionState).spaces)
+export function parseSessionState(value: unknown, expectedId?: string): SessionState {
+  if (!record(value) || value.version !== SESSION_VERSION || typeof value.id !== "string" ||
+    !isSessionId(value.id) || (expectedId !== undefined && value.id !== expectedId) ||
+    !nonNegativeNumber(value.createdAt) || !nonNegativeNumber(value.updatedAt) ||
+    typeof value.attached !== "boolean" || !Array.isArray(value.spaces)) {
+    throw new Error("invalid session state")
+  }
+  const spaces = value.spaces as unknown[]
+  if (spaces.length > MAX_SPACES) throw new Error("session has too many spaces")
+  const spaceIds = new Set<string>()
+  const agentIds = new Set<string>()
+  const paneIds = new Set<string>()
+  let windowCount = 0
+  let agentCount = 0
+  for (const item of spaces) {
+    if (!record(item) || !nonEmptyString(item.id) || spaceIds.has(item.id) ||
+      typeof item.name !== "string" || typeof item.dir !== "string" || !Array.isArray(item.windows) ||
+      !(item.activeWindow === null || positiveInt(item.activeWindow))) {
+      throw new Error("invalid persisted space")
+    }
+    spaceIds.add(item.id)
+    windowCount += item.windows.length
+    if (windowCount > MAX_WINDOWS) throw new Error("session has too many windows")
+    const numbers = new Set<number>()
+    for (const candidate of item.windows) {
+      if (!record(candidate) || !positiveInt(candidate.number) || numbers.has(candidate.number) ||
+        !(candidate.name === null || typeof candidate.name === "string") || !Array.isArray(candidate.agents) ||
+        !(candidate.layout === undefined || candidate.layout === null ||
+          (typeof candidate.layout === "string" && Buffer.byteLength(candidate.layout) <= MAX_LAYOUT_BYTES))) {
+        throw new Error("invalid persisted window")
+      }
+      numbers.add(candidate.number)
+      agentCount += candidate.agents.length
+      if (agentCount > MAX_AGENTS) throw new Error("session has too many agents")
+      const owned = new Map<string, boolean>()
+      for (const entry of candidate.agents) {
+        if (!record(entry) || !nonEmptyString(entry.id) || agentIds.has(entry.id) ||
+          typeof entry.name !== "string" || !Array.isArray(entry.cmd) || entry.cmd.length === 0 ||
+          !entry.cmd.every(nonEmptyString) || !(entry.cwd === undefined || typeof entry.cwd === "string") ||
+          !isTerminalSize(entry.cols, entry.rows) || typeof entry.exited !== "boolean" ||
+          !(entry.exitCode === null || Number.isInteger(entry.exitCode))) {
+          throw new Error("invalid persisted agent")
+        }
+        agentIds.add(entry.id)
+        owned.set(entry.id, entry.exited)
+      }
+      if (candidate.layout) {
+        const raw = JSON.parse(candidate.layout) as { focus?: unknown }
+        const layout = decodeLayout(candidate.layout)
+        if (raw.focus !== undefined && layout.focus !== raw.focus) throw new Error("layout focus names no pane")
+        for (const pane of layoutPanes(layout.root)) {
+          if (paneIds.has(pane.id)) throw new Error(`duplicate pane id '${pane.id}'`)
+          paneIds.add(pane.id)
+          if (!owned.has(pane.agent) || owned.get(pane.agent)) {
+            throw new Error(`pane '${pane.id}' names an absent or exited agent`)
+          }
+        }
+      }
+    }
+    if (item.activeWindow !== null && !numbers.has(item.activeWindow)) {
+      throw new Error("active window does not exist")
+    }
+  }
+  if (!(value.activeSpace === undefined || value.activeSpace === null ||
+    (typeof value.activeSpace === "string" && spaceIds.has(value.activeSpace)))) {
+    throw new Error("active space does not exist")
+  }
+  return structuredClone(value) as SessionState
+}
+
+function validState(value: unknown, expectedId?: string): value is SessionState {
+  try {
+    parseSessionState(value, expectedId)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function jsonFile<T>(path: string): Promise<T | null> {
-  try { return JSON.parse(await readFile(path, "utf8")) as T } catch { return null }
+  try {
+    const info = await stat(path)
+    if (info.size > MAX_SESSION_BYTES) return null
+    return JSON.parse(await readFile(path, "utf8")) as T
+  } catch { return null }
 }
 
 export function loadSession(id: string): Effect.Effect<SessionState | null, SessionIdError, SessionEnv> {
   return Effect.gen(function* () {
     const paths = yield* sessionPaths(id)
     const current = yield* Effect.promise(() => jsonFile<SessionState>(paths.state))
-    if (validState(current)) return current
+    if (validState(current, id)) return current
     const backup = yield* Effect.promise(() => jsonFile<SessionState>(paths.backup))
-    return validState(backup) ? backup : null
+    return validState(backup, id) ? backup : null
   })
 }
+
+const record = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value)
+const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.length > 0
+const positiveInt = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0
+const nonNegativeNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0
 
 /** Atomic replace. The previous valid generation remains available after a crash. */
 export function saveSession(state: SessionState): Effect.Effect<void, unknown, SessionEnv> {
@@ -181,9 +269,21 @@ export function saveSession(state: SessionState): Effect.Effect<void, unknown, S
     yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }))
     const temp = `${paths.state}.${process.pid}.tmp`
     const bytes = JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt: Date.now() }, null, 2) + "\n"
-    yield* Effect.promise(() => writeFile(temp, bytes, { mode: 0o600 }))
-    yield* Effect.promise(async () => { try { await rename(paths.state, paths.backup) } catch (error: any) { if (error.code !== "ENOENT") throw error } })
-    yield* Effect.promise(() => rename(temp, paths.state))
+    if (Buffer.byteLength(bytes) > MAX_SESSION_BYTES) return yield* Effect.fail(new Error("session state is too large"))
+    yield* Effect.tryPromise({
+      try: (signal) => writeFile(temp, bytes, { mode: 0o600, signal }),
+      catch: (error) => error,
+    })
+    // The commit has no cancellable filesystem API. Keep it synchronous so an
+    // interrupted fiber is either before the commit or after it; it can never
+    // abandon a rename Promise that installs this generation after shutdown.
+    yield* Effect.try({
+      try: () => {
+        try { renameSync(paths.state, paths.backup) } catch (error: any) { if (error.code !== "ENOENT") throw error }
+        renameSync(temp, paths.state)
+      },
+      catch: (error) => error,
+    })
   })
 }
 

@@ -10,25 +10,27 @@
 
 import { afterEach, expect, test } from "bun:test"
 import { Effect } from "effect"
-import { chmod, mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { which } from "bun"
-import { Agent } from "./agent.ts"
+import { Agent, type AgentOptions } from "./agent.ts"
 import { snapshotAgent } from "./snapshot.ts"
 import { AttachClient } from "./attach.ts"
 import { SessionClient, type SessionClientShape } from "./client.ts"
 import { SessionDaemon } from "./daemon.ts"
 import { captureVisible } from "./capture.ts"
 import { MODE_ALT_SCREEN } from "./ghostty.ts"
-import { processAlive, readLease, SessionEnv } from "./session.ts"
-import { Stream } from "effect"
+import { loadSession, processAlive, readLease, sessionPaths, SessionEnv } from "./session.ts"
+import { Option, Stream } from "effect"
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./effect/AttachProtocol.ts"
+import { command } from "./commands.ts"
 
 const dirs: string[] = []
 const daemons: SessionDaemon[] = []
 const clients: SessionClientShape[] = []
 const agents: Agent[] = []
+let nextProjection = 0
 const run = <A>(effect: Effect.Effect<A, unknown, SessionEnv>, env: NodeJS.ProcessEnv) => Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, env)))
 
 afterEach(async () => {
@@ -55,11 +57,36 @@ async function attach(id: string, env: NodeJS.ProcessEnv, client = "ui") {
   return connected
 }
 
+/** Test-only low-level fixture: the daemon owns creation; the client only projects it. */
+async function projectAgent(daemon: SessionDaemon, client: SessionClientShape, options: Omit<AgentOptions, "backend">) {
+  const id = options.id ?? `transport-${nextProjection++}`
+  const live = await daemon.liveAgents()
+  ;(client.live as Set<string>).add(id)
+  const projected = new Agent({ ...options, id, backend: client.backend() })
+  agents.push(projected)
+  if (!live.includes(id)) {
+    await daemon.spawnAgent({
+      id,
+      cmd: options.cmd,
+      cwd: options.cwd,
+      cols: options.cols ?? 80,
+      rows: options.rows ?? 24,
+    })
+  }
+  return projected
+}
+
+function modeledAgent(client: SessionClientShape): { id: string; cmd: string[]; cwd?: string; cols: number; rows: number } {
+  const agent = client.workspace().spaces[0]?.windows[0]?.agents.find((candidate) => !candidate.exited)
+  if (!agent) throw new Error("no modeled live agent")
+  return agent
+}
+
 /** Wait for a predicate, so tests assert on outcomes rather than on sleeps. */
-async function until(predicate: () => boolean, what: string, timeoutMs = 5_000) {
+async function until(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (predicate()) return
+    if (await predicate()) return
     await Bun.sleep(10)
   }
   throw new Error(`timed out waiting for ${what}`)
@@ -73,8 +100,7 @@ test("an agent's bytes travel to the daemon and its output comes back", async ()
   const { daemon, env } = await session("roundtrip")
   const client = await attach("roundtrip", env)
 
-  const agent = new Agent({ cmd: ["cat"], backend: client.backend() })
-  agents.push(agent)
+  const agent = await projectAgent(daemon, client, { cmd: ["cat"] })
 
   // The spawn is a round trip over RPC, so the first write has to be held until
   // the daemon actually has an agent by this name to give it to.
@@ -90,9 +116,8 @@ test("two clients share output and input, and one can leave without detaching th
   const first = await attach("shared-attach", env, "first")
   const second = await attach("shared-attach", env, "second")
 
-  const firstAgent = new Agent({ cmd: ["cat"], backend: first.backend() })
-  const secondAgent = new Agent({ id: firstAgent.id, cmd: ["cat"], backend: second.backend() })
-  agents.push(firstAgent, secondAgent)
+  const firstAgent = await projectAgent(daemon, first, { cmd: ["cat"] })
+  const secondAgent = await projectAgent(daemon, second, { id: firstAgent.id, cmd: ["cat"] })
 
   firstAgent.write("first-input\n")
   await until(() => screen(firstAgent).includes("first-input") && screen(secondAgent).includes("first-input"), "both clients to see first input")
@@ -118,8 +143,7 @@ test("an agent outlives the client, and the next client adopts it", async () => 
   const { daemon, env } = await session("outlives")
   const first = await attach("outlives", env)
 
-  const agent = new Agent({ cmd: ["cat"], backend: first.backend() })
-  agents.push(agent)
+  const agent = await projectAgent(daemon, first, { cmd: ["cat"] })
   let exited = false
   agent.onExit = () => { exited = true }
   agent.write("first-life\n")
@@ -145,19 +169,17 @@ test("an agent outlives the client, and the next client adopts it", async () => 
   // Adopted under the same id: nothing was re-run, so the same `cat` is still
   // there to answer. A fresh spawn would also echo, which is why the assertion
   // below is about the daemon's agent list and not just about the echo.
-  const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend() })
-  agents.push(readopted)
+  const readopted = await projectAgent(daemon, second, { id: agent.id, cmd: ["cat"] })
   readopted.write("second-life\n")
   await until(() => screen(readopted).includes("second-life"), "the adopted agent's echo")
   expect((await daemon.liveAgents()).filter((id) => id === agent.id)).toHaveLength(1)
 })
 
 test("a process that ends reports its exit code through the stream", async () => {
-  const { env } = await session("exits")
+  const { daemon, env } = await session("exits")
   const client = await attach("exits", env)
 
-  const agent = new Agent({ cmd: ["sh", "-c", "exit 7"], backend: client.backend() })
-  agents.push(agent)
+  const agent = await projectAgent(daemon, client, { cmd: ["sh", "-c", "exit 7"] })
 
   await until(() => agent.exited, "the agent to exit")
   expect(agent.detached).toBe(false)
@@ -199,16 +221,14 @@ async function fakeAgent(name: string): Promise<string> {
  * detection must pick it up from its argv.
  */
 test("an agent started from a shell is detected through the daemon backend", async () => {
-  const { env } = await session("foreground-detection")
+  const { daemon, env } = await session("foreground-detection")
   const client = await attach("foreground-detection", env)
 
   const claude = await fakeAgent("claude")
-  const agent = new Agent({
+  const agent = await projectAgent(daemon, client, {
     name: "shell",
     cmd: ["bash", "--norc", "--noprofile"],
-    backend: client.backend(),
   })
-  agents.push(agent)
 
   // A fresh shell at a prompt has no foreground command to name: its pgid is
   // its own session id, and detection must not mistake the shell for an agent.
@@ -236,12 +256,10 @@ test("a reattaching client detects an agent already in the foreground", async ()
   const first = await attach("foreground-adopt", env, "first")
 
   const claude = await fakeAgent("claude")
-  const agent = new Agent({
+  const agent = await projectAgent(daemon, first, {
     name: "shell",
     cmd: ["bash", "--norc", "--noprofile"],
-    backend: first.backend(),
   })
-  agents.push(agent)
   await until(() => agent.foregroundCommand === "", "the shell at a prompt to report no command")
   agent.write(`${claude} --norc --noprofile\n`)
   await until(() => agent.agentKind === "claude", "the foreground agent to be detected")
@@ -250,8 +268,7 @@ test("a reattaching client detects an agent already in the foreground", async ()
   await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
 
   const second = await attach("foreground-adopt", env, "second")
-  const readopted = new Agent({ id: agent.id, cmd: ["bash", "--norc", "--noprofile"], backend: second.backend() })
-  agents.push(readopted)
+  const readopted = await projectAgent(daemon, second, { id: agent.id, cmd: ["bash", "--norc", "--noprofile"] })
 
   // Nothing changes on this session after adoption — no keystroke, no output,
   // no foreground switch. The daemon's sync reply must carry the answer.
@@ -260,17 +277,15 @@ test("a reattaching client detects an agent already in the foreground", async ()
 })
 
 test("output written immediately before exit arrives before the exit frame", async () => {
-  const { env } = await session("drain-order")
+  const { daemon, env } = await session("drain-order")
   const client = await attach("drain-order", env)
 
-  const agent = new Agent({
+  const agent = await projectAgent(daemon, client, {
     cmd: ["sh", "-c", "printf 'last-bytes\\n'; exit 9"],
-    backend: client.backend(),
   })
-  agents.push(agent)
 
   await until(() => agent.exited, "the short-lived agent to exit")
-  expect(screen(agent)).toContain("last-bytes")
+  expect(screen(agent).replace(/\s/g, "")).toContain("last-bytes")
   expect(agent.exitCode).toBe(9)
 })
 
@@ -507,7 +522,8 @@ test("killing through the daemon ends the agent here too", async () => {
   const { daemon, env } = await session("killed")
   const client = await attach("killed", env)
 
-  const agent = new Agent({ cmd: ["sleep", "30"], backend: client.backend() })
+  const saved = modeledAgent(client)
+  const agent = new Agent({ ...saved, backend: client.backend() })
   agents.push(agent)
 
   let live: readonly string[] = []
@@ -519,49 +535,44 @@ test("killing through the daemon ends the agent here too", async () => {
     "the daemon to have the agent",
   )
 
-  // kill() is issued here and executed there; it must still end this agent's
-  // stream, because the exit frame travels back the same way output does.
-  agent.kill()
+  await run(client.runWorkspace(command("agent.kill", { agent: agent.id }), {
+    size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp",
+  }), env)
   await until(() => agent.exited, "the killed agent to close")
 })
 
 test("a command that does not exist fails in the daemon and is visible here", async () => {
-  const { env } = await session("missing-command")
+  const { daemon, env } = await session("missing-command")
   const client = await attach("missing-command", env)
 
   // The daemon spawns this happily — a PTY for a program that is not there is
   // still a PTY. The failure arrives as output and an exit, like any other
   // process that could not do its job, which is what a terminal should show.
-  const agent = new Agent({ cmd: ["/definitely/not/a/program"], backend: client.backend() })
-  agents.push(agent)
+  const agent = await projectAgent(daemon, client, { cmd: ["/definitely/not/a/program"] })
 
   await until(() => agent.exited, "the failed command to exit")
   expect(screen(agent)).toContain("No such file or directory")
   expect(agent.exitCode).toBeGreaterThan(0)
 })
 
-test("a spawn the daemon never receives becomes a dead agent, not a hung one", async () => {
+test("a projection of an unmodeled id never asks the daemon to spawn it", async () => {
   const { daemon, env } = await session("unreachable")
   const client = await attach("unreachable", env)
 
-  // The daemon goes away between attaching and spawning. Nothing can start, so
-  // the agent must fail loudly rather than sit forever waiting for first bytes.
-  await daemon.stop()
-  daemons.splice(daemons.indexOf(daemon), 1)
-
-  const agent = new Agent({ cmd: ["cat"], backend: client.backend() })
+  const before = await daemon.liveAgents()
+  const agent = new Agent({ id: "not-modeled", cmd: ["cat"], backend: client.backend() })
   agents.push(agent)
 
-  await until(() => agent.exited, "the failed spawn to close the agent")
-  expect(screen(agent)).toContain("could not start")
+  await until(() => agent.exited, "the invalid projection to close")
+  expect(screen(agent)).toContain("is not live")
+  expect(await daemon.liveAgents()).toEqual(before)
 })
 
 test("a client whose daemon stops sees a detach, not a process exit", async () => {
   const { daemon, env } = await session("daemon-dies")
   const client = await attach("daemon-dies", env)
 
-  const agent = new Agent({ cmd: ["cat"], backend: client.backend() })
-  agents.push(agent)
+  const agent = await projectAgent(daemon, client, { cmd: ["cat"] })
   agent.write("before-death\n")
   await until(() => screen(agent).includes("before-death"), "the client's echo")
 
@@ -584,8 +595,7 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
   const { daemon, env } = await session("replay-screen")
   const first = await attach("replay-screen", env)
 
-  const agent = new Agent({ cmd: ["cat"], backend: first.backend() })
-  agents.push(agent)
+  const agent = await projectAgent(daemon, first, { cmd: ["cat"] })
   agent.write("left-on-screen\n")
   await until(() => screen(agent).includes("left-on-screen"), "the first client's echo")
 
@@ -593,8 +603,7 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
   await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
 
   const second = await attach("replay-screen", env)
-  const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend() })
-  agents.push(readopted)
+  const readopted = await projectAgent(daemon, second, { id: agent.id, cmd: ["cat"] })
 
   // cat never redraws. The old line can reach this fresh pane only through the
   // daemon's replay; without it the pane stays blank until some later echo.
@@ -605,8 +614,7 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
 test("an adopted agent is resized before its screen replay", async () => {
   const { daemon, env } = await session("replay-resize")
   const first = await attach("replay-resize", env, "first")
-  const agent = new Agent({ cmd: ["cat"], backend: first.backend(), cols: 80, rows: 24 })
-  agents.push(agent)
+  const agent = await projectAgent(daemon, first, { cmd: ["cat"], cols: 80, rows: 24 })
   agent.write("resized-replay\n")
   await until(() => screen(agent).includes("resized-replay"), "the first client's echo")
 
@@ -614,8 +622,7 @@ test("an adopted agent is resized before its screen replay", async () => {
   await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
 
   const second = await attach("replay-resize", env, "second")
-  const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend(), cols: 40, rows: 10 })
-  agents.push(readopted)
+  const readopted = await projectAgent(daemon, second, { id: agent.id, cmd: ["cat"], cols: 40, rows: 10 })
 
   await until(() => screen(readopted).includes("resized-replay"), "the resized replay")
   expect(readopted.term.cols).toBe(40)
@@ -625,21 +632,18 @@ test("an adopted agent is resized before its screen replay", async () => {
 test("daemon replay keeps only the current screen, with no scrollback", async () => {
   const { daemon, env } = await session("replay-no-scrollback")
   const first = await attach("replay-no-scrollback", env, "first")
-  const agent = new Agent({
+  const agent = await projectAgent(daemon, first, {
     cmd: ["sh", "-c", "printf 'old-1\\nold-2\\nold-3\\nold-4\\nold-5\\nold-6\\nold-7\\nold-8\\nold-9\\nold-10\\nlast\\n'; sleep 30"],
-    backend: first.backend(),
     cols: 40,
     rows: 4,
   })
-  agents.push(agent)
   await until(() => screen(agent).includes("last"), "the daemon terminal to receive the final line")
   expect(screen(agent)).not.toContain("old-3")
 
   first.close()
   await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
   const second = await attach("replay-no-scrollback", env, "second")
-  const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend(), cols: 40, rows: 4 })
-  agents.push(readopted)
+  const readopted = await projectAgent(daemon, second, { id: agent.id, cmd: ["cat"], cols: 40, rows: 4 })
 
   await until(() => screen(readopted).includes("last"), "the current screen replay")
   expect(screen(readopted)).not.toContain("old-3")
@@ -650,8 +654,7 @@ test("an alternate-screen app's view is replayed intact to a reattaching client"
   const first = await attach("replay-alt", env)
 
   const cmd = ["sh", "-c", "printf '\\033[?1049h\\033[2J\\033[2;2Halt-mode-view'; sleep 30"]
-  const agent = new Agent({ cmd, backend: first.backend() })
-  agents.push(agent)
+  const agent = await projectAgent(daemon, first, { cmd })
   await until(() => screen(agent).includes("alt-mode-view"), "the app to draw its alternate screen")
   expect(agent.term.mode(MODE_ALT_SCREEN)).toBe(true)
 
@@ -659,8 +662,7 @@ test("an alternate-screen app's view is replayed intact to a reattaching client"
   await until(() => daemon.attachedClient === null, "the daemon to notice the detach")
 
   const second = await attach("replay-alt", env)
-  const readopted = new Agent({ id: agent.id, cmd, backend: second.backend() })
-  agents.push(readopted)
+  const readopted = await projectAgent(daemon, second, { id: agent.id, cmd })
 
   // The content alone could have landed on the wrong screen; the mode check is
   // the discriminator. A raw byte-suffix replay would fail exactly here.
@@ -692,18 +694,19 @@ test("a daemon started on demand keeps agents between two separate clients", asy
     expect(lease?.pid).toBeGreaterThan(0)
     expect(lease!.pid).not.toBe(process.pid)
 
-    const agent = new Agent({ cmd: ["cat"], backend: first.backend() })
+    const saved = modeledAgent(first)
+    const agent = new Agent({ ...saved, backend: first.backend() })
     agents.push(agent)
-    agent.write("across-processes\n")
+    agent.write("printf 'across-processes\\n'\n")
     await until(() => screen(agent).includes("across-processes"), "the daemon's echo")
     first.close()
 
     // A second client, with no memory of the first, finds the agent still there.
     const second = await run(SessionClient.connect(id, { client: "second" }), env)
     expect(second.live).toContain(agent.id)
-    const readopted = new Agent({ id: agent.id, cmd: ["cat"], backend: second.backend() })
+    const readopted = new Agent({ ...saved, backend: second.backend() })
     agents.push(readopted)
-    readopted.write("still-alive\n")
+    readopted.write("printf 'still-alive\\n'\n")
     await until(() => screen(readopted).includes("still-alive"), "the adopted agent's echo")
     await run(second.stop(), env)
   } finally {
@@ -712,17 +715,129 @@ test("a daemon started on demand keeps agents between two separate clients", asy
   }
 })
 
-test("a workspace saved through the daemon is visible to a later client", async () => {
+test("a daemon workspace mutation is visible to a later client", async () => {
   const { daemon, env } = await session("saved")
   const client = await attach("saved", env)
 
-  await run(client.save({
-    spaces: [{ id: "space-1", name: "proj", dir: "/tmp", activeWindow: 1, windows: [] }],
-    activeSpace: "space-1",
+  await run(client.runWorkspace(command("space.rename", { name: "proj" }), {
+    size: { cols: 80, rows: 24 },
+    shell: ["sh"],
+    cwd: "/tmp",
   }), env)
 
   // And a client attaching later is handed that same workspace to rebuild from.
   client.close()
   const next = await attach("saved", env, "second")
-  expect(next.session?.spaces.map((s) => s.name)).toEqual(["proj"])
+  expect(next.workspace().spaces.map((s) => s.name)).toEqual(["proj"])
+})
+
+test("SessionClient exposes no unrevisioned process mutation methods", async () => {
+  const { env } = await session("client-authority-surface")
+  const client = await attach("client-authority-surface", env)
+  expect("spawn" in client).toBe(false)
+  expect("kill" in client).toBe(false)
+})
+
+test("releasing a client projection closes local resources without killing the daemon PTY", async () => {
+  const { daemon, env } = await session("projection-release")
+  const client = await attach("projection-release", env)
+  const agent = await projectAgent(daemon, client, { cmd: ["sleep", "30"] })
+  await Effect.runPromise(agent.release())
+  expect(await daemon.liveAgents()).toContain(agent.id)
+})
+
+test("a failed workspace response is neither accepted nor left as a phantom PTY", async () => {
+  const { daemon, env } = await session("client-transaction")
+  const client = await attach("client-transaction", env)
+  const before = client.workspace()
+  const beforeLive = await daemon.liveAgents()
+  const p = await run(sessionPaths("client-transaction"), env)
+  await rm(p.backup, { recursive: true, force: true })
+  await mkdir(p.backup)
+
+  await expect(run(client.runWorkspace(command("pane.split", { axis: "row" }), {
+    size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp",
+  }), env)).rejects.toThrow()
+  expect(client.workspace()).toEqual(before)
+  expect(daemon.workspace).toEqual(before)
+  expect(await daemon.liveAgents()).toEqual(beforeLive)
+})
+
+test("a natural terminal exit is published only after its workspace generation is durable", async () => {
+  const { daemon, env } = await session("exit-order")
+  const client = await attach("exit-order", env)
+  const before = new Set(client.workspace().spaces.flatMap((space) => space.windows.flatMap((window) => window.agents.map((agent) => agent.id))))
+  const created = await run(client.runWorkspace(command("pane.split", { axis: "row" }), {
+    size: { cols: 80, rows: 24 }, shell: ["sh", "-c", "exit 7"], cwd: "/tmp",
+  }), env)
+  const id = created.spaces.flatMap((space) => space.windows).flatMap((window) => window.agents)
+    .find((agent) => !before.has(agent.id))!.id
+
+  await Effect.runPromise(Stream.runForEach(client.attach.stream(id), (frame) => {
+    if (frame._tag !== "exit") return Effect.void
+    return loadSession("exit-order").pipe(
+      Effect.provideService(SessionEnv, env),
+      Effect.map((saved) => {
+        const agent = saved?.spaces.flatMap((space) => space.windows).flatMap((window) => window.agents)
+          .find((candidate) => candidate.id === id)
+        expect(agent?.exited).toBe(true)
+        expect(agent?.exitCode).toBe(7)
+      }),
+    )
+  }))
+  await daemon.stop()
+  daemons.splice(daemons.indexOf(daemon), 1)
+})
+
+test("a transient natural-exit write failure does not consume the terminal exit latch", async () => {
+  const { daemon, env } = await session("exit-retry-order")
+  const client = await attach("exit-retry-order", env)
+  const before = new Set(client.workspace().spaces.flatMap((space) => space.windows.flatMap((window) => window.agents.map((agent) => agent.id))))
+  const created = await run(client.runWorkspace(command("pane.split", { axis: "row" }), {
+    size: { cols: 80, rows: 24 }, shell: ["sh", "-c", "sleep 0.2; exit 9"], cwd: "/tmp",
+  }), env)
+  const id = created.spaces.flatMap((space) => space.windows).flatMap((window) => window.agents)
+    .find((agent) => !before.has(agent.id))!.id
+  const p = await run(sessionPaths("exit-retry-order"), env)
+  await rm(p.backup, { recursive: true, force: true })
+  await mkdir(p.backup)
+
+  let sawExit = false
+  const exit = Effect.runPromise(Stream.runForEach(client.attach.stream(id), (frame) => {
+    if (frame._tag !== "exit") return Effect.void
+    sawExit = true
+    return loadSession("exit-retry-order").pipe(
+      Effect.provideService(SessionEnv, env),
+      Effect.map((saved) => {
+        const agent = saved?.spaces.flatMap((space) => space.windows).flatMap((window) => window.agents)
+          .find((candidate) => candidate.id === id)
+        expect(agent?.exited).toBe(true)
+        expect(agent?.exitCode).toBe(9)
+      }),
+    )
+  }))
+  await until(() => daemon.handle({ command: "status" }).then((status) => !status.ok), "the persistence failure to surface")
+  await rm(p.backup, { recursive: true, force: true })
+  await Promise.race([exit, Bun.sleep(2_000).then(() => { throw new Error("exit stayed latched after recovery") })])
+  expect(sawExit).toBe(true)
+})
+
+test("attached clients subscribe to ordered workspace generations", async () => {
+  const { env } = await session("model-subscription")
+  const first = await attach("model-subscription", env, "first")
+  const second = await attach("model-subscription", env, "second")
+  const update = Effect.runPromise(Stream.runHead(second.models))
+
+  const changed = await run(first.runWorkspace(command("space.rename", { name: "shared" }), {
+    size: { cols: 80, rows: 24 },
+    shell: ["sh"],
+    cwd: "/tmp",
+  }), env)
+  const received = await update
+
+  expect(Option.isSome(received)).toBe(true)
+  if (Option.isSome(received)) {
+    expect(received.value.revision).toBe(changed.revision)
+    expect(received.value.spaces[0]!.name).toBe("shared")
+  }
 })

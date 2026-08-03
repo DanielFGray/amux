@@ -17,6 +17,7 @@ import { SessionClient, type SessionClientShape } from "../client.ts"
 import { SessionEnv } from "../session.ts"
 import type { SpawnBackend } from "../backend.ts"
 import { workspaceEnv } from "../env.ts"
+import type { AgentOptions } from "../agent.ts"
 
 /**
  * A shell with nobody's dotfiles in it.
@@ -70,7 +71,7 @@ async function waitForAsync(predicate: () => boolean | Promise<boolean>, what: s
   throw new Error(`timed out waiting for ${what}`)
 }
 
-async function setup(backend?: SpawnBackend, agentsOnly = false) {
+async function setup(backend?: SpawnBackend, agentsOnly = false, initial?: AgentOptions) {
   const [selected, setSelected] = createSignal(0)
   const [hovered, setHovered] = createSignal<number | null>(null)
   const activated: number[] = []
@@ -83,7 +84,8 @@ async function setup(backend?: SpawnBackend, agentsOnly = false) {
   const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer, { shell: SHELL, backend }), paneHost)
   const space = Effect.runSync(spaces.create("proj", process.cwd()))
   const win = Effect.runSync(space.newWindow())
-  Effect.runSync(win.init("shell"))
+  if (initial) win.mount(Effect.runSync(win.startAgent(initial)))
+  else Effect.runSync(win.init("shell"))
   const app = createAppState(spaces)
 
   await render(
@@ -251,11 +253,18 @@ test("an agent whose daemon attachment is lost is distinct from idle and done", 
   const client = await run(SessionClient.connect("sidebar-detach", { client: "ui", autostart: false }), env)
   clients.push(client)
 
-  const s = await setup(client.backend())
+  const saved = client.workspace().spaces[0]!.windows[0]!.agents[0]!
+  const s = await setup(client.backend(), false, {
+    id: saved.id,
+    name: "shell",
+    cmd: saved.cmd,
+    cwd: saved.cwd,
+    cols: saved.cols,
+    rows: saved.rows,
+  })
   try {
     const agent = s.win.agents[0]!
-    // The spawn is a round trip over RPC; stopping the daemon before it lands
-    // would end nothing, so first wait for the daemon to own the agent.
+    // Projection adopts the daemon model; it never asks the client to spawn.
     await waitForAsync(
       () => daemon.liveAgents().then((ids) => ids.includes(agent.id)),
       "the daemon to own the agent",

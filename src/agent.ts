@@ -187,7 +187,7 @@ export class Agent {
     return Effect.suspend(() => {
       if (this.#disposed) return Effect.void
       this.#disposed = true
-      this.kill()
+      this.#backend.close()
       return (this.#pumpFiber ? Fiber.interrupt(this.#pumpFiber) : Effect.void).pipe(
         Effect.andThen(Scope.close(this.#scope, Exit.void)),
       )

@@ -22,6 +22,7 @@
  */
 
 import type { SplitDirection } from "./window.ts"
+import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts"
 
 /** The format written into session.json and any exported string. */
 export const LAYOUT_VERSION = 1
@@ -488,6 +489,7 @@ function order(node: LayoutNode | null): LayoutNode | null {
  * a live window — by the time applyLayout runs, the old tree is already gone.
  */
 export function decodeLayout(text: string): Layout {
+  if (Buffer.byteLength(text) > MAX_LAYOUT_BYTES) throw new LayoutFormatError("layout is too large")
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -503,14 +505,17 @@ export function parseLayout(value: unknown): Layout {
   if (raw.version !== LAYOUT_VERSION) {
     throw new LayoutFormatError(`unsupported layout version ${String(raw.version)}`)
   }
-  const root = raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root")
+  const budget = { nodes: 0 }
+  const root = raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root", 1, budget)
   if (raw.focus !== undefined && typeof raw.focus !== "string") {
     throw new LayoutFormatError("focus must be a pane id")
   }
   return makeLayout(collapse(root), raw.focus)
 }
 
-function parseNode(value: unknown, at: string): LayoutNode {
+function parseNode(value: unknown, at: string, depth: number, budget: { nodes: number }): LayoutNode {
+  if (depth > MAX_LAYOUT_DEPTH) throw new LayoutFormatError(`layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}`)
+  if (++budget.nodes > MAX_LAYOUT_NODES) throw new LayoutFormatError(`layout exceeds maximum node count ${MAX_LAYOUT_NODES}`)
   if (!value || typeof value !== "object") throw new LayoutFormatError(`${at} must be an object`)
   const raw = value as Record<string, unknown>
   const weight = parseWeight(raw.weight, at)
@@ -537,7 +542,7 @@ function parseNode(value: unknown, at: string): LayoutNode {
       type: "split",
       direction: raw.direction,
       weight,
-      children: raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`)),
+      children: raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`, depth + 1, budget)),
     }
   }
 

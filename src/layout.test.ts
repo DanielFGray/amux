@@ -134,6 +134,14 @@ test("malformed JSON is refused as a value, not thrown from deep in a rebuild", 
   expect(() => decodeLayout("{not json")).toThrow(LayoutFormatError)
 })
 
+test("recursive layouts are bounded before they can exhaust the stack", () => {
+  let root: any = { type: "pane", id: "deep-pane", agent: "deep-agent", weight: 1 }
+  for (let i = 0; i < 65; i++) {
+    root = { type: "split", direction: "row", weight: 1, children: [root, { type: "pane", id: `p-${i}`, agent: `a-${i}`, weight: 1 }] }
+  }
+  expect(() => parseLayout({ version: LAYOUT_VERSION, root })).toThrow("maximum depth")
+})
+
 test("an unsupported version is refused rather than guessed at", () => {
   expect(() => parseLayout({ version: 99, root: pane("a") })).toThrow(/unsupported layout version/)
 })

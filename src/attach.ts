@@ -20,6 +20,7 @@ import {
 } from "./effect/AttachProtocol.ts"
 import { Deferred, Effect, Layer, Option, Queue, Stream } from "effect"
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts"
+import { parseWorkspace, type WorkspaceSnapshot } from "./workspace.ts"
 
 /**
  * Seconds between heartbeats.
@@ -65,6 +66,8 @@ export interface AttachClientShape {
   readonly client: string
   readonly closed: boolean
   stream(session: string): Stream.Stream<AttachFrame>
+  /** Ordered daemon model generations, independent of terminal streams. */
+  workspace(): Stream.Stream<WorkspaceSnapshot>
   input(session: string, data: string | Uint8Array): void
   resize(session: string, cols: number, rows: number): void
   sync(session: string): void
@@ -85,6 +88,7 @@ class AttachClientImpl implements AttachClientShape {
    *  instead of being left pending forever. */
   #pongs = new Map<string, Deferred.Deferred<boolean>>()
   #queued = new Map<string, { queue: Queue.Queue<AttachFrame>; active: number; terminal: boolean }>()
+  #workspace = Effect.runSync(Queue.bounded<WorkspaceSnapshot>(64))
 
   /**
    * The attachment ended: the socket closed, the daemon went away, or the
@@ -226,6 +230,10 @@ class AttachClientImpl implements AttachClientShape {
     }))
   }
 
+  workspace(): Stream.Stream<WorkspaceSnapshot> {
+    return Stream.fromQueue(this.#workspace)
+  }
+
   input(session: string, data: string | Uint8Array): void {
     this.#send({
       _tag: "input",
@@ -306,6 +314,20 @@ class AttachClientImpl implements AttachClientShape {
       this.onError?.(frame.message)
       return
     }
+    if (frame._tag === "workspace") {
+      try {
+        const workspace = parseWorkspace(JSON.parse(frame.state))
+        if (workspace.revision !== frame.revision) throw new AttachError("workspace revision does not match frame")
+        if (!this.#workspace.unsafeOffer(workspace)) {
+          this.#finish(new AttachError("workspace receive queue is overloaded"))
+          this.#socket.end()
+        }
+      } catch (error) {
+        this.#finish(error instanceof Error ? error : new AttachError(String(error)))
+        this.#socket.end()
+      }
+      return
+    }
     if (frame._tag !== "output" && frame._tag !== "exit" && frame._tag !== "foreground") return
 
     let entry = this.#queued.get(frame.session)
@@ -349,6 +371,7 @@ class AttachClientImpl implements AttachClientShape {
     for (const pong of this.#pongs.values()) Effect.runSync(Deferred.succeed(pong, false))
     this.#pongs.clear()
     for (const { queue } of this.#queued.values()) Effect.runFork(Queue.shutdown(queue))
+    Effect.runFork(Queue.shutdown(this.#workspace))
     this.#queued.clear()
     this.onClose?.(error)
   }

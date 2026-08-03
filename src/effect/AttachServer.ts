@@ -2,6 +2,7 @@ import { Cause, Data, Effect, ExecutionStrategy, Exit, FiberMap, Match, Runtime,
 import { randomUUID } from "node:crypto"
 import { AttachHub } from "./AttachHub.ts"
 import { createSocketWriter } from "../attach-write.ts"
+import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts"
 import {
   decodeAttachFrames,
   encodeAttachFrame,
@@ -308,8 +309,11 @@ export const startAttachServer = (
                 // frames from one connection in wire order so resize->sync
                 // adoption cannot serialize the old dimensions.
                 state.processing = state.processing.then(() => Runtime.runPromise(runtime)(
-                  Effect.gen(function* () {
-                    state.buffer += data.toString("utf8")
+                   Effect.gen(function* () {
+                     if (Buffer.byteLength(state.buffer) + data.byteLength > MAX_ATTACH_FRAME_BYTES) {
+                       return yield* new AttachServerError({ message: "attach frame is too large" })
+                     }
+                     state.buffer += data.toString("utf8")
                     const decoded = decodeAttachFrames(state.buffer)
                     state.buffer = decoded.rest
                     for (const frame of decoded.frames) dispatchFrame(socket, frame)

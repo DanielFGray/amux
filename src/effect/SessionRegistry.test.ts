@@ -37,6 +37,22 @@ test("SessionRegistry releases sessions when the scope closes", async () => {
   expect(result).toEqual(new Set(["scoped-pty"]))
 })
 
+test("SessionRegistry rejects oversized terminals before allocating a PTY", async () => {
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const registry = yield* SessionRegistry
+      return yield* Effect.either(registry.spawn({
+        id: "oversized-pty",
+        cmd: ["sh"],
+        cols: 1_000_000,
+        rows: 1_000_000,
+      }))
+    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
+  )
+  expect(result._tag).toBe("Left")
+  if (result._tag === "Left") expect(result.left.operation).toBe("spawn")
+})
+
 test("a non-reading child cannot wedge writes, kill, or another session", async () => {
   const result = await Promise.race([
     Effect.runPromise(

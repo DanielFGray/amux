@@ -40,11 +40,12 @@ function spyBackend(): { backend: SpawnBackend; killed: () => string[] } {
       stream: Stream.never,
       write() {},
       resize() {},
-      kill() {
+      close() {
         if (mine) return
         mine = true
         killed.push(opts.id)
       },
+      kill() { this.close() },
       get closed() {
         return mine
       },

@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
-import { cleanupStaleSessions, isSessionId, loadSession, removeSession, saveSession, sessionExists, sessionPaths, sessionRoot, writeLease, SessionEnv } from "./session.ts"
+import { cleanupStaleSessions, isSessionId, loadSession, parseSessionState, removeSession, saveSession, sessionExists, sessionPaths, sessionRoot, writeLease, SessionEnv } from "./session.ts"
+import { MAX_SPACES } from "./limits.ts"
 
 const dirs: string[] = []
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
@@ -108,4 +109,39 @@ test("cleanup ignores entries that are not valid session ids", async () => {
   expect(await run(cleanupStaleSessions(), e)).toEqual(["dead"])
   expect(await run(sessionExists("dead"), e)).toBe(false)
   await expect(stat(join(root, "weird name"))).resolves.toBeDefined()
+})
+
+test("nested persisted state rejects duplicate identities and invalid layout relationships", () => {
+  const value: any = {
+    ...state("nested"), activeSpace: "space-a", spaces: [{
+      id: "space-a", name: "a", dir: "/tmp", activeWindow: 1, windows: [{
+        number: 1, name: null,
+        agents: [{ id: "agent-a", name: "a", cmd: ["sh"], cols: 80, rows: 24, exited: false, exitCode: null }],
+        layout: JSON.stringify({ version: 1, root: { type: "pane", id: "pane-a", agent: "agent-a", weight: 1 }, focus: "pane-a" }),
+      }],
+    }],
+  }
+  expect(parseSessionState(value)).toEqual(value)
+  const duplicate = structuredClone(value)
+  duplicate.spaces.push(structuredClone(value.spaces[0]))
+  expect(() => parseSessionState(duplicate)).toThrow("invalid persisted space")
+  const missing = structuredClone(value)
+  missing.spaces[0].windows[0].layout = JSON.stringify({ version: 1, root: { type: "pane", id: "pane-a", agent: "missing", weight: 1 } })
+  expect(() => parseSessionState(missing)).toThrow("absent or exited agent")
+  const malformed = structuredClone(value)
+  malformed.spaces[0].windows[0].agents[0].rows = -1
+  expect(() => parseSessionState(malformed)).toThrow("invalid persisted agent")
+  const huge = structuredClone(value)
+  huge.spaces[0].windows[0].agents[0].cols = 1_000_000
+  huge.spaces[0].windows[0].agents[0].rows = 1_000_000
+  expect(() => parseSessionState(huge)).toThrow("invalid persisted agent")
+})
+
+test("persisted snapshots bound aggregate model size", () => {
+  const crowded: any = state("crowded")
+  crowded.spaces = Array.from({ length: MAX_SPACES + 1 }, (_, i) => ({
+    id: `space-${i}`, name: "s", dir: "/tmp", activeWindow: null, windows: [],
+  }))
+  crowded.activeSpace = crowded.spaces[0].id
+  expect(() => parseSessionState(crowded)).toThrow("too many spaces")
 })

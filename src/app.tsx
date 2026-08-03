@@ -7,19 +7,18 @@ import {
 } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import { createSignal, createMemo, createEffect, on } from "solid-js"
-import { Effect } from "effect"
+import { Effect, Fiber, Stream } from "effect"
 import { basename, join, resolve } from "node:path"
 import { writeFile } from "node:fs/promises"
 
 import { Divider } from "./divider.ts"
-import { SpaceSet, type Space } from "./space.ts"
-import { frame, type Window } from "./window.ts"
+import { projectWorkspace, SpaceSet } from "./space.ts"
+import { frame } from "./window.ts"
 import { nextPreset, LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts"
-import type { Agent } from "./agent.ts"
 import type { TerminalPane } from "./pane.ts"
 import { readGit } from "./git.ts"
 import { encodeKey } from "./keys.ts"
-import { pickSendTarget, sendKeys, type SendTarget } from "./send.ts"
+import { sendKeys, type SendTarget } from "./send.ts"
 import {
   createBindings,
   helpGroups,
@@ -59,7 +58,7 @@ import {
   type OptionValue,
 } from "./options.ts"
 import type { SessionClientShape } from "./client.ts"
-import { restoreSession, snapshotSpace } from "./snapshot.ts"
+import type { WorkspaceSnapshot } from "./workspace.ts"
 import { createAppState } from "./ui/state.ts"
 import { clampSidebarSelection, sidebarTargets } from "./ui/Sidebar.tsx"
 import { App, type Overlay } from "./ui/App.tsx"
@@ -101,9 +100,6 @@ export interface AppHandle {
    *  the signals below are read inside it, and evaluating them any earlier
    *  would hand `render` a dead snapshot. */
   readonly View: () => JSX.Element
-  /** Write the workspace out. Called on the way down by the session's
-   *  finalizer, which is what makes a signal save the session. */
-  readonly persist: () => Promise<void>
   readonly dispose: () => void
 }
 
@@ -119,7 +115,6 @@ export interface AppHandle {
  */
 export function createApp({ renderer, paneHost, config, session, quit }: AppOptions): AppHandle {
   const SHELL = [resolveOptions(config.options)["behaviour.shell"] || process.env.SHELL || "bash"]
-  const SESSION_ID = session.id
 
   /**
    * Run one of the workspace's Effect-returning methods here and now.
@@ -134,27 +129,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   /** A failure's message, whatever shape the socket threw it in. */
   const errorMessage = (error: unknown): string =>
     error instanceof Error ? error.message : String(error)
-
-  /**
-   * Start a releasing effect and let it finish on its own.
-   *
-   * Releasing cannot be `run`: closing an agent's scope interrupts its pump
-   * fiber before freeing the terminal, and interrupting a running fiber means
-   * waiting for it to unwind — `runSync` throws on it. A callback has nowhere
-   * to await, so it forks.
-   *
-   * Which makes the SHAPE of a caller matter: anything that reads the tree
-   * after a release must do so inside the same effect, not after this call.
-   * Forking only guarantees the effect starts, which is how ts-456094's eight
-   * dropped Effects hid for as long as they did.
-   *
-   * The two remaining callers are the agent-exit cascade and the sidebar's `x`,
-   * neither of which is a command today. The sidebar's is a duplicate of
-   * agent.kill / window.close / space.close aimed at the selected row instead
-   * of the active one, and it collapses into those the moment commands take
-   * arguments — the Schema half of ts-8b3867.
-   */
-  const fork = (effect: Effect.Effect<unknown>): void => void Effect.runFork(effect)
 
   const spaces = new SpaceSet(workspaceEnv(renderer, { shell: SHELL, backend: session.backend() }), paneHost)
   // Copy goes to the clipboard AND the server's buffer stack — tmux's model,
@@ -207,97 +181,43 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   }, 100)
   copyTimer.unref?.()
 
-  /**
-   * Session persistence.
-   *
-   * The workspace is written out as metadata — spaces, windows, their split
-   * arrangements and what each agent was started with — and read back at the next
-   * launch. Terminal contents are NOT in it and cannot be; see snapshot.ts for
-   * what that does and does not restore.
-   *
-   * The daemon writes the file, not us: it is already writing attachment state
-   * into the same file, and two writers would race over it. We send what we see.
-   *
-   * Writes are debounced because onChange fires on every keystroke that changes a
-   * title, and coalesced through a chain so two saves can never interleave. The
-   * chaining onto whatever onChange was already there is the same idiom
-   * createAppState uses: this is one more observer, not the owner.
-   */
-  const SAVE_DEBOUNCE_MS = 500
-
-  let saveTimer: Timer | null = null
-  let saving: Promise<void> = Promise.resolve()
-
-  function persistSession(): Promise<void> {
-    const workspace = {
-      spaces: spaces.spaces.map(snapshotSpace),
-      activeSpace: spaces.active?.id ?? null,
-    }
-    saving = saving.then(() => Effect.runPromise(session.save(workspace))).catch((error) => {
-      // A session that cannot be written is worth saying once, not worth taking
-      // the app down for: everything still running keeps running.
-      console.error(`could not save session '${SESSION_ID}': ${String(error)}`)
-    })
-    return saving
+  let projectedRevision = -1
+  let projection = Promise.resolve()
+  let runProjectedCommand: (value: Command) => void = () => {}
+  const project = (model: WorkspaceSnapshot): Promise<void> => {
+    if (model.revision <= projectedRevision) return projection
+    projectedRevision = model.revision
+    projection = projection
+      .then(() => Effect.runPromise(projectWorkspace(spaces, model, session.backend())))
+      .then(() => {
+        for (const space of spaces.spaces) {
+          for (const window of space.windows) {
+            window.onModelFocus = (pane) => runProjectedCommand(command("pane.select", { pane }))
+            window.onModelResizeDivider = (path, index, delta) =>
+              runProjectedCommand(command("pane.resize-divider", { path: [...path], index, delta }))
+          }
+        }
+        app.refresh()
+        if (model.spaces.length === 0) shutdown()
+      })
+      .catch((error) => console.error(`could not project workspace revision ${model.revision}: ${String(error)}`))
+    return projection
   }
-
-  function scheduleSave() {
-    if (saveTimer) return
-    saveTimer = setTimeout(() => {
-      saveTimer = null
-      void persistSession()
-    }, SAVE_DEBOUNCE_MS)
-    saveTimer.unref?.()
-  }
-
-  const previousOnChange = spaces.onChange
-  spaces.onChange = () => {
-    previousOnChange?.()
-    scheduleSave()
-  }
-
-  /**
-   * What to do after an agent is finished and its views have closed.
-   *
-   * An agent ending triggers this, whether it ended on its own or was killed
-   * with ^a K — the two are the same event from here, and letting them diverge
-   * is what left ^a K with an empty window (ts-8d06b3). What does NOT trigger
-   * it is closing a view with ^a x: that is a deliberate detach, the agent keeps
-   * running, and reopening it would fight the user. The difference that matters
-   * is whether anything is still running, not who ended it.
-   *
-   * The cascade is tmux's: the window closes when its last pane dies, the space
-   * when its last window closes, and the app with the last space. The one
-   * exception is that a still-running agent is never discarded silently — if the
-   * window has one detached, it is shown instead of being killed with the window.
-   */
-  function afterAgentExit(_agent: Agent, window: Window, space: Space) {
-    if (window.panes.length > 0) return
-
-    const live = window.agents.find((a) => a.state !== "done")
-    if (live) {
-      window.reveal(live)
-      return
-    }
-
-    // Closing the window — and possibly the whole space — frees the agents'
-    // terminals, so any copy mode sitting on a pane in this space must end
-    // first: the mode's own exit clears the selection through that terminal.
-    exitCopyModeFor(space.windows.flatMap((w) => w.panes))
-    // One effect, not three forks: each step's condition is read from the tree
-    // the previous step just changed, so the sequencing has to be inside.
-    fork(
-      Effect.gen(function* () {
-        yield* space.closeWindow(window)
-        if (space.windows.length > 0) return
-        yield* spaces.remove(space)
-        // Nothing running and no space left: an empty screen would just be a
-        // dead end, so exiting is the honest outcome.
-        if (spaces.spaces.length === 0) shutdown()
-      }),
+  const modelFiber = Effect.runFork(
+    Stream.runForEach(session.models, (model) => Effect.promise(() => project(model))),
+  )
+  const workspaceContext = () => ({
+    size: { cols: Math.max(1, paneHost.width), rows: Math.max(1, paneHost.height) },
+    shell: SHELL,
+    cwd: spaces.active?.dir ?? process.cwd(),
+    blockedAgents: spaces.allAgents.filter((agent) => agent.state === "blocked").map((agent) => agent.id),
+  })
+  const runWorkspace = (value: Command, input?: string): Effect.Effect<void, CommandError> =>
+    session.runWorkspace(value, { ...workspaceContext(), ...(input === undefined ? {} : { input }) }).pipe(
+      Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      Effect.tap((model) => Effect.promise(() => project(model))),
+      Effect.asVoid,
     )
-  }
-  spaces.onAgentExit = afterAgentExit
 
   const [configState, setConfigState] = createSignal<Config>(config)
   /** Every option resolved against its declared default — what the app reads.
@@ -460,10 +380,12 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     const target = targets()[index]
     if (!target) return
     setSelected(index)
-    if (target.space !== spaces.active) spaces.activate(target.space)
-    if (target.kind !== "space") target.space.selectWindow(target.window)
-    if (target.kind === "agent") target.window.reveal(target.agent)
-    app.refresh()
+    const effect = target.kind === "space"
+      ? commands.run(command("space.select", { space: target.space.id }))
+      : target.kind === "agent"
+        ? commands.run(command("agent.reveal", { agent: target.agent.id }))
+        : commands.run(command("window.select", { space: target.space.id, number: target.window.number }))
+    runDetached("sidebar.select", effect)
   }
 
   /**
@@ -721,24 +643,10 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   function sendKeysTarget(): SendTarget | null {
     const focused = spaces.activeWindow?.focused ?? null
     const selection = targets()[selected()]
-    const focusedTarget = focused
-      ? {
-          write: (b: string) => focused.write(b),
-          describe: () => focused.agent.title || "pane",
-        }
+    if (focused) return { write() {}, describe: () => focused.agent.title || "pane" }
+    return selection?.kind === "agent"
+      ? { write() {}, describe: () => selection.agent.title || "pane" }
       : null
-    const selectedTarget =
-      selection?.kind === "agent"
-        ? {
-            write: (b: string) => selection.window.reveal(selection.agent)?.write(b),
-            describe: () => selection.agent.title || "pane",
-          }
-        : null
-    return pickSendTarget(focusedTarget, selectedTarget, () => {
-      if (selection?.kind !== "agent") return
-      if (selection.space !== spaces.active) spaces.activate(selection.space)
-      selection.space.selectWindow(selection.window)
-    })
   }
 
   /**
@@ -784,51 +692,6 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     })
   })
 
-  /**
-   * Which window, space or agent a command is aimed at.
-   *
-   * An absent target means the active one, which is what a keypress means. A
-   * target that is named and not found is a failure rather than a shrug: over
-   * the socket that is a typo worth an answer, whereas `^a z` with no window at
-   * all has always been a no-op and stays one.
-   */
-  function findSpace(id: string | undefined): Effect.Effect<Space | null, CommandError> {
-    if (id === undefined) return Effect.succeed(spaces.active)
-    const space = spaces.spaces.find((s) => s.id === id)
-    return space ? Effect.succeed(space) : Effect.fail(new CommandError({ message: `no space '${id}'` }))
-  }
-
-  function findWindow(target: {
-    space?: string | undefined
-    window?: number | undefined
-  }): Effect.Effect<{ space: Space; window: Window } | null, CommandError> {
-    return Effect.flatMap(findSpace(target.space), (space) => {
-      if (!space) return Effect.succeed(null)
-      if (target.window === undefined) {
-        return Effect.succeed(space.active ? { space, window: space.active } : null)
-      }
-      const window = space.windows.find((w) => w.number === target.window)
-      return window
-        ? Effect.succeed({ space, window })
-        : Effect.fail(new CommandError({ message: `no window ${target.window} in '${space.name}'` }))
-    })
-  }
-
-  function findAgent(id: string | undefined): Effect.Effect<{ window: Window; agent: Agent } | null, CommandError> {
-    if (id === undefined) {
-      const window = activeWin()
-      const agent = window?.focused?.agent
-      return Effect.succeed(window && agent ? { window, agent } : null)
-    }
-    for (const space of spaces.spaces) {
-      for (const window of space.windows) {
-        const agent = window.agents.find((a) => a.id === id)
-        if (agent) return Effect.succeed({ window, agent })
-      }
-    }
-    return Effect.fail(new CommandError({ message: `no agent '${id}'` }))
-  }
-
   /** The declaration behind an option name, or a refusal naming it. */
   function knownOption(name: string): Effect.Effect<{ spec: OptionSpec; option: OptionName }, CommandError> {
     const spec = optionSpec(name)
@@ -848,32 +711,28 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   const handlers: CommandHandlers = {
     // Suspended rather than `sync`: the window has to be read when the command
     // runs, not when the table is built.
-    "pane.split": ({ axis }) => Effect.suspend(() => activeWin()?.splitSpawn(axis) ?? Effect.void),
-    "pane.next": () => Effect.sync(() => activeWin()?.focusNext(1)),
-    "pane.last": () => Effect.sync(() => activeWin()?.lastPane()),
-    "pane.focus": ({ direction }) => Effect.sync(() => activeWin()?.focusDirection(direction)),
-    "pane.resize": ({ direction }) => Effect.sync(() => activeWin()?.resizeFocus(direction)),
-    "pane.zoom": () => Effect.sync(() => activeWin()?.zoom()),
-    "pane.swap": ({ to }) => Effect.sync(() => activeWin()?.swap(to === "next" ? 1 : -1)),
-    "pane.close": () =>
-      Effect.sync(() => {
-        const w = activeWin()
-        if (!w?.focused) return
-        exitCopyModeFor(w.focused)
-        w.close(w.focused)
-      }),
-    "pane.break": () =>
-      Effect.gen(function* () {
-        const w = activeWin()
-        const space = spaces.active
-        if (w?.focused && space) yield* space.breakPane(w.focused)
-      }),
+    "pane.split": (value) => runWorkspace(value),
+    "pane.next": (value) => runWorkspace(value),
+    "pane.last": (value) => runWorkspace(value),
+    "pane.focus": (value) => runWorkspace(value),
+    "pane.select": (value) => runWorkspace(value),
+    "pane.resize": (value) => runWorkspace(value),
+    "pane.resize-divider": (value) => runWorkspace(value),
+    "pane.zoom": (value) => runWorkspace(value),
+    "pane.swap": (value) => runWorkspace(value),
+    "pane.close": (value) => runWorkspace(value),
+    "pane.break": (value) => runWorkspace(value),
     "pane.send-keys": ({ keys }) =>
       Effect.suspend(() => {
-        const target = sendKeysTarget()
-        if (!target) return Effect.fail(new CommandError({ message: "no pane to send to" }))
-        const error = sendKeys(target, keys, parseKeyStrokes.bind(null, bindings.keymap))
-        return error ? Effect.fail(new CommandError({ message: error.message })) : Effect.void
+        let input = ""
+        const error = sendKeys(
+          { write: (bytes) => { input += bytes }, describe: () => "pane" },
+          keys,
+          parseKeyStrokes.bind(null, bindings.keymap),
+        )
+        return error
+          ? Effect.fail(new CommandError({ message: error.message }))
+          : runWorkspace(command("pane.send-keys", { keys }), input)
       }),
     "pane.capture": () => Effect.sync(openCapture),
     "pane.copy-mode": () => Effect.sync(enterCopyMode),
@@ -918,99 +777,27 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
         openChooseBuffer(buffers)
       }),
 
-    "window.new": () =>
-      Effect.gen(function* () {
-        const space = spaces.active
-        if (!space) return
-        const window = yield* space.newWindow()
-        yield* window.init()
-      }),
-    "window.next": () => Effect.sync(() => spaces.active?.cycleWindow(1)),
-    "window.previous": () => Effect.sync(() => spaces.active?.cycleWindow(-1)),
-    "window.last": () => Effect.sync(() => spaces.active?.selectLastWindow()),
-    "window.select": ({ space, number }) =>
-      Effect.flatMap(findSpace(space), (found) => Effect.sync(() => void found?.selectNumber(number))),
-    "window.rename": ({ name, ...target }) =>
-      Effect.flatMap(findWindow(target), (found) =>
-        Effect.sync(() => {
-          if (!found) return
-          // Clearing the name hands the title back to whatever the window is
-          // running, which is the only way to undo a rename.
-          found.window.customName = name.trim() || null
-          app.refresh()
-        }),
-      ),
-    "window.close": (target) =>
-      Effect.gen(function* () {
-        const found = yield* findWindow(target)
-        if (!found) return
-        exitCopyModeFor(found.window.panes)
-        yield* found.space.closeWindow(found.window)
-        app.refresh()
-      }),
-    "window.next-layout": () =>
-      Effect.sync(() => {
-        const w = activeWin()
-        if (!w) return
-        exitCopyModeFor(w.panes)
-        w.selectLayout(nextPreset(w.preset))
-      }),
-    "window.select-layout": ({ preset }) =>
-      Effect.sync(() => {
-        const w = activeWin()
-        if (!w) return
-        exitCopyModeFor(w.panes)
-        w.selectLayout(preset)
-      }),
-    "window.synchronize-panes": () => Effect.sync(() => activeWin()?.toggleSync()),
+    "window.new": (value) => runWorkspace(value),
+    "window.next": (value) => runWorkspace(value),
+    "window.previous": (value) => runWorkspace(value),
+    "window.last": (value) => runWorkspace(value),
+    "window.select": (value) => runWorkspace(value),
+    "window.rename": (value) => runWorkspace(value),
+    "window.close": (value) => runWorkspace(value),
+    "window.next-layout": (value) => runWorkspace(value),
+    "window.select-layout": (value) => runWorkspace(value),
+    "window.synchronize-panes": (value) => runWorkspace(value),
 
-    "agent.kill": ({ agent }) =>
-      Effect.gen(function* () {
-        const found = yield* findAgent(agent)
-        if (!found) return
-        // Before the teardown, never after: the mode's exit clears the selection
-        // through the pane's terminal, and a freed terminal cannot be caught.
-        exitCopyModeFor(found.window.panes.filter((p) => p.agent === found.agent))
-        yield* found.window.killAgent(found.agent)
-        app.refresh()
-      }),
-    "agent.next-blocked": () =>
-      Effect.sync(() => {
-        const agent = spaces.nextBlocked()
-        if (!agent) return
-        const index = targets().findIndex((target) => target.kind === "agent" && target.agent === agent)
-        if (index !== -1) setSelected(index)
-      }),
+    "agent.kill": (value) => runWorkspace(value),
+    "agent.reveal": (value) => runWorkspace(value),
+    "agent.next-blocked": (value) => runWorkspace(value),
 
-    "space.new": ({ name, dir }) =>
-      Effect.gen(function* () {
-        // An absent or empty field means "the default" rather than "blank".
-        const cwd = spaces.active?.dir ?? process.cwd()
-        const target = resolve(dir?.trim() || cwd)
-        const space = yield* spaces.create(name?.trim() || basename(target), target)
-        spaces.activate(space)
-        const window = yield* space.newWindow()
-        yield* window.init()
-        void refreshGit()
-      }),
-    "space.rename": ({ space, name }) =>
-      Effect.flatMap(findSpace(space), (found) =>
-        Effect.sync(() => {
-          if (!found || !name.trim()) return
-          found.name = name.trim()
-          app.refresh()
-        }),
-      ),
-    "space.close": ({ space }) =>
-      Effect.gen(function* () {
-        const found = yield* findSpace(space)
-        if (!found) return
-        exitCopyModeFor(found.windows.flatMap((w) => w.panes))
-        yield* spaces.remove(found)
-        app.refresh()
-      }),
-    "space.next": () => Effect.sync(() => spaces.cycle(1)),
-    "space.previous": () => Effect.sync(() => spaces.cycle(-1)),
+    "space.new": (value) => runWorkspace(value),
+    "space.select": (value) => runWorkspace(value),
+    "space.rename": (value) => runWorkspace(value),
+    "space.close": (value) => runWorkspace(value),
+    "space.next": (value) => runWorkspace(value),
+    "space.previous": (value) => runWorkspace(value),
 
     // The name arrives as a string from every surface, so it is checked here
     // rather than trusted: the table is what says whether it exists and what it
@@ -1078,6 +865,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
   }
 
   const commands = makeCommands(handlers)
+  runProjectedCommand = (value) => runDetached(value._tag, commands.run(value))
 
   /**
    * One keybinding: a name, the keys that reach it, and the command it invokes
@@ -1602,16 +1390,17 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
 
   // Before the first window exists, so its panes are built with the right edges.
   syncSidebarFrame()
-  // The daemon's workspace is restored in place of the default space. Nothing was
-  // saved on a first run, and a session whose spaces were all closed is the same
-  // thing: either way the fallback is one space on the current directory.
-  //
-  // Agents the daemon is still running are adopted rather than re-run — the
-  // backend knows which ones those are — so a reattach puts the live processes
-  // back under the same window numbers and the same split arrangement.
-  if (!session.session || run(restoreSession(spaces, session.session)).length === 0) {
-    const first = run(spaces.create(basename(process.cwd()) || "space", process.cwd()))
-    run(Effect.flatMap(first.newWindow(), (w) => w.init()))
+  // Initial status is the reconnect snapshot; later generations arrive on the
+  // model stream. The client never invents a fallback workspace of its own.
+  const initialWorkspace = session.workspace()
+  run(projectWorkspace(spaces, initialWorkspace, session.backend()))
+  projectedRevision = initialWorkspace.revision
+  for (const space of spaces.spaces) {
+    for (const window of space.windows) {
+      window.onModelFocus = (pane) => runProjectedCommand(command("pane.select", { pane }))
+      window.onModelResizeDivider = (path, index, delta) =>
+        runProjectedCommand(command("pane.resize-divider", { path: [...path], index, delta }))
+    }
   }
   syncSidebarFrame()
   void refreshGit()
@@ -1632,8 +1421,8 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
       hints={hints()}
       hintsVisible={hintsVisible()}
       onSelectWindow={(w) => {
-        spaces.active?.selectWindow(w)
-        app.refresh()
+        const space = spaces.active
+        if (space) runProjectedCommand(command("window.select", { space: space.id, number: w.number }))
       }}
       overlay={overlay()}
       helpGroups={groups()}
@@ -1670,7 +1459,7 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
    *
    * Deliberately NOT a detach: the spaces are left alone, because disposing an
    * agent kills its process. Only our own observers and timers go, and the
-   * workspace is written by `persist` from the session's finalizer afterwards.
+   * workspace is already durable in the daemon before its revision is published.
    */
   function dispose() {
     // While the pane is still alive: the mode's exit clears the selection
@@ -1679,9 +1468,9 @@ export function createApp({ renderer, paneHost, config, session, quit }: AppOpti
     clearInterval(copyTimer)
     clearInterval(gitTimer)
     clearHintTimer()
-    if (saveTimer) clearTimeout(saveTimer)
+    Effect.runFork(Fiber.interrupt(modelFiber))
     app.dispose()
   }
 
-  return { View, persist: persistSession, dispose }
+  return { View, dispose }
 }

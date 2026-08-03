@@ -14,11 +14,11 @@ import { startDaemon } from "./daemon.ts"
  * session that every later client refuses to attach to.
  */
 const program = Effect.gen(function* () {
-  yield* Effect.acquireRelease(
+  const daemon = yield* Effect.acquireRelease(
     Effect.promise(() => startDaemon()),
     (daemon) => Effect.promise(() => daemon.stop()).pipe(Effect.ignore),
   )
-  yield* Effect.never
+  yield* Effect.promise(() => daemon.stopped)
 })
 
 BunRuntime.runMain(Effect.scoped(program))

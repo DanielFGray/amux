@@ -10,6 +10,7 @@ import {
   Stream,
 } from "effect";
 import { PtyWriteInterrupted, readPty, spawnPty } from "../pty.ts";
+import { isTerminalSize } from "../limits.ts";
 
 export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   operation: S.String,
@@ -169,6 +170,9 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
 
     const spawn = (spec: SessionSpec): Effect.Effect<ManagedSession, PtyError, Scope.Scope> =>
       Effect.gen(function* () {
+        if (!isTerminalSize(spec.cols, spec.rows)) {
+          return yield* new PtyError({ operation: "spawn", message: "invalid terminal size" });
+        }
         const kind: SessionKind = spec.kind ?? "pty";
         const token = Symbol(spec.id);
         const reserved = yield* Ref.modify(sessions, (current) => {
@@ -268,7 +272,9 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
                 : Effect.fail(asPtyError("write", error)),
             ),
           ),
-          resize: (cols, rows) => commandResult((done) => ({ _tag: "resize", cols, rows, done })),
+          resize: (cols, rows) => isTerminalSize(cols, rows)
+            ? commandResult((done) => ({ _tag: "resize", cols, rows, done }))
+            : Effect.fail(new PtyError({ operation: "resize", message: "invalid terminal size" })),
           // Kill must not wait behind a write whose child stopped reading.
           kill: Effect.promise(() => backend.kill()),
           foreground: () => backend.foreground(),

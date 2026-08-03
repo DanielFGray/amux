@@ -41,7 +41,7 @@ const Resize = S.Struct({
  * daemon answers with an `output` frame carrying the serialized screen (modes
  * and content) ahead of the session's live bytes, so a reattaching client's
  * pane is not blank until the program next redraws. Only adopted sessions need
- * it: a freshly spawned session's bytes reach the client from the first one.
+ * it: an attached client sees a newly created session's bytes from the first one.
  */
 const Sync = S.Struct({
   _tag: S.Literal("sync"),
@@ -54,8 +54,8 @@ const Sync = S.Struct({
  * The daemon owns the PTY, so only it can ask the tty which process group is
  * in the foreground (tcgetpgrp) and what its session id is (tcgetsid); a
  * client reading the same tty gets -1. Sent whenever either value changes —
- * and once when the session starts, so a client that spawns or adopts a
- * session is told the current state without having to ask. The client keeps
+ * and once when the session starts, so attached clients observing a new or
+ * adopted session learn the current state without asking. The client keeps
  * reading /proc for the actual cmdline: pids are a global namespace, the
  * foreground pgid is not.
  */
@@ -67,6 +67,17 @@ const Foreground = S.Struct({
   pgid: S.Int,
   /** Session id = the session leader's pid, or -1 when it is not knowable. */
   sid: S.Int,
+})
+
+/**
+ * An authoritative workspace generation. Model state is a separate tagged
+ * concern on the shared transport; terminal byte frames retain their own
+ * session ordering and routing.
+ */
+const Workspace = S.Struct({
+  _tag: S.Literal("workspace"),
+  revision: S.NonNegativeInt,
+  state: S.String,
 })
 
 const Exit = S.Struct({
@@ -90,7 +101,7 @@ const Pong = S.Struct({
   nonce: S.String,
 })
 
-export const AttachFrame = S.Union(Hello, Output, Input, Resize, Sync, Exit, Foreground, ErrorFrame, Ping, Pong)
+export const AttachFrame = S.Union(Hello, Output, Input, Resize, Sync, Exit, Foreground, Workspace, ErrorFrame, Ping, Pong)
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()("AttachProtocolError", {

@@ -97,6 +97,8 @@ export class Window {
   onAgentExit?: (agent: Agent) => void
   onCopy?: (text: string) => boolean | void
   onCopyError?: (error: Error) => void
+  onModelFocus?: (pane: string) => void
+  onModelResizeDivider?: (path: LayoutPath, index: number, delta: number) => void
 
   /**
    * Where agents started here get their processes.
@@ -121,6 +123,8 @@ export class Window {
    * closing of exactly one of them.
    */
   #scopes = new Map<Agent, Scope.CloseableScope>()
+  /** In a daemon client, exits are projected from model revisions, never authored here. */
+  #authoritativeProjection = false
 
   constructor(env: Context.Context<WorkspaceEnv>, cwd: string | undefined, number: number) {
     this.#env = env
@@ -194,6 +198,11 @@ export class Window {
       this.onChange?.()
     }
     agent.onExit = () => {
+      if (this.#authoritativeProjection) {
+        this.onChange?.()
+        this.#ctx.requestRender()
+        return
+      }
       // The process is gone, so its viewports are dead weight — close them and
       // give the space back to the surviving panes, the way tmux does.
       // The agent itself stays: it keeps its terminal, so it remains in the
@@ -208,6 +217,28 @@ export class Window {
       // no output to invalidate panes — but the sidebar's ▲ must repaint.
       this.onChange?.()
     }
+  }
+
+  /** Make this renderable window a projection of daemon state. */
+  project(layout: Layout, state: WindowState): void {
+    this.#authoritativeProjection = true
+    this.#state = structuredClone(state)
+    for (const evicted of this.#mount(layout, state.preset)) evicted.destroyRecursively()
+    this.#state = structuredClone(state)
+    this.#layout = makeLayout(layout.root, state.focus ?? undefined)
+    for (const pane of this.#panes) pane.active = pane.id === state.focus
+    this.#refreshChrome()
+    this.#ctx.requestRender()
+  }
+
+  /** Drop a client projection after the daemon has removed its owner. */
+  removeProjectedAgent(agent: Agent): Effect.Effect<void> {
+    return Effect.gen(this, function* () {
+      for (const pane of [...this.#panes]) if (pane.agent === agent) this.close(pane)
+      const at = this.#agents.indexOf(agent)
+      if (at !== -1) this.#agents.splice(at, 1)
+      yield* this.#releaseAgent(agent)
+    })
   }
 
   /**
@@ -397,7 +428,9 @@ export class Window {
     const divider = new Divider(this.#ctx, {
       id: `divider-${nextId++}`,
       axis: direction,
-      onDrag: (delta) => this.#resizeDivider(path, index, delta),
+      onDrag: (delta) => this.#authoritativeProjection
+        ? this.onModelResizeDivider?.(path, index, delta)
+        : this.#resizeDivider(path, index, delta),
     })
     this.#dividerRefs.set(divider, { path, index })
     // It is a segment of the pane frame, so its ends finish as junctions.
@@ -415,7 +448,9 @@ export class Window {
   #makePane(agent: Agent, id = newPaneId()): TerminalPane {
     const pane = new TerminalPane(this.#ctx, { id, agent })
     setWeight(pane, 1)
-    pane.onFocusRequest = (p) => this.focus(p)
+    pane.onFocusRequest = (p) => this.#authoritativeProjection
+      ? this.onModelFocus?.(p.id)
+      : this.focus(p)
     pane.onCopy = this.onCopy
     pane.onCopyError = this.onCopyError
     return pane
@@ -852,7 +887,9 @@ export class Window {
     this.#scopes.set(agent, scope)
     this.#bind(agent)
     this.#panes.push(pane)
-    pane.onFocusRequest = (p) => this.focus(p)
+    pane.onFocusRequest = (p) => this.#authoritativeProjection
+      ? this.onModelFocus?.(p.id)
+      : this.focus(p)
     this.#mount(appendPane(this.#layout, { id: pane.id, agent: agent.id }), null)
   }
 

@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process"
-import { Data, Effect, Layer, Schedule } from "effect"
+import { Data, Effect, Layer, Schedule, Stream } from "effect"
 import { AttachClient } from "./attach.ts"
-import { daemonBackend, type BackendOptions, type DaemonSession, type SpawnBackend } from "./backend.ts"
+import { daemonBackend, type DaemonSession, type SpawnBackend } from "./backend.ts"
 import { daemonRequest, type DaemonResponse } from "./daemon.ts"
 import type { BufferEntry } from "./effect/BufferStore.ts"
+import type { Command } from "./commands.ts"
+import { parseWorkspace, type WorkspaceCommandContext, type WorkspaceSnapshot } from "./workspace.ts"
 import { readLease, processAlive, sessionPaths, SessionEnv, type SessionState } from "./session.ts"
 
 const START_TIMEOUT_MS = 10_000
@@ -22,10 +24,12 @@ export interface SessionClientShape extends DaemonSession {
   readonly id: string
   readonly session: SessionState | null
   readonly live: ReadonlySet<string>
+  readonly workspace: () => WorkspaceSnapshot
+  readonly models: Stream.Stream<WorkspaceSnapshot>
+  readonly runWorkspace: (command: Command, context: WorkspaceCommandContext) => Effect.Effect<WorkspaceSnapshot, unknown, never>
   readonly backend: () => SpawnBackend
   readonly close: () => void
   readonly stop: () => Effect.Effect<void, unknown, never>
-  readonly save: (workspace: Pick<SessionState, "spaces"> & { activeSpace?: string | null }) => Effect.Effect<void, unknown, never>
   /** tmux's buffer verbs, all server-side: the stack lives in the daemon
    *  beside the PTYs, so a copy and a paste work with no client attached. */
   readonly setBuffer: (name: string | undefined, data: string) => Effect.Effect<string, unknown, never>
@@ -71,21 +75,54 @@ const make = (id: string, options: SessionClientOptions): Effect.Effect<SessionC
       yield* Effect.sync(() => attach.close())
       return yield* Effect.fail(new SessionClientError({ message: `session '${id}' did not answer status: ${String(error)}` }))
     }
+    if (!status.workspace) {
+      yield* Effect.sync(() => attach.close())
+      return yield* Effect.fail(new SessionClientError({ message: "daemon status returned no workspace" }))
+    }
     let service!: SessionClientShape
+    const initialWorkspace = yield* Effect.try({
+      try: () => parseWorkspace(status.workspace),
+      catch: (error) => new SessionClientError({ message: `daemon returned an invalid workspace: ${String(error)}` }),
+    })
+    let workspace = initialWorkspace
+    let commandQueue: Promise<void> = Promise.resolve()
+    const accept = (next: WorkspaceSnapshot) => {
+      if (next.revision > workspace.revision) workspace = next
+      for (const space of next.spaces) {
+        for (const window of space.windows) {
+          for (const agent of window.agents) if (!agent.exited) (service.live as Set<string>).add(agent.id)
+        }
+      }
+      return workspace
+    }
     service = {
       id,
       attach,
-      stream: (agent: string) => attach.stream(agent),
       session: status.session ?? null,
       live: new Set(status.agents ?? []),
+      workspace: () => structuredClone(workspace),
+      models: attach.workspace().pipe(Stream.map(accept)),
+      runWorkspace: (command, context) => Effect.tryPromise({
+        try: () => {
+          const request = async () => {
+            const response = await Effect.runPromise(daemonRequest(id, {
+              command: "workspace-command",
+              workspaceCommand: command,
+              expectedRevision: workspace.revision,
+              workspaceContext: context,
+            }).pipe(Effect.provideService(SessionEnv, env)))
+            if (!response.ok) throw new SessionClientError({ message: response.error ?? "workspace command refused" })
+            if (!response.workspace) throw new SessionClientError({ message: "workspace command returned no generation" })
+            accept(parseWorkspace(response.workspace))
+            return structuredClone(workspace)
+          }
+          const queued = commandQueue.then(request)
+          commandQueue = queued.then(() => {}, () => {})
+          return queued
+        },
+        catch: (error) => error,
+      }),
       backend: () => daemonBackend(service, service.live),
-      spawn: (spec: BackendOptions) => daemonRequest(id, { command: "spawn", spawn: { id: spec.id, cmd: spec.cmd, cwd: spec.cwd, cols: spec.cols, rows: spec.rows } }).pipe(Effect.provideService(SessionEnv, env),
-        Effect.flatMap((response) => response.ok ? Effect.void : Effect.fail(new SessionClientError({ message: response.error ?? "spawn refused" }))),
-      ),
-      kill: (agent: string) => daemonRequest(id, { command: "kill", agent }).pipe(Effect.provideService(SessionEnv, env), Effect.catchAll(() => Effect.void), Effect.asVoid),
-      save: (workspace: Pick<SessionState, "spaces"> & { activeSpace?: string | null }) => daemonRequest(id, { command: "save", workspace }).pipe(Effect.provideService(SessionEnv, env),
-        Effect.flatMap((response) => response.ok ? Effect.void : Effect.fail(new SessionClientError({ message: response.error ?? "save refused" }))),
-      ),
       setBuffer: (name: string | undefined, data: string) => daemonRequest(id, { command: "set-buffer", bufferName: name, bufferData: data }).pipe(Effect.provideService(SessionEnv, env),
         Effect.flatMap((response) => response.ok
           ? Effect.succeed(response.bufferName ?? name ?? "")

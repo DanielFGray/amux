@@ -15,6 +15,8 @@ import {
   type SpaceSetState,
   type SpaceState,
 } from "./space-model.ts"
+import type { WorkspaceSnapshot, WorkspaceSpace, WorkspaceWindow } from "./workspace.ts"
+import type { SpawnBackend } from "./backend.ts"
 
 let nextSpaceId = 0
 
@@ -78,6 +80,12 @@ export class Space {
   /** Stable model identity used by persistence and, eventually, the daemon. */
   get activeWindowNumber(): number | null {
     return this.#state.activeWindow
+  }
+
+  /** Reconcile selection counters after windows have been projected. */
+  projectState(state: SpaceState): void {
+    this.#state = structuredClone(state)
+    this.onChange?.()
   }
 
   /** Every agent across every window in this space. */
@@ -334,6 +342,14 @@ export class SpaceSet {
     return this.#state.activeSpace
   }
 
+  /** Reconcile active identity after spaces and windows have been projected. */
+  projectState(state: SpaceSetState): void {
+    this.#state = structuredClone(state)
+    this.#project()
+    this.onChange?.()
+    this.#ctx.requestRender()
+  }
+
   /** The window keystrokes currently land in. */
   get activeWindow(): Window | null {
     return this.active?.active ?? null
@@ -477,4 +493,65 @@ export class SpaceSet {
       this.#spaces.length = 0
     })
   }
+}
+
+/**
+ * Reconcile one authoritative daemon generation into renderer-owned objects.
+ * Existing Agent terminals and panes are reused; only model identities that
+ * appeared or disappeared are acquired or released.
+ */
+export function projectWorkspace(
+  target: SpaceSet,
+  source: WorkspaceSnapshot,
+  backend: SpawnBackend,
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    for (const space of [...target.spaces]) {
+      if (!source.spaces.some((candidate) => candidate.id === space.id)) yield* target.remove(space)
+    }
+    for (const savedSpace of source.spaces) {
+      let space = target.spaces.find((candidate) => candidate.id === savedSpace.id)
+      if (!space) space = yield* target.create(savedSpace.name, savedSpace.dir, savedSpace.id)
+      space.name = savedSpace.name
+      space.dir = savedSpace.dir
+      yield* projectSpace(space, savedSpace, backend)
+    }
+    target.projectState(source.state)
+  })
+}
+
+function projectSpace(space: Space, source: WorkspaceSpace, backend: SpawnBackend): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    for (const window of [...space.windows]) {
+      if (!source.windows.some((candidate) => candidate.number === window.number)) yield* space.closeWindow(window)
+    }
+    for (const savedWindow of source.windows) {
+      let window = space.windows.find((candidate) => candidate.number === savedWindow.number)
+      if (!window) window = yield* space.newWindow(savedWindow.name ?? undefined, savedWindow.number)
+      window.customName = savedWindow.name
+      yield* projectWindow(window, savedWindow, backend)
+    }
+    space.projectState(source.state)
+  })
+}
+
+function projectWindow(window: Window, source: WorkspaceWindow, backend: SpawnBackend): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    for (const agent of [...window.agents]) {
+      if (!source.agents.some((candidate) => candidate.id === agent.id)) yield* window.removeProjectedAgent(agent)
+    }
+    for (const saved of source.agents) {
+      if (window.agents.some((candidate) => candidate.id === saved.id)) continue
+      yield* window.startAgent({
+        id: saved.id,
+        name: saved.name,
+        cmd: saved.cmd,
+        cwd: saved.cwd,
+        cols: saved.cols,
+        rows: saved.rows,
+        ...(saved.exited ? { exited: { code: saved.exitCode } } : { backend }),
+      })
+    }
+    window.project(source.layout, source.state)
+  })
 }

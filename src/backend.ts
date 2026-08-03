@@ -14,7 +14,7 @@
  */
 
 import { spawnPty, readPty } from "./pty.ts"
-import { Deferred, Effect, Fiber, Mailbox, Stream } from "effect"
+import { Effect, Fiber, Mailbox, Stream } from "effect"
 import type { AttachClientShape } from "./attach.ts"
 
 export interface AgentBackend {
@@ -30,6 +30,8 @@ export interface AgentBackend {
   readonly stream: Stream.Stream<Uint8Array>
   write(data: string | Uint8Array): void
   resize(cols: number, rows: number): void
+  /** Release this process's view. Local owners terminate; daemon projections detach. */
+  close(): void
   kill(): void
   /**
    * Foreground process group and session id of the controlling terminal, or -1.
@@ -49,8 +51,7 @@ export interface BackendOptions {
    *
    * A local PTY has no use for it — the fd is the identity. A daemon-owned one
    * has nothing else: every agent's bytes share one socket and are told apart
-   * by this id, and the layout being persisted alongside is written in terms of
-   * the same ids, so the client chooses it rather than the daemon.
+    * by this id. The daemon workspace allocates it; projections only adopt it.
    */
   id: string
   cmd: string[]
@@ -99,6 +100,7 @@ export const localPty: SpawnBackend = (opts) => {
       })
     },
     resize: (cols, rows) => pty.resize(cols, rows),
+    close: () => { void pty.kill() },
     kill: () => pty.kill(),
     foregroundPgid: () => pty.foregroundPgid(),
     sessionId: () => pty.sessionId(),
@@ -108,17 +110,11 @@ export const localPty: SpawnBackend = (opts) => {
 /**
  * The daemon, as far as a backend needs to know it.
  *
- * Two planes, deliberately: `attach` carries bytes and is a live connection,
- * while `spawn` and `kill` change what agents exist and are request/response.
- * Splitting them is what lets a keystroke be fire-and-forget while a failed
- * spawn still has somewhere to report itself.
+ * A projection only borrows terminal bytes. Process creation and destruction
+ * are workspace transactions and are intentionally absent from this surface.
  */
 export interface DaemonSession {
   readonly attach: AttachClientShape
-  stream(agent: string): Stream.Stream<import("./effect/AttachProtocol.ts").AttachFrame>
-  spawn(spec: BackendOptions): Effect.Effect<void, unknown, never>
-  kill(id: string): Effect.Effect<void, unknown, never>
-  save(workspace: Pick<import("./session.ts").SessionState, "spaces"> & { activeSpace?: string | null }): Effect.Effect<void, unknown, never>
 }
 
 /**
@@ -194,19 +190,7 @@ export function daemonBackend(
       }))),
     )
 
-    /**
-     * Resolved once this agent exists in the daemon.
-     *
-     * Frames naming an agent the daemon has not started yet are dropped on the
-     * floor by design (they are the tail of a dying agent's keystrokes), so
-     * anything said before the spawn round trip completes has to wait for this.
-     */
-    const started = Effect.runSync(Deferred.make<void>())
-    const once = (action: () => void) =>
-      Effect.runFork(Deferred.await(started).pipe(Effect.andThen(Effect.sync(action))))
-
     if (live.has(opts.id)) {
-      Effect.runSync(Deferred.succeed(started, undefined))
       // An adopted agent was sized by whoever had it last. This client's
       // viewport is the current truth, so say so before drawing anything.
       session.attach.resize(opts.id, opts.cols, opts.rows)
@@ -216,30 +200,17 @@ export function daemonBackend(
       // serializes at the resize it just applied.
       session.attach.sync(opts.id)
     } else {
-      Effect.runPromise(session.spawn(opts)).then(
-        () => Effect.runSync(Deferred.succeed(started, undefined)),
-        (error) => {
-          // A stale live snapshot can race the authoritative daemon spawn. The
-          // daemon rejects the duplicate; this client adopts the already-owned
-          // PTY instead of turning a successful session into a tombstone.
-          if (String(error).includes("already live or starting")) {
-            Effect.runSync(Deferred.succeed(started, undefined))
-            session.attach.resize(opts.id, opts.cols, opts.rows)
-            session.attach.sync(opts.id)
-            return
-          }
-          // A spawn that never happened has no process to exit, so the agent
-          // becomes a tombstone carrying the reason rather than a pane waiting
-          // forever on bytes that are not coming. Interrupting the gate rather
-          // than completing it discards whatever was queued behind it: there is
-          // nothing to send it to.
-          Effect.runFork(Deferred.interrupt(started))
-          Effect.runFork(
-            output.offer(new TextEncoder().encode(`\r\n[daemon] could not start: ${String(error)}\r\n`)),
-          )
-          end(null)
-        },
-      )
+      Effect.runFork(output.offer(new TextEncoder().encode(
+        `\r\n[daemon] modeled session '${opts.id}' is not live\r\n`,
+      )))
+      end(null)
+    }
+
+    const close = () => {
+      if (closed) return
+      detached = true
+      end(null)
+      Effect.runFork(Fiber.interrupt(streamFiber))
     }
 
     return {
@@ -257,9 +228,12 @@ export function daemonBackend(
       stream: Mailbox.toStream(output).pipe(
         Stream.ensuring(Fiber.interrupt(streamFiber)),
       ),
-      write: (data) => once(() => session.attach.input(opts.id, data)),
-      resize: (cols, rows) => once(() => session.attach.resize(opts.id, cols, rows)),
-      kill: () => once(() => void Effect.runPromise(session.kill(opts.id)).catch(() => {})),
+      write: (data) => { if (!closed) session.attach.input(opts.id, data) },
+      resize: (cols, rows) => { if (!closed) session.attach.resize(opts.id, cols, rows) },
+      close,
+      // Projection code cannot kill daemon-owned processes. Explicit modeled
+      // kills go through the revisioned workspace command path.
+      kill: close,
       // The tty is in the daemon; these answer from its `foreground` frames
       // rather than from this process's view of the tty (which is -1). A
       // caller that reads /proc/<pgid> is reading a global namespace, so the
@@ -287,6 +261,7 @@ export function exitedBackend(exitCode: number | null): AgentBackend {
     stream: Stream.empty,
     write() {},
     resize() {},
+    close() {},
     kill() {},
     foregroundPgid: () => -1,
     sessionId: () => -1,
