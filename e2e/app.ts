@@ -60,7 +60,7 @@ export interface App {
    * for `\x1b[1;5D` — so a check that needs a real ctrl+arrow builds the
    * sequence itself and sends it whole.
    */
-  send(bytes: string): void
+  send(bytes: string): Promise<void>
   /**
    * The workspace as the app last persisted it — spaces, windows and agents.
    *
@@ -98,9 +98,9 @@ export async function launch(
     config?: unknown
   } = {},
 ): Promise<App> {
-  const home = await mkdtemp(join(tmpdir(), `herdr-${session}-`))
+  const home = await mkdtemp(join(tmpdir(), `amux-${session}-`))
   const state = join(home, "state")
-  const configPath = join(home, "config", "opentui-herdr", "config.json")
+  const configPath = join(home, "config", "amux", "config.json")
   if (opts.config !== undefined) await Bun.write(configPath, JSON.stringify(opts.config, null, 2) + "\n")
   const env = {
     ...process.env,
@@ -113,7 +113,7 @@ export async function launch(
     SHELL: "/bin/sh",
     XDG_STATE_HOME: state,
     XDG_CONFIG_HOME: join(home, "config"),
-    HERDR_SESSION: session,
+    AMUX_SESSION: session,
     TERM: "xterm-256color",
   }
   const cols = opts.cols ?? 100
@@ -136,7 +136,7 @@ export async function launch(
   // Glob order is filesystem order, so a check read either the live file or a
   // stale snapshot depending on the day, and `e2e/boot.ts` failed its second
   // launch as "0sp 0win 0ag" perhaps one run in two. Name the file.
-  const sessionFile = join(state, "opentui-herdr", "sessions", session, "session.json")
+  const sessionFile = join(state, "amux", "sessions", session, "session.json")
 
   async function readSession(): Promise<Record<string, any> | null> {
     return await Bun.file(sessionFile).json().catch(() => null)
@@ -169,8 +169,27 @@ export async function launch(
   // later, and before either of those `shape()` says "(no session file)" —
   // which satisfies any predicate phrased as a negation, so the wait returned
   // on its first poll and the check then read the empty write.
-  await until(async () => /\s[1-9]\d*ag$/.test(await shape()), "the workspace to have an agent")
-  await until(() => captureVisible(term).includes(" · "), "the sidebar to draw its footer")
+  //
+  // Boot wait must clean up on failure: a timeout throws out of launch() past
+  // the App object and its stop(), leaving a live PTY, detached daemon and
+  // /tmp/amux-* dir. Extract stop()'s body so both paths share it.
+  const cleanup = async () => {
+    await pty.kill()
+    await reader.catch(() => {})
+    // After the reader, never before: the pump can be holding a chunk, and a
+    // write into a freed terminal corrupts ghostty's heap rather than faulting.
+    term.free()
+    await stopDaemon(join(state, "amux", "sessions", session, "lease.json"))
+    await rm(home, { recursive: true, force: true })
+  }
+
+  try {
+    await until(async () => /\s[1-9]\d*ag$/.test(await shape()), "the workspace to have an agent")
+    await until(() => captureVisible(term).includes(" · "), "the sidebar to draw its footer")
+  } catch (e) {
+    await cleanup()
+    throw e
+  }
 
   return {
     output: () => out,
@@ -185,20 +204,12 @@ export async function launch(
       }
     },
     send(bytes) {
-      pty.write(bytes)
+      return pty.write(bytes)
     },
     shape,
     session: readSession,
     config: () => Bun.file(configPath).json().catch(() => null),
-    async stop() {
-      await pty.kill()
-      await reader.catch(() => {})
-      // After the reader, never before: the pump can be holding a chunk, and a
-      // write into a freed terminal corrupts ghostty's heap rather than faulting.
-      term.free()
-      await stopDaemon(join(state, "opentui-herdr", "sessions", session, "lease.json"))
-      await rm(home, { recursive: true, force: true })
-    },
+    stop: cleanup,
   }
 }
 
