@@ -21,17 +21,17 @@
     "session": "bun src/session-cli.ts",
     "cli": "bun src/cli.ts",
     "typecheck": "bunx tsc --noEmit",
+    "format": "bunx oxfmt --write src e2e",
+    "format:check": "bunx oxfmt --check src e2e",
     "test": "bun test src",
     "e2e": "bun test e2e"
   },
   "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
+    "@types/bun": "latest",
+    "oxfmt": "0.62.0",
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@effect/platform": "^0.97.1",
     "@effect/platform-bun": "0.91.2",
     "@opentui/core": "^0.4.5",
     "@opentui/keymap": "0.4.5",
