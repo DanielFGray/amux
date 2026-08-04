@@ -1,4 +1,4 @@
-import { Schema as S } from "effect"
+import { Schema as S } from "effect";
 
 /**
  * The framed wire protocol between a client and the attach daemon.
@@ -13,26 +13,26 @@ import { Schema as S } from "effect"
 const Hello = S.Struct({
   _tag: S.Literal("hello"),
   client: S.String,
-})
+});
 
 const Output = S.Struct({
   _tag: S.Literal("output"),
   session: S.String,
   data: S.Uint8ArrayFromBase64,
-})
+});
 
 const Input = S.Struct({
   _tag: S.Literal("input"),
   session: S.String,
   data: S.Uint8ArrayFromBase64,
-})
+});
 
 const Resize = S.Struct({
   _tag: S.Literal("resize"),
   session: S.String,
   cols: S.Int,
   rows: S.Int,
-})
+});
 
 /**
  * Ask the daemon to replay a session's current screen to this client.
@@ -46,7 +46,7 @@ const Resize = S.Struct({
 const Sync = S.Struct({
   _tag: S.Literal("sync"),
   session: S.String,
-})
+});
 
 /**
  * The daemon's answer to "what is in the foreground of this session's tty".
@@ -67,7 +67,7 @@ const Foreground = S.Struct({
   pgid: S.Int,
   /** Session id = the session leader's pid, or -1 when it is not knowable. */
   sid: S.Int,
-})
+});
 
 /**
  * An authoritative workspace generation. Model state is a separate tagged
@@ -78,39 +78,54 @@ const Workspace = S.Struct({
   _tag: S.Literal("workspace"),
   revision: S.NonNegativeInt,
   state: S.String,
-})
+});
 
 const Exit = S.Struct({
   _tag: S.Literal("exit"),
   session: S.String,
   code: S.NullOr(S.Int),
-})
+});
 
 const ErrorFrame = S.Struct({
   _tag: S.Literal("error"),
   message: S.String,
-})
+});
 
 const Ping = S.Struct({
   _tag: S.Literal("ping"),
   nonce: S.String,
-})
+});
 
 const Pong = S.Struct({
   _tag: S.Literal("pong"),
   nonce: S.String,
-})
+});
 
-export const AttachFrame = S.Union(Hello, Output, Input, Resize, Sync, Exit, Foreground, Workspace, ErrorFrame, Ping, Pong)
-export type AttachFrame = S.Schema.Type<typeof AttachFrame>
+export const AttachFrame = S.Union(
+  Hello,
+  Output,
+  Input,
+  Resize,
+  Sync,
+  Exit,
+  Foreground,
+  Workspace,
+  ErrorFrame,
+  Ping,
+  Pong,
+);
+export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
 
-export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()("AttachProtocolError", {
-  message: S.String,
-}) {}
+export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()(
+  "AttachProtocolError",
+  {
+    message: S.String,
+  },
+) {}
 
 /** Encode one frame. Newline is the framing boundary, not part of the payload. */
 export function encodeAttachFrame(frame: AttachFrame): string {
-  return `${JSON.stringify(S.encodeSync(AttachFrame)(frame))}\n`
+  return `${JSON.stringify(S.encodeSync(AttachFrame)(frame))}\n`;
 }
 
 /**
@@ -118,20 +133,20 @@ export function encodeAttachFrame(frame: AttachFrame): string {
  * Incomplete trailing data is returned for the next socket read.
  */
 export function decodeAttachFrames(input: string): { frames: AttachFrame[]; rest: string } {
-  const lines = input.split("\n")
-  const rest = lines.pop() ?? ""
-  const frames: AttachFrame[] = []
+  const lines = input.split("\n");
+  const rest = lines.pop() ?? "";
+  const frames: AttachFrame[] = [];
 
   for (const line of lines) {
-    if (!line) continue
+    if (!line) continue;
     try {
-      frames.push(S.decodeUnknownSync(AttachFrame)(JSON.parse(line)))
+      frames.push(S.decodeUnknownSync(AttachFrame)(JSON.parse(line)));
     } catch (error) {
       throw new AttachProtocolError({
         message: error instanceof Error ? error.message : String(error),
-      })
+      });
     }
   }
 
-  return { frames, rest }
+  return { frames, rest };
 }

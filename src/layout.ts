@@ -21,13 +21,13 @@
  * either, and a headless window is the two of them together.
  */
 
-import type { SplitDirection } from "./window.ts"
-import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts"
+import type { SplitDirection } from "./window.ts";
+import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts";
 
 /** The format written into session.json and any exported string. */
-export const LAYOUT_VERSION = 1
+export const LAYOUT_VERSION = 1;
 
-export type LayoutNode = LayoutPane | LayoutSplit
+export type LayoutNode = LayoutPane | LayoutSplit;
 
 /**
  * A pane's identity, and what it is a viewport onto.
@@ -43,34 +43,34 @@ export type LayoutNode = LayoutPane | LayoutSplit
  * They are what a control API targets, the way tmux addresses panes by `%3`.
  */
 export interface PaneRef {
-  id: string
+  id: string;
   /** Agent.id. */
-  agent: string
+  agent: string;
 }
 
 export interface LayoutPane extends PaneRef {
-  type: "pane"
+  type: "pane";
   /** Flex weight, relative to siblings. */
-  weight: number
+  weight: number;
 }
 
 export interface LayoutSplit {
-  type: "split"
-  direction: SplitDirection
-  weight: number
+  type: "split";
+  direction: SplitDirection;
+  weight: number;
   /** Two or more. A one-child split is a split in name only and is collapsed. */
-  children: LayoutNode[]
+  children: LayoutNode[];
 }
 
 export interface Layout {
-  version: typeof LAYOUT_VERSION
+  version: typeof LAYOUT_VERSION;
   /** Absent for a window with no panes, which is a real state during teardown. */
-  root: LayoutNode | null
+  root: LayoutNode | null;
   /** PaneRef.id of the pane that had focus, if it is still in the tree. */
-  focus?: string
+  focus?: string;
 }
 
-let nextPaneId = 0
+let nextPaneId = 0;
 
 /**
  * Mint a pane id.
@@ -82,27 +82,27 @@ let nextPaneId = 0
  * could drift.
  */
 export function newPaneId(): string {
-  return `pane-${nextPaneId++}`
+  return `pane-${nextPaneId++}`;
 }
 
 /** Keep the generator ahead of every id a decoded layout brought back, so a
  *  fresh pane can never collide with a persisted one. Called from parseNode,
  *  which is the one door layouts from outside this process come through. */
 function reservePaneId(id: string) {
-  const n = /^pane-(\d+)$/.exec(id)
-  if (n) nextPaneId = Math.max(nextPaneId, Number(n[1]) + 1)
+  const n = /^pane-(\d+)$/.exec(id);
+  if (n) nextPaneId = Math.max(nextPaneId, Number(n[1]) + 1);
 }
 
 /** Every pane in the tree, left to right, depth first — the order `^a o` walks. */
 export function layoutPanes(node: LayoutNode | null): LayoutPane[] {
-  if (!node) return []
-  if (node.type === "pane") return [node]
-  return node.children.flatMap(layoutPanes)
+  if (!node) return [];
+  if (node.type === "pane") return [node];
+  return node.children.flatMap(layoutPanes);
 }
 
 /** Agent ids the layout expects to exist, in pane order. */
 export function layoutAgents(layout: Layout): string[] {
-  return layoutPanes(layout.root).map((pane) => pane.agent)
+  return layoutPanes(layout.root).map((pane) => pane.agent);
 }
 
 /**
@@ -118,8 +118,8 @@ export function layoutAgents(layout: Layout): string[] {
  * layouts must serialize to equal strings.
  */
 export function makeLayout(root: LayoutNode | null, focus?: string): Layout {
-  const present = focus !== undefined && layoutPanes(root).some((pane) => pane.id === focus)
-  return present ? { version: LAYOUT_VERSION, root, focus } : { version: LAYOUT_VERSION, root }
+  const present = focus !== undefined && layoutPanes(root).some((pane) => pane.id === focus);
+  return present ? { version: LAYOUT_VERSION, root, focus } : { version: LAYOUT_VERSION, root };
 }
 
 /**
@@ -135,12 +135,14 @@ export function makeLayout(root: LayoutNode | null, focus?: string): Layout {
  * parent was sizing against.
  */
 export function collapse(node: LayoutNode | null): LayoutNode | null {
-  if (!node) return null
-  if (node.type === "pane") return node
+  if (!node) return null;
+  if (node.type === "pane") return node;
 
-  const children = node.children.map(collapse).filter((child): child is LayoutNode => child !== null)
-  if (children.length === 0) return null
-  if (children.length === 1) return { ...children[0]!, weight: node.weight }
+  const children = node.children
+    .map(collapse)
+    .filter((child): child is LayoutNode => child !== null);
+  if (children.length === 0) return null;
+  if (children.length === 1) return { ...children[0]!, weight: node.weight };
 
   // A child split along the same axis as its parent is flattened into it: the
   // live tree only nests when the axis alternates (see Window.split), so a
@@ -149,17 +151,17 @@ export function collapse(node: LayoutNode | null): LayoutNode | null {
     child.type === "split" && child.direction === node.direction
       ? redistribute(child.children, child.weight)
       : [child],
-  )
+  );
 
-  return { ...node, children: flattened }
+  return { ...node, children: flattened };
 }
 
 /** Scale a flattened split's children so they keep their share of the space the
  *  nested split used to occupy. */
 function redistribute(children: LayoutNode[], weight: number): LayoutNode[] {
-  const total = children.reduce((sum, child) => sum + child.weight, 0)
-  if (total <= 0) return children
-  return children.map((child) => ({ ...child, weight: (child.weight / total) * weight }))
+  const total = children.reduce((sum, child) => sum + child.weight, 0);
+  if (total <= 0) return children;
+  return children.map((child) => ({ ...child, weight: (child.weight / total) * weight }));
 }
 
 /**
@@ -178,13 +180,13 @@ function rewritePanes(
   root: LayoutNode | null,
   fn: (pane: LayoutPane, at: number) => LayoutNode | null,
 ): LayoutNode | null {
-  let seen = 0
+  let seen = 0;
   const walk = (node: LayoutNode): LayoutNode | null => {
-    if (node.type === "pane") return fn(node, seen++)
-    const children = node.children.map(walk).filter((child): child is LayoutNode => child !== null)
-    return children.length ? { ...node, children } : null
-  }
-  return root ? walk(root) : null
+    if (node.type === "pane") return fn(node, seen++);
+    const children = node.children.map(walk).filter((child): child is LayoutNode => child !== null);
+    return children.length ? { ...node, children } : null;
+  };
+  return root ? walk(root) : null;
 }
 
 /**
@@ -224,23 +226,24 @@ export function splitLayout(
             { type: "pane", ...pane, weight: 1 },
           ],
         },
-  )
-  return makeLayout(collapse(root), pane.id)
+  );
+  return makeLayout(collapse(root), pane.id);
 }
 
 /** Append a pane to the root row, preserving the existing slots and weights. */
 export function appendPane(layout: Layout, ref: PaneRef): Layout {
-  const pane: LayoutPane = { type: "pane", ...ref, weight: 1 }
-  if (!layout.root) return makeLayout(pane, ref.id)
-  const root = layout.root.type === "split" && layout.root.direction === "row"
-    ? { ...layout.root, children: [...layout.root.children, pane] }
-    : {
-        type: "split" as const,
-        direction: "row" as const,
-        weight: 1,
-        children: [{ ...layout.root, weight: 1 }, pane],
-      }
-  return makeLayout(root, ref.id)
+  const pane: LayoutPane = { type: "pane", ...ref, weight: 1 };
+  if (!layout.root) return makeLayout(pane, ref.id);
+  const root =
+    layout.root.type === "split" && layout.root.direction === "row"
+      ? { ...layout.root, children: [...layout.root.children, pane] }
+      : {
+          type: "split" as const,
+          direction: "row" as const,
+          weight: 1,
+          children: [{ ...layout.root, weight: 1 }, pane],
+        };
+  return makeLayout(root, ref.id);
 }
 
 /**
@@ -253,19 +256,19 @@ export function appendPane(layout: Layout, ref: PaneRef): Layout {
  * the pane the user was in, wherever that pane now sits.
  */
 export function swapLayout(layout: Layout, from: number, to: number): Layout {
-  const panes = layoutPanes(layout.root)
-  const a = panes[from]
-  const b = panes[to]
-  if (!a || !b || from === to) return layout
+  const panes = layoutPanes(layout.root);
+  const a = panes[from];
+  const b = panes[to];
+  if (!a || !b || from === to) return layout;
   const move = (pane: LayoutPane, into: LayoutPane): LayoutPane => ({
     ...pane,
     id: into.id,
     agent: into.agent,
-  })
+  });
   const root = rewritePanes(layout.root, (pane, at) =>
     at === from ? move(pane, b) : at === to ? move(pane, a) : pane,
-  )
-  return makeLayout(collapse(root), layout.focus)
+  );
+  return makeLayout(collapse(root), layout.focus);
 }
 
 /**
@@ -287,16 +290,16 @@ export function swapLayout(layout: Layout, from: number, to: number): Layout {
  * error: a window with nothing in it is what the app closes.
  */
 export function closeLayout(layout: Layout, index: number): Layout {
-  const target = layoutPanes(layout.root)[index]
-  if (!target) return layout
+  const target = layoutPanes(layout.root)[index];
+  if (!target) return layout;
 
-  const root = collapse(rewritePanes(layout.root, (pane, at) => (at === index ? null : pane)))
-  const survivors = layoutPanes(root)
+  const root = collapse(rewritePanes(layout.root, (pane, at) => (at === index ? null : pane)));
+  const survivors = layoutPanes(root);
   const focus =
     layout.focus === target.id
       ? survivors[Math.min(index, survivors.length - 1)]?.id
-      : layout.focus
-  return makeLayout(root, focus)
+      : layout.focus;
+  return makeLayout(root, focus);
 }
 
 /**
@@ -309,15 +312,15 @@ export function closeLayout(layout: Layout, index: number): Layout {
  */
 export function prune(layout: Layout, alive: (agent: string) => boolean): Layout {
   const filter = (node: LayoutNode): LayoutNode | null => {
-    if (node.type === "pane") return alive(node.agent) ? node : null
+    if (node.type === "pane") return alive(node.agent) ? node : null;
     const children = node.children
       .map(filter)
-      .filter((child): child is LayoutNode => child !== null)
-    return children.length ? { ...node, children } : null
-  }
+      .filter((child): child is LayoutNode => child !== null);
+    return children.length ? { ...node, children } : null;
+  };
 
-  const root = layout.root ? collapse(filter(layout.root)) : null
-  return makeLayout(root, layout.focus)
+  const root = layout.root ? collapse(filter(layout.root)) : null;
+  return makeLayout(root, layout.focus);
 }
 
 /**
@@ -333,12 +336,12 @@ export const LAYOUT_PRESETS = [
   "main-horizontal",
   "main-vertical",
   "tiled",
-] as const
+] as const;
 
-export type LayoutPreset = (typeof LAYOUT_PRESETS)[number]
+export type LayoutPreset = (typeof LAYOUT_PRESETS)[number];
 
 export function isLayoutPreset(value: unknown): value is LayoutPreset {
-  return typeof value === "string" && (LAYOUT_PRESETS as readonly string[]).includes(value)
+  return typeof value === "string" && (LAYOUT_PRESETS as readonly string[]).includes(value);
 }
 
 /**
@@ -358,9 +361,9 @@ export function isLayoutPreset(value: unknown): value is LayoutPreset {
  */
 export interface Zoom {
   /** PaneRef.id of the pane filling the window. */
-  pane: string
+  pane: string;
   /** The arrangement to return to, captured when the zoom started. */
-  from: Layout
+  from: Layout;
 }
 
 /**
@@ -378,34 +381,36 @@ export interface Zoom {
  */
 export interface WindowState {
   /** PaneRef.id of the focused pane. */
-  focus: string | null
+  focus: string | null;
   /** PaneRef.id of the pane focused before it — tmux's last-pane. */
-  last: string | null
-  zoom: Zoom | null
+  last: string | null;
+  zoom: Zoom | null;
   /** Whether ordinary child input is replicated to every pane — tmux's
    *  synchronize-panes. A transient interactive mode, shown in the tab, never
    *  persisted or configured. */
-  sync: boolean
+  sync: boolean;
   /** The named layout this window currently matches, cleared by anything that
    *  reshapes or resizes the tree. Drives next-layout's cycle. */
-  preset: LayoutPreset | null
+  preset: LayoutPreset | null;
 }
 
 export function windowState(): WindowState {
-  return { focus: null, last: null, zoom: null, sync: false, preset: null }
+  return { focus: null, last: null, zoom: null, sync: false, preset: null };
 }
 
 /** tmux's next-layout: step through the presets, starting the cycle over from
  *  a window whose layout was built by hand and matches no preset. */
 export function nextPreset(current: LayoutPreset | null): LayoutPreset {
-  const i = current ? LAYOUT_PRESETS.indexOf(current) : -1
-  return LAYOUT_PRESETS[(i + 1) % LAYOUT_PRESETS.length]!
+  const i = current ? LAYOUT_PRESETS.indexOf(current) : -1;
+  return LAYOUT_PRESETS[(i + 1) % LAYOUT_PRESETS.length]!;
 }
 
-const pane = (ref: PaneRef, weight = 1): LayoutPane => ({ type: "pane", ...ref, weight })
+const pane = (ref: PaneRef, weight = 1): LayoutPane => ({ type: "pane", ...ref, weight });
 
 const split = (direction: SplitDirection, children: LayoutNode[], weight = 1): LayoutNode =>
-  children.length === 1 ? { ...children[0]!, weight } : { type: "split", direction, weight, children }
+  children.length === 1
+    ? { ...children[0]!, weight }
+    : { type: "split", direction, weight, children };
 
 /**
  * Build one of the named layouts over a list of panes.
@@ -424,39 +429,62 @@ export function presetLayout(
   preset: LayoutPreset,
   focus?: string,
 ): Layout {
-  if (panes.length === 0) return makeLayout(null)
-  const [first, ...rest] = panes as [PaneRef, ...PaneRef[]]
+  if (panes.length === 0) return makeLayout(null);
+  const [first, ...rest] = panes as [PaneRef, ...PaneRef[]];
 
   const build = (): LayoutNode => {
     switch (preset) {
       case "even-horizontal":
-        return split("row", panes.map((ref) => pane(ref)))
+        return split(
+          "row",
+          panes.map((ref) => pane(ref)),
+        );
       case "even-vertical":
-        return split("column", panes.map((ref) => pane(ref)))
+        return split(
+          "column",
+          panes.map((ref) => pane(ref)),
+        );
       // The main pane takes half; tmux sizes it in cells, which we cannot do
       // here because a layout is resolution-independent.
       case "main-horizontal":
-        return split("column", [pane(first), split("row", rest.map((r) => pane(r)))])
+        return split("column", [
+          pane(first),
+          split(
+            "row",
+            rest.map((r) => pane(r)),
+          ),
+        ]);
       case "main-vertical":
-        return split("row", [pane(first), split("column", rest.map((r) => pane(r)))])
+        return split("row", [
+          pane(first),
+          split(
+            "column",
+            rest.map((r) => pane(r)),
+          ),
+        ]);
       case "tiled":
-        return tiled(panes)
+        return tiled(panes);
     }
-  }
+  };
 
-  return makeLayout(collapse(rest.length === 0 ? pane(first) : build()), focus)
+  return makeLayout(collapse(rest.length === 0 ? pane(first) : build()), focus);
 }
 
 /** A grid as square as the count allows, filled row by row — tmux layout-set.c,
  *  where a short final row simply spreads across the full width. */
 function tiled(panes: readonly PaneRef[]): LayoutNode {
-  let columns = Math.floor(Math.sqrt(panes.length))
-  if (columns * columns < panes.length) columns++
-  const rows: LayoutNode[] = []
+  let columns = Math.floor(Math.sqrt(panes.length));
+  if (columns * columns < panes.length) columns++;
+  const rows: LayoutNode[] = [];
   for (let i = 0; i < panes.length; i += columns) {
-    rows.push(split("row", panes.slice(i, i + columns).map((ref) => pane(ref))))
+    rows.push(
+      split(
+        "row",
+        panes.slice(i, i + columns).map((ref) => pane(ref)),
+      ),
+    );
   }
-  return split("column", rows)
+  return split("column", rows);
 }
 
 export class LayoutFormatError extends Error {}
@@ -464,21 +492,21 @@ export class LayoutFormatError extends Error {}
 /** Serialize for session.json or the wire. Stable key order, so two equal
  *  layouts encode to equal strings and a diff of session.json stays readable. */
 export function encodeLayout(layout: Layout): string {
-  const normalized = makeLayout(collapse(layout.root), layout.focus)
-  return JSON.stringify({ ...normalized, root: order(normalized.root) })
+  const normalized = makeLayout(collapse(layout.root), layout.focus);
+  return JSON.stringify({ ...normalized, root: order(normalized.root) });
 }
 
 function order(node: LayoutNode | null): LayoutNode | null {
-  if (!node) return null
+  if (!node) return null;
   if (node.type === "pane") {
-    return { type: "pane", id: node.id, agent: node.agent, weight: node.weight }
+    return { type: "pane", id: node.id, agent: node.agent, weight: node.weight };
   }
   return {
     type: "split",
     direction: node.direction,
     weight: node.weight,
     children: node.children.map(order) as LayoutNode[],
-  }
+  };
 }
 
 /**
@@ -489,72 +517,83 @@ function order(node: LayoutNode | null): LayoutNode | null {
  * a live window — by the time applyLayout runs, the old tree is already gone.
  */
 export function decodeLayout(text: string): Layout {
-  if (Buffer.byteLength(text) > MAX_LAYOUT_BYTES) throw new LayoutFormatError("layout is too large")
-  let parsed: unknown
+  if (Buffer.byteLength(text) > MAX_LAYOUT_BYTES)
+    throw new LayoutFormatError("layout is too large");
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(text)
+    parsed = JSON.parse(text);
   } catch (error) {
-    throw new LayoutFormatError(`layout is not JSON: ${(error as Error).message}`)
+    throw new LayoutFormatError(`layout is not JSON: ${(error as Error).message}`);
   }
-  return parseLayout(parsed)
+  return parseLayout(parsed);
 }
 
 export function parseLayout(value: unknown): Layout {
-  if (!value || typeof value !== "object") throw new LayoutFormatError("layout must be an object")
-  const raw = value as Partial<Layout>
+  if (!value || typeof value !== "object") throw new LayoutFormatError("layout must be an object");
+  const raw = value as Partial<Layout>;
   if (raw.version !== LAYOUT_VERSION) {
-    throw new LayoutFormatError(`unsupported layout version ${String(raw.version)}`)
+    throw new LayoutFormatError(`unsupported layout version ${String(raw.version)}`);
   }
-  const budget = { nodes: 0 }
-  const root = raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root", 1, budget)
+  const budget = { nodes: 0 };
+  const root =
+    raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root", 1, budget);
   if (raw.focus !== undefined && typeof raw.focus !== "string") {
-    throw new LayoutFormatError("focus must be a pane id")
+    throw new LayoutFormatError("focus must be a pane id");
   }
-  return makeLayout(collapse(root), raw.focus)
+  return makeLayout(collapse(root), raw.focus);
 }
 
-function parseNode(value: unknown, at: string, depth: number, budget: { nodes: number }): LayoutNode {
-  if (depth > MAX_LAYOUT_DEPTH) throw new LayoutFormatError(`layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}`)
-  if (++budget.nodes > MAX_LAYOUT_NODES) throw new LayoutFormatError(`layout exceeds maximum node count ${MAX_LAYOUT_NODES}`)
-  if (!value || typeof value !== "object") throw new LayoutFormatError(`${at} must be an object`)
-  const raw = value as Record<string, unknown>
-  const weight = parseWeight(raw.weight, at)
+function parseNode(
+  value: unknown,
+  at: string,
+  depth: number,
+  budget: { nodes: number },
+): LayoutNode {
+  if (depth > MAX_LAYOUT_DEPTH)
+    throw new LayoutFormatError(`layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}`);
+  if (++budget.nodes > MAX_LAYOUT_NODES)
+    throw new LayoutFormatError(`layout exceeds maximum node count ${MAX_LAYOUT_NODES}`);
+  if (!value || typeof value !== "object") throw new LayoutFormatError(`${at} must be an object`);
+  const raw = value as Record<string, unknown>;
+  const weight = parseWeight(raw.weight, at);
 
   if (raw.type === "pane") {
     if (typeof raw.agent !== "string" || !raw.agent) {
-      throw new LayoutFormatError(`${at} pane needs an agent id`)
+      throw new LayoutFormatError(`${at} pane needs an agent id`);
     }
     if (typeof raw.id !== "string" || !raw.id) {
-      throw new LayoutFormatError(`${at} pane needs a pane id`)
+      throw new LayoutFormatError(`${at} pane needs a pane id`);
     }
-    reservePaneId(raw.id)
-    return { type: "pane", id: raw.id, agent: raw.agent, weight }
+    reservePaneId(raw.id);
+    return { type: "pane", id: raw.id, agent: raw.agent, weight };
   }
 
   if (raw.type === "split") {
     if (raw.direction !== "row" && raw.direction !== "column") {
-      throw new LayoutFormatError(`${at} split needs direction "row" or "column"`)
+      throw new LayoutFormatError(`${at} split needs direction "row" or "column"`);
     }
     if (!Array.isArray(raw.children) || raw.children.length === 0) {
-      throw new LayoutFormatError(`${at} split needs children`)
+      throw new LayoutFormatError(`${at} split needs children`);
     }
     return {
       type: "split",
       direction: raw.direction,
       weight,
-      children: raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`, depth + 1, budget)),
-    }
+      children: raw.children.map((child, i) =>
+        parseNode(child, `${at}.children[${i}]`, depth + 1, budget),
+      ),
+    };
   }
 
-  throw new LayoutFormatError(`${at} has unknown type ${JSON.stringify(raw.type)}`)
+  throw new LayoutFormatError(`${at} has unknown type ${JSON.stringify(raw.type)}`);
 }
 
 /** Weights are relative, so any positive finite number is meaningful; a
  *  non-positive one would render as a zero-width pane and is refused. */
 function parseWeight(value: unknown, at: string): number {
-  if (value === undefined) return 1
+  if (value === undefined) return 1;
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    throw new LayoutFormatError(`${at} weight must be a positive number`)
+    throw new LayoutFormatError(`${at} weight must be a positive number`);
   }
-  return value
+  return value;
 }

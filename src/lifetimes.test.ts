@@ -11,20 +11,20 @@
  * records being killed rather than by inspecting processes: the property under
  * test is "the finalizer ran", and a spy says that directly.
  */
-import { test, expect } from "bun:test"
-import { BoxRenderable } from "@opentui/core"
-import { createTestRenderer } from "@opentui/core/testing"
-import { Effect, Exit, Scope, Stream } from "effect"
-import { SpaceSet } from "./space.ts"
-import { workspaceEnv } from "./env.ts"
-import type { SpawnBackend } from "./backend.ts"
-import { run, runAsync } from "./harness.ts"
-import { createApp } from "./app.tsx"
-import { DEFAULT_CONFIG } from "./config.ts"
-import { makeLayout, windowState } from "./layout.ts"
-import { spaceSetState, spaceState } from "./space-model.ts"
-import type { SessionClientShape } from "./client.ts"
-import type { WorkspaceSnapshot } from "./workspace.ts"
+import { test, expect } from "bun:test";
+import { BoxRenderable } from "@opentui/core";
+import { createTestRenderer } from "@opentui/core/testing";
+import { Effect, Exit, Scope, Stream } from "effect";
+import { SpaceSet } from "./space.ts";
+import { workspaceEnv } from "./env.ts";
+import type { SpawnBackend } from "./backend.ts";
+import { run, runAsync } from "./harness.ts";
+import { createApp } from "./app.tsx";
+import { DEFAULT_CONFIG } from "./config.ts";
+import { makeLayout, windowState } from "./layout.ts";
+import { spaceSetState, spaceState } from "./space-model.ts";
+import type { SessionClientShape } from "./client.ts";
+import type { WorkspaceSnapshot } from "./workspace.ts";
 
 /**
  * A backend that starts nothing and remembers WHICH agents were killed.
@@ -35,11 +35,11 @@ import type { WorkspaceSnapshot } from "./workspace.ts"
  * once the target has already been spliced out of the list.
  */
 function spyBackend(): { backend: SpawnBackend; killed: () => string[] } {
-  const killed: string[] = []
+  const killed: string[] = [];
   const backend: SpawnBackend = (opts) => {
     // Per instance, not shared: `closed` describes THIS backend, while the
     // counter above is how many of them the release chain reached.
-    let mine = false
+    let mine = false;
     return {
       // Never ends on its own, so a killed backend is the only way the agent's
       // pump fiber stops — which is what makes the interrupt observable.
@@ -47,223 +47,240 @@ function spyBackend(): { backend: SpawnBackend; killed: () => string[] } {
       write() {},
       resize() {},
       close() {
-        if (mine) return
-        mine = true
-        killed.push(opts.id)
+        if (mine) return;
+        mine = true;
+        killed.push(opts.id);
       },
-      kill() { this.close() },
+      kill() {
+        this.close();
+      },
       get closed() {
-        return mine
+        return mine;
       },
       detached: false,
       exitCode: null,
       foregroundPgid: () => -1,
       sessionId: () => -1,
-    }
-  }
-  return { backend, killed: () => killed }
+    };
+  };
+  return { backend, killed: () => killed };
 }
 
 async function fixture() {
-  const t = await createTestRenderer({ width: 60, height: 20 })
-  const host = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 })
-  t.renderer.root.add(host)
-  const spy = spyBackend()
-  const scope = Effect.runSync(Scope.make())
+  const t = await createTestRenderer({ width: 60, height: 20 });
+  const host = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
+  t.renderer.root.add(host);
+  const spy = spyBackend();
+  const scope = Effect.runSync(Scope.make());
   const spaces = run(
-    Scope.extend(
-      SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host),
-      scope,
-    ),
-  )
+    Scope.extend(SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host), scope),
+  );
   return {
     spaces,
     killed: spy.killed,
     closeTop: () => runAsync(Scope.close(scope, Exit.void)),
     async cleanup() {
-      await runAsync(Scope.close(scope, Exit.void))
-      await Bun.sleep(20)
-      t.renderer.destroy()
+      await runAsync(Scope.close(scope, Exit.void));
+      await Bun.sleep(20);
+      t.renderer.destroy();
     },
-  }
+  };
 }
 
 test("closing the top scope kills agents three levels down", async () => {
-  const f = await fixture()
+  const f = await fixture();
   try {
-    const space = run(f.spaces.create("proj", process.cwd()))
-    const window = run(space.newWindow())
-    const first = run(window.init()).agent
-    const second = run(window.spawn("second"))
-    expect(f.killed()).toEqual([])
+    const space = run(f.spaces.create("proj", process.cwd()));
+    const window = run(space.newWindow());
+    const first = run(window.init()).agent;
+    const second = run(window.spawn("second"));
+    expect(f.killed()).toEqual([]);
 
-    await f.closeTop()
+    await f.closeTop();
     // Both agents, reached through SpaceSet -> Space -> Window without anyone
     // calling a dispose method by hand.
-    expect(f.killed().sort()).toEqual([first.id, second.id].sort())
+    expect(f.killed().sort()).toEqual([first.id, second.id].sort());
   } finally {
-    await f.cleanup()
+    await f.cleanup();
   }
-})
+});
 
 test("closing one window releases its agents and leaves its siblings running", async () => {
-  const f = await fixture()
+  const f = await fixture();
   try {
-    const space = run(f.spaces.create("proj", process.cwd()))
-    const doomed = run(space.newWindow())
-    const doomedAgent = run(doomed.init()).agent
-    const survivor = run(space.newWindow())
-    const survivorAgent = run(survivor.init()).agent
+    const space = run(f.spaces.create("proj", process.cwd()));
+    const doomed = run(space.newWindow());
+    const doomedAgent = run(doomed.init()).agent;
+    const survivor = run(space.newWindow());
+    const survivorAgent = run(survivor.init()).agent;
 
-    await runAsync(space.closeWindow(doomed))
-    expect(f.killed()).toEqual([doomedAgent.id])
+    await runAsync(space.closeWindow(doomed));
+    expect(f.killed()).toEqual([doomedAgent.id]);
 
     // The survivor is still live: closing the top scope is what ends it.
-    await f.closeTop()
-    expect(f.killed()).toEqual([doomedAgent.id, survivorAgent.id])
+    await f.closeTop();
+    expect(f.killed()).toEqual([doomedAgent.id, survivorAgent.id]);
   } finally {
-    await f.cleanup()
+    await f.cleanup();
   }
-})
+});
 
 test("killAgent releases the agent it was given and no other", async () => {
-  const f = await fixture()
+  const f = await fixture();
   try {
-    const space = run(f.spaces.create("proj", process.cwd()))
-    const window = run(space.newWindow())
-    const bystander = run(window.init()).agent
-    const second = run(window.spawn("second"))
+    const space = run(f.spaces.create("proj", process.cwd()));
+    const window = run(space.newWindow());
+    const bystander = run(window.init()).agent;
+    const second = run(window.spawn("second"));
 
-    await runAsync(window.killAgent(second))
+    await runAsync(window.killAgent(second));
     // By id: the target, not merely "one of them". killAgent splices its target
     // out of #agents before releasing, so a release loop over the survivors
     // would kill the bystander and still leave the count at one.
-    expect(f.killed()).toEqual([second.id])
-    expect(window.agents).toContain(bystander)
+    expect(f.killed()).toEqual([second.id]);
+    expect(window.agents).toContain(bystander);
   } finally {
-    await f.cleanup()
+    await f.cleanup();
   }
-})
+});
 
 test("a broken-out pane survives its source window closing", async () => {
-  const f = await fixture()
+  const f = await fixture();
   try {
-    const space = run(f.spaces.create("proj", process.cwd()))
-    const source = run(space.newWindow())
-    const pane = run(source.init())
-    const moved = pane.agent
+    const space = run(f.spaces.create("proj", process.cwd()));
+    const source = run(space.newWindow());
+    const pane = run(source.init());
+    const moved = pane.agent;
 
     // breakPane moves the agent AND its scope. The source window is emptied and
     // closed by the break itself, so if the scope had stayed behind — or been
     // forked from the source window's — this would kill the process that just
     // moved out.
-    const broken = await runAsync(space.breakPane(pane))
-    expect(broken).not.toBeNull()
-    expect(f.killed()).toEqual([])
+    const broken = await runAsync(space.breakPane(pane));
+    expect(broken).not.toBeNull();
+    expect(f.killed()).toEqual([]);
 
     // And it is genuinely owned by its new window, not merely un-killed: the
     // scope travelled, so the destination is what closes it.
-    await runAsync(space.closeWindow(broken!))
-    expect(f.killed()).toEqual([moved.id])
+    await runAsync(space.closeWindow(broken!));
+    expect(f.killed()).toEqual([moved.id]);
   } finally {
-    await f.cleanup()
+    await f.cleanup();
   }
-})
+});
 
 test("scoped app release detaches daemon projections and terminates local owners", async () => {
   for (const ownership of ["daemon", "local"] as const) {
-    const t = await createTestRenderer({ width: 60, height: 20 })
-    const host = new BoxRenderable(t.renderer, { id: `pane-host-${ownership}`, flexGrow: 1 })
-    const closed: string[] = []
-    const killed: string[] = []
+    const t = await createTestRenderer({ width: 60, height: 20 });
+    const host = new BoxRenderable(t.renderer, { id: `pane-host-${ownership}`, flexGrow: 1 });
+    const closed: string[] = [];
+    const killed: string[] = [];
     const backend: SpawnBackend = (opts) => {
-      let isClosed = false
+      let isClosed = false;
       return {
         stream: Stream.never,
         write() {},
         resize() {},
         close() {
-          if (isClosed) return
-          isClosed = true
-          closed.push(opts.id)
-          if (ownership === "local") killed.push(opts.id)
+          if (isClosed) return;
+          isClosed = true;
+          closed.push(opts.id);
+          if (ownership === "local") killed.push(opts.id);
         },
         kill() {
-          if (!isClosed) killed.push(opts.id)
-          isClosed = true
+          if (!isClosed) killed.push(opts.id);
+          isClosed = true;
         },
-        get closed() { return isClosed },
-        get detached() { return ownership === "daemon" && isClosed },
+        get closed() {
+          return isClosed;
+        },
+        get detached() {
+          return ownership === "daemon" && isClosed;
+        },
         exitCode: null,
         foregroundPgid: () => -1,
         sessionId: () => -1,
-      }
-    }
-    const workspace = lifecycleWorkspace(`agent-${ownership}`)
-    const session = lifecycleSession(workspace, backend)
-    const scope = Effect.runSync(Scope.make())
+      };
+    };
+    const workspace = lifecycleWorkspace(`agent-${ownership}`);
+    const session = lifecycleSession(workspace, backend);
+    const scope = Effect.runSync(Scope.make());
 
     try {
-      run(Scope.extend(createApp({
-        renderer: t.renderer,
-        paneHost: host,
-        config: { ...structuredClone(DEFAULT_CONFIG), options: { "sidebar.open": false } },
-        session,
-        quit() {},
-      }), scope))
-      expect(host.getChildren()).toHaveLength(1)
+      run(
+        Scope.extend(
+          createApp({
+            renderer: t.renderer,
+            paneHost: host,
+            config: { ...structuredClone(DEFAULT_CONFIG), options: { "sidebar.open": false } },
+            session,
+            quit() {},
+          }),
+          scope,
+        ),
+      );
+      expect(host.getChildren()).toHaveLength(1);
 
-      await runAsync(Scope.close(scope, Exit.void))
+      await runAsync(Scope.close(scope, Exit.void));
 
-      expect(closed).toEqual([`agent-${ownership}`])
-      expect(killed).toEqual(ownership === "local" ? [`agent-${ownership}`] : [])
+      expect(closed).toEqual([`agent-${ownership}`]);
+      expect(killed).toEqual(ownership === "local" ? [`agent-${ownership}`] : []);
       // The terminal is freed only after its entire renderable window has been
       // removed. A subsequent frame therefore has no path back to that handle.
-      expect(host.getChildren()).toHaveLength(0)
-      await t.renderOnce()
+      expect(host.getChildren()).toHaveLength(0);
+      await t.renderOnce();
     } finally {
-      await runAsync(Scope.close(scope, Exit.void))
-      t.renderer.destroy()
+      await runAsync(Scope.close(scope, Exit.void));
+      t.renderer.destroy();
     }
   }
-})
+});
 
 function lifecycleWorkspace(agent: string): WorkspaceSnapshot {
-  const pane = `pane-${agent}`
-  const layout = makeLayout({ type: "pane", id: pane, agent, weight: 1 }, pane)
+  const pane = `pane-${agent}`;
+  const layout = makeLayout({ type: "pane", id: pane, agent, weight: 1 }, pane);
   return {
     revision: 1,
     state: { ...spaceSetState(), activeSpace: "space-lifecycle" },
-    spaces: [{
-      id: "space-lifecycle",
-      name: "lifecycle",
-      dir: process.cwd(),
-      state: { ...spaceState(), activeWindow: 1 },
-      windows: [{
-        number: 1,
-        name: null,
-        state: { ...windowState(), focus: pane },
-        layout,
-        agents: [{
-          id: agent,
-          name: agent,
-          cmd: ["sleep", "30"],
-          cols: 40,
-          rows: 10,
-          exited: false,
-          exitCode: null,
-        }],
-      }],
-    }],
-  }
+    spaces: [
+      {
+        id: "space-lifecycle",
+        name: "lifecycle",
+        dir: process.cwd(),
+        state: { ...spaceState(), activeWindow: 1 },
+        windows: [
+          {
+            number: 1,
+            name: null,
+            state: { ...windowState(), focus: pane },
+            layout,
+            agents: [
+              {
+                id: agent,
+                name: agent,
+                cmd: ["sleep", "30"],
+                cols: 40,
+                rows: 10,
+                exited: false,
+                exitCode: null,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
 }
 
 function lifecycleSession(workspace: WorkspaceSnapshot, spawn: SpawnBackend): SessionClientShape {
   return {
     id: "lifecycle",
     session: null,
-    live: new Set(workspace.spaces.flatMap((space) =>
-      space.windows.flatMap((window) => window.agents.map((agent) => agent.id)))),
+    live: new Set(
+      workspace.spaces.flatMap((space) =>
+        space.windows.flatMap((window) => window.agents.map((agent) => agent.id)),
+      ),
+    ),
     workspace: () => structuredClone(workspace),
     models: Stream.never,
     backend: () => spawn,
@@ -276,5 +293,5 @@ function lifecycleSession(workspace: WorkspaceSnapshot, spawn: SpawnBackend): Se
     deleteBuffer: () => Effect.void,
     showBuffer: () => Effect.succeed(""),
     attach: {} as SessionClientShape["attach"],
-  }
+  };
 }

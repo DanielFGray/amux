@@ -21,7 +21,11 @@ import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame } from "./AttachProtocol.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
-import { SessionExitObserver, SessionSupervisor, type PreparedSession } from "./SessionSupervisor.ts";
+import {
+  SessionExitObserver,
+  SessionSupervisor,
+  type PreparedSession,
+} from "./SessionSupervisor.ts";
 import type { ManagedSession, PtyError, SessionSpec } from "./SessionRegistry.ts";
 
 export interface AttachHostOptions {
@@ -36,7 +40,11 @@ export interface AttachHostOptions {
    *  proof that an attachment is still live. */
   readonly onActivity?: (client: string, connection: string) => Effect.Effect<void, unknown>;
   /** A client adopted a session and wants its screen replayed to it alone. */
-  readonly onSync?: (client: string, connection: string, session: string) => Effect.Effect<void, unknown>;
+  readonly onSync?: (
+    client: string,
+    connection: string,
+    session: string,
+  ) => Effect.Effect<void, unknown>;
   /** A supervised backend actually terminated (not merely an observer detaching). */
   readonly onSessionExit?: (session: string, code: number | null) => Effect.Effect<void, unknown>;
 }
@@ -79,7 +87,11 @@ export class AttachHost extends Context.Tag("AttachHost")<AttachHost, AttachHost
 
 const make = (
   options: AttachHostOptions,
-): Effect.Effect<AttachHostService, AttachServerError, Scope.Scope | AttachHub | SessionSupervisor> =>
+): Effect.Effect<
+  AttachHostService,
+  AttachServerError,
+  Scope.Scope | AttachHub | SessionSupervisor
+> =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const supervisor = yield* SessionSupervisor;
@@ -97,7 +109,9 @@ const make = (
       onActivity: options.onActivity,
       // The screen models live here, so replay is the data plane's job unless
       // an owner outside it says otherwise.
-       onSync: options.onSync ?? ((client, connection, session) => supervisor.sync(client, connection, session)),
+      onSync:
+        options.onSync ??
+        ((client, connection, session) => supervisor.sync(client, connection, session)),
       // An input or resize naming a session that is already gone is a benign
       // race — the client had a keystroke in flight when the process exited —
       // not a protocol violation. Logging it keeps the attachment alive;
@@ -114,19 +128,21 @@ const make = (
     });
     return {
       prepare: (spec) => Scope.extend(supervisor.prepare(spec), sessions),
-      spawn: (spec) => Scope.extend(supervisor.prepare(spec), sessions).pipe(
-        Effect.tap((prepared) => prepared.activate),
-        Effect.map((prepared) => prepared.session),
-      ),
+      spawn: (spec) =>
+        Scope.extend(supervisor.prepare(spec), sessions).pipe(
+          Effect.tap((prepared) => prepared.activate),
+          Effect.map((prepared) => prepared.session),
+        ),
       kill: supervisor.kill,
       live: supervisor.live,
       publish: hub.publish,
       paste: (id, data) => supervisor.paste(id, data),
-      write: (id, data) => supervisor.handle({
-        _tag: "input",
-        session: id,
-        data: typeof data === "string" ? new TextEncoder().encode(data) : data,
-      }),
+      write: (id, data) =>
+        supervisor.handle({
+          _tag: "input",
+          session: id,
+          data: typeof data === "string" ? new TextEncoder().encode(data) : data,
+        }),
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),
     };
@@ -144,10 +160,14 @@ export const layerAttachHost = (
   options: AttachHostOptions,
 ): Layer.Layer<AttachHost, AttachServerError> =>
   Layer.scoped(AttachHost, make(options)).pipe(
-    Layer.provide(SessionSupervisor.Live.pipe(
-      Layer.provide(Layer.succeed(SessionExitObserver, {
-        beforePublish: options.onSessionExit ?? (() => Effect.void),
-      })),
-    )),
+    Layer.provide(
+      SessionSupervisor.Live.pipe(
+        Layer.provide(
+          Layer.succeed(SessionExitObserver, {
+            beforePublish: options.onSessionExit ?? (() => Effect.void),
+          }),
+        ),
+      ),
+    ),
     Layer.provide(AttachHub.Default),
   );

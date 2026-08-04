@@ -1,20 +1,20 @@
 /** @jsxImportSource @opentui/solid */
-import { Show } from "solid-js"
-import type { BoxRenderable } from "@opentui/core"
-import type { Anchor, DockSide, Regions } from "./regions.tsx"
+import { Show } from "solid-js";
+import type { BoxRenderable } from "@opentui/core";
+import type { Anchor, DockSide, Regions } from "./regions.tsx";
 
 export interface AppProps {
   /** Every panel on screen. The app declares them; this file only decides
    *  where a region lands and how big it is. */
-  regions: Regions
+  regions: Regions;
   /** The imperative pane tree, adopted as a child so splits keep their own
    *  layout code and their cell-blitting renderables untouched. It is the one
    *  thing here that is not a panel: it is the mux, not a view of it. */
-  paneHost: BoxRenderable
-  size: { width: number; height: number }
+  paneHost: BoxRenderable;
+  size: { width: number; height: number };
   /** Breathing room around the pane tree. On the pane host alone: a dock is
    *  chrome and sits flush against the edge it is docked to. */
-  padding?: number
+  padding?: number;
 }
 
 /**
@@ -34,8 +34,8 @@ export function App(props: AppProps) {
   /** Where the pane area starts, so transient chrome lines up with it rather
    *  than covering the docks. */
   const paneLeft = () =>
-    props.regions.thickness("left", "app") + props.regions.thickness("left", "center")
-  const Slot = props.regions.Slot
+    props.regions.thickness("left", "app") + props.regions.thickness("left", "center");
+  const Slot = props.regions.Slot;
 
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column" }}>
@@ -71,7 +71,7 @@ export function App(props: AppProps) {
       />
       <Slot name="overlay" width={props.size.width} height={props.size.height} />
     </box>
-  )
+  );
 }
 
 /**
@@ -84,9 +84,9 @@ export function App(props: AppProps) {
  * render.
  */
 function Dock(props: { regions: Regions; side: DockSide; anchor: Anchor }) {
-  const Slot = props.regions.Slot
-  const across = () => props.side === "left" || props.side === "right"
-  const size = () => props.regions.thickness(props.side, props.anchor)
+  const Slot = props.regions.Slot;
+  const across = () => props.side === "left" || props.side === "right";
+  const size = () => props.regions.thickness(props.side, props.anchor);
 
   return (
     <Show when={props.regions.declared(props.side, props.anchor)}>
@@ -103,5 +103,5 @@ function Dock(props: { regions: Regions; side: DockSide; anchor: Anchor }) {
         {props.regions.divider(props.side, props.anchor)}
       </box>
     </Show>
-  )
+  );
 }

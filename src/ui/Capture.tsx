@@ -1,26 +1,26 @@
 /** @jsxImportSource @opentui/solid */
-import { Show } from "solid-js"
-import { theme } from "./theme.ts"
-import type { CaptureSpan } from "../capture.ts"
+import { Show } from "solid-js";
+import { theme } from "./theme.ts";
+import type { CaptureSpan } from "../capture.ts";
 
 export interface CaptureView {
-  title: string
-  content: string
-  path: string
+  title: string;
+  content: string;
+  path: string;
   /** What `content` is a capture of; `f` re-captures the other span. */
-  span: CaptureSpan
+  span: CaptureSpan;
   /** True once the file has been written to `path`. */
-  saved: boolean
+  saved: boolean;
   /** Failure from the last save attempt, if any. */
-  error?: string
-  onToggleSpan: () => void
-  onSave: () => void
-  onClose: () => void
+  error?: string;
+  onToggleSpan: () => void;
+  onSave: () => void;
+  onClose: () => void;
 }
 
 /** Rows captured, counting lines the way the terminal would: an empty capture
  *  has none. */
-const rowCount = (content: string) => (content === "" ? 0 : content.split("\n").length)
+const rowCount = (content: string) => (content === "" ? 0 : content.split("\n").length);
 
 /**
  * The destination of a pane capture.
@@ -31,9 +31,9 @@ const rowCount = (content: string) => (content === "" ? 0 : content.split("\n").
  * itself was never touched.
  */
 export function Capture(props: { view: CaptureView; width: number; height: number }) {
-  const width = () => Math.min(Math.max(40, props.width - 6), 110)
-  const bodyHeight = () => Math.max(4, Math.min(props.height - 5, 20))
-  const rows = () => rowCount(props.view.content)
+  const width = () => Math.min(Math.max(40, props.width - 6), 110);
+  const bodyHeight = () => Math.max(4, Math.min(props.height - 5, 20));
+  const rows = () => rowCount(props.view.content);
   return (
     <box
       style={{
@@ -68,11 +68,13 @@ export function Capture(props: { view: CaptureView; width: number; height: numbe
         </Show>
       </text>
       <Show when={props.view.error}>
-        {(error: () => string) => <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{error()}</text>}
+        {(error: () => string) => (
+          <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{error()}</text>
+        )}
       </Show>
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
         {props.view.saved ? "esc closes" : "s saves · f toggles span · esc discards"}
       </text>
     </box>
-  )
+  );
 }

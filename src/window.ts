@@ -1,12 +1,12 @@
-import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/core"
-import { TerminalPane } from "./pane.ts"
-import { Agent, type AgentOptions } from "./agent.ts"
-import type { SpawnBackend } from "./backend.ts"
-import { Context, Effect, Exit, Scope } from "effect"
-import { RenderCtx, Shell, Backend, type WorkspaceEnv } from "./env.ts"
-import { rollUp } from "./space.ts"
-import { Divider, setWeight, setDirection, type JunctionFrame } from "./divider.ts"
-import { runtime } from "./options.ts"
+import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/core";
+import { TerminalPane } from "./pane.ts";
+import { Agent, type AgentOptions } from "./agent.ts";
+import type { SpawnBackend } from "./backend.ts";
+import { Context, Effect, Exit, Scope } from "effect";
+import { RenderCtx, Shell, Backend, type WorkspaceEnv } from "./env.ts";
+import { rollUp } from "./space.ts";
+import { Divider, setWeight, setDirection, type JunctionFrame } from "./divider.ts";
+import { runtime } from "./options.ts";
 import {
   appendPane,
   closeLayout,
@@ -23,7 +23,7 @@ import {
   type LayoutPane,
   type LayoutPreset,
   type WindowState,
-} from "./layout.ts"
+} from "./layout.ts";
 import {
   dividerHasNeighbour,
   dividerTouchesPane,
@@ -33,14 +33,14 @@ import {
   resizePane,
   type LayoutPath,
   type LayoutSize,
-} from "./geometry.ts"
+} from "./geometry.ts";
 
-export type SplitDirection = "row" | "column"
+export type SplitDirection = "row" | "column";
 
 /** Which way `focusDirection` looks. Screen directions, not tree axes. */
-export type Direction = "left" | "right" | "up" | "down"
+export type Direction = "left" | "right" | "up" | "down";
 
-let nextId = 0
+let nextId = 0;
 
 /**
  * Chrome the window does not draw itself.
@@ -50,7 +50,7 @@ let nextId = 0
  * ones. The panes and their dividers then have to leave that column alone, and
  * they need telling, because nothing inside a window can see the sidebar.
  */
-export const frame = { externalLeft: false }
+export const frame = { externalLeft: false };
 
 /**
  * A window: one split tree of panes, and the agents behind them.
@@ -65,17 +65,17 @@ export const frame = { externalLeft: false }
  * coordinate math of our own.
  */
 export class Window {
-  readonly root: BoxRenderable
+  readonly root: BoxRenderable;
   /** Stable 1-based number for ^a 1..9, kept even as siblings come and go. */
-  readonly number: number
+  readonly number: number;
   /** Set by rename; otherwise the window shows what it is running. */
-  customName: string | null = null
-  #ctx: RenderContext
-  #panes: TerminalPane[] = []
-  #agents: Agent[] = []
+  customName: string | null = null;
+  #ctx: RenderContext;
+  #panes: TerminalPane[] = [];
+  #agents: Agent[] = [];
   /** The arrangement is authoritative here; renderables are only its projection. */
-  #layout: Layout = makeLayout(null)
-  #dividerRefs = new WeakMap<Divider, { path: LayoutPath; index: number }>()
+  #layout: Layout = makeLayout(null);
+  #dividerRefs = new WeakMap<Divider, { path: LayoutPath; index: number }>();
   /**
    * Everything about this window that is not its arrangement: focus,
    * last-pane, zoom, sync and preset, all as pane ids and flags.
@@ -84,21 +84,21 @@ export class Window {
    * renderable references, so that the state a headless window would hold is
    * separable from the tree that draws it. See WindowState in layout.ts.
    */
-  #state: WindowState = windowState()
-  #shell: string[]
+  #state: WindowState = windowState();
+  #shell: string[];
   /** Handed on to the panes and dividers this window builds. */
-  #env: Context.Context<WorkspaceEnv>
+  #env: Context.Context<WorkspaceEnv>;
   /** Directory agents spawn in — the owning space's attached directory. */
-  #cwd: string | undefined
-  onChange?: () => void
+  #cwd: string | undefined;
+  onChange?: () => void;
   /** Fired after an agent's process exits and its views have been closed. The
    *  app uses it to decide what to show next; it is deliberately not the same
    *  as "a pane closed", because closing a view by hand is a detach, not an end. */
-  onAgentExit?: (agent: Agent) => void
-  onCopy?: (text: string) => boolean | void
-  onCopyError?: (error: Error) => void
-  onModelFocus?: (pane: string) => void
-  onModelResizeDivider?: (path: LayoutPath, index: number, delta: number) => void
+  onAgentExit?: (agent: Agent) => void;
+  onCopy?: (text: string) => boolean | void;
+  onCopyError?: (error: Error) => void;
+  onModelFocus?: (pane: string) => void;
+  onModelResizeDivider?: (path: LayoutPath, index: number, delta: number) => void;
 
   /**
    * Where agents started here get their processes.
@@ -109,7 +109,7 @@ export class Window {
    * here. It is always a real backend now: "run it locally" is the Backend
    * reference's default rather than the absence of an answer.
    */
-  #backend: SpawnBackend
+  #backend: SpawnBackend;
 
   /**
    * One scope per agent, rather than one scope for the window.
@@ -122,66 +122,66 @@ export class Window {
    * between two windows (see relinquishAgent/adopt), and make killAgent the
    * closing of exactly one of them.
    */
-  #scopes = new Map<Agent, Scope.CloseableScope>()
+  #scopes = new Map<Agent, Scope.CloseableScope>();
   /** In a daemon client, exits are projected from model revisions, never authored here. */
-  #authoritativeProjection = false
+  #authoritativeProjection = false;
 
   constructor(env: Context.Context<WorkspaceEnv>, cwd: string | undefined, number: number) {
-    this.#env = env
-    this.#ctx = Context.get(env, RenderCtx)
-    this.#shell = Context.get(env, Shell)
-    this.#backend = Context.get(env, Backend)
-    this.#cwd = cwd
-    this.number = number
+    this.#env = env;
+    this.#ctx = Context.get(env, RenderCtx);
+    this.#shell = Context.get(env, Shell);
+    this.#backend = Context.get(env, Backend);
+    this.#cwd = cwd;
+    this.number = number;
     this.root = new BoxRenderable(this.#ctx, {
       id: `window-${number}-${nextId++}`,
       flexDirection: "row",
       flexGrow: 1,
-    })
+    });
   }
 
   get panes(): readonly TerminalPane[] {
-    return this.#panes
+    return this.#panes;
   }
 
   /** Tab label: the given name, else whatever the focused pane is showing —
    *  the same "what is this actually running" cue tmux gives a window. */
   get title(): string {
-    if (this.customName) return this.customName
-    const agent = this.focused?.agent ?? this.#agents[0]
-    return agent?.title ?? "window"
+    if (this.customName) return this.customName;
+    const agent = this.focused?.agent ?? this.#agents[0];
+    return agent?.title ?? "window";
   }
 
   /** How the window reads in the tab bar and the sidebar. Both show the same
    *  string, including the zoom marker, so neither can drift from the other. */
   get label(): string {
-    return `${this.number}:${this.title}${this.#state.zoom ? " Z" : ""}${this.#state.sync ? " Y" : ""}`
+    return `${this.number}:${this.title}${this.#state.zoom ? " Z" : ""}${this.#state.sync ? " Y" : ""}`;
   }
 
   /** True while one pane is filling the window on its own. */
   get zoomed(): boolean {
-    return this.#state.zoom !== null
+    return this.#state.zoom !== null;
   }
 
   /** True while ordinary child input is broadcast to every pane in the window. */
   get sync(): boolean {
-    return this.#state.sync
+    return this.#state.sync;
   }
 
   /** Every agent, including ones no pane is currently showing. This is what
    *  the sidebar lists. */
   get agents(): readonly Agent[] {
-    return this.#agents
+    return this.#agents;
   }
 
   /** Most urgent state among this window's agents, for its sidebar row. */
   get state() {
-    return rollUp(this.#agents)
+    return rollUp(this.#agents);
   }
 
   /** Agents with no viewport open — running, but off-screen. */
   get detached(): Agent[] {
-    return this.#agents.filter((a) => a.viewers === 0)
+    return this.#agents.filter((a) => a.viewers === 0);
   }
 
   /**
@@ -194,51 +194,51 @@ export class Window {
    */
   #bind(agent: Agent) {
     agent.onOutput = () => {
-      for (const p of this.#panes) if (p.agent === agent) p.invalidate()
-      this.onChange?.()
-    }
+      for (const p of this.#panes) if (p.agent === agent) p.invalidate();
+      this.onChange?.();
+    };
     agent.onExit = () => {
       if (this.#authoritativeProjection) {
-        this.onChange?.()
-        this.#ctx.requestRender()
-        return
+        this.onChange?.();
+        this.#ctx.requestRender();
+        return;
       }
       // The process is gone, so its viewports are dead weight — close them and
       // give the space back to the surviving panes, the way tmux does.
       // The agent itself stays: it keeps its terminal, so it remains in the
       // sidebar as "done" and revealing it again still shows its final output.
-      for (const pane of [...this.#panes]) if (pane.agent === agent) this.close(pane)
-      this.onChange?.()
-      this.onAgentExit?.(agent)
-      this.#ctx.requestRender()
-    }
+      for (const pane of [...this.#panes]) if (pane.agent === agent) this.close(pane);
+      this.onChange?.();
+      this.onAgentExit?.(agent);
+      this.#ctx.requestRender();
+    };
     agent.onScroll = () => {
       // Scrollback state (scrollBy/scrollToBottom) is user-driven, so it has
       // no output to invalidate panes — but the sidebar's ▲ must repaint.
-      this.onChange?.()
-    }
+      this.onChange?.();
+    };
   }
 
   /** Make this renderable window a projection of daemon state. */
   project(layout: Layout, state: WindowState): void {
-    this.#authoritativeProjection = true
-    this.#state = structuredClone(state)
-    for (const evicted of this.#mount(layout, state.preset)) evicted.destroyRecursively()
-    this.#state = structuredClone(state)
-    this.#layout = makeLayout(layout.root, state.focus ?? undefined)
-    for (const pane of this.#panes) pane.active = pane.id === state.focus
-    this.#refreshChrome()
-    this.#ctx.requestRender()
+    this.#authoritativeProjection = true;
+    this.#state = structuredClone(state);
+    for (const evicted of this.#mount(layout, state.preset)) evicted.destroyRecursively();
+    this.#state = structuredClone(state);
+    this.#layout = makeLayout(layout.root, state.focus ?? undefined);
+    for (const pane of this.#panes) pane.active = pane.id === state.focus;
+    this.#refreshChrome();
+    this.#ctx.requestRender();
   }
 
   /** Drop a client projection after the daemon has removed its owner. */
   removeProjectedAgent(agent: Agent): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const pane of [...this.#panes]) if (pane.agent === agent) this.close(pane)
-      const at = this.#agents.indexOf(agent)
-      if (at !== -1) this.#agents.splice(at, 1)
-      yield* this.#releaseAgent(agent)
-    })
+      for (const pane of [...this.#panes]) if (pane.agent === agent) this.close(pane);
+      const at = this.#agents.indexOf(agent);
+      if (at !== -1) this.#agents.splice(at, 1);
+      yield* this.#releaseAgent(agent);
+    });
   }
 
   /**
@@ -256,13 +256,13 @@ export class Window {
     return Effect.acquireRelease(
       Effect.sync(() => new Window(env, cwd, number)),
       (window) => window.release,
-    )
+    );
   }
 
   /** Start an agent without opening a view onto it. The name defaults to the
    *  command being run — "zsh", not a generic "shell". */
   spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Effect.Effect<Agent> {
-    return this.startAgent({ name, cmd, cwd })
+    return this.startAgent({ name, cmd, cwd });
   }
 
   /**
@@ -274,19 +274,19 @@ export class Window {
    */
   startAgent(opts: AgentOptions): Effect.Effect<Agent> {
     return Effect.gen(this, function* () {
-      const scope = yield* Scope.make()
+      const scope = yield* Scope.make();
       // The window's backend is a default, not an override: restore passes its
       // own per-agent choice, and a tombstone must keep having no backend at all.
       // Spread order is what encodes that — opts wins where it says anything.
       const agent = yield* Agent.make({ backend: this.#backend, ...opts }).pipe(
         Scope.extend(scope),
-      )
-      this.#scopes.set(agent, scope)
-      this.#bind(agent)
-      this.#agents.push(agent)
-      this.onChange?.()
-      return agent
-    })
+      );
+      this.#scopes.set(agent, scope);
+      this.#bind(agent);
+      this.#agents.push(agent);
+      this.onChange?.();
+      return agent;
+    });
   }
 
   /**
@@ -300,13 +300,13 @@ export class Window {
    * Returns the scope to transfer, or null when the agent is not ours.
    */
   relinquishAgent(agent: Agent): Scope.CloseableScope | null {
-    const i = this.#agents.indexOf(agent)
-    if (i === -1) return null
-    this.#agents.splice(i, 1)
-    const scope = this.#scopes.get(agent) ?? null
-    this.#scopes.delete(agent)
-    this.onChange?.()
-    return scope
+    const i = this.#agents.indexOf(agent);
+    if (i === -1) return null;
+    this.#agents.splice(i, 1);
+    const scope = this.#scopes.get(agent) ?? null;
+    this.#scopes.delete(agent);
+    this.onChange?.();
+    return scope;
   }
 
   /**
@@ -325,14 +325,14 @@ export class Window {
    */
   killAgent(agent: Agent): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const p of [...this.#panes]) if (p.agent === agent) this.close(p)
-      const i = this.#agents.indexOf(agent)
-      if (i !== -1) this.#agents.splice(i, 1)
-      yield* this.#releaseAgent(agent)
-      this.onChange?.()
-      this.#ctx.requestRender()
-      this.onAgentExit?.(agent)
-    })
+      for (const p of [...this.#panes]) if (p.agent === agent) this.close(p);
+      const i = this.#agents.indexOf(agent);
+      if (i !== -1) this.#agents.splice(i, 1);
+      yield* this.#releaseAgent(agent);
+      this.onChange?.();
+      this.#ctx.requestRender();
+      this.onAgentExit?.(agent);
+    });
   }
 
   /**
@@ -345,13 +345,12 @@ export class Window {
    * invisible, and a leaked scope is exactly the bug worth seeing.
    */
   #releaseAgent(agent: Agent): Effect.Effect<void> {
-    const scope = this.#scopes.get(agent)
-    this.#scopes.delete(agent)
-    if (scope) return Scope.close(scope, Exit.void)
-    return Effect.andThen(
-      Effect.logWarning(`agent ${agent.id} released without a scope`),
-      () => agent.release(),
-    )
+    const scope = this.#scopes.get(agent);
+    this.#scopes.delete(agent);
+    if (scope) return Scope.close(scope, Exit.void);
+    return Effect.andThen(Effect.logWarning(`agent ${agent.id} released without a scope`), () =>
+      agent.release(),
+    );
   }
 
   /**
@@ -364,11 +363,11 @@ export class Window {
    * come back to life as some later pane either.
    */
   get focused(): TerminalPane | null {
-    return this.#pane(this.#state.focus)
+    return this.#pane(this.#state.focus);
   }
 
   #pane(id: string | null): TerminalPane | null {
-    return id === null ? null : (this.#panes.find((pane) => pane.id === id) ?? null)
+    return id === null ? null : (this.#panes.find((pane) => pane.id === id) ?? null);
   }
 
   /**
@@ -381,7 +380,7 @@ export class Window {
    * asking it directly is both more correct and answerable in more states.
    */
   #slotOf(layout: Layout, pane: TerminalPane): number {
-    return layoutPanes(layout.root).findIndex((slot) => slot.id === pane.id)
+    return layoutPanes(layout.root).findIndex((slot) => slot.id === pane.id);
   }
 
   /**
@@ -406,39 +405,40 @@ export class Window {
    */
   write(bytes: string | Uint8Array) {
     if (this.#state.sync) {
-      const seen = new Set<Agent>()
+      const seen = new Set<Agent>();
       for (const pane of this.#panes) {
-        if (seen.has(pane.agent)) continue
-        seen.add(pane.agent)
-        pane.write(bytes)
+        if (seen.has(pane.agent)) continue;
+        seen.add(pane.agent);
+        pane.write(bytes);
       }
-      return
+      return;
     }
-    this.focused?.write(bytes)
+    this.focused?.write(bytes);
   }
 
   /** Flip synchronize-panes for this window. */
   toggleSync() {
-    this.#state.sync = !this.#state.sync
-    this.onChange?.()
-    this.#ctx.requestRender()
+    this.#state.sync = !this.#state.sync;
+    this.onChange?.();
+    this.#ctx.requestRender();
   }
 
   #makeDivider(direction: SplitDirection, path: LayoutPath, index: number): Divider {
     const divider = new Divider(this.#ctx, {
       id: `divider-${nextId++}`,
       axis: direction,
-      onDrag: (delta) => this.#authoritativeProjection
-        ? this.onModelResizeDivider?.(path, index, delta)
-        : this.#resizeDivider(path, index, delta),
-    })
-    this.#dividerRefs.set(divider, { path, index })
+      onDrag: (delta) =>
+        this.#authoritativeProjection
+          ? this.onModelResizeDivider?.(path, index, delta)
+          : this.#resizeDivider(path, index, delta),
+    });
+    this.#dividerRefs.set(divider, { path, index });
     // It is a segment of the pane frame, so its ends finish as junctions.
-    divider.tees = true
+    divider.tees = true;
     // Every cell it draws is merged against the frame's geometry, so a seam
     // meeting a seam at one cell draws a ┼ rather than the last tee to land.
-    divider.junction = () => this.#junctionFrame()
-    return divider
+    divider.junction = () => this.#junctionFrame();
+    return divider;
   }
 
   /** `id` is the pane's model identity (layout.ts newPaneId), used as the
@@ -446,48 +446,47 @@ export class Window {
    *  The caller adds it to `#panes`, because where a pane lands in that list is
    *  layout order and only the projection knows it. */
   #makePane(agent: Agent, id = newPaneId()): TerminalPane {
-    const pane = new TerminalPane(this.#ctx, { id, agent })
-    setWeight(pane, 1)
-    pane.onFocusRequest = (p) => this.#authoritativeProjection
-      ? this.onModelFocus?.(p.id)
-      : this.focus(p)
-    pane.onCopy = this.onCopy
-    pane.onCopyError = this.onCopyError
-    return pane
+    const pane = new TerminalPane(this.#ctx, { id, agent });
+    setWeight(pane, 1);
+    pane.onFocusRequest = (p) =>
+      this.#authoritativeProjection ? this.onModelFocus?.(p.id) : this.focus(p);
+    pane.onCopy = this.onCopy;
+    pane.onCopyError = this.onCopyError;
+    return pane;
   }
 
   /** Seed the workspace with a single agent and a view onto it. */
   init(name?: string): Effect.Effect<TerminalPane> {
-    return this.spawn(name).pipe(Effect.map((agent) => this.mount(agent)))
+    return this.spawn(name).pipe(Effect.map((agent) => this.mount(agent)));
   }
 
   /** Put a pane for an existing agent at the root of an empty window. The
    *  synchronous half of init, and what split falls back to when there is no
    *  pane to split. */
   mount(agent: Agent): TerminalPane {
-    const id = newPaneId()
-    this.#mount(makeLayout({ type: "pane", id, agent: agent.id, weight: 1 }, id), null)
-    return this.#pane(id)!
+    const id = newPaneId();
+    this.#mount(makeLayout({ type: "pane", id, agent: agent.id, weight: 1 }, id), null);
+    return this.#pane(id)!;
   }
 
   focus(pane: TerminalPane) {
     // Looking at another pane means you are done with the zoom, which is also
     // what tmux's select-pane does. Zoom survives switching *windows*, though:
     // that is navigation, not a change of mind about this layout.
-    if (this.#state.zoom && pane.id !== this.#state.zoom.pane) this.#unzoom()
+    if (this.#state.zoom && pane.id !== this.#state.zoom.pane) this.#unzoom();
     // The pane being left becomes last-pane's other endpoint, the way tmux's
     // window_set_active_pane records a last pane on every select. Re-focusing
     // the pane already on screen — a window switch landing back on its own
     // focus — is not a change of mind, so it leaves the pair alone.
     if (pane.id !== this.#state.focus) {
-      this.#state.last = this.#state.focus
-      this.#state.focus = pane.id
-      this.#layout = makeLayout(this.#layout.root, pane.id)
+      this.#state.last = this.#state.focus;
+      this.#state.focus = pane.id;
+      this.#layout = makeLayout(this.#layout.root, pane.id);
     }
-    for (const p of this.#panes) p.active = p === pane
-    this.#refreshChrome()
-    this.onChange?.()
-    this.#ctx.requestRender()
+    for (const p of this.#panes) p.active = p === pane;
+    this.#refreshChrome();
+    this.onChange?.();
+    this.#ctx.requestRender();
   }
 
   /**
@@ -501,8 +500,8 @@ export class Window {
    * the point of holding an id rather than a reference.
    */
   lastPane() {
-    const last = this.#pane(this.#state.last)
-    if (last) this.focus(last)
+    const last = this.#pane(this.#state.last);
+    if (last) this.focus(last);
   }
 
   /**
@@ -527,35 +526,35 @@ export class Window {
    */
   zoom() {
     if (this.#state.zoom) {
-      this.#unzoom()
+      this.#unzoom();
     } else {
-      const pane = this.focused
+      const pane = this.focused;
       // Zooming the only pane changes nothing but would still show a marker.
-      if (!pane || this.#panes.length < 2) return
-      const from = this.exportLayout()
-      if (this.#slotOf(from, pane) === -1) return
-      this.#state.zoom = { pane: pane.id, from }
-      this.#mount(from, this.#state.preset)
+      if (!pane || this.#panes.length < 2) return;
+      const from = this.exportLayout();
+      if (this.#slotOf(from, pane) === -1) return;
+      this.#state.zoom = { pane: pane.id, from };
+      this.#mount(from, this.#state.preset);
     }
-    this.#refreshChrome()
-    this.onChange?.()
-    this.#ctx.requestRender()
+    this.#refreshChrome();
+    this.onChange?.();
+    this.#ctx.requestRender();
   }
 
   #unzoom() {
-    const zoom = this.#state.zoom
-    if (!zoom) return
-    this.#state.zoom = null
-    this.#mount(zoom.from, this.#state.preset)
+    const zoom = this.#state.zoom;
+    if (!zoom) return;
+    this.#state.zoom = null;
+    this.#mount(zoom.from, this.#state.preset);
   }
 
   /** Model-derived neighbour query shared by pane borders and divider caps. */
   #hasNeighbour(node: TerminalPane | Divider, axis: SplitDirection, direction: -1 | 1): boolean {
     if (node instanceof TerminalPane) {
-      return paneHasNeighbour(this.#layout, node.id, axis, direction)
+      return paneHasNeighbour(this.#layout, node.id, axis, direction);
     }
-    const ref = this.#dividerRefs.get(node)
-    return ref ? dividerHasNeighbour(this.#layout, ref.path, axis, direction) : false
+    const ref = this.#dividerRefs.get(node);
+    return ref ? dividerHasNeighbour(this.#layout, ref.path, axis, direction) : false;
   }
 
   /**
@@ -566,13 +565,13 @@ export class Window {
    * cell thick at every seam.
    */
   #refreshChrome() {
-    const gap = runtime["appearance.gap"]
+    const gap = runtime["appearance.gap"];
     // Without a gap the pane frame is the only usable edge, so outerBorder is
     // intentionally ignored. It only changes the separated-border mode.
-    const showOuterBorder = runtime["appearance.outerBorder"]
+    const showOuterBorder = runtime["appearance.outerBorder"];
     const edge = (pane: TerminalPane, axis: SplitDirection, direction: -1 | 1) =>
-      gap || (!this.#hasNeighbour(pane, axis, direction) && showOuterBorder)
-    const focused = this.focused
+      gap || (!this.#hasNeighbour(pane, axis, direction) && showOuterBorder);
+    const focused = this.focused;
     for (const pane of this.#panes) {
       pane.edges = {
         // frame.externalLeft: the sidebar handle owns that column, so no pane
@@ -581,44 +580,44 @@ export class Window {
         right: edge(pane, "row", 1),
         top: edge(pane, "column", -1),
         bottom: edge(pane, "column", 1),
-      }
+      };
     }
     for (const divider of this.#dividers()) {
-      divider.setPaneGap(runtime["appearance.gap"] ? 1 : 0)
+      divider.setPaneGap(runtime["appearance.gap"] ? 1 : 0);
       // A divider's ends meet the window's outer border exactly where it has no
       // neighbour of its own across the perpendicular axis.
-      const cross: SplitDirection = divider.axis === "row" ? "column" : "row"
+      const cross: SplitDirection = divider.axis === "row" ? "column" : "row";
       // A horizontal divider running to the window's left edge no longer ends
       // there: the sidebar handle is one column further out, and an uncapped end
       // is exactly the "draw the tee one cell outside me" case, which lands the
       // junction in that handle's column.
       divider.capStart =
-        !this.#hasNeighbour(divider, cross, -1) && !(frame.externalLeft && cross === "row")
-      divider.capEnd = !this.#hasNeighbour(divider, cross, 1)
-      divider.adjacentToFocus = focused ? this.#touches(divider, focused) : false
+        !this.#hasNeighbour(divider, cross, -1) && !(frame.externalLeft && cross === "row");
+      divider.capEnd = !this.#hasNeighbour(divider, cross, 1);
+      divider.adjacentToFocus = focused ? this.#touches(divider, focused) : false;
     }
   }
 
   /** Recompute borders after something outside the window changed — the only
    *  case being the sidebar opening or closing. */
   refreshChrome() {
-    this.#refreshChrome()
-    this.#ctx.requestRender()
+    this.#refreshChrome();
+    this.#ctx.requestRender();
   }
 
   /** True when the focused pane sits against the window's left edge, so the
    *  sidebar handle is that pane's border and should highlight with it. */
   get focusAtLeftEdge(): boolean {
-    const focused = this.focused
-    return focused ? !this.#hasNeighbour(focused, "row", -1) : false
+    const focused = this.focused;
+    return focused ? !this.#hasNeighbour(focused, "row", -1) : false;
   }
 
   #dividers(root: Renderable = this.root, out: Divider[] = []): Divider[] {
     for (const child of root.getChildren()) {
-      if (child instanceof Divider) out.push(child)
-      else if (!(child instanceof TerminalPane)) this.#dividers(child, out)
+      if (child instanceof Divider) out.push(child);
+      else if (!(child instanceof TerminalPane)) this.#dividers(child, out);
     }
-    return out
+    return out;
   }
 
   /**
@@ -639,63 +638,65 @@ export class Window {
    * is what makes that cell right from either drawer.
    */
   #junctionFrame(): JunctionFrame {
-    const dividers = this.#dividers()
-    const panes = this.#panes
+    const dividers = this.#dividers();
+    const panes = this.#panes;
     // The sidebar handle is the left border of the pane area: one column out
     // from the leftmost pane, spanning the pane area's rows. Its cells count
     // as a vertical frame line so horizontal dividers tee into the seam
     // correctly without knowing the handle exists.
-    const handleX = frame.externalLeft && panes.length > 0
-      ? Math.min(...dividers.map((d) => d.x), ...panes.map((p) => p.x)) - 1
-      : null
-    const handleTop = panes.length > 0 ? Math.min(...panes.map((p) => p.y)) : 0
-    const handleBottom = panes.length > 0 ? Math.max(...panes.map((p) => p.y + p.height)) : 0
+    const handleX =
+      frame.externalLeft && panes.length > 0
+        ? Math.min(...dividers.map((d) => d.x), ...panes.map((p) => p.x)) - 1
+        : null;
+    const handleTop = panes.length > 0 ? Math.min(...panes.map((p) => p.y)) : 0;
+    const handleBottom = panes.length > 0 ? Math.max(...panes.map((p) => p.y + p.height)) : 0;
 
     const vertical = (x: number, y: number): boolean => {
-      if (handleX !== null && x === handleX && y >= handleTop && y < handleBottom) return true
+      if (handleX !== null && x === handleX && y >= handleTop && y < handleBottom) return true;
       for (const d of dividers) {
-        if (d.axis !== "row") continue
-        if (d.x === x && y >= d.y && y < d.y + d.height) return true
-        if (d.tees && !d.capStart && d.x === x && y === d.y - 1) return true
-        if (d.tees && !d.capEnd && d.x === x && y === d.y + d.height) return true
+        if (d.axis !== "row") continue;
+        if (d.x === x && y >= d.y && y < d.y + d.height) return true;
+        if (d.tees && !d.capStart && d.x === x && y === d.y - 1) return true;
+        if (d.tees && !d.capEnd && d.x === x && y === d.y + d.height) return true;
       }
       for (const p of panes) {
-        if (p.edges.left && p.x === x && y >= p.y && y < p.y + p.height) return true
-        if (p.edges.right && p.x + p.width - 1 === x && y >= p.y && y < p.y + p.height) return true
+        if (p.edges.left && p.x === x && y >= p.y && y < p.y + p.height) return true;
+        if (p.edges.right && p.x + p.width - 1 === x && y >= p.y && y < p.y + p.height) return true;
       }
-      return false
-    }
+      return false;
+    };
 
     const horizontal = (x: number, y: number): boolean => {
       for (const d of dividers) {
-        if (d.axis !== "column") continue
-        if (d.y === y && x >= d.x && x < d.x + d.width) return true
-        if (d.tees && !d.capStart && d.y === y && x === d.x - 1) return true
-        if (d.tees && !d.capEnd && d.y === y && x === d.x + d.width) return true
+        if (d.axis !== "column") continue;
+        if (d.y === y && x >= d.x && x < d.x + d.width) return true;
+        if (d.tees && !d.capStart && d.y === y && x === d.x - 1) return true;
+        if (d.tees && !d.capEnd && d.y === y && x === d.x + d.width) return true;
       }
       for (const p of panes) {
-        if (p.edges.top && p.y === y && x >= p.x && x < p.x + p.width) return true
-        if (p.edges.bottom && p.y + p.height - 1 === y && x >= p.x && x < p.x + p.width) return true
+        if (p.edges.top && p.y === y && x >= p.x && x < p.x + p.width) return true;
+        if (p.edges.bottom && p.y + p.height - 1 === y && x >= p.x && x < p.x + p.width)
+          return true;
       }
-      return false
-    }
+      return false;
+    };
 
-    return { vertical, horizontal }
+    return { vertical, horizontal };
   }
 
   /** True when the pane sits immediately on either side of the divider — the
    *  shared border is that pane's border too, so it highlights with it. */
   #touches(divider: Divider, pane: TerminalPane): boolean {
-    const ref = this.#dividerRefs.get(divider)
-    return ref ? dividerTouchesPane(this.#layout, ref.path, ref.index, pane.id) : false
+    const ref = this.#dividerRefs.get(divider);
+    return ref ? dividerTouchesPane(this.#layout, ref.path, ref.index, pane.id) : false;
   }
 
   focusNext(step = 1) {
-    if (!this.#panes.length) return
-    const focused = this.focused
-    const i = focused ? this.#panes.indexOf(focused) : -1
-    const next = (i + step + this.#panes.length) % this.#panes.length
-    this.focus(this.#panes[next]!)
+    if (!this.#panes.length) return;
+    const focused = this.focused;
+    const i = focused ? this.#panes.indexOf(focused) : -1;
+    const next = (i + step + this.#panes.length) % this.#panes.length;
+    this.focus(this.#panes[next]!);
   }
 
   /**
@@ -712,10 +713,10 @@ export class Window {
    * are actually looking at rather than the first in the list.
    */
   focusDirection(direction: Direction) {
-    const from = this.focused
-    if (!from || this.#panes.length < 2) return
-    const best = this.#pane(paneInDirection(this.#layout, this.#layoutSize(), from.id, direction))
-    if (best) this.focus(best)
+    const from = this.focused;
+    if (!from || this.#panes.length < 2) return;
+    const best = this.#pane(paneInDirection(this.#layout, this.#layoutSize(), from.id, direction));
+    if (best) this.focus(best);
   }
 
   /**
@@ -731,41 +732,42 @@ export class Window {
    * would.
    */
   resizeFocus(direction: Direction) {
-    const pane = this.focused
-    if (!pane || this.#panes.length < 2 || this.#state.zoom) return
-    this.#setResizedLayout(resizePane(this.#layout, this.#layoutSize(), pane.id, direction))
+    const pane = this.focused;
+    if (!pane || this.#panes.length < 2 || this.#state.zoom) return;
+    this.#setResizedLayout(resizePane(this.#layout, this.#layoutSize(), pane.id, direction));
   }
 
   #layoutSize(): LayoutSize {
-    return { cols: this.root.width, rows: this.root.height }
+    return { cols: this.root.width, rows: this.root.height };
   }
 
   #resizeDivider(path: LayoutPath, index: number, delta: number) {
-    if (this.#state.zoom) return
-    this.#setResizedLayout(resizeDivider(this.#layout, this.#layoutSize(), path, index, delta))
+    if (this.#state.zoom) return;
+    this.#setResizedLayout(resizeDivider(this.#layout, this.#layoutSize(), path, index, delta));
   }
 
   #setResizedLayout(layout: Layout) {
-    if (layout === this.#layout) return
-    this.#layout = layout
-    this.#state.preset = null
-    this.#projectWeights()
-    this.onChange?.()
-    this.#ctx.requestRender()
+    if (layout === this.#layout) return;
+    this.#layout = layout;
+    this.#state.preset = null;
+    this.#projectWeights();
+    this.onChange?.();
+    this.#ctx.requestRender();
   }
 
   /** Project model weights without rebuilding dividers during pointer capture. */
   #projectWeights() {
     const project = (box: BoxRenderable, split: Extract<LayoutNode, { type: "split" }>) => {
-      const renderables = box.getChildren().filter((child) => !(child instanceof Divider))
+      const renderables = box.getChildren().filter((child) => !(child instanceof Divider));
       split.children.forEach((child, index) => {
-        const renderable = renderables[index]
-        if (!renderable) return
-        setWeight(renderable, child.weight)
-        if (child.type === "split" && renderable instanceof BoxRenderable) project(renderable, child)
-      })
-    }
-    if (this.#layout.root?.type === "split") project(this.root, this.#layout.root)
+        const renderable = renderables[index];
+        if (!renderable) return;
+        setWeight(renderable, child.weight);
+        if (child.type === "split" && renderable instanceof BoxRenderable)
+          project(renderable, child);
+      });
+    };
+    if (this.#layout.root?.type === "split") project(this.root, this.#layout.root);
   }
 
   /**
@@ -776,17 +778,17 @@ export class Window {
    * with the pane, which is what makes repeated presses walk it along.
    */
   swap(step: 1 | -1) {
-    const from = this.focused
-    if (!from) return
-    const layout = this.exportLayout()
-    const count = layoutPanes(layout.root).length
-    if (count < 2) return
-    const i = this.#slotOf(layout, from)
-    if (i === -1) return
-    const j = (i + step + count) % count
+    const from = this.focused;
+    if (!from) return;
+    const layout = this.exportLayout();
+    const count = layoutPanes(layout.root).length;
+    if (count < 2) return;
+    const i = this.#slotOf(layout, from);
+    if (i === -1) return;
+    const j = (i + step + count) % count;
     // Swapping panes inside a preset arrangement leaves it that arrangement:
     // even-horizontal with two panes exchanged is still even-horizontal.
-    this.applyLayout(swapLayout(layout, i, j), this.#state.preset)
+    this.applyLayout(swapLayout(layout, i, j), this.#state.preset);
   }
 
   /**
@@ -797,24 +799,24 @@ export class Window {
    * the tree stays a proper h/v alternation instead of a flat list.
    */
   split(direction: SplitDirection, agent: Agent): TerminalPane | null {
-    const target = this.focused
-    if (!target) return this.mount(agent)
+    const target = this.focused;
+    if (!target) return this.mount(agent);
 
     // A focused pane the arrangement does not contain has no slot to split.
     // The layout is what answers that — not whether the pane is mounted, which
     // a zoom makes false for panes that do have slots.
-    const layout = this.exportLayout()
-    const at = this.#slotOf(layout, target)
-    if (at === -1) return null
+    const layout = this.exportLayout();
+    const at = this.#slotOf(layout, target);
+    if (at === -1) return null;
 
     // The newcomer is named before it exists, so the layout can say which pane
     // to focus even when it shows an agent this window is already showing. The
     // apply builds it under that id and focuses it, which is why nothing here
     // has to find the new pane by position afterwards.
-    const id = newPaneId()
-    const next = splitLayout(layout, at, direction, { id, agent: agent.id })
-    if (!this.applyLayout(next)) return null
-    return this.#panes.find((pane) => pane.id === id) ?? null
+    const id = newPaneId();
+    const next = splitLayout(layout, at, direction, { id, agent: agent.id });
+    if (!this.applyLayout(next)) return null;
+    return this.#panes.find((pane) => pane.id === id) ?? null;
   }
 
   /**
@@ -829,22 +831,22 @@ export class Window {
    * take a split does not leave a live process behind with no pane on it.
    */
   splitSpawn(direction: SplitDirection, name?: string): Effect.Effect<TerminalPane | null> {
-    const focused = this.focused
+    const focused = this.focused;
     if (focused && this.#slotOf(this.exportLayout(), focused) === -1) {
-      return Effect.succeed(null)
+      return Effect.succeed(null);
     }
-    return this.spawn(name).pipe(Effect.map((agent) => this.split(direction, agent)))
+    return this.spawn(name).pipe(Effect.map((agent) => this.split(direction, agent)));
   }
 
   /** Open an existing agent in a new split — the way a detached agent gets a
    *  viewport back. */
   reveal(agent: Agent): TerminalPane | null {
-    const existing = this.#panes.find((p) => p.agent === agent)
+    const existing = this.#panes.find((p) => p.agent === agent);
     if (existing) {
-      this.focus(existing)
-      return existing
+      this.focus(existing);
+      return existing;
     }
-    return this.split("row", agent)
+    return this.split("row", agent);
   }
 
   /**
@@ -863,13 +865,13 @@ export class Window {
     // Works zoomed or not: the arrangement is read from the layout, which under
     // a zoom is the one the zoom captured, and projecting the result is what
     // drops the zoom. Closing the zoomed pane itself is the same path.
-    const layout = this.exportLayout()
-    const at = this.#slotOf(layout, pane)
-    if (at === -1) return null
+    const layout = this.exportLayout();
+    const at = this.#slotOf(layout, pane);
+    if (at === -1) return null;
     // Losing a pane moves the window off whatever preset it matched: the
     // arrangement now has one fewer pane than the preset describes.
-    const [evicted] = this.#project(closeLayout(layout, at), null)
-    return evicted ?? null
+    const [evicted] = this.#project(closeLayout(layout, at), null);
+    return evicted ?? null;
   }
 
   /** Adopt a pane and its agent, detached from another window — break-pane's
@@ -882,30 +884,29 @@ export class Window {
     // zoom has to come down first: a zoomed window has its other panes
     // unmounted, and adding a second pane beside the zoomed one would leave
     // them stranded there with no arrangement on screen to rejoin.
-    this.#unzoom()
-    this.#agents.push(agent)
+    this.#unzoom();
+    this.#agents.push(agent);
     // The scope comes from the window that relinquished it — see the note on
     // #scopes for why it travels rather than being re-forked here. Required,
     // not optional: an agent in a window without a scope is one nothing will
     // ever release, and making that unrepresentable is cheaper than detecting it.
-    this.#scopes.set(agent, scope)
-    this.#bind(agent)
-    this.#panes.push(pane)
-    pane.onFocusRequest = (p) => this.#authoritativeProjection
-      ? this.onModelFocus?.(p.id)
-      : this.focus(p)
-    this.#mount(appendPane(this.#layout, { id: pane.id, agent: agent.id }), null)
+    this.#scopes.set(agent, scope);
+    this.#bind(agent);
+    this.#panes.push(pane);
+    pane.onFocusRequest = (p) =>
+      this.#authoritativeProjection ? this.onModelFocus?.(p.id) : this.focus(p);
+    this.#mount(appendPane(this.#layout, { id: pane.id, agent: agent.id }), null);
   }
 
   /** Close a pane: take it out of the layout, then destroy the view. The agent
    *  survives as detached, which is what makes this a close and not a kill. */
   close(pane: TerminalPane) {
-    if (!this.detachPane(pane)) return
-    pane.destroyRecursively()
+    if (!this.detachPane(pane)) return;
+    pane.destroyRecursively();
     // #project refocused a survivor (which notified) or left the window
     // empty — and an empty window needs the app told, so it can close it or
     // decide what to show next.
-    if (this.#panes.length === 0) this.onChange?.()
+    if (this.#panes.length === 0) this.onChange?.();
   }
 
   /**
@@ -917,7 +918,7 @@ export class Window {
    * adjacent sibling pair.
    */
   exportLayout(): Layout {
-    return this.#layout
+    return this.#layout;
   }
 
   /**
@@ -951,11 +952,11 @@ export class Window {
    * (a split, a close) has nothing to validate and may legitimately be empty.
    */
   applyLayout(layout: Layout, preset: LayoutPreset | null = null): boolean {
-    const wanted = prune(layout, (id) => this.#agents.some((agent) => agent.id === id))
-    if (!wanted.root) return false
+    const wanted = prune(layout, (id) => this.#agents.some((agent) => agent.id === id));
+    if (!wanted.root) return false;
     // Whatever the layout had no slot for is a closed view, not a killed agent.
-    for (const evicted of this.#project(wanted, preset)) evicted.destroyRecursively()
-    return true
+    for (const evicted of this.#project(wanted, preset)) evicted.destroyRecursively();
+    return true;
   }
 
   /**
@@ -973,8 +974,8 @@ export class Window {
    * arrangement that no longer describes this window.
    */
   #project(wanted: Layout, preset: LayoutPreset | null): TerminalPane[] {
-    this.#state.zoom = null
-    return this.#mount(wanted, preset)
+    this.#state.zoom = null;
+    return this.#mount(wanted, preset);
   }
 
   /**
@@ -987,102 +988,106 @@ export class Window {
    * window, still in `#panes`, still fed by the sync fan-out — just not shown.
    */
   #mount(wanted: Layout, preset: LayoutPreset | null): TerminalPane[] {
-    const byId = new Map(this.#agents.map((agent) => [agent.id, agent]))
+    const byId = new Map(this.#agents.map((agent) => [agent.id, agent]));
     // An arbitrary layout matches no preset, so that is the default. A caller
     // that knows better says so: select-layout builds its arrangement FROM a
     // preset, and swapping two panes inside one leaves it that preset.
-    this.#state.preset = preset
+    this.#state.preset = preset;
 
     // Who fills which slot is decided before anything is built, in two passes.
     // A slot naming a pane that exists must get that pane, so those are claimed
     // first — one interleaved pass would let an earlier slot take, on agent
     // alone, the very pane a later slot named outright.
-    const spare = new Set(this.#dismantle())
-    this.#panes.length = 0
-    const filled = new Map<string, TerminalPane>()
+    const spare = new Set(this.#dismantle());
+    this.#panes.length = 0;
+    const filled = new Map<string, TerminalPane>();
 
     const claim = (slot: LayoutPane, match: (pane: TerminalPane) => boolean) => {
-      if (filled.has(slot.id)) return
+      if (filled.has(slot.id)) return;
       for (const pane of spare) {
-        if (!match(pane)) continue
-        filled.set(slot.id, pane)
-        spare.delete(pane)
-        return
+        if (!match(pane)) continue;
+        filled.set(slot.id, pane);
+        spare.delete(pane);
+        return;
       }
-    }
-    const slots = wanted.root ? layoutPanes(wanted.root) : []
-    for (const slot of slots) claim(slot, (pane) => pane.id === slot.id)
-    for (const slot of slots) claim(slot, (pane) => pane.agent.id === slot.agent)
+    };
+    const slots = wanted.root ? layoutPanes(wanted.root) : [];
+    for (const slot of slots) claim(slot, (pane) => pane.id === slot.id);
+    for (const slot of slots) claim(slot, (pane) => pane.agent.id === slot.agent);
 
     // PASS ONE — which panes exist. Every slot ends up with a pane, reused or
     // freshly made, and `#panes` comes out in layout order whether or not the
     // pane is going to be mounted.
     for (const slot of slots) {
-      const pane = filled.get(slot.id) ?? this.#makePane(byId.get(slot.agent)!, slot.id)
-      filled.set(slot.id, pane)
-      this.#panes.push(pane)
+      const pane = filled.get(slot.id) ?? this.#makePane(byId.get(slot.agent)!, slot.id);
+      filled.set(slot.id, pane);
+      this.#panes.push(pane);
     }
 
     // An imported layout may name foreign pane IDs. The live pane keeps its own
     // identity, and the resident model records that resolved identity once,
     // before any renderables are built from it.
-    const requestedFocus = wanted.focus ? filled.get(wanted.focus) : undefined
-    const next = requestedFocus ?? this.#panes[0]
-    const panesById = new Map<string, TerminalPane>()
+    const requestedFocus = wanted.focus ? filled.get(wanted.focus) : undefined;
+    const next = requestedFocus ?? this.#panes[0];
+    const panesById = new Map<string, TerminalPane>();
     const materialize = (node: LayoutNode): LayoutNode => {
       if (node.type === "pane") {
-        const pane = filled.get(node.id)!
-        panesById.set(pane.id, pane)
-        return { ...node, id: pane.id, agent: pane.agent.id }
+        const pane = filled.get(node.id)!;
+        panesById.set(pane.id, pane);
+        return { ...node, id: pane.id, agent: pane.agent.id };
       }
-      return { ...node, children: node.children.map(materialize) }
-    }
-    this.#layout = makeLayout(wanted.root ? materialize(wanted.root) : null, next?.id)
+      return { ...node, children: node.children.map(materialize) };
+    };
+    this.#layout = makeLayout(wanted.root ? materialize(wanted.root) : null, next?.id);
 
     const build = (node: LayoutNode, path: LayoutPath): Renderable => {
       if (node.type === "pane") {
-        const pane = panesById.get(node.id)!
-        setWeight(pane, node.weight)
-        return pane
+        const pane = panesById.get(node.id)!;
+        setWeight(pane, node.weight);
+        return pane;
       }
-      const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` })
-      setDirection(box, node.direction)
-      setWeight(box, node.weight)
-      fill(box, node, path)
-      return box
-    }
+      const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` });
+      setDirection(box, node.direction);
+      setWeight(box, node.weight);
+      fill(box, node, path);
+      return box;
+    };
 
     // Dividers are derived, never serialized: one sits between every adjacent
     // pair, which is the invariant split() maintains and refreshChrome reads.
-    const fill = (box: BoxRenderable, node: Extract<LayoutNode, { type: "split" }>, path: LayoutPath) => {
+    const fill = (
+      box: BoxRenderable,
+      node: Extract<LayoutNode, { type: "split" }>,
+      path: LayoutPath,
+    ) => {
       node.children.forEach((child, i) => {
-        if (i > 0) box.add(this.#makeDivider(node.direction, path, i - 1))
-        box.add(build(child, [...path, i]))
-      })
-    }
+        if (i > 0) box.add(this.#makeDivider(node.direction, path, i - 1));
+        box.add(build(child, [...path, i]));
+      });
+    };
 
     // PASS TWO — how they are arranged. A split at the root goes *into* the
     // root box rather than under a fresh one: the root carries the outermost
     // axis itself (see split), and an extra level here would be a shape
     // exportLayout immediately collapses away.
-    const zoom = this.#state.zoom
+    const zoom = this.#state.zoom;
     if (zoom) {
       // One pane, no dividers, and every other pane left unmounted. Nothing
       // else has to be remembered for the way back: `zoom.from` is the whole
       // arrangement, and projecting it again is what restores it.
-      const pane = panesById.get(zoom.pane)
+      const pane = panesById.get(zoom.pane);
       if (pane) {
-        setWeight(pane, 1)
-        this.root.add(pane)
+        setWeight(pane, 1);
+        this.root.add(pane);
       }
     } else if (this.#layout.root === null) {
       // Nothing to build: closing the last pane empties the window, which is a
       // state it really has until the app decides to close it.
     } else if (this.#layout.root.type === "split") {
-      setDirection(this.root, this.#layout.root.direction)
-      fill(this.root, this.#layout.root, [])
+      setDirection(this.root, this.#layout.root.direction);
+      fill(this.root, this.#layout.root, []);
     } else {
-      this.root.add(build(this.#layout.root, []))
+      this.root.add(build(this.#layout.root, []));
     }
 
     if (next) {
@@ -1092,16 +1097,16 @@ export class Window {
       // window_set_active_pane does this bookkeeping after a split, a close or
       // an arrange too. The one exception is a rebuild that keeps the same pane
       // focused, which focus() sees as no change and leaves the pair alone.
-      this.focus(next)
+      this.focus(next);
     } else {
       // An empty window has no focus and nothing for last-pane to toggle to.
-      this.#state.focus = null
-      this.#layout = makeLayout(this.#layout.root)
+      this.#state.focus = null;
+      this.#layout = makeLayout(this.#layout.root);
     }
-    this.#refreshChrome()
-    this.onChange?.()
-    this.#ctx.requestRender()
-    return [...spare]
+    this.#refreshChrome();
+    this.onChange?.();
+    this.#ctx.requestRender();
+    return [...spare];
   }
 
   /**
@@ -1117,22 +1122,22 @@ export class Window {
    * derived nodes to destroy.
    */
   #dismantle(): TerminalPane[] {
-    const panes = [...this.#panes]
-    for (const pane of panes) (pane.parent as BoxRenderable | null)?.remove(pane)
+    const panes = [...this.#panes];
+    for (const pane of panes) (pane.parent as BoxRenderable | null)?.remove(pane);
     const walk = (box: BoxRenderable) => {
       // Children are copied before removal — removing while iterating the live
       // child list skips every other one.
       for (const child of [...box.getChildren()]) {
-        box.remove(child)
-        if (child instanceof Divider) child.destroy()
+        box.remove(child);
+        if (child instanceof Divider) child.destroy();
         else if (child instanceof BoxRenderable) {
-          walk(child)
-          child.destroy()
+          walk(child);
+          child.destroy();
         }
       }
-    }
-    walk(this.root)
-    return panes
+    };
+    walk(this.root);
+    return panes;
   }
 
   /**
@@ -1142,15 +1147,15 @@ export class Window {
    * on the pane the user was in.
    */
   selectLayout(preset: LayoutPreset): boolean {
-    if (this.#panes.length === 0) return false
-    const panes = this.#panes.map((pane) => ({ id: pane.id, agent: pane.agent.id }))
-    return this.applyLayout(presetLayout(panes, preset, this.#state.focus ?? undefined), preset)
+    if (this.#panes.length === 0) return false;
+    const panes = this.#panes.map((pane) => ({ id: pane.id, agent: pane.agent.id }));
+    return this.applyLayout(presetLayout(panes, preset, this.#state.focus ?? undefined), preset);
   }
 
   /** The preset this window was last arranged by, or null once a split, close
    *  or drag has moved it off that arrangement. Drives next-layout's cycle. */
   get preset(): LayoutPreset | null {
-    return this.#state.preset
+    return this.#state.preset;
   }
 
   /** Release every agent and free its terminal. The finalizer `Window.make`
@@ -1162,9 +1167,9 @@ export class Window {
    *  exception. */
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const pane of [...this.#panes]) this.close(pane)
-      for (const agent of [...this.#agents]) yield* this.#releaseAgent(agent)
-      this.#agents.length = 0
-    })
+      for (const pane of [...this.#panes]) this.close(pane);
+      for (const agent of [...this.#agents]) yield* this.#releaseAgent(agent);
+      this.#agents.length = 0;
+    });
   }
 }

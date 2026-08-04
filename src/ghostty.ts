@@ -579,10 +579,7 @@ export class RenderState {
           continue;
         }
         const utf8Len = Number(gv.getBigUint64(16, true));
-        line +=
-          utf8Len === 0
-            ? " "
-            : new TextDecoder().decode(this.#cps.subarray(0, utf8Len));
+        line += utf8Len === 0 ? " " : new TextDecoder().decode(this.#cps.subarray(0, utf8Len));
       }
       lines.push(line);
     }

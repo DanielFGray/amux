@@ -1,20 +1,26 @@
-import { Renderable, RGBA, type MouseEvent, type OptimizedBuffer, type RenderContext } from "@opentui/core"
-import { runtime } from "./options.ts"
+import {
+  Renderable,
+  RGBA,
+  type MouseEvent,
+  type OptimizedBuffer,
+  type RenderContext,
+} from "@opentui/core";
+import { runtime } from "./options.ts";
 
-const IDLE = RGBA.fromInts(69, 71, 90, 255) // surface1
-const FOCUS = RGBA.fromInts(137, 180, 250, 255) // blue
-const HOVER = RGBA.fromInts(203, 166, 247, 255) // mauve
-const BG = RGBA.fromInts(30, 30, 46, 255) // base
+const IDLE = RGBA.fromInts(69, 71, 90, 255); // surface1
+const FOCUS = RGBA.fromInts(137, 180, 250, 255); // blue
+const HOVER = RGBA.fromInts(203, 166, 247, 255); // mauve
+const BG = RGBA.fromInts(30, 30, 46, 255); // base
 
 export function setDirection(r: object, direction: "row" | "column"): void {
-  ;(r as { flexDirection: string }).flexDirection = direction
+  (r as { flexDirection: string }).flexDirection = direction;
 }
 
 /** Project a model weight into OpenTUI's write-only flex properties. */
 export function setWeight(r: object, weight: number): void {
-  const w = Math.max(0.0001, weight)
-  ;(r as { flexGrow: number; flexBasis: number }).flexGrow = w
-  ;(r as { flexGrow: number; flexBasis: number }).flexBasis = 0
+  const w = Math.max(0.0001, weight);
+  (r as { flexGrow: number; flexBasis: number }).flexGrow = w;
+  (r as { flexGrow: number; flexBasis: number }).flexBasis = 0;
 }
 
 /**
@@ -28,15 +34,15 @@ export function setWeight(r: object, weight: number): void {
  */
 export interface JunctionFrame {
   /** Whether a vertical frame line runs through or ends at the cell. */
-  vertical(x: number, y: number): boolean
+  vertical(x: number, y: number): boolean;
   /** Whether a horizontal frame line runs through or ends at the cell. */
-  horizontal(x: number, y: number): boolean
+  horizontal(x: number, y: number): boolean;
 }
 
-const UP = 1
-const DOWN = 2
-const LEFT = 4
-const RIGHT = 8
+const UP = 1;
+const DOWN = 2;
+const LEFT = 4;
+const RIGHT = 8;
 
 /** Junction glyphs by which arms reach the cell: up, down, left, right. */
 const JUNCTION: Record<number, string> = {
@@ -51,7 +57,7 @@ const JUNCTION: Record<number, string> = {
   [UP | LEFT]: "┘",
   [DOWN | RIGHT]: "┌",
   [DOWN | LEFT]: "┐",
-}
+};
 
 /**
  * The glyph a cell wants, given the arms that reach it.
@@ -71,21 +77,21 @@ function junctionGlyph(
   x: number,
   y: number,
 ): string {
-  let arms: number
+  let arms: number;
   if (vertical) {
-    const up = (index !== null && index > 0) || frame.vertical(x, y - 1)
-    const down = (index !== null && index < length - 1) || frame.vertical(x, y + 1)
-    const left = frame.horizontal(x - 1, y)
-    const right = frame.horizontal(x + 1, y)
-    arms = (up ? UP : 0) | (down ? DOWN : 0) | (left ? LEFT : 0) | (right ? RIGHT : 0)
+    const up = (index !== null && index > 0) || frame.vertical(x, y - 1);
+    const down = (index !== null && index < length - 1) || frame.vertical(x, y + 1);
+    const left = frame.horizontal(x - 1, y);
+    const right = frame.horizontal(x + 1, y);
+    arms = (up ? UP : 0) | (down ? DOWN : 0) | (left ? LEFT : 0) | (right ? RIGHT : 0);
   } else {
-    const left = (index !== null && index > 0) || frame.horizontal(x - 1, y)
-    const right = (index !== null && index < length - 1) || frame.horizontal(x + 1, y)
-    const up = frame.vertical(x, y - 1)
-    const down = frame.vertical(x, y + 1)
-    arms = (up ? UP : 0) | (down ? DOWN : 0) | (left ? LEFT : 0) | (right ? RIGHT : 0)
+    const left = (index !== null && index > 0) || frame.horizontal(x - 1, y);
+    const right = (index !== null && index < length - 1) || frame.horizontal(x + 1, y);
+    const up = frame.vertical(x, y - 1);
+    const down = frame.vertical(x, y + 1);
+    arms = (up ? UP : 0) | (down ? DOWN : 0) | (left ? LEFT : 0) | (right ? RIGHT : 0);
   }
-  return JUNCTION[arms] ?? (arms & (UP | DOWN) ? "│" : "─")
+  return JUNCTION[arms] ?? (arms & (UP | DOWN) ? "│" : "─");
 }
 
 /**
@@ -103,34 +109,34 @@ function junctionGlyph(
 export class Divider extends Renderable {
   /** Axis of the parent split: "row" means a vertical bar between left/right
    *  neighbours, "column" a horizontal one between top/bottom. */
-  readonly axis: "row" | "column"
+  readonly axis: "row" | "column";
   /** Whether this divider is part of a pane frame and should finish its ends
    *  with a junction. */
-  tees = false
+  tees = false;
   /** Whether each end meets the window's outer border rather than another
    *  divider. Set by Window, which is the only thing that knows the tree. */
-  capStart = false
-  capEnd = false
+  capStart = false;
+  capEnd = false;
   /** True when the divider is the frame's outer edge. Nothing is drawn on its
    *  far side, so its ends are corners rather than tees. */
-  outer = false
+  outer = false;
   /** True when the focused pane is on one side of this divider — the shared
    *  border is the focused pane's border too, so it highlights with it. */
-  adjacentToFocus = false
+  adjacentToFocus = false;
   /** A resize target with no visual divider of its own. */
-  hitboxOnly = false
+  hitboxOnly = false;
   /**
    * The frame this divider is a segment of, asked once per frame for every
    * cell it draws. Set by Window, which is the only thing that knows the tree;
    * a bare divider (the sidebar handle) leaves it unset and falls back to
    * drawing a plain line with corner ends.
    */
-  junction?: () => JunctionFrame
-  #hovered = false
-  #dragging = false
-  #paneGap = 0
-  #spaced = false
-  #dragSentPos = 0
+  junction?: () => JunctionFrame;
+  #hovered = false;
+  #dragging = false;
+  #paneGap = 0;
+  #spaced = false;
+  #dragSentPos = 0;
 
   /**
    * Where the drag goes instead of the neighbours' flex weights.
@@ -140,7 +146,7 @@ export class Divider extends Renderable {
    * whole pane area. Handing that case a callback reuses the capture-on-press
    * handling, which is the part that is actually fiddly.
    */
-  onDrag?: (delta: number) => void
+  onDrag?: (delta: number) => void;
 
   constructor(
     ctx: RenderContext,
@@ -151,10 +157,10 @@ export class Divider extends Renderable {
       flexShrink: 0,
       flexGrow: 0,
       ...(options.axis === "row" ? { width: 1 } : { height: 1 }),
-    })
-    this.axis = options.axis
-    this.onDrag = options.onDrag
-    this.setPaneGap(runtime["appearance.gap"] ? 1 : 0)
+    });
+    this.axis = options.axis;
+    this.onDrag = options.onDrag;
+    this.setPaneGap(runtime["appearance.gap"] ? 1 : 0);
   }
 
   /** Update the target's width when the appearance setting changes. */
@@ -163,32 +169,32 @@ export class Divider extends Renderable {
     // column is enough to separate side-by-side panes, while a whole blank row
     // makes top/bottom panes look disproportionately far apart. Larger levels
     // retain the same visual correction.
-    const requested = Math.max(0, Math.floor(gap))
-    this.#spaced = requested > 0
-    this.#paneGap = this.axis === "column" ? Math.max(0, requested - 1) : requested
-    if (this.axis === "row") this.width = this.#spaced ? this.#paneGap : 1
+    const requested = Math.max(0, Math.floor(gap));
+    this.#spaced = requested > 0;
+    this.#paneGap = this.axis === "column" ? Math.max(0, requested - 1) : requested;
+    if (this.axis === "row") this.width = this.#spaced ? this.#paneGap : 1;
     else {
       // OpenTUI keeps renderables at least one cell high. Reclaim that
       // implementation floor with a negative trailing margin when the visual
       // gap is zero, so the divider remains draggable without adding a row.
-      this.height = Math.max(1, this.#paneGap)
-      this.marginBottom = this.#spaced && this.#paneGap === 0 ? -1 : 0
+      this.height = Math.max(1, this.#paneGap);
+      this.marginBottom = this.#spaced && this.#paneGap === 0 ? -1 : 0;
     }
   }
 
   protected override onMouseEvent(event: MouseEvent): void {
     switch (event.type) {
       case "over":
-        this.#hovered = true
-        this.requestRender()
-        return
+        this.#hovered = true;
+        this.requestRender();
+        return;
       case "out":
-        this.#hovered = false
-        this.requestRender()
-        return
+        this.#hovered = false;
+        this.requestRender();
+        return;
       case "down":
-        this.#dragging = true
-        this.#dragSentPos = this.axis === "row" ? this.x : this.y
+        this.#dragging = true;
+        this.#dragSentPos = this.axis === "row" ? this.x : this.y;
         // Claim the pointer now, rather than letting OpenTUI decide on the
         // first drag event. It captures whatever the pointer is over at that
         // moment, and a divider is one cell wide — move quickly and the first
@@ -196,15 +202,16 @@ export class Divider extends Renderable {
         // rest of the gesture. Capturing on the press makes the drag work at
         // any speed. Routing to a captured renderable happens before OpenTUI's
         // own capture bookkeeping, so this survives the rest of the dispatch.
-        ;(this._ctx as unknown as { setCapturedRenderable?: (r: unknown) => void })
-          .setCapturedRenderable?.(this)
-        event.stopPropagation()
-        return
+        (
+          this._ctx as unknown as { setCapturedRenderable?: (r: unknown) => void }
+        ).setCapturedRenderable?.(this);
+        event.stopPropagation();
+        return;
       case "up":
       case "drag-end":
-        this.#dragging = false
-        event.stopPropagation()
-        return
+        this.#dragging = false;
+        event.stopPropagation();
+        return;
       case "drag": {
         // Local echo: compute the delta from the position we last sent, not
         // from the divider's current rendered position. In projection mode
@@ -213,15 +220,15 @@ export class Divider extends Renderable {
         // each unconfirmed event — quadratic overshoot. Advancing
         // `#dragSentPos` by the delta we send keeps each event incremental
         // and converges to `this.x` when the daemon generation arrives.
-        const axisVal = this.axis === "row" ? event.x : event.y
-        const delta = axisVal - this.#dragSentPos
+        const axisVal = this.axis === "row" ? event.x : event.y;
+        const delta = axisVal - this.#dragSentPos;
         if (delta !== 0) {
-          this.#dragSentPos += delta
-          this.onDrag?.(delta)
-          this.requestRender()
+          this.#dragSentPos += delta;
+          this.onDrag?.(delta);
+          this.requestRender();
         }
-        event.stopPropagation()
-        return
+        event.stopPropagation();
+        return;
       }
     }
   }
@@ -249,46 +256,44 @@ export class Divider extends Renderable {
    * cells, so it keeps the simple path.
    */
   protected override renderSelf(buffer: OptimizedBuffer): void {
-    if (this.hitboxOnly) return
+    if (this.hitboxOnly) return;
     if (this.#spaced) {
       for (let y = this.y; y < this.y + this.height; y++) {
         for (let x = this.x; x < this.x + this.width; x++) {
-          buffer.setCell(x, y, " ", IDLE, BG)
+          buffer.setCell(x, y, " ", IDLE, BG);
         }
       }
-      return
+      return;
     }
-    const fg = this.#hovered || this.#dragging ? HOVER : this.adjacentToFocus ? FOCUS : IDLE
-    const vertical = this.axis === "row"
-    const length = vertical ? this.height : this.width
+    const fg = this.#hovered || this.#dragging ? HOVER : this.adjacentToFocus ? FOCUS : IDLE;
+    const vertical = this.axis === "row";
+    const length = vertical ? this.height : this.width;
     const at = (i: number) =>
-      vertical
-        ? ([this.x, this.y + i] as const)
-        : ([this.x + i, this.y] as const)
+      vertical ? ([this.x, this.y + i] as const) : ([this.x + i, this.y] as const);
 
-    const frame = this.junction?.()
+    const frame = this.junction?.();
     if (!frame || this.outer) {
-      for (let i = 0; i < length; i++) buffer.setCell(...at(i), vertical ? "│" : "─", fg, BG)
-      if (!this.tees) return
-      const [sx, sy] = at(this.capStart ? 0 : -1)
-      buffer.setCell(sx, sy, this.outer ? "┌" : vertical ? "┬" : "├", fg, BG)
-      const [ex, ey] = at(this.capEnd ? length - 1 : length)
-      buffer.setCell(ex, ey, this.outer ? (vertical ? "└" : "┐") : vertical ? "┴" : "┤", fg, BG)
-      return
+      for (let i = 0; i < length; i++) buffer.setCell(...at(i), vertical ? "│" : "─", fg, BG);
+      if (!this.tees) return;
+      const [sx, sy] = at(this.capStart ? 0 : -1);
+      buffer.setCell(sx, sy, this.outer ? "┌" : vertical ? "┬" : "├", fg, BG);
+      const [ex, ey] = at(this.capEnd ? length - 1 : length);
+      buffer.setCell(ex, ey, this.outer ? (vertical ? "└" : "┐") : vertical ? "┴" : "┤", fg, BG);
+      return;
     }
 
     for (let i = 0; i < length; i++) {
-      const [x, y] = at(i)
-      buffer.setCell(x, y, junctionGlyph(vertical, i, length, frame, x, y), fg, BG)
+      const [x, y] = at(i);
+      buffer.setCell(x, y, junctionGlyph(vertical, i, length, frame, x, y), fg, BG);
     }
-    if (!this.tees) return
+    if (!this.tees) return;
     if (!this.capStart) {
-      const [x, y] = at(-1)
-      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG)
+      const [x, y] = at(-1);
+      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG);
     }
     if (!this.capEnd) {
-      const [x, y] = at(length)
-      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG)
+      const [x, y] = at(length);
+      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG);
     }
   }
 }

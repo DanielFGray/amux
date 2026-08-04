@@ -1,42 +1,42 @@
-import { Effect, Exit, Fiber, Scope, Stream } from "effect"
-import { Terminal, RenderState } from "./ghostty.ts"
-import { localPty, exitedBackend, type AgentBackend, type SpawnBackend } from "./backend.ts"
-import { scrollViewport, ScrollTo } from "./shim.ts"
+import { Effect, Exit, Fiber, Scope, Stream } from "effect";
+import { Terminal, RenderState } from "./ghostty.ts";
+import { localPty, exitedBackend, type AgentBackend, type SpawnBackend } from "./backend.ts";
+import { scrollViewport, ScrollTo } from "./shim.ts";
 import {
   splitActivity,
   looksBlocked,
   identifyAgent,
   commandName,
   type AgentState,
-} from "./detect.ts"
+} from "./detect.ts";
 
-export type { AgentState }
+export type { AgentState };
 /** @deprecated use AgentState — kept so older call sites keep compiling. */
-export type AgentStatus = AgentState
+export type AgentStatus = AgentState;
 
 /** How often the screen is re-scanned for a "waiting on you" prompt. Blocked
  *  state changes are human-paced, so a few times a second is ample and keeps
  *  the scan off the render path for busy agents. */
-const BLOCKED_POLL_MS = 250
+const BLOCKED_POLL_MS = 250;
 
 /** How many of the last written rows are searched for a prompt. A confirmation
  *  UI is the most recent thing on screen by definition, so a short tail is
  *  enough and scanning the whole grid would cost several times more. */
-const BLOCKED_SCAN_ROWS = 20
+const BLOCKED_SCAN_ROWS = 20;
 
 /** How often the foreground process is re-checked for an agent CLI. Reading
  *  /proc on every sidebar row on every tick would be gratuitous, and starting an
  *  agent is a human-paced event. */
-const AGENT_POLL_MS = 500
+const AGENT_POLL_MS = 500;
 
 export interface AgentOptions {
   /** Display name before the child reports an OSC title. Defaults to the
    *  executable being run, which is nearly always the better answer. */
-  name?: string
-  cmd: string[]
-  cwd?: string
-  cols?: number
-  rows?: number
+  name?: string;
+  cmd: string[];
+  cwd?: string;
+  cols?: number;
+  rows?: number;
   /**
    * Keep an identity that already exists, instead of minting a new one.
    *
@@ -44,9 +44,9 @@ export interface AgentOptions {
    * comes back under a fresh id is an agent its own window's saved arrangement
    * no longer mentions.
    */
-  id?: string
+  id?: string;
   /** Where the process comes from. Defaults to a PTY in this process. */
-  backend?: SpawnBackend
+  backend?: SpawnBackend;
   /**
    * Restore an agent whose process is already over.
    *
@@ -54,16 +54,16 @@ export interface AgentOptions {
    * previous life, and firing onExit here would cascade "an agent just
    * finished" through an app that has been running for two seconds.
    */
-  exited?: { code: number | null }
+  exited?: { code: number | null };
 }
 
-let nextAgentId = 0
+let nextAgentId = 0;
 
 /** Keep the generator ahead of every id restore has brought back, so a fresh
  *  agent can never collide with a persisted one. */
 function reserveAgentId(id: string) {
-  const n = /^agent-(\d+)$/.exec(id)
-  if (n) nextAgentId = Math.max(nextAgentId, Number(n[1]) + 1)
+  const n = /^agent-(\d+)$/.exec(id);
+  if (n) nextAgentId = Math.max(nextAgentId, Number(n[1]) + 1);
 }
 
 /**
@@ -79,34 +79,34 @@ function reserveAgentId(id: string) {
  * kind of thing to everything above.
  */
 export class Agent {
-  readonly id: string
-  readonly name: string
-  readonly cmd: string[]
-  readonly cwd: string | undefined
-  readonly term: Terminal
-  readonly startedAt = Date.now()
+  readonly id: string;
+  readonly name: string;
+  readonly cmd: string[];
+  readonly cwd: string | undefined;
+  readonly term: Terminal;
+  readonly startedAt = Date.now();
 
-  #backend: AgentBackend
-  #exited = false
-  #detached = false
-  #exitCode: number | null = null
-  #lastOutputAt = 0
-  #viewers = 0
-  #unseen = false
+  #backend: AgentBackend;
+  #exited = false;
+  #detached = false;
+  #exitCode: number | null = null;
+  #lastOutputAt = 0;
+  #viewers = 0;
+  #unseen = false;
   /** Lazily created: only agents actually asked for their state pay for it. */
-  #detect: RenderState | null = null
-  #blockedCache = false
-  #blockedAt = 0
-  #blockedSeenOutput = -1
+  #detect: RenderState | null = null;
+  #blockedCache = false;
+  #blockedAt = 0;
+  #blockedSeenOutput = -1;
   /** Agent CLI this pane was launched as, if any. Fixed for the agent's life. */
-  #spawnedAs: string | null
-  #runningAs: string | null = null
-  #runningAt = 0
-  #comm = ""
-  #commAt = 0
+  #spawnedAs: string | null;
+  #runningAs: string | null = null;
+  #runningAt = 0;
+  #comm = "";
+  #commAt = 0;
   /** The fiber drawing backend output into `term`. Null for a tombstone, which
    *  has nothing to draw. Interrupted before the terminal is freed. */
-  #pumpFiber: Fiber.RuntimeFiber<void> | null = null
+  #pumpFiber: Fiber.RuntimeFiber<void> | null = null;
   /**
    * Owns every FFI handle this agent allocates.
    *
@@ -114,35 +114,44 @@ export class Agent {
    * the heap if something frees them twice, and they used to be freed by
    * dispose() remembering to name each one. Closing a scope cannot forget.
    */
-  #scope = Effect.runSync(Scope.make())
-  #disposed = false
+  #scope = Effect.runSync(Scope.make());
+  #disposed = false;
 
   /** Bumped whenever output arrives, so views can invalidate caches. */
-  onOutput?: (agent: Agent) => void
-  onExit?: (agent: Agent) => void
+  onOutput?: (agent: Agent) => void;
+  onExit?: (agent: Agent) => void;
   /** Fired when scrolled state changes (scrollback entered or exited), so the
    *  sidebar's ▲ indicator stays accurate. */
-  onScroll?: (agent: Agent) => void
+  onScroll?: (agent: Agent) => void;
 
   constructor(opts: AgentOptions) {
-    this.id = opts.id ?? `agent-${nextAgentId++}`
-    if (opts.id) reserveAgentId(opts.id)
-    this.name = opts.name ?? commandName(opts.cmd)
-    this.cmd = opts.cmd
-    this.cwd = opts.cwd
-    this.#spawnedAs = identifyAgent(opts.cmd.join(" "))
-    const cols = opts.cols ?? 80
-    const rows = opts.rows ?? 24
-    this.term = this.#own(() => new Terminal(cols, rows), (t) => t.free())
+    this.id = opts.id ?? `agent-${nextAgentId++}`;
+    if (opts.id) reserveAgentId(opts.id);
+    this.name = opts.name ?? commandName(opts.cmd);
+    this.cmd = opts.cmd;
+    this.cwd = opts.cwd;
+    this.#spawnedAs = identifyAgent(opts.cmd.join(" "));
+    const cols = opts.cols ?? 80;
+    const rows = opts.rows ?? 24;
+    this.term = this.#own(
+      () => new Terminal(cols, rows),
+      (t) => t.free(),
+    );
     if (opts.exited) {
       // A tombstone: everything it can still answer, nothing running behind it.
-      this.#backend = exitedBackend(opts.exited.code)
-      this.#exited = true
-      this.#exitCode = opts.exited.code
-      return
+      this.#backend = exitedBackend(opts.exited.code);
+      this.#exited = true;
+      this.#exitCode = opts.exited.code;
+      return;
     }
-    this.#backend = (opts.backend ?? localPty)({ id: this.id, cmd: opts.cmd, cwd: opts.cwd, cols, rows })
-    this.#pumpFiber = this.#pump()
+    this.#backend = (opts.backend ?? localPty)({
+      id: this.id,
+      cmd: opts.cmd,
+      cwd: opts.cwd,
+      cols,
+      rows,
+    });
+    this.#pumpFiber = this.#pump();
   }
 
   /**
@@ -159,7 +168,7 @@ export class Agent {
         Effect.acquireRelease(Effect.sync(acquire), (handle) => Effect.sync(() => free(handle))),
         this.#scope,
       ),
-    )
+    );
   }
 
   /**
@@ -172,7 +181,7 @@ export class Agent {
     return Effect.acquireRelease(
       Effect.sync(() => new Agent(opts)),
       (agent) => agent.release(),
-    )
+    );
   }
 
   /**
@@ -185,13 +194,13 @@ export class Agent {
    */
   release(): Effect.Effect<void> {
     return Effect.suspend(() => {
-      if (this.#disposed) return Effect.void
-      this.#disposed = true
-      this.#backend.close()
+      if (this.#disposed) return Effect.void;
+      this.#disposed = true;
+      this.#backend.close();
       return (this.#pumpFiber ? Fiber.interrupt(this.#pumpFiber) : Effect.void).pipe(
         Effect.andThen(Scope.close(this.#scope, Exit.void)),
-      )
-    })
+      );
+    });
   }
 
   /**
@@ -206,10 +215,10 @@ export class Agent {
     return Effect.runFork(
       Stream.runForEach(this.#backend.stream, (chunk) =>
         Effect.sync(() => {
-          this.term.write(chunk)
-          this.#lastOutputAt = Date.now()
-          if (this.#viewers === 0) this.#unseen = true
-          this.onOutput?.(this)
+          this.term.write(chunk);
+          this.#lastOutputAt = Date.now();
+          if (this.#viewers === 0) this.#unseen = true;
+          this.onOutput?.(this);
         }),
       ).pipe(
         // onExit belongs to the stream ending, not to the fiber ending: an
@@ -217,50 +226,50 @@ export class Agent {
         // there would tombstone an agent that is still running.
         Effect.andThen(
           Effect.sync(() => {
-            this.#detached = this.#backend.detached
-            if (this.#detached) return
-            this.#exited = true
+            this.#detached = this.#backend.detached;
+            if (this.#detached) return;
+            this.#exited = true;
             // Not `?? 0`: a backend that reports no exit code does not mean the
             // process succeeded. A daemon-owned agent whose attachment was lost
             // is still running somewhere, and calling that a clean exit would
             // persist a tombstone for something that never died. See backend.ts.
-            this.#exitCode = this.#backend.exitCode
-            this.onExit?.(this)
+            this.#exitCode = this.#backend.exitCode;
+            this.onExit?.(this);
           }),
         ),
       ),
-    )
+    );
   }
 
   /** Title reported by the child via OSC 0/2, falling back to the given name.
    *  The leading activity glyph is stripped: it is state, not a name, and we
    *  render it ourselves as an animated state icon. */
   get title(): string {
-    const raw = this.term.title
-    if (!raw) return this.name
-    return splitActivity(raw).text || this.name
+    const raw = this.term.title;
+    if (!raw) return this.name;
+    return splitActivity(raw).text || this.name;
   }
 
   get pwd(): string {
-    return this.term.pwd
+    return this.term.pwd;
   }
 
   get exited() {
-    return this.#exited
+    return this.#exited;
   }
 
   /** True when the daemon attachment ended without the process exiting. */
   get detached() {
-    return this.#detached
+    return this.#detached;
   }
 
   get exitCode() {
-    return this.#exitCode
+    return this.#exitCode;
   }
 
   /** True when output has arrived that no pane was displaying. */
   get unseen() {
-    return this.#unseen
+    return this.#unseen;
   }
 
   /** True when the viewport is parked in history rather than following output.
@@ -268,7 +277,7 @@ export class Agent {
    *  edges, so a counter of our own drifts out of sync the first time the user
    *  scrolls past the top or the bottom. */
   get scrolled(): boolean {
-    return !this.#exited && !this.term.atBottom
+    return !this.#exited && !this.term.atBottom;
   }
 
   /**
@@ -280,27 +289,27 @@ export class Agent {
    * tells us about.
    */
   get agentKind(): string | null {
-    if (this.#spawnedAs) return this.#spawnedAs
-    if (this.#exited) return null
-    const now = Date.now()
+    if (this.#spawnedAs) return this.#spawnedAs;
+    if (this.#exited) return null;
+    const now = Date.now();
     if (now - this.#runningAt >= AGENT_POLL_MS) {
-      this.#runningAt = now
-      this.#runningAs = identifyAgent(this.#foregroundCmdline())
+      this.#runningAt = now;
+      this.#runningAs = identifyAgent(this.#foregroundCmdline());
     }
-    return this.#runningAs
+    return this.#runningAs;
   }
 
   /** Full argv of the foreground process, space-joined. `comm` is truncated at
    *  15 bytes and hides the script behind a `node`/`bun` wrapper, so identifying
    *  an agent has to read the command line. */
   #foregroundCmdline(): string {
-    const fg = this.#backend.foregroundPgid()
-    if (fg <= 0 || fg === this.#backend.sessionId()) return ""
+    const fg = this.#backend.foregroundPgid();
+    if (fg <= 0 || fg === this.#backend.sessionId()) return "";
     try {
-      const raw = require("node:fs").readFileSync(`/proc/${fg}/cmdline`, "utf8") as string
-      return raw.split("\0").filter(Boolean).join(" ")
+      const raw = require("node:fs").readFileSync(`/proc/${fg}/cmdline`, "utf8") as string;
+      return raw.split("\0").filter(Boolean).join(" ");
     } catch {
-      return ""
+      return "";
     }
   }
 
@@ -324,106 +333,111 @@ export class Agent {
    *    BLOCKED_POLL_MS.
    */
   get state(): AgentState {
-    if (this.#exited) return "done"
-    if (this.#detached) return "detached"
-    if (!this.agentKind) return "idle"
-    if (splitActivity(this.term.title).spinning) return "working"
-    if (this.#blocked()) return "blocked"
-    return "idle"
+    if (this.#exited) return "done";
+    if (this.#detached) return "detached";
+    if (!this.agentKind) return "idle";
+    if (splitActivity(this.term.title).spinning) return "working";
+    if (this.#blocked()) return "blocked";
+    return "idle";
   }
 
   /** @deprecated use `state`. */
   get status(): AgentState {
-    return this.state
+    return this.state;
   }
 
   /** Cached screen scan. Recomputed at most every BLOCKED_POLL_MS, and only
    *  when output has actually arrived since the last scan. */
   #blocked(): boolean {
-    const now = Date.now()
-    if (now - this.#blockedAt < BLOCKED_POLL_MS) return this.#blockedCache
+    const now = Date.now();
+    if (now - this.#blockedAt < BLOCKED_POLL_MS) return this.#blockedCache;
     if (this.#blockedAt > 0 && this.#lastOutputAt <= this.#blockedSeenOutput) {
-      this.#blockedAt = now
-      return this.#blockedCache
+      this.#blockedAt = now;
+      return this.#blockedCache;
     }
-    this.#blockedAt = now
-    this.#blockedSeenOutput = this.#lastOutputAt
+    this.#blockedAt = now;
+    this.#blockedSeenOutput = this.#lastOutputAt;
     // A disposed agent's handles are freed; scanning one would read released
     // memory. The last answer it gave is still the true one — nothing has
     // arrived since to change it.
-    if (this.#disposed) return this.#blockedCache
-    this.#detect ??= this.#own(() => new RenderState(), (state) => state.free())
-    this.#detect.update(this.term)
-    this.#blockedCache = looksBlocked(this.#detect.tailText(BLOCKED_SCAN_ROWS))
-    return this.#blockedCache
+    if (this.#disposed) return this.#blockedCache;
+    this.#detect ??= this.#own(
+      () => new RenderState(),
+      (state) => state.free(),
+    );
+    this.#detect.update(this.term);
+    this.#blockedCache = looksBlocked(this.#detect.tailText(BLOCKED_SCAN_ROWS));
+    return this.#blockedCache;
   }
 
   /** Command name of the foreground process, e.g. "vim" — "" when at a prompt.
    *  Cached: the sidebar reads this for every row on every tick, and a process
    *  starting is not a sub-second event. */
   get foregroundCommand(): string {
-    if (this.#exited) return ""
-    const now = Date.now()
+    if (this.#exited) return "";
+    const now = Date.now();
     if (now - this.#commAt >= AGENT_POLL_MS) {
-      this.#commAt = now
-      const fg = this.#backend.foregroundPgid()
+      this.#commAt = now;
+      const fg = this.#backend.foregroundPgid();
       if (fg <= 0 || fg === this.#backend.sessionId()) {
-        this.#comm = ""
+        this.#comm = "";
       } else {
         try {
-          this.#comm = (require("node:fs").readFileSync(`/proc/${fg}/comm`, "utf8") as string).trim()
+          this.#comm = (
+            require("node:fs").readFileSync(`/proc/${fg}/comm`, "utf8") as string
+          ).trim();
         } catch {
-          this.#comm = ""
+          this.#comm = "";
         }
       }
     }
-    return this.#comm
+    return this.#comm;
   }
 
   get msSinceOutput() {
-    return this.#lastOutputAt === 0 ? Infinity : Date.now() - this.#lastOutputAt
+    return this.#lastOutputAt === 0 ? Infinity : Date.now() - this.#lastOutputAt;
   }
 
   addViewer() {
-    this.#viewers++
-    this.#unseen = false
+    this.#viewers++;
+    this.#unseen = false;
   }
 
   removeViewer() {
-    this.#viewers = Math.max(0, this.#viewers - 1)
+    this.#viewers = Math.max(0, this.#viewers - 1);
   }
 
   get viewers() {
-    return this.#viewers
+    return this.#viewers;
   }
 
   write(data: string | Uint8Array) {
-    this.scrollToBottom()
-    this.#backend.write(data)
+    this.scrollToBottom();
+    this.#backend.write(data);
   }
 
   /** Views share one terminal, so resize is last-writer-wins. See notes in
    *  workspace: two panes on one agent at different sizes will fight. */
   resize(cols: number, rows: number) {
-    if (cols === this.term.cols && rows === this.term.rows) return
-    this.term.resize(cols, rows)
-    this.#backend.resize(cols, rows)
+    if (cols === this.term.cols && rows === this.term.rows) return;
+    this.term.resize(cols, rows);
+    this.#backend.resize(cols, rows);
   }
 
   scrollBy(rows: number) {
-    const before = this.scrolled
-    scrollViewport(this.term.handle, ScrollTo.delta, rows)
-    if (this.scrolled !== before) this.onScroll?.(this)
+    const before = this.scrolled;
+    scrollViewport(this.term.handle, ScrollTo.delta, rows);
+    if (this.scrolled !== before) this.onScroll?.(this);
   }
 
   scrollToBottom() {
-    if (!this.scrolled) return
-    scrollViewport(this.term.handle, ScrollTo.bottom)
-    this.onScroll?.(this)
+    if (!this.scrolled) return;
+    scrollViewport(this.term.handle, ScrollTo.bottom);
+    this.onScroll?.(this);
   }
 
   kill() {
-    this.#backend.kill()
+    this.#backend.kill();
   }
 
   /**
@@ -434,10 +448,10 @@ export class Agent {
    * scope to hang them on.
    */
   dispose() {
-    Effect.runFork(this.release())
+    Effect.runFork(this.release());
   }
 
   [Symbol.dispose]() {
-    this.dispose()
+    this.dispose();
   }
 }

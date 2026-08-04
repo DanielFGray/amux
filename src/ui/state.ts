@@ -1,27 +1,27 @@
-import { createSignal, createMemo, type Accessor } from "solid-js"
-import type { SpaceSet, Space } from "../space.ts"
-import type { Window } from "../window.ts"
-import type { Agent } from "../agent.ts"
-import type { TerminalPane } from "../pane.ts"
+import { createSignal, createMemo, type Accessor } from "solid-js";
+import type { SpaceSet, Space } from "../space.ts";
+import type { Window } from "../window.ts";
+import type { Agent } from "../agent.ts";
+import type { TerminalPane } from "../pane.ts";
 
 /** How often polled state (agent status, spinner frame) is re-read. */
-export const POLL_MS = 100
+export const POLL_MS = 100;
 
 export interface AppState {
-  spaces: Accessor<readonly Space[]>
-  active: Accessor<Space | null>
+  spaces: Accessor<readonly Space[]>;
+  active: Accessor<Space | null>;
   /** The window keystrokes land in. */
-  activeWindow: Accessor<Window | null>
-  focusedPane: Accessor<TerminalPane | null>
-  allAgents: Accessor<Agent[]>
+  activeWindow: Accessor<Window | null>;
+  focusedPane: Accessor<TerminalPane | null>;
+  allAgents: Accessor<Agent[]>;
   /** Advances on a timer. Read this in anything that displays polled state. */
-  tick: Accessor<number>
+  tick: Accessor<number>;
   /** Current spinner frame index, derived from the tick. */
-  frame: Accessor<number>
+  frame: Accessor<number>;
   /** Bump after any structural change (space/agent/pane added or removed). */
-  refresh: () => void
+  refresh: () => void;
   /** Advance every view of state that must be polled. */
-  poll: () => void
+  poll: () => void;
 }
 
 /**
@@ -40,22 +40,22 @@ export interface AppState {
  * Views read `tick()` alongside a getter to opt into the polled refresh.
  */
 export function createAppState(spaces: SpaceSet): AppState {
-  const [revision, setRevision] = createSignal(0)
-  const [tick, setTick] = createSignal(0)
+  const [revision, setRevision] = createSignal(0);
+  const [tick, setTick] = createSignal(0);
 
-  const refresh = () => setRevision((r) => r + 1)
-  const poll = () => setTick((t) => t + 1)
+  const refresh = () => setRevision((r) => r + 1);
+  const poll = () => setTick((t) => t + 1);
 
-  const previous = spaces.onChange
+  const previous = spaces.onChange;
   spaces.onChange = () => {
-    previous?.()
-    refresh()
-  }
+    previous?.();
+    refresh();
+  };
 
   const spacesList = createMemo(() => {
-    revision()
-    return [...spaces.spaces]
-  })
+    revision();
+    return [...spaces.spaces];
+  });
 
   return {
     spaces: spacesList,
@@ -66,35 +66,35 @@ export function createAppState(spaces: SpaceSet): AppState {
     // memos below build a fresh array each time and notify on their own.
     active: createMemo(
       () => {
-        revision()
-        return spaces.active
+        revision();
+        return spaces.active;
       },
       undefined,
       { equals: false },
     ),
     activeWindow: createMemo(
       () => {
-        revision()
-        return spaces.activeWindow
+        revision();
+        return spaces.activeWindow;
       },
       undefined,
       { equals: false },
     ),
     focusedPane: createMemo(
       () => {
-        revision()
-        return spaces.activeWindow?.focused ?? null
+        revision();
+        return spaces.activeWindow?.focused ?? null;
       },
       undefined,
       { equals: false },
     ),
     allAgents: createMemo(() => {
-      revision()
-      return spaces.allAgents
+      revision();
+      return spaces.allAgents;
     }),
     tick,
     frame: tick,
     refresh,
     poll,
-  }
+  };
 }

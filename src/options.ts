@@ -19,27 +19,27 @@
 /** Bounded because every numeric option has an answer to "how far can it go?",
  *  and the one place that answer belongs is here. */
 interface NumberSpec {
-  readonly kind: "number"
-  readonly default: number
-  readonly min: number
-  readonly max: number
-  readonly desc: string
+  readonly kind: "number";
+  readonly default: number;
+  readonly min: number;
+  readonly max: number;
+  readonly desc: string;
 }
 
 interface BooleanSpec {
-  readonly kind: "boolean"
-  readonly default: boolean
-  readonly desc: string
+  readonly kind: "boolean";
+  readonly default: boolean;
+  readonly desc: string;
 }
 
 interface StringSpec {
-  readonly kind: "string"
-  readonly default: string
-  readonly desc: string
+  readonly kind: "string";
+  readonly default: string;
+  readonly desc: string;
 }
 
-export type OptionSpec = NumberSpec | BooleanSpec | StringSpec
-export type OptionValue = number | boolean | string
+export type OptionSpec = NumberSpec | BooleanSpec | StringSpec;
+export type OptionValue = number | boolean | string;
 
 export const OPTIONS = {
   "sidebar.open": { kind: "boolean", default: true, desc: "show the sidebar" },
@@ -78,20 +78,26 @@ export const OPTIONS = {
     desc: "seconds before the which-key panel appears",
   },
 
-  "behaviour.scrollRows": { kind: "number", default: 3, min: 1, max: 20, desc: "rows per wheel notch" },
+  "behaviour.scrollRows": {
+    kind: "number",
+    default: 3,
+    min: 1,
+    max: 20,
+    desc: "rows per wheel notch",
+  },
   "behaviour.shell": {
     kind: "string",
     default: "",
     desc: "shell for new agents · empty uses $SHELL",
   },
-} as const satisfies Record<string, OptionSpec>
+} as const satisfies Record<string, OptionSpec>;
 
-export type OptionName = keyof typeof OPTIONS
+export type OptionName = keyof typeof OPTIONS;
 
-type ValueOf<S> = S extends NumberSpec ? number : S extends BooleanSpec ? boolean : string
+type ValueOf<S> = S extends NumberSpec ? number : S extends BooleanSpec ? boolean : string;
 
 /** Every option resolved to a value — what the app reads. */
-export type Options = { readonly [K in OptionName]: ValueOf<(typeof OPTIONS)[K]> }
+export type Options = { readonly [K in OptionName]: ValueOf<(typeof OPTIONS)[K]> };
 
 /**
  * What is written to disk: only the options a user has actually changed.
@@ -103,28 +109,28 @@ export type Options = { readonly [K in OptionName]: ValueOf<(typeof OPTIONS)[K]>
  * unrecognised name owns survive: they are kept verbatim and written back, so
  * turning a plugin off does not flatten its settings out of the file.
  */
-export type OptionDeltas = Readonly<Record<string, unknown>>
+export type OptionDeltas = Readonly<Record<string, unknown>>;
 
 export function optionSpec(name: string): OptionSpec | undefined {
-  return Object.hasOwn(OPTIONS, name) ? OPTIONS[name as OptionName] : undefined
+  return Object.hasOwn(OPTIONS, name) ? OPTIONS[name as OptionName] : undefined;
 }
 
-export const optionNames = Object.keys(OPTIONS) as OptionName[]
+export const optionNames = Object.keys(OPTIONS) as OptionName[];
 
 /** The distinct name prefixes, in declaration order — the settings window's tabs. */
-export const optionSections = [...new Set(optionNames.map(sectionOf))]
+export const optionSections = [...new Set(optionNames.map(sectionOf))];
 
 export function optionsIn(section: string): OptionName[] {
-  return optionNames.filter((name) => sectionOf(name) === section)
+  return optionNames.filter((name) => sectionOf(name) === section);
 }
 
 /** The part of a dotted name that identifies it within its section. */
 export function leafOf(name: string): string {
-  return name.slice(name.indexOf(".") + 1)
+  return name.slice(name.indexOf(".") + 1);
 }
 
 function sectionOf(name: string): string {
-  return name.slice(0, name.indexOf("."))
+  return name.slice(0, name.indexOf("."));
 }
 
 /**
@@ -135,24 +141,24 @@ function sectionOf(name: string): string {
  * that the app would not have accepted from its own UI.
  */
 export function resolveOptions(stored: OptionDeltas): Options {
-  const resolved: Record<string, OptionValue> = {}
+  const resolved: Record<string, OptionValue> = {};
   for (const name of optionNames) {
-    const spec = OPTIONS[name]
-    resolved[name] = coerceOption(spec, stored[name]) ?? spec.default
+    const spec = OPTIONS[name];
+    resolved[name] = coerceOption(spec, stored[name]) ?? spec.default;
   }
-  return resolved as Options
+  return resolved as Options;
 }
 
 /** The value this option would take from `raw`, or undefined if it refuses it. */
 export function coerceOption(spec: OptionSpec, raw: unknown): OptionValue | undefined {
   switch (spec.kind) {
     case "number":
-      if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined
-      return clamp(spec, Math.floor(raw))
+      if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+      return clamp(spec, Math.floor(raw));
     case "boolean":
-      return typeof raw === "boolean" ? raw : undefined
+      return typeof raw === "boolean" ? raw : undefined;
     case "string":
-      return typeof raw === "string" ? raw : undefined
+      return typeof raw === "string" ? raw : undefined;
   }
 }
 
@@ -163,17 +169,21 @@ export function coerceOption(spec: OptionSpec, raw: unknown): OptionValue | unde
  * the way to disk, which is what makes "has the user set this?" answerable at
  * any moment — `name in deltas` — instead of only while saving.
  */
-export function writeOption(stored: OptionDeltas, name: OptionName, value: OptionValue): OptionDeltas {
-  const next = { ...stored }
-  if (value === OPTIONS[name].default) delete next[name]
-  else next[name] = value
-  return next
+export function writeOption(
+  stored: OptionDeltas,
+  name: OptionName,
+  value: OptionValue,
+): OptionDeltas {
+  const next = { ...stored };
+  if (value === OPTIONS[name].default) delete next[name];
+  else next[name] = value;
+  return next;
 }
 
 export function clearOption(stored: OptionDeltas, name: OptionName): OptionDeltas {
-  const next = { ...stored }
-  delete next[name]
-  return next
+  const next = { ...stored };
+  delete next[name];
+  return next;
 }
 
 /**
@@ -187,35 +197,35 @@ export function clearOption(stored: OptionDeltas, name: OptionName): OptionDelta
 export function adjustedValue(spec: OptionSpec, current: OptionValue, by: number): OptionValue {
   switch (spec.kind) {
     case "number":
-      return clamp(spec, (current as number) + by)
+      return clamp(spec, (current as number) + by);
     case "boolean":
-      return !(current as boolean)
+      return !(current as boolean);
     case "string":
-      return current
+      return current;
   }
 }
 
 /** How the value reads on screen. */
 export function formatOption(spec: OptionSpec, value: OptionValue): string {
-  if (spec.kind === "boolean") return value ? "yes" : "no"
-  if (spec.kind === "string") return (value as string) || "unset"
-  return String(value)
+  if (spec.kind === "boolean") return value ? "yes" : "no";
+  if (spec.kind === "string") return (value as string) || "unset";
+  return String(value);
 }
 
 /** What the row says you can do to it, which follows from the kind. */
 export function editHint(spec: OptionSpec): string {
   switch (spec.kind) {
     case "number":
-      return "←/→ adjusts"
+      return "←/→ adjusts";
     case "boolean":
-      return "←/→ toggles"
+      return "←/→ toggles";
     case "string":
-      return "read-only"
+      return "read-only";
   }
 }
 
 function clamp(spec: NumberSpec, value: number): number {
-  return Math.max(spec.min, Math.min(spec.max, value))
+  return Math.max(spec.min, Math.min(spec.max, value));
 }
 
 /**
@@ -225,8 +235,8 @@ function clamp(spec: NumberSpec, value: number): number {
  * from renderables and event handlers that have no path back to the app's
  * reactive graph; ts-6b5314 is where the global goes away.
  */
-export const runtime: { [K in OptionName]: ValueOf<(typeof OPTIONS)[K]> } = resolveOptions({})
+export const runtime: { [K in OptionName]: ValueOf<(typeof OPTIONS)[K]> } = resolveOptions({});
 
 export function applyOptions(options: Options): void {
-  Object.assign(runtime, options)
+  Object.assign(runtime, options);
 }

@@ -1,12 +1,12 @@
 export interface SocketWriter {
-  readonly closed: boolean
-  send(value: Uint8Array): boolean
-  drain(): void
-  close(): void
-  closeAfterFlush(onFlushed: () => void): void
+  readonly closed: boolean;
+  send(value: Uint8Array): boolean;
+  drain(): void;
+  close(): void;
+  closeAfterFlush(onFlushed: () => void): void;
 }
 
-const MAX_PENDING_BYTES = 4 * 1024 * 1024
+const MAX_PENDING_BYTES = 4 * 1024 * 1024;
 
 /** Serialize unbuffered Bun socket writes without losing partial frames. */
 export const createSocketWriter = (
@@ -14,95 +14,97 @@ export const createSocketWriter = (
   onClose: () => void,
   maxPendingBytes = MAX_PENDING_BYTES,
 ): SocketWriter => {
-  const pending: Uint8Array[] = []
-  let pendingBytes = 0
-  let offset = 0
-  let closed = false
-  let pumping = false
-  let waitingDrain = false
-  let closing = false
-  let flushed: (() => void) | null = null
+  const pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  let offset = 0;
+  let closed = false;
+  let pumping = false;
+  let waitingDrain = false;
+  let closing = false;
+  let flushed: (() => void) | null = null;
 
   const fail = () => {
-    if (closed) return
-    closed = true
-    pending.length = 0
-    pendingBytes = 0
-    onClose()
-  }
+    if (closed) return;
+    closed = true;
+    pending.length = 0;
+    pendingBytes = 0;
+    onClose();
+  };
 
   const pump = () => {
-    if (closed || pumping || waitingDrain) return
-    pumping = true
+    if (closed || pumping || waitingDrain) return;
+    pumping = true;
     try {
       while (!closed && pending.length > 0) {
-        const frame = pending[0]!
-        const remaining = frame.length - offset
-        let written: number
+        const frame = pending[0]!;
+        const remaining = frame.length - offset;
+        let written: number;
         try {
-          written = socket.write(frame, offset, remaining)
+          written = socket.write(frame, offset, remaining);
         } catch {
-          fail()
-          return
+          fail();
+          return;
         }
         if (written < 0 || written > remaining) {
-          fail()
-          return
+          fail();
+          return;
         }
         if (written === 0) {
-          waitingDrain = true
-          return
+          waitingDrain = true;
+          return;
         }
-        offset += written
-        pendingBytes -= written
+        offset += written;
+        pendingBytes -= written;
         if (offset === frame.length) {
-          pending.shift()
-          offset = 0
+          pending.shift();
+          offset = 0;
         } else {
-          waitingDrain = true
-          return
+          waitingDrain = true;
+          return;
         }
       }
       if (!closed && closing && pending.length === 0) {
-        const callback = flushed
-        flushed = null
-        closed = true
-        callback?.()
+        const callback = flushed;
+        flushed = null;
+        closed = true;
+        callback?.();
       }
     } finally {
-      pumping = false
+      pumping = false;
     }
-  }
+  };
 
   return {
-    get closed() { return closed },
+    get closed() {
+      return closed;
+    },
     send(bytes) {
-      if (closed || closing) return false
+      if (closed || closing) return false;
       if (pendingBytes + bytes.length > maxPendingBytes) {
-        fail()
-        return false
+        fail();
+        return false;
       }
-      pending.push(bytes)
-      pendingBytes += bytes.length
-      pump()
-      return !closed
+      pending.push(bytes);
+      pendingBytes += bytes.length;
+      pump();
+      return !closed;
     },
     drain() {
-      if (closed) return
-      waitingDrain = false
-      pump()
+      if (closed) return;
+      waitingDrain = false;
+      pump();
     },
     close() {
-      closing = true
-      closed = true
-      pending.length = 0
-      pendingBytes = 0
+      closing = true;
+      closed = true;
+      pending.length = 0;
+      pendingBytes = 0;
     },
     closeAfterFlush(onFlushed) {
-      if (closed) return
-      closing = true
-      flushed = onFlushed
-      pump()
+      if (closed) return;
+      closing = true;
+      flushed = onFlushed;
+      pump();
     },
-  }
-}
+  };
+};

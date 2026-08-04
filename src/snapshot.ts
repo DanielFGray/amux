@@ -36,23 +36,30 @@
  * client is attached after restore.
  */
 
-import { Effect } from "effect"
-import { decodeLayout, encodeLayout, newPaneId, presetLayout, prune, type Layout } from "./layout.ts"
-import type { SpawnBackend } from "./backend.ts"
-import type { Agent } from "./agent.ts"
-import type { Window } from "./window.ts"
-import type { Space, SpaceSet } from "./space.ts"
+import { Effect } from "effect";
+import {
+  decodeLayout,
+  encodeLayout,
+  newPaneId,
+  presetLayout,
+  prune,
+  type Layout,
+} from "./layout.ts";
+import type { SpawnBackend } from "./backend.ts";
+import type { Agent } from "./agent.ts";
+import type { Window } from "./window.ts";
+import type { Space, SpaceSet } from "./space.ts";
 import {
   SESSION_VERSION,
   type PersistedAgent,
   type PersistedSpace,
   type PersistedWindow,
   type SessionState,
-} from "./session.ts"
+} from "./session.ts";
 
 /** The arrangement a restored window falls back to when none was recorded, or
  *  when the one recorded no longer parses. */
-const FALLBACK_PRESET = "tiled"
+const FALLBACK_PRESET = "tiled";
 
 export function snapshotAgent(agent: Agent): PersistedAgent {
   return {
@@ -64,7 +71,7 @@ export function snapshotAgent(agent: Agent): PersistedAgent {
     rows: agent.term.rows,
     exited: agent.exited,
     exitCode: agent.exitCode,
-  }
+  };
 }
 
 /**
@@ -82,7 +89,7 @@ export function snapshotWindow(window: Window): PersistedWindow {
     name: window.customName,
     agents: window.agents.map(snapshotAgent),
     layout: encodeLayout(window.exportLayout()),
-  }
+  };
 }
 
 export function snapshotSpace(space: Space): PersistedSpace {
@@ -92,7 +99,7 @@ export function snapshotSpace(space: Space): PersistedSpace {
     dir: space.dir,
     activeWindow: space.activeWindowNumber,
     windows: space.windows.map(snapshotWindow),
-  }
+  };
 }
 
 /**
@@ -108,13 +115,13 @@ export function snapshotSession(spaces: SpaceSet, base: SessionState): SessionSt
     updatedAt: Date.now(),
     activeSpace: spaces.activeSpaceId,
     spaces: spaces.spaces.map(snapshotSpace),
-  }
+  };
 }
 
 export interface RestoreOptions {
   /** Where restored agents get their processes. Defaults to a local PTY, the
    *  same as any other agent; a daemon-attached client passes its own. */
-  backend?: SpawnBackend
+  backend?: SpawnBackend;
 }
 
 /**
@@ -134,19 +141,19 @@ export function restoreSpaces(
   options: RestoreOptions = {},
 ): Effect.Effect<Space[]> {
   return Effect.gen(function* () {
-    const created: Space[] = []
+    const created: Space[] = [];
     for (const saved of persisted) {
-      const space = yield* spaces.create(saved.name, saved.dir, saved.id)
-      created.push(space)
+      const space = yield* spaces.create(saved.name, saved.dir, saved.id);
+      created.push(space);
       for (const savedWindow of saved.windows) {
-        yield* restoreWindow(space, savedWindow, options)
+        yield* restoreWindow(space, savedWindow, options);
       }
-      const active = saved.activeWindow
-      const window = active === null ? undefined : space.windows.find((w) => w.number === active)
-      if (window) space.selectWindow(window)
+      const active = saved.activeWindow;
+      const window = active === null ? undefined : space.windows.find((w) => w.number === active);
+      if (window) space.selectWindow(window);
     }
-    return created
-  })
+    return created;
+  });
 }
 
 /** Rebuild a whole session, including which space was on screen. */
@@ -156,11 +163,11 @@ export function restoreSession(
   options: RestoreOptions = {},
 ): Effect.Effect<Space[]> {
   return Effect.gen(function* () {
-    const created = yield* restoreSpaces(spaces, state.spaces, options)
-    const active = state.activeSpace ? created.find((s) => s.id === state.activeSpace) : undefined
-    if (active) spaces.activate(active)
-    return created
-  })
+    const created = yield* restoreSpaces(spaces, state.spaces, options);
+    const active = state.activeSpace ? created.find((s) => s.id === state.activeSpace) : undefined;
+    if (active) spaces.activate(active);
+    return created;
+  });
 }
 
 /** Rebuild one window into `space`, agents first and then the arrangement. */
@@ -170,7 +177,7 @@ export function restoreWindow(
   options: RestoreOptions = {},
 ): Effect.Effect<Window> {
   return Effect.gen(function* () {
-    const window = yield* space.newWindow(saved.name ?? undefined, saved.number)
+    const window = yield* space.newWindow(saved.name ?? undefined, saved.number);
     for (const agent of saved.agents) {
       yield* window.startAgent({
         id: agent.id,
@@ -182,15 +189,15 @@ export function restoreWindow(
         // A dead agent is restored as a tombstone rather than re-run. Its own
         // backend is fixed by that, so the option deliberately does not reach it.
         ...(agent.exited ? { exited: { code: agent.exitCode } } : { backend: options.backend }),
-      })
+      });
     }
 
     // Only the live agents get panes: an exited one has no view in the running
     // app either, and applyLayout would happily build it one.
-    const live = window.agents.filter((a) => !a.exited).map((a) => a.id)
-    if (live.length > 0) window.applyLayout(restoredLayout(saved, live))
-    return window
-  })
+    const live = window.agents.filter((a) => !a.exited).map((a) => a.id);
+    if (live.length > 0) window.applyLayout(restoredLayout(saved, live));
+    return window;
+  });
 }
 
 /**
@@ -215,17 +222,20 @@ export function restoreWindow(
  * and now, and nothing else has ever named them.
  */
 function restoredLayout(saved: PersistedWindow, live: string[]): Layout {
-  const alive = new Set(live)
-  const recorded = saved.layout ? parseOrNull(saved.layout) : null
-  const pruned = recorded ? prune(recorded, (id) => alive.has(id)) : null
-  if (pruned?.root) return pruned
-  return presetLayout(live.map((agent) => ({ id: newPaneId(), agent })), FALLBACK_PRESET)
+  const alive = new Set(live);
+  const recorded = saved.layout ? parseOrNull(saved.layout) : null;
+  const pruned = recorded ? prune(recorded, (id) => alive.has(id)) : null;
+  if (pruned?.root) return pruned;
+  return presetLayout(
+    live.map((agent) => ({ id: newPaneId(), agent })),
+    FALLBACK_PRESET,
+  );
 }
 
 function parseOrNull(encoded: string): Layout | null {
   try {
-    return decodeLayout(encoded)
+    return decodeLayout(encoded);
   } catch {
-    return null
+    return null;
   }
 }

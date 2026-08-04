@@ -177,9 +177,9 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
         const token = Symbol(spec.id);
         const reserved = yield* Ref.modify(sessions, (current) => {
           const existing = current.get(spec.id);
-           // The leader may have exited while session members still run. The
-           // reservation lasts until the whole-session termination barrier.
-           if (existing) return [false, current] as const;
+          // The leader may have exited while session members still run. The
+          // reservation lasts until the whole-session termination barrier.
+          if (existing) return [false, current] as const;
           const next = new Map(current);
           next.set(spec.id, { token });
           return [true, next] as const;
@@ -202,11 +202,14 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
             try: () => (kind === "agent" ? agentStubBackend() : ptyBackend(spec)),
             catch: (error) => asPtyError("spawn", error),
           }).pipe(Effect.tapError(() => release)),
-         (owned) => Effect.uninterruptible(Effect.tryPromise(() => owned.kill()).pipe(
-            Effect.catchAll(() => Effect.void),
-            Effect.ensuring(Effect.sync(() => owned.close())),
-            Effect.ensuring(release),
-          )),
+          (owned) =>
+            Effect.uninterruptible(
+              Effect.tryPromise(() => owned.kill()).pipe(
+                Effect.catchAll(() => Effect.void),
+                Effect.ensuring(Effect.sync(() => owned.close())),
+                Effect.ensuring(release),
+              ),
+            ),
         );
         yield* Ref.update(sessions, (current) => {
           if (current.get(spec.id)?.token !== token) return current;
@@ -214,11 +217,14 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           next.set(spec.id, { token, backend });
           return next;
         });
-        const commands = yield* Mailbox.make<SessionCommand>({ capacity: 256, strategy: "suspend" });
+        const commands = yield* Mailbox.make<SessionCommand>({
+          capacity: 256,
+          strategy: "suspend",
+        });
         const runCommand = (command: SessionCommand) => {
           const operation = Match.valueTags(command, {
             resize: (command) => Effect.sync(() => backend.resize(command.cols, command.rows)),
-             kill: () => Effect.tryPromise(() => backend.kill()),
+            kill: () => Effect.tryPromise(() => backend.kill()),
           });
           return operation.pipe(
             Effect.mapError((error) => asPtyError(command._tag, error)),
@@ -259,27 +265,31 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           id: spec.id,
           kind,
           output: Stream.fromAsyncIterable(backend.output, (error) => asPtyError("read", error)),
-           exit: Effect.tryPromise({
-             try: () => backend.wait,
+          exit: Effect.tryPromise({
+            try: () => backend.wait,
             catch: (error) => asPtyError("exit", error),
           }).pipe(Effect.ensuring(release)),
-          write: (data) => Effect.tryPromise({
-            try: (signal) => backend.write(data, signal),
-            catch: (error) => error,
-          }).pipe(
-            Effect.catchAll((error) =>
-              error instanceof PtyWriteInterrupted && error.reason === "shutdown"
-                ? Effect.void
-                : Effect.fail(asPtyError("write", error)),
+          write: (data) =>
+            Effect.tryPromise({
+              try: (signal) => backend.write(data, signal),
+              catch: (error) => error,
+            }).pipe(
+              Effect.catchAll((error) =>
+                error instanceof PtyWriteInterrupted && error.reason === "shutdown"
+                  ? Effect.void
+                  : Effect.fail(asPtyError("write", error)),
+              ),
             ),
+          resize: (cols, rows) =>
+            isTerminalSize(cols, rows)
+              ? commandResult((done) => ({ _tag: "resize", cols, rows, done }))
+              : Effect.fail(
+                  new PtyError({ operation: "resize", message: "invalid terminal size" }),
+                ),
+          // Kill must not wait behind a write whose child stopped reading.
+          kill: Effect.tryPromise(() => backend.kill()).pipe(
+            Effect.catchAll((error) => Effect.fail(asPtyError("kill", error))),
           ),
-          resize: (cols, rows) => isTerminalSize(cols, rows)
-            ? commandResult((done) => ({ _tag: "resize", cols, rows, done }))
-            : Effect.fail(new PtyError({ operation: "resize", message: "invalid terminal size" })),
-         // Kill must not wait behind a write whose child stopped reading.
-         kill: Effect.tryPromise(() => backend.kill()).pipe(
-           Effect.catchAll((error) => Effect.fail(asPtyError("kill", error))),
-         ),
           foreground: () => backend.foreground(),
         } satisfies ManagedSession;
       });

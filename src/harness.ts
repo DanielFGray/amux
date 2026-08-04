@@ -19,7 +19,7 @@ import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testin
 import { Context, Effect, Exit, Scope } from "effect";
 import { SpaceSet, type Space } from "./space.ts";
 import type { Window } from "./window.ts";
-import { workspaceEnv, type WorkspaceEnv } from "./env.ts"
+import { workspaceEnv, type WorkspaceEnv } from "./env.ts";
 
 /**
  * Run one of the workspace's Effect-returning methods and hand back its value.

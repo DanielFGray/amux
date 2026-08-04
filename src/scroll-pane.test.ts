@@ -1,189 +1,205 @@
-import { run, scopedSpaceSet } from "./harness.ts"
-import { expect, describe, it, afterEach } from "bun:test"
-import { BoxRenderable } from "@opentui/core"
-import { createTestRenderer } from "@opentui/core/testing"
-import { workspaceEnv } from "./env.ts"
-import { runtime } from "./options.ts"
+import { run, scopedSpaceSet } from "./harness.ts";
+import { expect, describe, it, afterEach } from "bun:test";
+import { BoxRenderable } from "@opentui/core";
+import { createTestRenderer } from "@opentui/core/testing";
+import { workspaceEnv } from "./env.ts";
+import { runtime } from "./options.ts";
 
 describe("scroll", () => {
-  const origGap = runtime["appearance.gap"]
-  const disposers: (() => Promise<void>)[] = []
+  const origGap = runtime["appearance.gap"];
+  const disposers: (() => Promise<void>)[] = [];
 
   afterEach(async () => {
-    runtime["appearance.gap"] = origGap
-    for (const dispose of disposers.splice(0)) await dispose()
-  })
+    runtime["appearance.gap"] = origGap;
+    for (const dispose of disposers.splice(0)) await dispose();
+  });
 
   it("scroll up scrolls the pane's scrollback for a plain shell", async () => {
-    const t = await createTestRenderer({ width: 30, height: 8 })
-    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 })
-    t.renderer.root.add(host)
-    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host)
+    const t = await createTestRenderer({ width: 30, height: 8 });
+    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
+    t.renderer.root.add(host);
+    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
     disposers.push(async () => {
-      await disposeSpaces()
-      t.renderer.destroy()
-    })
+      await disposeSpaces();
+      t.renderer.destroy();
+    });
 
-    const space = run(spaces.create("test", process.cwd()))
-    const window = run(space.newWindow())
-    const pane = run(window.init())
-    pane.agent.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"))
+    const space = run(spaces.create("test", process.cwd()));
+    const window = run(space.newWindow());
+    const pane = run(window.init());
+    pane.agent.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"));
 
-    let scrollCount = 0
-    const originalScrollBy = pane.agent.scrollBy.bind(pane.agent)
+    let scrollCount = 0;
+    const originalScrollBy = pane.agent.scrollBy.bind(pane.agent);
     pane.agent.scrollBy = (rows: number) => {
-      scrollCount += rows
-      originalScrollBy(rows)
-    }
+      scrollCount += rows;
+      originalScrollBy(rows);
+    };
 
-    await t.renderOnce()
-    await t.mockMouse.scroll(Math.floor(pane.x + pane.width / 2), Math.floor(pane.y + pane.height / 2), "up")
-    await t.renderOnce()
+    await t.renderOnce();
+    await t.mockMouse.scroll(
+      Math.floor(pane.x + pane.width / 2),
+      Math.floor(pane.y + pane.height / 2),
+      "up",
+    );
+    await t.renderOnce();
 
-    expect(scrollCount).toBe(-3)
-    pane.agent.scrollBy = originalScrollBy
-  })
+    expect(scrollCount).toBe(-3);
+    pane.agent.scrollBy = originalScrollBy;
+  });
 
   it("scroll wheel events reach the pane through nested boxes (App layout)", async () => {
-    const t = await createTestRenderer({ width: 60, height: 15 })
-    const outerRow = new BoxRenderable(t.renderer, { flexDirection: "row", flexGrow: 1 })
-    const leftSidebar = new BoxRenderable(t.renderer, { width: 20, height: "100%", backgroundColor: "#1e1e2e" })
-    const center = new BoxRenderable(t.renderer, { flexDirection: "column", flexGrow: 1 })
-    const tabs = new BoxRenderable(t.renderer, { height: 1, backgroundColor: "#313244" })
-    const paneArea = new BoxRenderable(t.renderer, { flexDirection: "row", flexGrow: 1 })
-    const paneHost = new BoxRenderable(t.renderer, { flexDirection: "row", flexGrow: 1 })
-    outerRow.add(leftSidebar)
-    outerRow.add(center)
-    center.add(tabs)
-    center.add(paneArea)
-    paneArea.add(paneHost)
-    t.renderer.root.add(outerRow)
+    const t = await createTestRenderer({ width: 60, height: 15 });
+    const outerRow = new BoxRenderable(t.renderer, { flexDirection: "row", flexGrow: 1 });
+    const leftSidebar = new BoxRenderable(t.renderer, {
+      width: 20,
+      height: "100%",
+      backgroundColor: "#1e1e2e",
+    });
+    const center = new BoxRenderable(t.renderer, { flexDirection: "column", flexGrow: 1 });
+    const tabs = new BoxRenderable(t.renderer, { height: 1, backgroundColor: "#313244" });
+    const paneArea = new BoxRenderable(t.renderer, { flexDirection: "row", flexGrow: 1 });
+    const paneHost = new BoxRenderable(t.renderer, { flexDirection: "row", flexGrow: 1 });
+    outerRow.add(leftSidebar);
+    outerRow.add(center);
+    center.add(tabs);
+    center.add(paneArea);
+    paneArea.add(paneHost);
+    t.renderer.root.add(outerRow);
 
-    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost)
+    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
     disposers.push(async () => {
-      await disposeSpaces()
-      t.renderer.destroy()
-    })
+      await disposeSpaces();
+      t.renderer.destroy();
+    });
 
-    const space = run(spaces.create("test", process.cwd()))
-    const window = run(space.newWindow())
-    const pane = run(window.init())
-    pane.agent.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"))
+    const space = run(spaces.create("test", process.cwd()));
+    const window = run(space.newWindow());
+    const pane = run(window.init());
+    pane.agent.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"));
 
-    let scrollReached = false
-    const orig = (pane as any).onMouseEvent.bind(pane)
-    ;(pane as any).onMouseEvent = function (this: any, event: any) {
-      if (event.type === "scroll") scrollReached = true
-      orig(event)
-    }
-    await t.renderOnce()
-    await t.mockMouse.scroll(Math.floor(pane.x + pane.width / 2), Math.floor(pane.y + pane.height / 2), "up")
-    await t.renderOnce()
+    let scrollReached = false;
+    const orig = (pane as any).onMouseEvent.bind(pane);
+    (pane as any).onMouseEvent = function (this: any, event: any) {
+      if (event.type === "scroll") scrollReached = true;
+      orig(event);
+    };
+    await t.renderOnce();
+    await t.mockMouse.scroll(
+      Math.floor(pane.x + pane.width / 2),
+      Math.floor(pane.y + pane.height / 2),
+      "up",
+    );
+    await t.renderOnce();
 
-    expect(scrollReached).toBe(true)
-  })
+    expect(scrollReached).toBe(true);
+  });
 
   it("scroll events are forwarded to a mouse-reporting child", async () => {
-    const t = await createTestRenderer({ width: 30, height: 8 })
-    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 })
-    t.renderer.root.add(host)
-    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host)
+    const t = await createTestRenderer({ width: 30, height: 8 });
+    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
+    t.renderer.root.add(host);
+    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
     disposers.push(async () => {
-      await disposeSpaces()
-      t.renderer.destroy()
-    })
+      await disposeSpaces();
+      t.renderer.destroy();
+    });
 
-    const space = run(spaces.create("test", process.cwd()))
-    const window = run(space.newWindow())
-    const pane = run(window.init())
+    const space = run(spaces.create("test", process.cwd()));
+    const window = run(space.newWindow());
+    const pane = run(window.init());
 
     // Enable SGR mouse reporting on the terminal, simulating a full-screen child
-    pane.agent.term.write(new TextEncoder().encode("\x1b[?1002h\x1b[?1006h"))
-    await t.renderOnce()
+    pane.agent.term.write(new TextEncoder().encode("\x1b[?1002h\x1b[?1006h"));
+    await t.renderOnce();
 
-    let forwarded = ""
-    const originalWrite = pane.agent.write.bind(pane.agent)
+    let forwarded = "";
+    const originalWrite = pane.agent.write.bind(pane.agent);
     pane.agent.write = (data: string | Uint8Array) => {
-      forwarded += typeof data === "string" ? data : new TextDecoder().decode(data)
-      originalWrite(data)
-    }
+      forwarded += typeof data === "string" ? data : new TextDecoder().decode(data);
+      originalWrite(data);
+    };
 
-    await t.mockMouse.scroll(Math.floor(pane.x + pane.width / 2), Math.floor(pane.y + pane.height / 2), "up")
-    await t.renderOnce()
+    await t.mockMouse.scroll(
+      Math.floor(pane.x + pane.width / 2),
+      Math.floor(pane.y + pane.height / 2),
+      "up",
+    );
+    await t.renderOnce();
 
-    expect(forwarded.length).toBeGreaterThan(0)
-    pane.agent.write = originalWrite
-  })
+    expect(forwarded.length).toBeGreaterThan(0);
+    pane.agent.write = originalWrite;
+  });
 
   it("renders an OSC title in the top border when gaps are enabled", async () => {
-    const t = await createTestRenderer({ width: 40, height: 8 })
-    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 })
-    t.renderer.root.add(host)
-    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host)
+    const t = await createTestRenderer({ width: 40, height: 8 });
+    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
+    t.renderer.root.add(host);
+    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
     disposers.push(async () => {
-      await disposeSpaces()
-      t.renderer.destroy()
-    })
+      await disposeSpaces();
+      t.renderer.destroy();
+    });
 
-    runtime["appearance.gap"] = true
+    runtime["appearance.gap"] = true;
 
-    const space = run(spaces.create("test", process.cwd()))
-    const window = run(space.newWindow())
-    const pane = run(window.init())
-    pane.agent.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"))
-    await t.renderOnce()
-    await t.renderOnce()
+    const space = run(spaces.create("test", process.cwd()));
+    const window = run(space.newWindow());
+    const pane = run(window.init());
+    pane.agent.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"));
+    await t.renderOnce();
+    await t.renderOnce();
 
-    const frame = t.captureCharFrame().split("\n")
-    const topBorder = frame[pane.y]!
-    expect(topBorder.slice(pane.x, pane.x + pane.width)).toMatch(/┌ myservice ─+┐/)
-  })
+    const frame = t.captureCharFrame().split("\n");
+    const topBorder = frame[pane.y]!;
+    expect(topBorder.slice(pane.x, pane.x + pane.width)).toMatch(/┌ myservice ─+┐/);
+  });
 
   it("no title in the border when gaps are disabled", async () => {
-    const t = await createTestRenderer({ width: 40, height: 8 })
-    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 })
-    t.renderer.root.add(host)
-    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host)
+    const t = await createTestRenderer({ width: 40, height: 8 });
+    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
+    t.renderer.root.add(host);
+    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
     disposers.push(async () => {
-      await disposeSpaces()
-      t.renderer.destroy()
-    })
+      await disposeSpaces();
+      t.renderer.destroy();
+    });
 
-    runtime["appearance.gap"] = false
+    runtime["appearance.gap"] = false;
 
-    const space = run(spaces.create("test", process.cwd()))
-    const window = run(space.newWindow())
-    const pane = run(window.init())
-    pane.agent.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"))
-    await t.renderOnce()
-    await t.renderOnce()
+    const space = run(spaces.create("test", process.cwd()));
+    const window = run(space.newWindow());
+    const pane = run(window.init());
+    pane.agent.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"));
+    await t.renderOnce();
+    await t.renderOnce();
 
-    const frame = t.captureCharFrame().split("\n")
-    const topBorder = frame[pane.y]!
-    expect(topBorder.slice(pane.x, pane.x + pane.width)).not.toMatch(/myservice/)
-  })
+    const frame = t.captureCharFrame().split("\n");
+    const topBorder = frame[pane.y]!;
+    expect(topBorder.slice(pane.x, pane.x + pane.width)).not.toMatch(/myservice/);
+  });
 
   it("no title when pane is too narrow", async () => {
-    const t = await createTestRenderer({ width: 13, height: 8 })
-    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 })
-    t.renderer.root.add(host)
-    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host)
+    const t = await createTestRenderer({ width: 13, height: 8 });
+    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
+    t.renderer.root.add(host);
+    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
     disposers.push(async () => {
-      await disposeSpaces()
-      t.renderer.destroy()
-    })
+      await disposeSpaces();
+      t.renderer.destroy();
+    });
 
-    runtime["appearance.gap"] = true
+    runtime["appearance.gap"] = true;
 
-    const space = run(spaces.create("test", process.cwd()))
-    const window = run(space.newWindow())
-    const pane = run(window.init())
-    pane.agent.term.write(new TextEncoder().encode("\x1b]0;need14chars\x07"))
-    await t.renderOnce()
-    await t.renderOnce()
+    const space = run(spaces.create("test", process.cwd()));
+    const window = run(space.newWindow());
+    const pane = run(window.init());
+    pane.agent.term.write(new TextEncoder().encode("\x1b]0;need14chars\x07"));
+    await t.renderOnce();
+    await t.renderOnce();
 
-    const frame = t.captureCharFrame().split("\n")
-    const topBorder = frame[pane.y]!
-    expect(topBorder.slice(pane.x, pane.x + pane.width)).not.toMatch(/need14chars/)
-  })
-})
+    const frame = t.captureCharFrame().split("\n");
+    const topBorder = frame[pane.y]!;
+    expect(topBorder.slice(pane.x, pane.x + pane.width)).not.toMatch(/need14chars/);
+  });
+});

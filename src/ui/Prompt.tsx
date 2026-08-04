@@ -1,22 +1,22 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show, createSignal, createEffect } from "solid-js"
-import { theme } from "./theme.ts"
+import { For, Show, createSignal, createEffect } from "solid-js";
+import { theme } from "./theme.ts";
 
 export interface PromptField {
-  label: string
-  value?: string
-  placeholder?: string
+  label: string;
+  value?: string;
+  placeholder?: string;
 }
 
 export interface PromptRequest {
-  title: string
-  fields: PromptField[]
+  title: string;
+  fields: PromptField[];
   /** Replaces the default footer line, to document a prompt's own syntax. */
-  footer?: string
+  footer?: string;
   /** When set, the prompt is a dismiss-only message instead of an input form.
    *  The send-keys command uses it to name a target failure ("no pane"). */
-  notice?: string
-  resolve: (values: string[] | null) => void
+  notice?: string;
+  resolve: (values: string[] | null) => void;
 }
 
 /**
@@ -28,39 +28,39 @@ export interface PromptRequest {
  * well would double every character.
  */
 export function Prompt(props: {
-  request: PromptRequest
-  width: number
+  request: PromptRequest;
+  width: number;
   /** Compile error from the last submit, kept live while the input stays
    *  editable — the resolver decides whether to accept the value, and a reject
    *  lands here rather than closing the prompt. */
-  error?: string
+  error?: string;
 }) {
-  const [field, setField] = createSignal(0)
-  const [values, setValues] = createSignal<string[]>([])
+  const [field, setField] = createSignal(0);
+  const [values, setValues] = createSignal<string[]>([]);
 
   // A new request resets the cursor and seeds the defaults.
   createEffect(() => {
-    setValues(props.request.fields.map((f) => f.value ?? ""))
-    setField(0)
-  })
+    setValues(props.request.fields.map((f) => f.value ?? ""));
+    setField(0);
+  });
 
   const set = (i: number, value: string) =>
-    setValues((prev) => prev.map((v, index) => (index === i ? value : v)))
+    setValues((prev) => prev.map((v, index) => (index === i ? value : v)));
 
   const submit = () => {
     // Enter on the last field submits; earlier fields advance, so the form is
     // filled top to bottom without reaching for tab.
-    if (field() < props.request.fields.length - 1) setField(field() + 1)
-    else props.request.resolve(values())
-  }
+    if (field() < props.request.fields.length - 1) setField(field() + 1);
+    else props.request.resolve(values());
+  };
 
   // Tab moves focus to the next field. The textarea renderable has no tab
   // binding of its own, so without this the footer's "⇥ field" hint lies and
   // tab does nothing at all.
   const nextField = () => {
-    if (field() < props.request.fields.length - 1) setField(field() + 1)
-    else setField(0)
-  }
+    if (field() < props.request.fields.length - 1) setField(field() + 1);
+    else setField(0);
+  };
 
   return (
     <box
@@ -97,8 +97,8 @@ export function Prompt(props: {
                       // reached the app. Intercept it here and move focus, then
                       // stop the event so nothing downstream treats it as input.
                       if (key.name === "tab" && field() === i()) {
-                        nextField()
-                        key.preventDefault()
+                        nextField();
+                        key.preventDefault();
                       }
                     }}
                     style={{
@@ -123,8 +123,10 @@ export function Prompt(props: {
         }
       >
         <text style={{ fg: theme.text, height: 1, flexShrink: 0 }}>{props.request.notice}</text>
-        <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>↵ dismiss · esc dismiss</text>
+        <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
+          ↵ dismiss · esc dismiss
+        </text>
       </Show>
     </box>
-  )
+  );
 }

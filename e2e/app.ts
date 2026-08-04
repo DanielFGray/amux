@@ -12,22 +12,22 @@
  * suite rather than the unit suite. `bun run e2e` is a thing you run before
  * landing something that changes app wiring.
  */
-import { spawnPty, readPty, type Pty } from "../src/pty.ts"
-import { Terminal } from "../src/ghostty.ts"
-import { captureVisible } from "../src/capture.ts"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join, dirname } from "node:path"
+import { spawnPty, readPty, type Pty } from "../src/pty.ts";
+import { Terminal } from "../src/ghostty.ts";
+import { captureVisible } from "../src/capture.ts";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
 
-const REPO = dirname(import.meta.dir)
-const KEY_GAP_MS = 50
+const REPO = dirname(import.meta.dir);
+const KEY_GAP_MS = 50;
 
 /** ctrl+a, the default prefix. */
-export const LEADER = "\x01"
+export const LEADER = "\x01";
 
 export interface App {
   /** Everything the app has drawn since launch, escape codes and all. */
-  output(): string
+  output(): string;
   /**
    * What is ON SCREEN, as plain text.
    *
@@ -43,14 +43,14 @@ export interface App {
    * So the bytes go through the same VT the app runs its own panes on, and this
    * reads that terminal's screen. A check gets to ask what a user would see.
    */
-  screen(): string
+  screen(): string;
   /**
    * Type, one keystroke per write with a gap between them.
    *
    * The prefix arms a sequence and the next key completes it; a single write
    * can arrive as one input event, which reads as neither.
    */
-  press(keys: string): Promise<void>
+  press(keys: string): Promise<void>;
   /**
    * Write raw bytes straight to the app in a single write.
    *
@@ -60,7 +60,7 @@ export interface App {
    * for `\x1b[1;5D` — so a check that needs a real ctrl+arrow builds the
    * sequence itself and sends it whole.
    */
-  send(bytes: string): Promise<void>
+  send(bytes: string): Promise<void>;
   /**
    * The workspace as the app last persisted it — spaces, windows and agents.
    *
@@ -68,13 +68,13 @@ export interface App {
    * nothing is invisible in a terminal diff but obvious here, and the file is
    * the app's own account of its state rather than a rendering of it.
    */
-  shape(): Promise<string>
+  shape(): Promise<string>;
   /**
    * The same session file, unparsed beyond JSON — for checks that need more
    * than the shape string's counts: which window is active, or which pane a
    * window's layout says is focused.
    */
-  session(): Promise<Record<string, any> | null>
+  session(): Promise<Record<string, any> | null>;
   /**
    * Poll until something is true, or fail saying what never happened.
    *
@@ -82,26 +82,31 @@ export interface App {
    * both slower than it needs to be and still wrong under load — boot was
    * `Bun.sleep(3500)` and it raced the app's first save.
    */
-  until(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs?: number): Promise<void>
+  until(
+    predicate: () => boolean | Promise<boolean>,
+    what: string,
+    timeoutMs?: number,
+  ): Promise<void>;
   /** The config as the app last wrote it, or null if it never has. */
-  config(): Promise<Record<string, any> | null>
-  stop(): Promise<void>
+  config(): Promise<Record<string, any> | null>;
+  stop(): Promise<void>;
 }
 
 export async function launch(
   session: string,
   opts: {
-    cols?: number
-    rows?: number
+    cols?: number;
+    rows?: number;
     /** Written before launch, so a check can start from a config rather than
      *  having to reach one through the settings window. */
-    config?: unknown
+    config?: unknown;
   } = {},
 ): Promise<App> {
-  const home = await mkdtemp(join(tmpdir(), `amux-${session}-`))
-  const state = join(home, "state")
-  const configPath = join(home, "config", "amux", "config.json")
-  if (opts.config !== undefined) await Bun.write(configPath, JSON.stringify(opts.config, null, 2) + "\n")
+  const home = await mkdtemp(join(tmpdir(), `amux-${session}-`));
+  const state = join(home, "state");
+  const configPath = join(home, "config", "amux", "config.json");
+  if (opts.config !== undefined)
+    await Bun.write(configPath, JSON.stringify(opts.config, null, 2) + "\n");
   const env = {
     ...process.env,
     // A throwaway HOME so a real session file, config or shell rc can neither
@@ -115,18 +120,18 @@ export async function launch(
     XDG_CONFIG_HOME: join(home, "config"),
     AMUX_SESSION: session,
     TERM: "xterm-256color",
-  }
-  const cols = opts.cols ?? 100
-  const rows = opts.rows ?? 30
-  const pty = spawnPty(["bun", join(REPO, "src/main.tsx")], { cols, rows, cwd: REPO, env })
-  let out = ""
-  const term = new Terminal(cols, rows)
+  };
+  const cols = opts.cols ?? 100;
+  const rows = opts.rows ?? 30;
+  const pty = spawnPty(["bun", join(REPO, "src/main.tsx")], { cols, rows, cwd: REPO, env });
+  let out = "";
+  const term = new Terminal(cols, rows);
   const reader = (async () => {
     for await (const chunk of readPty(pty)) {
-      out += Buffer.from(chunk).toString("utf8")
-      term.write(chunk)
+      out += Buffer.from(chunk).toString("utf8");
+      term.write(chunk);
     }
-  })()
+  })();
 
   // THE session file, not "whichever json turns up first".
   //
@@ -136,27 +141,33 @@ export async function launch(
   // Glob order is filesystem order, so a check read either the live file or a
   // stale snapshot depending on the day, and `e2e/boot.ts` failed its second
   // launch as "0sp 0win 0ag" perhaps one run in two. Name the file.
-  const sessionFile = join(state, "amux", "sessions", session, "session.json")
+  const sessionFile = join(state, "amux", "sessions", session, "session.json");
 
   async function readSession(): Promise<Record<string, any> | null> {
-    return await Bun.file(sessionFile).json().catch(() => null)
+    return await Bun.file(sessionFile)
+      .json()
+      .catch(() => null);
   }
 
   async function shape(): Promise<string> {
-    const saved = await readSession()
-    if (!saved?.spaces) return "(no session file)"
-    const windows = saved.spaces.flatMap((s: { windows: unknown[] }) => s.windows)
-    const agents = windows.flatMap((w: { agents: unknown[] }) => w.agents)
-    return `${saved.spaces.length}sp ${windows.length}win ${agents.length}ag`
+    const saved = await readSession();
+    if (!saved?.spaces) return "(no session file)";
+    const windows = saved.spaces.flatMap((s: { windows: unknown[] }) => s.windows);
+    const agents = windows.flatMap((w: { agents: unknown[] }) => w.agents);
+    return `${saved.spaces.length}sp ${windows.length}win ${agents.length}ag`;
   }
 
-  async function until(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs = 15_000) {
-    const deadline = Date.now() + timeoutMs
+  async function until(
+    predicate: () => boolean | Promise<boolean>,
+    what: string,
+    timeoutMs = 15_000,
+  ) {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (await predicate()) return
-      await Bun.sleep(100)
+      if (await predicate()) return;
+      await Bun.sleep(100);
     }
-    throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`)
+    throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
   }
 
   // Booted means drawn AND saved, because checks read both. This was
@@ -174,21 +185,21 @@ export async function launch(
   // the App object and its stop(), leaving a live PTY, detached daemon and
   // /tmp/amux-* dir. Extract stop()'s body so both paths share it.
   const cleanup = async () => {
-    await pty.kill()
-    await reader.catch(() => {})
+    await pty.kill();
+    await reader.catch(() => {});
     // After the reader, never before: the pump can be holding a chunk, and a
     // write into a freed terminal corrupts ghostty's heap rather than faulting.
-    term.free()
-    await stopDaemon(join(state, "amux", "sessions", session, "lease.json"))
-    await rm(home, { recursive: true, force: true })
-  }
+    term.free();
+    await stopDaemon(join(state, "amux", "sessions", session, "lease.json"));
+    await rm(home, { recursive: true, force: true });
+  };
 
   try {
-    await until(async () => /\s[1-9]\d*ag$/.test(await shape()), "the workspace to have an agent")
-    await until(() => captureVisible(term).includes(" · "), "the sidebar to draw its footer")
+    await until(async () => /\s[1-9]\d*ag$/.test(await shape()), "the workspace to have an agent");
+    await until(() => captureVisible(term).includes(" · "), "the sidebar to draw its footer");
   } catch (e) {
-    await cleanup()
-    throw e
+    await cleanup();
+    throw e;
   }
 
   return {
@@ -197,48 +208,51 @@ export async function launch(
     until,
     async press(keys) {
       for (const k of keys) {
-        await pty.write(k)
+        await pty.write(k);
         // PTY writes are a byte stream, not event-framed. Leave enough time for
         // the keymap to consume one key before the next write completes a chord.
-        await Bun.sleep(KEY_GAP_MS)
+        await Bun.sleep(KEY_GAP_MS);
       }
     },
     send(bytes) {
-      return pty.write(bytes)
+      return pty.write(bytes);
     },
     shape,
     session: readSession,
-    config: () => Bun.file(configPath).json().catch(() => null),
+    config: () =>
+      Bun.file(configPath)
+        .json()
+        .catch(() => null),
     stop: cleanup,
-  }
+  };
 }
 
 /** Stop the detached daemon and wait for its scoped finalizers to release its PTYs. */
 async function stopDaemon(leasePath: string): Promise<void> {
   const lease = await Bun.file(leasePath)
     .json()
-    .catch(() => null)
-  const pid = lease?.pid
-  if (!Number.isInteger(pid) || pid <= 0) return
+    .catch(() => null);
+  const pid = lease?.pid;
+  if (!Number.isInteger(pid) || pid <= 0) return;
 
   try {
-    process.kill(pid, "SIGTERM")
+    process.kill(pid, "SIGTERM");
   } catch {
-    return
+    return;
   }
 
-  const deadline = Date.now() + 3_000
+  const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
     try {
-      process.kill(pid, 0)
-      await Bun.sleep(10)
+      process.kill(pid, 0);
+      await Bun.sleep(10);
     } catch {
-      return
+      return;
     }
   }
 
   try {
-    process.kill(pid, "SIGKILL")
+    process.kill(pid, "SIGKILL");
   } catch {
     /* exited after the deadline */
   }
@@ -253,7 +267,7 @@ async function stopDaemon(leasePath: string): Promise<void> {
  * clear `until`'s own timeout with room to spare, or a step that is merely slow
  * fails as "test timed out" and says nothing about which wait was the slow one.
  */
-export const E2E_TIMEOUT = 60_000
+export const E2E_TIMEOUT = 60_000;
 
 /**
  * The column of the tee where a divider meets the window's top frame line, or
@@ -265,10 +279,10 @@ export const E2E_TIMEOUT = 60_000
  */
 export function teeColumn(screen: string): number {
   for (const line of screen.split("\n")) {
-    const at = line.indexOf("┬")
-    if (at !== -1) return at
+    const at = line.indexOf("┬");
+    if (at !== -1) return at;
   }
-  return -1
+  return -1;
 }
 
-export type { Pty }
+export type { Pty };

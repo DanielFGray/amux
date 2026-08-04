@@ -1,7 +1,7 @@
-import { BunRuntime } from "@effect/platform-bun"
-import { Effect } from "effect"
+import { BunRuntime } from "@effect/platform-bun";
+import { Effect } from "effect";
 
-import { startDaemon } from "./daemon.ts"
+import { startDaemon } from "./daemon.ts";
 
 /**
  * The daemon process.
@@ -18,11 +18,11 @@ export function runDaemonMain(id?: string): void {
     const daemon = yield* Effect.acquireRelease(
       Effect.promise(() => startDaemon(id)),
       (daemon) => Effect.promise(() => daemon.stop()).pipe(Effect.ignore),
-    )
-    yield* Effect.promise(() => daemon.stopped)
-  })
+    );
+    yield* Effect.promise(() => daemon.stopped);
+  });
 
-  BunRuntime.runMain(Effect.scoped(program))
+  BunRuntime.runMain(Effect.scoped(program));
 }
 
-if (import.meta.main) runDaemonMain()
+if (import.meta.main) runDaemonMain();

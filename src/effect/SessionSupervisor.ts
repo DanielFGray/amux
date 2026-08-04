@@ -3,7 +3,13 @@ import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
 import { type AttachFrame } from "./AttachProtocol.ts";
-import { PtyError, SessionRegistry, type ManagedSession, type SessionForeground, type SessionSpec } from "./SessionRegistry.ts";
+import {
+  PtyError,
+  SessionRegistry,
+  type ManagedSession,
+  type SessionForeground,
+  type SessionSpec,
+} from "./SessionRegistry.ts";
 import { isTerminalSize } from "../limits.ts";
 
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
@@ -26,9 +32,12 @@ export interface SessionExitObserverService {
 }
 
 /** Durability barrier between backend termination and the observable exit frame. */
-export class SessionExitObserver extends Context.Reference<SessionExitObserver>()("SessionExitObserver", {
-  defaultValue: (): SessionExitObserverService => ({ beforePublish: () => Effect.void }),
-}) {}
+export class SessionExitObserver extends Context.Reference<SessionExitObserver>()(
+  "SessionExitObserver",
+  {
+    defaultValue: (): SessionExitObserverService => ({ beforePublish: () => Effect.void }),
+  },
+) {}
 
 export interface PreparedSession {
   readonly session: ManagedSession;
@@ -40,7 +49,9 @@ export interface PreparedSession {
 
 /** Wrap bytes in the bracketed-paste escapes, for a child that asked for them. */
 const bracketPaste = (data: Uint8Array): Uint8Array => {
-  const out = new Uint8Array(BRACKETED_PASTE_START.length + data.length + BRACKETED_PASTE_END.length);
+  const out = new Uint8Array(
+    BRACKETED_PASTE_START.length + data.length + BRACKETED_PASTE_END.length,
+  );
   out.set(BRACKETED_PASTE_START);
   out.set(data, BRACKETED_PASTE_START.length);
   out.set(BRACKETED_PASTE_END, BRACKETED_PASTE_START.length + data.length);
@@ -65,7 +76,9 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     const exitObserver = yield* SessionExitObserver;
     const sessions = yield* Ref.make<ReadonlyMap<string, ManagedSession>>(new Map());
     const completions = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<void>>>(new Map());
-    const terminations = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<number | null>>>(new Map());
+    const terminations = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<number | null>>>(
+      new Map(),
+    );
     const reservations = yield* Ref.make<ReadonlySet<string>>(new Set());
     // The daemon-side screen model per session. A reattaching client has none
     // of an adopted session's history, so its pane would be blank until the
@@ -167,7 +180,9 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           message: `session '${spec.id}' is already live or starting`,
         });
       }
-      const session = yield* registry.spawn(spec).pipe(Effect.tapError(() => releaseReservation(spec.id)));
+      const session = yield* registry
+        .spawn(spec)
+        .pipe(Effect.tapError(() => releaseReservation(spec.id)));
       const screen = yield* Effect.sync(() => new Terminal(spec.cols, spec.rows, 0));
       const completion = yield* Deferred.make<void>();
       const termination = yield* Deferred.make<number | null>();
@@ -177,31 +192,40 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       let exitPublished = false;
 
       const publishExit = (code: number | null) =>
-        Effect.suspend(() => exitPublished
-          ? Effect.void
-          : exitObserver.beforePublish(spec.id, code).pipe(
-              Effect.zipRight(Effect.sync(() => {
-                if (exitPublished) return false;
-                exitPublished = true;
-                return true;
-              })),
-              Effect.flatMap((publish) => publish
-                ? hub.publish({ _tag: "exit", session: spec.id, code } satisfies AttachFrame)
-                : Effect.void),
-            ));
+        Effect.suspend(() =>
+          exitPublished
+            ? Effect.void
+            : exitObserver.beforePublish(spec.id, code).pipe(
+                Effect.zipRight(
+                  Effect.sync(() => {
+                    if (exitPublished) return false;
+                    exitPublished = true;
+                    return true;
+                  }),
+                ),
+                Effect.flatMap((publish) =>
+                  publish
+                    ? hub.publish({ _tag: "exit", session: spec.id, code } satisfies AttachFrame)
+                    : Effect.void,
+                ),
+              ),
+        );
       const complete = dropSession(spec.id, session, screen).pipe(
         Effect.zipRight(Deferred.succeed(completion, void 0)),
       );
       const foreground = Effect.gen(function* () {
-        const publish = (fg: SessionForeground) => hub.publish({
-          _tag: "foreground",
-          session: spec.id,
-          pgid: fg.pgid,
-          sid: fg.sid,
-        } satisfies AttachFrame);
+        const publish = (fg: SessionForeground) =>
+          hub.publish({
+            _tag: "foreground",
+            session: spec.id,
+            pgid: fg.pgid,
+            sid: fg.sid,
+          } satisfies AttachFrame);
         let last = yield* Effect.sync(() => session.foreground());
         yield* publish(last);
-        while (yield* Ref.get(sessions).pipe(Effect.map((current) => current.get(spec.id) === session))) {
+        while (
+          yield* Ref.get(sessions).pipe(Effect.map((current) => current.get(spec.id) === session))
+        ) {
           yield* Effect.sleep(FOREGROUND_POLL_MS);
           const next = yield* Effect.sync(() => session.foreground());
           if (next.pgid !== last.pgid || next.sid !== last.sid) {
@@ -216,15 +240,21 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
         `prepared:${spec.id}`,
         Effect.gen(function* () {
           yield* session.output.pipe(
-            Stream.runForEach((chunk) => Effect.gen(function* () {
-              // The replay terminal is the private output buffer. Only bytes
-              // arriving while activation drains that replay need a side queue.
-              screen.write(chunk);
-              const data = new Uint8Array(chunk);
-              if (phase === "active") {
-                yield* hub.publish({ _tag: "output", session: spec.id, data } satisfies AttachFrame);
-              } else if (phase === "activating") pending.push(data);
-            })),
+            Stream.runForEach((chunk) =>
+              Effect.gen(function* () {
+                // The replay terminal is the private output buffer. Only bytes
+                // arriving while activation drains that replay need a side queue.
+                screen.write(chunk);
+                const data = new Uint8Array(chunk);
+                if (phase === "active") {
+                  yield* hub.publish({
+                    _tag: "output",
+                    session: spec.id,
+                    data,
+                  } satisfies AttachFrame);
+                } else if (phase === "activating") pending.push(data);
+              }),
+            ),
             Effect.catchAll((error) =>
               Effect.logDebug(`session output ended: ${error.operation}: ${error.message}`),
             ),
@@ -234,15 +264,17 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           if ((yield* Deferred.await(disposition)) === "active") yield* publishExit(code);
           yield* complete;
         }).pipe(
-          Effect.ensuring(Effect.uninterruptible(
-            session.kill.pipe(
-              Effect.ignore,
-              Effect.zipRight(session.exit.pipe(Effect.orElseSucceed(() => null))),
-              Effect.tap((code) => Deferred.succeed(termination, code)),
-              Effect.zipRight(Deferred.succeed(disposition, "aborted")),
-              Effect.zipRight(complete),
+          Effect.ensuring(
+            Effect.uninterruptible(
+              session.kill.pipe(
+                Effect.ignore,
+                Effect.zipRight(session.exit.pipe(Effect.orElseSucceed(() => null))),
+                Effect.tap((code) => Deferred.succeed(termination, code)),
+                Effect.zipRight(Deferred.succeed(disposition, "aborted")),
+                Effect.zipRight(complete),
+              ),
             ),
-          )),
+          ),
         ),
       );
 
@@ -256,10 +288,18 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           yield* Ref.update(terminations, (current) => new Map(current).set(spec.id, termination));
           const replay = yield* Effect.sync(() => formatScreen(screen.handle));
           if (replay.length > 0) {
-            yield* hub.publish({ _tag: "output", session: spec.id, data: replay } satisfies AttachFrame);
+            yield* hub.publish({
+              _tag: "output",
+              session: spec.id,
+              data: replay,
+            } satisfies AttachFrame);
           }
           while (pending.length > 0) {
-            yield* hub.publish({ _tag: "output", session: spec.id, data: pending.shift()! } satisfies AttachFrame);
+            yield* hub.publish({
+              _tag: "output",
+              session: spec.id,
+              data: pending.shift()!,
+            } satisfies AttachFrame);
           }
           phase = "active";
           yield* FiberMap.run(pumps, `foreground:${spec.id}`, foreground);
@@ -299,7 +339,10 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               }
               if (command._tag === "resize") {
                 if (!isTerminalSize(command.cols, command.rows)) {
-                  return yield* new PtyError({ operation: "resize", message: "invalid terminal size" });
+                  return yield* new PtyError({
+                    operation: "resize",
+                    message: "invalid terminal size",
+                  });
                 }
                 // Size the screen model before the backend: a pty's child
                 // redraws in response to SIGWINCH, and the redraw must land on
@@ -313,7 +356,8 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
                 Match.tag("resize", (resize) => session.resize(resize.cols, resize.rows)),
                 Match.exhaustive,
               );
-            })),
+            }),
+          ),
           Match.orElse(() => Effect.void),
         );
       }),
@@ -337,7 +381,11 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
         const screen = (yield* Ref.get(replays)).get(id);
         if (!screen) return;
         const data = yield* Effect.sync(() => formatScreen(screen.handle));
-        yield* hub.publishTo(client, connection, { _tag: "output", session: id, data } satisfies AttachFrame);
+        yield* hub.publishTo(client, connection, {
+          _tag: "output",
+          session: id,
+          data,
+        } satisfies AttachFrame);
       }),
 
       /**

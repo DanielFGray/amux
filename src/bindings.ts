@@ -1,30 +1,30 @@
-import type { Effect } from "effect"
-import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core"
-import { createOpenTuiKeymap } from "@opentui/keymap/opentui"
+import type { Effect } from "effect";
+import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core";
+import { createOpenTuiKeymap } from "@opentui/keymap/opentui";
 import {
   registerDefaultKeys,
   registerLeader,
   registerMetadataFields,
   registerEscapeClearsPendingSequence,
-} from "@opentui/keymap/addons"
-import type { Keymap } from "@opentui/keymap"
-import type { KeyStroke } from "./keys.ts"
-import { runDetached, type CommandError } from "./commands.ts"
+} from "@opentui/keymap/addons";
+import type { Keymap } from "@opentui/keymap";
+import type { KeyStroke } from "./keys.ts";
+import { runDetached, type CommandError } from "./commands.ts";
 
-export type AppKeymap = Keymap<Renderable, KeyEvent>
+export type AppKeymap = Keymap<Renderable, KeyEvent>;
 
 /** The tmux-style prefix. Bindings write it as `<leader>` for readability. */
-export const DEFAULT_LEADER = "ctrl+a"
+export const DEFAULT_LEADER = "ctrl+a";
 
 /** What the user has changed: the prefix, and per-command sequences. */
 export interface Keys {
-  leader: string
+  leader: string;
   /** Command name -> sequences. Absent means the command's own default; an
    *  empty array means deliberately unbound. */
-  bindings: Record<string, string[]>
+  bindings: Record<string, string[]>;
 }
 
-export const DEFAULT_KEYS: Keys = { leader: DEFAULT_LEADER, bindings: {} }
+export const DEFAULT_KEYS: Keys = { leader: DEFAULT_LEADER, bindings: {} };
 
 /**
  * How one compiled key reads on screen.
@@ -38,14 +38,14 @@ export function formatKey(display: string, leader = DEFAULT_LEADER): string {
   if (display === "<leader>") {
     // A malformed hand-edited config must not recurse forever while rendering
     // the settings screen.
-    if (leader === "<leader>") return "<leader>"
-    return formatKey(leader, leader)
+    if (leader === "<leader>") return "<leader>";
+    return formatKey(leader, leader);
   }
   // `shift+s` is how a capital has to be *written* — a bare "S" compiles to the
   // same sequence as "s" — but "S" is how it is pressed and read.
-  const shifted = display.match(/^shift\+([a-z])$/)
-  if (shifted) return shifted[1]!.toUpperCase()
-  return display.replace(/^ctrl\+/, "^").replace(/^alt\+/, "M-")
+  const shifted = display.match(/^shift\+([a-z])$/);
+  if (shifted) return shifted[1]!.toUpperCase();
+  return display.replace(/^ctrl\+/, "^").replace(/^alt\+/, "M-");
 }
 
 /** Turn a compiled sequence into something worth showing a human. */
@@ -53,7 +53,7 @@ export function formatSequence(
   parts: readonly { display: string }[],
   leader = DEFAULT_LEADER,
 ): string {
-  return parts.map((p) => formatKey(p.display, leader)).join(" ")
+  return parts.map((p) => formatKey(p.display, leader)).join(" ");
 }
 
 /**
@@ -74,28 +74,28 @@ const MODIFIER_KEYS = new Set([
   "hyper",
   "capslock",
   "numlock",
-])
+]);
 
 export function keyToBinding(event: KeyEvent): string | null {
-  if (event.eventType === "release") return null
-  let name = event.name
-  if (!name || MODIFIER_KEYS.has(name.toLowerCase())) return null
+  if (event.eventType === "release") return null;
+  let name = event.name;
+  if (!name || MODIFIER_KEYS.has(name.toLowerCase())) return null;
 
-  const parts: string[] = []
-  if (event.ctrl) parts.push("ctrl")
-  if (event.meta || event.option) parts.push("alt")
+  const parts: string[] = [];
+  if (event.ctrl) parts.push("ctrl");
+  if (event.meta || event.option) parts.push("alt");
   // Shift is only its own modifier on letters and named keys. On punctuation it
   // is how the character was *produced* — "shift+|" is not a thing anyone can
   // press, "|" is.
-  const letter = /^[A-Za-z]$/.test(name)
+  const letter = /^[A-Za-z]$/.test(name);
   if (letter) {
-    if (event.shift || name !== name.toLowerCase()) parts.push("shift")
-    name = name.toLowerCase()
+    if (event.shift || name !== name.toLowerCase()) parts.push("shift");
+    name = name.toLowerCase();
   } else if (event.shift && name.length > 1) {
-    parts.push("shift")
+    parts.push("shift");
   }
-  parts.push(name)
-  return parts.join("+")
+  parts.push(name);
+  return parts.join("+");
 }
 
 /**
@@ -108,26 +108,26 @@ export function keyToBinding(event: KeyEvent): string | null {
  * for anything the parser rejects outright.
  */
 export function parseKeyStrokes(keymap: AppKeymap, token: string): KeyStroke[] | null {
-  let parts: ReturnType<AppKeymap["parseKeySequence"]>
+  let parts: ReturnType<AppKeymap["parseKeySequence"]>;
   try {
-    parts = keymap.parseKeySequence(token)
+    parts = keymap.parseKeySequence(token);
   } catch {
-    return null
+    return null;
   }
-  if (parts.length === 0) return null
-  const strokes: KeyStroke[] = []
+  if (parts.length === 0) return null;
+  const strokes: KeyStroke[] = [];
   for (const part of parts) {
-    const stroke = (part as unknown as { stroke?: Partial<KeyStroke> }).stroke
-    if (!stroke?.name) return null
+    const stroke = (part as unknown as { stroke?: Partial<KeyStroke> }).stroke;
+    if (!stroke?.name) return null;
     strokes.push({
       name: stroke.name,
       ctrl: stroke.ctrl ?? false,
       shift: stroke.shift ?? false,
       meta: stroke.meta ?? false,
       super: stroke.super ?? false,
-    })
+    });
   }
-  return strokes
+  return strokes;
 }
 
 /**
@@ -138,14 +138,14 @@ export function parseKeyStrokes(keymap: AppKeymap, token: string): KeyStroke[] |
  * hardcode.
  */
 export function leaderBytes(leader: string): string {
-  const ctrl = leader.match(/^ctrl\+([a-z@[\]\\^_])$/i)
+  const ctrl = leader.match(/^ctrl\+([a-z@[\]\\^_])$/i);
   if (ctrl) {
-    const c = ctrl[1]!.toLowerCase()
-    return String.fromCharCode(c === "@" ? 0 : c.charCodeAt(0) & 0x1f)
+    const c = ctrl[1]!.toLowerCase();
+    return String.fromCharCode(c === "@" ? 0 : c.charCodeAt(0) & 0x1f);
   }
   // A plain-character prefix sends itself; anything else has no sensible
   // literal form, so send nothing rather than send garbage.
-  return leader.length === 1 ? leader : ""
+  return leader.length === 1 ? leader : "";
 }
 
 /**
@@ -161,11 +161,11 @@ export function leaderBytes(leader: string): string {
  */
 export interface CommandSpec {
   /** Dotted name, e.g. "pane.split-row". The namespace doubles as the help group. */
-  name: string
+  name: string;
   /** Key sequence, e.g. "<leader>|". Omit for commands with no default binding. */
-  key?: string | string[]
-  desc: string
-  group: string
+  key?: string | string[];
+  desc: string;
+  group: string;
   /**
    * Covered by a sibling entry, so help and hints list it once rather than
    * nine times — `^a 1..9` being the case in point.
@@ -175,10 +175,10 @@ export interface CommandSpec {
    * binding*, so `^a 2` looked bound in every readback and silently did nothing
    * when pressed. Every command gets a real description.
    */
-  hidden?: boolean
+  hidden?: boolean;
   /** Left out of the keybind editor. The prefix passthrough is the case: its
    *  sequence is the prefix twice, and rebinding it separately is nonsense. */
-  fixed?: boolean
+  fixed?: boolean;
   /**
    * What pressing the keys does, as a value rather than a callback.
    *
@@ -198,22 +198,22 @@ export interface CommandSpec {
    * statement that quietly does nothing (ts-456094, where eight commands did
    * exactly that).
    */
-  run: Effect.Effect<void, CommandError>
+  run: Effect.Effect<void, CommandError>;
 }
 
 /** The sequences a command answers to right now: the user's, or its own. */
 export function keysFor(cmd: CommandSpec, keys: Keys): string[] {
-  const override = keys.bindings[cmd.name]
-  if (override) return override
-  if (!cmd.key) return []
-  return Array.isArray(cmd.key) ? [...cmd.key] : [cmd.key]
+  const override = keys.bindings[cmd.name];
+  if (override) return override;
+  if (!cmd.key) return [];
+  return Array.isArray(cmd.key) ? [...cmd.key] : [cmd.key];
 }
 
 export interface Conflict {
   /** The sequence as a human reads it, e.g. "^a k". */
-  sequence: string
+  sequence: string;
   /** Command names claiming it, in registration order. */
-  commands: string[]
+  commands: string[];
 }
 
 /**
@@ -225,22 +225,22 @@ export interface Conflict {
  * metadata fields — is registered once and outlives the rebuild.
  */
 export interface Bindings {
-  keymap: AppKeymap
+  keymap: AppKeymap;
   /** Execute a registered command through the keymap's command dispatcher. */
-  dispatch: (name: string) => boolean
+  dispatch: (name: string) => boolean;
   /** The prefix in effect. Display code needs it to render `<leader>`. */
-  leader(): string
+  leader(): string;
   /** Sequences claimed by more than one command as of the last apply. */
-  conflicts(): Conflict[]
+  conflicts(): Conflict[];
   /** Rebuild under `keys`, returning whatever collided. */
-  apply(keys: Keys): Conflict[]
+  apply(keys: Keys): Conflict[];
   /**
    * Take the next real keystroke instead of dispatching it, for recording a
    * binding. Modifiers alone do not end the capture. Returns a canceller.
    */
-  capture(onKey: (event: KeyEvent, binding: string) => void): () => void
+  capture(onKey: (event: KeyEvent, binding: string) => void): () => void;
   /** Remove every layer and interceptor installed on the renderer. */
-  dispose(): void
+  dispose(): void;
 }
 
 /**
@@ -255,26 +255,26 @@ export function createBindings(
   renderer: CliRenderer,
   commands: CommandSpec[],
   opts: {
-    keys?: Keys
+    keys?: Keys;
     /** Return true if the app consumed the key. Returning false leaves it for
      *  whichever renderable holds focus — that is how a focused text input
      *  receives characters. */
-    onUnhandled: (event: KeyEvent, reason: string) => boolean
+    onUnhandled: (event: KeyEvent, reason: string) => boolean;
   },
 ): Bindings {
-  const keymap = createOpenTuiKeymap(renderer)
-  registerDefaultKeys(keymap)
+  const keymap = createOpenTuiKeymap(renderer);
+  registerDefaultKeys(keymap);
   // `desc` and `group` become queryable attrs, which is what the keybind list
   // groups and labels itself from.
-  registerMetadataFields(keymap)
+  registerMetadataFields(keymap);
   // Escape backs out of a half-typed sequence instead of stranding the prefix.
-  registerEscapeClearsPendingSequence(keymap)
+  registerEscapeClearsPendingSequence(keymap);
 
-  let leader = opts.keys?.leader ?? DEFAULT_LEADER
-  let conflicts: Conflict[] = []
-  let disposeLayer: (() => void) | null = null
-  let disposeLeader: (() => void) | null = null
-  let capturing: ((event: KeyEvent, binding: string) => void) | null = null
+  let leader = opts.keys?.leader ?? DEFAULT_LEADER;
+  let conflicts: Conflict[] = [];
+  let disposeLayer: (() => void) | null = null;
+  let disposeLeader: (() => void) | null = null;
+  let capturing: ((event: KeyEvent, binding: string) => void) | null = null;
 
   // Ahead of dispatch, so recording a binding can record keys that are
   // themselves bound — including the prefix, which would otherwise arm a
@@ -282,40 +282,40 @@ export function createBindings(
   const disposeCapture = keymap.intercept(
     "key",
     (ctx) => {
-      if (!capturing) return
-      const binding = keyToBinding(ctx.event)
-      if (!binding) return
-      const fn = capturing
-      capturing = null
-      ctx.consume({ preventDefault: true })
-      ctx.event.preventDefault()
-      fn(ctx.event, binding)
+      if (!capturing) return;
+      const binding = keyToBinding(ctx.event);
+      if (!binding) return;
+      const fn = capturing;
+      capturing = null;
+      ctx.consume({ preventDefault: true });
+      ctx.event.preventDefault();
+      fn(ctx.event, binding);
     },
     { priority: 1000 },
-  )
+  );
 
   // A multiplexer is a pass-through: anything not claimed by a binding belongs
   // to the child. This fires after dispatch, so bound keys and keys that are
   // mid-sequence are already accounted for and never reach a shell.
   const disposeUnhandled = keymap.intercept("key:after", (ctx) => {
-    if (ctx.handled) return
+    if (ctx.handled) return;
     // preventDefault only when the app really took the key. A focused
     // Renderable skips any event whose default was prevented, so blanket
     // prevention here would stop a text input ever receiving a character.
-    if (!opts.onUnhandled(ctx.event, ctx.reason)) return
-    ctx.consume({ preventDefault: true })
-    ctx.event.preventDefault()
-  })
+    if (!opts.onUnhandled(ctx.event, ctx.reason)) return;
+    ctx.consume({ preventDefault: true });
+    ctx.event.preventDefault();
+  });
 
   function apply(keys: Keys): Conflict[] {
-    const requestedLeader = keys.leader || DEFAULT_LEADER
-    leader = parseable(requestedLeader, true) ? requestedLeader : DEFAULT_LEADER
-    disposeLayer?.()
-    disposeLeader?.()
+    const requestedLeader = keys.leader || DEFAULT_LEADER;
+    leader = parseable(requestedLeader, true) ? requestedLeader : DEFAULT_LEADER;
+    disposeLayer?.();
+    disposeLeader?.();
     // A half-typed sequence compiled against the old token means nothing now.
-    keymap.clearPendingSequence()
+    keymap.clearPendingSequence();
 
-    disposeLeader = registerLeader(keymap, { trigger: leader })
+    disposeLeader = registerLeader(keymap, { trigger: leader });
     disposeLayer = keymap.registerLayer({
       bindings: commands.flatMap((cmd) =>
         keysFor(cmd, keys)
@@ -328,46 +328,46 @@ export function createBindings(
         group: cmd.group,
         run: () => runDetached(cmd.name, cmd.run),
       })),
-    })
+    });
 
-    conflicts = findConflicts(keymap, commands, leader)
-    return conflicts
+    conflicts = findConflicts(keymap, commands, leader);
+    return conflicts;
   }
 
   const bindings: Bindings = {
     keymap,
     dispatch(name) {
-      return keymap.dispatchCommand(name).ok
+      return keymap.dispatchCommand(name).ok;
     },
     leader: () => leader,
     conflicts: () => conflicts,
     apply,
     capture(onKey) {
-      capturing = onKey
+      capturing = onKey;
       return () => {
-        if (capturing === onKey) capturing = null
-      }
+        if (capturing === onKey) capturing = null;
+      };
     },
     dispose() {
-      capturing = null
-      disposeLayer?.()
-      disposeLayer = null
-      disposeLeader?.()
-      disposeLeader = null
-      disposeCapture()
-      disposeUnhandled()
+      capturing = null;
+      disposeLayer?.();
+      disposeLayer = null;
+      disposeLeader?.();
+      disposeLeader = null;
+      disposeCapture();
+      disposeUnhandled();
     },
-  }
+  };
 
-  apply(opts.keys ?? DEFAULT_KEYS)
-  return bindings
+  apply(opts.keys ?? DEFAULT_KEYS);
+  return bindings;
 
   function parseable(key: string, single = false): boolean {
     try {
-      const parts = key.length > 0 ? keymap.parseKeySequence(key) : []
-      return single ? parts.length === 1 : parts.length > 0
+      const parts = key.length > 0 ? keymap.parseKeySequence(key) : [];
+      return single ? parts.length === 1 : parts.length > 0;
     } catch {
-      return false
+      return false;
     }
   }
 }
@@ -397,44 +397,44 @@ export function findConflicts(
   const bindings = keymap.getCommandBindings({
     visibility: "registered",
     commands: commands.map((c) => c.name),
-  })
+  });
 
-  const owners = new Map<string, string[]>()
+  const owners = new Map<string, string[]>();
   for (const [name, list] of bindings) {
     for (const binding of list) {
-      const sequence = formatSequence(binding.sequence, leader)
-      const existing = owners.get(sequence)
-      if (existing) existing.push(name)
-      else owners.set(sequence, [name])
+      const sequence = formatSequence(binding.sequence, leader);
+      const existing = owners.get(sequence);
+      if (existing) existing.push(name);
+      else owners.set(sequence, [name]);
     }
   }
 
   return [...owners]
     .filter(([, names]) => names.length > 1)
-    .map(([sequence, names]) => ({ sequence, commands: names }))
+    .map(([sequence, names]) => ({ sequence, commands: names }));
 }
 
 export interface HelpEntry {
   /** Command name, so the keybind editor knows what a row edits. */
-  name: string
-  keys: string
-  desc: string
+  name: string;
+  keys: string;
+  desc: string;
   /** Whether the sequences come from the config rather than the default. */
-  custom: boolean
+  custom: boolean;
   /** Not editable; see CommandSpec.fixed. */
-  fixed: boolean
+  fixed: boolean;
 }
 
 export interface HelpGroup {
-  group: string
-  entries: HelpEntry[]
+  group: string;
+  entries: HelpEntry[];
 }
 
 export interface PaletteEntry {
-  name: string
-  group: string
-  keys: string
-  desc: string
+  name: string;
+  group: string;
+  keys: string;
+  desc: string;
 }
 
 /** All registered commands, including commands intentionally hidden from help. */
@@ -442,43 +442,46 @@ export function paletteEntries(bindings: Bindings, commands: CommandSpec[]): Pal
   const active = bindings.keymap.getCommandBindings({
     visibility: "registered",
     commands: commands.map((c) => c.name),
-  })
+  });
   return commands.map((cmd) => ({
     name: cmd.name,
     group: cmd.group,
-    keys: (active.get(cmd.name) ?? [])
-      .map((binding) => formatSequence(binding.sequence, bindings.leader()))
-      .join(" / ") || "unbound",
+    keys:
+      (active.get(cmd.name) ?? [])
+        .map((binding) => formatSequence(binding.sequence, bindings.leader()))
+        .join(" / ") || "unbound",
     desc: cmd.desc,
-  }))
+  }));
 }
 
 /** Case-insensitive subsequence matching with stable relevance ordering. */
 export function filterPaletteEntries(entries: PaletteEntry[], query: string): PaletteEntry[] {
-  const needle = query.trim().toLowerCase()
-  if (!needle) return entries
+  const needle = query.trim().toLowerCase();
+  if (!needle) return entries;
   return entries
     .map((entry, index) => {
-      const text = `${entry.name} ${entry.desc} ${entry.group}`.toLowerCase()
-      let cursor = 0
-      let score = 0
+      const text = `${entry.name} ${entry.desc} ${entry.group}`.toLowerCase();
+      let cursor = 0;
+      let score = 0;
       for (const char of needle) {
-        const found = text.indexOf(char, cursor)
-        if (found === -1) return null
-        score += found - cursor
-        cursor = found + 1
+        const found = text.indexOf(char, cursor);
+        if (found === -1) return null;
+        score += found - cursor;
+        cursor = found + 1;
       }
-      return { entry, score, index }
+      return { entry, score, index };
     })
-    .filter((match): match is { entry: PaletteEntry; score: number; index: number } => match !== null)
+    .filter(
+      (match): match is { entry: PaletteEntry; score: number; index: number } => match !== null,
+    )
     .sort((a, b) => a.score - b.score || a.index - b.index)
-    .map((match) => match.entry)
+    .map((match) => match.entry);
 }
 
 /** One reachable command: the single key that gets you there, and what it does. */
 export interface HintGroup {
-  group: string
-  entries: { keys: string[]; desc: string }[]
+  group: string;
+  entries: { keys: string[]; desc: string }[];
 }
 
 /**
@@ -496,27 +499,27 @@ export function helpGroups(
   const active = bindings.keymap.getCommandBindings({
     visibility: "registered",
     commands: commands.map((c) => c.name),
-  })
+  });
 
-  const groups = new Map<string, HelpEntry[]>()
+  const groups = new Map<string, HelpEntry[]>();
   for (const cmd of commands) {
-    if (cmd.hidden) continue
+    if (cmd.hidden) continue;
     // Render the compiled sequence, not the source string, so a binding
     // displays as the keys the user actually presses.
     const sequences = (active.get(cmd.name) ?? []).map((b) =>
       formatSequence(b.sequence, bindings.leader()),
-    )
-    const entries = groups.get(cmd.group) ?? []
+    );
+    const entries = groups.get(cmd.group) ?? [];
     entries.push({
       name: cmd.name,
       keys: sequences.join(" / ") || "unbound",
       desc: cmd.desc,
       custom: cmd.name in keys.bindings,
       fixed: cmd.fixed === true,
-    })
-    groups.set(cmd.group, entries)
+    });
+    groups.set(cmd.group, entries);
   }
-  return [...groups].map(([group, entries]) => ({ group, entries }))
+  return [...groups].map(([group, entries]) => ({ group, entries }));
 }
 
 /**
@@ -536,28 +539,28 @@ export function nextKeys(
   commands: CommandSpec[],
   pending: readonly { display: string }[],
 ): HintGroup[] {
-  if (pending.length === 0) return []
+  if (pending.length === 0) return [];
   const active = bindings.keymap.getCommandBindings({
     visibility: "registered",
     commands: commands.map((c) => c.name),
-  })
+  });
 
-  const groups = new Map<string, { keys: string[]; desc: string }[]>()
+  const groups = new Map<string, { keys: string[]; desc: string }[]>();
   for (const cmd of commands) {
-    if (cmd.hidden) continue
-    const keys: string[] = []
+    if (cmd.hidden) continue;
+    const keys: string[] = [];
     for (const binding of active.get(cmd.name) ?? []) {
-      const sequence = binding.sequence
+      const sequence = binding.sequence;
       // Longer than what has been typed, and typed so far in full.
-      if (sequence.length <= pending.length) continue
-      if (pending.some((part, i) => sequence[i]!.display !== part.display)) continue
-      const key = formatKey(sequence[pending.length]!.display, bindings.leader())
-      if (!keys.includes(key)) keys.push(key)
+      if (sequence.length <= pending.length) continue;
+      if (pending.some((part, i) => sequence[i]!.display !== part.display)) continue;
+      const key = formatKey(sequence[pending.length]!.display, bindings.leader());
+      if (!keys.includes(key)) keys.push(key);
     }
-    if (!keys.length) continue
-    const entries = groups.get(cmd.group) ?? []
-    entries.push({ keys, desc: cmd.desc })
-    groups.set(cmd.group, entries)
+    if (!keys.length) continue;
+    const entries = groups.get(cmd.group) ?? [];
+    entries.push({ keys, desc: cmd.desc });
+    groups.set(cmd.group, entries);
   }
-  return [...groups].map(([group, entries]) => ({ group, entries }))
+  return [...groups].map(([group, entries]) => ({ group, entries }));
 }

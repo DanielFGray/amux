@@ -38,9 +38,9 @@ specified width into:
 
 ```ts
 interface TranscriptGrid {
-  cols: number
-  rows: string[]
-  viewport: { top: number; height: number }
+  cols: number;
+  rows: string[];
+  viewport: { top: number; height: number };
 }
 ```
 

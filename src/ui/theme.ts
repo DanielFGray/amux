@@ -1,4 +1,4 @@
-import { RGBA } from "@opentui/core"
+import { RGBA } from "@opentui/core";
 
 /** Catppuccin Mocha. Kept as one table so the imperative panes and the Solid
  *  chrome cannot drift into two slightly different palettes. */
@@ -17,4 +17,4 @@ export const theme = {
   red: RGBA.fromInts(243, 139, 168, 255),
   peach: RGBA.fromInts(250, 179, 135, 255),
   yellow: RGBA.fromInts(249, 226, 175, 255),
-} as const
+} as const;

@@ -1,13 +1,13 @@
-import { createCliRenderer, BoxRenderable } from "@opentui/core"
-import { render } from "@opentui/solid"
-import { BunRuntime } from "@effect/platform-bun"
-import { Deferred, Effect, Exit } from "effect"
+import { createCliRenderer, BoxRenderable } from "@opentui/core";
+import { render } from "@opentui/solid";
+import { BunRuntime } from "@effect/platform-bun";
+import { Deferred, Effect, Exit } from "effect";
 
-import { loadConfig } from "./config.ts"
-import { applyOptions, resolveOptions } from "./options.ts"
-import { SessionClient } from "./client.ts"
-import { isSessionId, SessionEnv } from "./session.ts"
-import { createApp } from "./app.tsx"
+import { loadConfig } from "./config.ts";
+import { applyOptions, resolveOptions } from "./options.ts";
+import { SessionClient } from "./client.ts";
+import { isSessionId, SessionEnv } from "./session.ts";
+import { createApp } from "./app.tsx";
 
 /**
  * The entry point, and the only place in the client that owns a lifetime.
@@ -26,8 +26,8 @@ import { createApp } from "./app.tsx"
  * app asks to leave by completing it.
  */
 const program = Effect.gen(function* () {
-  const config = yield* Effect.promise(() => loadConfig())
-  applyOptions(resolveOptions(config.options))
+  const config = yield* Effect.promise(() => loadConfig());
+  applyOptions(resolveOptions(config.options));
 
   const renderer = yield* Effect.acquireRelease(
     Effect.promise(() =>
@@ -39,29 +39,27 @@ const program = Effect.gen(function* () {
       }),
     ),
     (r) => Effect.sync(() => r.destroy()),
-  )
-  renderer.useKittyKeyboard = false
+  );
+  renderer.useKittyKeyboard = false;
 
   const paneHost = new BoxRenderable(renderer, {
     id: "pane-host",
     flexDirection: "row",
     flexGrow: 1,
-  })
+  });
 
-  const SESSION_ID = process.env.AMUX_SESSION || "default"
+  const SESSION_ID = process.env.AMUX_SESSION || "default";
   if (!isSessionId(SESSION_ID)) {
-    return yield* Effect.fail(new Error(`invalid AMUX_SESSION ${JSON.stringify(SESSION_ID)}`))
+    return yield* Effect.fail(new Error(`invalid AMUX_SESSION ${JSON.stringify(SESSION_ID)}`));
   }
 
-  const session = yield* Effect.acquireRelease(
-    SessionClient.connect(SESSION_ID),
-    (s) =>
-      Effect.gen(function* () {
-        yield* Effect.sync(() => s.attach.close())
-      }),
-  )
+  const session = yield* Effect.acquireRelease(SessionClient.connect(SESSION_ID), (s) =>
+    Effect.gen(function* () {
+      yield* Effect.sync(() => s.attach.close());
+    }),
+  );
 
-  const quit = yield* Deferred.make<void>()
+  const quit = yield* Deferred.make<void>();
 
   const app = yield* createApp({
     renderer,
@@ -69,13 +67,9 @@ const program = Effect.gen(function* () {
     config,
     session,
     quit: () => Deferred.unsafeDone(quit, Exit.void),
-  })
-  yield* Effect.promise(() => render(app.View, renderer))
-  yield* Deferred.await(quit)
-})
+  });
+  yield* Effect.promise(() => render(app.View, renderer));
+  yield* Deferred.await(quit);
+});
 
-BunRuntime.runMain(
-  Effect.scoped(program).pipe(
-    Effect.provideService(SessionEnv, process.env),
-  ),
-)
+BunRuntime.runMain(Effect.scoped(program).pipe(Effect.provideService(SessionEnv, process.env)));

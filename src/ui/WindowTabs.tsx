@@ -1,12 +1,12 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show } from "solid-js"
-import { SPINNER_FRAMES, STATE_GLYPH, type AgentState } from "../detect.ts"
-import type { Window } from "../window.ts"
-import type { AppState } from "./state.ts"
-import { theme } from "./theme.ts"
+import { For, Show } from "solid-js";
+import { SPINNER_FRAMES, STATE_GLYPH, type AgentState } from "../detect.ts";
+import type { Window } from "../window.ts";
+import type { AppState } from "./state.ts";
+import { theme } from "./theme.ts";
 
 const stateColor = (state: AgentState) =>
-  state === "blocked" ? theme.red : state === "working" ? theme.green : theme.overlay1
+  state === "blocked" ? theme.red : state === "working" ? theme.green : theme.overlay1;
 
 /**
  * The window list, herdr-style: a single row at the top of the pane area rather
@@ -17,28 +17,28 @@ const stateColor = (state: AgentState) =>
  * there is no global bar to put it in.
  */
 export function WindowTabs(props: {
-  app: AppState
-  windows: readonly Window[]
-  active: Window | null
+  app: AppState;
+  windows: readonly Window[];
+  active: Window | null;
   /** Key sequence in progress, e.g. ["^a"]. */
-  pending: string[]
+  pending: string[];
   /** True while the focused window's pane is in keyboard copy mode. */
-  copying: boolean
-  onSelect: (window: Window) => void
+  copying: boolean;
+  onSelect: (window: Window) => void;
 }) {
   const glyph = (window: Window) => {
-    props.app.tick()
-    const state = window.state
-    if (state !== "working") return STATE_GLYPH[state]
-    return SPINNER_FRAMES[props.app.frame() % SPINNER_FRAMES.length]!
-  }
+    props.app.tick();
+    const state = window.state;
+    if (state !== "working") return STATE_GLYPH[state];
+    return SPINNER_FRAMES[props.app.frame() % SPINNER_FRAMES.length]!;
+  };
 
   /** Read through the tick: an unnamed window is titled by what it is running,
    *  which arrives from the agent's OSC title after the tab first renders. */
   const label = (window: Window) => {
-    props.app.tick()
-    return window.label
-  }
+    props.app.tick();
+    return window.label;
+  };
 
   return (
     <box
@@ -51,7 +51,7 @@ export function WindowTabs(props: {
     >
       <For each={props.windows}>
         {(window) => {
-          const active = () => window === props.active
+          const active = () => window === props.active;
           return (
             <box
               style={{
@@ -74,7 +74,7 @@ export function WindowTabs(props: {
                 {`${label(window)} `}
               </text>
             </box>
-          )
+          );
         }}
       </For>
 
@@ -91,5 +91,5 @@ export function WindowTabs(props: {
         </text>
       </Show>
     </box>
-  )
+  );
 }

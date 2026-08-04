@@ -13,26 +13,26 @@
  * inspection is a local-only signal it answers -1 to.
  */
 
-import { spawnPty, readPty } from "./pty.ts"
-import { Effect, Fiber, Mailbox, Stream } from "effect"
-import type { AttachClientShape } from "./attach.ts"
+import { spawnPty, readPty } from "./pty.ts";
+import { Effect, Fiber, Mailbox, Stream } from "effect";
+import type { AttachClientShape } from "./attach.ts";
 
 export interface AgentBackend {
   /** True once the stream is over: the process exited, or the attachment was
    *  lost, or it was never running to begin with. */
-  readonly closed: boolean
+  readonly closed: boolean;
   /** True when the stream ended because the client lost its attachment while
    * the daemon-owned process may still be running. */
-  readonly detached: boolean
+  readonly detached: boolean;
   /** Exit status once closed, null while running or when it is not knowable. */
-  readonly exitCode: number | null
+  readonly exitCode: number | null;
   /** Output bytes, ending when the backend closes. Run exactly once. */
-  readonly stream: Stream.Stream<Uint8Array>
-  write(data: string | Uint8Array): void
-  resize(cols: number, rows: number): void
+  readonly stream: Stream.Stream<Uint8Array>;
+  write(data: string | Uint8Array): void;
+  resize(cols: number, rows: number): void;
   /** Release this process's view. Local owners terminate; daemon projections detach. */
-  close(): void
-  kill(): void
+  close(): void;
+  kill(): void;
   /**
    * Foreground process group and session id of the controlling terminal, or -1.
    *
@@ -41,8 +41,8 @@ export interface AgentBackend {
    * A backend that is not a local tty returns -1, which every caller already
    * treats as "no foreground process worth naming".
    */
-  foregroundPgid(): number
-  sessionId(): number
+  foregroundPgid(): number;
+  sessionId(): number;
 }
 
 export interface BackendOptions {
@@ -51,13 +51,13 @@ export interface BackendOptions {
    *
    * A local PTY has no use for it — the fd is the identity. A daemon-owned one
    * has nothing else: every agent's bytes share one socket and are told apart
-    * by this id. The daemon workspace allocates it; projections only adopt it.
+   * by this id. The daemon workspace allocates it; projections only adopt it.
    */
-  id: string
-  cmd: string[]
-  cwd?: string
-  cols: number
-  rows: number
+  id: string;
+  cmd: string[];
+  cwd?: string;
+  cols: number;
+  rows: number;
 }
 
 /**
@@ -70,21 +70,21 @@ export interface BackendOptions {
  * past this the writer backs up into the attach socket, which is where the
  * decision to drop belongs.
  */
-const OUTPUT_LIMIT = 1024
+const OUTPUT_LIMIT = 1024;
 
 /** How an Agent obtains its backend. Swapping this is the whole point. */
-export type SpawnBackend = (opts: BackendOptions) => AgentBackend
+export type SpawnBackend = (opts: BackendOptions) => AgentBackend;
 
 /** A PTY in this process — what every agent used before there was a choice. */
 export const localPty: SpawnBackend = (opts) => {
-  const pty = spawnPty(opts.cmd, opts)
+  const pty = spawnPty(opts.cmd, opts);
   return {
     get closed() {
-      return pty.closed
+      return pty.closed;
     },
     detached: false,
     get exitCode() {
-      return pty.exitCode
+      return pty.exitCode;
     },
     // Suspended so the generator is not created until something runs the
     // stream: constructing a backend must not start draining the master.
@@ -96,16 +96,18 @@ export const localPty: SpawnBackend = (opts) => {
       // live PTY failure must not disappear silently. Interruption during
       // close/kill is expected; all other failures are actionable diagnostics.
       void pty.write(data).catch((error) => {
-        if (!pty.closed) console.error("local PTY write failed", error)
-      })
+        if (!pty.closed) console.error("local PTY write failed", error);
+      });
     },
     resize: (cols, rows) => pty.resize(cols, rows),
-    close: () => { void pty.kill() },
+    close: () => {
+      void pty.kill();
+    },
     kill: () => pty.kill(),
     foregroundPgid: () => pty.foregroundPgid(),
     sessionId: () => pty.sessionId(),
-  }
-}
+  };
+};
 
 /**
  * The daemon, as far as a backend needs to know it.
@@ -114,7 +116,7 @@ export const localPty: SpawnBackend = (opts) => {
  * are workspace transactions and are intentionally absent from this surface.
  */
 export interface DaemonSession {
-  readonly attach: AttachClientShape
+  readonly attach: AttachClientShape;
 }
 
 /**
@@ -135,9 +137,9 @@ export function daemonBackend(
   live: ReadonlySet<string> = new Set(),
 ): SpawnBackend {
   return (opts) => {
-    let closed = false
-    let detached = false
-    let exitCode: number | null = null
+    let closed = false;
+    let detached = false;
+    let exitCode: number | null = null;
 
     /**
      * Foreground process group and session id, as reported by the daemon.
@@ -149,8 +151,8 @@ export function daemonBackend(
      * returns -1 only until the first frame arrives — the same shape a local
      * PTY has before its shell is up.
      */
-    let foregroundPgid = -1
-    let foregroundSid = -1
+    let foregroundPgid = -1;
+    let foregroundSid = -1;
 
     /**
      * Output waiting to be drawn.
@@ -161,14 +163,14 @@ export function daemonBackend(
      * UI that stalls cannot grow this without limit — which the array it
      * replaces could, and did.
      */
-    const output = Effect.runSync(Mailbox.make<Uint8Array>(OUTPUT_LIMIT))
+    const output = Effect.runSync(Mailbox.make<Uint8Array>(OUTPUT_LIMIT));
 
     const end = (code: number | null) => {
-      if (closed) return
-      closed = true
-      exitCode = code
-      Effect.runFork(output.end)
-    }
+      if (closed) return;
+      closed = true;
+      exitCode = code;
+      Effect.runFork(output.end);
+    };
 
     const streamFiber = Effect.runFork(
       Stream.runForEach(session.attach.stream(opts.id), (frame) =>
@@ -178,58 +180,66 @@ export function daemonBackend(
             ? Effect.sync(() => end(frame.code))
             : frame._tag === "foreground"
               ? Effect.sync(() => {
-                  foregroundPgid = frame.pgid
-                  foregroundSid = frame.sid
+                  foregroundPgid = frame.pgid;
+                  foregroundSid = frame.sid;
                 })
               : Effect.void,
-      ).pipe(Effect.ensuring(Effect.sync(() => {
-        if (!closed) {
-          detached = true
-          end(null)
-        }
-      }))),
-    )
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (!closed) {
+              detached = true;
+              end(null);
+            }
+          }),
+        ),
+      ),
+    );
 
     if (live.has(opts.id)) {
       // An adopted agent was sized by whoever had it last. This client's
       // viewport is the current truth, so say so before drawing anything.
-      session.attach.resize(opts.id, opts.cols, opts.rows)
+      session.attach.resize(opts.id, opts.cols, opts.rows);
       // And ask for its screen: this client was not there for the bytes that
       // drew it, so without a replay the pane stays blank until the program
       // next redraws. The resize frame precedes the sync, and the daemon
       // serializes at the resize it just applied.
-      session.attach.sync(opts.id)
+      session.attach.sync(opts.id);
     } else {
-      Effect.runFork(output.offer(new TextEncoder().encode(
-        `\r\n[daemon] modeled session '${opts.id}' is not live\r\n`,
-      )))
-      end(null)
+      Effect.runFork(
+        output.offer(
+          new TextEncoder().encode(`\r\n[daemon] modeled session '${opts.id}' is not live\r\n`),
+        ),
+      );
+      end(null);
     }
 
     const close = () => {
-      if (closed) return
-      detached = true
-      end(null)
-      Effect.runFork(Fiber.interrupt(streamFiber))
-    }
+      if (closed) return;
+      detached = true;
+      end(null);
+      Effect.runFork(Fiber.interrupt(streamFiber));
+    };
 
     return {
       get closed() {
-        return closed
+        return closed;
       },
       get detached() {
-        return detached
+        return detached;
       },
       get exitCode() {
-        return exitCode
+        return exitCode;
       },
       // The frame reader outlives nothing: when whoever is drawing this stops,
       // the fiber forwarding frames into the mailbox goes with it.
-      stream: Mailbox.toStream(output).pipe(
-        Stream.ensuring(Fiber.interrupt(streamFiber)),
-      ),
-      write: (data) => { if (!closed) session.attach.input(opts.id, data) },
-      resize: (cols, rows) => { if (!closed) session.attach.resize(opts.id, cols, rows) },
+      stream: Mailbox.toStream(output).pipe(Stream.ensuring(Fiber.interrupt(streamFiber))),
+      write: (data) => {
+        if (!closed) session.attach.input(opts.id, data);
+      },
+      resize: (cols, rows) => {
+        if (!closed) session.attach.resize(opts.id, cols, rows);
+      },
       close,
       // Projection code cannot kill daemon-owned processes. Explicit modeled
       // kills go through the revisioned workspace command path.
@@ -240,8 +250,8 @@ export function daemonBackend(
       // pgid alone is enough — the cmdline never needs to cross the wire.
       foregroundPgid: () => foregroundPgid,
       sessionId: () => foregroundSid,
-    }
-  }
+    };
+  };
 }
 
 /**
@@ -265,5 +275,5 @@ export function exitedBackend(exitCode: number | null): AgentBackend {
     kill() {},
     foregroundPgid: () => -1,
     sessionId: () => -1,
-  }
+  };
 }

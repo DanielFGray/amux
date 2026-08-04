@@ -1,9 +1,9 @@
-import { BoxRenderable, type RenderContext } from "@opentui/core"
-import { Context, Effect, Exit, Scope } from "effect"
-import { Window } from "./window.ts"
-import type { Agent, AgentState } from "./agent.ts"
-import type { TerminalPane } from "./pane.ts"
-import { RenderCtx, type WorkspaceEnv } from "./env.ts"
+import { BoxRenderable, type RenderContext } from "@opentui/core";
+import { Context, Effect, Exit, Scope } from "effect";
+import { Window } from "./window.ts";
+import type { Agent, AgentState } from "./agent.ts";
+import type { TerminalPane } from "./pane.ts";
+import { RenderCtx, type WorkspaceEnv } from "./env.ts";
 import {
   activateSpaceState,
   claimWindowNumber,
@@ -14,17 +14,17 @@ import {
   spaceState,
   type SpaceSetState,
   type SpaceState,
-} from "./space-model.ts"
-import type { WorkspaceSnapshot, WorkspaceSpace, WorkspaceWindow } from "./workspace.ts"
-import type { SpawnBackend } from "./backend.ts"
+} from "./space-model.ts";
+import type { WorkspaceSnapshot, WorkspaceSpace, WorkspaceWindow } from "./workspace.ts";
+import type { SpawnBackend } from "./backend.ts";
 
-let nextSpaceId = 0
+let nextSpaceId = 0;
 
 /** Keep the generator ahead of every id restore brought back, so a space
  *  created after a restore cannot collide with one that came out of the file. */
 function reserveSpaceId(id: string) {
-  const n = /^space-(\d+)$/.exec(id)
-  if (n) nextSpaceId = Math.max(nextSpaceId, Number(n[1]) + 1)
+  const n = /^space-(\d+)$/.exec(id);
+  if (n) nextSpaceId = Math.max(nextSpaceId, Number(n[1]) + 1);
 }
 
 /**
@@ -36,61 +36,64 @@ function reserveSpaceId(id: string) {
  * its layout and running agents while contributing nothing to yoga or hit tests.
  */
 export class Space {
-  readonly id: string
-  name: string
-  dir: string
+  readonly id: string;
+  name: string;
+  dir: string;
 
   /** Git branch of `dir`, refreshed by the app. "" when not a checkout. */
-  branch = ""
+  branch = "";
   /** Commits ahead/behind the upstream, for the sidebar's second row. */
-  ahead = 0
-  behind = 0
+  ahead = 0;
+  behind = 0;
 
   /** Passed down to every window this space opens, unread here beyond the
    *  renderer — a space is a container, not a thing that starts processes. */
-  #env: Context.Context<WorkspaceEnv>
-  #windows: Window[] = []
+  #env: Context.Context<WorkspaceEnv>;
+  #windows: Window[] = [];
   /** One scope per window, for the same reason Window keeps one per agent:
    *  closeWindow must end exactly one window, and a window will eventually be
    *  movable between spaces (ts-e10c3a), which a forked child scope forbids. */
-  #scopes = new Map<Window, Scope.CloseableScope>()
-  #state: SpaceState = spaceState()
+  #scopes = new Map<Window, Scope.CloseableScope>();
+  #state: SpaceState = spaceState();
 
-  onChange?: () => void
-  onAgentExit?: (agent: Agent, window: Window, space: Space) => void
-  onCopy?: (text: string) => boolean | void
-  onCopyError?: (error: Error) => void
+  onChange?: () => void;
+  onAgentExit?: (agent: Agent, window: Window, space: Space) => void;
+  onCopy?: (text: string) => boolean | void;
+  onCopyError?: (error: Error) => void;
 
-  constructor(env: Context.Context<WorkspaceEnv>, opts: { name: string; dir: string; id?: string }) {
-    this.#env = env
-    this.id = opts.id ?? `space-${nextSpaceId++}`
-    if (opts.id) reserveSpaceId(opts.id)
-    this.name = opts.name
-    this.dir = opts.dir
+  constructor(
+    env: Context.Context<WorkspaceEnv>,
+    opts: { name: string; dir: string; id?: string },
+  ) {
+    this.#env = env;
+    this.id = opts.id ?? `space-${nextSpaceId++}`;
+    if (opts.id) reserveSpaceId(opts.id);
+    this.name = opts.name;
+    this.dir = opts.dir;
   }
 
   get windows(): readonly Window[] {
-    return this.#windows
+    return this.#windows;
   }
 
   get active(): Window | null {
-    return this.#windows.find((window) => window.number === this.#state.activeWindow) ?? null
+    return this.#windows.find((window) => window.number === this.#state.activeWindow) ?? null;
   }
 
   /** Stable model identity used by persistence and, eventually, the daemon. */
   get activeWindowNumber(): number | null {
-    return this.#state.activeWindow
+    return this.#state.activeWindow;
   }
 
   /** Reconcile selection counters after windows have been projected. */
   projectState(state: SpaceState): void {
-    this.#state = structuredClone(state)
-    this.onChange?.()
+    this.#state = structuredClone(state);
+    this.onChange?.();
   }
 
   /** Every agent across every window in this space. */
   get agents(): Agent[] {
-    return this.#windows.flatMap((w) => [...w.agents])
+    return this.#windows.flatMap((w) => [...w.agents]);
   }
 
   /**
@@ -102,7 +105,7 @@ export class Space {
    * finished agent reads as idle, not finished.
    */
   get state(): AgentState {
-    return rollUp(this.agents)
+    return rollUp(this.agents);
   }
 
   /**
@@ -115,31 +118,33 @@ export class Space {
    */
   newWindow(name?: string, number?: number): Effect.Effect<Window> {
     return Effect.gen(this, function* () {
-      let claimed: number
-      ;[this.#state, claimed] = claimWindowNumber(this.#state, number)
-      const scope = yield* Scope.make()
-      const window = yield* Window.make(this.#env, this.dir, claimed).pipe(
-        Scope.extend(scope),
-      )
-      this.#scopes.set(window, scope)
-      if (name) window.customName = name
-      window.onChange = () => this.onChange?.()
-      window.onAgentExit = (agent) => this.onAgentExit?.(agent, window, this)
-      window.onCopy = this.onCopy
-      window.onCopyError = this.onCopyError
-      this.#windows.push(window)
-      this.selectWindow(window)
-      return window
-    })
+      let claimed: number;
+      [this.#state, claimed] = claimWindowNumber(this.#state, number);
+      const scope = yield* Scope.make();
+      const window = yield* Window.make(this.#env, this.dir, claimed).pipe(Scope.extend(scope));
+      this.#scopes.set(window, scope);
+      if (name) window.customName = name;
+      window.onChange = () => this.onChange?.();
+      window.onAgentExit = (agent) => this.onAgentExit?.(agent, window, this);
+      window.onCopy = this.onCopy;
+      window.onCopyError = this.onCopyError;
+      this.#windows.push(window);
+      this.selectWindow(window);
+      return window;
+    });
   }
 
   selectWindow(window: Window) {
-    const next = selectWindowState(this.#state, this.#windows.map((candidate) => candidate.number), window.number)
-    if (next === this.#state) return
-    this.#state = next
-    const pane = window.focused ?? window.panes[0]
-    if (pane) window.focus(pane)
-    this.onChange?.()
+    const next = selectWindowState(
+      this.#state,
+      this.#windows.map((candidate) => candidate.number),
+      window.number,
+    );
+    if (next === this.#state) return;
+    this.#state = next;
+    const pane = window.focused ?? window.panes[0];
+    if (pane) window.focus(pane);
+    this.onChange?.();
   }
 
   /**
@@ -151,24 +156,24 @@ export class Space {
    * keeps the promise even if something else left a stale reference behind.
    */
   selectLastWindow() {
-    const last = this.#windows.find((window) => window.number === this.#state.lastWindow)
-    if (!last) return
-    this.selectWindow(last)
+    const last = this.#windows.find((window) => window.number === this.#state.lastWindow);
+    if (!last) return;
+    this.selectWindow(last);
   }
 
   /** Select by 1-based number, the way `^a 1..9` does. */
   selectNumber(number: number): boolean {
-    const window = this.#windows.find((w) => w.number === number)
-    if (!window) return false
-    this.selectWindow(window)
-    return true
+    const window = this.#windows.find((w) => w.number === number);
+    if (!window) return false;
+    this.selectWindow(window);
+    return true;
   }
 
   cycleWindow(step = 1) {
-    if (this.#windows.length < 2) return
-    const active = this.active
-    const i = active ? this.#windows.indexOf(active) : -1
-    this.selectWindow(this.#windows[(i + step + this.#windows.length) % this.#windows.length]!)
+    if (this.#windows.length < 2) return;
+    const active = this.active;
+    const i = active ? this.#windows.indexOf(active) : -1;
+    this.selectWindow(this.#windows[(i + step + this.#windows.length) % this.#windows.length]!);
   }
 
   /**
@@ -193,59 +198,59 @@ export class Space {
    */
   breakPane(pane: TerminalPane): Effect.Effect<Window | null> {
     return Effect.gen(this, function* () {
-      const source = this.#windows.find((w) => w.panes.includes(pane))
-      if (!source) return null
-      const agent = pane.agent
+      const source = this.#windows.find((w) => w.panes.includes(pane));
+      if (!source) return null;
+      const agent = pane.agent;
       // Ownership is checked BEFORE anything is mutated. The agent's scope has
       // to travel with it — the source window may be closed below, and closing
       // it must not end a process that now lives elsewhere — so a break that
       // could not hand the scope over has to be refused while it is still a
       // no-op, rather than half-done with a detached pane nothing will release.
-      if (!source.agents.includes(agent)) return null
-      if (!source.detachPane(pane)) return null
-      const scope = source.relinquishAgent(agent)!
+      if (!source.agents.includes(agent)) return null;
+      if (!source.detachPane(pane)) return null;
+      const scope = source.relinquishAgent(agent)!;
 
-      const window = yield* this.newWindow()
-      window.adopt(agent, pane, scope)
+      const window = yield* this.newWindow();
+      window.adopt(agent, pane, scope);
 
       if (source.panes.length === 0 && !source.agents.some((a) => a.state !== "done")) {
-        yield* this.closeWindow(source)
+        yield* this.closeWindow(source);
       }
-      return window
-    })
+      return window;
+    });
   }
 
   /** Redraw every window's borders after `frame.externalLeft` changed. */
   refreshChrome() {
-    for (const w of this.#windows) w.refreshChrome()
+    for (const w of this.#windows) w.refreshChrome();
   }
 
   /** Close a window and everything running in it. */
   closeWindow(window: Window): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      const i = this.#windows.indexOf(window)
-      if (i === -1) return
-      this.#windows.splice(i, 1)
+      const i = this.#windows.indexOf(window);
+      if (i === -1) return;
+      this.#windows.splice(i, 1);
       this.#state = closeWindowState(
         this.#state,
         this.#windows.map((candidate) => candidate.number),
         window.number,
         i,
-      )
+      );
       // SpaceSet observes this synchronously and unmounts the old root before
       // the window scope frees terminals that root could still render.
-      const active = this.active
-      const pane = active?.focused ?? active?.panes[0]
-      if (active && pane) active.focus(pane)
-      else this.onChange?.()
-      yield* this.#releaseWindow(window)
-    })
+      const active = this.active;
+      const pane = active?.focused ?? active?.panes[0];
+      if (active && pane) active.focus(pane);
+      else this.onChange?.();
+      yield* this.#releaseWindow(window);
+    });
   }
 
   #releaseWindow(window: Window): Effect.Effect<void> {
-    const scope = this.#scopes.get(window)
-    this.#scopes.delete(window)
-    return scope ? Scope.close(scope, Exit.void) : window.release
+    const scope = this.#scopes.get(window);
+    this.#scopes.delete(window);
+    return scope ? Scope.close(scope, Exit.void) : window.release;
   }
 
   /**
@@ -258,28 +263,34 @@ export class Space {
     return Effect.acquireRelease(
       Effect.sync(() => new Space(env, opts)),
       (space) => space.release,
-    )
+    );
   }
 
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const w of [...this.#windows]) yield* this.#releaseWindow(w)
-      this.#windows.length = 0
-      this.#state = spaceState()
-    })
+      for (const w of [...this.#windows]) yield* this.#releaseWindow(w);
+      this.#windows.length = 0;
+      this.#state = spaceState();
+    });
   }
 }
 
 /** Ranked by how much it wants your attention. Shared by spaces and windows. */
 export function rollUp(agents: readonly Agent[]): AgentState {
-  const RANK: Record<AgentState, number> = { blocked: 4, working: 3, detached: 2, idle: 1, done: 0 }
-  let best: AgentState = "done"
+  const RANK: Record<AgentState, number> = {
+    blocked: 4,
+    working: 3,
+    detached: 2,
+    idle: 1,
+    done: 0,
+  };
+  let best: AgentState = "done";
   for (const a of agents) {
-    const s = a.state
-    if (s === "blocked") return "blocked"
-    if (RANK[s] > RANK[best]) best = s
+    const s = a.state;
+    if (s === "blocked") return "blocked";
+    if (RANK[s] > RANK[best]) best = s;
   }
-  return best
+  return best;
 }
 
 /**
@@ -294,14 +305,14 @@ export function rollUp(agents: readonly Agent[]): AgentState {
  * Returns null when no agent is blocked.
  */
 export function nextBlockedAfter(order: readonly Agent[], from: Agent | null): Agent | null {
-  const n = order.length
-  if (!n) return null
-  const start = from ? order.indexOf(from) + 1 : 0
+  const n = order.length;
+  if (!n) return null;
+  const start = from ? order.indexOf(from) + 1 : 0;
   for (let step = 0; step < n; step++) {
-    const agent = order[(start + step) % n]!
-    if (agent.state === "blocked") return agent
+    const agent = order[(start + step) % n]!;
+    if (agent.state === "blocked") return agent;
   }
-  return null
+  return null;
 }
 
 /**
@@ -311,102 +322,106 @@ export function nextBlockedAfter(order: readonly Agent[], from: Agent | null): A
  * windows, their layouts and their agents entirely off the layout tree.
  */
 export class SpaceSet {
-  #env: Context.Context<WorkspaceEnv>
-  #ctx: RenderContext
-  #host: BoxRenderable
-  #spaces: Space[] = []
-  #scopes = new Map<Space, Scope.CloseableScope>()
-  #state: SpaceSetState = spaceSetState()
-  #mounted: Window | null = null
-  onChange?: () => void
-  onAgentExit?: (agent: Agent, window: Window, space: Space) => void
-  onCopy?: (text: string) => boolean | void
-  onCopyError?: (error: Error) => void
+  #env: Context.Context<WorkspaceEnv>;
+  #ctx: RenderContext;
+  #host: BoxRenderable;
+  #spaces: Space[] = [];
+  #scopes = new Map<Space, Scope.CloseableScope>();
+  #state: SpaceSetState = spaceSetState();
+  #mounted: Window | null = null;
+  onChange?: () => void;
+  onAgentExit?: (agent: Agent, window: Window, space: Space) => void;
+  onCopy?: (text: string) => boolean | void;
+  onCopyError?: (error: Error) => void;
 
   constructor(env: Context.Context<WorkspaceEnv>, host: BoxRenderable) {
-    this.#env = env
-    this.#ctx = Context.get(env, RenderCtx)
-    this.#host = host
+    this.#env = env;
+    this.#ctx = Context.get(env, RenderCtx);
+    this.#host = host;
   }
 
   get spaces(): readonly Space[] {
-    return this.#spaces
+    return this.#spaces;
   }
 
   get active(): Space | null {
-    return this.#spaces.find((space) => space.id === this.#state.activeSpace) ?? null
+    return this.#spaces.find((space) => space.id === this.#state.activeSpace) ?? null;
   }
 
   /** Stable model identity used by persistence and, eventually, the daemon. */
   get activeSpaceId(): string | null {
-    return this.#state.activeSpace
+    return this.#state.activeSpace;
   }
 
   /** Reconcile active identity after spaces and windows have been projected. */
   projectState(state: SpaceSetState): void {
-    this.#state = structuredClone(state)
-    this.#project()
-    this.onChange?.()
-    this.#ctx.requestRender()
+    this.#state = structuredClone(state);
+    this.#project();
+    this.onChange?.();
+    this.#ctx.requestRender();
   }
 
   /** The window keystrokes currently land in. */
   get activeWindow(): Window | null {
-    return this.active?.active ?? null
+    return this.active?.active ?? null;
   }
 
   /** Every agent across every space — what a global "N agents" count means. */
   get allAgents(): Agent[] {
-    return this.#spaces.flatMap((s) => s.agents)
+    return this.#spaces.flatMap((s) => s.agents);
   }
 
   create(name: string, dir = process.cwd(), id?: string): Effect.Effect<Space> {
     return Effect.gen(this, function* () {
-      const scope = yield* Scope.make()
-      const space = yield* Space.make(this.#env, { name, dir, id }).pipe(Scope.extend(scope))
-      this.#scopes.set(space, scope)
+      const scope = yield* Scope.make();
+      const space = yield* Space.make(this.#env, { name, dir, id }).pipe(Scope.extend(scope));
+      this.#scopes.set(space, scope);
       space.onChange = () => {
-        if (space === this.active) this.#project()
-        this.onChange?.()
-      }
-      space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space)
-      space.onCopy = this.onCopy
-      space.onCopyError = this.onCopyError
-      this.#spaces.push(space)
-      if (!this.active) this.activate(space)
-      else this.onChange?.()
-      return space
-    })
+        if (space === this.active) this.#project();
+        this.onChange?.();
+      };
+      space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space);
+      space.onCopy = this.onCopy;
+      space.onCopyError = this.onCopyError;
+      this.#spaces.push(space);
+      if (!this.active) this.activate(space);
+      else this.onChange?.();
+      return space;
+    });
   }
 
   activate(space: Space) {
-    const next = activateSpaceState(this.#state, this.#spaces.map((candidate) => candidate.id), space.id)
-    if (next === this.#state) return
-    this.#state = next
-    this.#project()
+    const next = activateSpaceState(
+      this.#state,
+      this.#spaces.map((candidate) => candidate.id),
+      space.id,
+    );
+    if (next === this.#state) return;
+    this.#state = next;
+    this.#project();
     // Re-focus so keystrokes land in this space's pane, not the old one's.
-    const window = space.active
-    const pane = window?.focused ?? window?.panes[0]
-    if (window && pane) window.focus(pane)
-    this.onChange?.()
-    this.#ctx.requestRender()
+    const window = space.active;
+    const pane = window?.focused ?? window?.panes[0];
+    if (window && pane) window.focus(pane);
+    this.onChange?.();
+    this.#ctx.requestRender();
   }
 
   /** Redraw every pane frame everywhere — an inactive space's windows too, so
    *  switching back to one does not reveal a stale border. */
   refreshChrome() {
-    for (const s of this.#spaces) s.refreshChrome()
+    for (const s of this.#spaces) s.refreshChrome();
   }
 
   cycle(step = 1) {
-    if (this.#spaces.length < 2) return
-    const active = this.active
-    const i = active ? this.#spaces.indexOf(active) : -1
-    this.activate(this.#spaces[(i + step + this.#spaces.length) % this.#spaces.length]!)
+    if (this.#spaces.length < 2) return;
+    const active = this.active;
+    const i = active ? this.#spaces.indexOf(active) : -1;
+    this.activate(this.#spaces[(i + step + this.#spaces.length) % this.#spaces.length]!);
   }
 
   find(agent: Agent): Space | null {
-    return this.#spaces.find((s) => s.agents.includes(agent)) ?? null
+    return this.#spaces.find((s) => s.agents.includes(agent)) ?? null;
   }
 
   /**
@@ -422,48 +437,48 @@ export class SpaceSet {
    * nothing is blocked.
    */
   nextBlocked(from: Agent | null = this.activeWindow?.focused?.agent ?? null): Agent | null {
-    const target = nextBlockedAfter(this.allAgents, from)
-    if (!target) return null
-    const space = this.find(target)
-    const window = space?.windows.find((w) => w.agents.includes(target))
-    if (!space || !window) return null
-    this.activate(space)
-    space.selectWindow(window)
-    window.reveal(target)
-    return target
+    const target = nextBlockedAfter(this.allAgents, from);
+    if (!target) return null;
+    const space = this.find(target);
+    const window = space?.windows.find((w) => w.agents.includes(target));
+    if (!space || !window) return null;
+    this.activate(space);
+    space.selectWindow(window);
+    window.reveal(target);
+    return target;
   }
 
   remove(space: Space): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      const i = this.#spaces.indexOf(space)
-      if (i === -1) return
-      this.#spaces.splice(i, 1)
+      const i = this.#spaces.indexOf(space);
+      if (i === -1) return;
+      this.#spaces.splice(i, 1);
       this.#state = removeSpaceState(
         this.#state,
         this.#spaces.map((candidate) => candidate.id),
         space.id,
         i,
-      )
-      this.#project()
-      yield* this.#releaseSpace(space)
-      this.onChange?.()
-      this.#ctx.requestRender()
-    })
+      );
+      this.#project();
+      yield* this.#releaseSpace(space);
+      this.onChange?.();
+      this.#ctx.requestRender();
+    });
   }
 
   #releaseSpace(space: Space): Effect.Effect<void> {
-    const scope = this.#scopes.get(space)
-    this.#scopes.delete(space)
-    return scope ? Scope.close(scope, Exit.void) : space.release
+    const scope = this.#scopes.get(space);
+    this.#scopes.delete(space);
+    return scope ? Scope.close(scope, Exit.void) : space.release;
   }
 
   /** Reconcile the one renderable admitted by the workspace model. */
   #project() {
-    const next = this.activeWindow
-    if (next === this.#mounted) return
-    if (this.#mounted) this.#host.remove(this.#mounted.root)
-    this.#mounted = next
-    if (next) this.#host.add(next.root)
+    const next = this.activeWindow;
+    if (next === this.#mounted) return;
+    if (this.#mounted) this.#host.remove(this.#mounted.root);
+    this.#mounted = next;
+    if (next) this.#host.add(next.root);
   }
 
   /**
@@ -481,18 +496,18 @@ export class SpaceSet {
     return Effect.acquireRelease(
       Effect.sync(() => new SpaceSet(env, host)),
       (spaces) => spaces.release,
-    )
+    );
   }
 
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
       // Unmount before disposing: mounted panes draw from terminals whose
       // scopes are about to close.
-      this.#state = spaceSetState()
-      this.#project()
-      for (const s of [...this.#spaces]) yield* this.#releaseSpace(s)
-      this.#spaces.length = 0
-    })
+      this.#state = spaceSetState();
+      this.#project();
+      for (const s of [...this.#spaces]) yield* this.#releaseSpace(s);
+      this.#spaces.length = 0;
+    });
   }
 }
 
@@ -508,41 +523,53 @@ export function projectWorkspace(
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     for (const space of [...target.spaces]) {
-      if (!source.spaces.some((candidate) => candidate.id === space.id)) yield* target.remove(space)
+      if (!source.spaces.some((candidate) => candidate.id === space.id))
+        yield* target.remove(space);
     }
     for (const savedSpace of source.spaces) {
-      let space = target.spaces.find((candidate) => candidate.id === savedSpace.id)
-      if (!space) space = yield* target.create(savedSpace.name, savedSpace.dir, savedSpace.id)
-      space.name = savedSpace.name
-      space.dir = savedSpace.dir
-      yield* projectSpace(space, savedSpace, backend)
+      let space = target.spaces.find((candidate) => candidate.id === savedSpace.id);
+      if (!space) space = yield* target.create(savedSpace.name, savedSpace.dir, savedSpace.id);
+      space.name = savedSpace.name;
+      space.dir = savedSpace.dir;
+      yield* projectSpace(space, savedSpace, backend);
     }
-    target.projectState(source.state)
-  })
+    target.projectState(source.state);
+  });
 }
 
-function projectSpace(space: Space, source: WorkspaceSpace, backend: SpawnBackend): Effect.Effect<void> {
+function projectSpace(
+  space: Space,
+  source: WorkspaceSpace,
+  backend: SpawnBackend,
+): Effect.Effect<void> {
   return Effect.gen(function* () {
     for (const window of [...space.windows]) {
-      if (!source.windows.some((candidate) => candidate.number === window.number)) yield* space.closeWindow(window)
+      if (!source.windows.some((candidate) => candidate.number === window.number))
+        yield* space.closeWindow(window);
     }
     for (const savedWindow of source.windows) {
-      let window = space.windows.find((candidate) => candidate.number === savedWindow.number)
-      if (!window) window = yield* space.newWindow(savedWindow.name ?? undefined, savedWindow.number)
-      window.customName = savedWindow.name
-      yield* projectWindow(window, savedWindow, backend)
+      let window = space.windows.find((candidate) => candidate.number === savedWindow.number);
+      if (!window)
+        window = yield* space.newWindow(savedWindow.name ?? undefined, savedWindow.number);
+      window.customName = savedWindow.name;
+      yield* projectWindow(window, savedWindow, backend);
     }
-    space.projectState(source.state)
-  })
+    space.projectState(source.state);
+  });
 }
 
-function projectWindow(window: Window, source: WorkspaceWindow, backend: SpawnBackend): Effect.Effect<void> {
+function projectWindow(
+  window: Window,
+  source: WorkspaceWindow,
+  backend: SpawnBackend,
+): Effect.Effect<void> {
   return Effect.gen(function* () {
     for (const agent of [...window.agents]) {
-      if (!source.agents.some((candidate) => candidate.id === agent.id)) yield* window.removeProjectedAgent(agent)
+      if (!source.agents.some((candidate) => candidate.id === agent.id))
+        yield* window.removeProjectedAgent(agent);
     }
     for (const saved of source.agents) {
-      if (window.agents.some((candidate) => candidate.id === saved.id)) continue
+      if (window.agents.some((candidate) => candidate.id === saved.id)) continue;
       yield* window.startAgent({
         id: saved.id,
         name: saved.name,
@@ -551,8 +578,8 @@ function projectWindow(window: Window, source: WorkspaceWindow, backend: SpawnBa
         cols: saved.cols,
         rows: saved.rows,
         ...(saved.exited ? { exited: { code: saved.exitCode } } : { backend }),
-      })
+      });
     }
-    window.project(source.layout, source.state)
-  })
+    window.project(source.layout, source.state);
+  });
 }

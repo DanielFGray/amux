@@ -38,7 +38,11 @@ test("SessionSupervisor publishes owned PTY output and exit frames", async () =>
         rows: 24,
       });
       return yield* untilExit(subscription.frames);
-    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
   );
 
   expect(output(frames)).toContain("hello");
@@ -46,7 +50,12 @@ test("SessionSupervisor publishes owned PTY output and exit frames", async () =>
   // a session is gone while output for it is still in flight. The foreground
   // frame is a side channel about the same session, not terminal content.
   expect(frames.at(-1)).toEqual({ _tag: "exit", session: "supervised-agent", code: 7 });
-  expect(frames.filter((frame) => frame._tag !== "foreground").slice(0, -1).every((frame) => frame._tag === "output")).toBe(true);
+  expect(
+    frames
+      .filter((frame) => frame._tag !== "foreground")
+      .slice(0, -1)
+      .every((frame) => frame._tag === "output"),
+  ).toBe(true);
 });
 
 /**
@@ -78,32 +87,44 @@ test("a supervised session publishes its foreground process, and its changes", a
         Stream.runForEach(subscription.frames, (frame) =>
           frame._tag === "foreground"
             ? Effect.gen(function* () {
-                if (frame.pgid > 0 && frame.pgid === frame.sid) yield* Deferred.succeed(atPrompt, frame).pipe(Effect.ignore);
-                if (frame.pgid > 0 && frame.pgid !== frame.sid) yield* Deferred.succeed(running, frame).pipe(Effect.ignore);
+                if (frame.pgid > 0 && frame.pgid === frame.sid)
+                  yield* Deferred.succeed(atPrompt, frame).pipe(Effect.ignore);
+                if (frame.pgid > 0 && frame.pgid !== frame.sid)
+                  yield* Deferred.succeed(running, frame).pipe(Effect.ignore);
               })
             : Effect.void,
         ),
       );
       // The shell has to come up and make itself the foreground group before
       // the first meaningful frame can arrive.
-      yield* Deferred.await(atPrompt).pipe(Effect.timeout("5 seconds"), Effect.orElseSucceed(() => {
-        throw new Error("no foreground frame with a shell at a prompt arrived");
-      }));
+      yield* Deferred.await(atPrompt).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.orElseSucceed(() => {
+          throw new Error("no foreground frame with a shell at a prompt arrived");
+        }),
+      );
       yield* supervisor.handle({
         _tag: "input",
         session: "foreground-agent",
         data: new TextEncoder().encode("sleep 30\n"),
       });
-      yield* Deferred.await(running).pipe(Effect.timeout("5 seconds"), Effect.orElseSucceed(() => {
-        throw new Error("no foreground frame with a command running arrived");
-      }));
+      yield* Deferred.await(running).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.orElseSucceed(() => {
+          throw new Error("no foreground frame with a command running arrived");
+        }),
+      );
       yield* Fiber.interrupt(waiter);
       // Left running: scope teardown below has to kill it on its own.
       return {
         prompt: yield* Deferred.await(atPrompt),
         running: yield* Deferred.await(running),
       };
-    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
   );
 
   expect(fg.prompt.session).toBe("foreground-agent");
@@ -162,7 +183,11 @@ test("SessionSupervisor routes input through the managed PTY", async () => {
         data: new Uint8Array([104, 105, 10]),
       });
       return yield* untilExit(subscription.frames);
-    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
   );
 
   expect(output(frames)).toContain("got:hi");
@@ -186,10 +211,16 @@ test("concurrent duplicate spawns create one child and one managed session", asy
       const second = yield* Effect.exit(supervisor.spawn(spec));
       const firstResult = yield* Fiber.join(first);
       expect([firstResult._tag, second._tag].sort()).toEqual(["Failure", "Success"]);
-      expect(String(firstResult._tag === "Failure" ? firstResult : second)).toContain("already live or starting");
+      expect(String(firstResult._tag === "Failure" ? firstResult : second)).toContain(
+        "already live or starting",
+      );
       expect(yield* supervisor.live).toEqual(["duplicate-agent"]);
       return yield* untilExit(subscription.frames);
-    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
   );
 
   expect(await readFile(marker, "utf8")).toBe("x");
@@ -208,7 +239,11 @@ test("exit cleanup releases the session and replay terminal for reuse", async ()
       expect(yield* supervisor.live).toEqual([]);
       yield* supervisor.spawn({ id: "reusable-agent", cmd: ["true"], cols: 80, rows: 24 });
       return yield* supervisor.live;
-    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
   );
 
   expect(live).toEqual(["reusable-agent"]);
@@ -222,27 +257,38 @@ test("killing a trapped session publishes one exit and removes it", async () => 
       const supervisor = yield* SessionSupervisor;
       yield* supervisor.spawn({
         id: "trapped-agent",
-        cmd: ["bash", "-c", "trap '' HUP TERM; (trap '' HUP TERM; printf CHILD_READY\\n; sleep 30) & wait"],
+        cmd: [
+          "bash",
+          "-c",
+          "trap '' HUP TERM; (trap '' HUP TERM; printf CHILD_READY\\n; sleep 30) & wait",
+        ],
         cols: 80,
         rows: 24,
       });
       const ready = yield* Deferred.make<void>();
       const collector = yield* Effect.fork(
-        Stream.runCollect(subscription.frames.pipe(
-          Stream.tap((frame) =>
-            frame._tag === "output" && new TextDecoder().decode(frame.data).includes("CHILD_READY")
-              ? Deferred.succeed(ready, void 0)
-              : Effect.void,
+        Stream.runCollect(
+          subscription.frames.pipe(
+            Stream.tap((frame) =>
+              frame._tag === "output" &&
+              new TextDecoder().decode(frame.data).includes("CHILD_READY")
+                ? Deferred.succeed(ready, void 0)
+                : Effect.void,
+            ),
+            Stream.takeUntil((frame) => frame._tag === "exit"),
           ),
-          Stream.takeUntil((frame) => frame._tag === "exit"),
-        )),
+        ),
       );
       yield* Deferred.await(ready);
       yield* supervisor.kill("trapped-agent");
       const received = Chunk.toReadonlyArray(yield* Fiber.join(collector));
       expect(yield* supervisor.live).toEqual([]);
       return received;
-    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
   );
 
   expect(frames.filter((frame) => frame._tag === "exit")).toHaveLength(1);
@@ -258,15 +304,19 @@ test("concurrent supervisor kills publish one exit and permit same-id reuse", as
       yield* supervisor.spawn({ id: "concurrent-agent", cmd: ["sleep", "30"], cols: 80, rows: 24 });
       const received: AttachFrame[] = [];
       const exitSeen = yield* Deferred.make<void>();
-      const collector = yield* Effect.fork(Stream.runForEach(subscription.frames, (frame) =>
-        Effect.sync(() => received.push(frame)).pipe(
-          Effect.zipRight(frame._tag === "exit" ? Deferred.succeed(exitSeen, void 0) : Effect.void),
+      const collector = yield* Effect.fork(
+        Stream.runForEach(subscription.frames, (frame) =>
+          Effect.sync(() => received.push(frame)).pipe(
+            Effect.zipRight(
+              frame._tag === "exit" ? Deferred.succeed(exitSeen, void 0) : Effect.void,
+            ),
+          ),
         ),
-      ));
-      yield* Effect.all([
-        supervisor.kill("concurrent-agent"),
-        supervisor.kill("concurrent-agent"),
-      ], { concurrency: "unbounded" });
+      );
+      yield* Effect.all(
+        [supervisor.kill("concurrent-agent"), supervisor.kill("concurrent-agent")],
+        { concurrency: "unbounded" },
+      );
       yield* Deferred.await(exitSeen);
       yield* Effect.sleep(50);
       yield* Fiber.interrupt(collector);
@@ -274,7 +324,11 @@ test("concurrent supervisor kills publish one exit and permit same-id reuse", as
       expect(yield* supervisor.live).toEqual([]);
       yield* supervisor.spawn({ id: "concurrent-agent", cmd: ["true"], cols: 80, rows: 24 });
       return received;
-    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
   );
 
   expect(frames.filter((frame) => frame._tag === "exit")).toHaveLength(1);
@@ -298,7 +352,11 @@ test("an agent-kind session is listed and killed through the same supervisor pat
       yield* supervisor.kill("stub-agent");
       expect(yield* supervisor.live).toEqual([]);
       return yield* untilExit(subscription.frames);
-    }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default), Effect.scoped),
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AttachHub.Default),
+      Effect.scoped,
+    ),
   );
 
   expect(frames.at(-1)).toEqual({ _tag: "exit", session: "stub-agent", code: null });

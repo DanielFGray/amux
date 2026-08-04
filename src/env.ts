@@ -11,9 +11,9 @@
  * already import each other.
  */
 
-import { Context } from "effect"
-import type { RenderContext } from "@opentui/core"
-import { localPty, type SpawnBackend } from "./backend.ts"
+import { Context } from "effect";
+import type { RenderContext } from "@opentui/core";
+import { localPty, type SpawnBackend } from "./backend.ts";
 
 /** The renderer everything in a workspace draws into. No default: there is no
  *  sensible stand-in for a renderer, and a missing one should not be silently
@@ -44,7 +44,7 @@ export class Backend extends Context.Reference<Backend>()("Backend", {
 }) {}
 
 /** Everything a workspace reads out of its context. */
-export type WorkspaceEnv = RenderCtx | Shell | Backend
+export type WorkspaceEnv = RenderCtx | Shell | Backend;
 
 /**
  * Build a workspace's context.
@@ -59,8 +59,8 @@ export const workspaceEnv = (
   ctx: RenderContext,
   options: { shell?: string[]; backend?: SpawnBackend } = {},
 ): Context.Context<WorkspaceEnv> => {
-  let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>
-  if (options.shell) env = Context.add(env, Shell, options.shell)
-  if (options.backend) env = Context.add(env, Backend, options.backend)
-  return env
-}
+  let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>;
+  if (options.shell) env = Context.add(env, Shell, options.shell);
+  if (options.backend) env = Context.add(env, Backend, options.backend);
+  return env;
+};

@@ -1,23 +1,23 @@
 /** @jsxImportSource @opentui/solid */
-import { For, createMemo } from "solid-js"
-import { theme } from "./theme.ts"
-import type { HintGroup } from "../bindings.ts"
+import { For, createMemo } from "solid-js";
+import { theme } from "./theme.ts";
+import type { HintGroup } from "../bindings.ts";
 
 /** Widest group name we will indent to before the layout starts looking silly. */
-const MAX_LABEL = 10
+const MAX_LABEL = 10;
 /** Gap between two entries on the same line. */
-const GAP = "   "
+const GAP = "   ";
 
 interface Line {
-  label: string
-  entries: { keys: string; desc: string }[]
+  label: string;
+  entries: { keys: string; desc: string }[];
 }
 
 /** Decide the visible/delayed state before the app arms its timer. */
 export function hintVisibility(sequenceLength: number, enabled: boolean, delaySeconds: number) {
-  if (sequenceLength === 0 || !enabled) return { visible: false, delayMs: 0 }
-  const delayMs = Math.max(0, delaySeconds) * 1000
-  return { visible: delayMs === 0, delayMs }
+  if (sequenceLength === 0 || !enabled) return { visible: false, delayMs: 0 };
+  const delayMs = Math.max(0, delaySeconds) * 1000;
+  return { visible: delayMs === 0, delayMs };
 }
 
 /**
@@ -28,24 +28,24 @@ export function hintVisibility(sequenceLength: number, enabled: boolean, delaySe
  * scan it in the half second before you press the next key.
  */
 function wrap(group: HintGroup, label: string, width: number): Line[] {
-  const lines: Line[] = []
-  let current: Line["entries"] = []
-  let used = 0
+  const lines: Line[] = [];
+  let current: Line["entries"] = [];
+  let used = 0;
 
   for (const entry of group.entries) {
     // Not "/" — one of the keys *is* "/", and "?//" is unreadable.
-    const keys = entry.keys.join("·")
-    const size = keys.length + 1 + entry.desc.length
+    const keys = entry.keys.join("·");
+    const size = keys.length + 1 + entry.desc.length;
     if (current.length && used + GAP.length + size > width) {
-      lines.push({ label: lines.length ? "" : label, entries: current })
-      current = []
-      used = 0
+      lines.push({ label: lines.length ? "" : label, entries: current });
+      current = [];
+      used = 0;
     }
-    used += (current.length ? GAP.length : 0) + size
-    current.push({ keys, desc: entry.desc })
+    used += (current.length ? GAP.length : 0) + size;
+    current.push({ keys, desc: entry.desc });
   }
-  if (current.length) lines.push({ label: lines.length ? "" : label, entries: current })
-  return lines
+  if (current.length) lines.push({ label: lines.length ? "" : label, entries: current });
+  return lines;
 }
 
 /**
@@ -57,24 +57,22 @@ function wrap(group: HintGroup, label: string, width: number): Line[] {
  * press. Transient chrome must never touch the layout of a terminal.
  */
 export function Hints(props: {
-  groups: HintGroup[]
+  groups: HintGroup[];
   /** The sequence so far, e.g. "^a". */
-  pending: string
-  left: number
-  width: number
-  height: number
+  pending: string;
+  left: number;
+  width: number;
+  height: number;
 }) {
   const labelWidth = createMemo(() =>
     Math.min(MAX_LABEL, Math.max(0, ...props.groups.map((g) => g.group.length))),
-  )
+  );
 
   const lines = createMemo(() => {
     // 2 for the border, 2 for the padding, then the label gutter.
-    const available = Math.max(20, props.width - 4 - labelWidth() - 1)
-    return props.groups.flatMap((group) =>
-      wrap(group, group.group.slice(0, MAX_LABEL), available),
-    )
-  })
+    const available = Math.max(20, props.width - 4 - labelWidth() - 1);
+    return props.groups.flatMap((group) => wrap(group, group.group.slice(0, MAX_LABEL), available));
+  });
 
   return (
     <box
@@ -113,5 +111,5 @@ export function Hints(props: {
         )}
       </For>
     </box>
-  )
+  );
 }

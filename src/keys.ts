@@ -1,9 +1,9 @@
-import type { KeyEvent } from "@opentui/core"
+import type { KeyEvent } from "@opentui/core";
 
 /** Key event types that represent an actual keystroke to forward. Kitty's
  *  protocol also reports releases, which must not be sent to the child or
  *  every keypress arrives twice. */
-const FORWARDABLE = new Set(["press", "repeat"])
+const FORWARDABLE = new Set(["press", "repeat"]);
 
 /**
  * Turn a parsed key event back into the bytes a terminal child expects.
@@ -15,26 +15,26 @@ const FORWARDABLE = new Set(["press", "repeat"])
  * drops those, which silently breaks readline bindings such as alt+b/alt+f.
  */
 export function encodeKey(key: KeyEvent): string | null {
-  if (key.eventType && !FORWARDABLE.has(key.eventType)) return null
+  if (key.eventType && !FORWARDABLE.has(key.eventType)) return null;
 
-  const raw = key.raw
-  if (raw) return raw
+  const raw = key.raw;
+  if (raw) return raw;
 
-  const seq = key.sequence
-  if (seq) return key.meta || key.option ? `\x1b${seq}` : seq
+  const seq = key.sequence;
+  if (seq) return key.meta || key.option ? `\x1b${seq}` : seq;
 
-  return null
+  return null;
 }
 
 /** A key the way the keymap's parser describes it: a name plus modifiers. The
  *  compiled parts of parseKeySequence carry one of these as their `stroke`.
  *  send-keys turns these back into bytes via encodeStroke below. */
 export interface KeyStroke {
-  name: string
-  ctrl: boolean
-  shift: boolean
-  meta: boolean
-  super?: boolean
+  name: string;
+  ctrl: boolean;
+  shift: boolean;
+  meta: boolean;
+  super?: boolean;
 }
 
 /** The child's declared TERM is xterm-256color, so the unmodified named keys
@@ -70,7 +70,7 @@ const NAMED_SEQUENCES: Record<string, string> = {
   f10: "\x1b[21~",
   f11: "\x1b[23~",
   f12: "\x1b[24~",
-}
+};
 
 /** The xterm modified-key forms, parameter and final byte — `\x1b[1;5A` for
  *  ctrl+up. The modifier number is the same 1+shift+2*alt+4*ctrl+8*super
@@ -98,7 +98,7 @@ const MODIFIED_CSI: Record<string, [param: string, final: string]> = {
   f10: ["21", "~"],
   f11: ["23", "~"],
   f12: ["24", "~"],
-}
+};
 
 /** Modified keys with no classic xterm form at all (shift+enter, ctrl+escape)
  *  use the CSI-u codes. The ghostty emulator understands these natively, and
@@ -110,7 +110,7 @@ const CSI_U: Record<string, number> = {
   enter: 13,
   escape: 27,
   space: 32,
-}
+};
 
 /** The named punctuation keys — how a "," or "+" is spelled when whitespace or
  *  the modifier "+" would otherwise split the token that carries it. */
@@ -129,10 +129,16 @@ const NAMED_PRINTABLE: Record<string, string> = {
   backquote: "`",
   leftbracket: "[",
   rightbracket: "]",
-}
+};
 
 function csiModifier(stroke: KeyStroke): number {
-  return 1 + (stroke.shift ? 1 : 0) + (stroke.meta ? 2 : 0) + (stroke.ctrl ? 4 : 0) + (stroke.super ? 8 : 0)
+  return (
+    1 +
+    (stroke.shift ? 1 : 0) +
+    (stroke.meta ? 2 : 0) +
+    (stroke.ctrl ? 4 : 0) +
+    (stroke.super ? 8 : 0)
+  );
 }
 
 /** The control code a ctrl-modified printable produces. Everything ASCII that
@@ -141,18 +147,18 @@ function csiModifier(stroke: KeyStroke): number {
  *  Anything else — ctrl on a comma, say — has no control form, so it goes
  *  through unmodified rather than inventing a byte. */
 function ctrlByte(char: string): string {
-  if (/^[a-z@[\]\\^_?]$/.test(char)) return String.fromCharCode(char.charCodeAt(0) & 0x1f)
-  return char
+  if (/^[a-z@[\]\\^_?]$/.test(char)) return String.fromCharCode(char.charCodeAt(0) & 0x1f);
+  return char;
 }
 
 function encodeChar(char: string, stroke: KeyStroke): string {
-  let out = char
-  if (stroke.ctrl) out = ctrlByte(out)
+  let out = char;
+  if (stroke.ctrl) out = ctrlByte(out);
   // shift is only a modifier on letters; on punctuation it is how the
   // character was produced, and the parser already recorded the result.
-  if (stroke.shift && /^[a-z]$/.test(out)) out = out.toUpperCase()
-  if (stroke.meta) out = `\x1b${out}`
-  return out
+  if (stroke.shift && /^[a-z]$/.test(out)) out = out.toUpperCase();
+  if (stroke.meta) out = `\x1b${out}`;
+  return out;
 }
 
 /**
@@ -171,27 +177,27 @@ function encodeChar(char: string, stroke: KeyStroke): string {
  * callers treat as "not a key" rather than silently writing nothing.
  */
 export function encodeStroke(stroke: KeyStroke): string {
-  const { name, ctrl, shift, meta } = stroke
+  const { name, ctrl, shift, meta } = stroke;
 
   // ctrl+space is NUL — the one modified named key with a single-byte form.
-  if (name === "space" && ctrl && !shift && !meta) return "\x00"
+  if (name === "space" && ctrl && !shift && !meta) return "\x00";
 
-  const named = NAMED_SEQUENCES[name]
+  const named = NAMED_SEQUENCES[name];
   if (named !== undefined) {
-    if (meta) return `\x1b${named}`
-    if (!ctrl && !shift) return named
+    if (meta) return `\x1b${named}`;
+    if (!ctrl && !shift) return named;
     // shift+tab is the one modified key xterm's terminfo spells out directly.
-    if (name === "tab" && shift && !ctrl) return "\x1b[Z"
-    const csi = MODIFIED_CSI[name]
-    if (csi) return `\x1b[${csi[0]};${csiModifier(stroke)}${csi[1]}`
-    const code = CSI_U[name]
-    if (code !== undefined) return `\x1b[${code};${csiModifier(stroke)}u`
-    return named
+    if (name === "tab" && shift && !ctrl) return "\x1b[Z";
+    const csi = MODIFIED_CSI[name];
+    if (csi) return `\x1b[${csi[0]};${csiModifier(stroke)}${csi[1]}`;
+    const code = CSI_U[name];
+    if (code !== undefined) return `\x1b[${code};${csiModifier(stroke)}u`;
+    return named;
   }
 
   // Named printable keys and bare single characters. A multi-codepoint name
   // from the parser's table (kp1, media keys) has no sequence at all.
-  const char = NAMED_PRINTABLE[name] ?? name
-  if ([...char].length !== 1) return ""
-  return encodeChar(char, stroke)
+  const char = NAMED_PRINTABLE[name] ?? name;
+  if ([...char].length !== 1) return "";
+  return encodeChar(char, stroke);
 }

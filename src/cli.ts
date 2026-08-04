@@ -9,9 +9,9 @@
  * feel like a foreground one. The client reads the chosen session from
  * `AMUX_SESSION`, the same variable `main.tsx` honours directly.
  */
-import { isSessionId } from "./session.ts"
+import { isSessionId } from "./session.ts";
 
-const [sub, id] = process.argv.slice(2)
+const [sub, id] = process.argv.slice(2);
 
 if (sub === "help" || sub === "--help" || sub === "-h") {
   console.log(`usage: amux [session-id] | <daemon|status|stop> [session-id]
@@ -20,22 +20,22 @@ if (sub === "help" || sub === "--help" || sub === "-h") {
                        sessions is "default"
   amux daemon [id]     run the daemon for a session in the foreground
   amux status [id]     print a session's status as JSON
-  amux stop [id]       stop a session`)
-  process.exit(0)
+  amux stop [id]       stop a session`);
+  process.exit(0);
 }
 
 if (sub === "daemon") {
-  const { runDaemonMain } = await import("./daemon-main.ts")
-  runDaemonMain(id)
+  const { runDaemonMain } = await import("./daemon-main.ts");
+  runDaemonMain(id);
 } else if (sub === "status" || sub === "stop") {
-  const { runSessionCli } = await import("./session-cli.ts")
-  process.exit(await runSessionCli([sub, id ?? "default"]))
+  const { runSessionCli } = await import("./session-cli.ts");
+  process.exit(await runSessionCli([sub, id ?? "default"]));
 } else {
-  const sessionId = sub ?? "default"
+  const sessionId = sub ?? "default";
   if (!isSessionId(sessionId)) {
-    console.error(`invalid session id ${JSON.stringify(sessionId)}`)
-    process.exit(2)
+    console.error(`invalid session id ${JSON.stringify(sessionId)}`);
+    process.exit(2);
   }
-  process.env.AMUX_SESSION = sessionId
-  await import("./main.tsx")
+  process.env.AMUX_SESSION = sessionId;
+  await import("./main.tsx");
 }

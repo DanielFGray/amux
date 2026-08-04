@@ -13,7 +13,7 @@
  * we project here — a supervised PTY has no hooks to lean on.
  */
 
-export type AgentState = "idle" | "working" | "blocked" | "detached" | "done"
+export type AgentState = "idle" | "working" | "blocked" | "detached" | "done";
 
 /**
  * Executable names that mean "this is an agent CLI", mapped to a short label.
@@ -43,18 +43,18 @@ const AGENT_EXECUTABLES: Record<string, string> = {
   goose: "goose",
   pi: "pi",
   cline: "cline",
-}
+};
 
 /** Runtimes an agent is commonly launched through, where the name worth reading
  *  is the script in argv[1] rather than the binary in argv[0]. */
-const INTERPRETERS = new Set(["node", "bun", "deno", "python", "python3", "sh", "bash", "zsh"])
+const INTERPRETERS = new Set(["node", "bun", "deno", "python", "python3", "sh", "bash", "zsh"]);
 
 const executableName = (token: string): string =>
   token
     .split("/")
     .pop()!
     .replace(/\.(exe|cmd|js|mjs|ts)$/i, "")
-    .toLowerCase()
+    .toLowerCase();
 
 /**
  * Recognise an agent CLI from a command name or a whole command line.
@@ -65,14 +65,14 @@ const executableName = (token: string): string =>
  * there.
  */
 export function identifyAgent(command: string): string | null {
-  const tokens = command.trim().split(/\s+/).filter(Boolean)
-  const first = tokens[0]
-  if (!first) return null
-  const base = executableName(first)
-  const direct = AGENT_EXECUTABLES[base]
-  if (direct) return direct
-  if (!INTERPRETERS.has(base) || !tokens[1]) return null
-  return AGENT_EXECUTABLES[executableName(tokens[1])] ?? null
+  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  const first = tokens[0];
+  if (!first) return null;
+  const base = executableName(first);
+  const direct = AGENT_EXECUTABLES[base];
+  if (direct) return direct;
+  if (!INTERPRETERS.has(base) || !tokens[1]) return null;
+  return AGENT_EXECUTABLES[executableName(tokens[1])] ?? null;
 }
 
 /**
@@ -84,20 +84,20 @@ export function identifyAgent(command: string): string | null {
  * conventional leading dash is stripped.
  */
 export function commandName(cmd: readonly string[]): string {
-  const first = cmd[0]?.trim()
-  if (!first) return "shell"
-  return executableName(first.replace(/^-/, "")) || "shell"
+  const first = cmd[0]?.trim();
+  if (!first) return "shell";
+  return executableName(first.replace(/^-/, "")) || "shell";
 }
 
 /** Non-braille glyphs Claude Code cycles through in its title while thinking. */
-const CLAUDE_ACTIVITY_GLYPHS = "·✢✳✶✻✽"
+const CLAUDE_ACTIVITY_GLYPHS = "·✢✳✶✻✽";
 
 /** Braille spinners occupy U+2800–U+28FF; most agent CLIs animate one there. */
 const isActivityGlyph = (ch: string): boolean => {
-  const cp = ch.codePointAt(0)
-  if (cp === undefined) return false
-  return (cp >= 0x2800 && cp <= 0x28ff) || CLAUDE_ACTIVITY_GLYPHS.includes(ch)
-}
+  const cp = ch.codePointAt(0);
+  if (cp === undefined) return false;
+  return (cp >= 0x2800 && cp <= 0x28ff) || CLAUDE_ACTIVITY_GLYPHS.includes(ch);
+};
 
 /**
  * Split a leading activity glyph off a terminal title.
@@ -107,13 +107,13 @@ const isActivityGlyph = (ch: string): boolean => {
  * is left alone and a spinner is not mistaken for content.
  */
 export function splitActivity(title: string): { spinning: boolean; text: string } {
-  const trimmed = title.trim()
-  if (!trimmed) return { spinning: false, text: "" }
-  const first = String.fromCodePoint(trimmed.codePointAt(0)!)
-  const rest = trimmed.slice(first.length)
-  if (!isActivityGlyph(first)) return { spinning: false, text: trimmed }
-  if (rest && !/^\s/.test(rest)) return { spinning: false, text: trimmed }
-  return { spinning: true, text: rest.trim() }
+  const trimmed = title.trim();
+  if (!trimmed) return { spinning: false, text: "" };
+  const first = String.fromCodePoint(trimmed.codePointAt(0)!);
+  const rest = trimmed.slice(first.length);
+  if (!isActivityGlyph(first)) return { spinning: false, text: trimmed };
+  if (rest && !/^\s/.test(rest)) return { spinning: false, text: trimmed };
+  return { spinning: true, text: rest.trim() };
 }
 
 /**
@@ -132,7 +132,7 @@ const BLOCKED_PATTERNS: RegExp[] = [
   /\(y\/N\)/,
   /Press\s+(enter|return)\s+to\s+continue/i,
   /Waiting for (your )?(input|response|approval)/i,
-]
+];
 
 /** True when the tail of the screen looks like a prompt awaiting an answer. */
 export function looksBlocked(lines: string[]): boolean {
@@ -141,14 +141,13 @@ export function looksBlocked(lines: string[]): boolean {
   const text = lines
     .map((l) => l.replace(/\s+$/, ""))
     .filter((l) => l.length > 0)
-    .join("\n")
-  if (!text) return false
-  return BLOCKED_PATTERNS.some((re) => re.test(text))
+    .join("\n");
+  if (!text) return false;
+  return BLOCKED_PATTERNS.some((re) => re.test(text));
 }
 
 /** Braille frames for our own rendering of the "working" state. */
-export const SPINNER_FRAMES = [...
-  "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"]
+export const SPINNER_FRAMES = [..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"];
 
 export const STATE_GLYPH: Record<AgentState, string> = {
   blocked: "●",
@@ -156,4 +155,4 @@ export const STATE_GLYPH: Record<AgentState, string> = {
   idle: "○",
   detached: "⊘",
   done: "✓",
-}
+};

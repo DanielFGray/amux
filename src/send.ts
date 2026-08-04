@@ -1,4 +1,4 @@
-import { encodeStroke, type KeyStroke } from "./keys.ts"
+import { encodeStroke, type KeyStroke } from "./keys.ts";
 
 /** A send-keys input that cannot be compiled. The message is what the prompt
  *  shows; the two structural failures are "nothing to send" (empty input) and
@@ -14,21 +14,21 @@ export class SendKeysError extends Error {}
  *  this in the app. A token is a single key (`Enter`) or a run containing one
  *  (`<leader>:` is the prefix then a colon); a token of only plain characters
  *  (`hello`, `C-a`) is not a key sequence, it is text. */
-export type SendKeyParser = (token: string) => readonly KeyStroke[] | null
+export type SendKeyParser = (token: string) => readonly KeyStroke[] | null;
 
 /** A pane that can receive injected input. The `write` path is deliberately
  *  the pane's own: bytes go straight to the child's pty, past the app keymap,
  *  so an injected `^a q` can never quit amux — which is the whole point. */
 export interface SendTarget {
-  write(bytes: string): void
+  write(bytes: string): void;
   /** A human name for the target, for the prompt's title. */
-  describe(): string
+  describe(): string;
 }
 
 interface RawToken {
   /** Whether the token was wrapped in quotes, which forces literal text. */
-  quoted: boolean
-  text: string
+  quoted: boolean;
+  text: string;
 }
 
 /**
@@ -40,39 +40,39 @@ interface RawToken {
  * needs no escaping. A quote that is never closed is an error.
  */
 export function tokenizeSendKeys(input: string): RawToken[] {
-  const tokens: RawToken[] = []
-  let current: RawToken | null = null
+  const tokens: RawToken[] = [];
+  let current: RawToken | null = null;
   const flush = () => {
     if (current) {
-      tokens.push(current)
-      current = null
+      tokens.push(current);
+      current = null;
     }
-  }
+  };
 
-  let i = 0
+  let i = 0;
   while (i < input.length) {
-    const ch = input[i]!
+    const ch = input[i]!;
     if (ch === "'" || ch === '"') {
       if (current === null) {
-        const close = input.indexOf(ch, i + 1)
-        if (close === -1) throw new SendKeysError("unterminated quote")
-        tokens.push({ quoted: true, text: input.slice(i + 1, close) })
-        i = close + 1
+        const close = input.indexOf(ch, i + 1);
+        if (close === -1) throw new SendKeysError("unterminated quote");
+        tokens.push({ quoted: true, text: input.slice(i + 1, close) });
+        i = close + 1;
       } else {
-        current.text += ch
-        i++
+        current.text += ch;
+        i++;
       }
     } else if (/\s/.test(ch)) {
-      flush()
-      i++
+      flush();
+      i++;
     } else {
-      current ??= { quoted: false, text: "" }
-      current.text += ch
-      i++
+      current ??= { quoted: false, text: "" };
+      current.text += ch;
+      i++;
     }
   }
-  flush()
-  return tokens
+  flush();
+  return tokens;
 }
 
 /**
@@ -93,38 +93,38 @@ export function tokenizeSendKeys(input: string): RawToken[] {
  * SendKeysError for empty input or an unterminated quote.
  */
 export function encodeSendKeys(input: string, parseKey: SendKeyParser): string {
-  const tokens = tokenizeSendKeys(input)
-  let out = ""
-  let lastWasLiteral = false
-  let produced = false
+  const tokens = tokenizeSendKeys(input);
+  let out = "";
+  let lastWasLiteral = false;
+  let produced = false;
   for (const token of tokens) {
     if (token.quoted) {
-      if (token.text === "") continue
-      if (lastWasLiteral) out += " "
-      out += token.text
-      lastWasLiteral = true
-      produced = true
-      continue
+      if (token.text === "") continue;
+      if (lastWasLiteral) out += " ";
+      out += token.text;
+      lastWasLiteral = true;
+      produced = true;
+      continue;
     }
-    const strokes = parseKey(token.text)
+    const strokes = parseKey(token.text);
     if (strokes && strokes.some((stroke) => !isPlainStroke(stroke))) {
-      const bytes = strokes.map(encodeStroke).join("")
+      const bytes = strokes.map(encodeStroke).join("");
       if (bytes !== "") {
-        out += bytes
-        lastWasLiteral = false
-        produced = true
-        continue
+        out += bytes;
+        lastWasLiteral = false;
+        produced = true;
+        continue;
       }
     }
     // Not a key send-keys can encode ("C-a" reads as three letters, "kp1" has
     // no terminal sequence): it goes through as the text it is.
-    if (lastWasLiteral) out += " "
-    out += token.text
-    lastWasLiteral = true
-    produced = true
+    if (lastWasLiteral) out += " ";
+    out += token.text;
+    lastWasLiteral = true;
+    produced = true;
   }
-  if (!produced) throw new SendKeysError("nothing to send")
-  return out
+  if (!produced) throw new SendKeysError("nothing to send");
+  return out;
 }
 
 /** A stroke whose encoding is just the character it is — a bare printable
@@ -134,12 +134,8 @@ export function encodeSendKeys(input: string, parseKey: SendKeyParser): string {
  *  or the `<leader>` token — turns into encoded bytes. */
 function isPlainStroke(stroke: KeyStroke): boolean {
   return (
-    !stroke.ctrl &&
-    !stroke.shift &&
-    !stroke.meta &&
-    !stroke.super &&
-    [...stroke.name].length === 1
-  )
+    !stroke.ctrl && !stroke.shift && !stroke.meta && !stroke.super && [...stroke.name].length === 1
+  );
 }
 
 /**
@@ -152,15 +148,15 @@ export function sendKeys(
   input: string,
   parseKey: SendKeyParser,
 ): SendKeysError | null {
-  let bytes: string
+  let bytes: string;
   try {
-    bytes = encodeSendKeys(input, parseKey)
+    bytes = encodeSendKeys(input, parseKey);
   } catch (error) {
-    return error instanceof SendKeysError ? error : new SendKeysError(String(error))
+    return error instanceof SendKeysError ? error : new SendKeysError(String(error));
   }
-  if (bytes === "") return new SendKeysError("nothing to send")
-  target.write(bytes)
-  return null
+  if (bytes === "") return new SendKeysError("nothing to send");
+  target.write(bytes);
+  return null;
 }
 
 /**
@@ -174,10 +170,10 @@ export function pickSendTarget(
   selected: SendTarget | null,
   reveal: (selected: SendTarget) => void,
 ): SendTarget | null {
-  if (focused) return focused
+  if (focused) return focused;
   if (selected) {
-    reveal(selected)
-    return selected
+    reveal(selected);
+    return selected;
   }
-  return null
+  return null;
 }

@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show, createMemo } from "solid-js"
-import type { ScrollBoxRenderable } from "@opentui/core"
-import { theme } from "./theme.ts"
+import { For, Show, createMemo } from "solid-js";
+import type { ScrollBoxRenderable } from "@opentui/core";
+import { theme } from "./theme.ts";
 import {
   OPTIONS,
   editHint,
@@ -11,22 +11,22 @@ import {
   optionsIn,
   type OptionName,
   type Options,
-} from "../options.ts"
-import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts"
+} from "../options.ts";
+import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts";
 
 /** The option sections, plus the keybinds tab — which is not a section of the
  *  options table because a binding is not an option. */
-export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "keybinds"]
-export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]
+export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "keybinds"];
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** One row of the settings window. */
 interface Field {
   /** What `config.set` takes, so acting on a row needs nothing but the row. */
-  name: OptionName
+  name: OptionName;
   /** The name without its section, which the tab above already says. */
-  label: string
-  value: string
-  hint: string
+  label: string;
+  value: string;
+  hint: string;
 }
 
 /**
@@ -37,14 +37,14 @@ interface Field {
  */
 export function settingsFields(options: Options, section: SettingsSection): Field[] {
   return optionsIn(section).map((name) => {
-    const spec = OPTIONS[name]
+    const spec = OPTIONS[name];
     return {
       name,
       label: leafOf(name),
       value: formatOption(spec, options[name]),
       hint: `${spec.desc} · ${editHint(spec)}`,
-    }
-  })
+    };
+  });
 }
 
 /**
@@ -56,16 +56,16 @@ export function settingsFields(options: Options, section: SettingsSection): Fiel
  */
 export interface KeybindRow {
   /** Command name, or null for the prefix row. */
-  name: string | null
-  keys: string
-  desc: string
-  custom: boolean
+  name: string | null;
+  keys: string;
+  desc: string;
+  custom: boolean;
 }
 
 export interface KeybindGroup {
-  group: string
+  group: string;
   /** `index` is the selection index; null for a row that cannot be edited. */
-  entries: (KeybindRow & { index: number | null })[]
+  entries: (KeybindRow & { index: number | null })[];
 }
 
 /**
@@ -75,18 +75,18 @@ export interface KeybindGroup {
  * selection index cannot mean one row on screen and another when acted on.
  */
 export function keybindTargets(groups: HelpGroup[]): (string | null)[] {
-  return [null, ...groups.flatMap((g) => g.entries.filter((e) => !e.fixed).map((e) => e.name))]
+  return [null, ...groups.flatMap((g) => g.entries.filter((e) => !e.fixed).map((e) => e.name))];
 }
 
 export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup[] {
-  const targets = keybindTargets(groups)
+  const targets = keybindTargets(groups);
   const row = (entry: HelpEntry) => ({
     index: entry.fixed ? null : targets.indexOf(entry.name),
     name: entry.name,
     keys: entry.keys,
     desc: entry.desc,
     custom: entry.custom,
-  })
+  });
   return [
     {
       group: "prefix",
@@ -101,7 +101,7 @@ export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup
       ],
     },
     ...groups.map((g) => ({ group: g.group, entries: g.entries.map(row) })),
-  ]
+  ];
 }
 
 /**
@@ -113,16 +113,16 @@ export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup
  * between groups.
  */
 export function keybindLine(groups: HelpGroup[], index: number): number {
-  let line = 0
+  let line = 0;
   for (const group of keybindGroups(groups, "")) {
-    line++
+    line++;
     for (const entry of group.entries) {
-      if (entry.index === index) return line
-      line++
+      if (entry.index === index) return line;
+      line++;
     }
-    line++
+    line++;
   }
-  return 0
+  return 0;
 }
 
 /**
@@ -135,26 +135,26 @@ export function keybindLine(groups: HelpGroup[], index: number): number {
  * editor are necessarily the same screen.
  */
 export function Settings(props: {
-  options: Options
-  section: SettingsSection
-  selected: number
-  groups: HelpGroup[]
-  leader: string
+  options: Options;
+  section: SettingsSection;
+  selected: number;
+  groups: HelpGroup[];
+  leader: string;
   /** Sequences claimed by two commands. Reported, never fatal. */
-  conflicts: Conflict[]
+  conflicts: Conflict[];
   /** Set while waiting for the keystroke that becomes a binding. */
-  capturing: boolean
-  width: number
-  height: number
-  dirty: boolean
+  capturing: boolean;
+  width: number;
+  height: number;
+  dirty: boolean;
   /** Error from the last settings save attempt. */
-  error?: string
+  error?: string;
   /** Handed the keybind list's scroll container so the app can drive it from
    *  the keyboard — the list is longer than the window by some margin. */
-  onKeybindList?: (box: ScrollBoxRenderable) => void
+  onKeybindList?: (box: ScrollBoxRenderable) => void;
 }) {
-  const fields = createMemo(() => settingsFields(props.options, props.section))
-  const rows = createMemo(() => keybindGroups(props.groups, props.leader))
+  const fields = createMemo(() => settingsFields(props.options, props.section));
+  const rows = createMemo(() => keybindGroups(props.groups, props.leader));
 
   return (
     <box
@@ -200,7 +200,7 @@ export function Settings(props: {
                   <text style={{ fg: theme.mauve, height: 1, flexShrink: 0 }}>{group.group}</text>
                   <For each={group.entries}>
                     {(entry) => {
-                      const active = () => entry.index === props.selected
+                      const active = () => entry.index === props.selected;
                       return (
                         <box
                           style={{
@@ -222,7 +222,7 @@ export function Settings(props: {
                             {entry.desc + (entry.custom ? " *" : "")}
                           </text>
                         </box>
-                      )
+                      );
                     }}
                   </For>
                   <text style={{ height: 1, flexShrink: 0 }}> </text>
@@ -265,7 +265,9 @@ export function Settings(props: {
         </text>
       </Show>
       <Show when={props.error}>
-        {(error: () => string) => <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{error()}</text>}
+        {(error: () => string) => (
+          <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{error()}</text>
+        )}
       </Show>
 
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
@@ -277,5 +279,5 @@ export function Settings(props: {
               : "↑↓ row · ⏎ rebind · u default · d unbind · s saves")}
       </text>
     </box>
-  )
+  );
 }
