@@ -3,21 +3,14 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Schema, Stream } from "effect";
+import { BunFileSystem } from "@effect/platform-bun";
 import {
   DaemonRequestSchema,
   daemonRequest,
   SessionDaemon,
   type SessionDaemonOptions,
 } from "./daemon.ts";
-import {
-  cleanupStaleSessions,
-  loadSession,
-  readLease,
-  saveSession,
-  sessionPaths,
-  writeLease,
-  SessionEnv,
-} from "./session.ts";
+import { Session, SessionEnv, sessionPaths } from "./session.ts";
 import { command } from "./commands.ts";
 import { AttachClient } from "./attach.ts";
 
@@ -32,8 +25,17 @@ async function env() {
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
-const run = <A>(effect: Effect.Effect<A, unknown, SessionEnv>, e: NodeJS.ProcessEnv) =>
-  Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, e)));
+const run = <A>(
+  effect: Effect.Effect<A, unknown, Session | SessionEnv>,
+  e: NodeJS.ProcessEnv,
+) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.provide(Session.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(SessionEnv, e),
+    ),
+  );
 const open = (id: string, e: NodeJS.ProcessEnv, options: SessionDaemonOptions = {}) =>
   run(SessionDaemon.open(id, options), e);
 const paths = (id: string, e: NodeJS.ProcessEnv) => run(sessionPaths(id), e);
@@ -82,7 +84,7 @@ test("concurrent opens reject the second owner and release on stop", async () =>
   await first.start();
   await expect(open("race", e)).rejects.toThrow(/already (being opened|owned)/);
   await first.stop();
-  expect(await run(loadSession("race"), e)).toBeNull();
+  expect(await run(Session.load("race"), e)).toBeNull();
 });
 
 test("a dead lease and stale lock are recovered without deleting state", async () => {
@@ -101,7 +103,7 @@ test("a dead lease and stale lock are recovered without deleting state", async (
   );
   await writeFile(paths.lock, "999999\n");
   await run(
-    writeLease({
+    Session.writeLease({
       version: 1,
       session: "restart",
       pid: 999999,
@@ -132,8 +134,8 @@ test("cleanup leaves a locked startup session for its owner", async () => {
     }),
   );
   await writeFile(paths.lock, `${process.pid}\n`);
-  expect(await run(cleanupStaleSessions(), e)).toEqual([]);
-  expect(await run(loadSession("starting"), e)).not.toBeNull();
+  expect(await run(Session.cleanupStale, e)).toEqual([]);
+  expect(await run(Session.load("starting"), e)).not.toBeNull();
 });
 
 // The workspace is what makes a restart worth surviving: without it a restored
@@ -207,7 +209,7 @@ test("stopping a daemon discards the workspace it was keeping", async () => {
   const daemon = await open("discard", e);
   await daemon.start();
   await daemon.stop();
-  expect(await run(loadSession("discard"), e)).toBeNull();
+  expect(await run(Session.load("discard"), e)).toBeNull();
 });
 
 test("stopping waits for an in-flight workspace mutation before removing metadata", async () => {
@@ -223,7 +225,7 @@ test("stopping waits for an in-flight workspace mutation before removing metadat
   const stop = daemon.stop();
   await Promise.all([save, stop]);
 
-  expect(await run(loadSession("stop-save-race"), e)).toBeNull();
+  expect(await run(Session.load("stop-save-race"), e)).toBeNull();
 });
 
 test("the daemon rejects a stale client instead of rebasing its command", async () => {
@@ -299,7 +301,7 @@ test("a fast prepared exit cannot deadlock failed-write compensation", async () 
         await Bun.sleep(50);
         throw new Error("injected candidate failure");
       }
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
@@ -343,7 +345,7 @@ test("a prepared session is absent from status and subscribers until its model i
         saving();
         await gate;
       }
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
@@ -395,7 +397,7 @@ test("a one-shot reversible write failure does not poison the next command", asy
         fail = false;
         throw new Error("one-shot candidate failure");
       }
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
@@ -422,7 +424,7 @@ test("a rejected candidate never reaches current or backup state", async () => {
         space.windows.flatMap((window: any) => window.agents),
       );
       if (rejectCandidate && agents.length > 1) throw new Error("injected candidate failure");
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
@@ -474,7 +476,7 @@ test("attachment metadata cannot overwrite a newer workspace generation", async 
         detachStarted();
         await detachGate;
       }
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
@@ -496,7 +498,7 @@ test("attachment metadata cannot overwrite a newer workspace generation", async 
   releaseAttach();
   const client = await attaching;
   await rename;
-  const saved = await run(loadSession("attach-write-race"), e);
+  const saved = await run(Session.load("attach-write-race"), e);
   expect(saved?.attached).toBe(true);
   expect(saved?.spaces[0]?.name).toBe("winner");
   blockAttach = false;
@@ -510,7 +512,7 @@ test("attachment metadata cannot overwrite a newer workspace generation", async 
   );
   releaseDetach();
   await secondRename;
-  const detached = await run(loadSession("attach-write-race"), e);
+  const detached = await run(Session.load("attach-write-race"), e);
   expect(detached?.attached).toBe(false);
   expect(detached?.spaces[0]?.name).toBe("newest");
   blockDetach = false;
@@ -527,7 +529,7 @@ test("a destructive commit retries its single durable write after process comple
         failed = true;
         throw new Error("transient destructive write failure");
       }
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
@@ -564,7 +566,7 @@ test("stop interrupts and joins a never-settling destructive persistence operati
           ),
         );
       }
-      return saveSession(state).pipe(Effect.provideService(SessionEnv, e));
+      return Session.save(state).pipe(Effect.provideService(SessionEnv, e));
     },
   });
   await daemon.start();
@@ -596,7 +598,7 @@ test("stop interrupts and joins a never-settling destructive persistence operati
   expect(cancelled).toBe(true);
   await expect(mutation).rejects.toThrow();
   expect(await daemon.liveAgents()).toEqual([]);
-  expect(await run(loadSession("kill-save-cancel"), e)).toBeNull();
+  expect(await run(Session.load("kill-save-cancel"), e)).toBeNull();
   await expectProcessGone(heldPid);
 });
 
@@ -604,17 +606,19 @@ test("the first heartbeat waits one interval after the startup lease write", asy
   const e = await env();
   const daemon = await open("heartbeat-first-fire", e);
   await daemon.start();
-  const initial = await run(readLease("heartbeat-first-fire"), e);
+  const initial = await run(Session.readLease("heartbeat-first-fire"), e);
   expect(initial).not.toBeNull();
 
   await Bun.sleep(700);
-  expect((await run(readLease("heartbeat-first-fire"), e))?.heartbeatAt).toBe(initial!.heartbeatAt);
+  expect((await run(Session.readLease("heartbeat-first-fire"), e))?.heartbeatAt).toBe(
+    initial!.heartbeatAt,
+  );
 
   const firstBeatBy = Date.now() + 1_000;
   let heartbeatAt = initial!.heartbeatAt;
   while (heartbeatAt === initial!.heartbeatAt && Date.now() < firstBeatBy) {
     await Bun.sleep(10);
-    heartbeatAt = (await run(readLease("heartbeat-first-fire"), e))!.heartbeatAt;
+    heartbeatAt = (await run(Session.readLease("heartbeat-first-fire"), e))!.heartbeatAt;
   }
   expect(heartbeatAt).toBeGreaterThan(initial!.heartbeatAt);
   await daemon.close();
@@ -637,11 +641,11 @@ test("a heartbeat queued behind attachment persistence publishes the committed a
         attachStarted();
         await attachGate;
       }
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
-  const initial = await run(readLease("heartbeat-attach-race"), e);
+  const initial = await run(Session.readLease("heartbeat-attach-race"), e);
   const p = await paths("heartbeat-attach-race", e);
   const connecting = AttachClient.connect({ path: p.attach, client: "lease-race" });
   await started;
@@ -651,10 +655,10 @@ test("a heartbeat queued behind attachment persistence publishes the committed a
   releaseAttach();
   const client = await connecting;
   const heartbeatBy = Date.now() + 1_000;
-  let lease = await run(readLease("heartbeat-attach-race"), e);
+  let lease = await run(Session.readLease("heartbeat-attach-race"), e);
   while (lease?.heartbeatAt === initial?.heartbeatAt && Date.now() < heartbeatBy) {
     await Bun.sleep(10);
-    lease = await run(readLease("heartbeat-attach-race"), e);
+    lease = await run(Session.readLease("heartbeat-attach-race"), e);
   }
   expect(lease?.attachments).toEqual([expect.objectContaining({ client: "lease-race" })]);
 
@@ -706,7 +710,7 @@ test("close bounds and interrupts its final persistence obligation", async () =>
               }),
             ),
           )
-        : saveSession(state).pipe(Effect.provideService(SessionEnv, e)),
+        : Session.save(state).pipe(Effect.provideService(SessionEnv, e)),
   });
   await daemon.start();
   armed = true;
@@ -734,7 +738,7 @@ test("a transient natural-exit write failure retries before making the exit visi
         failed = true;
         throw new Error("transient disk failure");
       }
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
@@ -773,7 +777,7 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
         .flatMap((window: any) => window.agents)
         .some((agent: any) => agent.exited);
       if (exited && unavailable) throw new Error("disk offline");
-      await run(saveSession(state), e);
+      await run(Session.save(state), e);
     }),
   });
   await daemon.start();
@@ -838,7 +842,7 @@ test("close interrupts and joins a never-settling natural-exit persistence opera
           ),
         );
       }
-      return saveSession(state).pipe(Effect.provideService(SessionEnv, e));
+      return Session.save(state).pipe(Effect.provideService(SessionEnv, e));
     },
   });
   await daemon.start();
@@ -888,7 +892,7 @@ test("a failed destructive action leaves durable state untouched", async () => {
   ).rejects.toThrow("injected kill failure");
   expect(daemon.workspace).toEqual(before);
   expect(
-    (await run(loadSession("kill-transaction"), e))?.spaces[0]?.windows[0]?.agents[0]?.id,
+    (await run(Session.load("kill-transaction"), e))?.spaces[0]?.windows[0]?.agents[0]?.id,
   ).toBe(agent);
   (daemon as any).killAgent = kill;
   await daemon.stop();
@@ -902,7 +906,7 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     focus: "pane-restore",
   });
   await run(
-    saveSession({
+    Session.save({
       version: 1,
       id: "restore-failure",
       createdAt: 1,
@@ -945,7 +949,7 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     return spawn(spec as any);
   };
   await daemon.start();
-  const saved = await run(loadSession("restore-failure"), e);
+  const saved = await run(Session.load("restore-failure"), e);
   expect(JSON.stringify(saved)).not.toContain("agent-restore");
   await daemon.stop();
 });

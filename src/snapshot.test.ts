@@ -151,7 +151,7 @@ test("snapshotting a restored workspace reproduces the snapshot it came from", a
   const source = await setup();
   run(source.window.splitSpawn("row"));
   run(source.window.splitSpawn("column"));
-  run(source.space.newWindow("second")).init();
+  run(run(source.space.newWindow("second")).init());
   await source.layout();
   const before = snapshotSession(source.spaces, session([]));
 
@@ -166,8 +166,8 @@ test("snapshotting a restored workspace reproduces the snapshot it came from", a
 
 test("window numbers survive, and a window made afterwards does not reuse one", async () => {
   const source = await setup();
-  run(source.space.newWindow()).init();
-  run(source.space.newWindow()).init();
+  run(run(source.space.newWindow()).init());
+  run(run(source.space.newWindow()).init());
   await source.layout();
   const saved = snapshotSpace(source.space);
   expect(saved.windows.map((w) => w.number)).toEqual([1, 2, 3]);
@@ -203,7 +203,7 @@ test("the focused pane and the selected window come back", async () => {
 test("the active space comes back, not merely the first one restored", async () => {
   const source = await setup();
   const other = run(source.spaces.create("other", process.cwd()));
-  run(other.newWindow()).init();
+  run(run(other.newWindow()).init());
   source.spaces.activate(other);
   await source.layout();
   const saved = snapshotSession(source.spaces, session([]));

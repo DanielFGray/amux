@@ -10,6 +10,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { Effect } from "effect";
+import { BunFileSystem } from "@effect/platform-bun";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ import { SessionClient, type SessionClientShape } from "./client.ts";
 import { SessionDaemon } from "./daemon.ts";
 import { captureVisible } from "./capture.ts";
 import { MODE_ALT_SCREEN } from "./ghostty.ts";
-import { loadSession, processAlive, readLease, sessionPaths, SessionEnv } from "./session.ts";
+import { processAlive, sessionPaths, Session, SessionEnv } from "./session.ts";
 import { Option, Stream } from "effect";
 import {
   decodeAttachFrames,
@@ -35,8 +36,17 @@ const daemons: SessionDaemon[] = [];
 const clients: SessionClientShape[] = [];
 const agents: Agent[] = [];
 let nextProjection = 0;
-const run = <A>(effect: Effect.Effect<A, unknown, SessionEnv>, env: NodeJS.ProcessEnv) =>
-  Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, env)));
+const run = <A>(
+  effect: Effect.Effect<A, unknown, Session | SessionEnv>,
+  env: NodeJS.ProcessEnv,
+) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.provide(Session.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(SessionEnv, env),
+    ),
+  );
 
 afterEach(async () => {
   for (const agent of agents.splice(0)) agent.dispose();
@@ -947,7 +957,7 @@ test("a daemon started on demand keeps agents between two separate clients", asy
 
   const first = await run(SessionClient.connect(id, { client: "first" }), env);
   try {
-    const lease = await run(readLease(id), env);
+    const lease = await run(Session.readLease(id), env);
     expect(lease?.pid).toBeGreaterThan(0);
     expect(lease!.pid).not.toBe(process.pid);
 
@@ -967,7 +977,7 @@ test("a daemon started on demand keeps agents between two separate clients", asy
     await until(() => screen(readopted).includes("still-alive"), "the adopted agent's echo");
     await run(second.stop(), env);
   } finally {
-    const lease = await run(readLease(id), env);
+    const lease = await run(Session.readLease(id), env);
     if (lease && processAlive(lease.pid)) process.kill(lease.pid, "SIGKILL");
   }
 });
@@ -1056,7 +1066,9 @@ test("a natural terminal exit is published only after its workspace generation i
   await Effect.runPromise(
     Stream.runForEach(client.attach.stream(id), (frame) => {
       if (frame._tag !== "exit") return Effect.void;
-      return loadSession("exit-order").pipe(
+      return Session.load("exit-order").pipe(
+        Effect.provide(Session.Default),
+        Effect.provide(BunFileSystem.layer),
         Effect.provideService(SessionEnv, env),
         Effect.map((saved) => {
           const agent = saved?.spaces
@@ -1104,7 +1116,9 @@ test("a transient natural-exit write failure does not consume the terminal exit 
     Stream.runForEach(client.attach.stream(id), (frame) => {
       if (frame._tag !== "exit") return Effect.void;
       sawExit = true;
-      return loadSession("exit-retry-order").pipe(
+      return Session.load("exit-retry-order").pipe(
+        Effect.provide(Session.Default),
+        Effect.provide(BunFileSystem.layer),
         Effect.provideService(SessionEnv, env),
         Effect.map((saved) => {
           const agent = saved?.spaces

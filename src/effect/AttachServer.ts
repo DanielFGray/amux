@@ -387,7 +387,7 @@ export const startAttachServer = (
           );
           resetIdleDeadline(socket);
           for (const data of state.pending.splice(0)) processData(socket, data);
-          if (!state.closed) yield* Effect.never;
+          if (!state.closed) return yield* Effect.never;
         }),
       ).pipe(Effect.ensuring(closeClient(socket)));
 

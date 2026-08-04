@@ -1,12 +1,12 @@
 import { createCliRenderer, BoxRenderable } from "@opentui/core";
 import { render } from "@opentui/solid";
-import { BunRuntime } from "@effect/platform-bun";
+import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
 import { Deferred, Effect, Exit } from "effect";
 
 import { loadConfig } from "./config.ts";
 import { applyOptions, resolveOptions } from "./options.ts";
 import { SessionClient } from "./client.ts";
-import { isSessionId, SessionEnv } from "./session.ts";
+import { isSessionId, Session, SessionEnv } from "./session.ts";
 import { createApp } from "./app.tsx";
 
 /**
@@ -72,4 +72,10 @@ const program = Effect.gen(function* () {
   yield* Deferred.await(quit);
 });
 
-BunRuntime.runMain(Effect.scoped(program).pipe(Effect.provideService(SessionEnv, process.env)));
+BunRuntime.runMain(
+  Effect.scoped(program).pipe(
+    Effect.provide(Session.Default),
+    Effect.provide(BunFileSystem.layer),
+    Effect.provideService(SessionEnv, process.env),
+  ),
+);

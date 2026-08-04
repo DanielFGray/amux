@@ -1,8 +1,8 @@
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { closeSync, fsyncSync, openSync, renameSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
-import { Context, Data, Effect } from "effect";
+import { FileSystem } from "@effect/platform";
+import type { PlatformError } from "@effect/platform/Error";
+import { Context, Data, Effect, Exit, Option, Schema } from "effect";
 import { decodeLayout, layoutPanes } from "./layout.ts";
 import {
   MAX_AGENTS,
@@ -10,7 +10,6 @@ import {
   MAX_SESSION_BYTES,
   MAX_SPACES,
   MAX_WINDOWS,
-  isTerminalSize,
 } from "./limits.ts";
 
 export class SessionEnv extends Context.Reference<SessionEnv>()("SessionEnv", {
@@ -33,6 +32,26 @@ export const MAX_SESSION_ID_LENGTH = 128;
 export class SessionIdError extends Data.TaggedError("SessionIdError")<{
   message: string;
 }> {}
+
+export class SessionStateError extends Data.TaggedError("SessionStateError")<{
+  message: string;
+}> {}
+
+export class SessionSizeError extends Data.TaggedError("SessionSizeError")<{
+  message: string;
+}> {}
+
+export interface SessionService {
+  readonly load: (id: string) => Effect.Effect<SessionState | null, SessionIdError>;
+  readonly save: (
+    state: SessionState,
+  ) => Effect.Effect<void, SessionIdError | SessionStateError | SessionSizeError | PlatformError>;
+  readonly readLease: (id: string) => Effect.Effect<SessionLease | null, SessionIdError>;
+  readonly writeLease: (lease: SessionLease) => Effect.Effect<void, SessionIdError | PlatformError>;
+  readonly remove: (id: string) => Effect.Effect<void, SessionIdError | PlatformError>;
+  readonly cleanupStale: Effect.Effect<string[], SessionIdError | PlatformError>;
+  readonly exists: (id: string) => Effect.Effect<boolean>;
+}
 
 /**
  * Whether `id` is safe to use as a session's directory name.
@@ -138,6 +157,82 @@ export interface SessionAttachment {
   attachLastSeen: number;
 }
 
+const NonEmptyString = Schema.String.pipe(Schema.minLength(1));
+const PositiveInt = Schema.Int.pipe(Schema.greaterThan(0));
+const NonNegativeNumber = Schema.Number.pipe(Schema.greaterThanOrEqualTo(0));
+const SessionIdSchema = Schema.String.pipe(
+  Schema.filter(isSessionId, { message: () => "invalid session id" }),
+);
+const TerminalDimension = Schema.Int.pipe(Schema.greaterThan(0), Schema.lessThanOrEqualTo(1_000));
+const LayoutMetadataSchema = Schema.Struct({ focus: Schema.optional(Schema.Unknown) });
+
+const PersistedAgentSchema = Schema.Struct({
+  id: NonEmptyString,
+  name: Schema.String,
+  cmd: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),
+  cwd: Schema.optional(Schema.String),
+  cols: TerminalDimension,
+  rows: TerminalDimension,
+  exited: Schema.Boolean,
+  exitCode: Schema.NullOr(Schema.Int),
+}).pipe(
+  Schema.filter(({ cols, rows }) => cols * rows <= 500_000, {
+    message: () => "terminal size is too large",
+  }),
+);
+
+const PersistedWindowSchema = Schema.Struct({
+  number: PositiveInt,
+  name: Schema.NullOr(Schema.String),
+  agents: Schema.Array(PersistedAgentSchema),
+  layout: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+const PersistedSpaceSchema = Schema.Struct({
+  id: NonEmptyString,
+  name: Schema.String,
+  dir: Schema.String,
+  activeWindow: Schema.NullOr(PositiveInt),
+  windows: Schema.Array(PersistedWindowSchema),
+  worktree: Schema.optional(
+    Schema.Struct({ branch: Schema.String, repo: Schema.String, path: Schema.String }),
+  ),
+});
+
+export const SessionStateSchema = Schema.Struct({
+  version: Schema.Literal(SESSION_VERSION),
+  id: SessionIdSchema,
+  createdAt: NonNegativeNumber,
+  updatedAt: NonNegativeNumber,
+  attached: Schema.Boolean,
+  spaces: Schema.Array(PersistedSpaceSchema).pipe(
+    Schema.filter((spaces) => spaces.length <= MAX_SPACES, {
+      message: () => `session has too many spaces`,
+    }),
+  ),
+  activeSpace: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+export const SessionLeaseSchema = Schema.Struct({
+  version: Schema.Literal(SESSION_VERSION),
+  session: SessionIdSchema,
+  pid: PositiveInt,
+  socket: Schema.String,
+  startedAt: NonNegativeNumber,
+  heartbeatAt: NonNegativeNumber,
+  attachedSince: Schema.optional(NonNegativeNumber),
+  attachLastSeen: Schema.optional(NonNegativeNumber),
+  attachments: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        client: NonEmptyString,
+        attachedSince: NonNegativeNumber,
+        attachLastSeen: NonNegativeNumber,
+      }),
+    ),
+  ),
+});
+
 export interface SessionPaths {
   root: string;
   state: string;
@@ -173,9 +268,7 @@ export function worktreesRoot(): Effect.Effect<string, never, SessionEnv> {
 export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdError, SessionEnv> {
   return Effect.gen(function* () {
     if (!isSessionId(id)) {
-      return yield* Effect.fail(
-        new SessionIdError({ message: `invalid session id ${JSON.stringify(id)}` }),
-      );
+      return yield* new SessionIdError({ message: `invalid session id ${JSON.stringify(id)}` });
     }
     const root = yield* sessionRoot();
     const path = join(root, id);
@@ -191,231 +284,221 @@ export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdE
   });
 }
 
-export function parseSessionState(value: unknown, expectedId?: string): SessionState {
-  if (
-    !record(value) ||
-    value.version !== SESSION_VERSION ||
-    typeof value.id !== "string" ||
-    !isSessionId(value.id) ||
-    (expectedId !== undefined && value.id !== expectedId) ||
-    !nonNegativeNumber(value.createdAt) ||
-    !nonNegativeNumber(value.updatedAt) ||
-    typeof value.attached !== "boolean" ||
-    !Array.isArray(value.spaces)
-  ) {
-    throw new Error("invalid session state");
-  }
-  const spaces = value.spaces as unknown[];
-  if (spaces.length > MAX_SPACES) throw new Error("session has too many spaces");
-  const spaceIds = new Set<string>();
-  const paneIds = new Set<string>();
-  let windowCount = 0;
-  let agentCount = 0;
-  for (const item of spaces) {
-    if (
-      !record(item) ||
-      !nonEmptyString(item.id) ||
-      spaceIds.has(item.id) ||
-      typeof item.name !== "string" ||
-      typeof item.dir !== "string" ||
-      !Array.isArray(item.windows) ||
-      !(item.activeWindow === null || positiveInt(item.activeWindow))
-    ) {
-      throw new Error("invalid persisted space");
-    }
-    if (item.worktree !== undefined) {
-      if (
-        !record(item.worktree) ||
-        typeof item.worktree.branch !== "string" ||
-        typeof item.worktree.repo !== "string" ||
-        typeof item.worktree.path !== "string"
-      ) {
-        throw new Error("invalid persisted space worktree");
-      }
-    }
-    spaceIds.add(item.id);
-    windowCount += item.windows.length;
-    if (windowCount > MAX_WINDOWS) throw new Error("session has too many windows");
-    const numbers = new Set<number>();
-    for (const candidate of item.windows) {
-      if (
-        !record(candidate) ||
-        !positiveInt(candidate.number) ||
-        numbers.has(candidate.number) ||
-        !(candidate.name === null || typeof candidate.name === "string") ||
-        !Array.isArray(candidate.agents) ||
-        !(
-          candidate.layout === undefined ||
-          candidate.layout === null ||
-          (typeof candidate.layout === "string" &&
-            Buffer.byteLength(candidate.layout) <= MAX_LAYOUT_BYTES)
-        )
-      ) {
-        throw new Error("invalid persisted window");
-      }
-      numbers.add(candidate.number);
-      agentCount += candidate.agents.length;
-      if (agentCount > MAX_AGENTS) throw new Error("session has too many agents");
-      const owned = new Map<string, boolean>();
-      for (const entry of candidate.agents) {
+export function parseSessionState(
+  value: unknown,
+  expectedId?: string,
+): Effect.Effect<SessionState, SessionStateError> {
+  return Effect.gen(function* () {
+    const state = yield* Schema.decodeUnknown(SessionStateSchema)(value).pipe(
+      Effect.mapError(schemaError),
+    );
+    if (expectedId !== undefined && state.id !== expectedId) return yield* invalidState;
+    const spaces = state.spaces;
+    if (spaces.length > MAX_SPACES) return yield* tooManySpaces;
+    const spaceIds = new Set<string>();
+    const paneIds = new Set<string>();
+    let windowCount = 0;
+    let agentCount = 0;
+    for (const item of spaces) {
+      if (spaceIds.has(item.id)) return yield* invalidSpace;
+      spaceIds.add(item.id);
+      windowCount += item.windows.length;
+      if (windowCount > MAX_WINDOWS) return yield* tooManyWindows;
+      const numbers = new Set<number>();
+      for (const candidate of item.windows) {
+        if (numbers.has(candidate.number)) return yield* invalidWindow;
         if (
-          !record(entry) ||
-          !nonEmptyString(entry.id) ||
-          owned.has(entry.id) ||
-          typeof entry.name !== "string" ||
-          !Array.isArray(entry.cmd) ||
-          entry.cmd.length === 0 ||
-          !entry.cmd.every(nonEmptyString) ||
-          !(entry.cwd === undefined || typeof entry.cwd === "string") ||
-          !isTerminalSize(entry.cols, entry.rows) ||
-          typeof entry.exited !== "boolean" ||
-          !(entry.exitCode === null || Number.isInteger(entry.exitCode))
-        ) {
-          throw new Error("invalid persisted agent");
+          candidate.layout !== undefined &&
+          candidate.layout !== null &&
+          Buffer.byteLength(candidate.layout) > MAX_LAYOUT_BYTES
+        )
+          return yield* invalidWindow;
+        numbers.add(candidate.number);
+        agentCount += candidate.agents.length;
+        if (agentCount > MAX_AGENTS) return yield* tooManyAgents;
+        const owned = new Map<string, boolean>();
+        for (const entry of candidate.agents) {
+          if (owned.has(entry.id)) return yield* invalidAgent;
+          owned.set(entry.id, entry.exited);
         }
-        owned.set(entry.id, entry.exited);
-      }
-      if (candidate.layout) {
-        const raw = JSON.parse(candidate.layout) as { focus?: unknown };
-        const layout = decodeLayout(candidate.layout);
-        if (raw.focus !== undefined && layout.focus !== raw.focus)
-          throw new Error("layout focus names no pane");
-        for (const pane of layoutPanes(layout.root)) {
-          if (paneIds.has(pane.id)) throw new Error(`duplicate pane id '${pane.id}'`);
-          paneIds.add(pane.id);
-          if (!owned.has(pane.agent) || owned.get(pane.agent)) {
-            throw new Error(`pane '${pane.id}' names an absent or exited agent`);
+        if (candidate.layout) {
+          const raw = yield* Schema.decodeUnknown(Schema.parseJson(LayoutMetadataSchema))(
+            candidate.layout,
+          ).pipe(Effect.mapError(schemaError));
+          const layout = yield* Effect.try({
+            try: () => decodeLayout(candidate.layout!),
+            catch: (error) => new SessionStateError({ message: String(error) }),
+          });
+          if (raw.focus !== undefined && layout.focus !== raw.focus) return yield* layoutFocus;
+          for (const pane of layoutPanes(layout.root)) {
+            if (paneIds.has(pane.id)) return yield* duplicatePane(pane.id);
+            paneIds.add(pane.id);
+            if (!owned.has(pane.agent) || owned.get(pane.agent)) {
+              return yield* absentAgent(pane.id);
+            }
           }
         }
       }
+      if (item.activeWindow !== null && !numbers.has(item.activeWindow)) {
+        return yield* missingWindow;
+      }
     }
-    if (item.activeWindow !== null && !numbers.has(item.activeWindow)) {
-      throw new Error("active window does not exist");
+    if (
+      state.activeSpace !== undefined &&
+      state.activeSpace !== null &&
+      !spaceIds.has(state.activeSpace)
+    ) {
+      return yield* missingSpace;
     }
-  }
-  if (
-    !(
-      value.activeSpace === undefined ||
-      value.activeSpace === null ||
-      (typeof value.activeSpace === "string" && spaceIds.has(value.activeSpace))
-    )
-  ) {
-    throw new Error("active space does not exist");
-  }
-  return structuredClone(value) as SessionState;
+    return structuredClone(state) as SessionState;
+  });
+}
+
+const invalidState = new SessionStateError({ message: "invalid session state" });
+const tooManySpaces = new SessionStateError({ message: "session has too many spaces" });
+const invalidSpace = new SessionStateError({ message: "invalid persisted space" });
+const tooManyWindows = new SessionStateError({ message: "session has too many windows" });
+const invalidWindow = new SessionStateError({ message: "invalid persisted window" });
+const tooManyAgents = new SessionStateError({ message: "session has too many agents" });
+const invalidAgent = new SessionStateError({ message: "invalid persisted agent" });
+const layoutFocus = new SessionStateError({ message: "layout focus names no pane" });
+const missingWindow = new SessionStateError({ message: "active window does not exist" });
+const missingSpace = new SessionStateError({ message: "active space does not exist" });
+const duplicatePane = (id: string) =>
+  new SessionStateError({ message: `duplicate pane id '${id}'` });
+const absentAgent = (id: string) =>
+  new SessionStateError({ message: `pane '${id}' names an absent or exited agent` });
+
+function schemaError(error: unknown): SessionStateError {
+  const message = String(error);
+  if (message.includes("session has too many spaces")) return tooManySpaces;
+  if (message.includes('["agents"]')) return invalidAgent;
+  if (message.includes('["windows"]')) return invalidWindow;
+  if (message.includes('["spaces"]')) return invalidSpace;
+  return invalidState;
 }
 
 function validState(value: unknown, expectedId?: string): value is SessionState {
-  try {
-    parseSessionState(value, expectedId);
-    return true;
-  } catch {
-    return false;
-  }
+  return Exit.isSuccess(Effect.runSync(Effect.exit(parseSessionState(value, expectedId))));
 }
 
-async function jsonFile<T>(path: string): Promise<T | null> {
-  try {
-    const info = await stat(path);
-    if (info.size > MAX_SESSION_BYTES) return null;
-    return JSON.parse(await readFile(path, "utf8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-export function loadSession(
-  id: string,
-): Effect.Effect<SessionState | null, SessionIdError, SessionEnv> {
-  return Effect.gen(function* () {
-    const paths = yield* sessionPaths(id);
-    const current = yield* Effect.promise(() => jsonFile<SessionState>(paths.state));
-    if (validState(current, id)) return current;
-    const backup = yield* Effect.promise(() => jsonFile<SessionState>(paths.backup));
-    return validState(backup, id) ? backup : null;
+const jsonFile = <A, I>(path: string, schema: Schema.Schema<A, I>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const info = yield* fs.stat(path);
+    if (info.size > MAX_SESSION_BYTES) return Option.none();
+    const text = yield* fs.readFileString(path);
+    return Schema.decodeUnknownOption(Schema.parseJson(schema))(text);
   });
-}
 
-const record = (value: unknown): value is Record<string, any> =>
-  !!value && typeof value === "object" && !Array.isArray(value);
-const nonEmptyString = (value: unknown): value is string =>
-  typeof value === "string" && value.length > 0;
-const positiveInt = (value: unknown): value is number =>
-  Number.isSafeInteger(value) && (value as number) > 0;
-const nonNegativeNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0;
+export class Session extends Effect.Service<Session>()("Session", {
+  accessors: true,
+  effect: Effect.gen(function* () {
+    const env = yield* SessionEnv;
+    const fs = yield* FileSystem.FileSystem;
+    const paths = (id: string) => sessionPaths(id).pipe(Effect.provideService(SessionEnv, env));
 
-/** Atomic replace. The previous valid generation remains available after a crash. */
-export function saveSession(state: SessionState): Effect.Effect<void, unknown, SessionEnv> {
-  return Effect.gen(function* () {
-    if (!validState(state)) return yield* Effect.fail(new Error("invalid session state"));
-    const paths = yield* sessionPaths(state.id);
-    yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }));
-    const temp = `${paths.state}.${process.pid}.tmp`;
-    const bytes =
-      JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt: Date.now() }, null, 2) + "\n";
-    if (Buffer.byteLength(bytes) > MAX_SESSION_BYTES)
-      return yield* Effect.fail(new Error("session state is too large"));
-    yield* Effect.tryPromise({
-      try: (signal) => writeFile(temp, bytes, { mode: 0o600, signal }),
-      catch: (error) => error,
+    const load = Effect.fnUntraced(function* (id: string) {
+      const sessionPaths = yield* paths(id);
+      const current = yield* jsonFile(sessionPaths.state, SessionStateSchema);
+      if (Option.isSome(current) && validState(current.value, id)) return current.value;
+      const backup = yield* jsonFile(sessionPaths.backup, SessionStateSchema);
+      return Option.isSome(backup) && validState(backup.value, id) ? backup.value : null;
     });
-    yield* Effect.try({
-      try: () => {
-        const fd = openSync(temp, "r+");
-        try {
-          fsyncSync(fd);
-        } finally {
-          closeSync(fd);
-        }
-      },
-      catch: (error) => {
-        try {
-          unlinkSync(temp);
-        } catch {}
-        return error;
-      },
-    });
-    // The commit has no cancellable filesystem API. Keep it synchronous so an
-    // interrupted fiber is either before the commit or after it; it can never
-    // abandon a rename Promise that installs this generation after shutdown.
-    yield* Effect.try({
-      try: () => {
-        try {
-          renameSync(paths.state, paths.backup);
-        } catch (error: any) {
-          if (error.code !== "ENOENT") throw error;
-        }
-        renameSync(temp, paths.state);
-        const dirFd = openSync(dirname(paths.state), "r");
-        try {
-          fsyncSync(dirFd);
-        } finally {
-          closeSync(dirFd);
-        }
-      },
-      catch: (error) => error,
-    });
-  });
-}
 
-export function writeLease(lease: SessionLease): Effect.Effect<void, unknown, SessionEnv> {
-  return Effect.gen(function* () {
-    const paths = yield* sessionPaths(lease.session);
-    yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }));
-    const temp = `${paths.lease}.${process.pid}.tmp`;
-    yield* Effect.promise(() => writeFile(temp, JSON.stringify(lease) + "\n", { mode: 0o600 }));
-    yield* Effect.promise(() => rename(temp, paths.lease));
-  });
-}
+    const save = Effect.fnUntraced(function* (state: SessionState) {
+      yield* parseSessionState(state);
+      const paths = yield* sessionPaths(state.id).pipe(Effect.provideService(SessionEnv, env));
+      yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
+      const temp = `${paths.state}.${process.pid}.tmp`;
+      const bytes =
+        JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt: Date.now() }, null, 2) +
+        "\n";
+      if (Buffer.byteLength(bytes) > MAX_SESSION_BYTES)
+        return yield* new SessionSizeError({ message: "session state is too large" });
+      yield* fs.writeFileString(temp, bytes, { mode: 0o600 });
+      const tempFile = yield* fs.open(temp, { flag: "r+" });
+      yield* tempFile.sync;
+      yield* fs
+        .rename(paths.state, paths.backup)
+        .pipe(
+          Effect.catchTag("SystemError", (error) =>
+            error.reason === "NotFound" ? Effect.void : Effect.fail(error),
+          ),
+        );
+      yield* fs.rename(temp, paths.state);
+      const directory = yield* fs.open(paths.root, { flag: "r" });
+      yield* directory.sync;
+    }, Effect.scoped);
 
-export function readLease(
-  id: string,
-): Effect.Effect<SessionLease | null, SessionIdError, SessionEnv> {
-  return Effect.flatMap(sessionPaths(id), (paths) =>
-    Effect.promise(() => jsonFile<SessionLease>(paths.lease)),
-  );
-}
+    const readLease = Effect.fnUntraced(function* (id: string) {
+      const sessionPaths = yield* paths(id);
+      return yield* jsonFile(sessionPaths.lease, SessionLeaseSchema).pipe(
+        Effect.map(Option.getOrNull),
+      );
+    });
+
+    const writeLease = (lease: SessionLease) =>
+      Effect.gen(function* () {
+        const paths = yield* sessionPaths(lease.session).pipe(
+          Effect.provideService(SessionEnv, env),
+        );
+        yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
+        const temp = `${paths.lease}.${process.pid}.tmp`;
+        yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", { mode: 0o600 });
+        yield* fs.rename(temp, paths.lease);
+      });
+
+    const remove = (id: string) =>
+      Effect.flatMap(paths(id), (sessionPaths) =>
+        fs.remove(sessionPaths.root, { recursive: true, force: true }),
+      );
+
+    const cleanupStale = Effect.gen(function* () {
+      const root = yield* sessionRoot().pipe(Effect.provideService(SessionEnv, env));
+      const entries = yield* fs
+        .readDirectory(root)
+        .pipe(
+          Effect.catchTag("SystemError", (error) =>
+            error.reason === "NotFound" ? Effect.succeed([]) : Effect.fail(error),
+          ),
+        );
+      const removed: string[] = [];
+      for (const id of entries) {
+        if (!isSessionId(id)) continue;
+        const paths = yield* sessionPaths(id).pipe(Effect.provideService(SessionEnv, env));
+        const locked = yield* fs.stat(paths.lock).pipe(
+          Effect.map(() => true),
+          Effect.catchTag("SystemError", (error) =>
+            error.reason === "NotFound" ? Effect.succeed(false) : Effect.fail(error),
+          ),
+        );
+        if (locked) continue;
+        const lease = yield* readLease(id);
+        if (lease && processAlive(lease.pid)) continue;
+        yield* remove(id);
+        removed.push(id);
+      }
+      return removed;
+    });
+
+    return {
+      load,
+      save,
+      readLease,
+      writeLease,
+      remove,
+      cleanupStale,
+      exists: (id: string) =>
+        Effect.flatMap(paths(id), (sessionPaths) =>
+          fs.stat(sessionPaths.root).pipe(
+            Effect.as(true),
+            Effect.catchAll(() => Effect.succeed(false)),
+          ),
+        ).pipe(Effect.catchAll(() => Effect.succeed(false))),
+    };
+  }),
+}) {}
 
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -425,59 +508,4 @@ export function processAlive(pid: number): boolean {
   } catch (error: any) {
     return error.code === "EPERM";
   }
-}
-
-export function removeSession(id: string): Effect.Effect<void, unknown, SessionEnv> {
-  return Effect.flatMap(sessionPaths(id), (paths) =>
-    Effect.promise(() => rm(paths.root, { recursive: true, force: true })),
-  );
-}
-
-/** Remove only sessions whose lease is absent, malformed, or owned by a dead pid. */
-export function cleanupStaleSessions(): Effect.Effect<string[], unknown, SessionEnv> {
-  return Effect.gen(function* () {
-    const root = yield* sessionRoot();
-    let entries: string[];
-    try {
-      entries = yield* Effect.promise(() => readdir(root));
-    } catch (error: any) {
-      if (error.code === "ENOENT") return [];
-      return yield* Effect.fail(error);
-    }
-    const removed: string[] = [];
-    for (const id of entries) {
-      // Never resolve an entry that is not a valid session id: a name with a
-      // separator or a dot-component would turn this readdir into a path that
-      // exists somewhere else, and a tampered entry is not our session to remove.
-      if (!isSessionId(id)) continue;
-      // A lock is the stronger startup signal than the lease: there is a small
-      // window between acquiring it and publishing the first lease heartbeat.
-      // Leave locked sessions for SessionDaemon.open to adjudicate.
-      const paths = yield* sessionPaths(id);
-      const locked = yield* Effect.tryPromise({
-        try: () => stat(paths.lock),
-        catch: (error) => error,
-      }).pipe(
-        Effect.map(() => true),
-        Effect.catchAll((error: any) =>
-          error.code === "ENOENT" ? Effect.succeed(false) : Effect.fail(error),
-        ),
-      );
-      if (locked) continue;
-      const lease = yield* readLease(id);
-      if (lease && processAlive(lease.pid)) continue;
-      yield* removeSession(id);
-      removed.push(id);
-    }
-    return removed;
-  });
-}
-
-export function sessionExists(id: string): Effect.Effect<boolean, never, SessionEnv> {
-  return Effect.flatMap(sessionPaths(id), (paths) =>
-    Effect.tryPromise(() => stat(paths.root)).pipe(
-      Effect.as(true),
-      Effect.catchAll(() => Effect.succeed(false)),
-    ),
-  ).pipe(Effect.catchAll(() => Effect.succeed(false)));
 }

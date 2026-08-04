@@ -3,8 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
+import { BunFileSystem } from "@effect/platform-bun";
 import { SessionDaemon } from "./daemon.ts";
-import { SessionEnv } from "./session.ts";
+import { Session, SessionEnv } from "./session.ts";
 import { command } from "./commands.ts";
 import {
   gitWorktreeAdd,
@@ -25,8 +26,17 @@ async function env() {
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
-const run = <A>(effect: Effect.Effect<A, unknown, SessionEnv>, e: NodeJS.ProcessEnv) =>
-  Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, e)));
+const run = <A>(
+  effect: Effect.Effect<A, unknown, SessionEnv | Session>,
+  e: NodeJS.ProcessEnv,
+) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.provide(Session.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(SessionEnv, e),
+    ),
+  );
 const open = (id: string, e: NodeJS.ProcessEnv) => run(SessionDaemon.open(id), e);
 
 const git = async (args: string[], cwd: string): Promise<string> => {

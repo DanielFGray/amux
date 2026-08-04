@@ -1,7 +1,8 @@
-import { BunRuntime } from "@effect/platform-bun";
+import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
 import { Effect } from "effect";
 
 import { startDaemon } from "./daemon.ts";
+import { Session, SessionEnv } from "./session.ts";
 
 /**
  * The daemon process.
@@ -15,14 +16,19 @@ import { startDaemon } from "./daemon.ts";
  */
 export function runDaemonMain(id?: string): void {
   const program = Effect.gen(function* () {
-    const daemon = yield* Effect.acquireRelease(
-      Effect.promise(() => startDaemon(id)),
-      (daemon) => Effect.promise(() => daemon.stop()).pipe(Effect.ignore),
+    const daemon = yield* Effect.acquireRelease(startDaemon(id), (daemon) =>
+      Effect.promise(() => daemon.stop()).pipe(Effect.ignore),
     );
     yield* Effect.promise(() => daemon.stopped);
   });
 
-  BunRuntime.runMain(Effect.scoped(program));
+  BunRuntime.runMain(
+    Effect.scoped(program).pipe(
+      Effect.provide(Session.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(SessionEnv, process.env),
+    ),
+  );
 }
 
 if (import.meta.main) runDaemonMain();

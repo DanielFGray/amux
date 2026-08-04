@@ -27,9 +27,10 @@ import {
   Schedule,
   Scope,
   Stream,
+  Schema,
 } from "effect";
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts";
-import { parseWorkspace, type WorkspaceSnapshot } from "./workspace.ts";
+import { parseWorkspace, WorkspaceSnapshotJson, type WorkspaceSnapshot } from "./workspace.ts";
 
 /**
  * Seconds between heartbeats.
@@ -417,7 +418,9 @@ class AttachClientImpl implements AttachClientShape {
     }
     if (frame._tag === "workspace") {
       try {
-        const workspace = parseWorkspace(JSON.parse(frame.state));
+        const workspace = parseWorkspace(
+          Schema.decodeUnknownSync(WorkspaceSnapshotJson)(frame.state),
+        );
         if (workspace.revision !== frame.revision)
           throw new AttachError("workspace revision does not match frame");
         this.#workspace.unsafeOffer(workspace);
@@ -493,7 +496,7 @@ class AttachClientImpl implements AttachClientShape {
 
 /** Scoped service wrapper. The socket is acquired and released with the layer,
  * so a client cannot outlive the scope that owns its attachment. */
-export class AttachClient extends Effect.Service<AttachClientShape>()("AttachClient", {
+export class AttachClient extends Effect.Service<AttachClient>()("AttachClient", {
   scoped: (options: AttachClientOptions) => AttachClientImpl.scoped(options),
 }) {
   static layer(options: AttachClientOptions) {

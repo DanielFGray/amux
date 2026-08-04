@@ -37,7 +37,15 @@ import {
   type SpaceSetState,
   type SpaceState,
 } from "./space-model.ts";
-import { isTerminalSize } from "./limits.ts";
+import {
+  isTerminalSize,
+  MAX_AGENTS,
+  MAX_SPACES,
+  MAX_TERMINAL_CELLS,
+  MAX_TERMINAL_DIMENSION,
+  MAX_WINDOWS,
+} from "./limits.ts";
+import { Effect, Schema } from "effect";
 
 export interface WorkspaceWindow {
   number: number;
@@ -76,6 +84,103 @@ export interface WorkspaceCommandContext {
    *  worktree space (space.new with a branch). */
   worktreesRoot?: string;
 }
+
+const NonEmptyString = Schema.String.pipe(Schema.minLength(1));
+const PositiveInt = Schema.Int.pipe(Schema.greaterThan(0));
+const TerminalDimension = Schema.Int.pipe(
+  Schema.greaterThan(0),
+  Schema.lessThanOrEqualTo(MAX_TERMINAL_DIMENSION),
+);
+const TerminalSize = Schema.Struct({
+  cols: TerminalDimension,
+  rows: TerminalDimension,
+}).pipe(
+  Schema.filter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {
+    message: () => "terminal size is too large",
+  }),
+);
+const PersistedAgentShape = Schema.Struct({
+  id: NonEmptyString,
+  name: Schema.String,
+  cmd: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),
+  cwd: Schema.optional(Schema.String),
+  cols: TerminalDimension,
+  rows: TerminalDimension,
+  exited: Schema.Boolean,
+  exitCode: Schema.NullOr(Schema.Int),
+});
+const LayoutNodeShape: Schema.Schema<any> = Schema.suspend(() =>
+  Schema.Union(
+    Schema.Struct({
+      type: Schema.Literal("pane"),
+      id: NonEmptyString,
+      agent: NonEmptyString,
+      weight: Schema.Number.pipe(Schema.greaterThan(0)),
+    }),
+    Schema.Struct({
+      type: Schema.Literal("split"),
+      direction: Schema.Union(Schema.Literal("row"), Schema.Literal("column")),
+      weight: Schema.Number.pipe(Schema.greaterThan(0)),
+      children: Schema.Array(LayoutNodeShape).pipe(Schema.minItems(2)),
+    }),
+  ),
+);
+const LayoutShape = Schema.Struct({
+  version: Schema.Literal(1),
+  root: Schema.NullOr(LayoutNodeShape),
+  focus: Schema.optional(NonEmptyString),
+});
+const WindowStateShape = Schema.Struct({
+  focus: Schema.NullOr(NonEmptyString),
+  last: Schema.NullOr(NonEmptyString),
+  zoom: Schema.NullOr(Schema.Struct({ pane: NonEmptyString, from: LayoutShape })),
+  sync: Schema.Boolean,
+  preset: Schema.NullOr(
+    Schema.Union(
+      Schema.Literal("even-horizontal"),
+      Schema.Literal("even-vertical"),
+      Schema.Literal("main-horizontal"),
+      Schema.Literal("main-vertical"),
+      Schema.Literal("tiled"),
+    ),
+  ),
+});
+const WorkspaceWindowShape = Schema.Struct({
+  number: PositiveInt,
+  name: Schema.NullOr(Schema.String),
+  agents: Schema.Array(PersistedAgentShape).pipe(Schema.maxItems(MAX_AGENTS)),
+  layout: LayoutShape,
+  state: WindowStateShape,
+});
+const WorkspaceSpaceShape = Schema.Struct({
+  id: NonEmptyString,
+  name: Schema.String,
+  dir: Schema.String,
+  windows: Schema.Array(WorkspaceWindowShape).pipe(Schema.maxItems(MAX_WINDOWS)),
+  state: Schema.Struct({
+    activeWindow: Schema.NullOr(PositiveInt),
+    lastWindow: Schema.NullOr(PositiveInt),
+    nextWindow: PositiveInt,
+  }),
+  worktree: Schema.optional(
+    Schema.Struct({ branch: Schema.String, repo: Schema.String, path: Schema.String }),
+  ),
+});
+const WorkspaceSnapshotShape = Schema.Struct({
+  revision: Schema.Int.pipe(Schema.greaterThanOrEqualTo(0)),
+  spaces: Schema.Array(WorkspaceSpaceShape).pipe(Schema.maxItems(MAX_SPACES)),
+  state: Schema.Struct({ activeSpace: Schema.NullOr(NonEmptyString) }),
+});
+export const WorkspaceSnapshotJson = Schema.parseJson(WorkspaceSnapshotShape);
+
+const WorkspaceCommandContextShape = Schema.Struct({
+  size: TerminalSize,
+  shell: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),
+  cwd: NonEmptyString,
+  blockedAgents: Schema.optional(Schema.Array(NonEmptyString)),
+  input: Schema.optional(Schema.String),
+  worktreesRoot: Schema.optional(Schema.String),
+});
 
 export type WorkspaceAction =
   | { readonly _tag: "spawn"; readonly agent: PersistedAgent }
@@ -186,6 +291,7 @@ export function workspaceSession(workspace: WorkspaceSnapshot, base: SessionStat
 
 /** Parse a subscribed model before a client projects it. */
 export function parseWorkspace(value: unknown): WorkspaceSnapshot {
+  Schema.decodeUnknownSync(WorkspaceSnapshotShape)(value);
   if (
     !record(value) ||
     !Number.isSafeInteger(value.revision) ||
@@ -197,15 +303,17 @@ export function parseWorkspace(value: unknown): WorkspaceSnapshot {
     throw new Error("workspace has an invalid revision or spaces");
   }
   const raw = structuredClone(value) as WorkspaceSnapshot;
-  parseSessionState(
-    workspaceSession(raw, {
-      version: SESSION_VERSION,
-      id: "workspace",
-      createdAt: 0,
-      updatedAt: 0,
-      attached: false,
-      spaces: [],
-    }),
+  Effect.runSync(
+    parseSessionState(
+      workspaceSession(raw, {
+        version: SESSION_VERSION,
+        id: "workspace",
+        createdAt: 0,
+        updatedAt: 0,
+        attached: false,
+        spaces: [],
+      }),
+    ),
   );
   const spaceIds = new Set(raw.spaces.map((space) => space.id));
   if (raw.state.activeSpace !== null && !spaceIds.has(raw.state.activeSpace)) {
@@ -269,6 +377,7 @@ export function parseWorkspaceCommandContext(
   value: unknown,
   workspace?: WorkspaceSnapshot,
 ): WorkspaceCommandContext {
+  Schema.decodeUnknownSync(WorkspaceCommandContextShape)(value);
   if (
     !record(value) ||
     !record(value.size) ||

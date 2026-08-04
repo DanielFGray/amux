@@ -10,7 +10,7 @@ import {
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
-import { readLease, processAlive, sessionPaths, SessionEnv, type SessionState } from "./session.ts";
+import { processAlive, sessionPaths, Session, SessionEnv, type SessionState } from "./session.ts";
 
 const START_TIMEOUT_MS = 10_000;
 const POLL_MS = 25;
@@ -53,7 +53,7 @@ export interface SessionClientShape extends DaemonSession {
   readonly showBuffer: (name: string | undefined) => Effect.Effect<string, unknown, never>;
 }
 
-export class SessionClient extends Effect.Service<SessionClientShape>()("SessionClient", {
+export class SessionClient extends Effect.Service<SessionClient>()("SessionClient", {
   scoped: (id: string, options: SessionClientOptions = {}) =>
     Effect.acquireRelease(make(id, options), (client) => Effect.sync(() => client.close())),
 }) {
@@ -67,7 +67,7 @@ export class SessionClient extends Effect.Service<SessionClientShape>()("Session
   static connect(
     id: string,
     options: SessionClientOptions = {},
-  ): Effect.Effect<SessionClientShape, unknown, SessionEnv> {
+  ): Effect.Effect<SessionClientShape, unknown, SessionEnv | Session> {
     return make(id, options);
   }
 }
@@ -77,7 +77,7 @@ export interface SessionClient extends SessionClientShape {}
 const make = (
   id: string,
   options: SessionClientOptions,
-): Effect.Effect<SessionClientShape, unknown, SessionEnv> =>
+): Effect.Effect<SessionClientShape, unknown, SessionEnv | Session> =>
   Effect.gen(function* () {
     const env = yield* SessionEnv;
     if (options.autostart !== false) yield* ensureDaemon(id);
@@ -247,9 +247,9 @@ const make = (
     return service;
   });
 
-export function daemonAlive(id: string): Effect.Effect<boolean, never, SessionEnv> {
+export function daemonAlive(id: string): Effect.Effect<boolean, never, SessionEnv | Session> {
   return Effect.gen(function* () {
-    const lease = yield* readLease(id).pipe(Effect.catchAll(() => Effect.succeed(null)));
+    const lease = yield* Session.readLease(id).pipe(Effect.catchAll(() => Effect.succeed(null)));
     if (!lease || !processAlive(lease.pid)) return false;
     return yield* daemonRequest(id, { command: "ping" }).pipe(
       Effect.map((response) => response.ok),
@@ -258,7 +258,9 @@ export function daemonAlive(id: string): Effect.Effect<boolean, never, SessionEn
   });
 }
 
-export function ensureDaemon(id: string): Effect.Effect<void, SessionClientError, SessionEnv> {
+export function ensureDaemon(
+  id: string,
+): Effect.Effect<void, SessionClientError, SessionEnv | Session> {
   return Effect.gen(function* () {
     if (yield* daemonAlive(id)) return;
     const env = yield* SessionEnv;

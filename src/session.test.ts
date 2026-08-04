@@ -2,18 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BunFileSystem } from "@effect/platform-bun";
 import { Effect } from "effect";
 import {
-  cleanupStaleSessions,
   isSessionId,
-  loadSession,
   parseSessionState,
-  removeSession,
-  saveSession,
-  sessionExists,
+  Session,
   sessionPaths,
   sessionRoot,
-  writeLease,
   SessionEnv,
 } from "./session.ts";
 import { MAX_SPACES } from "./limits.ts";
@@ -33,15 +29,21 @@ function state(id: string) {
   return { version: 1 as const, id, createdAt: 1, updatedAt: 1, attached: false, spaces: [] };
 }
 
-const run = <A>(effect: Effect.Effect<A, unknown, SessionEnv>, env: NodeJS.ProcessEnv) =>
-  Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, env)));
+const run = <A>(effect: Effect.Effect<A, unknown, Session | SessionEnv>, env: NodeJS.ProcessEnv) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.provide(Session.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(SessionEnv, env),
+    ),
+  );
 
 test("session writes are atomic and recover the previous generation", async () => {
   const e = await env();
-  await run(saveSession(state("one")), e);
+  await run(Session.save(state("one")), e);
   const next = { ...state("one"), attached: true };
-  await run(saveSession(next), e);
-  expect((await run(loadSession("one"), e))?.attached).toBe(true);
+  await run(Session.save(next), e);
+  expect((await run(Session.load("one"), e))?.attached).toBe(true);
   expect(
     JSON.parse(await readFile((await run(sessionPaths("one"), e)).backup, "utf8")).attached,
   ).toBe(false);
@@ -49,17 +51,17 @@ test("session writes are atomic and recover the previous generation", async () =
 
 test("a truncated current file falls back to the previous generation", async () => {
   const e = await env();
-  await run(saveSession(state("recover")), e);
-  await run(saveSession({ ...state("recover"), attached: true }), e);
+  await run(Session.save(state("recover")), e);
+  await run(Session.save({ ...state("recover"), attached: true }), e);
   await Bun.write((await run(sessionPaths("recover"), e)).state, '{"version":1');
-  expect((await run(loadSession("recover"), e))?.attached).toBe(false);
+  expect((await run(Session.load("recover"), e))?.attached).toBe(false);
 });
 
 test("stale cleanup removes dead leases but never live leases", async () => {
   const e = await env();
-  await run(saveSession(state("dead")), e);
+  await run(Session.save(state("dead")), e);
   await run(
-    writeLease({
+    Session.writeLease({
       version: 1,
       session: "dead",
       pid: 999999,
@@ -69,9 +71,9 @@ test("stale cleanup removes dead leases but never live leases", async () => {
     }),
     e,
   );
-  await run(saveSession(state("live")), e);
+  await run(Session.save(state("live")), e);
   await run(
-    writeLease({
+    Session.writeLease({
       version: 1,
       session: "live",
       pid: process.pid,
@@ -81,9 +83,9 @@ test("stale cleanup removes dead leases but never live leases", async () => {
     }),
     e,
   );
-  expect(await run(cleanupStaleSessions(), e)).toEqual(["dead"]);
-  expect(await run(loadSession("dead"), e)).toBeNull();
-  expect(await run(loadSession("live"), e)).not.toBeNull();
+  expect(await run(Session.cleanupStale, e)).toEqual(["dead"]);
+  expect(await run(Session.load("dead"), e)).toBeNull();
+  expect(await run(Session.load("live"), e)).not.toBeNull();
 });
 
 test("valid session ids resolve to a single path component", async () => {
@@ -149,23 +151,23 @@ test("invalid session ids are rejected before any path is built", async () => {
 
 test("no session helper touches the filesystem for a traversal id", async () => {
   const e = await env();
-  await run(saveSession(state("ok")), e);
+  await run(Session.save(state("ok")), e);
   for (const id of ["..", "../escape", "a/../../victim"]) {
-    await expect(run(loadSession(id), e)).rejects.toThrow();
-    await expect(run(removeSession(id), e)).rejects.toThrow();
-    await expect(run(sessionExists(id), e)).resolves.toBe(false);
+    await expect(run(Session.load(id), e)).rejects.toThrow();
+    await expect(run(Session.remove(id), e)).rejects.toThrow();
+    await expect(run(Session.exists(id), e)).resolves.toBe(false);
   }
   // The valid session is untouched.
-  expect(await run(loadSession("ok"), e)).not.toBeNull();
+  expect(await run(Session.load("ok"), e)).not.toBeNull();
 });
 
 test("traversal ids cannot read or delete files outside the sessions root", async () => {
   const e = await env();
   const victim = join(e.HOME!, "victim.json");
   await Bun.write(victim, "secret");
-  await expect(run(saveSession({ ...state("../..") }), e)).rejects.toThrow();
-  await expect(run(removeSession(".."), e)).rejects.toThrow();
-  await expect(run(removeSession("../.."), e)).rejects.toThrow();
+  await expect(run(Session.save({ ...state("../..") }), e)).rejects.toThrow();
+  await expect(run(Session.remove(".."), e)).rejects.toThrow();
+  await expect(run(Session.remove("../.."), e)).rejects.toThrow();
   expect(await Bun.file(victim).exists()).toBe(true);
   expect(await Bun.file(victim).text()).toBe("secret");
 });
@@ -175,8 +177,8 @@ test("cleanup ignores entries that are not valid session ids", async () => {
   const root = await run(sessionRoot(), e);
   await mkdir(join(root, "dead"), { recursive: true });
   await mkdir(join(root, "weird name"), { recursive: true });
-  expect(await run(cleanupStaleSessions(), e)).toEqual(["dead"]);
-  expect(await run(sessionExists("dead"), e)).toBe(false);
+  expect(await run(Session.cleanupStale, e)).toEqual(["dead"]);
+  expect(await run(Session.exists("dead"), e)).toBe(false);
   await expect(stat(join(root, "weird name"))).resolves.toBeDefined();
 });
 
@@ -215,23 +217,23 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
       },
     ],
   };
-  expect(parseSessionState(value)).toEqual(value);
+  expect(Effect.runSync(parseSessionState(value))).toEqual(value);
   const duplicate = structuredClone(value);
   duplicate.spaces.push(structuredClone(value.spaces[0]));
-  expect(() => parseSessionState(duplicate)).toThrow("invalid persisted space");
+  expect(() => Effect.runSync(parseSessionState(duplicate))).toThrow("invalid persisted space");
   const missing = structuredClone(value);
   missing.spaces[0].windows[0].layout = JSON.stringify({
     version: 1,
     root: { type: "pane", id: "pane-a", agent: "missing", weight: 1 },
   });
-  expect(() => parseSessionState(missing)).toThrow("absent or exited agent");
+  expect(() => Effect.runSync(parseSessionState(missing))).toThrow("absent or exited agent");
   const malformed = structuredClone(value);
   malformed.spaces[0].windows[0].agents[0].rows = -1;
-  expect(() => parseSessionState(malformed)).toThrow("invalid persisted agent");
+  expect(() => Effect.runSync(parseSessionState(malformed))).toThrow("invalid persisted agent");
   const huge = structuredClone(value);
   huge.spaces[0].windows[0].agents[0].cols = 1_000_000;
   huge.spaces[0].windows[0].agents[0].rows = 1_000_000;
-  expect(() => parseSessionState(huge)).toThrow("invalid persisted agent");
+  expect(() => Effect.runSync(parseSessionState(huge))).toThrow("invalid persisted agent");
 });
 
 test("persisted snapshots bound aggregate model size", () => {
@@ -244,5 +246,5 @@ test("persisted snapshots bound aggregate model size", () => {
     windows: [],
   }));
   crowded.activeSpace = crowded.spaces[0].id;
-  expect(() => parseSessionState(crowded)).toThrow("too many spaces");
+  expect(() => Effect.runSync(parseSessionState(crowded))).toThrow("too many spaces");
 });

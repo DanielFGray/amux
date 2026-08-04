@@ -14,7 +14,8 @@ import { createAppState, POLL_MS } from "./state.ts";
 import { Sidebar, sidebarTargets, SIDEBAR_WIDTH, clampSidebarSelection } from "./Sidebar.tsx";
 import { SessionDaemon } from "../daemon.ts";
 import { SessionClient, type SessionClientShape } from "../client.ts";
-import { SessionEnv } from "../session.ts";
+import { Session, SessionEnv } from "../session.ts";
+import { BunFileSystem } from "@effect/platform-bun";
 import type { SpawnBackend } from "../backend.ts";
 import { workspaceEnv } from "../env.ts";
 import type { AgentOptions } from "../agent.ts";
@@ -36,8 +37,17 @@ const SHELL = ["bash", "--norc", "--noprofile"];
 const daemons: SessionDaemon[] = [];
 const clients: SessionClientShape[] = [];
 const dirs: string[] = [];
-const run = <A,>(effect: Effect.Effect<A, unknown, SessionEnv>, env: NodeJS.ProcessEnv) =>
-  Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, env)));
+const run = <A,>(
+  effect: Effect.Effect<A, unknown, SessionEnv | Session>,
+  env: NodeJS.ProcessEnv,
+) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.provide(Session.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(SessionEnv, env),
+    ),
+  );
 afterEach(async () => {
   for (const client of clients.splice(0)) client.close();
   for (const daemon of daemons.splice(0)) await daemon.stop().catch(() => {});

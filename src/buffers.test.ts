@@ -13,13 +13,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
+import { BunFileSystem } from "@effect/platform-bun";
 import { daemonRequest, SessionDaemon, type DaemonRequest, type DaemonResponse } from "./daemon.ts";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
-import { SessionEnv } from "./session.ts";
+import { Session, SessionEnv } from "./session.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemon[] = [];
@@ -33,7 +34,11 @@ async function started(id: string) {
   dirs.push(home);
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") };
   const daemon = await Effect.runPromise(
-    SessionDaemon.open(id).pipe(Effect.provideService(SessionEnv, env)),
+    SessionDaemon.open(id).pipe(
+      Effect.provide(Session.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(SessionEnv, env),
+    ),
   );
   daemons.push(daemon);
   await daemon.start();

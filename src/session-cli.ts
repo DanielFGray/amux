@@ -1,5 +1,6 @@
 import { daemonRequest } from "./daemon.ts";
-import { isSessionId, SessionEnv } from "./session.ts";
+import { isSessionId, Session, SessionEnv } from "./session.ts";
+import { BunFileSystem } from "@effect/platform-bun";
 import { Effect } from "effect";
 
 /** `amux status <id>` / `amux stop <id>`: a one-shot RPC against a live daemon. */
@@ -18,7 +19,11 @@ export async function runSessionCli(argv: string[]): Promise<number> {
     const result = await Effect.runPromise(
       daemonRequest(id, {
         command: command as "status" | "stop",
-      }).pipe(Effect.provideService(SessionEnv, process.env)),
+      }).pipe(
+        Effect.provide(Session.Default),
+        Effect.provide(BunFileSystem.layer),
+        Effect.provideService(SessionEnv, process.env),
+      ),
     );
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     return result.ok ? 0 : 1;

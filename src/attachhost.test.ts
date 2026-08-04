@@ -8,6 +8,7 @@
  */
 
 import { Effect } from "effect";
+import { BunFileSystem } from "@effect/platform-bun";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,12 +19,21 @@ import {
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
-import { loadSession, SessionEnv } from "./session.ts";
+import { Session, SessionEnv } from "./session.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemon[] = [];
-const run = <A>(effect: Effect.Effect<A, unknown, SessionEnv>, env: NodeJS.ProcessEnv) =>
-  Effect.runPromise(effect.pipe(Effect.provideService(SessionEnv, env)));
+const run = <A>(
+  effect: Effect.Effect<A, unknown, Session | SessionEnv>,
+  env: NodeJS.ProcessEnv,
+) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.provide(Session.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(SessionEnv, env),
+    ),
+  );
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.stop().catch(() => {});
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
@@ -221,7 +231,7 @@ test("closing a daemon persists that the preserved session is detached", async (
 
   const home = dirs[dirs.length - 1]!;
   expect(
-    (await run(loadSession("close-detached"), { HOME: home, XDG_STATE_HOME: join(home, "state") }))
+    (await run(Session.load("close-detached"), { HOME: home, XDG_STATE_HOME: join(home, "state") }))
       ?.attached,
   ).toBe(false);
 });

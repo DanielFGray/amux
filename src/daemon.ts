@@ -23,14 +23,10 @@ import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { ManagedSession, SessionSpec } from "./effect/SessionRegistry.ts";
 import {
   isSessionId,
-  loadSession,
   processAlive,
-  readLease,
-  removeSession,
-  saveSession,
+  Session,
   SessionEnv,
   sessionPaths,
-  writeLease,
   type SessionAttachment,
   type SessionLease,
   type SessionState,
@@ -133,8 +129,8 @@ export interface DaemonResponse {
 }
 
 export interface SessionDaemonOptions {
-  /** Persistence seam used by fault-injection tests; production uses saveSession. */
-  readonly saveState?: (state: SessionState) => Effect.Effect<void, unknown>;
+  /** Persistence seam used by fault-injection tests; production uses Session.save. */
+  readonly saveState?: (state: SessionState) => Effect.Effect<void, unknown, Session>;
 }
 
 const SHUTDOWN_SAVE_TIMEOUT_MS = 500;
@@ -173,6 +169,7 @@ export class SessionDaemon {
   #exitCommits = new Map<string, (code: number | null) => Promise<void>>();
   #durableObligations = new Map<symbol, string>();
   #writeState: (state: SessionState) => Effect.Effect<void, unknown>;
+  #session: Session;
   #activeSave: Fiber.RuntimeFiber<void, unknown> | null = null;
   #cancelPersistence = false;
   #scope: Scope.CloseableScope;
@@ -186,6 +183,7 @@ export class SessionDaemon {
     env: NodeJS.ProcessEnv,
     paths: SessionPaths,
     options: SessionDaemonOptions,
+    session: Session,
   ) {
     this.id = id;
     this.paths = paths;
@@ -193,9 +191,10 @@ export class SessionDaemon {
     this.#env = env;
     this.#state = state;
     this.#workspace = workspaceFromSession(state);
-    this.#writeState =
-      options.saveState ??
-      ((next) => saveSession(next).pipe(Effect.provideService(SessionEnv, env)));
+    this.#session = session;
+    this.#writeState = options.saveState
+      ? (next) => options.saveState!(next).pipe(Effect.provideService(Session, session))
+      : (next) => session.save(next);
     this.#scope = Effect.runSync(Scope.make());
     this.stopped = new Promise((resolve) => {
       this.#resolveStopped = resolve;
@@ -208,7 +207,7 @@ export class SessionDaemon {
   static open(
     id = "default",
     options: SessionDaemonOptions = {},
-  ): Effect.Effect<SessionDaemon, unknown, SessionEnv> {
+  ): Effect.Effect<SessionDaemon, unknown, SessionEnv | Session> {
     return Effect.gen(function* () {
       if (!isSessionId(id)) {
         return yield* Effect.fail(
@@ -218,14 +217,17 @@ export class SessionDaemon {
       const env = yield* SessionEnv;
       const paths = yield* sessionPaths(id);
       yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }));
-      const lock = yield* Effect.promise(() => SessionDaemon.acquireLock(id, paths.lock, env));
+      const session = yield* Session;
+      const lock = yield* Effect.promise(() =>
+        SessionDaemon.acquireLock(id, paths.lock, env, session),
+      );
       try {
-        const existing = yield* readLease(id);
+        const existing = yield* session.readLease(id);
         if (existing && processAlive(existing.pid))
           return yield* Effect.fail(
             new Error(`session '${id}' is already owned by pid ${existing.pid}`),
           );
-        const state = (yield* loadSession(id)) ?? {
+        const state = (yield* session.load(id)) ?? {
           version: 1,
           id,
           createdAt: Date.now(),
@@ -234,7 +236,7 @@ export class SessionDaemon {
           spaces: [],
         };
         state.attached = false;
-        const daemon = new SessionDaemon(id, state, env, paths, options);
+        const daemon = new SessionDaemon(id, state, env, paths, options, session);
         daemon.#lock = lock;
         return daemon;
       } catch (error) {
@@ -247,7 +249,7 @@ export class SessionDaemon {
 
   #lock: Awaited<ReturnType<typeof open>> | null = null;
 
-  static async acquireLock(id: string, path: string, env: NodeJS.ProcessEnv) {
+  static async acquireLock(id: string, path: string, env: NodeJS.ProcessEnv, session: Session) {
     for (;;) {
       try {
         const lock = await open(path, "wx", 0o600);
@@ -263,9 +265,7 @@ export class SessionDaemon {
           // A directory or malformed file is a stale marker; lease validation
           // below still protects a running daemon from being removed.
         }
-        const lease = await Effect.runPromise(
-          readLease(id).pipe(Effect.provideService(SessionEnv, env)),
-        );
+        const lease = await Effect.runPromise(session.readLease(id));
         if (lease && processAlive(lease.pid))
           throw new Error(`session '${id}' is already owned by pid ${lease.pid}`);
         // Recover a lock left by a dead daemon, including the old directory
@@ -294,7 +294,7 @@ export class SessionDaemon {
     };
     try {
       await this.#enqueueModelChange(() => this.#persistState(this.#state));
-      await Effect.runPromise(writeLease(lease).pipe(Effect.provideService(SessionEnv, this.#env)));
+      await Effect.runPromise(this.#session.writeLease(lease));
       await this.#startAttachHost();
       await this.#enqueueModelChange(() => this.#restoreWorkspaceSessions());
       if (this.#workspace.spaces.length === 0) {
@@ -419,9 +419,7 @@ export class SessionDaemon {
         return this.#run(
           Effect.gen(this, function* () {
             const heartbeatAt = yield* Clock.currentTimeMillis;
-            yield* writeLease({ ...lease, heartbeatAt, ...this.#attachInfo() }).pipe(
-              Effect.provideService(SessionEnv, this.#env),
-            );
+            yield* this.#session.writeLease({ ...lease, heartbeatAt, ...this.#attachInfo() });
             this.#heartbeatError = null;
           }),
         );
@@ -902,9 +900,7 @@ export class SessionDaemon {
       await this.#mutations;
 
       if (mode === "stop") {
-        await Effect.runPromise(
-          removeSession(this.id).pipe(Effect.provideService(SessionEnv, this.#env)),
-        );
+        await Effect.runPromise(this.#session.remove(this.id));
       } else {
         await this.#enqueueModelChange(async () => {
           const state = { ...this.#state, attached: false, updatedAt: Date.now() };
@@ -1118,10 +1114,12 @@ export function daemonRequest(
  * SIGTERM and SIGINT release it through the same path as any other exit rather
  * than through two handlers that could only race `stop()` against `exit()`.
  */
-export async function startDaemon(id = process.argv[2] || randomUUID()): Promise<SessionDaemon> {
-  const daemon = await Effect.runPromise(
-    SessionDaemon.open(id).pipe(Effect.provideService(SessionEnv, process.env)),
-  );
-  await daemon.start();
-  return daemon;
+export function startDaemon(
+  id = process.argv[2] || randomUUID(),
+): Effect.Effect<SessionDaemon, unknown, SessionEnv | Session> {
+  return Effect.gen(function* () {
+    const daemon = yield* SessionDaemon.open(id);
+    yield* Effect.promise(() => daemon.start());
+    return daemon;
+  });
 }
