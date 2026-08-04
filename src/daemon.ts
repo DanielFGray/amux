@@ -3,7 +3,18 @@ import { request as httpRequest } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { Cause, Clock, Data, Effect, Exit, Fiber, ManagedRuntime, Schedule, Scope } from "effect";
+import {
+  Cause,
+  Clock,
+  Data,
+  Effect,
+  Exit,
+  Fiber,
+  ManagedRuntime,
+  Schedule,
+  Schema,
+  Scope,
+} from "effect";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
 import type { PreparedSession } from "./effect/SessionSupervisor.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
@@ -56,6 +67,18 @@ export type DaemonCommand =
   | "delete-buffer"
   | "show-buffer";
 
+const DaemonCommandSchema = Schema.Literal(
+  "ping",
+  "status",
+  "stop",
+  "workspace-command",
+  "set-buffer",
+  "paste-buffer",
+  "list-buffers",
+  "delete-buffer",
+  "show-buffer",
+);
+
 export class SessionDaemonError extends Data.TaggedError("SessionDaemonError")<{
   message: string;
 }> {}
@@ -65,26 +88,28 @@ export class SessionDaemonError extends Data.TaggedError("SessionDaemonError")<{
 const describe = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-export interface DaemonRequest {
-  command: DaemonCommand;
+export const DaemonRequestSchema = Schema.Struct({
+  command: DaemonCommandSchema,
   /** Existing command value executed against the daemon-owned workspace. */
-  workspaceCommand?: unknown;
+  workspaceCommand: Schema.optional(Schema.Unknown),
   /** Commands from an obsolete generation are rejected, never rebased silently. */
-  expectedRevision?: number;
-  workspaceContext?: unknown;
+  expectedRevision: Schema.optional(Schema.Int),
+  workspaceContext: Schema.optional(Schema.Unknown),
   /**
    * The buffer a buffer verb acts on, for set-buffer/paste-buffer/
    * delete-buffer/show-buffer. Absent means "the top of the stack" except for
    * set-buffer, where it means "a new numbered buffer".
    */
-  bufferName?: string;
+  bufferName: Schema.optional(Schema.String),
   /** The data to store, for set-buffer. */
-  bufferData?: string;
+  bufferData: Schema.optional(Schema.String),
   /** The session to write into, for paste-buffer (the focused pane's agent). */
-  bufferTarget?: string;
+  bufferTarget: Schema.optional(Schema.String),
   /** paste-buffer -d: drop the buffer after pasting it. */
-  bufferDelete?: boolean;
-}
+  bufferDelete: Schema.optional(Schema.Boolean),
+});
+
+export type DaemonRequest = Schema.Schema.Type<typeof DaemonRequestSchema>;
 
 export interface DaemonResponse {
   ok: boolean;
@@ -743,7 +768,9 @@ export class SessionDaemon {
     if (request.method !== "POST" || new URL(request.url).pathname !== "/rpc")
       return new Response("not found", { status: 404 });
     try {
-      const body = (await boundedJson(request, MAX_RPC_BYTES)) as DaemonRequest;
+      const body = Schema.decodeUnknownSync(DaemonRequestSchema)(
+        await boundedJson(request, MAX_RPC_BYTES),
+      );
       return Response.json(await this.handle(body));
     } catch (error) {
       return Response.json({ ok: false, error: String(error) }, { status: 400 });

@@ -2,8 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Stream } from "effect";
-import { daemonRequest, SessionDaemon, type SessionDaemonOptions } from "./daemon.ts";
+import { Effect, Schema, Stream } from "effect";
+import {
+  DaemonRequestSchema,
+  daemonRequest,
+  SessionDaemon,
+  type SessionDaemonOptions,
+} from "./daemon.ts";
 import {
   cleanupStaleSessions,
   loadSession,
@@ -33,6 +38,17 @@ const open = (id: string, e: NodeJS.ProcessEnv, options: SessionDaemonOptions = 
   run(SessionDaemon.open(id, options), e);
 const paths = (id: string, e: NodeJS.ProcessEnv) => run(sessionPaths(id), e);
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
+
+test("daemon RPC requests are schema-validated", () => {
+  expect(Schema.decodeUnknownSync(DaemonRequestSchema)({ command: "status" })).toEqual({
+    command: "status",
+  });
+  expect(() =>
+    Schema.decodeUnknownSync(DaemonRequestSchema)({ command: "status", expectedRevision: "1" }),
+  ).toThrow();
+  expect(() => Schema.decodeUnknownSync(DaemonRequestSchema)({ command: "unknown" })).toThrow();
+});
+
 const saveEffect = (save: (state: any, signal: AbortSignal) => Promise<void>) => (state: any) =>
   Effect.tryPromise({ try: (signal) => save(state, signal), catch: (error) => error });
 
