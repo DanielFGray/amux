@@ -310,6 +310,25 @@ export class Window {
   }
 
   /**
+   * Detach a pane and transfer its live agent ownership as one handoff.
+   *
+   * All preconditions are checked before the layout or ownership maps change,
+   * so callers cannot leave a pane detached when its lifetime is unavailable.
+   */
+  releasePane(pane: TerminalPane): { agent: Agent; scope: Scope.CloseableScope } | null {
+    const agent = pane.agent;
+    if (!this.#panes.includes(pane) || !this.#agents.includes(agent)) return null;
+    const scope = this.#scopes.get(agent);
+    if (!scope) return null;
+    if (this.#slotOf(this.exportLayout(), pane) === -1) return null;
+    if (!this.detachPane(pane)) return null;
+    this.#agents.splice(this.#agents.indexOf(agent), 1);
+    this.#scopes.delete(agent);
+    this.onChange?.();
+    return { agent, scope };
+  }
+
+  /**
    * Permanently stop an agent and close any views of it.
    *
    * Reports the agent as gone, exactly as a process ending does. A kill and an

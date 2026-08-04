@@ -200,18 +200,16 @@ export class Space {
     return Effect.gen(this, function* () {
       const source = this.#windows.find((w) => w.panes.includes(pane));
       if (!source) return null;
-      const agent = pane.agent;
       // Ownership is checked BEFORE anything is mutated. The agent's scope has
       // to travel with it — the source window may be closed below, and closing
       // it must not end a process that now lives elsewhere — so a break that
       // could not hand the scope over has to be refused while it is still a
       // no-op, rather than half-done with a detached pane nothing will release.
-      if (!source.agents.includes(agent)) return null;
-      if (!source.detachPane(pane)) return null;
-      const scope = source.relinquishAgent(agent)!;
+      const handoff = source.releasePane(pane);
+      if (!handoff) return null;
 
       const window = yield* this.newWindow();
-      window.adopt(agent, pane, scope);
+      window.adopt(handoff.agent, pane, handoff.scope);
 
       if (source.panes.length === 0 && !source.agents.some((a) => a.state !== "done")) {
         yield* this.closeWindow(source);
