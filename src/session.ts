@@ -90,6 +90,7 @@ export interface PersistedSpace {
   dir: string
   activeWindow: number | null
   windows: PersistedWindow[]
+  worktree?: { branch: string; repo: string; path: string }
 }
 
 export interface SessionState {
@@ -148,6 +149,11 @@ export function sessionRoot(): Effect.Effect<string, never, SessionEnv> {
   return Effect.map(SessionEnv, (env) => join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "amux", "sessions"))
 }
 
+/** Root directory for space worktrees, siblings to the sessions root. */
+export function worktreesRoot(): Effect.Effect<string, never, SessionEnv> {
+  return Effect.map(SessionEnv, (env) => join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "amux", "worktrees"))
+}
+
 export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdError, SessionEnv> {
   return Effect.gen(function* () {
     if (!isSessionId(id)) {
@@ -177,6 +183,12 @@ export function parseSessionState(value: unknown, expectedId?: string): SessionS
       typeof item.name !== "string" || typeof item.dir !== "string" || !Array.isArray(item.windows) ||
       !(item.activeWindow === null || positiveInt(item.activeWindow))) {
       throw new Error("invalid persisted space")
+    }
+    if (item.worktree !== undefined) {
+      if (!record(item.worktree) || typeof item.worktree.branch !== "string" ||
+        typeof item.worktree.repo !== "string" || typeof item.worktree.path !== "string") {
+        throw new Error("invalid persisted space worktree")
+      }
     }
     spaceIds.add(item.id)
     windowCount += item.windows.length

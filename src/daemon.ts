@@ -1,5 +1,7 @@
 import { mkdir, open, readFile, rm, unlink } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { Cause, Clock, Data, Effect, Exit, Fiber, ManagedRuntime, Schedule, Scope } from "effect"
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts"
@@ -22,7 +24,9 @@ import {
   workspaceSession,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
+  type WorkspaceSpace,
 } from "./workspace.ts"
+import { gitWorktreeAdd, gitWorktreeDirty, gitWorktreeExists, gitWorktreeRemove, type WorktreeSpec } from "./git.ts"
 
 export type DaemonCommand =
   | "ping" | "status" | "stop" | "workspace-command"
@@ -342,8 +346,25 @@ export class SessionDaemon {
   async #restoreWorkspaceSessions(): Promise<void> {
     let next = this.#workspace
     let changed = false
-    for (const space of next.spaces) {
-      for (const window of space.windows) {
+    for (let si = 0; si < next.spaces.length; si++) {
+      const space = next.spaces[si]!
+      if (space.worktree) {
+        const exists = await gitWorktreeExists(space.worktree.path)
+        if (!exists) {
+          for (let wi = 0; wi < space.windows.length; wi++) {
+            const window = space.windows[wi]!
+            for (const agent of window.agents) {
+              if (!agent.exited) {
+                next = markAgentExited(next, agent.id, null)
+                changed = true
+              }
+            }
+          }
+          continue
+        }
+      }
+      for (let wi = 0; wi < space.windows.length; wi++) {
+        const window = space.windows[wi]!
         for (const agent of window.agents) {
           if (agent.exited) continue
           try {
@@ -371,14 +392,27 @@ export class SessionDaemon {
       if (expectedRevision !== this.#workspace.revision) {
         throw new Error(`stale workspace revision ${expectedRevision}; current revision is ${this.#workspace.revision}`)
       }
+      // The worktree root is a daemon property derived from its own env; a
+      // client never chooses where worktrees live.
+      context = { ...context, worktreesRoot: this.#worktreesRoot() }
       if (!isWorkspaceCommand(value)) throw new Error(`command '${value._tag}' is not a workspace command`)
       const mutation = applyWorkspaceCommand(this.#workspace, value, context)
       const candidateState = workspaceSession(mutation.snapshot, this.#state)
+
+      const worktrees = this.#gitWorktreesFor(value, mutation.snapshot, this.#workspace)
       const prepared: PreparedSession[] = []
       let settleExits!: (committed: boolean) => void
       const exitsSettled = new Promise<boolean>((resolve) => { settleExits = resolve })
       const killed = mutation.actions.filter((action) => action._tag === "kill").map((action) => action.agent)
+      // Creating a worktree is a reversible acquisition, like a prepared PTY:
+      // it must exist before the agents that run in it spawn, but a git
+      // failure here aborts the transaction with nothing destroyed.
+      let createdWorktree = false
       try {
+        if (worktrees.created) {
+          await this.#createWorktree(worktrees.created, worktrees.base)
+          createdWorktree = true
+        }
         // Prepared PTYs are private acquisitions. Fast exits stop at their
         // activation gate and abort terminates them without entering this queue.
         for (const action of mutation.actions) {
@@ -399,6 +433,14 @@ export class SessionDaemon {
             await this.#runtime.runPromise(this.#host.write(action.agent, action.data))
           }
         }
+        // The dirty gate sits after kills (agents have stopped writing) and
+        // before persist: a dirty removed worktree rejects while the space is
+        // still in the model, so a failed close keeps both model and worktree.
+        for (const worktree of worktrees.removed) {
+          if (await gitWorktreeDirty(worktree.path)) {
+            throw new Error(`worktree '${worktree.path}' has uncommitted changes; commit or stash before closing the space`)
+          }
+        }
         if (mutation.changed) {
           // A spawn-only candidate is reversible and may reject on write
           // failure. Once a process has been destroyed, fail-stop retry is the
@@ -409,12 +451,25 @@ export class SessionDaemon {
           this.#state = candidateState
           await this.#publishWorkspace()
         }
+        // Removal is the destructive half of a worktree space: the model and
+        // the disk must already agree that the space is gone before the
+        // worktree disappears, so a failed close leaves both consistent. The
+        // dirty gate has already run; do not re-check after commit.
+        for (const worktree of worktrees.removed) {
+          await gitWorktreeRemove(worktree.repo, worktree.path)
+        }
         settleExits(true)
         for (const session of prepared) await this.#runtime!.runPromise(session.activate)
         return this.workspace
       } catch (error) {
         settleExits(false)
         for (const session of prepared) await this.#runtime?.runPromise(session.abort).catch(() => {})
+        // A created-but-uncommitted worktree is a phantom: the model never
+        // claimed it, so it must not outlive the failed transaction. Nothing
+        // has run in it yet, so force removal cannot lose committed work.
+        if (createdWorktree && worktrees.created) {
+          await gitWorktreeRemove(worktrees.created.repo, worktrees.created.path, true).catch(() => {})
+        }
         throw error
       } finally {
         for (const id of killed) this.#exitCommits.delete(id)
@@ -426,6 +481,46 @@ export class SessionDaemon {
     const result = this.#mutations.then(change, change)
     this.#mutations = result.then(() => {}, () => {})
     return result
+  }
+
+  /** The daemon owns amux's state directory; worktree space dirs live beneath
+   *  it, siblings of the sessions root. The context the client supplies never
+   *  decides this root. */
+  #worktreesRoot(): string {
+    const env = this.#env
+    return join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "amux", "worktrees")
+  }
+
+  /**
+   * A git worktree is created when space.new carries a branch and destroyed
+   * when its space closes. Destroying one is a second destructive obligation
+   * on top of the kill: a half-applied close must not lose the worktree while
+   * the model still names it.
+   */
+  #gitWorktreesFor(value: Command, next: WorkspaceSnapshot, current: WorkspaceSnapshot) {
+    if (value._tag === "space.new") {
+      const created = next.spaces.find((s) => s.worktree && !current.spaces.some((c) => c.id === s.id))
+      if (created?.worktree) {
+        const base = typeof (value as { base?: string }).base === "string"
+          ? (value as { base?: string }).base!.trim() || undefined
+          : undefined
+        return { created: created.worktree, base, removed: [] }
+      }
+      return { created: null, base: undefined, removed: [] }
+    }
+    if (value._tag === "space.close") {
+      const closedIds = new Set(next.spaces.map((s) => s.id))
+      const removed = current.spaces
+        .filter((s) => s.worktree && !closedIds.has(s.id))
+        .map((s) => s.worktree!)
+      return { created: null, base: undefined, removed }
+    }
+    return { created: null, base: undefined, removed: [] }
+  }
+
+  async #createWorktree(worktree: WorkspaceSpace["worktree"] & {}, base?: string): Promise<void> {
+    const spec: WorktreeSpec = { branch: worktree.branch, ...(base ? { base } : {}) }
+    await gitWorktreeAdd(worktree.repo, spec, worktree.path)
   }
 
   async #beforeSessionExit(id: string, code: number | null): Promise<void> {

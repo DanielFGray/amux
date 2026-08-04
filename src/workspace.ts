@@ -1,6 +1,7 @@
 import type { Command } from "./commands.ts"
 import { randomUUID } from "node:crypto"
-import { basename, resolve } from "node:path"
+import { basename, join, resolve } from "node:path"
+import { worktreeDirname } from "./git.ts"
 import { paneInDirection, resizeDivider, resizePane, type LayoutSize } from "./geometry.ts"
 import {
   closeLayout,
@@ -46,6 +47,7 @@ export interface WorkspaceSpace {
   dir: string
   windows: WorkspaceWindow[]
   state: SpaceState
+  worktree?: { branch: string; repo: string; path: string }
 }
 
 /** The renderer-free value owned and ordered by one session daemon. */
@@ -63,6 +65,10 @@ export interface WorkspaceCommandContext {
   blockedAgents?: readonly string[]
   /** Compiled bytes for pane.send-keys; the command remains the vocabulary. */
   input?: string
+  /** Root directory for space worktrees. Daemon authority: derived from the
+   *  session env, never the client. Required only when a command creates a
+   *  worktree space (space.new with a branch). */
+  worktreesRoot?: string
 }
 
 export type WorkspaceAction =
@@ -125,6 +131,7 @@ export function workspaceFromSession(session: SessionState): WorkspaceSnapshot {
         name: saved.name,
         dir: saved.dir,
         windows,
+        worktree: saved.worktree,
         state: {
           ...base,
           activeWindow,
@@ -147,6 +154,7 @@ export function workspaceSession(workspace: WorkspaceSnapshot, base: SessionStat
       name: space.name,
       dir: space.dir,
       activeWindow: space.state.activeWindow,
+      worktree: space.worktree,
       windows: space.windows.map((window) => ({
         number: window.number,
         name: window.name,
@@ -222,7 +230,8 @@ export function parseWorkspaceCommandContext(value: unknown, workspace?: Workspa
   if (!record(value) || !record(value.size) || !isTerminalSize(value.size.cols, value.size.rows) || !Array.isArray(value.shell) ||
     value.shell.length === 0 || !value.shell.every(nonEmptyString) || !nonEmptyString(value.cwd) ||
     !(value.blockedAgents === undefined || Array.isArray(value.blockedAgents)) ||
-    !(value.input === undefined || typeof value.input === "string")) {
+    !(value.input === undefined || typeof value.input === "string") ||
+    !(value.worktreesRoot === undefined || typeof value.worktreesRoot === "string")) {
     throw new Error("invalid workspace command context")
   }
   const blocked = value.blockedAgents ?? []
@@ -510,14 +519,30 @@ export function applyWorkspaceCommand(
       break
     }
     case "space.new": {
-      const dir = resolve(command.dir?.trim() || space()?.dir || context.cwd)
-      const created: WorkspaceSpace = {
-        id: newSpaceId(),
-        name: command.name?.trim() || basename(dir),
-        dir,
-        windows: [],
-        state: spaceState(),
-      }
+      const branch = typeof command.branch === "string" ? command.branch.trim() : ""
+      const repo = resolve(command.dir?.trim() || space()?.dir || context.cwd)
+      const id = newSpaceId()
+      const created: WorkspaceSpace = branch
+        ? (() => {
+            const root = context.worktreesRoot
+            if (!root) throw new Error("worktree space requires a worktreesRoot context")
+            const dir = join(root, `${id}-${worktreeDirname(branch)}`)
+            return {
+              id,
+              name: command.name?.trim() || branch,
+              dir,
+              worktree: { branch, repo, path: dir },
+              windows: [],
+              state: spaceState(),
+            }
+          })()
+        : {
+            id,
+            name: command.name?.trim() || basename(repo),
+            dir: repo,
+            windows: [],
+            state: spaceState(),
+          }
       next.spaces.push(created)
       next.state = activateSpaceState(next.state, next.spaces.map((item) => item.id), created.id)
       addWindow(created)
