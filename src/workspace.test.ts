@@ -353,6 +353,33 @@ test("pane.join without a source uses the previously active window", () => {
   ).toContain("agent-a");
 });
 
+test("pane.move transfers the focused pane to another space without killing it", () => {
+  const adopted = workspaceFromSession(twoPaneSession());
+  const withOther = applyWorkspaceCommand(
+    adopted,
+    command("space.new", { dir: "/tmp/other" }),
+    context,
+  ).snapshot;
+  const other = withOther.spaces[1]!;
+  const back = applyWorkspaceCommand(
+    withOther,
+    command("space.select", { space: adopted.spaces[0]!.id }),
+    context,
+  ).snapshot;
+  const result = applyWorkspaceCommand(back, command("pane.move", { space: other.id }), context);
+
+  expect(result.changed).toBe(true);
+  expect(result.actions.filter((action) => action._tag === "kill")).toHaveLength(0);
+  expect(result.snapshot.state.activeSpace).toBe(other.id);
+  expect(
+    layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root).map((pane) => pane.agent),
+  ).toEqual(["agent-b"]);
+  const movedSpace = result.snapshot.spaces.find((space) => space.id === other.id)!;
+  expect(layoutPanes(movedSpace.windows[0]!.layout.root).map((pane) => pane.agent)).toContain(
+    "agent-a",
+  );
+});
+
 // ── pane.zoom ──
 
 test("pane.zoom toggles zoom on and off", () => {

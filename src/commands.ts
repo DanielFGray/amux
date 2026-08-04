@@ -190,6 +190,15 @@ const PaneJoin = define(
     capability: "agent",
   },
 );
+const PaneMove = define(
+  "pane.move",
+  { space: Schema.String },
+  {
+    desc: "move the focused pane into another space",
+    group: "panes",
+    capability: "agent",
+  },
+);
 const PaneSendKeys = define(
   "pane.send-keys",
   { keys: Schema.String },
@@ -539,6 +548,7 @@ export const COMMAND_DEFS = [
   PaneClose,
   PaneBreak,
   PaneJoin,
+  PaneMove,
   PaneSendKeys,
   PaneCapture,
   PaneCopyMode,

@@ -543,6 +543,42 @@ export function applyWorkspaceCommand(
       afterPaneRemoved(next, source.space, source.window, actions);
       break;
     }
+    case "pane.move": {
+      const source = activeWindow();
+      const destination = findSpace(next, command.space);
+      const target = destination?.windows.find(
+        (window) => window.number === destination.state.activeWindow,
+      );
+      if (!source || !destination || !target || destination === source.space) break;
+      const paneId = source.window.state.focus;
+      const slot = layoutPanes(source.window.layout.root).find((item) => item.id === paneId);
+      const agent = source.window.agents.find((item) => item.id === slot?.agent);
+      if (!slot || !agent) break;
+
+      closePane(source.window, slot.id);
+      const stillReferenced = layoutPanes(source.window.layout.root).some(
+        (pane) => pane.agent === agent.id,
+      );
+      if (!stillReferenced)
+        source.window.agents = source.window.agents.filter((item) => item.id !== agent.id);
+      target.layout = appendPane(target.layout, slot);
+      target.agents.push(stillReferenced ? structuredClone(agent) : agent);
+      target.state.focus = slot.id;
+      target.state.last = null;
+      target.state.zoom = null;
+      afterPaneRemoved(next, source.space, source.window, actions);
+      destination.state = selectWindowState(
+        destination.state,
+        destination.windows.map((window) => window.number),
+        target.number,
+      );
+      next.state = activateSpaceState(
+        next.state,
+        next.spaces.map((space) => space.id),
+        destination.id,
+      );
+      break;
+    }
     case "pane.send-keys": {
       const target = activeWindow()?.window;
       const focused = layoutPanes(target?.layout.root ?? null).find(
@@ -785,6 +821,7 @@ const WORKSPACE_COMMANDS = new Set<Command["_tag"]>([
   "pane.close",
   "pane.break",
   "pane.join",
+  "pane.move",
   "pane.send-keys",
   "window.new",
   "window.next",

@@ -451,6 +451,25 @@ function buildApp(
     yield* commands.run(command("space.rename", { space: space.id, name: answers[0] ?? "" }));
   });
 
+  const promptMovePane = Effect.gen(function* () {
+    const current = spaces.active;
+    const candidates = spaces.spaces.filter((space) => space !== current);
+    if (!candidates.length) return;
+    const answers = yield* ask("Move pane to space", [
+      {
+        label: "Space",
+        value: candidates[0]!.name,
+        placeholder: candidates.map((space) => space.name).join(", "),
+      },
+    ]);
+    if (!answers) return;
+    const wanted = candidates.find(
+      (space) => space.id === answers[0] || space.name === answers[0]?.trim(),
+    );
+    if (!wanted) return yield* Effect.fail(new CommandError({ message: "unknown target space" }));
+    yield* commands.run(command("pane.move", { space: wanted.id }));
+  });
+
   const promptRenameWindow = Effect.gen(function* () {
     const space = spaces.active;
     const window = space?.active;
@@ -814,6 +833,7 @@ function buildApp(
     "pane.close": (value) => runWorkspace(value),
     "pane.break": (value) => runWorkspace(value),
     "pane.join": (value) => runWorkspace(value),
+    "pane.move": (value) => runWorkspace(value),
     "pane.send-keys": ({ keys }) =>
       Effect.suspend(() => {
         let input = "";
@@ -1095,6 +1115,7 @@ function buildApp(
     ),
     // The binding tmux itself gives break-pane.
     bind("pane.break", "<leader>!", command("pane.break")),
+    bindPrompt("pane.move", "<leader>M", promptMovePane, "move pane to another space"),
 
     // Windows.
     bind("window.new", "<leader>c", command("window.new")),

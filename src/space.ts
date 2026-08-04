@@ -17,6 +17,7 @@ import {
 } from "./space-model.ts";
 import type { WorkspaceSnapshot, WorkspaceSpace, WorkspaceWindow } from "./workspace.ts";
 import type { SpawnBackend } from "./backend.ts";
+import { layoutPanes } from "./layout.ts";
 
 let nextSpaceId = 0;
 
@@ -542,16 +543,38 @@ export function projectWorkspace(
   backend: SpawnBackend,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
-    for (const space of [...target.spaces]) {
-      if (!source.spaces.some((candidate) => candidate.id === space.id))
-        yield* target.remove(space);
-    }
     for (const savedSpace of source.spaces) {
       let space = target.spaces.find((candidate) => candidate.id === savedSpace.id);
       if (!space) space = yield* target.create(savedSpace.name, savedSpace.dir, savedSpace.id);
       space.name = savedSpace.name;
       space.dir = savedSpace.dir;
-      yield* projectSpace(space, savedSpace, backend);
+      for (const savedWindow of savedSpace.windows) {
+        if (!space.windows.some((candidate) => candidate.number === savedWindow.number))
+          yield* space.newWindow(savedWindow.name ?? undefined, savedWindow.number);
+      }
+    }
+    for (const savedSpace of source.spaces) {
+      const space = target.spaces.find((candidate) => candidate.id === savedSpace.id)!;
+      for (const savedWindow of savedSpace.windows) {
+        const destination = space.windows.find(
+          (candidate) => candidate.number === savedWindow.number,
+        )!;
+        for (const slot of layoutPanes(savedWindow.layout.root)) {
+          const current = target.spaces
+            .flatMap((candidate) => candidate.windows)
+            .find((window) => window.panes.some((pane) => pane.id === slot.id));
+          const pane = current?.panes.find((candidate) => candidate.id === slot.id);
+          if (!current || !pane || current === destination) continue;
+          const owner = target.spaces.find((candidate) => candidate.windows.includes(current));
+          const handoff = owner && current.releasePane(pane);
+          if (handoff) destination.adopt(handoff.agent, pane, handoff.scope);
+        }
+      }
+    }
+    for (const space of [...target.spaces]) {
+      const savedSpace = source.spaces.find((candidate) => candidate.id === space.id);
+      if (!savedSpace) yield* target.remove(space);
+      else yield* projectSpace(space, savedSpace, backend);
     }
     target.projectState(source.state);
   });
