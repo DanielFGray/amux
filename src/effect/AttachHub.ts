@@ -2,7 +2,17 @@ import { Effect, Queue, Ref, Schema as S, Scope, Stream } from "effect"
 import { encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts"
 
 const MAX_PENDING_BYTES = 4 * 1024 * 1024
-const frameBytes = (frame: AttachFrame) => new TextEncoder().encode(encodeAttachFrame(frame)).byteLength
+const encoder = new TextEncoder()
+
+interface QueuedFrame {
+  readonly frame: AttachFrame
+  readonly bytes: Uint8Array
+}
+
+const queuedFrame = (frame: AttachFrame): QueuedFrame => ({
+  frame,
+  bytes: encoder.encode(encodeAttachFrame(frame)),
+})
 
 export class AttachHubError extends S.TaggedError<AttachHubError>()("AttachHubError", {
   message: S.String,
@@ -22,11 +32,11 @@ export interface AttachSubscription {
  */
 export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
   effect: Effect.gen(function* () {
-    const clients = yield* Ref.make<ReadonlyMap<string, { connection: string; queue: Queue.Queue<AttachFrame>; pendingBytes: number; replaying: boolean; replayPending: number; replayLock: Effect.Semaphore; deferred: AttachFrame[]; deferredBytes: number; onOverflow?: () => void }>>(new Map())
+    const clients = yield* Ref.make<ReadonlyMap<string, { connection: string; queue: Queue.Queue<QueuedFrame>; pendingBytes: number; replaying: boolean; replayPending: number; replayLock: Effect.Semaphore; deferred: QueuedFrame[]; deferredBytes: number; onOverflow?: () => void }>>(new Map())
 
     const subscribe = (client: string, connection = "", onOverflow?: () => void): Effect.Effect<AttachSubscription, AttachHubError, Scope.Scope> =>
       Effect.gen(function* () {
-        const queue = yield* Queue.bounded<AttachFrame>(256)
+        const queue = yield* Queue.bounded<QueuedFrame>(256)
         const replayLock = yield* Effect.makeSemaphore(1)
         const registered = yield* Ref.modify(clients, (current) => {
           if (current.has(client)) {
@@ -59,36 +69,43 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
           client,
           frames: Stream.fromQueue(queue).pipe(
             Stream.mapEffect((frame) => Effect.sync(() => {
-              target.pendingBytes -= frameBytes(frame)
-              return frame
+              target.pendingBytes -= frame.bytes.byteLength
+              return frame.frame
             })),
           ),
         }
       })
 
+    const evict = (client: string, target: { queue: Queue.Queue<QueuedFrame>; onOverflow?: () => void }): Effect.Effect<void> =>
+      Queue.shutdown(target.queue).pipe(
+        Effect.zipRight(
+          Ref.update(clients, (current) => {
+            const next = new Map(current)
+            if (next.get(client)?.queue === target.queue) next.delete(client)
+            return next
+          }),
+        ),
+        Effect.tap(() => Effect.sync(() => target.onOverflow?.())),
+      )
+
     const publish = (frame: AttachFrame): Effect.Effect<void> =>
       Effect.gen(function* () {
         const queues = yield* Ref.get(clients)
-        const size = frameBytes(frame)
+        const item = queuedFrame(frame)
+        const size = item.bytes.byteLength
         for (const [client, target] of queues) {
           if (target.replaying || target.replayPending > 0) {
             if (target.pendingBytes + target.deferredBytes + size <= MAX_PENDING_BYTES) {
-              target.deferred.push(frame)
+              target.deferred.push(item)
               target.deferredBytes += size
               continue
             }
           }
-          if (target.pendingBytes + size <= MAX_PENDING_BYTES && target.queue.unsafeOffer(frame)) {
+          if (target.pendingBytes + size <= MAX_PENDING_BYTES && target.queue.unsafeOffer(item)) {
             target.pendingBytes += size
             continue
           }
-          yield* Queue.shutdown(target.queue)
-          yield* Ref.update(clients, (current) => {
-            const next = new Map(current)
-            if (next.get(client)?.queue === target.queue) next.delete(client)
-            return next
-          })
-          target.onOverflow?.()
+          yield* evict(client, target)
         }
       })
 
@@ -104,15 +121,10 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
       Effect.gen(function* () {
         const target = (yield* Ref.get(clients)).get(client)
         if (!target || target.connection !== connection) return
-        const size = frameBytes(frame)
-        if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(frame)) {
-          yield* Queue.shutdown(target.queue)
-          yield* Ref.update(clients, (current) => {
-            const next = new Map(current)
-            if (next.get(client)?.queue === target.queue) next.delete(client)
-            return next
-          })
-          target.onOverflow?.()
+        const item = queuedFrame(frame)
+        const size = item.bytes.byteLength
+        if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(item)) {
+          yield* evict(client, target)
         } else target.pendingBytes += size
       })
 
@@ -140,13 +152,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
         target.deferred = []
         target.deferredBytes = 0
         if (target.pendingBytes + size > MAX_PENDING_BYTES || !frames.every((item) => target.queue.unsafeOffer(item))) {
-          yield* Queue.shutdown(target.queue)
-          yield* Ref.update(clients, (current) => {
-            const next = new Map(current)
-            if (next.get(client)?.queue === target.queue) next.delete(client)
-            return next
-          })
-          target.onOverflow?.()
+          yield* evict(client, target)
         } else target.pendingBytes += size
         yield* target.replayLock.release(1)
       })

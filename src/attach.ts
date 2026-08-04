@@ -89,7 +89,9 @@ class AttachClientImpl implements AttachClientShape {
    *  instead of being left pending forever. */
   #pongs = new Map<string, Deferred.Deferred<boolean>>()
   #queued = new Map<string, { queue: Queue.Queue<AttachFrame>; active: number; terminal: boolean }>()
-  #workspace = Effect.runSync(Queue.bounded<WorkspaceSnapshot>(64))
+  // Workspace generations are snapshots, so an unconsumed client only needs
+  // the newest one. Terminal/session queues remain lossless and bounded.
+  #workspace = Effect.runSync(Queue.sliding<WorkspaceSnapshot>(1))
 
   /**
    * The attachment ended: the socket closed, the daemon went away, or the
@@ -363,10 +365,7 @@ class AttachClientImpl implements AttachClientShape {
       try {
         const workspace = parseWorkspace(JSON.parse(frame.state))
         if (workspace.revision !== frame.revision) throw new AttachError("workspace revision does not match frame")
-        if (!this.#workspace.unsafeOffer(workspace)) {
-          this.#finish(new AttachError("workspace receive queue is overloaded"))
-          this.#socket.end()
-        }
+        this.#workspace.unsafeOffer(workspace)
       } catch (error) {
         this.#finish(error instanceof Error ? error : new AttachError(String(error)))
         this.#socket.end()
