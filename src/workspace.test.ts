@@ -321,6 +321,38 @@ test("pane.break when two panes show the same agent clones the agent to both win
   expect(result.snapshot.revision).toBe(adopted.revision + 1);
 });
 
+test("pane.join moves a focused pane from the named window into the active window", () => {
+  const adopted = workspaceFromSession(twoPaneSession());
+  const withDestination = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot;
+  const result = applyWorkspaceCommand(
+    withDestination,
+    command("pane.join", { source: 1 }),
+    context,
+  );
+
+  expect(result.changed).toBe(true);
+  const space = result.snapshot.spaces[0]!;
+  expect(space.windows).toHaveLength(2);
+  const destination = space.windows[1]!;
+  expect(layoutPanes(destination.layout.root).map((pane) => pane.agent)).toEqual([
+    expect.any(String),
+    "agent-a",
+  ]);
+  expect(destination.agents.map((agent) => agent.id)).toContain("agent-a");
+  expect(destination.state.focus).toBe("pane-a");
+});
+
+test("pane.join without a source uses the previously active window", () => {
+  const adopted = workspaceFromSession(twoPaneSession());
+  const withDestination = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot;
+  const result = applyWorkspaceCommand(withDestination, command("pane.join"), context);
+
+  expect(result.changed).toBe(true);
+  expect(
+    layoutPanes(result.snapshot.spaces[0]!.windows[1]!.layout.root).map((pane) => pane.agent),
+  ).toContain("agent-a");
+});
+
 // ── pane.zoom ──
 
 test("pane.zoom toggles zoom on and off", () => {

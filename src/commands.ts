@@ -181,6 +181,15 @@ const PaneBreak = define(
     capability: "agent",
   },
 );
+const PaneJoin = define(
+  "pane.join",
+  { source: Schema.optional(Schema.Int) },
+  {
+    desc: "join a pane from another window into the focused window",
+    group: "panes",
+    capability: "agent",
+  },
+);
 const PaneSendKeys = define(
   "pane.send-keys",
   { keys: Schema.String },
@@ -529,6 +538,7 @@ export const COMMAND_DEFS = [
   PaneSwap,
   PaneClose,
   PaneBreak,
+  PaneJoin,
   PaneSendKeys,
   PaneCapture,
   PaneCopyMode,

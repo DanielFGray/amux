@@ -7,6 +7,7 @@ import {
   closeLayout,
   decodeLayout,
   encodeLayout,
+  appendPane,
   layoutPanes,
   makeLayout,
   nextPreset,
@@ -513,6 +514,35 @@ export function applyWorkspaceCommand(
       afterPaneRemoved(next, found.space, found.window, actions);
       break;
     }
+    case "pane.join": {
+      const destination = activeWindow();
+      if (!destination) break;
+      const sourceNumber =
+        command.source ??
+        destination.space.state.lastWindow ??
+        destination.space.windows.find((window) => window !== destination.window)?.number;
+      const source = findWindow(next, { space: destination.space.id, window: sourceNumber });
+      if (!source || source.window === destination.window) break;
+      const paneId = source.window.state.focus;
+      const slot = layoutPanes(source.window.layout.root).find((item) => item.id === paneId);
+      if (!slot) break;
+      const agent = source.window.agents.find((item) => item.id === slot.agent);
+      if (!agent) break;
+
+      closePane(source.window, slot.id);
+      const stillReferenced = layoutPanes(source.window.layout.root).some(
+        (pane) => pane.agent === agent.id,
+      );
+      if (!stillReferenced)
+        source.window.agents = source.window.agents.filter((item) => item.id !== agent.id);
+      destination.window.layout = appendPane(destination.window.layout, slot);
+      destination.window.agents.push(stillReferenced ? structuredClone(agent) : agent);
+      destination.window.state.focus = slot.id;
+      destination.window.state.last = null;
+      destination.window.state.zoom = null;
+      afterPaneRemoved(next, source.space, source.window, actions);
+      break;
+    }
     case "pane.send-keys": {
       const target = activeWindow()?.window;
       const focused = layoutPanes(target?.layout.root ?? null).find(
@@ -754,6 +784,7 @@ const WORKSPACE_COMMANDS = new Set<Command["_tag"]>([
   "pane.swap",
   "pane.close",
   "pane.break",
+  "pane.join",
   "pane.send-keys",
   "window.new",
   "window.next",

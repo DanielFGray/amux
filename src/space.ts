@@ -218,6 +218,28 @@ export class Space {
     });
   }
 
+  /** Move a pane into the active window, preserving its agent and lifetime. */
+  joinPane(pane: TerminalPane, sourceNumber?: number): Effect.Effect<Window | null> {
+    return Effect.gen(this, function* () {
+      const destination = this.active;
+      const source = this.#windows.find(
+        (window) =>
+          window !== destination &&
+          (sourceNumber === undefined || window.number === sourceNumber) &&
+          window.panes.includes(pane),
+      );
+      if (!destination || !source) return null;
+      const handoff = source.releasePane(pane);
+      if (!handoff) return null;
+      destination.adopt(handoff.agent, pane, handoff.scope);
+      if (source.panes.length === 0 && !source.agents.some((agent) => agent.state !== "done")) {
+        yield* this.closeWindow(source);
+      }
+      this.selectWindow(destination);
+      return destination;
+    });
+  }
+
   /** Redraw every window's borders after `frame.externalLeft` changed. */
   refreshChrome() {
     for (const w of this.#windows) w.refreshChrome();

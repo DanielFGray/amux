@@ -813,6 +813,7 @@ function buildApp(
     "pane.swap": (value) => runWorkspace(value),
     "pane.close": (value) => runWorkspace(value),
     "pane.break": (value) => runWorkspace(value),
+    "pane.join": (value) => runWorkspace(value),
     "pane.send-keys": ({ keys }) =>
       Effect.suspend(() => {
         let input = "";

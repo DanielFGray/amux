@@ -269,6 +269,29 @@ test("each space keeps its own windows and layouts across activation", async () 
   }
 });
 
+test("joining a pane preserves its live agent and transfers ownership", async () => {
+  const s = await setup();
+  try {
+    const source = s.win;
+    const pane = source.panes[0]!;
+    const agent = pane.agent;
+    const destination = run(s.space.newWindow());
+    run(destination.init("destination"));
+
+    expect(await runAsync(s.space.joinPane(pane, source.number))).toBe(destination);
+    expect(source.panes).toHaveLength(0);
+    expect(destination.panes).toContain(pane);
+    expect(destination.agents).toContain(agent);
+    expect(agent.exited).toBe(false);
+    expect(s.space.windows).toEqual([destination]);
+
+    await runAsync(s.space.closeWindow(destination));
+    expect(s.space.windows).toHaveLength(0);
+  } finally {
+    await s.dispose();
+  }
+});
+
 test("a space of plain shells is idle, and an exited one still reads as idle", async () => {
   // Shells have no agent state to report, so the space stays idle no matter
   // what they are running — see the note on Agent.state.
