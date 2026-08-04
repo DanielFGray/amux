@@ -113,6 +113,29 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
   }
 });
 
+test("pane move uses the encodable shifted-letter binding", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const commands: CommandSpec[] = [
+      {
+        name: "pane.move",
+        key: "<leader>shift+m",
+        desc: "move pane",
+        group: "panes",
+        run: Effect.sync(() => fired.push("move")),
+      },
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    t.mockInput.pressKey("a", { ctrl: true });
+    t.mockInput.pressKey("M", { shift: true });
+    expect(fired).toEqual(["move"]);
+    expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^a M");
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
 /**
  * ctrl+arrow is how resize is told apart from focus on the same key, the way
  * tmux ships resize-pane and select-pane under one prefix. The two bindings

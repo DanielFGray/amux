@@ -1115,7 +1115,7 @@ function buildApp(
     ),
     // The binding tmux itself gives break-pane.
     bind("pane.break", "<leader>!", command("pane.break")),
-    bindPrompt("pane.move", "<leader>M", promptMovePane, "move pane to another space"),
+    bindPrompt("pane.move", "<leader>shift+m", promptMovePane, "move pane to another space"),
 
     // Windows.
     bind("window.new", "<leader>c", command("window.new")),
