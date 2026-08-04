@@ -20,6 +20,7 @@ import { runtime } from "./options.ts"
 import { STATE_GLYPH } from "./detect.ts"
 import { captureRange } from "./shim.ts"
 import { clearSelection, setSelection } from "./shim.ts"
+import { cellWidth } from "./copy.ts"
 
 const DEFAULT_FG = RGBA.fromInts(205, 214, 244, 255)
 const DEFAULT_BG = RGBA.fromInts(30, 30, 46, 255)
@@ -341,11 +342,12 @@ export class TerminalPane extends Renderable {
 
     if (top) {
       const title = this.agent.term.title
-      if (title && runtime["appearance.gap"] && this.width >= title.length + 4) {
+      const titleWidth = cellWidth(title)
+      if (title && runtime["appearance.gap"] && this.width >= titleWidth + 4) {
         if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG)
         else buffer.setCell(x0, y0, "─", fg, DEFAULT_BG)
         buffer.drawText(` ${title} `, x0 + 1, y0, fg, DEFAULT_BG)
-        const dashStart = x0 + 3 + title.length
+        const dashStart = x0 + 3 + titleWidth
         const dashEnd = right ? x1 - 1 : x1
         for (let x = dashStart; x <= dashEnd; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG)
       } else {

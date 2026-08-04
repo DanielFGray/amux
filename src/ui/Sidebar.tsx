@@ -72,21 +72,17 @@ export function Sidebar(props: SidebarProps) {
     if (props.agentsOnly) props.app.tick()
     const out: Row[] = []
     let index = 0
-    for (const space of props.app.spaces()) {
-      const windows = props.agentsOnly
-        ? space.windows.filter((window) => window.agents.some((agent) => agent.agentKind !== null))
-        : space.windows
-      if (props.agentsOnly && windows.length === 0) continue
-      out.push({ kind: "space", space, index: index++ })
-      if (space.branch) out.push({ kind: "branch", space })
-      for (const window of windows) {
-        const agents = props.agentsOnly
-          ? window.agents.filter((agent) => agent.agentKind !== null)
-          : window.agents.filter((agent) => !agent.exited)
-        out.push({ kind: "window", space, window, index: index++ })
-        for (const agent of agents) {
-          out.push({ kind: "agent", space, window, agent, index: index++ })
-        }
+    let lastSpace: Space | undefined
+    for (const target of sidebarTargets(props.app.spaces(), props.agentsOnly)) {
+      if (target.space !== lastSpace) {
+        lastSpace = target.space
+        out.push({ kind: "space", space: target.space, index: index++ })
+        if (target.space.branch) out.push({ kind: "branch", space: target.space })
+      }
+      if (target.kind === "window") {
+        out.push({ kind: "window", space: target.space, window: target.window, index: index++ })
+      } else if (target.kind === "agent") {
+        out.push({ kind: "agent", space: target.space, window: target.window, agent: target.agent, index: index++ })
       }
     }
     return out

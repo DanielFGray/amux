@@ -128,18 +128,18 @@ export type Overlay = "none" | "settings" | "palette"
  * caller's, in one place, on every path including a signal.
  */
 export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, Scope.Scope> {
-  const SHELL = [resolveOptions(options.config.options)["behaviour.shell"] || process.env.SHELL || "bash"]
+  const initialShell = [resolveOptions(options.config.options)["behaviour.shell"] || process.env.SHELL || "bash"]
   return Effect.gen(function* () {
     const fiberScope = yield* Scope.make()
     yield* Effect.addFinalizer(() => Scope.close(fiberScope, Exit.void))
     const fibers = yield* Scope.extend(FiberMap.make<string>(), fiberScope)
     const runFiber = yield* FiberMap.runtime(fibers)<never>()
     const spaces = yield* SpaceSet.make(
-      workspaceEnv(options.renderer, { shell: SHELL, backend: options.session.backend() }),
+      workspaceEnv(options.renderer, { shell: initialShell, backend: options.session.backend() }),
       options.paneHost,
     )
     return yield* Effect.acquireRelease(
-      Effect.sync(() => buildApp(options, spaces, SHELL, fiberScope, runFiber)),
+      Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber)),
       (app) => app.release,
     )
   })
@@ -195,7 +195,6 @@ export function runModelProjections<A>(
 function buildApp(
   { renderer, paneHost, config, session, quit }: AppOptions,
   spaces: SpaceSet,
-  SHELL: string[],
   fiberScope: Scope.CloseableScope,
   runFiber: AppFiberRunner,
 ): ManagedAppHandle {
@@ -298,7 +297,7 @@ function buildApp(
   )
   const workspaceContext = () => ({
     size: { cols: Math.max(1, paneHost.width), rows: Math.max(1, paneHost.height) },
-    shell: SHELL,
+    shell: [resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash"],
     cwd: spaces.active?.dir ?? process.cwd(),
     blockedAgents: spaces.allAgents.filter((agent) => agent.state === "blocked").map((agent) => agent.id),
   })
@@ -371,7 +370,8 @@ function buildApp(
   }
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false)
   const [size, setSize] = createSignal({ width: renderer.width, height: renderer.height })
-  renderer.on("resize", (width: number, height: number) => setSize({ width, height }))
+  const onResize = (width: number, height: number) => setSize({ width, height })
+  renderer.on("resize", onResize)
 
   const targets = createMemo(() => {
     // agentKind is polled, so keyboard targets must refresh with the rendered rows.
@@ -836,7 +836,6 @@ function buildApp(
     "buffer.list": () =>
       session.listBuffers().pipe(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-        Effect.asVoid,
       ),
     "buffer.delete": ({ name }) =>
       session.deleteBuffer(name).pipe(
@@ -845,7 +844,6 @@ function buildApp(
     "buffer.show": ({ name }) =>
       session.showBuffer(name).pipe(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-        Effect.asVoid,
       ),
     "buffer.choose": () =>
       Effect.gen(function* () {
@@ -1530,11 +1528,11 @@ function buildApp(
           if (!view) return true
           const count = view.buffers.length
           if (event.name === "j" || event.name === "down") {
-            setChooseView((v) => (v ? { ...v, selected: Math.min(count - 1, v.selected + 1) } : v))
+            setChooseView((v) => (v ? { ...v, selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 1) } : v))
           } else if (event.name === "k" || event.name === "up") {
             setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v))
           } else if (event.name === "pagedown") {
-            setChooseView((v) => (v ? { ...v, selected: Math.min(count - 1, v.selected + 10) } : v))
+            setChooseView((v) => (v ? { ...v, selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 10) } : v))
           } else if (event.name === "pageup") {
             setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v))
           } else if (event.name === "return" || event.name === "enter") {
@@ -1739,7 +1737,10 @@ function buildApp(
     yield* Scope.close(fiberScope, Exit.void)
     // A projection already handed to a Promise cannot be interrupted. Let it
     // finish before releasing any UI object it can still refresh.
-    yield* Effect.promise(() => projection)
+    yield* Effect.promise(() => projection).pipe(
+      Effect.timeout("2 seconds"),
+      Effect.catchAll(() => Effect.sync(() => console.warn("workspace projection did not finish during shutdown"))),
+    )
     // While the pane is still alive: the mode's exit clears the selection
     // through the pane's terminal, and a freed terminal cannot be caught.
     if (copyMode.active) copyMode.exit()
@@ -1748,6 +1749,7 @@ function buildApp(
     disposePendingSequence()
     disposePanels()
     bindings.dispose()
+    renderer.removeListener("resize", onResize)
   })
 
   return { View, release }

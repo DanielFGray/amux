@@ -173,6 +173,11 @@ export function rowCells(text: string): RowMap {
   return { at, col }
 }
 
+/** Width of text in terminal cells, rather than UTF-16 code units. */
+export function cellWidth(text: string): number {
+  return rowCells(text).col.at(-1) ?? 0
+}
+
 /** The cell column of the grapheme that contains string index `at`. A match
  *  always begins on a grapheme boundary, so a match index lands on its own
  *  leading cell. */
