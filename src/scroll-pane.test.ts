@@ -1,5 +1,5 @@
 import { run, scopedSpaceSet } from "./harness.ts";
-import { expect, describe, it, afterEach } from "bun:test";
+import { expect, describe, it, afterEach } from "vitest";
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { workspaceEnv } from "./env.ts";

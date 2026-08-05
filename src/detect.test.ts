@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect } from "vitest";
 import { which } from "bun";
 import { mkdtemp, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";

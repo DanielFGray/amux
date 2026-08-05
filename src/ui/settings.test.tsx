@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { test, expect, afterEach } from "bun:test";
+import { test, expect, afterEach } from "vitest";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { optionsIn, resolveOptions } from "../options.ts";

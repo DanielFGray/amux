@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
 import { createTestRenderer } from "@opentui/core/testing";
 import type { CapturedFrame, CapturedLine } from "@opentui/core";
 import { render } from "@opentui/solid";

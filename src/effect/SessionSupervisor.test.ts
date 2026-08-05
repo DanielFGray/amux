@@ -1,5 +1,5 @@
 import { Chunk, Deferred, Effect, Fiber, Stream } from "effect";
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";

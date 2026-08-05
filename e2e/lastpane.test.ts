@@ -10,7 +10,7 @@
  * Each step depends on the one before it — a toggle needs somewhere to toggle
  * back to — so these run in order and share one app.
  */
-import { test, expect, beforeAll, afterAll } from "bun:test";
+import { test, expect, beforeAll, afterAll } from "vitest";
 import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
 
 let app: App;

@@ -13,7 +13,7 @@
  * binding already in place, and the settings half has to start from a default
  * config it can edit.
  */
-import { test, expect, beforeAll, afterAll } from "bun:test";
+import { test, expect, beforeAll, afterAll } from "vitest";
 import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
 
 // ^a g is bound to nothing by default, so a split appearing under it can only

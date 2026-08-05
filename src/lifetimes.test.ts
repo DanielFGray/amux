@@ -11,7 +11,7 @@
  * records being killed rather than by inspecting processes: the property under
  * test is "the finalizer ran", and a spy says that directly.
  */
-import { test, expect } from "bun:test";
+import { test, expect } from "vitest";
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { Effect, Exit, Scope, Stream } from "effect";

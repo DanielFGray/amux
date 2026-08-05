@@ -1,4 +1,4 @@
-import { test, expect, spyOn, afterEach } from "bun:test";
+import { test, expect, vi, afterEach } from "vitest";
 import { Effect } from "effect";
 import { createBindings } from "./bindings.ts";
 import { createHarness, run } from "./harness.ts";
@@ -7,7 +7,7 @@ import { RenderState } from "./ghostty.ts";
 import { Agent } from "./agent.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
-const spies: ReturnType<typeof spyOn>[] = [];
+const spies: ReturnType<typeof vi.spyOn>[] = [];
 afterEach(async () => {
   for (const s of spies.splice(0)) s.mockRestore();
   for (const fn of cleanup.splice(0)) await fn();
@@ -21,7 +21,7 @@ async function setup(opts?: { init?: boolean }) {
 
 /** Intercept every child-input write and record which agent got which bytes. */
 function captureAgentWrites() {
-  const spy = spyOn(Agent.prototype, "write");
+  const spy = vi.spyOn(Agent.prototype, "write");
   spy.mockImplementation(() => {});
   spies.push(spy);
   return {

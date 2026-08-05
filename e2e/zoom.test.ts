@@ -18,7 +18,7 @@
  * the same one resize.test.ts uses. A zoomed window has no dividers at all, so
  * its absence is the signal that the zoom took.
  */
-import { test, expect, beforeAll, afterAll } from "bun:test";
+import { test, expect, beforeAll, afterAll } from "vitest";
 import { launch, teeColumn, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
 
 const CTRL_LEFT = "\x1b[1;5D";

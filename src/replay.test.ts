@@ -11,7 +11,7 @@
  * alternate screen would be drawn into the wrong screen without them.
  */
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test } from "vitest";
 import { MODE_ALT_SCREEN, MODE_BRACKETED_PASTE, Terminal } from "./ghostty.ts";
 import { formatScreen } from "./shim.ts";
 import { captureVisible } from "./capture.ts";

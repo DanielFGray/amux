@@ -18,7 +18,7 @@
  * state on disk. This is the claim ts-9beb5d was filed about, and could not
  * have been settled by reading `output()` — see App.screen().
  */
-import { test, expect, beforeAll, afterAll } from "bun:test";
+import { test, expect, beforeAll, afterAll } from "vitest";
 import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
 
 let app: App;

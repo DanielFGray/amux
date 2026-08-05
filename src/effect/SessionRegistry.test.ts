@@ -1,5 +1,5 @@
 import { Effect, Fiber, Stream } from "effect";
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { SessionRegistry } from "./SessionRegistry.ts";
 
 const program = Effect.gen(function* () {

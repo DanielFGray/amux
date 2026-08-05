@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect } from "vitest";
 import { createTestRenderer } from "@opentui/core/testing";
 import { createBindings, parseKeyStrokes } from "./bindings.ts";
 import { encodeStroke } from "./keys.ts";

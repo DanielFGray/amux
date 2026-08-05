@@ -1,4 +1,4 @@
-import { test, expect, afterEach } from "bun:test";
+import { test, expect, afterEach } from "vitest";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
 import { encodeLayout, decodeLayout, layoutAgents } from "./layout.ts";

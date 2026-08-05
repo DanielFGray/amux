@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
 import type { SpaceSet } from "../space.ts";
 import { runModelProjections, scheduledPoll, scheduleHintVisibility } from "../app.tsx";

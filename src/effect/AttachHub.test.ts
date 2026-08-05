@@ -1,5 +1,5 @@
 import { Effect, Stream } from "effect";
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { AttachHub } from "./AttachHub.ts";
 
 test("AttachHub fans frames out and removes subscriptions with scope", async () => {
