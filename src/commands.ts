@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Schema } from "effect";
+import { Cause, Effect, Exit, Schema as S } from "effect";
 import { LAYOUT_PRESETS } from "./layout.ts";
 
 /**
@@ -19,20 +19,21 @@ import { LAYOUT_PRESETS } from "./layout.ts";
  * exactly the same reason. See bindings.ts for that split.
  */
 
-/**
- * Who may invoke a command.
- *
- * Monotone, so a surface filters with `>=` rather than a set membership test:
- * `local` is the keymap only, `remote` adds the control socket and the CLI, and
- * `agent` adds the tool surface an agent driving the mux sees. `app.settings`
- * over a socket is meaningless and handing an agent all 30-odd verbs is a
- * footgun, so the level is declared per verb rather than assumed.
- */
-export const CAPABILITIES = ["local", "remote", "agent"] as const;
-export type Capability = (typeof CAPABILITIES)[number];
+/** What a command acts ON — the authority that owns the state it mutates. */
+export const COMMAND_TARGETS = ["workspace", "session", "buffers", "server", "view"] as const;
+export type CommandTarget = (typeof COMMAND_TARGETS)[number];
 
-export const atLeast = (capability: Capability, floor: Capability): boolean =>
-  CAPABILITIES.indexOf(capability) >= CAPABILITIES.indexOf(floor);
+/** Who the command is exposed TO — a human or an agent. */
+export type CommandExposure = "human" | "agent";
+
+/** Derived from target: commands whose state is daemon-owned are remotely
+ * invocable. workspace, session, buffers, and server are in the daemon; view
+ * is client-only UI state (options, overlays). */
+export const isRemoteCommand = (target: CommandTarget): boolean => target !== "view";
+
+/** Derived from target: workspace-targeted commands go through the daemon's
+ * model queue and mutate the renderer-free workspace tree. */
+export const isWorkspaceCommandByTarget = (target: CommandTarget): boolean => target === "workspace";
 
 /**
  * A command that could not do what it was asked.
@@ -42,28 +43,48 @@ export const atLeast = (capability: Capability, floor: Capability): boolean =>
  * *missing* target is not one of these — pressing `^a z` with no window is a
  * no-op, the way it has always been.
  */
-export class CommandError extends Schema.TaggedError<CommandError>()("CommandError", {
-  message: Schema.String,
+export class CommandError extends S.TaggedError<CommandError>()("CommandError", {
+  message: S.String,
 }) {}
 
 interface Meta {
   readonly desc: string;
   readonly group: string;
-  readonly capability: Capability;
+  readonly target: CommandTarget;
+  readonly exposure: CommandExposure;
 }
 
-const define = <const Tag extends string, Fields extends Schema.Struct.Fields>(
+type CommandDef<
+  T extends string,
+  Sch extends S.Schema.All,
+  R,
+> = {
+  readonly tag: T;
+  readonly desc: string;
+  readonly group: string;
+  readonly target: CommandTarget;
+  readonly exposure: CommandExposure;
+  readonly schema: Sch;
+  readonly result: R;
+};
+
+const define = <
+  const Tag extends string,
+  Fields extends S.Struct.Fields,
+  R = typeof S.Void,
+>(
   tag: Tag,
   fields: Fields,
   meta: Meta,
-) => ({
+  result?: R,
+): CommandDef<Tag, ReturnType<typeof S.TaggedStruct<Tag, Fields>>, R extends S.Schema.All ? R : typeof S.Void> => ({
   tag,
-  ...meta,
-  // `description` is an annotation and not merely a field on this object
-  // because that is what a derived JSON Schema carries: the agent tool surface
-  // gets its descriptions from here rather than from a second table written by
-  // hand and kept in step by hope.
-  schema: Schema.TaggedStruct(tag, fields).annotations({ identifier: tag, description: meta.desc }),
+  desc: meta.desc,
+  group: meta.group,
+  target: meta.target,
+  exposure: meta.exposure,
+  schema: S.TaggedStruct(tag, fields).annotations({ identifier: tag, description: meta.desc }) as any,
+  result: (result ?? S.Void) as any,
 });
 
 /**
@@ -74,161 +95,96 @@ const define = <const Tag extends string, Fields extends Schema.Struct.Fields>(
  * row, and before commands took arguments that was a second copy of
  * agent.kill / window.close / space.close aimed somewhere else.
  */
-const Space = { space: Schema.optional(Schema.String) };
-const Window = { ...Space, window: Schema.optional(Schema.Int) };
-const Agent = { agent: Schema.optional(Schema.String) };
+const Space = { space: S.optional(S.String) };
+const Window = { ...Space, window: S.optional(S.Int) };
+const Agent = { agent: S.optional(S.String) };
 
-const Axis = Schema.Literal("row", "column");
-const Direction = Schema.Literal("left", "right", "up", "down");
+const Axis = S.Literal("row", "column");
+const Direction = S.Literal("left", "right", "up", "down");
 
 // Panes.
 const PaneSplit = define(
   "pane.split",
   { axis: Axis },
-  {
-    desc: "split the focused pane",
-    group: "panes",
-    capability: "agent",
-  },
+  { desc: "split the focused pane", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneNext = define(
   "pane.next",
   {},
-  { desc: "focus the next pane", group: "panes", capability: "agent" },
+  { desc: "focus the next pane", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneLast = define(
   "pane.last",
   {},
-  {
-    desc: "toggle to the last-focused pane",
-    group: "panes",
-    capability: "agent",
-  },
+  { desc: "toggle to the last-focused pane", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneFocus = define(
   "pane.focus",
   { direction: Direction },
-  {
-    desc: "focus the pane in a direction",
-    group: "panes",
-    capability: "agent",
-  },
+  { desc: "focus the pane in a direction", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneSelect = define(
   "pane.select",
-  { pane: Schema.String },
-  {
-    desc: "focus a pane by id",
-    group: "panes",
-    capability: "agent",
-  },
+  { pane: S.String },
+  { desc: "focus a pane by id", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneResize = define(
   "pane.resize",
   { direction: Direction },
-  {
-    desc: "resize the focused pane",
-    group: "panes",
-    capability: "agent",
-  },
+  { desc: "resize the focused pane", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneResizeDivider = define(
   "pane.resize-divider",
-  {
-    path: Schema.Array(Schema.Int),
-    index: Schema.Int,
-    delta: Schema.Int,
-  },
-  {
-    desc: "move a layout divider",
-    group: "panes",
-    capability: "remote",
-  },
+  { path: S.Array(S.Int), index: S.Int, delta: S.Int },
+  { desc: "move a layout divider", group: "panes", target: "workspace", exposure: "human" },
 );
 const PaneZoom = define(
   "pane.zoom",
   {},
-  {
-    desc: "zoom the focused pane",
-    group: "panes",
-    capability: "agent",
-  },
+  { desc: "zoom the focused pane", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneSwap = define(
   "pane.swap",
-  { to: Schema.Literal("previous", "next") },
-  {
-    desc: "swap the focused pane with its neighbour",
-    group: "panes",
-    capability: "agent",
-  },
+  { to: S.Literal("previous", "next") },
+  { desc: "swap the focused pane with its neighbour", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneClose = define(
   "pane.close",
   {},
-  {
-    desc: "close the focused pane, leaving its agent running",
-    group: "panes",
-    capability: "agent",
-  },
+  { desc: "close the focused pane, leaving its agent running", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneBreak = define(
   "pane.break",
   {},
-  {
-    desc: "break the focused pane into its own window",
-    group: "panes",
-    capability: "agent",
-  },
+  { desc: "break the focused pane into its own window", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneJoin = define(
   "pane.join",
-  { source: Schema.optional(Schema.Int) },
-  {
-    desc: "join a pane from another window into the focused window",
-    group: "panes",
-    capability: "agent",
-  },
+  { source: S.optional(S.Int) },
+  { desc: "join a pane from another window into the focused window", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneMove = define(
   "pane.move",
-  { space: Schema.String },
-  {
-    desc: "move the focused pane into another space",
-    group: "panes",
-    capability: "agent",
-  },
+  { space: S.String },
+  { desc: "move the focused pane into another space", group: "panes", target: "workspace", exposure: "agent" },
 );
 const PaneSendKeys = define(
   "pane.send-keys",
-  { keys: Schema.String },
-  {
-    desc: "send keys to the focused pane",
-    group: "panes",
-    capability: "agent",
-  },
+  { keys: S.String },
+  { desc: "send keys to the focused pane", group: "panes", target: "workspace", exposure: "agent" },
 );
-// Capture and copy mode open a local overlay. There is nothing to return to a
-// caller that is not sitting in front of the screen, so they stay local — the
-// remote way to read a pane is a verb that answers with the text, and that verb
-// belongs to the control API rather than to the overlay.
+// Capture and copy mode open a local overlay. The remote way to read a pane is
+// a daemon-side terminal capture: pane.capture's result is the text.
 const PaneCapture = define(
   "pane.capture",
   {},
-  {
-    desc: "capture the focused pane into a popup",
-    group: "panes",
-    capability: "local",
-  },
+  { desc: "capture the focused pane into a popup", group: "panes", target: "view", exposure: "human" },
+  S.String,
 );
 const PaneCopyMode = define(
   "pane.copy-mode",
   {},
-  {
-    desc: "review pane history",
-    group: "panes",
-    capability: "local",
-  },
+  { desc: "review pane history", group: "panes", target: "view", exposure: "human" },
 );
 
 // Buffers — tmux's paste-buffer family. The stack itself lives on the daemon,
@@ -237,217 +193,131 @@ const PaneCopyMode = define(
 // pure server operations and therefore scriptable.
 const BufferSet = define(
   "buffer.set",
-  { name: Schema.optional(Schema.String), data: Schema.String },
-  {
-    desc: "set a paste buffer (a copy pushes onto the stack automatically)",
-    group: "buffers",
-    capability: "remote",
-  },
+  { name: S.optional(S.String), data: S.String },
+  { desc: "set a paste buffer (a copy pushes onto the stack automatically)", group: "buffers", target: "buffers", exposure: "agent" },
+  S.String,
 );
 const BufferPaste = define(
   "buffer.paste",
-  { name: Schema.optional(Schema.String) },
-  {
-    desc: "paste the top paste buffer into the focused pane",
-    group: "buffers",
-    capability: "local",
-  },
+  { name: S.optional(S.String) },
+  { desc: "paste the top paste buffer into the focused pane", group: "buffers", target: "view", exposure: "human" },
 );
 const BufferList = define(
   "buffer.list",
   {},
-  {
-    desc: "list the paste buffers",
-    group: "buffers",
-    capability: "remote",
-  },
+  { desc: "list the paste buffers", group: "buffers", target: "buffers", exposure: "agent" },
+  S.Array(S.Struct({ name: S.String, bytes: S.Int, preview: S.String })),
 );
 const BufferDelete = define(
   "buffer.delete",
-  { name: Schema.optional(Schema.String) },
-  {
-    desc: "delete the top paste buffer (or a named one)",
-    group: "buffers",
-    capability: "remote",
-  },
+  { name: S.optional(S.String) },
+  { desc: "delete the top paste buffer (or a named one)", group: "buffers", target: "buffers", exposure: "agent" },
 );
 const BufferShow = define(
   "buffer.show",
-  { name: Schema.optional(Schema.String) },
-  {
-    desc: "show a paste buffer's contents",
-    group: "buffers",
-    capability: "remote",
-  },
+  { name: S.optional(S.String) },
+  { desc: "show a paste buffer's contents", group: "buffers", target: "buffers", exposure: "agent" },
+  S.String,
 );
 const BufferChoose = define(
   "buffer.choose",
   {},
-  {
-    desc: "choose a paste buffer to paste",
-    group: "buffers",
-    capability: "local",
-  },
+  { desc: "choose a paste buffer to paste", group: "buffers", target: "view", exposure: "human" },
 );
 
 // Windows.
 const WindowNew = define(
   "window.new",
   {},
-  { desc: "new window", group: "windows", capability: "agent" },
+  { desc: "new window", group: "windows", target: "workspace", exposure: "agent" },
 );
 const WindowNext = define(
   "window.next",
   {},
-  { desc: "next window", group: "windows", capability: "agent" },
+  { desc: "next window", group: "windows", target: "workspace", exposure: "agent" },
 );
 const WindowPrevious = define(
   "window.previous",
   {},
-  {
-    desc: "previous window",
-    group: "windows",
-    capability: "agent",
-  },
+  { desc: "previous window", group: "windows", target: "workspace", exposure: "agent" },
 );
 const WindowLast = define(
   "window.last",
   {},
-  {
-    desc: "toggle to the last window",
-    group: "windows",
-    capability: "agent",
-  },
+  { desc: "toggle to the last window", group: "windows", target: "workspace", exposure: "agent" },
 );
 const WindowSelect = define(
   "window.select",
-  { ...Space, number: Schema.Int },
-  {
-    desc: "select a window by its number",
-    group: "windows",
-    capability: "agent",
-  },
+  { ...Space, number: S.Int },
+  { desc: "select a window by its number", group: "windows", target: "workspace", exposure: "agent" },
 );
 const WindowRename = define(
   "window.rename",
-  { ...Window, name: Schema.String },
-  {
-    // An empty name is not a validation failure: it hands the title back to
-    // whatever the window is running, which is the only way to undo a rename.
-    desc: "rename a window; an empty name restores the running command's title",
-    group: "windows",
-    capability: "agent",
-  },
+  { ...Window, name: S.String },
+  { desc: "rename a window; an empty name restores the running command's title", group: "windows", target: "workspace", exposure: "agent" },
 );
 const WindowClose = define("window.close", Window, {
-  desc: "kill a window and its agents",
-  group: "windows",
-  capability: "agent",
+  desc: "kill a window and its agents", group: "windows", target: "workspace", exposure: "agent",
 });
 const WindowNextLayout = define(
   "window.next-layout",
   {},
-  {
-    desc: "cycle through the preset layouts",
-    group: "windows",
-    capability: "agent",
-  },
+  { desc: "cycle through the preset layouts", group: "windows", target: "workspace", exposure: "agent" },
 );
 const WindowSelectLayout = define(
   "window.select-layout",
-  { preset: Schema.Literal(...LAYOUT_PRESETS) },
-  {
-    desc: "arrange panes in a preset layout",
-    group: "windows",
-    capability: "agent",
-  },
+  { preset: S.Literal(...LAYOUT_PRESETS) },
+  { desc: "arrange panes in a preset layout", group: "windows", target: "workspace", exposure: "agent" },
 );
 const WindowSynchronize = define(
   "window.synchronize-panes",
   {},
-  {
-    desc: "toggle synchronize-panes (input to every pane)",
-    group: "windows",
-    capability: "agent",
-  },
+  { desc: "toggle synchronize-panes (input to every pane)", group: "windows", target: "workspace", exposure: "agent" },
 );
 
 // Agents.
 const AgentKill = define("agent.kill", Agent, {
-  desc: "stop an agent",
-  group: "agents",
-  capability: "agent",
+  desc: "stop an agent", group: "agents", target: "workspace", exposure: "agent",
 });
 const AgentReveal = define(
   "agent.reveal",
-  { agent: Schema.String },
-  {
-    desc: "show and focus an agent",
-    group: "agents",
-    capability: "agent",
-  },
+  { agent: S.String },
+  { desc: "show and focus an agent", group: "agents", target: "workspace", exposure: "agent" },
 );
 const AgentNextBlocked = define(
   "agent.next-blocked",
   {},
-  {
-    desc: "select the next blocked agent",
-    group: "agents",
-    capability: "agent",
-  },
+  { desc: "select the next blocked agent", group: "agents", target: "workspace", exposure: "agent" },
 );
 
 // Spaces.
 const SpaceNew = define(
   "space.new",
-  {
-    name: Schema.optional(Schema.String),
-    dir: Schema.optional(Schema.String),
-    branch: Schema.optional(Schema.String),
-    base: Schema.optional(Schema.String),
-  },
-  {
-    desc: "new space",
-    group: "spaces",
-    capability: "agent",
-  },
+  { name: S.optional(S.String), dir: S.optional(S.String), branch: S.optional(S.String), base: S.optional(S.String) },
+  { desc: "new space", group: "spaces", target: "workspace", exposure: "agent" },
 );
 const SpaceSelect = define(
   "space.select",
-  { space: Schema.String },
-  {
-    desc: "select a space by id",
-    group: "spaces",
-    capability: "agent",
-  },
+  { space: S.String },
+  { desc: "select a space by id", group: "spaces", target: "workspace", exposure: "agent" },
 );
 const SpaceRename = define(
   "space.rename",
-  { ...Space, name: Schema.String },
-  {
-    desc: "rename a space",
-    group: "spaces",
-    capability: "agent",
-  },
+  { ...Space, name: S.String },
+  { desc: "rename a space", group: "spaces", target: "workspace", exposure: "agent" },
 );
 const SpaceClose = define("space.close", Space, {
-  desc: "close a space and everything in it",
-  group: "spaces",
-  capability: "agent",
+  desc: "close a space and everything in it", group: "spaces", target: "workspace", exposure: "agent",
 });
 const SpaceNext = define(
   "space.next",
   {},
-  { desc: "next space", group: "spaces", capability: "agent" },
+  { desc: "next space", group: "spaces", target: "workspace", exposure: "agent" },
 );
 const SpacePrevious = define(
   "space.previous",
   {},
-  {
-    desc: "previous space",
-    group: "spaces",
-    capability: "agent",
-  },
+  { desc: "previous space", group: "spaces", target: "workspace", exposure: "agent" },
 );
 
 /**
@@ -466,127 +336,59 @@ const SpacePrevious = define(
  */
 const ConfigSet = define(
   "config.set",
-  {
-    name: Schema.String,
-    value: Schema.Union(Schema.String, Schema.Number, Schema.Boolean),
-  },
-  {
-    desc: "set an option",
-    group: "config",
-    capability: "remote",
-  },
+  { name: S.String, value: S.Union(S.String, S.Number, S.Boolean) },
+  { desc: "set an option", group: "config", target: "view", exposure: "human" },
 );
 const ConfigToggle = define(
   "config.toggle",
-  { name: Schema.String },
-  {
-    desc: "flip a yes/no option",
-    group: "config",
-    capability: "remote",
-  },
+  { name: S.String },
+  { desc: "flip a yes/no option", group: "config", target: "view", exposure: "human" },
 );
 const ConfigAdjust = define(
   "config.adjust",
-  { name: Schema.String, by: Schema.Int },
-  {
-    desc: "move a numeric option by a step",
-    group: "config",
-    capability: "remote",
-  },
+  { name: S.String, by: S.Int },
+  { desc: "move a numeric option by a step", group: "config", target: "view", exposure: "human" },
 );
 const ConfigReset = define(
   "config.reset",
-  { name: Schema.String },
-  {
-    desc: "put an option back to its default",
-    group: "config",
-    capability: "remote",
-  },
+  { name: S.String },
+  { desc: "put an option back to its default", group: "config", target: "view", exposure: "human" },
 );
 
-// The app itself. These drive overlays and the local terminal, so they are the
-// bulk of what `local` is for.
-const AppHelp = define("app.help", {}, { desc: "keybinds", group: "global", capability: "local" });
+// The app itself. These drive overlays and the local terminal.
+const AppHelp = define("app.help", {}, { desc: "keybinds", group: "global", target: "view", exposure: "human" });
 const AppPalette = define(
   "app.command-palette",
   {},
-  {
-    desc: "search and run commands",
-    group: "global",
-    capability: "local",
-  },
+  { desc: "search and run commands", group: "global", target: "view", exposure: "human" },
 );
 const AppSettings = define(
   "app.settings",
   {},
-  { desc: "settings", group: "global", capability: "local" },
+  { desc: "settings", group: "global", target: "view", exposure: "human" },
 );
 const AppSendPrefix = define(
   "app.send-prefix",
   {},
-  {
-    desc: "send a literal prefix key",
-    group: "global",
-    capability: "local",
-  },
+  { desc: "send a literal prefix key", group: "global", target: "view", exposure: "human" },
 );
-// Remote but not agent: closing the client a person is looking at is a
-// legitimate thing to script and not a thing to hand an agent.
-const AppQuit = define("app.quit", {}, { desc: "quit", group: "global", capability: "remote" });
+const AppQuit = define("app.quit", {}, { desc: "quit", group: "global", target: "server", exposure: "human" });
 
 /** Every verb, in the order the surfaces list them. */
 export const COMMAND_DEFS = [
-  PaneSplit,
-  PaneNext,
-  PaneLast,
-  PaneFocus,
-  PaneSelect,
-  PaneResize,
-  PaneResizeDivider,
-  PaneZoom,
-  PaneSwap,
-  PaneClose,
-  PaneBreak,
-  PaneJoin,
-  PaneMove,
-  PaneSendKeys,
-  PaneCapture,
-  PaneCopyMode,
-  BufferSet,
-  BufferPaste,
-  BufferList,
-  BufferDelete,
-  BufferShow,
-  BufferChoose,
-  WindowNew,
-  WindowNext,
-  WindowPrevious,
-  WindowLast,
-  WindowSelect,
-  WindowRename,
-  WindowClose,
-  WindowNextLayout,
-  WindowSelectLayout,
-  WindowSynchronize,
-  AgentKill,
-  AgentReveal,
-  AgentNextBlocked,
-  SpaceNew,
-  SpaceSelect,
-  SpaceRename,
-  SpaceClose,
-  SpaceNext,
-  SpacePrevious,
-  ConfigSet,
-  ConfigToggle,
-  ConfigAdjust,
-  ConfigReset,
-  AppHelp,
-  AppPalette,
-  AppSettings,
-  AppSendPrefix,
-  AppQuit,
+  PaneSplit, PaneNext, PaneLast, PaneFocus, PaneSelect, PaneResize, PaneResizeDivider,
+  PaneZoom, PaneSwap, PaneClose, PaneBreak, PaneJoin, PaneMove, PaneSendKeys,
+  PaneCapture, PaneCopyMode,
+  BufferSet, BufferPaste, BufferList, BufferDelete, BufferShow, BufferChoose,
+  WindowNew, WindowNext, WindowPrevious, WindowLast, WindowSelect, WindowRename, WindowClose,
+  WindowNextLayout, WindowSelectLayout, WindowSynchronize,
+  AgentKill, AgentReveal, AgentNextBlocked,
+  SpaceNew, SpaceSelect, SpaceRename, SpaceClose, SpaceNext, SpacePrevious,
+  ConfigSet, ConfigToggle, ConfigAdjust, ConfigReset,
+  AppHelp, AppPalette, AppSettings, AppSendPrefix, AppQuit,
 ] as const;
+
+type CommandDefs = typeof COMMAND_DEFS;
 
 /**
  * The union, derived from the list rather than written out beside it.
@@ -594,12 +396,17 @@ export const COMMAND_DEFS = [
  * A member that is not in COMMAND_DEFS is not in the union and has no handler,
  * so there is no way to declare a verb and forget to expose it.
  */
-export const Command = Schema.Union(...COMMAND_DEFS.map((def) => def.schema));
+export const Command = S.Union(...COMMAND_DEFS.map((def) => def.schema));
 export type Command = typeof Command.Type;
 export type CommandTag = Command["_tag"];
 
 export type CommandOf<T extends CommandTag> = Extract<Command, { _tag: T }>;
 type ArgsOf<T extends CommandTag> = Omit<CommandOf<T>, "_tag">;
+
+type _DefByTag<T extends CommandTag> = Extract<CommandDefs[number], { tag: T }>;
+export type CommandResult<T extends CommandTag> = S.Schema.Type<_DefByTag<T>["result"]>;
+
+export type AnyCommandResult = CommandResult<CommandTag>;
 
 /**
  * A command value, written the way a caller thinks of it.
@@ -613,14 +420,15 @@ export const command = <T extends CommandTag>(
 ): Command => ({ _tag: tag, ...args[0] }) as Command;
 
 /** Decode a command off the wire — the socket and the CLI in ts-14b665. */
-export const decodeCommand = Schema.decodeUnknown(Command);
+export const decodeCommand = S.decodeUnknown(Command);
 
 /** What a command is, for the palette, the help, and the agent tool surface. */
 export interface CommandMeta {
   readonly name: CommandTag;
   readonly desc: string;
   readonly group: string;
-  readonly capability: Capability;
+  readonly target: CommandTarget;
+  readonly exposure: CommandExposure;
 }
 
 /** Metadata by tag, so a binding can take its group and its default
@@ -628,7 +436,7 @@ export interface CommandMeta {
 export const COMMAND_META = Object.fromEntries(
   COMMAND_DEFS.map((def) => [
     def.tag,
-    { name: def.tag, desc: def.desc, group: def.group, capability: def.capability },
+    { name: def.tag, desc: def.desc, group: def.group, target: def.target, exposure: def.exposure } satisfies CommandMeta,
   ]),
 ) as Record<CommandTag, CommandMeta>;
 
@@ -636,18 +444,23 @@ export const COMMAND_META = Object.fromEntries(
  * What each verb actually does.
  *
  * Keyed by tag and total over the union, so adding a member to COMMAND_DEFS is
- * a type error until it does something.
+ * a type error until it does something. Return types are the per-command
+ * result values defined in the COMMAND_DEFS table.
  */
 export type CommandHandlers = {
-  readonly [T in CommandTag]: (args: CommandOf<T>) => Effect.Effect<void, CommandError>;
+  readonly [T in CommandTag]: (args: CommandOf<T>) => Effect.Effect<CommandResult<T>, CommandError>;
 };
 
 export interface Commands {
   /** Run a command. Local dispatch, not a round trip: the keymap needs the
    *  effect's synchronous prefix to run in the keypress it was dispatched from. */
-  readonly run: (command: Command) => Effect.Effect<void, CommandError>;
+  readonly run: <T extends CommandTag = CommandTag>(command: Command) => Effect.Effect<AnyCommandResult, CommandError>;
   /** Every verb and what it is, for whichever surface is listing them. */
-  readonly list: (floor?: Capability) => CommandMeta[];
+  readonly list: (filter?: { target?: CommandTarget; exposure?: CommandExposure }) => CommandMeta[];
+  /** Whether a command tag targets the workspace. */
+  readonly isWorkspaceCommand: (tag: CommandTag) => boolean;
+  /** Whether a command tag is remotely invocable. */
+  readonly isRemoteCommand: (tag: CommandTag) => boolean;
 }
 
 export const makeCommands = (handlers: CommandHandlers): Commands => ({
@@ -656,12 +469,16 @@ export const makeCommands = (handlers: CommandHandlers): Commands => ({
   // at the moment it runs, not at the moment it was named.
   run: (command) =>
     Effect.suspend(() =>
-      (handlers[command._tag] as (args: Command) => Effect.Effect<void, CommandError>)(command),
+      (handlers[command._tag] as (args: Command) => Effect.Effect<AnyCommandResult, CommandError>)(command),
     ),
-  list: (floor = "local") =>
-    COMMAND_DEFS.filter((def) => atLeast(def.capability, floor)).map(
-      (def) => COMMAND_META[def.tag],
-    ),
+  list: (filter) => {
+    let defs = COMMAND_DEFS as unknown as readonly { tag: CommandTag; target: CommandTarget; exposure: CommandExposure }[];
+    if (filter?.target) defs = defs.filter((d) => d.target === filter.target);
+    if (filter?.exposure) defs = defs.filter((d) => d.exposure === filter.exposure);
+    return defs.map((def) => COMMAND_META[def.tag]!);
+  },
+  isWorkspaceCommand: (tag) => isWorkspaceCommandByTarget(COMMAND_META[tag]!.target),
+  isRemoteCommand: (tag) => isRemoteCommand(COMMAND_META[tag]!.target),
 });
 
 /**
@@ -680,10 +497,10 @@ export const makeCommands = (handlers: CommandHandlers): Commands => ({
  */
 export function runDetached(
   label: string,
-  effect: Effect.Effect<void, CommandError>,
+  effect: Effect.Effect<any, CommandError>,
   onError?: (message: string) => void,
 ): void {
-  Effect.runFork(effect).addObserver((exit) => {
+  Effect.runFork(Effect.asVoid(effect)).addObserver((exit) => {
     if (Exit.isSuccess(exit) || Cause.isInterruptedOnly(exit.cause)) return;
     const message = `command ${label} failed: ${Cause.pretty(exit.cause)}`;
     console.error(message);
@@ -692,52 +509,14 @@ export function runDetached(
 }
 
 export const Commands = {
-  PaneSplit,
-  PaneNext,
-  PaneLast,
-  PaneFocus,
-  PaneSelect,
-  PaneResize,
-  PaneResizeDivider,
-  PaneZoom,
-  PaneSwap,
-  PaneClose,
-  PaneBreak,
-  PaneSendKeys,
-  PaneCapture,
-  PaneCopyMode,
-  BufferSet,
-  BufferPaste,
-  BufferList,
-  BufferDelete,
-  BufferShow,
-  BufferChoose,
-  WindowNew,
-  WindowNext,
-  WindowPrevious,
-  WindowLast,
-  WindowSelect,
-  WindowRename,
-  WindowClose,
-  WindowNextLayout,
-  WindowSelectLayout,
-  WindowSynchronize,
-  AgentKill,
-  AgentReveal,
-  AgentNextBlocked,
-  SpaceNew,
-  SpaceSelect,
-  SpaceRename,
-  SpaceClose,
-  SpaceNext,
-  SpacePrevious,
-  ConfigSet,
-  ConfigToggle,
-  ConfigAdjust,
-  ConfigReset,
-  AppHelp,
-  AppPalette,
-  AppSettings,
-  AppSendPrefix,
-  AppQuit,
+  PaneSplit, PaneNext, PaneLast, PaneFocus, PaneSelect, PaneResize, PaneResizeDivider,
+  PaneZoom, PaneSwap, PaneClose, PaneBreak, PaneJoin, PaneMove, PaneSendKeys,
+  PaneCapture, PaneCopyMode,
+  BufferSet, BufferPaste, BufferList, BufferDelete, BufferShow, BufferChoose,
+  WindowNew, WindowNext, WindowPrevious, WindowLast, WindowSelect, WindowRename, WindowClose,
+  WindowNextLayout, WindowSelectLayout, WindowSynchronize,
+  AgentKill, AgentReveal, AgentNextBlocked,
+  SpaceNew, SpaceSelect, SpaceRename, SpaceClose, SpaceNext, SpacePrevious,
+  ConfigSet, ConfigToggle, ConfigAdjust, ConfigReset,
+  AppHelp, AppPalette, AppSettings, AppSendPrefix, AppQuit,
 };

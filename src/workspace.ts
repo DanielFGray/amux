@@ -917,44 +917,7 @@ export function applyWorkspaceCommand(
   };
 }
 
-const WORKSPACE_COMMANDS = new Set<Command["_tag"]>([
-  "pane.split",
-  "pane.next",
-  "pane.last",
-  "pane.focus",
-  "pane.select",
-  "pane.resize",
-  "pane.resize-divider",
-  "pane.zoom",
-  "pane.swap",
-  "pane.close",
-  "pane.break",
-  "pane.join",
-  "pane.move",
-  "pane.send-keys",
-  "window.new",
-  "window.next",
-  "window.previous",
-  "window.last",
-  "window.select",
-  "window.rename",
-  "window.close",
-  "window.next-layout",
-  "window.select-layout",
-  "window.synchronize-panes",
-  "agent.kill",
-  "agent.reveal",
-  "agent.next-blocked",
-  "space.new",
-  "space.select",
-  "space.rename",
-  "space.close",
-  "space.next",
-  "space.previous",
-]);
 
-export const isWorkspaceCommand = (command: Command): boolean =>
-  WORKSPACE_COMMANDS.has(command._tag);
 
 /** Natural PTY exit is a daemon-side model mutation too. */
 export function markAgentExited(

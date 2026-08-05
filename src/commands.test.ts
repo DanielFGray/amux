@@ -1,11 +1,10 @@
 import { test, expect } from "bun:test";
-import { Effect, Either } from "effect";
+import { Effect, Either, Schema } from "effect";
 import {
   COMMAND_DEFS,
   COMMAND_META,
   Command,
   CommandError,
-  atLeast,
   command,
   decodeCommand,
   makeCommands,
@@ -118,28 +117,46 @@ test("the buffer verbs carry their stack arguments over the wire", () => {
 });
 
 /**
- * Capability is what stops ts-538b30 handing an agent the whole table.
- *
- * Monotone, so a surface filters with a floor rather than a set: everything the
- * agent tool surface sees is also invocable over the socket, and the overlays
- * are invocable from neither.
+ * Target is what determines whether a command can be invoked remotely and
+ * whether it mutates the daemon-owned workspace. Exposure controls whether
+ * an agent sees the command.
  */
-test("listing by capability is monotone, and overlays are local only", () => {
+test("target derivation: workspace commands are in the workspace, view commands are not", () => {
   const commands = makeCommands(recording().handlers);
-  const names = (floor: Parameters<typeof commands.list>[0]) =>
-    commands.list(floor).map((c) => c.name);
 
-  expect(names("local")).toEqual(COMMAND_DEFS.map((def) => def.tag));
-  expect(names("agent").every((name) => names("remote").includes(name))).toBe(true);
+  for (const def of COMMAND_DEFS) {
+    expect(commands.isWorkspaceCommand(def.tag)).toBe(def.target === "workspace");
+    expect(commands.isRemoteCommand(def.tag)).toBe(def.target !== "view");
+  }
+});
 
-  const local: CommandTag[] = ["app.settings", "app.command-palette", "app.help", "pane.capture"];
-  for (const name of local) expect(names("remote")).not.toContain(name);
-  // Quitting the client is scriptable but not something to hand an agent.
-  expect(names("remote")).toContain("app.quit");
-  expect(names("agent")).not.toContain("app.quit");
+test("filtering by target and exposure produces the expected subsets", () => {
+  const commands = makeCommands(recording().handlers);
 
-  expect(atLeast("agent", "remote")).toBe(true);
-  expect(atLeast("local", "remote")).toBe(false);
+  const allNames = commands.list().map((c) => c.name);
+  expect(allNames).toEqual(COMMAND_DEFS.map((def) => def.tag));
+
+  const workspaceNames = commands.list({ target: "workspace" }).map((c) => c.name);
+  expect(workspaceNames.length).toBeGreaterThan(0);
+  for (const name of workspaceNames) {
+    expect(commands.isWorkspaceCommand(name)).toBe(true);
+  }
+
+  const viewOnly: CommandTag[] = [
+    "app.settings", "app.command-palette", "app.help", "app.send-prefix",
+    "buffer.choose", "buffer.paste",
+    "config.adjust", "config.reset", "config.set", "config.toggle",
+    "pane.capture", "pane.copy-mode",
+  ];
+  const remote = commands.list({ target: "workspace" }).map((c) => c.name)
+    .concat(commands.list({ target: "buffers" }).map((c) => c.name))
+    .concat(commands.list({ target: "session" }).map((c) => c.name))
+    .concat(commands.list({ target: "server" }).map((c) => c.name));
+  // View-targeted commands are NOT in the remote set.
+  for (const name of viewOnly) expect(remote).not.toContain(name);
+  // app.quit targets "server" — remotely invocable but not agent-visible.
+  expect(remote).toContain("app.quit");
+  expect(commands.list({ exposure: "agent" }).map((c) => c.name)).not.toContain("app.quit");
 });
 
 /**
@@ -163,7 +180,8 @@ test("every verb annotates its own description and is unique", () => {
       name: def.tag,
       desc: def.desc,
       group: def.group,
-      capability: def.capability,
+      target: def.target,
+      exposure: def.exposure,
     });
   }
 });
@@ -189,4 +207,39 @@ test("a detached command reports its failure", () => {
   expect(errors).toHaveLength(1);
   expect(errors[0]).toContain("pane.send-keys");
   expect(errors[0]).toContain("no pane to send to");
+});
+
+/**
+ * Commands with results return typed values, not just void.
+ */
+test("commands with declared results carry them through the handler", () => {
+  const handlers: CommandHandlers = {
+    ...Object.fromEntries(COMMAND_DEFS.map((def) => [def.tag, () => Effect.void])),
+    "buffer.set": ({ name, data }: any) => Effect.succeed(name ?? `buffer-${data.length}`),
+    "buffer.show": ({ name }: any) => Effect.succeed(`content of ${name ?? "top"}`),
+    "pane.capture": () => Effect.succeed("captured text"),
+  } as unknown as CommandHandlers;
+
+  const commands = makeCommands(handlers);
+
+  expect(Effect.runSync(commands.run(command("buffer.set", { data: "hello" })))).toBe("buffer-5");
+  expect(Effect.runSync(commands.run(command("buffer.show", { name: "buf1" })))).toBe("content of buf1");
+  expect(Effect.runSync(commands.run(command("pane.capture")))).toBe("captured text");
+  expect(Effect.runSync(commands.run(command("pane.zoom")))).toBe(undefined);
+});
+
+test("command result types match the declared schema", () => {
+  const bufSetDef = COMMAND_DEFS.find((d) => d.tag === "buffer.set")!;
+  const bufListDef = COMMAND_DEFS.find((d) => d.tag === "buffer.list")!;
+  const paneCaptureDef = COMMAND_DEFS.find((d) => d.tag === "pane.capture")!;
+
+  // buffer.set → string
+  expect(Schema.decodeUnknownSync(bufSetDef.result)("hello")).toBe("hello");
+  // buffer.list → array of {name, bytes, preview}
+  expect(Schema.decodeUnknownSync(bufListDef.result)([{ name: "x", bytes: 3, preview: "..." }])).toEqual([{ name: "x", bytes: 3, preview: "..." }]);
+  // pane.capture → string
+  expect(Schema.decodeUnknownSync(paneCaptureDef.result)("captured text")).toBe("captured text");
+  // void-schema decodes to undefined
+  const paneZoomDef = COMMAND_DEFS.find((d) => d.tag === "pane.zoom")!;
+  expect(Schema.decodeUnknownSync(paneZoomDef.result)(undefined)).toBe(undefined);
 });

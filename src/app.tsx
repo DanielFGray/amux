@@ -851,8 +851,8 @@ function buildApp(
           ? Effect.fail(new CommandError({ message: error.message }))
           : runWorkspace(command("pane.send-keys", { keys }), input);
       }),
-    "pane.capture": () => Effect.sync(openCapture),
-    "pane.copy-mode": () => Effect.sync(enterCopyMode),
+    "pane.capture": () => Effect.sync(() => { openCapture(); return ""; }),
+    "pane.copy-mode": () => Effect.sync(() => { enterCopyMode(); return undefined as void; }),
 
     // The tmux paste-buffer family. The stack lives on the daemon; these
     // handlers are the local doors to it — the same RPC a script uses, minus
@@ -862,7 +862,6 @@ function buildApp(
     "buffer.set": ({ name, data }) =>
       session.setBuffer(name, data).pipe(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-        Effect.asVoid,
       ),
     "buffer.paste": ({ name }) =>
       Effect.gen(function* () {
@@ -875,7 +874,10 @@ function buildApp(
     "buffer.list": () =>
       session
         .listBuffers()
-        .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) }))),
+        .pipe(
+          Effect.map((bufs) => bufs.map((b) => ({ name: b.name, bytes: b.bytes, preview: b.preview }))),
+          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        ),
     "buffer.delete": ({ name }) =>
       session
         .deleteBuffer(name)
@@ -998,7 +1000,7 @@ function buildApp(
     cmd: Command,
     opts: { desc?: string; group?: string; hidden?: boolean; fixed?: boolean } = {},
   ): CommandSpec {
-    const meta = COMMAND_META[cmd._tag];
+    const meta = COMMAND_META[cmd._tag]!;
     return {
       name,
       ...(key === undefined ? {} : { key }),
@@ -1022,7 +1024,7 @@ function buildApp(
     open: Effect.Effect<void, CommandError>,
     desc?: string,
   ): CommandSpec {
-    const meta = COMMAND_META[tag];
+    const meta = COMMAND_META[tag]!;
     return {
       name: tag,
       ...(key === undefined ? {} : { key }),

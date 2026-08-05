@@ -198,7 +198,7 @@ export interface CommandSpec {
    * statement that quietly does nothing (ts-456094, where eight commands did
    * exactly that).
    */
-  run: Effect.Effect<void, CommandError>;
+  run: Effect.Effect<any, CommandError>;
 }
 
 /** The sequences a command answers to right now: the user's, or its own. */

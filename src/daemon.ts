@@ -38,10 +38,9 @@ import {
   type SessionState,
   type SessionPaths,
 } from "./session.ts";
-import { command, decodeCommand, type Command } from "./commands.ts";
+import { command, COMMAND_META, decodeCommand, type Command } from "./commands.ts";
 import {
   applyWorkspaceCommand,
-  isWorkspaceCommand,
   markAgentExited,
   parseWorkspaceCommandContext,
   workspaceFromSession,
@@ -66,6 +65,7 @@ const DaemonCommandSchema = S.Literal(
   "status",
   "stop",
   "workspace-command",
+  "run",
   "set-buffer",
   "paste-buffer",
   "list-buffers",
@@ -78,6 +78,7 @@ export type DaemonCommand = S.Schema.Type<typeof DaemonCommandSchema>;
 export const DaemonRequestSchema = S.Struct({
   command: DaemonCommandSchema,
   workspaceCommand: S.optional(S.Unknown),
+  commandValue: S.optional(S.Unknown),
   expectedRevision: S.optional(S.Int),
   workspaceContext: S.optional(S.Unknown),
   bufferName: S.optional(S.String),
@@ -91,6 +92,7 @@ export type DaemonRequest = S.Schema.Type<typeof DaemonRequestSchema>;
 export interface DaemonResponse {
   ok: boolean;
   error?: string;
+  result?: unknown;
   session?: SessionState;
   attached?: boolean;
   attachedSince?: number;
@@ -708,7 +710,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             "worktrees",
           ),
         };
-        if (!isWorkspaceCommand(value)) {
+        if (COMMAND_META[value._tag].target !== "workspace") {
           return yield* new DaemonError({
             message: `command '${value._tag}' is not a workspace command`,
           });
@@ -854,6 +856,70 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               const ctx = parseWorkspaceCommandContext(req.workspaceContext, cur.workspace);
               const ws = yield* runWorkspaceCommand(decoded, req.expectedRevision!, ctx);
               return { ok: true, workspace: ws };
+            },
+            Effect.catchAll((e) => Effect.succeed(failResponse(describe(e)))),
+          ),
+        ),
+        Match.when(
+          "run",
+          Effect.fnUntraced(
+            function* () {
+              if (req.commandValue === undefined)
+                return failResponse("run requires a command value");
+              const decoded = yield* decodeCommand(req.commandValue);
+              const meta = COMMAND_META[decoded._tag]!;
+              if (meta.target === "view")
+                return failResponse(
+                  `command '${decoded._tag}' is a view command, not remotely invocable`,
+                );
+              if (meta.target === "workspace") {
+                if (req.expectedRevision === undefined || !req.workspaceContext) {
+                  const cur = Effect.runSync(Ref.get(daemonState));
+                  const ctx = parseWorkspaceCommandContext(req.workspaceContext ?? {}, cur.workspace)!;
+                  const ws = yield* runWorkspaceCommand(
+                    decoded,
+                    req.expectedRevision ?? cur.workspace.revision,
+                    ctx,
+                  );
+                  return { ok: true, workspace: ws };
+                }
+                const cur = Effect.runSync(Ref.get(daemonState));
+                const ctx = parseWorkspaceCommandContext(req.workspaceContext, cur.workspace);
+                const ws = yield* runWorkspaceCommand(decoded, req.expectedRevision!, ctx);
+                return { ok: true, workspace: ws };
+              }
+              if (meta.target === "buffers") {
+                const h = requireHost();
+                if (decoded._tag === "buffer.set") {
+                  const name = h.buffers.set(decoded.name, decoded.data);
+                  return { ok: true, result: name };
+                }
+                if (decoded._tag === "buffer.list") {
+                  const bufs = h.buffers.list();
+                  return { ok: true, result: bufs.map((b) => ({ name: b.name, bytes: b.bytes, preview: b.preview })) };
+                }
+                if (decoded._tag === "buffer.show") {
+                  const data = new TextDecoder().decode(h.buffers.show(decoded.name));
+                  return { ok: true, result: data };
+                }
+                if (decoded._tag === "buffer.delete") {
+                  h.buffers.delete(decoded.name);
+                  return { ok: true };
+                }
+                return failResponse(`buffer command '${decoded._tag}' is not implemented for run`);
+              }
+              if (meta.target === "server") {
+                if (decoded._tag === "app.quit") {
+                  return yield* Effect.forkDaemon(
+                    Effect.provideService(stop, Session, session).pipe(Effect.ignore),
+                  ).pipe(Effect.as({ ok: true as const } as DaemonResponse));
+                }
+                return failResponse(`server command '${decoded._tag}' is not implemented for run`);
+              }
+              if (meta.target === "session") {
+                return failResponse(`session commands are not yet implemented for run`);
+              }
+              return failResponse(`unknown target for command '${decoded._tag}'`);
             },
             Effect.catchAll((e) => Effect.succeed(failResponse(describe(e)))),
           ),
