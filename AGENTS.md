@@ -41,6 +41,10 @@ workspace: renderer-free transform model (the thing the daemon owns)
 
 ## Working with this project
 
+Before performing multiple mechanical rewrites, read
+`tools/ast-grep/README.md`. Keep transformations narrow, dry-run them first,
+and add newly discovered ast-grep examples and gotchas to that document.
+
 ```bash
 bun test src          # unit tests
 bun test e2e          # e2e tests (slower, requires daemon)
