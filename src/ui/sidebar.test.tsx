@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { SpaceSet } from "../space.ts";
 import { createAppState, POLL_MS } from "./state.ts";
 import { Sidebar, sidebarTargets, SIDEBAR_WIDTH, clampSidebarSelection } from "./Sidebar.tsx";
-import { SessionDaemon } from "../daemon.ts";
+import { startDaemon, type SessionDaemonService } from "../daemon.ts";
 import { SessionClient, type SessionClientShape } from "../client.ts";
 import { Session, SessionEnv } from "../session.ts";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -35,7 +35,7 @@ import { scheduledPoll } from "../app.tsx";
  */
 const SHELL = ["bash", "--norc", "--noprofile"];
 
-const daemons: SessionDaemon[] = [];
+const daemons: SessionDaemonService[] = [];
 const clients: SessionClientShape[] = [];
 const dirs: string[] = [];
 const run = <A,>(
@@ -43,7 +43,7 @@ const run = <A,>(
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
-    effect.pipe(
+    Effect.scoped(effect).pipe(
       Effect.provide(Session.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.provideService(SessionEnv, env),
@@ -51,7 +51,7 @@ const run = <A,>(
   );
 afterEach(async () => {
   for (const client of clients.splice(0)) client.close();
-  for (const daemon of daemons.splice(0)) await daemon.stop().catch(() => {});
+  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
@@ -274,9 +274,8 @@ test("an agent whose daemon attachment is lost is distinct from idle and done", 
   const home = await mkdtemp(join(tmpdir(), "amux-sidebar-"));
   dirs.push(home);
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv;
-  const daemon = await run(SessionDaemon.open("sidebar-detach"), env);
+  const daemon = await run(Effect.scoped(startDaemon("sidebar-detach")), env);
   daemons.push(daemon);
-  await daemon.start();
   const client = await run(
     SessionClient.connect("sidebar-detach", { client: "ui", autostart: false }),
     env,
@@ -296,7 +295,7 @@ test("an agent whose daemon attachment is lost is distinct from idle and done", 
     const agent = s.win.agents[0]!;
     // Projection adopts the daemon model; it never asks the client to spawn.
     await waitForAsync(
-      () => daemon.liveAgents().then((ids) => ids.includes(agent.id)),
+      () => Effect.runPromise(daemon.liveAgents()).then((ids) => ids.includes(agent.id)),
       "the daemon to own the agent",
     );
     // waitForFrame may return when the renderer is idle even if the matching
@@ -309,7 +308,7 @@ test("an agent whose daemon attachment is lost is distinct from idle and done", 
 
     // The daemon dies: its agents are killed by the same move, but from this
     // client's side it is a lost attachment, never an exit frame.
-    await daemon.stop();
+    await Effect.runPromise(daemon.stop);
 
     await waitForAsync(() => agent.detached === true, "the agent to detach");
     expect(agent.exited).toBe(false);

@@ -12,9 +12,15 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect } from "effect";
+import { Effect, Scope } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
-import { daemonRequest, SessionDaemon, type DaemonRequest, type DaemonResponse } from "./daemon.ts";
+import {
+  daemonRequest,
+  startDaemon,
+  type DaemonRequest,
+  type DaemonResponse,
+  type SessionDaemonService,
+} from "./daemon.ts";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
@@ -23,9 +29,9 @@ import {
 import { Session, SessionEnv } from "./session.ts";
 
 const dirs: string[] = [];
-const daemons: SessionDaemon[] = [];
+const daemons: SessionDaemonService[] = [];
 afterEach(async () => {
-  for (const daemon of daemons.splice(0)) await daemon.stop().catch(() => {});
+  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
@@ -34,14 +40,13 @@ async function started(id: string) {
   dirs.push(home);
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") };
   const daemon = await Effect.runPromise(
-    SessionDaemon.open(id).pipe(
+    Effect.scoped(startDaemon(id)).pipe(
       Effect.provide(Session.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.provideService(SessionEnv, env),
     ),
   );
   daemons.push(daemon);
-  await daemon.start();
   // The RPC client must resolve the same session paths, so it needs the same
   // env the daemon was started with.
   return { daemon, env };
@@ -81,7 +86,7 @@ const output = (frames: AttachFrame[]) =>
 
 test("a copy pushed onto the stack pastes into a real pane's PTY", async () => {
   const { daemon, env } = await started("copy-paste");
-  await daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
+  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -102,7 +107,7 @@ test("a copy pushed onto the stack pastes into a real pane's PTY", async () => {
 
 test("the stack is a stack: the newest copy is what a default paste reads", async () => {
   const { daemon, env } = await started("stack-order");
-  await daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
+  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -119,7 +124,7 @@ test("the stack is a stack: the newest copy is what a default paste reads", asyn
 
 test("a named buffer pastes, shows, and deletes by name", async () => {
   const { daemon, env } = await started("named-buffer");
-  await daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
+  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -144,7 +149,7 @@ test("a named buffer pastes, shows, and deletes by name", async () => {
 
 test("paste-buffer -d deletes the buffer only after it was pasted", async () => {
   const { daemon, env } = await started("paste-delete");
-  await daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
+  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -170,12 +175,14 @@ test("a paste into a bracketed-paste-enabled child arrives wrapped", async () =>
   // Echo and canonical mode are off: echo would rewrite the ESC bytes as ^[
   // (ECHOCTL), and canonical mode would hold back the \x1b[201~ tail because
   // it ends without a newline.
-  await daemon.spawnAgent({
-    id: "pane",
-    cmd: ["sh", "-c", "printf '\\x1b[?2004h'; stty -echo -icanon; cat"],
-    cols: 80,
-    rows: 24,
-  });
+  await Effect.runPromise(
+    daemon.spawnAgent({
+      id: "pane",
+      cmd: ["sh", "-c", "printf '\\x1b[?2004h'; stty -echo -icanon; cat"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -190,7 +197,7 @@ test("a paste into a bracketed-paste-enabled child arrives wrapped", async () =>
 
 test("buffer failures are answers, not crashes", async () => {
   const { daemon, env } = await started("buffer-errors");
-  await daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
+  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   await settle();
 
   const empty = await rpc(daemon.id, { command: "paste-buffer", bufferTarget: "pane" }, env);

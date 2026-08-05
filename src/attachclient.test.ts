@@ -20,7 +20,7 @@ import { Agent, type AgentOptions } from "./agent.ts";
 import { snapshotAgent } from "./snapshot.ts";
 import { AttachClient } from "./attach.ts";
 import { SessionClient, type SessionClientShape } from "./client.ts";
-import { SessionDaemon } from "./daemon.ts";
+import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { captureVisible } from "./capture.ts";
 import { MODE_ALT_SCREEN } from "./ghostty.ts";
 import { processAlive, sessionPaths, Session, SessionEnv } from "./session.ts";
@@ -33,7 +33,9 @@ import {
 import { command } from "./commands.ts";
 
 const dirs: string[] = [];
-const daemons: SessionDaemon[] = [];
+const daemons: SessionDaemonService[] = [];
+const attachedClient = (d: SessionDaemonService) => Effect.runPromise(d.getAttachedClient);
+const attachedClients = (d: SessionDaemonService) => Effect.runPromise(d.getAttachedClients);
 const clients: SessionClientShape[] = [];
 const agents: Agent[] = [];
 let nextProjection = 0;
@@ -52,7 +54,7 @@ const run = <A>(
 afterEach(async () => {
   for (const agent of agents.splice(0)) agent.dispose();
   for (const client of clients.splice(0)) client.close();
-  for (const daemon of daemons.splice(0)) await daemon.stop().catch(() => {});
+  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
@@ -60,9 +62,8 @@ async function session(id: string) {
   const home = await mkdtemp(join(tmpdir(), "amux-client-"));
   dirs.push(home);
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv;
-  const daemon = await run(SessionDaemon.open(id), env);
+  const daemon = await run(Effect.scoped(startDaemon(id)), env);
   daemons.push(daemon);
-  await daemon.start();
   return { daemon, env };
 }
 
@@ -75,23 +76,25 @@ async function attach(id: string, env: NodeJS.ProcessEnv, client = "ui") {
 
 /** Test-only low-level fixture: the daemon owns creation; the client only projects it. */
 async function projectAgent(
-  daemon: SessionDaemon,
+  daemon: SessionDaemonService,
   client: SessionClientShape,
   options: Omit<AgentOptions, "backend">,
 ) {
   const id = options.id ?? `transport-${nextProjection++}`;
-  const live = await daemon.liveAgents();
+  const live = await Effect.runPromise(daemon.liveAgents());
   (client.live as Set<string>).add(id);
   const projected = new Agent({ ...options, id, backend: client.backend() });
   agents.push(projected);
   if (!live.includes(id)) {
-    await daemon.spawnAgent({
-      id,
-      cmd: options.cmd,
-      cwd: options.cwd,
-      cols: options.cols ?? 80,
-      rows: options.rows ?? 24,
-    });
+    await Effect.runPromise(
+      daemon.spawnAgent({
+        id,
+        cmd: options.cmd,
+        cwd: options.cwd,
+        cols: options.cols ?? 80,
+        rows: options.rows ?? 24,
+      }),
+    );
   }
   return projected;
 }
@@ -136,7 +139,7 @@ test("an agent's bytes travel to the daemon and its output comes back", async ()
   await until(() => screen(agent).includes("hello-from-the-client"), "cat to echo the input");
 
   // And the daemon, not this process, is the one holding the PTY.
-  expect(await daemon.liveAgents()).toContain(agent.id);
+  expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
 });
 
 test("two clients share output and input, and one can leave without detaching the other", async () => {
@@ -167,17 +170,17 @@ test("two clients share output and input, and one can leave without detaching th
   // to be true — it was already true before the close, so waiting on it would
   // return instantly and prove nothing about the release path.
   await until(
-    () => daemon.attachedClients.length === 1,
+    async () => (await attachedClients(daemon)).length === 1,
     "the daemon to notice the first client leave",
   );
-  expect(daemon.attachedClients).toEqual(["second"]);
+  expect(await attachedClients(daemon)).toEqual(["second"]);
 
   secondAgent.write("still-shared\n");
   await until(
     () => screen(secondAgent).includes("still-shared"),
     "the remaining client to keep working",
   );
-  expect((await daemon.handle({ command: "ping" })).attached).toBe(true);
+  expect((await Effect.runPromise(daemon.handle({ command: "ping" }))).attached).toBe(true);
 });
 
 test("an agent outlives the client, and the next client adopts it", async () => {
@@ -194,8 +197,11 @@ test("an agent outlives the client, and the next client adopts it", async () => 
 
   // Detach, exactly as closing the terminal would.
   first.close();
-  await until(() => daemon.attachedClient === null, "the daemon to notice the detach");
-  expect(await daemon.liveAgents()).toContain(agent.id);
+  await until(
+    async () => (await attachedClient(daemon)) === null,
+    "the daemon to notice the detach",
+  );
+  expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
 
   // The backend closed with no exit code: the attachment ended, the process
   // did not. Reporting 0 here would be a lie the sidebar renders as "done".
@@ -215,7 +221,9 @@ test("an agent outlives the client, and the next client adopts it", async () => 
   const readopted = await projectAgent(daemon, second, { id: agent.id, cmd: ["cat"] });
   readopted.write("second-life\n");
   await until(() => screen(readopted).includes("second-life"), "the adopted agent's echo");
-  expect((await daemon.liveAgents()).filter((id) => id === agent.id)).toHaveLength(1);
+  expect(
+    (await Effect.runPromise(daemon.liveAgents())).filter((id) => id === agent.id),
+  ).toHaveLength(1);
 });
 
 test("a process that ends reports its exit code through the stream", async () => {
@@ -308,7 +316,10 @@ test("a reattaching client detects an agent already in the foreground", async ()
   await until(() => agent.agentKind === "claude", "the foreground agent to be detected");
 
   first.close();
-  await until(() => daemon.attachedClient === null, "the daemon to notice the detach");
+  await until(
+    async () => (await attachedClient(daemon)) === null,
+    "the daemon to notice the detach",
+  );
 
   const second = await attach("foreground-adopt", env, "second");
   const readopted = await projectAgent(daemon, second, {
@@ -345,12 +356,14 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
       Effect.sync(() => firstFrames.push(frame._tag)),
     ),
   );
-  const first = await daemon.spawnAgent({
-    id: "agent-1",
-    cmd: ["sh", "-c", "printf first; exit 3"],
-    cols: 80,
-    rows: 24,
-  });
+  const first = await Effect.runPromise(
+    daemon.spawnAgent({
+      id: "agent-1",
+      cmd: ["sh", "-c", "printf first; exit 3"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
   await Effect.runPromise(first.exit);
   await Promise.race([
     firstDone,
@@ -368,12 +381,14 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
       client.stream("agent-1").pipe(Stream.takeUntil((frame) => frame._tag === "exit")),
     ),
   );
-  const second = await daemon.spawnAgent({
-    id: "agent-1",
-    cmd: ["sh", "-c", "printf second; exit 4"],
-    cols: 80,
-    rows: 24,
-  });
+  const second = await Effect.runPromise(
+    daemon.spawnAgent({
+      id: "agent-1",
+      cmd: ["sh", "-c", "printf second; exit 4"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
   await Effect.runPromise(second.exit);
   const frames = await Promise.race([
     secondDone,
@@ -396,12 +411,14 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
     client: "unconsumed-test",
   });
 
-  const first = await daemon.spawnAgent({
-    id: "agent-1",
-    cmd: ["sh", "-c", "printf first; exit 3"],
-    cols: 80,
-    rows: 24,
-  });
+  const first = await Effect.runPromise(
+    daemon.spawnAgent({
+      id: "agent-1",
+      cmd: ["sh", "-c", "printf first; exit 3"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
   await Effect.runPromise(first.exit);
   // The PTY exit and its daemon publication are separate events. Let the
   // unconsumed terminal frame reach the client before opening the replacement.
@@ -412,12 +429,14 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
       client.stream("agent-1").pipe(Stream.takeUntil((frame) => frame._tag === "exit")),
     ),
   );
-  const second = await daemon.spawnAgent({
-    id: "agent-1",
-    cmd: ["sh", "-c", "printf second; exit 4"],
-    cols: 80,
-    rows: 24,
-  });
+  const second = await Effect.runPromise(
+    daemon.spawnAgent({
+      id: "agent-1",
+      cmd: ["sh", "-c", "printf second; exit 4"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
   await Effect.runPromise(second.exit);
   const frames = await Promise.race([
     replacement,
@@ -774,7 +793,7 @@ test("killing through the daemon ends the agent here too", async () => {
 
   let live: readonly string[] = [];
   await until(() => {
-    void daemon.liveAgents().then((ids) => (live = ids));
+    void Effect.runPromise(daemon.liveAgents()).then((ids) => (live = ids));
     return live.includes(agent.id);
   }, "the daemon to have the agent");
 
@@ -807,13 +826,13 @@ test("a projection of an unmodeled id never asks the daemon to spawn it", async 
   const { daemon, env } = await session("unreachable");
   const client = await attach("unreachable", env);
 
-  const before = await daemon.liveAgents();
+  const before = await Effect.runPromise(daemon.liveAgents());
   const agent = new Agent({ id: "not-modeled", cmd: ["cat"], backend: client.backend() });
   agents.push(agent);
 
   await until(() => agent.exited, "the invalid projection to close");
   expect(screen(agent)).toContain("is not live");
-  expect(await daemon.liveAgents()).toEqual(before);
+  expect(await Effect.runPromise(daemon.liveAgents())).toEqual(before);
 });
 
 test("a client whose daemon stops sees a detach, not a process exit", async () => {
@@ -829,7 +848,7 @@ test("a client whose daemon stops sees a detach, not a process exit", async () =
   // would learn about a crash — as an attachment ending, never as a clean
   // exit. A stop and a crash only diverge on the next RPC: stop removed the
   // session, a crash left it restorable.
-  await daemon.stop();
+  await Effect.runPromise(daemon.stop);
   daemons.splice(daemons.indexOf(daemon), 1);
 
   await until(() => agent.detached, "the client to notice the daemon went away");
@@ -848,7 +867,10 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
   await until(() => screen(agent).includes("left-on-screen"), "the first client's echo");
 
   first.close();
-  await until(() => daemon.attachedClient === null, "the daemon to notice the detach");
+  await until(
+    async () => (await attachedClient(daemon)) === null,
+    "the daemon to notice the detach",
+  );
 
   const second = await attach("replay-screen", env);
   const readopted = await projectAgent(daemon, second, { id: agent.id, cmd: ["cat"] });
@@ -856,7 +878,7 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
   // cat never redraws. The old line can reach this fresh pane only through the
   // daemon's replay; without it the pane stays blank until some later echo.
   await until(() => screen(readopted).includes("left-on-screen"), "the replayed screen");
-  expect(await daemon.liveAgents()).toContain(agent.id);
+  expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
 });
 
 test("an adopted agent is resized before its screen replay", async () => {
@@ -867,7 +889,10 @@ test("an adopted agent is resized before its screen replay", async () => {
   await until(() => screen(agent).includes("resized-replay"), "the first client's echo");
 
   first.close();
-  await until(() => daemon.attachedClient === null, "the daemon to notice the detach");
+  await until(
+    async () => (await attachedClient(daemon)) === null,
+    "the daemon to notice the detach",
+  );
 
   const second = await attach("replay-resize", env, "second");
   const readopted = await projectAgent(daemon, second, {
@@ -901,7 +926,10 @@ test("daemon replay keeps only the current screen, with no scrollback", async ()
   expect(screen(agent)).not.toContain("old-3");
 
   first.close();
-  await until(() => daemon.attachedClient === null, "the daemon to notice the detach");
+  await until(
+    async () => (await attachedClient(daemon)) === null,
+    "the daemon to notice the detach",
+  );
   const second = await attach("replay-no-scrollback", env, "second");
   const readopted = await projectAgent(daemon, second, {
     id: agent.id,
@@ -927,7 +955,10 @@ test("an alternate-screen app's view is replayed intact to a reattaching client"
   expect(agent.term.mode(MODE_ALT_SCREEN)).toBe(true);
 
   first.close();
-  await until(() => daemon.attachedClient === null, "the daemon to notice the detach");
+  await until(
+    async () => (await attachedClient(daemon)) === null,
+    "the daemon to notice the detach",
+  );
 
   const second = await attach("replay-alt", env);
   const readopted = await projectAgent(daemon, second, { id: agent.id, cmd });
@@ -1014,14 +1045,14 @@ test("releasing a client projection closes local resources without killing the d
   const client = await attach("projection-release", env);
   const agent = await projectAgent(daemon, client, { cmd: ["sleep", "30"] });
   await Effect.runPromise(agent.release());
-  expect(await daemon.liveAgents()).toContain(agent.id);
+  expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
 });
 
 test("a failed workspace response is neither accepted nor left as a phantom PTY", async () => {
   const { daemon, env } = await session("client-transaction");
   const client = await attach("client-transaction", env);
   const before = client.workspace();
-  const beforeLive = await daemon.liveAgents();
+  const beforeLive = await Effect.runPromise(daemon.liveAgents());
   const p = await run(sessionPaths("client-transaction"), env);
   await rm(p.backup, { recursive: true, force: true });
   await mkdir(p.backup);
@@ -1037,8 +1068,8 @@ test("a failed workspace response is neither accepted nor left as a phantom PTY"
     ),
   ).rejects.toThrow();
   expect(client.workspace()).toEqual(before);
-  expect(daemon.workspace).toEqual(before);
-  expect(await daemon.liveAgents()).toEqual(beforeLive);
+  expect(await Effect.runPromise(daemon.getWorkspace)).toEqual(before);
+  expect(await Effect.runPromise(daemon.liveAgents())).toEqual(beforeLive);
 });
 
 test("a natural terminal exit is published only after its workspace generation is durable", async () => {
@@ -1082,7 +1113,7 @@ test("a natural terminal exit is published only after its workspace generation i
       );
     }),
   );
-  await daemon.stop();
+  await Effect.runPromise(daemon.stop);
   daemons.splice(daemons.indexOf(daemon), 1);
 });
 
@@ -1133,7 +1164,7 @@ test("a transient natural-exit write failure does not consume the terminal exit 
     }),
   );
   await until(
-    () => daemon.handle({ command: "status" }).then((status) => !status.ok),
+    () => Effect.runPromise(daemon.handle({ command: "status" })).then((status) => !status.ok),
     "the persistence failure to surface",
   );
   await rm(p.backup, { recursive: true, force: true });

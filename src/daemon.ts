@@ -1,24 +1,27 @@
-import { mkdir, open, readFile, rm, unlink } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
+import { request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
 import {
   Cause,
   Clock,
+  Context,
   Deferred,
   Effect,
+  Either,
   Exit,
   Fiber,
   ManagedRuntime,
   Queue,
+  Ref,
   Schedule,
-  Schema,
+  Schema as S,
   Scope,
+  Match,
 } from "effect";
 import { FileSystem } from "@effect/platform";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
-import type { PreparedSession } from "./effect/SessionSupervisor.ts";
+import { type PreparedSession } from "./effect/SessionSupervisor.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
@@ -31,6 +34,7 @@ import {
   sessionPaths,
   type SessionAttachment,
   type SessionLease,
+  type SessionIdError,
   type SessionState,
   type SessionPaths,
 } from "./session.ts";
@@ -54,18 +58,10 @@ import {
   type WorktreeSpec,
 } from "./git.ts";
 
-export type DaemonCommand =
-  | "ping"
-  | "status"
-  | "stop"
-  | "workspace-command"
-  | "set-buffer"
-  | "paste-buffer"
-  | "list-buffers"
-  | "delete-buffer"
-  | "show-buffer";
+const describe = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
-const DaemonCommandSchema = Schema.Literal(
+const DaemonCommandSchema = S.Literal(
   "ping",
   "status",
   "stop",
@@ -77,1034 +73,131 @@ const DaemonCommandSchema = Schema.Literal(
   "show-buffer",
 );
 
-export class SessionDaemonError extends Schema.TaggedError<SessionDaemonError>()(
-  "SessionDaemonError",
-  {
-    message: Schema.String,
-  },
-) {}
+export type DaemonCommand = S.Schema.Type<typeof DaemonCommandSchema>;
 
-/** A failure's message, without the Effect error tag the tagged errors also
- *  carry (String() of one prints "BufferError: no buffers"). */
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
-export const DaemonRequestSchema = Schema.Struct({
+export const DaemonRequestSchema = S.Struct({
   command: DaemonCommandSchema,
-  /** Existing command value executed against the daemon-owned workspace. */
-  workspaceCommand: Schema.optional(Schema.Unknown),
-  /** Commands from an obsolete generation are rejected, never rebased silently. */
-  expectedRevision: Schema.optional(Schema.Int),
-  workspaceContext: Schema.optional(Schema.Unknown),
-  /**
-   * The buffer a buffer verb acts on, for set-buffer/paste-buffer/
-   * delete-buffer/show-buffer. Absent means "the top of the stack" except for
-   * set-buffer, where it means "a new numbered buffer".
-   */
-  bufferName: Schema.optional(Schema.String),
-  /** The data to store, for set-buffer. */
-  bufferData: Schema.optional(Schema.String),
-  /** The session to write into, for paste-buffer (the focused pane's agent). */
-  bufferTarget: Schema.optional(Schema.String),
-  /** paste-buffer -d: drop the buffer after pasting it. */
-  bufferDelete: Schema.optional(Schema.Boolean),
+  workspaceCommand: S.optional(S.Unknown),
+  expectedRevision: S.optional(S.Int),
+  workspaceContext: S.optional(S.Unknown),
+  bufferName: S.optional(S.String),
+  bufferData: S.optional(S.String),
+  bufferTarget: S.optional(S.String),
+  bufferDelete: S.optional(S.Boolean),
 });
 
-export type DaemonRequest = Schema.Schema.Type<typeof DaemonRequestSchema>;
+export type DaemonRequest = S.Schema.Type<typeof DaemonRequestSchema>;
 
 export interface DaemonResponse {
   ok: boolean;
   error?: string;
   session?: SessionState;
   attached?: boolean;
-  /** Earliest start among current attachments; absent when detached. */
   attachedSince?: number;
-  /** Most recent activity among current attachments. */
   attachLastSeen?: number;
-  /** Agents with a live process right now. Not the same as the agents in
-   *  `session`, which include ones that have already exited. */
   agents?: string[];
-  /** list-buffers: the paste buffer stack, top first. */
   buffers?: readonly BufferEntry[];
-  /** set-buffer: the name the data landed in. */
   bufferName?: string;
-  /** show-buffer: the buffer's contents, decoded as text. */
   bufferData?: string;
   workspace?: WorkspaceSnapshot;
 }
 
+export class SessionDaemonError extends S.TaggedError<SessionDaemonError>()("SessionDaemonError", {
+  message: S.String,
+}) {}
+
+export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
+  message: S.String,
+}) {}
+
 export interface SessionDaemonOptions {
-  /** Persistence seam used by fault-injection tests; production uses Session.save. */
   readonly saveState?: (state: SessionState) => Effect.Effect<void, unknown, Session>;
+  readonly spawnAgent?: (spec: SessionSpec) => Effect.Effect<ManagedSession, unknown>;
 }
 
-const SHUTDOWN_SAVE_TIMEOUT_MS = 500;
-
-type Mutation = {
-  readonly effect: Effect.Effect<any, any>;
-  readonly done: Deferred.Deferred<any, any>;
-};
-
-/**
- * A single owner for one session's lifecycle, persistence, and PTYs.
- *
- * There are two sockets and they do different jobs. The RPC socket answers
- * questions about the session and hangs up. The attach socket *is* an
- * attachment: a client holds it open, PTY bytes flow both ways over it, and its
- * EOF is how the daemon learns the client died — which request/response RPC
- * structurally could not tell it.
- *
- * The PTYs live in an Effect scope owned by this object (see AttachHost), not
- * by any client and not by the UI process. That is what makes closing the
- * terminal a detach rather than a kill.
- */
-export class SessionDaemon {
+export interface SessionDaemonService {
   readonly id: string;
   readonly paths: SessionPaths;
-  #state: SessionState;
-  #workspace: WorkspaceSnapshot;
-  #server: ReturnType<typeof Bun.serve> | null = null;
-  #heartbeat: Fiber.RuntimeFiber<unknown, never> | null = null;
-  #heartbeatError: string | null = null;
-  /** Attachments are keyed by transport connection so each socket has its own liveness. */
-  #attachments = new Map<string, SessionAttachment>();
-  #lockPath: string;
-  #env: NodeJS.ProcessEnv;
-  #runtime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError> | null = null;
-  #host: AttachHostService | null = null;
-  #mutationQueue = Effect.runSync(Queue.unbounded<Mutation>());
-  #closing = false;
-  #shutdown: Promise<void>;
-  #resolveShutdown!: () => void;
-  #exitCommits = new Map<string, (code: number | null) => Promise<void>>();
-  #durableObligations = new Map<symbol, string>();
-  #writeState: (state: SessionState) => Effect.Effect<void, unknown>;
-  #session: Session;
-  #activeSave: Fiber.RuntimeFiber<void, unknown> | null = null;
-  #cancelPersistence = false;
-  #scope: Scope.CloseableScope;
-  #termination: Promise<void> | null = null;
-  readonly stopped: Promise<void>;
-  #resolveStopped!: () => void;
-
-  #running(): {
-    runtime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>;
-    host: AttachHostService;
-  } {
-    if (!this.#host || !this.#runtime) throw new Error("daemon is not started");
-    return { runtime: this.#runtime, host: this.#host };
-  }
-
-  private constructor(
-    id: string,
-    state: SessionState,
-    env: NodeJS.ProcessEnv,
-    paths: SessionPaths,
-    options: SessionDaemonOptions,
-    session: Session,
-  ) {
-    this.id = id;
-    this.paths = paths;
-    this.#lockPath = this.paths.lock;
-    this.#env = env;
-    this.#state = state;
-    this.#workspace = workspaceFromSession(state);
-    this.#session = session;
-    this.#writeState = options.saveState
-      ? (next) => options.saveState!(next).pipe(Effect.provideService(Session, session))
-      : (next) => session.save(next);
-    this.#scope = Effect.runSync(Scope.make());
-    Effect.runSync(Effect.forkIn(this.#mutationLoop(), this.#scope));
-    this.stopped = new Promise((resolve) => {
-      this.#resolveStopped = resolve;
-    });
-    this.#shutdown = new Promise((resolve) => {
-      this.#resolveShutdown = resolve;
-    });
-  }
-
-  static open(
-    id = "default",
-    options: SessionDaemonOptions = {},
-  ): Effect.Effect<SessionDaemon, unknown, SessionEnv | Session | FileSystem.FileSystem> {
-    return Effect.gen(function* () {
-      if (!isSessionId(id)) {
-        return yield* new SessionDaemonError({
-          message: `invalid session id ${JSON.stringify(id)}`,
-        });
-      }
-      const env = yield* SessionEnv;
-      const paths = yield* sessionPaths(id);
-      yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }));
-      const session = yield* Session;
-      const fs = yield* FileSystem.FileSystem;
-      const lock = yield* Effect.promise(() =>
-        SessionDaemon.acquireLock(id, paths.lock, env, session, fs),
-      );
-      try {
-        const existing = yield* session.readLease(id);
-        if (existing && processAlive(existing.pid))
-          return yield* Effect.fail(
-            new Error(`session '${id}' is already owned by pid ${existing.pid}`),
-          );
-        const state = (yield* session.load(id)) ?? {
-          version: 1,
-          id,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          attached: false,
-          spaces: [],
-        };
-        state.attached = false;
-        const daemon = new SessionDaemon(id, state, env, paths, options, session);
-        daemon.#lock = lock;
-        return daemon;
-      } catch (error) {
-        yield* Effect.promise(() => lock.close());
-        yield* Effect.promise(() => rm(paths.lock, { force: true }).catch(() => {}));
-        return yield* Effect.fail(error);
-      }
-    });
-  }
-
-  #lock: Awaited<ReturnType<typeof open>> | null = null;
-
-  static async acquireLock(
-    id: string,
-    path: string,
-    env: NodeJS.ProcessEnv,
-    session: Session,
-    fs: FileSystem.FileSystem,
-  ) {
-    for (;;) {
-      try {
-        const lock = await open(path, "wx", 0o600);
-        await lock.writeFile(`${process.pid}\n`);
-        return lock;
-      } catch (error: any) {
-        if (error.code !== "EEXIST") throw error;
-        try {
-          const owner = Number.parseInt(await readFile(path, "utf8"), 10);
-          if (processAlive(owner)) throw new Error(`session '${id}' is already being opened`);
-        } catch (readError: any) {
-          if (readError.message?.includes("already being opened")) throw readError;
-          // A directory or malformed file is a stale marker; lease validation
-          // below still protects a running daemon from being removed.
-        }
-        const lease = await Effect.runPromise(
-          session.readLease(id).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
-        );
-        if (lease && processAlive(lease.pid))
-          throw new Error(`session '${id}' is already owned by pid ${lease.pid}`);
-        // Recover a lock left by a dead daemon, including the old directory
-        // marker written by the previous metadata-only implementation.
-        await rm(path, { recursive: true, force: true });
-      }
-    }
-  }
-
-  get state(): SessionState {
-    return structuredClone(this.#state);
-  }
-  get workspace(): WorkspaceSnapshot {
-    return structuredClone(this.#workspace);
-  }
-
-  async start(): Promise<void> {
-    if (this.#server) return;
-    const lease: SessionLease = {
-      version: 1,
-      session: this.id,
-      pid: process.pid,
-      socket: this.paths.socket,
-      startedAt: Date.now(),
-      heartbeatAt: Date.now(),
-    };
-    try {
-      await this.#enqueueModelChange(() => this.#persistState(this.#state));
-      await Effect.runPromise(this.#session.writeLease(lease));
-      await this.#startAttachHost();
-      await this.#enqueueModelChange(() => this.#restoreWorkspaceSessions());
-      if (this.#workspace.spaces.length === 0) {
-        await this.runWorkspaceCommand(command("space.new"), this.#workspace.revision, {
-          size: { cols: 80, rows: 24 },
-          shell: [this.#env.SHELL || "bash"],
-          cwd: process.cwd(),
-        });
-      }
-      try {
-        await unlink(this.paths.socket);
-      } catch (error: any) {
-        if (error.code !== "ENOENT") throw error;
-      }
-      this.#server = Bun.serve({
-        unix: this.paths.socket,
-        fetch: async (request) => this.#fetch(request),
-      });
-      const heartbeat = Effect.sleep("1 second").pipe(
-        Effect.andThen(Effect.repeat(this.#heartbeatBeat(lease), Schedule.fixed("1 second"))),
-      );
-      this.#heartbeat = await this.#fork(heartbeat);
-    } catch (error) {
-      await this.#disposeHost();
-      await this.#releaseLock();
-      await Effect.runPromise(Scope.close(this.#scope, Exit.void));
-      throw error;
-    }
-  }
-
-  /**
-   * Bring up the PTY/attach plane before the RPC socket exists.
-   *
-   * Order matters: once /rpc answers, a client is entitled to believe the
-   * session is usable, and a session whose attach socket is not listening yet
-   * is not. Building the runtime here also means a socket that cannot be bound
-   * fails `start` — the caller then releases the lock rather than leaving a
-   * half-live daemon holding it.
-   */
-  async #startAttachHost(): Promise<void> {
-    try {
-      await unlink(this.paths.attach);
-    } catch (error: any) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    const runtime = ManagedRuntime.make(
-      layerAttachHost({
-        path: this.paths.attach,
-        // The stream is the authority on attachment; the daemon records every
-        // accepted connection rather than imposing an exclusive owner.
-        onAttach: (client, connection) =>
-          Effect.suspend(() => Effect.promise(() => this.#attach(client, connection))),
-        onDetach: (client, connection) =>
-          Effect.suspend(() => Effect.promise(() => this.#detach(client, connection))),
-        onActivity: (client, connection) => Effect.sync(() => this.#touch(client, connection)),
-        onSessionExit: (session, code) =>
-          Effect.tryPromise({
-            try: () => this.#beforeSessionExit(session, code),
-            catch: (error) => error,
-          }),
-      }),
-    );
-    this.#runtime = runtime;
-    this.#host = await runtime.runPromise(AttachHost);
-  }
-
-  /** Attachment metadata is a model mutation and shares its serialization. */
-  #attach(client: string, connection: string): Promise<void> {
-    return this.#enqueueModelChange(async () => {
-      if (this.#attachments.has(connection)) throw new Error("attachment is already registered");
-      const now = Date.now();
-      const attachments = new Map(this.#attachments);
-      attachments.set(connection, { client, attachedSince: now, attachLastSeen: now });
-      const state = { ...this.#state, attached: true, updatedAt: now };
-      await this.#persistState(state);
-      this.#attachments = attachments;
-      this.#state = state;
-    });
-  }
-
-  /** Release only this connection; other clients remain attached. */
-  #detach(client: string, connection: string): Promise<void> {
-    return this.#enqueueModelChange(async () => {
-      const attachment = this.#attachments.get(connection);
-      if (!attachment || attachment.client !== client) return;
-      const attachments = new Map(this.#attachments);
-      attachments.delete(connection);
-      const state = { ...this.#state, attached: attachments.size > 0, updatedAt: Date.now() };
-      await this.#persistUntilSuccess(state, "attachment detach");
-      this.#attachments = attachments;
-      this.#state = state;
-    });
-  }
-
-  /** Refresh only this connection's liveness. */
-  #touch(client: string, connection: string): void {
-    const attachment = this.#attachments.get(connection);
-    if (attachment?.client === client) attachment.attachLastSeen = Date.now();
-  }
-
-  /** Aggregate status plus per-client detail for the lease heartbeat. */
-  #attachInfo(): Pick<SessionLease, "attachedSince" | "attachLastSeen" | "attachments"> {
-    const attachments = [...this.#attachments.values()];
-    return {
-      ...(attachments.length
-        ? {
-            attachedSince: Math.min(...attachments.map(({ attachedSince }) => attachedSince)),
-            attachLastSeen: Math.max(...attachments.map(({ attachLastSeen }) => attachLastSeen)),
-            attachments: attachments.map((attachment) => ({ ...attachment })),
-          }
-        : {}),
-    };
-  }
-
-  /** Lease metadata is a view of the model, so it takes its snapshot only when
-   * its turn in the model queue begins. The scheduled effect awaits this whole
-   * operation, which keeps fixed cadence without overlapping lease writes. */
-  #heartbeatBeat(lease: SessionLease): Effect.Effect<void, never> {
-    return Effect.promise(() =>
-      this.#enqueueModelChange(() => {
-        if (this.#closing) return;
-        return this.#run(
-          Effect.gen(this, function* () {
-            const heartbeatAt = yield* Clock.currentTimeMillis;
-            yield* this.#session.writeLease({ ...lease, heartbeatAt, ...this.#attachInfo() });
-            this.#heartbeatError = null;
-          }),
-        );
-      }),
-    ).pipe(
-      Effect.catchAllCause((cause) =>
-        Cause.isInterruptedOnly(cause)
-          ? Effect.interrupt
-          : Effect.sync(() => {
-              this.#heartbeatError = `lease heartbeat failed: ${Cause.pretty(cause)}`;
-            }),
-      ),
-    );
-  }
-
-  /** Start an agent the daemon owns. It outlives every client by construction:
-   *  see the note on AttachHost.spawn. */
-  spawnAgent(spec: SessionSpec): Promise<ManagedSession> {
-    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"));
-    return this.#runtime.runPromise(this.#host.spawn(spec));
-  }
-
-  async #spawnWorkspaceAgent(spec: SessionSpec): Promise<ManagedSession> {
-    return this.spawnAgent(spec);
-  }
-
-  async #prepareWorkspaceAgent(spec: SessionSpec): Promise<PreparedSession> {
-    if (!this.#host || !this.#runtime) throw new Error("daemon is not started");
-    return this.#runtime.runPromise(this.#host.prepare(spec));
-  }
-
-  async #restoreWorkspaceSessions(): Promise<void> {
-    let next = this.#workspace;
-    let changed = false;
-    for (let si = 0; si < next.spaces.length; si++) {
-      const space = next.spaces[si]!;
-      if (space.worktree) {
-        const exists = await gitWorktreeExists(space.worktree.path);
-        if (!exists) {
-          for (let wi = 0; wi < space.windows.length; wi++) {
-            const window = space.windows[wi]!;
-            for (const agent of window.agents) {
-              if (!agent.exited) {
-                next = markAgentExited(next, agent.id, null);
-                changed = true;
-              }
-            }
-          }
-          continue;
-        }
-      }
-      for (let wi = 0; wi < space.windows.length; wi++) {
-        const window = space.windows[wi]!;
-        for (const agent of window.agents) {
-          if (agent.exited) continue;
-          try {
-            await this.#spawnWorkspaceAgent(agent);
-          } catch {
-            next = markAgentExited(next, agent.id, null);
-            changed = true;
-          }
-        }
-      }
-    }
-    const state = workspaceSession(next, this.#state);
-    if (changed) await this.#persistState(state);
-    this.#workspace = next;
-    this.#state = state;
-  }
-
-  /** One serialized authority decides command order and the next revision. */
-  runWorkspaceCommand(
+  readonly start: Effect.Effect<void, DaemonError>;
+  readonly stop: Effect.Effect<void, DaemonError>;
+  readonly close: Effect.Effect<void, DaemonError>;
+  readonly runWorkspaceCommand: (
     value: Command,
     expectedRevision: number,
     context: WorkspaceCommandContext,
-  ): Promise<WorkspaceSnapshot> {
-    return this.#enqueueModelChange(async () => {
-      if (expectedRevision !== this.#workspace.revision) {
-        throw new Error(
-          `stale workspace revision ${expectedRevision}; current revision is ${this.#workspace.revision}`,
-        );
-      }
-      // The worktree root is a daemon property derived from its own env; a
-      // client never chooses where worktrees live.
-      context = { ...context, worktreesRoot: this.#worktreesRoot() };
-      if (!isWorkspaceCommand(value))
-        throw new Error(`command '${value._tag}' is not a workspace command`);
-      const mutation = applyWorkspaceCommand(this.#workspace, value, context);
-      const candidateState = workspaceSession(mutation.snapshot, this.#state);
-
-      const worktrees = this.#gitWorktreesFor(value, mutation.snapshot, this.#workspace);
-      const prepared: PreparedSession[] = [];
-      let settleExits!: (committed: boolean) => void;
-      const exitsSettled = new Promise<boolean>((resolve) => {
-        settleExits = resolve;
-      });
-      const killed = mutation.actions
-        .filter((action) => action._tag === "kill")
-        .map((action) => action.agent);
-      // Creating a worktree is a reversible acquisition, like a prepared PTY:
-      // it must exist before the agents that run in it spawn, but a git
-      // failure here aborts the transaction with nothing destroyed.
-      let createdWorktree = false;
-      try {
-        if (worktrees.created) {
-          await this.#createWorktree(worktrees.created, worktrees.base);
-          createdWorktree = true;
-        }
-        // Prepared PTYs are private acquisitions. Fast exits stop at their
-        // activation gate and abort terminates them without entering this queue.
-        for (const action of mutation.actions) {
-          if (action._tag !== "spawn") continue;
-          prepared.push(await this.#prepareWorkspaceAgent(action.agent));
-        }
-        // Destructive exits are externally gated. killAgent waits for process
-        // completion only, never for the callback waiting on this transaction.
-        for (const id of killed)
-          this.#exitCommits.set(id, async (code) => {
-            if (!(await exitsSettled)) await this.#beforeSessionExit(id, code);
-          });
-        for (const action of mutation.actions) {
-          if (action._tag !== "kill") continue;
-          await this.killAgent(action.agent);
-        }
-        for (const action of mutation.actions) {
-          if (action._tag === "input" && this.#host && this.#runtime) {
-            await this.#runtime.runPromise(this.#host.write(action.agent, action.data));
-          }
-        }
-        // The dirty gate sits after kills (agents have stopped writing) and
-        // before persist: a dirty removed worktree rejects while the space is
-        // still in the model, so a failed close keeps both model and worktree.
-        for (const worktree of worktrees.removed) {
-          if (await gitWorktreeDirty(worktree.path)) {
-            throw new Error(
-              `worktree '${worktree.path}' has uncommitted changes; commit or stash before closing the space`,
-            );
-          }
-        }
-        if (mutation.changed) {
-          // A spawn-only candidate is reversible and may reject on write
-          // failure. Once a process has been destroyed, fail-stop retry is the
-          // only coherent option: neither disk nor process state may roll back.
-          if (killed.length > 0)
-            await this.#persistUntilSuccess(candidateState, "destructive workspace command");
-          else await this.#persistState(candidateState);
-          this.#workspace = mutation.snapshot;
-          this.#state = candidateState;
-          await this.#publishWorkspace();
-        }
-        // Removal is the destructive half of a worktree space: the model and
-        // the disk must already agree that the space is gone before the
-        // worktree disappears, so a failed close leaves both consistent. The
-        // dirty gate has already run; do not re-check after commit.
-        for (const worktree of worktrees.removed) {
-          await gitWorktreeRemove(worktree.repo, worktree.path);
-        }
-        settleExits(true);
-        for (const session of prepared) await this.#running().runtime.runPromise(session.activate);
-        return this.workspace;
-      } catch (error) {
-        settleExits(false);
-        for (const session of prepared)
-          await this.#runtime?.runPromise(session.abort).catch(() => {});
-        // A created-but-uncommitted worktree is a phantom: the model never
-        // claimed it, so it must not outlive the failed transaction. Nothing
-        // has run in it yet, so force removal cannot lose committed work.
-        if (createdWorktree && worktrees.created) {
-          await gitWorktreeRemove(worktrees.created.repo, worktrees.created.path, true).catch(
-            () => {},
-          );
-        }
-        throw error;
-      } finally {
-        for (const id of killed) this.#exitCommits.delete(id);
-      }
-    });
-  }
-
-  #enqueueModelChange<A>(change: () => A | Promise<A>): Promise<A> {
-    const effect = Effect.tryPromise({
-      try: () => Promise.resolve().then(change),
-      catch: (error) => error,
-    });
-    return Effect.runPromise(
-      Effect.gen(this, function* () {
-        const done = yield* Deferred.make<A, unknown>();
-        yield* Queue.offer(this.#mutationQueue, { effect, done });
-        return yield* Deferred.await(done);
-      }),
-    );
-  }
-
-  #mutationLoop(): Effect.Effect<never, never> {
-    return Effect.forever(
-      Queue.take(this.#mutationQueue).pipe(
-        Effect.flatMap((mutation) =>
-          Effect.exit(mutation.effect).pipe(
-            Effect.flatMap((exit) => Deferred.done(mutation.done, exit)),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /** The daemon owns amux's state directory; worktree space dirs live beneath
-   *  it, siblings of the sessions root. The context the client supplies never
-   *  decides this root. */
-  #worktreesRoot(): string {
-    const env = this.#env;
-    return join(
-      env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"),
-      "amux",
-      "worktrees",
-    );
-  }
-
-  /**
-   * A git worktree is created when space.new carries a branch and destroyed
-   * when its space closes. Destroying one is a second destructive obligation
-   * on top of the kill: a half-applied close must not lose the worktree while
-   * the model still names it.
-   */
-  #gitWorktreesFor(value: Command, next: WorkspaceSnapshot, current: WorkspaceSnapshot) {
-    if (value._tag === "space.new") {
-      const created = next.spaces.find(
-        (s) => s.worktree && !current.spaces.some((c) => c.id === s.id),
-      );
-      if (created?.worktree) {
-        const base =
-          typeof (value as { base?: string }).base === "string"
-            ? (value as { base?: string }).base!.trim() || undefined
-            : undefined;
-        return { created: created.worktree, base, removed: [] };
-      }
-      return { created: null, base: undefined, removed: [] };
-    }
-    if (value._tag === "space.close") {
-      const closedIds = new Set(next.spaces.map((s) => s.id));
-      const removed = current.spaces
-        .filter((s) => s.worktree && !closedIds.has(s.id))
-        .map((s) => s.worktree!);
-      return { created: null, base: undefined, removed };
-    }
-    return { created: null, base: undefined, removed: [] };
-  }
-
-  async #createWorktree(worktree: WorkspaceSpace["worktree"] & {}, base?: string): Promise<void> {
-    const spec: WorktreeSpec = { branch: worktree.branch, ...(base ? { base } : {}) };
-    await gitWorktreeAdd(worktree.repo, spec, worktree.path);
-  }
-
-  async #beforeSessionExit(id: string, code: number | null): Promise<void> {
-    if (this.#closing) return Promise.resolve();
-    const commit = this.#exitCommits.get(id);
-    if (commit) {
-      this.#exitCommits.delete(id);
-      return commit(code);
-    }
-    await this.#enqueueModelChange(() => this.#recordAgentExit(id, code));
-  }
-
-  async #recordAgentExit(id: string, code: number | null): Promise<void> {
-    // Host disposal ends every local PTY, but close() means "restart this
-    // session", not "all of its modeled agents exited". A later daemon respawns
-    // those persisted live agents.
-    if (this.#closing) return;
-    const next = markAgentExited(this.#workspace, id, code);
-    if (next === this.#workspace) return;
-    const state = workspaceSession(next, this.#state);
-    await this.#persistUntilSuccess(state, `natural exit for '${id}'`);
-    this.#workspace = next;
-    this.#state = state;
-    await this.#publishWorkspace();
-  }
-
-  async #publishWorkspace(): Promise<void> {
-    if (!this.#host || !this.#runtime) return;
-    await this.#runtime.runPromise(
-      this.#host.publish({
-        _tag: "workspace",
-        revision: this.#workspace.revision,
-        state: JSON.stringify(this.#workspace),
-      }),
-    );
-  }
-
-  /** Stop an agent. Clients learn about it from the exit frame, exactly as they
-   *  would for a process that ended on its own. */
-  killAgent(id: string): Promise<void> {
-    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"));
-    return this.#runtime.runPromise(this.#host.kill(id));
-  }
-
-  /** Agent ids with a live process behind them. */
-  liveAgents(): Promise<readonly string[]> {
-    if (!this.#host || !this.#runtime) return Promise.resolve([]);
-    return this.#runtime.runPromise(this.#host.live);
-  }
-
-  /**
-   * The paste buffer stack's verbs, tmux's set-buffer family.
-   *
-   * The stack is server state, living beside the PTYs in the attach host, so a
-   * copy and a paste both work with no client attached at all — the daemon
-   * writes the bytes into its own PTY. These are thin doors into the host;
-   * see the buffer verbs in handle() for the wire shape.
-   */
-  setBuffer(name: string | undefined, data: string): Promise<string> {
-    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"));
-    return Promise.resolve(this.#host.buffers.set(name, data));
-  }
-
-  pasteBuffer(name: string | undefined, target: string, deleteAfter: boolean): Promise<void> {
-    const host = this.#host;
-    if (!host || !this.#runtime) return Promise.reject(new Error("daemon is not started"));
-    return this.#runtime.runPromise(
-      Effect.gen(function* () {
-        const bytes = host.buffers.show(name);
-        yield* host.paste(target, bytes);
-        // The delete happens only after the paste went through: -d must not
-        // lose a buffer because the write failed.
-        if (deleteAfter) host.buffers.delete(name);
-      }),
-    );
-  }
-
-  listBuffers(): Promise<readonly BufferEntry[]> {
-    if (!this.#host || !this.#runtime) return Promise.resolve([]);
-    return Promise.resolve(this.#host.buffers.list());
-  }
-
-  deleteBuffer(name: string | undefined): Promise<void> {
-    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"));
-    return Promise.resolve(this.#host.buffers.delete(name));
-  }
-
-  showBuffer(name: string | undefined): Promise<string> {
-    if (!this.#host || !this.#runtime) return Promise.reject(new Error("daemon is not started"));
-    return Promise.resolve(new TextDecoder().decode(this.#host.buffers.show(name)));
-  }
-
-  /** Every client currently attached, in the order they arrived. */
-  get attachedClients(): string[] {
-    return [...this.#attachments.values()].map((a) => a.client);
-  }
-
-  /**
-   * The earliest-arrived attachment, or null when nothing is attached.
-   *
-   * Only meaningful when at most one client is attached, which is the common
-   * case and what the single-client status paths want. With several attached
-   * this is arrival order, not ownership — there is no owner any more. Use
-   * `attachedClients` when more than one may be present.
-   */
-  get attachedClient(): string | null {
-    return this.#attachments.values().next().value?.client ?? null;
-  }
-
-  async #fetch(request: Request): Promise<Response> {
-    if (request.method !== "POST" || new URL(request.url).pathname !== "/rpc")
-      return new Response("not found", { status: 404 });
-    try {
-      const body = Schema.decodeUnknownSync(DaemonRequestSchema)(
-        await boundedJson(request, MAX_RPC_BYTES),
-      );
-      return Response.json(await this.handle(body));
-    } catch (error) {
-      return Response.json({ ok: false, error: String(error) }, { status: 400 });
-    }
-  }
-
-  async handle(request: DaemonRequest): Promise<DaemonResponse> {
-    switch (request.command) {
-      case "ping":
-        return { ok: true, attached: this.#state.attached, ...this.#attachInfo() };
-      case "status": {
-        const persistenceError = this.#durableObligations.values().next().value as
-          | string
-          | undefined;
-        const healthError = persistenceError ?? this.#heartbeatError ?? undefined;
-        return {
-          ok: healthError === undefined,
-          ...(healthError ? { error: healthError } : {}),
-          session: this.state,
-          workspace: this.workspace,
-          attached: this.#state.attached,
-          ...this.#attachInfo(),
-          agents: [...(await this.liveAgents())],
-        };
-      }
-      case "workspace-command": {
-        if (request.expectedRevision === undefined || !request.workspaceContext) {
-          return {
-            ok: false,
-            error: "workspace-command requires a revision and context",
-            workspace: this.workspace,
-          };
-        }
-        try {
-          const value = await Effect.runPromise(decodeCommand(request.workspaceCommand));
-          const context = parseWorkspaceCommandContext(request.workspaceContext, this.#workspace);
-          const workspace = await this.runWorkspaceCommand(
-            value,
-            request.expectedRevision,
-            context,
-          );
-          return { ok: true, workspace };
-        } catch (error) {
-          return { ok: false, error: describe(error), workspace: this.workspace };
-        }
-      }
-      // The buffer verbs are the tmux paste-buffer family over the socket:
-      // the stack lives here, so copy/paste work over ssh and from a script
-      // with no client attached at all.
-      case "set-buffer": {
-        if (request.bufferData === undefined)
-          return { ok: false, error: "set-buffer requires data" };
-        try {
-          const name = await this.setBuffer(request.bufferName, request.bufferData);
-          return { ok: true, bufferName: name };
-        } catch (error) {
-          return { ok: false, error: describe(error) };
-        }
-      }
-      case "paste-buffer": {
-        if (!request.bufferTarget)
-          return { ok: false, error: "paste-buffer requires a target session" };
-        try {
-          await this.pasteBuffer(
-            request.bufferName,
-            request.bufferTarget,
-            request.bufferDelete === true,
-          );
-          return { ok: true };
-        } catch (error) {
-          return { ok: false, error: describe(error) };
-        }
-      }
-      case "list-buffers": {
-        try {
-          return { ok: true, buffers: await this.listBuffers() };
-        } catch (error) {
-          return { ok: false, error: describe(error) };
-        }
-      }
-      case "delete-buffer": {
-        try {
-          await this.deleteBuffer(request.bufferName);
-          return { ok: true };
-        } catch (error) {
-          return { ok: false, error: describe(error) };
-        }
-      }
-      case "show-buffer": {
-        try {
-          return { ok: true, bufferData: await this.showBuffer(request.bufferName) };
-        } catch (error) {
-          return { ok: false, error: describe(error) };
-        }
-      }
-      case "stop":
-        await this.stop();
-        return { ok: true };
-      default:
-        return { ok: false, error: "unknown command" };
-    }
-  }
-
-  async stop(): Promise<void> {
-    return this.#terminate("stop");
-  }
-
-  /** Release the daemon process while preserving metadata for a restart. */
-  async close(): Promise<void> {
-    return this.#terminate("close");
-  }
-
-  #terminate(mode: "stop" | "close"): Promise<void> {
-    if (this.#termination) return this.#termination;
-    this.#closing = true;
-    this.#resolveShutdown();
-    this.#termination = this.#runTermination(mode);
-    return this.#termination;
-  }
-
-  async #runTermination(mode: "stop" | "close"): Promise<void> {
-    let failure: unknown;
-    try {
-      await this.#stopHeartbeat();
-      this.#server?.stop();
-      this.#server = null;
-      await this.#drainMutationsForShutdown();
-      await this.#disposeHost();
-
-      if (mode === "stop") {
-        await Effect.runPromise(this.#session.remove(this.id));
-      } else {
-        await this.#enqueueModelChange(async () => {
-          const state = { ...this.#state, attached: false, updatedAt: Date.now() };
-          await this.#persistState(state, {
-            allowClosing: true,
-            timeoutMs: SHUTDOWN_SAVE_TIMEOUT_MS,
-          });
-          this.#attachments.clear();
-          this.#state = state;
-        });
-      }
-    } catch (error) {
-      failure = error;
-    } finally {
-      await unlink(this.paths.socket).catch(() => {});
-      await rm(this.paths.lease, { force: true }).catch(() => {});
-      await this.#releaseLock();
-      await Effect.runPromise(Scope.close(this.#scope, Exit.void));
-      this.#resolveStopped();
-    }
-    if (failure) throw failure;
-  }
-
-  /**
-   * Tear down the PTY plane.
-   *
-   * Disposing the runtime closes the host scope, which runs SessionRegistry's
-   * finalizers: every agent is killed and every master fd closed. There is no
-   * kinder option — the PTYs are children of this process, so a daemon that
-   * exits without this leaves them orphaned rather than saved.
-   */
-  async #disposeHost(): Promise<void> {
-    const runtime = this.#runtime;
-    this.#runtime = null;
-    this.#host = null;
-    await runtime?.dispose().catch(() => {});
-    await unlink(this.paths.attach).catch(() => {});
-  }
-
-  async #releaseLock() {
-    await this.#lock?.close().catch(() => {});
-    this.#lock = null;
-    await rm(this.#lockPath, { force: true }).catch(() => {});
-  }
-
-  async #interruptPersistence(): Promise<void> {
-    const fiber = this.#activeSave;
-    if (fiber) await Effect.runPromise(Fiber.interrupt(fiber));
-  }
-
-  async #stopHeartbeat(): Promise<void> {
-    const fiber = this.#heartbeat;
-    this.#heartbeat = null;
-    if (fiber) await Effect.runPromise(Fiber.interrupt(fiber));
-  }
-
-  /** Let an ordinary in-flight mutation finish, but cancel and join persistence
-   * once the shutdown budget is exhausted. The queue itself is still awaited;
-   * no mutation or write is abandoned in the background. */
-  async #drainMutationsForShutdown(): Promise<void> {
-    const drained = await this.#run(
-      Effect.promise(() => this.#awaitMutations()).pipe(
-        Effect.as(true),
-        Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`),
-        Effect.orElseSucceed(() => false),
-      ),
-    );
-    if (drained) return;
-    this.#cancelPersistence = true;
-    await this.#interruptPersistence();
-    await this.#awaitMutations();
-  }
-
-  #awaitMutations(): Promise<void> {
-    return this.#enqueueModelChange(() => undefined);
-  }
-
-  async #persistState(
-    state: SessionState,
-    options: { allowClosing?: boolean; timeoutMs?: number } = {},
-  ): Promise<void> {
-    if (this.#cancelPersistence && !options.allowClosing)
-      throw new Error("daemon is shutting down");
-    const write =
-      options.timeoutMs === undefined
-        ? this.#writeState(state)
-        : this.#writeState(state).pipe(Effect.timeout(`${options.timeoutMs} millis`));
-    const fiber = await this.#fork(write);
-    this.#activeSave = fiber;
-    try {
-      await Effect.runPromise(Fiber.join(fiber));
-    } finally {
-      if (this.#activeSave === fiber) this.#activeSave = null;
-    }
-  }
-
-  /**
-   * Irreversible process changes cannot be rolled back. Keep their terminal
-   * exits gated and retry the sole candidate write until disk recovers. Status
-   * remains available and reports the unhealthy state; model mutations stop
-   * behind this fail-stop barrier rather than diverging from durable state.
-   */
-  async #persistUntilSuccess(state: SessionState, reason: string): Promise<void> {
-    const obligation = Symbol(reason);
-    this.#durableObligations.set(obligation, `${reason} is waiting for durable storage`);
-    let delay = 10;
-    try {
-      for (;;) {
-        if (this.#closing)
-          throw new Error(`daemon shut down with outstanding durable obligation: ${reason}`);
-        try {
-          await this.#persistState(state);
-          return;
-        } catch (error) {
-          this.#durableObligations.set(
-            obligation,
-            `${reason} is waiting for durable storage: ${describe(error)}`,
-          );
-          if (this.#closing) throw error;
-          await this.#run(
-            Effect.raceFirst(
-              Effect.sleep(`${delay} millis`),
-              Effect.promise(() => this.#shutdown),
-            ),
-          );
-          delay = Math.min(delay * 2, 1_000);
-        }
-      }
-    } finally {
-      this.#durableObligations.delete(obligation);
-    }
-  }
-
-  /** Native daemon callbacks only bridge far enough to fork work into the
-   * daemon scope; the child fiber, its Clock sleeps, and its finalizers all
-   * remain owned by that scope. */
-  #fork<A, E>(effect: Effect.Effect<A, E>): Promise<Fiber.RuntimeFiber<A, E>> {
-    return Effect.runPromise(Effect.forkIn(effect, this.#scope));
-  }
-
-  async #run<A, E>(effect: Effect.Effect<A, E>): Promise<A> {
-    const fiber = await this.#fork(effect);
-    return Effect.runPromise(Fiber.join(fiber));
-  }
+  ) => Effect.Effect<WorkspaceSnapshot, DaemonError>;
+  readonly handle: (request: DaemonRequest) => Effect.Effect<DaemonResponse, never>;
+  readonly spawnAgent: (spec: SessionSpec) => Effect.Effect<ManagedSession, DaemonError>;
+  readonly killAgent: (id: string) => Effect.Effect<void, DaemonError>;
+  readonly liveAgents: () => Effect.Effect<readonly string[], never>;
+  readonly setBuffer: (n: string | undefined, d: string) => Effect.Effect<string, never>;
+  readonly pasteBuffer: (
+    n: string | undefined,
+    t: string,
+    d: boolean,
+  ) => Effect.Effect<void, DaemonError>;
+  readonly listBuffers: () => Effect.Effect<readonly BufferEntry[], never>;
+  readonly deleteBuffer: (n: string | undefined) => Effect.Effect<void, never>;
+  readonly showBuffer: (n: string | undefined) => Effect.Effect<string, never>;
+  readonly getState: Effect.Effect<SessionState, never>;
+  readonly getWorkspace: Effect.Effect<WorkspaceSnapshot, never>;
+  readonly getAttachedClients: Effect.Effect<string[], never>;
+  readonly getAttachedClient: Effect.Effect<string | null, never>;
 }
 
-async function boundedJson(request: Request, limit: number): Promise<unknown> {
-  const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > limit) throw new Error("request body is too large");
-  const reader = request.body?.getReader();
+export const SessionDaemon = Context.GenericTag<SessionDaemonService>("@amux/SessionDaemon");
+
+const SHUTDOWN_SAVE_TIMEOUT_MS = 500;
+
+interface DaemonState {
+  state: SessionState;
+  workspace: WorkspaceSnapshot;
+  attachments: Map<string, SessionAttachment>;
+  heartbeatError: string | null;
+  durableObligations: Map<symbol, string>;
+  closing: boolean;
+  cancelPersistence: boolean;
+}
+
+type Mutation = { effect: Effect.Effect<any, any, never>; done: Deferred.Deferred<any, any> };
+
+function gitWorktreesFor(value: Command, next: WorkspaceSnapshot, current: WorkspaceSnapshot) {
+  const none = { created: null, base: undefined, removed: [] as WorkspaceSpace["worktree"][] };
+  if (value._tag === "space.new") {
+    const created = next.spaces.find(
+      (s) => s.worktree && !current.spaces.some((c) => c.id === s.id),
+    );
+    if (created?.worktree) {
+      const base = (value as { base?: string }).base?.trim() || undefined;
+      return { created: created.worktree, base, removed: [] as WorkspaceSpace["worktree"][] };
+    }
+    return none;
+  }
+  if (value._tag === "space.close") {
+    const closedIds = new Set(next.spaces.map((s) => s.id));
+    const removed = current.spaces
+      .filter((s) => s.worktree && !closedIds.has(s.id))
+      .map((s) => s.worktree!);
+    return { created: null, base: undefined, removed };
+  }
+  return none;
+}
+
+const boundedJson = Effect.fnUntraced(function* (req: Request, limit: number) {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit)
+    return yield* new DaemonError({ message: "request body is too large" });
+  const reader = req.body?.getReader();
   if (!reader) return null;
   const chunks: Uint8Array[] = [];
   let length = 0;
   for (;;) {
-    const { done, value } = await reader.read();
+    const { done, value } = yield* Effect.promise(() => reader.read());
     if (done) break;
     length += value.byteLength;
     if (length > limit) {
-      await reader.cancel();
-      throw new Error("request body is too large");
+      yield* Effect.promise(() => reader.cancel());
+      return yield* new DaemonError({ message: "request body is too large" });
     }
     chunks.push(value);
   }
@@ -1115,59 +208,798 @@ async function boundedJson(request: Request, limit: number): Promise<unknown> {
     offset += chunk.byteLength;
   }
   return JSON.parse(new TextDecoder().decode(bytes));
-}
+});
 
-/** Client used by CLI commands and tests; HTTP keeps framing and errors explicit. */
-export function daemonRequest(
-  id: string,
-  body: DaemonRequest,
-): Effect.Effect<DaemonResponse, unknown, SessionEnv> {
-  return Effect.flatMap(sessionPaths(id), (paths) =>
-    Effect.tryPromise({
-      try: () =>
-        new Promise((resolve, reject) => {
-          const request = httpRequest(
-            {
-              socketPath: paths.socket,
-              path: "/rpc",
-              method: "POST",
-              headers: { "content-type": "application/json" },
-            },
-            (response) => {
-              let text = "";
-              response.setEncoding("utf8");
-              response.on("data", (chunk) => (text += chunk));
-              response.on("end", () => {
-                try {
-                  resolve(JSON.parse(text) as DaemonResponse);
-                } catch (error) {
-                  reject(error);
-                }
-              });
-            },
-          );
-          request.on("error", reject);
-          request.end(JSON.stringify(body));
-        }),
-      catch: (error) => error,
-    }),
-  );
-}
-
-/**
- * Open and start a daemon, and hand it back still running.
- *
- * No signal handling here: the caller owns the lifetime and is the one that
- * knows how it wants to be torn down. daemon-main.ts holds it in a scope, so
- * SIGTERM and SIGINT release it through the same path as any other exit rather
- * than through two handlers that could only race `stop()` against `exit()`.
- */
-export function startDaemon(
-  id = process.argv[2] || randomUUID(),
-): Effect.Effect<SessionDaemon, unknown, SessionEnv | Session | FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const daemon = yield* SessionDaemon.open(id);
-    yield* Effect.promise(() => daemon.start());
-    return daemon;
+const persistUntilSuccess = Effect.fnUntraced(function* (
+  persistFn: (state: SessionState) => Effect.Effect<void, unknown>,
+  daemonRef: Ref.Ref<DaemonState>,
+  state: SessionState,
+  reason: string,
+  activeRef: { current: Fiber.RuntimeFiber<void, unknown> | null },
+  scope: Scope.CloseableScope,
+) {
+  const obligation = Symbol(reason);
+  yield* Ref.update(daemonRef, (s) => {
+    s.durableObligations.set(obligation, `${reason} is waiting for durable storage`);
+    return s;
   });
-}
+  let delay = 10;
+  try {
+    for (;;) {
+      const cur = yield* Ref.get(daemonRef);
+      if (cur.closing)
+        throw new Error(`daemon shut down with outstanding durable obligation: ${reason}`);
+      const result = yield* Effect.either(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkIn(
+            persistFn(state).pipe(Effect.mapError((e) => new Error(describe(e)))),
+            scope,
+          );
+          activeRef.current = fiber;
+          const value = yield* Fiber.join(fiber);
+          activeRef.current = null;
+          return value;
+        }),
+      );
+      if (Either.isRight(result)) return;
+      {
+        const error = result.left;
+        activeRef.current = null;
+        yield* Ref.update(daemonRef, (s) => {
+          s.durableObligations.set(
+            obligation,
+            `${reason} is waiting for durable storage: ${describe(error)}`,
+          );
+          return s;
+        });
+        if ((yield* Ref.get(daemonRef)).closing) throw error;
+        yield* Effect.raceFirst(Effect.sleep(`${delay} millis`), Effect.never);
+        delay = Math.min(delay * 2, 1_000);
+      }
+    }
+  } finally {
+    yield* Ref.update(daemonRef, (s) => {
+      s.durableObligations.delete(obligation);
+      return s;
+    });
+  }
+});
+
+export const makeDaemonService = Effect.fnUntraced(function* (
+  id: string,
+  options: SessionDaemonOptions,
+) {
+  if (!isSessionId(id))
+    return yield* new SessionDaemonError({ message: `invalid session id ${JSON.stringify(id)}` });
+
+  const env = yield* SessionEnv;
+  const paths = yield* sessionPaths(id);
+  const session = yield* Session;
+  const fs = yield* FileSystem.FileSystem;
+
+  yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
+
+  yield* Effect.gen(function* () {
+    for (;;) {
+      const result = yield* Effect.either(
+        Effect.gen(function* () {
+          const file = yield* fs.open(paths.lock, { flag: "wx", mode: 0o600 });
+          yield* file.write(new TextEncoder().encode(`${process.pid}\n`));
+          return file;
+        }),
+      );
+      if (Either.isRight(result)) return result.right;
+      const error = result.left;
+      if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
+        return yield* Effect.die(error);
+      const content = yield* fs.readFileString(paths.lock).pipe(Effect.orElseSucceed(() => "0"));
+      const owner = Number.parseInt(content, 10);
+      if (processAlive(owner))
+        return yield* new DaemonError({ message: `session '${id}' is already being opened` });
+      const lease = yield* session.readLease(id);
+      if (lease && processAlive(lease.pid))
+        return yield* new DaemonError({
+          message: `session '${id}' is already owned by pid ${lease.pid}`,
+        });
+      yield* fs.remove(paths.lock, { recursive: true });
+    }
+  }).pipe(
+    Effect.mapError((e) =>
+      e instanceof DaemonError ? e : new DaemonError({ message: describe(e) }),
+    ),
+  );
+
+  const existing = yield* session.readLease(id);
+  if (existing && processAlive(existing.pid))
+    return yield* new DaemonError({
+      message: `session '${id}' is already owned by pid ${existing.pid}`,
+    });
+
+  const loaded = yield* session.load(id);
+  const state: SessionState = loaded ?? {
+    version: 1,
+    id,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    attached: false,
+    spaces: [],
+  };
+  state.attached = false;
+  const workspace = workspaceFromSession(state);
+
+  const daemonState = yield* Ref.make<DaemonState>({
+    state,
+    workspace,
+    attachments: new Map(),
+    heartbeatError: null,
+    durableObligations: new Map(),
+    closing: false,
+    cancelPersistence: false,
+  });
+
+  const daemonScope = yield* Scope.make();
+  const mutationQueue = Effect.runSync(Queue.unbounded<Mutation>());
+  yield* Effect.forkIn(
+    Effect.forever(
+      Queue.take(mutationQueue).pipe(
+        Effect.flatMap((m) =>
+          Effect.exit(m.effect).pipe(Effect.flatMap((e) => Deferred.done(m.done, e))),
+        ),
+      ),
+    ),
+    daemonScope,
+  );
+
+  let server: ReturnType<typeof Bun.serve> | null = null;
+  let hostRuntime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError> | null = null;
+  let host: AttachHostService | null = null;
+  let heartbeatFiber: Fiber.RuntimeFiber<unknown, never> | null = null;
+  const activeSaveRef = { current: null as Fiber.RuntimeFiber<void, unknown> | null };
+  const exitCommits = new Map<string, (code: number | null) => Promise<void>>();
+  let terminationShared: Promise<void> | null = null;
+
+  const requireHost = () => {
+    if (!host) throw new Error("daemon not started");
+    return host;
+  };
+  const requireRuntime = () => {
+    if (!hostRuntime) throw new Error("daemon not started");
+    return hostRuntime;
+  };
+
+  const persist = options.saveState
+    ? (s: SessionState) => options.saveState!(s).pipe(Effect.provideService(Session, session))
+    : (s: SessionState) => session.save(s);
+
+  const attachInfo = (): Pick<SessionLease, "attachedSince" | "attachLastSeen" | "attachments"> => {
+    const s = Effect.runSync(Ref.get(daemonState));
+    const atts = [...s.attachments.values()];
+    if (!atts.length) return {};
+    return {
+      attachedSince: Math.min(...atts.map((a) => a.attachedSince)),
+      attachLastSeen: Math.max(...atts.map((a) => a.attachLastSeen)),
+      attachments: atts.map((a) => ({ ...a })),
+    };
+  };
+
+  const enqueue = <A, E>(effect: Effect.Effect<A, E, never>): Effect.Effect<A, E> =>
+    Effect.gen(function* () {
+      const done = yield* Deferred.make<A, E>();
+      yield* Queue.offer(mutationQueue, {
+        effect: effect as Effect.Effect<any, any, never>,
+        done: done as Deferred.Deferred<any, any>,
+      });
+      return yield* Deferred.await(done);
+    });
+
+  const attachEffect = Effect.fnUntraced(function* (client: string, connection: string) {
+    const cur = yield* Ref.get(daemonState);
+    if (cur.attachments.has(connection))
+      return yield* new DaemonError({ message: "attachment already registered" });
+    const now = Date.now();
+    const attachments = new Map(cur.attachments);
+    attachments.set(connection, { client, attachedSince: now, attachLastSeen: now });
+    const newState = { ...cur.state, attached: true, updatedAt: now };
+    yield* persist(newState).pipe(
+      Effect.mapError((e) => new DaemonError({ message: describe(e) })),
+    );
+    yield* Ref.set(daemonState, { ...cur, attachments, state: newState });
+  }, enqueue);
+
+  const detachEffect = Effect.fnUntraced(function* (client: string, connection: string) {
+    const cur = yield* Ref.get(daemonState);
+    const att = cur.attachments.get(connection);
+    if (!att || att.client !== client) return;
+    const attachments = new Map(cur.attachments);
+    attachments.delete(connection);
+    const newState = { ...cur.state, attached: attachments.size > 0, updatedAt: Date.now() };
+    yield* persistUntilSuccess(
+      persist,
+      daemonState,
+      newState,
+      "attachment detach",
+      activeSaveRef,
+      daemonScope,
+    );
+    yield* Ref.set(daemonState, { ...cur, attachments, state: newState });
+  }, enqueue);
+
+  const touchEffect = (client: string, connection: string) =>
+    Ref.modify(daemonState, (cur) => {
+      const att = cur.attachments.get(connection);
+      if (att?.client === client) {
+        const attachments = new Map(cur.attachments);
+        attachments.set(connection, { ...att, attachLastSeen: Date.now() });
+        return [undefined as void, { ...cur, attachments }];
+      }
+      return [undefined as void, cur];
+    });
+
+  const sessionExitEffect = Effect.fnUntraced(function* (sid: string, code: number | null) {
+    const cur = yield* Ref.get(daemonState);
+    if (cur.closing) return;
+    const commit = exitCommits.get(sid);
+    if (commit) {
+      exitCommits.delete(sid);
+      yield* Effect.promise(() => commit(code));
+      return;
+    }
+    yield* enqueue(
+      Effect.gen(function* () {
+        const cur2 = yield* Ref.get(daemonState);
+        if (cur2.closing) return;
+        const next = markAgentExited(cur2.workspace, sid, code);
+        if (next === cur2.workspace) return;
+        const newState = workspaceSession(next, cur2.state);
+        yield* persistUntilSuccess(
+          persist,
+          daemonState,
+          newState,
+          `natural exit for '${sid}'`,
+          activeSaveRef,
+          daemonScope,
+        );
+        yield* Ref.set(daemonState, { ...cur2, workspace: next, state: newState });
+        if (host)
+          yield* host
+            .publish({
+              _tag: "workspace",
+              revision: next.revision,
+              state: JSON.stringify(next),
+            })
+            .pipe(Effect.ignore);
+      }),
+    );
+  });
+
+  let spawnAgent = (spec: SessionSpec): Effect.Effect<ManagedSession, DaemonError> =>
+    (options.spawnAgent ? options.spawnAgent(spec) : requireHost().spawn(spec)).pipe(
+      Effect.mapError((e) => new DaemonError({ message: describe(e) })),
+    );
+  let killAgent = (agentId: string): Effect.Effect<void, DaemonError> =>
+    requireHost()
+      .kill(agentId)
+      .pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
+
+  const start = Effect.gen(function* () {
+    if (server) return;
+    const lease: SessionLease = {
+      version: 1,
+      session: id,
+      pid: process.pid,
+      socket: paths.socket,
+      startedAt: Date.now(),
+      heartbeatAt: Date.now(),
+    };
+
+    yield* Effect.gen(function* () {
+      const cur = yield* Ref.get(daemonState);
+      yield* persist(cur.state);
+    }).pipe(enqueue);
+
+    yield* session.writeLease(lease);
+
+    yield* fs
+      .remove(paths.attach)
+      .pipe(
+        Effect.catchTag("SystemError", (e) =>
+          e.reason === "NotFound" ? Effect.void : Effect.die(e),
+        ),
+      );
+
+    const rt = ManagedRuntime.make(
+      layerAttachHost({
+        path: paths.attach,
+        onAttach: attachEffect,
+        onDetach: detachEffect,
+        onActivity: touchEffect,
+        onSessionExit: (sid, code) =>
+          sessionExitEffect(sid, code).pipe(Effect.catchAll((e) => Effect.die(e))),
+      }),
+    );
+    hostRuntime = rt;
+    host = yield* Effect.promise(() => rt.runPromise(AttachHost));
+
+    yield* Effect.gen(function* () {
+      const cur = yield* Ref.get(daemonState);
+      let next = cur.workspace;
+      let changed = false;
+      for (const space of next.spaces) {
+        if (space.worktree) {
+          const exists = yield* Effect.promise(() => gitWorktreeExists(space.worktree!.path));
+          if (!exists) {
+            for (const w of space.windows)
+              for (const a of w.agents) {
+                if (!a.exited) {
+                  next = markAgentExited(next, a.id, null);
+                  changed = true;
+                }
+              }
+            continue;
+          }
+        }
+        for (const w of space.windows) {
+          for (const a of w.agents) {
+            if (a.exited) continue;
+            yield* spawnAgent(a).pipe(
+              Effect.catchAll(() => {
+                next = markAgentExited(next, a.id, null);
+                changed = true;
+                return Effect.void;
+              }),
+            );
+          }
+        }
+      }
+      const newState = workspaceSession(next, cur.state);
+      if (changed) yield* persist(newState);
+      yield* Ref.set(daemonState, { ...cur, workspace: next, state: newState });
+    }).pipe(enqueue);
+
+    const cur = Effect.runSync(Ref.get(daemonState));
+    if (cur.workspace.spaces.length === 0) {
+      yield* runWorkspaceCommand(command("space.new"), cur.workspace.revision, {
+        size: { cols: 80, rows: 24 },
+        shell: [env.SHELL || "bash"],
+        cwd: process.cwd(),
+      });
+    }
+
+    yield* fs
+      .remove(paths.socket)
+      .pipe(
+        Effect.catchTag("SystemError", (e) =>
+          e.reason === "NotFound" ? Effect.void : Effect.die(e),
+        ),
+      );
+
+    server = Bun.serve({
+      unix: paths.socket,
+      fetch: async (req) => {
+        if (req.method !== "POST" || new URL(req.url).pathname !== "/rpc")
+          return new Response("not found", { status: 404 });
+        try {
+          const raw = await Effect.runPromise(boundedJson(req, MAX_RPC_BYTES));
+          const body = S.decodeUnknownSync(DaemonRequestSchema)(raw);
+          const h = requireHost();
+          const result = await requireRuntime().runPromise(
+            handle(body).pipe(Effect.provideService(AttachHost, h)),
+          );
+          return Response.json(result);
+        } catch (e) {
+          return Response.json({ ok: false, error: describe(e) }, { status: 400 });
+        }
+      },
+    });
+
+    heartbeatFiber = yield* Effect.forkIn(
+      Effect.forever(
+        Effect.sleep("1 second").pipe(
+          Effect.zipRight(
+            enqueue(
+              Effect.gen(function* () {
+                const info = attachInfo();
+                const hbAt = yield* Clock.currentTimeMillis;
+                yield* session.writeLease({ ...lease, heartbeatAt: hbAt, ...info });
+                yield* Ref.update(daemonState, (s) => ({ ...s, heartbeatError: null }));
+              }),
+            ),
+          ),
+          Effect.catchAllCause((c) =>
+            Cause.isInterruptedOnly(c)
+              ? Effect.interrupt
+              : Ref.update(daemonState, (s) => ({
+                  ...s,
+                  heartbeatError: `lease heartbeat failed: ${Cause.pretty(c)}`,
+                })),
+          ),
+        ),
+      ),
+      daemonScope,
+    );
+  }).pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
+
+  const terminate = Effect.fnUntraced(
+    function* (mode: "stop" | "close") {
+      if (terminationShared) return;
+      yield* Ref.update(daemonState, (s) => ({ ...s, closing: true }));
+      terminationShared = Effect.runPromise(
+        Effect.gen(function* () {
+          let finalFailure: unknown = undefined;
+          if (heartbeatFiber) {
+            yield* Fiber.interrupt(heartbeatFiber);
+            heartbeatFiber = null;
+          }
+          server?.stop();
+          server = null;
+
+          const drained = yield* Effect.raceFirst(
+            enqueue(Effect.void).pipe(Effect.as(true)),
+            Effect.sleep(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`).pipe(Effect.as(false)),
+          );
+          if (!drained) {
+            yield* Ref.update(daemonState, (s) => ({ ...s, cancelPersistence: true }));
+            if (activeSaveRef.current)
+              yield* Effect.promise(() =>
+                Effect.runPromise(Fiber.interrupt(activeSaveRef.current!)).catch(() => {}),
+              );
+            yield* Effect.raceFirst(
+              enqueue(Effect.void),
+              Effect.sleep(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`),
+            );
+          }
+
+          if (hostRuntime) {
+            yield* Effect.promise(() => hostRuntime!.dispose().catch(() => {}));
+            hostRuntime = null;
+            host = null;
+            yield* fs.remove(paths.attach).pipe(Effect.ignore);
+          }
+
+          if (mode === "stop") {
+            yield* session.remove(id);
+          } else {
+            yield* enqueue(
+              Effect.gen(function* () {
+                const cur = yield* Ref.get(daemonState);
+                const newState = { ...cur.state, attached: false, updatedAt: Date.now() };
+                const result = yield* Effect.exit(
+                  persist(newState).pipe(Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`)),
+                );
+                if (Exit.isFailure(result)) finalFailure = Cause.squash(result.cause);
+                yield* Ref.set(daemonState, { ...cur, state: newState, attachments: new Map() });
+              }),
+            );
+          }
+
+          yield* fs.remove(paths.socket).pipe(Effect.ignore);
+          yield* fs.remove(paths.lease).pipe(Effect.ignore);
+          yield* fs.remove(paths.lock).pipe(Effect.ignore);
+          yield* Scope.close(daemonScope, Exit.void);
+          if (finalFailure !== undefined) return yield* Effect.fail(finalFailure);
+        }),
+      );
+      yield* Effect.promise(() => terminationShared!);
+    },
+    Effect.mapError((e) => new DaemonError({ message: describe(e) })),
+  );
+
+  const stop = terminate("stop");
+  const close = terminate("close");
+
+  const runWorkspaceCommand = (
+    value: Command,
+    expectedRevision: number,
+    context: WorkspaceCommandContext,
+  ): Effect.Effect<WorkspaceSnapshot, DaemonError> =>
+    enqueue(
+      Effect.gen(function* () {
+        const cur = yield* Ref.get(daemonState);
+        if (expectedRevision !== cur.workspace.revision) {
+          return yield* new DaemonError({
+            message: `stale workspace revision ${expectedRevision}; current revision is ${cur.workspace.revision}`,
+          });
+        }
+        context = {
+          ...context,
+          worktreesRoot: path.join(
+            env.XDG_STATE_HOME || path.join(env.HOME || homedir(), ".local", "state"),
+            "amux",
+            "worktrees",
+          ),
+        };
+        if (!isWorkspaceCommand(value)) {
+          return yield* new DaemonError({
+            message: `command '${value._tag}' is not a workspace command`,
+          });
+        }
+        const mutation = applyWorkspaceCommand(cur.workspace, value, context);
+        const candidate = workspaceSession(mutation.snapshot, cur.state);
+        const worktrees = gitWorktreesFor(value, mutation.snapshot, cur.workspace);
+        const prepared: PreparedSession[] = [];
+        const exitsSettled = Effect.runSync(Deferred.make<boolean>());
+        const killed = mutation.actions.filter((a) => a._tag === "kill").map((a) => a.agent);
+        let createdWt = false;
+
+        try {
+          if (worktrees.created) {
+            const spec: WorktreeSpec = {
+              branch: worktrees.created.branch,
+              ...(worktrees.base ? { base: worktrees.base } : {}),
+            };
+            yield* Effect.promise(() =>
+              gitWorktreeAdd(worktrees.created!.repo, spec, worktrees.created!.path),
+            );
+            createdWt = true;
+          }
+          for (const a of mutation.actions) {
+            if (a._tag !== "spawn") continue;
+            prepared.push(yield* requireHost().prepare(a.agent));
+          }
+          for (const agentId of killed) {
+            exitCommits.set(agentId, async (code) => {
+              if (!(await Effect.runPromise(Deferred.await(exitsSettled)))) {
+                await Effect.runPromise(
+                  sessionExitEffect(agentId, code).pipe(Effect.catchAll(() => Effect.void)),
+                );
+              }
+            });
+          }
+          for (const a of mutation.actions) {
+            if (a._tag === "kill") {
+              const result = killAgent(a.agent) as unknown;
+              yield* Effect.isEffect(result)
+                ? (result as Effect.Effect<void, DaemonError, never>)
+                : Effect.promise(() => Promise.resolve(result as void));
+            }
+            if (a._tag === "input") yield* requireHost().write(a.agent, a.data);
+          }
+          for (const wt of worktrees.removed) {
+            const dirty = yield* Effect.promise(() => gitWorktreeDirty(wt!.path));
+            if (dirty)
+              return yield* new DaemonError({
+                message: `worktree '${wt!.path}' has uncommitted changes`,
+              });
+          }
+          if (mutation.changed) {
+            if (killed.length > 0) {
+              yield* persistUntilSuccess(
+                persist,
+                daemonState,
+                candidate,
+                "destructive workspace command",
+                activeSaveRef,
+                daemonScope,
+              );
+            } else {
+              yield* persist(candidate);
+            }
+            yield* Ref.set(daemonState, {
+              ...cur,
+              workspace: mutation.snapshot,
+              state: candidate,
+            });
+            yield* requireHost()
+              .publish({
+                _tag: "workspace",
+                revision: mutation.snapshot.revision,
+                state: JSON.stringify(mutation.snapshot),
+              })
+              .pipe(Effect.ignore);
+          }
+          for (const wt of worktrees.removed) {
+            yield* Effect.promise(() => gitWorktreeRemove(wt!.repo, wt!.path));
+          }
+          Effect.runSync(Deferred.succeed(exitsSettled, true));
+          for (const p of prepared) yield* p.activate;
+          const final = yield* Ref.get(daemonState);
+          return structuredClone(final.workspace);
+        } catch (error) {
+          Effect.runSync(Deferred.succeed(exitsSettled, false));
+          for (const p of prepared) yield* p.abort.pipe(Effect.ignore);
+          if (createdWt && worktrees.created)
+            yield* Effect.promise(() =>
+              gitWorktreeRemove(worktrees.created!.repo, worktrees.created!.path, true).catch(
+                () => {},
+              ),
+            );
+          if (error instanceof DaemonError) return yield* error;
+          return yield* new DaemonError({ message: describe(error) });
+        } finally {
+          for (const agentId of killed) exitCommits.delete(agentId);
+        }
+      }) as Effect.Effect<WorkspaceSnapshot, DaemonError, never>,
+    ).pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
+
+  const handle = (req: DaemonRequest) =>
+    Effect.gen(function* () {
+      const failResponse = (reason: string): DaemonResponse => ({ ok: false, error: reason });
+
+      return yield* Match.value(req.command).pipe(
+        Match.when(
+          "ping",
+          Effect.fnUntraced(function* () {
+            const cur = yield* Ref.get(daemonState);
+            return { ok: true, attached: cur.state.attached, ...attachInfo() };
+          }),
+        ),
+        Match.when(
+          "status",
+          Effect.fnUntraced(function* () {
+            const cur = Effect.runSync(Ref.get(daemonState));
+            const perr = cur.durableObligations.values().next().value as string | undefined;
+            const herr = perr ?? cur.heartbeatError ?? undefined;
+            const live = yield* liveAgents().pipe(Effect.orDie);
+            return {
+              ok: herr === undefined,
+              ...(herr ? { error: herr } : {}),
+              session: structuredClone(cur.state),
+              workspace: structuredClone(cur.workspace),
+              attached: cur.state.attached,
+              ...attachInfo(),
+              agents: [...live],
+            };
+          }),
+        ),
+        Match.when(
+          "workspace-command",
+          Effect.fnUntraced(
+            function* () {
+              if (req.expectedRevision === undefined || !req.workspaceContext) {
+                const cur = Effect.runSync(Ref.get(daemonState));
+                return failResponse("workspace-command requires a revision and context");
+              }
+              const decoded = yield* decodeCommand(req.workspaceCommand);
+              const cur = Effect.runSync(Ref.get(daemonState));
+              const ctx = parseWorkspaceCommandContext(req.workspaceContext, cur.workspace);
+              const ws = yield* runWorkspaceCommand(decoded, req.expectedRevision!, ctx);
+              return { ok: true, workspace: ws };
+            },
+            Effect.catchAll((e) => Effect.succeed(failResponse(describe(e)))),
+          ),
+        ),
+        Match.when("set-buffer", () => {
+          if (req.bufferData === undefined)
+            return Effect.succeed(failResponse("set-buffer requires data"));
+          const h = requireHost();
+          return Effect.succeed({
+            ok: true,
+            bufferName: h.buffers.set(req.bufferName, req.bufferData),
+          });
+        }),
+        Match.when(
+          "paste-buffer",
+          Effect.fnUntraced(
+            function* () {
+              if (!req.bufferTarget) return failResponse("paste-buffer requires a target session");
+              const h = requireHost();
+              yield* h.paste(req.bufferTarget!, h.buffers.show(req.bufferName));
+              if (req.bufferDelete === true) h.buffers.delete(req.bufferName);
+              return { ok: true };
+            },
+            Effect.catchAll((e) => Effect.succeed(failResponse(describe(e)))),
+          ),
+        ),
+        Match.when("list-buffers", () => {
+          return Effect.succeed({ ok: true, buffers: requireHost().buffers.list() });
+        }),
+        Match.when("delete-buffer", () => {
+          requireHost().buffers.delete(req.bufferName);
+          return Effect.succeed({ ok: true });
+        }),
+        Match.when("show-buffer", () => {
+          return Effect.succeed({
+            ok: true,
+            bufferData: new TextDecoder().decode(requireHost().buffers.show(req.bufferName)),
+          });
+        }),
+        Match.when("stop", () => {
+          // The RPC response must be written before shutdown stops the server
+          // that is handling this request.
+          return Effect.forkDaemon(
+            Effect.provideService(stop, Session, session).pipe(Effect.ignore),
+          ).pipe(Effect.as({ ok: true as const } as DaemonResponse));
+        }),
+        Match.orElse(() => Effect.succeed(failResponse("unknown command"))),
+      );
+    });
+
+  const spawnAgentService = spawnAgent;
+
+  const liveAgents = (): Effect.Effect<readonly string[], never> =>
+    host ? host.live : Effect.succeed([]);
+
+  const setBuffer = (n: string | undefined, d: string): Effect.Effect<string, never> =>
+    Effect.sync(() => requireHost().buffers.set(n, d));
+
+  const pasteBuffer = (
+    n: string | undefined,
+    t: string,
+    d: boolean,
+  ): Effect.Effect<void, DaemonError> =>
+    Effect.gen(function* () {
+      const h = requireHost();
+      yield* h.paste(t, h.buffers.show(n));
+      if (d) h.buffers.delete(n);
+    }).pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
+
+  const listBuffers = (): Effect.Effect<readonly BufferEntry[], never> =>
+    Effect.sync(() => requireHost().buffers.list());
+
+  const deleteBuffer = (n: string | undefined): Effect.Effect<void, never> =>
+    Effect.sync(() => requireHost().buffers.delete(n));
+
+  const showBuffer = (n: string | undefined): Effect.Effect<string, never> =>
+    Effect.sync(() => new TextDecoder().decode(requireHost().buffers.show(n)));
+
+  const service: SessionDaemonService = {
+    id,
+    paths,
+    start,
+    stop,
+    close,
+    runWorkspaceCommand,
+    handle,
+    spawnAgent: spawnAgentService,
+    get killAgent() {
+      return killAgent;
+    },
+    set killAgent(value) {
+      killAgent = value;
+    },
+    liveAgents,
+    setBuffer,
+    pasteBuffer,
+    listBuffers,
+    deleteBuffer,
+    showBuffer,
+    getState: Ref.get(daemonState).pipe(Effect.map((s) => structuredClone(s.state))),
+    getWorkspace: Ref.get(daemonState).pipe(Effect.map((s) => structuredClone(s.workspace))),
+    getAttachedClients: Ref.get(daemonState).pipe(
+      Effect.map((s) => [...s.attachments.values()].map((a) => a.client)),
+    ),
+    getAttachedClient: Ref.get(daemonState).pipe(
+      Effect.map((s) => s.attachments.values().next().value?.client ?? null),
+    ),
+  };
+  return service;
+});
+
+export const startDaemon = Effect.fnUntraced(function* (
+  id = process.argv[2] || randomUUID(),
+  options: SessionDaemonOptions = {},
+) {
+  const daemon = yield* makeDaemonService(id, options);
+  yield* daemon.start;
+  return daemon;
+});
+
+export const daemonRequest = Effect.fnUntraced(function* (id: string, body: DaemonRequest) {
+  const paths = yield* sessionPaths(id);
+  return yield* Effect.async<DaemonResponse, DaemonError | SessionIdError>((resume) => {
+    const req = httpRequest(
+      {
+        socketPath: paths.socket,
+        path: "/rpc",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      },
+      (response) => {
+        let text = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => (text += chunk));
+        response.on("end", () => {
+          try {
+            resume(Effect.succeed(JSON.parse(text)));
+          } catch (e) {
+            resume(Effect.fail(new DaemonError({ message: describe(e) })));
+          }
+        });
+      },
+    );
+    req.on("error", (e: Error) => {
+      resume(Effect.fail(new DaemonError({ message: e.message })));
+    });
+    req.end(JSON.stringify(body));
+  });
+});

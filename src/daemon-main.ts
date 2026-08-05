@@ -17,9 +17,9 @@ import { Session, SessionEnv } from "./session.ts";
 export function runDaemonMain(id?: string): void {
   const program = Effect.gen(function* () {
     const daemon = yield* Effect.acquireRelease(startDaemon(id), (daemon) =>
-      Effect.promise(() => daemon.stop()).pipe(Effect.ignore),
+      daemon.stop.pipe(Effect.ignore),
     );
-    yield* Effect.promise(() => daemon.stopped);
+    return yield* Effect.never;
   });
 
   BunRuntime.runMain(

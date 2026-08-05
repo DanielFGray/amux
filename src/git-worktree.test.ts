@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
-import { SessionDaemon } from "./daemon.ts";
+import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { Session, SessionEnv } from "./session.ts";
 import { command } from "./commands.ts";
 import {
@@ -38,7 +38,15 @@ const run = <A>(
       Effect.provideService(SessionEnv, e),
     ),
   );
-const open = (id: string, e: NodeJS.ProcessEnv) => run(SessionDaemon.open(id), e);
+const open = (id: string, e: NodeJS.ProcessEnv) => run(Effect.scoped(startDaemon(id)), e);
+const ws = (d: SessionDaemonService) => Effect.runSync(d.getWorkspace);
+const close = (d: SessionDaemonService) => Effect.runPromise(d.close);
+const runCommand = (
+  d: SessionDaemonService,
+  value: Parameters<SessionDaemonService["runWorkspaceCommand"]>[0],
+  revision: number,
+  context: Parameters<SessionDaemonService["runWorkspaceCommand"]>[2],
+) => Effect.runPromise(d.runWorkspaceCommand(value, revision, context));
 
 const git = async (args: string[], cwd: string): Promise<string> => {
   const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -119,18 +127,18 @@ test("space.new with a branch creates a worktree under the daemon's worktrees ro
   const repo = await initRepo();
   const e = await env();
   const daemon = await open("wt-new", e);
-  await daemon.start();
   try {
     const worktreesRoot = join(e.HOME!, "wt");
     await mkdir(worktreesRoot);
     const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp", worktreesRoot };
-    const before = daemon.workspace.revision;
-    await daemon.runWorkspaceCommand(
+    const before = ws(daemon).revision;
+    await runCommand(
+      daemon,
       command("space.new", { branch: "feat/demo", dir: repo, base: "main" }),
       before,
       context,
     );
-    const space = daemon.workspace.spaces.find((s) => s.worktree?.branch === "feat/demo");
+    const space = ws(daemon).spaces.find((s) => s.worktree?.branch === "feat/demo");
     expect(space).toBeDefined();
     const worktree = space!.worktree!;
     expect(worktree.repo).toBe(repo);
@@ -141,7 +149,7 @@ test("space.new with a branch creates a worktree under the daemon's worktrees ro
     );
     expect(await gitWorktreeExists(worktree.path)).toBe(true);
   } finally {
-    await daemon.close();
+    await close(daemon);
   }
 });
 
@@ -149,79 +157,71 @@ test("space.close removes the space's worktree after the model commit", async ()
   const repo = await initRepo();
   const e = await env();
   const daemon = await open("wt-close", e);
-  await daemon.start();
   const worktreesRoot = join(e.HOME!, "wt");
   await mkdir(worktreesRoot);
   const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp", worktreesRoot };
 
-  await daemon.runWorkspaceCommand(
+  await runCommand(
+    daemon,
     command("space.new", { branch: "feat/close", dir: repo }),
-    daemon.workspace.revision,
+    ws(daemon).revision,
     context,
   );
-  const space = daemon.workspace.spaces.find((s) => s.worktree?.branch === "feat/close")!;
+  const space = ws(daemon).spaces.find((s) => s.worktree?.branch === "feat/close")!;
   const worktreePath = space.worktree!.path;
   expect(await gitWorktreeExists(worktreePath)).toBe(true);
 
-  await daemon.runWorkspaceCommand(
+  await runCommand(
+    daemon,
     command("space.close", { space: space.id }),
-    daemon.workspace.revision,
+    ws(daemon).revision,
     context,
   );
-  expect(daemon.workspace.spaces.find((s) => s.id === space.id)).toBeUndefined();
+  expect(ws(daemon).spaces.find((s) => s.id === space.id)).toBeUndefined();
   expect(await gitWorktreeExists(worktreePath)).toBe(false);
-  await daemon.close();
+  await close(daemon);
 });
 
 test("a dirty worktree rejects space.close without losing model or worktree", async () => {
   const repo = await initRepo();
   const e = await env();
   const daemon = await open("wt-dirty-close", e);
-  await daemon.start();
   const worktreesRoot = join(e.HOME!, "wt");
   await mkdir(worktreesRoot);
   const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp", worktreesRoot };
 
-  await daemon.runWorkspaceCommand(
+  await runCommand(
+    daemon,
     command("space.new", { branch: "feat/keep", dir: repo }),
-    daemon.workspace.revision,
+    ws(daemon).revision,
     context,
   );
-  const space = daemon.workspace.spaces.find((s) => s.worktree?.branch === "feat/keep")!;
+  const space = ws(daemon).spaces.find((s) => s.worktree?.branch === "feat/keep")!;
   await writeFile(join(space.worktree!.path, "pending.txt"), "wip\n");
 
   await expect(
-    daemon.runWorkspaceCommand(
-      command("space.close", { space: space.id }),
-      daemon.workspace.revision,
-      context,
-    ),
+    runCommand(daemon, command("space.close", { space: space.id }), ws(daemon).revision, context),
   ).rejects.toThrow(/uncommitted changes/);
   // The failed close is a no-op: the space and its worktree both survive.
-  expect(daemon.workspace.spaces.find((s) => s.id === space.id)).toBeDefined();
+  expect(ws(daemon).spaces.find((s) => s.id === space.id)).toBeDefined();
   expect(await gitWorktreeExists(space.worktree!.path)).toBe(true);
-  await daemon.close();
+  await close(daemon);
 });
 
 test("a failed space.new leaves no worktree behind", async () => {
   const repo = await initRepo();
   const e = await env();
   const daemon = await open("wt-failed-new", e);
-  await daemon.start();
   const worktreesRoot = join(e.HOME!, "wt");
   await mkdir(worktreesRoot);
   const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp", worktreesRoot };
 
-  const revision = daemon.workspace.revision;
+  const revision = ws(daemon).revision;
   // Branch already exists in the repo: git worktree add -b must fail, which
   // aborts the transaction before the space is committed.
   await git(["branch", "taken"], repo);
   await expect(
-    daemon.runWorkspaceCommand(
-      command("space.new", { branch: "taken", dir: repo }),
-      revision,
-      context,
-    ),
+    runCommand(daemon, command("space.new", { branch: "taken", dir: repo }), revision, context),
   ).rejects.toThrow();
 
   const orphan = join(worktreesRoot, `${"anything"}-${worktreeDirname("taken")}`);
@@ -231,5 +231,5 @@ test("a failed space.new leaves no worktree behind", async () => {
     "utf8",
   );
   expect(spaces).not.toContain("feat/taken");
-  await daemon.close();
+  await close(daemon);
 });
