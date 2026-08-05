@@ -16,6 +16,7 @@ import {
   Ref,
   Schema as S,
   Scope,
+  Stream,
 } from "effect";
 import { FileSystem, SocketServer } from "@effect/platform";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
@@ -23,6 +24,7 @@ import * as RpcServer from "@effect/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
 import { type PreparedSession } from "./effect/SessionSupervisor.ts";
+import { EventBus } from "./effect/EventBus.ts";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { ManagedSession, SessionSpec } from "./effect/SessionRegistry.ts";
@@ -48,6 +50,7 @@ import {
   type WorkspaceSnapshot,
   type WorkspaceSpace,
 } from "./workspace.ts";
+import { layoutPanes } from "./layout.ts";
 import {
   gitWorktreeAdd,
   gitWorktreeDirty,
@@ -267,6 +270,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   });
 
   const daemonScope = yield* Scope.make();
+  const eventBusContext = yield* Layer.build(EventBus.Default).pipe(Scope.extend(daemonScope));
+  const eventBus = Context.get(eventBusContext, EventBus);
   const mutationQueue = Effect.runSync(Queue.unbounded<Mutation>());
   yield* Effect.forkIn(
     Effect.forever(
@@ -339,6 +344,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       Effect.mapError((e) => new DaemonError({ message: describe(e) })),
     );
     yield* Ref.set(daemonState, { ...cur, attachments, state: newState });
+    yield* eventBus.publish({ _tag: "client.changed", client, change: "attached" });
   }, enqueue);
 
   const detachEffect = Effect.fnUntraced(function* (client: string, connection: string) {
@@ -357,6 +363,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       daemonScope,
     );
     yield* Ref.set(daemonState, { ...cur, attachments, state: newState });
+    yield* eventBus.publish({ _tag: "client.changed", client, change: "detached" });
   }, enqueue);
 
   const touchEffect = (client: string, connection: string) =>
@@ -374,6 +381,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     const cur = yield* Ref.get(daemonState);
     if (cur.closing) return;
     const commit = exitCommits.get(sid);
+    yield* eventBus.publish({ _tag: "pane.exited", session: sid, code });
     if (commit) {
       exitCommits.delete(sid);
       yield* Effect.promise(() => commit(code));
@@ -406,6 +414,60 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       }),
     );
   });
+
+  const publishWorkspaceEvents = (before: WorkspaceSnapshot, after: WorkspaceSnapshot) =>
+    Effect.gen(function* () {
+      const beforeSpaces = new Map(before.spaces.map((space) => [space.id, space]));
+      const afterSpaces = new Map(after.spaces.map((space) => [space.id, space]));
+      for (const space of after.spaces) {
+        const oldSpace = beforeSpaces.get(space.id);
+        if (!oldSpace) {
+          yield* eventBus.publish({ _tag: "space.changed", space: space.id, change: "created" });
+        } else if (oldSpace.name !== space.name) {
+          yield* eventBus.publish({ _tag: "space.changed", space: space.id, change: "renamed" });
+        }
+        const oldWindows = new Map(oldSpace?.windows.map((window) => [window.number, window]) ?? []);
+        for (const window of space.windows) {
+          const oldWindow = oldWindows.get(window.number);
+          if (!oldWindow)
+            yield* eventBus.publish({
+              _tag: "window.changed",
+              space: space.id,
+              window: window.number,
+              change: "created",
+            });
+          else if (oldWindow.name !== window.name)
+            yield* eventBus.publish({
+              _tag: "window.changed",
+              space: space.id,
+              window: window.number,
+              change: "renamed",
+            });
+        }
+        for (const window of oldSpace?.windows ?? []) {
+          if (!space.windows.some((current) => current.number === window.number))
+            yield* eventBus.publish({
+              _tag: "window.changed",
+              space: space.id,
+              window: window.number,
+              change: "closed",
+            });
+        }
+      }
+      for (const space of before.spaces) {
+        if (!afterSpaces.has(space.id))
+          yield* eventBus.publish({ _tag: "space.changed", space: space.id, change: "closed" });
+      }
+      for (const space of after.spaces)
+        for (const window of space.windows)
+          for (const pane of window.layout.root ? layoutPanes(window.layout.root) : [])
+            if (
+              !beforeSpaces
+                .get(space.id)
+                ?.windows.some((oldWindow) => layoutPanes(oldWindow.layout.root).some((oldPane) => oldPane.id === pane.id))
+            )
+              yield* eventBus.publish({ _tag: "pane.opened", pane: pane.id, session: pane.agent });
+    });
 
   let spawnAgent = (spec: SessionSpec): Effect.Effect<ManagedSession, DaemonError> =>
     (options.spawnAgent ? options.spawnAgent(spec) : requireHost().spawn(spec)).pipe(
@@ -712,6 +774,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               workspace: mutation.snapshot,
               state: candidate,
             });
+            yield* publishWorkspaceEvents(cur.workspace, mutation.snapshot);
             yield* requireHost()
               .publish({
                 _tag: "workspace",
@@ -873,6 +936,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
     ShowBuffer: ({ name }) =>
       guard(Effect.sync(() => new TextDecoder().decode(requireHost().buffers.show(name)))),
+
+    Events: () =>
+      Stream.concat(
+        Stream.succeed({ sequence: 0, event: { _tag: "events.ready" } } as const),
+        Stream.unwrapScoped(eventBus.subscribe()),
+      ),
   });
 
   const spawnAgentService = spawnAgent;

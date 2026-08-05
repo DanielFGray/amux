@@ -10,7 +10,7 @@ import { afterEach, expect, test } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Scope } from "effect";
+import { Effect, Option, Scope, Stream } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
@@ -98,6 +98,39 @@ test("one connection serves many requests for its whole scope", async () => {
     env,
   );
   expect(seen.map((entry) => entry.name).sort()).toEqual(["a", "b"]);
+});
+
+test("the events stream is ready before it observes later workspace changes", async () => {
+  const { daemon, env } = await started("control-events");
+  const before = Effect.runSync(daemon.getWorkspace);
+  const event = await run(
+    Effect.gen(function* () {
+      const control = yield* connectControl(daemon.id);
+      const stream = control.Events().pipe(
+        Stream.tap((item) =>
+          item.event._tag === "events.ready"
+            ? control
+                .Run({
+                  value: command("space.rename", { name: "event-space" }),
+                  expectedRevision: before.revision,
+                  context,
+                })
+                .pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+        Stream.filter((item) => item.event._tag === "space.changed"),
+      );
+      return yield* Stream.runHead(stream);
+    }),
+    env,
+  );
+  expect(Option.map(event, (item) => item.event)).toEqual(
+    Option.some({
+      _tag: "space.changed",
+      space: before.spaces[0]!.id,
+      change: "renamed",
+    }),
+  );
 });
 
 test("a refused command arrives as the daemon's typed failure, not a crash", async () => {

@@ -12,8 +12,9 @@ import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import * as RpcClient from "@effect/rpc/RpcClient";
 import type { RpcClientError } from "@effect/rpc/RpcClientError";
 import type * as RpcGroup from "@effect/rpc/RpcGroup";
-import { Effect, Layer, Scope } from "effect";
+import { Effect, Layer, Scope, Stream } from "effect";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
+import type { DaemonEvent, DaemonEventPayload } from "./effect/EventBus.ts";
 import { SessionEnv, sessionPaths } from "./session.ts";
 
 /**
@@ -50,6 +51,33 @@ export const controlCall = <A, E>(
   use: (client: ControlClient) => Effect.Effect<A, E>,
 ): Effect.Effect<A, ControlError | E, ControlEnv> =>
   Effect.scoped(Effect.flatMap(connectControl(id), use));
+
+/**
+ * Subscribe to daemon events for the enclosing control connection scope. The
+ * stream owns the RPC request, so callers must keep the returned scope alive
+ * while consuming it.
+ */
+export const controlEvents = (
+  id: string,
+): Effect.Effect<Stream.Stream<DaemonEventPayload, unknown>, ControlError, Scope.Scope | ControlEnv> =>
+  Effect.map(controlEventFrames(id), (events) => events.pipe(Stream.map(({ event }) => event)));
+
+/** Subscribe while retaining sequence numbers for gap detection. */
+export const controlEventFrames = (
+  id: string,
+): Effect.Effect<Stream.Stream<DaemonEvent, unknown>, ControlError, Scope.Scope | ControlEnv> =>
+  Effect.map(connectControl(id), (control) => control.Events().pipe(Stream.drop(1)));
+
+/** Keep only one family of daemon events while preserving stream lifetime. */
+export const filterControlEvents = <T extends DaemonEventPayload["_tag"]>(
+  events: Stream.Stream<DaemonEventPayload, unknown>,
+  tag: T,
+): Stream.Stream<Extract<DaemonEventPayload, { readonly _tag: T }>, unknown> =>
+  events.pipe(Stream.filter((event): event is Extract<DaemonEventPayload, { readonly _tag: T }> => event._tag === tag));
+
+/** Return the number of events missed between two retained bus frames. */
+export const eventGap = (previous: DaemonEvent, current: DaemonEvent): number =>
+  Math.max(0, current.sequence - previous.sequence - 1);
 
 /** Collapse transport and protocol failures onto the control plane's one error. */
 export const toControlError = (error: unknown): ControlError =>
