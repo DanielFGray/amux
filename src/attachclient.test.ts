@@ -10,6 +10,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { Effect } from "effect";
+import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,7 +38,7 @@ const clients: SessionClientShape[] = [];
 const agents: Agent[] = [];
 let nextProjection = 0;
 const run = <A>(
-  effect: Effect.Effect<A, unknown, Session | SessionEnv>,
+  effect: Effect.Effect<A, unknown, Session | SessionEnv | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(

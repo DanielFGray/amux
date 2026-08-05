@@ -1,6 +1,5 @@
 import {
   Cause,
-  Data,
   Duration,
   Effect,
   Exit,
@@ -8,6 +7,7 @@ import {
   FiberId,
   FiberMap,
   Match,
+  Schema as S,
   Scope,
   Stream,
 } from "effect";
@@ -17,9 +17,9 @@ import { createSocketWriter } from "../attach-write.ts";
 import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
 
-export class AttachServerError extends Data.TaggedError("AttachServerError")<{
-  message: string;
-}> {}
+export class AttachServerError extends S.TaggedError<AttachServerError>()("AttachServerError", {
+  message: S.String,
+}) {}
 
 export interface AttachServerOptions {
   readonly path: string;

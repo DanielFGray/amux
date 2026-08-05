@@ -466,7 +466,7 @@ function buildApp(
     const wanted = candidates.find(
       (space) => space.id === answers[0] || space.name === answers[0]?.trim(),
     );
-    if (!wanted) return yield* Effect.fail(new CommandError({ message: "unknown target space" }));
+    if (!wanted) return yield* new CommandError({ message: "unknown target space" });
     yield* commands.run(command("pane.move", { space: wanted.id }));
   });
 
@@ -867,8 +867,7 @@ function buildApp(
     "buffer.paste": ({ name }) =>
       Effect.gen(function* () {
         const pane = spaces.activeWindow?.focused;
-        if (!pane)
-          return yield* Effect.fail(new CommandError({ message: "no pane to paste into" }));
+        if (!pane) return yield* new CommandError({ message: "no pane to paste into" });
         yield* session
           .pasteBuffer(name, pane.agent.id)
           .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
@@ -1805,7 +1804,7 @@ function buildApp(
     yield* Effect.promise(() => projection).pipe(
       Effect.timeout("2 seconds"),
       Effect.catchAll(() =>
-        Effect.sync(() => console.warn("workspace projection did not finish during shutdown")),
+        Effect.logWarning("workspace projection did not finish during shutdown"),
       ),
     );
     // While the pane is still alive: the mode's exit clears the selection

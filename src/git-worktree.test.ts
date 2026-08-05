@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
+import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { SessionDaemon } from "./daemon.ts";
 import { Session, SessionEnv } from "./session.ts";
@@ -27,7 +28,7 @@ async function env() {
 }
 
 const run = <A>(
-  effect: Effect.Effect<A, unknown, SessionEnv | Session>,
+  effect: Effect.Effect<A, unknown, SessionEnv | Session | FileSystem.FileSystem>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(

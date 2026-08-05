@@ -6,15 +6,17 @@ import { randomUUID } from "node:crypto";
 import {
   Cause,
   Clock,
-  Data,
+  Deferred,
   Effect,
   Exit,
   Fiber,
   ManagedRuntime,
+  Queue,
   Schedule,
   Schema,
   Scope,
 } from "effect";
+import { FileSystem } from "@effect/platform";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
 import type { PreparedSession } from "./effect/SessionSupervisor.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
@@ -75,9 +77,12 @@ const DaemonCommandSchema = Schema.Literal(
   "show-buffer",
 );
 
-export class SessionDaemonError extends Data.TaggedError("SessionDaemonError")<{
-  message: string;
-}> {}
+export class SessionDaemonError extends Schema.TaggedError<SessionDaemonError>()(
+  "SessionDaemonError",
+  {
+    message: Schema.String,
+  },
+) {}
 
 /** A failure's message, without the Effect error tag the tagged errors also
  *  carry (String() of one prints "BufferError: no buffers"). */
@@ -135,6 +140,11 @@ export interface SessionDaemonOptions {
 
 const SHUTDOWN_SAVE_TIMEOUT_MS = 500;
 
+type Mutation = {
+  readonly effect: Effect.Effect<any, any>;
+  readonly done: Deferred.Deferred<any, any>;
+};
+
 /**
  * A single owner for one session's lifecycle, persistence, and PTYs.
  *
@@ -162,7 +172,7 @@ export class SessionDaemon {
   #env: NodeJS.ProcessEnv;
   #runtime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError> | null = null;
   #host: AttachHostService | null = null;
-  #mutations: Promise<void> = Promise.resolve();
+  #mutationQueue = Effect.runSync(Queue.unbounded<Mutation>());
   #closing = false;
   #shutdown: Promise<void>;
   #resolveShutdown!: () => void;
@@ -176,6 +186,14 @@ export class SessionDaemon {
   #termination: Promise<void> | null = null;
   readonly stopped: Promise<void>;
   #resolveStopped!: () => void;
+
+  #running(): {
+    runtime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>;
+    host: AttachHostService;
+  } {
+    if (!this.#host || !this.#runtime) throw new Error("daemon is not started");
+    return { runtime: this.#runtime, host: this.#host };
+  }
 
   private constructor(
     id: string,
@@ -196,6 +214,7 @@ export class SessionDaemon {
       ? (next) => options.saveState!(next).pipe(Effect.provideService(Session, session))
       : (next) => session.save(next);
     this.#scope = Effect.runSync(Scope.make());
+    Effect.runSync(Effect.forkIn(this.#mutationLoop(), this.#scope));
     this.stopped = new Promise((resolve) => {
       this.#resolveStopped = resolve;
     });
@@ -207,19 +226,20 @@ export class SessionDaemon {
   static open(
     id = "default",
     options: SessionDaemonOptions = {},
-  ): Effect.Effect<SessionDaemon, unknown, SessionEnv | Session> {
+  ): Effect.Effect<SessionDaemon, unknown, SessionEnv | Session | FileSystem.FileSystem> {
     return Effect.gen(function* () {
       if (!isSessionId(id)) {
-        return yield* Effect.fail(
-          new SessionDaemonError({ message: `invalid session id ${JSON.stringify(id)}` }),
-        );
+        return yield* new SessionDaemonError({
+          message: `invalid session id ${JSON.stringify(id)}`,
+        });
       }
       const env = yield* SessionEnv;
       const paths = yield* sessionPaths(id);
       yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o700 }));
       const session = yield* Session;
+      const fs = yield* FileSystem.FileSystem;
       const lock = yield* Effect.promise(() =>
-        SessionDaemon.acquireLock(id, paths.lock, env, session),
+        SessionDaemon.acquireLock(id, paths.lock, env, session, fs),
       );
       try {
         const existing = yield* session.readLease(id);
@@ -249,7 +269,13 @@ export class SessionDaemon {
 
   #lock: Awaited<ReturnType<typeof open>> | null = null;
 
-  static async acquireLock(id: string, path: string, env: NodeJS.ProcessEnv, session: Session) {
+  static async acquireLock(
+    id: string,
+    path: string,
+    env: NodeJS.ProcessEnv,
+    session: Session,
+    fs: FileSystem.FileSystem,
+  ) {
     for (;;) {
       try {
         const lock = await open(path, "wx", 0o600);
@@ -265,7 +291,9 @@ export class SessionDaemon {
           // A directory or malformed file is a stale marker; lease validation
           // below still protects a running daemon from being removed.
         }
-        const lease = await Effect.runPromise(session.readLease(id));
+        const lease = await Effect.runPromise(
+          session.readLease(id).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
+        );
         if (lease && processAlive(lease.pid))
           throw new Error(`session '${id}' is already owned by pid ${lease.pid}`);
         // Recover a lock left by a dead daemon, including the old directory
@@ -578,7 +606,7 @@ export class SessionDaemon {
           await gitWorktreeRemove(worktree.repo, worktree.path);
         }
         settleExits(true);
-        for (const session of prepared) await this.#runtime!.runPromise(session.activate);
+        for (const session of prepared) await this.#running().runtime.runPromise(session.activate);
         return this.workspace;
       } catch (error) {
         settleExits(false);
@@ -600,12 +628,29 @@ export class SessionDaemon {
   }
 
   #enqueueModelChange<A>(change: () => A | Promise<A>): Promise<A> {
-    const result = this.#mutations.then(change, change);
-    this.#mutations = result.then(
-      () => {},
-      () => {},
+    const effect = Effect.tryPromise({
+      try: () => Promise.resolve().then(change),
+      catch: (error) => error,
+    });
+    return Effect.runPromise(
+      Effect.gen(this, function* () {
+        const done = yield* Deferred.make<A, unknown>();
+        yield* Queue.offer(this.#mutationQueue, { effect, done });
+        return yield* Deferred.await(done);
+      }),
     );
-    return result;
+  }
+
+  #mutationLoop(): Effect.Effect<never, never> {
+    return Effect.forever(
+      Queue.take(this.#mutationQueue).pipe(
+        Effect.flatMap((mutation) =>
+          Effect.exit(mutation.effect).pipe(
+            Effect.flatMap((exit) => Deferred.done(mutation.done, exit)),
+          ),
+        ),
+      ),
+    );
   }
 
   /** The daemon owns amux's state directory; worktree space dirs live beneath
@@ -897,7 +942,6 @@ export class SessionDaemon {
       this.#server = null;
       await this.#drainMutationsForShutdown();
       await this.#disposeHost();
-      await this.#mutations;
 
       if (mode === "stop") {
         await Effect.runPromise(this.#session.remove(this.id));
@@ -962,7 +1006,7 @@ export class SessionDaemon {
    * no mutation or write is abandoned in the background. */
   async #drainMutationsForShutdown(): Promise<void> {
     const drained = await this.#run(
-      Effect.promise(() => this.#mutations).pipe(
+      Effect.promise(() => this.#awaitMutations()).pipe(
         Effect.as(true),
         Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`),
         Effect.orElseSucceed(() => false),
@@ -971,7 +1015,11 @@ export class SessionDaemon {
     if (drained) return;
     this.#cancelPersistence = true;
     await this.#interruptPersistence();
-    await this.#mutations;
+    await this.#awaitMutations();
+  }
+
+  #awaitMutations(): Promise<void> {
+    return this.#enqueueModelChange(() => undefined);
   }
 
   async #persistState(
@@ -1116,7 +1164,7 @@ export function daemonRequest(
  */
 export function startDaemon(
   id = process.argv[2] || randomUUID(),
-): Effect.Effect<SessionDaemon, unknown, SessionEnv | Session> {
+): Effect.Effect<SessionDaemon, unknown, SessionEnv | Session | FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const daemon = yield* SessionDaemon.open(id);
     yield* Effect.promise(() => daemon.start());

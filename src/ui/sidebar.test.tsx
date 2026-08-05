@@ -2,6 +2,7 @@
 import { scopedSpaceSet } from "../harness.ts";
 import { afterEach, test, expect } from "bun:test";
 import { Effect, Exit, FiberMap, Scope } from "effect";
+import { FileSystem } from "@effect/platform";
 import { createSignal } from "solid-js";
 import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { render } from "@opentui/solid";
@@ -38,7 +39,7 @@ const daemons: SessionDaemon[] = [];
 const clients: SessionClientShape[] = [];
 const dirs: string[] = [];
 const run = <A,>(
-  effect: Effect.Effect<A, unknown, SessionEnv | Session>,
+  effect: Effect.Effect<A, unknown, SessionEnv | Session | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(

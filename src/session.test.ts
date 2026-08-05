@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Effect } from "effect";
 import {
@@ -29,7 +30,10 @@ function state(id: string) {
   return { version: 1 as const, id, createdAt: 1, updatedAt: 1, attached: false, spaces: [] };
 }
 
-const run = <A>(effect: Effect.Effect<A, unknown, Session | SessionEnv>, env: NodeJS.ProcessEnv) =>
+const run = <A>(
+  effect: Effect.Effect<A, unknown, Session | SessionEnv | FileSystem.FileSystem>,
+  env: NodeJS.ProcessEnv,
+) =>
   Effect.runPromise(
     effect.pipe(
       Effect.provide(Session.Default),

@@ -245,11 +245,11 @@ test("aborting a blocked write stops its owned retries", async () => {
     ),
     Bun.sleep(1000).then(() => "deadline exceeded"),
   ]);
-  expect(result).toContain("interrupted");
+  expect(result).toContain("PtyWriteInterrupted");
   await p.kill();
   await p.processExited;
   expect(p.closed).toBe(true);
-  await expect(p.write("late")).rejects.toThrow("interrupted");
+  await expect(p.write("late")).rejects.toThrow("shutdown");
 });
 
 test("writes copy input and retain FIFO ordering", async () => {

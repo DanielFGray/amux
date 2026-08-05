@@ -275,7 +275,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
               catch: (error) => error,
             }).pipe(
               Effect.catchAll((error) =>
-                error instanceof PtyWriteInterrupted && error.reason === "shutdown"
+                S.is(PtyWriteInterrupted)(error) && error.reason === "shutdown"
                   ? Effect.void
                   : Effect.fail(asPtyError("write", error)),
               ),
@@ -288,7 +288,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
                 ),
           // Kill must not wait behind a write whose child stopped reading.
           kill: Effect.tryPromise(() => backend.kill()).pipe(
-            Effect.catchAll((error) => Effect.fail(asPtyError("kill", error))),
+            Effect.mapError((error) => asPtyError("kill", error)),
           ),
           foreground: () => backend.foreground(),
         } satisfies ManagedSession;

@@ -1,8 +1,8 @@
-import { join } from "node:path";
+import path from "node:path";
 import { homedir } from "node:os";
-import { FileSystem } from "@effect/platform";
+import { FileSystem, Path } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
-import { Context, Data, Effect, Exit, Option, Schema } from "effect";
+import { Clock, Context, Data, Effect, Exit, Option, Schema as S } from "effect";
 import { decodeLayout, layoutPanes } from "./layout.ts";
 import {
   MAX_AGENTS,
@@ -29,17 +29,17 @@ export const SESSION_VERSION = 1;
  */
 export const MAX_SESSION_ID_LENGTH = 128;
 
-export class SessionIdError extends Data.TaggedError("SessionIdError")<{
-  message: string;
-}> {}
+export class SessionIdError extends S.TaggedError<SessionIdError>()("SessionIdError", {
+  message: S.String,
+}) {}
 
-export class SessionStateError extends Data.TaggedError("SessionStateError")<{
-  message: string;
-}> {}
+export class SessionStateError extends S.TaggedError<SessionStateError>()("SessionStateError", {
+  message: S.String,
+}) {}
 
-export class SessionSizeError extends Data.TaggedError("SessionSizeError")<{
-  message: string;
-}> {}
+export class SessionSizeError extends S.TaggedError<SessionSizeError>()("SessionSizeError", {
+  message: S.String,
+}) {}
 
 export interface SessionService {
   readonly load: (id: string) => Effect.Effect<SessionState | null, SessionIdError>;
@@ -157,74 +157,72 @@ export interface SessionAttachment {
   attachLastSeen: number;
 }
 
-const NonEmptyString = Schema.String.pipe(Schema.minLength(1));
-const PositiveInt = Schema.Int.pipe(Schema.greaterThan(0));
-const NonNegativeNumber = Schema.Number.pipe(Schema.greaterThanOrEqualTo(0));
-const SessionIdSchema = Schema.String.pipe(
-  Schema.filter(isSessionId, { message: () => "invalid session id" }),
+const NonEmptyString = S.String.pipe(S.minLength(1));
+const PositiveInt = S.Int.pipe(S.greaterThan(0));
+const NonNegativeNumber = S.Number.pipe(S.greaterThanOrEqualTo(0));
+const SessionIdSchema = S.String.pipe(
+  S.filter(isSessionId, { message: () => "invalid session id" }),
 );
-const TerminalDimension = Schema.Int.pipe(Schema.greaterThan(0), Schema.lessThanOrEqualTo(1_000));
-const LayoutMetadataSchema = Schema.Struct({ focus: Schema.optional(Schema.Unknown) });
+const TerminalDimension = S.Int.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1_000));
+const LayoutMetadataSchema = S.Struct({ focus: S.optional(S.Unknown) });
 
-const PersistedAgentSchema = Schema.Struct({
+const PersistedAgentSchema = S.Struct({
   id: NonEmptyString,
-  name: Schema.String,
-  cmd: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),
-  cwd: Schema.optional(Schema.String),
+  name: S.String,
+  cmd: S.Array(NonEmptyString).pipe(S.minItems(1)),
+  cwd: S.optional(S.String),
   cols: TerminalDimension,
   rows: TerminalDimension,
-  exited: Schema.Boolean,
-  exitCode: Schema.NullOr(Schema.Int),
+  exited: S.Boolean,
+  exitCode: S.NullOr(S.Int),
 }).pipe(
-  Schema.filter(({ cols, rows }) => cols * rows <= 500_000, {
+  S.filter(({ cols, rows }) => cols * rows <= 500_000, {
     message: () => "terminal size is too large",
   }),
 );
 
-const PersistedWindowSchema = Schema.Struct({
+const PersistedWindowSchema = S.Struct({
   number: PositiveInt,
-  name: Schema.NullOr(Schema.String),
-  agents: Schema.Array(PersistedAgentSchema),
-  layout: Schema.optional(Schema.NullOr(Schema.String)),
+  name: S.NullOr(S.String),
+  agents: S.Array(PersistedAgentSchema),
+  layout: S.optional(S.NullOr(S.String)),
 });
 
-const PersistedSpaceSchema = Schema.Struct({
+const PersistedSpaceSchema = S.Struct({
   id: NonEmptyString,
-  name: Schema.String,
-  dir: Schema.String,
-  activeWindow: Schema.NullOr(PositiveInt),
-  windows: Schema.Array(PersistedWindowSchema),
-  worktree: Schema.optional(
-    Schema.Struct({ branch: Schema.String, repo: Schema.String, path: Schema.String }),
-  ),
+  name: S.String,
+  dir: S.String,
+  activeWindow: S.NullOr(PositiveInt),
+  windows: S.Array(PersistedWindowSchema),
+  worktree: S.optional(S.Struct({ branch: S.String, repo: S.String, path: S.String })),
 });
 
-export const SessionStateSchema = Schema.Struct({
-  version: Schema.Literal(SESSION_VERSION),
+export const SessionStateSchema = S.Struct({
+  version: S.Literal(SESSION_VERSION),
   id: SessionIdSchema,
   createdAt: NonNegativeNumber,
   updatedAt: NonNegativeNumber,
-  attached: Schema.Boolean,
-  spaces: Schema.Array(PersistedSpaceSchema).pipe(
-    Schema.filter((spaces) => spaces.length <= MAX_SPACES, {
+  attached: S.Boolean,
+  spaces: S.Array(PersistedSpaceSchema).pipe(
+    S.filter((spaces) => spaces.length <= MAX_SPACES, {
       message: () => `session has too many spaces`,
     }),
   ),
-  activeSpace: Schema.optional(Schema.NullOr(Schema.String)),
+  activeSpace: S.optional(S.NullOr(S.String)),
 });
 
-export const SessionLeaseSchema = Schema.Struct({
-  version: Schema.Literal(SESSION_VERSION),
+export const SessionLeaseSchema = S.Struct({
+  version: S.Literal(SESSION_VERSION),
   session: SessionIdSchema,
   pid: PositiveInt,
-  socket: Schema.String,
+  socket: S.String,
   startedAt: NonNegativeNumber,
   heartbeatAt: NonNegativeNumber,
-  attachedSince: Schema.optional(NonNegativeNumber),
-  attachLastSeen: Schema.optional(NonNegativeNumber),
-  attachments: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
+  attachedSince: S.optional(NonNegativeNumber),
+  attachLastSeen: S.optional(NonNegativeNumber),
+  attachments: S.optional(
+    S.Array(
+      S.Struct({
         client: NonEmptyString,
         attachedSince: NonNegativeNumber,
         attachLastSeen: NonNegativeNumber,
@@ -254,14 +252,22 @@ export interface SessionPaths {
 
 export function sessionRoot(): Effect.Effect<string, never, SessionEnv> {
   return Effect.map(SessionEnv, (env) =>
-    join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "amux", "sessions"),
+    path.join(
+      env.XDG_STATE_HOME || path.join(env.HOME || homedir(), ".local", "state"),
+      "amux",
+      "sessions",
+    ),
   );
 }
 
 /** Root directory for space worktrees, siblings to the sessions root. */
 export function worktreesRoot(): Effect.Effect<string, never, SessionEnv> {
   return Effect.map(SessionEnv, (env) =>
-    join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "amux", "worktrees"),
+    path.join(
+      env.XDG_STATE_HOME || path.join(env.HOME || homedir(), ".local", "state"),
+      "amux",
+      "worktrees",
+    ),
   );
 }
 
@@ -271,15 +277,15 @@ export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdE
       return yield* new SessionIdError({ message: `invalid session id ${JSON.stringify(id)}` });
     }
     const root = yield* sessionRoot();
-    const path = join(root, id);
+    const rootPath = path.join(root, id);
     return {
-      root: path,
-      state: join(path, "session.json"),
-      backup: join(path, "session.json.prev"),
-      lease: join(path, "lease.json"),
-      lock: join(path, "daemon.lock"),
-      socket: join(path, "daemon.sock"),
-      attach: join(path, "attach.sock"),
+      root: rootPath,
+      state: path.join(rootPath, "session.json"),
+      backup: path.join(rootPath, "session.json.prev"),
+      lease: path.join(rootPath, "lease.json"),
+      lock: path.join(rootPath, "daemon.lock"),
+      socket: path.join(rootPath, "daemon.sock"),
+      attach: path.join(rootPath, "attach.sock"),
     };
   });
 }
@@ -289,7 +295,7 @@ export function parseSessionState(
   expectedId?: string,
 ): Effect.Effect<SessionState, SessionStateError> {
   return Effect.gen(function* () {
-    const state = yield* Schema.decodeUnknown(SessionStateSchema)(value).pipe(
+    const state = yield* S.decodeUnknown(SessionStateSchema)(value).pipe(
       Effect.mapError(schemaError),
     );
     if (expectedId !== undefined && state.id !== expectedId) return yield* invalidState;
@@ -322,7 +328,7 @@ export function parseSessionState(
           owned.set(entry.id, entry.exited);
         }
         if (candidate.layout) {
-          const raw = yield* Schema.decodeUnknown(Schema.parseJson(LayoutMetadataSchema))(
+          const raw = yield* S.decodeUnknown(S.parseJson(LayoutMetadataSchema))(
             candidate.layout,
           ).pipe(Effect.mapError(schemaError));
           const layout = yield* Effect.try({
@@ -350,7 +356,7 @@ export function parseSessionState(
     ) {
       return yield* missingSpace;
     }
-    return structuredClone(state) as SessionState;
+    return structuredClone(state) as unknown as SessionState;
   });
 }
 
@@ -382,13 +388,20 @@ function validState(value: unknown, expectedId?: string): value is SessionState 
   return Exit.isSuccess(Effect.runSync(Effect.exit(parseSessionState(value, expectedId))));
 }
 
-const jsonFile = <A, I>(path: string, schema: Schema.Schema<A, I>) =>
+const jsonFile = <A, I>(path: string, schema: S.Schema<A, I>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const info = yield* fs.stat(path);
+    const info = yield* fs
+      .stat(path)
+      .pipe(
+        Effect.catchTag("SystemError", (error) =>
+          error.reason === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
+        ),
+      );
+    if (info === null) return Option.none();
     if (info.size > MAX_SESSION_BYTES) return Option.none();
     const text = yield* fs.readFileString(path);
-    return Schema.decodeUnknownOption(Schema.parseJson(schema))(text);
+    return S.decodeUnknownOption(S.parseJson(schema))(text);
   });
 
 export class Session extends Effect.Service<Session>()("Session", {
@@ -411,9 +424,9 @@ export class Session extends Effect.Service<Session>()("Session", {
       const paths = yield* sessionPaths(state.id).pipe(Effect.provideService(SessionEnv, env));
       yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
       const temp = `${paths.state}.${process.pid}.tmp`;
+      const updatedAt = yield* Clock.currentTimeMillis;
       const bytes =
-        JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt: Date.now() }, null, 2) +
-        "\n";
+        JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt }, null, 2) + "\n";
       if (Buffer.byteLength(bytes) > MAX_SESSION_BYTES)
         return yield* new SessionSizeError({ message: "session state is too large" });
       yield* fs.writeFileString(temp, bytes, { mode: 0o600 });
@@ -440,14 +453,12 @@ export class Session extends Effect.Service<Session>()("Session", {
 
     const writeLease = (lease: SessionLease) =>
       Effect.gen(function* () {
-        const paths = yield* sessionPaths(lease.session).pipe(
-          Effect.provideService(SessionEnv, env),
-        );
+        const paths = yield* sessionPaths(lease.session);
         yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
         const temp = `${paths.lease}.${process.pid}.tmp`;
         yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", { mode: 0o600 });
         yield* fs.rename(temp, paths.lease);
-      });
+      }).pipe(Effect.provideService(SessionEnv, env));
 
     const remove = (id: string) =>
       Effect.flatMap(paths(id), (sessionPaths) =>
@@ -455,7 +466,7 @@ export class Session extends Effect.Service<Session>()("Session", {
       );
 
     const cleanupStale = Effect.gen(function* () {
-      const root = yield* sessionRoot().pipe(Effect.provideService(SessionEnv, env));
+      const root = yield* sessionRoot();
       const entries = yield* fs
         .readDirectory(root)
         .pipe(
@@ -466,7 +477,7 @@ export class Session extends Effect.Service<Session>()("Session", {
       const removed: string[] = [];
       for (const id of entries) {
         if (!isSessionId(id)) continue;
-        const paths = yield* sessionPaths(id).pipe(Effect.provideService(SessionEnv, env));
+        const paths = yield* sessionPaths(id);
         const locked = yield* fs.stat(paths.lock).pipe(
           Effect.map(() => true),
           Effect.catchTag("SystemError", (error) =>
@@ -480,6 +491,18 @@ export class Session extends Effect.Service<Session>()("Session", {
         removed.push(id);
       }
       return removed;
+    }).pipe(Effect.provideService(SessionEnv, env));
+
+    const exists = Effect.fnUntraced(function* (id: string) {
+      return yield* paths(id).pipe(
+        Effect.flatMap((sessionPaths) =>
+          fs.stat(sessionPaths.root).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          ),
+        ),
+        Effect.orElseSucceed(() => false),
+      );
     });
 
     return {
@@ -489,13 +512,7 @@ export class Session extends Effect.Service<Session>()("Session", {
       writeLease,
       remove,
       cleanupStale,
-      exists: (id: string) =>
-        Effect.flatMap(paths(id), (sessionPaths) =>
-          fs.stat(sessionPaths.root).pipe(
-            Effect.as(true),
-            Effect.catchAll(() => Effect.succeed(false)),
-          ),
-        ).pipe(Effect.catchAll(() => Effect.succeed(false))),
+      exists,
     };
   }),
 }) {}

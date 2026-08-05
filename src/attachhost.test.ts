@@ -8,6 +8,7 @@
  */
 
 import { Effect } from "effect";
+import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -24,7 +25,7 @@ import { Session, SessionEnv } from "./session.ts";
 const dirs: string[] = [];
 const daemons: SessionDaemon[] = [];
 const run = <A>(
-  effect: Effect.Effect<A, unknown, Session | SessionEnv>,
+  effect: Effect.Effect<A, unknown, Session | SessionEnv | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(

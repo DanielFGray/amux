@@ -1,3 +1,4 @@
+import { Schema as S } from "effect";
 import { encodeStroke, type KeyStroke } from "./keys.ts";
 
 /** A send-keys input that cannot be compiled. The message is what the prompt
@@ -5,7 +6,9 @@ import { encodeStroke, type KeyStroke } from "./keys.ts";
  *  "unterminated quote". Anything else is a *value* question, and values are
  *  sent literally rather than reported — an input that does not name a key is
  *  exactly the shell text send-keys exists to type. */
-export class SendKeysError extends Error {}
+export class SendKeysError extends S.TaggedError<SendKeysError>()("SendKeysError", {
+  message: S.String,
+}) {}
 
 /** Turns one unquoted token into the key strokes that would produce it, or
  *  null when the token is not a key sequence at all. The live keymap's parser
@@ -55,7 +58,7 @@ export function tokenizeSendKeys(input: string): RawToken[] {
     if (ch === "'" || ch === '"') {
       if (current === null) {
         const close = input.indexOf(ch, i + 1);
-        if (close === -1) throw new SendKeysError("unterminated quote");
+        if (close === -1) throw new SendKeysError({ message: "unterminated quote" });
         tokens.push({ quoted: true, text: input.slice(i + 1, close) });
         i = close + 1;
       } else {
@@ -123,7 +126,7 @@ export function encodeSendKeys(input: string, parseKey: SendKeyParser): string {
     lastWasLiteral = true;
     produced = true;
   }
-  if (!produced) throw new SendKeysError("nothing to send");
+  if (!produced) throw new SendKeysError({ message: "nothing to send" });
   return out;
 }
 
@@ -152,9 +155,9 @@ export function sendKeys(
   try {
     bytes = encodeSendKeys(input, parseKey);
   } catch (error) {
-    return error instanceof SendKeysError ? error : new SendKeysError(String(error));
+    return S.is(SendKeysError)(error) ? error : new SendKeysError({ message: String(error) });
   }
-  if (bytes === "") return new SendKeysError("nothing to send");
+  if (bytes === "") return new SendKeysError({ message: "nothing to send" });
   target.write(bytes);
   return null;
 }

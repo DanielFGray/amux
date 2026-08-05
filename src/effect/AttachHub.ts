@@ -78,9 +78,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
 
         if (!registered) {
           yield* Queue.shutdown(queue);
-          return yield* Effect.fail(
-            new AttachHubError({ message: `client '${client}' is already attached` }),
-          );
+          return yield* new AttachHubError({ message: `client '${client}' is already attached` });
         }
 
         yield* Effect.addFinalizer(() =>

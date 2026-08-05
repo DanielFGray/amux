@@ -1,7 +1,9 @@
 import { createCliRenderer, BoxRenderable } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
-import { Deferred, Effect, Exit } from "effect";
+import { Data, Deferred, Effect, Exit } from "effect";
+
+class SessionIdError extends Data.TaggedError("SessionIdError")<{ message: string }> {}
 
 import { loadConfig } from "./config.ts";
 import { applyOptions, resolveOptions } from "./options.ts";
@@ -50,13 +52,13 @@ const program = Effect.gen(function* () {
 
   const SESSION_ID = process.env.AMUX_SESSION || "default";
   if (!isSessionId(SESSION_ID)) {
-    return yield* Effect.fail(new Error(`invalid AMUX_SESSION ${JSON.stringify(SESSION_ID)}`));
+    return yield* new SessionIdError({
+      message: `invalid AMUX_SESSION ${JSON.stringify(SESSION_ID)}`,
+    });
   }
 
   const session = yield* Effect.acquireRelease(SessionClient.connect(SESSION_ID), (s) =>
-    Effect.gen(function* () {
-      yield* Effect.sync(() => s.attach.close());
-    }),
+    Effect.sync(() => s.attach.close()),
   );
 
   const quit = yield* Deferred.make<void>();

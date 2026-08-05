@@ -21,6 +21,7 @@
  * either, and a headless window is the two of them together.
  */
 
+import { Schema as S } from "effect";
 import type { SplitDirection } from "./window.ts";
 import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts";
 
@@ -487,7 +488,9 @@ function tiled(panes: readonly PaneRef[]): LayoutNode {
   return split("column", rows);
 }
 
-export class LayoutFormatError extends Error {}
+export class LayoutFormatError extends S.TaggedError<LayoutFormatError>()("LayoutFormatError", {
+  message: S.String,
+}) {}
 
 /** Serialize for session.json or the wire. Stable key order, so two equal
  *  layouts encode to equal strings and a diff of session.json stays readable. */
@@ -518,27 +521,28 @@ function order(node: LayoutNode | null): LayoutNode | null {
  */
 export function decodeLayout(text: string): Layout {
   if (Buffer.byteLength(text) > MAX_LAYOUT_BYTES)
-    throw new LayoutFormatError("layout is too large");
+    throw new LayoutFormatError({ message: "layout is too large" });
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch (error) {
-    throw new LayoutFormatError(`layout is not JSON: ${(error as Error).message}`);
+    throw new LayoutFormatError({ message: `layout is not JSON: ${(error as Error).message}` });
   }
   return parseLayout(parsed);
 }
 
 export function parseLayout(value: unknown): Layout {
-  if (!value || typeof value !== "object") throw new LayoutFormatError("layout must be an object");
+  if (!value || typeof value !== "object")
+    throw new LayoutFormatError({ message: "layout must be an object" });
   const raw = value as Partial<Layout>;
   if (raw.version !== LAYOUT_VERSION) {
-    throw new LayoutFormatError(`unsupported layout version ${String(raw.version)}`);
+    throw new LayoutFormatError({ message: `unsupported layout version ${String(raw.version)}` });
   }
   const budget = { nodes: 0 };
   const root =
     raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root", 1, budget);
   if (raw.focus !== undefined && typeof raw.focus !== "string") {
-    throw new LayoutFormatError("focus must be a pane id");
+    throw new LayoutFormatError({ message: "focus must be a pane id" });
   }
   return makeLayout(collapse(root), raw.focus);
 }
@@ -550,19 +554,22 @@ function parseNode(
   budget: { nodes: number },
 ): LayoutNode {
   if (depth > MAX_LAYOUT_DEPTH)
-    throw new LayoutFormatError(`layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}`);
+    throw new LayoutFormatError({ message: `layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}` });
   if (++budget.nodes > MAX_LAYOUT_NODES)
-    throw new LayoutFormatError(`layout exceeds maximum node count ${MAX_LAYOUT_NODES}`);
-  if (!value || typeof value !== "object") throw new LayoutFormatError(`${at} must be an object`);
+    throw new LayoutFormatError({
+      message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
+    });
+  if (!value || typeof value !== "object")
+    throw new LayoutFormatError({ message: `${at} must be an object` });
   const raw = value as Record<string, unknown>;
   const weight = parseWeight(raw.weight, at);
 
   if (raw.type === "pane") {
     if (typeof raw.agent !== "string" || !raw.agent) {
-      throw new LayoutFormatError(`${at} pane needs an agent id`);
+      throw new LayoutFormatError({ message: `${at} pane needs an agent id` });
     }
     if (typeof raw.id !== "string" || !raw.id) {
-      throw new LayoutFormatError(`${at} pane needs a pane id`);
+      throw new LayoutFormatError({ message: `${at} pane needs a pane id` });
     }
     reservePaneId(raw.id);
     return { type: "pane", id: raw.id, agent: raw.agent, weight };
@@ -570,10 +577,10 @@ function parseNode(
 
   if (raw.type === "split") {
     if (raw.direction !== "row" && raw.direction !== "column") {
-      throw new LayoutFormatError(`${at} split needs direction "row" or "column"`);
+      throw new LayoutFormatError({ message: `${at} split needs direction "row" or "column"` });
     }
     if (!Array.isArray(raw.children) || raw.children.length === 0) {
-      throw new LayoutFormatError(`${at} split needs children`);
+      throw new LayoutFormatError({ message: `${at} split needs children` });
     }
     return {
       type: "split",
@@ -585,7 +592,7 @@ function parseNode(
     };
   }
 
-  throw new LayoutFormatError(`${at} has unknown type ${JSON.stringify(raw.type)}`);
+  throw new LayoutFormatError({ message: `${at} has unknown type ${JSON.stringify(raw.type)}` });
 }
 
 /** Weights are relative, so any positive finite number is meaningful; a
@@ -593,7 +600,7 @@ function parseNode(
 function parseWeight(value: unknown, at: string): number {
   if (value === undefined) return 1;
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    throw new LayoutFormatError(`${at} weight must be a positive number`);
+    throw new LayoutFormatError({ message: `${at} weight must be a positive number` });
   }
   return value;
 }

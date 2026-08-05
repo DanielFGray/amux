@@ -1,4 +1,4 @@
-import { Effect, Exit, Fiber, Scope, Stream } from "effect";
+import { Clock, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { Terminal, RenderState } from "./ghostty.ts";
 import { localPty, exitedBackend, type AgentBackend, type SpawnBackend } from "./backend.ts";
 import { scrollViewport, ScrollTo } from "./shim.ts";
@@ -212,13 +212,14 @@ export class Agent {
    * free second, instead of racing it.
    */
   #pump(): Fiber.RuntimeFiber<void> {
+    const self = this;
     return Effect.runFork(
-      Stream.runForEach(this.#backend.stream, (chunk) =>
-        Effect.sync(() => {
-          this.term.write(chunk);
-          this.#lastOutputAt = Date.now();
-          if (this.#viewers === 0) this.#unseen = true;
-          this.onOutput?.(this);
+      Stream.runForEach(self.#backend.stream, (chunk) =>
+        Effect.gen(function* () {
+          self.term.write(chunk);
+          self.#lastOutputAt = yield* Clock.currentTimeMillis;
+          if (self.#viewers === 0) self.#unseen = true;
+          self.onOutput?.(self);
         }),
       ).pipe(
         // onExit belongs to the stream ending, not to the fiber ending: an

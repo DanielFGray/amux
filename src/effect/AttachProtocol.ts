@@ -10,25 +10,21 @@ import { Schema as S } from "effect";
  * - agent: an LLM coding agent (the future backend kind), never the supervised
  *   PTY. The old name for the PTY-scoped meaning collided with this.
  */
-const Hello = S.Struct({
-  _tag: S.Literal("hello"),
+const Hello = S.TaggedStruct("hello", {
   client: S.String,
 });
 
-const Output = S.Struct({
-  _tag: S.Literal("output"),
+const Output = S.TaggedStruct("output", {
   session: S.String,
   data: S.Uint8ArrayFromBase64,
 });
 
-const Input = S.Struct({
-  _tag: S.Literal("input"),
+const Input = S.TaggedStruct("input", {
   session: S.String,
   data: S.Uint8ArrayFromBase64,
 });
 
-const Resize = S.Struct({
-  _tag: S.Literal("resize"),
+const Resize = S.TaggedStruct("resize", {
   session: S.String,
   cols: S.Int,
   rows: S.Int,
@@ -43,8 +39,7 @@ const Resize = S.Struct({
  * pane is not blank until the program next redraws. Only adopted sessions need
  * it: an attached client sees a newly created session's bytes from the first one.
  */
-const Sync = S.Struct({
-  _tag: S.Literal("sync"),
+const Sync = S.TaggedStruct("sync", {
   session: S.String,
 });
 
@@ -59,8 +54,7 @@ const Sync = S.Struct({
  * reading /proc for the actual cmdline: pids are a global namespace, the
  * foreground pgid is not.
  */
-const Foreground = S.Struct({
-  _tag: S.Literal("foreground"),
+const Foreground = S.TaggedStruct("foreground", {
   session: S.String,
   /** Foreground process group of the controlling tty, or -1. Equal to the
    *  session id while a shell sits at a prompt. */
@@ -74,30 +68,25 @@ const Foreground = S.Struct({
  * concern on the shared transport; terminal byte frames retain their own
  * session ordering and routing.
  */
-const Workspace = S.Struct({
-  _tag: S.Literal("workspace"),
+const Workspace = S.TaggedStruct("workspace", {
   revision: S.NonNegativeInt,
   state: S.String,
 });
 
-const Exit = S.Struct({
-  _tag: S.Literal("exit"),
+const Exit = S.TaggedStruct("exit", {
   session: S.String,
   code: S.NullOr(S.Int),
 });
 
-const ErrorFrame = S.Struct({
-  _tag: S.Literal("error"),
+const ErrorFrame = S.TaggedStruct("error", {
   message: S.String,
 });
 
-const Ping = S.Struct({
-  _tag: S.Literal("ping"),
+const Ping = S.TaggedStruct("ping", {
   nonce: S.String,
 });
 
-const Pong = S.Struct({
-  _tag: S.Literal("pong"),
+const Pong = S.TaggedStruct("pong", {
   nonce: S.String,
 });
 

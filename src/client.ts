@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { Data, Effect, Layer, Schedule, Stream } from "effect";
+import { Effect, Layer, Schedule, Stream, Schema as S } from "effect";
+import { FileSystem } from "@effect/platform";
 import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SpawnBackend } from "./backend.ts";
 import { daemonRequest, type DaemonResponse } from "./daemon.ts";
@@ -20,9 +21,9 @@ export interface SessionClientOptions {
   autostart?: boolean;
 }
 
-export class SessionClientError extends Data.TaggedError("SessionClientError")<{
-  message: string;
-}> {}
+export class SessionClientError extends S.TaggedError<SessionClientError>()("SessionClientError", {
+  message: S.String,
+}) {}
 
 export interface SessionClientShape extends DaemonSession {
   readonly id: string;
@@ -60,14 +61,16 @@ export class SessionClient extends Effect.Service<SessionClient>()("SessionClien
   static layer(id: string, options: SessionClientOptions = {}) {
     return Layer.scoped(
       SessionClient,
-      Effect.acquireRelease(make(id, options), (client) => Effect.sync(() => client.close())),
+      Effect.acquireRelease(make(id, options), (client) => Effect.sync(() => client.close())).pipe(
+        Effect.map((client) => client as SessionClient),
+      ),
     );
   }
 
   static connect(
     id: string,
     options: SessionClientOptions = {},
-  ): Effect.Effect<SessionClientShape, unknown, SessionEnv | Session> {
+  ): Effect.Effect<SessionClientShape, unknown, SessionEnv | Session | FileSystem.FileSystem> {
     return make(id, options);
   }
 }
@@ -77,7 +80,7 @@ export interface SessionClient extends SessionClientShape {}
 const make = (
   id: string,
   options: SessionClientOptions,
-): Effect.Effect<SessionClientShape, unknown, SessionEnv | Session> =>
+): Effect.Effect<SessionClientShape, unknown, SessionEnv | Session | FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const env = yield* SessionEnv;
     if (options.autostart !== false) yield* ensureDaemon(id);
@@ -93,25 +96,24 @@ const make = (
       Effect.retry({
         schedule: Schedule.spaced("200 millis").pipe(Schedule.upTo("5000 millis")),
         while: (error) =>
-          error instanceof SessionClientError && error.message.includes("already attached"),
+          S.is(SessionClientError)(error) && error.message.includes("already attached"),
       }),
     );
     let status: DaemonResponse;
-    try {
-      status = yield* daemonRequest(id, { command: "status" });
-    } catch (error) {
-      yield* Effect.sync(() => attach.close());
-      return yield* Effect.fail(
-        new SessionClientError({
-          message: `session '${id}' did not answer status: ${String(error)}`,
+    const getStatus = daemonRequest(id, { command: "status" }).pipe(
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          yield* Effect.sync(() => attach.close());
+          return yield* new SessionClientError({
+            message: `session '${id}' did not answer status: ${String(error)}`,
+          });
         }),
-      );
-    }
+      ),
+    );
+    status = yield* getStatus;
     if (!status.workspace) {
       yield* Effect.sync(() => attach.close());
-      return yield* Effect.fail(
-        new SessionClientError({ message: "daemon status returned no workspace" }),
-      );
+      return yield* new SessionClientError({ message: "daemon status returned no workspace" });
     }
     let service!: SessionClientShape;
     const initialWorkspace = yield* Effect.try({
@@ -173,7 +175,7 @@ const make = (
             );
             return queued;
           },
-          catch: (error) => error,
+          catch: (error) => new SessionClientError({ message: String(error) }),
         }),
       backend: () => daemonBackend(service, service.live),
       setBuffer: (name: string | undefined, data: string) =>
@@ -247,20 +249,22 @@ const make = (
     return service;
   });
 
-export function daemonAlive(id: string): Effect.Effect<boolean, never, SessionEnv | Session> {
+export function daemonAlive(
+  id: string,
+): Effect.Effect<boolean, never, SessionEnv | Session | FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const lease = yield* Session.readLease(id).pipe(Effect.catchAll(() => Effect.succeed(null)));
+    const lease = yield* Session.readLease(id).pipe(Effect.orElseSucceed(() => null));
     if (!lease || !processAlive(lease.pid)) return false;
     return yield* daemonRequest(id, { command: "ping" }).pipe(
       Effect.map((response) => response.ok),
-      Effect.catchAll(() => Effect.succeed(false)),
+      Effect.orElseSucceed(() => false),
     );
   });
 }
 
 export function ensureDaemon(
   id: string,
-): Effect.Effect<void, SessionClientError, SessionEnv | Session> {
+): Effect.Effect<void, SessionClientError, SessionEnv | Session | FileSystem.FileSystem> {
   return Effect.gen(function* () {
     if (yield* daemonAlive(id)) return;
     const env = yield* SessionEnv;
@@ -280,12 +284,11 @@ export function ensureDaemon(
       Effect.retry(
         Schedule.spaced(`${POLL_MS} millis`).pipe(Schedule.upTo(`${START_TIMEOUT_MS} millis`)),
       ),
-      Effect.catchAll(() =>
-        Effect.fail(
+      Effect.mapError(
+        () =>
           new SessionClientError({
             message: `daemon for session '${id}' did not start within ${START_TIMEOUT_MS}ms`,
           }),
-        ),
       ),
     );
   });

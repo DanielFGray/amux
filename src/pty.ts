@@ -1,14 +1,16 @@
+import { Schema as S } from "effect";
 import { closeFd, ptyForegroundPgid, resizePty, spawnNativePty, waitPid } from "./shim.ts";
 
 /** A trapped TERM must not make daemon shutdown unbounded. */
 const TERMINATE_GRACE_MS = 200;
 const KILL_SETTLE_MS = 500;
 
-export class PtyWriteInterrupted extends Error {
-  constructor(readonly reason: "shutdown" | "aborted") {
-    super("pty write interrupted");
-  }
-}
+export class PtyWriteInterrupted extends S.TaggedError<PtyWriteInterrupted>()(
+  "PtyWriteInterrupted",
+  {
+    reason: S.Literal("shutdown", "aborted"),
+  },
+) {}
 
 export interface Pty {
   master: number;
@@ -207,8 +209,8 @@ export function spawnPty(
       const buf = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
       const write = writeTail.then(async () => {
         const checkInterrupted = () => {
-          if (closed) throw new PtyWriteInterrupted("shutdown");
-          if (signal?.aborted) throw new PtyWriteInterrupted("aborted");
+          if (closed) throw new PtyWriteInterrupted({ reason: "shutdown" });
+          if (signal?.aborted) throw new PtyWriteInterrupted({ reason: "aborted" });
         };
         checkInterrupted();
         let off = 0;
