@@ -25,15 +25,16 @@
     "format:check": "bunx oxfmt --check src e2e",
     "test": "bun test src",
     "e2e": "bun test e2e",
-"prepare": "effect-tsgo patch --typescript --oxlint"
+    "prepare": "effect-tsgo patch --typescript --oxlint"
   },
   "devDependencies": {
+    "@effect/tsgo": "0.31.0",
+    "@effect/vitest": "^0.30.0",
     "@types/bun": "latest",
     "oxfmt": "0.62.0",
-    "typescript": "^7.0.2",
-"oxlint-tsgolint": "7.0.2001",
-"oxlint": "1.77.0",
-"@effect/tsgo": "0.31.0"
+    "oxlint": "1.77.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@effect/platform-bun": "0.91.2",
