@@ -57,9 +57,8 @@ const program = Effect.gen(function* () {
     });
   }
 
-  const session = yield* Effect.acquireRelease(SessionClient.connect(SESSION_ID), (s) =>
-    Effect.sync(() => s.attach.close()),
-  );
+  // The client closes its attach and control sockets with the enclosing scope.
+  const session = yield* SessionClient.connect(SESSION_ID);
 
   const quit = yield* Deferred.make<void>();
 

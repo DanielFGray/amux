@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 import path from "node:path";
-import { request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
 import {
   Cause,
@@ -11,18 +10,19 @@ import {
   Either,
   Exit,
   Fiber,
+  Layer,
   ManagedRuntime,
   Queue,
   Ref,
-  Schedule,
   Schema as S,
   Scope,
-  Match,
 } from "effect";
-import { FileSystem } from "@effect/platform";
+import { FileSystem, SocketServer } from "@effect/platform";
+import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
+import * as RpcServer from "@effect/rpc/RpcServer";
+import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
 import { type PreparedSession } from "./effect/SessionSupervisor.ts";
-import { MAX_RPC_BYTES } from "./limits.ts";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { ManagedSession, SessionSpec } from "./effect/SessionRegistry.ts";
@@ -34,7 +34,6 @@ import {
   sessionPaths,
   type SessionAttachment,
   type SessionLease,
-  type SessionIdError,
   type SessionState,
   type SessionPaths,
 } from "./session.ts";
@@ -60,50 +59,6 @@ import {
 const describe = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const DaemonCommandSchema = S.Literal(
-  "ping",
-  "status",
-  "stop",
-  "workspace-command",
-  "run",
-  "set-buffer",
-  "paste-buffer",
-  "list-buffers",
-  "delete-buffer",
-  "show-buffer",
-);
-
-export type DaemonCommand = S.Schema.Type<typeof DaemonCommandSchema>;
-
-export const DaemonRequestSchema = S.Struct({
-  command: DaemonCommandSchema,
-  workspaceCommand: S.optional(S.Unknown),
-  commandValue: S.optional(S.Unknown),
-  expectedRevision: S.optional(S.Int),
-  workspaceContext: S.optional(S.Unknown),
-  bufferName: S.optional(S.String),
-  bufferData: S.optional(S.String),
-  bufferTarget: S.optional(S.String),
-  bufferDelete: S.optional(S.Boolean),
-});
-
-export type DaemonRequest = S.Schema.Type<typeof DaemonRequestSchema>;
-
-export interface DaemonResponse {
-  ok: boolean;
-  error?: string;
-  result?: unknown;
-  session?: SessionState;
-  attached?: boolean;
-  attachedSince?: number;
-  attachLastSeen?: number;
-  agents?: string[];
-  buffers?: readonly BufferEntry[];
-  bufferName?: string;
-  bufferData?: string;
-  workspace?: WorkspaceSnapshot;
-}
-
 export class SessionDaemonError extends S.TaggedError<SessionDaemonError>()("SessionDaemonError", {
   message: S.String,
 }) {}
@@ -128,7 +83,6 @@ export interface SessionDaemonService {
     expectedRevision: number,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<WorkspaceSnapshot, DaemonError>;
-  readonly handle: (request: DaemonRequest) => Effect.Effect<DaemonResponse, never>;
   readonly spawnAgent: (spec: SessionSpec) => Effect.Effect<ManagedSession, DaemonError>;
   readonly killAgent: (id: string) => Effect.Effect<void, DaemonError>;
   readonly liveAgents: () => Effect.Effect<readonly string[], never>;
@@ -184,33 +138,6 @@ function gitWorktreesFor(value: Command, next: WorkspaceSnapshot, current: Works
   }
   return none;
 }
-
-const boundedJson = Effect.fnUntraced(function* (req: Request, limit: number) {
-  const declared = Number(req.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > limit)
-    return yield* new DaemonError({ message: "request body is too large" });
-  const reader = req.body?.getReader();
-  if (!reader) return null;
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for (;;) {
-    const { done, value } = yield* Effect.promise(() => reader.read());
-    if (done) break;
-    length += value.byteLength;
-    if (length > limit) {
-      yield* Effect.promise(() => reader.cancel());
-      return yield* new DaemonError({ message: "request body is too large" });
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return JSON.parse(new TextDecoder().decode(bytes));
-});
 
 const persistUntilSuccess = Effect.fnUntraced(function* (
   persistFn: (state: SessionState) => Effect.Effect<void, unknown>,
@@ -352,7 +279,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     daemonScope,
   );
 
-  let server: ReturnType<typeof Bun.serve> | null = null;
+  /** Holds the control-plane RPC server; its presence means `start` ran. */
+  let controlScope: Scope.CloseableScope | null = null;
   let hostRuntime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError> | null = null;
   let host: AttachHostService | null = null;
   let heartbeatFiber: Fiber.RuntimeFiber<unknown, never> | null = null;
@@ -363,10 +291,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const requireHost = () => {
     if (!host) throw new Error("daemon not started");
     return host;
-  };
-  const requireRuntime = () => {
-    if (!hostRuntime) throw new Error("daemon not started");
-    return hostRuntime;
   };
 
   const persist = options.saveState
@@ -381,6 +305,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       attachedSince: Math.min(...atts.map((a) => a.attachedSince)),
       attachLastSeen: Math.max(...atts.map((a) => a.attachLastSeen)),
       attachments: atts.map((a) => ({ ...a })),
+    };
+  };
+
+  /** The lease carries per-attachment detail; the control plane only reports times. */
+  const attachTimes = (): { attachedSince?: number; attachLastSeen?: number } => {
+    const { attachedSince, attachLastSeen } = attachInfo();
+    return {
+      ...(attachedSince !== undefined ? { attachedSince } : {}),
+      ...(attachLastSeen !== undefined ? { attachLastSeen } : {}),
     };
   };
 
@@ -484,7 +417,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       .pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
 
   const start = Effect.gen(function* () {
-    if (server) return;
+    if (controlScope) return;
     const lease: SessionLease = {
       version: 1,
       session: id,
@@ -575,24 +508,19 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         ),
       );
 
-    server = Bun.serve({
-      unix: paths.socket,
-      fetch: async (req) => {
-        if (req.method !== "POST" || new URL(req.url).pathname !== "/rpc")
-          return new Response("not found", { status: 404 });
-        try {
-          const raw = await Effect.runPromise(boundedJson(req, MAX_RPC_BYTES));
-          const body = S.decodeUnknownSync(DaemonRequestSchema)(raw);
-          const h = requireHost();
-          const result = await requireRuntime().runPromise(
-            handle(body).pipe(Effect.provideService(AttachHost, h)),
-          );
-          return Response.json(result);
-        } catch (e) {
-          return Response.json({ ok: false, error: describe(e) }, { status: 400 });
-        }
-      },
-    });
+    const scope = yield* Scope.make();
+    controlScope = scope;
+    const socketServer = yield* NodeSocketServer.make({ path: paths.socket }).pipe(
+      Scope.extend(scope),
+    );
+    yield* Layer.build(
+      RpcServer.layer(ControlRpcs, { disableTracing: true }).pipe(
+        Layer.provide(RpcServer.layerProtocolSocketServer),
+        Layer.provide(ControlSerialization),
+        Layer.provide(Layer.succeed(SocketServer.SocketServer, socketServer)),
+        Layer.provide(controlHandlers),
+      ),
+    ).pipe(Scope.extend(scope));
 
     heartbeatFiber = yield* Effect.forkIn(
       Effect.forever(
@@ -632,8 +560,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             yield* Fiber.interrupt(heartbeatFiber);
             heartbeatFiber = null;
           }
-          server?.stop();
-          server = null;
+          if (controlScope) {
+            const scope = controlScope;
+            controlScope = null;
+            yield* Scope.close(scope, Exit.void);
+          }
 
           const drained = yield* Effect.raceFirst(
             enqueue(Effect.void).pipe(Effect.as(true)),
@@ -813,162 +744,136 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       }) as Effect.Effect<WorkspaceSnapshot, DaemonError, never>,
     ).pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
 
-  const handle = (req: DaemonRequest) =>
-    Effect.gen(function* () {
-      const failResponse = (reason: string): DaemonResponse => ({ ok: false, error: reason });
+  /**
+   * Every control-plane procedure. `guard` turns failures *and* defects
+   * (notably `requireHost` before `start`) into the typed ControlError, so a
+   * bad request answers the caller instead of tearing the connection down.
+   */
+  const guard = <A>(effect: Effect.Effect<A, unknown>): Effect.Effect<A, ControlError> =>
+    effect.pipe(
+      Effect.catchAllDefect((defect) => Effect.fail(defect)),
+      Effect.mapError((error) => new ControlError({ message: describe(error) })),
+    );
 
-      return yield* Match.value(req.command).pipe(
-        Match.when(
-          "ping",
-          Effect.fnUntraced(function* () {
+  const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
+
+  const controlHandlers = ControlRpcs.toLayer({
+    Ping: () =>
+      guard(
+        Effect.gen(function* () {
+          const cur = yield* Ref.get(daemonState);
+          return { attached: cur.state.attached, ...attachTimes() };
+        }),
+      ),
+
+    Status: () =>
+      guard(
+        Effect.gen(function* () {
+          const cur = yield* Ref.get(daemonState);
+          const obligation = cur.durableObligations.values().next().value as string | undefined;
+          const degraded = obligation ?? cur.heartbeatError ?? undefined;
+          const live = yield* liveAgents();
+          return {
+            attached: cur.state.attached,
+            ...attachTimes(),
+            session: structuredClone(cur.state),
+            workspace: JSON.stringify(cur.workspace),
+            agents: [...live],
+            ...(degraded ? { degraded } : {}),
+          };
+        }),
+      ),
+
+    // The response must be written before shutdown closes the server that is
+    // serving this very request, so the stop runs on a detached fiber.
+    Stop: () =>
+      guard(
+        Effect.forkDaemon(Effect.provideService(stop, Session, session).pipe(Effect.ignore)).pipe(
+          Effect.asVoid,
+        ),
+      ),
+
+    WorkspaceCommand: ({ value, expectedRevision, context }) =>
+      guard(
+        Effect.gen(function* () {
+          const cur = yield* Ref.get(daemonState);
+          const ctx = parseWorkspaceCommandContext(context, cur.workspace);
+          const ws = yield* runWorkspaceCommand(value, expectedRevision, ctx);
+          return JSON.stringify(ws);
+        }),
+      ),
+
+    Run: ({ value, expectedRevision, context }) =>
+      guard(
+        Effect.gen(function* () {
+          const meta = COMMAND_META[value._tag]!;
+          if (meta.target === "view")
+            return yield* controlFail(
+              `command '${value._tag}' is a view command, not remotely invocable`,
+            );
+          if (meta.target === "workspace") {
             const cur = yield* Ref.get(daemonState);
-            return { ok: true, attached: cur.state.attached, ...attachInfo() };
-          }),
-        ),
-        Match.when(
-          "status",
-          Effect.fnUntraced(function* () {
-            const cur = Effect.runSync(Ref.get(daemonState));
-            const perr = cur.durableObligations.values().next().value as string | undefined;
-            const herr = perr ?? cur.heartbeatError ?? undefined;
-            const live = yield* liveAgents().pipe(Effect.orDie);
-            return {
-              ok: herr === undefined,
-              ...(herr ? { error: herr } : {}),
-              session: structuredClone(cur.state),
-              workspace: structuredClone(cur.workspace),
-              attached: cur.state.attached,
-              ...attachInfo(),
-              agents: [...live],
-            };
-          }),
-        ),
-        Match.when(
-          "workspace-command",
-          Effect.fnUntraced(
-            function* () {
-              if (req.expectedRevision === undefined || !req.workspaceContext) {
-                const cur = Effect.runSync(Ref.get(daemonState));
-                return failResponse("workspace-command requires a revision and context");
-              }
-              const decoded = yield* decodeCommand(req.workspaceCommand);
-              const cur = Effect.runSync(Ref.get(daemonState));
-              const ctx = parseWorkspaceCommandContext(req.workspaceContext, cur.workspace);
-              const ws = yield* runWorkspaceCommand(decoded, req.expectedRevision!, ctx);
-              return { ok: true, workspace: ws };
-            },
-            Effect.catchAll((e) => Effect.succeed(failResponse(describe(e)))),
-          ),
-        ),
-        Match.when(
-          "run",
-          Effect.fnUntraced(
-            function* () {
-              if (req.commandValue === undefined)
-                return failResponse("run requires a command value");
-              const decoded = yield* decodeCommand(req.commandValue);
-              const meta = COMMAND_META[decoded._tag]!;
-              if (meta.target === "view")
-                return failResponse(
-                  `command '${decoded._tag}' is a view command, not remotely invocable`,
-                );
-              if (meta.target === "workspace") {
-                if (req.expectedRevision === undefined || !req.workspaceContext) {
-                  const cur = Effect.runSync(Ref.get(daemonState));
-                  const ctx = parseWorkspaceCommandContext(req.workspaceContext ?? {}, cur.workspace)!;
-                  const ws = yield* runWorkspaceCommand(
-                    decoded,
-                    req.expectedRevision ?? cur.workspace.revision,
-                    ctx,
-                  );
-                  return { ok: true, workspace: ws };
-                }
-                const cur = Effect.runSync(Ref.get(daemonState));
-                const ctx = parseWorkspaceCommandContext(req.workspaceContext, cur.workspace);
-                const ws = yield* runWorkspaceCommand(decoded, req.expectedRevision!, ctx);
-                return { ok: true, workspace: ws };
-              }
-              if (meta.target === "buffers") {
-                const h = requireHost();
-                if (decoded._tag === "buffer.set") {
-                  const name = h.buffers.set(decoded.name, decoded.data);
-                  return { ok: true, result: name };
-                }
-                if (decoded._tag === "buffer.list") {
-                  const bufs = h.buffers.list();
-                  return { ok: true, result: bufs.map((b) => ({ name: b.name, bytes: b.bytes, preview: b.preview })) };
-                }
-                if (decoded._tag === "buffer.show") {
-                  const data = new TextDecoder().decode(h.buffers.show(decoded.name));
-                  return { ok: true, result: data };
-                }
-                if (decoded._tag === "buffer.delete") {
-                  h.buffers.delete(decoded.name);
-                  return { ok: true };
-                }
-                return failResponse(`buffer command '${decoded._tag}' is not implemented for run`);
-              }
-              if (meta.target === "server") {
-                if (decoded._tag === "app.quit") {
-                  return yield* Effect.forkDaemon(
-                    Effect.provideService(stop, Session, session).pipe(Effect.ignore),
-                  ).pipe(Effect.as({ ok: true as const } as DaemonResponse));
-                }
-                return failResponse(`server command '${decoded._tag}' is not implemented for run`);
-              }
-              if (meta.target === "session") {
-                return failResponse(`session commands are not yet implemented for run`);
-              }
-              return failResponse(`unknown target for command '${decoded._tag}'`);
-            },
-            Effect.catchAll((e) => Effect.succeed(failResponse(describe(e)))),
-          ),
-        ),
-        Match.when("set-buffer", () => {
-          if (req.bufferData === undefined)
-            return Effect.succeed(failResponse("set-buffer requires data"));
+            const ctx = parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+            const ws = yield* runWorkspaceCommand(
+              value,
+              expectedRevision ?? cur.workspace.revision,
+              ctx,
+            );
+            return { workspace: JSON.stringify(ws) };
+          }
+          if (meta.target === "buffers") {
+            const h = requireHost();
+            switch (value._tag) {
+              case "buffer.set":
+                return { result: h.buffers.set(value.name, value.data) };
+              case "buffer.list":
+                return { result: h.buffers.list().map((b) => ({ ...b })) };
+              case "buffer.show":
+                return { result: new TextDecoder().decode(h.buffers.show(value.name)) };
+              case "buffer.delete":
+                h.buffers.delete(value.name);
+                return {};
+            }
+            return yield* controlFail(`buffer command '${value._tag}' is not implemented for run`);
+          }
+          if (meta.target === "server") {
+            if (value._tag === "app.quit") {
+              yield* Effect.forkDaemon(
+                Effect.provideService(stop, Session, session).pipe(Effect.ignore),
+              );
+              return {};
+            }
+            return yield* controlFail(`server command '${value._tag}' is not implemented for run`);
+          }
+          return yield* controlFail("session commands are not yet implemented for run");
+        }),
+      ),
+
+    SetBuffer: ({ name, data }) => guard(Effect.sync(() => requireHost().buffers.set(name, data))),
+
+    PasteBuffer: ({ name, target, deleteAfter }) =>
+      guard(
+        Effect.gen(function* () {
           const h = requireHost();
-          return Effect.succeed({
-            ok: true,
-            bufferName: h.buffers.set(req.bufferName, req.bufferData),
-          });
+          yield* h.paste(target, h.buffers.show(name));
+          if (deleteAfter === true) h.buffers.delete(name);
         }),
-        Match.when(
-          "paste-buffer",
-          Effect.fnUntraced(
-            function* () {
-              if (!req.bufferTarget) return failResponse("paste-buffer requires a target session");
-              const h = requireHost();
-              yield* h.paste(req.bufferTarget!, h.buffers.show(req.bufferName));
-              if (req.bufferDelete === true) h.buffers.delete(req.bufferName);
-              return { ok: true };
-            },
-            Effect.catchAll((e) => Effect.succeed(failResponse(describe(e)))),
-          ),
+      ),
+
+    ListBuffers: () =>
+      guard(
+        Effect.sync(() =>
+          requireHost()
+            .buffers.list()
+            .map((b) => ({ ...b })),
         ),
-        Match.when("list-buffers", () => {
-          return Effect.succeed({ ok: true, buffers: requireHost().buffers.list() });
-        }),
-        Match.when("delete-buffer", () => {
-          requireHost().buffers.delete(req.bufferName);
-          return Effect.succeed({ ok: true });
-        }),
-        Match.when("show-buffer", () => {
-          return Effect.succeed({
-            ok: true,
-            bufferData: new TextDecoder().decode(requireHost().buffers.show(req.bufferName)),
-          });
-        }),
-        Match.when("stop", () => {
-          // The RPC response must be written before shutdown stops the server
-          // that is handling this request.
-          return Effect.forkDaemon(
-            Effect.provideService(stop, Session, session).pipe(Effect.ignore),
-          ).pipe(Effect.as({ ok: true as const } as DaemonResponse));
-        }),
-        Match.orElse(() => Effect.succeed(failResponse("unknown command"))),
-      );
-    });
+      ),
+
+    DeleteBuffer: ({ name }) => guard(Effect.sync(() => requireHost().buffers.delete(name))),
+
+    ShowBuffer: ({ name }) =>
+      guard(Effect.sync(() => new TextDecoder().decode(requireHost().buffers.show(name)))),
+  });
 
   const spawnAgentService = spawnAgent;
 
@@ -1005,7 +910,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     stop,
     close,
     runWorkspaceCommand,
-    handle,
     spawnAgent: spawnAgentService,
     get killAgent() {
       return killAgent;
@@ -1038,34 +942,4 @@ export const startDaemon = Effect.fnUntraced(function* (
   const daemon = yield* makeDaemonService(id, options);
   yield* daemon.start;
   return daemon;
-});
-
-export const daemonRequest = Effect.fnUntraced(function* (id: string, body: DaemonRequest) {
-  const paths = yield* sessionPaths(id);
-  return yield* Effect.async<DaemonResponse, DaemonError | SessionIdError>((resume) => {
-    const req = httpRequest(
-      {
-        socketPath: paths.socket,
-        path: "/rpc",
-        method: "POST",
-        headers: { "content-type": "application/json" },
-      },
-      (response) => {
-        let text = "";
-        response.setEncoding("utf8");
-        response.on("data", (chunk: string) => (text += chunk));
-        response.on("end", () => {
-          try {
-            resume(Effect.succeed(JSON.parse(text)));
-          } catch (e) {
-            resume(Effect.fail(new DaemonError({ message: describe(e) })));
-          }
-        });
-      },
-    );
-    req.on("error", (e: Error) => {
-      resume(Effect.fail(new DaemonError({ message: e.message })));
-    });
-    req.end(JSON.stringify(body));
-  });
 });

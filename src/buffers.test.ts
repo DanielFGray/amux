@@ -4,7 +4,7 @@
  * The whole point of the buffers living on the server is that copy and paste
  * work with no client attached: the daemon holds the bytes and writes them
  * into its own PTYs. So these tests drive the verbs exactly the way a script
- * would — daemonRequest against the unix socket — and read the result back
+ * would — the @effect/rpc control plane on the unix socket — and read the result back
  * out of a real child process's output.
  */
 
@@ -14,13 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Scope } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
-import {
-  daemonRequest,
-  startDaemon,
-  type DaemonRequest,
-  type DaemonResponse,
-  type SessionDaemonService,
-} from "./daemon.ts";
+import { startDaemon, type SessionDaemonService } from "./daemon.ts";
+import { controlCall, type ControlClient } from "./control-client.ts";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
@@ -52,8 +47,18 @@ async function started(id: string) {
   return { daemon, env };
 }
 
-const rpc = (id: string, request: DaemonRequest, env: NodeJS.ProcessEnv) =>
-  Effect.runPromise(daemonRequest(id, request).pipe(Effect.provideService(SessionEnv, env)));
+const rpc = <A, E>(
+  id: string,
+  use: (control: ControlClient) => Effect.Effect<A, E>,
+  env: NodeJS.ProcessEnv,
+) => Effect.runPromise(controlCall(id, use).pipe(Effect.provideService(SessionEnv, env)));
+
+/** The failure message of a control call that is expected to be refused. */
+const refusal = <A, E>(
+  id: string,
+  use: (control: ControlClient) => Effect.Effect<A, E>,
+  env: NodeJS.ProcessEnv,
+) => rpc(id, (control) => Effect.flip(use(control)), env).then((error) => String(error));
 
 /** A raw client of the attach socket, keeping every output frame it receives. */
 async function attach(path: string, client: string) {
@@ -91,11 +96,10 @@ test("a copy pushed onto the stack pastes into a real pane's PTY", async () => {
   await settle();
 
   // A copy is set-buffer with no name: it becomes the top of the stack.
-  const set = await rpc(daemon.id, { command: "set-buffer", bufferData: "pasted text\n" }, env);
-  expect(set).toEqual({ ok: true, bufferName: "0" });
+  const set = await rpc(daemon.id, (c) => c.SetBuffer({ data: "pasted text\n" }), env);
+  expect(set).toBe("0");
 
-  const pasted = await rpc(daemon.id, { command: "paste-buffer", bufferTarget: "pane" }, env);
-  expect(pasted.ok).toBe(true);
+  await rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env);
   await settle(200);
 
   // `cat` echoes what it receives; raw, because it never enabled bracketed paste.
@@ -111,12 +115,12 @@ test("the stack is a stack: the newest copy is what a default paste reads", asyn
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
-  await rpc(daemon.id, { command: "set-buffer", bufferData: "older\n" }, env);
-  await rpc(daemon.id, { command: "set-buffer", bufferData: "newer\n" }, env);
-  const list = await rpc(daemon.id, { command: "list-buffers" }, env);
-  expect(list.buffers?.map((buffer) => buffer.name)).toEqual(["1", "0"]);
+  await rpc(daemon.id, (c) => c.SetBuffer({ data: "older\n" }), env);
+  await rpc(daemon.id, (c) => c.SetBuffer({ data: "newer\n" }), env);
+  const list = await rpc(daemon.id, (c) => c.ListBuffers(), env);
+  expect(list.map((buffer) => buffer.name)).toEqual(["1", "0"]);
 
-  await rpc(daemon.id, { command: "paste-buffer", bufferTarget: "pane" }, env);
+  await rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env);
   await settle(200);
   expect(output(viewer.frames)).toContain("newer");
   viewer.socket.end();
@@ -128,22 +132,15 @@ test("a named buffer pastes, shows, and deletes by name", async () => {
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
-  await rpc(daemon.id, { command: "set-buffer", bufferName: "clip", bufferData: "named\n" }, env);
-  const shown = await rpc(daemon.id, { command: "show-buffer", bufferName: "clip" }, env);
-  expect(shown).toEqual({ ok: true, bufferData: "named\n" });
+  await rpc(daemon.id, (c) => c.SetBuffer({ name: "clip", data: "named\n" }), env);
+  expect(await rpc(daemon.id, (c) => c.ShowBuffer({ name: "clip" }), env)).toBe("named\n");
 
-  const pasted = await rpc(
-    daemon.id,
-    { command: "paste-buffer", bufferName: "clip", bufferTarget: "pane" },
-    env,
-  );
-  expect(pasted.ok).toBe(true);
+  await rpc(daemon.id, (c) => c.PasteBuffer({ name: "clip", target: "pane" }), env);
   await settle(200);
   expect(output(viewer.frames)).toContain("named");
 
-  await rpc(daemon.id, { command: "delete-buffer", bufferName: "clip" }, env);
-  const after = await rpc(daemon.id, { command: "show-buffer", bufferName: "clip" }, env);
-  expect(after.ok).toBe(false);
+  await rpc(daemon.id, (c) => c.DeleteBuffer({ name: "clip" }), env);
+  expect(await refusal(daemon.id, (c) => c.ShowBuffer({ name: "clip" }), env)).toContain("clip");
   viewer.socket.end();
 });
 
@@ -153,18 +150,12 @@ test("paste-buffer -d deletes the buffer only after it was pasted", async () => 
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
-  await rpc(daemon.id, { command: "set-buffer", bufferData: "gone after\n" }, env);
-  const pasted = await rpc(
-    daemon.id,
-    { command: "paste-buffer", bufferTarget: "pane", bufferDelete: true },
-    env,
-  );
-  expect(pasted.ok).toBe(true);
+  await rpc(daemon.id, (c) => c.SetBuffer({ data: "gone after\n" }), env);
+  await rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane", deleteAfter: true }), env);
   await settle(200);
   expect(output(viewer.frames)).toContain("gone after");
 
-  const list = await rpc(daemon.id, { command: "list-buffers" }, env);
-  expect(list.buffers).toEqual([]);
+  expect(await rpc(daemon.id, (c) => c.ListBuffers(), env)).toEqual([]);
   viewer.socket.end();
 });
 
@@ -186,8 +177,8 @@ test("a paste into a bracketed-paste-enabled child arrives wrapped", async () =>
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
-  await rpc(daemon.id, { command: "set-buffer", bufferData: "bracketed\n" }, env);
-  await rpc(daemon.id, { command: "paste-buffer", bufferTarget: "pane" }, env);
+  await rpc(daemon.id, (c) => c.SetBuffer({ data: "bracketed\n" }), env);
+  await rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env);
   await settle(200);
 
   // cat's output path turns the \n into \r\n (ONLCR); the wrapping is intact.
@@ -200,20 +191,18 @@ test("buffer failures are answers, not crashes", async () => {
   await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   await settle();
 
-  const empty = await rpc(daemon.id, { command: "paste-buffer", bufferTarget: "pane" }, env);
-  expect(empty.ok).toBe(false);
-  expect(empty.error).toContain("no buffers");
-
-  await rpc(daemon.id, { command: "set-buffer", bufferData: "x" }, env);
-  const unknown = await rpc(
-    daemon.id,
-    { command: "paste-buffer", bufferTarget: "no-such-session" },
-    env,
+  expect(await refusal(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env)).toContain(
+    "no buffers",
   );
-  expect(unknown.ok).toBe(false);
-  expect(unknown.error).toContain("unknown session 'no-such-session'");
 
-  const missing = await rpc(daemon.id, { command: "set-buffer" }, env);
-  expect(missing.ok).toBe(false);
-  expect(missing.error).toContain("requires data");
+  await rpc(daemon.id, (c) => c.SetBuffer({ data: "x" }), env);
+  expect(
+    await refusal(daemon.id, (c) => c.PasteBuffer({ target: "no-such-session" }), env),
+  ).toContain("unknown session 'no-such-session'");
+
+  // A missing `data` field is a schema violation, not a refusal: the payload
+  // fails to encode and the request never reaches the daemon at all.
+  await expect(rpc(daemon.id, (c) => c.SetBuffer({} as { data: string }), env)).rejects.toThrow(
+    "is missing",
+  );
 });

@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { Effect, Layer, Schedule, Stream, Schema as S } from "effect";
+import { Effect, Layer, Schedule, Scope, Stream, Schema as S } from "effect";
 import { FileSystem } from "@effect/platform";
 import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SpawnBackend } from "./backend.ts";
-import { daemonRequest, type DaemonResponse } from "./daemon.ts";
+import { connectControl, controlCall } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { Command } from "./commands.ts";
 import {
@@ -55,22 +55,27 @@ export interface SessionClientShape extends DaemonSession {
 }
 
 export class SessionClient extends Effect.Service<SessionClient>()("SessionClient", {
-  scoped: (id: string, options: SessionClientOptions = {}) =>
-    Effect.acquireRelease(make(id, options), (client) => Effect.sync(() => client.close())),
+  scoped: (id: string, options: SessionClientOptions = {}) => make(id, options),
 }) {
   static layer(id: string, options: SessionClientOptions = {}) {
     return Layer.scoped(
       SessionClient,
-      Effect.acquireRelease(make(id, options), (client) => Effect.sync(() => client.close())).pipe(
-        Effect.map((client) => client as SessionClient),
-      ),
+      make(id, options).pipe(Effect.map((client) => client as SessionClient)),
     );
   }
 
+  /**
+   * The control connection lives for the returned client's scope: closing the
+   * scope closes both the attach socket and the RPC socket.
+   */
   static connect(
     id: string,
     options: SessionClientOptions = {},
-  ): Effect.Effect<SessionClientShape, unknown, SessionEnv | Session | FileSystem.FileSystem> {
+  ): Effect.Effect<
+    SessionClientShape,
+    unknown,
+    Scope.Scope | SessionEnv | Session | FileSystem.FileSystem
+  > {
     return make(id, options);
   }
 }
@@ -80,9 +85,12 @@ export interface SessionClient extends SessionClientShape {}
 const make = (
   id: string,
   options: SessionClientOptions,
-): Effect.Effect<SessionClientShape, unknown, SessionEnv | Session | FileSystem.FileSystem> =>
+): Effect.Effect<
+  SessionClientShape,
+  unknown,
+  Scope.Scope | SessionEnv | Session | FileSystem.FileSystem
+> =>
   Effect.gen(function* () {
-    const env = yield* SessionEnv;
     if (options.autostart !== false) yield* ensureDaemon(id);
     const paths = yield* sessionPaths(id);
     const attach = yield* Effect.tryPromise({
@@ -99,25 +107,22 @@ const make = (
           S.is(SessionClientError)(error) && error.message.includes("already attached"),
       }),
     );
-    let status: DaemonResponse;
-    const getStatus = daemonRequest(id, { command: "status" }).pipe(
-      Effect.catchAll((error) =>
-        Effect.gen(function* () {
-          yield* Effect.sync(() => attach.close());
-          return yield* new SessionClientError({
+    yield* Effect.addFinalizer(() => Effect.sync(() => attach.close()));
+
+    // One connection for the client's whole lifetime: the protocol layer is
+    // built into this scope, so every later call reuses the same socket.
+    const control = yield* connectControl(id);
+    const status = yield* control.Status().pipe(
+      Effect.mapError(
+        (error) =>
+          new SessionClientError({
             message: `session '${id}' did not answer status: ${String(error)}`,
-          });
-        }),
+          }),
       ),
     );
-    status = yield* getStatus;
-    if (!status.workspace) {
-      yield* Effect.sync(() => attach.close());
-      return yield* new SessionClientError({ message: "daemon status returned no workspace" });
-    }
     let service!: SessionClientShape;
     const initialWorkspace = yield* Effect.try({
-      try: () => parseWorkspace(status.workspace),
+      try: () => parseWorkspace(JSON.parse(status.workspace)),
       catch: (error) =>
         new SessionClientError({
           message: `daemon returned an invalid workspace: ${String(error)}`,
@@ -141,31 +146,24 @@ const make = (
     service = {
       id,
       attach,
-      session: status.session ?? null,
-      live: new Set(status.agents ?? []),
+      // Decoded from the wire as deeply readonly; the client's shape owns a
+      // mutable copy of it.
+      session: structuredClone(status.session) as SessionState,
+      live: new Set(status.agents),
       workspace: () => structuredClone(workspace),
       models: attach.workspace().pipe(Stream.map(accept)),
       runWorkspace: (command, context) =>
         Effect.tryPromise({
           try: () => {
             const request = async () => {
-              const response = await Effect.runPromise(
-                daemonRequest(id, {
-                  command: "workspace-command",
-                  workspaceCommand: command,
+              const next = await Effect.runPromise(
+                control.WorkspaceCommand({
+                  value: command,
                   expectedRevision: workspace.revision,
-                  workspaceContext: context,
-                }).pipe(Effect.provideService(SessionEnv, env)),
+                  context,
+                }),
               );
-              if (!response.ok)
-                throw new SessionClientError({
-                  message: response.error ?? "workspace command refused",
-                });
-              if (!response.workspace)
-                throw new SessionClientError({
-                  message: "workspace command returned no generation",
-                });
-              accept(parseWorkspace(response.workspace));
+              accept(parseWorkspace(JSON.parse(next)));
               return structuredClone(workspace);
             };
             const queued = commandQueue.then(request);
@@ -178,73 +176,16 @@ const make = (
           catch: (error) => new SessionClientError({ message: String(error) }),
         }),
       backend: () => daemonBackend(service, service.live),
-      setBuffer: (name: string | undefined, data: string) =>
-        daemonRequest(id, { command: "set-buffer", bufferName: name, bufferData: data }).pipe(
-          Effect.provideService(SessionEnv, env),
-          Effect.flatMap((response) =>
-            response.ok
-              ? Effect.succeed(response.bufferName ?? name ?? "")
-              : Effect.fail(
-                  new SessionClientError({ message: response.error ?? "set-buffer refused" }),
-                ),
-          ),
-        ),
-      pasteBuffer: (name: string | undefined, target: string, deleteAfter = false) =>
-        daemonRequest(id, {
-          command: "paste-buffer",
-          bufferName: name,
-          bufferTarget: target,
-          bufferDelete: deleteAfter,
-        }).pipe(
-          Effect.provideService(SessionEnv, env),
-          Effect.flatMap((response) =>
-            response.ok
-              ? Effect.void
-              : Effect.fail(
-                  new SessionClientError({ message: response.error ?? "paste-buffer refused" }),
-                ),
-          ),
-        ),
-      listBuffers: () =>
-        daemonRequest(id, { command: "list-buffers" }).pipe(
-          Effect.provideService(SessionEnv, env),
-          Effect.flatMap((response) =>
-            response.ok
-              ? Effect.succeed(response.buffers ?? [])
-              : Effect.fail(
-                  new SessionClientError({ message: response.error ?? "list-buffers refused" }),
-                ),
-          ),
-        ),
-      deleteBuffer: (name: string | undefined) =>
-        daemonRequest(id, { command: "delete-buffer", bufferName: name }).pipe(
-          Effect.provideService(SessionEnv, env),
-          Effect.flatMap((response) =>
-            response.ok
-              ? Effect.void
-              : Effect.fail(
-                  new SessionClientError({ message: response.error ?? "delete-buffer refused" }),
-                ),
-          ),
-        ),
-      showBuffer: (name: string | undefined) =>
-        daemonRequest(id, { command: "show-buffer", bufferName: name }).pipe(
-          Effect.provideService(SessionEnv, env),
-          Effect.flatMap((response) =>
-            response.ok
-              ? Effect.succeed(response.bufferData ?? "")
-              : Effect.fail(
-                  new SessionClientError({ message: response.error ?? "show-buffer refused" }),
-                ),
-          ),
-        ),
+      setBuffer: (name, data) => control.SetBuffer({ name, data }),
+      pasteBuffer: (name, target, deleteAfter = false) =>
+        control.PasteBuffer({ name, target, deleteAfter }),
+      listBuffers: () => control.ListBuffers(),
+      deleteBuffer: (name) => control.DeleteBuffer({ name }),
+      showBuffer: (name) => control.ShowBuffer({ name }),
       close: () => attach.close(),
-      stop: () =>
-        daemonRequest(id, { command: "stop" }).pipe(
-          Effect.provideService(SessionEnv, env),
-          Effect.catchAll(() => Effect.void),
-          Effect.asVoid,
-        ),
+      // A daemon that dies mid-response is a successful stop, so transport
+      // failures here are expected rather than reported.
+      stop: () => control.Stop().pipe(Effect.catchAll(() => Effect.void)),
     };
     return service;
   });
@@ -255,8 +196,8 @@ export function daemonAlive(
   return Effect.gen(function* () {
     const lease = yield* Session.readLease(id).pipe(Effect.orElseSucceed(() => null));
     if (!lease || !processAlive(lease.pid)) return false;
-    return yield* daemonRequest(id, { command: "ping" }).pipe(
-      Effect.map((response) => response.ok),
+    return yield* controlCall(id, (control) => control.Ping()).pipe(
+      Effect.as(true),
       Effect.orElseSucceed(() => false),
     );
   });

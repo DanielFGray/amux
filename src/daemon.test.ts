@@ -6,8 +6,6 @@ import { Effect, Schema, Scope, Stream } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import {
-  DaemonRequestSchema,
-  daemonRequest,
   makeDaemonService,
   startDaemon,
   type SessionDaemonOptions,
@@ -15,7 +13,9 @@ import {
 } from "./daemon.ts";
 import { Session, SessionEnv, sessionPaths } from "./session.ts";
 import { command } from "./commands.ts";
+import { MAX_RPC_BYTES } from "./limits.ts";
 import { AttachClient } from "./attach.ts";
+import { controlCall, type ControlClient } from "./control-client.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -58,18 +58,19 @@ const rwc =
     ctx: Parameters<SessionDaemonService["runWorkspaceCommand"]>[2],
   ) =>
     Effect.runPromise(d.runWorkspaceCommand(value, rev, ctx));
-const hnd = (d: SessionDaemonService) => (req: Parameters<SessionDaemonService["handle"]>[0]) =>
-  Effect.runPromise(d.handle(req));
+/** One control-plane request over the daemon's real Unix socket. */
+const ctl = <A, E>(
+  id: string,
+  e: NodeJS.ProcessEnv,
+  use: (control: ControlClient) => Effect.Effect<A, E>,
+) => run(controlCall(id, use), e);
 
-test("daemon RPC requests are schema-validated", () => {
-  expect(Schema.decodeUnknownSync(DaemonRequestSchema)({ command: "status" })).toEqual({
-    command: "status",
-  });
-  expect(() =>
-    Schema.decodeUnknownSync(DaemonRequestSchema)({ command: "status", expectedRevision: "1" }),
-  ).toThrow();
-  expect(() => Schema.decodeUnknownSync(DaemonRequestSchema)({ command: "unknown" })).toThrow();
-});
+const status = (d: SessionDaemonService, e: NodeJS.ProcessEnv) =>
+  ctl(d.id, e, (control) => control.Status());
+
+/** The daemon reports itself healthy: no heartbeat or durability complaint. */
+const healthy = async (d: SessionDaemonService, e: NodeJS.ProcessEnv) =>
+  (await status(d, e)).degraded === undefined;
 
 const saveEffect = (save: (state: any, signal: AbortSignal) => Promise<void>) => (state: any) =>
   Effect.tryPromise({ try: (signal) => save(state, signal), catch: (error) => error });
@@ -191,13 +192,10 @@ test("concurrent status reads an empty workspace without racing default creation
   await rwc(d)(command("space.close", { space: ws(d).spaces[0]!.id }), ws(d).revision, context);
   expect(ws(d).spaces).toHaveLength(0);
 
-  const [first, second] = await Promise.all([
-    run(daemonRequest("empty", { command: "status" }), e),
-    run(daemonRequest("empty", { command: "status" }), e),
-  ]);
-  expect(first.ok).toBe(true);
+  const [first, second] = await Promise.all([status(d, e), status(d, e)]);
+  expect(first.degraded).toBeUndefined();
   expect(second.workspace).toEqual(first.workspace);
-  expect(first.workspace?.spaces).toHaveLength(0);
+  expect(JSON.parse(first.workspace).spaces).toHaveLength(0);
   await S(d);
 });
 
@@ -229,12 +227,13 @@ test("the daemon rejects a stale client instead of rebasing its command", async 
   await S(d);
 });
 
-test("unrevisioned spawn and kill RPC commands do not exist", async () => {
+test("the control plane exposes no unrevisioned spawn or kill procedure", async () => {
   const e = await env();
   const d = await open("no-bypass", e);
   const before = await Effect.runPromise(d.liveAgents());
-  expect((await hnd(d)({ command: "spawn" } as any)).error).toBe("unknown command");
-  expect((await hnd(d)({ command: "kill" } as any)).error).toBe("unknown command");
+  // The group is the whole surface: anything outside it is refused by the
+  // server before a handler exists to run it.
+  await expect(ctl(d.id, e, (c) => (c as any).Spawn({}))).rejects.toThrow();
   expect(await Effect.runPromise(d.liveAgents())).toEqual(before);
   await S(d);
 });
@@ -242,15 +241,13 @@ test("unrevisioned spawn and kill RPC commands do not exist", async () => {
 test("RPC rejects aggregate command bodies before decoding their payload", async () => {
   const e = await env();
   const d = await open("bounded-rpc", e);
-  const response = await run(
-    daemonRequest("bounded-rpc", {
-      command: "set-buffer",
-      bufferData: "x".repeat(1_048_577),
-    }),
-    e,
-  );
-  expect(response.ok).toBe(false);
-  expect(response.error).toContain("too large");
+  // The NDJSON framer tears the connection down before the oversized line is
+  // ever parsed, so an over-limit request fails rather than being served.
+  await expect(
+    ctl("bounded-rpc", e, (c) => c.SetBuffer({ data: "x".repeat(MAX_RPC_BYTES) })),
+  ).rejects.toThrow();
+  // The daemon is still serving afterwards.
+  expect(await healthy(d, e)).toBe(true);
   await S(d);
 });
 
@@ -348,8 +345,8 @@ test("a prepared session is absent from status and subscribers until its model i
   // and runHead would consume that stale frame immediately.
   await Bun.sleep(30);
   const terminal = Effect.runPromise(Stream.runHead(subscriber.stream(preparedId)));
-  const status = await hnd(daemon)({ command: "status" });
-  expect(status.agents).toEqual([...beforeLive]);
+  const live = await status(daemon, e);
+  expect(live.agents).toEqual([...beforeLive]);
   expect(await Effect.runPromise(daemon.liveAgents())).toEqual(beforeLive);
   expect(
     await Promise.race([model.then(() => "published"), Bun.sleep(30).then(() => "private")]),
@@ -386,7 +383,7 @@ test("a one-shot reversible write failure does not poison the next command", asy
   await expect(
     rwc(daemon)(command("pane.split", { axis: "row" }), revision, context),
   ).rejects.toThrow("one-shot candidate failure");
-  expect((await hnd(daemon)({ command: "status" })).ok).toBe(true);
+  expect(await healthy(daemon, e)).toBe(true);
   const recovered = await rwc(daemon)(command("pane.split", { axis: "row" }), revision, context);
   expect(recovered.spaces[0]!.windows[0]!.agents).toHaveLength(2);
   await S(daemon);
@@ -509,7 +506,7 @@ test("a destructive commit retries its single durable write after process comple
   await rwc(daemon)(command("agent.kill", { agent }), ws(daemon).revision, context);
   expect(failed).toBe(true);
   expect(ws(daemon).spaces).toHaveLength(0);
-  expect((await hnd(daemon)({ command: "status" })).ok).toBe(true);
+  expect(await healthy(daemon, e)).toBe(true);
   await S(daemon);
 });
 
@@ -641,19 +638,17 @@ test("heartbeat failure is visible and the heartbeat stops with the daemon scope
   await mkdir(p.lease);
 
   const failedBy = Date.now() + 3_500;
-  let status = await hnd(daemon)({ command: "status" });
-  while (status.ok && Date.now() < failedBy) {
+  let report = await status(daemon, e);
+  while (report.degraded === undefined && Date.now() < failedBy) {
     await Bun.sleep(10);
-    status = await hnd(daemon)({ command: "status" });
+    report = await status(daemon, e);
   }
-  expect(status.ok).toBe(false);
-  expect(status.error).toContain("lease heartbeat failed");
+  expect(report.degraded).toContain("lease heartbeat failed");
 
   await rm(p.lease, { recursive: true, force: true });
   const recoveredBy = Date.now() + 3_500;
-  while (!(await hnd(daemon)({ command: "status" })).ok && Date.now() < recoveredBy)
-    await Bun.sleep(10);
-  expect((await hnd(daemon)({ command: "status" })).ok).toBe(true);
+  while (!(await healthy(daemon, e)) && Date.now() < recoveredBy) await Bun.sleep(10);
+  expect(await healthy(daemon, e)).toBe(true);
 
   await C(daemon);
   await Bun.sleep(1_100);
@@ -720,7 +715,7 @@ test("a transient natural-exit write failure retries before making the exit visi
   expect(
     ws(daemon).spaces[0]!.windows[0]!.agents.some((agent) => agent.exited && agent.exitCode === 7),
   ).toBe(true);
-  expect((await hnd(daemon)({ command: "status" })).ok).toBe(true);
+  expect(await healthy(daemon, e)).toBe(true);
   await S(daemon);
 });
 
@@ -743,13 +738,12 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
     shell: ["sh", "-c", "exit 0"],
   });
   const deadline = Date.now() + 2_000;
-  let status = await hnd(daemon)({ command: "status" });
-  while (!status.error?.includes("disk offline") && Date.now() < deadline) {
+  let report = await status(daemon, e);
+  while (!report.degraded?.includes("disk offline") && Date.now() < deadline) {
     await Bun.sleep(10);
-    status = await hnd(daemon)({ command: "status" });
+    report = await status(daemon, e);
   }
-  expect(status.ok).toBe(false);
-  expect(status.error).toContain("disk offline");
+  expect(report.degraded).toContain("disk offline");
   const p = await paths("exit-unhealthy", e);
   let attached = false;
   const connecting = AttachClient.connect({ path: p.attach, client: "blocked-metadata" }).then(
@@ -760,13 +754,12 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
   );
   await Bun.sleep(30);
   expect(attached).toBe(false);
-  expect((await hnd(daemon)({ command: "status" })).ok).toBe(false);
+  expect(await healthy(daemon, e)).toBe(false);
   unavailable = false;
   const client = await connecting;
   const recovered = Date.now() + 2_000;
-  while (!(await hnd(daemon)({ command: "status" })).ok && Date.now() < recovered)
-    await Bun.sleep(10);
-  expect((await hnd(daemon)({ command: "status" })).ok).toBe(true);
+  while (!(await healthy(daemon, e)) && Date.now() < recovered) await Bun.sleep(10);
+  expect(await healthy(daemon, e)).toBe(true);
   client.close();
   await S(daemon);
 });
@@ -927,12 +920,12 @@ test("a blocked daemon write does not starve timers, RPC, or shutdown", async ()
       timerRan = true;
     }, 25);
     const response = await Promise.race([
-      run(daemonRequest("responsive", { command: "ping" }), e),
+      ctl("responsive", e, (c) => c.Ping()),
       Bun.sleep(1000).then(() => {
         throw new Error("RPC deadline exceeded");
       }),
     ]);
-    expect(response.ok).toBe(true);
+    expect(response.attached).toBe(false);
     await Bun.sleep(40);
     expect(timerRan).toBe(true);
     await Effect.runPromise(daemon.killAgent("blocked"));

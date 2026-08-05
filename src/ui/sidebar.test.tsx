@@ -37,6 +37,8 @@ const SHELL = ["bash", "--norc", "--noprofile"];
 
 const daemons: SessionDaemonService[] = [];
 const clients: SessionClientShape[] = [];
+/** A session client's control and attach sockets live in its scope. */
+const clientScopes: Scope.CloseableScope[] = [];
 const dirs: string[] = [];
 const run = <A,>(
   effect: Effect.Effect<A, unknown, SessionEnv | Session | FileSystem.FileSystem>,
@@ -51,6 +53,8 @@ const run = <A,>(
   );
 afterEach(async () => {
   for (const client of clients.splice(0)) client.close();
+  for (const scope of clientScopes.splice(0))
+    await Effect.runPromise(Scope.close(scope, Exit.void)).catch(() => {});
   for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
@@ -276,8 +280,13 @@ test("an agent whose daemon attachment is lost is distinct from idle and done", 
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv;
   const daemon = await run(Effect.scoped(startDaemon("sidebar-detach")), env);
   daemons.push(daemon);
+  const clientScope = Effect.runSync(Scope.make());
+  clientScopes.push(clientScope);
   const client = await run(
-    SessionClient.connect("sidebar-detach", { client: "ui", autostart: false }),
+    Scope.extend(
+      SessionClient.connect("sidebar-detach", { client: "ui", autostart: false }),
+      clientScope,
+    ),
     env,
   );
   clients.push(client);

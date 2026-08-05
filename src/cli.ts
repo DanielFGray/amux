@@ -9,19 +9,19 @@
  * - `amux <command> [args]` — invoke a remote command via the daemon RPC
  * - `amux help` — show usage
  */
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Session, SessionEnv, isSessionId } from "./session.ts";
-import { daemonRequest } from "./daemon.ts";
-import { command, COMMAND_META, decodeCommand, type CommandTag } from "./commands.ts";
+import { controlCall } from "./control-client.ts";
+import { COMMAND_META, Command, type CommandTag } from "./commands.ts";
 import { parseArgs, generateHelp } from "./command-cli.ts";
 
 function isCommandTag(s: string): s is CommandTag {
   return s in COMMAND_META;
 }
 
-const runRpc = (id: string, body: unknown) =>
-  daemonRequest(id, body as any).pipe(
+const runRpc = (id: string, value: Command) =>
+  controlCall(id, (control) => control.Run({ value })).pipe(
     Effect.provide(Session.Default),
     Effect.provide(BunFileSystem.layer),
     Effect.provideService(SessionEnv, process.env),
@@ -42,27 +42,12 @@ async function runCommand(id: string, tag: CommandTag, argv: string[]): Promise<
   if (!parsed) return 2;
 
   try {
-    const cmdVal = { _tag: tag, ...parsed };
-    const result = await Effect.runPromise(
-      runRpc(id, {
-        command: "run",
-        commandValue: cmdVal,
-      }),
-    );
+    const value = Schema.decodeUnknownSync(Command)({ _tag: tag, ...parsed });
+    const { result } = await Effect.runPromise(runRpc(id, value));
 
-    if (!result.ok) {
-      console.error(`error: ${result.error ?? "command refused"}`);
-      return 1;
-    }
-
-    if (result.result !== undefined) {
-      if (typeof result.result === "object")
-        process.stdout.write(JSON.stringify(result.result, null, 2) + "\n");
-      else process.stdout.write(String(result.result) + "\n");
-    }
-
-    if (result.workspace) {
-      // workspace-targeted commands return the new workspace snapshot too
+    if (result !== undefined) {
+      if (typeof result === "object") process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      else process.stdout.write(String(result) + "\n");
     }
 
     return 0;
@@ -115,5 +100,5 @@ async function main(): Promise<number> {
 }
 
 if (import.meta.main) {
-  main().then((code) => process.exitCode = code);
+  main().then((code) => (process.exitCode = code));
 }

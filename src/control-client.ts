@@ -1,0 +1,60 @@
+/**
+ * The client half of the control plane.
+ *
+ * The protocol layer must be built into the *caller's* scope, not into an
+ * ephemeral one: `Effect.provide(layer)` would close the socket the moment
+ * `RpcClient.make` returned, and every later call would fail on a dead
+ * connection. Long-lived callers (`SessionClient`) build it once for their
+ * lifetime; one-shot callers (`amux status`, liveness probes) use
+ * {@link controlCall}, which opens and closes a connection per request.
+ */
+import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
+import * as RpcClient from "@effect/rpc/RpcClient";
+import type { RpcClientError } from "@effect/rpc/RpcClientError";
+import type * as RpcGroup from "@effect/rpc/RpcGroup";
+import { Effect, Layer, Scope } from "effect";
+import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
+import { SessionEnv, sessionPaths } from "./session.ts";
+
+/**
+ * Every procedure of the group. Each call fails with the daemon's typed
+ * ControlError or with RpcClientError when the connection itself breaks.
+ */
+export type ControlClient = RpcClient.RpcClient<RpcGroup.Rpcs<typeof ControlRpcs>, RpcClientError>;
+
+/** All a control connection needs is the env that resolves the session socket. */
+export type ControlEnv = SessionEnv;
+
+/**
+ * Open a control connection to a session's Unix socket, alive for the
+ * enclosing scope.
+ */
+export const connectControl = (
+  id: string,
+): Effect.Effect<ControlClient, ControlError, Scope.Scope | ControlEnv> =>
+  Effect.gen(function* () {
+    const paths = yield* sessionPaths(id);
+    const protocol = RpcClient.layerProtocolSocket().pipe(
+      Layer.provide(NodeSocket.layerNet({ path: paths.socket })),
+      Layer.provide(ControlSerialization),
+    );
+    const context = yield* Layer.build(protocol);
+    return yield* RpcClient.make(ControlRpcs, { disableTracing: true }).pipe(
+      Effect.provide(context),
+    );
+  }).pipe(Effect.mapError(toControlError));
+
+/** One request against a live daemon, on a connection that dies with it. */
+export const controlCall = <A, E>(
+  id: string,
+  use: (client: ControlClient) => Effect.Effect<A, E>,
+): Effect.Effect<A, ControlError | E, ControlEnv> =>
+  Effect.scoped(Effect.flatMap(connectControl(id), use));
+
+/** Collapse transport and protocol failures onto the control plane's one error. */
+export const toControlError = (error: unknown): ControlError =>
+  error instanceof ControlError
+    ? error
+    : new ControlError({
+        message: error instanceof Error ? error.message : String(error),
+      });

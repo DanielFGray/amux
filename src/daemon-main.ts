@@ -16,9 +16,12 @@ import { Session, SessionEnv } from "./session.ts";
  */
 export function runDaemonMain(id?: string): void {
   const program = Effect.gen(function* () {
-    const daemon = yield* Effect.acquireRelease(startDaemon(id), (daemon) =>
-      daemon.stop.pipe(Effect.ignore),
-    );
+    // Not `acquireRelease`: its acquire is uninterruptible, and binding the
+    // control socket races the listen against the server's error signal —
+    // a race that can never be decided where interruption is disabled.
+    // `startDaemon` already unwinds its own partial state on failure.
+    const daemon = yield* startDaemon(id);
+    yield* Effect.addFinalizer(() => daemon.stop.pipe(Effect.ignore));
     return yield* Effect.never;
   });
 

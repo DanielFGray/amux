@@ -173,7 +173,7 @@ const WorkspaceSnapshotShape = Schema.Struct({
 });
 export const WorkspaceSnapshotJson = Schema.parseJson(WorkspaceSnapshotShape);
 
-const WorkspaceCommandContextShape = Schema.Struct({
+export const WorkspaceCommandContextSchema = Schema.Struct({
   size: TerminalSize,
   shell: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),
   cwd: NonEmptyString,
@@ -377,7 +377,7 @@ export function parseWorkspaceCommandContext(
   value: unknown,
   workspace?: WorkspaceSnapshot,
 ): WorkspaceCommandContext {
-  Schema.decodeUnknownSync(WorkspaceCommandContextShape)(value);
+  Schema.decodeUnknownSync(WorkspaceCommandContextSchema)(value);
   if (
     !record(value) ||
     !record(value.size) ||
@@ -916,8 +916,6 @@ export function applyWorkspaceCommand(
     changed,
   };
 }
-
-
 
 /** Natural PTY exit is a daemon-side model mutation too. */
 export function markAgentExited(

@@ -15,6 +15,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
+import { controlCall, type ControlClient } from "./control-client.ts";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
@@ -40,14 +41,23 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
+const envs = new Map<string, NodeJS.ProcessEnv>();
+
 async function started(id: string) {
   const home = await mkdtemp(join(tmpdir(), "amux-attach-host-"));
   dirs.push(home);
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") };
   const daemon = await run(Effect.scoped(startDaemon(id)), env);
   daemons.push(daemon);
+  envs.set(daemon.id, env);
   return daemon;
 }
+
+/** One control-plane request over the daemon's real Unix socket. */
+const control = <A, E>(
+  daemon: SessionDaemonService,
+  use: (client: ControlClient) => Effect.Effect<A, E>,
+) => run(controlCall(daemon.id, use), envs.get(daemon.id)!);
 
 /** A client of the attach socket that keeps every frame it was sent. */
 async function client(path: string, hello: string, extra: string = "") {
@@ -245,23 +255,23 @@ test("the daemon tracks when the attached client was last seen", async () => {
   const attached = await client(daemon.paths.attach, "watcher");
   await settle();
 
-  const claimed = await Effect.runPromise(daemon.handle({ command: "ping" }));
-  expect(claimed.ok).toBe(true);
+  const claimed = await control(daemon, (c) => c.Ping());
+  expect(claimed.attached).toBe(true);
   expect(claimed.attachedSince).toBeGreaterThan(0);
   expect(claimed.attachLastSeen).toBeGreaterThan(0);
 
   // Any inbound frame refreshes last-seen — a heartbeat above all, because an
   // attached UI showing an idle agent sends nothing else for hours.
-  const before = (await Effect.runPromise(daemon.handle({ command: "ping" }))).attachLastSeen!;
+  const before = (await control(daemon, (c) => c.Ping())).attachLastSeen!;
   attached.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "keepalive" }));
   await settle(25);
-  const after = (await Effect.runPromise(daemon.handle({ command: "ping" }))).attachLastSeen!;
+  const after = (await control(daemon, (c) => c.Ping())).attachLastSeen!;
   expect(after).toBeGreaterThan(before);
 
   // Detach clears the freshness along with the attachment itself.
   attached.socket.end();
   await settle();
-  const released = await Effect.runPromise(daemon.handle({ command: "ping" }));
+  const released = await control(daemon, (c) => c.Ping());
   expect(released.attached).toBe(false);
   expect(released.attachedSince).toBeUndefined();
   expect(released.attachLastSeen).toBeUndefined();

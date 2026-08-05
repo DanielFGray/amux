@@ -9,7 +9,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Exit, Scope } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -31,12 +31,24 @@ import {
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
 import { command } from "./commands.ts";
+import { controlCall } from "./control-client.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
 const attachedClient = (d: SessionDaemonService) => Effect.runPromise(d.getAttachedClient);
 const attachedClients = (d: SessionDaemonService) => Effect.runPromise(d.getAttachedClients);
 const clients: SessionClientShape[] = [];
+/** A client's control and attach sockets live in its scope, so tests own one. */
+const scopes: Scope.CloseableScope[] = [];
+const connect = (
+  id: string,
+  env: NodeJS.ProcessEnv,
+  options: { client?: string; autostart?: boolean } = {},
+) => {
+  const scope = Effect.runSync(Scope.make());
+  scopes.push(scope);
+  return run(Scope.extend(SessionClient.connect(id, options), scope), env);
+};
 const agents: Agent[] = [];
 let nextProjection = 0;
 const run = <A>(
@@ -54,6 +66,8 @@ const run = <A>(
 afterEach(async () => {
   for (const agent of agents.splice(0)) agent.dispose();
   for (const client of clients.splice(0)) client.close();
+  for (const scope of scopes.splice(0))
+    await Effect.runPromise(Scope.close(scope, Exit.void)).catch(() => {});
   for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
@@ -69,7 +83,7 @@ async function session(id: string) {
 
 /** Attach as a client of an already-running daemon. */
 async function attach(id: string, env: NodeJS.ProcessEnv, client = "ui") {
-  const connected = await run(SessionClient.connect(id, { client, autostart: false }), env);
+  const connected = await connect(id, env, { client, autostart: false });
   clients.push(connected);
   return connected;
 }
@@ -180,7 +194,14 @@ test("two clients share output and input, and one can leave without detaching th
     () => screen(secondAgent).includes("still-shared"),
     "the remaining client to keep working",
   );
-  expect((await Effect.runPromise(daemon.handle({ command: "ping" }))).attached).toBe(true);
+  expect(
+    (
+      await run(
+        controlCall(daemon.id, (c) => c.Ping()),
+        env,
+      )
+    ).attached,
+  ).toBe(true);
 });
 
 test("an agent outlives the client, and the next client adopts it", async () => {
@@ -987,7 +1008,7 @@ test("a daemon started on demand keeps agents between two separate clients", asy
   const env = { ...process.env, HOME: home, XDG_STATE_HOME: join(home, "state") };
   const id = "autostart";
 
-  const first = await run(SessionClient.connect(id, { client: "first" }), env);
+  const first = await connect(id, env, { client: "first" });
   try {
     const lease = await run(Session.readLease(id), env);
     expect(lease?.pid).toBeGreaterThan(0);
@@ -1001,7 +1022,7 @@ test("a daemon started on demand keeps agents between two separate clients", asy
     first.close();
 
     // A second client, with no memory of the first, finds the agent still there.
-    const second = await run(SessionClient.connect(id, { client: "second" }), env);
+    const second = await connect(id, env, { client: "second" });
     expect(second.live).toContain(agent.id);
     const readopted = new Agent({ ...saved, backend: second.backend() });
     agents.push(readopted);
@@ -1164,7 +1185,11 @@ test("a transient natural-exit write failure does not consume the terminal exit 
     }),
   );
   await until(
-    () => Effect.runPromise(daemon.handle({ command: "status" })).then((status) => !status.ok),
+    () =>
+      run(
+        controlCall(daemon.id, (c) => c.Status()),
+        env,
+      ).then((status) => status.degraded !== undefined),
     "the persistence failure to surface",
   );
   await rm(p.backup, { recursive: true, force: true });
