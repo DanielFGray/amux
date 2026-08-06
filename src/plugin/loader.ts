@@ -5,6 +5,11 @@ import { isAbsolute, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost } from "./host.ts";
+import { sidebarPlugin } from "./builtin/sidebar.tsx";
+
+const BUILTIN_PLUGINS: Readonly<Record<string, PluginDefinition>> = {
+  "builtin:amux.sidebar": sidebarPlugin,
+};
 
 function resolvePluginPath(specPath: string, configDir: string): string | null {
   if (specPath.startsWith("file://")) {
@@ -51,6 +56,12 @@ export function loadPluginsFromConfig(
   return Effect.gen(function* () {
     for (const spec of config.plugins) {
       if (!spec.enabled) continue;
+
+      const builtin = BUILTIN_PLUGINS[spec.path];
+      if (builtin) {
+        yield* host.add(builtin).pipe(Effect.catchAllCause(() => Effect.void));
+        continue;
+      }
 
       const resolved = resolvePluginPath(spec.path, configDir);
       if (!resolved) {

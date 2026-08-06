@@ -30,7 +30,7 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   options: {},
   keys: { leader: DEFAULT_LEADER, bindings: {} },
-  plugins: [],
+  plugins: [{ path: "builtin:amux.sidebar", enabled: true }],
 };
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config");
@@ -53,7 +53,10 @@ export function decodeConfig(loaded: unknown): Config {
   return {
     options: isRecord(loaded.options) ? { ...loaded.options } : {},
     keys: sanitizeKeys(loaded.keys),
-    plugins: sanitizePlugins(loaded.plugins),
+    plugins:
+      loaded.plugins === undefined
+        ? structuredClone(DEFAULT_CONFIG.plugins)
+        : sanitizePlugins(loaded.plugins),
   };
 }
 

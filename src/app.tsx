@@ -64,7 +64,6 @@ import { createPanelContext, type PanelContext } from "./ui/panel.ts";
 import { App } from "./ui/App.tsx";
 import { createRegions } from "./ui/regions.tsx";
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
-import { sidebarPlugin } from "./plugin/builtin/sidebar.tsx";
 import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
@@ -151,7 +150,6 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       (app) => app.release,
     );
     const pluginHost = yield* createPluginHost(app.panel, regions);
-    yield* pluginHost.add(sidebarPlugin);
     yield* loadPluginsFromConfig(
       options.config,
       pluginHost,

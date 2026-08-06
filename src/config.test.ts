@@ -47,6 +47,14 @@ test("an empty file is every default", () => {
   expect(resolveOptions(decodeConfig({}).options)["sidebar.width"]).toBe(30);
 });
 
+test("the default sidebar is an ordinary enabled plugin spec", () => {
+  expect(DEFAULT_CONFIG.plugins).toEqual([{ path: "builtin:amux.sidebar", enabled: true }]);
+  expect(decodeConfig({}).plugins).toEqual(DEFAULT_CONFIG.plugins);
+  expect(
+    decodeConfig({ plugins: [{ path: "builtin:amux.sidebar", enabled: false }] }).plugins,
+  ).toEqual([{ path: "builtin:amux.sidebar", enabled: false }]);
+});
+
 test("a changed config survives save and load", async () => {
   const path = await temporaryConfig();
   const config = decodeConfig({
