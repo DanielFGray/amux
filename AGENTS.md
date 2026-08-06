@@ -24,8 +24,8 @@ workspace model.
 ## Vocabulary
 
 session: daemon-owned backend (supervised PTY today, agent later)
-pane:    view of a session in a layout
-agent:   LLM coding agent — never the supervised PTY
+pane: view of a session in a layout
+agent: LLM coding agent — never the supervised PTY
 workspace: renderer-free transform model (the thing the daemon owns)
 
 ## Code conventions
@@ -55,6 +55,7 @@ bun run cli           # unified `amux` CLI entry
 ```
 
 Tasks live in `prog`:
+
 ```bash
 prog prime                    # workflow context
 prog ready -p amux  # unblocked tasks
@@ -77,6 +78,7 @@ prog ready -p amux  # unblocked tasks
 ## Referenced projects
 
 Available in sibling directories:
+
 - fibrae/ — Effect-powered JSX renderer
 - pg-sourcerer/ — codegen tool
 - effect-devtui/ — otel collector TUI and MCP

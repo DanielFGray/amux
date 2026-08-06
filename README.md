@@ -39,7 +39,7 @@ rename. The daemon directory also has an atomic ownership lock and a lease
 containing its PID and heartbeat.
 
 Two sockets do different jobs. The RPC socket answers questions about the
-session and hangs up; the attach socket *is* an attachment — a client holds it
+session and hangs up; the attach socket _is_ an attachment — a client holds it
 open and PTY bytes flow both ways over it as newline-framed JSON frames
 (`output`, `input`, `resize`, `exit`, `ping`/`pong`, plus `sync`). Workspace
 generations use a separate `workspace` frame tag and never masquerade as
@@ -51,9 +51,9 @@ included, alternate screen and all) before the live bytes, so a reattaching
 pane is not blank until the program next redraws.
 
 Surviving vocabulary (the attach protocol was renamed off `agent`): a
-*session* is a daemon-owned backend instance — a supervised PTY today, an LLM
+_session_ is a daemon-owned backend instance — a supervised PTY today, an LLM
 coding-agent session later — and every attach-frame field named `session`
-identifies one; a *pane* is a view of a session in a layout; *agent* means an
+identifies one; a _pane_ is a view of a session in a layout; _agent_ means an
 LLM coding agent, never the supervised PTY.
 
 The daemon migration uses Effect at the ownership boundary. `SessionRegistry.ts`

@@ -500,9 +500,7 @@ const makeScoped = (
           () => Effect.sync(() => acquired?.close()),
         ).pipe(
           Effect.tap((client) =>
-            client
-              ._heartbeatEffect(options.pingSeconds ?? PING_SECONDS)
-              .pipe(Effect.forkScoped),
+            client._heartbeatEffect(options.pingSeconds ?? PING_SECONDS).pipe(Effect.forkScoped),
           ),
         );
       }),

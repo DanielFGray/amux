@@ -6,16 +6,7 @@
  * transactions; this service owns no I/O beyond the queue consumer fiber.
  */
 
-import {
-  Context,
-  Deferred,
-  Effect,
-  Layer,
-  Queue,
-  Ref,
-  Schema as S,
-  Scope,
-} from "effect";
+import { Context, Deferred, Effect, Layer, Queue, Ref, Schema as S, Scope } from "effect";
 import type { DaemonEventPayload } from "./EventBus.ts";
 import type { SessionAttachment, SessionState } from "../session.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
@@ -82,9 +73,10 @@ export interface DaemonModelService {
 
 export class DaemonModel extends Context.Tag("DaemonModel")<DaemonModel, DaemonModelService>() {}
 
-export const layerDaemonModel = (
-  initial: { state: SessionState; workspace: WorkspaceSnapshot },
-): Layer.Layer<DaemonModel, never, Scope.Scope> =>
+export const layerDaemonModel = (initial: {
+  state: SessionState;
+  workspace: WorkspaceSnapshot;
+}): Layer.Layer<DaemonModel, never, Scope.Scope> =>
   Layer.scoped(
     DaemonModel,
     Effect.gen(function* () {
@@ -99,7 +91,7 @@ export const layerDaemonModel = (
       });
 
       const mutationQueue = yield* Queue.unbounded<Mutation>();
-       yield* Effect.forkScoped(
+      yield* Effect.forkScoped(
         Effect.forever(
           Queue.take(mutationQueue).pipe(
             Effect.flatMap((m) =>
@@ -222,7 +214,10 @@ export const layerDaemonModel = (
 
       const markClosing = Ref.update(daemonRef, (s) => ({ ...s, closing: true }));
       const isClosing = Ref.get(daemonRef).pipe(Effect.map((s) => s.closing));
-      const markCancelPersistence = Ref.update(daemonRef, (s) => ({ ...s, cancelPersistence: true }));
+      const markCancelPersistence = Ref.update(daemonRef, (s) => ({
+        ...s,
+        cancelPersistence: true,
+      }));
 
       const setHeartbeatError = (error: string | null) =>
         Ref.update(daemonRef, (s) => ({ ...s, heartbeatError: error }));

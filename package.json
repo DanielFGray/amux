@@ -1,20 +1,20 @@
 {
   "name": "@danielfgray/amux",
-  "module": "src/main.tsx",
   "version": "0.1.0",
-  "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/danielfgray/amux"
   },
-  "files": ["src", "README.md"],
-  "engines": {
-    "bun": ">=1.1.0"
-  },
   "bin": {
     "amux": "./src/cli.ts"
   },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "type": "module",
+  "module": "src/main.tsx",
   "scripts": {
     "start": "bun src/main.tsx",
     "daemon": "bun src/daemon-main.ts",
@@ -27,6 +27,14 @@
     "e2e": "bun test e2e",
     "prepare": "effect-tsgo patch --typescript --oxlint"
   },
+  "dependencies": {
+    "@effect/platform-bun": "0.91.2",
+    "@opentui/core": "^0.4.5",
+    "@opentui/keymap": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "effect": "^3.22.1",
+    "solid-js": "^1.9.14"
+  },
   "devDependencies": {
     "@effect/tsgo": "0.31.0",
     "@effect/vitest": "^0.30.0",
@@ -36,12 +44,7 @@
     "oxlint-tsgolint": "7.0.2001",
     "typescript": "^7.0.2"
   },
-  "dependencies": {
-    "@effect/platform-bun": "0.91.2",
-    "@opentui/core": "^0.4.5",
-    "@opentui/keymap": "0.4.5",
-    "@opentui/solid": "0.4.5",
-    "effect": "^3.22.1",
-    "solid-js": "^1.9.14"
+  "engines": {
+    "bun": ">=1.1.0"
   }
 }

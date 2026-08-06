@@ -45,10 +45,16 @@ test("parseArgs reports unknown flags", () => {
 
 test("parseArgs handles optional command args with all flags", () => {
   const result = parseArgs("space.new", [
-    "--name=myname", "--dir=/tmp", "--branch=feat", "--base=main",
+    "--name=myname",
+    "--dir=/tmp",
+    "--branch=feat",
+    "--base=main",
   ]);
   expect(result.parsed).toEqual({
-    name: "myname", dir: "/tmp", branch: "feat", base: "main",
+    name: "myname",
+    dir: "/tmp",
+    branch: "feat",
+    base: "main",
   });
   expect(result.errors).toEqual([]);
 });

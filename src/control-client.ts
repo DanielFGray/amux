@@ -59,8 +59,11 @@ export const controlCall = <A, E>(
  */
 export const controlEvents = (
   id: string,
-): Effect.Effect<Stream.Stream<DaemonEventPayload, unknown>, ControlError, Scope.Scope | ControlEnv> =>
-  Effect.map(controlEventFrames(id), (events) => events.pipe(Stream.map(({ event }) => event)));
+): Effect.Effect<
+  Stream.Stream<DaemonEventPayload, unknown>,
+  ControlError,
+  Scope.Scope | ControlEnv
+> => Effect.map(controlEventFrames(id), (events) => events.pipe(Stream.map(({ event }) => event)));
 
 /** Subscribe while retaining sequence numbers for gap detection. */
 export const controlEventFrames = (
@@ -73,7 +76,11 @@ export const filterControlEvents = <T extends DaemonEventPayload["_tag"]>(
   events: Stream.Stream<DaemonEventPayload, unknown>,
   tag: T,
 ): Stream.Stream<Extract<DaemonEventPayload, { readonly _tag: T }>, unknown> =>
-  events.pipe(Stream.filter((event): event is Extract<DaemonEventPayload, { readonly _tag: T }> => event._tag === tag));
+  events.pipe(
+    Stream.filter(
+      (event): event is Extract<DaemonEventPayload, { readonly _tag: T }> => event._tag === tag,
+    ),
+  );
 
 /** Return the number of events missed between two retained bus frames. */
 export const eventGap = (previous: DaemonEvent, current: DaemonEvent): number =>

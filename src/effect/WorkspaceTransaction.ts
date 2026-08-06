@@ -58,9 +58,10 @@ interface Events {
   readonly publishWorkspaceFrame: (snapshot: WorkspaceSnapshot) => Effect.Effect<void>;
 }
 
-export class WorkspaceTransactionSessionOps extends Context.Tag(
-  "WorkspaceTransaction/SessionOps",
-)<WorkspaceTransactionSessionOps, SessionOps>() {}
+export class WorkspaceTransactionSessionOps extends Context.Tag("WorkspaceTransaction/SessionOps")<
+  WorkspaceTransactionSessionOps,
+  SessionOps
+>() {}
 
 export class WorkspaceTransactionWorktreeOps extends Context.Tag(
   "WorkspaceTransaction/WorktreeOps",
@@ -70,9 +71,10 @@ export class WorkspaceTransactionPersistence extends Context.Tag(
   "WorkspaceTransaction/Persistence",
 )<WorkspaceTransactionPersistence, Persistence>() {}
 
-export class WorkspaceTransactionEvents extends Context.Tag(
-  "WorkspaceTransaction/Events",
-)<WorkspaceTransactionEvents, Events>() {}
+export class WorkspaceTransactionEvents extends Context.Tag("WorkspaceTransaction/Events")<
+  WorkspaceTransactionEvents,
+  Events
+>() {}
 
 export interface WorkspaceTransactionService {
   readonly run: (
@@ -146,16 +148,12 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
               const worktrees = gitWorktreesFor(value, mutation.snapshot, cur.workspace);
               const prepared: PreparedSession[] = [];
               const exitsSettled = yield* Deferred.make<boolean>();
-              const killed = mutation.actions
-                .filter((a) => a._tag === "kill")
-                .map((a) => a.agent);
+              const killed = mutation.actions.filter((a) => a._tag === "kill").map((a) => a.agent);
 
               for (const agentId of killed) {
                 const exitRuntime = yield* Effect.runtime<never>();
                 exitCommits.set(agentId, async (code) => {
-                  if (
-                    !(await Runtime.runPromise(exitRuntime)(Deferred.await(exitsSettled)))
-                  ) {
+                  if (!(await Runtime.runPromise(exitRuntime)(Deferred.await(exitsSettled)))) {
                     await Runtime.runPromise(exitRuntime)(onSessionExit(agentId, code));
                   }
                 });
@@ -168,15 +166,11 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                       branch: worktrees.created.branch,
                       ...(worktrees.base ? { base: worktrees.base } : {}),
                     };
-                    yield* worktreeOps.add(
-                      worktrees.created.repo,
-                      spec,
-                      worktrees.created.path,
-                    );
+                    yield* worktreeOps.add(worktrees.created.repo, spec, worktrees.created.path);
                   }
                   for (const a of mutation.actions) {
-                   if (a._tag !== "spawn") continue;
-                   prepared.push(yield* sessionOps.prepare(a.agent));
+                    if (a._tag !== "spawn") continue;
+                    prepared.push(yield* sessionOps.prepare(a.agent));
                   }
                   for (const a of mutation.actions) {
                     if (a._tag === "kill") yield* sessionOps.kill(a.agent);
@@ -248,8 +242,16 @@ export function gitWorktreesFor(
   value: Command,
   next: WorkspaceSnapshot,
   current: WorkspaceSnapshot,
-): { created: WorkspaceSpace["worktree"] | null; base: string | undefined; removed: WorkspaceSpace["worktree"][] } {
-  const none = { created: null as WorkspaceSpace["worktree"] | null, base: undefined as string | undefined, removed: [] as WorkspaceSpace["worktree"][] };
+): {
+  created: WorkspaceSpace["worktree"] | null;
+  base: string | undefined;
+  removed: WorkspaceSpace["worktree"][];
+} {
+  const none = {
+    created: null as WorkspaceSpace["worktree"] | null,
+    base: undefined as string | undefined,
+    removed: [] as WorkspaceSpace["worktree"][],
+  };
   if (value._tag === "space.new") {
     const created = next.spaces.find(
       (s) => s.worktree && !current.spaces.some((c) => c.id === s.id),
@@ -285,9 +287,7 @@ export function publishWorkspaceEventsEffect(
       } else if (oldSpace.name !== space.name) {
         yield* publish({ _tag: "space.changed", space: space.id, change: "renamed" });
       }
-      const oldWindows = new Map(
-        oldSpace?.windows.map((window) => [window.number, window]) ?? [],
-      );
+      const oldWindows = new Map(oldSpace?.windows.map((window) => [window.number, window]) ?? []);
       for (const window of space.windows) {
         const oldWindow = oldWindows.get(window.number);
         if (!oldWindow)
@@ -326,9 +326,7 @@ export function publishWorkspaceEventsEffect(
             !beforeSpaces
               .get(space.id)
               ?.windows.some((oldWindow) =>
-                layoutPanes(oldWindow.layout.root).some(
-                  (oldPane) => oldPane.id === pane.id,
-                ),
+                layoutPanes(oldWindow.layout.root).some((oldPane) => oldPane.id === pane.id),
               )
           )
             yield* publish({ _tag: "pane.opened", pane: pane.id, session: pane.agent });
@@ -366,9 +364,9 @@ export const makeWorktreeOps = (): Layer.Layer<WorkspaceTransactionWorktreeOps> 
         import("../git.ts").then((m) => m.gitWorktreeRemove(repo, path, force)),
       ).pipe(Effect.orDie),
     isDirty: (path) =>
-      Effect.tryPromise(() =>
-        import("../git.ts").then((m) => m.gitWorktreeDirty(path)),
-      ).pipe(Effect.orDie),
+      Effect.tryPromise(() => import("../git.ts").then((m) => m.gitWorktreeDirty(path))).pipe(
+        Effect.orDie,
+      ),
   } satisfies WorktreeOps);
 
 export const makePersistence = (
@@ -397,9 +395,7 @@ export const makePersistence = (
               Effect.gen(function* () {
                 const fiber = yield* Effect.forkIn(
                   persistFn(state).pipe(
-                    Effect.mapError(
-                      (e) => new WorkspaceTransactionError({ message: describe(e) }),
-                    ),
+                    Effect.mapError((e) => new WorkspaceTransactionError({ message: describe(e) })),
                   ),
                   scope,
                 );
@@ -435,10 +431,7 @@ export const makePersistence = (
   );
 
 export const makeEvents = (
-  publishEvent: (event: {
-    _tag: string;
-    [key: string]: unknown;
-  }) => Effect.Effect<void>,
+  publishEvent: (event: { _tag: string; [key: string]: unknown }) => Effect.Effect<void>,
   publishFrame: (snapshot: WorkspaceSnapshot) => Effect.Effect<void>,
 ): Layer.Layer<WorkspaceTransactionEvents> =>
   Layer.succeed(WorkspaceTransactionEvents, {

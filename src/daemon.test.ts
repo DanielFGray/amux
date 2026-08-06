@@ -76,7 +76,8 @@ const healthy = async (d: SessionDaemonService, e: NodeJS.ProcessEnv) =>
 const saveEffect = (save: (state: any, signal: AbortSignal) => Promise<void>) => (state: any) =>
   Effect.tryPromise({
     try: (signal) => save(state, signal),
-    catch: (error) => new DaemonError({ message: error instanceof Error ? error.message : String(error) }),
+    catch: (error) =>
+      new DaemonError({ message: error instanceof Error ? error.message : String(error) }),
   });
 
 async function waitForPid(path: string): Promise<number> {
