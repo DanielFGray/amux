@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createSignal } from "solid-js";
 import { Effect } from "effect";
-import { createPanelContext } from "./panel.ts";
+import { createPanelContext, type SidebarDisplay } from "./panel.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
 import { resolveOptions } from "../options.ts";
 import { command, CommandError } from "../commands.ts";
@@ -10,15 +10,25 @@ function emptySnapshot(revision = 0): WorkspaceSnapshot {
   return { revision, spaces: [], state: { activeSpace: null } };
 }
 
+function emptyDisplay(): SidebarDisplay {
+  return { rows: [], spaceCount: 0, agentCount: 0, blockedCount: 0 };
+}
+
 test("snapshot accessor reads the current signal value", () => {
   const [snapshot, setSnapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot(0));
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   const ctx = createPanelContext(
     snapshot,
     tick,
     () => Effect.succeed(emptySnapshot()),
     options,
+    () => {},
+    display,
+    () => {},
+    selected,
     () => {},
   );
 
@@ -35,11 +45,17 @@ test("snapshot and options accessors do not expose mutable host values", () => {
   });
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   const ctx = createPanelContext(
     snapshot,
     tick,
     () => Effect.succeed(emptySnapshot()),
     options,
+    () => {},
+    display,
+    () => {},
+    selected,
     () => {},
   );
 
@@ -55,11 +71,17 @@ test("tick accessor reads the current signal value", () => {
   const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
   const [tick, setTick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   const ctx = createPanelContext(
     snapshot,
     tick,
     () => Effect.succeed(emptySnapshot()),
     options,
+    () => {},
+    display,
+    () => {},
+    selected,
     () => {},
   );
 
@@ -72,6 +94,8 @@ test("run delegates to the provided command invoker and returns an Effect", asyn
   const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   let calledWith: string | undefined;
   const ctx = createPanelContext(
     snapshot,
@@ -81,6 +105,10 @@ test("run delegates to the provided command invoker and returns an Effect", asyn
       return Effect.succeed(emptySnapshot(1));
     },
     options,
+    () => {},
+    display,
+    () => {},
+    selected,
     () => {},
   );
 
@@ -93,11 +121,17 @@ test("run propagates a CommandError", async () => {
   const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   const ctx = createPanelContext(
     snapshot,
     tick,
     () => Effect.fail(new CommandError({ message: "no such window" })),
     options,
+    () => {},
+    display,
+    () => {},
+    selected,
     () => {},
   );
 
@@ -109,11 +143,17 @@ test("options accessor reads the current resolved values", () => {
   const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   const ctx = createPanelContext(
     snapshot,
     tick,
     () => Effect.succeed(emptySnapshot()),
     options,
+    () => {},
+    display,
+    () => {},
+    selected,
     () => {},
   );
 
@@ -124,6 +164,8 @@ test("options accessor reads the current resolved values", () => {
 test("setOption delegates to the provided setter", () => {
   const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
   const [tick] = createSignal(0);
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   let stored = resolveOptions({});
   const [options, setOptions] = createSignal(stored);
   const calls: { name: string; value: unknown }[] = [];
@@ -137,6 +179,10 @@ test("setOption delegates to the provided setter", () => {
       stored = { ...stored, [name]: value };
       setOptions(stored);
     },
+    display,
+    () => {},
+    selected,
+    () => {},
   );
 
   ctx.setOption("sidebar.open", false);
@@ -148,6 +194,8 @@ test("run passes the optional input string to the invoker", async () => {
   const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   let receivedInput: string | undefined;
   const ctx = createPanelContext(
     snapshot,
@@ -158,25 +206,45 @@ test("run passes the optional input string to the invoker", async () => {
     },
     options,
     () => {},
+    display,
+    () => {},
+    selected,
+    () => {},
   );
 
   await Effect.runPromise(ctx.run(command("pane.send-keys", { keys: "ls" }), "\x1b[B"));
   expect(receivedInput).toBe("\x1b[B");
 });
 
-test("the context carries snapshot, tick, run, options, and setOption as its full interface", () => {
+test("the context carries all expected fields", () => {
   const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   const ctx = createPanelContext(
     snapshot,
     tick,
     () => Effect.succeed(emptySnapshot()),
     options,
     () => {},
+    display,
+    () => {},
+    selected,
+    () => {},
   );
 
   const keys = Object.keys(ctx) as (keyof typeof ctx)[];
   keys.sort();
-  expect(keys).toEqual(["options", "run", "setOption", "snapshot", "tick"]);
+  expect(keys).toEqual([
+    "display",
+    "options",
+    "reportError",
+    "run",
+    "selectedAgentId",
+    "setOption",
+    "setSelectedAgentId",
+    "snapshot",
+    "tick",
+  ]);
 });

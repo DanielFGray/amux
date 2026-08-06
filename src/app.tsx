@@ -61,10 +61,10 @@ import type { SessionClientShape } from "./client.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
 import { createAppState, POLL_MS } from "./ui/state.ts";
 import { createPanelContext, type PanelContext } from "./ui/panel.ts";
-import { Sidebar, clampSidebarSelection, sidebarTargets } from "./ui/Sidebar.tsx";
 import { App } from "./ui/App.tsx";
 import { createRegions } from "./ui/regions.tsx";
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
+import { sidebarPlugin } from "./plugin/builtin/sidebar.tsx";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "./ui/Prompt.tsx";
@@ -84,6 +84,7 @@ import { Transcript } from "./ui/Transcript.tsx";
 import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import { workspaceEnv } from "./env.ts";
+import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 
 export interface AppOptions {
   readonly renderer: CliRenderer;
@@ -147,6 +148,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       (app) => app.release,
     );
     const pluginHost = yield* createPluginHost(app.panel, regions);
+    yield* pluginHost.add(sidebarPlugin);
     runFiber(
       "agent-notifications",
       Stream.runForEach(options.session.events, (event) =>
@@ -373,9 +375,6 @@ function buildApp(
 
   /** Where every panel on screen is registered. See registerPanels below. */
 
-  const sidebarOpen = () => options()["sidebar.open"];
-  const [selected, setSelected] = createSignal(0);
-  const [hovered, setHovered] = createSignal<number | null>(null);
   const [overlay, setOverlay] = createSignal<Overlay>("none");
   // The raw compiled parts, not a formatted string: the which-key panel has to
   // match them against every binding's sequence to work out what is still
@@ -407,19 +406,90 @@ function buildApp(
     setTimeout(() => setCommandError(null), 3000);
   }
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false);
+  const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null);
   const [size, setSize] = createSignal({ width: renderer.width, height: renderer.height });
+
+  const display = createMemo<SidebarDisplay>(() => {
+    app.tick();
+    const rows: SidebarDisplayRow[] = [];
+    let index = 0;
+    const active = spaces.active;
+    const activeWin = spaces.activeWindow;
+    const focusedAgent = activeWin?.focused?.agent ?? null;
+
+    for (const space of spaces.spaces) {
+      const isActiveSpace = space === active;
+      rows.push({
+        kind: "space",
+        index: index++,
+        spaceId: space.id,
+        spaceName: space.name,
+        active: isActiveSpace,
+      });
+
+      if (space.branch) {
+        rows.push({
+          kind: "branch",
+          index,
+          spaceId: space.id,
+          spaceName: space.name,
+          active: isActiveSpace,
+          branch: space.branch,
+          ahead: space.ahead,
+          behind: space.behind,
+        });
+      }
+
+      for (const window of space.windows) {
+        const isActiveWindow = isActiveSpace && space.active === window;
+        rows.push({
+          kind: "window",
+          index: index++,
+          spaceId: space.id,
+          spaceName: space.name,
+          active: isActiveWindow,
+          windowNumber: window.number,
+          windowLabel: window.label,
+        });
+
+        for (const agent of window.agents) {
+          const isFocusedAgent = isActiveWindow && agent === focusedAgent;
+          rows.push({
+            kind: "agent",
+            index: index++,
+            spaceId: space.id,
+            spaceName: space.name,
+            active: isFocusedAgent,
+            windowNumber: window.number,
+            windowLabel: window.label,
+            agentId: agent.id,
+            agentState: agent.state,
+            agentCliKind: agent.agentKind,
+            agentSessionKind: agent.kind,
+            title: agent.title,
+            foregroundCommand: agent.foregroundCommand,
+            viewers: agent.viewers,
+            unseen: agent.unseen,
+            scrolled: agent.scrolled,
+            exited: agent.exited,
+          });
+        }
+      }
+    }
+
+    const allAgents = spaces.allAgents.filter((a) => !a.exited);
+    const blocked = allAgents.filter((a) => a.state === "blocked").length;
+
+    return {
+      rows,
+      spaceCount: spaces.spaces.length,
+      agentCount: allAgents.length,
+      blockedCount: blocked,
+    };
+  });
   const onResize = (width: number, height: number) => setSize({ width, height });
   renderer.on("resize", onResize);
 
-  const targets = createMemo(() => {
-    // agentKind is polled, so keyboard targets must refresh with the rendered rows.
-    app.tick();
-    return sidebarTargets(app.spaces(), options()["sidebar.agentsOnly"]);
-  });
-  createEffect(() => {
-    const count = targets().length;
-    setSelected((current) => clampSidebarSelection(current, count));
-  });
   const activeWin = () => spaces.activeWindow;
 
   /**
@@ -516,23 +586,6 @@ function buildApp(
       command("window.rename", { space: space.id, window: window.number, name: answers[0] ?? "" }),
     );
   });
-
-  /** Act on the sidebar selection: a space row switches space, an agent row
-   *  focuses or opens a view of it. */
-  function activateSelection(index = selected()) {
-    const target = targets()[index];
-    if (!target) return;
-    setSelected(index);
-    const effect =
-      target.kind === "space"
-        ? commands.run(command("space.select", { space: target.space.id }))
-        : target.kind === "agent"
-          ? commands.run(command("agent.reveal", { agent: target.agent.id }))
-          : commands.run(
-              command("window.select", { space: target.space.id, number: target.window.number }),
-            );
-    runDetached("sidebar.select", effect, showCommandError);
-  }
 
   /**
    * Redraw the pane frame under the current docks.
@@ -669,13 +722,9 @@ function buildApp(
    */
   function captureTarget(): CaptureTarget | null {
     const focused = spaces.activeWindow?.focused?.agent ?? null;
-    const selection = targets()[selected()];
-    const selectedAgent = selection?.kind === "agent" ? selection.agent : null;
     return pickCaptureTarget(
       focused ? { term: focused.term, describe: () => focused.title || "pane" } : null,
-      selectedAgent
-        ? { term: selectedAgent.term, describe: () => selectedAgent.title || "pane" }
-        : null,
+      null,
     );
   }
 
@@ -783,11 +832,8 @@ function buildApp(
    */
   function sendKeysTarget(): SendTarget | null {
     const focused = spaces.activeWindow?.focused ?? null;
-    const selection = targets()[selected()];
     if (focused) return { write() {}, describe: () => focused.agent.title || "pane" };
-    return selection?.kind === "agent"
-      ? { write() {}, describe: () => selection.agent.title || "pane" }
-      : null;
+    return null;
   }
 
   /**
@@ -1505,32 +1551,6 @@ function buildApp(
   function registerPanels(): () => void {
     const disposers = [
       regions.register({
-        id: "amux.sidebar",
-        region: "left",
-        // The whole screen, not the pane area: the tree is taller than the
-        // panes and the window list sits beside it.
-        anchor: "app",
-        title: "spaces",
-        visible: sidebarOpen,
-        size: () => options()["sidebar.width"],
-        // The width it drags IS the option the settings window edits, so a drag
-        // survives a save and the two cannot disagree about how narrow is too
-        // narrow.
-        resizable: true,
-        onResize: (delta) => adjustOption("sidebar.width", delta),
-        component: () => (
-          <Sidebar
-            app={app}
-            width={options()["sidebar.width"]}
-            selected={selected()}
-            hovered={hovered()}
-            agentsOnly={options()["sidebar.agentsOnly"]}
-            onHover={setHovered}
-            onActivate={activateSelection}
-          />
-        ),
-      }),
-      regions.register({
         id: "amux.transcript",
         region: "right",
         anchor: "center",
@@ -1879,6 +1899,16 @@ function buildApp(
     renderer.removeListener("resize", onResize);
   });
 
-  const panel = createPanelContext(snapshot, app.tick, runPanelCommand, options, changeOption);
+  const panel = createPanelContext(
+    snapshot,
+    app.tick,
+    runPanelCommand,
+    options,
+    changeOption,
+    display,
+    showCommandError,
+    selectedAgentId,
+    setSelectedAgentId,
+  );
   return { View, panel, release };
 }

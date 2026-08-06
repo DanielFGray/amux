@@ -5,7 +5,6 @@ import type { Window } from "./window.ts";
 import type { Agent } from "./agent.ts";
 import type { TerminalPane } from "./pane.ts";
 import { RenderState } from "./ghostty.ts";
-import { sidebarTargets } from "./ui/Sidebar.tsx";
 
 const SHELL = ["bash"];
 
@@ -263,13 +262,8 @@ test("break updates what the sidebar and the tab list would show", async () => {
 
     const win2 = (await runAsync(s.space.breakPane(right)))!;
 
-    const targets = sidebarTargets(s.spaces.spaces);
-    const windowRow = targets.find((t) => t.kind === "window" && t.window === win2);
-    expect(windowRow).toBeDefined();
-    const agentRow = targets.find((t) => t.kind === "agent" && t.agent === agent);
-    expect(agentRow).toBeDefined();
-    const agentWindow = agentRow?.kind === "agent" ? agentRow.window : undefined;
-    expect(agentWindow).toBeDefined();
+    const agentWindow = s.space.windows.find((window) => window.agents.includes(agent));
+    expect(agentWindow).toBe(win2);
     // The agent now hangs under the new window, not the source one.
     expect(agentWindow!.agents).toContain(agent);
     expect(s.win.agents).not.toContain(agent);

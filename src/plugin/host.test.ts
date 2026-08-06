@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createSignal } from "solid-js";
 import { Chunk, Effect, Exit, Fiber, Queue, Scope, Stream } from "effect";
-import { createPanelContext, type PanelContext } from "../ui/panel.ts";
+import { createPanelContext, type PanelContext, type SidebarDisplay } from "../ui/panel.ts";
 import { createRegions, type Regions } from "../ui/regions.tsx";
 import { resolveOptions } from "../options.ts";
 import { testEffect } from "../test-effect.ts";
@@ -15,15 +15,25 @@ function emptySnapshot(revision = 0): WorkspaceSnapshot {
   return { revision, spaces: [], state: { activeSpace: null } };
 }
 
+function emptyDisplay(): SidebarDisplay {
+  return { rows: [], spaceCount: 0, agentCount: 0, blockedCount: 0 };
+}
+
 function mockPanelContext(): PanelContext {
   const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
   return createPanelContext(
     snapshot,
     tick,
     () => Effect.succeed(emptySnapshot()),
     options,
+    () => {},
+    display,
+    () => {},
+    selected,
     () => {},
   );
 }

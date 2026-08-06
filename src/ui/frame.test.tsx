@@ -12,7 +12,6 @@ import { resolveOptions } from "../options.ts";
 import { createAppState } from "./state.ts";
 import { App } from "./App.tsx";
 import { createRegions } from "./regions.tsx";
-import { Sidebar } from "./Sidebar.tsx";
 import { WindowTabs } from "./WindowTabs.tsx";
 import { Settings } from "./Settings.tsx";
 import { Hints } from "./Hints.tsx";
@@ -71,15 +70,9 @@ async function screen(
       resizable: true,
       onResize: () => {},
       component: () => (
-        <Sidebar
-          app={app}
-          width={options()["sidebar.width"]}
-          selected={0}
-          hovered={null}
-          agentsOnly={false}
-          onHover={() => {}}
-          onActivate={() => {}}
-        />
+        <box style={{ width: options()["sidebar.width"], height: "100%" }}>
+          <text>proj</text>
+        </box>
       ),
     }),
   );
