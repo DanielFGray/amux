@@ -23,7 +23,7 @@ const ClientChanged = S.TaggedStruct("client.changed", {
 });
 const AgentStateChanged = S.TaggedStruct("agent.state", {
   session: S.String,
-  state: S.Literal("idle", "working", "blocked", "detached", "done"),
+  state: S.Literal("idle", "working", "blocked", "failed", "detached", "done"),
 });
 const EventsReady = S.TaggedStruct("events.ready", {});
 

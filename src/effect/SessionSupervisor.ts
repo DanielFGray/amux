@@ -2,7 +2,7 @@ import { Context, Deferred, Effect, FiberMap, Layer, Match, Ref, Scope, Stream }
 import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
-import { type AttachFrame } from "./AttachProtocol.ts";
+import { type AgentFrame, type AttachFrame } from "./AttachProtocol.ts";
 import {
   PtyError,
   SessionRegistry,
@@ -30,6 +30,20 @@ const FOREGROUND_POLL_MS = 500;
 export interface SessionExitObserverService {
   readonly beforePublish: (id: string, code: number | null) => Effect.Effect<void, unknown>;
 }
+
+export interface SessionStateObserverService {
+  readonly onState: (
+    id: string,
+    state: "idle" | "working" | "blocked" | "failed" | "done",
+  ) => Effect.Effect<void, unknown>;
+}
+
+export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
+  "SessionStateObserver",
+  {
+    defaultValue: (): SessionStateObserverService => ({ onState: () => Effect.void }),
+  },
+) {}
 
 /** Durability barrier between backend termination and the observable exit frame. */
 export class SessionExitObserver extends Context.Reference<SessionExitObserver>()(
@@ -64,7 +78,7 @@ const bracketPaste = (data: Uint8Array): Uint8Array => {
  * A single FiberMap entry supervises each session's output and exit
  * publication. The backend itself remains scoped by SessionRegistry, outside
  * any client scope, so a UI disconnect cannot kill the session. Nothing here
- * branches on kind: a pty and a stub agent session are adopted, killed and
+ * branches on kind: a pty and a native agent session are adopted, killed and
  * replayed through the identical path.
  */
 export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("SessionSupervisor", {
@@ -74,6 +88,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     const registry = yield* SessionRegistry;
     const hub = yield* AttachHub;
     const exitObserver = yield* SessionExitObserver;
+    const stateObserver = yield* SessionStateObserver;
     const sessions = yield* Ref.make<ReadonlyMap<string, ManagedSession>>(new Map());
     const completions = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<void>>>(new Map());
     const terminations = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<number | null>>>(
@@ -189,6 +204,8 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       const disposition = yield* Deferred.make<"active" | "aborted">();
       let phase: "prepared" | "activating" | "active" | "aborted" = "prepared";
       const pending: Uint8Array[] = [];
+      const pendingEvents: AgentFrame[] = [];
+      let lastAgentState: "idle" | "working" | "blocked" | "failed" | "done" | null = null;
       let exitPublished = false;
 
       const publishExit = (code: number | null) =>
@@ -261,7 +278,18 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           );
           const code = yield* session.exit.pipe(Effect.orElseSucceed(() => null));
           yield* Deferred.succeed(termination, code);
-          if ((yield* Deferred.await(disposition)) === "active") yield* publishExit(code);
+          if ((yield* Deferred.await(disposition)) === "active") {
+            if (spec.kind === "agent" && code !== null) {
+              yield* stateObserver.onState(spec.id, "failed");
+              yield* hub.publish({
+                _tag: "agent.status",
+                session: spec.id,
+                sequence: 0,
+                state: "failed",
+              } satisfies AttachFrame);
+            }
+            yield* publishExit(code);
+          }
           yield* complete;
         }).pipe(
           Effect.ensuring(
@@ -277,6 +305,25 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           ),
         ),
       );
+
+      if (session.events) {
+        yield* FiberMap.run(
+          pumps,
+          `events:${spec.id}`,
+          session.events.pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                if (event._tag === "agent.status" && event.state !== lastAgentState) {
+                  lastAgentState = event.state;
+                  yield* stateObserver.onState(spec.id, event.state);
+                }
+                if (phase === "active") yield* hub.publish(event);
+                else pendingEvents.push(event);
+              }),
+            ),
+          ),
+        );
+      }
 
       const activate = Effect.suspend(() => {
         if (phase !== "prepared") return Effect.void;
@@ -301,6 +348,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               data: pending.shift()!,
             } satisfies AttachFrame);
           }
+          while (pendingEvents.length > 0) yield* hub.publish(pendingEvents.shift()!);
           phase = "active";
           yield* FiberMap.run(pumps, `foreground:${spec.id}`, foreground);
           yield* Deferred.succeed(disposition, "active");
@@ -360,6 +408,14 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           ),
           Match.orElse(() => Effect.void),
         );
+      }),
+
+      capture: Effect.fnUntraced(function* (id: string) {
+        const screen = (yield* Ref.get(replays)).get(id);
+        if (!screen) {
+          return yield* new PtyError({ operation: "capture", message: `unknown session '${id}'` });
+        }
+        return new TextDecoder().decode(yield* Effect.sync(() => formatScreen(screen.handle)));
       }),
 
       /** Replay an adopted session's screen to the client that asked for it. */

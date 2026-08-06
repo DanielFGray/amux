@@ -11,6 +11,7 @@ import {
 } from "effect";
 import { PtyWriteInterrupted, readPty, spawnPty } from "../pty.ts";
 import { isTerminalSize } from "../limits.ts";
+import { decodeAttachFrames, type AgentFrame, type AttachFrame } from "./AttachProtocol.ts";
 
 export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   operation: S.String,
@@ -28,6 +29,7 @@ export interface SessionSpec {
   readonly id: string;
   readonly cmd: readonly string[];
   readonly cwd?: string;
+  readonly controlPath?: string;
   readonly cols: number;
   readonly rows: number;
 }
@@ -36,6 +38,7 @@ export interface ManagedSession {
   readonly id: string;
   readonly kind: SessionKind;
   readonly output: Stream.Stream<Uint8Array, PtyError>;
+  readonly events?: Stream.Stream<AgentFrame, PtyError>;
   readonly exit: Effect.Effect<number | null, PtyError>;
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
   readonly resize: (cols: number, rows: number) => Effect.Effect<void, PtyError>;
@@ -74,6 +77,7 @@ type SessionCommand =
  */
 interface Backend {
   readonly output: AsyncIterable<Uint8Array>;
+  readonly events?: AsyncIterable<AgentFrame>;
   /** Resolves once the backend has fully terminated, with its exit code. */
   readonly wait: Promise<number | null>;
   write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>;
@@ -109,37 +113,123 @@ function ptyBackend(spec: SessionSpec): Backend {
   };
 }
 
-/**
- * A registrable session with no process behind it.
- *
- * Until the real out-of-process agent backend exists, this is what lets an
- * agent-kind session be spawned, listed, focused and killed through exactly
- * the same registry/supervisor paths as a pty — so nothing downstream has to
- * special-case the kind to be exercised. It produces no output and accepts
- * no input; it just holds the id live until kill() or close() ends it, with
- * no exit code because nothing exited.
- */
-function agentStubBackend(): Backend {
-  let resolveWait!: (code: number | null) => void;
-  const wait = new Promise<number | null>((resolve) => {
-    resolveWait = resolve;
+class AsyncMailbox<A> implements AsyncIterable<A> {
+  #values: A[] = [];
+  #waiters: ((result: IteratorResult<A>) => void)[] = [];
+  #ended = false;
+
+  offer(value: A): void {
+    const waiter = this.#waiters.shift();
+    if (waiter) waiter({ done: false, value });
+    else this.#values.push(value);
+  }
+
+  end(): void {
+    if (this.#ended) return;
+    this.#ended = true;
+    while (this.#waiters.length) this.#waiters.shift()!({ done: true, value: undefined });
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<A> {
+    while (this.#values.length || !this.#ended) {
+      if (this.#values.length) yield this.#values.shift()!;
+      else {
+        const next = await new Promise<IteratorResult<A>>((resolve) => this.#waiters.push(resolve));
+        if (next.done) return;
+        yield next.value;
+      }
+    }
+  }
+}
+
+const isAgentFrame = (frame: AttachFrame): frame is AgentFrame =>
+  frame._tag === "turn.start" ||
+  frame._tag === "text.delta" ||
+  frame._tag === "tool.start" ||
+  frame._tag === "tool.result" ||
+  frame._tag === "permission.request" ||
+  frame._tag === "permission.response" ||
+  frame._tag === "agent.status" ||
+  frame._tag === "turn.end";
+
+/** A native worker is isolated from the daemon and speaks semantic frames on stdout. */
+function agentProcessBackend(spec: SessionSpec): Backend {
+  if (!spec.cmd.length) throw new Error("native agent session requires a worker command");
+  const child = Bun.spawn([...spec.cmd], {
+    cwd: spec.cwd,
+    env: {
+      ...process.env,
+      AMUX_SESSION: spec.id,
+      AMUX_AGENT_ID: spec.id,
+      ...(spec.controlPath ? { AMUX_CONTROL_SOCKET: spec.controlPath } : {}),
+      AMUX_PANE_ID: spec.id,
+    },
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
   });
-  let done = false;
-  const finish = () => {
-    if (done) return;
-    done = true;
-    resolveWait(null);
+  const output = new AsyncMailbox<Uint8Array>();
+  const events = new AsyncMailbox<AgentFrame>();
+  let closed = false;
+  let killed = false;
+
+  void new Response(child.stderr).text();
+  void (async () => {
+    let pending = new Uint8Array();
+    const decoder = new TextDecoder();
+    try {
+      for await (const chunk of child.stdout) {
+        const combined = new Uint8Array(pending.length + chunk.length);
+        combined.set(pending);
+        combined.set(chunk, pending.length);
+        let start = 0;
+        for (let index = 0; index < combined.length; index++) {
+          if (combined[index] !== 10) continue;
+          const line = decoder.decode(combined.subarray(start, index));
+          start = index + 1;
+          if (!line) continue;
+          for (const frame of decodeAttachFrames(`${line}\n`).frames) {
+            if (frame._tag === "output" && frame.session === spec.id)
+              output.offer(new Uint8Array(frame.data));
+            else if (isAgentFrame(frame) && frame.session === spec.id) events.offer(frame);
+          }
+        }
+        pending = combined.slice(start);
+      }
+    } finally {
+      output.end();
+      events.end();
+    }
+  })();
+
+  const send = async (frame: AttachFrame) => {
+    if (!closed) await child.stdin.write(`${JSON.stringify(frame)}\n`);
   };
+  const wait = child.exited.then((code) => {
+    closed = true;
+    return killed ? null : code;
+  });
   return {
-    output: (async function* () {
-      await wait;
-    })(),
+    output,
+    events,
     wait,
-    write: async () => {},
-    resize: () => {},
-    kill: async () => finish(),
-    close: () => finish(),
-    // Nothing runs behind a stub, so nothing is in the foreground.
+    write: (data) =>
+      send({
+        _tag: "agent.steer",
+        session: spec.id,
+        message: typeof data === "string" ? data : new TextDecoder().decode(data),
+      }),
+    resize: (cols, rows) => void send({ _tag: "resize", session: spec.id, cols, rows }),
+    kill: async () => {
+      if (!closed) {
+        killed = true;
+        child.kill();
+        await child.exited;
+      }
+    },
+    close: () => {
+      if (!closed) child.kill();
+    },
     foreground: () => ({ pgid: -1, sid: -1 }),
   };
 }
@@ -199,7 +289,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
         });
         const backend = yield* Effect.acquireRelease(
           Effect.try({
-            try: () => (kind === "agent" ? agentStubBackend() : ptyBackend(spec)),
+            try: () => (kind === "agent" ? agentProcessBackend(spec) : ptyBackend(spec)),
             catch: (error) => asPtyError("spawn", error),
           }).pipe(Effect.tapError(() => release)),
           (owned) =>
@@ -265,6 +355,9 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           id: spec.id,
           kind,
           output: Stream.fromAsyncIterable(backend.output, (error) => asPtyError("read", error)),
+          events: backend.events
+            ? Stream.fromAsyncIterable(backend.events, (error) => asPtyError("event", error))
+            : undefined,
           exit: Effect.tryPromise({
             try: () => backend.wait,
             catch: (error) => asPtyError("exit", error),

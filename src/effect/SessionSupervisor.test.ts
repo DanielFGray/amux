@@ -49,10 +49,7 @@ it.scopedLive("SessionSupervisor publishes owned PTY output and exit frames", ()
         .slice(0, -1)
         .every((frame) => frame._tag === "output"),
     ).toBe(true);
-  }).pipe(
-    Effect.provide(SessionSupervisor.Live),
-    Effect.provide(AttachHub.Default),
-  ),
+  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
 /**
@@ -123,10 +120,7 @@ it.scopedLive("a supervised session publishes its foreground process, and its ch
     // reports must not be the shell's.
     expect(fg.running.pgid).toBeGreaterThan(0);
     expect(fg.running.pgid).not.toBe(fg.running.sid);
-  }).pipe(
-    Effect.provide(SessionSupervisor.Live),
-    Effect.provide(AttachHub.Default),
-  ),
+  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
 /**
@@ -176,10 +170,7 @@ it.scopedLive("SessionSupervisor routes input through the managed PTY", () =>
     const frames = yield* untilExit(subscription.frames);
     expect(output(frames)).toContain("got:hi");
     expect(frames.at(-1)).toEqual({ _tag: "exit", session: "input-agent", code: 0 });
-  }).pipe(
-    Effect.provide(SessionSupervisor.Live),
-    Effect.provide(AttachHub.Default),
-  ),
+  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
 test("concurrent duplicate spawns create one child and one managed session", async () => {
@@ -226,10 +217,7 @@ it.scopedLive("exit cleanup releases the session and replay terminal for reuse",
     expect(yield* supervisor.live).toEqual([]);
     yield* supervisor.spawn({ id: "reusable-agent", cmd: ["true"], cols: 80, rows: 24 });
     expect(yield* supervisor.live).toEqual(["reusable-agent"]);
-  }).pipe(
-    Effect.provide(SessionSupervisor.Live),
-    Effect.provide(AttachHub.Default),
-  ),
+  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
 it.scopedLive("killing a trapped session publishes one exit and removes it", () =>
@@ -252,8 +240,7 @@ it.scopedLive("killing a trapped session publishes one exit and removes it", () 
       Stream.runCollect(
         subscription.frames.pipe(
           Stream.tap((frame) =>
-            frame._tag === "output" &&
-            new TextDecoder().decode(frame.data).includes("CHILD_READY")
+            frame._tag === "output" && new TextDecoder().decode(frame.data).includes("CHILD_READY")
               ? Deferred.succeed(ready, void 0)
               : Effect.void,
           ),
@@ -267,10 +254,7 @@ it.scopedLive("killing a trapped session publishes one exit and removes it", () 
     expect(yield* supervisor.live).toEqual([]);
     expect(frames.filter((frame) => frame._tag === "exit")).toHaveLength(1);
     expect(frames.at(-1)?._tag).toBe("exit");
-  }).pipe(
-    Effect.provide(SessionSupervisor.Live),
-    Effect.provide(AttachHub.Default),
-  ),
+  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
 it.scopedLive("concurrent supervisor kills publish one exit and permit same-id reuse", () =>
@@ -284,48 +268,72 @@ it.scopedLive("concurrent supervisor kills publish one exit and permit same-id r
     const collector = yield* Effect.fork(
       Stream.runForEach(subscription.frames, (frame) =>
         Effect.sync(() => received.push(frame)).pipe(
-          Effect.zipRight(
-            frame._tag === "exit" ? Deferred.succeed(exitSeen, void 0) : Effect.void,
-          ),
+          Effect.zipRight(frame._tag === "exit" ? Deferred.succeed(exitSeen, void 0) : Effect.void),
         ),
       ),
     );
-    yield* Effect.all(
-      [supervisor.kill("concurrent-agent"), supervisor.kill("concurrent-agent")],
-      { concurrency: "unbounded" },
-    );
+    yield* Effect.all([supervisor.kill("concurrent-agent"), supervisor.kill("concurrent-agent")], {
+      concurrency: "unbounded",
+    });
     yield* Deferred.await(exitSeen);
     yield* Effect.sleep(50);
     yield* Fiber.interrupt(collector);
     expect(received.filter((frame) => frame._tag === "exit")).toHaveLength(1);
     expect(yield* supervisor.live).toEqual([]);
     yield* supervisor.spawn({ id: "concurrent-agent", cmd: ["true"], cols: 80, rows: 24 });
-  }).pipe(
-    Effect.provide(SessionSupervisor.Live),
-    Effect.provide(AttachHub.Default),
-  ),
+  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("an agent-kind session is listed and killed through the same supervisor path as a pty", () =>
+it.scopedLive("a native agent worker is listed and killed through the supervisor", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
     const supervisor = yield* SessionSupervisor;
     const agent = yield* supervisor.spawn({
       kind: "agent",
-      id: "stub-agent",
-      cmd: [],
+      id: "worker-agent",
+      cmd: [
+        process.execPath,
+        "-e",
+        `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"worker-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+      ],
       cols: 80,
       rows: 24,
     });
     expect(agent.kind).toBe("agent");
-    expect(yield* supervisor.live).toEqual(["stub-agent"]);
-    yield* supervisor.kill("stub-agent");
+    expect(yield* supervisor.live).toEqual(["worker-agent"]);
+    yield* supervisor.kill("worker-agent");
     expect(yield* supervisor.live).toEqual([]);
     const frames = yield* untilExit(subscription.frames);
-    expect(frames.at(-1)).toEqual({ _tag: "exit", session: "stub-agent", code: null });
-  }).pipe(
-    Effect.provide(SessionSupervisor.Live),
-    Effect.provide(AttachHub.Default),
-  ),
+    expect(frames.at(-1)).toEqual({ _tag: "exit", session: "worker-agent", code: null });
+  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+);
+
+it.scopedLive("a crashed native agent reports failure and can be restarted", () =>
+  Effect.gen(function* () {
+    const hub = yield* AttachHub;
+    const subscription = yield* hub.subscribe("client");
+    const supervisor = yield* SessionSupervisor;
+    const spec = {
+      kind: "agent" as const,
+      id: "crashed-worker",
+      cmd: [process.execPath, "-e", "process.exit(17)"],
+      cols: 80,
+      rows: 24,
+    };
+
+    yield* supervisor.spawn(spec);
+    const frames = yield* untilExit(subscription.frames);
+    expect(frames).toContainEqual({
+      _tag: "agent.status",
+      session: "crashed-worker",
+      sequence: 0,
+      state: "failed",
+    });
+    expect(frames.at(-1)).toEqual({ _tag: "exit", session: "crashed-worker", code: 17 });
+    expect(yield* supervisor.live).toEqual([]);
+
+    yield* supervisor.spawn({ ...spec, cmd: [process.execPath, "-e", "process.exit(0)"] });
+    expect(yield* supervisor.live).toEqual(["crashed-worker"]);
+  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );

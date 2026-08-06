@@ -78,6 +78,87 @@ const Exit = S.TaggedStruct("exit", {
   code: S.NullOr(S.Int),
 });
 
+/**
+ * Semantic events emitted by a native agent session. `sequence` orders events
+ * within a session; the IDs make turns, tool calls, and approval requests
+ * addressable when a client reconnects or renders them asynchronously.
+ * Payloads remain provider-neutral JSON values rather than rendered terminal
+ * content or transport-specific handles.
+ */
+const TurnStart = S.TaggedStruct("turn.start", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  prompt: S.String,
+});
+
+const TextDelta = S.TaggedStruct("text.delta", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  text: S.String,
+});
+
+const ToolStart = S.TaggedStruct("tool.start", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  call: S.String,
+  tool: S.String,
+  input: S.Unknown,
+});
+
+const ToolResult = S.TaggedStruct("tool.result", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  call: S.String,
+  output: S.Unknown,
+  isError: S.Boolean,
+});
+
+const PermissionRequest = S.TaggedStruct("permission.request", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  request: S.String,
+  tool: S.String,
+  description: S.String,
+  input: S.Unknown,
+});
+
+const PermissionResponse = S.TaggedStruct("permission.response", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  request: S.String,
+  approved: S.Boolean,
+  reason: S.optional(S.String),
+});
+
+const AgentStatus = S.TaggedStruct("agent.status", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  state: S.Literal("idle", "working", "blocked", "failed", "done"),
+});
+
+const TurnEnd = S.TaggedStruct("turn.end", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  outcome: S.Literal("completed", "interrupted", "failed"),
+});
+
+const AgentSteer = S.TaggedStruct("agent.steer", {
+  session: S.String,
+  message: S.String,
+});
+
+const AgentInterrupt = S.TaggedStruct("agent.interrupt", {
+  session: S.String,
+  reason: S.optional(S.String),
+});
+
 const ErrorFrame = S.TaggedStruct("error", {
   message: S.String,
 });
@@ -99,11 +180,32 @@ export const AttachFrame = S.Union(
   Exit,
   Foreground,
   Workspace,
+  TurnStart,
+  TextDelta,
+  ToolStart,
+  ToolResult,
+  PermissionRequest,
+  PermissionResponse,
+  AgentStatus,
+  TurnEnd,
+  AgentSteer,
+  AgentInterrupt,
   ErrorFrame,
   Ping,
   Pong,
 );
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
+export type AgentFrame = Extract<
+  AttachFrame,
+  | { readonly _tag: "turn.start" }
+  | { readonly _tag: "text.delta" }
+  | { readonly _tag: "tool.start" }
+  | { readonly _tag: "tool.result" }
+  | { readonly _tag: "permission.request" }
+  | { readonly _tag: "permission.response" }
+  | { readonly _tag: "agent.status" }
+  | { readonly _tag: "turn.end" }
+>;
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()(
   "AttachProtocolError",

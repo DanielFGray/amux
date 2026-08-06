@@ -178,6 +178,87 @@ test("a workspace command run over the socket installs the new generation", asyn
   expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("named-remotely");
 });
 
+test("a native agent can capture a live session through the command surface", async () => {
+  const { daemon, env } = await started("agent-tools");
+  const id = "capture-agent";
+  await Effect.runPromise(
+    daemon.spawnAgent({
+      kind: "pty",
+      id,
+      cmd: ["sh", "-c", "printf 'capture-me\\n'; sleep 30"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
+  await Bun.sleep(50);
+  const { result } = await ctl(daemon.id, env, (c) =>
+    c.Run({ value: command("pane.capture", { session: id }) }),
+  );
+  expect(result).toContain("capture-me");
+  await Effect.runPromise(daemon.killAgent(id));
+});
+
+test("a native worker invokes pane.capture through the amux CLI", async () => {
+  const { daemon, env } = await started("agent-cli-tools");
+  const target = "capture-target";
+  await Effect.runPromise(
+    daemon.spawnAgent({
+      id: target,
+      cmd: ["sh", "-c", "printf 'worker-capture\n'; sleep 30"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
+  const worker = "capture-worker";
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const script = `
+    const p = Bun.spawnSync([process.execPath, ${JSON.stringify(entry)}, "pane.capture", process.env.AMUX_SESSION, "--session=${target}"], { env: process.env });
+    const data = Buffer.from(p.stdout).toString("utf8");
+    process.stdout.write(JSON.stringify({_tag:"output",session:process.env.AMUX_AGENT_ID,data:Buffer.from(data).toString("base64")})+"\\n");
+  `;
+  await Effect.runPromise(
+    daemon.spawnAgent({
+      kind: "agent",
+      id: worker,
+      cmd: [process.execPath, "-e", script],
+      cols: 80,
+      rows: 24,
+    }),
+  );
+  const session = await ctl(daemon.id, env, (c) => c.Status());
+  expect(session.agents).toContain(worker);
+  await Bun.sleep(300);
+  await Effect.runPromise(daemon.killAgent(target));
+  await Effect.runPromise(daemon.killAgent(worker));
+});
+
+test("the pane control socket accepts ping and agent state reports", async () => {
+  const { daemon, env } = await started("pane-control");
+  const paths = await run(sessionPaths(daemon.id), env);
+  const lines: string[] = [];
+  const socket = await Bun.connect({
+    unix: paths.control,
+    socket: {
+      data: (_socket, data) => {
+        lines.push(data.toString());
+      },
+    },
+  });
+  socket.write(JSON.stringify({ id: "one", method: "ping" }) + "\n");
+  await Bun.sleep(50);
+  socket.write(
+    JSON.stringify({
+      id: "two",
+      method: "agent.state",
+      params: { agent: "pane-a", state: "blocked" },
+    }) + "\n",
+  );
+  await Bun.sleep(50);
+  socket.end();
+  expect(lines.join("\n")).toContain('"id":"one"');
+  expect(lines.join("\n")).toContain('"id":"two"');
+});
+
 test("malformed and oversized frames are refused without taking the daemon down", async () => {
   const { daemon, env } = await started("control-garbage");
   const paths = await run(sessionPaths(daemon.id), env);

@@ -13,6 +13,7 @@ import {
   type WorkspaceSnapshot,
 } from "./workspace.ts";
 import { processAlive, sessionPaths, Session, SessionEnv, type SessionState } from "./session.ts";
+import type { DaemonEventPayload } from "./effect/EventBus.ts";
 
 const START_TIMEOUT_MS = 10_000;
 const POLL_MS = 25;
@@ -32,6 +33,7 @@ export interface SessionClientShape extends DaemonSession {
   readonly live: ReadonlySet<string>;
   readonly workspace: () => WorkspaceSnapshot;
   readonly models: Stream.Stream<WorkspaceSnapshot>;
+  readonly events: Stream.Stream<DaemonEventPayload, unknown>;
   readonly runWorkspace: (
     command: Command,
     context: WorkspaceCommandContext,
@@ -140,6 +142,10 @@ const make = (
       live: new Set(status.agents),
       workspace: () => structuredClone(workspace),
       models: attach.workspace().pipe(Stream.map(accept)),
+      events: control.Events().pipe(
+        Stream.drop(1),
+        Stream.map(({ event }) => event),
+      ),
       runWorkspace: (command, context) =>
         Effect.flatMap(Effect.runtime<never>(), (runtime) =>
           Effect.tryPromise({

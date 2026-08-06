@@ -283,6 +283,7 @@ function lifecycleSession(workspace: WorkspaceSnapshot, spawn: SpawnBackend): Se
     ),
     workspace: () => structuredClone(workspace),
     models: Stream.never,
+    events: Stream.never,
     backend: () => spawn,
     runWorkspace: () => Effect.succeed(structuredClone(workspace)),
     close() {},

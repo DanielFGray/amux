@@ -48,7 +48,11 @@ export function sidebarTargets(spaces: readonly Space[], agentsOnly = false): Si
 }
 
 const stateColor = (state: AgentState) =>
-  state === "blocked" ? theme.red : state === "working" ? theme.green : theme.overlay1;
+  state === "blocked" || state === "failed"
+    ? theme.red
+    : state === "working"
+      ? theme.green
+      : theme.overlay1;
 
 export interface SidebarProps {
   app: AppState;
@@ -211,7 +215,13 @@ function SidebarRow(props: SidebarProps & { row: Exclude<Row, { kind: "branch" }
     if (row.kind === "window") return theme.blue;
     props.app.tick();
     const a = row.agent;
-    return a.state === "done" ? theme.overlay1 : a.unseen ? theme.peach : theme.text;
+    return a.state === "done"
+      ? theme.overlay1
+      : a.state === "failed"
+        ? theme.red
+        : a.unseen
+          ? theme.peach
+          : theme.text;
   };
 
   // space at column 0, window indented one, agents two — the nesting is the

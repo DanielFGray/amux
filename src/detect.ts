@@ -13,7 +13,7 @@
  * we project here — a supervised PTY has no hooks to lean on.
  */
 
-export type AgentState = "idle" | "working" | "blocked" | "detached" | "done";
+export type AgentState = "idle" | "working" | "blocked" | "failed" | "detached" | "done";
 
 /**
  * Executable names that mean "this is an agent CLI", mapped to a short label.
@@ -153,6 +153,7 @@ export const STATE_GLYPH: Record<AgentState, string> = {
   blocked: "●",
   working: "⠹", // replaced with the live spinner frame when rendering
   idle: "○",
+  failed: "!",
   detached: "⊘",
   done: "✓",
 };

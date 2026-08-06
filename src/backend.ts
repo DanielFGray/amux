@@ -16,6 +16,7 @@
 import { spawnPty, readPty } from "./pty.ts";
 import { Effect, Fiber, Mailbox, Stream } from "effect";
 import type { AttachClientShape } from "./attach.ts";
+import type { AgentState } from "./detect.ts";
 
 export interface AgentBackend {
   /** True once the stream is over: the process exited, or the attachment was
@@ -43,6 +44,7 @@ export interface AgentBackend {
    */
   foregroundPgid(): number;
   sessionId(): number;
+  readonly agentState?: () => AgentState | null;
 }
 
 export interface BackendOptions {
@@ -140,6 +142,7 @@ export function daemonBackend(
     let closed = false;
     let detached = false;
     let exitCode: number | null = null;
+    let agentState: AgentState | null = null;
 
     /**
      * Foreground process group and session id, as reported by the daemon.
@@ -183,7 +186,11 @@ export function daemonBackend(
                   foregroundPgid = frame.pgid;
                   foregroundSid = frame.sid;
                 })
-              : Effect.void,
+              : frame._tag === "agent.status"
+                ? Effect.sync(() => {
+                    agentState = frame.state;
+                  })
+                : Effect.void,
       ).pipe(
         Effect.ensuring(
           Effect.sync(() => {
@@ -250,6 +257,7 @@ export function daemonBackend(
       // pgid alone is enough — the cmdline never needs to cross the wire.
       foregroundPgid: () => foregroundPgid,
       sessionId: () => foregroundSid,
+      agentState: () => agentState,
     };
   };
 }

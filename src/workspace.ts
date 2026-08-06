@@ -102,6 +102,7 @@ const TerminalSize = Schema.Struct({
 const PersistedAgentShape = Schema.Struct({
   id: NonEmptyString,
   name: Schema.String,
+  kind: Schema.optional(Schema.Literal("pty", "agent")),
   cmd: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),
   cwd: Schema.optional(Schema.String),
   cols: TerminalDimension,
@@ -190,6 +191,7 @@ export const WorkspaceCommandContextSchema = Schema.Struct({
 export type WorkspaceAction =
   | { readonly _tag: "spawn"; readonly agent: PersistedAgent }
   | { readonly _tag: "kill"; readonly agent: string }
+  | { readonly _tag: "restart"; readonly agent: string }
   | { readonly _tag: "input"; readonly agent: string; readonly data: string };
 
 export interface WorkspaceMutation {
@@ -783,6 +785,22 @@ export function applyWorkspaceCommand(
       target.window.layout = prune(target.window.layout, (agent) => agent !== target.agent.id);
       target.window.state.focus = target.window.layout.focus ?? null;
       afterPaneRemoved(next, target.space, target.window, actions);
+      break;
+    }
+    case "agent.restart": {
+      const target = findAgent(next, command.agent);
+      if (!target || !target.agent.exited) break;
+      target.agent.exited = false;
+      target.agent.exitCode = null;
+      target.agent.kind ??= "pty";
+      if (!layoutPanes(target.window.layout.root).some((pane) => pane.agent === target.agent.id)) {
+        const pane = { id: newPaneId(), agent: target.agent.id };
+        target.window.layout = target.window.layout.root
+          ? splitLayout(target.window.layout, 0, "row", pane)
+          : makeLayout({ type: "pane", ...pane, weight: 1 }, pane.id);
+        target.window.state.focus = pane.id;
+      }
+      actions.push({ _tag: "spawn", agent: structuredClone(target.agent) });
       break;
     }
     case "agent.reveal": {

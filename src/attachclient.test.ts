@@ -102,6 +102,7 @@ async function projectAgent(
   if (!live.includes(id)) {
     await Effect.runPromise(
       daemon.spawnAgent({
+        kind: options.kind,
         id,
         cmd: options.cmd,
         cwd: options.cwd,
@@ -154,6 +155,31 @@ test("an agent's bytes travel to the daemon and its output comes back", async ()
 
   // And the daemon, not this process, is the one holding the PTY.
   expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
+});
+
+test("native agent status frames become authoritative projected state", async () => {
+  const { daemon, env } = await session("native-status");
+  const client = await attach("native-status", env);
+  const cmd = [
+    process.execPath,
+    "-e",
+    `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"native-status-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+  ];
+  await Effect.runPromise(
+    daemon.spawnAgent({ kind: "agent", id: "native-status-agent", cmd, cols: 80, rows: 24 }),
+  );
+  (client.live as Set<string>).add("native-status-agent");
+  const agent = new Agent({
+    id: "native-status-agent",
+    cmd,
+    kind: "agent",
+    backend: client.backend(),
+  });
+  agents.push(agent);
+
+  await until(() => agent.state === "working", "native working status");
+  expect(agent.state).toBe("working");
+  await Effect.runPromise(daemon.killAgent(agent.id));
 });
 
 test("two clients share output and input, and one can leave without detaching the other", async () => {

@@ -30,6 +30,8 @@ const BLOCKED_SCAN_ROWS = 20;
 const AGENT_POLL_MS = 500;
 
 export interface AgentOptions {
+  /** Native sessions use semantic worker frames; omitted means a foreign PTY. */
+  kind?: "pty" | "agent";
   /** Display name before the child reports an OSC title. Defaults to the
    *  executable being run, which is nearly always the better answer. */
   name?: string;
@@ -336,6 +338,8 @@ export class Agent {
   get state(): AgentState {
     if (this.#exited) return "done";
     if (this.#detached) return "detached";
+    const authoritative = this.#backend.agentState?.();
+    if (authoritative) return authoritative;
     if (!this.agentKind) return "idle";
     if (splitActivity(this.term.title).spinning) return "working";
     if (this.#blocked()) return "blocked";

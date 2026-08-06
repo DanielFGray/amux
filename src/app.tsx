@@ -135,10 +135,24 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       workspaceEnv(options.renderer, { shell: initialShell, backend: options.session.backend() }),
       options.paneHost,
     );
-    return yield* Effect.acquireRelease(
+    const app = yield* Effect.acquireRelease(
       Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber)),
       (app) => app.release,
     );
+    runFiber(
+      "agent-notifications",
+      Stream.runForEach(options.session.events, (event) =>
+        Effect.sync(() => {
+          if (
+            resolveOptions(options.config.options)["notifications.blocked"] &&
+            event._tag === "agent.state" &&
+            event.state === "blocked"
+          )
+            process.stdout.write("\x07");
+        }),
+      ),
+    );
+    return app;
   });
 }
 
@@ -851,8 +865,16 @@ function buildApp(
           ? Effect.fail(new CommandError({ message: error.message }))
           : runWorkspace(command("pane.send-keys", { keys }), input);
       }),
-    "pane.capture": () => Effect.sync(() => { openCapture(); return ""; }),
-    "pane.copy-mode": () => Effect.sync(() => { enterCopyMode(); return undefined as void; }),
+    "pane.capture": () =>
+      Effect.sync(() => {
+        openCapture();
+        return "";
+      }),
+    "pane.copy-mode": () =>
+      Effect.sync(() => {
+        enterCopyMode();
+        return undefined as void;
+      }),
 
     // The tmux paste-buffer family. The stack lives on the daemon; these
     // handlers are the local doors to it — the same RPC a script uses, minus
@@ -860,9 +882,9 @@ function buildApp(
     // The session methods fail with whatever the socket threw, so the message
     // is pulled out before it becomes a CommandError.
     "buffer.set": ({ name, data }) =>
-      session.setBuffer(name, data).pipe(
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-      ),
+      session
+        .setBuffer(name, data)
+        .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) }))),
     "buffer.paste": ({ name }) =>
       Effect.gen(function* () {
         const pane = spaces.activeWindow?.focused;
@@ -872,12 +894,12 @@ function buildApp(
           .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
       }),
     "buffer.list": () =>
-      session
-        .listBuffers()
-        .pipe(
-          Effect.map((bufs) => bufs.map((b) => ({ name: b.name, bytes: b.bytes, preview: b.preview }))),
-          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      session.listBuffers().pipe(
+        Effect.map((bufs) =>
+          bufs.map((b) => ({ name: b.name, bytes: b.bytes, preview: b.preview })),
         ),
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      ),
     "buffer.delete": ({ name }) =>
       session
         .deleteBuffer(name)
@@ -906,6 +928,7 @@ function buildApp(
     "window.synchronize-panes": (value) => runWorkspace(value),
 
     "agent.kill": (value) => runWorkspace(value),
+    "agent.restart": (value) => runWorkspace(value),
     "agent.reveal": (value) => runWorkspace(value),
     "agent.next-blocked": (value) => runWorkspace(value),
 
@@ -1164,6 +1187,9 @@ function buildApp(
     // something to put one keystroke away from "move up" anyway.
     bind("agent.kill", "<leader>shift+k", command("agent.kill"), {
       desc: "stop the focused agent",
+    }),
+    bind("agent.restart", "<leader>shift+r", command("agent.restart"), {
+      desc: "restart the focused agent",
     }),
     bind("agent.next-blocked", "<leader>a", command("agent.next-blocked"), {
       desc: "jump to the next blocked agent",

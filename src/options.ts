@@ -90,6 +90,11 @@ export const OPTIONS = {
     default: "",
     desc: "shell for new agents · empty uses $SHELL",
   },
+  "notifications.blocked": {
+    kind: "boolean",
+    default: true,
+    desc: "ring the terminal when an agent becomes blocked",
+  },
 } as const satisfies Record<string, OptionSpec>;
 
 export type OptionName = keyof typeof OPTIONS;

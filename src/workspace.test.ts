@@ -627,6 +627,51 @@ test("agent.kill reveals a surviving live agent when the window becomes empty", 
   expect(window.state.focus).not.toBeNull();
 });
 
+test("agent.restart revives an exited agent without changing its identity or pane", () => {
+  const s = base(
+    '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  );
+  s.spaces[0]!.windows[0]!.agents.push({
+    id: "agent-b",
+    name: "worker",
+    kind: "agent",
+    cmd: ["worker"],
+    cols: 80,
+    rows: 24,
+    exited: true,
+    exitCode: 17,
+  });
+
+  const adopted = workspaceFromSession(s);
+  const agent = adopted.spaces[0]!.windows[0]!.agents[1]!;
+  agent.exited = true;
+  agent.exitCode = 17;
+  const result = applyWorkspaceCommand(
+    adopted,
+    command("agent.restart", { agent: "agent-b" }),
+    context,
+  );
+
+  expect(result.changed).toBe(true);
+  expect(result.actions).toEqual([
+    {
+      _tag: "spawn",
+      agent: expect.objectContaining({
+        id: "agent-b",
+        kind: "agent",
+        exited: false,
+        exitCode: null,
+      }),
+    },
+  ]);
+  expect(layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ agent: "agent-a" }),
+      expect.objectContaining({ agent: "agent-b" }),
+    ]),
+  );
+});
+
 // ── pane.resize-divider ──
 
 test("pane.resize-divider adjusts neighbour weights", () => {

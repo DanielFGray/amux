@@ -202,7 +202,7 @@ test("renders the space/agent tree with a state glyph per row", async () => {
     expect(frame.split("\n")[0]).toContain("proj");
     // And it is still rendered, below the tree rather than above it.
     expect(frame).toContain("1 space · 1 agent");
-    expect(frame).toMatch(/[○●✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+    expect(frame).toMatch(/[○●!✓⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
     expect(frame).not.toContain("toggles sidebar");
   } finally {
     await s.dispose();

@@ -333,7 +333,22 @@ class AttachClientConnection {
       }
       return;
     }
-    if (frame._tag !== "output" && frame._tag !== "exit" && frame._tag !== "foreground") return;
+    if (
+      frame._tag !== "output" &&
+      frame._tag !== "exit" &&
+      frame._tag !== "foreground" &&
+      frame._tag !== "turn.start" &&
+      frame._tag !== "text.delta" &&
+      frame._tag !== "tool.start" &&
+      frame._tag !== "tool.result" &&
+      frame._tag !== "permission.request" &&
+      frame._tag !== "permission.response" &&
+      frame._tag !== "agent.status" &&
+      frame._tag !== "turn.end" &&
+      frame._tag !== "agent.steer" &&
+      frame._tag !== "agent.interrupt"
+    )
+      return;
 
     let entry = this._queued.get(frame.session);
     if (entry?.terminal) {

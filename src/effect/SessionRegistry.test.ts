@@ -178,21 +178,50 @@ it.scopedLive("duplicate reservations fail and failed spawns release the id", ()
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
-it.scopedLive("an agent-kind session registers, lists, and is killed through the same path as a pty", () =>
+it.scopedLive("an agent worker registers, emits semantic events, and is killed", () =>
   Effect.gen(function* () {
     const registry = yield* SessionRegistry;
     const agent = yield* registry.spawn({
       kind: "agent",
-      id: "stub-agent",
-      cmd: [],
+      id: "worker-agent",
+      cmd: [
+        process.execPath,
+        "-e",
+        `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"worker-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+      ],
       cols: 80,
       rows: 24,
     });
     expect(agent.kind).toBe("agent");
-    expect(yield* registry.sessions).toEqual(new Set(["stub-agent"]));
+    expect(yield* registry.sessions).toEqual(new Set(["worker-agent"]));
 
     yield* agent.kill;
     expect(yield* agent.exit).toBeNull();
     expect(yield* registry.sessions).toEqual(new Set());
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
+
+test("native workers receive stable amux identity environment", async () => {
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const registry = yield* SessionRegistry;
+      const agent = yield* registry.spawn({
+        kind: "agent",
+        id: "env-agent",
+        cmd: [
+          "sh",
+          "-c",
+          'printf \'{"_tag":"output","session":"env-agent","data":"%s"}\\n\' "$(printf \'%s:%s\' "$AMUX_SESSION" "$AMUX_AGENT_ID" | base64 -w0)"',
+        ],
+        cols: 80,
+        rows: 24,
+      });
+      const output = yield* Stream.runCollect(agent.output);
+      yield* agent.exit;
+      return new TextDecoder().decode(
+        Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
+      );
+    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
+  );
+  expect(result).toContain("env-agent:env-agent");
+});

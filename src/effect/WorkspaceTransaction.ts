@@ -175,8 +175,8 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                     );
                   }
                   for (const a of mutation.actions) {
-                    if (a._tag !== "spawn") continue;
-                    prepared.push(yield* sessionOps.prepare(a.agent));
+                   if (a._tag !== "spawn") continue;
+                   prepared.push(yield* sessionOps.prepare(a.agent));
                   }
                   for (const a of mutation.actions) {
                     if (a._tag === "kill") yield* sessionOps.kill(a.agent);

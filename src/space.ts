@@ -301,6 +301,7 @@ export function rollUp(agents: readonly Agent[]): AgentState {
   const RANK: Record<AgentState, number> = {
     blocked: 4,
     working: 3,
+    failed: 3,
     detached: 2,
     idle: 1,
     done: 0,

@@ -332,10 +332,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     const rt = ManagedRuntime.make(
       layerAttachHost({
         path: paths.attach,
+        controlPath: paths.control,
         onAttach: attachEffect,
         onDetach: detachEffect,
         onActivity: touchEffect,
         onSessionExit: (sid, code) => sessionExitEffect(sid, code),
+        onAgentState: (sid, state) =>
+          eventBus.publish({ _tag: "agent.state", session: sid, state }),
       }),
     );
     hostRuntime = rt;
@@ -363,7 +366,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         for (const w of space.windows) {
           for (const a of w.agents) {
             if (a.exited) continue;
-            yield* spawnAgent(a).pipe(
+            yield* spawnAgent({
+              kind: a.kind,
+              id: a.id,
+              cmd: a.cmd,
+              cwd: a.cwd,
+              controlPath: paths.control,
+              cols: a.cols,
+              rows: a.rows,
+            }).pipe(
               Effect.catchAll(() => {
                 next = markAgentExited(next, a.id, null);
                 changed = true;
@@ -622,6 +633,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               return {};
             }
             return yield* controlFail(`server command '${value._tag}' is not implemented for run`);
+          }
+          if (meta.target === "session") {
+            if (value._tag === "pane.capture") {
+              if (!value.session) return yield* controlFail("pane.capture requires a session id");
+              return { result: yield* requireHost().capture(value.session) };
+            }
+            return yield* controlFail(`session command '${value._tag}' is not implemented for run`);
           }
           return yield* controlFail("session commands are not yet implemented for run");
         }),

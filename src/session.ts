@@ -84,6 +84,7 @@ export function isSessionId(id: string): boolean {
 export interface PersistedAgent {
   id: string;
   name: string;
+  kind?: "pty" | "agent";
   cmd: string[];
   cwd?: string;
   cols: number;
@@ -169,6 +170,7 @@ const LayoutMetadataSchema = S.Struct({ focus: S.optional(S.Unknown) });
 const PersistedAgentSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
+  kind: S.optional(S.Literal("pty", "agent")),
   cmd: S.Array(NonEmptyString).pipe(S.minItems(1)),
   cwd: S.optional(S.String),
   cols: TerminalDimension,
@@ -248,6 +250,7 @@ export interface SessionPaths {
    * from an attachment going away.
    */
   attach: string;
+  control: string;
 }
 
 export function sessionRoot(): Effect.Effect<string, never, SessionEnv> {
@@ -286,6 +289,7 @@ export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdE
       lock: path.join(rootPath, "daemon.lock"),
       socket: path.join(rootPath, "daemon.sock"),
       attach: path.join(rootPath, "attach.sock"),
+      control: path.join(rootPath, "control.sock"),
     };
   });
 }

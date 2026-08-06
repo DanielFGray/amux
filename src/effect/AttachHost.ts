@@ -17,12 +17,14 @@
  */
 
 import { Context, Effect, ExecutionStrategy, Layer, Scope } from "effect";
+import { createServer, type Server } from "node:net";
 import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame } from "./AttachProtocol.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
 import {
   SessionExitObserver,
+  SessionStateObserver,
   SessionSupervisor,
   type PreparedSession,
 } from "./SessionSupervisor.ts";
@@ -31,6 +33,7 @@ import type { ManagedSession, PtyError, SessionSpec } from "./SessionRegistry.ts
 export interface AttachHostOptions {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
   readonly path: string;
+  readonly controlPath?: string;
   readonly idleTimeoutSeconds?: number;
   /** Record or reject an attachment; failing rejects the client's hello. */
   readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
@@ -47,6 +50,10 @@ export interface AttachHostOptions {
   ) => Effect.Effect<void, unknown>;
   /** A supervised backend actually terminated (not merely an observer detaching). */
   readonly onSessionExit?: (session: string, code: number | null) => Effect.Effect<void, unknown>;
+  readonly onAgentState?: (
+    session: string,
+    state: "idle" | "working" | "blocked" | "failed" | "done",
+  ) => Effect.Effect<void, unknown>;
 }
 
 export interface AttachHostService {
@@ -75,6 +82,7 @@ export interface AttachHostService {
   readonly paste: (id: string, data: Uint8Array) => Effect.Effect<void, PtyError>;
   /** Raw child input used by daemon-side pane.send-keys. */
   readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
+  readonly capture: (id: string) => Effect.Effect<string, PtyError>;
   /**
    * The server's paste buffer stack. Owned here because it belongs to the
    * PTY plane: it dies with the daemon's attach scope, exactly as tmux's
@@ -100,6 +108,65 @@ const make = (
     // finalizers run in reverse order, so connections close and clients observe
     // detach before session shutdown can publish process exit frames.
     const sessions = yield* Scope.fork(host, ExecutionStrategy.sequential);
+
+    if (options.controlPath) {
+      const controlPath = options.controlPath;
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(
+          () =>
+            new Promise<Server>((resolve, reject) => {
+              const value = createServer((socket) => {
+                let buffer = "";
+                socket.on("data", (chunk) => {
+                  buffer += chunk.toString("utf8");
+                  const lines = buffer.split("\n");
+                  buffer = lines.pop() ?? "";
+                  for (const line of lines) {
+                    if (!line) continue;
+                    try {
+                      const request = JSON.parse(line) as {
+                        id?: string;
+                        method?: string;
+                        params?: { agent?: string; state?: string };
+                      };
+                      const validState = ["idle", "working", "blocked", "failed", "done"].includes(
+                        request.params?.state ?? "",
+                      );
+                      const ok =
+                        request.method === "ping" ||
+                        (request.method === "agent.state" && validState);
+                      if (
+                        ok &&
+                        request.method === "agent.state" &&
+                        request.params?.agent &&
+                        request.params.state
+                      )
+                        void options.onAgentState?.(
+                          request.params.agent,
+                          request.params.state as any,
+                        );
+                      socket.write(
+                        JSON.stringify({
+                          id: request.id,
+                          ok,
+                          ...(ok ? {} : { error: "unknown request" }),
+                        }) + "\n",
+                      );
+                    } catch {
+                      socket.write('{"ok":false,"error":"invalid request"}\n');
+                    }
+                  }
+                });
+              });
+              value.once("error", reject);
+              value.listen(controlPath, () => resolve(value));
+            }),
+        ),
+        (value) =>
+          Effect.promise(() => new Promise<void>((resolve) => value.close(() => resolve()))),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => void server));
+    }
 
     yield* startAttachServer({
       path: options.path,
@@ -143,6 +210,7 @@ const make = (
           session: id,
           data: typeof data === "string" ? new TextEncoder().encode(data) : data,
         }),
+      capture: supervisor.capture,
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),
     };
@@ -165,6 +233,11 @@ export const layerAttachHost = (
         Layer.provide(
           Layer.succeed(SessionExitObserver, {
             beforePublish: options.onSessionExit ?? (() => Effect.void),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(SessionStateObserver, {
+            onState: options.onAgentState ?? (() => Effect.void),
           }),
         ),
       ),
