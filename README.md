@@ -113,3 +113,28 @@ an error the app refuses to start over — the settings window names the clash,
 and the first-registered of the two is the one that fires.
 
 This project was created using `bun init` in bun v1.3.14. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+
+## Plugins
+
+Plugins are trusted in-process TypeScript modules loaded at startup. The
+default sidebar is itself the builtin plugin `builtin:amux.sidebar`, so it can
+be disabled or replaced through the same configuration list:
+
+```json
+{
+  "plugins": [
+    { "path": "builtin:amux.sidebar", "enabled": true },
+    { "path": "./plugins/status-bar.tsx", "enabled": true }
+  ]
+}
+```
+
+Relative paths resolve from the config directory. A plugin must default-export
+an object with `id`, `apiVersion: "1"`, and an Effect `effect` function. The
+effect receives a value-only `PanelContext`, registers panels with
+`ctx.registerPanel`, and everything registered is removed when the plugin is
+disabled or fails. See `examples/status-bar.tsx` for a complete bottom-bar
+plugin.
+
+Plugins must invoke workspace commands through `ctx.panel.run()` and must not
+mutate client projection objects or access terminal handles.

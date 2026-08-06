@@ -143,6 +143,20 @@ testEffect("loads a valid plugin", () =>
   }),
 );
 
+testEffect("loads the worked external status bar example", () =>
+  Effect.gen(function* () {
+    const { host, regions } = yield* makeHost();
+    const config = baseConfig({
+      plugins: [spec(join(testDir, "../../examples/status-bar.tsx"))],
+    });
+
+    yield* loadPluginsFromConfig(config, host, testDir);
+
+    expect(host.status().map((status) => status.id)).toEqual(["example.status-bar"]);
+    expect(regions.declared("bottom", "app")).toBe(true);
+  }),
+);
+
 testEffect("loads multiple plugins in order", () =>
   Effect.gen(function* () {
     const dir = yield* Effect.promise(() => tempDir());
