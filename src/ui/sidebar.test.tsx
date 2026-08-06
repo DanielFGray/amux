@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { scopedSpaceSet } from "../harness.ts";
-import { afterEach, test, expect } from "vitest";
+import { afterEach, test, expect } from "bun:test";
 import { Effect, Exit, FiberMap, Scope } from "effect";
 import { FileSystem } from "@effect/platform";
 import { createSignal } from "solid-js";

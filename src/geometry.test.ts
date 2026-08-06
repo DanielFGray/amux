@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "bun:test";
 import { computeRects, resizeDivider, resizePane } from "./geometry.ts";
 import { createHarness, run } from "./harness.ts";
 import { LAYOUT_VERSION, makeLayout, type Layout, type LayoutNode } from "./layout.ts";

@@ -10,7 +10,7 @@
  * Two launches, because booting once proves nothing about booting onto state a
  * previous run left behind.
  */
-import { test, expect, beforeAll } from "vitest";
+import { test, expect, beforeAll } from "bun:test";
 import { launch, E2E_TIMEOUT } from "./app.ts";
 
 const MARKER = "MARKER-ONE";

@@ -16,7 +16,7 @@
  * `^a b` and the settings row are two ways to reach one value, and if they were
  * ever two values again, only one of these assertions would fail.
  */
-import { test, expect, beforeAll, afterAll } from "vitest";
+import { test, expect, beforeAll, afterAll } from "bun:test";
 import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
 
 let app: App;

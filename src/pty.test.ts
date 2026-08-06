@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect } from "bun:test";
 import { spawnPty, readPty, type Pty } from "./pty.ts";
 
 const fs = require("node:fs");

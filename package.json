@@ -23,8 +23,8 @@
     "typecheck": "bunx tsc --noEmit",
     "format": "bunx oxfmt --write src e2e",
     "format:check": "bunx oxfmt --check src e2e",
-    "test": "bunx --bun vitest run",
-    "e2e": "bunx --bun vitest run e2e",
+    "test": "bun test src",
+    "e2e": "bun test e2e",
     "prepare": "effect-tsgo patch --typescript --oxlint"
   },
   "devDependencies": {
@@ -34,8 +34,7 @@
     "oxfmt": "0.62.0",
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "7.0.2001",
-    "typescript": "^7.0.2",
-    "vitest": "^3.2.7"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@effect/platform-bun": "0.91.2",

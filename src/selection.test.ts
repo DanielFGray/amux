@@ -1,5 +1,6 @@
 import { run, runAsync, scopedSpaceSet } from "./harness.ts";
-import { test, expect, afterEach } from "vitest";
+import { test, expect } from "bun:test";
+import { afterEach } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { RenderState, Terminal } from "./ghostty.ts";

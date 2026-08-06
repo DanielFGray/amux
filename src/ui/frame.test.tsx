@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { scopedSpaceSet } from "../harness.ts";
 import { Effect } from "effect";
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";

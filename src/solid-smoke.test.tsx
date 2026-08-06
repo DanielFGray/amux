@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { test, expect } from "vitest";
+import { test, expect } from "bun:test";
 import { createSignal } from "solid-js";
 import { testRender } from "@opentui/solid";
 

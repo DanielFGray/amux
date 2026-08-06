@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { createSignal } from "solid-js";

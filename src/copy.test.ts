@@ -1,5 +1,5 @@
 import { run, runAsync, scopedSpaceSet } from "./harness.ts";
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach } from "bun:test";
 import { Effect } from "effect";
 import { MouseEvent, BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";

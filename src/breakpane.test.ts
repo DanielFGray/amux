@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect } from "bun:test";
 import { Divider } from "./divider.ts";
 import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";

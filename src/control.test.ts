@@ -6,7 +6,7 @@
  * surface is a different thing from what a script, a CLI or another machine's
  * client can ask of it, and the second is the contract worth pinning.
  */
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

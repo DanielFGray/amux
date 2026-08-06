@@ -1,4 +1,4 @@
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach } from "bun:test";
 import { Divider } from "./divider.ts";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";

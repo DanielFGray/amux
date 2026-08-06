@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect } from "bun:test";
 import { parseArgs, fieldNames, generateHelp } from "./command-cli.ts";
 import type { CommandTag } from "./commands.ts";
 

@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { BufferError, PasteBuffers } from "./BufferStore.ts";
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);

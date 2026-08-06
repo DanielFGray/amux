@@ -1,4 +1,4 @@
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach } from "bun:test";
 import { createHarness, run } from "./harness.ts";
 import type { Window } from "./window.ts";
 import { Divider } from "./divider.ts";

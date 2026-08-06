@@ -11,7 +11,7 @@
  * Plain arrows are focus, not resize, so they are checked against moving the
  * divider at all.
  */
-import { test, expect, beforeAll, afterAll } from "vitest";
+import { test, expect, beforeAll, afterAll } from "bun:test";
 import { launch, teeColumn, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
 
 /** ctrl+left as xterm writes it. Sent whole via App.send — press() writes one

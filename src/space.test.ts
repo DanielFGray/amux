@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect } from "bun:test";
 import { which } from "bun";
 import { BoxRenderable } from "@opentui/core";
 import { mkdtemp, chmod } from "node:fs/promises";

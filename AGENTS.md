@@ -46,8 +46,8 @@ Before performing multiple mechanical rewrites, read
 and add newly discovered ast-grep examples and gotchas to that document.
 
 ```bash
-bun run test          # unit tests
-bun run e2e           # e2e tests (slower, requires daemon)
+bun test src          # unit tests
+bun test e2e          # e2e tests (slower, requires daemon)
 bunx tsc --noEmit     # typecheck
 bun run start         # client (same as `bun src/cli.ts <session>`)
 bun run daemon        # daemon (same as `bun src/cli.ts daemon <session>`)

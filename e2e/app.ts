@@ -17,9 +17,9 @@ import { Terminal } from "../src/ghostty.ts";
 import { captureVisible } from "../src/capture.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join, dirname } from "node:path";
 
-const REPO = dirname(dirname(new URL(import.meta.url).pathname));
+const REPO = dirname(import.meta.dir);
 const KEY_GAP_MS = 50;
 
 /** ctrl+a, the default prefix. */

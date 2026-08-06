@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { test, expect } from "bun:test";
 import { Effect } from "effect";
 import { createTestRenderer } from "@opentui/core/testing";
 import {
