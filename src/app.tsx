@@ -64,6 +64,7 @@ import { createPanelContext, type PanelContext } from "./ui/panel.ts";
 import { Sidebar, clampSidebarSelection, sidebarTargets } from "./ui/Sidebar.tsx";
 import { App } from "./ui/App.tsx";
 import { createRegions } from "./ui/regions.tsx";
+import { createPluginHost, type PluginHost } from "./plugin/host.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "./ui/Prompt.tsx";
@@ -103,9 +104,10 @@ export interface AppHandle {
   readonly View: () => JSX.Element;
   /** Value-only context available to in-process panels and plugins. */
   readonly panel: PanelContext;
+  readonly pluginHost: PluginHost;
 }
 
-interface ManagedAppHandle extends AppHandle {
+interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly release: Effect.Effect<void>;
 }
 
@@ -139,10 +141,12 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       workspaceEnv(options.renderer, { shell: initialShell, backend: options.session.backend() }),
       options.paneHost,
     );
+    const regions = createRegions(options.renderer);
     const app = yield* Effect.acquireRelease(
-      Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber)),
+      Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber, regions)),
       (app) => app.release,
     );
+    const pluginHost = yield* createPluginHost(app.panel, regions);
     runFiber(
       "agent-notifications",
       Stream.runForEach(options.session.events, (event) =>
@@ -156,7 +160,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         }),
       ),
     );
-    return app;
+    return { ...app, pluginHost };
   });
 }
 
@@ -214,6 +218,7 @@ function buildApp(
   spaces: SpaceSet,
   fiberScope: Scope.CloseableScope,
   runFiber: AppFiberRunner,
+  regions: ReturnType<typeof createRegions>,
 ): ManagedAppHandle {
   const initialFrameExternalLeft = frame.externalLeft;
 
@@ -367,7 +372,6 @@ function buildApp(
   }
 
   /** Where every panel on screen is registered. See registerPanels below. */
-  const regions = createRegions(renderer);
 
   const sidebarOpen = () => options()["sidebar.open"];
   const [selected, setSelected] = createSignal(0);
