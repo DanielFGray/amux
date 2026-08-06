@@ -69,7 +69,7 @@ test("stale cleanup removes dead leases but never live leases", async () => {
       version: 1,
       session: "dead",
       pid: 999999,
-      socket: "",
+      socket: "/tmp/dead.sock",
       startedAt: 1,
       heartbeatAt: 1,
     }),
@@ -81,7 +81,7 @@ test("stale cleanup removes dead leases but never live leases", async () => {
       version: 1,
       session: "live",
       pid: process.pid,
-      socket: "",
+      socket: "/tmp/live.sock",
       startedAt: 1,
       heartbeatAt: 1,
     }),
@@ -90,6 +90,58 @@ test("stale cleanup removes dead leases but never live leases", async () => {
   expect(await run(Session.cleanupStale, e)).toEqual(["dead"]);
   expect(await run(Session.load("dead"), e)).toBeNull();
   expect(await run(Session.load("live"), e)).not.toBeNull();
+});
+
+test("lease files are schema-validated before ownership checks", async () => {
+  const e = await env();
+  const paths = await run(sessionPaths("lease-validation"), e);
+  await mkdir(paths.root, { recursive: true });
+
+  await Bun.write(
+    paths.lease,
+    JSON.stringify({
+      version: 1,
+      session: "other-session",
+      pid: process.pid,
+      socket: paths.socket,
+      startedAt: 1,
+      heartbeatAt: 1,
+    }),
+  );
+  expect(await run(Session.readLease("lease-validation"), e)).toBeNull();
+
+  await Bun.write(
+    paths.lease,
+    JSON.stringify({
+      version: 1,
+      session: "lease-validation",
+      pid: process.pid,
+      socket: "",
+      startedAt: 1,
+      heartbeatAt: 1,
+    }),
+  );
+  expect(await run(Session.readLease("lease-validation"), e)).toBeNull();
+
+  await run(
+    Session.writeLease({
+      version: 1,
+      session: "lease-validation",
+      pid: process.pid,
+      socket: paths.socket,
+      startedAt: 1,
+      heartbeatAt: 2,
+      attachedSince: 3,
+      attachLastSeen: 4,
+      attachments: [{ client: "client-a", attachedSince: 3, attachLastSeen: 4 }],
+    }),
+    e,
+  );
+  expect(await run(Session.readLease("lease-validation"), e)).toMatchObject({
+    session: "lease-validation",
+    attachedSince: 3,
+    attachments: [{ client: "client-a" }],
+  });
 });
 
 test("valid session ids resolve to a single path component", async () => {

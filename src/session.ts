@@ -215,7 +215,7 @@ export const SessionLeaseSchema = S.Struct({
   version: S.Literal(SESSION_VERSION),
   session: SessionIdSchema,
   pid: PositiveInt,
-  socket: S.String,
+  socket: NonEmptyString,
   startedAt: NonNegativeNumber,
   heartbeatAt: NonNegativeNumber,
   attachedSince: S.optional(NonNegativeNumber),
@@ -227,7 +227,7 @@ export const SessionLeaseSchema = S.Struct({
         attachedSince: NonNegativeNumber,
         attachLastSeen: NonNegativeNumber,
       }),
-    ),
+    ).pipe(S.maxItems(64)),
   ),
 });
 
@@ -446,9 +446,9 @@ export class Session extends Effect.Service<Session>()("Session", {
 
     const readLease = Effect.fnUntraced(function* (id: string) {
       const sessionPaths = yield* paths(id);
-      return yield* jsonFile(sessionPaths.lease, SessionLeaseSchema).pipe(
-        Effect.map(Option.getOrNull),
-      );
+      const lease = yield* jsonFile(sessionPaths.lease, SessionLeaseSchema);
+      if (Option.isNone(lease) || lease.value.session !== id) return null;
+      return lease.value;
     });
 
     const writeLease = (lease: SessionLease) =>
