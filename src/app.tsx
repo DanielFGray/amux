@@ -60,6 +60,7 @@ import {
 import type { SessionClientShape } from "./client.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
 import { createAppState, POLL_MS } from "./ui/state.ts";
+import { createPanelContext, type PanelContext } from "./ui/panel.ts";
 import { Sidebar, clampSidebarSelection, sidebarTargets } from "./ui/Sidebar.tsx";
 import { App } from "./ui/App.tsx";
 import { createRegions } from "./ui/regions.tsx";
@@ -100,6 +101,8 @@ export interface AppHandle {
    *  the signals below are read inside it, and evaluating them any earlier
    *  would hand `render` a dead snapshot. */
   readonly View: () => JSX.Element;
+  /** Value-only context available to in-process panels and plugins. */
+  readonly panel: PanelContext;
 }
 
 interface ManagedAppHandle extends AppHandle {
@@ -242,6 +245,7 @@ function buildApp(
   };
   spaces.onCopyError = (error) => console.error(error.message);
   const app = createAppState(spaces);
+  const [snapshot, setSnapshot] = createSignal<WorkspaceSnapshot>(session.workspace());
   session.attach.onClose = () => setDaemonDisconnected(true);
 
   /**
@@ -289,9 +293,14 @@ function buildApp(
     if (disposed) return Promise.resolve();
     if (model.revision <= projectedRevision) return projection;
     projection = projection
-      .then(() => Effect.runPromise(projectWorkspace(spaces, model, session.backend())))
       .then(() => {
+        if (model.revision <= projectedRevision) return;
+        return Effect.runPromise(projectWorkspace(spaces, model, session.backend()));
+      })
+      .then(() => {
+        if (model.revision <= projectedRevision) return;
         projectedRevision = model.revision;
+        setSnapshot(structuredClone(model));
         for (const space of spaces.spaces) {
           for (const window of space.windows) {
             window.onModelFocus = (pane) => runProjectedCommand(command("pane.select", { pane }));
@@ -320,14 +329,18 @@ function buildApp(
       .filter((agent) => agent.state === "blocked")
       .map((agent) => agent.id),
   });
-  const runWorkspace = (value: Command, input?: string): Effect.Effect<void, CommandError> =>
+  const runPanelCommand = (
+    value: Command,
+    input?: string,
+  ): Effect.Effect<WorkspaceSnapshot, CommandError> =>
     session
       .runWorkspace(value, { ...workspaceContext(), ...(input === undefined ? {} : { input }) })
       .pipe(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
         Effect.tap((model) => Effect.promise(() => project(model))),
-        Effect.asVoid,
       );
+  const runWorkspace = (value: Command, input?: string): Effect.Effect<void, CommandError> =>
+    runPanelCommand(value, input).pipe(Effect.asVoid);
 
   const [configState, setConfigState] = createSignal<Config>(config);
   /** Every option resolved against its declared default — what the app reads.
@@ -1862,5 +1875,6 @@ function buildApp(
     renderer.removeListener("resize", onResize);
   });
 
-  return { View, release };
+  const panel = createPanelContext(snapshot, app.tick, runPanelCommand, options, changeOption);
+  return { View, panel, release };
 }
