@@ -1,5 +1,6 @@
+import { testEffect } from "../test-effect.ts";
 import { Effect, Exit, Layer, Ref } from "effect";
-import { expect, it } from "@effect/vitest";
+import { expect } from "bun:test";
 import { DaemonModel, layerDaemonModel } from "./DaemonModel.ts";
 import {
   WorkspaceTransaction,
@@ -18,7 +19,10 @@ import { makeLayout, layoutPanes } from "../layout.ts";
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
-function singlePaneState(): { state: SessionState; workspace: ReturnType<typeof workspaceFromSession> } {
+function singlePaneState(): {
+  state: SessionState;
+  workspace: ReturnType<typeof workspaceFromSession>;
+} {
   const spaceId = "space-1";
   const winNum = 1;
   const agentId = "agent-1";
@@ -65,7 +69,10 @@ function singlePaneState(): { state: SessionState; workspace: ReturnType<typeof 
   return { state, workspace: workspaceFromSession(state) };
 }
 
-function worktreeSpace(): { state: SessionState; workspace: ReturnType<typeof workspaceFromSession> } {
+function worktreeSpace(): {
+  state: SessionState;
+  workspace: ReturnType<typeof workspaceFromSession>;
+} {
   const spaceId = "wt-space";
   const state: SessionState = {
     version: 1,
@@ -103,7 +110,9 @@ function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
       Effect.gen(function* () {
         const st = yield* Ref.get(stateRef);
         if (st.fail)
-          return yield* Effect.die(new WorkspaceTransactionError({ message: "injected prepare failure" }));
+          return yield* Effect.die(
+            new WorkspaceTransactionError({ message: "injected prepare failure" }),
+          );
         yield* Ref.update(stateRef, (s) => ({ ...s, prepared: [...s.prepared, agent.id] }));
         const activate = Ref.update(stateRef, (s) => ({
           ...s,
@@ -119,14 +128,18 @@ function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
       Effect.gen(function* () {
         const st = yield* Ref.get(stateRef);
         if (st.fail)
-          return yield* Effect.die(new WorkspaceTransactionError({ message: "injected kill failure" }));
+          return yield* Effect.die(
+            new WorkspaceTransactionError({ message: "injected kill failure" }),
+          );
         yield* Ref.update(stateRef, (s) => ({ ...s, killed: [...s.killed, id] }));
       }),
     write: (id: string, data: string) =>
       Effect.gen(function* () {
         const st = yield* Ref.get(stateRef);
         if (st.fail)
-          return yield* Effect.die(new WorkspaceTransactionError({ message: "injected write failure" }));
+          return yield* Effect.die(
+            new WorkspaceTransactionError({ message: "injected write failure" }),
+          );
         yield* Ref.update(stateRef, (s) => ({ ...s, written: [...s.written, { id, data }] }));
       }),
   };
@@ -145,21 +158,30 @@ function trackingWorktreeOps(stateRef: Ref.Ref<FakeWorktreeState>) {
       Effect.gen(function* () {
         const st = yield* Ref.get(stateRef);
         if (st.fail)
-          return yield* Effect.die(new WorkspaceTransactionError({ message: "injected worktree add failure" }));
+          return yield* Effect.die(
+            new WorkspaceTransactionError({ message: "injected worktree add failure" }),
+          );
         yield* Ref.update(stateRef, (s) => ({ ...s, added: [...s.added, { repo, spec, path }] }));
       }),
     remove: (repo: string, path: string, force = false) =>
       Effect.gen(function* () {
         const st = yield* Ref.get(stateRef);
         if (st.fail)
-          return yield* Effect.die(new WorkspaceTransactionError({ message: "injected worktree remove failure" }));
-        yield* Ref.update(stateRef, (s) => ({ ...s, removed: [...s.removed, { repo, path, force }] }));
+          return yield* Effect.die(
+            new WorkspaceTransactionError({ message: "injected worktree remove failure" }),
+          );
+        yield* Ref.update(stateRef, (s) => ({
+          ...s,
+          removed: [...s.removed, { repo, path, force }],
+        }));
       }),
     isDirty: (_path: string) =>
       Effect.gen(function* () {
         const st = yield* Ref.get(stateRef);
         if (st.fail)
-          return yield* Effect.die(new WorkspaceTransactionError({ message: "injected worktree dirty failure" }));
+          return yield* Effect.die(
+            new WorkspaceTransactionError({ message: "injected worktree dirty failure" }),
+          );
         return st.dirty;
       }),
   };
@@ -224,10 +246,7 @@ function testLayer(
   const persistRef = Ref.unsafeMake<FakePersistenceState>({ persisted: [], retried: [] });
   const eventsRef = Ref.unsafeMake<FakeEventsState>({ workspaceEvents: [], workspaceFrames: [] });
 
-  const layer = Layer.provide(
-    WorkspaceTransaction.Default,
-    layerDaemonModel(initial),
-  ).pipe(
+  const layer = Layer.provide(WorkspaceTransaction.Default, layerDaemonModel(initial)).pipe(
     Layer.provide(Layer.succeed(WorkspaceTransactionSessionOps, trackingSessionOps(sessionRef))),
     Layer.provide(Layer.succeed(WorkspaceTransactionWorktreeOps, trackingWorktreeOps(worktreeRef))),
     Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, trackingPersistence(persistRef))),
@@ -237,7 +256,7 @@ function testLayer(
   return { layer, sessionRef, worktreeRef, persistRef, eventsRef };
 }
 
-it.scoped("rejects stale revision", () => {
+testEffect("rejects stale revision", () => {
   const initial = singlePaneState();
   const { layer } = testLayer(initial);
   return Effect.gen(function* () {
@@ -249,7 +268,7 @@ it.scoped("rejects stale revision", () => {
   }).pipe(Effect.provide(layer));
 });
 
-it.scoped("rejects non-workspace commands", () => {
+testEffect("rejects non-workspace commands", () => {
   const initial = singlePaneState();
   const { layer } = testLayer(initial);
   return Effect.gen(function* () {
@@ -261,7 +280,7 @@ it.scoped("rejects non-workspace commands", () => {
   }).pipe(Effect.provide(layer));
 });
 
-it.scoped("executes a non-destructive command and publishes events", () => {
+testEffect("executes a non-destructive command and publishes events", () => {
   const initial = singlePaneState();
   const { layer } = testLayer(initial);
   return Effect.gen(function* () {
@@ -276,7 +295,7 @@ it.scoped("executes a non-destructive command and publishes events", () => {
   }).pipe(Effect.provide(layer));
 });
 
-it.scoped("rolls back prepared sessions and does not persist on session failure", () => {
+testEffect("rolls back prepared sessions and does not persist on session failure", () => {
   const initial = singlePaneState();
   const { layer, sessionRef, persistRef } = testLayer(initial, { sessionFail: true });
   return Effect.gen(function* () {
@@ -294,7 +313,7 @@ it.scoped("rolls back prepared sessions and does not persist on session failure"
   }).pipe(Effect.provide(layer));
 });
 
-it.scoped("activates prepared sessions after successful commit", () => {
+testEffect("activates prepared sessions after successful commit", () => {
   const initial = singlePaneState();
   const { layer, sessionRef } = testLayer(initial);
   return Effect.gen(function* () {
@@ -314,17 +333,13 @@ it.scoped("activates prepared sessions after successful commit", () => {
   }).pipe(Effect.provide(layer));
 });
 
-it.scoped("rejects worktree removal when dirty", () => {
+testEffect("rejects worktree removal when dirty", () => {
   const initial = worktreeSpace();
   const { layer } = testLayer(initial, { worktreeDirty: true });
   return Effect.gen(function* () {
     const tx = yield* WorkspaceTransaction;
     const result = yield* Effect.exit(
-      tx.run(
-        command("space.close", { space: "wt-space" }),
-        initial.workspace.revision,
-        context,
-      ),
+      tx.run(command("space.close", { space: "wt-space" }), initial.workspace.revision, context),
     );
     expect(result._tag).toBe("Failure");
   }).pipe(Effect.provide(layer));

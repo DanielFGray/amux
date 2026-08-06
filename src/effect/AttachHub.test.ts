@@ -1,8 +1,9 @@
 import { Effect, Stream } from "effect";
-import { expect, it } from "@effect/vitest";
+import { expect } from "bun:test";
 import { AttachHub } from "./AttachHub.ts";
+import { testEffect } from "../test-effect.ts";
 
-it.scopedLive("AttachHub fans frames out and removes subscriptions with scope", () =>
+testEffect("AttachHub fans frames out and removes subscriptions with scope", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const one = yield* hub.subscribe("one");
@@ -17,7 +18,7 @@ it.scopedLive("AttachHub fans frames out and removes subscriptions with scope", 
   }).pipe(Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("AttachHub rejects duplicate client ids", () =>
+testEffect("AttachHub rejects duplicate client ids", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     yield* hub.subscribe("same");
@@ -26,7 +27,7 @@ it.scopedLive("AttachHub rejects duplicate client ids", () =>
   }).pipe(Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("targeted replay requires the live connection token", () =>
+testEffect("targeted replay requires the live connection token", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("same", "new");
@@ -37,7 +38,7 @@ it.scopedLive("targeted replay requires the live connection token", () =>
   }).pipe(Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("concurrent sync barriers keep every replay ahead of live output", () =>
+testEffect("concurrent sync barriers keep every replay ahead of live output", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("same", "connection");
@@ -67,7 +68,7 @@ it.scopedLive("concurrent sync barriers keep every replay ahead of live output",
   }).pipe(Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("a replay that cannot fit the bounded queue evicts the client", () =>
+testEffect("a replay that cannot fit the bounded queue evicts the client", () =>
   Effect.gen(function* () {
     let overflow = 0;
     const hub = yield* AttachHub;

@@ -1,12 +1,9 @@
 import { Cause, Effect, Ref } from "effect";
-import { expect, it } from "@effect/vitest";
-import {
-  DaemonModel,
-  DaemonModelError,
-  layerDaemonModel,
-} from "./DaemonModel.ts";
+import { expect } from "bun:test";
+import { DaemonModel, DaemonModelError, layerDaemonModel } from "./DaemonModel.ts";
 import type { SessionState } from "../session.ts";
 import { workspaceFromSession } from "../workspace.ts";
+import { testEffect } from "../test-effect.ts";
 
 const initial = {
   state: {
@@ -27,7 +24,7 @@ const initial = {
   }),
 };
 
-it.scoped("reads initial state and workspace", () =>
+testEffect("reads initial state and workspace", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const s = yield* model.state;
@@ -39,7 +36,7 @@ it.scoped("reads initial state and workspace", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("enqueue preserves order", () =>
+testEffect("enqueue preserves order", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const order: number[] = [];
@@ -57,7 +54,7 @@ it.scoped("enqueue preserves order", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("enqueue serializes mutations", () =>
+testEffect("enqueue serializes mutations", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const counter = yield* Ref.make(0);
@@ -76,7 +73,7 @@ it.scoped("enqueue serializes mutations", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("enqueue propagates typed errors", () =>
+testEffect("enqueue propagates typed errors", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const result = yield* Effect.exit(
@@ -90,7 +87,7 @@ it.scoped("enqueue propagates typed errors", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("attach registers a client and updates state", () =>
+testEffect("attach registers a client and updates state", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     let persisted: SessionState | null = null;
@@ -126,7 +123,7 @@ it.scoped("attach registers a client and updates state", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("attach rejects duplicate connections", () =>
+testEffect("attach rejects duplicate connections", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const noop = () => Effect.void;
@@ -142,7 +139,7 @@ it.scoped("attach rejects duplicate connections", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("detach removes a client and updates state", () =>
+testEffect("detach removes a client and updates state", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const noop = () => Effect.void;
@@ -177,7 +174,7 @@ it.scoped("detach removes a client and updates state", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("detach of unknown client is a no-op", () =>
+testEffect("detach of unknown client is a no-op", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     let persisted = false;
@@ -194,7 +191,7 @@ it.scoped("detach of unknown client is a no-op", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("touch updates attachLastSeen", () =>
+testEffect("touch updates attachLastSeen", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const noop = () => Effect.void;
@@ -210,7 +207,7 @@ it.scoped("touch updates attachLastSeen", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("touch is a no-op for unknown client", () =>
+testEffect("touch is a no-op for unknown client", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     yield* model.touch("unknown", "unknown");
@@ -219,7 +216,7 @@ it.scoped("touch is a no-op for unknown client", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("commitWorkspace updates workspace and state atomically", () =>
+testEffect("commitWorkspace updates workspace and state atomically", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const next = workspaceFromSession({
@@ -254,7 +251,7 @@ it.scoped("commitWorkspace updates workspace and state atomically", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("obligation bookkeeping tracks durable obligations", () =>
+testEffect("obligation bookkeeping tracks durable obligations", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
 
@@ -272,7 +269,7 @@ it.scoped("obligation bookkeeping tracks durable obligations", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("multiple obligations are tracked independently", () =>
+testEffect("multiple obligations are tracked independently", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
 
@@ -289,7 +286,7 @@ it.scoped("multiple obligations are tracked independently", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("markClosing sets closing flag", () =>
+testEffect("markClosing sets closing flag", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     expect(yield* model.isClosing).toBe(false);
@@ -298,7 +295,7 @@ it.scoped("markClosing sets closing flag", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("markCancelPersistence sets cancelPersistence flag", () =>
+testEffect("markCancelPersistence sets cancelPersistence flag", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     yield* model.markCancelPersistence;
@@ -307,7 +304,7 @@ it.scoped("markCancelPersistence sets cancelPersistence flag", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("heartbeat error is tracked", () =>
+testEffect("heartbeat error is tracked", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     expect(yield* model.heartbeatError).toBeNull();
@@ -320,7 +317,7 @@ it.scoped("heartbeat error is tracked", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-it.scoped("concurrent attaches are serialized", () =>
+testEffect("concurrent attaches are serialized", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const clients: string[] = [];

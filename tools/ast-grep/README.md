@@ -149,3 +149,7 @@ ast-grep scan \
 ```
 
 Keep the scope narrow, then run formatting, typecheck, and the affected tests.
+
+The installed ast-grep CLI accepts `--lang` on `ast-grep run`, but not on
+`ast-grep scan` in this environment; use `ast-grep run` for a syntax rewrite
+and inspect its preview before adding `--update-all`.

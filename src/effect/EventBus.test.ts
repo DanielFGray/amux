@@ -1,8 +1,9 @@
 import { Chunk, Effect, Stream } from "effect";
-import { expect, it } from "@effect/vitest";
+import { expect } from "bun:test";
 import { EventBus } from "./EventBus.ts";
+import { testEffect } from "../test-effect.ts";
 
-it.scopedLive("EventBus broadcasts events and releases subscriptions with scope", () =>
+testEffect("EventBus broadcasts events and releases subscriptions with scope", () =>
   Effect.gen(function* () {
     const bus = yield* EventBus;
     const one = yield* bus.subscribe();
@@ -22,7 +23,7 @@ it.scopedLive("EventBus broadcasts events and releases subscriptions with scope"
   }).pipe(Effect.provide(EventBus.Default)),
 );
 
-it.scopedLive("EventBus uses sliding delivery rather than blocking publishers", () =>
+testEffect("EventBus uses sliding delivery rather than blocking publishers", () =>
   Effect.gen(function* () {
     const bus = yield* EventBus;
     const stream = yield* bus.subscribe();

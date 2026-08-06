@@ -1,5 +1,6 @@
+import { testEffect } from "../test-effect.ts";
 import { Chunk, Deferred, Effect, Fiber, Stream } from "effect";
-import { expect, it, test } from "@effect/vitest";
+import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";
@@ -25,7 +26,7 @@ const output = (frames: readonly AttachFrame[]) =>
     .map((frame) => new TextDecoder().decode(frame.data))
     .join("");
 
-it.scopedLive("SessionSupervisor publishes owned PTY output and exit frames", () =>
+testEffect("SessionSupervisor publishes owned PTY output and exit frames", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
@@ -59,7 +60,7 @@ it.scopedLive("SessionSupervisor publishes owned PTY output and exit frames", ()
  * as the foreground group; running a command changes it — and the change has
  * to travel over the hub for the client's detection to ever see it.
  */
-it.scopedLive("a supervised session publishes its foreground process, and its changes", () =>
+testEffect("a supervised session publishes its foreground process, and its changes", () =>
   Effect.gen(function* () {
     type FgFrame = Extract<AttachFrame, { _tag: "foreground" }>;
     const hub = yield* AttachHub;
@@ -131,7 +132,7 @@ it.scopedLive("a supervised session publishes its foreground process, and its ch
  * itself rather than depend on interrupting the pump to trigger that kill —
  * otherwise the pump waits on the kill and the kill waits on the pump.
  */
-it.scopedLive("scope teardown kills a session left running, without an explicit kill", () =>
+testEffect("scope teardown kills a session left running, without an explicit kill", () =>
   Effect.gen(function* () {
     const supervisor = yield* SessionSupervisor;
     yield* supervisor.spawn({
@@ -151,7 +152,7 @@ it.scopedLive("scope teardown kills a session left running, without an explicit 
   ),
 );
 
-it.scopedLive("SessionSupervisor routes input through the managed PTY", () =>
+testEffect("SessionSupervisor routes input through the managed PTY", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
@@ -207,7 +208,7 @@ test("concurrent duplicate spawns create one child and one managed session", asy
   expect(frames.at(-1)?._tag).toBe("exit");
 });
 
-it.scopedLive("exit cleanup releases the session and replay terminal for reuse", () =>
+testEffect("exit cleanup releases the session and replay terminal for reuse", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
@@ -220,7 +221,7 @@ it.scopedLive("exit cleanup releases the session and replay terminal for reuse",
   }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("killing a trapped session publishes one exit and removes it", () =>
+testEffect("killing a trapped session publishes one exit and removes it", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
@@ -257,7 +258,7 @@ it.scopedLive("killing a trapped session publishes one exit and removes it", () 
   }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("concurrent supervisor kills publish one exit and permit same-id reuse", () =>
+testEffect("concurrent supervisor kills publish one exit and permit same-id reuse", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
@@ -284,7 +285,7 @@ it.scopedLive("concurrent supervisor kills publish one exit and permit same-id r
   }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("a native agent worker is listed and killed through the supervisor", () =>
+testEffect("a native agent worker is listed and killed through the supervisor", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
@@ -309,7 +310,7 @@ it.scopedLive("a native agent worker is listed and killed through the supervisor
   }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
 );
 
-it.scopedLive("a crashed native agent reports failure and can be restarted", () =>
+testEffect("a crashed native agent reports failure and can be restarted", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");

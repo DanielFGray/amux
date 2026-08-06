@@ -1,5 +1,6 @@
+import { testEffect } from "../test-effect.ts";
 import { Effect, Fiber, Stream } from "effect";
-import { expect, it, test } from "@effect/vitest";
+import { expect, test } from "bun:test";
 import { SessionRegistry } from "./SessionRegistry.ts";
 
 const session = Effect.gen(function* () {
@@ -17,7 +18,7 @@ const session = Effect.gen(function* () {
   return { output: [...output], exit };
 }).pipe(Effect.provide(SessionRegistry.Default));
 
-it.scopedLive("SessionRegistry exposes PTY output and writes within a scope", () =>
+testEffect("SessionRegistry exposes PTY output and writes within a scope", () =>
   Effect.gen(function* () {
     const result = yield* session;
     const text = new TextDecoder().decode(
@@ -29,7 +30,7 @@ it.scopedLive("SessionRegistry exposes PTY output and writes within a scope", ()
   }),
 );
 
-it.scopedLive("SessionRegistry releases sessions when the scope closes", () =>
+testEffect("SessionRegistry releases sessions when the scope closes", () =>
   Effect.gen(function* () {
     const registry = yield* SessionRegistry;
     yield* registry.spawn({ id: "scoped-pty", cmd: ["sleep", "10"], cols: 80, rows: 24 });
@@ -37,7 +38,7 @@ it.scopedLive("SessionRegistry releases sessions when the scope closes", () =>
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
-it.scopedLive("SessionRegistry rejects oversized terminals before allocating a PTY", () =>
+testEffect("SessionRegistry rejects oversized terminals before allocating a PTY", () =>
   Effect.gen(function* () {
     const registry = yield* SessionRegistry;
     const result = yield* Effect.either(
@@ -123,7 +124,7 @@ test("interrupting a registry write cancels the PTY operation", async () => {
   expect(result).toBe("Failure");
 });
 
-it.scopedLive("duplicate reservations fail and failed spawns release the id", () =>
+testEffect("duplicate reservations fail and failed spawns release the id", () =>
   Effect.gen(function* () {
     const registry = yield* SessionRegistry;
     const first = yield* Effect.fork(
@@ -178,7 +179,7 @@ it.scopedLive("duplicate reservations fail and failed spawns release the id", ()
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
-it.scopedLive("an agent worker registers, emits semantic events, and is killed", () =>
+testEffect("an agent worker registers, emits semantic events, and is killed", () =>
   Effect.gen(function* () {
     const registry = yield* SessionRegistry;
     const agent = yield* registry.spawn({
