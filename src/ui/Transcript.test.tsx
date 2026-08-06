@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { Effect, Stream } from "effect";
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Transcript } from "./Transcript.tsx";

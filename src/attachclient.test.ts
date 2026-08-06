@@ -8,7 +8,7 @@
  * that stubbed either end would prove nothing about it.
  */
 
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test } from "bun:test";
 import { Effect, Exit, pipe, Scope } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";

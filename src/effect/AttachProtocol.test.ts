@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { Schema as S } from "effect";
 import { DaemonEvent } from "./EventBus.ts";
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";

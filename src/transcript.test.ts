@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { appendTranscriptFrame, serializeTranscript, type TranscriptBlock } from "./transcript.ts";
 
 const frame = (value: any) => ({ session: "agent", sequence: 1, ...value });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { eventGap } from "./control-client.ts";
 
 describe("eventGap", () => {
