@@ -143,12 +143,21 @@ test("filtering by target and exposure produces the expected subsets", () => {
   }
 
   const viewOnly: CommandTag[] = [
-    "app.settings", "app.command-palette", "app.help", "app.send-prefix",
-    "buffer.choose", "buffer.paste",
-    "config.adjust", "config.reset", "config.set", "config.toggle",
-    "pane.capture", "pane.copy-mode",
+    "app.settings",
+    "app.command-palette",
+    "app.help",
+    "app.send-prefix",
+    "buffer.choose",
+    "buffer.paste",
+    "config.adjust",
+    "config.reset",
+    "config.set",
+    "config.toggle",
+    "pane.copy-mode",
   ];
-  const remote = commands.list({ target: "workspace" }).map((c) => c.name)
+  const remote = commands
+    .list({ target: "workspace" })
+    .map((c) => c.name)
     .concat(commands.list({ target: "buffers" }).map((c) => c.name))
     .concat(commands.list({ target: "session" }).map((c) => c.name))
     .concat(commands.list({ target: "server" }).map((c) => c.name));
@@ -223,7 +232,9 @@ test("commands with declared results carry them through the handler", () => {
   const commands = makeCommands(handlers);
 
   expect(Effect.runSync(commands.run(command("buffer.set", { data: "hello" })))).toBe("buffer-5");
-  expect(Effect.runSync(commands.run(command("buffer.show", { name: "buf1" })))).toBe("content of buf1");
+  expect(Effect.runSync(commands.run(command("buffer.show", { name: "buf1" })))).toBe(
+    "content of buf1",
+  );
   expect(Effect.runSync(commands.run(command("pane.capture")))).toBe("captured text");
   expect(Effect.runSync(commands.run(command("pane.zoom")))).toBe(undefined);
 });
@@ -236,7 +247,9 @@ test("command result types match the declared schema", () => {
   // buffer.set → string
   expect(Schema.decodeUnknownSync(bufSetDef.result)("hello")).toBe("hello");
   // buffer.list → array of {name, bytes, preview}
-  expect(Schema.decodeUnknownSync(bufListDef.result)([{ name: "x", bytes: 3, preview: "..." }])).toEqual([{ name: "x", bytes: 3, preview: "..." }]);
+  expect(
+    Schema.decodeUnknownSync(bufListDef.result)([{ name: "x", bytes: 3, preview: "..." }]),
+  ).toEqual([{ name: "x", bytes: 3, preview: "..." }]);
   // pane.capture → string
   expect(Schema.decodeUnknownSync(paneCaptureDef.result)("captured text")).toBe("captured text");
   // void-schema decodes to undefined
