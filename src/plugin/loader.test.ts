@@ -1,0 +1,475 @@
+import { afterEach, expect, test } from "bun:test";
+import { rm, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Effect, Scope } from "effect";
+import { createPluginHost, type PluginHost } from "./host.ts";
+import { loadPluginsFromConfig } from "./loader.ts";
+import type { PluginDefinition } from "./types.ts";
+import type { Config, PluginSpec } from "../config.ts";
+import { decodeConfig } from "../config.ts";
+import { testEffect } from "../test-effect.ts";
+import { createPanelContext, type PanelContext } from "../ui/panel.ts";
+import { createRegions, type Regions } from "../ui/regions.tsx";
+import { createSignal } from "solid-js";
+import type { WorkspaceSnapshot } from "../workspace.ts";
+import type { SidebarDisplay } from "../ui/panel.ts";
+import { resolveOptions } from "../options.ts";
+import type { CliRenderer } from "@opentui/core";
+import { createTestRenderer } from "@opentui/core/testing";
+
+const testDir = fileURLToPath(new URL(".", import.meta.url));
+
+const temporaryDirectories: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((p) => rm(p, { recursive: true, force: true })),
+  );
+});
+
+const cleanupFns: (() => void)[] = [];
+afterEach(() => {
+  for (const fn of cleanupFns.splice(0)) fn();
+});
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(testDir, ".test-"));
+  temporaryDirectories.push(dir);
+  return dir;
+}
+
+async function writePluginFile(dir: string, name: string, content: string): Promise<string> {
+  const fp = join(dir, name);
+  await writeFile(fp, content);
+  return fp;
+}
+
+function emptySnapshot(revision = 0): WorkspaceSnapshot {
+  return { revision, spaces: [], state: { activeSpace: null } };
+}
+
+function emptyDisplay(): SidebarDisplay {
+  return { rows: [], spaceCount: 0, agentCount: 0, blockedCount: 0 };
+}
+
+function mockPanelContext(): PanelContext {
+  const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
+  const [tick] = createSignal(0);
+  const [options] = createSignal(resolveOptions({}));
+  const [display] = createSignal(emptyDisplay());
+  const [selected] = createSignal<string | null>(null);
+  return createPanelContext(
+    snapshot,
+    tick,
+    () => Effect.succeed(emptySnapshot()),
+    options,
+    () => {},
+    display,
+    () => {},
+    selected,
+    () => {},
+  );
+}
+
+async function mockRegions(): Promise<{
+  regions: Regions;
+  renderer: CliRenderer;
+  dispose: () => void;
+}> {
+  const t = await createTestRenderer({ width: 80, height: 24 });
+  const regions = createRegions(t.renderer);
+  return { regions, renderer: t.renderer, dispose: () => t.renderer.destroy() };
+}
+
+function makeHost(): Effect.Effect<{ host: PluginHost; regions: Regions }, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
+    cleanupFns.push(dispose);
+    const panelCtx = mockPanelContext();
+    return { host: yield* createPluginHost(panelCtx, regions), regions };
+  });
+}
+
+function baseConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    options: {},
+    keys: { leader: "ctrl+a", bindings: {} },
+    plugins: [],
+    ...overrides,
+  };
+}
+
+function spec(path: string, enabled = true): PluginSpec {
+  return { path, enabled };
+}
+
+function mkPluginSrc(id: string, variant?: string): string {
+  const preamble = `import { Effect } from "effect";`;
+  switch (variant) {
+    case "no-default":
+      return `export const x = 1;`;
+    case "null-default":
+      return `export default null;`;
+    case "no-id":
+      return `${preamble}\nexport default { apiVersion: "1", effect: () => Effect.void };`;
+    case "empty-id":
+      return `${preamble}\nexport default { id: "", apiVersion: "1", effect: () => Effect.void };`;
+    case "no-apiVersion":
+      return `${preamble}\nexport default { id: "${id}", effect: () => Effect.void };`;
+    case "no-effect":
+      return `export default { id: "${id}", apiVersion: "1" };`;
+    case "throw":
+      return `throw new Error("syntax error");`;
+    default:
+      return `${preamble}\nexport default { id: "${id}", apiVersion: "1", effect: () => Effect.void };`;
+  }
+}
+
+// --- Happy path ---
+
+testEffect("loads a valid plugin", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "my-plugin.ts", mkPluginSrc("my-plugin")));
+
+    const config = baseConfig({ plugins: [spec(join(dir, "my-plugin.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(1);
+    expect(host.status()[0]!.id).toBe("my-plugin");
+  }),
+);
+
+testEffect("loads multiple plugins in order", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "a.ts", mkPluginSrc("a")));
+    yield* Effect.promise(() => writePluginFile(dir, "b.ts", mkPluginSrc("b")));
+
+    const config = baseConfig({ plugins: [spec(join(dir, "a.ts")), spec(join(dir, "b.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    const ids = host
+      .status()
+      .map((s) => s.id)
+      .sort();
+    expect(ids).toEqual(["a", "b"]);
+  }),
+);
+
+// --- Relative paths ---
+
+testEffect("resolves relative paths against configDir", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "rel.ts", mkPluginSrc("rel-plugin")));
+
+    const config = baseConfig({ plugins: [spec("rel.ts")] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(1);
+    expect(host.status()[0]!.id).toBe("rel-plugin");
+  }),
+);
+
+// --- file:// URLs ---
+
+testEffect("resolves file:// URLs to paths", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    const fp = yield* Effect.promise(() =>
+      writePluginFile(dir, "url.ts", mkPluginSrc("url-plugin")),
+    );
+    const urlSpec = spec("file://" + fp);
+
+    const config = baseConfig({ plugins: [urlSpec] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(1);
+    expect(host.status()[0]!.id).toBe("url-plugin");
+  }),
+);
+
+// --- enabled / disabled ---
+
+testEffect("skips disabled plugins", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "enabled.ts", mkPluginSrc("enabled")));
+    yield* Effect.promise(() => writePluginFile(dir, "disabled.ts", mkPluginSrc("disabled")));
+
+    const config = baseConfig({
+      plugins: [spec(join(dir, "enabled.ts")), spec(join(dir, "disabled.ts"), false)],
+    });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(1);
+    expect(host.status()[0]!.id).toBe("enabled");
+  }),
+);
+
+// --- One bad plugin does not block others ---
+
+testEffect("one bad plugin does not block the next", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "bad.ts", mkPluginSrc("bad", "no-default")));
+    yield* Effect.promise(() => writePluginFile(dir, "good.ts", mkPluginSrc("good")));
+
+    const config = baseConfig({
+      plugins: [spec(join(dir, "bad.ts")), spec(join(dir, "good.ts"))],
+    });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    const ids = host.status().map((s) => s.id);
+    expect(ids).toEqual(["good"]);
+  }),
+);
+
+testEffect("a plugin that throws on import does not block others", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "crash.ts", mkPluginSrc("crash", "throw")));
+    yield* Effect.promise(() => writePluginFile(dir, "ok.ts", mkPluginSrc("ok")));
+
+    const config = baseConfig({
+      plugins: [spec(join(dir, "crash.ts")), spec(join(dir, "ok.ts"))],
+    });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(1);
+    expect(host.status()[0]!.id).toBe("ok");
+  }),
+);
+
+// --- Validation: missing default export ---
+
+testEffect("reports a plugin with no default export", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() =>
+      writePluginFile(dir, "nodefault.ts", mkPluginSrc("nodefault", "no-default")),
+    );
+
+    const config = baseConfig({ plugins: [spec(join(dir, "nodefault.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+// --- Validation: null default export ---
+
+testEffect("reports a plugin with a null default export", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() =>
+      writePluginFile(dir, "null.ts", mkPluginSrc("null", "null-default")),
+    );
+
+    const config = baseConfig({ plugins: [spec(join(dir, "null.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+// --- Validation: missing or empty id ---
+
+testEffect("reports a plugin with no id field", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "noid.ts", mkPluginSrc("noid", "no-id")));
+
+    const config = baseConfig({ plugins: [spec(join(dir, "noid.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+testEffect("reports a plugin with an empty id", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() =>
+      writePluginFile(dir, "emptyid.ts", mkPluginSrc("emptyid", "empty-id")),
+    );
+
+    const config = baseConfig({ plugins: [spec(join(dir, "emptyid.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+// --- Validation: missing apiVersion ---
+
+testEffect("reports a plugin with no apiVersion", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() =>
+      writePluginFile(dir, "noapi.ts", mkPluginSrc("noapi", "no-apiVersion")),
+    );
+
+    const config = baseConfig({ plugins: [spec(join(dir, "noapi.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+// --- Validation: missing effect function ---
+
+testEffect("reports a plugin with no effect function", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() =>
+      writePluginFile(dir, "noeff.ts", mkPluginSrc("noeff", "no-effect")),
+    );
+
+    const config = baseConfig({ plugins: [spec(join(dir, "noeff.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+// --- Missing file ---
+
+testEffect("handles a missing file gracefully", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    const missing = join(dir, "does-not-exist.ts");
+
+    const config = baseConfig({ plugins: [spec(missing)] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+// --- Malformed config defaults ---
+
+testEffect("empty plugins array does nothing", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(baseConfig(), host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+// --- Path traversal prevention ---
+
+testEffect("relative paths that escape configDir are rejected", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+
+    const config = baseConfig({ plugins: [spec("../other/plugin.ts")] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(0);
+  }),
+);
+
+// --- Explicit absolute paths are allowed ---
+
+testEffect("absolute paths outside configDir are allowed", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    const other = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(other, "abs.ts", mkPluginSrc("abs-plugin")));
+
+    const config = baseConfig({ plugins: [spec(join(other, "abs.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+
+    expect(host.status().length).toBe(1);
+    expect(host.status()[0]!.id).toBe("abs-plugin");
+  }),
+);
+
+// --- loadPluginsFromConfig doesn't block host lifecycle ---
+
+testEffect("host continues working after loader finishes", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "pre.ts", mkPluginSrc("pre")));
+
+    const config = baseConfig({ plugins: [spec(join(dir, "pre.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir);
+    yield* host.add({
+      id: "post",
+      apiVersion: "1",
+      effect: () => Effect.void,
+    } as PluginDefinition);
+
+    expect(
+      host
+        .status()
+        .map((s) => s.id)
+        .sort(),
+    ).toEqual(["post", "pre"]);
+  }),
+);
+
+// --- Decode config preserves plugins ---
+
+test("decodeConfig preserves valid plugin specs", () => {
+  const config = decodeConfig({
+    plugins: [
+      "./relative.ts",
+      "/absolute/path.ts",
+      { path: "/with/options.ts", enabled: true },
+      { path: "/disabled.ts", enabled: false },
+      "",
+      null,
+      42,
+      { enabled: true },
+      { path: 123 },
+    ],
+  });
+
+  expect(config.plugins).toEqual([
+    { path: "./relative.ts", enabled: true },
+    { path: "/absolute/path.ts", enabled: true },
+    { path: "/with/options.ts", enabled: true },
+    { path: "/disabled.ts", enabled: false },
+  ]);
+});

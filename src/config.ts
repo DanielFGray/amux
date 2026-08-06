@@ -3,6 +3,11 @@ import { dirname, join } from "node:path";
 import { DEFAULT_LEADER, type Keys } from "./bindings.ts";
 import { type OptionDeltas } from "./options.ts";
 
+export interface PluginSpec {
+  readonly path: string;
+  readonly enabled: boolean;
+}
+
 /**
  * The file, and nothing else.
  *
@@ -16,11 +21,16 @@ export interface Config {
   /** Prefix key and per-command overrides. Only commands the user has actually
    * rebound appear here, so the defaults stay free to change. */
   keys: Keys;
+  /** Ordered list of user plugins to load. Each entry is a path string or a
+   * { path, enabled } object. Relative paths resolve against the config
+   * directory. Malformed entries are silently skipped. */
+  plugins: PluginSpec[];
 }
 
 export const DEFAULT_CONFIG: Config = {
   options: {},
   keys: { leader: DEFAULT_LEADER, bindings: {} },
+  plugins: [],
 };
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config");
@@ -43,6 +53,7 @@ export function decodeConfig(loaded: unknown): Config {
   return {
     options: isRecord(loaded.options) ? { ...loaded.options } : {},
     keys: sanitizeKeys(loaded.keys),
+    plugins: sanitizePlugins(loaded.plugins),
   };
 }
 
@@ -81,6 +92,24 @@ export async function loadConfig(path = CONFIG_PATH): Promise<Config> {
     );
     return structuredClone(DEFAULT_CONFIG);
   }
+}
+
+function sanitizePlugins(raw: unknown): PluginSpec[] {
+  if (!Array.isArray(raw)) return [];
+  const result: PluginSpec[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string" && entry.length > 0) {
+      result.push({ path: entry, enabled: true });
+      continue;
+    }
+    if (isRecord(entry)) {
+      const path = typeof entry.path === "string" && entry.path.length > 0 ? entry.path : null;
+      if (!path) continue;
+      const enabled = typeof entry.enabled === "boolean" ? entry.enabled : true;
+      result.push({ path, enabled });
+    }
+  }
+  return result;
 }
 
 export async function saveConfig(config: Config, path = CONFIG_PATH): Promise<void> {

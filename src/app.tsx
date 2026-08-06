@@ -9,7 +9,7 @@ import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
 import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { writeFile } from "node:fs/promises";
 
 import { projectWorkspace, SpaceSet } from "./space.ts";
@@ -43,7 +43,7 @@ import {
   type CommandHandlers,
   type CommandTag,
 } from "./commands.ts";
-import { saveConfig, type Config } from "./config.ts";
+import { CONFIG_PATH, saveConfig, type Config } from "./config.ts";
 import {
   OPTIONS,
   adjustedValue,
@@ -65,6 +65,7 @@ import { App } from "./ui/App.tsx";
 import { createRegions } from "./ui/regions.tsx";
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
 import { sidebarPlugin } from "./plugin/builtin/sidebar.tsx";
+import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "./ui/Prompt.tsx";
@@ -92,6 +93,8 @@ export interface AppOptions {
    *  renderer owns it and the Effect program owns the renderer. */
   readonly paneHost: BoxRenderable;
   readonly config: Config;
+  /** Directory containing the loaded config, used to resolve local plugins. */
+  readonly configDir?: string;
   readonly session: SessionClientShape;
   /** Ask the program to exit. The app does not own the process, the renderer or
    *  the session, so leaving is a request rather than a teardown. */
@@ -149,6 +152,11 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     );
     const pluginHost = yield* createPluginHost(app.panel, regions);
     yield* pluginHost.add(sidebarPlugin);
+    yield* loadPluginsFromConfig(
+      options.config,
+      pluginHost,
+      options.configDir ?? dirname(CONFIG_PATH),
+    );
     runFiber(
       "agent-notifications",
       Stream.runForEach(options.session.events, (event) =>

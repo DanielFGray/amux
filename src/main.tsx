@@ -1,13 +1,15 @@
 import { createCliRenderer, BoxRenderable } from "@opentui/core";
+import { dirname } from "node:path";
 import { render } from "@opentui/solid";
 import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
 import { Schema as S, Deferred, Effect, Exit } from "effect";
 
 class SessionIdError extends S.TaggedError<SessionIdError>()("SessionIdError", {
   message: S.String,
-}) { }
+}) {}
 
 import { loadConfig } from "./config.ts";
+import { CONFIG_PATH } from "./config.ts";
 import { applyOptions, resolveOptions } from "./options.ts";
 import { SessionClient } from "./client.ts";
 import { isSessionId, Session, SessionEnv } from "./session.ts";
@@ -68,6 +70,7 @@ const program = Effect.gen(function* () {
     renderer,
     paneHost,
     config,
+    configDir: dirname(CONFIG_PATH),
     session,
     quit: () => Deferred.unsafeDone(quit, Exit.void),
   });
