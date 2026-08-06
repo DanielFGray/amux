@@ -18,6 +18,7 @@ import { controlCall, connectControl, type ControlClient } from "./control-clien
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { Session, SessionEnv, sessionPaths } from "./session.ts";
+import { parseWorkspaceJson } from "./workspace.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
@@ -84,6 +85,15 @@ test("ping and status answer over the session's unix socket", async () => {
   // The workspace crosses as JSON text, exactly as the attach plane sends it.
   expect(JSON.parse(status.workspace).spaces).toHaveLength(1);
   expect(status.agents).toHaveLength(1);
+});
+
+test("workspace JSON responses are schema-validated before projection", async () => {
+  const { daemon, env } = await started("control-workspace-validation");
+  const status = await ctl(daemon.id, env, (c) => c.Status());
+
+  expect(() => parseWorkspaceJson("not json")).toThrow();
+  expect(() => parseWorkspaceJson(JSON.stringify({ revision: 0 }))).toThrow();
+  expect(parseWorkspaceJson(status.workspace).revision).toBeGreaterThanOrEqual(0);
 });
 
 test("one connection serves many requests for its whole scope", async () => {

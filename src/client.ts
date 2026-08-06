@@ -8,6 +8,7 @@ import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { Command } from "./commands.ts";
 import {
   parseWorkspace,
+  parseWorkspaceJson,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
@@ -109,7 +110,7 @@ const make = (
     );
     let service!: SessionClientShape;
     const initialWorkspace = yield* Effect.try({
-      try: () => parseWorkspace(JSON.parse(status.workspace)),
+      try: () => parseWorkspaceJson(status.workspace),
       catch: (error) =>
         new SessionClientError({
           message: `daemon returned an invalid workspace: ${String(error)}`,
@@ -151,7 +152,7 @@ const make = (
                     context,
                   }),
                 );
-                accept(parseWorkspace(JSON.parse(next)));
+                accept(parseWorkspaceJson(next));
                 return structuredClone(workspace);
               };
               const queued = commandQueue.then(request);

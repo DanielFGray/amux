@@ -173,6 +173,11 @@ const WorkspaceSnapshotShape = Schema.Struct({
 });
 export const WorkspaceSnapshotJson = Schema.parseJson(WorkspaceSnapshotShape);
 
+/** Decode the JSON string used by the control and attach protocols. */
+export function parseWorkspaceJson(value: string): WorkspaceSnapshot {
+  return parseWorkspace(Schema.decodeUnknownSync(WorkspaceSnapshotJson)(value));
+}
+
 export const WorkspaceCommandContextSchema = Schema.Struct({
   size: TerminalSize,
   shell: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),

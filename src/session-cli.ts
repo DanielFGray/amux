@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { controlCall, type ControlClient } from "./control-client.ts";
 import { isSessionId, Session, SessionEnv } from "./session.ts";
+import { parseWorkspaceJson } from "./workspace.ts";
 
 /** `amux status <id>` / `amux stop <id>`: a one-shot RPC against a live daemon. */
 export async function runSessionCli(argv: string[]): Promise<number> {
@@ -31,7 +32,7 @@ export async function runSessionCli(argv: string[]): Promise<number> {
       return 0;
     }
     const { workspace, ...rest } = await call((control) => control.Status());
-    const report = { ...rest, workspace: JSON.parse(workspace) as unknown };
+    const report = { ...rest, workspace: parseWorkspaceJson(workspace) };
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
     return report.degraded === undefined ? 0 : 1;
   } catch (error) {
