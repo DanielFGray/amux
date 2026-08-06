@@ -25,6 +25,10 @@ const AgentStateChanged = S.TaggedStruct("agent.state", {
   session: S.String,
   state: S.Literal("idle", "working", "blocked", "failed", "detached", "done"),
 });
+const AgentFrame = S.TaggedStruct("agent.frame", {
+  session: S.String,
+  frame: S.Unknown,
+});
 const EventsReady = S.TaggedStruct("events.ready", {});
 
 /** Events emitted by the daemon, rather than observations made by a renderer. */
@@ -35,6 +39,7 @@ const EventPayload = S.Union(
   SpaceChanged,
   ClientChanged,
   AgentStateChanged,
+  AgentFrame,
   EventsReady,
 );
 export const DaemonEvent = S.Struct({

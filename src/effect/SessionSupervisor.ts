@@ -36,12 +36,16 @@ export interface SessionStateObserverService {
     id: string,
     state: "idle" | "working" | "blocked" | "failed" | "done",
   ) => Effect.Effect<void, unknown>;
+  readonly onFrame: (id: string, frame: AgentFrame) => Effect.Effect<void, unknown>;
 }
 
 export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
   "SessionStateObserver",
   {
-    defaultValue: (): SessionStateObserverService => ({ onState: () => Effect.void }),
+    defaultValue: (): SessionStateObserverService => ({
+      onState: () => Effect.void,
+      onFrame: () => Effect.void,
+    }),
   },
 ) {}
 
@@ -317,6 +321,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
                   lastAgentState = event.state;
                   yield* stateObserver.onState(spec.id, event.state);
                 }
+                yield* stateObserver.onFrame(spec.id, event);
                 if (phase === "active") yield* hub.publish(event);
                 else pendingEvents.push(event);
               }),

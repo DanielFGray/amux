@@ -65,6 +65,7 @@ export function snapshotAgent(agent: Agent): PersistedAgent {
   return {
     id: agent.id,
     name: agent.name,
+    ...(agent.kind === "agent" ? { kind: "agent" as const } : {}),
     cmd: [...agent.cmd],
     ...(agent.cwd ? { cwd: agent.cwd } : {}),
     cols: agent.term.cols,
@@ -182,6 +183,7 @@ export function restoreWindow(
       yield* window.startAgent({
         id: agent.id,
         name: agent.name,
+        kind: agent.kind,
         cmd: agent.cmd,
         cwd: agent.cwd,
         cols: agent.cols,

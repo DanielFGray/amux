@@ -54,6 +54,7 @@ export interface AttachHostOptions {
     session: string,
     state: "idle" | "working" | "blocked" | "failed" | "done",
   ) => Effect.Effect<void, unknown>;
+  readonly onAgentFrame?: (session: string, frame: unknown) => Effect.Effect<void, unknown>;
 }
 
 export interface AttachHostService {
@@ -238,6 +239,7 @@ export const layerAttachHost = (
         Layer.provide(
           Layer.succeed(SessionStateObserver, {
             onState: options.onAgentState ?? (() => Effect.void),
+            onFrame: (session, frame) => options.onAgentFrame?.(session, frame) ?? Effect.void,
           }),
         ),
       ),

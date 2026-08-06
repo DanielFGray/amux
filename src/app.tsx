@@ -78,6 +78,7 @@ import {
 import { captureSpan, pickCaptureTarget, type CaptureSpan, type CaptureTarget } from "./capture.ts";
 import { Capture, type CaptureView } from "./ui/Capture.tsx";
 import { BufferChoose, type BufferChooseView } from "./ui/BufferChoose.tsx";
+import { Transcript } from "./ui/Transcript.tsx";
 import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import { workspaceEnv } from "./env.ts";
@@ -1509,6 +1510,21 @@ function buildApp(
             agentsOnly={options()["sidebar.agentsOnly"]}
             onHover={setHovered}
             onActivate={activateSelection}
+          />
+        ),
+      }),
+      regions.register({
+        id: "amux.transcript",
+        region: "right",
+        anchor: "center",
+        title: "transcript",
+        visible: () => spaces.activeWindow?.focused?.agent.kind === "agent",
+        size: () => 42,
+        component: () => (
+          <Transcript
+            agent={spaces.activeWindow?.focused?.agent ?? null}
+            events={session.events}
+            width={42}
           />
         ),
       }),

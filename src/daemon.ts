@@ -339,6 +339,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         onSessionExit: (sid, code) => sessionExitEffect(sid, code),
         onAgentState: (sid, state) =>
           eventBus.publish({ _tag: "agent.state", session: sid, state }),
+        onAgentFrame: (sid, frame) =>
+          eventBus.publish({ _tag: "agent.frame", session: sid, frame }),
       }),
     );
     hostRuntime = rt;

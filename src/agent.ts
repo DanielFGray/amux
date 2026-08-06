@@ -82,6 +82,7 @@ function reserveAgentId(id: string) {
  */
 export class Agent {
   readonly id: string;
+  readonly kind: "pty" | "agent";
   readonly name: string;
   readonly cmd: string[];
   readonly cwd: string | undefined;
@@ -128,6 +129,7 @@ export class Agent {
 
   constructor(opts: AgentOptions) {
     this.id = opts.id ?? `agent-${nextAgentId++}`;
+    this.kind = opts.kind ?? "pty";
     if (opts.id) reserveAgentId(opts.id);
     this.name = opts.name ?? commandName(opts.cmd);
     this.cmd = opts.cmd;
