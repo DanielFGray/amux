@@ -1,4 +1,6 @@
 import { expect, test } from "vitest";
+import { Schema as S } from "effect";
+import { DaemonEvent } from "./EventBus.ts";
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
 
 test("attach frames preserve binary payloads across the wire format", () => {
@@ -51,8 +53,20 @@ test("foreground frames carry a negative pgid and sid across the wire", () => {
 
 test("native agent lifecycle frames round-trip as semantic events", () => {
   const frames: AttachFrame[] = [
-    { _tag: "turn.start", session: "agent-1", sequence: 1, turn: "turn-1", prompt: "Fix the failing test" },
-    { _tag: "text.delta", session: "agent-1", sequence: 2, turn: "turn-1", text: "I will inspect the test." },
+    {
+      _tag: "turn.start",
+      session: "agent-1",
+      sequence: 1,
+      turn: "turn-1",
+      prompt: "Fix the failing test",
+    },
+    {
+      _tag: "text.delta",
+      session: "agent-1",
+      sequence: 2,
+      turn: "turn-1",
+      text: "I will inspect the test.",
+    },
     {
       _tag: "tool.start",
       session: "agent-1",
@@ -105,4 +119,17 @@ test("native agent control frames round-trip without provider or transport detai
   ];
 
   expect(decodeAttachFrames(frames.map(encodeAttachFrame).join("")).frames).toEqual(frames);
+});
+
+test("daemon agent events reject malformed semantic frames", () => {
+  expect(() =>
+    S.decodeUnknownSync(DaemonEvent)({
+      sequence: 1,
+      event: {
+        _tag: "agent.frame",
+        session: "agent-1",
+        frame: { _tag: "text.delta", session: "agent-1", sequence: "bad" },
+      },
+    }),
+  ).toThrow();
 });

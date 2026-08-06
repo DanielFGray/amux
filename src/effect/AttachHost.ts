@@ -19,7 +19,7 @@
 import { Context, Effect, ExecutionStrategy, Layer, Scope } from "effect";
 import { createServer, type Server } from "node:net";
 import { AttachHub } from "./AttachHub.ts";
-import type { AttachFrame } from "./AttachProtocol.ts";
+import type { AgentFrame, AttachFrame } from "./AttachProtocol.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
 import {
@@ -54,7 +54,7 @@ export interface AttachHostOptions {
     session: string,
     state: "idle" | "working" | "blocked" | "failed" | "done",
   ) => Effect.Effect<void, unknown>;
-  readonly onAgentFrame?: (session: string, frame: unknown) => Effect.Effect<void, unknown>;
+  readonly onAgentFrame?: (session: string, frame: AgentFrame) => Effect.Effect<void, unknown>;
 }
 
 export interface AttachHostService {

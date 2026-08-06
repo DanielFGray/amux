@@ -195,17 +195,17 @@ export const AttachFrame = S.Union(
   Pong,
 );
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
-export type AgentFrame = Extract<
-  AttachFrame,
-  | { readonly _tag: "turn.start" }
-  | { readonly _tag: "text.delta" }
-  | { readonly _tag: "tool.start" }
-  | { readonly _tag: "tool.result" }
-  | { readonly _tag: "permission.request" }
-  | { readonly _tag: "permission.response" }
-  | { readonly _tag: "agent.status" }
-  | { readonly _tag: "turn.end" }
->;
+export const AgentFrame = S.Union(
+  TurnStart,
+  TextDelta,
+  ToolStart,
+  ToolResult,
+  PermissionRequest,
+  PermissionResponse,
+  AgentStatus,
+  TurnEnd,
+);
+export type AgentFrame = S.Schema.Type<typeof AgentFrame>;
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()(
   "AttachProtocolError",

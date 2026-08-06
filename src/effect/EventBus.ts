@@ -1,4 +1,5 @@
 import { Effect, PubSub, Schema as S, Scope, Stream } from "effect";
+import { AgentFrame } from "./AttachProtocol.ts";
 
 const PaneOpened = S.TaggedStruct("pane.opened", {
   pane: S.String,
@@ -25,9 +26,9 @@ const AgentStateChanged = S.TaggedStruct("agent.state", {
   session: S.String,
   state: S.Literal("idle", "working", "blocked", "failed", "detached", "done"),
 });
-const AgentFrame = S.TaggedStruct("agent.frame", {
+const AgentFrameEvent = S.TaggedStruct("agent.frame", {
   session: S.String,
-  frame: S.Unknown,
+  frame: AgentFrame,
 });
 const EventsReady = S.TaggedStruct("events.ready", {});
 
@@ -39,7 +40,7 @@ const EventPayload = S.Union(
   SpaceChanged,
   ClientChanged,
   AgentStateChanged,
-  AgentFrame,
+  AgentFrameEvent,
   EventsReady,
 );
 export const DaemonEvent = S.Struct({
