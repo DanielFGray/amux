@@ -1,0 +1,12 @@
+id: no-unknown-effect-channels
+language: TypeScript
+severity: error
+message: Effect error and requirements channels must not be unknown; use never, a concrete type, or a generic parameter
+rule:
+  any:
+    - all:
+        - kind: generic_type
+        - regex: '^Effect\.Effect<[^>]*,\s*unknown\s*,'
+    - all:
+        - kind: generic_type
+        - regex: '^Effect\.Effect<[^>]*,\s*[^>]*,\s*unknown\s*>'

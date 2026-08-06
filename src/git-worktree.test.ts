@@ -7,7 +7,7 @@ import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { Session, SessionEnv } from "./session.ts";
-import { command } from "./commands.ts";
+import { Command, command } from "./commands.ts";
 import {
   gitWorktreeAdd,
   gitWorktreeDirty,
@@ -15,6 +15,7 @@ import {
   gitWorktreeRemove,
   worktreeDirname,
 } from "./git.ts";
+import type { WorkspaceCommandContext } from "./workspace.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -43,9 +44,9 @@ const ws = (d: SessionDaemonService) => Effect.runSync(d.getWorkspace);
 const close = (d: SessionDaemonService) => Effect.runPromise(d.close);
 const runCommand = (
   d: SessionDaemonService,
-  value: Parameters<SessionDaemonService["runWorkspaceCommand"]>[0],
+  value: Command,
   revision: number,
-  context: Parameters<SessionDaemonService["runWorkspaceCommand"]>[2],
+  context: WorkspaceCommandContext,
 ) => Effect.runPromise(d.runWorkspaceCommand(value, revision, context));
 
 const git = async (args: string[], cwd: string): Promise<string> => {

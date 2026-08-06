@@ -1,8 +1,8 @@
 import { Effect, Fiber, Stream } from "effect";
-import { expect, test } from "vitest";
+import { expect, it, test } from "@effect/vitest";
 import { SessionRegistry } from "./SessionRegistry.ts";
 
-const program = Effect.gen(function* () {
+const session = Effect.gen(function* () {
   const registry = yield* SessionRegistry;
   const pty = yield* registry.spawn({
     id: "effect-pty",
@@ -15,47 +15,43 @@ const program = Effect.gen(function* () {
   const output = yield* Stream.runCollect(pty.output);
   const exit = yield* pty.exit;
   return { output: [...output], exit };
-}).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped);
+}).pipe(Effect.provide(SessionRegistry.Default));
 
-test("SessionRegistry exposes PTY output and writes within a scope", async () => {
-  const result = await Effect.runPromise(program);
-  const text = new TextDecoder().decode(
-    Buffer.concat(result.output.map((chunk) => Buffer.from(chunk))),
-  );
-  expect(text).toContain("ready");
-  expect(text).toContain("got:hello");
-  expect(result.exit).toBe(0);
-});
+it.scopedLive("SessionRegistry exposes PTY output and writes within a scope", () =>
+  Effect.gen(function* () {
+    const result = yield* session;
+    const text = new TextDecoder().decode(
+      Buffer.concat(result.output.map((chunk) => Buffer.from(chunk))),
+    );
+    expect(text).toContain("ready");
+    expect(text).toContain("got:hello");
+    expect(result.exit).toBe(0);
+  }),
+);
 
-test("SessionRegistry releases sessions when the scope closes", async () => {
-  const result = await Effect.runPromise(
-    Effect.gen(function* () {
-      const registry = yield* SessionRegistry;
-      yield* registry.spawn({ id: "scoped-pty", cmd: ["sleep", "10"], cols: 80, rows: 24 });
-      return yield* registry.sessions;
-    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
-  );
+it.scopedLive("SessionRegistry releases sessions when the scope closes", () =>
+  Effect.gen(function* () {
+    const registry = yield* SessionRegistry;
+    yield* registry.spawn({ id: "scoped-pty", cmd: ["sleep", "10"], cols: 80, rows: 24 });
+    expect(yield* registry.sessions).toEqual(new Set(["scoped-pty"]));
+  }).pipe(Effect.provide(SessionRegistry.Default)),
+);
 
-  expect(result).toEqual(new Set(["scoped-pty"]));
-});
-
-test("SessionRegistry rejects oversized terminals before allocating a PTY", async () => {
-  const result = await Effect.runPromise(
-    Effect.gen(function* () {
-      const registry = yield* SessionRegistry;
-      return yield* Effect.either(
-        registry.spawn({
-          id: "oversized-pty",
-          cmd: ["sh"],
-          cols: 1_000_000,
-          rows: 1_000_000,
-        }),
-      );
-    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
-  );
-  expect(result._tag).toBe("Left");
-  if (result._tag === "Left") expect(result.left.operation).toBe("spawn");
-});
+it.scopedLive("SessionRegistry rejects oversized terminals before allocating a PTY", () =>
+  Effect.gen(function* () {
+    const registry = yield* SessionRegistry;
+    const result = yield* Effect.either(
+      registry.spawn({
+        id: "oversized-pty",
+        cmd: ["sh"],
+        cols: 1_000_000,
+        rows: 1_000_000,
+      }),
+    );
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") expect(result.left.operation).toBe("spawn");
+  }).pipe(Effect.provide(SessionRegistry.Default)),
+);
 
 test("a non-reading child cannot wedge writes, kill, or another session", async () => {
   const result = await Promise.race([
@@ -127,86 +123,76 @@ test("interrupting a registry write cancels the PTY operation", async () => {
   expect(result).toBe("Failure");
 });
 
-test("duplicate reservations fail and failed spawns release the id", async () => {
-  const result = await Effect.runPromise(
-    Effect.gen(function* () {
-      const registry = yield* SessionRegistry;
-      const first = yield* Effect.fork(
-        Effect.exit(
-          registry.spawn({
-            id: "duplicate-pty",
-            cmd: ["sh", "-c", "sleep 30"],
-            cols: 80,
-            rows: 24,
-          }),
-        ),
-      );
-      const second = yield* Effect.exit(
+it.scopedLive("duplicate reservations fail and failed spawns release the id", () =>
+  Effect.gen(function* () {
+    const registry = yield* SessionRegistry;
+    const first = yield* Effect.fork(
+      Effect.exit(
         registry.spawn({
           id: "duplicate-pty",
           cmd: ["sh", "-c", "sleep 30"],
           cols: 80,
           rows: 24,
         }),
-      );
-      const firstResult = yield* Fiber.join(first);
-      expect([firstResult._tag, second._tag].sort()).toEqual(["Failure", "Success"]);
-      expect(String(firstResult._tag === "Failure" ? firstResult : second)).toContain(
-        "already live or starting",
-      );
+      ),
+    );
+    const second = yield* Effect.exit(
+      registry.spawn({
+        id: "duplicate-pty",
+        cmd: ["sh", "-c", "sleep 30"],
+        cols: 80,
+        rows: 24,
+      }),
+    );
+    const firstResult = yield* Fiber.join(first);
+    expect([firstResult._tag, second._tag].sort()).toEqual(["Failure", "Success"]);
+    expect(String(firstResult._tag === "Failure" ? firstResult : second)).toContain(
+      "already live or starting",
+    );
 
-      const failed = yield* Effect.exit(
-        registry.spawn({
-          id: "failed-pty",
-          cmd: ["true"],
-          cwd: "/definitely-not-a-real-directory",
-          cols: 80,
-          rows: 24,
-        }),
-      );
-      expect(failed._tag).toBe("Failure");
-      const retry = yield* registry.spawn({
+    const failed = yield* Effect.exit(
+      registry.spawn({
         id: "failed-pty",
-        cmd: ["sh", "-c", "exit 0"],
+        cmd: ["true"],
+        cwd: "/definitely-not-a-real-directory",
         cols: 80,
         rows: 24,
-      });
-      yield* retry.exit;
-      const duplicate =
-        firstResult._tag === "Success"
-          ? firstResult.value
-          : second._tag === "Success"
-            ? second.value
-            : undefined;
-      if (duplicate) yield* duplicate.kill.pipe(Effect.ignore);
-      return yield* registry.sessions;
-    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
-  );
+      }),
+    );
+    expect(failed._tag).toBe("Failure");
+    const retry = yield* registry.spawn({
+      id: "failed-pty",
+      cmd: ["sh", "-c", "exit 0"],
+      cols: 80,
+      rows: 24,
+    });
+    yield* retry.exit;
+    const duplicate =
+      firstResult._tag === "Success"
+        ? firstResult.value
+        : second._tag === "Success"
+          ? second.value
+          : undefined;
+    if (duplicate) yield* duplicate.kill.pipe(Effect.ignore);
+    expect(yield* registry.sessions).toEqual(new Set(["duplicate-pty"]));
+  }).pipe(Effect.provide(SessionRegistry.Default)),
+);
 
-  expect(result).toEqual(new Set(["duplicate-pty"]));
-});
+it.scopedLive("an agent-kind session registers, lists, and is killed through the same path as a pty", () =>
+  Effect.gen(function* () {
+    const registry = yield* SessionRegistry;
+    const agent = yield* registry.spawn({
+      kind: "agent",
+      id: "stub-agent",
+      cmd: [],
+      cols: 80,
+      rows: 24,
+    });
+    expect(agent.kind).toBe("agent");
+    expect(yield* registry.sessions).toEqual(new Set(["stub-agent"]));
 
-test("an agent-kind session registers, lists, and is killed through the same path as a pty", async () => {
-  const result = await Effect.runPromise(
-    Effect.gen(function* () {
-      const registry = yield* SessionRegistry;
-      const agent = yield* registry.spawn({
-        kind: "agent",
-        id: "stub-agent",
-        cmd: [],
-        cols: 80,
-        rows: 24,
-      });
-      expect(agent.kind).toBe("agent");
-      const listed = yield* registry.sessions;
-      expect(listed).toEqual(new Set(["stub-agent"]));
-
-      yield* agent.kill;
-      const exit = yield* agent.exit;
-      expect(exit).toBeNull();
-      return yield* registry.sessions;
-    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
-  );
-
-  expect(result).toEqual(new Set());
-});
+    yield* agent.kill;
+    expect(yield* agent.exit).toBeNull();
+    expect(yield* registry.sessions).toEqual(new Set());
+  }).pipe(Effect.provide(SessionRegistry.Default)),
+);

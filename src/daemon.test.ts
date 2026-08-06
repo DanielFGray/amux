@@ -8,6 +8,7 @@ import { BunFileSystem } from "@effect/platform-bun";
 import {
   makeDaemonService,
   startDaemon,
+  DaemonError,
   type SessionDaemonOptions,
   type SessionDaemonService,
 } from "./daemon.ts";
@@ -73,7 +74,10 @@ const healthy = async (d: SessionDaemonService, e: NodeJS.ProcessEnv) =>
   (await status(d, e)).degraded === undefined;
 
 const saveEffect = (save: (state: any, signal: AbortSignal) => Promise<void>) => (state: any) =>
-  Effect.tryPromise({ try: (signal) => save(state, signal), catch: (error) => error });
+  Effect.tryPromise({
+    try: (signal) => save(state, signal),
+    catch: (error) => new DaemonError({ message: error instanceof Error ? error.message : String(error) }),
+  });
 
 async function waitForPid(path: string): Promise<number> {
   const deadline = Date.now() + 2_000;
@@ -828,9 +832,7 @@ test("a failed destructive action leaves durable state untouched", async () => {
   const before = ws(daemon);
   const agent = before.spaces[0]!.windows[0]!.agents[0]!.id;
   const kill = daemon.killAgent.bind(daemon);
-  (daemon as any).killAgent = async () => {
-    throw new Error("injected kill failure");
-  };
+  daemon.killAgent = () => Effect.fail(new DaemonError({ message: "injected kill failure" }));
   await expect(
     rwc(daemon)(command("agent.kill", { agent }), before.revision, context),
   ).rejects.toThrow("injected kill failure");
@@ -838,7 +840,7 @@ test("a failed destructive action leaves durable state untouched", async () => {
   expect(
     (await run(Session.load("kill-transaction"), e))?.spaces[0]?.windows[0]?.agents[0]?.id,
   ).toBe(agent);
-  (daemon as any).killAgent = kill;
+  daemon.killAgent = kill;
   await S(daemon);
 });
 
@@ -890,8 +892,8 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     makeDaemonService("restore-failure", {
       spawnAgent: (spec) =>
         spec.id === "agent-restore"
-          ? Effect.fail(new Error("injected restore spawn failure"))
-          : Effect.die(new Error("unexpected restore spawn")),
+          ? Effect.fail(new DaemonError({ message: "injected restore spawn failure" }))
+          : Effect.die(new DaemonError({ message: "unexpected restore spawn" })),
     }),
     e,
   );

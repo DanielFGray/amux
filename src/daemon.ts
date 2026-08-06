@@ -5,15 +5,13 @@ import {
   Cause,
   Clock,
   Context,
-  Deferred,
   Effect,
   Either,
   Exit,
   Fiber,
   Layer,
   ManagedRuntime,
-  Queue,
-  Ref,
+  Runtime,
   Schema as S,
   Scope,
   Stream,
@@ -23,8 +21,21 @@ import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer
 import * as RpcServer from "@effect/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
-import { type PreparedSession } from "./effect/SessionSupervisor.ts";
 import { EventBus } from "./effect/EventBus.ts";
+import {
+  DaemonModel,
+  DaemonModelError,
+  layerDaemonModel,
+  type DaemonState,
+} from "./effect/DaemonModel.ts";
+import {
+  WorkspaceTransaction,
+  WorkspaceTransactionPersistence,
+  makeSessionOps,
+  makeWorktreeOps,
+  makePersistence,
+  makeEvents,
+} from "./effect/WorkspaceTransaction.ts";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { ManagedSession, SessionSpec } from "./effect/SessionRegistry.ts";
@@ -39,25 +50,16 @@ import {
   type SessionState,
   type SessionPaths,
 } from "./session.ts";
-import { command, COMMAND_META, decodeCommand, type Command } from "./commands.ts";
+import { command, COMMAND_META, type Command } from "./commands.ts";
 import {
-  applyWorkspaceCommand,
   markAgentExited,
   parseWorkspaceCommandContext,
   workspaceFromSession,
   workspaceSession,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
-  type WorkspaceSpace,
 } from "./workspace.ts";
-import { layoutPanes } from "./layout.ts";
-import {
-  gitWorktreeAdd,
-  gitWorktreeDirty,
-  gitWorktreeExists,
-  gitWorktreeRemove,
-  type WorktreeSpec,
-} from "./git.ts";
+import { gitWorktreeExists } from "./git.ts";
 
 const describe = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -87,7 +89,7 @@ export interface SessionDaemonService {
     context: WorkspaceCommandContext,
   ) => Effect.Effect<WorkspaceSnapshot, DaemonError>;
   readonly spawnAgent: (spec: SessionSpec) => Effect.Effect<ManagedSession, DaemonError>;
-  readonly killAgent: (id: string) => Effect.Effect<void, DaemonError>;
+  killAgent: (id: string) => Effect.Effect<void, DaemonError>;
   readonly liveAgents: () => Effect.Effect<readonly string[], never>;
   readonly setBuffer: (n: string | undefined, d: string) => Effect.Effect<string, never>;
   readonly pasteBuffer: (
@@ -107,95 +109,6 @@ export interface SessionDaemonService {
 export const SessionDaemon = Context.GenericTag<SessionDaemonService>("@amux/SessionDaemon");
 
 const SHUTDOWN_SAVE_TIMEOUT_MS = 500;
-
-interface DaemonState {
-  state: SessionState;
-  workspace: WorkspaceSnapshot;
-  attachments: Map<string, SessionAttachment>;
-  heartbeatError: string | null;
-  durableObligations: Map<symbol, string>;
-  closing: boolean;
-  cancelPersistence: boolean;
-}
-
-type Mutation = { effect: Effect.Effect<any, any, never>; done: Deferred.Deferred<any, any> };
-
-function gitWorktreesFor(value: Command, next: WorkspaceSnapshot, current: WorkspaceSnapshot) {
-  const none = { created: null, base: undefined, removed: [] as WorkspaceSpace["worktree"][] };
-  if (value._tag === "space.new") {
-    const created = next.spaces.find(
-      (s) => s.worktree && !current.spaces.some((c) => c.id === s.id),
-    );
-    if (created?.worktree) {
-      const base = (value as { base?: string }).base?.trim() || undefined;
-      return { created: created.worktree, base, removed: [] as WorkspaceSpace["worktree"][] };
-    }
-    return none;
-  }
-  if (value._tag === "space.close") {
-    const closedIds = new Set(next.spaces.map((s) => s.id));
-    const removed = current.spaces
-      .filter((s) => s.worktree && !closedIds.has(s.id))
-      .map((s) => s.worktree!);
-    return { created: null, base: undefined, removed };
-  }
-  return none;
-}
-
-const persistUntilSuccess = Effect.fnUntraced(function* (
-  persistFn: (state: SessionState) => Effect.Effect<void, unknown>,
-  daemonRef: Ref.Ref<DaemonState>,
-  state: SessionState,
-  reason: string,
-  activeRef: { current: Fiber.RuntimeFiber<void, unknown> | null },
-  scope: Scope.CloseableScope,
-) {
-  const obligation = Symbol(reason);
-  yield* Ref.update(daemonRef, (s) => {
-    s.durableObligations.set(obligation, `${reason} is waiting for durable storage`);
-    return s;
-  });
-  let delay = 10;
-  try {
-    for (;;) {
-      const cur = yield* Ref.get(daemonRef);
-      if (cur.closing)
-        throw new Error(`daemon shut down with outstanding durable obligation: ${reason}`);
-      const result = yield* Effect.either(
-        Effect.gen(function* () {
-          const fiber = yield* Effect.forkIn(
-            persistFn(state).pipe(Effect.mapError((e) => new Error(describe(e)))),
-            scope,
-          );
-          activeRef.current = fiber;
-          const value = yield* Fiber.join(fiber);
-          activeRef.current = null;
-          return value;
-        }),
-      );
-      if (Either.isRight(result)) return;
-      {
-        const error = result.left;
-        activeRef.current = null;
-        yield* Ref.update(daemonRef, (s) => {
-          s.durableObligations.set(
-            obligation,
-            `${reason} is waiting for durable storage: ${describe(error)}`,
-          );
-          return s;
-        });
-        if ((yield* Ref.get(daemonRef)).closing) throw error;
-        yield* Effect.raceFirst(Effect.sleep(`${delay} millis`), Effect.never);
-        delay = Math.min(delay * 2, 1_000);
-      }
-    }
-  } finally {
-    yield* Ref.update(daemonRef, (s) => {
-      s.durableObligations.delete(obligation);
-      return s;
-    });
-  }
-});
 
 export const makeDaemonService = Effect.fnUntraced(function* (
   id: string,
@@ -259,30 +172,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   state.attached = false;
   const workspace = workspaceFromSession(state);
 
-  const daemonState = yield* Ref.make<DaemonState>({
-    state,
-    workspace,
-    attachments: new Map(),
-    heartbeatError: null,
-    durableObligations: new Map(),
-    closing: false,
-    cancelPersistence: false,
-  });
-
   const daemonScope = yield* Scope.make();
   const eventBusContext = yield* Layer.build(EventBus.Default).pipe(Scope.extend(daemonScope));
   const eventBus = Context.get(eventBusContext, EventBus);
-  const mutationQueue = Effect.runSync(Queue.unbounded<Mutation>());
-  yield* Effect.forkIn(
-    Effect.forever(
-      Queue.take(mutationQueue).pipe(
-        Effect.flatMap((m) =>
-          Effect.exit(m.effect).pipe(Effect.flatMap((e) => Deferred.done(m.done, e))),
-        ),
-      ),
-    ),
-    daemonScope,
+  const modelContext = yield* Layer.build(layerDaemonModel({ state, workspace })).pipe(
+    Scope.extend(daemonScope),
   );
+  const model = Context.get(modelContext, DaemonModel);
 
   /** Holds the control-plane RPC server; its presence means `start` ran. */
   let controlScope: Scope.CloseableScope | null = null;
@@ -290,8 +186,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   let host: AttachHostService | null = null;
   let heartbeatFiber: Fiber.RuntimeFiber<unknown, never> | null = null;
   const activeSaveRef = { current: null as Fiber.RuntimeFiber<void, unknown> | null };
-  const exitCommits = new Map<string, (code: number | null) => Promise<void>>();
   let terminationShared: Promise<void> | null = null;
+
+  const hostRef = { current: null as AttachHostService | null };
 
   const requireHost = () => {
     if (!host) throw new Error("daemon not started");
@@ -302,172 +199,100 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     ? (s: SessionState) => options.saveState!(s).pipe(Effect.provideService(Session, session))
     : (s: SessionState) => session.save(s);
 
-  const attachInfo = (): Pick<SessionLease, "attachedSince" | "attachLastSeen" | "attachments"> => {
-    const s = Effect.runSync(Ref.get(daemonState));
-    const atts = [...s.attachments.values()];
-    if (!atts.length) return {};
-    return {
-      attachedSince: Math.min(...atts.map((a) => a.attachedSince)),
-      attachLastSeen: Math.max(...atts.map((a) => a.attachLastSeen)),
-      attachments: atts.map((a) => ({ ...a })),
-    };
-  };
+  const attachInfo = (): Effect.Effect<
+    Pick<SessionLease, "attachedSince" | "attachLastSeen" | "attachments">,
+    never,
+    never
+  > =>
+    Effect.gen(function* () {
+      const s = yield* model.get;
+      const atts = [...s.attachments.values()];
+      if (!atts.length) return {};
+      return {
+        attachedSince: Math.min(...atts.map((a) => a.attachedSince)),
+        attachLastSeen: Math.max(...atts.map((a) => a.attachLastSeen)),
+        attachments: atts.map((a) => ({ ...a })),
+      };
+    });
 
   /** The lease carries per-attachment detail; the control plane only reports times. */
-  const attachTimes = (): { attachedSince?: number; attachLastSeen?: number } => {
-    const { attachedSince, attachLastSeen } = attachInfo();
-    return {
-      ...(attachedSince !== undefined ? { attachedSince } : {}),
-      ...(attachLastSeen !== undefined ? { attachLastSeen } : {}),
-    };
-  };
-
-  const enqueue = <A, E>(effect: Effect.Effect<A, E, never>): Effect.Effect<A, E> =>
+  const attachTimes = (): Effect.Effect<
+    { attachedSince?: number; attachLastSeen?: number },
+    never,
+    never
+  > =>
     Effect.gen(function* () {
-      const done = yield* Deferred.make<A, E>();
-      yield* Queue.offer(mutationQueue, {
-        effect: effect as Effect.Effect<any, any, never>,
-        done: done as Deferred.Deferred<any, any>,
-      });
-      return yield* Deferred.await(done);
+      const { attachedSince, attachLastSeen } = yield* attachInfo();
+      return {
+        ...(attachedSince !== undefined ? { attachedSince } : {}),
+        ...(attachLastSeen !== undefined ? { attachLastSeen } : {}),
+      };
     });
 
-  const attachEffect = Effect.fnUntraced(function* (client: string, connection: string) {
-    const cur = yield* Ref.get(daemonState);
-    if (cur.attachments.has(connection))
-      return yield* new DaemonError({ message: "attachment already registered" });
-    const now = Date.now();
-    const attachments = new Map(cur.attachments);
-    attachments.set(connection, { client, attachedSince: now, attachLastSeen: now });
-    const newState = { ...cur.state, attached: true, updatedAt: now };
-    yield* persist(newState).pipe(
-      Effect.mapError((e) => new DaemonError({ message: describe(e) })),
-    );
-    yield* Ref.set(daemonState, { ...cur, attachments, state: newState });
-    yield* eventBus.publish({ _tag: "client.changed", client, change: "attached" });
-  }, enqueue);
+  const enqueue = model.enqueue;
 
-  const detachEffect = Effect.fnUntraced(function* (client: string, connection: string) {
-    const cur = yield* Ref.get(daemonState);
-    const att = cur.attachments.get(connection);
-    if (!att || att.client !== client) return;
-    const attachments = new Map(cur.attachments);
-    attachments.delete(connection);
-    const newState = { ...cur.state, attached: attachments.size > 0, updatedAt: Date.now() };
-    yield* persistUntilSuccess(
-      persist,
-      daemonState,
-      newState,
-      "attachment detach",
-      activeSaveRef,
-      daemonScope,
-    );
-    yield* Ref.set(daemonState, { ...cur, attachments, state: newState });
-    yield* eventBus.publish({ _tag: "client.changed", client, change: "detached" });
-  }, enqueue);
+  const attachEffect = (client: string, connection: string) =>
+    model
+      .attach(client, connection, persist, (event) =>
+        eventBus.publish(event).pipe(Effect.catchAllCause(() => Effect.void)),
+      )
+      .pipe(
+        Effect.mapError((e) =>
+          e instanceof DaemonModelError
+            ? new DaemonError({ message: e.message })
+            : new DaemonError({ message: describe(e) }),
+        ),
+      );
 
-  const touchEffect = (client: string, connection: string) =>
-    Ref.modify(daemonState, (cur) => {
-      const att = cur.attachments.get(connection);
-      if (att?.client === client) {
-        const attachments = new Map(cur.attachments);
-        attachments.set(connection, { ...att, attachLastSeen: Date.now() });
-        return [undefined as void, { ...cur, attachments }];
-      }
-      return [undefined as void, cur];
-    });
+  const persistenceContext = yield* Layer.build(
+    makePersistence(persist, activeSaveRef, daemonScope).pipe(
+      Layer.provide(Layer.succeed(DaemonModel, model)),
+    ),
+  ).pipe(Scope.extend(daemonScope));
+  const persistence = Context.get(persistenceContext, WorkspaceTransactionPersistence);
+
+  const detachEffect = (client: string, connection: string) =>
+    model.detach(
+      client,
+      connection,
+      (newState) => persistence.persistUntilSuccess(newState, "attachment detach"),
+      (event) => eventBus.publish(event).pipe(Effect.catchAllCause(() => Effect.void)),
+    );
+
+  const touchEffect = (client: string, connection: string) => model.touch(client, connection);
+
+  const transactionContext = yield* Layer.build(
+    WorkspaceTransaction.Default.pipe(
+      Layer.provide(Layer.succeed(DaemonModel, model)),
+      Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
+      Layer.provide(makeSessionOps(hostRef, (id) => killAgent(id))),
+      Layer.provide(makeWorktreeOps()),
+      Layer.provide(
+        makeEvents(
+          (event) => eventBus.publish(event as any).pipe(Effect.catchAllCause(() => Effect.void)),
+          (snapshot) =>
+            Effect.suspend(() => {
+              if (!hostRef.current) return Effect.die(new Error("host not started"));
+              return hostRef.current
+                .publish({
+                  _tag: "workspace" as const,
+                  revision: snapshot.revision,
+                  state: JSON.stringify(snapshot),
+                } as any)
+                .pipe(Effect.ignore);
+            }),
+        ),
+      ),
+    ),
+  ).pipe(Scope.extend(daemonScope));
+  const transaction = Context.get(transactionContext, WorkspaceTransaction);
 
   const sessionExitEffect = Effect.fnUntraced(function* (sid: string, code: number | null) {
-    const cur = yield* Ref.get(daemonState);
+    const cur = yield* model.get;
     if (cur.closing) return;
-    const commit = exitCommits.get(sid);
     yield* eventBus.publish({ _tag: "pane.exited", session: sid, code });
-    if (commit) {
-      exitCommits.delete(sid);
-      yield* Effect.promise(() => commit(code));
-      return;
-    }
-    yield* enqueue(
-      Effect.gen(function* () {
-        const cur2 = yield* Ref.get(daemonState);
-        if (cur2.closing) return;
-        const next = markAgentExited(cur2.workspace, sid, code);
-        if (next === cur2.workspace) return;
-        const newState = workspaceSession(next, cur2.state);
-        yield* persistUntilSuccess(
-          persist,
-          daemonState,
-          newState,
-          `natural exit for '${sid}'`,
-          activeSaveRef,
-          daemonScope,
-        );
-        yield* Ref.set(daemonState, { ...cur2, workspace: next, state: newState });
-        if (host)
-          yield* host
-            .publish({
-              _tag: "workspace",
-              revision: next.revision,
-              state: JSON.stringify(next),
-            })
-            .pipe(Effect.ignore);
-      }),
-    );
+    yield* transaction.onSessionExit(sid, code);
   });
-
-  const publishWorkspaceEvents = (before: WorkspaceSnapshot, after: WorkspaceSnapshot) =>
-    Effect.gen(function* () {
-      const beforeSpaces = new Map(before.spaces.map((space) => [space.id, space]));
-      const afterSpaces = new Map(after.spaces.map((space) => [space.id, space]));
-      for (const space of after.spaces) {
-        const oldSpace = beforeSpaces.get(space.id);
-        if (!oldSpace) {
-          yield* eventBus.publish({ _tag: "space.changed", space: space.id, change: "created" });
-        } else if (oldSpace.name !== space.name) {
-          yield* eventBus.publish({ _tag: "space.changed", space: space.id, change: "renamed" });
-        }
-        const oldWindows = new Map(oldSpace?.windows.map((window) => [window.number, window]) ?? []);
-        for (const window of space.windows) {
-          const oldWindow = oldWindows.get(window.number);
-          if (!oldWindow)
-            yield* eventBus.publish({
-              _tag: "window.changed",
-              space: space.id,
-              window: window.number,
-              change: "created",
-            });
-          else if (oldWindow.name !== window.name)
-            yield* eventBus.publish({
-              _tag: "window.changed",
-              space: space.id,
-              window: window.number,
-              change: "renamed",
-            });
-        }
-        for (const window of oldSpace?.windows ?? []) {
-          if (!space.windows.some((current) => current.number === window.number))
-            yield* eventBus.publish({
-              _tag: "window.changed",
-              space: space.id,
-              window: window.number,
-              change: "closed",
-            });
-        }
-      }
-      for (const space of before.spaces) {
-        if (!afterSpaces.has(space.id))
-          yield* eventBus.publish({ _tag: "space.changed", space: space.id, change: "closed" });
-      }
-      for (const space of after.spaces)
-        for (const window of space.windows)
-          for (const pane of window.layout.root ? layoutPanes(window.layout.root) : [])
-            if (
-              !beforeSpaces
-                .get(space.id)
-                ?.windows.some((oldWindow) => layoutPanes(oldWindow.layout.root).some((oldPane) => oldPane.id === pane.id))
-            )
-              yield* eventBus.publish({ _tag: "pane.opened", pane: pane.id, session: pane.agent });
-    });
 
   let spawnAgent = (spec: SessionSpec): Effect.Effect<ManagedSession, DaemonError> =>
     (options.spawnAgent ? options.spawnAgent(spec) : requireHost().spawn(spec)).pipe(
@@ -490,7 +315,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     };
 
     yield* Effect.gen(function* () {
-      const cur = yield* Ref.get(daemonState);
+      const cur = yield* model.get;
       yield* persist(cur.state);
     }).pipe(enqueue);
 
@@ -510,15 +335,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         onAttach: attachEffect,
         onDetach: detachEffect,
         onActivity: touchEffect,
-        onSessionExit: (sid, code) =>
-          sessionExitEffect(sid, code).pipe(Effect.catchAll((e) => Effect.die(e))),
+        onSessionExit: (sid, code) => sessionExitEffect(sid, code),
       }),
     );
     hostRuntime = rt;
     host = yield* Effect.promise(() => rt.runPromise(AttachHost));
+    hostRef.current = host;
 
     yield* Effect.gen(function* () {
-      const cur = yield* Ref.get(daemonState);
+      const cur = yield* model.get;
       let next = cur.workspace;
       let changed = false;
       for (const space of next.spaces) {
@@ -550,12 +375,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       }
       const newState = workspaceSession(next, cur.state);
       if (changed) yield* persist(newState);
-      yield* Ref.set(daemonState, { ...cur, workspace: next, state: newState });
+      yield* model.commitWorkspace(next, newState);
     }).pipe(enqueue);
 
-    const cur = Effect.runSync(Ref.get(daemonState));
-    if (cur.workspace.spaces.length === 0) {
-      yield* runWorkspaceCommand(command("space.new"), cur.workspace.revision, {
+    const curSpace = yield* model.workspace;
+    if (curSpace.spaces.length === 0) {
+      yield* runWorkspaceCommand(command("space.new"), curSpace.revision, {
         size: { cols: 80, rows: 24 },
         shell: [env.SHELL || "bash"],
         cwd: process.cwd(),
@@ -590,20 +415,17 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           Effect.zipRight(
             enqueue(
               Effect.gen(function* () {
-                const info = attachInfo();
+                const info = yield* attachInfo();
                 const hbAt = yield* Clock.currentTimeMillis;
                 yield* session.writeLease({ ...lease, heartbeatAt: hbAt, ...info });
-                yield* Ref.update(daemonState, (s) => ({ ...s, heartbeatError: null }));
+                yield* model.setHeartbeatError(null);
               }),
             ),
           ),
           Effect.catchAllCause((c) =>
             Cause.isInterruptedOnly(c)
               ? Effect.interrupt
-              : Ref.update(daemonState, (s) => ({
-                  ...s,
-                  heartbeatError: `lease heartbeat failed: ${Cause.pretty(c)}`,
-                })),
+              : model.setHeartbeatError(`lease heartbeat failed: ${Cause.pretty(c)}`),
           ),
         ),
       ),
@@ -614,8 +436,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const terminate = Effect.fnUntraced(
     function* (mode: "stop" | "close") {
       if (terminationShared) return;
-      yield* Ref.update(daemonState, (s) => ({ ...s, closing: true }));
-      terminationShared = Effect.runPromise(
+      yield* model.markClosing;
+      const runtime = yield* Effect.runtime<never>();
+      terminationShared = Runtime.runPromise(runtime)(
         Effect.gen(function* () {
           let finalFailure: unknown = undefined;
           if (heartbeatFiber) {
@@ -633,11 +456,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             Effect.sleep(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`).pipe(Effect.as(false)),
           );
           if (!drained) {
-            yield* Ref.update(daemonState, (s) => ({ ...s, cancelPersistence: true }));
-            if (activeSaveRef.current)
-              yield* Effect.promise(() =>
-                Effect.runPromise(Fiber.interrupt(activeSaveRef.current!)).catch(() => {}),
-              );
+            yield* model.markCancelPersistence;
+            if (activeSaveRef.current) yield* Fiber.interrupt(activeSaveRef.current!);
             yield* Effect.raceFirst(
               enqueue(Effect.void),
               Effect.sleep(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`),
@@ -656,13 +476,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           } else {
             yield* enqueue(
               Effect.gen(function* () {
-                const cur = yield* Ref.get(daemonState);
+                const cur = yield* model.get;
                 const newState = { ...cur.state, attached: false, updatedAt: Date.now() };
                 const result = yield* Effect.exit(
                   persist(newState).pipe(Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`)),
                 );
                 if (Exit.isFailure(result)) finalFailure = Cause.squash(result.cause);
-                yield* Ref.set(daemonState, { ...cur, state: newState, attachments: new Map() });
+                yield* model.updateState(newState);
+                yield* model.setAttachments(new Map());
+                yield* model.commitWorkspace(cur.workspace, newState);
               }),
             );
           }
@@ -686,126 +508,19 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     value: Command,
     expectedRevision: number,
     context: WorkspaceCommandContext,
-  ): Effect.Effect<WorkspaceSnapshot, DaemonError> =>
-    enqueue(
-      Effect.gen(function* () {
-        const cur = yield* Ref.get(daemonState);
-        if (expectedRevision !== cur.workspace.revision) {
-          return yield* new DaemonError({
-            message: `stale workspace revision ${expectedRevision}; current revision is ${cur.workspace.revision}`,
-          });
-        }
-        context = {
-          ...context,
-          worktreesRoot: path.join(
-            env.XDG_STATE_HOME || path.join(env.HOME || homedir(), ".local", "state"),
-            "amux",
-            "worktrees",
-          ),
-        };
-        if (COMMAND_META[value._tag].target !== "workspace") {
-          return yield* new DaemonError({
-            message: `command '${value._tag}' is not a workspace command`,
-          });
-        }
-        const mutation = applyWorkspaceCommand(cur.workspace, value, context);
-        const candidate = workspaceSession(mutation.snapshot, cur.state);
-        const worktrees = gitWorktreesFor(value, mutation.snapshot, cur.workspace);
-        const prepared: PreparedSession[] = [];
-        const exitsSettled = Effect.runSync(Deferred.make<boolean>());
-        const killed = mutation.actions.filter((a) => a._tag === "kill").map((a) => a.agent);
-        let createdWt = false;
-
-        try {
-          if (worktrees.created) {
-            const spec: WorktreeSpec = {
-              branch: worktrees.created.branch,
-              ...(worktrees.base ? { base: worktrees.base } : {}),
-            };
-            yield* Effect.promise(() =>
-              gitWorktreeAdd(worktrees.created!.repo, spec, worktrees.created!.path),
-            );
-            createdWt = true;
-          }
-          for (const a of mutation.actions) {
-            if (a._tag !== "spawn") continue;
-            prepared.push(yield* requireHost().prepare(a.agent));
-          }
-          for (const agentId of killed) {
-            exitCommits.set(agentId, async (code) => {
-              if (!(await Effect.runPromise(Deferred.await(exitsSettled)))) {
-                await Effect.runPromise(
-                  sessionExitEffect(agentId, code).pipe(Effect.catchAll(() => Effect.void)),
-                );
-              }
-            });
-          }
-          for (const a of mutation.actions) {
-            if (a._tag === "kill") {
-              const result = killAgent(a.agent) as unknown;
-              yield* Effect.isEffect(result)
-                ? (result as Effect.Effect<void, DaemonError, never>)
-                : Effect.promise(() => Promise.resolve(result as void));
-            }
-            if (a._tag === "input") yield* requireHost().write(a.agent, a.data);
-          }
-          for (const wt of worktrees.removed) {
-            const dirty = yield* Effect.promise(() => gitWorktreeDirty(wt!.path));
-            if (dirty)
-              return yield* new DaemonError({
-                message: `worktree '${wt!.path}' has uncommitted changes`,
-              });
-          }
-          if (mutation.changed) {
-            if (killed.length > 0) {
-              yield* persistUntilSuccess(
-                persist,
-                daemonState,
-                candidate,
-                "destructive workspace command",
-                activeSaveRef,
-                daemonScope,
-              );
-            } else {
-              yield* persist(candidate);
-            }
-            yield* Ref.set(daemonState, {
-              ...cur,
-              workspace: mutation.snapshot,
-              state: candidate,
-            });
-            yield* publishWorkspaceEvents(cur.workspace, mutation.snapshot);
-            yield* requireHost()
-              .publish({
-                _tag: "workspace",
-                revision: mutation.snapshot.revision,
-                state: JSON.stringify(mutation.snapshot),
-              })
-              .pipe(Effect.ignore);
-          }
-          for (const wt of worktrees.removed) {
-            yield* Effect.promise(() => gitWorktreeRemove(wt!.repo, wt!.path));
-          }
-          Effect.runSync(Deferred.succeed(exitsSettled, true));
-          for (const p of prepared) yield* p.activate;
-          const final = yield* Ref.get(daemonState);
-          return structuredClone(final.workspace);
-        } catch (error) {
-          Effect.runSync(Deferred.succeed(exitsSettled, false));
-          for (const p of prepared) yield* p.abort.pipe(Effect.ignore);
-          if (createdWt && worktrees.created)
-            yield* Effect.promise(() =>
-              gitWorktreeRemove(worktrees.created!.repo, worktrees.created!.path, true).catch(
-                () => {},
-              ),
-            );
-          if (error instanceof DaemonError) return yield* error;
-          return yield* new DaemonError({ message: describe(error) });
-        } finally {
-          for (const agentId of killed) exitCommits.delete(agentId);
-        }
-      }) as Effect.Effect<WorkspaceSnapshot, DaemonError, never>,
-    ).pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
+  ): Effect.Effect<WorkspaceSnapshot, DaemonError> => {
+    const enriched = {
+      ...context,
+      worktreesRoot: path.join(
+        env.XDG_STATE_HOME || path.join(env.HOME || homedir(), ".local", "state"),
+        "amux",
+        "worktrees",
+      ),
+    };
+    return transaction
+      .run(value, expectedRevision, enriched)
+      .pipe(Effect.mapError((e) => new DaemonError({ message: e.message })));
+  };
 
   /**
    * Every control-plane procedure. `guard` turns failures *and* defects
@@ -824,21 +539,21 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     Ping: () =>
       guard(
         Effect.gen(function* () {
-          const cur = yield* Ref.get(daemonState);
-          return { attached: cur.state.attached, ...attachTimes() };
+          const cur = yield* model.get;
+          return { attached: cur.state.attached, ...(yield* attachTimes()) };
         }),
       ),
 
     Status: () =>
       guard(
         Effect.gen(function* () {
-          const cur = yield* Ref.get(daemonState);
+          const cur = yield* model.get;
           const obligation = cur.durableObligations.values().next().value as string | undefined;
           const degraded = obligation ?? cur.heartbeatError ?? undefined;
           const live = yield* liveAgents();
           return {
             attached: cur.state.attached,
-            ...attachTimes(),
+            ...(yield* attachTimes()),
             session: structuredClone(cur.state),
             workspace: JSON.stringify(cur.workspace),
             agents: [...live],
@@ -859,7 +574,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     WorkspaceCommand: ({ value, expectedRevision, context }) =>
       guard(
         Effect.gen(function* () {
-          const cur = yield* Ref.get(daemonState);
+          const cur = yield* model.get;
           const ctx = parseWorkspaceCommandContext(context, cur.workspace);
           const ws = yield* runWorkspaceCommand(value, expectedRevision, ctx);
           return JSON.stringify(ws);
@@ -875,7 +590,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               `command '${value._tag}' is a view command, not remotely invocable`,
             );
           if (meta.target === "workspace") {
-            const cur = yield* Ref.get(daemonState);
+            const cur = yield* model.get;
             const ctx = parseWorkspaceCommandContext(context ?? {}, cur.workspace);
             const ws = yield* runWorkspaceCommand(
               value,
@@ -992,14 +707,10 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     listBuffers,
     deleteBuffer,
     showBuffer,
-    getState: Ref.get(daemonState).pipe(Effect.map((s) => structuredClone(s.state))),
-    getWorkspace: Ref.get(daemonState).pipe(Effect.map((s) => structuredClone(s.workspace))),
-    getAttachedClients: Ref.get(daemonState).pipe(
-      Effect.map((s) => [...s.attachments.values()].map((a) => a.client)),
-    ),
-    getAttachedClient: Ref.get(daemonState).pipe(
-      Effect.map((s) => s.attachments.values().next().value?.client ?? null),
-    ),
+    getState: model.state,
+    getWorkspace: model.workspace,
+    getAttachedClients: model.attachedClients,
+    getAttachedClient: model.attachedClients.pipe(Effect.map((clients) => clients[0] ?? null)),
   };
   return service;
 });

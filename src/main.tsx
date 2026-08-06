@@ -1,9 +1,11 @@
 import { createCliRenderer, BoxRenderable } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
-import { Data, Deferred, Effect, Exit } from "effect";
+import { Schema as S, Deferred, Effect, Exit } from "effect";
 
-class SessionIdError extends Data.TaggedError("SessionIdError")<{ message: string }> {}
+class SessionIdError extends S.TaggedError<SessionIdError>()("SessionIdError", {
+  message: S.String,
+}) { }
 
 import { loadConfig } from "./config.ts";
 import { applyOptions, resolveOptions } from "./options.ts";
@@ -74,7 +76,8 @@ const program = Effect.gen(function* () {
 });
 
 BunRuntime.runMain(
-  Effect.scoped(program).pipe(
+  program.pipe(
+    Effect.scoped,
     Effect.provide(Session.Default),
     Effect.provide(BunFileSystem.layer),
     Effect.provideService(SessionEnv, process.env),

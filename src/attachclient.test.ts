@@ -9,7 +9,7 @@
  */
 
 import { afterEach, expect, test } from "vitest";
-import { Effect, Exit, Scope } from "effect";
+import { Effect, Exit, pipe, Scope } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -368,7 +368,7 @@ test("output written immediately before exit arrives before the exit frame", asy
 });
 
 test("an exited session queue is reclaimed only after its exit is consumed", async () => {
-  const { daemon, env } = await session("reclaim-queue");
+  const { daemon } = await session("reclaim-queue");
   const client = await AttachClient.connect({ path: daemon.paths.attach, client: "queue-test" });
 
   const firstFrames: string[] = [];
@@ -674,25 +674,22 @@ test("a delayed handshake closes its socket and rejects on timeout", async () =>
   });
 
   const acquire = (client: string) =>
-    Effect.gen(function* () {
-      return yield* AttachClient;
-    })
-      .pipe(
-        Effect.provide(AttachClient.layer({ path, client, helloTimeoutMs: 30 })),
-        Effect.scoped,
-        Effect.runPromise,
-      )
-      .then(
-        (connected) => {
-          settlements += 1;
-          resurrected = connected;
-          return connected;
-        },
-        (error) => {
-          settlements += 1;
-          throw error;
-        },
-      );
+    pipe(
+      AttachClient,
+      Effect.provide(AttachClient.layer({ path, client, helloTimeoutMs: 30 })),
+      Effect.scoped,
+      Effect.runPromise,
+    ).then(
+      (connected) => {
+        settlements += 1;
+        resurrected = connected;
+        return connected;
+      },
+      (error) => {
+        settlements += 1;
+        throw error;
+      },
+    );
 
   const originalConnect = Bun.connect;
   Bun.connect = ((options: any) =>
@@ -1036,7 +1033,7 @@ test("a daemon started on demand keeps agents between two separate clients", asy
 });
 
 test("a daemon workspace mutation is visible to a later client", async () => {
-  const { daemon, env } = await session("saved");
+  const { env } = await session("saved");
   const client = await attach("saved", env);
 
   await run(

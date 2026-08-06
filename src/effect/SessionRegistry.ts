@@ -272,7 +272,8 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           write: (data) =>
             Effect.tryPromise({
               try: (signal) => backend.write(data, signal),
-              catch: (error) => error,
+              catch: (error) =>
+                S.is(PtyWriteInterrupted)(error) ? error : asPtyError("write", error),
             }).pipe(
               Effect.catchAll((error) =>
                 S.is(PtyWriteInterrupted)(error) && error.reason === "shutdown"

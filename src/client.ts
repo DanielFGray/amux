@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { Effect, Layer, Schedule, Scope, Stream, Schema as S } from "effect";
+import { Effect, Runtime, Schedule, Scope, Stream, Schema as S } from "effect";
 import { FileSystem } from "@effect/platform";
 import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SpawnBackend } from "./backend.ts";
@@ -54,21 +54,10 @@ export interface SessionClientShape extends DaemonSession {
   readonly showBuffer: (name: string | undefined) => Effect.Effect<string, unknown, never>;
 }
 
-export class SessionClient extends Effect.Service<SessionClient>()("SessionClient", {
-  scoped: (id: string, options: SessionClientOptions = {}) => make(id, options),
-}) {
-  static layer(id: string, options: SessionClientOptions = {}) {
-    return Layer.scoped(
-      SessionClient,
-      make(id, options).pipe(Effect.map((client) => client as SessionClient)),
-    );
-  }
-
-  /**
-   * The control connection lives for the returned client's scope: closing the
-   * scope closes both the attach socket and the RPC socket.
-   */
-  static connect(
+/** The control connection lives for the returned client's scope: closing the
+ *  scope closes both the attach socket and the RPC socket. */
+export const SessionClient = {
+  connect(
     id: string,
     options: SessionClientOptions = {},
   ): Effect.Effect<
@@ -77,10 +66,8 @@ export class SessionClient extends Effect.Service<SessionClient>()("SessionClien
     Scope.Scope | SessionEnv | Session | FileSystem.FileSystem
   > {
     return make(id, options);
-  }
-}
-
-export interface SessionClient extends SessionClientShape {}
+  },
+};
 
 const make = (
   id: string,
@@ -153,28 +140,30 @@ const make = (
       workspace: () => structuredClone(workspace),
       models: attach.workspace().pipe(Stream.map(accept)),
       runWorkspace: (command, context) =>
-        Effect.tryPromise({
-          try: () => {
-            const request = async () => {
-              const next = await Effect.runPromise(
-                control.WorkspaceCommand({
-                  value: command,
-                  expectedRevision: workspace.revision,
-                  context,
-                }),
+        Effect.flatMap(Effect.runtime<never>(), (runtime) =>
+          Effect.tryPromise({
+            try: () => {
+              const request = async () => {
+                const next = await Runtime.runPromise(runtime)(
+                  control.WorkspaceCommand({
+                    value: command,
+                    expectedRevision: workspace.revision,
+                    context,
+                  }),
+                );
+                accept(parseWorkspace(JSON.parse(next)));
+                return structuredClone(workspace);
+              };
+              const queued = commandQueue.then(request);
+              commandQueue = queued.then(
+                () => {},
+                () => {},
               );
-              accept(parseWorkspace(JSON.parse(next)));
-              return structuredClone(workspace);
-            };
-            const queued = commandQueue.then(request);
-            commandQueue = queued.then(
-              () => {},
-              () => {},
-            );
-            return queued;
-          },
-          catch: (error) => new SessionClientError({ message: String(error) }),
-        }),
+              return queued;
+            },
+            catch: (error) => new SessionClientError({ message: String(error) }),
+          }),
+        ),
       backend: () => daemonBackend(service, service.live),
       setBuffer: (name, data) => control.SetBuffer({ name, data }),
       pasteBuffer: (name, target, deleteAfter = false) =>

@@ -115,6 +115,28 @@ and Promise conversions. The correct replacement depends on whether the
 surrounding function must become `it.effect`, `it.scoped`, or remain a normal
 Vitest test.
 
+## Effect Channel Checks
+
+`no-unknown-effect-channels.yml` reports `unknown` in either the error or
+requirements channel of a qualified `Effect.Effect` type. It intentionally has
+no automatic fix: the appropriate replacement is usually `never`, a domain
+error, or a generic parameter, depending on the declaration.
+
+Run it against the source tree with:
+
+```bash
+ast-grep scan \
+  --rule tools/ast-grep/no-unknown-effect-channels.yml \
+  src \
+  --globs '**/*.ts' \
+  --globs '**/*.tsx' \
+  --report-style medium
+```
+
+The rule is deliberately structural. An inference helper that genuinely needs
+an unconstrained channel should be reviewed at the call site rather than
+excluded by a broad helper-name exception.
+
 ## Applying A Reviewed Rule
 
 Only after reviewing the dry-run output should a rule be applied:
