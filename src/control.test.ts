@@ -119,13 +119,15 @@ test("the events stream is ready before it observes later workspace changes", as
       const stream = control.Events().pipe(
         Stream.tap((item) =>
           item.event._tag === "events.ready"
-            ? control
-                .Run({
-                  value: command("space.rename", { name: "event-space" }),
-                  expectedRevision: before.revision,
-                  context,
-                })
-                .pipe(Effect.asVoid)
+            ? controlCall(daemon.id, (commandControl) =>
+                commandControl
+                  .Run({
+                    value: command("space.rename", { name: "event-space" }),
+                    expectedRevision: before.revision,
+                    context,
+                  })
+                  .pipe(Effect.asVoid),
+              )
             : Effect.void,
         ),
         Stream.filter((item) => item.event._tag === "space.changed"),
@@ -134,6 +136,8 @@ test("the events stream is ready before it observes later workspace changes", as
     }),
     env,
   );
+  await Effect.runPromise(daemon.stop).catch(() => {});
+  daemons.splice(daemons.indexOf(daemon), 1);
   expect(Option.map(event, (item) => item.event)).toEqual(
     Option.some({
       _tag: "space.changed",
