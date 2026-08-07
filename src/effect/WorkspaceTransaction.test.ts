@@ -10,7 +10,7 @@ import {
   WorkspaceTransactionEvents,
   WorkspaceTransactionError,
 } from "./WorkspaceTransaction.ts";
-import type { PersistedAgent, SessionState } from "../session.ts";
+import type { PersistedSession, SessionState } from "../session.ts";
 import { workspaceFromSession } from "../workspace.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
 import { command } from "../commands.ts";
@@ -107,7 +107,7 @@ interface FakeSessionState {
 
 function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
   return {
-    prepare: (agent: PersistedAgent) =>
+    prepare: (agent: PersistedSession) =>
       Effect.gen(function* () {
         const st = yield* Ref.get(stateRef);
         if (st.fail)

@@ -27,11 +27,11 @@ describe("scroll", () => {
     const space = run(spaces.create("test", process.cwd()));
     const window = run(space.newWindow());
     const pane = run(window.init());
-    pane.agent.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"));
+    pane.session.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"));
 
     let scrollCount = 0;
-    const originalScrollBy = pane.agent.scrollBy.bind(pane.agent);
-    pane.agent.scrollBy = (rows: number) => {
+    const originalScrollBy = pane.session.scrollBy.bind(pane.session);
+    pane.session.scrollBy = (rows: number) => {
       scrollCount += rows;
       originalScrollBy(rows);
     };
@@ -45,7 +45,7 @@ describe("scroll", () => {
     await t.renderOnce();
 
     expect(scrollCount).toBe(-3);
-    pane.agent.scrollBy = originalScrollBy;
+    pane.session.scrollBy = originalScrollBy;
   });
 
   it("scroll wheel events reach the pane through nested boxes (App layout)", async () => {
@@ -76,7 +76,7 @@ describe("scroll", () => {
     const space = run(spaces.create("test", process.cwd()));
     const window = run(space.newWindow());
     const pane = run(window.init());
-    pane.agent.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"));
+    pane.session.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"));
 
     let scrollReached = false;
     const orig = (pane as any).onMouseEvent.bind(pane);
@@ -110,12 +110,12 @@ describe("scroll", () => {
     const pane = run(window.init());
 
     // Enable SGR mouse reporting on the terminal, simulating a full-screen child
-    pane.agent.term.write(new TextEncoder().encode("\x1b[?1002h\x1b[?1006h"));
+    pane.session.term.write(new TextEncoder().encode("\x1b[?1002h\x1b[?1006h"));
     await t.renderOnce();
 
     let forwarded = "";
-    const originalWrite = pane.agent.write.bind(pane.agent);
-    pane.agent.write = (data: string | Uint8Array) => {
+    const originalWrite = pane.session.write.bind(pane.session);
+    pane.session.write = (data: string | Uint8Array) => {
       forwarded += typeof data === "string" ? data : new TextDecoder().decode(data);
       originalWrite(data);
     };
@@ -128,7 +128,7 @@ describe("scroll", () => {
     await t.renderOnce();
 
     expect(forwarded.length).toBeGreaterThan(0);
-    pane.agent.write = originalWrite;
+    pane.session.write = originalWrite;
   });
 
   it("renders an OSC title in the top border when gaps are enabled", async () => {
@@ -146,7 +146,7 @@ describe("scroll", () => {
     const space = run(spaces.create("test", process.cwd()));
     const window = run(space.newWindow());
     const pane = run(window.init());
-    pane.agent.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"));
+    pane.session.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"));
     await t.renderOnce();
     await t.renderOnce();
 
@@ -170,7 +170,7 @@ describe("scroll", () => {
     const space = run(spaces.create("test", process.cwd()));
     const window = run(space.newWindow());
     const pane = run(window.init());
-    pane.agent.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"));
+    pane.session.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"));
     await t.renderOnce();
     await t.renderOnce();
 
@@ -194,7 +194,7 @@ describe("scroll", () => {
     const space = run(spaces.create("test", process.cwd()));
     const window = run(space.newWindow());
     const pane = run(window.init());
-    pane.agent.term.write(new TextEncoder().encode("\x1b]0;need14chars\x07"));
+    pane.session.term.write(new TextEncoder().encode("\x1b]0;need14chars\x07"));
     await t.renderOnce();
     await t.renderOnce();
 

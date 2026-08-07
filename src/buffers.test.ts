@@ -21,7 +21,7 @@ import {
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
-import { Session } from "./session.ts";
+import { SessionStore } from "./session.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
@@ -36,7 +36,7 @@ async function started(id: string) {
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") };
   const daemon = await Effect.runPromise(
     Effect.scoped(startDaemon(id)).pipe(
-      Effect.provide(Session.Default),
+      Effect.provide(SessionStore.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
@@ -96,7 +96,7 @@ const output = (frames: AttachFrame[]) =>
 
 test("a copy pushed onto the stack pastes into a real pane's PTY", async () => {
   const { daemon, env } = await started("copy-paste");
-  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -116,7 +116,7 @@ test("a copy pushed onto the stack pastes into a real pane's PTY", async () => {
 
 test("the stack is a stack: the newest copy is what a default paste reads", async () => {
   const { daemon, env } = await started("stack-order");
-  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -133,7 +133,7 @@ test("the stack is a stack: the newest copy is what a default paste reads", asyn
 
 test("a named buffer pastes, shows, and deletes by name", async () => {
   const { daemon, env } = await started("named-buffer");
-  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -151,7 +151,7 @@ test("a named buffer pastes, shows, and deletes by name", async () => {
 
 test("paste-buffer -d deletes the buffer only after it was pasted", async () => {
   const { daemon, env } = await started("paste-delete");
-  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -172,7 +172,7 @@ test("a paste into a bracketed-paste-enabled child arrives wrapped", async () =>
   // (ECHOCTL), and canonical mode would hold back the \x1b[201~ tail because
   // it ends without a newline.
   await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "pane",
       cmd: ["sh", "-c", "printf '\\x1b[?2004h'; stty -echo -icanon; cat"],
       cols: 80,
@@ -193,7 +193,7 @@ test("a paste into a bracketed-paste-enabled child arrives wrapped", async () =>
 
 test("buffer failures are answers, not crashes", async () => {
   const { daemon, env } = await started("buffer-errors");
-  await Effect.runPromise(daemon.spawnAgent({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
   await settle();
 
   expect(await refusal(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env)).toContain(

@@ -83,7 +83,7 @@ test("the wire decodes into a command, and rejects one it cannot type", () => {
     command("window.select", { number: 2 }),
   );
   // Optional targets stay optional over the wire.
-  expect(Effect.runSync(decodeCommand({ _tag: "agent.kill" }))).toEqual(command("agent.kill"));
+  expect(Effect.runSync(decodeCommand({ _tag: "session.kill" }))).toEqual(command("session.kill"));
   expect(Effect.runSync(decodeCommand({ _tag: "pane.resize", direction: "left" }))).toEqual(
     command("pane.resize", { direction: "left" }),
   );

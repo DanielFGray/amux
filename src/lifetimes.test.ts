@@ -17,7 +17,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { Effect, Exit, Scope, Stream } from "effect";
 import { SpaceSet } from "./space.ts";
 import { workspaceEnv } from "./env.ts";
-import type { SpawnBackend } from "./backend.ts";
+import type { SessionBackendFactory } from "./backend.ts";
 import { run, runAsync } from "./harness.ts";
 import { createApp } from "./app.tsx";
 import { DEFAULT_CONFIG } from "./config.ts";
@@ -31,12 +31,12 @@ import type { WorkspaceSnapshot } from "./workspace.ts";
  *
  * By id, not by count. A count cannot tell "killed the agent you asked for"
  * from "killed a different one instead" — and that is a real mutation: making
- * `killAgent` release every agent in the window still leaves the count at one
+  * `killSession` release every session in the window still leaves the count at one
  * once the target has already been spliced out of the list.
  */
-function spyBackend(): { backend: SpawnBackend; killed: () => string[] } {
+function spyBackend(): { backend: SessionBackendFactory; killed: () => string[] } {
   const killed: string[] = [];
-  const backend: SpawnBackend = (opts) => {
+  const backend: SessionBackendFactory = (opts) => {
     // Per instance, not shared: `closed` describes THIS backend, while the
     // counter above is how many of them the release chain reached.
     let mine = false;
@@ -92,7 +92,7 @@ test("closing the top scope kills agents three levels down", async () => {
   try {
     const space = run(f.spaces.create("proj", process.cwd()));
     const window = run(space.newWindow());
-    const first = run(window.init()).agent;
+    const first = run(window.init()).session;
     const second = run(window.spawn("second"));
     expect(f.killed()).toEqual([]);
 
@@ -110,9 +110,9 @@ test("closing one window releases its agents and leaves its siblings running", a
   try {
     const space = run(f.spaces.create("proj", process.cwd()));
     const doomed = run(space.newWindow());
-    const doomedAgent = run(doomed.init()).agent;
+    const doomedAgent = run(doomed.init()).session;
     const survivor = run(space.newWindow());
-    const survivorAgent = run(survivor.init()).agent;
+    const survivorAgent = run(survivor.init()).session;
 
     await runAsync(space.closeWindow(doomed));
     expect(f.killed()).toEqual([doomedAgent.id]);
@@ -125,16 +125,16 @@ test("closing one window releases its agents and leaves its siblings running", a
   }
 });
 
-test("killAgent releases the agent it was given and no other", async () => {
+test("killSession releases the session it was given and no other", async () => {
   const f = await fixture();
   try {
     const space = run(f.spaces.create("proj", process.cwd()));
     const window = run(space.newWindow());
-    const bystander = run(window.init()).agent;
+    const bystander = run(window.init()).session;
     const second = run(window.spawn("second"));
 
-    await runAsync(window.killAgent(second));
-    // By id: the target, not merely "one of them". killAgent splices its target
+    await runAsync(window.killSession(second));
+    // By id: the target, not merely "one of them". killSession splices its target
     // out of #agents before releasing, so a release loop over the survivors
     // would kill the bystander and still leave the count at one.
     expect(f.killed()).toEqual([second.id]);
@@ -150,7 +150,7 @@ test("a broken-out pane survives its source window closing", async () => {
     const space = run(f.spaces.create("proj", process.cwd()));
     const source = run(space.newWindow());
     const pane = run(source.init());
-    const moved = pane.agent;
+    const moved = pane.session;
 
     // breakPane moves the agent AND its scope. The source window is emptied and
     // closed by the break itself, so if the scope had stayed behind — or been
@@ -175,7 +175,7 @@ test("scoped app release detaches daemon projections and terminates local owners
     const host = new BoxRenderable(t.renderer, { id: `pane-host-${ownership}`, flexGrow: 1 });
     const closed: string[] = [];
     const killed: string[] = [];
-    const backend: SpawnBackend = (opts) => {
+    const backend: SessionBackendFactory = (opts) => {
       let isClosed = false;
       return {
         stream: Stream.never,
@@ -272,7 +272,7 @@ function lifecycleWorkspace(agent: string): WorkspaceSnapshot {
   };
 }
 
-function lifecycleSession(workspace: WorkspaceSnapshot, spawn: SpawnBackend): SessionClientShape {
+function lifecycleSession(workspace: WorkspaceSnapshot, spawn: SessionBackendFactory): SessionClientShape {
   return {
     id: "lifecycle",
     session: null,

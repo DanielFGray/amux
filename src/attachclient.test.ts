@@ -16,14 +16,14 @@ import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { which } from "bun";
-import { Agent, type AgentOptions } from "./agent.ts";
-import { snapshotAgent } from "./snapshot.ts";
+import { Session, type SessionOptions } from "./agent.ts";
+import { snapshotSessionEntry } from "./snapshot.ts";
 import { AttachClient } from "./attach.ts";
 import { SessionClient, type SessionClientShape } from "./client.ts";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { captureVisible } from "./capture.ts";
 import { MODE_ALT_SCREEN } from "./ghostty.ts";
-import { processAlive, sessionPaths, Session } from "./session.ts";
+import { processAlive, sessionPaths, SessionStore } from "./session.ts";
 import { Option, Stream } from "effect";
 import {
   decodeAttachFrames,
@@ -49,15 +49,15 @@ const connect = (
   scopes.push(scope);
   return run(Scope.extend(SessionClient.connect(id, options), scope), env);
 };
-const agents: Agent[] = [];
+const agents: Session[] = [];
 let nextProjection = 0;
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(Session.Default),
+      Effect.provide(SessionStore.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
@@ -92,16 +92,16 @@ async function attach(id: string, env: NodeJS.ProcessEnv, client = "ui") {
 async function projectAgent(
   daemon: SessionDaemonService,
   client: SessionClientShape,
-  options: Omit<AgentOptions, "backend">,
+  options: Omit<SessionOptions, "backend">,
 ) {
   const id = options.id ?? `transport-${nextProjection++}`;
-  const live = await Effect.runPromise(daemon.liveAgents());
+  const live = await Effect.runPromise(daemon.liveSessions());
   (client.live as Set<string>).add(id);
-  const projected = new Agent({ ...options, id, backend: client.backend() });
+  const projected = new Session({ ...options, id, backend: client.backend() });
   agents.push(projected);
   if (!live.includes(id)) {
     await Effect.runPromise(
-      daemon.spawnAgent({
+      daemon.spawnSession({
         kind: options.kind,
         id,
         cmd: options.cmd,
@@ -140,7 +140,7 @@ async function until(predicate: () => boolean | Promise<boolean>, what: string, 
 
 /** What the agent's terminal is actually showing, as text. The app's own
  *  capture path, so these assertions read the screen the user would. */
-const screen = (agent: Agent) => captureVisible(agent.term);
+const screen = (agent: Session) => captureVisible(agent.term);
 
 test("an agent's bytes travel to the daemon and its output comes back", async () => {
   const { daemon, env } = await session("roundtrip");
@@ -154,7 +154,7 @@ test("an agent's bytes travel to the daemon and its output comes back", async ()
   await until(() => screen(agent).includes("hello-from-the-client"), "cat to echo the input");
 
   // And the daemon, not this process, is the one holding the PTY.
-  expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
+  expect(await Effect.runPromise(daemon.liveSessions())).toContain(agent.id);
 });
 
 test("native agent status frames become authoritative projected state", async () => {
@@ -166,10 +166,10 @@ test("native agent status frames become authoritative projected state", async ()
     `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"native-status-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
   ];
   await Effect.runPromise(
-    daemon.spawnAgent({ kind: "agent", id: "native-status-agent", cmd, cols: 80, rows: 24 }),
+    daemon.spawnSession({ kind: "agent", id: "native-status-agent", cmd, cols: 80, rows: 24 }),
   );
   (client.live as Set<string>).add("native-status-agent");
-  const agent = new Agent({
+  const agent = new Session({
     id: "native-status-agent",
     cmd,
     kind: "agent",
@@ -179,7 +179,7 @@ test("native agent status frames become authoritative projected state", async ()
 
   await until(() => agent.state === "working", "native working status");
   expect(agent.state).toBe("working");
-  await Effect.runPromise(daemon.killAgent(agent.id));
+  await Effect.runPromise(daemon.killSession(agent.id));
 });
 
 test("two clients share output and input, and one can leave without detaching the other", async () => {
@@ -248,7 +248,7 @@ test("an agent outlives the client, and the next client adopts it", async () => 
     async () => (await attachedClient(daemon)) === null,
     "the daemon to notice the detach",
   );
-  expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
+  expect(await Effect.runPromise(daemon.liveSessions())).toContain(agent.id);
 
   // The backend closed with no exit code: the attachment ended, the process
   // did not. Reporting 0 here would be a lie the sidebar renders as "done".
@@ -269,7 +269,7 @@ test("an agent outlives the client, and the next client adopts it", async () => 
   readopted.write("second-life\n");
   await until(() => screen(readopted).includes("second-life"), "the adopted agent's echo");
   expect(
-    (await Effect.runPromise(daemon.liveAgents())).filter((id) => id === agent.id),
+    (await Effect.runPromise(daemon.liveSessions())).filter((id) => id === agent.id),
   ).toHaveLength(1);
 });
 
@@ -404,7 +404,7 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
     ),
   );
   const first = await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "agent-1",
       cmd: ["sh", "-c", "printf first; exit 3"],
       cols: 80,
@@ -429,7 +429,7 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
     ),
   );
   const second = await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "agent-1",
       cmd: ["sh", "-c", "printf second; exit 4"],
       cols: 80,
@@ -459,7 +459,7 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
   });
 
   const first = await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "agent-1",
       cmd: ["sh", "-c", "printf first; exit 3"],
       cols: 80,
@@ -477,7 +477,7 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
     ),
   );
   const second = await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "agent-1",
       cmd: ["sh", "-c", "printf second; exit 4"],
       cols: 80,
@@ -832,17 +832,17 @@ test("killing through the daemon ends the agent here too", async () => {
   const client = await attach("killed", env);
 
   const saved = modeledAgent(client);
-  const agent = new Agent({ ...saved, backend: client.backend() });
+  const agent = new Session({ ...saved, backend: client.backend() });
   agents.push(agent);
 
   let live: readonly string[] = [];
   await until(() => {
-    void Effect.runPromise(daemon.liveAgents()).then((ids) => (live = ids));
+    void Effect.runPromise(daemon.liveSessions()).then((ids) => (live = ids));
     return live.includes(agent.id);
   }, "the daemon to have the agent");
 
   await run(
-    client.runWorkspace(command("agent.kill", { agent: agent.id }), {
+    client.runWorkspace(command("session.kill", { session: agent.id }), {
       size: { cols: 80, rows: 24 },
       shell: ["sh"],
       cwd: "/tmp",
@@ -870,13 +870,13 @@ test("a projection of an unmodeled id never asks the daemon to spawn it", async 
   const { daemon, env } = await session("unreachable");
   const client = await attach("unreachable", env);
 
-  const before = await Effect.runPromise(daemon.liveAgents());
-  const agent = new Agent({ id: "not-modeled", cmd: ["cat"], backend: client.backend() });
+  const before = await Effect.runPromise(daemon.liveSessions());
+  const agent = new Session({ id: "not-modeled", cmd: ["cat"], backend: client.backend() });
   agents.push(agent);
 
   await until(() => agent.exited, "the invalid projection to close");
   expect(screen(agent)).toContain("is not live");
-  expect(await Effect.runPromise(daemon.liveAgents())).toEqual(before);
+  expect(await Effect.runPromise(daemon.liveSessions())).toEqual(before);
 });
 
 test("a client whose daemon stops sees a detach, not a process exit", async () => {
@@ -899,7 +899,7 @@ test("a client whose daemon stops sees a detach, not a process exit", async () =
   expect(agent.exited).toBe(false);
   expect(agent.exitCode).toBeNull();
   expect(agent.state).toBe("detached");
-  expect(snapshotAgent(agent).exited).toBe(false);
+  expect(snapshotSessionEntry(agent).exited).toBe(false);
 });
 
 test("a reattaching client sees an adopted agent's screen without it redrawing", async () => {
@@ -922,7 +922,7 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
   // cat never redraws. The old line can reach this fresh pane only through the
   // daemon's replay; without it the pane stays blank until some later echo.
   await until(() => screen(readopted).includes("left-on-screen"), "the replayed screen");
-  expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
+  expect(await Effect.runPromise(daemon.liveSessions())).toContain(agent.id);
 });
 
 test("an adopted agent is resized before its screen replay", async () => {
@@ -1033,12 +1033,12 @@ test("a daemon started on demand keeps agents between two separate clients", asy
 
   const first = await connect(id, env, { client: "first" });
   try {
-    const lease = await run(Session.readLease(id), env);
+    const lease = await run(SessionStore.readLease(id), env);
     expect(lease?.pid).toBeGreaterThan(0);
     expect(lease!.pid).not.toBe(process.pid);
 
     const saved = modeledAgent(first);
-    const agent = new Agent({ ...saved, backend: first.backend() });
+    const agent = new Session({ ...saved, backend: first.backend() });
     agents.push(agent);
     agent.write("printf 'across-processes\\n'\n");
     await until(() => screen(agent).includes("across-processes"), "the daemon's echo");
@@ -1047,13 +1047,13 @@ test("a daemon started on demand keeps agents between two separate clients", asy
     // A second client, with no memory of the first, finds the agent still there.
     const second = await connect(id, env, { client: "second" });
     expect(second.live).toContain(agent.id);
-    const readopted = new Agent({ ...saved, backend: second.backend() });
+    const readopted = new Session({ ...saved, backend: second.backend() });
     agents.push(readopted);
     readopted.write("printf 'still-alive\\n'\n");
     await until(() => screen(readopted).includes("still-alive"), "the adopted agent's echo");
     await run(second.stop(), env);
   } finally {
-    const lease = await run(Session.readLease(id), env);
+    const lease = await run(SessionStore.readLease(id), env);
     if (lease && processAlive(lease.pid)) process.kill(lease.pid, "SIGKILL");
   }
 });
@@ -1089,14 +1089,14 @@ test("releasing a client projection closes local resources without killing the d
   const client = await attach("projection-release", env);
   const agent = await projectAgent(daemon, client, { cmd: ["sleep", "30"] });
   await Effect.runPromise(agent.release());
-  expect(await Effect.runPromise(daemon.liveAgents())).toContain(agent.id);
+  expect(await Effect.runPromise(daemon.liveSessions())).toContain(agent.id);
 });
 
 test("a failed workspace response is neither accepted nor left as a phantom PTY", async () => {
   const { daemon, env } = await session("client-transaction");
   const client = await attach("client-transaction", env);
   const before = client.workspace();
-  const beforeLive = await Effect.runPromise(daemon.liveAgents());
+  const beforeLive = await Effect.runPromise(daemon.liveSessions());
   const p = await run(sessionPaths("client-transaction"), env);
   await rm(p.backup, { recursive: true, force: true });
   await mkdir(p.backup);
@@ -1113,7 +1113,7 @@ test("a failed workspace response is neither accepted nor left as a phantom PTY"
   ).rejects.toThrow();
   expect(client.workspace()).toEqual(before);
   expect(await Effect.runPromise(daemon.getWorkspace)).toEqual(before);
-  expect(await Effect.runPromise(daemon.liveAgents())).toEqual(beforeLive);
+  expect(await Effect.runPromise(daemon.liveSessions())).toEqual(beforeLive);
 });
 
 test("a natural terminal exit is published only after its workspace generation is durable", async () => {
@@ -1142,8 +1142,8 @@ test("a natural terminal exit is published only after its workspace generation i
   await Effect.runPromise(
     Stream.runForEach(client.attach.stream(id), (frame) => {
       if (frame._tag !== "exit") return Effect.void;
-      return Session.load("exit-order").pipe(
-        Effect.provide(Session.Default),
+      return SessionStore.load("exit-order").pipe(
+        Effect.provide(SessionStore.Default),
         Effect.provide(BunFileSystem.layer),
         Effect.withConfigProvider(ConfigProvider.fromJson(env)),
         Effect.map((saved) => {
@@ -1192,8 +1192,8 @@ test("a transient natural-exit write failure does not consume the terminal exit 
     Stream.runForEach(client.attach.stream(id), (frame) => {
       if (frame._tag !== "exit") return Effect.void;
       sawExit = true;
-      return Session.load("exit-retry-order").pipe(
-        Effect.provide(Session.Default),
+      return SessionStore.load("exit-retry-order").pipe(
+        Effect.provide(SessionStore.Default),
         Effect.provide(BunFileSystem.layer),
         Effect.withConfigProvider(ConfigProvider.fromJson(env)),
         Effect.map((saved) => {

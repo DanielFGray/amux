@@ -3,7 +3,7 @@ import { test, expect, afterEach } from "bun:test";
 import { Effect } from "effect";
 import { MouseEvent, BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
-import { Agent } from "./agent.ts";
+import { Session } from "./agent.ts";
 import { TerminalPane } from "./pane.ts";
 import {
   CopyMode,
@@ -25,8 +25,8 @@ const bytes = (value: string) => new TextEncoder().encode(value);
  *  calls invalidate/copyText, neither of which needs layout. */
 async function makePane(vt: string) {
   const t = await createTestRenderer({ width: 80, height: 24 });
-  const agent = new Agent({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 });
-  const pane = new TerminalPane(t.renderer, { id: "pane", agent });
+  const agent = new Session({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 });
+  const pane = new TerminalPane(t.renderer, { id: "pane", session: agent });
   agent.term.resize(40, 10);
   if (vt) agent.term.write(bytes(vt));
   return {
@@ -761,8 +761,8 @@ test("moving up off the live bottom pins the viewport against new output", async
 
 test("the keymap enters copy mode and the leader keeps its meaning inside it", async () => {
   const t = await createTestRenderer({ width: 60, height: 12 });
-  const agent = new Agent({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 });
-  const pane = new TerminalPane(t.renderer, { id: "pane", agent });
+  const agent = new Session({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 });
+  const pane = new TerminalPane(t.renderer, { id: "pane", session: agent });
   agent.term.resize(40, 10);
   agent.term.write(bytes("alpha beta\r\ngamma"));
   const mode = new CopyMode();
@@ -839,7 +839,7 @@ async function makeWindow(count: number) {
   const space = run(spaces.create("proj", process.cwd()));
   const win = run(space.newWindow());
   const agents = Array.from({ length: count }, () =>
-    run(win.startAgent({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 })),
+    run(win.startSession({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 })),
   );
   const panes = agents.map((agent, i) => win.split(i === 0 ? "row" : "column", agent)!);
   return { t, spaces, space, win, agents, panes };

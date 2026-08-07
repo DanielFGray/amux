@@ -16,7 +16,7 @@ async function setup() {
 
 test("a pane is named after the command it runs, not a generic 'shell'", async () => {
   const { window } = await setup();
-  expect(window.panes[0]!.agent.name).toBe("bash");
+  expect(window.panes[0]!.session.name).toBe("bash");
 });
 
 test("focusDirection crosses nesting levels rather than walking siblings", async () => {
@@ -89,8 +89,8 @@ test("zoom survives a resize and an uneven split's weights", async () => {
       direction: "row",
       weight: 1,
       children: [
-        { type: "pane", id: first.id, agent: first.agent.id, weight: 5 },
-        { type: "pane", id: second.id, agent: second.agent.id, weight: 1 },
+        { type: "pane", id: first.id, agent: first.session.id, weight: 5 },
+        { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
       ],
     }),
   );
@@ -158,8 +158,8 @@ test("swap exchanges two panes' places while each slot keeps its size", async ()
   await layout();
 
   const slots = [first.x, second.x];
-  const firstAgent = first.agent;
-  const secondAgent = second.agent;
+  const firstAgent = first.session;
+  const secondAgent = second.session;
 
   window.focus(first);
   window.swap(1);
@@ -170,7 +170,7 @@ test("swap exchanges two panes' places while each slot keeps its size", async ()
   expect(window.focused).toBe(first);
   expect(first.x).toBe(slots[1]!);
   expect(second.x).toBe(slots[0]!);
-  expect(window.panes.map((p) => p.agent)).toEqual([secondAgent, firstAgent]);
+  expect(window.panes.map((p) => p.session)).toEqual([secondAgent, firstAgent]);
 });
 
 test("resizeFocus nudges the divider on the focused pane's side", async () => {

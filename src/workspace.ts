@@ -24,7 +24,7 @@ import {
   parseSessionState,
   SessionStateError,
   SESSION_VERSION,
-  type PersistedAgent,
+  type PersistedSession,
   type SessionState,
 } from "./session.ts";
 import {
@@ -38,7 +38,7 @@ import {
   type SpaceState,
 } from "./space-model.ts";
 import {
-  MAX_AGENTS,
+  MAX_SESSIONS,
   MAX_SPACES,
   MAX_TERMINAL_CELLS,
   MAX_TERMINAL_DIMENSION,
@@ -56,7 +56,7 @@ export class WorkspaceParseError extends S.TaggedError<WorkspaceParseError>()(
 export interface WorkspaceWindow {
   number: number;
   name: string | null;
-  agents: PersistedAgent[];
+  agents: PersistedSession[];
   layout: Layout;
   state: WindowState;
 }
@@ -87,20 +87,20 @@ export interface WindowEntry {
 }
 
 export interface AgentEntry extends WindowEntry {
-  agent: PersistedAgent;
+  agent: PersistedSession;
 }
 
 export function* workspaceWindows(workspace: WorkspaceSnapshot): Generator<WindowEntry> {
   for (const space of workspace.spaces) for (const window of space.windows) yield { space, window };
 }
 
-export function* workspaceAgents(workspace: WorkspaceSnapshot): Generator<AgentEntry> {
+export function* workspaceSessions(workspace: WorkspaceSnapshot): Generator<AgentEntry> {
   for (const entry of workspaceWindows(workspace))
     for (const agent of entry.window.agents) yield { ...entry, agent };
 }
 
-export function workspaceAgentIds(workspace: WorkspaceSnapshot): Set<string> {
-  return new Set(Array.from(workspaceAgents(workspace), ({ agent }) => agent.id));
+export function workspaceSessionIds(workspace: WorkspaceSnapshot): Set<string> {
+  return new Set(Array.from(workspaceSessions(workspace), ({ agent }) => agent.id));
 }
 
 export function workspacePaneIds(workspace: WorkspaceSnapshot): Set<string> {
@@ -187,7 +187,7 @@ const WindowStateShape = S.Struct({
 const WorkspaceWindowShape = S.Struct({
   number: PositiveInt,
   name: S.NullOr(S.String),
-  agents: S.Array(PersistedAgentShape).pipe(S.maxItems(MAX_AGENTS)),
+  agents: S.Array(PersistedAgentShape).pipe(S.maxItems(MAX_SESSIONS)),
   layout: LayoutShape,
   state: WindowStateShape,
 });
@@ -234,7 +234,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
 });
 
 export type WorkspaceAction =
-  | { readonly _tag: "spawn"; readonly agent: PersistedAgent }
+  | { readonly _tag: "spawn"; readonly agent: PersistedSession }
   | { readonly _tag: "steer"; readonly agent: string; readonly message: string }
   | { readonly _tag: "interrupt"; readonly agent: string; readonly reason?: string }
   | { readonly _tag: "kill"; readonly agent: string }
@@ -463,7 +463,7 @@ export function parseWorkspaceCommandContext(
       });
     }
     if (workspace) {
-      const agents = workspaceAgentIds(workspace);
+      const agents = workspaceSessionIds(workspace);
       if (blocked.some((id: string) => !agents.has(id)))
         return yield* new WorkspaceParseError({
           message: "blocked agent does not exist",
@@ -480,7 +480,7 @@ export function applyWorkspaceCommand(
   context: WorkspaceCommandContext,
 ): WorkspaceMutation {
   const next = structuredClone(current);
-  const agentIds = workspaceAgentIds(next);
+  const agentIds = workspaceSessionIds(next);
   const paneIds = workspacePaneIds(next);
   const spaceIds = new Set(next.spaces.map((space) => space.id));
   const newAgentId = () => allocateId("agent", agentIds);
@@ -503,9 +503,9 @@ export function applyWorkspaceCommand(
     target.state.focus = id;
     target.layout = makeLayout(target.layout.root, id);
   };
-  const addAgent = (target: WorkspaceWindow, dir: string): PersistedAgent => {
+  const addAgent = (target: WorkspaceWindow, dir: string): PersistedSession => {
     const native = command._tag === "agent.new";
-    const agent: PersistedAgent = {
+    const agent: PersistedSession = {
       id: newAgentId(),
       name: native ? "native-agent" : commandName(context.shell),
       cmd: native
@@ -548,12 +548,12 @@ export function applyWorkspaceCommand(
 
   switch (command._tag) {
     case "agent.steer": {
-      if (command.agent) actions.push({ _tag: "steer", agent: command.agent, message: command.message });
+      if (command.session) actions.push({ _tag: "steer", agent: command.session, message: command.message });
       break;
     }
     case "agent.interrupt": {
-      if (command.agent)
-        actions.push({ _tag: "interrupt", agent: command.agent, ...(command.reason ? { reason: command.reason } : {}) });
+      if (command.session)
+        actions.push({ _tag: "interrupt", agent: command.session, ...(command.reason ? { reason: command.reason } : {}) });
       break;
     }
     case "agent.new": {
@@ -857,8 +857,8 @@ export function applyWorkspaceCommand(
       if (target) target.state.sync = !target.state.sync;
       break;
     }
-    case "agent.kill": {
-      const target = findAgent(next, command.agent);
+    case "session.kill": {
+      const target = findSession(next, command.session);
       if (!target) break;
       actions.push({ _tag: "kill", agent: target.agent.id });
       target.window.agents = target.window.agents.filter((agent) => agent.id !== target.agent.id);
@@ -867,8 +867,8 @@ export function applyWorkspaceCommand(
       afterPaneRemoved(next, target.space, target.window, actions);
       break;
     }
-    case "agent.restart": {
-      const target = findAgent(next, command.agent);
+    case "session.restart": {
+      const target = findSession(next, command.session);
       if (!target || !target.agent.exited) break;
       target.agent.exited = false;
       target.agent.exitCode = null;
@@ -883,8 +883,8 @@ export function applyWorkspaceCommand(
       actions.push({ _tag: "spawn", agent: structuredClone(target.agent) });
       break;
     }
-    case "agent.reveal": {
-      const target = findAgent(next, command.agent);
+    case "session.reveal": {
+      const target = findSession(next, command.session);
       if (!target || target.agent.exited) break;
       next.state = activateSpaceState(
         next.state,
@@ -918,7 +918,7 @@ export function applyWorkspaceCommand(
       setFocus(target.window, pane?.id);
       break;
     }
-    case "agent.next-blocked": {
+    case "session.next-blocked": {
       const blocked = context.blockedAgents ?? [];
       const focused = activeWindow()?.window.state.focus;
       const currentAgent = next.spaces
@@ -927,7 +927,7 @@ export function applyWorkspaceCommand(
         .find((pane) => pane.id === focused)?.agent;
       const at = currentAgent ? blocked.indexOf(currentAgent) : -1;
       const id = blocked[(at + 1 + blocked.length) % blocked.length];
-      const target = id ? findAgent(next, id) : null;
+      const target = id ? findSession(next, id) : null;
       if (target) {
         next.state = activateSpaceState(
           next.state,
@@ -1021,13 +1021,13 @@ export function applyWorkspaceCommand(
 }
 
 /** Natural PTY exit is a daemon-side model mutation too. */
-export function markAgentExited(
+export function markSessionExited(
   current: WorkspaceSnapshot,
   id: string,
   code: number | null,
 ): WorkspaceSnapshot {
   const next = structuredClone(current);
-  const found = findAgent(next, id);
+  const found = findSession(next, id);
   if (!found) return current;
   found.agent.exited = true;
   found.agent.exitCode = code;
@@ -1068,7 +1068,7 @@ function findWindow(
   return window ? { space, window } : null;
 }
 
-function findAgent(workspace: WorkspaceSnapshot, id?: string): AgentEntry | null {
+function findSession(workspace: WorkspaceSnapshot, id?: string): AgentEntry | null {
   if (!id) {
     const target = findWindow(workspace, {});
     const pane = layoutPanes(target?.window.layout.root ?? null).find(
@@ -1077,7 +1077,7 @@ function findAgent(workspace: WorkspaceSnapshot, id?: string): AgentEntry | null
     const agent = target?.window.agents.find((item) => item.id === pane?.agent);
     return target && agent ? { ...target, agent } : null;
   }
-  for (const entry of workspaceAgents(workspace)) if (entry.agent.id === id) return entry;
+  for (const entry of workspaceSessions(workspace)) if (entry.agent.id === id) return entry;
   return null;
 }
 

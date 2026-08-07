@@ -12,7 +12,7 @@ import {
   type SessionDaemonOptions,
   type SessionDaemonService,
 } from "./daemon.ts";
-import { Session, sessionPaths } from "./session.ts";
+import { SessionStore, sessionPaths } from "./session.ts";
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { AttachClient } from "./attach.ts";
@@ -30,13 +30,13 @@ async function env() {
 }
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem | Scope.Scope>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Scope.Scope>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     Effect.scoped(
       effect.pipe(
-        Effect.provide(Session.Default),
+        Effect.provide(SessionStore.Default),
         Effect.provide(BunFileSystem.layer),
         Effect.withConfigProvider(ConfigProvider.fromJson(e)),
       ),
@@ -109,7 +109,7 @@ test("concurrent opens reject the second owner and release on stop", async () =>
   await expect(open("race", e)).rejects.toThrow(/already (being opened|owned)/);
   await expect(open("race", e)).rejects.toThrow(/already (being opened|owned)/);
   await S(first);
-  expect(await run(Session.load("race"), e)).toBeNull();
+  expect(await run(SessionStore.load("race"), e)).toBeNull();
 });
 
 test("a dead lease and stale lock are recovered without deleting state", async () => {
@@ -128,7 +128,7 @@ test("a dead lease and stale lock are recovered without deleting state", async (
   );
   await writeFile(p.lock, "999999\n");
   await run(
-    Session.writeLease({
+    SessionStore.writeLease({
       version: 1,
       session: "restart",
       pid: 999999,
@@ -159,8 +159,8 @@ test("cleanup leaves a locked startup session for its owner", async () => {
     }),
   );
   await writeFile(p.lock, `${process.pid}\n`);
-  expect(await run(Session.cleanupStale, e)).toEqual([]);
-  expect(await run(Session.load("starting"), e)).not.toBeNull();
+  expect(await run(SessionStore.cleanupStale, e)).toEqual([]);
+  expect(await run(SessionStore.load("starting"), e)).not.toBeNull();
 });
 
 test("the daemon-owned workspace survives closing and reopening", async () => {
@@ -196,7 +196,7 @@ test("last pane removal closes the daemon so the next attach starts fresh", asyn
   const d = await open("empty", e);
   await rwc(d)(command("space.close", { space: ws(d).spaces[0]!.id }), ws(d).revision, context);
   await Bun.sleep(100);
-  expect(await run(Session.readLease("empty"), e)).toBeNull();
+  expect(await run(SessionStore.readLease("empty"), e)).toBeNull();
   const next = await open("empty", e);
   const nextWorkspace = await Effect.runPromise(next.getWorkspace);
   expect(nextWorkspace.spaces).toHaveLength(1);
@@ -208,7 +208,7 @@ test("stopping a daemon discards the workspace it was keeping", async () => {
   const e = await env();
   const d = await open("discard", e);
   await S(d);
-  expect(await run(Session.load("discard"), e)).toBeNull();
+  expect(await run(SessionStore.load("discard"), e)).toBeNull();
 });
 
 test("stopping waits for an in-flight workspace mutation before removing metadata", async () => {
@@ -217,7 +217,7 @@ test("stopping waits for an in-flight workspace mutation before removing metadat
   const save = rwc(d)(command("space.rename", { name: "p" }), ws(d).revision, context);
   const stop = S(d);
   await Promise.all([save, stop]);
-  expect(await run(Session.load("stop-save-race"), e)).toBeNull();
+  expect(await run(SessionStore.load("stop-save-race"), e)).toBeNull();
 });
 
 test("the daemon rejects a stale client instead of rebasing its command", async () => {
@@ -235,11 +235,11 @@ test("the daemon rejects a stale client instead of rebasing its command", async 
 test("the control plane exposes no unrevisioned spawn or kill procedure", async () => {
   const e = await env();
   const d = await open("no-bypass", e);
-  const before = await Effect.runPromise(d.liveAgents());
+  const before = await Effect.runPromise(d.liveSessions());
   // The group is the whole surface: anything outside it is refused by the
   // server before a handler exists to run it.
   await expect(ctl(d.id, e, (c) => (c as any).Spawn({}))).rejects.toThrow();
-  expect(await Effect.runPromise(d.liveAgents())).toEqual(before);
+  expect(await Effect.runPromise(d.liveSessions())).toEqual(before);
   await S(d);
 });
 
@@ -260,7 +260,7 @@ test("a persistence failure compensates a spawned PTY and installs no generation
   const e = await env();
   const d = await open("persist-transaction", e);
   const before = ws(d);
-  const beforeLive = await Effect.runPromise(d.liveAgents());
+  const beforeLive = await Effect.runPromise(d.liveSessions());
   const p = await paths("persist-transaction", e);
   await rm(p.backup, { recursive: true, force: true });
   await mkdir(p.backup);
@@ -269,7 +269,7 @@ test("a persistence failure compensates a spawned PTY and installs no generation
     rwc(d)(command("pane.split", { axis: "row" }), before.revision, context),
   ).rejects.toThrow();
   expect(ws(d)).toEqual(before);
-  expect(await Effect.runPromise(d.liveAgents())).toEqual(beforeLive);
+  expect(await Effect.runPromise(d.liveSessions())).toEqual(beforeLive);
   await S(d);
 });
 
@@ -288,7 +288,7 @@ test("a fast prepared exit cannot deadlock failed-write compensation", async () 
         await Bun.sleep(50);
         throw new Error("injected candidate failure");
       }
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
@@ -306,7 +306,7 @@ test("a fast prepared exit cannot deadlock failed-write compensation", async () 
   ).rejects.toThrow("injected candidate failure");
   expect(await Bun.file(marker).text()).toBe("exited");
   expect(ws(daemon)).toEqual(before);
-  expect(await Effect.runPromise(daemon.liveAgents())).toHaveLength(1);
+  expect(await Effect.runPromise(daemon.liveSessions())).toHaveLength(1);
   rejectCandidate = false;
   await S(daemon);
 });
@@ -332,13 +332,13 @@ test("a prepared session is absent from status and subscribers until its model i
         saving();
         await gate;
       }
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
   const p = await paths("private-prepare", e);
   const subscriber = await AttachClient.connect({ path: p.attach, client: "subscriber" });
-  const beforeLive = await Effect.runPromise(daemon.liveAgents());
+  const beforeLive = await Effect.runPromise(daemon.liveSessions());
   const model = Effect.runPromise(Stream.runHead(subscriber.workspace()));
   const commandRun = rwc(daemon)(command("pane.split", { axis: "row" }), ws(daemon).revision, {
     ...context,
@@ -352,7 +352,7 @@ test("a prepared session is absent from status and subscribers until its model i
   const terminal = Effect.runPromise(Stream.runHead(subscriber.stream(preparedId)));
   const live = await status(daemon, e);
   expect(live.agents).toEqual([...beforeLive]);
-  expect(await Effect.runPromise(daemon.liveAgents())).toEqual(beforeLive);
+  expect(await Effect.runPromise(daemon.liveSessions())).toEqual(beforeLive);
   expect(
     await Promise.race([model.then(() => "published"), Bun.sleep(30).then(() => "private")]),
   ).toBe("private");
@@ -380,7 +380,7 @@ test("a one-shot reversible write failure does not poison the next command", asy
         fail = false;
         throw new Error("one-shot candidate failure");
       }
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
@@ -403,7 +403,7 @@ test("a rejected candidate never reaches current or backup state", async () => {
         space.windows.flatMap((window: any) => window.agents),
       );
       if (rejectCandidate && agents.length > 1) throw new Error("injected candidate failure");
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
@@ -451,7 +451,7 @@ test("attachment metadata cannot overwrite a newer workspace generation", async 
         detachStarted();
         await detachGate;
       }
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
@@ -471,7 +471,7 @@ test("attachment metadata cannot overwrite a newer workspace generation", async 
   releaseAttach();
   const client = await attaching;
   await rename;
-  const saved = await run(Session.load("attach-write-race"), e);
+  const saved = await run(SessionStore.load("attach-write-race"), e);
   expect(saved?.attached).toBe(true);
   expect(saved?.spaces[0]?.name).toBe("winner");
   blockAttach = false;
@@ -485,7 +485,7 @@ test("attachment metadata cannot overwrite a newer workspace generation", async 
   );
   releaseDetach();
   await secondRename;
-  const detached = await run(Session.load("attach-write-race"), e);
+  const detached = await run(SessionStore.load("attach-write-race"), e);
   expect(detached?.attached).toBe(false);
   expect(detached?.spaces[0]?.name).toBe("newest");
   blockDetach = false;
@@ -502,17 +502,17 @@ test("a destructive commit retries its single durable write after process comple
         failed = true;
         throw new Error("transient destructive write failure");
       }
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
   armed = true;
   const agent = ws(daemon).spaces[0]!.windows[0]!.agents[0]!.id;
-  await rwc(daemon)(command("agent.kill", { agent }), ws(daemon).revision, context);
+  await rwc(daemon)(command("session.kill", { session: agent }), ws(daemon).revision, context);
   expect(failed).toBe(true);
   expect(ws(daemon).spaces).toHaveLength(0);
   await Bun.sleep(100);
-  expect(await run(Session.readLease("kill-write-retry"), e)).toBeNull();
+  expect(await run(SessionStore.readLease("kill-write-retry"), e)).toBeNull();
 });
 
 test("stop interrupts and joins a never-settling destructive persistence operation", async () => {
@@ -535,13 +535,13 @@ test("stop interrupts and joins a never-settling destructive persistence operati
           ),
         );
       }
-      return Session.save(state);
+      return SessionStore.save(state);
     },
   });
   // started by startDaemon;
   const marker = join(e.HOME!, "held-destructive-pid");
   await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "held-destructive",
       cmd: ["sh", "-c", `printf '%s' $$ > ${marker}; sleep 30`],
       cols: 80,
@@ -551,7 +551,7 @@ test("stop interrupts and joins a never-settling destructive persistence operati
   const heldPid = await waitForPid(marker);
   armed = true;
   const agent = ws(daemon).spaces[0]!.windows[0]!.agents[0]!.id;
-  const mutation = rwc(daemon)(command("agent.kill", { agent }), ws(daemon).revision, context);
+  const mutation = rwc(daemon)(command("session.kill", { session: agent }), ws(daemon).revision, context);
   void mutation.catch(() => {});
   await saveStarted;
   const started = Date.now();
@@ -564,8 +564,8 @@ test("stop interrupts and joins a never-settling destructive persistence operati
   expect(Date.now() - started).toBeLessThan(1_500);
   expect(cancelled).toBe(true);
   await expect(mutation).rejects.toThrow();
-  expect(await Effect.runPromise(daemon.liveAgents())).toEqual([]);
-  expect(await run(Session.load("kill-save-cancel"), e)).toBeNull();
+  expect(await Effect.runPromise(daemon.liveSessions())).toEqual([]);
+  expect(await run(SessionStore.load("kill-save-cancel"), e)).toBeNull();
   await expectProcessGone(heldPid);
 });
 
@@ -573,11 +573,11 @@ test("the first heartbeat waits one interval after the startup lease write", asy
   const e = await env();
   const daemon = await open("heartbeat-first-fire", e);
   // started by startDaemon;
-  const initial = await run(Session.readLease("heartbeat-first-fire"), e);
+  const initial = await run(SessionStore.readLease("heartbeat-first-fire"), e);
   expect(initial).not.toBeNull();
 
   await Bun.sleep(700);
-  expect((await run(Session.readLease("heartbeat-first-fire"), e))?.heartbeatAt).toBe(
+  expect((await run(SessionStore.readLease("heartbeat-first-fire"), e))?.heartbeatAt).toBe(
     initial!.heartbeatAt,
   );
 
@@ -585,7 +585,7 @@ test("the first heartbeat waits one interval after the startup lease write", asy
   let heartbeatAt = initial!.heartbeatAt;
   while (heartbeatAt === initial!.heartbeatAt && Date.now() < firstBeatBy) {
     await Bun.sleep(10);
-    heartbeatAt = (await run(Session.readLease("heartbeat-first-fire"), e))!.heartbeatAt;
+    heartbeatAt = (await run(SessionStore.readLease("heartbeat-first-fire"), e))!.heartbeatAt;
   }
   expect(heartbeatAt).toBeGreaterThan(initial!.heartbeatAt);
   await C(daemon);
@@ -608,11 +608,11 @@ test("a heartbeat queued behind attachment persistence publishes the committed a
         attachStarted();
         await attachGate;
       }
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
-  const initial = await run(Session.readLease("heartbeat-attach-race"), e);
+  const initial = await run(SessionStore.readLease("heartbeat-attach-race"), e);
   const p = await paths("heartbeat-attach-race", e);
   const connecting = AttachClient.connect({ path: p.attach, client: "lease-race" });
   await started;
@@ -622,10 +622,10 @@ test("a heartbeat queued behind attachment persistence publishes the committed a
   releaseAttach();
   const client = await connecting;
   const heartbeatBy = Date.now() + 1_000;
-  let lease = await run(Session.readLease("heartbeat-attach-race"), e);
+  let lease = await run(SessionStore.readLease("heartbeat-attach-race"), e);
   while (lease?.heartbeatAt === initial?.heartbeatAt && Date.now() < heartbeatBy) {
     await Bun.sleep(10);
-    lease = await run(Session.readLease("heartbeat-attach-race"), e);
+    lease = await run(SessionStore.readLease("heartbeat-attach-race"), e);
   }
   expect(lease?.attachments).toEqual([expect.objectContaining({ client: "lease-race" })]);
 
@@ -674,7 +674,7 @@ test("close bounds and interrupts its final persistence obligation", async () =>
               }),
             ),
           )
-        : Session.save(state),
+        : SessionStore.save(state),
   });
   // started by startDaemon;
   armed = true;
@@ -701,7 +701,7 @@ test("a transient natural-exit write failure retries before making the exit visi
         failed = true;
         throw new Error("transient disk failure");
       }
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
@@ -734,7 +734,7 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
         .flatMap((window: any) => window.agents)
         .some((agent: any) => agent.exited);
       if (exited && unavailable) throw new Error("disk offline");
-      await run(Session.save(state), e);
+      await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
@@ -793,13 +793,13 @@ test("close interrupts and joins a never-settling natural-exit persistence opera
           ),
         );
       }
-      return Session.save(state);
+      return SessionStore.save(state);
     },
   });
   // started by startDaemon;
   const marker = join(e.HOME!, "held-natural-pid");
   await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "held-natural",
       cmd: ["sh", "-c", `printf '%s' $$ > ${marker}; sleep 30`],
       cols: 80,
@@ -822,7 +822,7 @@ test("close interrupts and joins a never-settling natural-exit persistence opera
   ]);
   expect(Date.now() - started).toBeLessThan(1_500);
   expect(cancelled).toBe(true);
-  expect(await Effect.runPromise(daemon.liveAgents())).toEqual([]);
+  expect(await Effect.runPromise(daemon.liveSessions())).toEqual([]);
   await expectProcessGone(heldPid);
 });
 
@@ -832,16 +832,16 @@ test("a failed destructive action leaves durable state untouched", async () => {
   // started by startDaemon;
   const before = ws(daemon);
   const agent = before.spaces[0]!.windows[0]!.agents[0]!.id;
-  const kill = daemon.killAgent.bind(daemon);
-  daemon.killAgent = () => Effect.fail(new DaemonError({ message: "injected kill failure" }));
+  const kill = daemon.killSession.bind(daemon);
+  daemon.killSession = () => Effect.fail(new DaemonError({ message: "injected kill failure" }));
   await expect(
-    rwc(daemon)(command("agent.kill", { agent }), before.revision, context),
+    rwc(daemon)(command("session.kill", { session: agent }), before.revision, context),
   ).rejects.toThrow("injected kill failure");
   expect(ws(daemon)).toEqual(before);
   expect(
-    (await run(Session.load("kill-transaction"), e))?.spaces[0]?.windows[0]?.agents[0]?.id,
+    (await run(SessionStore.load("kill-transaction"), e))?.spaces[0]?.windows[0]?.agents[0]?.id,
   ).toBe(agent);
-  daemon.killAgent = kill;
+  daemon.killSession = kill;
   await S(daemon);
 });
 
@@ -853,7 +853,7 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     focus: "pane-restore",
   });
   await run(
-    Session.save({
+    SessionStore.save({
       version: 1,
       id: "restore-failure",
       createdAt: 1,
@@ -891,7 +891,7 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
   );
   const daemon = await run(
     makeDaemonService("restore-failure", {
-      spawnAgent: (spec) =>
+    spawnSession: (spec) =>
         spec.id === "agent-restore"
           ? Effect.fail(new DaemonError({ message: "injected restore spawn failure" }))
           : Effect.die(new DaemonError({ message: "unexpected restore spawn" })),
@@ -899,7 +899,7 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     e,
   );
   await Effect.runPromise(daemon.start);
-  const saved = await run(Session.load("restore-failure"), e);
+  const saved = await run(SessionStore.load("restore-failure"), e);
   expect(JSON.stringify(saved)).not.toContain("agent-restore");
   await S(daemon);
 });
@@ -910,7 +910,7 @@ test("a blocked daemon write does not starve timers, RPC, or shutdown", async ()
   // started by startDaemon;
   try {
     const pty = await Effect.runPromise(
-      daemon.spawnAgent({
+      daemon.spawnSession({
         id: "blocked",
         cmd: ["sh", "-c", "sleep 30"],
         cols: 80,
@@ -931,7 +931,7 @@ test("a blocked daemon write does not starve timers, RPC, or shutdown", async ()
     expect(response.attached).toBe(false);
     await Bun.sleep(40);
     expect(timerRan).toBe(true);
-    await Effect.runPromise(daemon.killAgent("blocked"));
+    await Effect.runPromise(daemon.killSession("blocked"));
     const writeResult = await Promise.race([
       write.then(
         () => "succeeded",
@@ -957,7 +957,7 @@ test("daemon shutdown is bounded when session children trap termination signals"
   // started by startDaemon;
   const marker = join(e.HOME!, "children");
   await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "trapped",
       cmd: [
         "bash",

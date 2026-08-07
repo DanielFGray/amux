@@ -9,7 +9,7 @@ import { applyOptions, resolveOptions } from "./options.ts";
 import { rollUp, nextBlockedAfter } from "./space.ts";
 import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
-import type { Agent, AgentState } from "./agent.ts";
+import type { Session, AgentState } from "./agent.ts";
 
 const SHELL = ["bash"];
 
@@ -44,7 +44,7 @@ async function fakeAgent(name: string): Promise<string> {
 }
 
 /** Poll until the agent's screen scan reports blocked; fail loudly otherwise. */
-async function waitForBlocked(agent: Agent, tries = 20): Promise<void> {
+async function waitForBlocked(agent: Session, tries = 20): Promise<void> {
   for (let i = 0; i < tries; i++) {
     if (agent.state === "blocked") return;
     await Bun.sleep(100);
@@ -53,7 +53,7 @@ async function waitForBlocked(agent: Agent, tries = 20): Promise<void> {
 }
 
 /** Spawn a detached fake agent and put a confirmation prompt on its screen. */
-async function blockedAgent(window: Window, name: string): Promise<Agent> {
+async function blockedAgent(window: Window, name: string): Promise<Session> {
   const agent = run(window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]));
   await Bun.sleep(300);
   agent.write("printf 'Do you want to proceed?\\n'\n");
@@ -62,7 +62,7 @@ async function blockedAgent(window: Window, name: string): Promise<Agent> {
 }
 
 test("nextBlockedAfter walks the blocked set in a stable order, wrapping", () => {
-  const stub = (state: AgentState) => ({ state }) as unknown as Agent;
+  const stub = (state: AgentState) => ({ state }) as unknown as Session;
   const idle = stub("idle");
   const blocked1 = stub("blocked");
   const blocked2 = stub("blocked");
@@ -111,12 +111,12 @@ test("nextBlocked activates the agent's space and window, walking in a stable or
     expect(s.spaces.nextBlocked()).toBe(blockedB);
     expect(s.spaces.active).toBe(otherB);
     expect(otherB.active).toBe(winB);
-    expect(winB.focused?.agent).toBe(blockedB);
+    expect(winB.focused?.session).toBe(blockedB);
 
     expect(s.spaces.nextBlocked()).toBe(blockedC);
     expect(s.spaces.active).toBe(otherC);
     expect(otherC.active).toBe(winC);
-    expect(winC.focused?.agent).toBe(blockedC);
+    expect(winC.focused?.session).toBe(blockedC);
 
     expect(s.spaces.nextBlocked()).toBe(blockedB);
     expect(s.spaces.active).toBe(otherB);
@@ -139,7 +139,7 @@ test("a detached blocked agent is revealed and focused by nextBlocked", async ()
     expect(s.spaces.nextBlocked()).toBe(blocked);
     expect(blocked.viewers).toBe(1);
     expect(win.detached).not.toContain(blocked);
-    expect(win.focused?.agent).toBe(blocked);
+    expect(win.focused?.session).toBe(blocked);
     expect(s.spaces.active).toBe(other);
   } finally {
     await s.dispose();
@@ -180,7 +180,7 @@ test("killing an agent removes it and leaves the others alone", async () => {
   try {
     const killme = run(s.win.spawn("killme", ["sleep", "30"]));
     const keep = run(s.win.spawn("keep", ["sleep", "30"]));
-    await runAsync(s.win.killAgent(killme));
+    await runAsync(s.win.killSession(killme));
     expect(s.win.agents).not.toContain(killme);
     expect(s.win.agents).toContain(keep);
   } finally {
@@ -200,14 +200,14 @@ test("killing an agent reports it the way an exit does", async () => {
   const s = await setup();
   try {
     const killme = run(s.win.spawn("killme", ["sleep", "30"]));
-    const seen: { agent: Agent; remaining: number }[] = [];
+    const seen: { agent: Session; remaining: number }[] = [];
     s.space.onAgentExit = (agent, window) =>
       // Captured from inside the handler: the cascade decides what to do by
       // asking what is left, so the removal must already have happened.
       seen.push({ agent, remaining: window.agents.length });
 
     const before = s.win.agents.length;
-    await runAsync(s.win.killAgent(killme));
+    await runAsync(s.win.killSession(killme));
 
     expect(seen.map((s) => s.agent)).toEqual([killme]);
     expect(seen[0]!.remaining).toBe(before - 1);
@@ -274,7 +274,7 @@ test("joining a pane preserves its live agent and transfers ownership", async ()
   try {
     const source = s.win;
     const pane = source.panes[0]!;
-    const agent = pane.agent;
+    const agent = pane.session;
     const destination = run(s.space.newWindow());
     run(destination.init("destination"));
 
@@ -311,7 +311,7 @@ test("a space of plain shells is idle, and an exited one still reads as idle", a
 });
 
 test("a roll-up reports the most urgent state present, and 'done' never wins", () => {
-  const stub = (state: AgentState) => ({ state }) as unknown as Agent;
+  const stub = (state: AgentState) => ({ state }) as unknown as Session;
   expect(rollUp([])).toBe("done");
   expect(rollUp([stub("idle"), stub("working"), stub("done")])).toBe("working");
   expect(rollUp([stub("working"), stub("blocked")])).toBe("blocked");

@@ -9,7 +9,7 @@ export const MAX_RPC_BYTES = 1_048_576;
 export const MAX_ATTACH_FRAME_BYTES = 8 * 1_048_576;
 export const MAX_SPACES = 256;
 export const MAX_WINDOWS = 2_048;
-export const MAX_AGENTS = 4_096;
+export const MAX_SESSIONS = 4_096;
 
 export function isTerminalSize(cols: unknown, rows: unknown): cols is number {
   return (

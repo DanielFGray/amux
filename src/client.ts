@@ -2,13 +2,13 @@ import { spawn } from "node:child_process";
 import { Effect, Option, Runtime, Schedule, Scope, Stream, Schema as S } from "effect";
 import { FileSystem } from "@effect/platform";
 import { AttachClient } from "./attach.ts";
-import { daemonBackend, type DaemonSession, type SpawnBackend } from "./backend.ts";
+import { daemonBackend, type DaemonSession, type SessionBackendFactory } from "./backend.ts";
 import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { Command } from "./commands.ts";
 import {
   parseWorkspaceJson,
-  workspaceAgents,
+  workspaceSessions,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
@@ -16,7 +16,7 @@ import {
   processAlive,
   optionalEnvVar,
   sessionPaths,
-  Session,
+  SessionStore,
   SessionIdError,
   type SessionState,
 } from "./session.ts";
@@ -47,7 +47,7 @@ export interface SessionClientShape extends DaemonSession {
     command: Command,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<WorkspaceSnapshot, ControlError | SessionClientError, never>;
-  readonly backend: () => SpawnBackend;
+  readonly backend: () => SessionBackendFactory;
   readonly close: () => void;
   readonly stop: () => Effect.Effect<void, ControlError, never>;
   /** tmux's buffer verbs, all server-side: the stack lives in the daemon
@@ -75,7 +75,7 @@ export const SessionClient = {
   ): Effect.Effect<
     SessionClientShape,
     ControlError | SessionClientError | SessionIdError,
-    Scope.Scope | Session | FileSystem.FileSystem
+    Scope.Scope | SessionStore | FileSystem.FileSystem
   > {
     return make(id, options);
   },
@@ -87,7 +87,7 @@ const make = (
 ): Effect.Effect<
   SessionClientShape,
   ControlError | SessionClientError | SessionIdError,
-  Scope.Scope | Session | FileSystem.FileSystem
+  Scope.Scope | SessionStore | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     if (options.autostart !== false) yield* ensureDaemon(id);
@@ -135,7 +135,7 @@ const make = (
         workspace = next;
         const live = service.live as Set<string>;
         live.clear();
-        for (const { agent } of workspaceAgents(next)) if (!agent.exited) live.add(agent.id);
+        for (const { agent } of workspaceSessions(next)) if (!agent.exited) live.add(agent.id);
       }
       return workspace;
     };
@@ -197,9 +197,9 @@ const make = (
 
 export function daemonAlive(
   id: string,
-): Effect.Effect<boolean, never, Session | FileSystem.FileSystem> {
+): Effect.Effect<boolean, never, SessionStore | FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const lease = yield* Session.readLease(id).pipe(Effect.orElseSucceed(() => null));
+    const lease = yield* SessionStore.readLease(id).pipe(Effect.orElseSucceed(() => null));
     if (!lease || !processAlive(lease.pid)) return false;
     return yield* controlCall(id, (control) => control.Ping()).pipe(
       Effect.as(true),
@@ -210,7 +210,7 @@ export function daemonAlive(
 
 export function ensureDaemon(
   id: string,
-): Effect.Effect<void, SessionClientError, Session | FileSystem.FileSystem> {
+): Effect.Effect<void, SessionClientError, SessionStore | FileSystem.FileSystem> {
   return Effect.gen(function* () {
     if (yield* daemonAlive(id)) return;
     const home = yield* optionalEnvVar("HOME");

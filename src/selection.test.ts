@@ -82,7 +82,7 @@ test("drag selection copies through the pane and survives pane borders", async (
   const space = run(spaces.create("test", process.cwd()));
   const window = run(space.newWindow());
   const pane = run(window.init());
-  pane.agent.term.write(bytes("drag"));
+  pane.session.term.write(bytes("drag"));
   await t.renderOnce();
   await t.mockMouse.drag(pane.x + 1, pane.y + 1, pane.x + 4, pane.y + 1);
   expect(copied).toEqual(["drag"]);

@@ -12,7 +12,7 @@ import { loadConfig } from "./config.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { applyOptions, resolveOptions } from "./options.ts";
 import { SessionClient } from "./client.ts";
-import { isSessionId, Session } from "./session.ts";
+import { isSessionId, SessionStore } from "./session.ts";
 import { createApp } from "./app.tsx";
 
 /**
@@ -81,7 +81,7 @@ const program = Effect.gen(function* () {
 BunRuntime.runMain(
   program.pipe(
     Effect.scoped,
-    Effect.provide(Session.Default),
+    Effect.provide(SessionStore.Default),
     Effect.provide(BunFileSystem.layer),
   ),
 );

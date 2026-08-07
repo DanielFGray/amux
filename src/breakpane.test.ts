@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { Divider } from "./divider.ts";
 import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
-import type { Agent } from "./agent.ts";
+import type { Session } from "./agent.ts";
 import type { TerminalPane } from "./pane.ts";
 import { RenderState } from "./ghostty.ts";
 
@@ -24,7 +24,7 @@ async function setup() {
 
 /** The agent's on-screen text, so a move's effect on terminal state is read
  *  from the terminal itself rather than from our bookkeeping. */
-function screenTail(agent: Agent): string {
+function screenTail(agent: Session): string {
   const state = new RenderState();
   state.update(agent.term);
   const text = state.tailText(8).join("\n");
@@ -36,7 +36,7 @@ test("break moves the pane and its running agent into a new window, unchanged", 
   const s = await setup();
   try {
     const right = run(s.win.splitSpawn("row"))!;
-    const agent = right.agent;
+    const agent = right.session;
     agent.write("echo breakpane-marker-42\n");
     await Bun.sleep(300);
     expect(screenTail(agent)).toContain("breakpane-marker-42");
@@ -45,7 +45,7 @@ test("break moves the pane and its running agent into a new window, unchanged", 
 
     // The same Agent — same process, same PTY, same terminal — not a relaunch.
     expect(win2.panes).toEqual([right]);
-    expect(right.agent).toBe(agent);
+    expect(right.session).toBe(agent);
     expect(agent.exited).toBe(false);
     expect(screenTail(agent)).toContain("breakpane-marker-42");
 
@@ -143,7 +143,7 @@ test("a detached agent left in the source window survives the break", async () =
 test("a moved agent's exit closes its pane in the NEW window and reports it", async () => {
   const s = await setup();
   try {
-    const exits: { agent: Agent; window: Window }[] = [];
+    const exits: { agent: Session; window: Window }[] = [];
     s.space.onAgentExit = (agent, window) => {
       exits.push({ agent, window });
     };
@@ -154,7 +154,7 @@ test("a moved agent's exit closes its pane in the NEW window and reports it", as
       run(s.win.spawn("shortlived", ["sh", "-c", "sleep 1; echo bye"])),
     )!;
     const win2 = (await runAsync(s.space.breakPane(pane)))!;
-    const agent = pane.agent;
+    const agent = pane.session;
 
     await Bun.sleep(2200);
     expect(exits).toHaveLength(1);
@@ -212,9 +212,9 @@ test("adopting into a zoomed window puts the hidden panes back on screen", async
     const other = (await runAsync(s.space.newWindow()))!;
     const moved = run(other.init())!;
     expect(other.detachPane(moved)).toBe(moved);
-    const scope = other.relinquishAgent(moved.agent)!;
+    const scope = other.relinquishSession(moved.session)!;
 
-    s.win.adopt(moved.agent, moved, scope);
+    s.win.adopt(moved.session, moved, scope);
 
     // The newcomer is hung straight off the root, so the zoom has to come down
     // with it — otherwise a and b would be left unmounted with no arrangement
@@ -258,7 +258,7 @@ test("break updates what the sidebar and the tab list would show", async () => {
   const s = await setup();
   try {
     const right = run(s.win.splitSpawn("row"))!;
-    const agent = right.agent;
+    const agent = right.session;
 
     const win2 = (await runAsync(s.space.breakPane(right)))!;
 

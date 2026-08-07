@@ -45,13 +45,13 @@ import {
   prune,
   type Layout,
 } from "./layout.ts";
-import type { SpawnBackend } from "./backend.ts";
-import type { Agent } from "./agent.ts";
+import type { SessionBackendFactory } from "./backend.ts";
+import type { Session } from "./agent.ts";
 import type { Window } from "./window.ts";
 import type { Space, SpaceSet } from "./space.ts";
 import {
   SESSION_VERSION,
-  type PersistedAgent,
+  type PersistedSession,
   type PersistedSpace,
   type PersistedWindow,
   type SessionState,
@@ -61,7 +61,7 @@ import {
  *  when the one recorded no longer parses. */
 const FALLBACK_PRESET = "tiled";
 
-export function snapshotAgent(agent: Agent): PersistedAgent {
+export function snapshotSessionEntry(agent: Session): PersistedSession {
   return {
     id: agent.id,
     name: agent.name,
@@ -88,7 +88,7 @@ export function snapshotWindow(window: Window): PersistedWindow {
   return {
     number: window.number,
     name: window.customName,
-    agents: window.agents.map(snapshotAgent),
+    agents: window.agents.map(snapshotSessionEntry),
     layout: encodeLayout(window.exportLayout()),
   };
 }
@@ -122,7 +122,7 @@ export function snapshotSession(spaces: SpaceSet, base: SessionState): SessionSt
 export interface RestoreOptions {
   /** Where restored agents get their processes. Defaults to a local PTY, the
    *  same as any other agent; a daemon-attached client passes its own. */
-  backend?: SpawnBackend;
+  backend?: SessionBackendFactory;
 }
 
 /**
@@ -180,7 +180,7 @@ export function restoreWindow(
   return Effect.gen(function* () {
     const window = yield* space.newWindow(saved.name ?? undefined, saved.number);
     for (const agent of saved.agents) {
-      yield* window.startAgent({
+      yield* window.startSession({
         id: agent.id,
         name: agent.name,
         kind: agent.kind,

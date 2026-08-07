@@ -18,7 +18,7 @@ import { Effect, Fiber, Mailbox, Stream } from "effect";
 import type { AttachClientShape } from "./attach.ts";
 import type { AgentState } from "./detect.ts";
 
-export interface AgentBackend {
+export interface SessionBackend {
   /** True once the stream is over: the process exited, or the attachment was
    *  lost, or it was never running to begin with. */
   readonly closed: boolean;
@@ -75,10 +75,10 @@ export interface BackendOptions {
 const OUTPUT_LIMIT = 1024;
 
 /** How an Agent obtains its backend. Swapping this is the whole point. */
-export type SpawnBackend = (opts: BackendOptions) => AgentBackend;
+export type SessionBackendFactory = (opts: BackendOptions) => SessionBackend;
 
 /** A PTY in this process — what every agent used before there was a choice. */
-export const localPty: SpawnBackend = (opts) => {
+export const localPty: SessionBackendFactory = (opts) => {
   const pty = spawnPty(opts.cmd, opts);
   return {
     get closed() {
@@ -137,7 +137,7 @@ export interface DaemonSession {
 export function daemonBackend(
   session: DaemonSession,
   live: ReadonlySet<string> = new Set(),
-): SpawnBackend {
+): SessionBackendFactory {
   return (opts) => {
     let closed = false;
     let detached = false;
@@ -271,7 +271,7 @@ export function daemonBackend(
  * starts nothing. Its screen is empty, because a session file is metadata and
  * never held the terminal's contents — see the note in snapshot.ts.
  */
-export function exitedBackend(exitCode: number | null): AgentBackend {
+export function exitedBackend(exitCode: number | null): SessionBackend {
   return {
     closed: true,
     detached: false,

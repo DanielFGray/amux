@@ -2,7 +2,7 @@ import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
 import { Effect } from "effect";
 
 import { startDaemon } from "./daemon.ts";
-import { Session } from "./session.ts";
+import { SessionStore } from "./session.ts";
 
 /**
  * The daemon process.
@@ -27,7 +27,7 @@ export function runDaemonMain(id?: string): void {
 
   BunRuntime.runMain(
     Effect.scoped(program).pipe(
-      Effect.provide(Session.Default),
+      Effect.provide(SessionStore.Default),
       Effect.provide(BunFileSystem.layer),
     ),
   );

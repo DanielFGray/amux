@@ -15,7 +15,7 @@ import {
   type CursorInfo,
 } from "./ghostty.ts";
 import { Effect, Exit, Scope } from "effect";
-import type { Agent } from "./agent.ts";
+import type { Session } from "./agent.ts";
 import { runtime } from "./options.ts";
 import { STATE_GLYPH } from "./detect.ts";
 import { captureRange } from "./shim.ts";
@@ -82,7 +82,7 @@ const OPENTUI_TO_GHOSTTY_BUTTON: Record<number, number> = {
  * agent keeps running.
  */
 export class TerminalPane extends Renderable {
-  readonly agent: Agent;
+  readonly session: Session;
   /** Owns this pane's FFI handles, so closing it frees them all — see the note
    *  on Agent's scope. A pane is destroyed from OpenTUI's tree rather than from
    *  an Effect, so the scope is closed by destroySelf rather than by a parent. */
@@ -118,10 +118,10 @@ export class TerminalPane extends Renderable {
   #selectionEnd: CellPoint | null = null;
   #selecting = false;
 
-  constructor(ctx: RenderContext, options: { id: string; agent: Agent } & Record<string, any>) {
+  constructor(ctx: RenderContext, options: { id: string; session: Session } & Record<string, any>) {
     super(ctx, options);
-    this.agent = options.agent;
-    this.agent.addViewer();
+    this.session = options.session;
+    this.session.addViewer();
     this.#sync();
   }
 
@@ -156,7 +156,7 @@ export class TerminalPane extends Renderable {
   }
 
   #sync() {
-    this.agent.resize(Math.max(1, this.width - this.#padX), Math.max(1, this.height - this.#padY));
+    this.session.resize(Math.max(1, this.width - this.#padX), Math.max(1, this.height - this.#padY));
   }
 
   /** Called by the workspace when the agent produces output. */
@@ -166,12 +166,12 @@ export class TerminalPane extends Renderable {
   }
 
   protected override onResize(width: number, height: number): void {
-    this.agent.resize(Math.max(1, width - this.#padX), Math.max(1, height - this.#padY));
+    this.session.resize(Math.max(1, width - this.#padX), Math.max(1, height - this.#padY));
     this.#haveCache = false;
   }
 
   write(data: string | Uint8Array) {
-    this.agent.write(data);
+    this.session.write(data);
     this.#haveCache = false;
   }
 
@@ -195,7 +195,7 @@ export class TerminalPane extends Renderable {
     if (event.type === "down") this.onFocusRequest?.(this);
     // On the border: focus only. Forwarding it would hand the child a click at
     // coordinates that are off its grid.
-    if (x < 0 || y < 0 || x >= this.agent.term.cols || y >= this.agent.term.rows) return;
+    if (x < 0 || y < 0 || x >= this.session.term.cols || y >= this.session.term.rows) return;
 
     const action =
       event.type === "down" || event.type === "scroll"
@@ -211,7 +211,7 @@ export class TerminalPane extends Renderable {
       button = OPENTUI_TO_GHOSTTY_BUTTON[event.button] ?? MouseButton.left;
     }
 
-    const seq = this.#mouse.encode(this.agent.term, x, y, action, button, event.modifiers);
+    const seq = this.#mouse.encode(this.session.term, x, y, action, button, event.modifiers);
 
     const point = this.#point(x, y);
     if (event.type === "down" && (event.modifiers.shift || !seq)) {
@@ -221,7 +221,7 @@ export class TerminalPane extends Renderable {
       this.#selecting = true;
       this.#selectionAnchor = point;
       this.#selectionEnd = point;
-      setSelection(this.agent.term.handle, point.x, point.y, point.x, point.y);
+      setSelection(this.session.term.handle, point.x, point.y, point.x, point.y);
       (
         this._ctx as unknown as { setCapturedRenderable?: (r: unknown) => void }
       ).setCapturedRenderable?.(this);
@@ -233,7 +233,7 @@ export class TerminalPane extends Renderable {
     if (this.#selecting && (event.type === "drag" || event.type === "move")) {
       this.#selectionEnd = point;
       const anchor = this.#selectionAnchor!;
-      setSelection(this.agent.term.handle, anchor.x, anchor.y, point.x, point.y);
+      setSelection(this.session.term.handle, anchor.x, anchor.y, point.x, point.y);
       this.invalidate();
       event.stopPropagation();
       return;
@@ -242,9 +242,9 @@ export class TerminalPane extends Renderable {
     if (this.#selecting && (event.type === "drag-end" || event.type === "up")) {
       this.#selectionEnd = point;
       const anchor = this.#selectionAnchor!;
-      setSelection(this.agent.term.handle, anchor.x, anchor.y, point.x, point.y);
+      setSelection(this.session.term.handle, anchor.x, anchor.y, point.x, point.y);
       if (anchor.x !== point.x || anchor.y !== point.y) this.#copySelection(anchor, point);
-      else clearSelection(this.agent.term.handle);
+      else clearSelection(this.session.term.handle);
       this.#selecting = false;
       this.#selectionAnchor = null;
       this.#selectionEnd = null;
@@ -257,7 +257,7 @@ export class TerminalPane extends Renderable {
     // does not, and there the wheel should walk our scrollback instead.
     if (!seq && event.type === "scroll") {
       const rows = runtime["behaviour.scrollRows"];
-      this.agent.scrollBy(event.scroll?.direction === "up" ? -rows : rows);
+      this.session.scrollBy(event.scroll?.direction === "up" ? -rows : rows);
       this.invalidate();
       event.stopPropagation();
       return;
@@ -268,24 +268,24 @@ export class TerminalPane extends Renderable {
       // rather than to a local selection. Whatever modal owns the pane now
       // (keyboard copy mode) must step out before the child gets the mouse.
       this.onCopyModeInterrupt?.();
-      this.agent.write(seq);
+      this.session.write(seq);
       this.#haveCache = false;
       event.stopPropagation();
     }
   }
 
   #point(x: number, y: number): CellPoint {
-    const rows = this.agent.term.scrollbar;
+    const rows = this.session.term.scrollbar;
     return {
-      x: Math.max(0, Math.min(this.agent.term.cols - 1, x)),
-      y: Math.max(0, Math.min(this.agent.term.rows - 1, y)) + rows.offset,
+      x: Math.max(0, Math.min(this.session.term.cols - 1, x)),
+      y: Math.max(0, Math.min(this.session.term.rows - 1, y)) + rows.offset,
     };
   }
 
   #copySelection(a: CellPoint, b: CellPoint) {
     const start = a.y < b.y || (a.y === b.y && a.x <= b.x) ? a : b;
     const end = start === a ? b : a;
-    const bytes = captureRange(this.agent.term.handle, {
+    const bytes = captureRange(this.session.term.handle, {
       startTag: 2,
       startX: start.x,
       startY: start.y,
@@ -314,7 +314,7 @@ export class TerminalPane extends Renderable {
     buffer.fillRect(this.x, this.y, this.width, this.height, DEFAULT_BG);
     this.#drawBorder(buffer);
 
-    this.#state.update(this.agent.term);
+    this.#state.update(this.session.term);
 
     // Idle panes — most panes, most frames — replay the cached display list
     // instead of walking the grid over FFI again.
@@ -349,7 +349,7 @@ export class TerminalPane extends Renderable {
     const y1 = this.y + this.height - 1;
 
     if (top) {
-      const title = this.agent.term.title;
+      const title = this.session.term.title;
       const titleWidth = cellWidth(title);
       if (title && runtime["appearance.gap"] && this.width >= titleWidth + 4) {
         if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
@@ -449,7 +449,7 @@ export class TerminalPane extends Renderable {
 
   protected override destroySelf(): void {
     // Closes the view only; the agent keeps running.
-    this.agent.removeViewer();
+    this.session.removeViewer();
     Effect.runFork(Scope.close(this.#scope, Exit.void));
     super.destroySelf();
   }

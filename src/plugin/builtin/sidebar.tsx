@@ -33,7 +33,7 @@ export const sidebarPlugin: PluginDefinition = {
                     number: row.windowNumber!,
                   }),
                 )
-              : ctx.panel.run(command("agent.reveal", { agent: row.agentId! }));
+              : ctx.panel.run(command("session.reveal", { session: row.agentId! }));
 
         Effect.runFork(
           effect.pipe(

@@ -63,12 +63,12 @@ test("pure rectangles are a fixed point of OpenTUI flex layout", async () => {
   window.applyLayout(
     makeLayout(
       split("row", [
-        { type: "pane", id: left.id, agent: left.agent.id, weight: 3 },
+        { type: "pane", id: left.id, agent: left.session.id, weight: 3 },
         split(
           "column",
           [
-            { type: "pane", id: top.id, agent: top.agent.id, weight: 2 },
-            { type: "pane", id: bottom.id, agent: bottom.agent.id, weight: 1 },
+            { type: "pane", id: top.id, agent: top.session.id, weight: 2 },
+            { type: "pane", id: bottom.id, agent: bottom.session.id, weight: 1 },
           ],
           5,
         ),

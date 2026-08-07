@@ -54,7 +54,7 @@ function computeDisplay(spaces: SpaceSet): SidebarDisplay {
   let index = 0;
   const active = spaces.active;
   const activeWin = spaces.activeWindow;
-  const focusedAgent = activeWin?.focused?.agent ?? null;
+  const focusedAgent = activeWin?.focused?.session ?? null;
 
   for (const space of spaces.spaces) {
     const isActiveSpace = space === active;

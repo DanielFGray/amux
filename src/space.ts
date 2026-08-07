@@ -1,7 +1,7 @@
 import { BoxRenderable, type RenderContext } from "@opentui/core";
 import { Context, Effect, Exit, Scope } from "effect";
 import { Window } from "./window.ts";
-import type { Agent, AgentState } from "./agent.ts";
+import type { Session, AgentState } from "./agent.ts";
 import type { TerminalPane } from "./pane.ts";
 import { RenderCtx, type WorkspaceEnv } from "./env.ts";
 import {
@@ -16,7 +16,7 @@ import {
   type SpaceState,
 } from "./space-model.ts";
 import type { WorkspaceSnapshot, WorkspaceSpace, WorkspaceWindow } from "./workspace.ts";
-import type { SpawnBackend } from "./backend.ts";
+import type { SessionBackendFactory } from "./backend.ts";
 import { layoutPanes } from "./layout.ts";
 
 let nextSpaceId = 0;
@@ -58,7 +58,7 @@ export class Space {
   #state: SpaceState = spaceState();
 
   onChange?: () => void;
-  onAgentExit?: (agent: Agent, window: Window, space: Space) => void;
+  onAgentExit?: (session: Session, window: Window, space: Space) => void;
   onCopy?: (text: string) => boolean | void;
   onCopyError?: (error: Error) => void;
 
@@ -93,7 +93,7 @@ export class Space {
   }
 
   /** Every agent across every window in this space. */
-  get agents(): Agent[] {
+  get agents(): Session[] {
     return this.#windows.flatMap((w) => [...w.agents]);
   }
 
@@ -297,7 +297,7 @@ export class Space {
 }
 
 /** Ranked by how much it wants your attention. Shared by spaces and windows. */
-export function rollUp(agents: readonly Agent[]): AgentState {
+export function rollUp(agents: readonly Session[]): AgentState {
   const RANK: Record<AgentState, number> = {
     blocked: 4,
     working: 3,
@@ -326,7 +326,7 @@ export function rollUp(agents: readonly Agent[]): AgentState {
  *
  * Returns null when no agent is blocked.
  */
-export function nextBlockedAfter(order: readonly Agent[], from: Agent | null): Agent | null {
+export function nextBlockedAfter(order: readonly Session[], from: Session | null): Session | null {
   const n = order.length;
   if (!n) return null;
   const start = from ? order.indexOf(from) + 1 : 0;
@@ -352,7 +352,7 @@ export class SpaceSet {
   #state: SpaceSetState = spaceSetState();
   #mounted: Window | null = null;
   onChange?: () => void;
-  onAgentExit?: (agent: Agent, window: Window, space: Space) => void;
+  onAgentExit?: (session: Session, window: Window, space: Space) => void;
   onCopy?: (text: string) => boolean | void;
   onCopyError?: (error: Error) => void;
 
@@ -389,7 +389,7 @@ export class SpaceSet {
   }
 
   /** Every agent across every space — what a global "N agents" count means. */
-  get allAgents(): Agent[] {
+  get allAgents(): Session[] {
     return this.#spaces.flatMap((s) => s.agents);
   }
 
@@ -442,8 +442,8 @@ export class SpaceSet {
     this.activate(this.#spaces[(i + step + this.#spaces.length) % this.#spaces.length]!);
   }
 
-  find(agent: Agent): Space | null {
-    return this.#spaces.find((s) => s.agents.includes(agent)) ?? null;
+  find(session: Session): Space | null {
+    return this.#spaces.find((s) => s.agents.includes(session)) ?? null;
   }
 
   /**
@@ -458,7 +458,7 @@ export class SpaceSet {
    * focused) even when no pane shows it. Returns the agent, or null when
    * nothing is blocked.
    */
-  nextBlocked(from: Agent | null = this.activeWindow?.focused?.agent ?? null): Agent | null {
+  nextBlocked(from: Session | null = this.activeWindow?.focused?.session ?? null): Session | null {
     const target = nextBlockedAfter(this.allAgents, from);
     if (!target) return null;
     const space = this.find(target);
@@ -541,7 +541,7 @@ export class SpaceSet {
 export function projectWorkspace(
   target: SpaceSet,
   source: WorkspaceSnapshot,
-  backend: SpawnBackend,
+  backend: SessionBackendFactory,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     for (const savedSpace of source.spaces) {
@@ -584,7 +584,7 @@ export function projectWorkspace(
 function projectSpace(
   space: Space,
   source: WorkspaceSpace,
-  backend: SpawnBackend,
+  backend: SessionBackendFactory,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     for (const window of [...space.windows]) {
@@ -605,16 +605,16 @@ function projectSpace(
 function projectWindow(
   window: Window,
   source: WorkspaceWindow,
-  backend: SpawnBackend,
+  backend: SessionBackendFactory,
 ): Effect.Effect<void> {
   return Effect.gen(function* () {
     for (const agent of [...window.agents]) {
       if (!source.agents.some((candidate) => candidate.id === agent.id))
-        yield* window.removeProjectedAgent(agent);
+        yield* window.removeProjectedSession(agent);
     }
     for (const saved of source.agents) {
       if (window.agents.some((candidate) => candidate.id === saved.id)) continue;
-      yield* window.startAgent({
+      yield* window.startSession({
         id: saved.id,
         name: saved.name,
         cmd: saved.cmd,

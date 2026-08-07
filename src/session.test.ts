@@ -8,7 +8,7 @@ import { ConfigProvider, Effect } from "effect";
 import {
   isSessionId,
   parseSessionState,
-  Session,
+  SessionStore,
   sessionPaths,
   sessionRoot,
 } from "./session.ts";
@@ -30,12 +30,12 @@ function state(id: string) {
 }
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(Session.Default),
+      Effect.provide(SessionStore.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
@@ -43,10 +43,10 @@ const run = <A, E>(
 
 test("session writes are atomic and recover the previous generation", async () => {
   const e = await env();
-  await run(Session.save(state("one")), e);
+  await run(SessionStore.save(state("one")), e);
   const next = { ...state("one"), attached: true };
-  await run(Session.save(next), e);
-  expect((await run(Session.load("one"), e))?.attached).toBe(true);
+  await run(SessionStore.save(next), e);
+  expect((await run(SessionStore.load("one"), e))?.attached).toBe(true);
   expect(
     JSON.parse(await readFile((await run(sessionPaths("one"), e)).backup, "utf8")).attached,
   ).toBe(false);
@@ -54,17 +54,17 @@ test("session writes are atomic and recover the previous generation", async () =
 
 test("a truncated current file falls back to the previous generation", async () => {
   const e = await env();
-  await run(Session.save(state("recover")), e);
-  await run(Session.save({ ...state("recover"), attached: true }), e);
+  await run(SessionStore.save(state("recover")), e);
+  await run(SessionStore.save({ ...state("recover"), attached: true }), e);
   await Bun.write((await run(sessionPaths("recover"), e)).state, '{"version":1');
-  expect((await run(Session.load("recover"), e))?.attached).toBe(false);
+  expect((await run(SessionStore.load("recover"), e))?.attached).toBe(false);
 });
 
 test("stale cleanup removes dead leases but never live leases", async () => {
   const e = await env();
-  await run(Session.save(state("dead")), e);
+  await run(SessionStore.save(state("dead")), e);
   await run(
-    Session.writeLease({
+    SessionStore.writeLease({
       version: 1,
       session: "dead",
       pid: 999999,
@@ -74,9 +74,9 @@ test("stale cleanup removes dead leases but never live leases", async () => {
     }),
     e,
   );
-  await run(Session.save(state("live")), e);
+  await run(SessionStore.save(state("live")), e);
   await run(
-    Session.writeLease({
+    SessionStore.writeLease({
       version: 1,
       session: "live",
       pid: process.pid,
@@ -86,9 +86,9 @@ test("stale cleanup removes dead leases but never live leases", async () => {
     }),
     e,
   );
-  expect(await run(Session.cleanupStale, e)).toEqual(["dead"]);
-  expect(await run(Session.load("dead"), e)).toBeNull();
-  expect(await run(Session.load("live"), e)).not.toBeNull();
+  expect(await run(SessionStore.cleanupStale, e)).toEqual(["dead"]);
+  expect(await run(SessionStore.load("dead"), e)).toBeNull();
+  expect(await run(SessionStore.load("live"), e)).not.toBeNull();
 });
 
 test("lease files are schema-validated before ownership checks", async () => {
@@ -107,7 +107,7 @@ test("lease files are schema-validated before ownership checks", async () => {
       heartbeatAt: 1,
     }),
   );
-  expect(await run(Session.readLease("lease-validation"), e)).toBeNull();
+  expect(await run(SessionStore.readLease("lease-validation"), e)).toBeNull();
 
   await Bun.write(
     paths.lease,
@@ -120,10 +120,10 @@ test("lease files are schema-validated before ownership checks", async () => {
       heartbeatAt: 1,
     }),
   );
-  expect(await run(Session.readLease("lease-validation"), e)).toBeNull();
+  expect(await run(SessionStore.readLease("lease-validation"), e)).toBeNull();
 
   await run(
-    Session.writeLease({
+    SessionStore.writeLease({
       version: 1,
       session: "lease-validation",
       pid: process.pid,
@@ -136,7 +136,7 @@ test("lease files are schema-validated before ownership checks", async () => {
     }),
     e,
   );
-  expect(await run(Session.readLease("lease-validation"), e)).toMatchObject({
+  expect(await run(SessionStore.readLease("lease-validation"), e)).toMatchObject({
     session: "lease-validation",
     attachedSince: 3,
     attachments: [{ client: "client-a" }],
@@ -206,23 +206,23 @@ test("invalid session ids are rejected before any path is built", async () => {
 
 test("no session helper touches the filesystem for a traversal id", async () => {
   const e = await env();
-  await run(Session.save(state("ok")), e);
+  await run(SessionStore.save(state("ok")), e);
   for (const id of ["..", "../escape", "a/../../victim"]) {
-    await expect(run(Session.load(id), e)).rejects.toThrow();
-    await expect(run(Session.remove(id), e)).rejects.toThrow();
-    await expect(run(Session.exists(id), e)).resolves.toBe(false);
+    await expect(run(SessionStore.load(id), e)).rejects.toThrow();
+    await expect(run(SessionStore.remove(id), e)).rejects.toThrow();
+    await expect(run(SessionStore.exists(id), e)).resolves.toBe(false);
   }
   // The valid session is untouched.
-  expect(await run(Session.load("ok"), e)).not.toBeNull();
+  expect(await run(SessionStore.load("ok"), e)).not.toBeNull();
 });
 
 test("traversal ids cannot read or delete files outside the sessions root", async () => {
   const e = await env();
   const victim = join(e.HOME!, "victim.json");
   await Bun.write(victim, "secret");
-  await expect(run(Session.save({ ...state("../..") }), e)).rejects.toThrow();
-  await expect(run(Session.remove(".."), e)).rejects.toThrow();
-  await expect(run(Session.remove("../.."), e)).rejects.toThrow();
+  await expect(run(SessionStore.save({ ...state("../..") }), e)).rejects.toThrow();
+  await expect(run(SessionStore.remove(".."), e)).rejects.toThrow();
+  await expect(run(SessionStore.remove("../.."), e)).rejects.toThrow();
   expect(await Bun.file(victim).exists()).toBe(true);
   expect(await Bun.file(victim).text()).toBe("secret");
 });
@@ -232,8 +232,8 @@ test("cleanup ignores entries that are not valid session ids", async () => {
   const root = await run(sessionRoot(), e);
   await mkdir(join(root, "dead"), { recursive: true });
   await mkdir(join(root, "weird name"), { recursive: true });
-  expect(await run(Session.cleanupStale, e)).toEqual(["dead"]);
-  expect(await run(Session.exists("dead"), e)).toBe(false);
+  expect(await run(SessionStore.cleanupStale, e)).toEqual(["dead"]);
+  expect(await run(SessionStore.exists("dead"), e)).toBe(false);
   await expect(stat(join(root, "weird name"))).resolves.toBeDefined();
 });
 

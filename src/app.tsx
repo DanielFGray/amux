@@ -421,7 +421,7 @@ function buildApp(
     let index = 0;
     const active = spaces.active;
     const activeWin = spaces.activeWindow;
-    const focusedAgent = activeWin?.focused?.agent ?? null;
+    const focusedAgent = activeWin?.focused?.session ?? null;
 
     for (const space of spaces.spaces) {
       const isActiveSpace = space === active;
@@ -727,7 +727,7 @@ function buildApp(
    * being revealed or otherwise touched.
    */
   function captureTarget(): CaptureTarget | null {
-    const focused = spaces.activeWindow?.focused?.agent ?? null;
+    const focused = spaces.activeWindow?.focused?.session ?? null;
     return pickCaptureTarget(
       focused ? { term: focused.term, describe: () => focused.title || "pane" } : null,
       null,
@@ -804,7 +804,7 @@ function buildApp(
       onPaste: (name) => {
         const pane = spaces.activeWindow?.focused;
         if (pane) {
-          void Effect.runPromise(session.pasteBuffer(name, pane.agent.id)).catch((error) =>
+          void Effect.runPromise(session.pasteBuffer(name, pane.session.id)).catch((error) =>
             console.error(`could not paste buffer '${name}': ${String(error)}`),
           );
         }
@@ -838,7 +838,7 @@ function buildApp(
    */
   function sendKeysTarget(): SendTarget | null {
     const focused = spaces.activeWindow?.focused ?? null;
-    if (focused) return { write() {}, describe: () => focused.agent.title || "pane" };
+    if (focused) return { write() {}, describe: () => focused.session.title || "pane" };
     return null;
   }
 
@@ -960,7 +960,7 @@ function buildApp(
         const pane = spaces.activeWindow?.focused;
         if (!pane) return yield* new CommandError({ message: "no pane to paste into" });
         yield* session
-          .pasteBuffer(name, pane.agent.id)
+          .pasteBuffer(name, pane.session.id)
           .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
       }),
     "buffer.list": () =>
@@ -1000,10 +1000,10 @@ function buildApp(
     "agent.new": (value) => runWorkspace(value),
     "agent.steer": (value) => runWorkspace(value),
     "agent.interrupt": (value) => runWorkspace(value),
-    "agent.kill": (value) => runWorkspace(value),
-    "agent.restart": (value) => runWorkspace(value),
-    "agent.reveal": (value) => runWorkspace(value),
-    "agent.next-blocked": (value) => runWorkspace(value),
+    "session.kill": (value) => runWorkspace(value),
+    "session.restart": (value) => runWorkspace(value),
+    "session.reveal": (value) => runWorkspace(value),
+    "session.next-blocked": (value) => runWorkspace(value),
 
     "space.new": (value) => runWorkspace(value),
     "space.select": (value) => runWorkspace(value),
@@ -1258,13 +1258,13 @@ function buildApp(
     // Agents.
     // shift+k: plain ^a k is directional pane focus, and killing an agent is not
     // something to put one keystroke away from "move up" anyway.
-    bind("agent.kill", "<leader>shift+k", command("agent.kill"), {
+    bind("session.kill", "<leader>shift+k", command("session.kill"), {
       desc: "stop the focused agent",
     }),
-    bind("agent.restart", "<leader>shift+r", command("agent.restart"), {
+    bind("session.restart", "<leader>shift+r", command("session.restart"), {
       desc: "restart the focused agent",
     }),
-    bind("agent.next-blocked", "<leader>a", command("agent.next-blocked"), {
+    bind("session.next-blocked", "<leader>a", command("session.next-blocked"), {
       desc: "jump to the next blocked agent",
     }),
 
@@ -1564,11 +1564,11 @@ function buildApp(
         region: "right",
         anchor: "center",
         title: "transcript",
-        visible: () => spaces.activeWindow?.focused?.agent.kind === "agent",
+        visible: () => spaces.activeWindow?.focused?.session.kind === "agent",
         size: () => 42,
         component: () => (
           <Transcript
-            agent={spaces.activeWindow?.focused?.agent ?? null}
+            agent={spaces.activeWindow?.focused?.session ?? null}
             events={session.events}
             width={42}
           />

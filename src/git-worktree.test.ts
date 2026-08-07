@@ -6,7 +6,7 @@ import { ConfigProvider, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
-import { Session } from "./session.ts";
+import { SessionStore } from "./session.ts";
 import { Command, command } from "./commands.ts";
 import {
   gitWorktreeAdd,
@@ -29,12 +29,12 @@ async function env() {
 }
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(Session.Default),
+      Effect.provide(SessionStore.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.withConfigProvider(ConfigProvider.fromJson(e)),
     ),

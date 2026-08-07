@@ -21,17 +21,17 @@ import {
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
-import { Session } from "./session.ts";
+import { SessionStore } from "./session.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     Effect.scoped(effect).pipe(
-      Effect.provide(Session.Default),
+      Effect.provide(SessionStore.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
@@ -93,7 +93,7 @@ const text = (frames: AttachFrame[]) =>
 test("a session outlives the client that was watching it", async () => {
   const daemon = await started("survives");
   const pty = await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: "agent-1",
       cmd: ["sh", "-c", "sleep 0.4; echo still-here"],
       cols: 80,
@@ -120,7 +120,7 @@ test("a session outlives the client that was watching it", async () => {
 
 test("hello is honoured alongside frames batched behind it in one write", async () => {
   const daemon = await started("batched");
-  await Effect.runPromise(daemon.spawnAgent({ id: "agent-1", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(daemon.spawnSession({ id: "agent-1", cmd: ["cat"], cols: 80, rows: 24 }));
 
   const attached = await client(
     daemon.paths.attach,
@@ -216,7 +216,7 @@ test("an input naming a dead session is ignored rather than dropping the attachm
 test("stopping the daemon closes the attach socket and its sessions", async () => {
   const daemon = await started("teardown");
   const pty = await Effect.runPromise(
-    daemon.spawnAgent({ id: "agent-1", cmd: ["sleep", "30"], cols: 80, rows: 24 }),
+    daemon.spawnSession({ id: "agent-1", cmd: ["sleep", "30"], cols: 80, rows: 24 }),
   );
   const path = daemon.paths.attach;
 
@@ -245,7 +245,7 @@ test("closing a daemon persists that the preserved session is detached", async (
 
   const home = dirs[dirs.length - 1]!;
   expect(
-    (await run(Session.load("close-detached"), { HOME: home, XDG_STATE_HOME: join(home, "state") }))
+    (await run(SessionStore.load("close-detached"), { HOME: home, XDG_STATE_HOME: join(home, "state") }))
       ?.attached,
   ).toBe(false);
 });

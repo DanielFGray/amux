@@ -239,7 +239,7 @@ export class CopyMode {
   }
 
   get term() {
-    return this.#pane!.agent.term;
+    return this.#pane!.session.term;
   }
 
   /**
@@ -254,8 +254,8 @@ export class CopyMode {
     this.exit();
     this.#pane = pane;
     pane.onCopyModeInterrupt = () => this.exit();
-    scrollViewport(pane.agent.term.handle, ScrollTo.delta, -1);
-    const s = pane.agent.term.scrollbar;
+    scrollViewport(pane.session.term.handle, ScrollTo.delta, -1);
+    const s = pane.session.term.scrollbar;
     this.#cursor = { x: 0, y: Math.min(s.offset, Math.max(0, s.total - 1)) };
     this.#anchor = null;
     this.#search = null;
@@ -271,7 +271,7 @@ export class CopyMode {
     if (!this.#pane) return;
     this.#pane.onCopyModeInterrupt = null;
     try {
-      clearSelection(this.#pane.agent.term.handle);
+      clearSelection(this.#pane.session.term.handle);
     } catch {
       // The terminal may already be gone under us (the pane was closed).
     }
@@ -366,7 +366,7 @@ export class CopyMode {
     const b = this.#cursor;
     const start = a.y < b.y || (a.y === b.y && a.x <= b.x) ? a : b;
     const end = start === a ? b : a;
-    const bytes = captureRange(pane.agent.term.handle, {
+    const bytes = captureRange(pane.session.term.handle, {
       startTag: 2,
       startX: start.x,
       startY: start.y,

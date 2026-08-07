@@ -8,7 +8,7 @@ import type { Options, OptionName, OptionValue } from "../options.ts";
  * A single row of display data for the sidebar tree.
  *
  * Carries only plain values derived from the app's live projections; a plugin
- * never references Space, Window, Agent, TerminalPane, or any FFI handle.
+  * never references Space, Window, Session, TerminalPane, or any FFI handle.
  */
 export interface SidebarDisplayRow {
   readonly kind: "space" | "branch" | "window" | "agent";
@@ -46,8 +46,8 @@ export interface SidebarDisplay {
  * The read-model projection a panel receives: plain data, no live domain objects.
  *
  * Every field is derived from the daemon-owned workspace and the client's option
- * store, so a panel never holds a reference to SpaceSet, Space, Window, Agent,
- * TerminalPane, or any FFI handle. The snapshot carries `PersistedAgent`,
+  * store, so a panel never holds a reference to SpaceSet, Space, Window, Session,
+  * TerminalPane, or any FFI handle. The snapshot carries `PersistedSession`,
  * `Layout`, `WindowState`, and `SpaceSetState` — the full authoritative
  * immutable model the daemon and the control socket already speak.
  */

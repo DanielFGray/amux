@@ -13,7 +13,7 @@
 
 import { Context } from "effect";
 import type { RenderContext } from "@opentui/core";
-import { localPty, type SpawnBackend } from "./backend.ts";
+import { localPty, type SessionBackendFactory } from "./backend.ts";
 
 /** The renderer everything in a workspace draws into. No default: there is no
  *  sensible stand-in for a renderer, and a missing one should not be silently
@@ -40,7 +40,7 @@ export class Shell extends Context.Reference<Shell>()("Shell", {
  * it concerns rather than a default anything inherits.
  */
 export class Backend extends Context.Reference<Backend>()("Backend", {
-  defaultValue: (): SpawnBackend => localPty,
+  defaultValue: (): SessionBackendFactory => localPty,
 }) {}
 
 /** Everything a workspace reads out of its context. */
@@ -57,7 +57,7 @@ export type WorkspaceEnv = RenderCtx | Shell | Backend;
  */
 export const workspaceEnv = (
   ctx: RenderContext,
-  options: { shell?: string[]; backend?: SpawnBackend } = {},
+  options: { shell?: string[]; backend?: SessionBackendFactory } = {},
 ): Context.Context<WorkspaceEnv> => {
   let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>;
   if (options.shell) env = Context.add(env, Shell, options.shell);

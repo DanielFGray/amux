@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { controlCall, type ControlClient } from "./control-client.ts";
-import { isSessionId, Session } from "./session.ts";
+import { isSessionId, SessionStore } from "./session.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
 
 /** `amux status <id>` / `amux stop <id>`: a one-shot RPC against a live daemon. */
@@ -19,7 +19,7 @@ export async function runSessionCli(argv: string[]): Promise<number> {
   const call = <A, E>(use: (control: ControlClient) => Effect.Effect<A, E>) =>
     Effect.runPromise(
       controlCall(id, use).pipe(
-        Effect.provide(Session.Default),
+        Effect.provide(SessionStore.Default),
         Effect.provide(BunFileSystem.layer),
       ),
     );

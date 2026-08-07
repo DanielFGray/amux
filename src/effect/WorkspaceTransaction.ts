@@ -14,14 +14,14 @@ import {
 import { DaemonModel } from "./DaemonModel.ts";
 import {
   applyWorkspaceCommand,
-  markAgentExited,
+  markSessionExited,
   workspaceSession,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
   type WorkspaceSpace,
 } from "../workspace.ts";
 import { COMMAND_META, type Command } from "../commands.ts";
-import type { PersistedAgent, SessionState } from "../session.ts";
+import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { layoutPanes } from "../layout.ts";
@@ -35,7 +35,7 @@ export class WorkspaceTransactionError extends S.TaggedError<WorkspaceTransactio
 ) {}
 
 interface SessionOps {
-  readonly prepare: (agent: PersistedAgent) => Effect.Effect<PreparedSession>;
+  readonly prepare: (session: PersistedSession) => Effect.Effect<PreparedSession>;
   readonly kill: (id: string) => Effect.Effect<void>;
   readonly write: (id: string, data: string) => Effect.Effect<void>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void>;
@@ -128,7 +128,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
           Effect.gen(function* () {
             const cur2 = yield* model.get;
             if (cur2.closing) return;
-            const next = markAgentExited(cur2.workspace, sid, code);
+            const next = markSessionExited(cur2.workspace, sid, code);
             if (next === cur2.workspace) return;
             const newState = workspaceSession(next, cur2.state);
             yield* persistence.persistUntilSuccess(newState, `natural exit for '${sid}'`);

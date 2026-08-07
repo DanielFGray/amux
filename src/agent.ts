@@ -1,6 +1,6 @@
 import { Clock, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { Terminal, RenderState } from "./ghostty.ts";
-import { localPty, exitedBackend, type AgentBackend, type SpawnBackend } from "./backend.ts";
+import { localPty, exitedBackend, type SessionBackend, type SessionBackendFactory } from "./backend.ts";
 import { scrollViewport, ScrollTo } from "./shim.ts";
 import {
   splitActivity,
@@ -29,7 +29,7 @@ const BLOCKED_SCAN_ROWS = 20;
  *  agent is a human-paced event. */
 const AGENT_POLL_MS = 500;
 
-export interface AgentOptions {
+export interface SessionOptions {
   /** Native sessions use semantic worker frames; omitted means a foreign PTY. */
   kind?: "pty" | "agent";
   /** Display name before the child reports an OSC title. Defaults to the
@@ -48,7 +48,7 @@ export interface AgentOptions {
    */
   id?: string;
   /** Where the process comes from. Defaults to a PTY in this process. */
-  backend?: SpawnBackend;
+  backend?: SessionBackendFactory;
   /**
    * Restore an agent whose process is already over.
    *
@@ -80,7 +80,7 @@ function reserveAgentId(id: string) {
  * the seam is what lets a daemon-owned PTY and a restored tombstone be the same
  * kind of thing to everything above.
  */
-export class Agent {
+export class Session {
   readonly id: string;
   readonly kind: "pty" | "agent";
   readonly name: string;
@@ -89,7 +89,7 @@ export class Agent {
   readonly term: Terminal;
   readonly startedAt = Date.now();
 
-  #backend: AgentBackend;
+  #backend: SessionBackend;
   #exited = false;
   #detached = false;
   #exitCode: number | null = null;
@@ -121,13 +121,13 @@ export class Agent {
   #disposed = false;
 
   /** Bumped whenever output arrives, so views can invalidate caches. */
-  onOutput?: (agent: Agent) => void;
-  onExit?: (agent: Agent) => void;
+  onOutput?: (agent: Session) => void;
+  onExit?: (agent: Session) => void;
   /** Fired when scrolled state changes (scrollback entered or exited), so the
    *  sidebar's ▲ indicator stays accurate. */
-  onScroll?: (agent: Agent) => void;
+  onScroll?: (agent: Session) => void;
 
-  constructor(opts: AgentOptions) {
+  constructor(opts: SessionOptions) {
     this.id = opts.id ?? `agent-${nextAgentId++}`;
     this.kind = opts.kind ?? "pty";
     if (opts.id) reserveAgentId(opts.id);
@@ -181,9 +181,9 @@ export class Agent {
    * The lifetime-correct way to make one. `new Agent` still works and still
    * needs dispose(); this is what the call sites become as they convert.
    */
-  static make(opts: AgentOptions): Effect.Effect<Agent, never, Scope.Scope> {
+  static make(opts: SessionOptions): Effect.Effect<Session, never, Scope.Scope> {
     return Effect.acquireRelease(
-      Effect.sync(() => new Agent(opts)),
+      Effect.sync(() => new Session(opts)),
       (agent) => agent.release(),
     );
   }

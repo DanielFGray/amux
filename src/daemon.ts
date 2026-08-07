@@ -38,7 +38,7 @@ import type { ManagedSession, PtyError, SessionSpec } from "./effect/SessionRegi
 import {
   isSessionId,
   processAlive,
-  Session,
+  SessionStore,
   optionalEnvVar,
   sessionPaths,
   worktreesRoot,
@@ -51,7 +51,7 @@ import {
 } from "./session.ts";
 import { command, COMMAND_META, type Command } from "./commands.ts";
 import {
-  markAgentExited,
+  markSessionExited,
   parseWorkspaceCommandContext,
   workspaceFromSession,
   workspaceSession,
@@ -77,9 +77,9 @@ export interface SessionDaemonOptions {
   ) => Effect.Effect<
     void,
     SessionIdError | SessionStateError | SessionSizeError | PlatformError | DaemonError,
-    Session
+    SessionStore
   >;
-  readonly spawnAgent?: (
+  readonly spawnSession?: (
     spec: SessionSpec,
   ) => Effect.Effect<ManagedSession, PtyError | DaemonError>;
 }
@@ -95,9 +95,9 @@ export interface SessionDaemonService {
     expectedRevision: number,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<WorkspaceSnapshot, DaemonError>;
-  readonly spawnAgent: (spec: SessionSpec) => Effect.Effect<ManagedSession, DaemonError>;
-  killAgent: (id: string) => Effect.Effect<void, DaemonError>;
-  readonly liveAgents: () => Effect.Effect<readonly string[], never>;
+  readonly spawnSession: (spec: SessionSpec) => Effect.Effect<ManagedSession, DaemonError>;
+  killSession: (id: string) => Effect.Effect<void, DaemonError>;
+  readonly liveSessions: () => Effect.Effect<readonly string[], never>;
   readonly setBuffer: (n: string | undefined, d: string) => Effect.Effect<string, never>;
   readonly pasteBuffer: (
     n: string | undefined,
@@ -127,7 +127,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const paths = yield* sessionPaths(id);
   const daemonWorktreesRoot = yield* worktreesRoot();
   const defaultShell = Option.getOrElse(yield* optionalEnvVar("SHELL"), () => "bash");
-  const session = yield* Session;
+  const session = yield* SessionStore;
   const fs = yield* FileSystem.FileSystem;
 
   yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
@@ -204,7 +204,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   };
 
   const persist = options.saveState
-    ? (s: SessionState) => options.saveState!(s).pipe(Effect.provideService(Session, session))
+    ? (s: SessionState) => options.saveState!(s).pipe(Effect.provideService(SessionStore, session))
     : (s: SessionState) => session.save(s);
 
   const attachInfo = (): Effect.Effect<
@@ -273,7 +273,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     WorkspaceTransaction.Default.pipe(
       Layer.provide(Layer.succeed(DaemonModel, model)),
       Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
-      Layer.provide(makeSessionOps(hostRef, (id) => killAgent(id))),
+      Layer.provide(makeSessionOps(hostRef, (id) => killSession(id))),
       Layer.provide(makeWorktreeOps()),
       Layer.provide(
         Layer.succeed(WorkspaceTransactionLifecycle, {
@@ -307,13 +307,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     yield* transaction.onSessionExit(sid, code);
   });
 
-  let spawnAgent = (spec: SessionSpec): Effect.Effect<ManagedSession, DaemonError> =>
-    (options.spawnAgent ? options.spawnAgent(spec) : requireHost().spawn(spec)).pipe(
+  let spawnSession = (spec: SessionSpec): Effect.Effect<ManagedSession, DaemonError> =>
+    (options.spawnSession ? options.spawnSession(spec) : requireHost().spawn(spec)).pipe(
       Effect.mapError((e) => new DaemonError({ message: describe(e) })),
     );
-  let killAgent = (agentId: string): Effect.Effect<void, DaemonError> =>
+  let killSession = (sessionId: string): Effect.Effect<void, DaemonError> =>
     requireHost()
-      .kill(agentId)
+      .kill(sessionId)
       .pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
   let closeWhenEmpty: Effect.Effect<void> = Effect.void;
 
@@ -373,7 +373,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             for (const w of space.windows)
               for (const a of w.agents) {
                 if (!a.exited) {
-                  next = markAgentExited(next, a.id, null);
+                  next = markSessionExited(next, a.id, null);
                   changed = true;
                 }
               }
@@ -383,7 +383,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         for (const w of space.windows) {
           for (const a of w.agents) {
             if (a.exited) continue;
-            yield* spawnAgent({
+            yield* spawnSession({
               kind: a.kind,
               id: a.id,
               cmd: a.cmd,
@@ -394,7 +394,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               rows: a.rows,
             }).pipe(
               Effect.catchAll(() => {
-                next = markAgentExited(next, a.id, null);
+                next = markSessionExited(next, a.id, null);
                 changed = true;
                 return Effect.void;
               }),
@@ -572,7 +572,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           const cur = yield* model.get;
           const obligation = cur.durableObligations.values().next().value as string | undefined;
           const degraded = obligation ?? cur.heartbeatError ?? undefined;
-          const live = yield* liveAgents();
+          const live = yield* liveSessions();
           return {
             attached: cur.state.attached,
             ...(yield* attachTimes()),
@@ -588,7 +588,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     // serving this very request, so the stop runs on a detached fiber.
     Stop: () =>
       guard(
-        Effect.forkDaemon(Effect.provideService(stop, Session, session).pipe(Effect.ignore)).pipe(
+        Effect.forkDaemon(Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore)).pipe(
           Effect.asVoid,
         ),
       ),
@@ -639,7 +639,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           if (meta.target === "server") {
             if (value._tag === "app.quit") {
               yield* Effect.forkDaemon(
-                Effect.provideService(stop, Session, session).pipe(Effect.ignore),
+                Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore),
               );
               return {};
             }
@@ -688,9 +688,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       ),
   });
 
-  const spawnAgentService = spawnAgent;
+  const spawnSessionService = spawnSession;
 
-  const liveAgents = (): Effect.Effect<readonly string[], never> =>
+  const liveSessions = (): Effect.Effect<readonly string[], never> =>
     host ? host.live : Effect.succeed([]);
 
   const setBuffer = (n: string | undefined, d: string): Effect.Effect<string, never> =>
@@ -723,14 +723,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     stop,
     close,
     runWorkspaceCommand,
-    spawnAgent: spawnAgentService,
-    get killAgent() {
-      return killAgent;
+    spawnSession: spawnSessionService,
+    get killSession() {
+      return killSession;
     },
-    set killAgent(value) {
-      killAgent = value;
+    set killSession(value) {
+      killSession = value;
     },
-    liveAgents,
+    liveSessions,
     setBuffer,
     pasteBuffer,
     listBuffers,

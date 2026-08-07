@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { Effect, Cause } from "effect";
 import {
   applyWorkspaceCommand,
-  markAgentExited,
+  markSessionExited,
   parseWorkspace,
   parseWorkspaceCommandContext,
   workspaceFromSession,
@@ -132,7 +132,7 @@ test("a natural exit reveals a surviving detached agent", () => {
     exited: false,
     exitCode: null,
   });
-  const exited = markAgentExited(run(workspaceFromSession(saved)), "agent-a", 0);
+  const exited = markSessionExited(run(workspaceFromSession(saved)), "agent-a", 0);
   const window = exited.spaces[0]!.windows[0]!;
   expect(window.layout.root).toMatchObject({ type: "pane", agent: "agent-b" });
   expect(window.state.focus).toBe(window.layout.focus ?? null);
@@ -575,7 +575,7 @@ test("agent.reveal creates a pane for an unrevealed agent", () => {
   const adopted = run(workspaceFromSession(s));
   const result = applyWorkspaceCommand(
     adopted,
-    command("agent.reveal", { agent: "agent-b" }),
+    command("session.reveal", { session: "agent-b" }),
     context,
   );
   expect(result.changed).toBe(true);
@@ -590,7 +590,7 @@ test("agent.reveal on an already revealed agent just focuses it", () => {
   const adopted = run(workspaceFromSession(twoPaneSession()));
   const result = applyWorkspaceCommand(
     adopted,
-    command("agent.reveal", { agent: "agent-b" }),
+    command("session.reveal", { session: "agent-b" }),
     context,
   );
   expect(result.changed).toBe(true);
@@ -620,7 +620,7 @@ test("agent.next-blocked jumps to the next blocked agent", () => {
     '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1}]},"focus":"pane-a"}';
   const adopted = run(workspaceFromSession(s));
   const ctx = { ...context, blockedAgents: ["agent-a", "agent-b"] };
-  const result = applyWorkspaceCommand(adopted, command("agent.next-blocked"), ctx);
+  const result = applyWorkspaceCommand(adopted, command("session.next-blocked"), ctx);
   expect(result.changed).toBe(true);
   expect(result.snapshot.spaces[0]!.windows[0]!.state.focus).toBe("pane-b");
 });
@@ -643,7 +643,7 @@ test("agent.kill reveals a surviving live agent when the window becomes empty", 
   const adopted = run(workspaceFromSession(s));
   const result = applyWorkspaceCommand(
     adopted,
-    command("agent.kill", { agent: "agent-a" }),
+    command("session.kill", { session: "agent-a" }),
     context,
   );
   expect(result.changed).toBe(true);
@@ -687,7 +687,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
   agent.exitCode = 17;
   const result = applyWorkspaceCommand(
     adopted,
-    command("agent.restart", { agent: "agent-b" }),
+    command("session.restart", { session: "agent-b" }),
     context,
   );
 

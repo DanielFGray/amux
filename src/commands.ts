@@ -102,7 +102,7 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
  */
 const Space = { space: S.optional(S.String) };
 const Window = { ...Space, window: S.optional(S.Int) };
-const Agent = { agent: S.optional(S.String) };
+const SessionTarget = { session: S.optional(S.String) };
 
 const Axis = S.Literal("row", "column");
 const Direction = S.Literal("left", "right", "up", "down");
@@ -364,20 +364,20 @@ const WindowSynchronize = define(
 );
 
 // Agents.
-const AgentKill = define("agent.kill", Agent, {
-  desc: "stop an agent",
-  group: "agents",
+const SessionKill = define("session.kill", SessionTarget, {
+  desc: "stop a session",
+  group: "sessions",
   target: "workspace",
   exposure: "agent",
 });
 const AgentSteer = define(
   "agent.steer",
-  { ...Agent, message: S.String },
+  { ...SessionTarget, message: S.String },
   { desc: "send a message to an agent", group: "agents", target: "workspace", exposure: "human" },
 );
 const AgentInterrupt = define(
   "agent.interrupt",
-  { ...Agent, reason: S.optional(S.String) },
+  { ...SessionTarget, reason: S.optional(S.String) },
   { desc: "interrupt an agent turn", group: "agents", target: "workspace", exposure: "human" },
 );
 const AgentNew = define(
@@ -385,23 +385,23 @@ const AgentNew = define(
   { prompt: S.String },
   { desc: "start a native coding agent", group: "agents", target: "workspace", exposure: "human" },
 );
-const AgentRestart = define("agent.restart", Agent, {
-  desc: "restart an exited agent",
-  group: "agents",
+const SessionRestart = define("session.restart", SessionTarget, {
+  desc: "restart an exited session",
+  group: "sessions",
   target: "workspace",
   exposure: "agent",
 });
-const AgentReveal = define(
-  "agent.reveal",
-  { agent: S.String },
-  { desc: "show and focus an agent", group: "agents", target: "workspace", exposure: "agent" },
+const SessionReveal = define(
+  "session.reveal",
+  { session: S.String },
+  { desc: "show and focus a session", group: "sessions", target: "workspace", exposure: "agent" },
 );
-const AgentNextBlocked = define(
-  "agent.next-blocked",
+const SessionNextBlocked = define(
+  "session.next-blocked",
   {},
   {
-    desc: "select the next blocked agent",
-    group: "agents",
+    desc: "select the next blocked session",
+    group: "sessions",
     target: "workspace",
     exposure: "agent",
   },
@@ -544,10 +544,10 @@ export const COMMAND_DEFS = [
   AgentNew,
   AgentSteer,
   AgentInterrupt,
-  AgentKill,
-  AgentRestart,
-  AgentReveal,
-  AgentNextBlocked,
+  SessionKill,
+  SessionRestart,
+  SessionReveal,
+  SessionNextBlocked,
   SpaceNew,
   SpaceSelect,
   SpaceRename,
@@ -753,10 +753,10 @@ export const Commands = {
   WindowNextLayout,
   WindowSelectLayout,
   WindowSynchronize,
-  AgentKill,
-  AgentRestart,
-  AgentReveal,
-  AgentNextBlocked,
+  SessionKill,
+  SessionRestart,
+  SessionReveal,
+  SessionNextBlocked,
   SpaceNew,
   SpaceSelect,
   SpaceRename,

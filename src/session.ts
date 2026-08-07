@@ -5,7 +5,7 @@ import type { PlatformError } from "@effect/platform/Error";
 import { Clock, Config, Context, Effect, Exit, Option, Schema as S } from "effect";
 import { decodeLayout, layoutPanes } from "./layout.ts";
 import {
-  MAX_AGENTS,
+  MAX_SESSIONS,
   MAX_LAYOUT_BYTES,
   MAX_SESSION_BYTES,
   MAX_SPACES,
@@ -77,7 +77,7 @@ export function isSessionId(id: string): boolean {
   return true;
 }
 
-export interface PersistedAgent {
+export interface PersistedSession {
   id: string;
   name: string;
   kind?: "pty" | "agent";
@@ -92,7 +92,7 @@ export interface PersistedAgent {
 export interface PersistedWindow {
   number: number;
   name: string | null;
-  agents: PersistedAgent[];
+  agents: PersistedSession[];
   /**
    * The split arrangement, as an encoded layout string (see layout.ts).
    *
@@ -163,7 +163,7 @@ const SessionIdSchema = S.String.pipe(
 const TerminalDimension = S.Int.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1_000));
 const LayoutMetadataSchema = S.Struct({ focus: S.optional(S.Unknown) });
 
-const PersistedAgentSchema = S.Struct({
+const PersistedSessionSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
   kind: S.optional(S.Literal("pty", "agent")),
@@ -182,7 +182,7 @@ const PersistedAgentSchema = S.Struct({
 const PersistedWindowSchema = S.Struct({
   number: PositiveInt,
   name: S.NullOr(S.String),
-  agents: S.Array(PersistedAgentSchema),
+  agents: S.Array(PersistedSessionSchema),
   layout: S.optional(S.NullOr(S.String)),
 });
 
@@ -314,7 +314,7 @@ export function parseSessionState(
           return yield* invalidWindow;
         numbers.add(candidate.number);
         agentCount += candidate.agents.length;
-        if (agentCount > MAX_AGENTS) return yield* tooManyAgents;
+        if (agentCount > MAX_SESSIONS) return yield* tooManyAgents;
         const owned = new Map<string, boolean>();
         for (const entry of candidate.agents) {
           if (owned.has(entry.id)) return yield* invalidAgent;
@@ -396,7 +396,7 @@ const jsonFile = <A, I>(path: string, schema: S.Schema<A, I>) =>
     return S.decodeUnknownOption(S.parseJson(schema))(text);
   });
 
-export class Session extends Effect.Service<Session>()("Session", {
+export class SessionStore extends Effect.Service<SessionStore>()("Session", {
   accessors: true,
   effect: Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

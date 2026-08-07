@@ -54,7 +54,8 @@ Surviving vocabulary (the attach protocol was renamed off `agent`): a
 _session_ is a daemon-owned backend instance — a supervised PTY today, an LLM
 coding-agent session later — and every attach-frame field named `session`
 identifies one; a _pane_ is a view of a session in a layout; _agent_ means an
-LLM coding agent, never the supervised PTY.
+LLM coding agent, never the supervised PTY. Session lifecycle commands use the
+`session.*` namespace; `agent.*` is reserved for LLM interaction.
 
 The daemon migration uses Effect at the ownership boundary. `SessionRegistry.ts`
 owns scoped backend acquisition and release, `AttachProtocol.ts` and `AttachHub.ts`

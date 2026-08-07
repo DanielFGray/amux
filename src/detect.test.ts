@@ -4,7 +4,7 @@ import { mkdtemp, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitActivity, looksBlocked, identifyAgent } from "./detect.ts";
-import { Agent } from "./agent.ts";
+import { Session } from "./agent.ts";
 
 test("a leading braille spinner marks the agent working and is stripped from the title", () => {
   for (const frame of ["⠋", "⠙", "⠹", "⠿"]) {
@@ -83,7 +83,7 @@ async function fakeAgent(name: string): Promise<string> {
 test("a plain shell is idle whatever it is running", async () => {
   // The old behaviour reported any foreground process as "working", so opening
   // nvim in a pane put a spinner next to it. Only agents get a state now.
-  using agent = new Agent({ name: "t", cmd: ["bash", "--norc", "--noprofile"] });
+  using agent = new Session({ name: "t", cmd: ["bash", "--norc", "--noprofile"] });
   await Bun.sleep(400);
   expect(agent.state).toBe("idle");
   agent.write("sleep 3\n");
@@ -95,7 +95,7 @@ test("a plain shell is idle whatever it is running", async () => {
 });
 
 test("a blocked prompt on an agent's screen reads as blocked", async () => {
-  using agent = new Agent({
+  using agent = new Session({
     name: "t",
     cmd: [await fakeAgent("claude"), "--norc", "--noprofile"],
   });
@@ -108,7 +108,7 @@ test("a blocked prompt on an agent's screen reads as blocked", async () => {
 
 test("an agent started from a shell is picked up from the foreground process", async () => {
   const claude = await fakeAgent("claude");
-  using agent = new Agent({ name: "t", cmd: ["bash", "--norc", "--noprofile"] });
+  using agent = new Session({ name: "t", cmd: ["bash", "--norc", "--noprofile"] });
   await Bun.sleep(300);
   expect(agent.agentKind).toBe(null);
   agent.write(`${claude} --norc --noprofile\n`);
@@ -117,7 +117,7 @@ test("an agent started from a shell is picked up from the foreground process", a
 });
 
 test("an exited agent is done regardless of what is left on screen", async () => {
-  using agent = new Agent({ name: "t", cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"] });
+  using agent = new Session({ name: "t", cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"] });
   await Bun.sleep(500);
   expect(agent.state).toBe("done");
 });

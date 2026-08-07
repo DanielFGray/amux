@@ -1,14 +1,14 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { Effect, Fiber, Schema as S, Stream, type Stream as StreamType } from "effect";
-import type { Agent } from "../agent.ts";
+import type { Session } from "../agent.ts";
 import { appendTranscriptFrame, serializeTranscript, type TranscriptBlock } from "../transcript.ts";
 import type { DaemonEventPayload } from "../effect/EventBus.ts";
 import { AgentFrame } from "../effect/AttachProtocol.ts";
 import { theme } from "./theme.ts";
 
 export interface TranscriptProps {
-  agent: Agent | null;
+  agent: Session | null;
   events: StreamType.Stream<DaemonEventPayload, unknown>;
   width: number;
 }

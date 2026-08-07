@@ -17,7 +17,7 @@ import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { controlCall, connectControl, type ControlClient } from "./control-client.ts";
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
-import { Session, sessionPaths } from "./session.ts";
+import { SessionStore, sessionPaths } from "./session.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
 
 const dirs: string[] = [];
@@ -28,12 +28,12 @@ afterEach(async () => {
 });
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem | Scope.Scope>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Scope.Scope>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     Effect.scoped(effect).pipe(
-      Effect.provide(Session.Default),
+      Effect.provide(SessionStore.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
@@ -188,7 +188,7 @@ test("a native agent can capture a live session through the command surface", as
   const { daemon, env } = await started("agent-tools");
   const id = "capture-agent";
   await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       kind: "pty",
       id,
       cmd: ["sh", "-c", "printf 'capture-me\\n'; sleep 30"],
@@ -201,14 +201,14 @@ test("a native agent can capture a live session through the command surface", as
     c.Run({ value: command("pane.capture", { session: id }) }),
   );
   expect(result).toContain("capture-me");
-  await Effect.runPromise(daemon.killAgent(id));
+  await Effect.runPromise(daemon.killSession(id));
 });
 
 test("a native worker invokes pane.capture through the amux CLI", async () => {
   const { daemon, env } = await started("agent-cli-tools");
   const target = "capture-target";
   await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       id: target,
       cmd: ["sh", "-c", "printf 'worker-capture\n'; sleep 30"],
       cols: 80,
@@ -223,7 +223,7 @@ test("a native worker invokes pane.capture through the amux CLI", async () => {
     process.stdout.write(JSON.stringify({_tag:"output",session:process.env.AMUX_AGENT_ID,data:Buffer.from(data).toString("base64")})+"\\n");
   `;
   await Effect.runPromise(
-    daemon.spawnAgent({
+    daemon.spawnSession({
       kind: "agent",
       id: worker,
       cmd: [process.execPath, "-e", script],
@@ -234,8 +234,8 @@ test("a native worker invokes pane.capture through the amux CLI", async () => {
   const session = await ctl(daemon.id, env, (c) => c.Status());
   expect(session.agents).toContain(worker);
   await Bun.sleep(300);
-  await Effect.runPromise(daemon.killAgent(target));
-  await Effect.runPromise(daemon.killAgent(worker));
+  await Effect.runPromise(daemon.killSession(target));
+  await Effect.runPromise(daemon.killSession(worker));
 });
 
 test("the pane control socket accepts ping and agent state reports", async () => {
@@ -307,5 +307,5 @@ test("stop answers before it tears its own socket down", async () => {
   expect(await gone(paths.lease)).toBe(true);
   expect(await gone(paths.lock)).toBe(true);
   // A stopped session is discarded, not merely unreachable.
-  expect(await run(Session.load(daemon.id), env)).toBeNull();
+  expect(await run(SessionStore.load(daemon.id), env)).toBeNull();
 });

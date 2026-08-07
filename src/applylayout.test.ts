@@ -3,7 +3,7 @@ import { Divider } from "./divider.ts";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
 import { encodeLayout, decodeLayout, layoutAgents, makeLayout, type LayoutNode } from "./layout.ts";
-import type { Agent } from "./agent.ts";
+import type { Session } from "./agent.ts";
 import { Effect } from "effect";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -25,7 +25,7 @@ const shape = (node: LayoutNode | null): unknown => {
 
 /** The agent's on-screen text, so "the pane was reused" is checked against the
  *  terminal itself rather than against object identity alone. */
-function screenTail(agent: Agent): string {
+function screenTail(agent: Session): string {
   const state = new RenderState();
   try {
     state.update(agent.term);
@@ -70,7 +70,7 @@ test("panes are reused, keeping their terminal and its output", async () => {
   const { window, layout } = await setup();
   const first = window.panes[0]!;
   const second = run(window.splitSpawn("row"))!;
-  const agent = second.agent;
+  const agent = second.session;
   agent.write("echo applylayout-marker-7\n");
   await Bun.sleep(300);
   expect(screenTail(agent)).toContain("applylayout-marker-7");
@@ -82,7 +82,7 @@ test("panes are reused, keeping their terminal and its output", async () => {
       weight: 1,
       children: [
         { type: "pane", id: second.id, agent: agent.id, weight: 1 },
-        { type: "pane", id: first.id, agent: first.agent.id, weight: 1 },
+        { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
       ],
     }),
   );
@@ -90,7 +90,7 @@ test("panes are reused, keeping their terminal and its output", async () => {
 
   // Same pane objects, same agents, same screen — only the arrangement moved.
   expect(window.panes).toEqual([second, first]);
-  expect(second.agent).toBe(agent);
+  expect(second.session).toBe(agent);
   expect(agent.exited).toBe(false);
   expect(screenTail(agent)).toContain("applylayout-marker-7");
 });
@@ -123,8 +123,8 @@ test("weights in the layout become real geometry", async () => {
       direction: "row",
       weight: 1,
       children: [
-        { type: "pane", id: first.id, agent: first.agent.id, weight: 3 },
-        { type: "pane", id: second.id, agent: second.agent.id, weight: 1 },
+        { type: "pane", id: first.id, agent: first.session.id, weight: 3 },
+        { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
       ],
     }),
   );
@@ -176,14 +176,14 @@ test("panes naming an agent this window does not own are pruned away", async () 
       direction: "row",
       weight: 1,
       children: [
-        { type: "pane", id: first.id, agent: first.agent.id, weight: 1 },
+        { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
         {
           type: "pane",
           id: "pane-that-never-existed",
           agent: "agent-that-never-existed",
           weight: 1,
         },
-        { type: "pane", id: second.id, agent: second.agent.id, weight: 1 },
+        { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
       ],
     }),
   );
@@ -223,10 +223,10 @@ test("a pane the layout has no slot for is closed, but its agent survives", asyn
   const { window, layout } = await setup();
   const first = window.panes[0]!;
   const second = run(window.splitSpawn("row"))!;
-  const dropped = second.agent;
+  const dropped = second.session;
   await layout();
 
-  window.applyLayout(makeLayout({ type: "pane", id: first.id, agent: first.agent.id, weight: 1 }));
+  window.applyLayout(makeLayout({ type: "pane", id: first.id, agent: first.session.id, weight: 1 }));
   await layout();
 
   expect(window.panes).toEqual([first]);
@@ -259,12 +259,12 @@ test("two panes on one agent stay two panes across a rebuild", async () => {
   window.split("row", shared);
   window.split("row", shared);
   await layout();
-  expect(window.panes.filter((p) => p.agent === shared)).toHaveLength(2);
+  expect(window.panes.filter((p) => p.session === shared)).toHaveLength(2);
 
   window.selectLayout("even-vertical");
   await layout();
 
-  expect(window.panes.filter((p) => p.agent === shared)).toHaveLength(2);
+  expect(window.panes.filter((p) => p.session === shared)).toHaveLength(2);
   expect(layoutAgents(window.exportLayout()).filter((id) => id === shared.id)).toHaveLength(2);
 });
 
@@ -286,7 +286,7 @@ test("splitting to show an agent the window already shows focuses the new pane",
   await layout();
 
   expect(second).not.toBe(first);
-  expect(second.agent).toBe(shared);
+  expect(second.session).toBe(shared);
   expect(window.focused).toBe(second);
   expect(window.exportLayout().focus).toBe(second.id);
 });
@@ -333,8 +333,8 @@ test("a layout naming panes this window does not have reuses them by agent", asy
         direction: "column",
         weight: 1,
         children: [
-          { type: "pane", id: "pane-from-elsewhere-1", agent: second.agent.id, weight: 1 },
-          { type: "pane", id: "pane-from-elsewhere-2", agent: first.agent.id, weight: 1 },
+          { type: "pane", id: "pane-from-elsewhere-1", agent: second.session.id, weight: 1 },
+          { type: "pane", id: "pane-from-elsewhere-2", agent: first.session.id, weight: 1 },
         ],
       },
       "pane-from-elsewhere-1",
@@ -390,12 +390,12 @@ test("a preset rearranges the same panes, in the same order", async () => {
   run(window.splitSpawn("row"));
   run(window.splitSpawn("column"));
   await layout();
-  const before = window.panes.map((p) => p.agent.id);
+  const before = window.panes.map((p) => p.session.id);
 
   expect(window.selectLayout("tiled")).toBe(true);
   await layout();
 
-  expect(window.panes.map((p) => p.agent.id)).toEqual(before);
+  expect(window.panes.map((p) => p.session.id)).toEqual(before);
 });
 
 test("even-horizontal actually gives the panes equal widths", async () => {
@@ -480,7 +480,7 @@ test("a single-pane window exports as one pane, not a one-child split", async ()
   expect(exported.root).toEqual({
     type: "pane",
     id: window.panes[0]!.id,
-    agent: window.panes[0]!.agent.id,
+    agent: window.panes[0]!.session.id,
     weight: expect.any(Number),
   });
 });
@@ -500,7 +500,7 @@ test("every pane appears exactly once in the export, in left-to-right order", as
   run(window.splitSpawn("row"));
   run(window.splitSpawn("column"));
   await layout();
-  const ids = window.panes.map((p) => p.agent.id);
+  const ids = window.panes.map((p) => p.session.id);
   expect(layoutAgents(window.exportLayout()).sort()).toEqual([...ids].sort());
 });
 
@@ -523,13 +523,13 @@ test("resized weights survive the export", async () => {
       direction: "row",
       weight: 1,
       children: [
-        { type: "pane", id: first.id, agent: first.agent.id, weight: 7 },
-        { type: "pane", id: window.panes[1]!.id, agent: window.panes[1]!.agent.id, weight: 1 },
+        { type: "pane", id: first.id, agent: first.session.id, weight: 7 },
+        { type: "pane", id: window.panes[1]!.id, agent: window.panes[1]!.session.id, weight: 1 },
       ],
     }),
   );
   const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>;
-  const exported = root.children.find((c) => c.type === "pane" && c.agent === first.agent.id);
+  const exported = root.children.find((c) => c.type === "pane" && c.agent === first.session.id);
   expect(exported?.weight).toBe(7);
 });
 
