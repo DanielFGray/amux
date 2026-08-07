@@ -275,12 +275,16 @@ export const optionalEnvVar = (name: string) =>
     Effect.orDie,
   );
 
-const stateRoot = () =>
+export const stateRoot = () =>
   Effect.gen(function* () {
     const xdgStateHome = yield* optionalEnvVar("XDG_STATE_HOME");
     if (Option.isSome(xdgStateHome)) return xdgStateHome.value;
     const home = yield* optionalEnvVar("HOME");
-    return path.join(Option.getOrElse(home, () => homedir()), ".local", "state");
+    return path.join(
+      Option.getOrElse(home, () => homedir()),
+      ".local",
+      "state",
+    );
   });
 
 export function parseSessionState(

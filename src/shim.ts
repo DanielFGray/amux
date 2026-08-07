@@ -21,6 +21,8 @@ const { symbols } = cc({
     oh_resize_pty: { args: [T.i32, T.u16, T.u16], returns: T.i32 },
     oh_tcgetpgrp: { args: [T.i32], returns: T.i32 },
     oh_close_fd: { args: [T.i32], returns: T.i32 },
+    oh_flock: { args: [T.i32, T.i32], returns: T.i32 },
+    oh_flock_unlock: { args: [T.i32], returns: T.i32 },
     oh_error_message: { args: [T.i32], returns: T.ptr },
   },
 });
@@ -97,6 +99,8 @@ export const resizePty = (fd: number, cols: number, rows: number) =>
   symbols.oh_resize_pty(fd, rows, cols);
 export const ptyForegroundPgid = (fd: number) => symbols.oh_tcgetpgrp(fd);
 export const closeFd = (fd: number) => symbols.oh_close_fd(fd);
+export const flock = (fd: number, operation: number) => symbols.oh_flock(fd, operation);
+export const flockUnlock = (fd: number) => symbols.oh_flock_unlock(fd);
 
 const encoder = new TextEncoder();
 

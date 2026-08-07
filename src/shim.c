@@ -34,6 +34,7 @@ int oh_terminal_new(void **terminal, const GhosttyTerminalOptions *options) {
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/file.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -182,6 +183,11 @@ int oh_resize_pty(int fd, uint16_t rows, uint16_t cols) {
 
 int oh_tcgetpgrp(int fd) { return (int)tcgetpgrp(fd); }
 int oh_close_fd(int fd) { return close(fd); }
+int oh_flock(int fd, int operation) {
+  if (flock(fd, operation | LOCK_NB) == 0) return 0;
+  return errno;
+}
+int oh_flock_unlock(int fd) { return flock(fd, LOCK_UN); }
 const char *oh_error_message(int error) { return strerror(error); }
 #else
 int oh_spawn_pty(const void *req, int32_t out[2]) { return 38; }
@@ -189,6 +195,8 @@ int oh_wait_pid(int32_t pid, int32_t *exit_code) { return -38; }
 int oh_resize_pty(int fd, uint16_t rows, uint16_t cols) { return -1; }
 int oh_tcgetpgrp(int fd) { return -1; }
 int oh_close_fd(int fd) { return -1; }
+int oh_flock(int fd, int operation) { return ENOTSUP; }
+int oh_flock_unlock(int fd) { return -1; }
 const char *oh_error_message(int error) { return "unsupported operation"; }
 #endif
 
