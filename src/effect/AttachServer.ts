@@ -153,62 +153,61 @@ export const startAttachServer = (
     };
 
     /** Accept a hello, or tell the client why it was refused and hang up. */
-    const attach = (socket: Bun.Socket<ClientState>, client: string) =>
-      Effect.gen(function* () {
-        const child = yield* Scope.make();
-        const subscribed = yield* Scope.extend(
-          hub.subscribe(client, socket.data.connection, () => {
-            requestClose(socket);
+    const attach = Effect.fnUntraced(function* (socket: Bun.Socket<ClientState>, client: string) {
+      const child = yield* Scope.make();
+      const subscribed = yield* Scope.extend(
+        hub.subscribe(client, socket.data.connection, () => {
+          requestClose(socket);
+        }),
+        child,
+      ).pipe(Effect.exit);
+
+      if (Exit.isFailure(subscribed)) {
+        yield* Scope.close(child, Exit.succeed(undefined));
+        terminate(socket, { _tag: "error", message: reason(subscribed.cause) });
+        return;
+      }
+
+      // The subscription is installed before onAttach so owner interruption
+      // can always release this generation. Socket close interrupts onAttach;
+      // cleanup then unregisters the hub generation before onDetach.
+      if (socket.data.closed) {
+        yield* Scope.close(child, Exit.succeed(undefined));
+        return;
+      }
+      socket.data.client = client;
+      socket.data.scope = child;
+      const attached = yield* (
+        options.onAttach?.(client, socket.data.connection) ?? Effect.void
+      ).pipe(Effect.exit);
+      if (Exit.isFailure(attached)) {
+        if (socket.data.scope === child) {
+          yield* Scope.close(child, Exit.succeed(undefined));
+          socket.data.client = null;
+          socket.data.scope = null;
+        }
+        terminate(socket, { _tag: "error", message: reason(attached.cause) });
+        return;
+      }
+      if (socket.data.closed || socket.data.scope !== child) {
+        yield* Scope.close(child, Exit.succeed(undefined));
+        return;
+      }
+      socket.data.run?.(
+        "output",
+        Stream.runForEach(subscribed.value.frames, (outgoing) =>
+          Effect.sync(() => {
+            if (!socket.data.closed) socket.data.writer?.send(outgoing);
           }),
-          child,
-        ).pipe(Effect.exit);
-
-        if (Exit.isFailure(subscribed)) {
-          yield* Scope.close(child, Exit.succeed(undefined));
-          terminate(socket, { _tag: "error", message: reason(subscribed.cause) });
-          return;
-        }
-
-        // The subscription is installed before onAttach so owner interruption
-        // can always release this generation. Socket close interrupts onAttach;
-        // cleanup then unregisters the hub generation before onDetach.
-        if (socket.data.closed) {
-          yield* Scope.close(child, Exit.succeed(undefined));
-          return;
-        }
-        socket.data.client = client;
-        socket.data.scope = child;
-        const attached = yield* (
-          options.onAttach?.(client, socket.data.connection) ?? Effect.void
-        ).pipe(Effect.exit);
-        if (Exit.isFailure(attached)) {
-          if (socket.data.scope === child) {
-            yield* Scope.close(child, Exit.succeed(undefined));
-            socket.data.client = null;
-            socket.data.scope = null;
-          }
-          terminate(socket, { _tag: "error", message: reason(attached.cause) });
-          return;
-        }
-        if (socket.data.closed || socket.data.scope !== child) {
-          yield* Scope.close(child, Exit.succeed(undefined));
-          return;
-        }
-        socket.data.run?.(
-          "output",
-          Stream.runForEach(subscribed.value.frames, (outgoing) =>
+        ).pipe(
+          Effect.ensuring(
             Effect.sync(() => {
-              if (!socket.data.closed) socket.data.writer?.send(outgoing);
+              requestClose(socket);
             }),
-          ).pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                requestClose(socket);
-              }),
-            ),
           ),
-        );
-      });
+        ),
+      );
+    });
 
     const handleFrame = (
       socket: Bun.Socket<ClientState>,

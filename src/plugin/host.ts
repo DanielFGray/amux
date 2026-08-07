@@ -75,93 +75,87 @@ export function createPluginHost(
       };
     }
 
-    function addPlugin(plugin: PluginDefinition): Effect.Effect<void> {
-      return Effect.gen(function* () {
-        if (disposed) {
-          emitError({
-            pluginId: plugin.id,
-            phase: "activate",
-            source: "host",
-            error: new Error("Plugin host is disposed"),
-            timestamp: Date.now(),
-          });
-          return;
-        }
-
-        if (activePlugins.has(plugin.id)) {
-          emitError({
-            pluginId: plugin.id,
-            phase: "activate",
-            source: "host",
-            error: new Error(`Plugin '${plugin.id}' is already active`),
-            timestamp: Date.now(),
-          });
-          return;
-        }
-
-        if (plugin.apiVersion !== SUPPORTED_API_VERSION) {
-          emitError({
-            pluginId: plugin.id,
-            phase: "activate",
-            source: "host",
-            error: new Error(
-              `Plugin '${plugin.id}' declares apiVersion '${plugin.apiVersion}' but this host supports '${SUPPORTED_API_VERSION}'`,
-            ),
-            timestamp: Date.now(),
-          });
-          return;
-        }
-
-        const pluginScope = yield* Scope.fork(hostScope, ExecutionStrategy.sequential);
-        const context = makeContext(plugin.id, pluginScope);
-        const pluginEffect = plugin.effect(context).pipe(
-          Effect.catchAllDefect((defect) => {
-            const error = defect instanceof Error ? defect : new Error(String(defect));
-            emitError({
-              pluginId: plugin.id,
-              phase: "activate",
-              source: "plugin",
-              error,
-              timestamp: Date.now(),
-            });
-            activePlugins.delete(plugin.id);
-            return Scope.close(pluginScope, Exit.die(error));
-          }),
-          Effect.provideService(Scope.Scope, pluginScope),
-        );
-
-        const fiber = yield* Effect.forkIn(pluginEffect, hostScope);
-        activePlugins.set(plugin.id, {
-          scope: pluginScope,
-          fiber,
-          definition: plugin,
-          error: null,
+    const addPlugin = Effect.fnUntraced(function* (plugin: PluginDefinition) {
+      if (disposed) {
+        emitError({
+          pluginId: plugin.id,
+          phase: "activate",
+          source: "host",
+          error: new Error("Plugin host is disposed"),
+          timestamp: Date.now(),
         });
-        yield* Effect.yieldNow();
-      });
-    }
+        return;
+      }
 
-    function removePlugin(id: string): Effect.Effect<void> {
-      return Effect.gen(function* () {
-        const state = activePlugins.get(id);
-        if (!state) return;
-        activePlugins.delete(id);
-        yield* Fiber.interrupt(state.fiber);
-        yield* Fiber.await(state.fiber);
-        yield* Scope.close(state.scope, Exit.void);
-      });
-    }
+      if (activePlugins.has(plugin.id)) {
+        emitError({
+          pluginId: plugin.id,
+          phase: "activate",
+          source: "host",
+          error: new Error(`Plugin '${plugin.id}' is already active`),
+          timestamp: Date.now(),
+        });
+        return;
+      }
 
-    function disposeAll(): Effect.Effect<void> {
-      return Effect.gen(function* () {
-        if (disposed) return;
-        disposed = true;
-        yield* Scope.close(hostScope, Exit.void);
-        activePlugins.clear();
-        kvStores.clear();
-        yield* Queue.shutdown(errorQueue);
+      if (plugin.apiVersion !== SUPPORTED_API_VERSION) {
+        emitError({
+          pluginId: plugin.id,
+          phase: "activate",
+          source: "host",
+          error: new Error(
+            `Plugin '${plugin.id}' declares apiVersion '${plugin.apiVersion}' but this host supports '${SUPPORTED_API_VERSION}'`,
+          ),
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      const pluginScope = yield* Scope.fork(hostScope, ExecutionStrategy.sequential);
+      const context = makeContext(plugin.id, pluginScope);
+      const pluginEffect = plugin.effect(context).pipe(
+        Effect.catchAllDefect((defect) => {
+          const error = defect instanceof Error ? defect : new Error(String(defect));
+          emitError({
+            pluginId: plugin.id,
+            phase: "activate",
+            source: "plugin",
+            error,
+            timestamp: Date.now(),
+          });
+          activePlugins.delete(plugin.id);
+          return Scope.close(pluginScope, Exit.die(error));
+        }),
+        Effect.provideService(Scope.Scope, pluginScope),
+      );
+
+      const fiber = yield* Effect.forkIn(pluginEffect, hostScope);
+      activePlugins.set(plugin.id, {
+        scope: pluginScope,
+        fiber,
+        definition: plugin,
+        error: null,
       });
-    }
+      yield* Effect.yieldNow();
+    });
+
+    const removePlugin = Effect.fnUntraced(function* (id: string) {
+      const state = activePlugins.get(id);
+      if (!state) return;
+      activePlugins.delete(id);
+      yield* Fiber.interrupt(state.fiber);
+      yield* Fiber.await(state.fiber);
+      yield* Scope.close(state.scope, Exit.void);
+    });
+
+    const disposeAll = Effect.fnUntraced(function* () {
+      if (disposed) return;
+      disposed = true;
+      yield* Scope.close(hostScope, Exit.void);
+      activePlugins.clear();
+      kvStores.clear();
+      yield* Queue.shutdown(errorQueue);
+    });
 
     return {
       add: addPlugin,

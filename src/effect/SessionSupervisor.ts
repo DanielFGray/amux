@@ -141,17 +141,16 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       ),
     );
 
-    const dropScreen = (id: string, expected?: Terminal) =>
-      Effect.gen(function* () {
-        const screen = yield* Ref.modify(replays, (current) => {
-          const screen = current.get(id);
-          if (!screen || (expected && screen !== expected)) return [undefined, current] as const;
-          const next = new Map(current);
-          next.delete(id);
-          return [screen, next] as const;
-        });
-        if (screen) screen.free();
+    const dropScreen = Effect.fnUntraced(function* (id: string, expected?: Terminal) {
+      const screen = yield* Ref.modify(replays, (current) => {
+        const screen = current.get(id);
+        if (!screen || (expected && screen !== expected)) return [undefined, current] as const;
+        const next = new Map(current);
+        next.delete(id);
+        return [screen, next] as const;
       });
+      if (screen) screen.free();
+    });
 
     const releaseReservation = (id: string) =>
       Ref.update(reservations, (current) => {
@@ -161,29 +160,32 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
         return next;
       });
 
-    const dropSession = (id: string, session: ManagedSession, screen?: Terminal) =>
-      Effect.gen(function* () {
-        yield* Ref.update(sessions, (current) => {
-          if (current.get(id) !== session) return current;
-          const next = new Map(current);
-          next.delete(id);
-          return next;
-        });
-        yield* Ref.update(completions, (current) => {
-          if (!current.has(id)) return current;
-          const next = new Map(current);
-          next.delete(id);
-          return next;
-        });
-        yield* Ref.update(terminations, (current) => {
-          if (!current.has(id)) return current;
-          const next = new Map(current);
-          next.delete(id);
-          return next;
-        });
-        yield* dropScreen(id, screen);
-        yield* releaseReservation(id);
+    const dropSession = Effect.fnUntraced(function* (
+      id: string,
+      session: ManagedSession,
+      screen?: Terminal,
+    ) {
+      yield* Ref.update(sessions, (current) => {
+        if (current.get(id) !== session) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
       });
+      yield* Ref.update(completions, (current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+      yield* Ref.update(terminations, (current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+      yield* dropScreen(id, screen);
+      yield* releaseReservation(id);
+    });
 
     const prepare = Effect.fnUntraced(function* (spec: SessionSpec) {
       if (!isTerminalSize(spec.cols, spec.rows)) {

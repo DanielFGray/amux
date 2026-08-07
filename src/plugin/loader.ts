@@ -48,46 +48,44 @@ function validatePluginShape(mod: unknown): PluginDefinition | null {
   };
 }
 
-export function loadPluginsFromConfig(
+export const loadPluginsFromConfig = Effect.fnUntraced(function* (
   config: Config,
   host: PluginHost,
   configDir: string,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    for (const spec of config.plugins) {
-      if (!spec.enabled) continue;
+) {
+  for (const spec of config.plugins) {
+    if (!spec.enabled) continue;
 
-      const builtin = BUILTIN_PLUGINS[spec.path];
-      if (builtin) {
-        yield* host.add(builtin).pipe(Effect.catchAllCause(() => Effect.void));
-        continue;
-      }
-
-      const resolved = resolvePluginPath(spec.path, configDir);
-      if (!resolved) {
-        yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
-        continue;
-      }
-
-      const mod = yield* Effect.tryPromise({
-        try: () => import(resolved),
-        catch: (cause) => ({ _tag: "PluginLoadError" as const, cause }),
-      }).pipe(
-        Effect.tapError((error) =>
-          Effect.logWarning(`Could not import plugin '${spec.path}': ${String(error.cause)}`),
-        ),
-        Effect.orElseSucceed(() => null),
-      );
-
-      if (mod === null) continue;
-
-      const plugin = validatePluginShape(mod);
-      if (!plugin) {
-        yield* Effect.logWarning(`Ignoring plugin with invalid default export: ${spec.path}`);
-        continue;
-      }
-
-      yield* host.add(plugin).pipe(Effect.catchAllCause(() => Effect.void));
+    const builtin = BUILTIN_PLUGINS[spec.path];
+    if (builtin) {
+      yield* host.add(builtin).pipe(Effect.catchAllCause(() => Effect.void));
+      continue;
     }
-  });
-}
+
+    const resolved = resolvePluginPath(spec.path, configDir);
+    if (!resolved) {
+      yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
+      continue;
+    }
+
+    const mod = yield* Effect.tryPromise({
+      try: () => import(resolved),
+      catch: (cause) => ({ _tag: "PluginLoadError" as const, cause }),
+    }).pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning(`Could not import plugin '${spec.path}': ${String(error.cause)}`),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+
+    if (mod === null) continue;
+
+    const plugin = validatePluginShape(mod);
+    if (!plugin) {
+      yield* Effect.logWarning(`Ignoring plugin with invalid default export: ${spec.path}`);
+      continue;
+    }
+
+    yield* host.add(plugin).pipe(Effect.catchAllCause(() => Effect.void));
+  }
+});

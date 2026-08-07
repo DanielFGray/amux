@@ -122,26 +122,25 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
         Effect.tap(() => Effect.sync(() => target.onOverflow?.())),
       );
 
-    const publish = (frame: AttachFrame): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const queues = yield* Ref.get(clients);
-        const item = queuedFrame(frame);
-        const size = item.bytes.byteLength;
-        for (const [client, target] of queues) {
-          if (target.replaying || target.replayPending > 0) {
-            if (target.pendingBytes + target.deferredBytes + size <= MAX_PENDING_BYTES) {
-              target.deferred.push(item);
-              target.deferredBytes += size;
-              continue;
-            }
-          }
-          if (target.pendingBytes + size <= MAX_PENDING_BYTES && target.queue.unsafeOffer(item)) {
-            target.pendingBytes += size;
+    const publish = Effect.fnUntraced(function* (frame: AttachFrame) {
+      const queues = yield* Ref.get(clients);
+      const item = queuedFrame(frame);
+      const size = item.bytes.byteLength;
+      for (const [client, target] of queues) {
+        if (target.replaying || target.replayPending > 0) {
+          if (target.pendingBytes + target.deferredBytes + size <= MAX_PENDING_BYTES) {
+            target.deferred.push(item);
+            target.deferredBytes += size;
             continue;
           }
-          yield* evict(client, target);
         }
-      });
+        if (target.pendingBytes + size <= MAX_PENDING_BYTES && target.queue.unsafeOffer(item)) {
+          target.pendingBytes += size;
+          continue;
+        }
+        yield* evict(client, target);
+      }
+    });
 
     /**
      * Send a frame to one client's queue only.
@@ -151,52 +150,49 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
      * to a specific queue keeps the frame ordered against that client's live
      * output, which is exactly what a full-state replay needs.
      */
-    const publishTo = (
+    const publishTo = Effect.fnUntraced(function* (
       client: string,
       connection: string,
       frame: AttachFrame,
-    ): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const target = (yield* Ref.get(clients)).get(client);
-        if (!target || target.connection !== connection) return;
-        const item = queuedFrame(frame);
-        const size = item.bytes.byteLength;
-        if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(item)) {
-          yield* evict(client, target);
-        } else target.pendingBytes += size;
-      });
+    ) {
+      const target = (yield* Ref.get(clients)).get(client);
+      if (!target || target.connection !== connection) return;
+      const item = queuedFrame(frame);
+      const size = item.bytes.byteLength;
+      if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(item)) {
+        yield* evict(client, target);
+      } else target.pendingBytes += size;
+    });
 
-    const beginReplay = (client: string, connection: string): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const target = (yield* Ref.get(clients)).get(client);
-        if (target?.connection !== connection) return;
-        target.replayPending += 1;
-        yield* target.replayLock.take(1);
-        target.replaying = true;
-      });
+    const beginReplay = Effect.fnUntraced(function* (client: string, connection: string) {
+      const target = (yield* Ref.get(clients)).get(client);
+      if (target?.connection !== connection) return;
+      target.replayPending += 1;
+      yield* target.replayLock.take(1);
+      target.replaying = true;
+    });
 
-    const endReplay = (client: string, connection: string): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const target = (yield* Ref.get(clients)).get(client);
-        if (!target || target.connection !== connection || !target.replaying) return;
-        const size = target.deferredBytes;
-        const frames = target.deferred;
-        target.replayPending = Math.max(0, target.replayPending - 1);
-        if (target.replayPending > 0) {
-          yield* target.replayLock.release(1);
-          return;
-        }
-        target.replaying = false;
-        target.deferred = [];
-        target.deferredBytes = 0;
-        if (
-          target.pendingBytes + size > MAX_PENDING_BYTES ||
-          !frames.every((item) => target.queue.unsafeOffer(item))
-        ) {
-          yield* evict(client, target);
-        } else target.pendingBytes += size;
+    const endReplay = Effect.fnUntraced(function* (client: string, connection: string) {
+      const target = (yield* Ref.get(clients)).get(client);
+      if (!target || target.connection !== connection || !target.replaying) return;
+      const size = target.deferredBytes;
+      const frames = target.deferred;
+      target.replayPending = Math.max(0, target.replayPending - 1);
+      if (target.replayPending > 0) {
         yield* target.replayLock.release(1);
-      });
+        return;
+      }
+      target.replaying = false;
+      target.deferred = [];
+      target.deferredBytes = 0;
+      if (
+        target.pendingBytes + size > MAX_PENDING_BYTES ||
+        !frames.every((item) => target.queue.unsafeOffer(item))
+      ) {
+        yield* evict(client, target);
+      } else target.pendingBytes += size;
+      yield* target.replayLock.release(1);
+    });
 
     return { subscribe, publish, publishTo, beginReplay, endReplay };
   }),

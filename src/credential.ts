@@ -109,16 +109,15 @@ const paths = (root: string) => {
   };
 };
 
-const lock = (fd: number, shared: boolean) =>
-  Effect.gen(function* () {
-    for (;;) {
-      const result = flock(fd, shared ? 1 : 2);
-      if (result === 0) return;
-      if (result !== 11 && result !== 35)
-        return yield* Effect.die(new Error(`credential lock failed: errno ${result}`));
-      yield* Effect.sleep("5 millis");
-    }
-  });
+const lock = Effect.fnUntraced(function* (fd: number, shared: boolean) {
+  for (;;) {
+    const result = flock(fd, shared ? 1 : 2);
+    if (result === 0) return;
+    if (result !== 11 && result !== 35)
+      return yield* Effect.die(new Error(`credential lock failed: errno ${result}`));
+    yield* Effect.sleep("5 millis");
+  }
+});
 
 const implementation = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -167,29 +166,28 @@ const implementation = Effect.gen(function* () {
       );
     });
 
-  const writeRows = (rows: readonly Persisted[]) =>
-    Effect.gen(function* () {
-      yield* fs.makeDirectory(target.directory, { recursive: true, mode: 0o700 });
-      yield* fs.chmod(target.directory, 0o700);
-      const temp = `${target.file}.${process.pid}.${randomUUID()}.tmp`;
-      const handle = yield* fs.open(temp, { flag: "wx", mode: 0o600 });
-      yield* Effect.acquireUseRelease(
-        Effect.succeed(handle),
-        (file) =>
-          file
-            .writeAll(new TextEncoder().encode(JSON.stringify(rows) + "\n"))
-            .pipe(Effect.zipRight(file.sync)),
-        () => Effect.void,
-      );
-      yield* fs.chmod(temp, 0o600);
-      yield* fs.rename(temp, target.file);
-      const directory = yield* fs.open(target.directory, { flag: "r" });
-      yield* Effect.acquireUseRelease(
-        Effect.succeed(directory),
-        (file) => file.sync,
-        () => Effect.void,
-      );
-    });
+  const writeRows = Effect.fnUntraced(function* (rows: readonly Persisted[]) {
+    yield* fs.makeDirectory(target.directory, { recursive: true, mode: 0o700 });
+    yield* fs.chmod(target.directory, 0o700);
+    const temp = `${target.file}.${process.pid}.${randomUUID()}.tmp`;
+    const handle = yield* fs.open(temp, { flag: "wx", mode: 0o600 });
+    yield* Effect.acquireUseRelease(
+      Effect.succeed(handle),
+      (file) =>
+        file
+          .writeAll(new TextEncoder().encode(JSON.stringify(rows) + "\n"))
+          .pipe(Effect.zipRight(file.sync)),
+      () => Effect.void,
+    );
+    yield* fs.chmod(temp, 0o600);
+    yield* fs.rename(temp, target.file);
+    const directory = yield* fs.open(target.directory, { flag: "r" });
+    yield* Effect.acquireUseRelease(
+      Effect.succeed(directory),
+      (file) => file.sync,
+      () => Effect.void,
+    );
+  });
 
   const read = <A>(body: (rows: readonly Persisted[]) => A) =>
     withLock(true, readRows().pipe(Effect.map((loaded) => body(loaded.rows))));

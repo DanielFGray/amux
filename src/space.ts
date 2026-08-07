@@ -538,92 +538,85 @@ export class SpaceSet {
  * Existing Agent terminals and panes are reused; only model identities that
  * appeared or disappeared are acquired or released.
  */
-export function projectWorkspace(
+export const projectWorkspace = Effect.fnUntraced(function* (
   target: SpaceSet,
   source: WorkspaceSnapshot,
   backend: SessionBackendFactory,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    for (const savedSpace of source.spaces) {
-      let space = target.spaces.find((candidate) => candidate.id === savedSpace.id);
-      if (!space) space = yield* target.create(savedSpace.name, savedSpace.dir, savedSpace.id);
-      space.name = savedSpace.name;
-      space.dir = savedSpace.dir;
-      for (const savedWindow of savedSpace.windows) {
-        if (!space.windows.some((candidate) => candidate.number === savedWindow.number))
-          yield* space.newWindow(savedWindow.name ?? undefined, savedWindow.number);
+) {
+  for (const savedSpace of source.spaces) {
+    let space = target.spaces.find((candidate) => candidate.id === savedSpace.id);
+    if (!space) space = yield* target.create(savedSpace.name, savedSpace.dir, savedSpace.id);
+    space.name = savedSpace.name;
+    space.dir = savedSpace.dir;
+    for (const savedWindow of savedSpace.windows) {
+      if (!space.windows.some((candidate) => candidate.number === savedWindow.number))
+        yield* space.newWindow(savedWindow.name ?? undefined, savedWindow.number);
+    }
+  }
+  for (const savedSpace of source.spaces) {
+    const space = target.spaces.find((candidate) => candidate.id === savedSpace.id)!;
+    for (const savedWindow of savedSpace.windows) {
+      const destination = space.windows.find(
+        (candidate) => candidate.number === savedWindow.number,
+      )!;
+      for (const slot of layoutPanes(savedWindow.layout.root)) {
+        const current = target.spaces
+          .flatMap((candidate) => candidate.windows)
+          .find((window) => window.panes.some((pane) => pane.id === slot.id));
+        const pane = current?.panes.find((candidate) => candidate.id === slot.id);
+        if (!current || !pane || current === destination) continue;
+        const owner = target.spaces.find((candidate) => candidate.windows.includes(current));
+        const handoff = owner && current.releasePane(pane);
+        if (handoff) destination.adopt(handoff.agent, pane, handoff.scope);
       }
     }
-    for (const savedSpace of source.spaces) {
-      const space = target.spaces.find((candidate) => candidate.id === savedSpace.id)!;
-      for (const savedWindow of savedSpace.windows) {
-        const destination = space.windows.find(
-          (candidate) => candidate.number === savedWindow.number,
-        )!;
-        for (const slot of layoutPanes(savedWindow.layout.root)) {
-          const current = target.spaces
-            .flatMap((candidate) => candidate.windows)
-            .find((window) => window.panes.some((pane) => pane.id === slot.id));
-          const pane = current?.panes.find((candidate) => candidate.id === slot.id);
-          if (!current || !pane || current === destination) continue;
-          const owner = target.spaces.find((candidate) => candidate.windows.includes(current));
-          const handoff = owner && current.releasePane(pane);
-          if (handoff) destination.adopt(handoff.agent, pane, handoff.scope);
-        }
-      }
-    }
-    for (const space of [...target.spaces]) {
-      const savedSpace = source.spaces.find((candidate) => candidate.id === space.id);
-      if (!savedSpace) yield* target.remove(space);
-      else yield* projectSpace(space, savedSpace, backend);
-    }
-    target.projectState(source.state);
-  });
-}
+  }
+  for (const space of [...target.spaces]) {
+    const savedSpace = source.spaces.find((candidate) => candidate.id === space.id);
+    if (!savedSpace) yield* target.remove(space);
+    else yield* projectSpace(space, savedSpace, backend);
+  }
+  target.projectState(source.state);
+});
 
-function projectSpace(
+const projectSpace = Effect.fnUntraced(function* (
   space: Space,
   source: WorkspaceSpace,
   backend: SessionBackendFactory,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    for (const window of [...space.windows]) {
-      if (!source.windows.some((candidate) => candidate.number === window.number))
-        yield* space.closeWindow(window);
-    }
-    for (const savedWindow of source.windows) {
-      let window = space.windows.find((candidate) => candidate.number === savedWindow.number);
-      if (!window)
-        window = yield* space.newWindow(savedWindow.name ?? undefined, savedWindow.number);
-      window.customName = savedWindow.name;
-      yield* projectWindow(window, savedWindow, backend);
-    }
-    space.projectState(source.state);
-  });
-}
+) {
+  for (const window of [...space.windows]) {
+    if (!source.windows.some((candidate) => candidate.number === window.number))
+      yield* space.closeWindow(window);
+  }
+  for (const savedWindow of source.windows) {
+    let window = space.windows.find((candidate) => candidate.number === savedWindow.number);
+    if (!window) window = yield* space.newWindow(savedWindow.name ?? undefined, savedWindow.number);
+    window.customName = savedWindow.name;
+    yield* projectWindow(window, savedWindow, backend);
+  }
+  space.projectState(source.state);
+});
 
-function projectWindow(
+const projectWindow = Effect.fnUntraced(function* (
   window: Window,
   source: WorkspaceWindow,
   backend: SessionBackendFactory,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    for (const agent of [...window.agents]) {
-      if (!source.agents.some((candidate) => candidate.id === agent.id))
-        yield* window.removeProjectedSession(agent);
-    }
-    for (const saved of source.agents) {
-      if (window.agents.some((candidate) => candidate.id === saved.id)) continue;
-      yield* window.startSession({
-        id: saved.id,
-        name: saved.name,
-        cmd: saved.cmd,
-        cwd: saved.cwd,
-        cols: saved.cols,
-        rows: saved.rows,
-        ...(saved.exited ? { exited: { code: saved.exitCode } } : { backend }),
-      });
-    }
-    window.project(source.layout, source.state);
-  });
-}
+) {
+  for (const agent of [...window.agents]) {
+    if (!source.agents.some((candidate) => candidate.id === agent.id))
+      yield* window.removeProjectedSession(agent);
+  }
+  for (const saved of source.agents) {
+    if (window.agents.some((candidate) => candidate.id === saved.id)) continue;
+    yield* window.startSession({
+      id: saved.id,
+      name: saved.name,
+      cmd: saved.cmd,
+      cwd: saved.cwd,
+      cols: saved.cols,
+      rows: saved.rows,
+      ...(saved.exited ? { exited: { code: saved.exitCode } } : { backend }),
+    });
+  }
+  window.project(source.layout, source.state);
+});

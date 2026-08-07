@@ -58,20 +58,22 @@ export const makeLayer = (definitions: readonly Integration[] = integrations) =>
       ];
 
       const find = (id: string) => byID.get(id);
-      const refresh = (integration: Integration, credential: Credential.Info) =>
-        Effect.gen(function* () {
-          if (credential.value.type === "key" || !integration.refresh) return credential.value;
-          const now = yield* Clock.currentTimeMillis;
-          if (credential.value.expires > now + Duration.minutes(5).pipe(Duration.toMillis))
-            return credential.value;
-          const value = yield* integration.refresh(credential.value).pipe(Effect.orDie);
-          yield* credentials.update(credential.id, { value });
-          yield* events.publish({
-            _tag: "credential.changed",
-            integration: credential.integrationID,
-          });
-          return value;
+      const refresh = Effect.fnUntraced(function* (
+        integration: Integration,
+        credential: Credential.Info,
+      ) {
+        if (credential.value.type === "key" || !integration.refresh) return credential.value;
+        const now = yield* Clock.currentTimeMillis;
+        if (credential.value.expires > now + Duration.minutes(5).pipe(Duration.toMillis))
+          return credential.value;
+        const value = yield* integration.refresh(credential.value).pipe(Effect.orDie);
+        yield* credentials.update(credential.id, { value });
+        yield* events.publish({
+          _tag: "credential.changed",
+          integration: credential.integrationID,
         });
+        return value;
+      });
 
       return {
         get: (id) =>

@@ -293,66 +293,64 @@ export function gitWorktreesFor(
   return none;
 }
 
-export function publishWorkspaceEventsEffect(
+export const publishWorkspaceEventsEffect = Effect.fnUntraced(function* (
   before: WorkspaceSnapshot,
   after: WorkspaceSnapshot,
   publish: (event: { _tag: string; [key: string]: unknown }) => Effect.Effect<void>,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    const beforeSpaces = new Map(before.spaces.map((space) => [space.id, space]));
-    const afterSpaces = new Map(after.spaces.map((space) => [space.id, space]));
-    for (const space of after.spaces) {
-      const oldSpace = beforeSpaces.get(space.id);
-      if (!oldSpace) {
-        yield* publish({ _tag: "space.changed", space: space.id, change: "created" });
-      } else if (oldSpace.name !== space.name) {
-        yield* publish({ _tag: "space.changed", space: space.id, change: "renamed" });
-      }
-      const oldWindows = new Map(oldSpace?.windows.map((window) => [window.number, window]) ?? []);
-      for (const window of space.windows) {
-        const oldWindow = oldWindows.get(window.number);
-        if (!oldWindow)
-          yield* publish({
-            _tag: "window.changed",
-            space: space.id,
-            window: window.number,
-            change: "created",
-          });
-        else if (oldWindow.name !== window.name)
-          yield* publish({
-            _tag: "window.changed",
-            space: space.id,
-            window: window.number,
-            change: "renamed",
-          });
-      }
-      for (const window of oldSpace?.windows ?? []) {
-        if (!space.windows.some((current) => current.number === window.number))
-          yield* publish({
-            _tag: "window.changed",
-            space: space.id,
-            window: window.number,
-            change: "closed",
-          });
-      }
+) {
+  const beforeSpaces = new Map(before.spaces.map((space) => [space.id, space]));
+  const afterSpaces = new Map(after.spaces.map((space) => [space.id, space]));
+  for (const space of after.spaces) {
+    const oldSpace = beforeSpaces.get(space.id);
+    if (!oldSpace) {
+      yield* publish({ _tag: "space.changed", space: space.id, change: "created" });
+    } else if (oldSpace.name !== space.name) {
+      yield* publish({ _tag: "space.changed", space: space.id, change: "renamed" });
     }
-    for (const space of before.spaces) {
-      if (!afterSpaces.has(space.id))
-        yield* publish({ _tag: "space.changed", space: space.id, change: "closed" });
+    const oldWindows = new Map(oldSpace?.windows.map((window) => [window.number, window]) ?? []);
+    for (const window of space.windows) {
+      const oldWindow = oldWindows.get(window.number);
+      if (!oldWindow)
+        yield* publish({
+          _tag: "window.changed",
+          space: space.id,
+          window: window.number,
+          change: "created",
+        });
+      else if (oldWindow.name !== window.name)
+        yield* publish({
+          _tag: "window.changed",
+          space: space.id,
+          window: window.number,
+          change: "renamed",
+        });
     }
-    for (const space of after.spaces)
-      for (const window of space.windows)
-        for (const pane of window.layout.root ? layoutPanes(window.layout.root) : [])
-          if (
-            !beforeSpaces
-              .get(space.id)
-              ?.windows.some((oldWindow) =>
-                layoutPanes(oldWindow.layout.root).some((oldPane) => oldPane.id === pane.id),
-              )
-          )
-            yield* publish({ _tag: "pane.opened", pane: pane.id, session: pane.agent });
-  });
-}
+    for (const window of oldSpace?.windows ?? []) {
+      if (!space.windows.some((current) => current.number === window.number))
+        yield* publish({
+          _tag: "window.changed",
+          space: space.id,
+          window: window.number,
+          change: "closed",
+        });
+    }
+  }
+  for (const space of before.spaces) {
+    if (!afterSpaces.has(space.id))
+      yield* publish({ _tag: "space.changed", space: space.id, change: "closed" });
+  }
+  for (const space of after.spaces)
+    for (const window of space.windows)
+      for (const pane of window.layout.root ? layoutPanes(window.layout.root) : [])
+        if (
+          !beforeSpaces
+            .get(space.id)
+            ?.windows.some((oldWindow) =>
+              layoutPanes(oldWindow.layout.root).some((oldPane) => oldPane.id === pane.id),
+            )
+        )
+          yield* publish({ _tag: "pane.opened", pane: pane.id, session: pane.agent });
+});
 
 export const makeSessionOps = (
   hostRef: { current: { prepare: any; write: any; interrupt: any } | null },

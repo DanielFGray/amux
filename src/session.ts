@@ -275,17 +275,16 @@ export const optionalEnvVar = (name: string) =>
     Effect.orDie,
   );
 
-export const stateRoot = () =>
-  Effect.gen(function* () {
-    const xdgStateHome = yield* optionalEnvVar("XDG_STATE_HOME");
-    if (Option.isSome(xdgStateHome)) return xdgStateHome.value;
-    const home = yield* optionalEnvVar("HOME");
-    return path.join(
-      Option.getOrElse(home, () => homedir()),
-      ".local",
-      "state",
-    );
-  });
+export const stateRoot = Effect.fnUntraced(function* () {
+  const xdgStateHome = yield* optionalEnvVar("XDG_STATE_HOME");
+  if (Option.isSome(xdgStateHome)) return xdgStateHome.value;
+  const home = yield* optionalEnvVar("HOME");
+  return path.join(
+    Option.getOrElse(home, () => homedir()),
+    ".local",
+    "state",
+  );
+});
 
 export function parseSessionState(
   value: unknown,
@@ -450,14 +449,13 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
       return lease.value;
     });
 
-    const writeLease = (lease: SessionLease) =>
-      Effect.gen(function* () {
-        const paths = yield* pathFor(lease.session);
-        yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
-        const temp = `${paths.lease}.${process.pid}.tmp`;
-        yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", { mode: 0o600 });
-        yield* fs.rename(temp, paths.lease);
-      });
+    const writeLease = Effect.fnUntraced(function* (lease: SessionLease) {
+      const paths = yield* pathFor(lease.session);
+      yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
+      const temp = `${paths.lease}.${process.pid}.tmp`;
+      yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", { mode: 0o600 });
+      yield* fs.rename(temp, paths.lease);
+    });
 
     const remove = (id: string) =>
       Effect.flatMap(pathFor(id), (sessionPaths) =>

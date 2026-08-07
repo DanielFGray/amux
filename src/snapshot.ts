@@ -136,74 +136,68 @@ export interface RestoreOptions {
  * and creating a window selects it, so doing it as we go would leave whatever
  * happened to be built last on screen rather than what was recorded.
  */
-export function restoreSpaces(
+export const restoreSpaces = Effect.fnUntraced(function* (
   spaces: SpaceSet,
   persisted: readonly PersistedSpace[],
   options: RestoreOptions = {},
-): Effect.Effect<Space[]> {
-  return Effect.gen(function* () {
-    const created: Space[] = [];
-    for (const saved of persisted) {
-      const space = yield* spaces.create(saved.name, saved.dir, saved.id);
-      created.push(space);
-      for (const savedWindow of saved.windows) {
-        yield* restoreWindow(space, savedWindow, options);
-      }
-      const active = saved.activeWindow;
-      const window = active === null ? undefined : space.windows.find((w) => w.number === active);
-      if (window) space.selectWindow(window);
+) {
+  const created: Space[] = [];
+  for (const saved of persisted) {
+    const space = yield* spaces.create(saved.name, saved.dir, saved.id);
+    created.push(space);
+    for (const savedWindow of saved.windows) {
+      yield* restoreWindow(space, savedWindow, options);
     }
-    return created;
-  });
-}
+    const active = saved.activeWindow;
+    const window = active === null ? undefined : space.windows.find((w) => w.number === active);
+    if (window) space.selectWindow(window);
+  }
+  return created;
+});
 
 /** Rebuild a whole session, including which space was on screen. */
-export function restoreSession(
+export const restoreSession = Effect.fnUntraced(function* (
   spaces: SpaceSet,
   state: SessionState,
   options: RestoreOptions = {},
-): Effect.Effect<Space[]> {
-  return Effect.gen(function* () {
-    const created = yield* restoreSpaces(spaces, state.spaces, options);
-    const active = state.activeSpace ? created.find((s) => s.id === state.activeSpace) : undefined;
-    if (active) spaces.activate(active);
-    return created;
-  });
-}
+) {
+  const created = yield* restoreSpaces(spaces, state.spaces, options);
+  const active = state.activeSpace ? created.find((s) => s.id === state.activeSpace) : undefined;
+  if (active) spaces.activate(active);
+  return created;
+});
 
 /** Rebuild one window into `space`, agents first and then the arrangement. */
-export function restoreWindow(
+export const restoreWindow = Effect.fnUntraced(function* (
   space: Space,
   saved: PersistedWindow,
   options: RestoreOptions = {},
-): Effect.Effect<Window> {
-  return Effect.gen(function* () {
-    const window = yield* space.newWindow(saved.name ?? undefined, saved.number);
-    for (const agent of saved.agents) {
-      yield* window.startSession({
-        id: agent.id,
-        name: agent.name,
-        kind: agent.kind,
-        cmd: agent.cmd,
-        cwd: agent.cwd,
-        cols: agent.cols,
-        rows: agent.rows,
-        // A dead agent is restored as a tombstone rather than re-run. Its own
-        // backend is fixed by that, so the option deliberately does not reach it.
-        ...(agent.exited ? { exited: { code: agent.exitCode } } : { backend: options.backend }),
-      });
-    }
+) {
+  const window = yield* space.newWindow(saved.name ?? undefined, saved.number);
+  for (const agent of saved.agents) {
+    yield* window.startSession({
+      id: agent.id,
+      name: agent.name,
+      kind: agent.kind,
+      cmd: agent.cmd,
+      cwd: agent.cwd,
+      cols: agent.cols,
+      rows: agent.rows,
+      // A dead agent is restored as a tombstone rather than re-run. Its own
+      // backend is fixed by that, so the option deliberately does not reach it.
+      ...(agent.exited ? { exited: { code: agent.exitCode } } : { backend: options.backend }),
+    });
+  }
 
-    // Only the live agents get panes: an exited one has no view in the running
-    // app either, and applyLayout would happily build it one.
-    const live = window.agents.filter((a) => !a.exited).map((a) => a.id);
-    if (live.length > 0) {
-      const layout = yield* restoredLayout(saved, live);
-      window.applyLayout(layout);
-    }
-    return window;
-  });
-}
+  // Only the live agents get panes: an exited one has no view in the running
+  // app either, and applyLayout would happily build it one.
+  const live = window.agents.filter((a) => !a.exited).map((a) => a.id);
+  if (live.length > 0) {
+    const layout = yield* restoredLayout(saved, live);
+    window.applyLayout(layout);
+  }
+  return window;
+});
 
 /**
  * The layout to rebuild with: the recorded one, or a preset over the survivors.
