@@ -48,6 +48,31 @@ describe("scroll", () => {
     pane.session.scrollBy = originalScrollBy;
   });
 
+  it("coalesces repeated output invalidations until the next frame", async () => {
+    const t = await createTestRenderer({ width: 30, height: 8 });
+    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
+    t.renderer.root.add(host);
+    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
+    disposers.push(async () => {
+      await disposeSpaces();
+      t.renderer.destroy();
+    });
+
+    const space = run(spaces.create("test", process.cwd()));
+    const window = run(space.newWindow());
+    const pane = run(window.init());
+    await t.renderOnce();
+    const before = pane.rebuildCount;
+
+    pane.write("input");
+    pane.invalidate();
+    pane.invalidate();
+    pane.invalidate();
+    await t.renderOnce();
+
+    expect(pane.rebuildCount - before).toBe(1);
+  });
+
   it("scroll wheel events reach the pane through nested boxes (App layout)", async () => {
     const t = await createTestRenderer({ width: 60, height: 15 });
     const outerRow = new BoxRenderable(t.renderer, { flexDirection: "row", flexGrow: 1 });

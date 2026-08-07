@@ -113,6 +113,7 @@ export class TerminalPane extends Renderable {
   #cachedCursor: CursorInfo | null = null;
   #cursorText = " ";
   #haveCache = false;
+  #rebuildCount = 0;
   #edges: Edges = { ...ALL_EDGES };
   #selectionAnchor: CellPoint | null = null;
   #selectionEnd: CellPoint | null = null;
@@ -156,13 +157,21 @@ export class TerminalPane extends Renderable {
   }
 
   #sync() {
-    this.session.resize(Math.max(1, this.width - this.#padX), Math.max(1, this.height - this.#padY));
+    this.session.resize(
+      Math.max(1, this.width - this.#padX),
+      Math.max(1, this.height - this.#padY),
+    );
   }
 
   /** Called by the workspace when the agent produces output. */
   invalidate() {
     this.#haveCache = false;
     this.requestRender();
+  }
+
+  /** Number of display-list rebuilds, exposed for performance diagnostics. */
+  get rebuildCount(): number {
+    return this.#rebuildCount;
   }
 
   protected override onResize(width: number, height: number): void {
@@ -375,6 +384,7 @@ export class TerminalPane extends Renderable {
   /** Walk the grid once and batch contiguous same-style cells into runs.
    *  drawText is width-aware; setCell is single-column and drops wide glyphs. */
   #rebuild(): void {
+    this.#rebuildCount++;
     const runs: Run[] = [];
     const cur = this.#state.cursor();
     this.#cachedCursor = cur;
