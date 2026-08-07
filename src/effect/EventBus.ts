@@ -31,6 +31,8 @@ const AgentFrameEvent = S.TaggedStruct("agent.frame", {
   frame: AgentFrame,
 });
 const EventsReady = S.TaggedStruct("events.ready", {});
+const CredentialChanged = S.TaggedStruct("credential.changed", { integration: S.String });
+const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
 
 /** Events emitted by the daemon, rather than observations made by a renderer. */
 const EventPayload = S.Union(
@@ -42,6 +44,8 @@ const EventPayload = S.Union(
   AgentStateChanged,
   AgentFrameEvent,
   EventsReady,
+  CredentialChanged,
+  ModelsRefreshed,
 );
 export const DaemonEvent = S.Struct({
   sequence: S.NonNegativeInt,
