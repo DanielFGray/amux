@@ -411,6 +411,20 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               );
             }),
           ),
+          Match.tag("agent.steer", (command) =>
+            Effect.gen(function* () {
+              const session = (yield* Ref.get(sessions)).get(command.session);
+              if (!session) return;
+              yield* session.steer(command.message);
+            }),
+          ),
+          Match.tag("agent.interrupt", (command) =>
+            Effect.gen(function* () {
+              const session = (yield* Ref.get(sessions)).get(command.session);
+              if (!session) return;
+              yield* session.interrupt(command.reason);
+            }),
+          ),
           Match.orElse(() => Effect.void),
         );
       }),

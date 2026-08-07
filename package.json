@@ -30,6 +30,8 @@
     "prepare": "effect-tsgo patch --typescript --oxlint"
   },
   "dependencies": {
+    "@effect/ai": "0.37.0",
+    "@effect/ai-openai": "0.41.0",
     "@effect/platform-bun": "0.91.2",
     "@opentui/core": "^0.5.1",
     "@opentui/keymap": "0.5.1",

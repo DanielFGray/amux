@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Schema as S } from "effect";
+import { Cause, Effect, Exit, JSONSchema, Schema as S } from "effect";
 import { LAYOUT_PRESETS } from "./layout.ts";
 
 /**
@@ -55,12 +55,14 @@ interface Meta {
   readonly exposure: CommandExposure;
 }
 
-type CommandDef<T extends string, Sch extends S.Schema.All, R> = {
+type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.Schema.All, R> = {
   readonly tag: T;
   readonly desc: string;
   readonly group: string;
   readonly target: CommandTarget;
   readonly exposure: CommandExposure;
+  readonly argumentFields: Fields;
+  readonly arguments: S.Schema<any, any, unknown>;
   readonly schema: Sch;
   readonly result: R;
 };
@@ -72,6 +74,7 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
   result?: R,
 ): CommandDef<
   Tag,
+  Fields,
   ReturnType<typeof S.TaggedStruct<Tag, Fields>>,
   R extends S.Schema.All ? R : typeof S.Void
 > => ({
@@ -80,10 +83,12 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
   group: meta.group,
   target: meta.target,
   exposure: meta.exposure,
+  argumentFields: fields,
   schema: S.TaggedStruct(tag, fields).annotations({
     identifier: tag,
     description: meta.desc,
   }) as any,
+  arguments: S.Struct(fields),
   result: (result ?? S.Void) as any,
 });
 
@@ -365,6 +370,21 @@ const AgentKill = define("agent.kill", Agent, {
   target: "workspace",
   exposure: "agent",
 });
+const AgentSteer = define(
+  "agent.steer",
+  { ...Agent, message: S.String },
+  { desc: "send a message to an agent", group: "agents", target: "workspace", exposure: "human" },
+);
+const AgentInterrupt = define(
+  "agent.interrupt",
+  { ...Agent, reason: S.optional(S.String) },
+  { desc: "interrupt an agent turn", group: "agents", target: "workspace", exposure: "human" },
+);
+const AgentNew = define(
+  "agent.new",
+  { prompt: S.String },
+  { desc: "start a native coding agent", group: "agents", target: "workspace", exposure: "human" },
+);
 const AgentRestart = define("agent.restart", Agent, {
   desc: "restart an exited agent",
   group: "agents",
@@ -521,6 +541,9 @@ export const COMMAND_DEFS = [
   WindowNextLayout,
   WindowSelectLayout,
   WindowSynchronize,
+  AgentNew,
+  AgentSteer,
+  AgentInterrupt,
   AgentKill,
   AgentRestart,
   AgentReveal,
@@ -541,6 +564,27 @@ export const COMMAND_DEFS = [
   AppSendPrefix,
   AppQuit,
 ] as const;
+
+export type AgentToolDefinition = {
+  readonly name: CommandTag;
+  readonly description: string;
+  readonly parameters: ReturnType<typeof JSONSchema.make>;
+};
+
+/** Generate the model-facing tool surface from the command declarations. */
+export function agentToolDefinitions(): readonly AgentToolDefinition[] {
+  return COMMAND_DEFS.filter((def) => def.exposure === "agent").map((def) => ({
+    name: def.tag,
+    description: def.desc,
+    parameters: JSONSchema.make(def.arguments),
+  }));
+}
+
+export function commandDefinition(tag: CommandTag) {
+  const def = COMMAND_DEFS.find((candidate) => candidate.tag === tag);
+  if (!def) throw new Error(`unknown command: ${tag}`);
+  return def;
+}
 
 type CommandDefs = typeof COMMAND_DEFS;
 

@@ -143,6 +143,7 @@ function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
           );
         yield* Ref.update(stateRef, (s) => ({ ...s, written: [...s.written, { id, data }] }));
       }),
+    interrupt: () => Effect.void,
   };
 }
 

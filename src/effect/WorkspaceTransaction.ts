@@ -38,6 +38,7 @@ interface SessionOps {
   readonly prepare: (agent: PersistedAgent) => Effect.Effect<PreparedSession>;
   readonly kill: (id: string) => Effect.Effect<void>;
   readonly write: (id: string, data: string) => Effect.Effect<void>;
+  readonly interrupt: (id: string, reason?: string) => Effect.Effect<void>;
 }
 
 interface WorktreeOps {
@@ -217,6 +218,10 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                   }
                   yield* Deferred.succeed(exitsSettled, true);
                   for (const p of prepared) yield* p.activate;
+                  for (const a of mutation.actions) {
+                    if (a._tag === "steer") yield* sessionOps.write(a.agent, a.message);
+                    if (a._tag === "interrupt") yield* sessionOps.interrupt(a.agent, a.reason);
+                  }
                   const final = yield* model.get;
                   return structuredClone(final.workspace);
                 }),
@@ -350,7 +355,7 @@ export function publishWorkspaceEventsEffect(
 }
 
 export const makeSessionOps = (
-  hostRef: { current: { prepare: any; write: any } | null },
+  hostRef: { current: { prepare: any; write: any; interrupt: any } | null },
   killFn: (id: string) => Effect.Effect<void, unknown>,
 ): Layer.Layer<WorkspaceTransactionSessionOps> =>
   Layer.succeed(WorkspaceTransactionSessionOps, {
@@ -365,6 +370,12 @@ export const makeSessionOps = (
       Effect.suspend(() =>
         hostRef.current
           ? hostRef.current.write(id, data).pipe(Effect.orDie)
+          : Effect.die(new Error("host not started")),
+      ),
+    interrupt: (id, reason) =>
+      Effect.suspend(() =>
+        hostRef.current
+          ? hostRef.current.interrupt(id, reason).pipe(Effect.orDie)
           : Effect.die(new Error("host not started")),
       ),
   } satisfies SessionOps);

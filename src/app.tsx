@@ -997,6 +997,9 @@ function buildApp(
     "window.select-layout": (value) => runWorkspace(value),
     "window.synchronize-panes": (value) => runWorkspace(value),
 
+    "agent.new": (value) => runWorkspace(value),
+    "agent.steer": (value) => runWorkspace(value),
+    "agent.interrupt": (value) => runWorkspace(value),
     "agent.kill": (value) => runWorkspace(value),
     "agent.restart": (value) => runWorkspace(value),
     "agent.reveal": (value) => runWorkspace(value),

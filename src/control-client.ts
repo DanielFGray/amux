@@ -36,8 +36,16 @@ export const connectControl = (
 ): Effect.Effect<ControlClient, ControlError, Scope.Scope | ControlEnv> =>
   Effect.gen(function* () {
     const paths = yield* sessionPaths(id);
+    return yield* connectControlPath(paths.socket);
+  }).pipe(Effect.mapError(toControlError));
+
+/** Connect directly when a supervised child has been given the socket path. */
+export const connectControlPath = (
+  socket: string,
+): Effect.Effect<ControlClient, ControlError, Scope.Scope> =>
+  Effect.gen(function* () {
     const protocol = RpcClient.layerProtocolSocket().pipe(
-      Layer.provide(NodeSocket.layerNet({ path: paths.socket })),
+      Layer.provide(NodeSocket.layerNet({ path: socket })),
       Layer.provide(ControlSerialization),
     );
     const context = yield* Layer.build(protocol);
@@ -52,6 +60,11 @@ export const controlCall = <A, E>(
   use: (client: ControlClient) => Effect.Effect<A, E>,
 ): Effect.Effect<A, ControlError | E, ControlEnv> =>
   Effect.scoped(Effect.flatMap(connectControl(id), use));
+
+export const controlCallPath = <A, E>(
+  socket: string,
+  use: (client: ControlClient) => Effect.Effect<A, E>,
+): Effect.Effect<A, ControlError | E> => Effect.scoped(Effect.flatMap(connectControlPath(socket), use));
 
 /**
  * Subscribe to daemon events for the enclosing control connection scope. The

@@ -5,6 +5,7 @@ import {
   COMMAND_META,
   Command,
   CommandError,
+  agentToolDefinitions,
   command,
   decodeCommand,
   makeCommands,
@@ -193,6 +194,34 @@ test("every verb annotates its own description and is unique", () => {
       exposure: def.exposure,
     });
   }
+});
+
+test("agent tools are generated from the command definitions", () => {
+  const tools = agentToolDefinitions();
+  const split = tools.find((tool) => tool.name === "pane.split");
+  const capture = tools.find((tool) => tool.name === "pane.capture");
+
+  expect(tools.map((tool) => tool.name)).toEqual(
+    COMMAND_DEFS.filter((def) => def.exposure === "agent").map((def) => def.tag),
+  );
+  expect(split).toMatchObject({
+    name: "pane.split",
+    description: "split the focused pane",
+    parameters: {
+      type: "object",
+      required: ["axis"],
+      properties: { axis: { type: "string", enum: ["row", "column"] } },
+    },
+  });
+  expect(capture).toMatchObject({
+    name: "pane.capture",
+    description: "capture the focused pane",
+    parameters: {
+      type: "object",
+      required: [],
+      properties: { session: { type: "string" } },
+    },
+  });
 });
 
 /**

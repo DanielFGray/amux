@@ -30,6 +30,8 @@ export interface SessionSpec {
   readonly cmd: readonly string[];
   readonly cwd?: string;
   readonly controlPath?: string;
+  /** The pane's owning daemon session, distinct from the agent id. */
+  readonly daemonSession?: string;
   readonly cols: number;
   readonly rows: number;
 }
@@ -41,6 +43,8 @@ export interface ManagedSession {
   readonly events?: Stream.Stream<AgentFrame, PtyError>;
   readonly exit: Effect.Effect<number | null, PtyError>;
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
+  readonly steer: (message: string) => Effect.Effect<void, PtyError>;
+  readonly interrupt: (reason?: string) => Effect.Effect<void, PtyError>;
   readonly resize: (cols: number, rows: number) => Effect.Effect<void, PtyError>;
   readonly kill: Effect.Effect<void, PtyError>;
   /** What is in the foreground of this session's tty right now. Only the
@@ -81,6 +85,8 @@ interface Backend {
   /** Resolves once the backend has fully terminated, with its exit code. */
   readonly wait: Promise<number | null>;
   write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>;
+  steer(message: string): Promise<void>;
+  interrupt(reason?: string): Promise<void>;
   resize(cols: number, rows: number): void;
   kill(): Promise<void>;
   close(): void;
@@ -103,6 +109,8 @@ function ptyBackend(spec: SessionSpec): Backend {
       return pty.wait.then(() => pty.exitCode);
     },
     write: (data, signal) => pty.write(data, signal),
+    steer: async () => {},
+    interrupt: async () => {},
     resize: (cols, rows) => pty.resize(cols, rows),
     kill: () => pty.kill(),
     close: () => pty.close(),
@@ -162,7 +170,10 @@ function agentProcessBackend(spec: SessionSpec): Backend {
       AMUX_SESSION: spec.id,
       AMUX_AGENT_ID: spec.id,
       ...(spec.controlPath ? { AMUX_CONTROL_SOCKET: spec.controlPath } : {}),
+      ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
       AMUX_PANE_ID: spec.id,
+      ...(spec.cwd ? { AMUX_AGENT_CWD: spec.cwd } : {}),
+      AMUX_AGENT_SIZE: JSON.stringify({ cols: spec.cols, rows: spec.rows }),
     },
     stdin: "pipe",
     stdout: "pipe",
@@ -219,6 +230,9 @@ function agentProcessBackend(spec: SessionSpec): Backend {
         session: spec.id,
         message: typeof data === "string" ? data : new TextDecoder().decode(data),
       }),
+    steer: (message) => send({ _tag: "agent.steer", session: spec.id, message }),
+    interrupt: (reason) =>
+      send({ _tag: "agent.interrupt", session: spec.id, ...(reason ? { reason } : {}) }),
     resize: (cols, rows) => void send({ _tag: "resize", session: spec.id, cols, rows }),
     kill: async () => {
       if (!closed) {
@@ -374,6 +388,16 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
                   : Effect.fail(asPtyError("write", error)),
               ),
             ),
+          steer: (message) =>
+            Effect.tryPromise({
+              try: () => backend.steer(message),
+              catch: (error) => asPtyError("steer", error),
+            }),
+          interrupt: (reason) =>
+            Effect.tryPromise({
+              try: () => backend.interrupt(reason),
+              catch: (error) => asPtyError("interrupt", error),
+            }),
           resize: (cols, rows) =>
             isTerminalSize(cols, rows)
               ? commandResult((done) => ({ _tag: "resize", cols, rows, done }))

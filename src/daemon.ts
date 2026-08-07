@@ -346,6 +346,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       layerAttachHost({
         path: paths.attach,
         controlPath: paths.control,
+        daemonSession: id,
         onAttach: attachEffect,
         onDetach: detachEffect,
         onActivity: touchEffect,
@@ -387,6 +388,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               cmd: a.cmd,
               cwd: a.cwd,
               controlPath: paths.control,
+              daemonSession: id,
               cols: a.cols,
               rows: a.rows,
             }).pipe(

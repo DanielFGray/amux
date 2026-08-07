@@ -741,3 +741,24 @@ test("pane.resize-divider adjusts neighbour weights", () => {
   expect(afterLeft).not.toBe(beforeLeft);
   expect(result.snapshot.spaces[0]!.windows[0]!.state.preset).toBeNull();
 });
+
+test("agent.new creates an agent session and queues its initial prompt", () => {
+  const current = run(workspaceFromSession(base(twoPaneLayout)));
+  const mutation = applyWorkspaceCommand(
+    current,
+    command("agent.new", { prompt: "Inspect this" }),
+    {
+      cwd: "/tmp",
+      shell: ["sh"],
+      size: { cols: 80, rows: 24 },
+    },
+  );
+  const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
+  expect(agent.kind).toBe("agent");
+  expect(agent.cmd.at(-1)).toContain("src/agent/native-worker.ts");
+  expect(mutation.actions).toContainEqual({
+    _tag: "steer",
+    agent: agent.id,
+    message: "Inspect this",
+  });
+});

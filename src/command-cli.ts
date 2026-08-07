@@ -1,10 +1,11 @@
+import { JSONSchema } from "effect";
 import { COMMAND_DEFS, COMMAND_META, type CommandTag } from "./commands.ts";
 
 /**
  * Field metadata derived from each command's schema fields.
  * Keyed by command tag, mapping field name → kind.
  */
-type FieldKind = "string" | "int" | "boolean" | "literal";
+type FieldKind = "string" | "int" | "boolean" | "literal" | "array";
 type FieldShape = {
   name: string;
   kind: FieldKind;
@@ -12,117 +13,47 @@ type FieldShape = {
   literals?: readonly string[];
 };
 
-const FIELD_KINDS: Record<string, Record<string, FieldShape>> = {};
+type JsonSchemaObject = ReturnType<typeof JSONSchema.make> & {
+  properties?: Record<string, JsonSchemaObject>;
+  required?: readonly string[];
+  type?: string;
+  enum?: readonly string[];
+  items?: JsonSchemaObject;
+  $ref?: string;
+  $defs?: Record<string, JsonSchemaObject>;
+};
 
-function registerFields(
-  tag: CommandTag,
-  shapes: [string, FieldKind, { required?: boolean; literals?: readonly string[] }?][],
-) {
-  const fields: Record<string, FieldShape> = {};
-  for (const [name, kind, opts] of shapes) {
-    fields[name] = { name, kind, required: opts?.required ?? true, literals: opts?.literals };
-  }
-  FIELD_KINDS[tag] = fields;
+function commandSchema(tag: CommandTag): JsonSchemaObject {
+  const def = COMMAND_DEFS.find((item) => item.tag === tag);
+  if (!def) throw new Error(`unknown command: ${tag}`);
+  return JSONSchema.make(def.arguments) as JsonSchemaObject;
 }
 
-// Register field metadata for each command. Must stay in sync with commands.ts.
-registerFields("pane.split", [["axis", "literal", { literals: ["row", "column"] }]]);
-registerFields("pane.next", []);
-registerFields("pane.last", []);
-registerFields("pane.focus", [
-  ["direction", "literal", { literals: ["left", "right", "up", "down"] }],
-]);
-registerFields("pane.select", [["pane", "string"]]);
-registerFields("pane.resize", [
-  ["direction", "literal", { literals: ["left", "right", "up", "down"] }],
-]);
-registerFields("pane.resize-divider", [
-  ["path", "string"],
-  ["index", "int"],
-  ["delta", "int"],
-]);
-registerFields("pane.zoom", []);
-registerFields("pane.swap", [["to", "literal", { literals: ["previous", "next"] }]]);
-registerFields("pane.close", []);
-registerFields("pane.break", []);
-registerFields("pane.join", [["source", "int", { required: false }]]);
-registerFields("pane.move", [["space", "string"]]);
-registerFields("pane.send-keys", [["keys", "string"]]);
-registerFields("pane.capture", [["session", "string", { required: false }]]);
-registerFields("pane.copy-mode", []);
+function resolveSchema(schema: JsonSchemaObject, root: JsonSchemaObject): JsonSchemaObject {
+  const key = schema.$ref?.match(/^#\/\$defs\/(.+)$/)?.[1];
+  return key && root.$defs?.[key] ? root.$defs[key]! : schema;
+}
 
-registerFields("buffer.set", [
-  ["name", "string", { required: false }],
-  ["data", "string"],
-]);
-registerFields("buffer.paste", [["name", "string", { required: false }]]);
-registerFields("buffer.list", []);
-registerFields("buffer.delete", [["name", "string", { required: false }]]);
-registerFields("buffer.show", [["name", "string", { required: false }]]);
-registerFields("buffer.choose", []);
-
-registerFields("window.new", []);
-registerFields("window.next", []);
-registerFields("window.previous", []);
-registerFields("window.last", []);
-registerFields("window.select", [
-  ["space", "string", { required: false }],
-  ["number", "int"],
-]);
-registerFields("window.rename", [
-  ["space", "string", { required: false }],
-  ["window", "int", { required: false }],
-  ["name", "string"],
-]);
-registerFields("window.close", [
-  ["space", "string", { required: false }],
-  ["window", "int", { required: false }],
-]);
-registerFields("window.next-layout", []);
-registerFields("window.select-layout", [
-  ["preset", "string"] as [string, FieldKind], // coerce to string, validated by schema
-]);
-registerFields("window.synchronize-panes", []);
-
-registerFields("agent.kill", [["agent", "string", { required: false }]]);
-registerFields("agent.restart", [["agent", "string", { required: false }]]);
-registerFields("agent.reveal", [["agent", "string"]]);
-registerFields("agent.next-blocked", []);
-
-registerFields("space.new", [
-  ["name", "string", { required: false }],
-  ["dir", "string", { required: false }],
-  ["branch", "string", { required: false }],
-  ["base", "string", { required: false }],
-]);
-registerFields("space.select", [["space", "string"]]);
-registerFields("space.rename", [
-  ["space", "string", { required: false }],
-  ["name", "string"],
-]);
-registerFields("space.close", [["space", "string", { required: false }]]);
-registerFields("space.next", []);
-registerFields("space.previous", []);
-
-registerFields("config.set", [
-  ["name", "string"],
-  ["value", "string"],
-]);
-registerFields("config.toggle", [["name", "string"]]);
-registerFields("config.adjust", [
-  ["name", "string"],
-  ["by", "int"],
-]);
-registerFields("config.reset", [["name", "string"]]);
-
-registerFields("app.help", []);
-registerFields("app.command-palette", []);
-registerFields("app.settings", []);
-registerFields("app.send-prefix", []);
-registerFields("app.quit", []);
+function fieldShape(
+  name: string,
+  schema: JsonSchemaObject,
+  root: JsonSchemaObject,
+  required: boolean,
+): FieldShape {
+  const resolved = resolveSchema(schema, root);
+  if (resolved.enum) return { name, kind: "literal", required, literals: resolved.enum };
+  if (resolved.type === "integer") return { name, kind: "int", required };
+  if (resolved.type === "boolean") return { name, kind: "boolean", required };
+  if (resolved.type === "array") return { name, kind: "array", required };
+  return { name, kind: "string", required };
+}
 
 export function fieldNames(tag: CommandTag): FieldShape[] {
-  return Object.values(FIELD_KINDS[tag] ?? {});
+  const schema = commandSchema(tag);
+  const required = new Set(schema.required ?? []);
+  return Object.entries(schema.properties ?? {}).map(([name, field]) =>
+    fieldShape(name, field, schema, required.has(name)),
+  );
 }
 
 export function parseArgs(
@@ -208,6 +139,14 @@ function coerce(value: string | undefined, field: FieldShape): unknown {
       const n = Number(value);
       if (!Number.isSafeInteger(n)) return undefined;
       return n;
+    }
+    case "array": {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : undefined;
+      } catch {
+        return undefined;
+      }
     }
     case "boolean": {
       if (value === "true" || value === "1") return true;

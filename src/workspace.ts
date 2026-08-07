@@ -114,6 +114,8 @@ export interface WorkspaceCommandContext {
   size: LayoutSize;
   shell: string[];
   cwd: string;
+  /** Native agents execute workspace commands in the window containing them. */
+  agent?: string;
   /** Client-observed attention state, used only by agent.next-blocked. */
   blockedAgents?: readonly string[];
   /** Compiled bytes for pane.send-keys; the command remains the vocabulary. */
@@ -225,6 +227,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
   size: TerminalSize,
   shell: S.Array(NonEmptyString).pipe(S.minItems(1)),
   cwd: NonEmptyString,
+  agent: S.optional(NonEmptyString),
   blockedAgents: S.optional(S.Array(NonEmptyString)),
   input: S.optional(S.String),
   worktreesRoot: S.optional(S.String),
@@ -232,6 +235,8 @@ export const WorkspaceCommandContextSchema = S.Struct({
 
 export type WorkspaceAction =
   | { readonly _tag: "spawn"; readonly agent: PersistedAgent }
+  | { readonly _tag: "steer"; readonly agent: string; readonly message: string }
+  | { readonly _tag: "interrupt"; readonly agent: string; readonly reason?: string }
   | { readonly _tag: "kill"; readonly agent: string }
   | { readonly _tag: "restart"; readonly agent: string }
   | { readonly _tag: "input"; readonly agent: string; readonly data: string };
@@ -485,7 +490,12 @@ export function applyWorkspaceCommand(
   const before = JSON.stringify(next);
   const space = () => findSpace(next, "space" in command ? command.space : undefined);
   const window = () => findWindow(next, command as { space?: string; window?: number });
-  const activeWindow = () => findWindow(next, {});
+  const activeWindow = () =>
+    context.agent
+      ? [...workspaceWindows(next)].find((entry) =>
+          entry.window.agents.some((agent) => agent.id === context.agent),
+        ) ?? null
+      : findWindow(next, {});
   const setFocus = (target: WorkspaceWindow, id: string | undefined) => {
     if (!id || target.state.focus === id) return;
     target.state.zoom = target.state.zoom?.pane === id ? target.state.zoom : null;
@@ -494,11 +504,15 @@ export function applyWorkspaceCommand(
     target.layout = makeLayout(target.layout.root, id);
   };
   const addAgent = (target: WorkspaceWindow, dir: string): PersistedAgent => {
+    const native = command._tag === "agent.new";
     const agent: PersistedAgent = {
       id: newAgentId(),
-      name: commandName(context.shell),
-      cmd: [...context.shell],
+      name: native ? "native-agent" : commandName(context.shell),
+      cmd: native
+        ? [process.execPath, new URL("./agent/native-worker.ts", import.meta.url).pathname]
+        : [...context.shell],
       cwd: dir,
+      ...(native ? { kind: "agent" as const } : {}),
       cols: Math.max(1, context.size.cols),
       rows: Math.max(1, context.size.rows),
       exited: false,
@@ -506,6 +520,7 @@ export function applyWorkspaceCommand(
     };
     target.agents.push(agent);
     actions.push({ _tag: "spawn", agent });
+    if (native) actions.push({ _tag: "steer", agent: agent.id, message: command.prompt });
     return agent;
   };
   const addWindow = (target: WorkspaceSpace): WorkspaceWindow => {
@@ -532,6 +547,26 @@ export function applyWorkspaceCommand(
   };
 
   switch (command._tag) {
+    case "agent.steer": {
+      if (command.agent) actions.push({ _tag: "steer", agent: command.agent, message: command.message });
+      break;
+    }
+    case "agent.interrupt": {
+      if (command.agent)
+        actions.push({ _tag: "interrupt", agent: command.agent, ...(command.reason ? { reason: command.reason } : {}) });
+      break;
+    }
+    case "agent.new": {
+      const target = activeWindow();
+      if (!target) break;
+      const agent = addAgent(target.window, target.space.dir);
+      const pane = { id: newPaneId(), agent: agent.id };
+      target.window.layout = target.window.layout.root
+        ? splitLayout(target.window.layout, 0, "row", pane)
+        : makeLayout({ type: "pane", ...pane, weight: 1 }, pane.id);
+      target.window.state.focus = pane.id;
+      break;
+    }
     case "pane.split": {
       const found = activeWindow();
       if (!found) break;

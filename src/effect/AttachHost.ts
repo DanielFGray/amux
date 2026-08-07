@@ -34,6 +34,7 @@ export interface AttachHostOptions {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
   readonly path: string;
   readonly controlPath?: string;
+  readonly daemonSession?: string;
   readonly idleTimeoutSeconds?: number;
   /** Record or reject an attachment; failing rejects the client's hello. */
   readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
@@ -83,6 +84,7 @@ export interface AttachHostService {
   readonly paste: (id: string, data: Uint8Array) => Effect.Effect<void, PtyError>;
   /** Raw child input used by daemon-side pane.send-keys. */
   readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
+  readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
   readonly capture: (id: string) => Effect.Effect<string, PtyError>;
   /**
    * The server's paste buffer stack. Owned here because it belongs to the
@@ -195,9 +197,24 @@ const make = (
           ),
     });
     return {
-      prepare: (spec) => Scope.extend(supervisor.prepare(spec), sessions),
+      prepare: (spec) =>
+        Scope.extend(
+          supervisor.prepare({
+            ...spec,
+            ...(options.controlPath ? { controlPath: options.controlPath } : {}),
+            ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
+          }),
+          sessions,
+        ),
       spawn: (spec) =>
-        Scope.extend(supervisor.prepare(spec), sessions).pipe(
+        Scope.extend(
+          supervisor.prepare({
+            ...spec,
+            ...(options.controlPath ? { controlPath: options.controlPath } : {}),
+            ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
+          }),
+          sessions,
+        ).pipe(
           Effect.tap((prepared) => prepared.activate),
           Effect.map((prepared) => prepared.session),
         ),
@@ -211,6 +228,7 @@ const make = (
           session: id,
           data: typeof data === "string" ? new TextEncoder().encode(data) : data,
         }),
+      interrupt: (id, reason) => supervisor.handle({ _tag: "agent.interrupt", session: id, ...(reason ? { reason } : {}) }),
       capture: supervisor.capture,
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),

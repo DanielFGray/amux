@@ -57,7 +57,7 @@ bun run cli           # unified `amux` CLI entry
 Tasks live in `prog`:
 
 ```bash
-prog prime                    # workflow context
+prog prime          # workflow context
 prog ready -p amux  # unblocked tasks
 ```
 
@@ -79,7 +79,7 @@ prog ready -p amux  # unblocked tasks
 
 Available in sibling directories:
 
-- fibrae/ — Effect-powered JSX renderer
-- pg-sourcerer/ — codegen tool
-- effect-devtui/ — otel collector TUI and MCP
-- tsdoctor/ — TypeScript LSP features from CLI
+- opencode/ — opentui + effect-ts agent harness
+- opentui/ - opentui source including lots of examples
+- herdr/ - inspiration for this project
+- tsdoctor/ — TypeScript LSP features from CLI, very helpful when debugging type issues
