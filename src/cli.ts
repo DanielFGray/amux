@@ -11,7 +11,7 @@
  */
 import { Effect, Schema } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
-import { Session, SessionEnv, isSessionId } from "./session.ts";
+import { Session, isSessionId } from "./session.ts";
 import { controlCall } from "./control-client.ts";
 import { COMMAND_META, Command, type CommandTag } from "./commands.ts";
 import { parseArgs, generateHelp } from "./command-cli.ts";
@@ -24,7 +24,6 @@ const runRpc = (id: string, value: Command) =>
   controlCall(id, (control) => control.Run({ value })).pipe(
     Effect.provide(Session.Default),
     Effect.provide(BunFileSystem.layer),
-    Effect.provideService(SessionEnv, process.env),
   );
 
 async function runCommand(id: string, tag: CommandTag, argv: string[]): Promise<number> {

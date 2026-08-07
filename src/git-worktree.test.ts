@@ -2,11 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect } from "effect";
+import { ConfigProvider, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
-import { Session, SessionEnv } from "./session.ts";
+import { Session } from "./session.ts";
 import { Command, command } from "./commands.ts";
 import {
   gitWorktreeAdd,
@@ -29,14 +29,14 @@ async function env() {
 }
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionEnv | Session | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     effect.pipe(
       Effect.provide(Session.Default),
       Effect.provide(BunFileSystem.layer),
-      Effect.provideService(SessionEnv, e),
+      Effect.withConfigProvider(ConfigProvider.fromJson(e)),
     ),
   );
 const open = (id: string, e: NodeJS.ProcessEnv) => run(Effect.scoped(startDaemon(id)), e);

@@ -9,7 +9,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { Effect, Exit, pipe, Scope } from "effect";
+import { ConfigProvider, Effect, Exit, pipe, Scope } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -23,7 +23,7 @@ import { SessionClient, type SessionClientShape } from "./client.ts";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { captureVisible } from "./capture.ts";
 import { MODE_ALT_SCREEN } from "./ghostty.ts";
-import { processAlive, sessionPaths, Session, SessionEnv } from "./session.ts";
+import { processAlive, sessionPaths, Session } from "./session.ts";
 import { Option, Stream } from "effect";
 import {
   decodeAttachFrames,
@@ -52,14 +52,14 @@ const connect = (
 const agents: Agent[] = [];
 let nextProjection = 0;
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     effect.pipe(
       Effect.provide(Session.Default),
       Effect.provide(BunFileSystem.layer),
-      Effect.provideService(SessionEnv, env),
+      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
   );
 
@@ -1145,7 +1145,7 @@ test("a natural terminal exit is published only after its workspace generation i
       return Session.load("exit-order").pipe(
         Effect.provide(Session.Default),
         Effect.provide(BunFileSystem.layer),
-        Effect.provideService(SessionEnv, env),
+        Effect.withConfigProvider(ConfigProvider.fromJson(env)),
         Effect.map((saved) => {
           const agent = saved?.spaces
             .flatMap((space) => space.windows)
@@ -1195,7 +1195,7 @@ test("a transient natural-exit write failure does not consume the terminal exit 
       return Session.load("exit-retry-order").pipe(
         Effect.provide(Session.Default),
         Effect.provide(BunFileSystem.layer),
-        Effect.provideService(SessionEnv, env),
+        Effect.withConfigProvider(ConfigProvider.fromJson(env)),
         Effect.map((saved) => {
           const agent = saved?.spaces
             .flatMap((space) => space.windows)

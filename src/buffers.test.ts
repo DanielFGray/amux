@@ -12,7 +12,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Scope } from "effect";
+import { ConfigProvider, Effect, Scope } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
@@ -21,7 +21,7 @@ import {
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
-import { Session, SessionEnv } from "./session.ts";
+import { Session } from "./session.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
@@ -38,7 +38,7 @@ async function started(id: string) {
     Effect.scoped(startDaemon(id)).pipe(
       Effect.provide(Session.Default),
       Effect.provide(BunFileSystem.layer),
-      Effect.provideService(SessionEnv, env),
+      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
   );
   daemons.push(daemon);
@@ -51,7 +51,12 @@ const rpc = <A, E>(
   id: string,
   use: (control: ControlClient) => Effect.Effect<A, E>,
   env: NodeJS.ProcessEnv,
-) => Effect.runPromise(controlCall(id, use).pipe(Effect.provideService(SessionEnv, env)));
+) =>
+  Effect.runPromise(
+    controlCall(id, use).pipe(
+      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
+    ),
+  );
 
 /** The failure message of a control call that is expected to be refused. */
 const refusal = <A, E>(

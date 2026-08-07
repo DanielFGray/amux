@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { Effect, Runtime, Schedule, Scope, Stream, Schema as S } from "effect";
+import { Effect, Option, Runtime, Schedule, Scope, Stream, Schema as S } from "effect";
 import { FileSystem } from "@effect/platform";
 import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SpawnBackend } from "./backend.ts";
@@ -14,9 +14,9 @@ import {
 } from "./workspace.ts";
 import {
   processAlive,
+  optionalEnvVar,
   sessionPaths,
   Session,
-  SessionEnv,
   SessionIdError,
   type SessionState,
 } from "./session.ts";
@@ -75,7 +75,7 @@ export const SessionClient = {
   ): Effect.Effect<
     SessionClientShape,
     ControlError | SessionClientError | SessionIdError,
-    Scope.Scope | SessionEnv | Session | FileSystem.FileSystem
+    Scope.Scope | Session | FileSystem.FileSystem
   > {
     return make(id, options);
   },
@@ -87,7 +87,7 @@ const make = (
 ): Effect.Effect<
   SessionClientShape,
   ControlError | SessionClientError | SessionIdError,
-  Scope.Scope | SessionEnv | Session | FileSystem.FileSystem
+  Scope.Scope | Session | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     if (options.autostart !== false) yield* ensureDaemon(id);
@@ -197,7 +197,7 @@ const make = (
 
 export function daemonAlive(
   id: string,
-): Effect.Effect<boolean, never, SessionEnv | Session | FileSystem.FileSystem> {
+): Effect.Effect<boolean, never, Session | FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const lease = yield* Session.readLease(id).pipe(Effect.orElseSucceed(() => null));
     if (!lease || !processAlive(lease.pid)) return false;
@@ -210,13 +210,23 @@ export function daemonAlive(
 
 export function ensureDaemon(
   id: string,
-): Effect.Effect<void, SessionClientError, SessionEnv | Session | FileSystem.FileSystem> {
+): Effect.Effect<void, SessionClientError, Session | FileSystem.FileSystem> {
   return Effect.gen(function* () {
     if (yield* daemonAlive(id)) return;
-    const env = yield* SessionEnv;
+    const home = yield* optionalEnvVar("HOME");
+    const stateHome = yield* optionalEnvVar("XDG_STATE_HOME");
     const entry = new URL("./daemon-main.ts", import.meta.url).pathname;
     const child = yield* Effect.try({
-      try: () => spawn(process.execPath, [entry, id], { detached: true, stdio: "ignore", env }),
+      try: () =>
+        spawn(process.execPath, [entry, id], {
+          detached: true,
+          stdio: "ignore",
+          env: {
+            ...process.env,
+            ...(Option.isSome(home) ? { HOME: home.value } : {}),
+            ...(Option.isSome(stateHome) ? { XDG_STATE_HOME: stateHome.value } : {}),
+          },
+        }),
       catch: (error) => new SessionClientError({ message: errorMessage(error) }),
     });
     child.unref();

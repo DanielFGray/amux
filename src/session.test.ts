@@ -4,14 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
-import { Effect } from "effect";
+import { ConfigProvider, Effect } from "effect";
 import {
   isSessionId,
   parseSessionState,
   Session,
   sessionPaths,
   sessionRoot,
-  SessionEnv,
 } from "./session.ts";
 import { MAX_SPACES } from "./limits.ts";
 
@@ -31,14 +30,14 @@ function state(id: string) {
 }
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     effect.pipe(
       Effect.provide(Session.Default),
       Effect.provide(BunFileSystem.layer),
-      Effect.provideService(SessionEnv, env),
+      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
   );
 

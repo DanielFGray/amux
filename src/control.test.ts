@@ -10,14 +10,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Option, Scope, Stream } from "effect";
+import { ConfigProvider, Effect, Option, Scope, Stream } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { controlCall, connectControl, type ControlClient } from "./control-client.ts";
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
-import { Session, SessionEnv, sessionPaths } from "./session.ts";
+import { Session, sessionPaths } from "./session.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
 
 const dirs: string[] = [];
@@ -28,14 +28,14 @@ afterEach(async () => {
 });
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem | Scope.Scope>,
+  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem | Scope.Scope>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     Effect.scoped(effect).pipe(
       Effect.provide(Session.Default),
       Effect.provide(BunFileSystem.layer),
-      Effect.provideService(SessionEnv, env),
+      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
   );
 

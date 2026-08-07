@@ -2,7 +2,7 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { FileSystem } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
-import { Clock, Context, Effect, Exit, Option, Schema as S } from "effect";
+import { Clock, Config, Context, Effect, Exit, Option, Schema as S } from "effect";
 import { decodeLayout, layoutPanes } from "./layout.ts";
 import {
   MAX_AGENTS,
@@ -11,10 +11,6 @@ import {
   MAX_SPACES,
   MAX_WINDOWS,
 } from "./limits.ts";
-
-export class SessionEnv extends Context.Reference<SessionEnv>()("SessionEnv", {
-  defaultValue: () => process.env,
-}) {}
 
 export class SessionId extends Context.Tag("SessionId")<SessionId, string>() {}
 
@@ -253,46 +249,39 @@ export interface SessionPaths {
   control: string;
 }
 
-export function sessionRoot(): Effect.Effect<string, never, SessionEnv> {
-  return Effect.map(SessionEnv, (env) =>
-    path.join(
-      env.XDG_STATE_HOME || path.join(env.HOME || homedir(), ".local", "state"),
-      "amux",
-      "sessions",
-    ),
-  );
+export function sessionRoot(): Effect.Effect<string> {
+  return Effect.map(stateRoot(), (root) => path.join(root, "amux", "sessions"));
 }
 
 /** Root directory for space worktrees, siblings to the sessions root. */
-export function worktreesRoot(): Effect.Effect<string, never, SessionEnv> {
-  return Effect.map(SessionEnv, (env) =>
-    path.join(
-      env.XDG_STATE_HOME || path.join(env.HOME || homedir(), ".local", "state"),
-      "amux",
-      "worktrees",
-    ),
-  );
+export function worktreesRoot(): Effect.Effect<string> {
+  return Effect.map(stateRoot(), (root) => path.join(root, "amux", "worktrees"));
 }
 
-export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdError, SessionEnv> {
+export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdError> {
   return Effect.gen(function* () {
     if (!isSessionId(id)) {
       return yield* new SessionIdError({ message: `invalid session id ${JSON.stringify(id)}` });
     }
     const root = yield* sessionRoot();
-    const rootPath = path.join(root, id);
-    return {
-      root: rootPath,
-      state: path.join(rootPath, "session.json"),
-      backup: path.join(rootPath, "session.json.prev"),
-      lease: path.join(rootPath, "lease.json"),
-      lock: path.join(rootPath, "daemon.lock"),
-      socket: path.join(rootPath, "daemon.sock"),
-      attach: path.join(rootPath, "attach.sock"),
-      control: path.join(rootPath, "control.sock"),
-    };
+    return sessionPathsFromRoot(id, root);
   });
 }
+
+/** Read an environment variable while preserving the shell's empty-is-unset behavior. */
+export const optionalEnvVar = (name: string) =>
+  Config.option(Config.string(name)).pipe(
+    Config.map(Option.filter((value) => value.length > 0)),
+    Effect.orDie,
+  );
+
+const stateRoot = () =>
+  Effect.gen(function* () {
+    const xdgStateHome = yield* optionalEnvVar("XDG_STATE_HOME");
+    if (Option.isSome(xdgStateHome)) return xdgStateHome.value;
+    const home = yield* optionalEnvVar("HOME");
+    return path.join(Option.getOrElse(home, () => homedir()), ".local", "state");
+  });
 
 export function parseSessionState(
   value: unknown,
@@ -410,12 +399,15 @@ const jsonFile = <A, I>(path: string, schema: S.Schema<A, I>) =>
 export class Session extends Effect.Service<Session>()("Session", {
   accessors: true,
   effect: Effect.gen(function* () {
-    const env = yield* SessionEnv;
     const fs = yield* FileSystem.FileSystem;
-    const paths = (id: string) => sessionPaths(id).pipe(Effect.provideService(SessionEnv, env));
+    const root = yield* sessionRoot();
+    const pathFor = (id: string): Effect.Effect<SessionPaths, SessionIdError> =>
+      isSessionId(id)
+        ? Effect.succeed(sessionPathsFromRoot(id, root))
+        : Effect.fail(new SessionIdError({ message: `invalid session id ${JSON.stringify(id)}` }));
 
     const load = Effect.fnUntraced(function* (id: string) {
-      const sessionPaths = yield* paths(id);
+      const sessionPaths = yield* pathFor(id);
       const current = yield* jsonFile(sessionPaths.state, SessionStateSchema);
       if (Option.isSome(current) && validState(current.value, id)) return current.value;
       const backup = yield* jsonFile(sessionPaths.backup, SessionStateSchema);
@@ -424,7 +416,7 @@ export class Session extends Effect.Service<Session>()("Session", {
 
     const save = Effect.fnUntraced(function* (state: SessionState) {
       yield* parseSessionState(state);
-      const paths = yield* sessionPaths(state.id).pipe(Effect.provideService(SessionEnv, env));
+      const paths = yield* pathFor(state.id);
       yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
       const temp = `${paths.state}.${process.pid}.tmp`;
       const updatedAt = yield* Clock.currentTimeMillis;
@@ -448,7 +440,7 @@ export class Session extends Effect.Service<Session>()("Session", {
     }, Effect.scoped);
 
     const readLease = Effect.fnUntraced(function* (id: string) {
-      const sessionPaths = yield* paths(id);
+      const sessionPaths = yield* pathFor(id);
       const lease = yield* jsonFile(sessionPaths.lease, SessionLeaseSchema);
       if (Option.isNone(lease) || lease.value.session !== id) return null;
       return lease.value;
@@ -456,20 +448,19 @@ export class Session extends Effect.Service<Session>()("Session", {
 
     const writeLease = (lease: SessionLease) =>
       Effect.gen(function* () {
-        const paths = yield* sessionPaths(lease.session);
+        const paths = yield* pathFor(lease.session);
         yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
         const temp = `${paths.lease}.${process.pid}.tmp`;
         yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", { mode: 0o600 });
         yield* fs.rename(temp, paths.lease);
-      }).pipe(Effect.provideService(SessionEnv, env));
+      });
 
     const remove = (id: string) =>
-      Effect.flatMap(paths(id), (sessionPaths) =>
+      Effect.flatMap(pathFor(id), (sessionPaths) =>
         fs.remove(sessionPaths.root, { recursive: true, force: true }),
       );
 
     const cleanupStale = Effect.gen(function* () {
-      const root = yield* sessionRoot();
       const entries = yield* fs
         .readDirectory(root)
         .pipe(
@@ -480,7 +471,7 @@ export class Session extends Effect.Service<Session>()("Session", {
       const removed: string[] = [];
       for (const id of entries) {
         if (!isSessionId(id)) continue;
-        const paths = yield* sessionPaths(id);
+        const paths = sessionPathsFromRoot(id, root);
         const locked = yield* fs.stat(paths.lock).pipe(
           Effect.map(() => true),
           Effect.catchTag("SystemError", (error) =>
@@ -494,16 +485,13 @@ export class Session extends Effect.Service<Session>()("Session", {
         removed.push(id);
       }
       return removed;
-    }).pipe(Effect.provideService(SessionEnv, env));
+    });
 
     const exists = Effect.fnUntraced(function* (id: string) {
-      return yield* paths(id).pipe(
-        Effect.flatMap((sessionPaths) =>
-          fs.stat(sessionPaths.root).pipe(
-            Effect.as(true),
-            Effect.orElseSucceed(() => false),
-          ),
-        ),
+      if (!isSessionId(id)) return false;
+      const sessionPaths = sessionPathsFromRoot(id, root);
+      return yield* fs.stat(sessionPaths.root).pipe(
+        Effect.as(true),
         Effect.orElseSucceed(() => false),
       );
     });
@@ -519,6 +507,20 @@ export class Session extends Effect.Service<Session>()("Session", {
     };
   }),
 }) {}
+
+function sessionPathsFromRoot(id: string, root: string): SessionPaths {
+  const rootPath = path.join(root, id);
+  return {
+    root: rootPath,
+    state: path.join(rootPath, "session.json"),
+    backup: path.join(rootPath, "session.json.prev"),
+    lease: path.join(rootPath, "lease.json"),
+    lock: path.join(rootPath, "daemon.lock"),
+    socket: path.join(rootPath, "daemon.sock"),
+    attach: path.join(rootPath, "attach.sock"),
+    control: path.join(rootPath, "control.sock"),
+  };
+}
 
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;

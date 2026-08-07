@@ -2,7 +2,6 @@ import { FetchHttpClient } from "@effect/platform";
 import { LanguageModel, Tool, Toolkit } from "@effect/ai";
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
 import { Effect, Layer, Redacted, Runtime, Schema as S, Stream } from "effect";
-import { SessionEnv } from "../session.ts";
 import { controlCallPath } from "../control-client.ts";
 import { COMMAND_DEFS, command } from "../commands.ts";
 import { encodeAttachFrame, type AgentFrame, type AttachFrame } from "../effect/AttachProtocol.ts";
@@ -44,7 +43,7 @@ const program = Effect.gen(function* () {
           agent: session,
         },
       }).pipe(Effect.map((result) => result.result)),
-    ).pipe(Effect.provideService(SessionEnv, process.env));
+    );
   };
   const definitions = COMMAND_DEFS.filter((def) => def.exposure === "agent").map((def) =>
     Tool.make(def.tag, {

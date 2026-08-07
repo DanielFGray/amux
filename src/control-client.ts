@@ -15,7 +15,7 @@ import type * as RpcGroup from "@effect/rpc/RpcGroup";
 import { Effect, Layer, Scope, Stream } from "effect";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { DaemonEvent, DaemonEventPayload } from "./effect/EventBus.ts";
-import { SessionEnv, sessionPaths } from "./session.ts";
+import { sessionPaths } from "./session.ts";
 import { errorMessage } from "./error-message.ts";
 
 /**
@@ -25,15 +25,13 @@ import { errorMessage } from "./error-message.ts";
 export type ControlClient = RpcClient.RpcClient<RpcGroup.Rpcs<typeof ControlRpcs>, RpcClientError>;
 
 /** All a control connection needs is the env that resolves the session socket. */
-export type ControlEnv = SessionEnv;
-
 /**
  * Open a control connection to a session's Unix socket, alive for the
  * enclosing scope.
  */
 export const connectControl = (
   id: string,
-): Effect.Effect<ControlClient, ControlError, Scope.Scope | ControlEnv> =>
+): Effect.Effect<ControlClient, ControlError, Scope.Scope> =>
   Effect.gen(function* () {
     const paths = yield* sessionPaths(id);
     return yield* connectControlPath(paths.socket);
@@ -58,7 +56,7 @@ export const connectControlPath = (
 export const controlCall = <A, E>(
   id: string,
   use: (client: ControlClient) => Effect.Effect<A, E>,
-): Effect.Effect<A, ControlError | E, ControlEnv> =>
+): Effect.Effect<A, ControlError | E> =>
   Effect.scoped(Effect.flatMap(connectControl(id), use));
 
 export const controlCallPath = <A, E>(
@@ -76,13 +74,13 @@ export const controlEvents = (
 ): Effect.Effect<
   Stream.Stream<DaemonEventPayload, unknown>,
   ControlError,
-  Scope.Scope | ControlEnv
+  Scope.Scope
 > => Effect.map(controlEventFrames(id), (events) => events.pipe(Stream.map(({ event }) => event)));
 
 /** Subscribe while retaining sequence numbers for gap detection. */
 export const controlEventFrames = (
   id: string,
-): Effect.Effect<Stream.Stream<DaemonEvent, unknown>, ControlError, Scope.Scope | ControlEnv> =>
+): Effect.Effect<Stream.Stream<DaemonEvent, unknown>, ControlError, Scope.Scope> =>
   Effect.map(connectControl(id), (control) => control.Events().pipe(Stream.drop(1)));
 
 /** Keep only one family of daemon events while preserving stream lifetime. */

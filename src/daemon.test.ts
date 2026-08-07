@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Schema, Scope, Stream } from "effect";
+import { ConfigProvider, Effect, Schema, Scope, Stream } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import {
@@ -12,7 +12,7 @@ import {
   type SessionDaemonOptions,
   type SessionDaemonService,
 } from "./daemon.ts";
-import { Session, SessionEnv, sessionPaths } from "./session.ts";
+import { Session, sessionPaths } from "./session.ts";
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { AttachClient } from "./attach.ts";
@@ -30,7 +30,7 @@ async function env() {
 }
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem | Scope.Scope>,
+  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem | Scope.Scope>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
@@ -38,7 +38,7 @@ const run = <A, E>(
       effect.pipe(
         Effect.provide(Session.Default),
         Effect.provide(BunFileSystem.layer),
-        Effect.provideService(SessionEnv, e),
+        Effect.withConfigProvider(ConfigProvider.fromJson(e)),
       ),
     ),
   );
@@ -535,7 +535,7 @@ test("stop interrupts and joins a never-settling destructive persistence operati
           ),
         );
       }
-      return Session.save(state).pipe(Effect.provideService(SessionEnv, e));
+      return Session.save(state);
     },
   });
   // started by startDaemon;
@@ -674,7 +674,7 @@ test("close bounds and interrupts its final persistence obligation", async () =>
               }),
             ),
           )
-        : Session.save(state).pipe(Effect.provideService(SessionEnv, e)),
+        : Session.save(state),
   });
   // started by startDaemon;
   armed = true;
@@ -793,7 +793,7 @@ test("close interrupts and joins a never-settling natural-exit persistence opera
           ),
         );
       }
-      return Session.save(state).pipe(Effect.provideService(SessionEnv, e));
+      return Session.save(state);
     },
   });
   // started by startDaemon;

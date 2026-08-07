@@ -12,7 +12,7 @@ import { loadConfig } from "./config.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { applyOptions, resolveOptions } from "./options.ts";
 import { SessionClient } from "./client.ts";
-import { isSessionId, Session, SessionEnv } from "./session.ts";
+import { isSessionId, Session } from "./session.ts";
 import { createApp } from "./app.tsx";
 
 /**
@@ -83,6 +83,5 @@ BunRuntime.runMain(
     Effect.scoped,
     Effect.provide(Session.Default),
     Effect.provide(BunFileSystem.layer),
-    Effect.provideService(SessionEnv, process.env),
   ),
 );

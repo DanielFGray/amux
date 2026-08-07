@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   Cause,
@@ -11,6 +9,7 @@ import {
   Fiber,
   Layer,
   ManagedRuntime,
+  Option,
   Runtime,
   Schema as S,
   Scope,
@@ -40,8 +39,9 @@ import {
   isSessionId,
   processAlive,
   Session,
-  SessionEnv,
+  optionalEnvVar,
   sessionPaths,
+  worktreesRoot,
   SessionIdError,
   SessionStateError,
   SessionSizeError,
@@ -124,8 +124,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   if (!isSessionId(id))
     return yield* new SessionDaemonError({ message: `invalid session id ${JSON.stringify(id)}` });
 
-  const env = yield* SessionEnv;
   const paths = yield* sessionPaths(id);
+  const daemonWorktreesRoot = yield* worktreesRoot();
+  const defaultShell = Option.getOrElse(yield* optionalEnvVar("SHELL"), () => "bash");
   const session = yield* Session;
   const fs = yield* FileSystem.FileSystem;
 
@@ -410,7 +411,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     if (curSpace.spaces.length === 0) {
       yield* runWorkspaceCommand(command("space.new"), curSpace.revision, {
         size: { cols: 80, rows: 24 },
-        shell: [env.SHELL || "bash"],
+        shell: [defaultShell],
         cwd: process.cwd(),
       });
     }
@@ -538,16 +539,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     expectedRevision: number,
     context: WorkspaceCommandContext,
   ): Effect.Effect<WorkspaceSnapshot, DaemonError> => {
-    const enriched = {
-      ...context,
-      worktreesRoot: path.join(
-        env.XDG_STATE_HOME || path.join(env.HOME || homedir(), ".local", "state"),
-        "amux",
-        "worktrees",
-      ),
-    };
     return transaction
-      .run(value, expectedRevision, enriched)
+      .run(value, expectedRevision, { ...context, worktreesRoot: daemonWorktreesRoot })
       .pipe(Effect.mapError((e) => new DaemonError({ message: e.message })));
   };
 

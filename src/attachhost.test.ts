@@ -7,7 +7,7 @@
  * and a client that dies without saying goodbye must still be noticed.
  */
 
-import { Effect, Scope } from "effect";
+import { ConfigProvider, Effect, Scope } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { afterEach, expect, test } from "bun:test";
@@ -21,19 +21,19 @@ import {
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
-import { Session, SessionEnv } from "./session.ts";
+import { Session } from "./session.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
 const run = <A, E>(
-  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, Session | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     Effect.scoped(effect).pipe(
       Effect.provide(Session.Default),
       Effect.provide(BunFileSystem.layer),
-      Effect.provideService(SessionEnv, env),
+      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
     ),
   );
 afterEach(async () => {
