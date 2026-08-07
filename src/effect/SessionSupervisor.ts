@@ -268,14 +268,13 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
                 // The replay terminal is the private output buffer. Only bytes
                 // arriving while activation drains that replay need a side queue.
                 screen.write(chunk);
-                const data = new Uint8Array(chunk);
                 if (phase === "active") {
                   yield* hub.publish({
                     _tag: "output",
                     session: spec.id,
-                    data,
+                    data: chunk,
                   } satisfies AttachFrame);
-                } else if (phase === "activating") pending.push(data);
+                } else if (phase === "activating") pending.push(new Uint8Array(chunk));
               }),
             ),
             Effect.catchAll((error) =>

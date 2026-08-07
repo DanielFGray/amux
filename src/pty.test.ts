@@ -36,7 +36,7 @@ async function waitFor(fn: () => boolean, ms = 5000) {
 function collect(p: Pty): { text: () => string; done: Promise<void> } {
   const chunks: Uint8Array[] = [];
   const done = (async () => {
-    for await (const c of readPty(p)) chunks.push(c);
+    for await (const c of readPty(p)) chunks.push(new Uint8Array(c));
   })();
   return { text: () => new TextDecoder().decode(Buffer.concat(chunks)), done };
 }

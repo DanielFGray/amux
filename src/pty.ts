@@ -261,7 +261,13 @@ export function spawnPty(
   return result;
 }
 
-/** Async iterator over raw PTY output bytes. */
+/**
+ * Async iterator over raw PTY output bytes.
+ *
+ * Each yielded view is borrowed until the consumer resumes this iterator.
+ * Direct terminal consumers pass it synchronously to Terminal.write; consumers
+ * that retain it copy at their ownership boundary.
+ */
 export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
   const fs = require("node:fs");
   const buf = Buffer.alloc(65536);
@@ -293,6 +299,6 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
       continue;
     }
     if (n < 0) return;
-    yield new Uint8Array(buf.subarray(0, n));
+    yield buf.subarray(0, n);
   }
 }

@@ -9,10 +9,15 @@ interface QueuedFrame {
   readonly bytes: Uint8Array;
 }
 
-const queuedFrame = (frame: AttachFrame): QueuedFrame => ({
-  frame,
-  bytes: encoder.encode(encodeAttachFrame(frame)),
-});
+const queuedFrame = (frame: AttachFrame): QueuedFrame => {
+  // Subscribers consume output after the publisher returns, so it must stop
+  // borrowing the PTY reader's reusable buffer at this boundary.
+  const owned = frame._tag === "output" ? { ...frame, data: new Uint8Array(frame.data) } : frame;
+  return {
+    frame: owned,
+    bytes: encoder.encode(encodeAttachFrame(owned)),
+  };
+};
 
 export class AttachHubError extends S.TaggedError<AttachHubError>()("AttachHubError", {
   message: S.String,
