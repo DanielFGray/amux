@@ -27,8 +27,8 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
-const run = <A>(
-  effect: Effect.Effect<A, unknown, Session | SessionEnv | FileSystem.FileSystem | Scope.Scope>,
+const run = <A, E>(
+  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem | Scope.Scope>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
@@ -91,9 +91,11 @@ test("workspace JSON responses are schema-validated before projection", async ()
   const { daemon, env } = await started("control-workspace-validation");
   const status = await ctl(daemon.id, env, (c) => c.Status());
 
-  expect(() => parseWorkspaceJson("not json")).toThrow();
-  expect(() => parseWorkspaceJson(JSON.stringify({ revision: 0 }))).toThrow();
-  expect(parseWorkspaceJson(status.workspace).revision).toBeGreaterThanOrEqual(0);
+  expect(Effect.runSyncExit(parseWorkspaceJson("not json"))._tag).toBe("Failure");
+  expect(Effect.runSyncExit(parseWorkspaceJson(JSON.stringify({ revision: 0 })))._tag).toBe(
+    "Failure",
+  );
+  expect(Effect.runSync(parseWorkspaceJson(status.workspace)).revision).toBeGreaterThanOrEqual(0);
 });
 
 test("one connection serves many requests for its whole scope", async () => {

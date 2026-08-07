@@ -32,7 +32,8 @@ export async function runSessionCli(argv: string[]): Promise<number> {
       return 0;
     }
     const { workspace, ...rest } = await call((control) => control.Status());
-    const report = { ...rest, workspace: parseWorkspaceJson(workspace) };
+    const parsed = Effect.runSync(parseWorkspaceJson(workspace));
+    const report = { ...rest, workspace: parsed };
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
     return report.degraded === undefined ? 0 : 1;
   } catch (error) {

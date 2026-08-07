@@ -2,6 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
 import { encodeLayout, decodeLayout, layoutAgents } from "./layout.ts";
+import { Effect } from "effect";
 import {
   restoreSession,
   restoreSpaces,
@@ -56,8 +57,11 @@ test("a window snapshot records its agents and the arrangement of them", async (
   expect(saved.agents.map((a) => a.id)).toEqual([first.agent.id, second.agent.id]);
   // The flat list cannot say how they were placed, nor which of them was
   // focused; the layout string says both, and is the only record of either.
-  expect(layoutAgents(decodeLayout(saved.layout!))).toEqual([first.agent.id, second.agent.id]);
-  expect(decodeLayout(saved.layout!).focus).toBe(second.id);
+  expect(layoutAgents(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([
+    first.agent.id,
+    second.agent.id,
+  ]);
+  expect(Effect.runSync(decodeLayout(saved.layout!)).focus).toBe(second.id);
 });
 
 test("a snapshot records an agent's command, directory and terminal size", async () => {
@@ -96,7 +100,7 @@ test("agents with no pane open are recorded, and are absent from the layout", as
 
   const saved = snapshotWindow(window);
   expect(saved.agents.map((a) => a.id)).toContain(hidden.id);
-  expect(layoutAgents(decodeLayout(saved.layout!))).toEqual([kept.agent.id]);
+  expect(layoutAgents(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([kept.agent.id]);
 });
 
 // Restore.
@@ -331,7 +335,7 @@ test("a tombstone named by the saved layout still gets no pane", async () => {
   await source.layout();
   const saved = snapshotSpace(source.space);
   // The layout still mentions both, but one is recorded as already finished.
-  expect(layoutAgents(decodeLayout(saved.windows[0]!.layout!))).toHaveLength(2);
+  expect(layoutAgents(Effect.runSync(decodeLayout(saved.windows[0]!.layout!)))).toHaveLength(2);
   const dead = saved.windows[0]!.agents.find((a) => a.id === doomed.id)!;
   dead.exited = true;
   dead.exitCode = 1;

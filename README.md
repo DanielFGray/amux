@@ -133,8 +133,11 @@ Relative paths resolve from the config directory. A plugin must default-export
 an object with `id`, `apiVersion: "1"`, and an Effect `effect` function. The
 effect receives a value-only `PanelContext`, registers panels with
 `ctx.registerPanel`, and everything registered is removed when the plugin is
-disabled or fails. See `examples/status-bar.tsx` for a complete bottom-bar
-plugin.
+disabled or fails. `PanelContext.display()` provides cloned space, window, and
+agent rows with state and blocked counts; `examples/agent-dashboard.tsx` uses
+that projection for a live agent roster. See `examples/status-bar.tsx` for a
+minimal bottom-bar plugin, or `examples/agent-triage.tsx` for a right-side
+attention rail.
 
 Plugins must invoke workspace commands through `ctx.panel.run()` and must not
 mutate client projection objects or access terminal handles.

@@ -1,8 +1,8 @@
 import path from "node:path";
 import { homedir } from "node:os";
-import { FileSystem, Path } from "@effect/platform";
+import { FileSystem } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
-import { Clock, Context, Data, Effect, Exit, Option, Schema as S } from "effect";
+import { Clock, Context, Effect, Exit, Option, Schema as S } from "effect";
 import { decodeLayout, layoutPanes } from "./layout.ts";
 import {
   MAX_AGENTS,
@@ -335,10 +335,9 @@ export function parseSessionState(
           const raw = yield* S.decodeUnknown(S.parseJson(LayoutMetadataSchema))(
             candidate.layout,
           ).pipe(Effect.mapError(schemaError));
-          const layout = yield* Effect.try({
-            try: () => decodeLayout(candidate.layout!),
-            catch: (error) => new SessionStateError({ message: String(error) }),
-          });
+          const layout = yield* decodeLayout(candidate.layout!).pipe(
+            Effect.mapError((error) => new SessionStateError({ message: error.message })),
+          );
           if (raw.focus !== undefined && layout.focus !== raw.focus) return yield* layoutFocus;
           for (const pane of layoutPanes(layout.root)) {
             if (paneIds.has(pane.id)) return yield* duplicatePane(pane.id);

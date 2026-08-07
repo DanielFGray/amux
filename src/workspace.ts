@@ -16,12 +16,13 @@ import {
   splitLayout,
   swapLayout,
   windowState,
-  isLayoutPreset,
+  LayoutFormatError,
   type Layout,
   type WindowState,
 } from "./layout.ts";
 import {
   parseSessionState,
+  SessionStateError,
   SESSION_VERSION,
   type PersistedAgent,
   type SessionState,
@@ -32,20 +33,25 @@ import {
   closeWindowState,
   removeSpaceState,
   selectWindowState,
-  spaceSetState,
   spaceState,
   type SpaceSetState,
   type SpaceState,
 } from "./space-model.ts";
 import {
-  isTerminalSize,
   MAX_AGENTS,
   MAX_SPACES,
   MAX_TERMINAL_CELLS,
   MAX_TERMINAL_DIMENSION,
   MAX_WINDOWS,
 } from "./limits.ts";
-import { Effect, Schema } from "effect";
+import { Effect, Either, Schema as S } from "effect";
+
+export class WorkspaceParseError extends S.TaggedError<WorkspaceParseError>()(
+  "WorkspaceParseError",
+  {
+    message: S.String,
+  },
+) {}
 
 export interface WorkspaceWindow {
   number: number;
@@ -71,6 +77,39 @@ export interface WorkspaceSnapshot {
   state: SpaceSetState;
 }
 
+/** A window with the space that owns it. The model is a tree — a space owns its
+ *  windows, a window owns its agents — so ownership is always determined and
+ *  every traversal can hand back the owners rather than making callers re-nest
+ *  to recover them. */
+export interface WindowEntry {
+  space: WorkspaceSpace;
+  window: WorkspaceWindow;
+}
+
+export interface AgentEntry extends WindowEntry {
+  agent: PersistedAgent;
+}
+
+export function* workspaceWindows(workspace: WorkspaceSnapshot): Generator<WindowEntry> {
+  for (const space of workspace.spaces) for (const window of space.windows) yield { space, window };
+}
+
+export function* workspaceAgents(workspace: WorkspaceSnapshot): Generator<AgentEntry> {
+  for (const entry of workspaceWindows(workspace))
+    for (const agent of entry.window.agents) yield { ...entry, agent };
+}
+
+export function workspaceAgentIds(workspace: WorkspaceSnapshot): Set<string> {
+  return new Set(Array.from(workspaceAgents(workspace), ({ agent }) => agent.id));
+}
+
+export function workspacePaneIds(workspace: WorkspaceSnapshot): Set<string> {
+  const ids = new Set<string>();
+  for (const { window } of workspaceWindows(workspace))
+    for (const pane of layoutPanes(window.layout.root)) ids.add(pane.id);
+  return ids;
+}
+
 export interface WorkspaceCommandContext {
   size: LayoutSize;
   shell: string[];
@@ -85,107 +124,110 @@ export interface WorkspaceCommandContext {
   worktreesRoot?: string;
 }
 
-const NonEmptyString = Schema.String.pipe(Schema.minLength(1));
-const PositiveInt = Schema.Int.pipe(Schema.greaterThan(0));
-const TerminalDimension = Schema.Int.pipe(
-  Schema.greaterThan(0),
-  Schema.lessThanOrEqualTo(MAX_TERMINAL_DIMENSION),
-);
-const TerminalSize = Schema.Struct({
+const NonEmptyString = S.String.pipe(S.minLength(1));
+const PositiveInt = S.Int.pipe(S.greaterThan(0));
+const TerminalDimension = S.Int.pipe(S.greaterThan(0), S.lessThanOrEqualTo(MAX_TERMINAL_DIMENSION));
+const TerminalSize = S.Struct({
   cols: TerminalDimension,
   rows: TerminalDimension,
 }).pipe(
-  Schema.filter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {
+  S.filter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {
     message: () => "terminal size is too large",
   }),
 );
-const PersistedAgentShape = Schema.Struct({
+const PersistedAgentShape = S.Struct({
   id: NonEmptyString,
-  name: Schema.String,
-  kind: Schema.optional(Schema.Literal("pty", "agent")),
-  cmd: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),
-  cwd: Schema.optional(Schema.String),
+  name: S.String,
+  kind: S.optional(S.Literal("pty", "agent")),
+  cmd: S.Array(NonEmptyString).pipe(S.minItems(1)),
+  cwd: S.optional(S.String),
   cols: TerminalDimension,
   rows: TerminalDimension,
-  exited: Schema.Boolean,
-  exitCode: Schema.NullOr(Schema.Int),
+  exited: S.Boolean,
+  exitCode: S.NullOr(S.Int),
 });
-const LayoutNodeShape: Schema.Schema<any> = Schema.suspend(() =>
-  Schema.Union(
-    Schema.Struct({
-      type: Schema.Literal("pane"),
+const LayoutNodeShape: S.Schema<any> = S.suspend(() =>
+  S.Union(
+    S.Struct({
+      type: S.Literal("pane"),
       id: NonEmptyString,
       agent: NonEmptyString,
-      weight: Schema.Number.pipe(Schema.greaterThan(0)),
+      weight: S.Number.pipe(S.greaterThan(0)),
     }),
-    Schema.Struct({
-      type: Schema.Literal("split"),
-      direction: Schema.Union(Schema.Literal("row"), Schema.Literal("column")),
-      weight: Schema.Number.pipe(Schema.greaterThan(0)),
-      children: Schema.Array(LayoutNodeShape).pipe(Schema.minItems(2)),
+    S.Struct({
+      type: S.Literal("split"),
+      direction: S.Union(S.Literal("row"), S.Literal("column")),
+      weight: S.Number.pipe(S.greaterThan(0)),
+      children: S.Array(LayoutNodeShape).pipe(S.minItems(2)),
     }),
   ),
 );
-const LayoutShape = Schema.Struct({
-  version: Schema.Literal(1),
-  root: Schema.NullOr(LayoutNodeShape),
-  focus: Schema.optional(NonEmptyString),
+const LayoutShape = S.Struct({
+  version: S.Literal(1),
+  root: S.NullOr(LayoutNodeShape),
+  focus: S.optional(NonEmptyString),
 });
-const WindowStateShape = Schema.Struct({
-  focus: Schema.NullOr(NonEmptyString),
-  last: Schema.NullOr(NonEmptyString),
-  zoom: Schema.NullOr(Schema.Struct({ pane: NonEmptyString, from: LayoutShape })),
-  sync: Schema.Boolean,
-  preset: Schema.NullOr(
-    Schema.Union(
-      Schema.Literal("even-horizontal"),
-      Schema.Literal("even-vertical"),
-      Schema.Literal("main-horizontal"),
-      Schema.Literal("main-vertical"),
-      Schema.Literal("tiled"),
+const WindowStateShape = S.Struct({
+  focus: S.NullOr(NonEmptyString),
+  last: S.NullOr(NonEmptyString),
+  zoom: S.NullOr(S.Struct({ pane: NonEmptyString, from: LayoutShape })),
+  sync: S.Boolean,
+  preset: S.NullOr(
+    S.Union(
+      S.Literal("even-horizontal"),
+      S.Literal("even-vertical"),
+      S.Literal("main-horizontal"),
+      S.Literal("main-vertical"),
+      S.Literal("tiled"),
     ),
   ),
 });
-const WorkspaceWindowShape = Schema.Struct({
+const WorkspaceWindowShape = S.Struct({
   number: PositiveInt,
-  name: Schema.NullOr(Schema.String),
-  agents: Schema.Array(PersistedAgentShape).pipe(Schema.maxItems(MAX_AGENTS)),
+  name: S.NullOr(S.String),
+  agents: S.Array(PersistedAgentShape).pipe(S.maxItems(MAX_AGENTS)),
   layout: LayoutShape,
   state: WindowStateShape,
 });
-const WorkspaceSpaceShape = Schema.Struct({
+const WorkspaceSpaceShape = S.Struct({
   id: NonEmptyString,
-  name: Schema.String,
-  dir: Schema.String,
-  windows: Schema.Array(WorkspaceWindowShape).pipe(Schema.maxItems(MAX_WINDOWS)),
-  state: Schema.Struct({
-    activeWindow: Schema.NullOr(PositiveInt),
-    lastWindow: Schema.NullOr(PositiveInt),
+  name: S.String,
+  dir: S.String,
+  windows: S.Array(WorkspaceWindowShape).pipe(S.maxItems(MAX_WINDOWS)),
+  state: S.Struct({
+    activeWindow: S.NullOr(PositiveInt),
+    lastWindow: S.NullOr(PositiveInt),
     nextWindow: PositiveInt,
   }),
-  worktree: Schema.optional(
-    Schema.Struct({ branch: Schema.String, repo: Schema.String, path: Schema.String }),
-  ),
+  worktree: S.optional(S.Struct({ branch: S.String, repo: S.String, path: S.String })),
 });
-const WorkspaceSnapshotShape = Schema.Struct({
-  revision: Schema.Int.pipe(Schema.greaterThanOrEqualTo(0)),
-  spaces: Schema.Array(WorkspaceSpaceShape).pipe(Schema.maxItems(MAX_SPACES)),
-  state: Schema.Struct({ activeSpace: Schema.NullOr(NonEmptyString) }),
+const WorkspaceSnapshotShape = S.Struct({
+  revision: S.Int.pipe(S.greaterThanOrEqualTo(0)),
+  spaces: S.Array(WorkspaceSpaceShape).pipe(S.maxItems(MAX_SPACES)),
+  state: S.Struct({ activeSpace: S.NullOr(NonEmptyString) }),
 });
-export const WorkspaceSnapshotJson = Schema.parseJson(WorkspaceSnapshotShape);
+export const WorkspaceSnapshotJson = S.parseJson(WorkspaceSnapshotShape);
 
 /** Decode the JSON string used by the control and attach protocols. */
-export function parseWorkspaceJson(value: string): WorkspaceSnapshot {
-  return parseWorkspace(Schema.decodeUnknownSync(WorkspaceSnapshotJson)(value));
+export function parseWorkspaceJson(
+  value: string,
+): Effect.Effect<WorkspaceSnapshot, WorkspaceParseError | SessionStateError> {
+  return S.decodeUnknown(WorkspaceSnapshotJson)(value).pipe(
+    Effect.mapError(
+      (error) =>
+        new WorkspaceParseError({ message: `workspace JSON is invalid: ${String(error)}` }),
+    ),
+    Effect.flatMap(parseWorkspace),
+  );
 }
 
-export const WorkspaceCommandContextSchema = Schema.Struct({
+export const WorkspaceCommandContextSchema = S.Struct({
   size: TerminalSize,
-  shell: Schema.Array(NonEmptyString).pipe(Schema.minItems(1)),
+  shell: S.Array(NonEmptyString).pipe(S.minItems(1)),
   cwd: NonEmptyString,
-  blockedAgents: Schema.optional(Schema.Array(NonEmptyString)),
-  input: Schema.optional(Schema.String),
-  worktreesRoot: Schema.optional(Schema.String),
+  blockedAgents: S.optional(S.Array(NonEmptyString)),
+  input: S.optional(S.String),
+  worktreesRoot: S.optional(S.String),
 });
 
 export type WorkspaceAction =
@@ -208,69 +250,80 @@ export interface WorkspaceMutation {
  * pruned. Internal command transforms do not pass through this validation and
  * may legitimately produce an empty layout.
  */
-export function workspaceFromSession(session: SessionState): WorkspaceSnapshot {
-  const usedPaneIds = new Set<string>();
-  for (const saved of session.spaces) {
-    for (const window of saved.windows) {
-      if (!window.layout) continue;
-      for (const pane of layoutPanes(decodeLayout(window.layout).root)) usedPaneIds.add(pane.id);
+export function workspaceFromSession(
+  session: SessionState,
+): Effect.Effect<WorkspaceSnapshot, LayoutFormatError | SessionStateError> {
+  return Effect.gen(function* () {
+    const usedPaneIds = new Set<string>();
+    for (const saved of session.spaces) {
+      for (const window of saved.windows) {
+        if (!window.layout) continue;
+        const layout = yield* decodeLayout(window.layout);
+        for (const pane of layoutPanes(layout.root)) usedPaneIds.add(pane.id);
+      }
     }
-  }
-  const paneId = () => allocateId("pane", usedPaneIds);
-  return {
-    revision: 0,
-    state: {
-      activeSpace: session.spaces.some((space) => space.id === session.activeSpace)
-        ? (session.activeSpace ?? null)
-        : (session.spaces[0]?.id ?? null),
-    },
-    spaces: session.spaces.map((saved) => {
-      const windows = saved.windows.map((window): WorkspaceWindow => {
-        const live = new Set(
-          window.agents.filter((agent) => !agent.exited).map((agent) => agent.id),
-        );
-        let layout: Layout | null = null;
-        try {
-          layout = window.layout
-            ? prune(decodeLayout(window.layout), (agent) => live.has(agent))
-            : null;
-        } catch {}
-        if (!layout?.root && live.size > 0) {
-          const panes = [...live].map((agent) => ({ id: paneId(), agent }));
-          layout = presetLayout(panes, "tiled", panes[0]?.id);
-        }
-        layout ??= makeLayout(null);
-        if (layout.root && !layout.focus)
-          layout = makeLayout(layout.root, layoutPanes(layout.root)[0]?.id);
-        const state = windowState();
-        state.focus = layout.focus ?? null;
-        return {
-          number: window.number,
-          name: window.name,
-          agents: structuredClone(window.agents),
-          layout,
-          state,
-        };
-      });
-      const numbers = windows.map((window) => window.number);
-      const base = spaceState();
-      const activeWindow = numbers.includes(saved.activeWindow ?? -1)
-        ? saved.activeWindow
-        : (numbers[0] ?? null);
-      return {
-        id: saved.id,
-        name: saved.name,
-        dir: saved.dir,
-        windows,
-        worktree: saved.worktree,
-        state: {
-          ...base,
-          activeWindow,
-          nextWindow: Math.max(1, ...numbers.map((number) => number + 1)),
-        },
-      };
-    }),
-  };
+    const paneId = () => allocateId("pane", usedPaneIds);
+    return {
+      revision: 0,
+      state: {
+        activeSpace: session.spaces.some((space) => space.id === session.activeSpace)
+          ? (session.activeSpace ?? null)
+          : (session.spaces[0]?.id ?? null),
+      },
+      spaces: yield* Effect.all(
+        session.spaces.map((saved) =>
+          Effect.gen(function* () {
+            const windows: WorkspaceWindow[] = [];
+            for (const window of saved.windows) {
+              const live = new Set(
+                window.agents.filter((agent) => !agent.exited).map((agent) => agent.id),
+              );
+              let layout: Layout | null = null;
+              if (window.layout) {
+                const result = yield* Effect.either(decodeLayout(window.layout));
+                if (Either.isRight(result)) {
+                  layout = prune(result.right, (agent) => live.has(agent));
+                }
+              }
+              if (!layout?.root && live.size > 0) {
+                const panes = [...live].map((agent) => ({ id: paneId(), agent }));
+                layout = presetLayout(panes, "tiled", panes[0]?.id);
+              }
+              layout ??= makeLayout(null);
+              if (layout.root && !layout.focus)
+                layout = makeLayout(layout.root, layoutPanes(layout.root)[0]?.id);
+              const state = windowState();
+              state.focus = layout.focus ?? null;
+              windows.push({
+                number: window.number,
+                name: window.name,
+                agents: structuredClone(window.agents),
+                layout,
+                state,
+              });
+            }
+            const numbers = windows.map((window) => window.number);
+            const base = spaceState();
+            const activeWindow = numbers.includes(saved.activeWindow ?? -1)
+              ? saved.activeWindow
+              : (numbers[0] ?? null);
+            return {
+              id: saved.id,
+              name: saved.name,
+              dir: saved.dir,
+              windows,
+              worktree: saved.worktree,
+              state: {
+                ...base,
+                activeWindow,
+                nextWindow: Math.max(1, ...numbers.map((number) => number + 1)),
+              },
+            };
+          }),
+        ),
+      ),
+    };
+  });
 }
 
 /** Serialize only durable model fields. Transient WindowState stays daemon-live. */
@@ -297,21 +350,20 @@ export function workspaceSession(workspace: WorkspaceSnapshot, base: SessionStat
 }
 
 /** Parse a subscribed model before a client projects it. */
-export function parseWorkspace(value: unknown): WorkspaceSnapshot {
-  Schema.decodeUnknownSync(WorkspaceSnapshotShape)(value);
-  if (
-    !record(value) ||
-    !Number.isSafeInteger(value.revision) ||
-    (value.revision as number) < 0 ||
-    !Array.isArray(value.spaces) ||
-    !record(value.state) ||
-    !(value.state.activeSpace === null || typeof value.state.activeSpace === "string")
-  ) {
-    throw new Error("workspace has an invalid revision or spaces");
-  }
-  const raw = structuredClone(value) as WorkspaceSnapshot;
-  Effect.runSync(
-    parseSessionState(
+export function parseWorkspace(
+  value: unknown,
+): Effect.Effect<WorkspaceSnapshot, WorkspaceParseError | SessionStateError> {
+  return Effect.gen(function* () {
+    const decoded = yield* S.decodeUnknown(WorkspaceSnapshotShape)(value).pipe(
+      Effect.mapError(
+        (error) =>
+          new WorkspaceParseError({
+            message: `workspace does not match schema: ${error.message}`,
+          }),
+      ),
+    );
+    const raw = structuredClone(decoded) as WorkspaceSnapshot;
+    yield* parseSessionState(
       workspaceSession(raw, {
         version: SESSION_VERSION,
         id: "workspace",
@@ -320,99 +372,100 @@ export function parseWorkspace(value: unknown): WorkspaceSnapshot {
         attached: false,
         spaces: [],
       }),
-    ),
-  );
-  const spaceIds = new Set(raw.spaces.map((space) => space.id));
-  if (raw.state.activeSpace !== null && !spaceIds.has(raw.state.activeSpace)) {
-    throw new Error("workspace active space does not exist");
-  }
-  for (const space of raw.spaces) {
-    if (
-      !record(space.state) ||
-      !(space.state.activeWindow === null || positiveInt(space.state.activeWindow)) ||
-      !(space.state.lastWindow === null || positiveInt(space.state.lastWindow)) ||
-      !positiveInt(space.state.nextWindow)
-    ) {
-      throw new Error("workspace has invalid space state");
+    );
+    const spaceIds = new Set(raw.spaces.map((space) => space.id));
+    if (raw.state.activeSpace !== null && !spaceIds.has(raw.state.activeSpace)) {
+      return yield* new WorkspaceParseError({
+        message: "workspace active space does not exist",
+      });
     }
-    const numbers = new Set(space.windows.map((window) => window.number));
-    if (
-      (space.state.activeWindow !== null && !numbers.has(space.state.activeWindow)) ||
-      (space.state.lastWindow !== null && !numbers.has(space.state.lastWindow)) ||
-      space.state.nextWindow <= Math.max(0, ...numbers)
-    ) {
-      throw new Error("workspace space state names an invalid window");
-    }
-    for (const window of space.windows) {
+    for (const space of raw.spaces) {
+      const numbers = new Set(space.windows.map((window) => window.number));
       if (
-        !record(window.state) ||
-        !(window.state.focus === null || typeof window.state.focus === "string") ||
-        !(window.state.last === null || typeof window.state.last === "string") ||
-        typeof window.state.sync !== "boolean" ||
-        !(window.state.preset === null || isLayoutPreset(window.state.preset)) ||
-        !(window.state.zoom === null || record(window.state.zoom))
+        (space.state.activeWindow !== null && !numbers.has(space.state.activeWindow)) ||
+        (space.state.lastWindow !== null && !numbers.has(space.state.lastWindow)) ||
+        space.state.nextWindow <= Math.max(0, ...numbers)
       ) {
-        throw new Error("workspace has invalid window state");
+        return yield* new WorkspaceParseError({
+          message: "workspace space state names an invalid window",
+        });
       }
-      window.layout = decodeLayout(encodeLayout(window.layout));
-      const paneIds = new Set(layoutPanes(window.layout.root).map((pane) => pane.id));
-      if (
-        window.state.focus !== (window.layout.focus ?? null) ||
-        (window.state.last !== null && !paneIds.has(window.state.last))
-      ) {
-        throw new Error("workspace window state names an invalid pane");
-      }
-      if (window.state.zoom !== null) {
-        if (typeof window.state.zoom.pane !== "string" || !paneIds.has(window.state.zoom.pane)) {
-          throw new Error("workspace zoom names an invalid pane");
-        }
-        const from = decodeLayout(encodeLayout(window.state.zoom.from as Layout));
-        const agents = new Set(
-          window.agents.filter((agent) => !agent.exited).map((agent) => agent.id),
+      for (const window of space.windows) {
+        window.layout = yield* decodeLayout(encodeLayout(window.layout)).pipe(
+          Effect.mapError(
+            (error) =>
+              new WorkspaceParseError({
+                message: `workspace has an invalid layout: ${error.message}`,
+              }),
+          ),
         );
-        if (layoutPanes(from.root).some((pane) => !agents.has(pane.agent))) {
-          throw new Error("workspace zoom layout names an invalid agent");
+        const paneIds = new Set(layoutPanes(window.layout.root).map((pane) => pane.id));
+        if (
+          window.state.focus !== (window.layout.focus ?? null) ||
+          (window.state.last !== null && !paneIds.has(window.state.last))
+        ) {
+          return yield* new WorkspaceParseError({
+            message: "workspace window state names an invalid pane",
+          });
         }
-        window.state.zoom.from = from;
+        if (window.state.zoom !== null) {
+          if (typeof window.state.zoom.pane !== "string" || !paneIds.has(window.state.zoom.pane)) {
+            return yield* new WorkspaceParseError({
+              message: "workspace zoom names an invalid pane",
+            });
+          }
+          const from = yield* decodeLayout(encodeLayout(window.state.zoom.from as Layout)).pipe(
+            Effect.mapError(
+              (error) =>
+                new WorkspaceParseError({
+                  message: `workspace zoom has an invalid layout: ${error.message}`,
+                }),
+            ),
+          );
+          const agents = new Set(
+            window.agents.filter((agent) => !agent.exited).map((agent) => agent.id),
+          );
+          if (layoutPanes(from.root).some((pane) => !agents.has(pane.agent))) {
+            return yield* new WorkspaceParseError({
+              message: "workspace zoom layout names an invalid agent",
+            });
+          }
+          window.state.zoom.from = from;
+        }
       }
     }
-  }
-  return raw;
+    return raw;
+  });
 }
 
 export function parseWorkspaceCommandContext(
   value: unknown,
   workspace?: WorkspaceSnapshot,
-): WorkspaceCommandContext {
-  Schema.decodeUnknownSync(WorkspaceCommandContextSchema)(value);
-  if (
-    !record(value) ||
-    !record(value.size) ||
-    !isTerminalSize(value.size.cols, value.size.rows) ||
-    !Array.isArray(value.shell) ||
-    value.shell.length === 0 ||
-    !value.shell.every(nonEmptyString) ||
-    !nonEmptyString(value.cwd) ||
-    !(value.blockedAgents === undefined || Array.isArray(value.blockedAgents)) ||
-    !(value.input === undefined || typeof value.input === "string") ||
-    !(value.worktreesRoot === undefined || typeof value.worktreesRoot === "string")
-  ) {
-    throw new Error("invalid workspace command context");
-  }
-  const blocked = value.blockedAgents ?? [];
-  if (!blocked.every(nonEmptyString) || new Set(blocked).size !== blocked.length) {
-    throw new Error("invalid blocked agent ids");
-  }
-  if (workspace) {
-    const agents = new Set(
-      workspace.spaces.flatMap((space) =>
-        space.windows.flatMap((window) => window.agents.map((agent) => agent.id)),
+): Effect.Effect<WorkspaceCommandContext, WorkspaceParseError> {
+  return Effect.gen(function* () {
+    const decoded = yield* S.decodeUnknown(WorkspaceCommandContextSchema)(value).pipe(
+      Effect.mapError(
+        (error) =>
+          new WorkspaceParseError({
+            message: `invalid workspace command context: ${error.message}`,
+          }),
       ),
     );
-    if (blocked.some((id: string) => !agents.has(id)))
-      throw new Error("blocked agent does not exist");
-  }
-  return structuredClone(value) as unknown as WorkspaceCommandContext;
+    const blocked = decoded.blockedAgents ?? [];
+    if (new Set(blocked).size !== blocked.length) {
+      return yield* new WorkspaceParseError({
+        message: "invalid blocked agent ids",
+      });
+    }
+    if (workspace) {
+      const agents = workspaceAgentIds(workspace);
+      if (blocked.some((id: string) => !agents.has(id)))
+        return yield* new WorkspaceParseError({
+          message: "blocked agent does not exist",
+        });
+    }
+    return structuredClone(decoded) as WorkspaceCommandContext;
+  });
 }
 
 /** Apply one existing command value to a private candidate generation. */
@@ -422,16 +475,8 @@ export function applyWorkspaceCommand(
   context: WorkspaceCommandContext,
 ): WorkspaceMutation {
   const next = structuredClone(current);
-  const agentIds = new Set(
-    next.spaces.flatMap((space) =>
-      space.windows.flatMap((window) => window.agents.map((agent) => agent.id)),
-    ),
-  );
-  const paneIds = new Set(
-    next.spaces.flatMap((space) =>
-      space.windows.flatMap((window) => layoutPanes(window.layout.root).map((pane) => pane.id)),
-    ),
-  );
+  const agentIds = workspaceAgentIds(next);
+  const paneIds = workspacePaneIds(next);
   const spaceIds = new Set(next.spaces.map((space) => space.id));
   const newAgentId = () => allocateId("agent", agentIds);
   const newPaneId = () => allocateId("pane", paneIds);
@@ -930,7 +975,7 @@ export function applyWorkspaceCommand(
     }
   }
 
-  for (const item of next.spaces) for (const target of item.windows) normalizeWindowState(target);
+  for (const { window } of workspaceWindows(next)) normalizeWindowState(window);
 
   const changed = before !== JSON.stringify(next);
   return {
@@ -980,7 +1025,7 @@ function findSpace(workspace: WorkspaceSnapshot, id?: string): WorkspaceSpace | 
 function findWindow(
   workspace: WorkspaceSnapshot,
   target: { space?: string; window?: number },
-): { space: WorkspaceSpace; window: WorkspaceWindow } | null {
+): WindowEntry | null {
   const space = findSpace(workspace, target.space);
   if (!space) return null;
   const number = target.window ?? space.state.activeWindow;
@@ -988,10 +1033,7 @@ function findWindow(
   return window ? { space, window } : null;
 }
 
-function findAgent(
-  workspace: WorkspaceSnapshot,
-  id?: string,
-): { space: WorkspaceSpace; window: WorkspaceWindow; agent: PersistedAgent } | null {
+function findAgent(workspace: WorkspaceSnapshot, id?: string): AgentEntry | null {
   if (!id) {
     const target = findWindow(workspace, {});
     const pane = layoutPanes(target?.window.layout.root ?? null).find(
@@ -1000,12 +1042,7 @@ function findAgent(
     const agent = target?.window.agents.find((item) => item.id === pane?.agent);
     return target && agent ? { ...target, agent } : null;
   }
-  for (const space of workspace.spaces) {
-    for (const window of space.windows) {
-      const agent = window.agents.find((item) => item.id === id);
-      if (agent) return { space, window, agent };
-    }
-  }
+  for (const entry of workspaceAgents(workspace)) if (entry.agent.id === id) return entry;
   return null;
 }
 
@@ -1105,9 +1142,3 @@ function allocateId(prefix: string, used: Set<string>): string {
 }
 
 const commandName = (command: readonly string[]) => basename(command[0] ?? "") || "shell";
-const record = (value: unknown): value is Record<string, any> =>
-  !!value && typeof value === "object" && !Array.isArray(value);
-const nonEmptyString = (value: unknown): value is string =>
-  typeof value === "string" && value.length > 0;
-const positiveInt = (value: unknown): value is number =>
-  Number.isSafeInteger(value) && (value as number) > 0;

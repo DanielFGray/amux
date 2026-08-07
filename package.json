@@ -24,19 +24,21 @@
     "format": "bunx oxfmt --write src e2e",
     "format:check": "bunx oxfmt --check src e2e",
     "test": "bun test src",
+    "lint": "oxlint src e2e",
+    "lint:fix": "oxlint --fix src e2e",
     "e2e": "bun test e2e",
     "prepare": "effect-tsgo patch --typescript --oxlint"
   },
   "dependencies": {
     "@effect/platform-bun": "0.91.2",
-    "@opentui/core": "^0.4.5",
-    "@opentui/keymap": "0.4.5",
-    "@opentui/solid": "0.4.5",
+    "@opentui/core": "^0.5.1",
+    "@opentui/keymap": "0.5.1",
+    "@opentui/solid": "0.5.1",
     "effect": "^3.22.1",
     "solid-js": "^1.9.14"
   },
   "devDependencies": {
-    "@effect/tsgo": "0.31.0",
+    "@effect/tsgo": "0.34.0",
     "@effect/vitest": "^0.30.0",
     "@types/bun": "latest",
     "oxfmt": "0.62.0",

@@ -6,7 +6,10 @@ rule:
   any:
     - all:
         - kind: generic_type
-        - regex: '^Effect\.Effect<[^>]*,\s*unknown\s*,'
+        - regex: '^Effect\.Effect<[^>]*,\s*unknown\s*(,|>)'
     - all:
         - kind: generic_type
         - regex: '^Effect\.Effect<[^>]*,\s*[^>]*,\s*unknown\s*>'
+    - all:
+        - kind: generic_type
+        - regex: '^Stream\.Stream<[^>]*,\s*unknown\s*>'

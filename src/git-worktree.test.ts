@@ -28,8 +28,8 @@ async function env() {
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
-const run = <A>(
-  effect: Effect.Effect<A, unknown, SessionEnv | Session | FileSystem.FileSystem>,
+const run = <A, E>(
+  effect: Effect.Effect<A, E, SessionEnv | Session | FileSystem.FileSystem>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(

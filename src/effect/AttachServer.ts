@@ -16,6 +16,7 @@ import { AttachHub } from "./AttachHub.ts";
 import { createSocketWriter } from "../attach-write.ts";
 import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
+import { errorMessage } from "../error-message.ts";
 
 export class AttachServerError extends S.TaggedError<AttachServerError>()("AttachServerError", {
   message: S.String,
@@ -335,7 +336,7 @@ export const startAttachServer = (
           ),
           Effect.catchAll((error) =>
             Effect.sync(() => {
-              if (!state.closed) terminate(socket, { _tag: "error", message: String(error) });
+              if (!state.closed) terminate(socket, { _tag: "error", message: errorMessage(error) });
             }),
           ),
         ),
@@ -449,7 +450,7 @@ export const startAttachServer = (
               },
             },
           }),
-        catch: (error) => new AttachServerError({ message: String(error) }),
+        catch: (error) => new AttachServerError({ message: errorMessage(error) }),
       }),
       (server) => Effect.sync(() => server.stop(true)),
     );

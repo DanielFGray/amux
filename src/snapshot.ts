@@ -197,7 +197,10 @@ export function restoreWindow(
     // Only the live agents get panes: an exited one has no view in the running
     // app either, and applyLayout would happily build it one.
     const live = window.agents.filter((a) => !a.exited).map((a) => a.id);
-    if (live.length > 0) window.applyLayout(restoredLayout(saved, live));
+    if (live.length > 0) {
+      const layout = yield* restoredLayout(saved, live);
+      window.applyLayout(layout);
+    }
     return window;
   });
 }
@@ -223,21 +226,19 @@ export function restoreWindow(
  * The invented fallback gets fresh pane ids: those panes are being created here
  * and now, and nothing else has ever named them.
  */
-function restoredLayout(saved: PersistedWindow, live: string[]): Layout {
+function restoredLayout(saved: PersistedWindow, live: string[]): Effect.Effect<Layout, never> {
   const alive = new Set(live);
-  const recorded = saved.layout ? parseOrNull(saved.layout) : null;
-  const pruned = recorded ? prune(recorded, (id) => alive.has(id)) : null;
-  if (pruned?.root) return pruned;
-  return presetLayout(
-    live.map((agent) => ({ id: newPaneId(), agent })),
-    FALLBACK_PRESET,
-  );
-}
-
-function parseOrNull(encoded: string): Layout | null {
-  try {
-    return decodeLayout(encoded);
-  } catch {
-    return null;
-  }
+  return Effect.gen(function* () {
+    let recorded: Layout | null = null;
+    if (saved.layout) {
+      const result = yield* Effect.either(decodeLayout(saved.layout));
+      if (result._tag === "Right") recorded = result.right;
+    }
+    const pruned = recorded ? prune(recorded, (id) => alive.has(id)) : null;
+    if (pruned?.root) return pruned;
+    return presetLayout(
+      live.map((agent) => ({ id: newPaneId(), agent })),
+      FALLBACK_PRESET,
+    );
+  });
 }

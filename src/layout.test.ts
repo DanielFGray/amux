@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
+import { Cause, Effect } from "effect";
 import {
   LAYOUT_VERSION,
-  LayoutFormatError,
   closeLayout,
   collapse,
   decodeLayout,
@@ -19,6 +19,15 @@ import {
   type Layout,
   type LayoutNode,
 } from "./layout.ts";
+
+const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
+
+const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
+  const exit = Effect.runSyncExit(effect);
+  if (exit._tag === "Success") throw new Error("expected effect to fail");
+  const error = Cause.squash(exit.cause);
+  return error instanceof Error ? error.message : String(error);
+};
 
 /** Panes are named after the agent they show, since most cases here have one
  *  pane per agent; the cases that do not say so explicitly. */
@@ -48,7 +57,7 @@ test("a layout round-trips through encode and decode", () => {
     split("row", [pane("a", 2), split("column", [pane("b"), pane("c", 3)], 5)]),
     "c",
   );
-  expect(parseLayout(JSON.parse(encodeLayout(original)))).toEqual(original);
+  expect(run(parseLayout(JSON.parse(encodeLayout(original))))).toEqual(original);
 });
 
 test("encoding is stable, so equal layouts produce equal strings", () => {
@@ -119,24 +128,26 @@ test("pruning keeps a focus that did survive", () => {
 // A focus naming a pane that is not in the tree would leave a rebuilt window
 // with nothing focused, so it is dropped at the boundary rather than carried.
 test("a focus not present in the tree is dropped on parse", () => {
-  const parsed = parseLayout({ version: LAYOUT_VERSION, root: pane("a"), focus: "ghost" });
+  const parsed = run(parseLayout({ version: LAYOUT_VERSION, root: pane("a"), focus: "ghost" }));
   expect(parsed.focus).toBeUndefined();
 });
 
 test("an empty layout round-trips", () => {
-  expect(decodeLayout(encodeLayout(layout(null)))).toEqual(layout(null));
+  expect(run(decodeLayout(encodeLayout(layout(null))))).toEqual(layout(null));
 });
 
 test("a missing weight defaults to an even share", () => {
-  const parsed = parseLayout({
-    version: LAYOUT_VERSION,
-    root: { type: "split", direction: "row", children: [{ type: "pane", id: "a", agent: "a" }] },
-  });
+  const parsed = run(
+    parseLayout({
+      version: LAYOUT_VERSION,
+      root: { type: "split", direction: "row", children: [{ type: "pane", id: "a", agent: "a" }] },
+    }),
+  );
   expect(parsed.root).toEqual(pane("a", 1));
 });
 
 test("malformed JSON is refused as a value, not thrown from deep in a rebuild", () => {
-  expect(() => decodeLayout("{not json")).toThrow(LayoutFormatError);
+  expect(runFailMessage(decodeLayout("{not json"))).toContain("layout is not JSON");
 });
 
 test("recursive layouts are bounded before they can exhaust the stack", () => {
@@ -149,78 +160,102 @@ test("recursive layouts are bounded before they can exhaust the stack", () => {
       children: [root, { type: "pane", id: `p-${i}`, agent: `a-${i}`, weight: 1 }],
     };
   }
-  expect(() => parseLayout({ version: LAYOUT_VERSION, root })).toThrow("maximum depth");
+  expect(runFailMessage(parseLayout({ version: LAYOUT_VERSION, root }))).toContain("maximum depth");
 });
 
 test("an unsupported version is refused rather than guessed at", () => {
-  expect(() => parseLayout({ version: 99, root: pane("a") })).toThrow(/unsupported layout version/);
-});
-
-test("a pane without an agent id is refused", () => {
-  expect(() => parseLayout({ version: LAYOUT_VERSION, root: { type: "pane", weight: 1 } })).toThrow(
-    /needs an agent id/,
+  expect(runFailMessage(parseLayout({ version: 99, root: pane("a") }))).toMatch(
+    /unsupported layout version/,
   );
 });
 
+test("a pane without an agent id is refused", () => {
+  expect(
+    runFailMessage(parseLayout({ version: LAYOUT_VERSION, root: { type: "pane", weight: 1 } })),
+  ).toContain("needs an agent id");
+});
+
 test("a pane without a pane id is refused", () => {
-  expect(() =>
-    parseLayout({ version: LAYOUT_VERSION, root: { type: "pane", agent: "a", weight: 1 } }),
-  ).toThrow(/needs a pane id/);
+  expect(
+    runFailMessage(
+      parseLayout({
+        version: LAYOUT_VERSION,
+        root: { type: "pane", agent: "a", weight: 1 },
+      }),
+    ),
+  ).toContain("needs a pane id");
 });
 
 // Otherwise a restored session's pane ids and the ones a later split mints
 // would collide, and two different panes would answer to one name.
 test("parsing reserves the pane ids it read, so fresh ones cannot collide", () => {
   const minted = Number(/\d+/.exec(newPaneId())![0]);
-  parseLayout({
-    version: LAYOUT_VERSION,
-    root: { type: "pane", id: `pane-${minted + 500}`, agent: "a", weight: 1 },
-  });
+  run(
+    parseLayout({
+      version: LAYOUT_VERSION,
+      root: { type: "pane", id: `pane-${minted + 500}`, agent: "a", weight: 1 },
+    }),
+  );
   expect(Number(/\d+/.exec(newPaneId())![0])).toBeGreaterThan(minted + 500);
 });
 
 test("a split without a valid direction is refused", () => {
-  expect(() =>
-    parseLayout({
-      version: LAYOUT_VERSION,
-      root: { type: "split", direction: "sideways", children: [pane("a")] },
-    }),
-  ).toThrow(/direction/);
+  expect(
+    runFailMessage(
+      parseLayout({
+        version: LAYOUT_VERSION,
+        root: { type: "split", direction: "sideways", children: [pane("a")] },
+      }),
+    ),
+  ).toContain("direction");
 });
 
 test("a split with no children is refused", () => {
-  expect(() =>
-    parseLayout({
-      version: LAYOUT_VERSION,
-      root: { type: "split", direction: "row", children: [] },
-    }),
-  ).toThrow(/needs children/);
+  expect(
+    runFailMessage(
+      parseLayout({
+        version: LAYOUT_VERSION,
+        root: { type: "split", direction: "row", children: [] },
+      }),
+    ),
+  ).toContain("needs children");
 });
 
 // A zero or negative weight renders as a pane with no cells, which reads as a
 // pane that silently vanished.
 test("a non-positive weight is refused", () => {
-  expect(() => parseLayout({ version: LAYOUT_VERSION, root: pane("a", 0) })).toThrow(
-    /positive number/,
+  expect(runFailMessage(parseLayout({ version: LAYOUT_VERSION, root: pane("a", 0) }))).toContain(
+    "positive number",
   );
-  expect(() => parseLayout({ version: LAYOUT_VERSION, root: pane("a", -3) })).toThrow(
-    /positive number/,
+  expect(runFailMessage(parseLayout({ version: LAYOUT_VERSION, root: pane("a", -3) }))).toContain(
+    "positive number",
   );
 });
 
 test("an unknown node type is refused", () => {
-  expect(() => parseLayout({ version: LAYOUT_VERSION, root: { type: "tabs", weight: 1 } })).toThrow(
-    /unknown type/,
-  );
+  expect(
+    runFailMessage(
+      parseLayout({
+        version: LAYOUT_VERSION,
+        root: { type: "tabs", weight: 1 },
+      }),
+    ),
+  ).toContain("unknown type");
 });
 
 test("the error names where in the tree the problem is", () => {
-  expect(() =>
-    parseLayout({
-      version: LAYOUT_VERSION,
-      root: { type: "split", direction: "row", children: [pane("a"), { type: "pane" }] },
-    }),
-  ).toThrow(/root\.children\[1\]/);
+  expect(
+    runFailMessage(
+      parseLayout({
+        version: LAYOUT_VERSION,
+        root: {
+          type: "split",
+          direction: "row",
+          children: [pane("a"), { type: "pane" }],
+        },
+      }),
+    ),
+  ).toContain("root.children[1]");
 });
 
 // Presets.

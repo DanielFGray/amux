@@ -9,8 +9,9 @@ import {
   Runtime,
   Schema as S,
   Scope,
+  Option,
 } from "effect";
-import { DaemonModel, type DaemonModelService } from "./DaemonModel.ts";
+import { DaemonModel } from "./DaemonModel.ts";
 import {
   applyWorkspaceCommand,
   markAgentExited,
@@ -24,9 +25,9 @@ import type { PersistedAgent, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { layoutPanes } from "../layout.ts";
+import { errorMessage } from "../error-message.ts";
 
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+const describe = errorMessage;
 
 export class WorkspaceTransactionError extends S.TaggedError<WorkspaceTransactionError>()(
   "WorkspaceTransactionError",
@@ -58,6 +59,10 @@ interface Events {
   readonly publishWorkspaceFrame: (snapshot: WorkspaceSnapshot) => Effect.Effect<void>;
 }
 
+interface Lifecycle {
+  readonly onEmpty: Effect.Effect<void>;
+}
+
 export class WorkspaceTransactionSessionOps extends Context.Tag("WorkspaceTransaction/SessionOps")<
   WorkspaceTransactionSessionOps,
   SessionOps
@@ -74,6 +79,11 @@ export class WorkspaceTransactionPersistence extends Context.Tag(
 export class WorkspaceTransactionEvents extends Context.Tag("WorkspaceTransaction/Events")<
   WorkspaceTransactionEvents,
   Events
+>() {}
+
+export class WorkspaceTransactionLifecycle extends Context.Tag("WorkspaceTransaction/Lifecycle")<
+  WorkspaceTransactionLifecycle,
+  Lifecycle
 >() {}
 
 export interface WorkspaceTransactionService {
@@ -97,6 +107,10 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
       const worktreeOps = yield* WorkspaceTransactionWorktreeOps;
       const persistence = yield* WorkspaceTransactionPersistence;
       const events = yield* WorkspaceTransactionEvents;
+      const lifecycle = yield* Effect.serviceOption(WorkspaceTransactionLifecycle);
+      const closeIfEmpty = lifecycle.pipe(
+        Option.match({ onNone: () => Effect.void, onSome: (value) => value.onEmpty }),
+      );
 
       const exitCommits = new Map<string, (code: number | null) => Promise<void>>();
 
@@ -119,6 +133,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
             yield* persistence.persistUntilSuccess(newState, `natural exit for '${sid}'`);
             yield* model.commitWorkspace(next, newState);
             yield* events.publishWorkspaceFrame(next);
+            if (next.spaces.length === 0) yield* closeIfEmpty;
           }),
         );
       });
@@ -195,6 +210,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                     yield* model.commitWorkspace(mutation.snapshot, candidate);
                     yield* events.publishWorkspaceEvents(cur.workspace, mutation.snapshot);
                     yield* events.publishWorkspaceFrame(mutation.snapshot);
+                    if (mutation.snapshot.spaces.length === 0) yield* closeIfEmpty;
                   }
                   for (const wt of worktrees.removed) {
                     yield* worktreeOps.remove(wt!.repo, wt!.path);

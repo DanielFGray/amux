@@ -30,8 +30,8 @@ function state(id: string) {
   return { version: 1 as const, id, createdAt: 1, updatedAt: 1, attached: false, spaces: [] };
 }
 
-const run = <A>(
-  effect: Effect.Effect<A, unknown, Session | SessionEnv | FileSystem.FileSystem>,
+const run = <A, E>(
+  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(

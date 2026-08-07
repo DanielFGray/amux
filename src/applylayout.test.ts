@@ -4,6 +4,7 @@ import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
 import { encodeLayout, decodeLayout, layoutAgents, makeLayout, type LayoutNode } from "./layout.ts";
 import type { Agent } from "./agent.ts";
+import { Effect } from "effect";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -58,7 +59,7 @@ test("a layout survives the wire format and rebuilds the same tree", async () =>
   await layout();
   expect(shape(window.exportLayout().root)).toEqual({ column: ["pane", "pane", "pane"] });
 
-  expect(window.applyLayout(decodeLayout(saved))).toBe(true);
+  expect(window.applyLayout(Effect.runSync(decodeLayout(saved)))).toBe(true);
   await layout();
   expect(encodeLayout(window.exportLayout())).toBe(saved);
 });

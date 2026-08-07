@@ -22,30 +22,29 @@ import * as RpcServer from "@effect/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
 import { EventBus } from "./effect/EventBus.ts";
-import {
-  DaemonModel,
-  DaemonModelError,
-  layerDaemonModel,
-  type DaemonState,
-} from "./effect/DaemonModel.ts";
+import { DaemonModel, DaemonModelError, layerDaemonModel } from "./effect/DaemonModel.ts";
 import {
   WorkspaceTransaction,
+  WorkspaceTransactionLifecycle,
   WorkspaceTransactionPersistence,
   makeSessionOps,
   makeWorktreeOps,
   makePersistence,
   makeEvents,
 } from "./effect/WorkspaceTransaction.ts";
+import type { PlatformError } from "@effect/platform/Error";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
-import type { ManagedSession, SessionSpec } from "./effect/SessionRegistry.ts";
+import type { ManagedSession, PtyError, SessionSpec } from "./effect/SessionRegistry.ts";
 import {
   isSessionId,
   processAlive,
   Session,
   SessionEnv,
   sessionPaths,
-  type SessionAttachment,
+  SessionIdError,
+  SessionStateError,
+  SessionSizeError,
   type SessionLease,
   type SessionState,
   type SessionPaths,
@@ -60,9 +59,9 @@ import {
   type WorkspaceSnapshot,
 } from "./workspace.ts";
 import { gitWorktreeExists } from "./git.ts";
+import { errorMessage } from "./error-message.ts";
 
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+const describe = errorMessage;
 
 export class SessionDaemonError extends S.TaggedError<SessionDaemonError>()("SessionDaemonError", {
   message: S.String,
@@ -73,8 +72,16 @@ export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
 }) {}
 
 export interface SessionDaemonOptions {
-  readonly saveState?: (state: SessionState) => Effect.Effect<void, unknown, Session>;
-  readonly spawnAgent?: (spec: SessionSpec) => Effect.Effect<ManagedSession, unknown>;
+  readonly saveState?: (
+    state: SessionState,
+  ) => Effect.Effect<
+    void,
+    SessionIdError | SessionStateError | SessionSizeError | PlatformError | DaemonError,
+    Session
+  >;
+  readonly spawnAgent?: (
+    spec: SessionSpec,
+  ) => Effect.Effect<ManagedSession, PtyError | DaemonError>;
 }
 
 export interface SessionDaemonService {
@@ -170,7 +177,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     spaces: [],
   };
   state.attached = false;
-  const workspace = workspaceFromSession(state);
+  const workspace = yield* workspaceFromSession(state);
 
   const daemonScope = yield* Scope.make();
   const eventBusContext = yield* Layer.build(EventBus.Default).pipe(Scope.extend(daemonScope));
@@ -268,6 +275,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       Layer.provide(makeSessionOps(hostRef, (id) => killAgent(id))),
       Layer.provide(makeWorktreeOps()),
       Layer.provide(
+        Layer.succeed(WorkspaceTransactionLifecycle, {
+          onEmpty: Effect.suspend(() => closeWhenEmpty),
+        }),
+      ),
+      Layer.provide(
         makeEvents(
           (event) => eventBus.publish(event as any).pipe(Effect.catchAllCause(() => Effect.void)),
           (snapshot) =>
@@ -302,6 +314,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     requireHost()
       .kill(agentId)
       .pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
+  let closeWhenEmpty: Effect.Effect<void> = Effect.void;
 
   const start = Effect.gen(function* () {
     if (controlScope) return;
@@ -516,6 +529,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const stop = terminate("stop");
   const close = terminate("close");
+  closeWhenEmpty = Effect.forkDaemon(close).pipe(Effect.asVoid);
 
   const runWorkspaceCommand = (
     value: Command,
@@ -588,7 +602,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       guard(
         Effect.gen(function* () {
           const cur = yield* model.get;
-          const ctx = parseWorkspaceCommandContext(context, cur.workspace);
+          const ctx = yield* parseWorkspaceCommandContext(context, cur.workspace);
           const ws = yield* runWorkspaceCommand(value, expectedRevision, ctx);
           return JSON.stringify(ws);
         }),
@@ -604,7 +618,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             );
           if (meta.target === "workspace") {
             const cur = yield* model.get;
-            const ctx = parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+            const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
             const ws = yield* runWorkspaceCommand(
               value,
               expectedRevision ?? cur.workspace.revision,

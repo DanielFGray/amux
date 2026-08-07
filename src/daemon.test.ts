@@ -29,8 +29,8 @@ async function env() {
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
-const run = <A>(
-  effect: Effect.Effect<A, unknown, Session | SessionEnv | FileSystem.FileSystem | Scope.Scope>,
+const run = <A, E>(
+  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem | Scope.Scope>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
@@ -191,17 +191,17 @@ test("a new session starts with a default 80x24 space", async () => {
   await C(d);
 });
 
-test("concurrent status reads an empty workspace without racing default creation", async () => {
+test("last pane removal closes the daemon so the next attach starts fresh", async () => {
   const e = await env();
   const d = await open("empty", e);
   await rwc(d)(command("space.close", { space: ws(d).spaces[0]!.id }), ws(d).revision, context);
-  expect(ws(d).spaces).toHaveLength(0);
-
-  const [first, second] = await Promise.all([status(d, e), status(d, e)]);
-  expect(first.degraded).toBeUndefined();
-  expect(second.workspace).toEqual(first.workspace);
-  expect(JSON.parse(first.workspace).spaces).toHaveLength(0);
-  await S(d);
+  await Bun.sleep(100);
+  expect(await run(Session.readLease("empty"), e)).toBeNull();
+  const next = await open("empty", e);
+  const nextWorkspace = await Effect.runPromise(next.getWorkspace);
+  expect(nextWorkspace.spaces).toHaveLength(1);
+  expect(nextWorkspace.spaces[0]!.windows[0]!.agents[0]!.exited).toBe(false);
+  await C(next);
 });
 
 test("stopping a daemon discards the workspace it was keeping", async () => {
@@ -511,8 +511,8 @@ test("a destructive commit retries its single durable write after process comple
   await rwc(daemon)(command("agent.kill", { agent }), ws(daemon).revision, context);
   expect(failed).toBe(true);
   expect(ws(daemon).spaces).toHaveLength(0);
-  expect(await healthy(daemon, e)).toBe(true);
-  await S(daemon);
+  await Bun.sleep(100);
+  expect(await run(Session.readLease("kill-write-retry"), e)).toBeNull();
 });
 
 test("stop interrupts and joins a never-settling destructive persistence operation", async () => {

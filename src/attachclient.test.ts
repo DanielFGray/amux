@@ -51,8 +51,8 @@ const connect = (
 };
 const agents: Agent[] = [];
 let nextProjection = 0;
-const run = <A>(
-  effect: Effect.Effect<A, unknown, Session | SessionEnv | FileSystem.FileSystem>,
+const run = <A, E>(
+  effect: Effect.Effect<A, E, Session | SessionEnv | FileSystem.FileSystem>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { command } from "./commands.ts";
 import { resolve } from "node:path";
+import { Effect, Cause } from "effect";
 import {
   applyWorkspaceCommand,
   markAgentExited,
@@ -11,6 +12,14 @@ import {
 } from "./workspace.ts";
 import { layoutPanes } from "./layout.ts";
 import type { SessionState } from "./session.ts";
+
+const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
+const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
+  const exit = Effect.runSyncExit(effect);
+  if (exit._tag === "Success") throw new Error("expected effect to fail");
+  const error = Cause.squash(exit.cause);
+  return error instanceof Error ? error.message : String(error);
+};
 
 const base = (layout: string): SessionState => ({
   version: 1,
@@ -50,10 +59,12 @@ const base = (layout: string): SessionState => ({
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
 test("pane.close reveals a live agent when the window would become empty", () => {
-  expect(() => workspaceFromSession(base("not json"))).toThrow("layout is not JSON");
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  expect(runFailMessage(workspaceFromSession(base("not json")))).toContain("layout is not JSON");
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const window = adopted.spaces[0]!.windows[0]!;
@@ -69,9 +80,11 @@ test("pane.close reveals a live agent when the window would become empty", () =>
 });
 
 test("transient window state stays live but is omitted from persistence", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const split = applyWorkspaceCommand(
@@ -89,9 +102,11 @@ test("transient window state stays live but is omitted from persistence", () => 
 });
 
 test("commands transform a private generation and leave their input untouched", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const renamed = applyWorkspaceCommand(
@@ -117,51 +132,61 @@ test("a natural exit reveals a surviving detached agent", () => {
     exited: false,
     exitCode: null,
   });
-  const exited = markAgentExited(workspaceFromSession(saved), "agent-a", 0);
+  const exited = markAgentExited(run(workspaceFromSession(saved)), "agent-a", 0);
   const window = exited.spaces[0]!.windows[0]!;
   expect(window.layout.root).toMatchObject({ type: "pane", agent: "agent-b" });
   expect(window.state.focus).toBe(window.layout.focus ?? null);
 });
 
 test("workspace and command context parsers reject malformed nested state and relationships", () => {
-  const valid = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const valid = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
-  expect(parseWorkspace(valid)).toEqual(valid);
+  expect(run(parseWorkspace(valid))).toEqual(valid);
 
   const badAgent = structuredClone(valid) as any;
   badAgent.spaces[0].windows[0].agents[0].cols = "wide";
-  expect(() => parseWorkspace(badAgent)).toThrow();
+  expect(runFailMessage(parseWorkspace(badAgent))).toContain("workspace does not match schema");
   const badFocus = structuredClone(valid);
   badFocus.spaces[0]!.windows[0]!.state.focus = "missing-pane";
-  expect(() => parseWorkspace(badFocus)).toThrow("invalid pane");
+  expect(runFailMessage(parseWorkspace(badFocus))).toContain("invalid pane");
   const badRelation = structuredClone(valid);
   (badRelation.spaces[0]!.windows[0]!.layout.root as any).agent = "missing-agent";
-  expect(() => parseWorkspace(badRelation)).toThrow("absent or exited agent");
+  expect(runFailMessage(parseWorkspace(badRelation))).toContain("absent or exited agent");
 
-  expect(() =>
-    parseWorkspaceCommandContext(
-      { size: { cols: 0, rows: 24 }, shell: ["sh"], cwd: "/tmp" },
-      valid,
+  expect(
+    runFailMessage(
+      parseWorkspaceCommandContext(
+        { size: { cols: 0, rows: 24 }, shell: ["sh"], cwd: "/tmp" },
+        valid,
+      ),
     ),
-  ).toThrow();
-  expect(() =>
-    parseWorkspaceCommandContext(
-      { size: { cols: 1_000_000, rows: 1_000_000 }, shell: ["sh"], cwd: "/tmp" },
-      valid,
+  ).toContain("invalid workspace command context");
+  expect(
+    runFailMessage(
+      parseWorkspaceCommandContext(
+        { size: { cols: 1_000_000, rows: 1_000_000 }, shell: ["sh"], cwd: "/tmp" },
+        valid,
+      ),
     ),
-  ).toThrow();
-  expect(() =>
-    parseWorkspaceCommandContext({ ...context, blockedAgents: ["missing-agent"] }, valid),
-  ).toThrow("does not exist");
+  ).toContain("invalid workspace command context");
+  expect(
+    runFailMessage(
+      parseWorkspaceCommandContext({ ...context, blockedAgents: ["missing-agent"] }, valid),
+    ),
+  ).toContain("does not exist");
 });
 
 test("new identities are UUID-based, unique, and disjoint from adopted ids", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-adopted","agent":"agent-a","weight":1},"focus":"pane-adopted"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-adopted","agent":"agent-a","weight":1},"focus":"pane-adopted"}',
+      ),
     ),
   );
   const first = applyWorkspaceCommand(
@@ -190,7 +215,7 @@ test("pane.close transfers focus to a survivor when the focused pane is closed",
     { id: "agent-b", name: "sh", cmd: ["sh"], cols: 80, rows: 24, exited: false, exitCode: null },
     { id: "agent-c", name: "sh", cmd: ["sh"], cols: 80, rows: 24, exited: false, exitCode: null },
   );
-  const adopted = workspaceFromSession(saved);
+  const adopted = run(workspaceFromSession(saved));
   const closed = applyWorkspaceCommand(structuredClone(adopted), command("pane.close"), context);
   const window = closed.snapshot.spaces[0]!.windows[0]!;
   // pane-b was at index 1 in [pane-a, pane-b, pane-c]. focus → pane-c.
@@ -211,7 +236,7 @@ test("pane.close on the last pane reveals a live agent", () => {
     exited: false,
     exitCode: null,
   });
-  const adopted = workspaceFromSession(saved);
+  const adopted = run(workspaceFromSession(saved));
   const closed = applyWorkspaceCommand(adopted, command("pane.close"), context);
   const window = closed.snapshot.spaces[0]!.windows[0]!;
   // The window has live agents (agent-a detached, agent-b detached).
@@ -221,9 +246,11 @@ test("pane.close on the last pane reveals a live agent", () => {
 });
 
 test("space.new uses node path resolution and basename semantics", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const next = applyWorkspaceCommand(
@@ -277,7 +304,7 @@ function threePaneSession(): SessionState {
 // ── pane.break ──
 
 test("pane.break moves the focused pane into a new window", () => {
-  const adopted = workspaceFromSession(twoPaneSession());
+  const adopted = run(workspaceFromSession(twoPaneSession()));
   const result = applyWorkspaceCommand(adopted, command("pane.break"), context);
   expect(result.changed).toBe(true);
   const space = result.snapshot.spaces[0]!;
@@ -299,7 +326,7 @@ test("pane.break moves the focused pane into a new window", () => {
 });
 
 test("pane.break when two panes show the same agent clones the agent to both windows", () => {
-  const adopted = workspaceFromSession(dupAgentSession());
+  const adopted = run(workspaceFromSession(dupAgentSession()));
   const result = applyWorkspaceCommand(adopted, command("pane.break"), context);
   expect(result.changed).toBe(true);
   const space = result.snapshot.spaces[0]!;
@@ -322,7 +349,7 @@ test("pane.break when two panes show the same agent clones the agent to both win
 });
 
 test("pane.join moves a focused pane from the named window into the active window", () => {
-  const adopted = workspaceFromSession(twoPaneSession());
+  const adopted = run(workspaceFromSession(twoPaneSession()));
   const withDestination = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot;
   const result = applyWorkspaceCommand(
     withDestination,
@@ -343,7 +370,7 @@ test("pane.join moves a focused pane from the named window into the active windo
 });
 
 test("pane.join without a source uses the previously active window", () => {
-  const adopted = workspaceFromSession(twoPaneSession());
+  const adopted = run(workspaceFromSession(twoPaneSession()));
   const withDestination = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot;
   const result = applyWorkspaceCommand(withDestination, command("pane.join"), context);
 
@@ -354,7 +381,7 @@ test("pane.join without a source uses the previously active window", () => {
 });
 
 test("pane.move transfers the focused pane to another space without killing it", () => {
-  const adopted = workspaceFromSession(twoPaneSession());
+  const adopted = run(workspaceFromSession(twoPaneSession()));
   const withOther = applyWorkspaceCommand(
     adopted,
     command("space.new", { dir: "/tmp/other" }),
@@ -383,7 +410,7 @@ test("pane.move transfers the focused pane to another space without killing it",
 // ── pane.zoom ──
 
 test("pane.zoom toggles zoom on and off", () => {
-  const adopted = workspaceFromSession(twoPaneSession());
+  const adopted = run(workspaceFromSession(twoPaneSession()));
   const zoomed = applyWorkspaceCommand(adopted, command("pane.zoom"), context);
   expect(zoomed.changed).toBe(true);
   expect(zoomed.snapshot.spaces[0]!.windows[0]!.state.zoom).toEqual({
@@ -398,9 +425,11 @@ test("pane.zoom toggles zoom on and off", () => {
 });
 
 test("pane.zoom on a single-pane window is a no-op", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const result = applyWorkspaceCommand(adopted, command("pane.zoom"), context);
@@ -410,7 +439,7 @@ test("pane.zoom on a single-pane window is a no-op", () => {
 // ── pane.swap ──
 
 test("pane.swap next exchanges the focused pane with its neighbour", () => {
-  const adopted = workspaceFromSession(threePaneSession());
+  const adopted = run(workspaceFromSession(threePaneSession()));
   const result = applyWorkspaceCommand(adopted, command("pane.swap", { to: "next" }), context);
   expect(result.changed).toBe(true);
 
@@ -426,9 +455,11 @@ test("pane.swap next exchanges the focused pane with its neighbour", () => {
 // ── window.next / window.previous ──
 
 test("window.next cycles to the next window", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const with2 = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot;
@@ -442,9 +473,11 @@ test("window.next cycles to the next window", () => {
 });
 
 test("window.previous cycles to the previous window", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const with2 = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot;
@@ -458,9 +491,11 @@ test("window.previous cycles to the previous window", () => {
 // ── window.last ──
 
 test("window.last returns to the last focused window", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const with3 = applyWorkspaceCommand(
@@ -480,9 +515,11 @@ test("window.last returns to the last focused window", () => {
 // ── space.next / space.previous ──
 
 test("space.next cycles to the next space", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const with2 = applyWorkspaceCommand(
@@ -500,9 +537,11 @@ test("space.next cycles to the next space", () => {
 });
 
 test("space.previous cycles to the previous space", () => {
-  const adopted = workspaceFromSession(
-    base(
-      '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
     ),
   );
   const with2 = applyWorkspaceCommand(
@@ -533,7 +572,7 @@ test("agent.reveal creates a pane for an unrevealed agent", () => {
     exited: false,
     exitCode: null,
   });
-  const adopted = workspaceFromSession(s);
+  const adopted = run(workspaceFromSession(s));
   const result = applyWorkspaceCommand(
     adopted,
     command("agent.reveal", { agent: "agent-b" }),
@@ -548,7 +587,7 @@ test("agent.reveal creates a pane for an unrevealed agent", () => {
 });
 
 test("agent.reveal on an already revealed agent just focuses it", () => {
-  const adopted = workspaceFromSession(twoPaneSession());
+  const adopted = run(workspaceFromSession(twoPaneSession()));
   const result = applyWorkspaceCommand(
     adopted,
     command("agent.reveal", { agent: "agent-b" }),
@@ -579,7 +618,7 @@ test("agent.next-blocked jumps to the next blocked agent", () => {
   // Give agent-b its own pane so it can be focused
   s.spaces[0]!.windows[0]!.layout =
     '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1}]},"focus":"pane-a"}';
-  const adopted = workspaceFromSession(s);
+  const adopted = run(workspaceFromSession(s));
   const ctx = { ...context, blockedAgents: ["agent-a", "agent-b"] };
   const result = applyWorkspaceCommand(adopted, command("agent.next-blocked"), ctx);
   expect(result.changed).toBe(true);
@@ -601,7 +640,7 @@ test("agent.kill reveals a surviving live agent when the window becomes empty", 
     exited: false,
     exitCode: null,
   });
-  const adopted = workspaceFromSession(s);
+  const adopted = run(workspaceFromSession(s));
   const result = applyWorkspaceCommand(
     adopted,
     command("agent.kill", { agent: "agent-a" }),
@@ -642,7 +681,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
     exitCode: 17,
   });
 
-  const adopted = workspaceFromSession(s);
+  const adopted = run(workspaceFromSession(s));
   const agent = adopted.spaces[0]!.windows[0]!.agents[1]!;
   agent.exited = true;
   agent.exitCode = 17;
@@ -675,7 +714,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
 // ── pane.resize-divider ──
 
 test("pane.resize-divider adjusts neighbour weights", () => {
-  const adopted = workspaceFromSession(twoPaneSession());
+  const adopted = run(workspaceFromSession(twoPaneSession()));
   const beforeLeft = JSON.stringify(
     (
       adopted.spaces[0]!.windows[0]!.layout.root as {

@@ -1,7 +1,7 @@
 import { testEffect } from "../test-effect.ts";
-import { Effect, Exit, Layer, Ref } from "effect";
+import { Effect, Layer, Ref } from "effect";
 import { expect } from "bun:test";
-import { DaemonModel, layerDaemonModel } from "./DaemonModel.ts";
+import { layerDaemonModel } from "./DaemonModel.ts";
 import {
   WorkspaceTransaction,
   WorkspaceTransactionSessionOps,
@@ -12,6 +12,7 @@ import {
 } from "./WorkspaceTransaction.ts";
 import type { PersistedAgent, SessionState } from "../session.ts";
 import { workspaceFromSession } from "../workspace.ts";
+import type { WorkspaceSnapshot } from "../workspace.ts";
 import { command } from "../commands.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
@@ -21,7 +22,7 @@ const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
 function singlePaneState(): {
   state: SessionState;
-  workspace: ReturnType<typeof workspaceFromSession>;
+  workspace: WorkspaceSnapshot;
 } {
   const spaceId = "space-1";
   const winNum = 1;
@@ -66,12 +67,12 @@ function singlePaneState(): {
       },
     ],
   };
-  return { state, workspace: workspaceFromSession(state) };
+  return { state, workspace: Effect.runSync(workspaceFromSession(state)) };
 }
 
 function worktreeSpace(): {
   state: SessionState;
-  workspace: ReturnType<typeof workspaceFromSession>;
+  workspace: WorkspaceSnapshot;
 } {
   const spaceId = "wt-space";
   const state: SessionState = {
@@ -92,7 +93,7 @@ function worktreeSpace(): {
       },
     ],
   };
-  return { state, workspace: workspaceFromSession(state) };
+  return { state, workspace: Effect.runSync(workspaceFromSession(state)) };
 }
 
 interface FakeSessionState {
@@ -226,7 +227,7 @@ function trackingEvents(stateRef: Ref.Ref<FakeEventsState>) {
 }
 
 function testLayer(
-  initial: { state: SessionState; workspace: ReturnType<typeof workspaceFromSession> },
+  initial: { state: SessionState; workspace: WorkspaceSnapshot },
   opts?: { sessionFail?: boolean; worktreeFail?: boolean; worktreeDirty?: boolean },
 ) {
   const sessionRef = Ref.unsafeMake<FakeSessionState>({

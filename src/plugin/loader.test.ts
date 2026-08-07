@@ -157,6 +157,34 @@ testEffect("loads the worked external status bar example", () =>
   }),
 );
 
+testEffect("loads the agent dashboard example", () =>
+  Effect.gen(function* () {
+    const { host, regions } = yield* makeHost();
+    const config = baseConfig({
+      plugins: [spec(join(testDir, "../../examples/agent-dashboard.tsx"))],
+    });
+
+    yield* loadPluginsFromConfig(config, host, testDir);
+
+    expect(host.status().map((status) => status.id)).toEqual(["example.agent-dashboard"]);
+    expect(regions.declared("bottom", "app")).toBe(true);
+  }),
+);
+
+testEffect("loads the agent triage example", () =>
+  Effect.gen(function* () {
+    const { host, regions } = yield* makeHost();
+    const config = baseConfig({
+      plugins: [spec(join(testDir, "../../examples/agent-triage.tsx"))],
+    });
+
+    yield* loadPluginsFromConfig(config, host, testDir);
+
+    expect(host.status().map((status) => status.id)).toEqual(["example.agent-triage"]);
+    expect(regions.declared("right", "app")).toBe(true);
+  }),
+);
+
 testEffect("loads multiple plugins in order", () =>
   Effect.gen(function* () {
     const dir = yield* Effect.promise(() => tempDir());

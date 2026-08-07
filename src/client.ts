@@ -3,17 +3,26 @@ import { Effect, Runtime, Schedule, Scope, Stream, Schema as S } from "effect";
 import { FileSystem } from "@effect/platform";
 import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SpawnBackend } from "./backend.ts";
-import { connectControl, controlCall } from "./control-client.ts";
+import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { Command } from "./commands.ts";
 import {
-  parseWorkspace,
   parseWorkspaceJson,
+  workspaceAgents,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
-import { processAlive, sessionPaths, Session, SessionEnv, type SessionState } from "./session.ts";
+import {
+  processAlive,
+  sessionPaths,
+  Session,
+  SessionEnv,
+  SessionIdError,
+  type SessionState,
+} from "./session.ts";
 import type { DaemonEventPayload } from "./effect/EventBus.ts";
+import { ControlError } from "./control.ts";
+import { errorMessage } from "./error-message.ts";
 
 const START_TIMEOUT_MS = 10_000;
 const POLL_MS = 25;
@@ -33,28 +42,28 @@ export interface SessionClientShape extends DaemonSession {
   readonly live: ReadonlySet<string>;
   readonly workspace: () => WorkspaceSnapshot;
   readonly models: Stream.Stream<WorkspaceSnapshot>;
-  readonly events: Stream.Stream<DaemonEventPayload, unknown>;
+  readonly events: Stream.Stream<DaemonEventPayload, ControlError>;
   readonly runWorkspace: (
     command: Command,
     context: WorkspaceCommandContext,
-  ) => Effect.Effect<WorkspaceSnapshot, unknown, never>;
+  ) => Effect.Effect<WorkspaceSnapshot, ControlError | SessionClientError, never>;
   readonly backend: () => SpawnBackend;
   readonly close: () => void;
-  readonly stop: () => Effect.Effect<void, unknown, never>;
+  readonly stop: () => Effect.Effect<void, ControlError, never>;
   /** tmux's buffer verbs, all server-side: the stack lives in the daemon
    *  beside the PTYs, so a copy and a paste work with no client attached. */
   readonly setBuffer: (
     name: string | undefined,
     data: string,
-  ) => Effect.Effect<string, unknown, never>;
+  ) => Effect.Effect<string, ControlError, never>;
   readonly pasteBuffer: (
     name: string | undefined,
     target: string,
     deleteAfter?: boolean,
-  ) => Effect.Effect<void, unknown, never>;
-  readonly listBuffers: () => Effect.Effect<readonly BufferEntry[], unknown, never>;
-  readonly deleteBuffer: (name: string | undefined) => Effect.Effect<void, unknown, never>;
-  readonly showBuffer: (name: string | undefined) => Effect.Effect<string, unknown, never>;
+  ) => Effect.Effect<void, ControlError, never>;
+  readonly listBuffers: () => Effect.Effect<readonly BufferEntry[], ControlError, never>;
+  readonly deleteBuffer: (name: string | undefined) => Effect.Effect<void, ControlError, never>;
+  readonly showBuffer: (name: string | undefined) => Effect.Effect<string, ControlError, never>;
 }
 
 /** The control connection lives for the returned client's scope: closing the
@@ -65,7 +74,7 @@ export const SessionClient = {
     options: SessionClientOptions = {},
   ): Effect.Effect<
     SessionClientShape,
-    unknown,
+    ControlError | SessionClientError | SessionIdError,
     Scope.Scope | SessionEnv | Session | FileSystem.FileSystem
   > {
     return make(id, options);
@@ -77,7 +86,7 @@ const make = (
   options: SessionClientOptions,
 ): Effect.Effect<
   SessionClientShape,
-  unknown,
+  ControlError | SessionClientError | SessionIdError,
   Scope.Scope | SessionEnv | Session | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
@@ -89,7 +98,7 @@ const make = (
           path: paths.attach,
           client: options.client ?? `pid-${process.pid}`,
         }),
-      catch: (error) => new SessionClientError({ message: String(error) }),
+      catch: (error) => new SessionClientError({ message: errorMessage(error) }),
     }).pipe(
       Effect.retry({
         schedule: Schedule.spaced("200 millis").pipe(Schedule.upTo("5000 millis")),
@@ -106,18 +115,19 @@ const make = (
       Effect.mapError(
         (error) =>
           new SessionClientError({
-            message: `session '${id}' did not answer status: ${String(error)}`,
+            message: `session '${id}' did not answer status: ${error.message}`,
           }),
       ),
     );
     let service!: SessionClientShape;
-    const initialWorkspace = yield* Effect.try({
-      try: () => parseWorkspaceJson(status.workspace),
-      catch: (error) =>
-        new SessionClientError({
-          message: `daemon returned an invalid workspace: ${String(error)}`,
-        }),
-    });
+    const initialWorkspace = yield* parseWorkspaceJson(status.workspace).pipe(
+      Effect.mapError(
+        (error) =>
+          new SessionClientError({
+            message: `daemon returned an invalid workspace: ${error.message}`,
+          }),
+      ),
+    );
     let workspace = initialWorkspace;
     let commandQueue: Promise<void> = Promise.resolve();
     const accept = (next: WorkspaceSnapshot) => {
@@ -125,11 +135,7 @@ const make = (
         workspace = next;
         const live = service.live as Set<string>;
         live.clear();
-        for (const space of next.spaces) {
-          for (const window of space.windows) {
-            for (const agent of window.agents) if (!agent.exited) live.add(agent.id);
-          }
-        }
+        for (const { agent } of workspaceAgents(next)) if (!agent.exited) live.add(agent.id);
       }
       return workspace;
     };
@@ -145,6 +151,7 @@ const make = (
       events: control.Events().pipe(
         Stream.drop(1),
         Stream.map(({ event }) => event),
+        Stream.mapError(toControlError),
       ),
       runWorkspace: (command, context) =>
         Effect.flatMap(Effect.runtime<never>(), (runtime) =>
@@ -158,7 +165,8 @@ const make = (
                     context,
                   }),
                 );
-                accept(parseWorkspaceJson(next));
+                const parsed = await Runtime.runPromise(runtime)(parseWorkspaceJson(next));
+                accept(parsed);
                 return structuredClone(workspace);
               };
               const queued = commandQueue.then(request);
@@ -168,16 +176,17 @@ const make = (
               );
               return queued;
             },
-            catch: (error) => new SessionClientError({ message: String(error) }),
+            catch: (error) => new SessionClientError({ message: errorMessage(error) }),
           }),
         ),
       backend: () => daemonBackend(service, service.live),
-      setBuffer: (name, data) => control.SetBuffer({ name, data }),
+      setBuffer: (name, data) =>
+        control.SetBuffer({ name, data }).pipe(Effect.mapError(toControlError)),
       pasteBuffer: (name, target, deleteAfter = false) =>
-        control.PasteBuffer({ name, target, deleteAfter }),
-      listBuffers: () => control.ListBuffers(),
-      deleteBuffer: (name) => control.DeleteBuffer({ name }),
-      showBuffer: (name) => control.ShowBuffer({ name }),
+        control.PasteBuffer({ name, target, deleteAfter }).pipe(Effect.mapError(toControlError)),
+      listBuffers: () => control.ListBuffers().pipe(Effect.mapError(toControlError)),
+      deleteBuffer: (name) => control.DeleteBuffer({ name }).pipe(Effect.mapError(toControlError)),
+      showBuffer: (name) => control.ShowBuffer({ name }).pipe(Effect.mapError(toControlError)),
       close: () => attach.close(),
       // A daemon that dies mid-response is a successful stop, so transport
       // failures here are expected rather than reported.
@@ -208,7 +217,7 @@ export function ensureDaemon(
     const entry = new URL("./daemon-main.ts", import.meta.url).pathname;
     const child = yield* Effect.try({
       try: () => spawn(process.execPath, [entry, id], { detached: true, stdio: "ignore", env }),
-      catch: (error) => new SessionClientError({ message: String(error) }),
+      catch: (error) => new SessionClientError({ message: errorMessage(error) }),
     });
     child.unref();
     const daemonReady = daemonAlive(id).pipe(

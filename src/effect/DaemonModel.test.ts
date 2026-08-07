@@ -14,14 +14,16 @@ const initial = {
     attached: false,
     spaces: [],
   },
-  workspace: workspaceFromSession({
-    version: 1,
-    id: "test",
-    createdAt: 1,
-    updatedAt: 1,
-    attached: false,
-    spaces: [],
-  }),
+  workspace: Effect.runSync(
+    workspaceFromSession({
+      version: 1,
+      id: "test",
+      createdAt: 1,
+      updatedAt: 1,
+      attached: false,
+      spaces: [],
+    }),
+  ),
 };
 
 testEffect("reads initial state and workspace", () =>
@@ -219,7 +221,7 @@ testEffect("touch is a no-op for unknown client", () =>
 testEffect("commitWorkspace updates workspace and state atomically", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
-    const next = workspaceFromSession({
+    const next = yield* workspaceFromSession({
       version: 1,
       id: "test",
       createdAt: 1,

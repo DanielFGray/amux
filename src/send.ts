@@ -1,5 +1,6 @@
 import { Schema as S } from "effect";
 import { encodeStroke, type KeyStroke } from "./keys.ts";
+import { errorMessage } from "./error-message.ts";
 
 /** A send-keys input that cannot be compiled. The message is what the prompt
  *  shows; the two structural failures are "nothing to send" (empty input) and
@@ -155,7 +156,7 @@ export function sendKeys(
   try {
     bytes = encodeSendKeys(input, parseKey);
   } catch (error) {
-    return S.is(SendKeysError)(error) ? error : new SendKeysError({ message: String(error) });
+    return S.is(SendKeysError)(error) ? error : new SendKeysError({ message: errorMessage(error) });
   }
   if (bytes === "") return new SendKeysError({ message: "nothing to send" });
   target.write(bytes);

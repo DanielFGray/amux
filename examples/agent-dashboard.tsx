@@ -1,0 +1,49 @@
+/** @jsxImportSource @opentui/solid */
+import { createMemo } from "solid-js";
+import { Effect } from "effect";
+import type { PluginDefinition } from "../src/plugin/types.ts";
+
+/** A read-only agent roster built entirely on the public panel projection. */
+const agentDashboard: PluginDefinition = {
+  id: "example.agent-dashboard",
+  apiVersion: "1",
+  effect: (ctx) =>
+    Effect.sync(() => {
+      const panel = {
+        id: "example.agent-dashboard.panel",
+        region: "bottom" as const,
+        anchor: "app" as const,
+        title: "agents",
+        size: () => 2,
+        component: () => {
+          const lines = createMemo(() => {
+            ctx.panel.tick();
+            const display = ctx.panel.display();
+            const agents = display.rows.filter((row) => row.kind === "agent");
+            const roster = agents.length
+              ? agents
+                  .map((agent) => {
+                    const state = agent.agentState ?? (agent.exited ? "done" : "idle");
+                    return `${agent.agentCliKind ?? "pty"}:${state}`;
+                  })
+                  .join(" ")
+              : "no agents";
+            return [
+              ` agents ${display.agentCount} | blocked ${display.blockedCount} `,
+              ` ${roster} `,
+            ];
+          });
+
+          return (
+            <box style={{ height: 2, flexDirection: "column", backgroundColor: "#1e1e2e" }}>
+              <text style={{ height: 1, fg: "#f9e2af" }}>{lines()[0]}</text>
+              <text style={{ height: 1, fg: "#a6e3a1" }}>{lines()[1]}</text>
+            </box>
+          );
+        },
+      };
+      ctx.registerPanel(panel);
+    }),
+};
+
+export default agentDashboard;

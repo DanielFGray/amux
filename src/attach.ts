@@ -16,6 +16,7 @@ import {
   encodeAttachFrame,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
+import { errorMessage } from "./error-message.ts";
 import {
   Clock,
   Deferred,
@@ -31,7 +32,7 @@ import {
   Schema as S,
 } from "effect";
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts";
-import { parseWorkspace, WorkspaceSnapshotJson, type WorkspaceSnapshot } from "./workspace.ts";
+import { parseWorkspaceJson, type WorkspaceSnapshot } from "./workspace.ts";
 
 /**
  * Seconds between heartbeats.
@@ -273,7 +274,7 @@ class AttachClientConnection {
       decoded = decodeAttachFrames(complete.toString("utf8"));
     } catch (error) {
       const protocolError =
-        error instanceof Error ? error : new AttachError({ message: String(error) });
+        error instanceof AttachError ? error : new AttachError({ message: errorMessage(error) });
       onProtocolError(protocolError);
       this._finish(protocolError);
       this._socket.end();
@@ -323,12 +324,14 @@ class AttachClientConnection {
     }
     if (frame._tag === "workspace") {
       try {
-        const workspace = parseWorkspace(S.decodeUnknownSync(WorkspaceSnapshotJson)(frame.state));
+        const workspace = Effect.runSync(parseWorkspaceJson(frame.state));
         if (workspace.revision !== frame.revision)
           throw new AttachError({ message: "workspace revision does not match frame" });
         this._workspaceQ.unsafeOffer(workspace);
       } catch (error) {
-        this._finish(error instanceof Error ? error : new AttachError({ message: String(error) }));
+        this._finish(
+          error instanceof AttachError ? error : new AttachError({ message: errorMessage(error) }),
+        );
         this._socket.end();
       }
       return;
@@ -420,7 +423,9 @@ const makeScoped = (
             socketRef?.end();
             resume(
               Effect.fail(
-                S.is(AttachError)(error) ? error : new AttachError({ message: String(error) }),
+                S.is(AttachError)(error)
+                  ? error
+                  : new AttachError({ message: errorMessage(error) }),
               ),
             );
           };

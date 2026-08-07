@@ -21,7 +21,7 @@
  * either, and a headless window is the two of them together.
  */
 
-import { Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { SplitDirection } from "./window.ts";
 import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts";
 
@@ -519,32 +519,36 @@ function order(node: LayoutNode | null): LayoutNode | null {
  * layout must fail as a value rather than by throwing halfway through mutating
  * a live window — by the time applyLayout runs, the old tree is already gone.
  */
-export function decodeLayout(text: string): Layout {
+export function decodeLayout(text: string): Effect.Effect<Layout, LayoutFormatError> {
   if (Buffer.byteLength(text) > MAX_LAYOUT_BYTES)
-    throw new LayoutFormatError({ message: "layout is too large" });
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new LayoutFormatError({ message: `layout is not JSON: ${(error as Error).message}` });
-  }
-  return parseLayout(parsed);
+    return Effect.fail(new LayoutFormatError({ message: "layout is too large" }));
+  return Effect.try({
+    try: () => JSON.parse(text),
+    catch: (error) =>
+      new LayoutFormatError({ message: `layout is not JSON: ${(error as Error).message}` }),
+  }).pipe(Effect.flatMap((parsed) => parseLayout(parsed)));
 }
 
-export function parseLayout(value: unknown): Layout {
-  if (!value || typeof value !== "object")
-    throw new LayoutFormatError({ message: "layout must be an object" });
-  const raw = value as Partial<Layout>;
-  if (raw.version !== LAYOUT_VERSION) {
-    throw new LayoutFormatError({ message: `unsupported layout version ${String(raw.version)}` });
-  }
-  const budget = { nodes: 0 };
-  const root =
-    raw.root === null || raw.root === undefined ? null : parseNode(raw.root, "root", 1, budget);
-  if (raw.focus !== undefined && typeof raw.focus !== "string") {
-    throw new LayoutFormatError({ message: "focus must be a pane id" });
-  }
-  return makeLayout(collapse(root), raw.focus);
+export function parseLayout(value: unknown): Effect.Effect<Layout, LayoutFormatError> {
+  return Effect.gen(function* () {
+    if (!value || typeof value !== "object")
+      return yield* new LayoutFormatError({ message: "layout must be an object" });
+    const raw = value as Partial<Layout>;
+    if (raw.version !== LAYOUT_VERSION) {
+      return yield* new LayoutFormatError({
+        message: `unsupported layout version ${String(raw.version)}`,
+      });
+    }
+    const budget = { nodes: 0 };
+    const root =
+      raw.root === null || raw.root === undefined
+        ? null
+        : yield* parseNode(raw.root, "root", 1, budget);
+    if (raw.focus !== undefined && typeof raw.focus !== "string") {
+      return yield* new LayoutFormatError({ message: "focus must be a pane id" });
+    }
+    return makeLayout(collapse(root), raw.focus);
+  });
 }
 
 function parseNode(
@@ -552,55 +556,61 @@ function parseNode(
   at: string,
   depth: number,
   budget: { nodes: number },
-): LayoutNode {
-  if (depth > MAX_LAYOUT_DEPTH)
-    throw new LayoutFormatError({ message: `layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}` });
-  if (++budget.nodes > MAX_LAYOUT_NODES)
-    throw new LayoutFormatError({
-      message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
+): Effect.Effect<LayoutNode, LayoutFormatError> {
+  return Effect.gen(function* () {
+    if (depth > MAX_LAYOUT_DEPTH)
+      return yield* new LayoutFormatError({
+        message: `layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}`,
+      });
+    if (++budget.nodes > MAX_LAYOUT_NODES)
+      return yield* new LayoutFormatError({
+        message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
+      });
+    if (!value || typeof value !== "object")
+      return yield* new LayoutFormatError({ message: `${at} must be an object` });
+    const raw = value as Record<string, unknown>;
+    const weight = yield* parseWeight(raw.weight, at);
+
+    if (raw.type === "pane") {
+      if (typeof raw.agent !== "string" || !raw.agent) {
+        return yield* new LayoutFormatError({ message: `${at} pane needs an agent id` });
+      }
+      if (typeof raw.id !== "string" || !raw.id) {
+        return yield* new LayoutFormatError({ message: `${at} pane needs a pane id` });
+      }
+      reservePaneId(raw.id);
+      return { type: "pane", id: raw.id, agent: raw.agent, weight };
+    }
+
+    if (raw.type === "split") {
+      if (raw.direction !== "row" && raw.direction !== "column") {
+        return yield* new LayoutFormatError({
+          message: `${at} split needs direction "row" or "column"`,
+        });
+      }
+      if (!Array.isArray(raw.children) || raw.children.length === 0) {
+        return yield* new LayoutFormatError({ message: `${at} split needs children` });
+      }
+      const children = yield* Effect.all(
+        raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`, depth + 1, budget)),
+      );
+      return { type: "split", direction: raw.direction, weight, children };
+    }
+
+    return yield* new LayoutFormatError({
+      message: `${at} has unknown type ${JSON.stringify(raw.type)}`,
     });
-  if (!value || typeof value !== "object")
-    throw new LayoutFormatError({ message: `${at} must be an object` });
-  const raw = value as Record<string, unknown>;
-  const weight = parseWeight(raw.weight, at);
-
-  if (raw.type === "pane") {
-    if (typeof raw.agent !== "string" || !raw.agent) {
-      throw new LayoutFormatError({ message: `${at} pane needs an agent id` });
-    }
-    if (typeof raw.id !== "string" || !raw.id) {
-      throw new LayoutFormatError({ message: `${at} pane needs a pane id` });
-    }
-    reservePaneId(raw.id);
-    return { type: "pane", id: raw.id, agent: raw.agent, weight };
-  }
-
-  if (raw.type === "split") {
-    if (raw.direction !== "row" && raw.direction !== "column") {
-      throw new LayoutFormatError({ message: `${at} split needs direction "row" or "column"` });
-    }
-    if (!Array.isArray(raw.children) || raw.children.length === 0) {
-      throw new LayoutFormatError({ message: `${at} split needs children` });
-    }
-    return {
-      type: "split",
-      direction: raw.direction,
-      weight,
-      children: raw.children.map((child, i) =>
-        parseNode(child, `${at}.children[${i}]`, depth + 1, budget),
-      ),
-    };
-  }
-
-  throw new LayoutFormatError({ message: `${at} has unknown type ${JSON.stringify(raw.type)}` });
+  });
 }
 
 /** Weights are relative, so any positive finite number is meaningful; a
  *  non-positive one would render as a zero-width pane and is refused. */
-function parseWeight(value: unknown, at: string): number {
-  if (value === undefined) return 1;
+function parseWeight(value: unknown, at: string): Effect.Effect<number, LayoutFormatError> {
+  if (value === undefined) return Effect.succeed(1);
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    throw new LayoutFormatError({ message: `${at} weight must be a positive number` });
+    return Effect.fail(
+      new LayoutFormatError({ message: `${at} weight must be a positive number` }),
+    );
   }
-  return value;
+  return Effect.succeed(value);
 }

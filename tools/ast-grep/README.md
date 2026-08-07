@@ -122,6 +122,10 @@ requirements channel of a qualified `Effect.Effect` type. It intentionally has
 no automatic fix: the appropriate replacement is usually `never`, a domain
 error, or a generic parameter, depending on the declaration.
 
+It also reports `unknown` as a qualified `Stream.Stream` error channel. Generic
+helpers should expose an `E` parameter instead of prescribing `unknown`; public
+APIs should use a schema-typed tagged error or a concrete error union.
+
 Run it against the source tree with:
 
 ```bash

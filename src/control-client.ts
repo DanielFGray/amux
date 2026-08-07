@@ -16,6 +16,7 @@ import { Effect, Layer, Scope, Stream } from "effect";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { DaemonEvent, DaemonEventPayload } from "./effect/EventBus.ts";
 import { SessionEnv, sessionPaths } from "./session.ts";
+import { errorMessage } from "./error-message.ts";
 
 /**
  * Every procedure of the group. Each call fails with the daemon's typed
@@ -91,5 +92,5 @@ export const toControlError = (error: unknown): ControlError =>
   error instanceof ControlError
     ? error
     : new ControlError({
-        message: error instanceof Error ? error.message : String(error),
+        message: errorMessage(error),
       });
