@@ -12,7 +12,7 @@ const catalog = {
   openai: {
     id: "openai",
     name: "OpenAI",
-    env: ["OPENAI_API_KEY"],
+     env: [],
     models: {
       "gpt-test": {
         id: "gpt-test",

@@ -8,6 +8,7 @@ import {
   optionSections,
   optionSpec,
   optionsIn,
+  parseModelReference,
   resolveOptions,
   writeOption,
 } from "./options.ts";
@@ -85,9 +86,26 @@ test("an unknown name has no declaration to act on", () => {
 });
 
 test("sections are the name prefixes, so declaring an option places its row", () => {
-  expect(optionSections).toEqual(["sidebar", "appearance", "behaviour", "notifications"]);
+  expect(optionSections).toEqual(["sidebar", "appearance", "behaviour", "agent", "notifications"]);
   expect(optionsIn("sidebar")).toEqual(["sidebar.open", "sidebar.width", "sidebar.agentsOnly"]);
   expect(optionsIn("nonesuch")).toEqual([]);
+});
+
+test("the native agent model is a provider/model config value", () => {
+  expect(resolveOptions({})["agent.model"]).toBe("openai/gpt-4o-mini");
+  expect(resolveOptions({ "agent.model": "anthropic/claude-sonnet" })["agent.model"]).toBe(
+    "anthropic/claude-sonnet",
+  );
+  expect(resolveOptions({ "agent.model": 42 })["agent.model"]).toBe("openai/gpt-4o-mini");
+});
+
+test("model references split provider from model and reject incomplete values", () => {
+  expect(parseModelReference("openai/gpt-4o-mini")).toEqual({
+    providerID: "openai",
+    modelID: "gpt-4o-mini",
+  });
+  expect(parseModelReference("openai/")).toBeUndefined();
+  expect(parseModelReference("/gpt-4o-mini")).toBeUndefined();
 });
 
 test("values read as something a person can act on", () => {

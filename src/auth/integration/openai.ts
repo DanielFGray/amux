@@ -1,6 +1,7 @@
 import { FetchHttpClient } from "@effect/platform";
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
 import { Layer, Redacted } from "effect";
+import { HttpClientRequest } from "@effect/platform";
 import type { Credential } from "../../credential.ts";
 import type { Integration } from "./types.ts";
 
@@ -12,11 +13,12 @@ export const openai: Integration = {
   label: "OpenAI",
   methods: [
     { type: "key", label: "API key" },
-    { type: "env", names: ["OPENAI_API_KEY"] },
   ],
-  model: (credential, model) =>
+  model: (model, transformClient) =>
     OpenAiLanguageModel.layer({ model }).pipe(
-      Layer.provide(OpenAiClient.layer({ apiKey: Redacted.make(Redacted.value(key(credential))) })),
+      Layer.provide(OpenAiClient.layer({ transformClient })),
       Layer.provide(FetchHttpClient.layer),
     ),
+  authorize: (credential, request) =>
+    HttpClientRequest.setHeader("Authorization", `Bearer ${Redacted.value(key(credential))}`)(request),
 };

@@ -36,6 +36,7 @@ interface StringSpec {
   readonly kind: "string";
   readonly default: string;
   readonly desc: string;
+  readonly editable?: boolean;
 }
 
 export type OptionSpec = NumberSpec | BooleanSpec | StringSpec;
@@ -90,6 +91,12 @@ export const OPTIONS = {
     default: "",
     desc: "shell for new agents · empty uses $SHELL",
   },
+  "agent.model": {
+    kind: "string",
+    default: "openai/gpt-4o-mini",
+    desc: "provider/model for native agents",
+    editable: true,
+  },
   "notifications.blocked": {
     kind: "boolean",
     default: true,
@@ -98,6 +105,14 @@ export const OPTIONS = {
 } as const satisfies Record<string, OptionSpec>;
 
 export type OptionName = keyof typeof OPTIONS;
+
+export function parseModelReference(value: string):
+  | { readonly providerID: string; readonly modelID: string }
+  | undefined {
+  const separator = value.indexOf("/");
+  if (separator <= 0 || separator === value.length - 1) return undefined;
+  return { providerID: value.slice(0, separator), modelID: value.slice(separator + 1) };
+}
 
 type ValueOf<S> = S extends NumberSpec ? number : S extends BooleanSpec ? boolean : string;
 
@@ -225,7 +240,7 @@ export function editHint(spec: OptionSpec): string {
     case "boolean":
       return "←/→ toggles";
     case "string":
-      return "read-only";
+      return spec.editable ? "enter edits" : "read-only";
   }
 }
 

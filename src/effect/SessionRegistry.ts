@@ -166,7 +166,11 @@ function agentProcessBackend(spec: SessionSpec): Backend {
   const child = Bun.spawn([...spec.cmd], {
     cwd: spec.cwd,
     env: {
-      ...process.env,
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([name]) => name !== "OPENAI_API_KEY" && name !== "ANTHROPIC_API_KEY",
+        ),
+      ),
       AMUX_SESSION: spec.id,
       AMUX_AGENT_ID: spec.id,
       ...(spec.controlPath ? { AMUX_CONTROL_SOCKET: spec.controlPath } : {}),

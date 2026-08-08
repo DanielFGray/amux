@@ -1,4 +1,6 @@
 import type { LanguageModel } from "@effect/ai";
+import type { HttpClient } from "@effect/platform";
+import type { HttpClientRequest } from "@effect/platform/HttpClientRequest";
 import type { Layer } from "effect";
 import type { Credential } from "../../credential.ts";
 
@@ -25,7 +27,6 @@ export type Prompt =
 
 export type Method =
   | { readonly type: "key"; readonly label?: string }
-  | { readonly type: "env"; readonly names: readonly string[] }
   | {
       readonly type: "oauth";
       readonly id: string;
@@ -34,8 +35,7 @@ export type Method =
     };
 
 export type Connection =
-  | { readonly type: "credential"; readonly id: Credential.ID; readonly label: string }
-  | { readonly type: "env"; readonly name: string };
+  | { readonly type: "credential"; readonly id: Credential.ID; readonly label: string };
 
 export type Integration = {
   readonly id: string;
@@ -45,7 +45,11 @@ export type Integration = {
     credential: Credential.OAuth,
   ) => import("effect").Effect.Effect<Credential.OAuth, unknown>;
   readonly model: (
-    credential: Credential.Value,
     model: string,
+    transformClient: (client: HttpClient.HttpClient) => HttpClient.HttpClient,
   ) => Layer.Layer<LanguageModel.LanguageModel, never, never>;
+  readonly authorize: (
+    credential: Credential.Value,
+    request: HttpClientRequest,
+  ) => HttpClientRequest;
 };

@@ -7,7 +7,7 @@ import {
 } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
-import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
+import { Effect, Exit, FiberMap, Redacted, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
 import { basename, dirname, join, resolve } from "node:path";
 import { writeFile } from "node:fs/promises";
@@ -24,8 +24,10 @@ import {
   helpGroups,
   nextKeys,
   formatSequence,
+  formatKey,
   leaderBytes,
   parseKeyStrokes,
+  keysFor,
   DEFAULT_LEADER,
   type CommandSpec,
   type Conflict,
@@ -51,6 +53,7 @@ import {
   clearOption,
   coerceOption,
   optionSpec,
+  parseModelReference,
   resolveOptions,
   writeOption,
   type OptionName,
@@ -80,11 +83,16 @@ import {
 import { captureSpan, pickCaptureTarget, type CaptureSpan, type CaptureTarget } from "./capture.ts";
 import { Capture, type CaptureView } from "./ui/Capture.tsx";
 import { BufferChoose, type BufferChooseView } from "./ui/BufferChoose.tsx";
+import { KeybindPicker, sortKeybindEntries, type KeybindPickerView } from "./ui/KeybindPicker.tsx";
 import { Transcript } from "./ui/Transcript.tsx";
 import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
+import type { Interface as IntegrationService, Info as IntegrationInfo } from "./integration.ts";
+import { Credential } from "./credential.ts";
+import { ModelCatalog, type Provider } from "./model-catalog.ts";
+import { ModelPicker, type ModelPickerEntry, type ModelPickerView } from "./ui/ModelPicker.tsx";
 
 export interface AppOptions {
   readonly renderer: CliRenderer;
@@ -98,6 +106,9 @@ export interface AppOptions {
   /** Ask the program to exit. The app does not own the process, the renderer or
    *  the session, so leaving is a request rather than a teardown. */
   readonly quit: () => void;
+  readonly integrations?: IntegrationService;
+  readonly credentials?: Credential.Interface;
+  readonly modelCatalog?: ModelCatalog.Interface;
 }
 
 export interface AppHandle {
@@ -222,7 +233,7 @@ export function runModelProjections<A>(
 }
 
 function buildApp(
-  { renderer, paneHost, config, session, quit }: AppOptions,
+  { renderer, paneHost, config, session, quit, integrations, credentials, modelCatalog }: AppOptions,
   spaces: SpaceSet,
   fiberScope: Scope.CloseableScope,
   runFiber: AppFiberRunner,
@@ -398,9 +409,12 @@ function buildApp(
   const [settingsSelected, setSettingsSelected] = createSignal(0);
   const [settingsDirty, setSettingsDirty] = createSignal(false);
   const [settingsError, setSettingsError] = createSignal("");
+  const [integrationInfo, setIntegrationInfo] = createSignal<readonly IntegrationInfo[]>([]);
   /** True while the keybind editor is waiting for the keystroke to record. */
   const [capturing, setCapturing] = createSignal(false);
   const [conflicts, setConflicts] = createSignal<Conflict[]>([]);
+  const [keybindPicker, setKeybindPicker] = createSignal<KeybindPickerView | null>(null);
+  const [modelPicker, setModelPicker] = createSignal<ModelPickerView | null>(null);
   const [paletteQuery, setPaletteQuery] = createSignal("");
   const [paletteSelected, setPaletteSelected] = createSignal(0);
   /** The keybind tab's scroll container, so ↑↓ can drive a list that is much
@@ -414,6 +428,14 @@ function buildApp(
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false);
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null);
   const [size, setSize] = createSignal({ width: renderer.width, height: renderer.height });
+
+  const refreshIntegrations = () => {
+    if (!integrations) return;
+    void Effect.runPromise(integrations.list()).then(setIntegrationInfo).catch((error) => {
+      setSettingsError(errorMessage(error));
+    });
+  };
+  refreshIntegrations();
 
   const display = createMemo<SidebarDisplay>(() => {
     app.tick();
@@ -672,23 +694,93 @@ function buildApp(
     return keybindTargets(groups())[index];
   }
 
-  /** Record the next keystroke as the selected row's binding. */
-  function captureBinding() {
-    const targets = keybindTargets(groups());
-    const index = settingsSelected();
-    if (index >= targets.length) return;
-    const command = targets[index]!;
+  function availableKeyHints(): string[] {
+    const active = bindings.keymap.getCommandBindings({
+      visibility: "registered",
+      commands: COMMANDS.map((command) => command.name),
+    });
+    const used = new Set(
+      [...active.values()].flatMap((list) =>
+        list.map((binding) => formatSequence(binding.sequence, bindings.leader())),
+      ),
+    );
+    return [
+      ..."abcdefghijklmnopqrstuvwxyz".split(""),
+      ..."0123456789".split(""),
+      "space",
+      "tab",
+      "left",
+      "down",
+      "up",
+      "right",
+    ].filter((key) => !used.has(`${formatKey(bindings.leader())} ${key}`));
+  }
+
+  function openKeybindPicker(add: boolean) {
+    const target = keybindTarget();
+    const entries = sortKeybindEntries(filterPaletteEntries(allPaletteEntries(), ""));
+    const found = target ? entries.findIndex((entry) => entry.name === target) : 0;
+    setKeybindPicker({
+      entries,
+      query: "",
+      selected: Math.max(0, found),
+      add,
+      capturing: false,
+      error: "",
+      available: availableKeyHints(),
+    });
+  }
+
+  function capturePrefix() {
     setCapturing(true);
+    bindings.capture((event, key) => {
+      setCapturing(false);
+      if (event.name !== "escape") setKeys({ ...configState().keys, leader: key });
+    });
+  }
+
+  /** Record the next keystroke for the selected action. */
+  function captureBinding(command: string, add: boolean) {
+    setCapturing(true);
+    setKeybindPicker((view) => (view ? { ...view, capturing: true, error: "" } : view));
     bindings.capture((event, key) => {
       setCapturing(false);
       // Escape backs out — a binding on escape would swallow the one key every
       // overlay in the app relies on.
-      if (event.name === "escape") return;
+      if (event.name === "escape") {
+        setKeybindPicker((view) => (view ? { ...view, capturing: false } : view));
+        return;
+      }
       const keys = configState().keys;
-      if (command === null) setKeys({ ...keys, leader: key });
-      // Recorded under the prefix, which is what every binding in the app is:
-      // an unprefixed one would eat that key from every shell running in a pane.
-      else setKeys({ ...keys, bindings: { ...keys.bindings, [command]: [`<leader>${key}`] } });
+      const spec = COMMANDS.find((candidate) => candidate.name === command);
+      if (!spec) return;
+      const next = `<leader>${key}`;
+      const compiled = bindings.keymap.parseKeySequence(next);
+      const display = formatSequence(compiled, bindings.leader());
+      const active = bindings.keymap.getCommandBindings({
+        visibility: "registered",
+        commands: COMMANDS.map((candidate) => candidate.name),
+      });
+      const owner = [...active].find(([, list]) =>
+        list.some((binding) => formatSequence(binding.sequence, bindings.leader()) === display),
+      )?.[0];
+      if (owner && (add || owner !== command)) {
+        setKeybindPicker((view) =>
+          view
+            ? { ...view, capturing: false, error: `${display} is already used by ${owner}` }
+            : view,
+        );
+        return;
+      }
+      const current = add ? keysFor(spec, keys) : [];
+      setKeys({
+        ...keys,
+        bindings: {
+          ...keys.bindings,
+          [command]: current.includes(next) ? current : [...current, next],
+        },
+      });
+      setKeybindPicker(null);
     });
   }
 
@@ -1384,7 +1476,9 @@ function buildApp(
         return moveKeybind(-10);
       case "return":
       case "enter":
-        return captureBinding();
+        return keybindTarget() === null ? capturePrefix() : openKeybindPicker(false);
+      case "a":
+        return keybindTarget() === null ? capturePrefix() : openKeybindPicker(true);
       case "u":
         return resetBinding(false);
       case "d":
@@ -1397,6 +1491,56 @@ function buildApp(
 
   function settingsKey(event: KeyEvent) {
     const fields = settingsFields(options(), settingsSection());
+    if (settingsSection() === "auth") {
+      const selected = integrationInfo()[settingsSelected()];
+      if (event.name === "j" || event.name === "down") {
+        setSettingsSelected((s) => Math.min(Math.max(0, integrationInfo().length - 1), s + 1));
+        return;
+      }
+      if (event.name === "k" || event.name === "up") {
+        setSettingsSelected((s) => Math.max(0, s - 1));
+        return;
+      }
+      if (event.name === "d" && selected?.connections[0]) {
+        if (!credentials) return;
+        void Effect.runPromise(credentials.remove(selected.connections[0].id))
+          .then(refreshIntegrations)
+          .catch((error) => setSettingsError(errorMessage(error)));
+        return;
+      }
+      if ((event.name === "return" || event.name === "enter") && selected) {
+        const method = selected.methods.find((entry) => entry.type === "key");
+        if (!method) return;
+        void Effect.runPromise(
+          ask(`${selected.label} API key`, [
+            { label: "API key", placeholder: "paste key", masked: true },
+          ]).pipe(
+          Effect.flatMap((values) =>
+                values?.[0] && credentials
+                ? selected.connections[0]
+                  ? credentials.update(selected.connections[0].id, {
+                      value: { type: "key", key: Redacted.make(values[0]) },
+                    })
+                  : credentials
+                      .create({ integrationID: selected.id, value: { type: "key", key: Redacted.make(values[0]) } })
+                      .pipe(Effect.asVoid)
+                : Effect.void,
+            ),
+          ),
+        )
+          .then(refreshIntegrations)
+          .catch((error) => setSettingsError(errorMessage(error)));
+        return;
+      }
+      return;
+    }
+    if (event.name === "return" || event.name === "enter") {
+      const option = selectedOption();
+      if (option === "agent.model") {
+        openModelPicker();
+        return;
+      }
+    }
     // The keybind tab edits sequences rather than values, so it has its own keys.
     if (settingsSection() === "keybinds") return keybindsKey(event);
     switch (event.name) {
@@ -1418,6 +1562,120 @@ function buildApp(
         void saveSettings();
         return;
     }
+  }
+
+  function modelEntries(
+    providers: Readonly<Record<string, Provider>>,
+    connectedProviders: ReadonlySet<string>,
+  ): ModelPickerEntry[] {
+    return Object.values(providers)
+      .filter((provider) => connectedProviders.has(provider.id))
+      .flatMap((provider) =>
+        Object.values(provider.models)
+          .filter((model) => model.status !== "deprecated")
+          .filter((model) => model.tool_call && (model.modalities?.input ?? ["text"]).includes("text"))
+          .map((model) => ({
+            value: `${provider.id}/${model.id}`,
+            provider: provider.name,
+            name: model.name,
+            description: model.family ?? model.id,
+          })),
+      )
+      .sort((a, b) => a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name));
+  }
+
+  function openModelPicker() {
+    if (!modelCatalog || !integrations) return setSettingsError("model catalog unavailable");
+    void Effect.runPromise(
+      Effect.all({ providers: modelCatalog.providers(), integrations: integrations.list() }),
+    )
+      .then(({ providers, integrations: availableIntegrations }) => {
+        const connectedProviders = new Set(
+          availableIntegrations
+            .filter((integration) => integration.connections.length > 0)
+            .map((integration) => integration.id),
+        );
+        const entries = modelEntries(providers, connectedProviders);
+        const selected = entries.findIndex((entry) => entry.value === options()["agent.model"]);
+        setModelPicker({ allEntries: entries, entries, query: "", selected: Math.max(0, selected) });
+      })
+      .catch((error) => setSettingsError(errorMessage(error)));
+  }
+
+  function filterModelPicker(query: string) {
+    setModelPicker((current) => {
+      if (!current) return current;
+      const needle = query.trim().toLowerCase();
+      const entries = current.allEntries.filter((entry) =>
+        `${entry.value} ${entry.provider} ${entry.name} ${entry.description}`.toLowerCase().includes(needle),
+      );
+      return { ...current, entries, query, selected: 0 };
+    });
+  }
+
+  function chooseModel() {
+    const entry = modelPicker()?.entries[modelPicker()?.selected ?? -1];
+    if (!entry) return;
+    changeOption("agent.model", entry.value);
+    setModelPicker(null);
+    void saveSettings();
+  }
+
+  function modelPickerKey(event: KeyEvent) {
+    const view = modelPicker();
+    if (!view) return true;
+    if (event.name === "escape") {
+      setModelPicker(null);
+      return true;
+    }
+    if (event.name === "j" || event.name === "down") {
+      setModelPicker((current) => current ? { ...current, selected: Math.min(current.entries.length - 1, current.selected + 1) } : current);
+      return true;
+    }
+    if (event.name === "k" || event.name === "up") {
+      setModelPicker((current) => current ? { ...current, selected: Math.max(0, current.selected - 1) } : current);
+      return true;
+    }
+    if (event.name === "return" || event.name === "enter") {
+      chooseModel();
+      return true;
+    }
+    return false;
+  }
+
+  function keybindPickerKey(event: KeyEvent) {
+    const view = keybindPicker();
+    if (!view) return true;
+    if (event.name === "escape") {
+      if (view.capturing) {
+        setCapturing(false);
+        setKeybindPicker((current) => (current ? { ...current, capturing: false } : current));
+      } else {
+        setKeybindPicker(null);
+      }
+      return true;
+    }
+    if (view.capturing) return true;
+    if (event.name === "j" || event.name === "down") {
+      setKeybindPicker((current) =>
+        current
+          ? { ...current, selected: Math.min(current.entries.length - 1, current.selected + 1) }
+          : current,
+      );
+      return true;
+    }
+    if (event.name === "k" || event.name === "up") {
+      setKeybindPicker((current) =>
+        current ? { ...current, selected: Math.max(0, current.selected - 1) } : current,
+      );
+      return true;
+    }
+    if (event.name === "return" || event.name === "enter") {
+      const command = view.entries[view.selected]?.name;
+      if (command) captureBinding(command, view.add);
+      return true;
+    }
+    return false;
   }
 
   async function saveSettings() {
@@ -1630,7 +1888,65 @@ function buildApp(
             onKeybindList={(box) => {
               keybindList = box;
             }}
+            integrations={integrationInfo()}
           />
+        ),
+      }),
+      regions.register({
+        id: "amux.keybind-picker",
+        region: "overlay",
+        order: 15,
+        title: "keybind picker",
+        visible: () => keybindPicker() !== null,
+        keys: keybindPickerKey,
+        component: (props) => (
+          <Show when={keybindPicker()}>
+            {() => (
+              <KeybindPicker
+                view={keybindPicker()!}
+                width={props.width}
+                onSubmit={() => {
+                  const current = keybindPicker();
+                  const command = current?.entries[current.selected]?.name;
+                  if (command && current) captureBinding(command, current.add);
+                }}
+                onInput={(query) =>
+                  setKeybindPicker((current) =>
+                    current
+                      ? {
+                          ...current,
+                          query,
+                          selected: 0,
+                          entries: sortKeybindEntries(
+                            filterPaletteEntries(allPaletteEntries(), query),
+                          ),
+                        }
+                      : current,
+                  )
+                }
+              />
+            )}
+          </Show>
+        ),
+      }),
+      regions.register({
+        id: "amux.model-picker",
+        region: "overlay",
+        order: 15,
+        title: "model picker",
+        visible: () => modelPicker() !== null,
+        keys: modelPickerKey,
+        component: (props) => (
+          <Show when={modelPicker()}>
+            {(view: () => ModelPickerView) => (
+              <ModelPicker
+                view={view()}
+                width={props.width}
+                onInput={filterModelPicker}
+                onSubmit={chooseModel}
+              />
+            )}
+          </Show>
         ),
       }),
       regions.register({

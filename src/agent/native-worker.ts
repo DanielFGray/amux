@@ -1,7 +1,9 @@
-import { FetchHttpClient } from "@effect/platform";
 import { LanguageModel, Tool, Toolkit } from "@effect/ai";
-import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
-import { Effect, Layer, Redacted, Runtime, Schema as S, Stream } from "effect";
+import { BunFileSystem } from "@effect/platform-bun";
+import { Effect, Runtime, Schema as S, Stream } from "effect";
+import { Default as IntegrationDefault, Service as Integration } from "../integration.ts";
+import { loadConfig } from "../config.ts";
+import { parseModelReference, resolveOptions } from "../options.ts";
 import { controlCallPath } from "../control-client.ts";
 import { COMMAND_DEFS, command } from "../commands.ts";
 import { encodeAttachFrame, type AgentFrame, type AttachFrame } from "../effect/AttachProtocol.ts";
@@ -9,8 +11,6 @@ import { makeAgentWorker, type AgentModelPart } from "./worker.ts";
 
 const session = process.env.AMUX_SESSION ?? process.env.AMUX_AGENT_ID;
 const controlSocket = process.env.AMUX_CONTROL_SOCKET;
-const apiKey = process.env.OPENAI_API_KEY;
-const modelName = process.env.AMUX_MODEL ?? "gpt-4o-mini";
 const agentSize = JSON.parse(process.env.AMUX_AGENT_SIZE ?? '{"cols":80,"rows":24}') as {
   cols: number;
   rows: number;
@@ -18,18 +18,23 @@ const agentSize = JSON.parse(process.env.AMUX_AGENT_SIZE ?? '{"cols":80,"rows":2
 
 if (!session) throw new Error("AMUX_SESSION is required");
 if (!controlSocket) throw new Error("AMUX_CONTROL_SOCKET is required");
-if (!apiKey) throw new Error("OPENAI_API_KEY is required in the agent worker");
-
 const emit = (frame: AgentFrame) =>
   Effect.sync(() => process.stdout.write(encodeAttachFrame(frame)));
 
-const modelLayer = OpenAiLanguageModel.layer({ model: modelName }).pipe(
-  Layer.provide(OpenAiClient.layer({ apiKey: Redacted.make(apiKey) })),
-  Layer.provide(FetchHttpClient.layer),
-);
-
 const program = Effect.gen(function* () {
-  const languageModel = yield* LanguageModel.LanguageModel;
+  const modelReference = resolveOptions((yield* Effect.promise(() => loadConfig())).options)["agent.model"];
+  const model = parseModelReference(modelReference);
+  if (!model)
+    return yield* Effect.fail(`invalid agent.model '${modelReference}', expected provider/model`);
+  const { providerID, modelID: modelName } = model;
+  const modelLayer = yield* Integration.pipe(
+    Effect.flatMap((integration) => integration.model(providerID, modelName)),
+    Effect.flatMap((layer) =>
+      layer ? Effect.succeed(layer) : Effect.fail(`credential missing for ${providerID}`),
+    ),
+  );
+  yield* Effect.gen(function* () {
+    const languageModel = yield* LanguageModel.LanguageModel;
   const runtime = yield* Effect.runtime<never>();
   const executeTool = (tool: string, input: unknown) => {
     const value = command(tool as never, input as never);
@@ -107,10 +112,15 @@ const program = Effect.gen(function* () {
       buffer = bytes.slice(start);
     }
   });
-  yield* worker.close;
+    yield* worker.close;
+  }).pipe(Effect.provide(modelLayer));
 });
 
-Effect.runPromise(Effect.scoped(program.pipe(Effect.provide(modelLayer)))).catch((error) => {
+Effect.runPromise(
+  Effect.scoped(
+    program.pipe(Effect.provide(IntegrationDefault), Effect.provide(BunFileSystem.layer)),
+  ) as Effect.Effect<void, unknown, never>,
+).catch((error) => {
   process.stderr.write(
     `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
   );

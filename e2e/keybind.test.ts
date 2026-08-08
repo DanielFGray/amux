@@ -26,6 +26,7 @@ let beforeSplit = "";
 let afterSplit = "";
 let captured: Record<string, any> | null = null;
 let reset: Record<string, any> | null = null;
+let added: Record<string, any> | null = null;
 
 beforeAll(async () => {
   configured = await launch("e2e-keybind-config", { config: REBOUND });
@@ -48,8 +49,9 @@ beforeAll(async () => {
   );
   await edited.press("j");
   await edited.press("\r");
+  await edited.press("\r");
   await edited.until(
-    () => edited.screen().includes("press a key…"),
+    () => edited.screen().includes("choose key"),
     "pane.split-row to enter key capture",
   );
   await edited.press("g");
@@ -71,6 +73,23 @@ beforeAll(async () => {
     "the reset binding to be saved",
   );
   reset = await edited.config();
+
+  // `a` opens the action picker; Enter chooses the current action, then the
+  // captured key is added while retaining the command's shipped defaults.
+  await edited.press("a");
+  await edited.until(() => edited.screen().includes("add keybind"), "the action picker to open");
+  await edited.press("\r");
+  await edited.until(
+    () => edited.screen().includes("choose key"),
+    "pane.split-row to enter additive key capture",
+  );
+  await edited.press("g");
+  await edited.press("s");
+  await edited.until(
+    async () => (await edited.config())?.keys?.bindings?.["pane.split-row"]?.includes("<leader>g"),
+    "the added binding to be saved",
+  );
+  added = await edited.config();
 }, E2E_TIMEOUT);
 
 afterAll(async () => {
@@ -93,4 +112,12 @@ test("capture records the pressed key under the prefix", () => {
 
 test("reset takes the row back to its default", () => {
   expect(reset?.keys?.bindings ?? {}).not.toHaveProperty("pane.split-row");
+});
+
+test("add preserves the command's default bindings", () => {
+  expect(added?.keys?.bindings?.["pane.split-row"]).toEqual([
+    "<leader>|",
+    "<leader>\\",
+    "<leader>g",
+  ]);
 });

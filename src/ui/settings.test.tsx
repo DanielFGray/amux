@@ -23,6 +23,7 @@ const GROUPS: HelpGroup[] = [
     entries: [
       { name: "pane.zoom", keys: "^a z", desc: "zoom", custom: false, fixed: false },
       { name: "pane.close", keys: "^a x", desc: "close pane", custom: true, fixed: false },
+      { name: "pane.send-keys", keys: "unbound", desc: "send keys", custom: false, fixed: false },
     ],
   },
   {
@@ -44,6 +45,13 @@ const GROUPS: HelpGroup[] = [
  */
 test("the editor enumerates the prefix and every rebindable command", () => {
   expect(keybindTargets(GROUPS)).toEqual([null, "pane.zoom", "pane.close", "app.quit"]);
+});
+
+test("the editor hides unbound actions from the keybind list", () => {
+  const rows = keybindGroups(GROUPS, "ctrl+a");
+
+  expect(rows[1]!.entries.map((entry) => entry.name)).toEqual(["pane.zoom", "pane.close"]);
+  expect(keybindTargets(GROUPS)).not.toContain("pane.send-keys");
 });
 
 /** The index the key handler acts on and the row drawn on screen are the same

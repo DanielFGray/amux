@@ -24,13 +24,13 @@ const run = <A>(effect: Effect.Effect<A, any, any>, variables: NodeJS.ProcessEnv
 
 const key = (value: string) => ({ type: "key" as const, key: Redacted.make(value) });
 
-testEffect("stored credentials take precedence over environment credentials", () =>
+testEffect("stored credentials are the active connection", () =>
   Effect.gen(function* () {
     const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
     yield* Effect.addFinalizer(() =>
       Effect.promise(() => rm(root, { recursive: true, force: true })),
     );
-    const variables = { ...env(root), OPENAI_API_KEY: "environment" };
+    const variables = env(root);
     const created = yield* run(
       Credential.Service.pipe(
         Effect.flatMap((store) =>
@@ -73,6 +73,7 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
           };
         }),
       model: () => Effect.die("unused") as never,
+      authorize: (credential, request) => request,
     };
     const variables = env(root);
     const now = Date.now();

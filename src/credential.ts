@@ -1,7 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { FileSystem } from "@effect/platform";
-import { Context, Effect, Layer, Option, Redacted, Schema as S } from "effect";
+import { Context, Duration, Effect, Layer, Option, Redacted, Schema as S } from "effect";
 import { stateRoot } from "./session.ts";
 import { flock, flockUnlock } from "./shim.ts";
 
@@ -43,6 +43,12 @@ export interface Interface {
     readonly label?: string;
   }) => Effect.Effect<Info>;
   readonly update: (id: ID, updates: Partial<Pick<Info, "label" | "value">>) => Effect.Effect<void>;
+  /** Refresh and persist an OAuth value while holding the store's writer lock. */
+  readonly refreshOAuth: (
+    id: ID,
+    now: number,
+    refresh: (value: OAuth) => Effect.Effect<OAuth, unknown>,
+  ) => Effect.Effect<Value | undefined>;
   readonly remove: (id: ID) => Effect.Effect<void>;
 }
 
@@ -239,6 +245,26 @@ const implementation = Effect.gen(function* () {
       })),
     remove: (id: ID) =>
       mutate((rows) => ({ rows: rows.filter((row) => row.id !== id), result: undefined })),
+    refreshOAuth: (id, now, refresh) =>
+      withLock(
+        false,
+        readRows().pipe(
+          Effect.flatMap((loaded) => {
+            if (!loaded.valid) return Effect.die(new Error("credential store contains invalid JSON"));
+            const row = loaded.rows.find((item) => item.id === id);
+            if (!row) return Effect.succeed(undefined);
+            if (row.value.type === "key" || row.value.expires > now + Duration.minutes(5).pipe(Duration.toMillis))
+              return Effect.succeed(redact(row.value));
+            return refresh(redact(row.value) as OAuth).pipe(
+              Effect.flatMap((value) =>
+                writeRows(loaded.rows.map((item) => item.id === id ? { ...item, value: unredact(value) } : item)).pipe(
+                  Effect.as(value),
+                ),
+              ),
+            );
+          }),
+        ),
+      ),
   } as Interface;
 });
 

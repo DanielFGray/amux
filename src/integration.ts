@@ -1,4 +1,5 @@
-import { Clock, Context, Duration, Effect, Layer, Redacted } from "effect";
+import { Clock, Context, Duration, Effect, Layer } from "effect";
+import { HttpClient, HttpClientRequest } from "@effect/platform";
 import { Credential } from "./credential.ts";
 import { EventBus } from "./effect/EventBus.ts";
 import { integrations, type Connection, type Integration } from "./auth/integration/index.ts";
@@ -19,7 +20,6 @@ export interface Interface {
   readonly resolve: (connection: Connection) => Effect.Effect<Credential.Value | undefined>;
   readonly model: (
     integrationID: string,
-    connection: Connection,
     model: string,
   ) => Effect.Effect<
     Layer.Layer<import("@effect/ai").LanguageModel.LanguageModel, never, never> | undefined
@@ -36,26 +36,12 @@ export const makeLayer = (definitions: readonly Integration[] = integrations) =>
       const events = yield* EventBus;
       const byID = new Map(definitions.map((integration) => [integration.id, integration]));
 
-      const connections = (
-        integration: Integration,
-        saved: readonly Credential.Info[],
-      ): readonly Connection[] => [
-        ...saved.map((credential) => ({
+      const connections = (saved: readonly Credential.Info[]): readonly Connection[] =>
+        saved.map((credential) => ({
           type: "credential" as const,
           id: credential.id,
           label: credential.label,
-        })),
-        ...integration.methods
-          .filter(
-            (method): method is Extract<Integration["methods"][number], { type: "env" }> =>
-              method.type === "env",
-          )
-          .flatMap((method) =>
-            method.names
-              .filter((name) => process.env[name])
-              .map((name) => ({ type: "env" as const, name })),
-          ),
-      ];
+        }));
 
       const find = (id: string) => byID.get(id);
       const refresh = Effect.fnUntraced(function* (
@@ -66,14 +52,21 @@ export const makeLayer = (definitions: readonly Integration[] = integrations) =>
         const now = yield* Clock.currentTimeMillis;
         if (credential.value.expires > now + Duration.minutes(5).pipe(Duration.toMillis))
           return credential.value;
-        const value = yield* integration.refresh(credential.value).pipe(Effect.orDie);
-        yield* credentials.update(credential.id, { value });
+        const value = yield* credentials.refreshOAuth(credential.id, now, integration.refresh).pipe(Effect.orDie);
+        if (!value) return credential.value;
         yield* events.publish({
           _tag: "credential.changed",
           integration: credential.integrationID,
         });
         return value;
       });
+      const resolve = (connection: Connection) =>
+        Effect.gen(function* () {
+          const credential = yield* credentials.get(connection.id);
+          if (!credential) return undefined;
+          const integration = find(credential.integrationID);
+          return integration ? yield* refresh(integration, credential) : undefined;
+        });
 
       return {
         get: (id) =>
@@ -84,7 +77,7 @@ export const makeLayer = (definitions: readonly Integration[] = integrations) =>
               id,
               label: integration.label,
               methods: integration.methods,
-              connections: connections(integration, yield* credentials.list(id)),
+              connections: connections(yield* credentials.list(id)),
             };
           }),
         list: () =>
@@ -94,47 +87,38 @@ export const makeLayer = (definitions: readonly Integration[] = integrations) =>
               id: integration.id,
               label: integration.label,
               methods: integration.methods,
-              connections: connections(
-                integration,
-                saved.filter((credential) => credential.integrationID === integration.id),
-              ),
+              connections: connections(saved.filter((credential) => credential.integrationID === integration.id)),
             }));
           }),
         active: (id) =>
           Effect.gen(function* () {
             const integration = find(id);
             if (!integration) return undefined;
-            return connections(integration, yield* credentials.list(id))[0];
+            return connections(yield* credentials.list(id))[0];
           }),
         resolve: (connection) =>
-          connection.type === "env"
-            ? Effect.succeed(
-                process.env[connection.name]
-                  ? { type: "key" as const, key: Redacted.make(process.env[connection.name]!) }
-                  : undefined,
-              )
-            : Effect.gen(function* () {
-                const credential = yield* credentials.get(connection.id);
-                if (!credential) return undefined;
-                return yield* refresh(find(credential.integrationID)!, credential);
-              }),
-        model: (integrationID, connection, model) =>
+          Effect.gen(function* () {
+            const credential = yield* credentials.get(connection.id);
+            if (!credential) return undefined;
+            const integration = find(credential.integrationID);
+            return integration ? yield* refresh(integration, credential) : undefined;
+          }),
+        model: (integrationID, model) =>
           Effect.gen(function* () {
             const integration = find(integrationID);
-            const value = yield* connection.type === "env"
-              ? process.env[connection.name]
-                ? Effect.succeed({
-                    type: "key" as const,
-                    key: Redacted.make(process.env[connection.name]!),
-                  })
-                : Effect.void.pipe(Effect.as(undefined))
-              : Effect.gen(function* () {
-                  const credential = yield* credentials.get(connection.id);
-                  return credential
-                    ? yield* refresh(find(credential.integrationID)!, credential)
-                    : undefined;
-                });
-            return integration && value ? integration.model(value, model) : undefined;
+            if (!integration) return undefined;
+            const authorize = (request: HttpClientRequest.HttpClientRequest) =>
+              Effect.gen(function* () {
+                const connection = yield* Effect.flatMap(credentials.list(integrationID), (items) =>
+                  items[0] ? Effect.succeed({ type: "credential" as const, id: items[0].id, label: items[0].label }) : Effect.fail("credential missing"),
+                );
+                const value = yield* resolve(connection);
+                if (!value) return yield* Effect.fail("credential missing");
+                return integration.authorize(value, request);
+              });
+            return integration.model(model, (client) =>
+              HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
+            );
           }),
       } satisfies Interface;
     }),

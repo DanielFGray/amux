@@ -6,6 +6,7 @@ export interface PromptField {
   label: string;
   value?: string;
   placeholder?: string;
+  masked?: boolean;
 }
 
 export interface PromptRequest {
@@ -87,9 +88,10 @@ export function Prompt(props: {
               {(spec, i) => (
                 <box style={{ flexDirection: "column", flexShrink: 0 }}>
                   <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>{spec.label}</text>
-                  <input
-                    value={values()[i()] ?? ""}
-                    placeholder={spec.placeholder ?? ""}
+                    <box style={{ position: "relative", height: 1, flexShrink: 0 }}>
+                     <input
+                       value={values()[i()] ?? ""}
+                     placeholder={spec.placeholder ?? ""}
                     focused={field() === i()}
                     onKeyDown={(key) => {
                       // The textarea renderable does not bind tab, so an
@@ -101,15 +103,21 @@ export function Prompt(props: {
                         key.preventDefault();
                       }
                     }}
-                    style={{
-                      flexShrink: 0,
-                      backgroundColor: field() === i() ? theme.surface1 : theme.surface0,
-                      textColor: theme.text,
-                      focusedTextColor: theme.text,
-                    }}
-                    onInput={(value: string) => set(i(), value)}
-                    onSubmit={submit}
-                  />
+                       style={{
+                       flexShrink: 0,
+                       backgroundColor: field() === i() ? theme.surface1 : theme.surface0,
+                       textColor: spec.masked ? theme.surface1 : theme.text,
+                       focusedTextColor: spec.masked ? theme.surface1 : theme.text,
+                     }}
+                       onInput={(value: string) => set(i(), value)}
+                       onSubmit={submit}
+                     />
+                     <Show when={spec.masked && (values()[i()] ?? "").length > 0}>
+                       <text style={{ position: "absolute", left: 1, top: 0, fg: theme.text }}>
+                         {"*".repeat((values()[i()] ?? "").length)}
+                       </text>
+                     </Show>
+                    </box>
                 </box>
               )}
             </For>

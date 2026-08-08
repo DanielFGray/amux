@@ -13,10 +13,11 @@ import {
   type Options,
 } from "../options.ts";
 import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts";
+import type { Info as IntegrationInfo } from "../integration.ts";
 
 /** The option sections, plus the keybinds tab — which is not a section of the
  *  options table because a binding is not an option. */
-export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "keybinds"];
+export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "auth", "keybinds"];
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 /** One row of the settings window. */
@@ -75,7 +76,12 @@ export interface KeybindGroup {
  * selection index cannot mean one row on screen and another when acted on.
  */
 export function keybindTargets(groups: HelpGroup[]): (string | null)[] {
-  return [null, ...groups.flatMap((g) => g.entries.filter((e) => !e.fixed).map((e) => e.name))];
+  return [
+    null,
+    ...groups.flatMap((g) =>
+      g.entries.filter((e) => e.keys !== "unbound" && !e.fixed).map((e) => e.name),
+    ),
+  ];
 }
 
 export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup[] {
@@ -100,7 +106,10 @@ export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup
         },
       ],
     },
-    ...groups.map((g) => ({ group: g.group, entries: g.entries.map(row) })),
+    ...groups.map((g) => ({
+      group: g.group,
+      entries: g.entries.filter((entry) => entry.keys !== "unbound").map(row),
+    })),
   ];
 }
 
@@ -152,6 +161,7 @@ export function Settings(props: {
   /** Handed the keybind list's scroll container so the app can drive it from
    *  the keyboard — the list is longer than the window by some margin. */
   onKeybindList?: (box: ScrollBoxRenderable) => void;
+  integrations?: readonly IntegrationInfo[];
 }) {
   const fields = createMemo(() => settingsFields(props.options, props.section));
   const rows = createMemo(() => keybindGroups(props.groups, props.leader));
@@ -191,9 +201,10 @@ export function Settings(props: {
       <text style={{ height: 1, flexShrink: 0 }}> </text>
 
       <Show
-        when={props.section !== "keybinds"}
+        when={props.section !== "keybinds" && props.section !== "auth"}
         fallback={
-          <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
+          <Show when={props.section === "keybinds"}>
+           <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
             <For each={rows()}>
               {(group) => (
                 <box style={{ flexDirection: "column", flexShrink: 0 }}>
@@ -229,10 +240,26 @@ export function Settings(props: {
                 </box>
               )}
             </For>
-          </scrollbox>
+           </scrollbox>
+          </Show>
         }
       >
-        <box style={{ flexDirection: "column", flexGrow: 1 }}>
+        <Show when={props.section === "auth"}>
+          <box style={{ flexDirection: "column", flexGrow: 1 }}>
+            <For each={props.integrations ?? []}>
+              {(integration, i) => (
+                <box style={{ flexDirection: "row", height: 1, flexShrink: 0, backgroundColor: i() === props.selected ? theme.surface1 : theme.base }}>
+                  <text style={{ fg: theme.text, width: 18, flexShrink: 0 }}>{integration.label}</text>
+                  <text style={{ fg: integration.connections.length ? theme.green : theme.overlay1 }}>
+                    {integration.connections.length ? integration.connections.map((connection) => connection.label).join(", ") : "not connected"}
+                  </text>
+                </box>
+              )}
+            </For>
+          </box>
+        </Show>
+        <Show when={props.section !== "auth"}>
+         <box style={{ flexDirection: "column", flexGrow: 1 }}>
           <For each={fields()}>
             {(field, i) => (
               <box
@@ -251,7 +278,8 @@ export function Settings(props: {
               </box>
             )}
           </For>
-        </box>
+         </box>
+        </Show>
       </Show>
 
       {/* A collision is not fatal — one of the two commands is simply dead — so
@@ -272,11 +300,13 @@ export function Settings(props: {
 
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
         {(props.dirty ? "● unsaved · " : "") +
-          (props.section !== "keybinds"
+          (props.section === "auth"
+            ? "↑↓ provider · ⏎ connect · d disconnect · esc closes"
+            : props.section !== "keybinds"
             ? "⇥ section · ↑↓ field · ←→ change · s saves · esc closes"
             : props.capturing
               ? "press the key to bind · esc cancels"
-              : "↑↓ row · ⏎ rebind · u default · d unbind · s saves")}
+              : "↑↓ row · ⏎ rebind · a add key · u default · d unbind · s saves")}
       </text>
     </box>
   );
