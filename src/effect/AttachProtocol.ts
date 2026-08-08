@@ -108,6 +108,46 @@ const ToolStart = S.TaggedStruct("tool.start", {
   input: S.Unknown,
 });
 
+/**
+ * A provider begins streaming a tool argument as incremental JSON fragments.
+ * `tool.params-start` arrives before any deltas; the `tool.start` frame with
+ * the parsed input follows the last delta. Every partial-tool frame shares
+ * the call id so a transcript can append deltas into a block the start frame
+ * created.
+ */
+const ToolParamsStart = S.TaggedStruct("tool.params-start", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  call: S.String,
+  tool: S.String,
+});
+
+/**
+ * A single incremental JSON fragment of a streaming tool argument.
+ * Concatenating deltas produces the JSON value that will be in the eventual
+ * `tool.start` frame's `input` field.
+ */
+const ToolParamsDelta = S.TaggedStruct("tool.params-delta", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  call: S.String,
+  delta: S.String,
+});
+
+/**
+ * The last partial-tool frame for this call — no further deltas arrive.
+ * The provider has finished streaming the argument; the next tool event
+ * for the same call id is `tool.start` with the parsed `input`.
+ */
+const ToolParamsEnd = S.TaggedStruct("tool.params-end", {
+  session: S.String,
+  sequence: S.NonNegativeInt,
+  turn: S.String,
+  call: S.String,
+});
+
 const ToolResult = S.TaggedStruct("tool.result", {
   session: S.String,
   sequence: S.NonNegativeInt,
@@ -183,6 +223,9 @@ export const AttachFrame = S.Union(
   TurnStart,
   TextDelta,
   ToolStart,
+  ToolParamsStart,
+  ToolParamsDelta,
+  ToolParamsEnd,
   ToolResult,
   PermissionRequest,
   PermissionResponse,
@@ -199,6 +242,9 @@ export const AgentFrame = S.Union(
   TurnStart,
   TextDelta,
   ToolStart,
+  ToolParamsStart,
+  ToolParamsDelta,
+  ToolParamsEnd,
   ToolResult,
   PermissionRequest,
   PermissionResponse,

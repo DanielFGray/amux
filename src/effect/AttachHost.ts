@@ -34,6 +34,7 @@ export interface AttachHostOptions {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
   readonly path: string;
   readonly controlPath?: string;
+  readonly rpcPath?: string;
   readonly daemonSession?: string;
   readonly idleTimeoutSeconds?: number;
   /** Record or reject an attachment; failing rejects the client's hello. */
@@ -201,7 +202,7 @@ const make = (
         Scope.extend(
           supervisor.prepare({
             ...spec,
-            ...(options.controlPath ? { controlPath: options.controlPath } : {}),
+            ...(options.rpcPath ? { rpcPath: options.rpcPath } : {}),
             ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
           }),
           sessions,
@@ -210,7 +211,7 @@ const make = (
         Scope.extend(
           supervisor.prepare({
             ...spec,
-            ...(options.controlPath ? { controlPath: options.controlPath } : {}),
+            ...(options.rpcPath ? { rpcPath: options.rpcPath } : {}),
             ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
           }),
           sessions,

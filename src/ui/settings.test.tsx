@@ -4,6 +4,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { optionsIn, resolveOptions } from "../options.ts";
 import type { HelpGroup } from "../bindings.ts";
+import type { Info as IntegrationInfo } from "../integration.ts";
 import {
   Settings,
   keybindGroups,
@@ -183,4 +184,77 @@ test("a failed settings save is visible while the dirty marker remains", async (
   expect(frame).toContain("could not save settings");
   expect(frame).toContain("permission denied");
   expect(frame).toContain("unsaved");
+});
+
+const AUTH_INTEGRATIONS: readonly IntegrationInfo[] = [
+  {
+    id: "openai",
+    label: "OpenAI",
+    methods: [{ type: "key" }],
+    connections: [],
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    methods: [{ type: "key" }],
+    connections: [{ type: "credential", id: "cred-1" as never, label: "personal" }],
+  },
+];
+
+async function drawAuth(over: Partial<Parameters<typeof Settings>[0]> = {}) {
+  const t = await createTestRenderer({ width: 80, height: 20 });
+  cleanup.push(() => t.renderer.destroy());
+  await render(
+    () => (
+      <Settings
+        options={resolveOptions({})}
+        section="auth"
+        selected={0}
+        groups={GROUPS}
+        leader="ctrl+a"
+        conflicts={[]}
+        capturing={false}
+        width={80}
+        height={20}
+        dirty={false}
+        integrations={AUTH_INTEGRATIONS}
+        {...over}
+      />
+    ),
+    t.renderer,
+  );
+  await t.renderOnce();
+  return t.captureCharFrame();
+}
+
+test("the auth tab lists providers with connection status", async () => {
+  const frame = await drawAuth();
+
+  expect(frame).toContain("OpenAI");
+  expect(frame).toContain("Anthropic");
+  expect(frame).toContain("not connected");
+  expect(frame).toContain("personal");
+});
+
+test("the auth tab footer promises section cycling", async () => {
+  const frame = await drawAuth();
+
+  expect(frame).toContain("⇥ section");
+  expect(frame).toContain("↑↓ provider");
+  expect(frame).toContain("⏎ connect");
+  expect(frame).toContain("d disconnect");
+  expect(frame).toContain("esc closes");
+});
+
+test("the auth tab highlights the selected provider", async () => {
+  const frame = await drawAuth({ selected: 1 });
+
+  expect(frame).toContain("OpenAI");
+  expect(frame).toContain("Anthropic");
+  // Both render; the highlight is a background color, not text change.
+  // This test verifies the selection index doesn't crash the render.
+});
+
+test("settingsFields returns empty for auth since it holds no options", () => {
+  expect(settingsFields(resolveOptions({}), "auth")).toEqual([]);
 });

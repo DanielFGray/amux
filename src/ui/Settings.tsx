@@ -200,86 +200,80 @@ export function Settings(props: {
       </box>
       <text style={{ height: 1, flexShrink: 0 }}> </text>
 
-      <Show
-        when={props.section !== "keybinds" && props.section !== "auth"}
-        fallback={
-          <Show when={props.section === "keybinds"}>
-           <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
-            <For each={rows()}>
-              {(group) => (
-                <box style={{ flexDirection: "column", flexShrink: 0 }}>
-                  <text style={{ fg: theme.mauve, height: 1, flexShrink: 0 }}>{group.group}</text>
-                  <For each={group.entries}>
-                    {(entry) => {
-                      const active = () => entry.index === props.selected;
-                      return (
-                        <box
-                          style={{
-                            flexDirection: "row",
-                            height: 1,
-                            flexShrink: 0,
-                            backgroundColor: active() ? theme.surface1 : theme.base,
-                          }}
-                        >
-                          <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
-                            {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
-                          </text>
-                          <text
-                            style={{
-                              fg: entry.index === null ? theme.overlay1 : theme.text,
-                              flexGrow: 1,
-                            }}
-                          >
-                            {entry.desc + (entry.custom ? " *" : "")}
-                          </text>
-                        </box>
-                      );
-                    }}
-                  </For>
-                  <text style={{ height: 1, flexShrink: 0 }}> </text>
-                </box>
-              )}
-            </For>
-           </scrollbox>
-          </Show>
-        }
-      >
-        <Show when={props.section === "auth"}>
-          <box style={{ flexDirection: "column", flexGrow: 1 }}>
-            <For each={props.integrations ?? []}>
-              {(integration, i) => (
-                <box style={{ flexDirection: "row", height: 1, flexShrink: 0, backgroundColor: i() === props.selected ? theme.surface1 : theme.base }}>
-                  <text style={{ fg: theme.text, width: 18, flexShrink: 0 }}>{integration.label}</text>
-                  <text style={{ fg: integration.connections.length ? theme.green : theme.overlay1 }}>
-                    {integration.connections.length ? integration.connections.map((connection) => connection.label).join(", ") : "not connected"}
-                  </text>
-                </box>
-              )}
-            </For>
-          </box>
-        </Show>
-        <Show when={props.section !== "auth"}>
-         <box style={{ flexDirection: "column", flexGrow: 1 }}>
-          <For each={fields()}>
-            {(field, i) => (
-              <box
-                style={{
-                  flexDirection: "row",
-                  height: 1,
-                  flexShrink: 0,
-                  backgroundColor: i() === props.selected ? theme.surface1 : theme.base,
-                }}
-              >
-                <text style={{ fg: theme.subtext0, width: 18, flexShrink: 0 }}>
-                  {` ${field.label}`}
+      <Show when={props.section === "auth"}>
+        <box style={{ flexDirection: "column", flexGrow: 1 }}>
+          <For each={props.integrations ?? []}>
+            {(integration, i) => (
+              <box style={{ flexDirection: "row", height: 1, flexShrink: 0, backgroundColor: i() === props.selected ? theme.surface1 : theme.base }}>
+                <text style={{ fg: theme.text, width: 18, flexShrink: 0 }}>{integration.label}</text>
+                <text style={{ fg: integration.connections.length ? theme.green : theme.overlay1 }}>
+                  {integration.connections.length ? integration.connections.map((connection) => connection.label).join(", ") : "not connected"}
                 </text>
-                <text style={{ fg: theme.text, width: 14, flexShrink: 0 }}>{field.value}</text>
-                <text style={{ fg: theme.overlay1, flexGrow: 1 }}>{field.hint}</text>
               </box>
             )}
           </For>
-         </box>
-        </Show>
+        </box>
+      </Show>
+      <Show when={props.section === "keybinds"}>
+       <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
+        <For each={rows()}>
+          {(group) => (
+            <box style={{ flexDirection: "column", flexShrink: 0 }}>
+              <text style={{ fg: theme.mauve, height: 1, flexShrink: 0 }}>{group.group}</text>
+              <For each={group.entries}>
+                {(entry) => {
+                  const active = () => entry.index === props.selected;
+                  return (
+                    <box
+                      style={{
+                        flexDirection: "row",
+                        height: 1,
+                        flexShrink: 0,
+                        backgroundColor: active() ? theme.surface1 : theme.base,
+                      }}
+                    >
+                      <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
+                        {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
+                      </text>
+                      <text
+                        style={{
+                          fg: entry.index === null ? theme.overlay1 : theme.text,
+                          flexGrow: 1,
+                        }}
+                      >
+                        {entry.desc + (entry.custom ? " *" : "")}
+                      </text>
+                    </box>
+                  );
+                }}
+              </For>
+              <text style={{ height: 1, flexShrink: 0 }}> </text>
+            </box>
+          )}
+        </For>
+       </scrollbox>
+      </Show>
+      <Show when={props.section !== "keybinds" && props.section !== "auth"}>
+       <box style={{ flexDirection: "column", flexGrow: 1 }}>
+        <For each={fields()}>
+          {(field, i) => (
+            <box
+              style={{
+                flexDirection: "row",
+                height: 1,
+                flexShrink: 0,
+                backgroundColor: i() === props.selected ? theme.surface1 : theme.base,
+              }}
+            >
+              <text style={{ fg: theme.subtext0, width: 18, flexShrink: 0 }}>
+                {` ${field.label}`}
+              </text>
+              <text style={{ fg: theme.text, width: 14, flexShrink: 0 }}>{field.value}</text>
+              <text style={{ fg: theme.overlay1, flexGrow: 1 }}>{field.hint}</text>
+            </box>
+          )}
+        </For>
+       </box>
       </Show>
 
       {/* A collision is not fatal — one of the two commands is simply dead — so
@@ -301,7 +295,7 @@ export function Settings(props: {
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
         {(props.dirty ? "● unsaved · " : "") +
           (props.section === "auth"
-            ? "↑↓ provider · ⏎ connect · d disconnect · esc closes"
+            ? "⇥ section · ↑↓ provider · ⏎ connect · d disconnect · esc closes"
             : props.section !== "keybinds"
             ? "⇥ section · ↑↓ field · ←→ change · s saves · esc closes"
             : props.capturing

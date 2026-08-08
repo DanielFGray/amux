@@ -9,15 +9,56 @@ import { COMMAND_DEFS, command } from "../commands.ts";
 import { encodeAttachFrame, type AgentFrame, type AttachFrame } from "../effect/AttachProtocol.ts";
 import { makeAgentWorker, type AgentModelPart } from "./worker.ts";
 
+// --- Native tool name mapping ---
+// OpenAI and Anthropic reject dot-containing function names.
+// Each COMMAND_DEFS tag has exactly one dot, so replacing it with an underscore
+// is a bijection. The explicit bidirectional maps ensure deterministic lookup
+// regardless of any existing underscores in command names (e.g. pane.send_keys).
+
+const nativeToolName = (tag: string): string => tag.replace(/\./g, "_");
+
+const buildNativeMapping = (defs: readonly { tag: string }[]) => {
+  const safeToCommand = new Map<string, string>();
+  const commandToSafe = new Map<string, string>();
+  for (const def of defs) {
+    const safe = nativeToolName(def.tag);
+    safeToCommand.set(safe, def.tag);
+    commandToSafe.set(def.tag, safe);
+  }
+  return { safeToCommand, commandToSafe };
+};
+
+export function nativeToolkit() {
+  const agentDefs = COMMAND_DEFS.filter((def) => def.exposure === "agent");
+  const mapping = buildNativeMapping(agentDefs);
+  const tools = agentDefs.map((def) =>
+    Tool.make(mapping.commandToSafe.get(def.tag)!, {
+      description: def.desc,
+      parameters: def.argumentFields,
+      success: S.Unknown,
+    }),
+  );
+  return Toolkit.make(...tools);
+}
+
+export { buildNativeMapping, nativeToolName };
+
+// --- Process entry point ---
+
 const session = process.env.AMUX_SESSION ?? process.env.AMUX_AGENT_ID;
 const controlSocket = process.env.AMUX_CONTROL_SOCKET;
+
+if (!import.meta.main) {
+  // Imported as a module — exports only, don't validate env or start the daemon.
+} else if (!session)
+  throw new Error("AMUX_SESSION is required");
+else if (!controlSocket)
+  throw new Error("AMUX_CONTROL_SOCKET is required");
+else {
 const agentSize = JSON.parse(process.env.AMUX_AGENT_SIZE ?? '{"cols":80,"rows":24}') as {
   cols: number;
   rows: number;
 };
-
-if (!session) throw new Error("AMUX_SESSION is required");
-if (!controlSocket) throw new Error("AMUX_CONTROL_SOCKET is required");
 const emit = (frame: AgentFrame) =>
   Effect.sync(() => process.stdout.write(encodeAttachFrame(frame)));
 
@@ -36,8 +77,12 @@ const program = Effect.gen(function* () {
   yield* Effect.gen(function* () {
     const languageModel = yield* LanguageModel.LanguageModel;
   const runtime = yield* Effect.runtime<never>();
+  const agentDefs = COMMAND_DEFS.filter((def) => def.exposure === "agent");
+  const { safeToCommand, commandToSafe } = buildNativeMapping(agentDefs);
+  const resolveCommand = (name: string): string => safeToCommand.get(name) ?? name;
   const executeTool = (tool: string, input: unknown) => {
-    const value = command(tool as never, input as never);
+    const tag = resolveCommand(tool);
+    const value = command(tag as never, input as never);
     return controlCallPath(controlSocket, (control) =>
       control.Run({
         value: value as never,
@@ -50,8 +95,8 @@ const program = Effect.gen(function* () {
       }).pipe(Effect.map((result) => result.result)),
     );
   };
-  const definitions = COMMAND_DEFS.filter((def) => def.exposure === "agent").map((def) =>
-    Tool.make(def.tag, {
+  const definitions = agentDefs.map((def) =>
+    Tool.make(commandToSafe.get(def.tag)!, {
       description: def.desc,
       parameters: def.argumentFields,
       success: S.Unknown,
@@ -77,8 +122,14 @@ const program = Effect.gen(function* () {
         Stream.map((part): AgentModelPart | undefined => {
           const value = part as any;
           if (value.type === "text-delta") return { _tag: "text", text: value.delta };
+          if (value.type === "tool-params-start")
+            return { _tag: "tool.params-start", call: value.id, tool: resolveCommand(value.name) };
+          if (value.type === "tool-params-delta")
+            return { _tag: "tool.params-delta", call: value.id, delta: value.delta };
+          if (value.type === "tool-params-end")
+            return { _tag: "tool.params-end", call: value.id };
           if (value.type === "tool-call")
-            return { _tag: "tool", call: value.id, tool: value.name, input: value.params };
+            return { _tag: "tool", call: value.id, tool: resolveCommand(value.name), input: value.params };
           if (value.type === "tool-result")
             return {
               _tag: "result",
@@ -126,3 +177,4 @@ Effect.runPromise(
   );
   process.exitCode = 1;
 });
+}

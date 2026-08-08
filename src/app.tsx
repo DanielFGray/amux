@@ -600,6 +600,52 @@ function buildApp(
     yield* commands.run(command("pane.move", { space: wanted.id }));
   });
 
+  const promptNewAgent = Effect.gen(function* () {
+    const answers = yield* ask("New native agent", [
+      { label: "Prompt", value: "", placeholder: "what should the agent do?" },
+    ]);
+    if (!answers) return;
+    const prompt = answers[0]?.trim();
+    if (!prompt) return;
+    yield* commands.run(command("agent.new", { prompt }));
+  });
+
+  const promptSteerAgent = Effect.gen(function* () {
+    const focused = spaces.activeWindow?.focused?.session;
+    if (!focused || focused.kind !== "agent") {
+      setPromptError("");
+      setPromptRequest({
+        title: "steer agent",
+        notice: "no native agent focused",
+        fields: [],
+        resolve: () => setPromptRequest(null),
+      });
+      return;
+    }
+    const answers = yield* ask(`Steer ${focused.title}`, [
+      { label: "Message", value: "", placeholder: "what to tell the agent" },
+    ]);
+    if (!answers) return;
+    const message = answers[0]?.trim();
+    if (!message) return;
+    yield* commands.run(command("agent.steer", { session: focused.id, message }));
+  });
+
+  const promptInterruptAgent = Effect.gen(function* () {
+    const focused = spaces.activeWindow?.focused?.session;
+    if (!focused || focused.kind !== "agent") {
+      setPromptError("");
+      setPromptRequest({
+        title: "interrupt agent",
+        notice: "no native agent focused",
+        fields: [],
+        resolve: () => setPromptRequest(null),
+      });
+      return;
+    }
+    yield* commands.run(command("agent.interrupt", { session: focused.id }));
+  });
+
   const promptRenameWindow = Effect.gen(function* () {
     const space = spaces.active;
     const window = space?.active;
@@ -1348,6 +1394,9 @@ function buildApp(
     ),
 
     // Agents.
+    bindPrompt("agent.new", "<leader>shift+n", promptNewAgent),
+    bindPrompt("agent.steer", "<leader>shift+e", promptSteerAgent, "steer the focused native agent"),
+    bindPrompt("agent.interrupt", "<leader>shift+i", promptInterruptAgent, "interrupt the focused native agent"),
     // shift+k: plain ^a k is directional pane focus, and killing an agent is not
     // something to put one keystroke away from "move up" anyway.
     bind("session.kill", "<leader>shift+k", command("session.kill"), {
@@ -1532,7 +1581,6 @@ function buildApp(
           .catch((error) => setSettingsError(errorMessage(error)));
         return;
       }
-      return;
     }
     if (event.name === "return" || event.name === "enter") {
       const option = selectedOption();

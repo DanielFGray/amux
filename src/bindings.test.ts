@@ -512,3 +512,72 @@ test("keysFor prefers the override, including an empty one", () => {
   ]);
   expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": [] } })).toEqual([]);
 });
+
+test("agent.new compiles its shifted-letter binding", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const commands: CommandSpec[] = [
+      {
+        name: "agent.new",
+        key: "<leader>shift+n",
+        desc: "start a native coding agent",
+        group: "agents",
+        run: Effect.sync(() => fired.push("agent.new")),
+      },
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    t.mockInput.pressKey("a", { ctrl: true });
+    t.mockInput.pressKey("N", { shift: true });
+    expect(fired).toEqual(["agent.new"]);
+    expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^a N");
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("agent.steer compiles its shifted-letter binding", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const commands: CommandSpec[] = [
+      {
+        name: "agent.steer",
+        key: "<leader>shift+e",
+        desc: "steer the focused native agent",
+        group: "agents",
+        run: Effect.sync(() => fired.push("agent.steer")),
+      },
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    t.mockInput.pressKey("a", { ctrl: true });
+    t.mockInput.pressKey("E", { shift: true });
+    expect(fired).toEqual(["agent.steer"]);
+    expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^a E");
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("agent.interrupt compiles its shifted-letter binding", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const commands: CommandSpec[] = [
+      {
+        name: "agent.interrupt",
+        key: "<leader>shift+i",
+        desc: "interrupt the focused native agent",
+        group: "agents",
+        run: Effect.sync(() => fired.push("agent.interrupt")),
+      },
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    t.mockInput.pressKey("a", { ctrl: true });
+    t.mockInput.pressKey("I", { shift: true });
+    expect(fired).toEqual(["agent.interrupt"]);
+    expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^a I");
+  } finally {
+    t.renderer.destroy();
+  }
+});

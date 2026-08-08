@@ -343,6 +343,9 @@ class AttachClientConnection {
       frame._tag !== "turn.start" &&
       frame._tag !== "text.delta" &&
       frame._tag !== "tool.start" &&
+      frame._tag !== "tool.params-start" &&
+      frame._tag !== "tool.params-delta" &&
+      frame._tag !== "tool.params-end" &&
       frame._tag !== "tool.result" &&
       frame._tag !== "permission.request" &&
       frame._tag !== "permission.response" &&

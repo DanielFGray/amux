@@ -61,3 +61,70 @@ test("transcript serialization reflows semantic blocks at the requested width", 
     "matches",
   ]);
 });
+
+test("tool.params-start creates a block that tool.params-delta appends to", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.params-start", turn: "t1", call: "c1", tool: "grep" }),
+  );
+  expect(blocks).toEqual([
+    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: "" },
+  ]);
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.params-delta", turn: "t1", call: "c1", delta: "pat" }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.params-delta", turn: "t1", call: "c1", delta: "tern" }),
+  );
+  expect(blocks).toEqual([
+    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: "pattern" },
+  ]);
+});
+
+test("tool.start after partial streaming replaces the accumulated input", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.params-start", turn: "t1", call: "c1", tool: "grep" }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.params-delta", turn: "t1", call: "c1", delta: "ignore" }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.start", turn: "t1", call: "c1", tool: "grep", input: { pattern: "real" } }),
+  );
+  expect(blocks).toEqual([
+    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: { pattern: "real" } },
+  ]);
+});
+
+test("tool.params-delta without prior start creates a loose block", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.params-delta", turn: "t1", call: "c1", delta: "orphan" }),
+  );
+  expect(blocks).toEqual([
+    { kind: "tool", turn: "t1", call: "c1", name: "", input: "orphan" },
+  ]);
+});
+
+test("tool.params-delta after tool.start does not corrupt the resolved input", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.start", turn: "t1", call: "c1", tool: "grep", input: { ready: true } }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.params-delta", turn: "t1", call: "c1", delta: "late" }),
+  );
+  expect(blocks).toEqual([
+    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: { ready: true } },
+  ]);
+});

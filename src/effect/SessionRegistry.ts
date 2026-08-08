@@ -29,7 +29,7 @@ export interface SessionSpec {
   readonly id: string;
   readonly cmd: readonly string[];
   readonly cwd?: string;
-  readonly controlPath?: string;
+  readonly rpcPath?: string;
   /** The pane's owning daemon session, distinct from the agent id. */
   readonly daemonSession?: string;
   readonly cols: number;
@@ -154,6 +154,9 @@ const isAgentFrame = (frame: AttachFrame): frame is AgentFrame =>
   frame._tag === "turn.start" ||
   frame._tag === "text.delta" ||
   frame._tag === "tool.start" ||
+  frame._tag === "tool.params-start" ||
+  frame._tag === "tool.params-delta" ||
+  frame._tag === "tool.params-end" ||
   frame._tag === "tool.result" ||
   frame._tag === "permission.request" ||
   frame._tag === "permission.response" ||
@@ -173,7 +176,7 @@ function agentProcessBackend(spec: SessionSpec): Backend {
       ),
       AMUX_SESSION: spec.id,
       AMUX_AGENT_ID: spec.id,
-      ...(spec.controlPath ? { AMUX_CONTROL_SOCKET: spec.controlPath } : {}),
+      ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
       ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
       AMUX_PANE_ID: spec.id,
       ...(spec.cwd ? { AMUX_AGENT_CWD: spec.cwd } : {}),

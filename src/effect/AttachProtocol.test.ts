@@ -121,6 +121,60 @@ test("native agent control frames round-trip without provider or transport detai
   expect(decodeAttachFrames(frames.map(encodeAttachFrame).join("")).frames).toEqual(frames);
 });
 
+test("tool.params-start round-trips as a self-contained semantic event", () => {
+  const frame: AttachFrame = {
+    _tag: "tool.params-start",
+    session: "agent-1",
+    sequence: 1,
+    turn: "turn-1",
+    call: "call-1",
+    tool: "write",
+  };
+  const decoded = decodeAttachFrames(encodeAttachFrame(frame));
+  expect(decoded.rest).toBe("");
+  expect(decoded.frames).toEqual([frame]);
+});
+
+test("tool.params-delta round-trips incremental JSON fragments", () => {
+  const frame: AttachFrame = {
+    _tag: "tool.params-delta",
+    session: "agent-1",
+    sequence: 2,
+    turn: "turn-1",
+    call: "call-1",
+    delta: '{"path":',
+  };
+  const decoded = decodeAttachFrames(encodeAttachFrame(frame));
+  expect(decoded.rest).toBe("");
+  expect(decoded.frames).toEqual([frame]);
+});
+
+test("tool.params-end terminates a streaming call", () => {
+  const frame: AttachFrame = {
+    _tag: "tool.params-end",
+    session: "agent-1",
+    sequence: 5,
+    turn: "turn-1",
+    call: "call-1",
+  };
+  const decoded = decodeAttachFrames(encodeAttachFrame(frame));
+  expect(decoded.rest).toBe("");
+  expect(decoded.frames).toEqual([frame]);
+});
+
+test("tool.params-start, deltas, end stream as an ordered lifecycle", () => {
+  const frames: AttachFrame[] = [
+    { _tag: "tool.params-start", session: "agent-1", sequence: 1, turn: "turn-1", call: "call-1", tool: "write" },
+    { _tag: "tool.params-delta", session: "agent-1", sequence: 2, turn: "turn-1", call: "call-1", delta: '{"path":' },
+    { _tag: "tool.params-delta", session: "agent-1", sequence: 3, turn: "turn-1", call: "call-1", delta: '"/tmp/f"' },
+    { _tag: "tool.params-end", session: "agent-1", sequence: 4, turn: "turn-1", call: "call-1" },
+  ];
+
+  const decoded = decodeAttachFrames(frames.map(encodeAttachFrame).join(""));
+  expect(decoded.rest).toBe("");
+  expect(decoded.frames).toEqual(frames);
+});
+
 test("daemon agent events reject malformed semantic frames", () => {
   expect(() =>
     S.decodeUnknownSync(DaemonEvent)({
@@ -129,6 +183,45 @@ test("daemon agent events reject malformed semantic frames", () => {
         _tag: "agent.frame",
         session: "agent-1",
         frame: { _tag: "text.delta", session: "agent-1", sequence: "bad" },
+      },
+    }),
+  ).toThrow();
+});
+
+test("daemon agent events reject malformed tool.params-start frame", () => {
+  expect(() =>
+    S.decodeUnknownSync(DaemonEvent)({
+      sequence: 1,
+      event: {
+        _tag: "agent.frame",
+        session: "agent-1",
+        frame: { _tag: "tool.params-start", session: "agent-1", sequence: 1, turn: "turn-1", call: "call-1" },
+      },
+    }),
+  ).toThrow();
+});
+
+test("daemon agent events reject malformed tool.params-delta frame", () => {
+  expect(() =>
+    S.decodeUnknownSync(DaemonEvent)({
+      sequence: 1,
+      event: {
+        _tag: "agent.frame",
+        session: "agent-1",
+        frame: { _tag: "tool.params-delta", session: "agent-1", sequence: 2, turn: "turn-1" },
+      },
+    }),
+  ).toThrow();
+});
+
+test("daemon agent events reject malformed tool.params-end frame", () => {
+  expect(() =>
+    S.decodeUnknownSync(DaemonEvent)({
+      sequence: 1,
+      event: {
+        _tag: "agent.frame",
+        session: "agent-1",
+        frame: { _tag: "tool.params-end", session: "agent-1", turn: "turn-1" },
       },
     }),
   ).toThrow();

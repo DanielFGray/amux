@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createSignal, createEffect } from "solid-js";
+import type { InputRenderable } from "@opentui/core";
 import { theme } from "./theme.ts";
 
 export interface PromptField {
@@ -12,34 +13,30 @@ export interface PromptField {
 export interface PromptRequest {
   title: string;
   fields: PromptField[];
-  /** Replaces the default footer line, to document a prompt's own syntax. */
   footer?: string;
-  /** When set, the prompt is a dismiss-only message instead of an input form.
-   *  The send-keys command uses it to name a target failure ("no pane"). */
   notice?: string;
   resolve: (values: string[] | null) => void;
 }
 
+const isPrintable = (s: string): boolean =>
+  s.length === 1 && s.charCodeAt(0) >= 32 && s.charCodeAt(0) !== 127;
+
 /**
  * Modal multi-field text prompt.
  *
- * The `focused` prop is how a Solid-managed InputRenderable takes focus, and
- * focus is what routes keystrokes into it — the app's key handling only has to
- * refrain from stealing them, not forward them. Feeding the input by hand as
- * well would double every character.
+ * Masked fields use a custom input path: all editing is intercepted in
+ * onKeyDown with preventDefault so plaintext never enters the renderable's
+ * edit buffer. The renderable displays only stars, updated directly via the
+ * captured ref. The real secret lives only in the `values` signal.
  */
 export function Prompt(props: {
   request: PromptRequest;
   width: number;
-  /** Compile error from the last submit, kept live while the input stays
-   *  editable — the resolver decides whether to accept the value, and a reject
-   *  lands here rather than closing the prompt. */
   error?: string;
 }) {
   const [field, setField] = createSignal(0);
   const [values, setValues] = createSignal<string[]>([]);
 
-  // A new request resets the cursor and seeds the defaults.
   createEffect(() => {
     setValues(props.request.fields.map((f) => f.value ?? ""));
     setField(0);
@@ -49,19 +46,16 @@ export function Prompt(props: {
     setValues((prev) => prev.map((v, index) => (index === i ? value : v)));
 
   const submit = () => {
-    // Enter on the last field submits; earlier fields advance, so the form is
-    // filled top to bottom without reaching for tab.
     if (field() < props.request.fields.length - 1) setField(field() + 1);
     else props.request.resolve(values());
   };
 
-  // Tab moves focus to the next field. The textarea renderable has no tab
-  // binding of its own, so without this the footer's "⇥ field" hint lies and
-  // tab does nothing at all.
   const nextField = () => {
     if (field() < props.request.fields.length - 1) setField(field() + 1);
     else setField(0);
   };
+
+  const maskedInputs: Map<number, InputRenderable> = new Map();
 
   return (
     <box
@@ -85,41 +79,78 @@ export function Prompt(props: {
         fallback={
           <>
             <For each={props.request.fields}>
-              {(spec, i) => (
-                <box style={{ flexDirection: "column", flexShrink: 0 }}>
-                  <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>{spec.label}</text>
+              {(spec, i) => {
+                const idx = i();
+                const syncMask = () => {
+                  const input = maskedInputs.get(idx);
+                  if (input) input.value = "*".repeat((values()[idx] ?? "").length);
+                };
+
+                return (
+                  <box style={{ flexDirection: "column", flexShrink: 0 }}>
+                    <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>{spec.label}</text>
                     <box style={{ position: "relative", height: 1, flexShrink: 0 }}>
-                     <input
-                       value={values()[i()] ?? ""}
-                     placeholder={spec.placeholder ?? ""}
-                    focused={field() === i()}
-                    onKeyDown={(key) => {
-                      // The textarea renderable does not bind tab, so an
-                      // unbound tab would be silently dropped before it ever
-                      // reached the app. Intercept it here and move focus, then
-                      // stop the event so nothing downstream treats it as input.
-                      if (key.name === "tab" && field() === i()) {
-                        nextField();
-                        key.preventDefault();
-                      }
-                    }}
-                       style={{
-                       flexShrink: 0,
-                       backgroundColor: field() === i() ? theme.surface1 : theme.surface0,
-                       textColor: spec.masked ? theme.surface1 : theme.text,
-                       focusedTextColor: spec.masked ? theme.surface1 : theme.text,
-                     }}
-                       onInput={(value: string) => set(i(), value)}
-                       onSubmit={submit}
-                     />
-                     <Show when={spec.masked && (values()[i()] ?? "").length > 0}>
-                       <text style={{ position: "absolute", left: 1, top: 0, fg: theme.text }}>
-                         {"*".repeat((values()[i()] ?? "").length)}
-                       </text>
-                     </Show>
+                      <input
+                        value={spec.masked ? "" : (values()[idx] ?? "")}
+                        placeholder={spec.placeholder ?? ""}
+                        focused={field() === idx}
+                        ref={spec.masked ? (el: InputRenderable) => { maskedInputs.set(idx, el); } : undefined}
+                        onKeyDown={(key) => {
+                          if (field() !== idx) return;
+                          if (key.name === "tab") {
+                            nextField();
+                            key.preventDefault();
+                            return;
+                          }
+                          if (spec.masked) {
+                            if (key.name === "return" || key.name === "kpenter" || key.name === "linefeed") {
+                              submit();
+                              key.preventDefault();
+                              return;
+                            }
+                            if (key.name === "backspace") {
+                              const cur = values()[idx] ?? "";
+                              if (cur.length > 0) {
+                                set(idx, cur.slice(0, -1));
+                                syncMask();
+                              }
+                              key.preventDefault();
+                              return;
+                            }
+                            if (isPrintable(key.sequence)) {
+                              set(idx, (values()[idx] ?? "") + key.sequence);
+                              syncMask();
+                              key.preventDefault();
+                              return;
+                            }
+                            key.preventDefault();
+                          }
+                        }}
+                        onPaste={
+                          spec.masked
+                            ? (event) => {
+                                const text = new TextDecoder().decode(event.bytes).replace(/[\n\r]/g, "");
+                                if (text) {
+                                  set(idx, (values()[idx] ?? "") + text);
+                                  syncMask();
+                                }
+                                event.preventDefault();
+                              }
+                            : undefined
+                        }
+                        style={{
+                          flexShrink: 0,
+                          backgroundColor: field() === idx ? theme.surface1 : theme.surface0,
+                          textColor: theme.text,
+                          focusedTextColor: theme.text,
+                        }}
+                        onInput={spec.masked ? undefined : (value: string) => set(idx, value)}
+                        onSubmit={submit}
+                      />
                     </box>
-                </box>
-              )}
+                  </box>
+                );
+              }}
             </For>
             <Show when={props.error}>
               <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{props.error}</text>

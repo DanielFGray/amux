@@ -41,11 +41,61 @@ export function appendTranscriptFrame(
       }
       return [...blocks, { kind: "assistant", turn: frame.turn, text: frame.text }];
     }
-    case "tool.start":
+    case "tool.start": {
+      const index = blocks.findLastIndex(
+        (block) => block.kind === "tool" && block.call === frame.call,
+      );
+      // Replace a block that was built from tool.params-delta (string input).
+      if (index >= 0 && blocks[index]!.kind === "tool" && typeof blocks[index]!.input === "string") {
+        const prev = blocks[index]!;
+        if (prev.kind !== "tool") return blocks;
+        return [
+          ...blocks.slice(0, index),
+          { ...prev, input: frame.input },
+          ...blocks.slice(index + 1),
+        ];
+      }
       return [
         ...blocks,
         { kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: frame.input },
       ];
+    }
+    case "tool.params-start": {
+      const index = blocks.findLastIndex(
+        (block) => block.kind === "tool" && block.call === frame.call,
+      );
+      if (index >= 0 && blocks[index]!.kind === "tool") {
+        // The final tool.start already resolved this call.
+        return blocks;
+      }
+      return [
+        ...blocks,
+        { kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: "" },
+      ];
+    }
+    case "tool.params-delta": {
+      const index = blocks.findLastIndex(
+        (block) => block.kind === "tool" && block.call === frame.call,
+      );
+      if (index >= 0 && blocks[index]!.kind === "tool") {
+        const tool = blocks[index]!;
+        if (tool.kind !== "tool") return blocks;
+        // Append if the input is still a string (partial streaming) but not if
+        // a later tool.start already installed a parsed object.
+        if (typeof tool.input !== "string") return blocks;
+        return [
+          ...blocks.slice(0, index),
+          { ...tool, input: tool.input + frame.delta },
+          ...blocks.slice(index + 1),
+        ];
+      }
+      return [
+        ...blocks,
+        { kind: "tool", turn: frame.turn, call: frame.call, name: "", input: frame.delta },
+      ];
+    }
+    case "tool.params-end":
+      return blocks;
     case "tool.result": {
       const index = blocks.findLastIndex(
         (block) => block.kind === "tool" && block.call === frame.call,

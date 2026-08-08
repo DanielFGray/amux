@@ -10,6 +10,17 @@ export type AgentModelPart =
   | { readonly _tag: "text"; readonly text: string }
   | { readonly _tag: "tool"; readonly call: string; readonly tool: string; readonly input: unknown }
   | {
+      readonly _tag: "tool.params-start";
+      readonly call: string;
+      readonly tool: string;
+    }
+  | {
+      readonly _tag: "tool.params-delta";
+      readonly call: string;
+      readonly delta: string;
+    }
+  | { readonly _tag: "tool.params-end"; readonly call: string }
+  | {
       readonly _tag: "result";
       readonly call: string;
       readonly output: unknown;
@@ -20,6 +31,14 @@ export type AgentModel = (input: {
   readonly prompt: string;
   readonly signal: AbortSignal;
 }) => Stream.Stream<AgentModelPart, unknown>;
+
+type ConversationMessage = { readonly role: "user" | "assistant"; readonly content: string };
+
+export function buildConversationPrompt(history: readonly ConversationMessage[], prompt: string): string {
+  if (history.length === 0) return prompt;
+  const prefix = history.map((m) => `${m.role}:\n${m.content}`).join("\n\n");
+  return `${prefix}\n\nuser:\n${prompt}`;
+}
 
 export const modelParts = (
   parts: Iterable<{
@@ -35,6 +54,12 @@ export const modelParts = (
   const result: AgentModelPart[] = [];
   for (const part of parts) {
     if (part.type === "text-delta" && part.delta) result.push({ _tag: "text", text: part.delta });
+    else if (part.type === "tool-params-start" && part.id && part.name)
+      result.push({ _tag: "tool.params-start", call: part.id, tool: part.name });
+    else if (part.type === "tool-params-delta" && part.id && part.delta)
+      result.push({ _tag: "tool.params-delta", call: part.id, delta: part.delta });
+    else if (part.type === "tool-params-end" && part.id)
+      result.push({ _tag: "tool.params-end", call: part.id });
     else if (part.type === "tool-call" && part.id && part.name)
       result.push({ _tag: "tool", call: part.id, tool: part.name, input: part.params });
     else if (part.type === "tool-result" && part.id)
@@ -61,6 +86,23 @@ type AgentFramePayload =
     }
   | { readonly _tag: "turn.start"; readonly turn: string; readonly prompt: string }
   | { readonly _tag: "text.delta"; readonly turn: string; readonly text: string }
+  | {
+      readonly _tag: "tool.params-start";
+      readonly turn: string;
+      readonly call: string;
+      readonly tool: string;
+    }
+  | {
+      readonly _tag: "tool.params-delta";
+      readonly turn: string;
+      readonly call: string;
+      readonly delta: string;
+    }
+  | {
+      readonly _tag: "tool.params-end";
+      readonly turn: string;
+      readonly call: string;
+    }
   | {
       readonly _tag: "tool.start";
       readonly turn: string;
@@ -100,6 +142,7 @@ export function makeAgentWorker(options: {
     let activeInterrupt: Deferred.Deferred<void> | undefined;
     let interrupted = false;
     let activeTurn: string | undefined;
+    const conversation: ConversationMessage[] = [];
 
     const emit = (frame: AgentFramePayload) =>
       options.emit({ ...frame, session: options.session, sequence: sequence++ } as AgentFrame);
@@ -113,10 +156,27 @@ export function makeAgentWorker(options: {
         const interrupt = yield* Deferred.make<void>();
         activeInterrupt = interrupt;
         interrupted = false;
+        const userPrompt = prompt;
         yield* emit({ _tag: "agent.status", state: "working" });
         yield* emit({ _tag: "turn.start", turn: id, prompt });
-        let nextPrompt = prompt;
+        let nextPrompt =
+          conversation.length > 0 ? buildConversationPrompt(conversation, prompt) : prompt;
         let continued = true;
+        let assistantText = "";
+        const toolCalls: string[] = [];
+        const pendingToolCalls = new Map<string, { tool: string; params: string }>();
+        const pushPartialContext = () => {
+          if (!assistantText && toolCalls.length === 0 && pendingToolCalls.size === 0) return;
+          const parts: string[] = [];
+          if (assistantText) parts.push(assistantText);
+          for (const [, { tool, params }] of pendingToolCalls) {
+            parts.push(`[tool call in progress: ${tool}(${params})]`);
+          }
+          if (toolCalls.length > 0) parts.push(`[tool calls: ${toolCalls.join(", ")}]`);
+          const content = parts.join("\n");
+          conversation.push({ role: "user", content: userPrompt });
+          conversation.push({ role: "assistant", content });
+        };
         while (continued) {
           continued = false;
           const toolResults: string[] = [];
@@ -126,8 +186,35 @@ export function makeAgentWorker(options: {
             Stream.runForEach((part) =>
               Effect.gen(function* () {
                 if (part._tag === "text") {
+                  assistantText += part.text;
                   yield* emit({ _tag: "text.delta", turn: id, text: part.text });
+                } else if (part._tag === "tool.params-start") {
+                  pendingToolCalls.set(part.call, { tool: part.tool, params: "" });
+                  yield* emit({
+                    _tag: "tool.params-start",
+                    turn: id,
+                    call: part.call,
+                    tool: part.tool,
+                  });
+                } else if (part._tag === "tool.params-delta") {
+                  const pending = pendingToolCalls.get(part.call);
+                  if (pending) pending.params += part.delta;
+                  else pendingToolCalls.set(part.call, { tool: "", params: part.delta });
+                  yield* emit({
+                    _tag: "tool.params-delta",
+                    turn: id,
+                    call: part.call,
+                    delta: part.delta,
+                  });
+                } else if (part._tag === "tool.params-end") {
+                  yield* emit({
+                    _tag: "tool.params-end",
+                    turn: id,
+                    call: part.call,
+                  });
                 } else if (part._tag === "tool") {
+                  pendingToolCalls.delete(part.call);
+                  toolCalls.push(`${part.tool}(${JSON.stringify(part.input)})`);
                   yield* emit({
                     _tag: "tool.start",
                     turn: id,
@@ -168,6 +255,7 @@ export function makeAgentWorker(options: {
           if (exit._tag === "Failure") {
             if (interrupted || Cause.isInterruptedOnly(exit.cause)) {
               controller.abort();
+              pushPartialContext();
               yield* emit({ _tag: "turn.end", turn: id, outcome: "interrupted" });
               yield* emit({ _tag: "agent.status", state: "idle" });
               activeController = undefined;
@@ -186,6 +274,7 @@ export function makeAgentWorker(options: {
         }
         if (interrupted) {
           controller.abort();
+          pushPartialContext();
           yield* emit({ _tag: "turn.end", turn: id, outcome: "interrupted" });
           yield* emit({ _tag: "agent.status", state: "idle" });
           activeController = undefined;
@@ -193,6 +282,10 @@ export function makeAgentWorker(options: {
           activeTurn = undefined;
           return;
         }
+        if (toolCalls.length > 0)
+          assistantText += `\n[tool calls: ${toolCalls.join(", ")}]`;
+        conversation.push({ role: "user", content: userPrompt });
+        conversation.push({ role: "assistant", content: assistantText });
         yield* emit({ _tag: "turn.end", turn: id, outcome: "completed" });
         yield* emit({ _tag: "agent.status", state: "idle" });
         activeController = undefined;
