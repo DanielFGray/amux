@@ -9,7 +9,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { ConfigProvider, Effect, Exit, pipe, Scope } from "effect";
+import { ConfigProvider, Effect, Exit, Fiber, pipe, Scope } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -24,12 +24,14 @@ import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { captureVisible } from "./capture.ts";
 import { MODE_ALT_SCREEN } from "./ghostty.ts";
 import { processAlive, sessionPaths, SessionStore } from "./session.ts";
-import { Option, Stream } from "effect";
+import { Option, Schema as S, Stream } from "effect";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
   type AttachFrame,
+  AgentFrame,
 } from "./effect/AttachProtocol.ts";
+import { Transcript, serializeTranscript } from "./transcript.ts";
 import { command } from "./commands.ts";
 import { controlCall } from "./control-client.ts";
 
@@ -180,6 +182,49 @@ test("native agent status frames become authoritative projected state", async ()
   await until(() => agent.state === "working", "native working status");
   expect(agent.state).toBe("working");
   await Effect.runPromise(daemon.killSession(agent.id));
+});
+
+test("reattaching replays the completed transcript but not live-only deltas", async () => {
+  const { daemon, env } = await session("agent-replay");
+  const first = await attach("agent-replay", env, "first");
+  const id = "replay-agent";
+  const emitted = [
+    { _tag: "agent.event", event: { _tag: "agent.status", session: id, state: "working" } },
+    { _tag: "agent.event", event: { _tag: "turn.start", session: id, turn: "turn-1", prompt: "inspect" } },
+    { _tag: "text.delta", session: id, turn: "turn-1", text: "live answer" },
+    { _tag: "agent.event", event: { _tag: "turn.end", session: id, turn: "turn-1", outcome: "completed", text: "live answer" } },
+    { _tag: "agent.event", event: { _tag: "agent.status", session: id, state: "idle" } },
+  ];
+  const cmd = [
+    process.execPath,
+    "-e",
+    `process.stdout.write(${JSON.stringify(emitted.map((frame) => JSON.stringify(frame)).join("\n") + "\n")}); setTimeout(()=>{},30000)`,
+  ];
+  const live: AttachFrame[] = [];
+  const liveFiber = Effect.runFork(
+    first.attach.stream(id).pipe(Stream.runForEach((frame) => Effect.sync(() => void live.push(frame)))),
+  );
+  await Effect.runPromise(daemon.spawnSession({ kind: "agent", id, cmd, cols: 80, rows: 24 }));
+  first.attach.sync(id);
+  await until(() => live.some((frame) => frame._tag === "turn.end"), "the completed turn");
+  expect(live.some((frame) => frame._tag === "text.delta")).toBe(true);
+  await Effect.runPromise(Fiber.interrupt(liveFiber));
+  first.close();
+  await until(async () => (await attachedClient(daemon)) === null, "the first client to detach");
+
+  const second = await attach("agent-replay", env, "second");
+  const replay: AttachFrame[] = [];
+  const replayFiber = Effect.runFork(
+    second.attach.stream(id).pipe(Stream.runForEach((frame) => Effect.sync(() => void replay.push(frame)))),
+  );
+  second.attach.sync(id);
+  await until(() => replay.some((frame) => frame._tag === "agent.status"), "durable history");
+  await Effect.runPromise(Fiber.interrupt(replayFiber));
+
+  const transcript = new Transcript();
+  for (const frame of replay) if (S.is(AgentFrame)(frame)) transcript.append(frame);
+  expect(serializeTranscript(transcript.snapshot(), 80)).toContain("assistant> live answer");
+  expect(replay.some((frame) => frame._tag === "text.delta")).toBe(false);
 });
 
 test("two clients share output and input, and one can leave without detaching the other", async () => {

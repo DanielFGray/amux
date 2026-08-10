@@ -63,7 +63,6 @@ test("native agent lifecycle frames round-trip as semantic events", () => {
     {
       _tag: "text.delta",
       session: "agent-1",
-      sequence: 2,
       turn: "turn-1",
       text: "I will inspect the test.",
     },
@@ -125,7 +124,6 @@ test("tool.params-start round-trips as a self-contained semantic event", () => {
   const frame: AttachFrame = {
     _tag: "tool.params-start",
     session: "agent-1",
-    sequence: 1,
     turn: "turn-1",
     call: "call-1",
     tool: "write",
@@ -139,7 +137,6 @@ test("tool.params-delta round-trips incremental JSON fragments", () => {
   const frame: AttachFrame = {
     _tag: "tool.params-delta",
     session: "agent-1",
-    sequence: 2,
     turn: "turn-1",
     call: "call-1",
     delta: '{"path":',
@@ -153,7 +150,6 @@ test("tool.params-end terminates a streaming call", () => {
   const frame: AttachFrame = {
     _tag: "tool.params-end",
     session: "agent-1",
-    sequence: 5,
     turn: "turn-1",
     call: "call-1",
   };
@@ -164,10 +160,10 @@ test("tool.params-end terminates a streaming call", () => {
 
 test("tool.params-start, deltas, end stream as an ordered lifecycle", () => {
   const frames: AttachFrame[] = [
-    { _tag: "tool.params-start", session: "agent-1", sequence: 1, turn: "turn-1", call: "call-1", tool: "write" },
-    { _tag: "tool.params-delta", session: "agent-1", sequence: 2, turn: "turn-1", call: "call-1", delta: '{"path":' },
-    { _tag: "tool.params-delta", session: "agent-1", sequence: 3, turn: "turn-1", call: "call-1", delta: '"/tmp/f"' },
-    { _tag: "tool.params-end", session: "agent-1", sequence: 4, turn: "turn-1", call: "call-1" },
+    { _tag: "tool.params-start", session: "agent-1", turn: "turn-1", call: "call-1", tool: "write" },
+    { _tag: "tool.params-delta", session: "agent-1", turn: "turn-1", call: "call-1", delta: '{"path":' },
+    { _tag: "tool.params-delta", session: "agent-1", turn: "turn-1", call: "call-1", delta: '"/tmp/f"' },
+    { _tag: "tool.params-end", session: "agent-1", turn: "turn-1", call: "call-1" },
   ];
 
   const decoded = decodeAttachFrames(frames.map(encodeAttachFrame).join(""));

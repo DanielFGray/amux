@@ -2,37 +2,47 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { Effect, Fiber, Schema as S, Stream, type Stream as StreamType } from "effect";
 import type { Session } from "../agent.ts";
-import { appendTranscriptFrame, serializeTranscript, type TranscriptBlock } from "../transcript.ts";
-import type { DaemonEventPayload } from "../effect/EventBus.ts";
-import { AgentFrame } from "../effect/AttachProtocol.ts";
+import { serializeTranscript, Transcript as TranscriptModel } from "../transcript.ts";
+import { AgentFrame, type AttachFrame } from "../effect/AttachProtocol.ts";
 import { theme } from "./theme.ts";
 
 export interface TranscriptProps {
   agent: Session | null;
-  events: StreamType.Stream<DaemonEventPayload, unknown>;
+  frames: (session: string) => StreamType.Stream<AttachFrame, unknown>;
+  sync: (session: string) => void;
   width: number;
 }
 
 /** A retained semantic view of the active native agent conversation. */
 export function Transcript(props: TranscriptProps) {
-  const [blocks, setBlocks] = createSignal<readonly TranscriptBlock[]>([]);
+  const transcript = new TranscriptModel();
+  const [revision, setRevision] = createSignal(0);
   const agentId = createMemo(() => (props.agent?.kind === "agent" ? props.agent.id : null));
-  const lines = createMemo(() => serializeTranscript(blocks(), Math.max(1, props.width - 2)));
+  const lines = createMemo(() => {
+    revision();
+    return serializeTranscript(transcript.snapshot(), Math.max(1, props.width - 2));
+  });
 
   createEffect(() => {
     agentId();
-    setBlocks([]);
+    transcript.clear();
+    if (agentId()) props.sync(agentId()!);
+    setRevision((value) => value + 1);
   });
 
   const fiber = Effect.runFork(
-    props.events.pipe(
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const id = agentId();
+        if (id === null) return Stream.never;
+        return props.frames(id);
+      }),
+    ).pipe(
       Stream.runForEach((event) =>
         Effect.sync(() => {
-          const id = agentId();
-          if (id === null || event._tag !== "agent.frame" || event.session !== id) return;
-          const frame = event.frame;
-          if (!S.is(AgentFrame)(frame)) return;
-          setBlocks((current) => appendTranscriptFrame(current, frame));
+          if (!S.is(AgentFrame)(event)) return;
+          transcript.append(event);
+          setRevision((value) => value + 1);
         }),
       ),
     ),

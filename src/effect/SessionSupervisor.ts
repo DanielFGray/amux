@@ -2,7 +2,14 @@ import { Context, Deferred, Effect, FiberMap, Layer, Match, Ref, Scope, Stream }
 import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
-import { type AgentFrame, type AttachFrame } from "./AttachProtocol.ts";
+import {
+  isAgentEventPayload,
+  type AgentEventPayload,
+  type AgentDelta,
+  type AgentFrame,
+  type AttachFrame,
+} from "./AttachProtocol.ts";
+import { AgentLog } from "./AgentLog.ts";
 import {
   PtyError,
   SessionRegistry,
@@ -93,6 +100,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     const hub = yield* AttachHub;
     const exitObserver = yield* SessionExitObserver;
     const stateObserver = yield* SessionStateObserver;
+    const agentLog = yield* AgentLog;
     const sessions = yield* Ref.make<ReadonlyMap<string, ManagedSession>>(new Map());
     const completions = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<void>>>(new Map());
     const terminations = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<number | null>>>(
@@ -285,13 +293,14 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           yield* Deferred.succeed(termination, code);
           if ((yield* Deferred.await(disposition)) === "active") {
             if (spec.kind === "agent" && code !== null) {
-              yield* stateObserver.onState(spec.id, "failed");
-              yield* hub.publish({
+              const failed = yield* agentLog.append({
                 _tag: "agent.status",
                 session: spec.id,
-                sequence: 0,
                 state: "failed",
-              } satisfies AttachFrame);
+              });
+              yield* stateObserver.onState(spec.id, "failed");
+              yield* stateObserver.onFrame(spec.id, failed);
+              yield* hub.publish(failed);
             }
             yield* publishExit(code);
           }
@@ -318,13 +327,16 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           session.events.pipe(
             Stream.runForEach((event) =>
               Effect.gen(function* () {
-                if (event._tag === "agent.status" && event.state !== lastAgentState) {
-                  lastAgentState = event.state;
-                  yield* stateObserver.onState(spec.id, event.state);
+                const committed = isAgentEventPayload(event)
+                  ? yield* agentLog.append(event)
+                  : event;
+                if (committed._tag === "agent.status" && committed.state !== lastAgentState) {
+                  lastAgentState = committed.state;
+                  yield* stateObserver.onState(spec.id, committed.state);
                 }
-                yield* stateObserver.onFrame(spec.id, event);
-                if (phase === "active") yield* hub.publish(event);
-                else pendingEvents.push(event);
+                yield* stateObserver.onFrame(spec.id, committed);
+                if (phase === "active") yield* hub.publish(committed);
+                else pendingEvents.push(committed);
               }),
             ),
           ),
@@ -439,7 +451,12 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       }),
 
       /** Replay an adopted session's screen to the client that asked for it. */
-      sync: Effect.fnUntraced(function* (client: string, connection: string, id: string) {
+      sync: Effect.fnUntraced(function* (
+        client: string,
+        connection: string,
+        id: string,
+        after?: number,
+      ) {
         const session = (yield* Ref.get(sessions)).get(id);
         // "Bring me up to date" includes which process is in the foreground.
         // The poller only publishes changes, so an adopting client would stay
@@ -453,6 +470,13 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             pgid: fg.pgid,
             sid: fg.sid,
           } satisfies AttachFrame);
+        }
+        if (session?.kind === "agent") {
+          // Agent panes render their semantic transcript; the native worker's
+          // terminal screen is not the transcript and must not replace it.
+          const history = yield* agentLog.read(id, after);
+          for (const event of history) yield* hub.publishTo(client, connection, event);
+          return;
         }
         const screen = (yield* Ref.get(replays)).get(id);
         if (!screen) return;

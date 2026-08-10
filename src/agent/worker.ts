@@ -1,6 +1,6 @@
 import type { Chat, LanguageModel, Response, Tool, Toolkit } from "@effect/ai";
 import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
-import { type AgentFrame } from "../effect/AttachProtocol.ts";
+import type { AgentEventPayload, AgentDelta } from "../effect/AttachProtocol.ts";
 
 export type AgentWorker = {
   readonly steer: (message: string) => Effect.Effect<void>;
@@ -50,6 +50,7 @@ type AgentFramePayload =
       readonly _tag: "turn.end";
       readonly turn: string;
       readonly outcome: "completed" | "interrupted" | "failed";
+      readonly text?: string;
     };
 
 /**
@@ -104,7 +105,7 @@ export function frameForPart(
 export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options: {
   readonly session: string;
   readonly chat: Chat.Service;
-  readonly emit: (frame: AgentFrame) => Effect.Effect<void>;
+  readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
   readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Tools>>;
   /** Provider-safe tool names map back to command tags for the transcript. */
   readonly toolName?: (name: string) => string;
@@ -115,26 +116,21 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
 > {
   return Effect.gen(function* () {
     const inbox = yield* Queue.unbounded<string>();
-    const sequences = yield* Ref.make(0);
     const turns = yield* Ref.make(0);
     const running = yield* FiberHandle.make<void, never>();
     const toolName = options.toolName ?? ((name: string) => name);
 
     const emit = (frame: AgentFramePayload) =>
-      Ref.getAndUpdate(sequences, (n) => n + 1).pipe(
-        Effect.flatMap((sequence) =>
-          options.emit({ ...frame, session: options.session, sequence } as AgentFrame),
-        ),
-      );
+      options.emit({ ...frame, session: options.session } as AgentEventPayload | AgentDelta);
 
     /** Terminal frames for every exit, so no path leaves the pane mid-turn. */
-    const settle = (turn: string, exit: Exit.Exit<void, unknown>) => {
+    const settle = (turn: string, exit: Exit.Exit<void, unknown>, text: string) => {
       const outcome = Exit.isSuccess(exit)
         ? ("completed" as const)
         : Cause.isInterruptedOnly(exit.cause)
           ? ("interrupted" as const)
           : ("failed" as const);
-      return emit({ _tag: "turn.end", turn, outcome }).pipe(
+      return emit({ _tag: "turn.end", turn, outcome, ...(text ? { text } : {}) }).pipe(
         Effect.andThen(
           emit({ _tag: "agent.status", state: outcome === "failed" ? "failed" : "idle" }),
         ),
@@ -145,6 +141,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
       Ref.updateAndGet(turns, (n) => n + 1).pipe(
         Effect.flatMap((n) => {
           const turn = `turn-${n}`;
+          let responseText = "";
           return emit({ _tag: "agent.status", state: "working" }).pipe(
             Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
             Effect.andThen(
@@ -159,11 +156,12 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
                       part as Response.StreamPart<Record<string, Tool.Any>>,
                       toolName,
                     );
-                    return frame ? emit(frame) : Effect.void;
+                     if (frame?._tag === "text.delta") responseText += frame.text;
+                     return frame ? emit(frame) : Effect.void;
                   }),
                 ),
             ),
-            Effect.onExit((exit) => settle(turn, exit)),
+             Effect.onExit((exit) => settle(turn, exit, responseText)),
             // settle has already reported the failure as turn.end{failed}, so the
             // transcript is this turn's error channel and there is nothing left to
             // raise. A provider 500 ends a turn, never the session. catchAll takes

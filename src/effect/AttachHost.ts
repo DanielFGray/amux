@@ -20,6 +20,7 @@ import { Context, Effect, ExecutionStrategy, Layer, Scope } from "effect";
 import { createServer, type Server } from "node:net";
 import { AttachHub } from "./AttachHub.ts";
 import type { AgentFrame, AttachFrame } from "./AttachProtocol.ts";
+import { AgentLog, AgentLogDefault, type AgentLogService } from "./AgentLog.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
 import {
@@ -49,6 +50,7 @@ export interface AttachHostOptions {
     client: string,
     connection: string,
     session: string,
+    after?: number,
   ) => Effect.Effect<void, unknown>;
   /** A supervised backend actually terminated (not merely an observer detaching). */
   readonly onSessionExit?: (session: string, code: number | null) => Effect.Effect<void, unknown>;
@@ -57,6 +59,7 @@ export interface AttachHostOptions {
     state: "idle" | "working" | "blocked" | "failed" | "done",
   ) => Effect.Effect<void, unknown>;
   readonly onAgentFrame?: (session: string, frame: AgentFrame) => Effect.Effect<void, unknown>;
+  readonly agentLog?: AgentLogService;
 }
 
 export interface AttachHostService {
@@ -182,7 +185,8 @@ const make = (
       // an owner outside it says otherwise.
       onSync:
         options.onSync ??
-        ((client, connection, session) => supervisor.sync(client, connection, session)),
+        ((client, connection, session, after) =>
+          supervisor.sync(client, connection, session, after)),
       // An input or resize naming a session that is already gone is a benign
       // race — the client had a keystroke in flight when the process exited —
       // not a protocol violation. Logging it keeps the attachment alive;
@@ -229,7 +233,8 @@ const make = (
           session: id,
           data: typeof data === "string" ? new TextEncoder().encode(data) : data,
         }),
-      interrupt: (id, reason) => supervisor.handle({ _tag: "agent.interrupt", session: id, ...(reason ? { reason } : {}) }),
+      interrupt: (id, reason) =>
+        supervisor.handle({ _tag: "agent.interrupt", session: id, ...(reason ? { reason } : {}) }),
       capture: supervisor.capture,
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),
@@ -250,6 +255,9 @@ export const layerAttachHost = (
   Layer.scoped(AttachHost, make(options)).pipe(
     Layer.provide(
       SessionSupervisor.Live.pipe(
+        Layer.provide(
+          options.agentLog ? Layer.succeed(AgentLog, options.agentLog) : AgentLogDefault,
+        ),
         Layer.provide(
           Layer.succeed(SessionExitObserver, {
             beforePublish: options.onSessionExit ?? (() => Effect.void),
