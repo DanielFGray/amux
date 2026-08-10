@@ -98,6 +98,15 @@ function ptyBackend(spec: SessionSpec): Backend {
     cols: spec.cols,
     rows: spec.rows,
     cwd: spec.cwd,
+    // What makes a pane addressable from the inside: an agent CLI running here
+    // can learn which pane it occupies and where to reach the mux. Unlike the
+    // native worker, provider keys are left in place — this is the user's own
+    // shell, and a foreign agent authenticates with the user's own environment.
+    env: {
+      AMUX_PANE_ID: spec.id,
+      ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
+      ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
+    },
   });
   return {
     output: readPty(pty),

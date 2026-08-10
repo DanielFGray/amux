@@ -277,3 +277,63 @@ test("native sessions spawned without rpcPath do not set AMUX_CONTROL_SOCKET", a
   );
   expect(result).toContain("none");
 });
+
+/** A foreign agent CLI in a shell pane can only call back into the mux if the
+ *  pane tells it which pane it is and where the control socket lives. */
+testEffect("pty sessions carry pane identity and the control socket", () =>
+  Effect.gen(function* () {
+    const registry = yield* SessionRegistry;
+    const pty = yield* registry.spawn({
+      id: "addressable-pty",
+      cmd: ["sh", "-c", 'printf "pane=%s socket=%s\\n" "$AMUX_PANE_ID" "$AMUX_CONTROL_SOCKET"'],
+      rpcPath: "/tmp/test-pane-rpc.sock",
+      cols: 80,
+      rows: 24,
+    });
+    const output = yield* Stream.runCollect(pty.output);
+    yield* pty.exit;
+    const text = new TextDecoder().decode(
+      Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
+    );
+    expect(text).toContain("pane=addressable-pty");
+    expect(text).toContain("socket=/tmp/test-pane-rpc.sock");
+  }).pipe(Effect.provide(SessionRegistry.Default)),
+);
+
+testEffect("a pty session without an rpcPath leaves AMUX_CONTROL_SOCKET unset", () =>
+  Effect.gen(function* () {
+    const registry = yield* SessionRegistry;
+    const pty = yield* registry.spawn({
+      id: "socketless-pty",
+      cmd: ["sh", "-c", 'printf "socket=%s\\n" "${AMUX_CONTROL_SOCKET-unset}"'],
+      cols: 80,
+      rows: 24,
+    });
+    const output = yield* Stream.runCollect(pty.output);
+    yield* pty.exit;
+    const text = new TextDecoder().decode(
+      Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
+    );
+    expect(text).toContain("socket=unset");
+  }).pipe(Effect.provide(SessionRegistry.Default)),
+);
+
+/** The pane's own shell, so its environment is extended and never replaced —
+ *  a foreign agent authenticates with the credentials the user already has. */
+testEffect("pane identity extends the inherited environment", () =>
+  Effect.gen(function* () {
+    const registry = yield* SessionRegistry;
+    const pty = yield* registry.spawn({
+      id: "inheriting-pty",
+      cmd: ["sh", "-c", 'printf "home=%s\\n" "${HOME-missing}"'],
+      cols: 80,
+      rows: 24,
+    });
+    const output = yield* Stream.runCollect(pty.output);
+    yield* pty.exit;
+    const text = new TextDecoder().decode(
+      Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
+    );
+    expect(text).toContain(`home=${process.env.HOME}`);
+  }).pipe(Effect.provide(SessionRegistry.Default)),
+);
