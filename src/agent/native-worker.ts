@@ -6,7 +6,7 @@ import { loadConfig } from "../config.ts";
 import { parseModelReference, resolveOptions } from "../options.ts";
 import { controlCallPath } from "../control-client.ts";
 import { COMMAND_DEFS, command } from "../commands.ts";
-import { encodeAttachFrame, type AgentFrame, type AttachFrame } from "../effect/AttachProtocol.ts";
+import { encodeAttachFrame, type AgentEventPayload, type AgentDelta, type AttachFrame } from "../effect/AttachProtocol.ts";
 import { makeAgentWorker } from "./worker.ts";
 
 // --- Native tool name mapping ---
@@ -59,8 +59,12 @@ const agentSize = JSON.parse(process.env.AMUX_AGENT_SIZE ?? '{"cols":80,"rows":2
   cols: number;
   rows: number;
 };
-const emit = (frame: AgentFrame) =>
-  Effect.sync(() => process.stdout.write(encodeAttachFrame(frame)));
+const emit = (frame: AgentEventPayload | AgentDelta) =>
+  Effect.sync(() => process.stdout.write(encodeAttachFrame(
+    frame._tag === "text.delta" || frame._tag.startsWith("tool.params-")
+      ? (frame as AttachFrame)
+      : ({ _tag: "agent.event", event: frame } as AttachFrame),
+  )));
 
 const program = Effect.gen(function* () {
   const modelReference = resolveOptions((yield* Effect.promise(() => loadConfig())).options)["agent.model"];

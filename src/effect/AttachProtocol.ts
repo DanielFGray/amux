@@ -41,6 +41,7 @@ const Resize = S.TaggedStruct("resize", {
  */
 const Sync = S.TaggedStruct("sync", {
   session: S.String,
+  after: S.optional(S.NonNegativeInt),
 });
 
 /**
@@ -79,9 +80,8 @@ const Exit = S.TaggedStruct("exit", {
 });
 
 /**
- * Semantic events emitted by a native agent session. `sequence` orders events
- * within a session; the IDs make turns, tool calls, and approval requests
- * addressable when a client reconnects or renders them asynchronously.
+ * Durable semantic events emitted by a native agent session. `sequence` is
+ * assigned by the daemon when the event is committed to the session log.
  * Payloads remain provider-neutral JSON values rather than rendered terminal
  * content or transport-specific handles.
  */
@@ -94,7 +94,6 @@ const TurnStart = S.TaggedStruct("turn.start", {
 
 const TextDelta = S.TaggedStruct("text.delta", {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   text: S.String,
 });
@@ -117,7 +116,6 @@ const ToolStart = S.TaggedStruct("tool.start", {
  */
 const ToolParamsStart = S.TaggedStruct("tool.params-start", {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   call: S.String,
   tool: S.String,
@@ -130,7 +128,6 @@ const ToolParamsStart = S.TaggedStruct("tool.params-start", {
  */
 const ToolParamsDelta = S.TaggedStruct("tool.params-delta", {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   call: S.String,
   delta: S.String,
@@ -143,7 +140,6 @@ const ToolParamsDelta = S.TaggedStruct("tool.params-delta", {
  */
 const ToolParamsEnd = S.TaggedStruct("tool.params-end", {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   call: S.String,
 });
@@ -187,7 +183,19 @@ const TurnEnd = S.TaggedStruct("turn.end", {
   sequence: S.NonNegativeInt,
   turn: S.String,
   outcome: S.Literal("completed", "interrupted", "failed"),
+  text: S.optional(S.String),
 });
+
+export const AgentEventPayloadSchema = S.Union(
+  S.TaggedStruct("turn.start", { session: S.String, turn: S.String, prompt: S.String }),
+  S.TaggedStruct("tool.start", { session: S.String, turn: S.String, call: S.String, tool: S.String, input: S.Unknown }),
+  S.TaggedStruct("tool.result", { session: S.String, turn: S.String, call: S.String, output: S.Unknown, isError: S.Boolean }),
+  S.TaggedStruct("permission.request", { session: S.String, turn: S.String, request: S.String, tool: S.String, description: S.String, input: S.Unknown }),
+  S.TaggedStruct("permission.response", { session: S.String, turn: S.String, request: S.String, approved: S.Boolean, reason: S.optional(S.String) }),
+  S.TaggedStruct("agent.status", { session: S.String, state: S.Literal("idle", "working", "blocked", "failed", "done") }),
+  S.TaggedStruct("turn.end", { session: S.String, turn: S.String, outcome: S.Literal("completed", "interrupted", "failed"), text: S.optional(S.String) }),
+);
+const AgentEventInputFrame = S.TaggedStruct("agent.event", { event: AgentEventPayloadSchema });
 
 const AgentSteer = S.TaggedStruct("agent.steer", {
   session: S.String,
@@ -211,6 +219,26 @@ const Pong = S.TaggedStruct("pong", {
   nonce: S.String,
 });
 
+export const AgentEvent = S.Union(
+  TurnStart,
+  ToolStart,
+  ToolResult,
+  PermissionRequest,
+  PermissionResponse,
+  AgentStatus,
+  TurnEnd,
+);
+export type AgentEvent = S.Schema.Type<typeof AgentEvent>;
+export type AgentEventPayload = AgentEvent extends infer Event
+  ? Event extends { readonly sequence: number }
+    ? Omit<Event, "sequence">
+    : never
+  : never;
+export const isAgentEventPayload = S.is(AgentEventPayloadSchema);
+
+export const AgentDelta = S.Union(TextDelta, ToolParamsStart, ToolParamsDelta, ToolParamsEnd);
+export type AgentDelta = S.Schema.Type<typeof AgentDelta>;
+
 export const AttachFrame = S.Union(
   Hello,
   Output,
@@ -220,6 +248,7 @@ export const AttachFrame = S.Union(
   Exit,
   Foreground,
   Workspace,
+  AgentEventInputFrame,
   TurnStart,
   TextDelta,
   ToolStart,
@@ -238,20 +267,14 @@ export const AttachFrame = S.Union(
   Pong,
 );
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
-export const AgentFrame = S.Union(
-  TurnStart,
-  TextDelta,
-  ToolStart,
-  ToolParamsStart,
-  ToolParamsDelta,
-  ToolParamsEnd,
-  ToolResult,
-  PermissionRequest,
-  PermissionResponse,
-  AgentStatus,
-  TurnEnd,
-);
-export type AgentFrame = S.Schema.Type<typeof AgentFrame>;
+export type AgentEventInputFrame = S.Schema.Type<typeof AgentEventInputFrame>;
+export const DurableAgentFrame = AgentEvent;
+export type DurableAgentFrame = AgentEvent;
+export const LiveAgentFrame = AgentDelta;
+export type LiveAgentFrame = AgentDelta;
+export const AgentFrame = S.Union(AgentEvent, AgentDelta);
+export type AgentFrame = AgentEvent | AgentDelta;
+export const isDurableAgentFrame = S.is(AgentEvent);
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()(
   "AttachProtocolError",

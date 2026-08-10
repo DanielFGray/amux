@@ -83,7 +83,7 @@ export interface AttachClientShape {
   workspace(): Stream.Stream<WorkspaceSnapshot>;
   input(session: string, data: string | Uint8Array): void;
   resize(session: string, cols: number, rows: number): void;
-  sync(session: string): void;
+  sync(session: string, after?: number): void;
   ping(timeoutMs?: number): Promise<boolean>;
   close(): void;
   onClose?: (error: Error | null) => void;
@@ -207,8 +207,8 @@ class AttachClientConnection {
     this._send({ _tag: "resize", session, cols, rows });
   }
 
-  sync(session: string): void {
-    this._send({ _tag: "sync", session });
+  sync(session: string, after?: number): void {
+    this._send({ _tag: "sync", session, ...(after === undefined ? {} : { after }) });
   }
 
   ping(timeoutMs = 5_000): Promise<boolean> {

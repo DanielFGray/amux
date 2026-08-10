@@ -1,5 +1,5 @@
 import { Effect, Queue, Ref, Schema as S, Scope, Stream } from "effect";
-import { encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
+import { encodeAttachFrame, isDurableAgentFrame, type AttachFrame } from "./AttachProtocol.ts";
 
 const MAX_PENDING_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
@@ -47,8 +47,9 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
           replaying: boolean;
           replayPending: number;
           replayLock: Effect.Semaphore;
-          deferred: QueuedFrame[];
-          deferredBytes: number;
+           deferred: QueuedFrame[];
+           deferredBytes: number;
+           replayed: Set<string>;
           onOverflow?: () => void;
         }
       >
@@ -76,6 +77,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
             replayLock,
             deferred: [],
             deferredBytes: 0,
+            replayed: new Set(),
             onOverflow,
           });
           return [true, next] as const;
@@ -162,6 +164,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
     ) {
       const target = (yield* Ref.get(clients)).get(client);
       if (!target || target.connection !== connection) return;
+      if (isDurableAgentFrame(frame)) target.replayed.add(`${frame.session}\0${frame.sequence}`);
       const item = queuedFrame(frame);
       const size = item.bytes.byteLength;
       if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(item)) {
@@ -180,16 +183,21 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
     const endReplay = Effect.fnUntraced(function* (client: string, connection: string) {
       const target = (yield* Ref.get(clients)).get(client);
       if (!target || target.connection !== connection || !target.replaying) return;
-      const size = target.deferredBytes;
-      const frames = target.deferred;
+       const frames = target.deferred.filter(
+         (item) =>
+           !isDurableAgentFrame(item.frame) ||
+           !target.replayed.has(`${item.frame.session}\0${item.frame.sequence}`),
+       );
+       const size = frames.reduce((total, item) => total + item.bytes.byteLength, 0);
       target.replayPending = Math.max(0, target.replayPending - 1);
       if (target.replayPending > 0) {
         yield* target.replayLock.release(1);
         return;
       }
       target.replaying = false;
-      target.deferred = [];
-      target.deferredBytes = 0;
+       target.deferred = [];
+       target.deferredBytes = 0;
+       target.replayed.clear();
       if (
         target.pendingBytes + size > MAX_PENDING_BYTES ||
         !frames.every((item) => target.queue.unsafeOffer(item))

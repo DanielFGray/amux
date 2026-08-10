@@ -1909,7 +1909,8 @@ function buildApp(
         component: () => (
           <Transcript
             agent={spaces.activeWindow?.focused?.session ?? null}
-            events={session.events}
+            frames={(id) => session.attach.stream(id)}
+            sync={(id) => session.attach.sync(id)}
             width={42}
           />
         ),

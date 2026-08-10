@@ -2,7 +2,8 @@ import { Context, Deferred, Effect, FiberMap, Layer, Match, Ref, Scope, Stream }
 import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
-import { type AgentFrame, type AttachFrame } from "./AttachProtocol.ts";
+import { isAgentEventPayload, type AgentEventPayload, type AgentDelta, type AgentFrame, type AttachFrame } from "./AttachProtocol.ts";
+import { AgentLog, AgentLogDefault } from "./AgentLog.ts";
 import {
   PtyError,
   SessionRegistry,
@@ -93,6 +94,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     const hub = yield* AttachHub;
     const exitObserver = yield* SessionExitObserver;
     const stateObserver = yield* SessionStateObserver;
+    const agentLog = yield* AgentLog;
     const sessions = yield* Ref.make<ReadonlyMap<string, ManagedSession>>(new Map());
     const completions = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<void>>>(new Map());
     const terminations = yield* Ref.make<ReadonlyMap<string, Deferred.Deferred<number | null>>>(
@@ -210,7 +212,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       const disposition = yield* Deferred.make<"active" | "aborted">();
       let phase: "prepared" | "activating" | "active" | "aborted" = "prepared";
       const pending: Uint8Array[] = [];
-      const pendingEvents: AgentFrame[] = [];
+       const pendingEvents: AgentFrame[] = [];
       let lastAgentState: "idle" | "working" | "blocked" | "failed" | "done" | null = null;
       let exitPublished = false;
 
@@ -284,15 +286,16 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           const code = yield* session.exit.pipe(Effect.orElseSucceed(() => null));
           yield* Deferred.succeed(termination, code);
           if ((yield* Deferred.await(disposition)) === "active") {
-            if (spec.kind === "agent" && code !== null) {
-              yield* stateObserver.onState(spec.id, "failed");
-              yield* hub.publish({
-                _tag: "agent.status",
-                session: spec.id,
-                sequence: 0,
-                state: "failed",
-              } satisfies AttachFrame);
-            }
+             if (spec.kind === "agent" && code !== null) {
+               const failed = yield* agentLog.append({
+                 _tag: "agent.status",
+                 session: spec.id,
+                 state: "failed",
+               });
+               yield* stateObserver.onState(spec.id, "failed");
+               yield* stateObserver.onFrame(spec.id, failed);
+               yield* hub.publish(failed);
+             }
             yield* publishExit(code);
           }
           yield* complete;
@@ -316,16 +319,19 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           pumps,
           `events:${spec.id}`,
           session.events.pipe(
-            Stream.runForEach((event) =>
-              Effect.gen(function* () {
-                if (event._tag === "agent.status" && event.state !== lastAgentState) {
-                  lastAgentState = event.state;
-                  yield* stateObserver.onState(spec.id, event.state);
-                }
-                yield* stateObserver.onFrame(spec.id, event);
-                if (phase === "active") yield* hub.publish(event);
-                else pendingEvents.push(event);
-              }),
+             Stream.runForEach((event) =>
+               Effect.gen(function* () {
+                 const committed = isAgentEventPayload(event)
+                   ? yield* agentLog.append(event)
+                   : event;
+                 if (committed._tag === "agent.status" && committed.state !== lastAgentState) {
+                   lastAgentState = committed.state;
+                   yield* stateObserver.onState(spec.id, committed.state);
+                 }
+                 yield* stateObserver.onFrame(spec.id, committed);
+                 if (phase === "active") yield* hub.publish(committed);
+                 else pendingEvents.push(committed);
+               }),
             ),
           ),
         );
@@ -439,7 +445,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       }),
 
       /** Replay an adopted session's screen to the client that asked for it. */
-      sync: Effect.fnUntraced(function* (client: string, connection: string, id: string) {
+       sync: Effect.fnUntraced(function* (client: string, connection: string, id: string, after?: number) {
         const session = (yield* Ref.get(sessions)).get(id);
         // "Bring me up to date" includes which process is in the foreground.
         // The poller only publishes changes, so an adopting client would stay
@@ -447,12 +453,17 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
         // session outliving its client exists for.
         if (session) {
           const fg = yield* Effect.sync(() => session.foreground());
-          yield* hub.publishTo(client, connection, {
+         yield* hub.publishTo(client, connection, {
             _tag: "foreground",
             session: id,
             pgid: fg.pgid,
-            sid: fg.sid,
-          } satisfies AttachFrame);
+           sid: fg.sid,
+         } satisfies AttachFrame);
+        }
+        if (session?.kind === "agent") {
+          const history = yield* agentLog.read(id, after);
+          for (const event of history) yield* hub.publishTo(client, connection, event);
+          return;
         }
         const screen = (yield* Ref.get(replays)).get(id);
         if (!screen) return;
@@ -503,5 +514,8 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     };
   }),
 }) {
-  static Live = SessionSupervisor.Default.pipe(Layer.provide(SessionRegistry.Default));
+  static Live = SessionSupervisor.Default.pipe(
+    Layer.provide(SessionRegistry.Default),
+    Layer.provide(AgentLogDefault),
+  );
 }

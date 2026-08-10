@@ -26,6 +26,116 @@ export type TranscriptBlock =
       readonly state: Extract<AgentFrame, { _tag: "agent.status" }>["state"];
     };
 
+/** Mutable retained transcript; streamed text is accumulated without copying the block list. */
+export class Transcript {
+  #blocks: TranscriptBlock[] = [];
+  #assistant = new Map<string, number>();
+  #assistantChunks = new Map<number, string[]>();
+  #tools = new Map<string, number>();
+  #permissions = new Map<string, number>();
+  #dirty = true;
+  #view: readonly TranscriptBlock[] = [];
+
+  append(frame: AgentFrame): void {
+    switch (frame._tag) {
+      case "turn.start":
+        this.#blocks.push({ kind: "user", turn: frame.turn, text: frame.prompt });
+        break;
+      case "text.delta": {
+        const index = this.#assistant.get(frame.turn);
+        if (index === undefined) {
+          this.#assistant.set(frame.turn, this.#blocks.length);
+          this.#assistantChunks.set(this.#blocks.length, [frame.text]);
+          this.#blocks.push({ kind: "assistant", turn: frame.turn, text: frame.text });
+        } else {
+          this.#assistantChunks.get(index)?.push(frame.text);
+        }
+        break;
+      }
+      case "tool.params-start": {
+        const key = `${frame.turn}\0${frame.call}`;
+        if (!this.#tools.has(key)) {
+          this.#tools.set(key, this.#blocks.length);
+          this.#blocks.push({ kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: "" });
+        }
+        break;
+      }
+      case "tool.params-delta": {
+        const index = this.#tools.get(`${frame.turn}\0${frame.call}`);
+        if (index === undefined) {
+          this.#tools.set(`${frame.turn}\0${frame.call}`, this.#blocks.length);
+          this.#blocks.push({ kind: "tool", turn: frame.turn, call: frame.call, name: "", input: frame.delta });
+        } else {
+          const block = this.#blocks[index];
+          if (block?.kind === "tool" && typeof block.input === "string") this.#blocks[index] = { ...block, input: block.input + frame.delta };
+        }
+        break;
+      }
+      case "tool.params-end":
+        break;
+      case "tool.start": {
+        const key = `${frame.turn}\0${frame.call}`;
+        const index = this.#tools.get(key);
+        if (index === undefined) {
+          this.#tools.set(key, this.#blocks.length);
+          this.#blocks.push({ kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: frame.input });
+        } else {
+          const block = this.#blocks[index];
+          if (block?.kind === "tool" && typeof block.input === "string") this.#blocks[index] = { ...block, name: frame.tool, input: frame.input };
+        }
+        break;
+      }
+      case "tool.result": {
+        const index = this.#tools.get(`${frame.turn}\0${frame.call}`);
+        const block = index === undefined ? undefined : this.#blocks[index];
+        if (index !== undefined && block?.kind === "tool") this.#blocks[index] = { ...block, output: frame.output, isError: frame.isError };
+        break;
+      }
+      case "permission.request":
+        this.#permissions.set(frame.request, this.#blocks.length);
+        this.#blocks.push({ kind: "permission", turn: frame.turn, request: frame.request, tool: frame.tool, description: frame.description, input: frame.input });
+        break;
+      case "permission.response": {
+        const index = this.#permissions.get(frame.request);
+        const block = index === undefined ? undefined : this.#blocks[index];
+        if (index !== undefined && block?.kind === "permission") this.#blocks[index] = { ...block, approved: frame.approved };
+        break;
+      }
+      case "agent.status":
+        this.#blocks.push({ kind: "status", state: frame.state });
+        break;
+      case "turn.end":
+        if (frame.text) {
+          this.#assistant.set(frame.turn, this.#blocks.length);
+          this.#assistantChunks.set(this.#blocks.length, [frame.text]);
+          this.#blocks.push({ kind: "assistant", turn: frame.turn, text: frame.text });
+        }
+        break;
+    }
+    this.#dirty = true;
+  }
+
+  clear(): void {
+    this.#blocks = [];
+    this.#assistant.clear();
+    this.#assistantChunks.clear();
+    this.#tools.clear();
+    this.#permissions.clear();
+    this.#dirty = true;
+  }
+
+  snapshot(): readonly TranscriptBlock[] {
+    if (this.#dirty) {
+      this.#view = this.#blocks.map((block, index) => {
+        const chunks = this.#assistantChunks.get(index);
+        return chunks && block.kind === "assistant" ? { ...block, text: chunks.join("") } : block;
+      });
+      this.#dirty = false;
+    }
+    return this.#view;
+  }
+}
+
 /** Reduce semantic agent frames into stable render blocks. */
 export function appendTranscriptFrame(
   blocks: readonly TranscriptBlock[],

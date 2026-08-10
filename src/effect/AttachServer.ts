@@ -36,6 +36,7 @@ export interface AttachServerOptions {
     client: string,
     connection: string,
     session: string,
+    after?: number,
   ) => Effect.Effect<void, unknown>;
   /**
    * Called once per inbound frame from an accepted client — pings included,
@@ -244,7 +245,7 @@ export const startAttachServer = (
               }
               yield* hub.beginReplay(socket.data.client, socket.data.connection);
               yield* (
-                options.onSync?.(socket.data.client, socket.data.connection, sync.session) ??
+                 options.onSync?.(socket.data.client, socket.data.connection, sync.session, sync.after) ??
                 Effect.void
               ).pipe(Effect.ensuring(hub.endReplay(socket.data.client, socket.data.connection)));
             }),

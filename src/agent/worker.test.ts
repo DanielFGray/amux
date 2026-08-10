@@ -2,7 +2,8 @@ import { test, expect } from "bun:test";
 import { Chat, LanguageModel, Prompt, Response, Tool, Toolkit } from "@effect/ai";
 import { Effect, Schema as S, Stream } from "effect";
 import { makeAgentWorker } from "./worker.ts";
-import type { AgentFrame } from "../effect/AttachProtocol.ts";
+import type { AgentEventPayload, AgentDelta } from "../effect/AttachProtocol.ts";
+type WorkerFrame = AgentEventPayload | AgentDelta;
 
 const waitFor = async (predicate: () => boolean) => {
   for (let i = 0; i < 200 && !predicate(); i++) await Bun.sleep(5);
@@ -43,7 +44,7 @@ const runWorker = <A>(
     readonly close: Effect.Effect<void>;
   }, chat: Chat.Service) => Effect.Effect<A>,
   options?: {
-    readonly emit?: (frame: AgentFrame) => Effect.Effect<void>;
+    readonly emit?: (frame: WorkerFrame) => Effect.Effect<void>;
     readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Record<string, Tool.Any>>>;
   },
 ) =>
@@ -65,7 +66,7 @@ const runWorker = <A>(
 const roles = (prompt: Prompt.Prompt) => prompt.content.map((message) => message.role);
 
 test("drains a prompt and emits semantic frames", async () => {
-  const frames: AgentFrame[] = [];
+  const frames: WorkerFrame[] = [];
   await runWorker(
     scriptedModel(() => [
       { type: "text-start", id: "t1" },
@@ -94,7 +95,7 @@ test("drains a prompt and emits semantic frames", async () => {
 });
 
 test("a tool call is resolved by the toolkit and reported as a result frame", async () => {
-  const frames: AgentFrame[] = [];
+  const frames: WorkerFrame[] = [];
   const capture = Tool.make("pane_capture", {
     description: "capture a pane",
     parameters: { session: S.String },
@@ -175,7 +176,7 @@ test("a second steer carries prior turns as structured messages, not concatenate
 });
 
 test("interrupt ends the turn as interrupted and keeps the partial text", async () => {
-  const frames: AgentFrame[] = [];
+  const frames: WorkerFrame[] = [];
   await runWorker(
     scriptedModel(
       () => [
@@ -200,7 +201,7 @@ test("interrupt ends the turn as interrupted and keeps the partial text", async 
 });
 
 test("streamed tool parameters emit params frames before the call", async () => {
-  const frames: AgentFrame[] = [];
+  const frames: WorkerFrame[] = [];
   await runWorker(
     scriptedModel(() => [
       { type: "tool-params-start", id: "call-1", name: "grep" },
@@ -230,7 +231,7 @@ test("streamed tool parameters emit params frames before the call", async () => 
 });
 
 test("a turn interrupted mid-tool-call leaves no unpaired tool call in history", async () => {
-  const frames: AgentFrame[] = [];
+  const frames: WorkerFrame[] = [];
   const chatHistory = await runWorker(
     scriptedModel(
       () => [

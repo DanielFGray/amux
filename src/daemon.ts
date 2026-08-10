@@ -20,6 +20,7 @@ import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer
 import * as RpcServer from "@effect/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
+import { makeAgentLog } from "./effect/AgentLog.ts";
 import { EventBus } from "./effect/EventBus.ts";
 import { DaemonModel, DaemonModelError, layerDaemonModel } from "./effect/DaemonModel.ts";
 import {
@@ -129,6 +130,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const defaultShell = Option.getOrElse(yield* optionalEnvVar("SHELL"), () => "bash");
   const session = yield* SessionStore;
   const fs = yield* FileSystem.FileSystem;
+  const agentLog = yield* makeAgentLog(paths.root);
 
   yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
 
@@ -357,6 +359,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           eventBus.publish({ _tag: "agent.state", session: sid, state }),
         onAgentFrame: (sid, frame) =>
           eventBus.publish({ _tag: "agent.frame", session: sid, frame }),
+        agentLog,
       }),
     );
     hostRuntime = rt;

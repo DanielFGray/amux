@@ -11,7 +11,14 @@ import {
 } from "effect";
 import { PtyWriteInterrupted, readPty, spawnPty } from "../pty.ts";
 import { isTerminalSize } from "../limits.ts";
-import { decodeAttachFrames, type AgentFrame, type AttachFrame } from "./AttachProtocol.ts";
+import {
+  decodeAttachFrames,
+  isDurableAgentFrame,
+  type AgentEventPayload,
+  AgentDelta,
+  type AgentFrame,
+  type AttachFrame,
+} from "./AttachProtocol.ts";
 
 export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   operation: S.String,
@@ -40,7 +47,7 @@ export interface ManagedSession {
   readonly id: string;
   readonly kind: SessionKind;
   readonly output: Stream.Stream<Uint8Array, PtyError>;
-  readonly events?: Stream.Stream<AgentFrame, PtyError>;
+  readonly events?: Stream.Stream<AgentEventPayload | AgentDelta, PtyError>;
   readonly exit: Effect.Effect<number | null, PtyError>;
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
   readonly steer: (message: string) => Effect.Effect<void, PtyError>;
@@ -81,7 +88,7 @@ type SessionCommand =
  */
 interface Backend {
   readonly output: AsyncIterable<Uint8Array>;
-  readonly events?: AsyncIterable<AgentFrame>;
+  readonly events?: AsyncIterable<AgentEventPayload | AgentDelta>;
   /** Resolves once the backend has fully terminated, with its exit code. */
   readonly wait: Promise<number | null>;
   write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>;
@@ -160,17 +167,7 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
 }
 
 const isAgentFrame = (frame: AttachFrame): frame is AgentFrame =>
-  frame._tag === "turn.start" ||
-  frame._tag === "text.delta" ||
-  frame._tag === "tool.start" ||
-  frame._tag === "tool.params-start" ||
-  frame._tag === "tool.params-delta" ||
-  frame._tag === "tool.params-end" ||
-  frame._tag === "tool.result" ||
-  frame._tag === "permission.request" ||
-  frame._tag === "permission.response" ||
-  frame._tag === "agent.status" ||
-  frame._tag === "turn.end";
+  isDurableAgentFrame(frame) || S.is(AgentDelta)(frame);
 
 /** A native worker is isolated from the daemon and speaks semantic frames on stdout. */
 function agentProcessBackend(spec: SessionSpec): Backend {
@@ -196,7 +193,7 @@ function agentProcessBackend(spec: SessionSpec): Backend {
     stderr: "pipe",
   });
   const output = new AsyncMailbox<Uint8Array>();
-  const events = new AsyncMailbox<AgentFrame>();
+  const events = new AsyncMailbox<AgentEventPayload | AgentDelta>();
   let closed = false;
   let killed = false;
 
@@ -218,6 +215,7 @@ function agentProcessBackend(spec: SessionSpec): Backend {
           for (const frame of decodeAttachFrames(`${line}\n`).frames) {
             if (frame._tag === "output" && frame.session === spec.id)
               output.offer(new Uint8Array(frame.data));
+            else if (frame._tag === "agent.event" && frame.event.session === spec.id) events.offer(frame.event);
             else if (isAgentFrame(frame) && frame.session === spec.id) events.offer(frame);
           }
         }
