@@ -53,7 +53,6 @@ interface Meta {
   readonly group: string;
   readonly target: CommandTarget;
   readonly exposure: CommandExposure;
-  readonly requiresSession?: boolean;
 }
 
 type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.Schema.All, R> = {
@@ -62,7 +61,6 @@ type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.
   readonly group: string;
   readonly target: CommandTarget;
   readonly exposure: CommandExposure;
-  readonly requiresSession: boolean;
   readonly argumentFields: Fields;
   readonly arguments: S.Schema<any, any, unknown>;
   readonly schema: Sch;
@@ -85,7 +83,6 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
   group: meta.group,
   target: meta.target,
   exposure: meta.exposure,
-  requiresSession: meta.requiresSession ?? false,
   argumentFields: fields,
   schema: S.TaggedStruct(tag, fields).annotations({
     identifier: tag,
@@ -391,7 +388,6 @@ const Notify = define(
     group: "notifications",
     target: "session",
     exposure: "agent",
-    requiresSession: true,
   },
 );
 const AgentNew = define(

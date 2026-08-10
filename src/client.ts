@@ -47,6 +47,7 @@ export interface SessionClientShape extends DaemonSession {
     command: Command,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<WorkspaceSnapshot, ControlError | SessionClientError, never>;
+  /** Raw control-protocol Run for commands that do not produce a workspace snapshot. */
   readonly run: (command: Command) => Effect.Effect<unknown, ControlError>;
   readonly backend: () => SessionBackendFactory;
   readonly close: () => void;

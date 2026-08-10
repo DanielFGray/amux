@@ -57,14 +57,14 @@ async function runCommand(
 
 export function resolveCommandSession(
   tag: CommandTag,
-  argv: string[],
+  positionalSession: string | undefined,
   parsed: Record<string, unknown>,
 ): string | null {
   if (typeof parsed.session === "string") return parsed.session;
-  if (argv[0] && !argv[0].startsWith("--") && isSessionId(argv[0])) return argv[0];
+  if (positionalSession) return positionalSession;
   const fromPane = process.env.AMUX_DAEMON_SESSION;
   if (fromPane) return fromPane;
-  return commandDefinition(tag).requiresSession ? null : "default";
+  return commandDefinition(tag).target === "session" ? null : "default";
 }
 
 async function main(): Promise<number> {
@@ -93,7 +93,8 @@ async function main(): Promise<number> {
 
   // Command dispatch
   if (isCommandTag(sub)) {
-    const positionalSession = argv[1] && !argv[1].startsWith("--") && isSessionId(argv[1]);
+    const positionalSession =
+      argv[1] && !argv[1].startsWith("--") && isSessionId(argv[1]) ? argv[1] : undefined;
     const cmdArgs = positionalSession ? argv.slice(2) : argv.slice(1);
     const { parsed, errors } = parseArgs(sub, cmdArgs);
     if (errors.length > 0) {
@@ -104,12 +105,16 @@ async function main(): Promise<number> {
       console.error(`error: could not parse arguments for '${sub}'`);
       return 2;
     }
-    const id = resolveCommandSession(sub, positionalSession ? argv.slice(1) : [], parsed);
+    const id = resolveCommandSession(sub, positionalSession, parsed);
     if (!id) {
       console.error(`error: '${sub}' requires a session id or a managed pane`);
       return 2;
     }
-    return await runCommand(id, sub, parsed);
+    const commandArgs =
+      COMMAND_META[sub]!.target === "session" && parsed.session === undefined
+        ? { ...parsed, session: id }
+        : parsed;
+    return await runCommand(id, sub, commandArgs);
   }
 
   // Session attach (default)
