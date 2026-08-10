@@ -110,11 +110,7 @@ async function main(): Promise<number> {
       console.error(`error: '${sub}' requires a session id or a managed pane`);
       return 2;
     }
-    const commandArgs =
-      COMMAND_META[sub]!.target === "session" && parsed.session === undefined
-        ? { ...parsed, session: id }
-        : parsed;
-    return await runCommand(id, sub, commandArgs);
+    return await runCommand(id, sub, parsed);
   }
 
   // Session attach (default)
