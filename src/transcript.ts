@@ -43,7 +43,7 @@ export function appendTranscriptFrame(
     }
     case "tool.start": {
       const index = blocks.findLastIndex(
-        (block) => block.kind === "tool" && block.call === frame.call,
+        (block) => block.kind === "tool" && block.turn === frame.turn && block.call === frame.call,
       );
       // Replace a block that was built from tool.params-delta (string input).
       if (index >= 0 && blocks[index]!.kind === "tool" && typeof blocks[index]!.input === "string") {
@@ -62,7 +62,7 @@ export function appendTranscriptFrame(
     }
     case "tool.params-start": {
       const index = blocks.findLastIndex(
-        (block) => block.kind === "tool" && block.call === frame.call,
+        (block) => block.kind === "tool" && block.turn === frame.turn && block.call === frame.call,
       );
       if (index >= 0 && blocks[index]!.kind === "tool") {
         // The final tool.start already resolved this call.
@@ -75,7 +75,7 @@ export function appendTranscriptFrame(
     }
     case "tool.params-delta": {
       const index = blocks.findLastIndex(
-        (block) => block.kind === "tool" && block.call === frame.call,
+        (block) => block.kind === "tool" && block.turn === frame.turn && block.call === frame.call,
       );
       if (index >= 0 && blocks[index]!.kind === "tool") {
         const tool = blocks[index]!;
@@ -98,7 +98,7 @@ export function appendTranscriptFrame(
       return blocks;
     case "tool.result": {
       const index = blocks.findLastIndex(
-        (block) => block.kind === "tool" && block.call === frame.call,
+        (block) => block.kind === "tool" && block.turn === frame.turn && block.call === frame.call,
       );
       if (index < 0) return blocks;
       const tool = blocks[index]!;

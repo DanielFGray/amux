@@ -128,3 +128,27 @@ test("tool.params-delta after tool.start does not corrupt the resolved input", (
     { kind: "tool", turn: "t1", call: "c1", name: "grep", input: { ready: true } },
   ]);
 });
+
+test("tool lookups match on both turn and call to prevent cross-turn collisions", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.start", turn: "t1", call: "c1", tool: "grep", input: { a: 1 } }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.result", turn: "t1", call: "c1", output: "ok", isError: false }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.start", turn: "t2", call: "c1", tool: "shell", input: { cmd: "ls" } }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.result", turn: "t2", call: "c1", output: "done", isError: false }),
+  );
+  expect(blocks).toEqual([
+    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: { a: 1 }, output: "ok", isError: false },
+    { kind: "tool", turn: "t2", call: "c1", name: "shell", input: { cmd: "ls" }, output: "done", isError: false },
+  ]);
+});
