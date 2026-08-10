@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Context, Effect, Layer, Schema as S } from "effect";
 import { join } from "node:path";
-import { AgentEvent, type AgentEventPayload, type DurableAgentFrame } from "./AttachProtocol.ts";
+import { AgentEvent, type AgentEventPayload } from "./AttachProtocol.ts";
 import { isSessionId } from "../session.ts";
 
 const Entry = S.Struct({ sequence: S.NonNegativeInt, event: AgentEvent });
@@ -13,20 +13,20 @@ export class AgentLogError extends S.TaggedError<AgentLogError>()("AgentLogError
 }) {}
 
 export interface AgentLogService {
-  readonly append: (frame: AgentEventPayload) => Effect.Effect<DurableAgentFrame, AgentLogError>;
-  readonly read: (session: string, after?: number) => Effect.Effect<readonly DurableAgentFrame[], AgentLogError>;
+  readonly append: (frame: AgentEventPayload) => Effect.Effect<AgentEvent, AgentLogError>;
+  readonly read: (session: string, after?: number) => Effect.Effect<readonly AgentEvent[], AgentLogError>;
   readonly bounds: (session: string) => Effect.Effect<{ readonly oldest: number; readonly latest: number }, AgentLogError>;
 }
 
 export class AgentLog extends Context.Tag("AgentLog")<AgentLog, AgentLogService>() {}
 
 const memoryLog = (): AgentLogService => {
-  const values = new Map<string, DurableAgentFrame[]>();
+  const values = new Map<string, AgentEvent[]>();
   return {
     append: (frame) =>
       Effect.sync(() => {
         const current = values.get(frame.session) ?? [];
-        const event = { ...frame, sequence: current.length } as DurableAgentFrame;
+        const event = { ...frame, sequence: current.length } as AgentEvent;
         current.push(event);
         values.set(frame.session, current);
         return event;
@@ -39,7 +39,7 @@ const memoryLog = (): AgentLogService => {
   };
 };
 
-export const AgentLogDefault = Layer.succeed(AgentLog, memoryLog());
+export const AgentLogDefault = Layer.sync(AgentLog, memoryLog);
 
 /** Durable history for one daemon session's native agent panes. */
 export function makeAgentLog(root: string): Effect.Effect<AgentLogService, never, FileSystem.FileSystem> {
@@ -95,11 +95,11 @@ export function makeAgentLog(root: string): Effect.Effect<AgentLogService, never
         const entry = { sequence, event: { ...frame, sequence } } as Entry;
         current.push(entry);
         yield* write(frame.session, current);
-        return entry.event as DurableAgentFrame;
+        return entry.event as AgentEvent;
       }).pipe(Effect.mapError((error) => (error instanceof AgentLogError ? error : new AgentLogError({ message: String(error) }))));
 
     const read = (session: string, after = -1) =>
-      load(session).pipe(Effect.map((current) => current.filter((entry) => entry.sequence > after).map((entry) => entry.event as DurableAgentFrame)));
+      load(session).pipe(Effect.map((current) => current.filter((entry) => entry.sequence > after).map((entry) => entry.event as AgentEvent)));
 
     const bounds = (session: string) =>
       load(session).pipe(

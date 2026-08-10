@@ -1,5 +1,5 @@
 import { Effect, Queue, Ref, Schema as S, Scope, Stream } from "effect";
-import { encodeAttachFrame, isDurableAgentFrame, type AttachFrame } from "./AttachProtocol.ts";
+import { encodeAttachFrame, isAgentEvent, type AttachFrame } from "./AttachProtocol.ts";
 
 const MAX_PENDING_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
@@ -164,7 +164,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
     ) {
       const target = (yield* Ref.get(clients)).get(client);
       if (!target || target.connection !== connection) return;
-      if (isDurableAgentFrame(frame)) target.replayed.add(`${frame.session}\0${frame.sequence}`);
+      if (isAgentEvent(frame)) target.replayed.add(`${frame.session}\0${frame.sequence}`);
       const item = queuedFrame(frame);
       const size = item.bytes.byteLength;
       if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(item)) {
@@ -185,7 +185,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
       if (!target || target.connection !== connection || !target.replaying) return;
        const frames = target.deferred.filter(
          (item) =>
-           !isDurableAgentFrame(item.frame) ||
+           !isAgentEvent(item.frame) ||
            !target.replayed.has(`${item.frame.session}\0${item.frame.sequence}`),
        );
        const size = frames.reduce((total, item) => total + item.bytes.byteLength, 0);

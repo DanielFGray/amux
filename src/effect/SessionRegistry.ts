@@ -13,7 +13,7 @@ import { PtyWriteInterrupted, readPty, spawnPty } from "../pty.ts";
 import { isTerminalSize } from "../limits.ts";
 import {
   decodeAttachFrames,
-  isDurableAgentFrame,
+  isAgentEvent,
   type AgentEventPayload,
   AgentDelta,
   type AgentFrame,
@@ -167,7 +167,7 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
 }
 
 const isAgentFrame = (frame: AttachFrame): frame is AgentFrame =>
-  isDurableAgentFrame(frame) || S.is(AgentDelta)(frame);
+  isAgentEvent(frame) || S.is(AgentDelta)(frame);
 
 /** A native worker is isolated from the daemon and speaks semantic frames on stdout. */
 function agentProcessBackend(spec: SessionSpec): Backend {

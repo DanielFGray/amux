@@ -85,12 +85,13 @@ const Exit = S.TaggedStruct("exit", {
  * Payloads remain provider-neutral JSON values rather than rendered terminal
  * content or transport-specific handles.
  */
-const TurnStart = S.TaggedStruct("turn.start", {
+const turnStartFields = {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   prompt: S.String,
-});
+};
+const TurnStartPayload = S.TaggedStruct("turn.start", turnStartFields);
+const TurnStart = S.TaggedStruct("turn.start", { ...turnStartFields, sequence: S.NonNegativeInt });
 
 const TextDelta = S.TaggedStruct("text.delta", {
   session: S.String,
@@ -98,14 +99,15 @@ const TextDelta = S.TaggedStruct("text.delta", {
   text: S.String,
 });
 
-const ToolStart = S.TaggedStruct("tool.start", {
+const toolStartFields = {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   call: S.String,
   tool: S.String,
   input: S.Unknown,
-});
+};
+const ToolStartPayload = S.TaggedStruct("tool.start", toolStartFields);
+const ToolStart = S.TaggedStruct("tool.start", { ...toolStartFields, sequence: S.NonNegativeInt });
 
 /**
  * A provider begins streaming a tool argument as incremental JSON fragments.
@@ -144,56 +146,71 @@ const ToolParamsEnd = S.TaggedStruct("tool.params-end", {
   call: S.String,
 });
 
-const ToolResult = S.TaggedStruct("tool.result", {
+const toolResultFields = {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   call: S.String,
   output: S.Unknown,
   isError: S.Boolean,
-});
+};
+const ToolResultPayload = S.TaggedStruct("tool.result", toolResultFields);
+const ToolResult = S.TaggedStruct("tool.result", { ...toolResultFields, sequence: S.NonNegativeInt });
 
-const PermissionRequest = S.TaggedStruct("permission.request", {
+const permissionRequestFields = {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   request: S.String,
   tool: S.String,
   description: S.String,
   input: S.Unknown,
+};
+const PermissionRequestPayload = S.TaggedStruct("permission.request", permissionRequestFields);
+const PermissionRequest = S.TaggedStruct("permission.request", {
+  ...permissionRequestFields,
+  sequence: S.NonNegativeInt,
 });
 
-const PermissionResponse = S.TaggedStruct("permission.response", {
+const permissionResponseFields = {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   request: S.String,
   approved: S.Boolean,
   reason: S.optional(S.String),
+};
+const PermissionResponsePayload = S.TaggedStruct("permission.response", permissionResponseFields);
+const PermissionResponse = S.TaggedStruct("permission.response", {
+  ...permissionResponseFields,
+  sequence: S.NonNegativeInt,
 });
 
-const AgentStatus = S.TaggedStruct("agent.status", {
+const agentStatusFields = {
   session: S.String,
-  sequence: S.NonNegativeInt,
   state: S.Literal("idle", "working", "blocked", "failed", "done"),
+};
+const AgentStatusPayload = S.TaggedStruct("agent.status", agentStatusFields);
+const AgentStatus = S.TaggedStruct("agent.status", {
+  ...agentStatusFields,
+  sequence: S.NonNegativeInt,
 });
 
-const TurnEnd = S.TaggedStruct("turn.end", {
+const turnEndFields = {
   session: S.String,
-  sequence: S.NonNegativeInt,
   turn: S.String,
   outcome: S.Literal("completed", "interrupted", "failed"),
+  // The final text makes a completed turn reconstructible after live deltas expire.
   text: S.optional(S.String),
-});
+};
+const TurnEndPayload = S.TaggedStruct("turn.end", turnEndFields);
+const TurnEnd = S.TaggedStruct("turn.end", { ...turnEndFields, sequence: S.NonNegativeInt });
 
 export const AgentEventPayloadSchema = S.Union(
-  S.TaggedStruct("turn.start", { session: S.String, turn: S.String, prompt: S.String }),
-  S.TaggedStruct("tool.start", { session: S.String, turn: S.String, call: S.String, tool: S.String, input: S.Unknown }),
-  S.TaggedStruct("tool.result", { session: S.String, turn: S.String, call: S.String, output: S.Unknown, isError: S.Boolean }),
-  S.TaggedStruct("permission.request", { session: S.String, turn: S.String, request: S.String, tool: S.String, description: S.String, input: S.Unknown }),
-  S.TaggedStruct("permission.response", { session: S.String, turn: S.String, request: S.String, approved: S.Boolean, reason: S.optional(S.String) }),
-  S.TaggedStruct("agent.status", { session: S.String, state: S.Literal("idle", "working", "blocked", "failed", "done") }),
-  S.TaggedStruct("turn.end", { session: S.String, turn: S.String, outcome: S.Literal("completed", "interrupted", "failed"), text: S.optional(S.String) }),
+  TurnStartPayload,
+  ToolStartPayload,
+  ToolResultPayload,
+  PermissionRequestPayload,
+  PermissionResponsePayload,
+  AgentStatusPayload,
+  TurnEndPayload,
 );
 const AgentEventInputFrame = S.TaggedStruct("agent.event", { event: AgentEventPayloadSchema });
 
@@ -268,13 +285,9 @@ export const AttachFrame = S.Union(
 );
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
 export type AgentEventInputFrame = S.Schema.Type<typeof AgentEventInputFrame>;
-export const DurableAgentFrame = AgentEvent;
-export type DurableAgentFrame = AgentEvent;
-export const LiveAgentFrame = AgentDelta;
-export type LiveAgentFrame = AgentDelta;
 export const AgentFrame = S.Union(AgentEvent, AgentDelta);
 export type AgentFrame = AgentEvent | AgentDelta;
-export const isDurableAgentFrame = S.is(AgentEvent);
+export const isAgentEvent = S.is(AgentEvent);
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()(
   "AttachProtocolError",
