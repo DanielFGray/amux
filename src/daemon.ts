@@ -132,36 +132,53 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
 
-  yield* Effect.gen(function* () {
-    for (;;) {
-      const result = yield* Effect.either(
-        Effect.gen(function* () {
-          const file = yield* fs.open(paths.lock, { flag: "wx", mode: 0o600 });
-          yield* file.write(new TextEncoder().encode(`${process.pid}\n`));
-          return file;
-        }),
-      );
-      if (Either.isRight(result)) return result.right;
-      const error = result.left;
-      if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
-        return yield* Effect.die(error);
-      const content = yield* fs.readFileString(paths.lock).pipe(Effect.orElseSucceed(() => "0"));
-      const owner = Number.parseInt(content, 10);
-      if (processAlive(owner))
-        return yield* new DaemonError({ message: `session '${id}' is already being opened` });
-      const lease = yield* session.readLease(id);
-      if (lease && processAlive(lease.pid))
-        return yield* new DaemonError({
-          message: `session '${id}' is already owned by pid ${lease.pid}`,
-        });
-      yield* fs.remove(paths.lock, { recursive: true });
-    }
-  }).pipe(
-    Effect.mapError((e) =>
-      e instanceof DaemonError ? e : new DaemonError({ message: describe(e) }),
+  // The `wx` open is the atomic claim — only one process can succeed.
+  // Write PID immediately; the narrow window between open and write is
+  // guarded below: an empty or unparseable lock means the claimant is still
+  // writing its PID, so the recovery path retries instead of stealing.
+  //
+  // `acquireRelease` ties the lock removal to successful acquisition: it
+  // only fires when `wx` actually succeeded. Paths that detect a live owner
+  // (both the in-loop "already being opened" and the "already owned by pid"
+  // lease checks) fail the acquire — the release never runs, so a live
+  // daemon's lock file cannot be deleted by a competing process.
+  yield* Effect.acquireRelease(
+    Effect.gen(function* () {
+      for (;;) {
+        const result = yield* Effect.either(
+          Effect.gen(function* () {
+            const file = yield* fs.open(paths.lock, { flag: "wx", mode: 0o600 });
+            yield* file.write(new TextEncoder().encode(`${process.pid}\n`));
+          }),
+        );
+        if (Either.isRight(result)) break;
+        const error = result.left;
+        if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
+          return yield* Effect.die(error);
+        const content = yield* fs.readFileString(paths.lock).pipe(Effect.orElseSucceed(() => ""));
+        const owner = Number.parseInt(content, 10);
+        // Empty or unparseable: a concurrent process opened with wx but
+        // hasn't written its PID yet. Retry — never steal a live claim.
+        if (!Number.isInteger(owner) || owner <= 0) continue;
+        if (processAlive(owner))
+          return yield* new DaemonError({ message: `session '${id}' is already being opened` });
+        const lease = yield* session.readLease(id);
+        if (lease && processAlive(lease.pid))
+          return yield* new DaemonError({
+            message: `session '${id}' is already owned by pid ${lease.pid}`,
+          });
+        yield* fs.remove(paths.lock);
+      }
+    }).pipe(
+      Effect.mapError((e) =>
+        e instanceof DaemonError ? e : new DaemonError({ message: describe(e) }),
+      ),
     ),
+    () => fs.remove(paths.lock).pipe(Effect.ignore),
   );
 
+  // Lock acquired. Verify the lease one more time — the lock could have
+  // been absent while a daemon with a valid lease is still running.
   const existing = yield* session.readLease(id);
   if (existing && processAlive(existing.pid))
     return yield* new DaemonError({
