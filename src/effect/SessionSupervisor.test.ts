@@ -1,11 +1,15 @@
 import { testEffect } from "../test-effect.ts";
-import { Chunk, Deferred, Effect, Fiber, Stream } from "effect";
+import { Chunk, Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AttachHub } from "./AttachHub.ts";
 import { type AttachFrame } from "./AttachProtocol.ts";
+import { AgentLog, AgentLogDefault, makeAgentLog } from "./AgentLog.ts";
 import { SessionSupervisor } from "./SessionSupervisor.ts";
+import { BunFileSystem } from "@effect/platform-bun";
 
 /**
  * Frames up to and including the session's exit.
@@ -50,7 +54,48 @@ testEffect("SessionSupervisor publishes owned PTY output and exit frames", () =>
         .slice(0, -1)
         .every((frame) => frame._tag === "output"),
     ).toBe(true);
-  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
+);
+
+testEffect("a file-backed agent log survives rebuilding the supervisor", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "amux-agent-log-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    const log = yield* makeAgentLog(root);
+    yield* Effect.gen(function* () {
+      const supervisor = yield* SessionSupervisor;
+      const event = {
+        _tag: "agent.event",
+        event: { _tag: "turn.start", session: "persisted-agent", turn: "t1", prompt: "persist" },
+      };
+      const command = [
+        process.execPath,
+        "-e",
+        `process.stdout.write(${JSON.stringify(JSON.stringify(event) + "\n")}); setTimeout(()=>{},30000)`,
+      ];
+      yield* supervisor.spawn({
+        kind: "agent",
+        id: "persisted-agent",
+        cmd: command,
+        cols: 80,
+        rows: 24,
+      });
+      yield* Effect.sleep("1 second");
+      yield* supervisor.kill("persisted-agent");
+    }).pipe(
+      Effect.provide(SessionSupervisor.Live.pipe(Layer.provide(Layer.succeed(AgentLog, log)))),
+      Effect.provide(AttachHub.Default),
+    );
+    expect(yield* log.read("persisted-agent")).toHaveLength(1);
+    const rebuilt = yield* makeAgentLog(root);
+    expect(yield* rebuilt.read("persisted-agent")).toHaveLength(1);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 /**
@@ -121,7 +166,11 @@ testEffect("a supervised session publishes its foreground process, and its chang
     // reports must not be the shell's.
     expect(fg.running.pgid).toBeGreaterThan(0);
     expect(fg.running.pgid).not.toBe(fg.running.sid);
-  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
 );
 
 /**
@@ -143,6 +192,7 @@ testEffect("scope teardown kills a session left running, without an explicit kil
     });
   }).pipe(
     Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
     Effect.provide(AttachHub.Default),
     Effect.timeout("5 seconds"),
     Effect.either,
@@ -171,7 +221,11 @@ testEffect("SessionSupervisor routes input through the managed PTY", () =>
     const frames = yield* untilExit(subscription.frames);
     expect(output(frames)).toContain("got:hi");
     expect(frames.at(-1)).toEqual({ _tag: "exit", session: "input-agent", code: 0 });
-  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
 );
 
 test("concurrent duplicate spawns create one child and one managed session", async () => {
@@ -198,6 +252,7 @@ test("concurrent duplicate spawns create one child and one managed session", asy
       return yield* untilExit(subscription.frames);
     }).pipe(
       Effect.provide(SessionSupervisor.Live),
+      Effect.provide(AgentLogDefault),
       Effect.provide(AttachHub.Default),
       Effect.scoped,
     ),
@@ -218,7 +273,11 @@ testEffect("exit cleanup releases the session and replay terminal for reuse", ()
     expect(yield* supervisor.live).toEqual([]);
     yield* supervisor.spawn({ id: "reusable-agent", cmd: ["true"], cols: 80, rows: 24 });
     expect(yield* supervisor.live).toEqual(["reusable-agent"]);
-  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
 );
 
 testEffect("killing a trapped session publishes one exit and removes it", () =>
@@ -255,7 +314,11 @@ testEffect("killing a trapped session publishes one exit and removes it", () =>
     expect(yield* supervisor.live).toEqual([]);
     expect(frames.filter((frame) => frame._tag === "exit")).toHaveLength(1);
     expect(frames.at(-1)?._tag).toBe("exit");
-  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
 );
 
 testEffect("concurrent supervisor kills publish one exit and permit same-id reuse", () =>
@@ -282,7 +345,11 @@ testEffect("concurrent supervisor kills publish one exit and permit same-id reus
     expect(received.filter((frame) => frame._tag === "exit")).toHaveLength(1);
     expect(yield* supervisor.live).toEqual([]);
     yield* supervisor.spawn({ id: "concurrent-agent", cmd: ["true"], cols: 80, rows: 24 });
-  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
 );
 
 testEffect("a native agent worker is listed and killed through the supervisor", () =>
@@ -307,7 +374,11 @@ testEffect("a native agent worker is listed and killed through the supervisor", 
     expect(yield* supervisor.live).toEqual([]);
     const frames = yield* untilExit(subscription.frames);
     expect(frames.at(-1)).toEqual({ _tag: "exit", session: "worker-agent", code: null });
-  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
 );
 
 testEffect("a crashed native agent reports failure and can be restarted", () =>
@@ -336,5 +407,9 @@ testEffect("a crashed native agent reports failure and can be restarted", () =>
 
     yield* supervisor.spawn({ ...spec, cmd: [process.execPath, "-e", "process.exit(0)"] });
     expect(yield* supervisor.live).toEqual(["crashed-worker"]);
-  }).pipe(Effect.provide(SessionSupervisor.Live), Effect.provide(AttachHub.Default)),
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
 );

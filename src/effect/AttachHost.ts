@@ -185,7 +185,8 @@ const make = (
       // an owner outside it says otherwise.
       onSync:
         options.onSync ??
-         ((client, connection, session, after) => supervisor.sync(client, connection, session, after)),
+        ((client, connection, session, after) =>
+          supervisor.sync(client, connection, session, after)),
       // An input or resize naming a session that is already gone is a benign
       // race — the client had a keystroke in flight when the process exited —
       // not a protocol violation. Logging it keeps the attachment alive;
@@ -232,7 +233,8 @@ const make = (
           session: id,
           data: typeof data === "string" ? new TextEncoder().encode(data) : data,
         }),
-      interrupt: (id, reason) => supervisor.handle({ _tag: "agent.interrupt", session: id, ...(reason ? { reason } : {}) }),
+      interrupt: (id, reason) =>
+        supervisor.handle({ _tag: "agent.interrupt", session: id, ...(reason ? { reason } : {}) }),
       capture: supervisor.capture,
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),
@@ -252,8 +254,10 @@ export const layerAttachHost = (
 ): Layer.Layer<AttachHost, AttachServerError> =>
   Layer.scoped(AttachHost, make(options)).pipe(
     Layer.provide(
-        SessionSupervisor.Live.pipe(
-          Layer.provide(options.agentLog ? Layer.succeed(AgentLog, options.agentLog) : AgentLogDefault),
+      SessionSupervisor.Live.pipe(
+        Layer.provide(
+          options.agentLog ? Layer.succeed(AgentLog, options.agentLog) : AgentLogDefault,
+        ),
         Layer.provide(
           Layer.succeed(SessionExitObserver, {
             beforePublish: options.onSessionExit ?? (() => Effect.void),

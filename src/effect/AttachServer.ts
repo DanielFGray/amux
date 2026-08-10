@@ -245,8 +245,12 @@ export const startAttachServer = (
               }
               yield* hub.beginReplay(socket.data.client, socket.data.connection);
               yield* (
-                 options.onSync?.(socket.data.client, socket.data.connection, sync.session, sync.after) ??
-                Effect.void
+                options.onSync?.(
+                  socket.data.client,
+                  socket.data.connection,
+                  sync.session,
+                  sync.after,
+                ) ?? Effect.void
               ).pipe(Effect.ensuring(hub.endReplay(socket.data.client, socket.data.connection)));
             }),
           ),

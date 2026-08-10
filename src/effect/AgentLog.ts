@@ -14,8 +14,13 @@ export class AgentLogError extends S.TaggedError<AgentLogError>()("AgentLogError
 
 export interface AgentLogService {
   readonly append: (frame: AgentEventPayload) => Effect.Effect<AgentEvent, AgentLogError>;
-  readonly read: (session: string, after?: number) => Effect.Effect<readonly AgentEvent[], AgentLogError>;
-  readonly bounds: (session: string) => Effect.Effect<{ readonly oldest: number; readonly latest: number }, AgentLogError>;
+  readonly read: (
+    session: string,
+    after?: number,
+  ) => Effect.Effect<readonly AgentEvent[], AgentLogError>;
+  readonly bounds: (
+    session: string,
+  ) => Effect.Effect<{ readonly oldest: number; readonly latest: number }, AgentLogError>;
 }
 
 export class AgentLog extends Context.Tag("AgentLog")<AgentLog, AgentLogService>() {}
@@ -31,18 +36,22 @@ const memoryLog = (): AgentLogService => {
         values.set(frame.session, current);
         return event;
       }),
-    read: (session, after = -1) => Effect.sync(() => (values.get(session) ?? []).filter((event) => event.sequence > after)),
-    bounds: (session) => Effect.sync(() => {
-      const current = values.get(session) ?? [];
-      return { oldest: current[0]?.sequence ?? 0, latest: current.at(-1)?.sequence ?? 0 };
-    }),
+    read: (session, after = -1) =>
+      Effect.sync(() => (values.get(session) ?? []).filter((event) => event.sequence > after)),
+    bounds: (session) =>
+      Effect.sync(() => {
+        const current = values.get(session) ?? [];
+        return { oldest: current[0]?.sequence ?? 0, latest: current.at(-1)?.sequence ?? 0 };
+      }),
   };
 };
 
 export const AgentLogDefault = Layer.sync(AgentLog, memoryLog);
 
 /** Durable history for one daemon session's native agent panes. */
-export function makeAgentLog(root: string): Effect.Effect<AgentLogService, never, FileSystem.FileSystem> {
+export function makeAgentLog(
+  root: string,
+): Effect.Effect<AgentLogService, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const entries = new Map<string, Entry[]>();
@@ -51,17 +60,23 @@ export function makeAgentLog(root: string): Effect.Effect<AgentLogService, never
 
     const load = (session: string) =>
       Effect.gen(function* () {
-        if (!isSessionId(session)) return yield* new AgentLogError({ message: `invalid session id ${JSON.stringify(session)}` });
+        if (!isSessionId(session))
+          return yield* new AgentLogError({
+            message: `invalid session id ${JSON.stringify(session)}`,
+          });
         const existing = entries.get(session);
         if (existing) return existing;
-        const text = yield* fs.readFileString(pathFor(session)).pipe(
-          Effect.catchTag("SystemError", (error) =>
-            error.reason === "NotFound" ? Effect.succeed("[]") : Effect.fail(error),
-          ),
-        );
+        const text = yield* fs
+          .readFileString(pathFor(session))
+          .pipe(
+            Effect.catchTag("SystemError", (error) =>
+              error.reason === "NotFound" ? Effect.succeed("[]") : Effect.fail(error),
+            ),
+          );
         const value = yield* Effect.try({
           try: () => JSON.parse(text),
-          catch: (error) => new AgentLogError({ message: error instanceof Error ? error.message : String(error) }),
+          catch: (error) =>
+            new AgentLogError({ message: error instanceof Error ? error.message : String(error) }),
         });
         const decoded = yield* S.decodeUnknown(Entries)(value).pipe(
           Effect.mapError((error) => new AgentLogError({ message: String(error) })),
@@ -69,11 +84,22 @@ export function makeAgentLog(root: string): Effect.Effect<AgentLogService, never
         const mutable = [...decoded];
         entries.set(session, mutable);
         return mutable;
-      }).pipe(Effect.mapError((error) => error instanceof AgentLogError ? error : new AgentLogError({ message: error instanceof Error ? error.message : String(error) })));
+      }).pipe(
+        Effect.mapError((error) =>
+          error instanceof AgentLogError
+            ? error
+            : new AgentLogError({
+                message: error instanceof Error ? error.message : String(error),
+              }),
+        ),
+      );
 
     const write = (session: string, value: readonly Entry[]) =>
       Effect.gen(function* () {
-        if (!isSessionId(session)) return yield* new AgentLogError({ message: `invalid session id ${JSON.stringify(session)}` });
+        if (!isSessionId(session))
+          return yield* new AgentLogError({
+            message: `invalid session id ${JSON.stringify(session)}`,
+          });
         const directory = join(root, "agent-events");
         const file = pathFor(session);
         yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
@@ -84,7 +110,9 @@ export function makeAgentLog(root: string): Effect.Effect<AgentLogService, never
         Effect.mapError((error) =>
           error instanceof AgentLogError
             ? error
-            : new AgentLogError({ message: error instanceof Error ? error.message : String(error) }),
+            : new AgentLogError({
+                message: error instanceof Error ? error.message : String(error),
+              }),
         ),
       );
 
@@ -96,14 +124,27 @@ export function makeAgentLog(root: string): Effect.Effect<AgentLogService, never
         current.push(entry);
         yield* write(frame.session, current);
         return entry.event as AgentEvent;
-      }).pipe(Effect.mapError((error) => (error instanceof AgentLogError ? error : new AgentLogError({ message: String(error) }))));
+      }).pipe(
+        Effect.mapError((error) =>
+          error instanceof AgentLogError ? error : new AgentLogError({ message: String(error) }),
+        ),
+      );
 
     const read = (session: string, after = -1) =>
-      load(session).pipe(Effect.map((current) => current.filter((entry) => entry.sequence > after).map((entry) => entry.event as AgentEvent)));
+      load(session).pipe(
+        Effect.map((current) =>
+          current
+            .filter((entry) => entry.sequence > after)
+            .map((entry) => entry.event as AgentEvent),
+        ),
+      );
 
     const bounds = (session: string) =>
       load(session).pipe(
-        Effect.map((current) => ({ oldest: current[0]?.sequence ?? 0, latest: current.at(-1)?.sequence ?? 0 })),
+        Effect.map((current) => ({
+          oldest: current[0]?.sequence ?? 0,
+          latest: current.at(-1)?.sequence ?? 0,
+        })),
       );
 
     return { append, read, bounds } satisfies AgentLogService;

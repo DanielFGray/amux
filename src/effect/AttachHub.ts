@@ -47,9 +47,9 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
           replaying: boolean;
           replayPending: number;
           replayLock: Effect.Semaphore;
-           deferred: QueuedFrame[];
-           deferredBytes: number;
-           replayed: Set<string>;
+          deferred: QueuedFrame[];
+          deferredBytes: number;
+          replayWatermarks: Map<string, number>;
           onOverflow?: () => void;
         }
       >
@@ -77,7 +77,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
             replayLock,
             deferred: [],
             deferredBytes: 0,
-            replayed: new Set(),
+            replayWatermarks: new Map(),
             onOverflow,
           });
           return [true, next] as const;
@@ -164,7 +164,12 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
     ) {
       const target = (yield* Ref.get(clients)).get(client);
       if (!target || target.connection !== connection) return;
-      if (isAgentEvent(frame)) target.replayed.add(`${frame.session}\0${frame.sequence}`);
+      if (isAgentEvent(frame)) {
+        target.replayWatermarks.set(
+          frame.session,
+          Math.max(target.replayWatermarks.get(frame.session) ?? -1, frame.sequence),
+        );
+      }
       const item = queuedFrame(frame);
       const size = item.bytes.byteLength;
       if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(item)) {
@@ -183,21 +188,22 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
     const endReplay = Effect.fnUntraced(function* (client: string, connection: string) {
       const target = (yield* Ref.get(clients)).get(client);
       if (!target || target.connection !== connection || !target.replaying) return;
-       const frames = target.deferred.filter(
-         (item) =>
-           !isAgentEvent(item.frame) ||
-           !target.replayed.has(`${item.frame.session}\0${item.frame.sequence}`),
-       );
-       const size = frames.reduce((total, item) => total + item.bytes.byteLength, 0);
+      const frames = target.deferred.filter((item) => {
+        if (!isAgentEvent(item.frame)) return true;
+        // sync(after) is the logical cursor; this watermark closes the transport
+        // race when a committed event is both replayed and published live.
+        return item.frame.sequence > (target.replayWatermarks.get(item.frame.session) ?? -1);
+      });
+      const size = frames.reduce((total, item) => total + item.bytes.byteLength, 0);
       target.replayPending = Math.max(0, target.replayPending - 1);
       if (target.replayPending > 0) {
         yield* target.replayLock.release(1);
         return;
       }
       target.replaying = false;
-       target.deferred = [];
-       target.deferredBytes = 0;
-       target.replayed.clear();
+      target.deferred = [];
+      target.deferredBytes = 0;
+      target.replayWatermarks.clear();
       if (
         target.pendingBytes + size > MAX_PENDING_BYTES ||
         !frames.every((item) => target.queue.unsafeOffer(item))
