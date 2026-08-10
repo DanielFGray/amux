@@ -1,77 +1,6 @@
-import { Cause, Deferred, Effect, Fiber, Queue, Scope, Stream } from "effect";
+import type { Chat, LanguageModel, Response, Tool, Toolkit } from "@effect/ai";
+import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
 import { type AgentFrame } from "../effect/AttachProtocol.ts";
-
-export type AgentTurn = {
-  readonly id: string;
-  readonly prompt: string;
-};
-
-export type AgentModelPart =
-  | { readonly _tag: "text"; readonly text: string }
-  | { readonly _tag: "tool"; readonly call: string; readonly tool: string; readonly input: unknown }
-  | {
-      readonly _tag: "tool.params-start";
-      readonly call: string;
-      readonly tool: string;
-    }
-  | {
-      readonly _tag: "tool.params-delta";
-      readonly call: string;
-      readonly delta: string;
-    }
-  | { readonly _tag: "tool.params-end"; readonly call: string }
-  | {
-      readonly _tag: "result";
-      readonly call: string;
-      readonly output: unknown;
-      readonly isError?: boolean;
-    };
-
-export type AgentModel = (input: {
-  readonly prompt: string;
-  readonly signal: AbortSignal;
-}) => Stream.Stream<AgentModelPart, unknown>;
-
-type ConversationMessage = { readonly role: "user" | "assistant"; readonly content: string };
-
-export function buildConversationPrompt(history: readonly ConversationMessage[], prompt: string): string {
-  if (history.length === 0) return prompt;
-  const prefix = history.map((m) => `${m.role}:\n${m.content}`).join("\n\n");
-  return `${prefix}\n\nuser:\n${prompt}`;
-}
-
-export const modelParts = (
-  parts: Iterable<{
-    readonly type: string;
-    readonly delta?: string;
-    readonly id?: string;
-    readonly name?: string;
-    readonly params?: unknown;
-    readonly result?: unknown;
-    readonly isError?: boolean;
-  }>,
-): AgentModelPart[] => {
-  const result: AgentModelPart[] = [];
-  for (const part of parts) {
-    if (part.type === "text-delta" && part.delta) result.push({ _tag: "text", text: part.delta });
-    else if (part.type === "tool-params-start" && part.id && part.name)
-      result.push({ _tag: "tool.params-start", call: part.id, tool: part.name });
-    else if (part.type === "tool-params-delta" && part.id && part.delta)
-      result.push({ _tag: "tool.params-delta", call: part.id, delta: part.delta });
-    else if (part.type === "tool-params-end" && part.id)
-      result.push({ _tag: "tool.params-end", call: part.id });
-    else if (part.type === "tool-call" && part.id && part.name)
-      result.push({ _tag: "tool", call: part.id, tool: part.name, input: part.params });
-    else if (part.type === "tool-result" && part.id)
-      result.push({
-        _tag: "result",
-        call: part.id,
-        output: part.result,
-        isError: part.isError,
-      });
-  }
-  return result;
-};
 
 export type AgentWorker = {
   readonly steer: (message: string) => Effect.Effect<void>;
@@ -124,207 +53,147 @@ type AgentFramePayload =
     };
 
 /**
- * Run one native-agent session. The model is injected so the scheduler can be
- * tested without credentials; the process entry point supplies the provider.
+ * Project one provider stream part onto the wire frame the mux already speaks.
+ *
+ * Parts with no transcript meaning (reasoning, sources, finish metadata) return
+ * undefined rather than being forced into a frame.
  */
-export function makeAgentWorker(options: {
+export function frameForPart(
+  turn: string,
+  part: Response.StreamPart<Record<string, Tool.Any>>,
+  toolName: (name: string) => string,
+): AgentFramePayload | undefined {
+  switch (part.type) {
+    case "text-delta":
+      return { _tag: "text.delta", turn, text: part.delta };
+    case "tool-params-start":
+      return { _tag: "tool.params-start", turn, call: part.id, tool: toolName(part.name) };
+    case "tool-params-delta":
+      return { _tag: "tool.params-delta", turn, call: part.id, delta: part.delta };
+    case "tool-params-end":
+      return { _tag: "tool.params-end", turn, call: part.id };
+    case "tool-call":
+      return {
+        _tag: "tool.start",
+        turn,
+        call: part.id,
+        tool: toolName(part.name),
+        input: part.params,
+      };
+    case "tool-result":
+      return {
+        _tag: "tool.result",
+        turn,
+        call: part.id,
+        output: part.result,
+        isError: part.isFailure,
+      };
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Run one native-agent session.
+ *
+ * The conversation lives in the injected `Chat`, so history, tool-call/result
+ * pairing and provider message construction all belong to `@effect/ai`. What is
+ * ours is the scheduler above it: a mailbox, one turn at a time, and
+ * interruption that leaves the transcript intact.
+ */
+export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options: {
   readonly session: string;
-  readonly model: AgentModel;
-  readonly executeTool?: (tool: string, input: unknown) => Effect.Effect<unknown, unknown>;
+  readonly chat: Chat.Service;
   readonly emit: (frame: AgentFrame) => Effect.Effect<void>;
-}): Effect.Effect<AgentWorker, never, Scope.Scope> {
+  readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Tools>>;
+  /** Provider-safe tool names map back to command tags for the transcript. */
+  readonly toolName?: (name: string) => string;
+}): Effect.Effect<
+  AgentWorker,
+  never,
+  Scope.Scope | LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
+> {
   return Effect.gen(function* () {
     const inbox = yield* Queue.unbounded<string>();
-    let sequence = 0;
-    let turn = 0;
-    let active: Fiber.RuntimeFiber<void, unknown> | undefined;
-    let activeController: AbortController | undefined;
-    let activeInterrupt: Deferred.Deferred<void> | undefined;
-    let interrupted = false;
-    let activeTurn: string | undefined;
-    const conversation: ConversationMessage[] = [];
+    const sequences = yield* Ref.make(0);
+    const turns = yield* Ref.make(0);
+    const running = yield* FiberHandle.make<void, never>();
+    const toolName = options.toolName ?? ((name: string) => name);
 
     const emit = (frame: AgentFramePayload) =>
-      options.emit({ ...frame, session: options.session, sequence: sequence++ } as AgentFrame);
-
-    const runTurn = (prompt: string) =>
-      Effect.gen(function* () {
-        const id = `turn-${++turn}`;
-        activeTurn = id;
-        const controller = new AbortController();
-        activeController = controller;
-        const interrupt = yield* Deferred.make<void>();
-        activeInterrupt = interrupt;
-        interrupted = false;
-        const userPrompt = prompt;
-        yield* emit({ _tag: "agent.status", state: "working" });
-        yield* emit({ _tag: "turn.start", turn: id, prompt });
-        let nextPrompt =
-          conversation.length > 0 ? buildConversationPrompt(conversation, prompt) : prompt;
-        let continued = true;
-        let assistantText = "";
-        const toolCalls: string[] = [];
-        const pendingToolCalls = new Map<string, { tool: string; params: string }>();
-        const pushPartialContext = () => {
-          if (!assistantText && toolCalls.length === 0 && pendingToolCalls.size === 0) return;
-          const parts: string[] = [];
-          if (assistantText) parts.push(assistantText);
-          for (const [, { tool, params }] of pendingToolCalls) {
-            parts.push(`[tool call in progress: ${tool}(${params})]`);
-          }
-          if (toolCalls.length > 0) parts.push(`[tool calls: ${toolCalls.join(", ")}]`);
-          const content = parts.join("\n");
-          conversation.push({ role: "user", content: userPrompt });
-          conversation.push({ role: "assistant", content });
-        };
-        while (continued) {
-          continued = false;
-          const toolResults: string[] = [];
-          const stream = options.model({ prompt: nextPrompt, signal: controller.signal });
-          const exit = yield* stream.pipe(
-            Stream.interruptWhen(Deferred.await(interrupt)),
-            Stream.runForEach((part) =>
-              Effect.gen(function* () {
-                if (part._tag === "text") {
-                  assistantText += part.text;
-                  yield* emit({ _tag: "text.delta", turn: id, text: part.text });
-                } else if (part._tag === "tool.params-start") {
-                  pendingToolCalls.set(part.call, { tool: part.tool, params: "" });
-                  yield* emit({
-                    _tag: "tool.params-start",
-                    turn: id,
-                    call: part.call,
-                    tool: part.tool,
-                  });
-                } else if (part._tag === "tool.params-delta") {
-                  const pending = pendingToolCalls.get(part.call);
-                  if (pending) pending.params += part.delta;
-                  else pendingToolCalls.set(part.call, { tool: "", params: part.delta });
-                  yield* emit({
-                    _tag: "tool.params-delta",
-                    turn: id,
-                    call: part.call,
-                    delta: part.delta,
-                  });
-                } else if (part._tag === "tool.params-end") {
-                  yield* emit({
-                    _tag: "tool.params-end",
-                    turn: id,
-                    call: part.call,
-                  });
-                } else if (part._tag === "tool") {
-                  pendingToolCalls.delete(part.call);
-                  toolCalls.push(`${part.tool}(${JSON.stringify(part.input)})`);
-                  yield* emit({
-                    _tag: "tool.start",
-                    turn: id,
-                    call: part.call,
-                    tool: part.tool,
-                    input: part.input,
-                  });
-                  if (options.executeTool) {
-                    const result = yield* options.executeTool(part.tool, part.input).pipe(
-                      Effect.map((output) => ({ output, isError: false })),
-                      Effect.catchAll((error) =>
-                        Effect.succeed({ output: String(error), isError: true }),
-                      ),
-                    );
-                    yield* emit({
-                      _tag: "tool.result",
-                      turn: id,
-                      call: part.call,
-                      output: result.output,
-                      isError: result.isError,
-                    });
-                    toolResults.push(JSON.stringify({ call: part.call, output: result.output }));
-                    continued = true;
-                  }
-                } else {
-                  yield* emit({
-                    _tag: "tool.result",
-                    turn: id,
-                    call: part.call,
-                    output: part.output,
-                    isError: part.isError ?? false,
-                  });
-                }
-              }),
-            ),
-            Effect.exit,
-          );
-          if (exit._tag === "Failure") {
-            if (interrupted || Cause.isInterruptedOnly(exit.cause)) {
-              controller.abort();
-              pushPartialContext();
-              yield* emit({ _tag: "turn.end", turn: id, outcome: "interrupted" });
-              yield* emit({ _tag: "agent.status", state: "idle" });
-              activeController = undefined;
-              activeInterrupt = undefined;
-              activeTurn = undefined;
-              return;
-            }
-            yield* emit({ _tag: "turn.end", turn: id, outcome: "failed" });
-            yield* emit({ _tag: "agent.status", state: "failed" });
-            activeController = undefined;
-            activeInterrupt = undefined;
-            activeTurn = undefined;
-            return;
-          }
-          if (continued) nextPrompt = `${prompt}\n\nTool results:\n${toolResults.join("\n")}`;
-        }
-        if (interrupted) {
-          controller.abort();
-          pushPartialContext();
-          yield* emit({ _tag: "turn.end", turn: id, outcome: "interrupted" });
-          yield* emit({ _tag: "agent.status", state: "idle" });
-          activeController = undefined;
-          activeInterrupt = undefined;
-          activeTurn = undefined;
-          return;
-        }
-        if (toolCalls.length > 0)
-          assistantText += `\n[tool calls: ${toolCalls.join(", ")}]`;
-        conversation.push({ role: "user", content: userPrompt });
-        conversation.push({ role: "assistant", content: assistantText });
-        yield* emit({ _tag: "turn.end", turn: id, outcome: "completed" });
-        yield* emit({ _tag: "agent.status", state: "idle" });
-        activeController = undefined;
-        activeInterrupt = undefined;
-        activeTurn = undefined;
-      }).pipe(
-        Effect.catchAllCause((cause) =>
-          Cause.isInterruptedOnly(cause) && activeTurn
-            ? Effect.gen(function* () {
-                yield* emit({ _tag: "turn.end", turn: activeTurn!, outcome: "interrupted" });
-                yield* emit({ _tag: "agent.status", state: "idle" });
-                activeController = undefined;
-              })
-              : Effect.failCause(cause),
+      Ref.getAndUpdate(sequences, (n) => n + 1).pipe(
+        Effect.flatMap((sequence) =>
+          options.emit({ ...frame, session: options.session, sequence } as AgentFrame),
         ),
       );
 
+    /** Terminal frames for every exit, so no path leaves the pane mid-turn. */
+    const settle = (turn: string, exit: Exit.Exit<void, unknown>) => {
+      const outcome = Exit.isSuccess(exit)
+        ? ("completed" as const)
+        : Cause.isInterruptedOnly(exit.cause)
+          ? ("interrupted" as const)
+          : ("failed" as const);
+      return emit({ _tag: "turn.end", turn, outcome }).pipe(
+        Effect.andThen(
+          emit({ _tag: "agent.status", state: outcome === "failed" ? "failed" : "idle" }),
+        ),
+      );
+    };
+
+    const runTurn = (prompt: string) =>
+      Ref.updateAndGet(turns, (n) => n + 1).pipe(
+        Effect.flatMap((n) => {
+          const turn = `turn-${n}`;
+          return emit({ _tag: "agent.status", state: "working" }).pipe(
+            Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
+            Effect.andThen(
+              options.chat
+                .streamText(
+                  options.toolkit ? { prompt, toolkit: options.toolkit } : { prompt },
+                )
+                .pipe(
+                  Stream.runForEach((part) => {
+                    const frame = frameForPart(
+                      turn,
+                      part as Response.StreamPart<Record<string, Tool.Any>>,
+                      toolName,
+                    );
+                    return frame ? emit(frame) : Effect.void;
+                  }),
+                ),
+            ),
+            Effect.onExit((exit) => settle(turn, exit)),
+            // settle has already reported the failure as turn.end{failed}, so the
+            // transcript is this turn's error channel and there is nothing left to
+            // raise. A provider 500 ends a turn, never the session. catchAll takes
+            // only typed failures: interruption still unwinds, defects still crash.
+            Effect.catchAll(() => Effect.void),
+          );
+        }),
+      );
+
+    // One turn at a time: a steer that lands mid-turn queues the next prompt
+    // rather than racing the running one. An interrupted turn must not end the
+    // session, so the join failure is absorbed here.
     const drain = Effect.forever(
       Queue.take(inbox).pipe(
-        Effect.flatMap((prompt) => {
-          return Effect.gen(function* () {
-            active = yield* Effect.fork(runTurn(prompt));
-            yield* Fiber.join(active);
-            active = undefined;
-          });
-        }),
+        Effect.flatMap((prompt) =>
+          FiberHandle.run(running, runTurn(prompt)).pipe(
+            Effect.flatMap(Fiber.join),
+            Effect.catchAllCause(() => Effect.void),
+          ),
+        ),
       ),
     );
     const drainFiber = yield* Effect.forkScoped(drain);
 
     return {
       steer: (message) => Queue.offer(inbox, message).pipe(Effect.asVoid),
-      interrupt: () =>
-        Effect.gen(function* () {
-          interrupted = true;
-          activeController?.abort();
-          if (activeInterrupt) yield* Deferred.succeed(activeInterrupt, void 0);
-        }),
-      close: Fiber.interrupt(drainFiber),
+      // Interruption is Effect's, so the provider request, the stream and every
+      // finalizer unwind together; there is no abort flag to keep in sync.
+      interrupt: () => FiberHandle.clear(running),
+      close: Fiber.interrupt(drainFiber).pipe(Effect.asVoid),
     } satisfies AgentWorker;
   });
 }
