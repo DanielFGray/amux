@@ -158,33 +158,25 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   // runs, so a live daemon's lock file cannot be deleted by a competing
   // process.
   //
-  // An empty or unparseable lock means a concurrent process opened `wx`
-  // but hasn't written its PID yet.  `waitForLockContent` polls the file
-  // every 10ms for up to 500ms.  Rationale: a write-after-open takes
-  // <10µs; 500ms is > 1000× safety margin.  If the PID still isn't
-  // written, the process died and the lock is stale — recovered just
-  // like any other stale lock.
-  //
-  // A lock with a dead PID is a stale lock from a previous daemon that
-  // crashed.  It is removed immediately and the outer `for(;;)` retries
-  // the `wx` open without any delay — no contention budget spent here.
+  // An empty or unparseable lock means a concurrent process opened `wx` but
+  // has not written its PID yet, so `lockOwner` waits one out.  A
+  // write-after-open takes <10µs; 500ms is a 1000× margin, and a lock still
+  // unwritten past it belongs to a process that died in that window.  The
+  // retry only delays a lock that is actually unwritten — a lock naming a
+  // dead owner is read once and recovered with no wait.
   yield* Effect.acquireRelease(
     Effect.gen(function* () {
-      /** Poll the lock file for a valid PID every 10ms, up to 500ms. */
-      const waitForLockContent = (): Effect.Effect<string, LockContended> =>
-        Effect.gen(function* () {
-          const content = yield* fs
-            .readFileString(paths.lock)
-            .pipe(Effect.orElseSucceed(() => ""));
-          const owner = Number.parseInt(content, 10);
-          if (Number.isInteger(owner) && owner > 0) return content;
-          return yield* new LockContended();
-        }).pipe(
-          Effect.retry({
-            while: (error) => error._tag === "LockContended",
-            schedule: Schedule.spaced("10 millis").pipe(Schedule.upTo("500 millis")),
-          }),
-        );
+      const lockOwner = Effect.gen(function* () {
+        const content = yield* fs.readFileString(paths.lock).pipe(Effect.orElseSucceed(() => ""));
+        const owner = Number.parseInt(content, 10);
+        if (Number.isInteger(owner) && owner > 0) return owner;
+        return yield* new LockContended();
+      }).pipe(
+        Effect.retry({
+          while: (error) => error._tag === "LockContended",
+          schedule: Schedule.spaced("10 millis").pipe(Schedule.upTo("500 millis")),
+        }),
+      );
 
       for (;;) {
         const result = yield* Effect.either(
@@ -199,30 +191,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
           return yield* Effect.die(error);
 
-        const content = yield* fs
-          .readFileString(paths.lock)
-          .pipe(Effect.orElseSucceed(() => ""));
-        const owner = Number.parseInt(content, 10);
-
-        if (!Number.isInteger(owner) || owner <= 0) {
-          // Mid-write: poll for the PID with a time bound.
-          const waited = yield* Effect.either(waitForLockContent());
-          if (Either.isRight(waited)) {
-            const pid = Number.parseInt(waited.right, 10);
-            if (processAlive(pid))
-              return yield* new DaemonError({
-                message: `session '${id}' is already being opened`,
-              });
-            // PID appeared but process is dead — stale lock, recover.
-            yield* fs.remove(paths.lock);
-            continue;
-          }
-          // 500ms expired, still empty.  Claimant died; recover.
+        const owner = yield* Effect.either(lockOwner);
+        if (Either.isLeft(owner)) {
+          // Never written: the claimant died between the open and the write.
           yield* fs.remove(paths.lock).pipe(Effect.ignore);
           continue;
         }
-
-        if (processAlive(owner))
+        if (processAlive(owner.right))
           return yield* new DaemonError({
             message: `session '${id}' is already being opened`,
           });
@@ -233,8 +208,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             message: `session '${id}' is already owned by pid ${lease.pid}`,
           });
 
-        // Dead PID — stale lock from a crashed daemon.  Recover and the
-        // outer `for(;;)` will retry the `wx` open immediately.
+        // A dead owner's lock is stale; recover it and reclaim immediately.
         yield* fs.remove(paths.lock);
       }
     }).pipe(
