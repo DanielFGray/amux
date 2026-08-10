@@ -1172,6 +1172,11 @@ function buildApp(
       }),
     "agent.steer": (value) => runPanelCommand(value),
     "agent.interrupt": (value) => runPanelCommand(value),
+    notify: (value) =>
+      session.run(value).pipe(
+        Effect.asVoid,
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      ),
     "session.kill": (value) => runPanelCommand(value),
     "session.restart": (value) => runPanelCommand(value),
     "session.reveal": (value) => runPanelCommand(value),

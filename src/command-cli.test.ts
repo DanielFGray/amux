@@ -59,6 +59,15 @@ test("parseArgs handles optional command args with all flags", () => {
   expect(result.errors).toEqual([]);
 });
 
+test("parseArgs accepts separated notify flags", () => {
+  expect(
+    parseArgs("notify", ["--title", "Build", "--body", "Finished", "--session", "work"]),
+  ).toEqual({
+    parsed: { title: "Build", body: "Finished", session: "work" },
+    errors: [],
+  });
+});
+
 test("fieldNames returns all fields for a command", () => {
   const fields = fieldNames("window.rename");
   expect(fields.map((f) => f.name)).toContain("space");

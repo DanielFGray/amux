@@ -78,16 +78,21 @@ export function parseArgs(
   const requiredFields = fields.filter((f) => f.required);
   let positionalIdx = 0;
 
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
     const flagMatch = arg.match(/^--([a-zA-Z][a-zA-Z0-9_-]*)(?:=(.*))?$/);
     if (flagMatch) {
       const name = flagMatch[1]!;
-      const value = flagMatch[2];
       const field = fields.find((f) => f.name === name);
       if (!field) {
         errors.push(`unknown flag: --${name}`);
         continue;
       }
+      const separateValue =
+        flagMatch[2] === undefined && field.kind !== "boolean" && !argv[i + 1]?.startsWith("--")
+          ? argv[++i]
+          : undefined;
+      const value = flagMatch[2] ?? separateValue;
       if (consumed.has(name)) {
         errors.push(`duplicate flag: --${name}`);
         continue;

@@ -4,6 +4,11 @@ const AgentStateChanged = S.TaggedStruct("agent.state", {
   session: S.String,
   state: S.Literal("idle", "working", "blocked", "failed", "detached", "done"),
 });
+const Notification = S.TaggedStruct("notification", {
+  session: S.String,
+  title: S.String,
+  body: S.String,
+});
 const EventsReady = S.TaggedStruct("events.ready", {});
 const CredentialChanged = S.TaggedStruct("credential.changed", { integration: S.String });
 const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
@@ -14,10 +19,16 @@ const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
  * Workspace changes reach clients as a whole snapshot and agent output reaches
  * them as a replayable transcript, both over the attach hub; re-announcing
  * either one here would be the same fact on two channels. What is left is
- * out-of-band: agent liveness, and configuration that changes underneath a
- * client that never asked for it.
+ * out-of-band: agent liveness, a notification an agent chose to send, and
+ * configuration that changes underneath a client that never asked for it.
  */
-const EventPayload = S.Union(AgentStateChanged, EventsReady, CredentialChanged, ModelsRefreshed);
+const EventPayload = S.Union(
+  AgentStateChanged,
+  Notification,
+  EventsReady,
+  CredentialChanged,
+  ModelsRefreshed,
+);
 export const DaemonEvent = S.Struct({
   sequence: S.NonNegativeInt,
   event: EventPayload,

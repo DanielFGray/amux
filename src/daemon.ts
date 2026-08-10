@@ -727,6 +727,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               if (!value.session) return yield* controlFail("pane.capture requires a session id");
               return { result: yield* requireHost().capture(value.session) };
             }
+            if (value._tag === "notify") {
+              yield* eventBus.publish({
+                _tag: "notification",
+                session: id,
+                title: value.title,
+                body: value.body,
+              });
+              return {};
+            }
             return yield* controlFail(`session command '${value._tag}' is not implemented for run`);
           }
           return yield* controlFail("session commands are not yet implemented for run");

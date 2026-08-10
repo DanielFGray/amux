@@ -380,6 +380,16 @@ const AgentInterrupt = define(
   { ...SessionTarget, reason: S.optional(S.String) },
   { desc: "interrupt an agent turn", group: "agents", target: "workspace", exposure: "human" },
 );
+const Notify = define(
+  "notify",
+  { title: S.String, body: S.String, ...SessionTarget },
+  {
+    desc: "send a notification to a session",
+    group: "notifications",
+    target: "session",
+    exposure: "agent",
+  },
+);
 const AgentNew = define(
   "agent.new",
   { prompt: S.String },
@@ -544,6 +554,7 @@ export const COMMAND_DEFS = [
   AgentNew,
   AgentSteer,
   AgentInterrupt,
+  Notify,
   SessionKill,
   SessionRestart,
   SessionReveal,
@@ -753,6 +764,7 @@ export const Commands = {
   WindowNextLayout,
   WindowSelectLayout,
   WindowSynchronize,
+  Notify,
   SessionKill,
   SessionRestart,
   SessionReveal,

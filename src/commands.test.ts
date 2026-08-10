@@ -117,6 +117,14 @@ test("the buffer verbs carry their stack arguments over the wire", () => {
   expect(rejects({ _tag: "buffer.set" })).toBe(true);
 });
 
+test("notify carries its title, body, and optional session over the wire", () => {
+  expect(
+    Effect.runSync(
+      decodeCommand({ _tag: "notify", title: "Build", body: "Finished", session: "work" }),
+    ),
+  ).toEqual(command("notify", { title: "Build", body: "Finished", session: "work" }));
+});
+
 /**
  * Target is what determines whether a command can be invoked remotely and
  * whether it mutates the daemon-owned workspace. Exposure controls whether

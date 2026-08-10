@@ -13,7 +13,7 @@ import { Effect, Schema } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { SessionStore, isSessionId } from "./session.ts";
 import { controlCall } from "./control-client.ts";
-import { COMMAND_META, Command, type CommandTag } from "./commands.ts";
+import { commandDefinition, COMMAND_META, Command, type CommandTag } from "./commands.ts";
 import { parseArgs, generateHelp } from "./command-cli.ts";
 
 function isCommandTag(s: string): s is CommandTag {
@@ -26,12 +26,11 @@ const runRpc = (id: string, value: Command) =>
     Effect.provide(BunFileSystem.layer),
   );
 
-async function runCommand(id: string, tag: CommandTag, argv: string[]): Promise<number> {
-  const { parsed, errors } = parseArgs(tag, argv);
-  if (errors.length > 0) {
-    console.error(`error: ${errors.join("\n  ")}`);
-    return 2;
-  }
+async function runCommand(
+  id: string,
+  tag: CommandTag,
+  parsed: Record<string, unknown>,
+): Promise<number> {
   if (!parsed) {
     console.error(`error: could not parse arguments for '${tag}'`);
     return 2;
@@ -54,6 +53,18 @@ async function runCommand(id: string, tag: CommandTag, argv: string[]): Promise<
     console.error(`error: ${String(error)}`);
     return 1;
   }
+}
+
+export function resolveCommandSession(
+  tag: CommandTag,
+  positionalSession: string | undefined,
+  parsed: Record<string, unknown>,
+): string | null {
+  if (typeof parsed.session === "string") return parsed.session;
+  if (positionalSession) return positionalSession;
+  const fromPane = process.env.AMUX_DAEMON_SESSION;
+  if (fromPane) return fromPane;
+  return commandDefinition(tag).target === "session" ? null : "default";
 }
 
 async function main(): Promise<number> {
@@ -82,9 +93,24 @@ async function main(): Promise<number> {
 
   // Command dispatch
   if (isCommandTag(sub)) {
-    const id = argv[1] && isSessionId(argv[1]) ? argv[1] : "default";
-    const cmdArgs = argv[1] && isSessionId(argv[1]) ? argv.slice(2) : argv.slice(1);
-    return await runCommand(id, sub as CommandTag, cmdArgs);
+    const positionalSession =
+      argv[1] && !argv[1].startsWith("--") && isSessionId(argv[1]) ? argv[1] : undefined;
+    const cmdArgs = positionalSession ? argv.slice(2) : argv.slice(1);
+    const { parsed, errors } = parseArgs(sub, cmdArgs);
+    if (errors.length > 0) {
+      console.error(`error: ${errors.join("\n  ")}`);
+      return 2;
+    }
+    if (!parsed) {
+      console.error(`error: could not parse arguments for '${sub}'`);
+      return 2;
+    }
+    const id = resolveCommandSession(sub, positionalSession, parsed);
+    if (!id) {
+      console.error(`error: '${sub}' requires a session id or a managed pane`);
+      return 2;
+    }
+    return await runCommand(id, sub, parsed);
   }
 
   // Session attach (default)
