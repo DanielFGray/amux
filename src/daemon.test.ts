@@ -144,28 +144,38 @@ test("a dead lease and stale lock are recovered without deleting state", async (
   await S(d);
 });
 
-test("an empty lock is not stolen — the daemon retries until the claimant finishes writing", async () => {
+test("a permanently empty lock is recovered after the 500ms retry bound", async () => {
   const e = await env();
-  const p = await run(sessionPaths("contended"), e);
+  const p = await run(sessionPaths("stale-empty"), e);
   await mkdir(p.root, { recursive: true });
-  // Simulate a concurrent process that opened the lock with wx but hasn't
-  // written its PID yet: the lock file exists but is empty.
   await writeFile(p.lock, "");
 
-  const opening = (async () => {
-    const d = await open("contended", e);
-    return d;
-  })();
+  // The lock is empty and nobody will ever write a PID.
+  // The daemon must resolve — not hang — within the bounded retry window.
+  const started = Date.now();
+  const daemon = await open("stale-empty", e);
+  const elapsed = Date.now() - started;
 
-  // The daemon should retry, not immediately error or steal the lock.
-  await Bun.sleep(100);
-  await expect(Promise.race([opening, Promise.resolve("retrying")])).resolves.toBe("retrying");
-
-  // Remove the contended lock so the daemon can acquire it.
-  await rm(p.lock);
-  const daemon = await opening;
-  expect(st(daemon).id).toBe("contended");
+  // Recovery must happen within the 500ms bound plus overhead.
+  expect(elapsed).toBeLessThan(750);
+  expect(st(daemon).id).toBe("stale-empty");
   await S(daemon);
+});
+
+test("an empty lock written with a live PID during the wait window is not stolen", async () => {
+  const e = await env();
+  const p = await run(sessionPaths("midwrite"), e);
+  await mkdir(p.root, { recursive: true });
+  await writeFile(p.lock, "");
+
+  const opening = open("midwrite", e);
+
+  // Give the daemon one poll cycle, then write a live PID into the lock
+  // (our own PID — processAlive returns true).
+  await Bun.sleep(15);
+  await writeFile(p.lock, `${process.pid}\n`);
+
+  await expect(opening).rejects.toThrow(/already being opened/);
 });
 
 test("a post-acquisition lease check releases the lock so the next start can proceed", async () => {
