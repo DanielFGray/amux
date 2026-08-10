@@ -11,6 +11,7 @@ import {
   ManagedRuntime,
   Option,
   Runtime,
+  Schedule,
   Schema as S,
   Scope,
   Stream,
@@ -71,6 +72,15 @@ export class SessionDaemonError extends S.TaggedError<SessionDaemonError>()("Ses
 export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
   message: S.String,
 }) {}
+
+/**
+ * Raised inside the lock acquisition loop when the lock file exists but is
+ * empty or unparseable — another process opened with `wx` but hasn't written
+ * its PID yet.  Effect.retry with a spaced Schedule retries this for a
+ * bounded period; once the bound is exceeded the unwritten lock is stale
+ * (the process died) and gets recovered like any other stale lock.
+ */
+class LockContended extends S.TaggedError<LockContended>()("LockContended", {}) {}
 
 export interface SessionDaemonOptions {
   readonly saveState?: (
@@ -134,36 +144,109 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
 
-  yield* Effect.gen(function* () {
-    for (;;) {
-      const result = yield* Effect.either(
-        Effect.gen(function* () {
-          const file = yield* fs.open(paths.lock, { flag: "wx", mode: 0o600 });
-          yield* file.write(new TextEncoder().encode(`${process.pid}\n`));
-          return file;
-        }),
-      );
-      if (Either.isRight(result)) return result.right;
-      const error = result.left;
-      if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
-        return yield* Effect.die(error);
-      const content = yield* fs.readFileString(paths.lock).pipe(Effect.orElseSucceed(() => "0"));
-      const owner = Number.parseInt(content, 10);
-      if (processAlive(owner))
-        return yield* new DaemonError({ message: `session '${id}' is already being opened` });
-      const lease = yield* session.readLease(id);
-      if (lease && processAlive(lease.pid))
-        return yield* new DaemonError({
-          message: `session '${id}' is already owned by pid ${lease.pid}`,
-        });
-      yield* fs.remove(paths.lock, { recursive: true });
-    }
-  }).pipe(
-    Effect.mapError((e) =>
-      e instanceof DaemonError ? e : new DaemonError({ message: describe(e) }),
-    ),
-  );
+  // `lockScope` owns the lock file.  It is closed by `terminate` on normal
+  // shutdown and by an ambient-scope finalizer on failure or interrupt.
+  // `acquireRelease` registers the lock removal exactly once — when
+  // `lockScope` closes — so there is no second release path.
+  const lockScope = yield* Scope.make();
+  yield* Effect.addFinalizer(() => Scope.close(lockScope, Exit.void));
 
+  // The `wx` open is the atomic claim — only one process can succeed.
+  // `acquireRelease` ties the lock removal to successful acquisition: it
+  // only fires when `wx` actually succeeded.  Paths that detect a live
+  // owner (live pid, live lease) fail the acquire — the release never
+  // runs, so a live daemon's lock file cannot be deleted by a competing
+  // process.
+  //
+  // An empty or unparseable lock means a concurrent process opened `wx`
+  // but hasn't written its PID yet.  `waitForLockContent` polls the file
+  // every 10ms for up to 500ms.  Rationale: a write-after-open takes
+  // <10µs; 500ms is > 1000× safety margin.  If the PID still isn't
+  // written, the process died and the lock is stale — recovered just
+  // like any other stale lock.
+  //
+  // A lock with a dead PID is a stale lock from a previous daemon that
+  // crashed.  It is removed immediately and the outer `for(;;)` retries
+  // the `wx` open without any delay — no contention budget spent here.
+  yield* Effect.acquireRelease(
+    Effect.gen(function* () {
+      /** Poll the lock file for a valid PID every 10ms, up to 500ms. */
+      const waitForLockContent = (): Effect.Effect<string, LockContended> =>
+        Effect.gen(function* () {
+          const content = yield* fs
+            .readFileString(paths.lock)
+            .pipe(Effect.orElseSucceed(() => ""));
+          const owner = Number.parseInt(content, 10);
+          if (Number.isInteger(owner) && owner > 0) return content;
+          return yield* new LockContended();
+        }).pipe(
+          Effect.retry({
+            while: (error) => error._tag === "LockContended",
+            schedule: Schedule.spaced("10 millis").pipe(Schedule.upTo("500 millis")),
+          }),
+        );
+
+      for (;;) {
+        const result = yield* Effect.either(
+          Effect.gen(function* () {
+            const file = yield* fs.open(paths.lock, { flag: "wx", mode: 0o600 });
+            yield* file.write(new TextEncoder().encode(`${process.pid}\n`));
+            return file;
+          }),
+        );
+        if (Either.isRight(result)) return result.right;
+        const error = result.left;
+        if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
+          return yield* Effect.die(error);
+
+        const content = yield* fs
+          .readFileString(paths.lock)
+          .pipe(Effect.orElseSucceed(() => ""));
+        const owner = Number.parseInt(content, 10);
+
+        if (!Number.isInteger(owner) || owner <= 0) {
+          // Mid-write: poll for the PID with a time bound.
+          const waited = yield* Effect.either(waitForLockContent());
+          if (Either.isRight(waited)) {
+            const pid = Number.parseInt(waited.right, 10);
+            if (processAlive(pid))
+              return yield* new DaemonError({
+                message: `session '${id}' is already being opened`,
+              });
+            // PID appeared but process is dead — stale lock, recover.
+            yield* fs.remove(paths.lock);
+            continue;
+          }
+          // 500ms expired, still empty.  Claimant died; recover.
+          yield* fs.remove(paths.lock).pipe(Effect.ignore);
+          continue;
+        }
+
+        if (processAlive(owner))
+          return yield* new DaemonError({
+            message: `session '${id}' is already being opened`,
+          });
+
+        const lease = yield* session.readLease(id);
+        if (lease && processAlive(lease.pid))
+          return yield* new DaemonError({
+            message: `session '${id}' is already owned by pid ${lease.pid}`,
+          });
+
+        // Dead PID — stale lock from a crashed daemon.  Recover and the
+        // outer `for(;;)` will retry the `wx` open immediately.
+        yield* fs.remove(paths.lock);
+      }
+    }).pipe(
+      Effect.mapError((e) =>
+        e instanceof DaemonError ? e : new DaemonError({ message: describe(e) }),
+      ),
+    ),
+    () => fs.remove(paths.lock).pipe(Effect.ignore),
+  ).pipe(Effect.provideService(Scope.Scope, lockScope));
+
+  // Lock acquired. Verify the lease one more time — the lock could have
+  // been absent while a daemon with a valid lease is still running.
   const existing = yield* session.readLease(id);
   if (existing && processAlive(existing.pid))
     return yield* new DaemonError({
@@ -514,7 +597,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
           yield* fs.remove(paths.socket).pipe(Effect.ignore);
           yield* fs.remove(paths.lease).pipe(Effect.ignore);
-          yield* fs.remove(paths.lock).pipe(Effect.ignore);
+          yield* Scope.close(lockScope, Exit.void);
           yield* Scope.close(daemonScope, Exit.void);
           if (finalFailure !== undefined) return yield* Effect.fail(finalFailure);
         }),

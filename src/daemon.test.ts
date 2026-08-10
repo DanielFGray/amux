@@ -144,6 +144,94 @@ test("a dead lease and stale lock are recovered without deleting state", async (
   await S(d);
 });
 
+test("a permanently empty lock is recovered after the 500ms retry bound", async () => {
+  const e = await env();
+  const p = await run(sessionPaths("stale-empty"), e);
+  await mkdir(p.root, { recursive: true });
+  await writeFile(p.lock, "");
+
+  // The lock is empty and nobody will ever write a PID.
+  // The daemon must resolve — not hang — within the bounded retry window.
+  const started = Date.now();
+  const daemon = await open("stale-empty", e);
+  const elapsed = Date.now() - started;
+
+  // Recovery must happen within the 500ms bound plus overhead.
+  expect(elapsed).toBeLessThan(750);
+  expect(st(daemon).id).toBe("stale-empty");
+  await S(daemon);
+});
+
+test("an empty lock written with a live PID during the wait window is not stolen", async () => {
+  const e = await env();
+  const p = await run(sessionPaths("midwrite"), e);
+  await mkdir(p.root, { recursive: true });
+  await writeFile(p.lock, "");
+
+  const opening = open("midwrite", e);
+
+  // Give the daemon one poll cycle, then write a live PID into the lock
+  // (our own PID — processAlive returns true).
+  await Bun.sleep(15);
+  await writeFile(p.lock, `${process.pid}\n`);
+
+  await expect(opening).rejects.toThrow(/already being opened/);
+});
+
+test("a post-acquisition lease check releases the lock so the next start can proceed", async () => {
+  const e = await env();
+  const p = await run(sessionPaths("released"), e);
+  await mkdir(p.root, { recursive: true });
+  await writeFile(p.state, JSON.stringify({
+    version: 1,
+    id: "released",
+    createdAt: 1,
+    updatedAt: 1,
+    attached: false,
+    spaces: [],
+  }));
+  // Write a lease with our own PID — the daemon will acquire the lock (wx
+  // succeeds because no lock exists) but then the lease check must fail
+  // because processAlive(process.pid) returns true.
+  await run(SessionStore.writeLease({
+    version: 1,
+    session: "released",
+    pid: process.pid,
+    socket: p.socket,
+    startedAt: Date.now(),
+    heartbeatAt: Date.now(),
+  }), e);
+
+  await expect(open("released", e)).rejects.toThrow(/already owned by pid/);
+
+  // The lock was acquired then released on failure — the file must be gone.
+  await expect(Bun.file(p.lock).exists()).resolves.toBe(false);
+});
+
+test("a competing acquisition that detects a live owner never deletes the owner's lock", async () => {
+  const e = await env();
+  const p = await run(sessionPaths("donotdelete"), e);
+  await mkdir(p.root, { recursive: true });
+  // Simulate a live daemon holding the lock.
+  await writeFile(p.lock, `${process.pid}\n`);
+  await writeFile(p.state, JSON.stringify({
+    version: 1,
+    id: "donotdelete",
+    createdAt: 1,
+    updatedAt: 1,
+    attached: false,
+    spaces: [],
+  }));
+
+  await expect(
+    run(makeDaemonService("donotdelete", {}), e),
+  ).rejects.toThrow(/already being opened/);
+
+  // The holder's lock file must still exist and be unmodified.
+  await expect(Bun.file(p.lock).exists()).resolves.toBe(true);
+  expect(await readFile(p.lock, "utf8")).toBe(`${process.pid}\n`);
+});
+
 test("cleanup leaves a locked startup session for its owner", async () => {
   const e = await env();
   const p = await run(sessionPaths("starting"), e);
