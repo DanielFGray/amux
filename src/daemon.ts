@@ -11,6 +11,7 @@ import {
   ManagedRuntime,
   Option,
   Runtime,
+  Schedule,
   Schema as S,
   Scope,
   Stream,
@@ -70,6 +71,15 @@ export class SessionDaemonError extends S.TaggedError<SessionDaemonError>()("Ses
 export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
   message: S.String,
 }) {}
+
+/**
+ * Raised inside the lock acquisition loop when the lock file exists but is
+ * empty or unparseable — another process opened with `wx` but hasn't written
+ * its PID yet.  Effect.retry with a spaced Schedule retries this for a
+ * bounded period; once the bound is exceeded the unwritten lock is stale
+ * (the process died) and gets recovered like any other stale lock.
+ */
+class LockContended extends S.TaggedError<LockContended>()("LockContended", {}) {}
 
 export interface SessionDaemonOptions {
   readonly saveState?: (
@@ -132,42 +142,71 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
 
+  // `lockScope` owns the lock file.  It is closed by `terminate` on normal
+  // shutdown and by an ambient-scope finalizer on failure or interrupt.
+  // `acquireRelease` registers the lock removal exactly once — when
+  // `lockScope` closes — so there is no second release path.
+  const lockScope = yield* Scope.make();
+  yield* Effect.addFinalizer(() => Scope.close(lockScope, Exit.void));
+
   // The `wx` open is the atomic claim — only one process can succeed.
-  // Write PID immediately; the narrow window between open and write is
-  // guarded below: an empty or unparseable lock means the claimant is still
-  // writing its PID, so the recovery path retries instead of stealing.
-  //
   // `acquireRelease` ties the lock removal to successful acquisition: it
-  // only fires when `wx` actually succeeded. Paths that detect a live owner
-  // (both the in-loop "already being opened" and the "already owned by pid"
-  // lease checks) fail the acquire — the release never runs, so a live
-  // daemon's lock file cannot be deleted by a competing process.
+  // only fires when `wx` actually succeeded.  Paths that detect a live
+  // owner (both the in-loop lease checks and the live-pid check) fail
+  // the acquire — the release never runs, so a live daemon's lock file
+  // cannot be deleted by a competing process.
+  //
+  // An empty or unparseable lock means a concurrent process opened `wx`
+  // but hasn't written its PID yet.  `Effect.retry` with a spaced
+  // Schedule retries this for a bounded period (10ms × 50 = 500ms).
+  // Rationale: a write-after-open takes <10µs; 500ms is > 1000× safety
+  // margin.  If the claimant still hasn't written, it died and the
+  // unwritten lock is stale — recovered just like any other stale lock.
   yield* Effect.acquireRelease(
     Effect.gen(function* () {
       for (;;) {
-        const result = yield* Effect.either(
-          Effect.gen(function* () {
-            const file = yield* fs.open(paths.lock, { flag: "wx", mode: 0o600 });
-            yield* file.write(new TextEncoder().encode(`${process.pid}\n`));
+        const attempt = Effect.gen(function* () {
+          const result = yield* Effect.either(
+            Effect.gen(function* () {
+              const file = yield* fs.open(paths.lock, { flag: "wx", mode: 0o600 });
+              yield* file.write(new TextEncoder().encode(`${process.pid}\n`));
+              return file;
+            }),
+          );
+          if (Either.isRight(result)) return result.right;
+          const error = result.left;
+          if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
+            return yield* Effect.die(error);
+          const content = yield* fs
+            .readFileString(paths.lock)
+            .pipe(Effect.orElseSucceed(() => ""));
+          const owner = Number.parseInt(content, 10);
+          if (!Number.isInteger(owner) || owner <= 0)
+            return yield* new LockContended();
+          if (processAlive(owner))
+            return yield* new DaemonError({ message: `session '${id}' is already being opened` });
+          const lease = yield* session.readLease(id);
+          if (lease && processAlive(lease.pid))
+            return yield* new DaemonError({
+              message: `session '${id}' is already owned by pid ${lease.pid}`,
+            });
+          yield* fs.remove(paths.lock);
+          return yield* new LockContended();
+        }).pipe(
+          Effect.retry({
+            while: (error) => error._tag === "LockContended",
+            schedule: Schedule.spaced("10 millis").pipe(Schedule.upTo("500 millis")),
           }),
         );
-        if (Either.isRight(result)) break;
+
+        const result = yield* Effect.either(attempt);
+        if (Either.isRight(result)) return result.right;
         const error = result.left;
-        if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
-          return yield* Effect.die(error);
-        const content = yield* fs.readFileString(paths.lock).pipe(Effect.orElseSucceed(() => ""));
-        const owner = Number.parseInt(content, 10);
-        // Empty or unparseable: a concurrent process opened with wx but
-        // hasn't written its PID yet. Retry — never steal a live claim.
-        if (!Number.isInteger(owner) || owner <= 0) continue;
-        if (processAlive(owner))
-          return yield* new DaemonError({ message: `session '${id}' is already being opened` });
-        const lease = yield* session.readLease(id);
-        if (lease && processAlive(lease.pid))
-          return yield* new DaemonError({
-            message: `session '${id}' is already owned by pid ${lease.pid}`,
-          });
-        yield* fs.remove(paths.lock);
+        if (error._tag === "LockContended") {
+          yield* fs.remove(paths.lock).pipe(Effect.ignore);
+          continue;
+        }
+        return yield* error;
       }
     }).pipe(
       Effect.mapError((e) =>
@@ -175,7 +214,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       ),
     ),
     () => fs.remove(paths.lock).pipe(Effect.ignore),
-  );
+  ).pipe(Effect.provideService(Scope.Scope, lockScope));
 
   // Lock acquired. Verify the lease one more time — the lock could have
   // been absent while a daemon with a valid lease is still running.
@@ -538,7 +577,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
           yield* fs.remove(paths.socket).pipe(Effect.ignore);
           yield* fs.remove(paths.lease).pipe(Effect.ignore);
-          yield* fs.remove(paths.lock).pipe(Effect.ignore);
+          yield* Scope.close(lockScope, Exit.void);
           yield* Scope.close(daemonScope, Exit.void);
           if (finalFailure !== undefined) return yield* Effect.fail(finalFailure);
         }),
