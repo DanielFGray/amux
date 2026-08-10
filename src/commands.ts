@@ -53,6 +53,7 @@ interface Meta {
   readonly group: string;
   readonly target: CommandTarget;
   readonly exposure: CommandExposure;
+  readonly requiresSession?: boolean;
 }
 
 type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.Schema.All, R> = {
@@ -61,6 +62,7 @@ type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.
   readonly group: string;
   readonly target: CommandTarget;
   readonly exposure: CommandExposure;
+  readonly requiresSession: boolean;
   readonly argumentFields: Fields;
   readonly arguments: S.Schema<any, any, unknown>;
   readonly schema: Sch;
@@ -83,6 +85,7 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
   group: meta.group,
   target: meta.target,
   exposure: meta.exposure,
+  requiresSession: meta.requiresSession ?? false,
   argumentFields: fields,
   schema: S.TaggedStruct(tag, fields).annotations({
     identifier: tag,
@@ -380,6 +383,17 @@ const AgentInterrupt = define(
   { ...SessionTarget, reason: S.optional(S.String) },
   { desc: "interrupt an agent turn", group: "agents", target: "workspace", exposure: "human" },
 );
+const Notify = define(
+  "notify",
+  { title: S.String, body: S.String, ...SessionTarget },
+  {
+    desc: "send a notification to a session",
+    group: "notifications",
+    target: "session",
+    exposure: "agent",
+    requiresSession: true,
+  },
+);
 const AgentNew = define(
   "agent.new",
   { prompt: S.String },
@@ -544,6 +558,7 @@ export const COMMAND_DEFS = [
   AgentNew,
   AgentSteer,
   AgentInterrupt,
+  Notify,
   SessionKill,
   SessionRestart,
   SessionReveal,
@@ -753,6 +768,7 @@ export const Commands = {
   WindowNextLayout,
   WindowSelectLayout,
   WindowSynchronize,
+  Notify,
   SessionKill,
   SessionRestart,
   SessionReveal,

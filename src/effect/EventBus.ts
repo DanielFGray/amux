@@ -30,6 +30,11 @@ const AgentFrameEvent = S.TaggedStruct("agent.frame", {
   session: S.String,
   frame: AgentFrame,
 });
+const Notification = S.TaggedStruct("notification", {
+  session: S.String,
+  title: S.String,
+  body: S.String,
+});
 const EventsReady = S.TaggedStruct("events.ready", {});
 const CredentialChanged = S.TaggedStruct("credential.changed", { integration: S.String });
 const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
@@ -43,6 +48,7 @@ const EventPayload = S.Union(
   ClientChanged,
   AgentStateChanged,
   AgentFrameEvent,
+  Notification,
   EventsReady,
   CredentialChanged,
   ModelsRefreshed,
