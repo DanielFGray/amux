@@ -227,6 +227,37 @@ test("reattaching replays the completed transcript but not live-only deltas", as
   expect(replay.some((frame) => frame._tag === "text.delta")).toBe(false);
 });
 
+/* A workspace change is broadcast as a whole snapshot, so a client that did not
+ * issue the command still converges on the same revision. This is the only
+ * channel that carries workspace changes; the daemon's event stream does not
+ * describe them. */
+test("a workspace change by one client reaches the other as a snapshot", async () => {
+  const { daemon, env } = await session("shared-workspace");
+  const author = await attach("shared-workspace", env, "author");
+  const observer = await attach("shared-workspace", env, "observer");
+
+  const before = observer.workspace();
+  const after = await run(
+    author.runWorkspace(command("space.rename", { name: "renamed-space" }), {
+      size: { cols: 80, rows: 24 },
+      shell: ["sh"],
+      cwd: "/tmp",
+    }),
+    env,
+  );
+  expect(after.revision).toBeGreaterThan(before.revision);
+
+  // The client holds broadcast snapshots in a sliding queue of one and only
+  // folds them into `workspace()` as the stream is drained, so a test must
+  // drain it exactly as the app's projection fiber does.
+  const received = await run(Stream.runHead(observer.models), env);
+  expect(Option.map(received, (snapshot) => snapshot.revision)).toEqual(
+    Option.some(after.revision),
+  );
+  expect(observer.workspace().spaces[0]!.name).toBe("renamed-space");
+  expect(await attachedClients(daemon)).toEqual(["author", "observer"]);
+});
+
 test("two clients share output and input, and one can leave without detaching the other", async () => {
   const { daemon, env } = await session("shared-attach");
   const first = await attach("shared-attach", env, "first");

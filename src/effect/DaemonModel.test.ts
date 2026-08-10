@@ -93,19 +93,11 @@ testEffect("attach registers a client and updates state", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     let persisted: SessionState | null = null;
-    let published: any = null;
 
-    yield* model.attach(
-      "client-a",
-      "conn-1",
-      (s) =>
-        Effect.sync(() => {
-          persisted = s;
-        }),
-      (event) =>
-        Effect.sync(() => {
-          published = event;
-        }),
+    yield* model.attach("client-a", "conn-1", (s) =>
+      Effect.sync(() => {
+        persisted = s;
+      }),
     );
 
     expect(persisted).not.toBeNull();
@@ -116,12 +108,6 @@ testEffect("attach registers a client and updates state", () =>
 
     const clients = yield* model.attachedClients;
     expect(clients).toEqual(["client-a"]);
-
-    expect(published).toEqual({
-      _tag: "client.changed",
-      client: "client-a",
-      change: "attached",
-    });
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
@@ -130,8 +116,8 @@ testEffect("attach rejects duplicate connections", () =>
     const model = yield* DaemonModel;
     const noop = () => Effect.void;
 
-    yield* model.attach("client-a", "conn-1", noop, noop);
-    const result = yield* Effect.exit(model.attach("client-b", "conn-1", noop, noop));
+    yield* model.attach("client-a", "conn-1", noop);
+    const result = yield* Effect.exit(model.attach("client-b", "conn-1", noop));
 
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure") {
@@ -146,20 +132,12 @@ testEffect("detach removes a client and updates state", () =>
     const model = yield* DaemonModel;
     const noop = () => Effect.void;
     let detachPersisted: SessionState | null = null;
-    let detachPublished: any = null;
 
-    yield* model.attach("client-a", "conn-1", noop, noop);
-    yield* model.detach(
-      "client-a",
-      "conn-1",
-      (s) =>
-        Effect.sync(() => {
-          detachPersisted = s;
-        }),
-      (event) =>
-        Effect.sync(() => {
-          detachPublished = event;
-        }),
+    yield* model.attach("client-a", "conn-1", noop);
+    yield* model.detach("client-a", "conn-1", (s) =>
+      Effect.sync(() => {
+        detachPersisted = s;
+      }),
     );
 
     expect(detachPersisted).not.toBeNull();
@@ -167,12 +145,6 @@ testEffect("detach removes a client and updates state", () =>
 
     const s = yield* model.state;
     expect(s.attached).toBe(false);
-
-    expect(detachPublished).toEqual({
-      _tag: "client.changed",
-      client: "client-a",
-      change: "detached",
-    });
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
@@ -180,14 +152,10 @@ testEffect("detach of unknown client is a no-op", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     let persisted = false;
-    yield* model.detach(
-      "unknown",
-      "unknown",
-      () =>
-        Effect.sync(() => {
-          persisted = true;
-        }),
-      () => Effect.void,
+    yield* model.detach("unknown", "unknown", () =>
+      Effect.sync(() => {
+        persisted = true;
+      }),
     );
     expect(persisted).toBe(false);
   }).pipe(Effect.provide(layerDaemonModel(initial))),
@@ -198,7 +166,7 @@ testEffect("touch updates attachLastSeen", () =>
     const model = yield* DaemonModel;
     const noop = () => Effect.void;
 
-    yield* model.attach("client-a", "conn-1", noop, noop);
+    yield* model.attach("client-a", "conn-1", noop);
     const before = yield* model.get;
     const beforeSeen = before.attachments.get("conn-1")!.attachLastSeen;
 
@@ -326,14 +294,10 @@ testEffect("concurrent attaches are serialized", () =>
 
     yield* Effect.all(
       ["a", "b", "c"].map((c, i) =>
-        model.attach(
-          c,
-          `conn-${i}`,
-          () =>
-            Effect.sync(() => {
-              clients.push(c);
-            }),
-          () => Effect.void,
+        model.attach(c, `conn-${i}`, () =>
+          Effect.sync(() => {
+            clients.push(c);
+          }),
         ),
       ),
       { concurrency: "unbounded" },

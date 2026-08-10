@@ -19,7 +19,7 @@
 import { Context, Effect, ExecutionStrategy, Layer, Scope } from "effect";
 import { createServer, type Server } from "node:net";
 import { AttachHub } from "./AttachHub.ts";
-import type { AgentFrame, AttachFrame } from "./AttachProtocol.ts";
+import type { AttachFrame } from "./AttachProtocol.ts";
 import { AgentLog, AgentLogDefault, type AgentLogService } from "./AgentLog.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
@@ -58,7 +58,6 @@ export interface AttachHostOptions {
     session: string,
     state: "idle" | "working" | "blocked" | "failed" | "done",
   ) => Effect.Effect<void, unknown>;
-  readonly onAgentFrame?: (session: string, frame: AgentFrame) => Effect.Effect<void, unknown>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -266,7 +265,6 @@ export const layerAttachHost = (
         Layer.provide(
           Layer.succeed(SessionStateObserver, {
             onState: options.onAgentState ?? (() => Effect.void),
-            onFrame: (session, frame) => options.onAgentFrame?.(session, frame) ?? Effect.void,
           }),
         ),
       ),

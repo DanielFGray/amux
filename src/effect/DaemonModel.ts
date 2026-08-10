@@ -7,7 +7,6 @@
  */
 
 import { Context, Deferred, Effect, Layer, Queue, Ref, Schema as S, Scope } from "effect";
-import type { DaemonEventPayload } from "./EventBus.ts";
 import type { SessionAttachment, SessionState } from "../session.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
 
@@ -39,14 +38,12 @@ export interface DaemonModelService {
     client: string,
     connection: string,
     onPersist: (state: SessionState) => Effect.Effect<void, unknown>,
-    onPublish: (event: DaemonEventPayload) => Effect.Effect<void>,
   ) => Effect.Effect<void, DaemonModelError>;
 
   readonly detach: (
     client: string,
     connection: string,
     onPersist: (state: SessionState) => Effect.Effect<void, unknown>,
-    onPublish: (event: DaemonEventPayload) => Effect.Effect<void>,
   ) => Effect.Effect<void, DaemonModelError>;
 
   readonly touch: (client: string, connection: string) => Effect.Effect<void>;
@@ -122,7 +119,6 @@ export const layerDaemonModel = (initial: {
         client: string,
         connection: string,
         onPersist: (s: SessionState) => Effect.Effect<void, unknown>,
-        onPublish: (event: DaemonEventPayload) => Effect.Effect<void>,
       ): Effect.Effect<void, DaemonModelError> =>
         enqueue(
           Effect.gen(function* () {
@@ -143,7 +139,6 @@ export const layerDaemonModel = (initial: {
               ),
             );
             yield* Ref.set(daemonRef, { ...cur, attachments, state: newState });
-            yield* onPublish({ _tag: "client.changed", client, change: "attached" });
           }),
         );
 
@@ -151,7 +146,6 @@ export const layerDaemonModel = (initial: {
         client: string,
         connection: string,
         onPersist: (s: SessionState) => Effect.Effect<void, unknown>,
-        onPublish: (event: DaemonEventPayload) => Effect.Effect<void>,
       ): Effect.Effect<void, DaemonModelError> =>
         enqueue(
           Effect.gen(function* () {
@@ -174,7 +168,6 @@ export const layerDaemonModel = (initial: {
               ),
             );
             yield* Ref.set(daemonRef, { ...cur, attachments, state: newState });
-            yield* onPublish({ _tag: "client.changed", client, change: "detached" });
           }),
         );
 

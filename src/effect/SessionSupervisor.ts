@@ -43,7 +43,6 @@ export interface SessionStateObserverService {
     id: string,
     state: "idle" | "working" | "blocked" | "failed" | "done",
   ) => Effect.Effect<void, unknown>;
-  readonly onFrame: (id: string, frame: AgentFrame) => Effect.Effect<void, unknown>;
 }
 
 export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
@@ -51,7 +50,6 @@ export class SessionStateObserver extends Context.Reference<SessionStateObserver
   {
     defaultValue: (): SessionStateObserverService => ({
       onState: () => Effect.void,
-      onFrame: () => Effect.void,
     }),
   },
 ) {}
@@ -299,7 +297,6 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
                 state: "failed",
               });
               yield* stateObserver.onState(spec.id, "failed");
-              yield* stateObserver.onFrame(spec.id, failed);
               yield* hub.publish(failed);
             }
             yield* publishExit(code);
@@ -334,7 +331,6 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
                   lastAgentState = committed.state;
                   yield* stateObserver.onState(spec.id, committed.state);
                 }
-                yield* stateObserver.onFrame(spec.id, committed);
                 if (phase === "active") yield* hub.publish(committed);
                 else pendingEvents.push(committed);
               }),

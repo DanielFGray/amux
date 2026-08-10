@@ -243,9 +243,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const attachEffect = (client: string, connection: string) =>
     model
-      .attach(client, connection, persist, (event) =>
-        eventBus.publish(event).pipe(Effect.catchAllCause(() => Effect.void)),
-      )
+      .attach(client, connection, persist)
       .pipe(
         Effect.mapError((e) =>
           e instanceof DaemonModelError
@@ -262,11 +260,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const persistence = Context.get(persistenceContext, WorkspaceTransactionPersistence);
 
   const detachEffect = (client: string, connection: string) =>
-    model.detach(
-      client,
-      connection,
-      (newState) => persistence.persistUntilSuccess(newState, "attachment detach"),
-      (event) => eventBus.publish(event).pipe(Effect.catchAllCause(() => Effect.void)),
+    model.detach(client, connection, (newState) =>
+      persistence.persistUntilSuccess(newState, "attachment detach"),
     );
 
   const touchEffect = (client: string, connection: string) => model.touch(client, connection);
@@ -283,19 +278,17 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         }),
       ),
       Layer.provide(
-        makeEvents(
-          (event) => eventBus.publish(event as any).pipe(Effect.catchAllCause(() => Effect.void)),
-          (snapshot) =>
-            Effect.suspend(() => {
-              if (!hostRef.current) return Effect.die(new Error("host not started"));
-              return hostRef.current
-                .publish({
-                  _tag: "workspace" as const,
-                  revision: snapshot.revision,
-                  state: JSON.stringify(snapshot),
-                } as any)
-                .pipe(Effect.ignore);
-            }),
+        makeEvents((snapshot) =>
+          Effect.suspend(() => {
+            if (!hostRef.current) return Effect.die(new Error("host not started"));
+            return hostRef.current
+              .publish({
+                _tag: "workspace" as const,
+                revision: snapshot.revision,
+                state: JSON.stringify(snapshot),
+              } as any)
+              .pipe(Effect.ignore);
+          }),
         ),
       ),
     ),
@@ -305,7 +298,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const sessionExitEffect = Effect.fnUntraced(function* (sid: string, code: number | null) {
     const cur = yield* model.get;
     if (cur.closing) return;
-    yield* eventBus.publish({ _tag: "pane.exited", session: sid, code });
     yield* transaction.onSessionExit(sid, code);
   });
 
@@ -357,8 +349,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         onSessionExit: (sid, code) => sessionExitEffect(sid, code),
         onAgentState: (sid, state) =>
           eventBus.publish({ _tag: "agent.state", session: sid, state }),
-        onAgentFrame: (sid, frame) =>
-          eventBus.publish({ _tag: "agent.frame", session: sid, frame }),
         agentLog,
       }),
     );
@@ -592,9 +582,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     // serving this very request, so the stop runs on a detached fiber.
     Stop: () =>
       guard(
-        Effect.forkDaemon(Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore)).pipe(
-          Effect.asVoid,
-        ),
+        Effect.forkDaemon(
+          Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore),
+        ).pipe(Effect.asVoid),
       ),
 
     WorkspaceCommand: ({ value, expectedRevision, context }) =>

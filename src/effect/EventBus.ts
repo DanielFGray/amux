@@ -1,52 +1,23 @@
 import { Effect, PubSub, Schema as S, Scope, Stream } from "effect";
-import { AgentFrame } from "./AttachProtocol.ts";
 
-const PaneOpened = S.TaggedStruct("pane.opened", {
-  pane: S.String,
-  session: S.String,
-});
-const PaneExited = S.TaggedStruct("pane.exited", {
-  session: S.String,
-  code: S.NullOr(S.Int),
-});
-const WindowChanged = S.TaggedStruct("window.changed", {
-  space: S.String,
-  window: S.Int,
-  change: S.Literal("created", "renamed", "closed"),
-});
-const SpaceChanged = S.TaggedStruct("space.changed", {
-  space: S.String,
-  change: S.Literal("created", "renamed", "closed"),
-});
-const ClientChanged = S.TaggedStruct("client.changed", {
-  client: S.String,
-  change: S.Literal("attached", "detached"),
-});
 const AgentStateChanged = S.TaggedStruct("agent.state", {
   session: S.String,
   state: S.Literal("idle", "working", "blocked", "failed", "detached", "done"),
-});
-const AgentFrameEvent = S.TaggedStruct("agent.frame", {
-  session: S.String,
-  frame: AgentFrame,
 });
 const EventsReady = S.TaggedStruct("events.ready", {});
 const CredentialChanged = S.TaggedStruct("credential.changed", { integration: S.String });
 const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
 
-/** Events emitted by the daemon, rather than observations made by a renderer. */
-const EventPayload = S.Union(
-  PaneOpened,
-  PaneExited,
-  WindowChanged,
-  SpaceChanged,
-  ClientChanged,
-  AgentStateChanged,
-  AgentFrameEvent,
-  EventsReady,
-  CredentialChanged,
-  ModelsRefreshed,
-);
+/**
+ * Facts a client cannot learn from anything it already receives.
+ *
+ * Workspace changes reach clients as a whole snapshot and agent output reaches
+ * them as a replayable transcript, both over the attach hub; re-announcing
+ * either one here would be the same fact on two channels. What is left is
+ * out-of-band: agent liveness, and configuration that changes underneath a
+ * client that never asked for it.
+ */
+const EventPayload = S.Union(AgentStateChanged, EventsReady, CredentialChanged, ModelsRefreshed);
 export const DaemonEvent = S.Struct({
   sequence: S.NonNegativeInt,
   event: EventPayload,

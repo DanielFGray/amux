@@ -112,40 +112,23 @@ test("one connection serves many requests for its whole scope", async () => {
   expect(seen.map((entry) => entry.name).sort()).toEqual(["a", "b"]);
 });
 
-test("the events stream is ready before it observes later workspace changes", async () => {
+/* The handshake is what makes the stream usable: a subscriber that acts only
+ * after `events.ready` knows it cannot have missed an event its own action
+ * caused. Workspace changes are not on this stream — they reach clients as
+ * whole snapshots over the attach channel. */
+test("the events stream opens with a readiness handshake", async () => {
   const { daemon, env } = await started("control-events");
-  const before = Effect.runSync(daemon.getWorkspace);
-  const event = await run(
+  const first = await run(
     Effect.gen(function* () {
       const control = yield* connectControl(daemon.id);
-      const stream = control.Events().pipe(
-        Stream.tap((item) =>
-          item.event._tag === "events.ready"
-            ? controlCall(daemon.id, (commandControl) =>
-                commandControl
-                  .Run({
-                    value: command("space.rename", { name: "event-space" }),
-                    expectedRevision: before.revision,
-                    context,
-                  })
-                  .pipe(Effect.asVoid),
-              )
-            : Effect.void,
-        ),
-        Stream.filter((item) => item.event._tag === "space.changed"),
-      );
-      return yield* Stream.runHead(stream);
+      return yield* Stream.runHead(control.Events());
     }),
     env,
   );
   await Effect.runPromise(daemon.stop).catch(() => {});
   daemons.splice(daemons.indexOf(daemon), 1);
-  expect(Option.map(event, (item) => item.event)).toEqual(
-    Option.some({
-      _tag: "space.changed",
-      space: before.spaces[0]!.id,
-      change: "renamed",
-    }),
+  expect(Option.map(first, (item) => item)).toEqual(
+    Option.some({ sequence: 0, event: { _tag: "events.ready" } }),
   );
 });
 
