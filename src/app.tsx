@@ -7,14 +7,14 @@ import {
 } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
-import { Effect, Exit, FiberMap, Redacted, Scope, Stream } from "effect";
+import { Effect, Either, Exit, FiberMap, Redacted, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { writeFile } from "node:fs/promises";
 
 import { projectWorkspace, SpaceSet } from "./space.ts";
 import { frame } from "./window.ts";
-import { nextPreset, LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts";
+import { LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts";
 import type { TerminalPane } from "./pane.ts";
 import { readGit } from "./git.ts";
 import { encodeKey } from "./keys.ts";
@@ -53,7 +53,7 @@ import {
   clearOption,
   coerceOption,
   optionSpec,
-  parseModelReference,
+  optionsIn,
   resolveOptions,
   writeOption,
   type OptionName,
@@ -93,6 +93,7 @@ import type { Interface as IntegrationService, Info as IntegrationInfo } from ".
 import { Credential } from "./credential.ts";
 import { ModelCatalog, type Provider } from "./model-catalog.ts";
 import { ModelPicker, type ModelPickerEntry, type ModelPickerView } from "./ui/ModelPicker.tsx";
+import { agentPreflight } from "./agent-preflight.ts";
 
 export interface AppOptions {
   readonly renderer: CliRenderer;
@@ -363,8 +364,6 @@ function buildApp(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
         Effect.tap((model) => Effect.promise(() => project(model))),
       );
-  const runWorkspace = (value: Command, input?: string): Effect.Effect<void, CommandError> =>
-    runPanelCommand(value, input).pipe(Effect.asVoid);
 
   const [configState, setConfigState] = createSignal<Config>(config);
   /** Every option resolved against its declared default — what the app reads.
@@ -1043,19 +1042,19 @@ function buildApp(
   const handlers: CommandHandlers = {
     // Suspended rather than `sync`: the window has to be read when the command
     // runs, not when the table is built.
-    "pane.split": (value) => runWorkspace(value),
-    "pane.next": (value) => runWorkspace(value),
-    "pane.last": (value) => runWorkspace(value),
-    "pane.focus": (value) => runWorkspace(value),
-    "pane.select": (value) => runWorkspace(value),
-    "pane.resize": (value) => runWorkspace(value),
-    "pane.resize-divider": (value) => runWorkspace(value),
-    "pane.zoom": (value) => runWorkspace(value),
-    "pane.swap": (value) => runWorkspace(value),
-    "pane.close": (value) => runWorkspace(value),
-    "pane.break": (value) => runWorkspace(value),
-    "pane.join": (value) => runWorkspace(value),
-    "pane.move": (value) => runWorkspace(value),
+    "pane.split": (value) => runPanelCommand(value),
+    "pane.next": (value) => runPanelCommand(value),
+    "pane.last": (value) => runPanelCommand(value),
+    "pane.focus": (value) => runPanelCommand(value),
+    "pane.select": (value) => runPanelCommand(value),
+    "pane.resize": (value) => runPanelCommand(value),
+    "pane.resize-divider": (value) => runPanelCommand(value),
+    "pane.zoom": (value) => runPanelCommand(value),
+    "pane.swap": (value) => runPanelCommand(value),
+    "pane.close": (value) => runPanelCommand(value),
+    "pane.break": (value) => runPanelCommand(value),
+    "pane.join": (value) => runPanelCommand(value),
+    "pane.move": (value) => runPanelCommand(value),
     "pane.send-keys": ({ keys }) =>
       Effect.suspend(() => {
         let input = "";
@@ -1071,7 +1070,7 @@ function buildApp(
         );
         return error
           ? Effect.fail(new CommandError({ message: error.message }))
-          : runWorkspace(command("pane.send-keys", { keys }), input);
+          : runPanelCommand(command("pane.send-keys", { keys }), input);
       }),
     "pane.capture": () =>
       Effect.sync(() => {
@@ -1124,31 +1123,66 @@ function buildApp(
         openChooseBuffer(buffers);
       }),
 
-    "window.new": (value) => runWorkspace(value),
-    "window.next": (value) => runWorkspace(value),
-    "window.previous": (value) => runWorkspace(value),
-    "window.last": (value) => runWorkspace(value),
-    "window.select": (value) => runWorkspace(value),
-    "window.rename": (value) => runWorkspace(value),
-    "window.close": (value) => runWorkspace(value),
-    "window.next-layout": (value) => runWorkspace(value),
-    "window.select-layout": (value) => runWorkspace(value),
-    "window.synchronize-panes": (value) => runWorkspace(value),
+    "window.new": (value) => runPanelCommand(value),
+    "window.next": (value) => runPanelCommand(value),
+    "window.previous": (value) => runPanelCommand(value),
+    "window.last": (value) => runPanelCommand(value),
+    "window.select": (value) => runPanelCommand(value),
+    "window.rename": (value) => runPanelCommand(value),
+    "window.close": (value) => runPanelCommand(value),
+    "window.next-layout": (value) => runPanelCommand(value),
+    "window.select-layout": (value) => runPanelCommand(value),
+    "window.synchronize-panes": (value) => runPanelCommand(value),
 
-    "agent.new": (value) => runWorkspace(value),
-    "agent.steer": (value) => runWorkspace(value),
-    "agent.interrupt": (value) => runWorkspace(value),
-    "session.kill": (value) => runWorkspace(value),
-    "session.restart": (value) => runWorkspace(value),
-    "session.reveal": (value) => runWorkspace(value),
-    "session.next-blocked": (value) => runWorkspace(value),
+    "agent.new": (value) =>
+      Effect.gen(function* () {
+        const outcome = yield* Effect.either(
+          agentPreflight(options()["agent.model"] as string, integrations, modelCatalog),
+        );
+        if (Either.isLeft(outcome)) {
+          const error = outcome.left;
+          let notice: string;
+          if (error._tag === "InvalidModel") {
+            notice = `invalid agent.model '${error.value}', expected provider/model`;
+          } else if (error._tag === "NoCredential") {
+            notice = `no credential stored for ${error.providerID}`;
+          } else {
+            notice = `model ${error.providerID}/${error.modelID} is not available`;
+          }
+          yield* Effect.sync(() => {
+            setSettingsSection(
+              error._tag === "NoCredential" ? "auth" : "agent",
+            );
+            setSettingsSelected(
+              error._tag === "NoCredential"
+                ? 0
+                : Math.max(0, optionsIn("agent").indexOf("agent.model")),
+            );
+            setOverlay("settings");
+            setPromptRequest({
+              title: "agent.new",
+              notice,
+              fields: [],
+              resolve: () => setPromptRequest(null),
+            });
+          });
+          return;
+        }
+        yield* runPanelCommand(value);
+      }),
+    "agent.steer": (value) => runPanelCommand(value),
+    "agent.interrupt": (value) => runPanelCommand(value),
+    "session.kill": (value) => runPanelCommand(value),
+    "session.restart": (value) => runPanelCommand(value),
+    "session.reveal": (value) => runPanelCommand(value),
+    "session.next-blocked": (value) => runPanelCommand(value),
 
-    "space.new": (value) => runWorkspace(value),
-    "space.select": (value) => runWorkspace(value),
-    "space.rename": (value) => runWorkspace(value),
-    "space.close": (value) => runWorkspace(value),
-    "space.next": (value) => runWorkspace(value),
-    "space.previous": (value) => runWorkspace(value),
+    "space.new": (value) => runPanelCommand(value),
+    "space.select": (value) => runPanelCommand(value),
+    "space.rename": (value) => runPanelCommand(value),
+    "space.close": (value) => runPanelCommand(value),
+    "space.next": (value) => runPanelCommand(value),
+    "space.previous": (value) => runPanelCommand(value),
 
     // The name arrives as a string from every surface, so it is checked here
     // rather than trusted: the table is what says whether it exists and what it
