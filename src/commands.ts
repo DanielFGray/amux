@@ -390,9 +390,11 @@ const Notify = define(
     exposure: "agent",
   },
 );
+/** A prompt is optional: an agent pane exists, idle, before it has been asked
+ *  anything, and the pane's own composer is the normal way to give it work. */
 const AgentNew = define(
   "agent.new",
-  { prompt: S.String },
+  { prompt: S.optional(S.String) },
   { desc: "start a native coding agent", group: "agents", target: "workspace", exposure: "human" },
 );
 const SessionRestart = define("session.restart", SessionTarget, {

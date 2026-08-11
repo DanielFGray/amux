@@ -520,7 +520,8 @@ export function applyWorkspaceCommand(
     };
     target.agents.push(agent);
     actions.push({ _tag: "spawn", agent });
-    if (native) actions.push({ _tag: "steer", agent: agent.id, message: command.prompt });
+    if (native && command.prompt)
+      actions.push({ _tag: "steer", agent: agent.id, message: command.prompt });
     return agent;
   };
   const addWindow = (target: WorkspaceSpace): WorkspaceWindow => {

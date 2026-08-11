@@ -762,3 +762,20 @@ test("agent.new creates an agent session and queues its initial prompt", () => {
     message: "Inspect this",
   });
 });
+
+/* An agent that has not been asked anything is a normal state, not a half-built
+ * one: the pane opens idle and its composer is where the first turn comes from.
+ * A steer with no message would open an empty turn instead. */
+test("agent.new without a prompt starts the session and opens no turn", () => {
+  const current = run(workspaceFromSession(base(twoPaneLayout)));
+  const mutation = applyWorkspaceCommand(current, command("agent.new", {}), {
+    cwd: "/tmp",
+    shell: ["sh"],
+    size: { cols: 80, rows: 24 },
+  });
+
+  const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
+  expect(agent.kind).toBe("agent");
+  expect(mutation.actions).toContainEqual({ _tag: "spawn", agent });
+  expect(mutation.actions.some((action) => action._tag === "steer")).toBe(false);
+});
