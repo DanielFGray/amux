@@ -14,6 +14,7 @@
 import { Context } from "effect";
 import type { RenderContext } from "@opentui/core";
 import { localPty, type SessionBackendFactory } from "./backend.ts";
+import type { PaneView } from "./component-pane.tsx";
 
 /** The renderer everything in a workspace draws into. No default: there is no
  *  sensible stand-in for a renderer, and a missing one should not be silently
@@ -43,24 +44,41 @@ export class Backend extends Context.Reference<Backend>()("Backend", {
   defaultValue: (): SessionBackendFactory => localPty,
 }) {}
 
+/**
+ * What draws a component session's pane.
+ *
+ * The counterpart of Backend on the other axis: Backend says where a session's
+ * content comes from, this says what turns that content into cells. A pty needs
+ * no entry here because an emulator and a grid are the only answer; a component
+ * is whatever the app decided to mount.
+ *
+ * Null is the default and a real state — a workspace that registered no view (a
+ * test, a headless client) draws such a pane as an empty frame rather than
+ * failing, exactly as it draws a detached agent as no pane at all.
+ */
+export class PaneContent extends Context.Reference<PaneContent>()("PaneContent", {
+  defaultValue: (): PaneView | null => null,
+}) {}
+
 /** Everything a workspace reads out of its context. */
-export type WorkspaceEnv = RenderCtx | Shell | Backend;
+export type WorkspaceEnv = RenderCtx | Shell | Backend | PaneContent;
 
 /**
  * Build a workspace's context.
  *
- * The renderer is required and the other two are not, because the other two
- * have defaults and a renderer cannot. Omitting `shell` or `backend` here means
- * "whatever the reference says", which is the same thing omitting them has
- * always meant — only now it is a default with a name rather than an undefined
- * travelling down four constructors.
+ * The renderer is required and the rest are not, because the rest have defaults
+ * and a renderer cannot. Omitting one here means "whatever the reference says",
+ * which is the same thing omitting them has always meant — only now it is a
+ * default with a name rather than an undefined travelling down four
+ * constructors.
  */
 export const workspaceEnv = (
   ctx: RenderContext,
-  options: { shell?: string[]; backend?: SessionBackendFactory } = {},
+  options: { shell?: string[]; backend?: SessionBackendFactory; paneContent?: PaneView } = {},
 ): Context.Context<WorkspaceEnv> => {
   let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>;
   if (options.shell) env = Context.add(env, Shell, options.shell);
   if (options.backend) env = Context.add(env, Backend, options.backend);
+  if (options.paneContent) env = Context.add(env, PaneContent, options.paneContent);
   return env;
 };

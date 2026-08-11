@@ -1,9 +1,10 @@
 import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/core";
-import { TerminalPane } from "./pane.ts";
+import { Pane, TerminalPane } from "./pane.ts";
+import { ComponentPane, type PaneView } from "./component-pane.tsx";
 import { Session, type SessionOptions } from "./agent.ts";
 import type { SessionBackendFactory } from "./backend.ts";
 import { Context, Effect, Exit, Scope } from "effect";
-import { RenderCtx, Shell, Backend, type WorkspaceEnv } from "./env.ts";
+import { RenderCtx, Shell, Backend, PaneContent, type WorkspaceEnv } from "./env.ts";
 import { rollUp } from "./space.ts";
 import { Divider, setWeight, setDirection, type JunctionFrame } from "./divider.ts";
 import { runtime } from "./options.ts";
@@ -71,7 +72,7 @@ export class Window {
   /** Set by rename; otherwise the window shows what it is running. */
   customName: string | null = null;
   #ctx: RenderContext;
-  #panes: TerminalPane[] = [];
+  #panes: Pane[] = [];
   #agents: Session[] = [];
   /** The arrangement is authoritative here; renderables are only its projection. */
   #layout: Layout = makeLayout(null);
@@ -111,6 +112,10 @@ export class Window {
    */
   #backend: SessionBackendFactory;
 
+  /** What a component session's pane mounts. Null in a workspace that
+   *  registered none; see PaneContent in env.ts. */
+  #paneContent: PaneView | null;
+
   /**
    * One scope per agent, rather than one scope for the window.
    *
@@ -131,6 +136,7 @@ export class Window {
     this.#ctx = Context.get(env, RenderCtx);
     this.#shell = Context.get(env, Shell);
     this.#backend = Context.get(env, Backend);
+    this.#paneContent = Context.get(env, PaneContent);
     this.#cwd = cwd;
     this.number = number;
     this.root = new BoxRenderable(this.#ctx, {
@@ -140,7 +146,7 @@ export class Window {
     });
   }
 
-  get panes(): readonly TerminalPane[] {
+  get panes(): readonly Pane[] {
     return this.#panes;
   }
 
@@ -315,7 +321,7 @@ export class Window {
    * All preconditions are checked before the layout or ownership maps change,
    * so callers cannot leave a pane detached when its lifetime is unavailable.
    */
-  releasePane(pane: TerminalPane): { agent: Session; scope: Scope.CloseableScope } | null {
+  releasePane(pane: Pane): { agent: Session; scope: Scope.CloseableScope } | null {
     const agent = pane.session;
     if (!this.#panes.includes(pane) || !this.#agents.includes(agent)) return null;
     const scope = this.#scopes.get(agent);
@@ -381,11 +387,11 @@ export class Window {
    * Pane ids are minted monotonically and never reused, so a stale id cannot
    * come back to life as some later pane either.
    */
-  get focused(): TerminalPane | null {
+  get focused(): Pane | null {
     return this.#pane(this.#state.focus);
   }
 
-  #pane(id: string | null): TerminalPane | null {
+  #pane(id: string | null): Pane | null {
     return id === null ? null : (this.#panes.find((pane) => pane.id === id) ?? null);
   }
 
@@ -398,7 +404,7 @@ export class Window {
    * them. The layout is the thing those transforms index into anyway, so
    * asking it directly is both more correct and answerable in more states.
    */
-  #slotOf(layout: Layout, pane: TerminalPane): number {
+  #slotOf(layout: Layout, pane: Pane): number {
     return layoutPanes(layout.root).findIndex((slot) => slot.id === pane.id);
   }
 
@@ -460,12 +466,21 @@ export class Window {
     return divider;
   }
 
-  /** `id` is the pane's model identity (layout.ts newPaneId), used as the
-   *  renderable's tree id too so a pane has one identifier rather than two.
-   *  The caller adds it to `#panes`, because where a pane lands in that list is
-   *  layout order and only the projection knows it. */
-  #makePane(agent: Session, id = newPaneId()): TerminalPane {
-    const pane = new TerminalPane(this.#ctx, { id, session: agent });
+  /**
+   * `id` is the pane's model identity (layout.ts newPaneId), used as the
+   * renderable's tree id too so a pane has one identifier rather than two.
+   * The caller adds it to `#panes`, because where a pane lands in that list is
+   * layout order and only the projection knows it.
+   *
+   * The session decides which kind of leaf it gets. This is the one place that
+   * asks: everything else in the window addresses a Pane, so a component leaf
+   * tiles, splits and closes without a second path through any of it.
+   */
+  #makePane(agent: Session, id = newPaneId()): Pane {
+    const pane =
+      agent.kind === "component"
+        ? new ComponentPane(this.#ctx, { id, session: agent, view: this.#paneContent ?? undefined })
+        : new TerminalPane(this.#ctx, { id, session: agent });
     setWeight(pane, 1);
     pane.onFocusRequest = (p) =>
       this.#authoritativeProjection ? this.onModelFocus?.(p.id) : this.focus(p);
@@ -475,20 +490,20 @@ export class Window {
   }
 
   /** Seed the workspace with a single agent and a view onto it. */
-  init(name?: string): Effect.Effect<TerminalPane> {
+  init(name?: string): Effect.Effect<Pane> {
     return this.spawn(name).pipe(Effect.map((agent) => this.mount(agent)));
   }
 
   /** Put a pane for an existing agent at the root of an empty window. The
    *  synchronous half of init, and what split falls back to when there is no
    *  pane to split. */
-  mount(agent: Session): TerminalPane {
+  mount(agent: Session): Pane {
     const id = newPaneId();
     this.#mount(makeLayout({ type: "pane", id, agent: agent.id, weight: 1 }, id), null);
     return this.#pane(id)!;
   }
 
-  focus(pane: TerminalPane) {
+  focus(pane: Pane) {
     // Looking at another pane means you are done with the zoom, which is also
     // what tmux's select-pane does. Zoom survives switching *windows*, though:
     // that is navigation, not a change of mind about this layout.
@@ -568,8 +583,8 @@ export class Window {
   }
 
   /** Model-derived neighbour query shared by pane borders and divider caps. */
-  #hasNeighbour(node: TerminalPane | Divider, axis: SplitDirection, direction: -1 | 1): boolean {
-    if (node instanceof TerminalPane) {
+  #hasNeighbour(node: Pane | Divider, axis: SplitDirection, direction: -1 | 1): boolean {
+    if (node instanceof Pane) {
       return paneHasNeighbour(this.#layout, node.id, axis, direction);
     }
     const ref = this.#dividerRefs.get(node);
@@ -588,7 +603,7 @@ export class Window {
     // Without a gap the pane frame is the only usable edge, so outerBorder is
     // intentionally ignored. It only changes the separated-border mode.
     const showOuterBorder = runtime["appearance.outerBorder"];
-    const edge = (pane: TerminalPane, axis: SplitDirection, direction: -1 | 1) =>
+    const edge = (pane: Pane, axis: SplitDirection, direction: -1 | 1) =>
       gap || (!this.#hasNeighbour(pane, axis, direction) && showOuterBorder);
     const focused = this.focused;
     for (const pane of this.#panes) {
@@ -634,7 +649,7 @@ export class Window {
   #dividers(root: Renderable = this.root, out: Divider[] = []): Divider[] {
     for (const child of root.getChildren()) {
       if (child instanceof Divider) out.push(child);
-      else if (!(child instanceof TerminalPane)) this.#dividers(child, out);
+      else if (!(child instanceof Pane)) this.#dividers(child, out);
     }
     return out;
   }
@@ -705,7 +720,7 @@ export class Window {
 
   /** True when the pane sits immediately on either side of the divider — the
    *  shared border is that pane's border too, so it highlights with it. */
-  #touches(divider: Divider, pane: TerminalPane): boolean {
+  #touches(divider: Divider, pane: Pane): boolean {
     const ref = this.#dividerRefs.get(divider);
     return ref ? dividerTouchesPane(this.#layout, ref.path, ref.index, pane.id) : false;
   }
@@ -817,7 +832,7 @@ export class Window {
    * inserted as a sibling; otherwise the pane is swapped for a nested Box so
    * the tree stays a proper h/v alternation instead of a flat list.
    */
-  split(direction: SplitDirection, agent: Session): TerminalPane | null {
+  split(direction: SplitDirection, agent: Session): Pane | null {
     const target = this.focused;
     if (!target) return this.mount(agent);
 
@@ -849,7 +864,7 @@ export class Window {
    * The unsplittable case is checked BEFORE spawning, so a window that cannot
    * take a split does not leave a live process behind with no pane on it.
    */
-  splitSpawn(direction: SplitDirection, name?: string): Effect.Effect<TerminalPane | null> {
+  splitSpawn(direction: SplitDirection, name?: string): Effect.Effect<Pane | null> {
     const focused = this.focused;
     if (focused && this.#slotOf(this.exportLayout(), focused) === -1) {
       return Effect.succeed(null);
@@ -859,7 +874,7 @@ export class Window {
 
   /** Open an existing agent in a new split — the way a detached agent gets a
    *  viewport back. */
-  reveal(agent: Session): TerminalPane | null {
+  reveal(agent: Session): Pane | null {
     const existing = this.#panes.find((p) => p.session === agent);
     if (existing) {
       this.focus(existing);
@@ -880,7 +895,7 @@ export class Window {
    *
    * Returns the pane, or null when this window does not hold it.
    */
-  detachPane(pane: TerminalPane): TerminalPane | null {
+  detachPane(pane: Pane): Pane | null {
     // Works zoomed or not: the arrangement is read from the layout, which under
     // a zoom is the one the zoom captured, and projecting the result is what
     // drops the zoom. Closing the zoomed pane itself is the same path.
@@ -898,7 +913,7 @@ export class Window {
    *  ownership moves, so the agent's hooks are re-pointed here and an exit
    *  closes the pane in the window it now lives in. The caller detaches first,
    *  so the pane arrives unmounted and with no other owner. */
-  adopt(agent: Session, pane: TerminalPane, scope: Scope.CloseableScope) {
+  adopt(agent: Session, pane: Pane, scope: Scope.CloseableScope) {
     // The newcomer is hung straight off the root rather than projected, so the
     // zoom has to come down first: a zoomed window has its other panes
     // unmounted, and adding a second pane beside the zoomed one would leave
@@ -919,7 +934,7 @@ export class Window {
 
   /** Close a pane: take it out of the layout, then destroy the view. The agent
    *  survives as detached, which is what makes this a close and not a kill. */
-  close(pane: TerminalPane) {
+  close(pane: Pane) {
     if (!this.detachPane(pane)) return;
     pane.destroyRecursively();
     // #project refocused a survivor (which notified) or left the window
@@ -992,7 +1007,7 @@ export class Window {
    * one being replaced, so keeping it would mean unzooming later into an
    * arrangement that no longer describes this window.
    */
-  #project(wanted: Layout, preset: LayoutPreset | null): TerminalPane[] {
+  #project(wanted: Layout, preset: LayoutPreset | null): Pane[] {
     this.#state.zoom = null;
     return this.#mount(wanted, preset);
   }
@@ -1006,7 +1021,7 @@ export class Window {
    * destroyed or parked somewhere off the tree: they are still panes of this
    * window, still in `#panes`, still fed by the sync fan-out — just not shown.
    */
-  #mount(wanted: Layout, preset: LayoutPreset | null): TerminalPane[] {
+  #mount(wanted: Layout, preset: LayoutPreset | null): Pane[] {
     const byId = new Map(this.#agents.map((agent) => [agent.id, agent]));
     // An arbitrary layout matches no preset, so that is the default. A caller
     // that knows better says so: select-layout builds its arrangement FROM a
@@ -1019,9 +1034,9 @@ export class Window {
     // alone, the very pane a later slot named outright.
     const spare = new Set(this.#dismantle());
     this.#panes.length = 0;
-    const filled = new Map<string, TerminalPane>();
+    const filled = new Map<string, Pane>();
 
-    const claim = (slot: LayoutPane, match: (pane: TerminalPane) => boolean) => {
+    const claim = (slot: LayoutPane, match: (pane: Pane) => boolean) => {
       if (filled.has(slot.id)) return;
       for (const pane of spare) {
         if (!match(pane)) continue;
@@ -1048,7 +1063,7 @@ export class Window {
     // before any renderables are built from it.
     const requestedFocus = wanted.focus ? filled.get(wanted.focus) : undefined;
     const next = requestedFocus ?? this.#panes[0];
-    const panesById = new Map<string, TerminalPane>();
+    const panesById = new Map<string, Pane>();
     const materialize = (node: LayoutNode): LayoutNode => {
       if (node.type === "pane") {
         const pane = filled.get(node.id)!;
@@ -1140,7 +1155,7 @@ export class Window {
    * Taking them off their parents first also leaves the walk with nothing but
    * derived nodes to destroy.
    */
-  #dismantle(): TerminalPane[] {
+  #dismantle(): Pane[] {
     const panes = [...this.#panes];
     for (const pane of panes) (pane.parent as BoxRenderable | null)?.remove(pane);
     const walk = (box: BoxRenderable) => {

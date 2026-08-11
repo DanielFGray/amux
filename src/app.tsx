@@ -16,7 +16,7 @@ import { AgentState } from "./agent-state.ts";
 import { projectWorkspace, SpaceSet } from "./space.ts";
 import { frame } from "./window.ts";
 import { LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts";
-import type { TerminalPane } from "./pane.ts";
+import { TerminalPane } from "./pane.ts";
 import { readGit } from "./git.ts";
 import { encodeKey } from "./keys.ts";
 import { sendKeys, type SendTarget } from "./send.ts";
@@ -854,7 +854,10 @@ function buildApp(
    */
   function enterCopyMode() {
     const pane = spaces.activeWindow?.focused;
-    if (!pane) return;
+    // Copy mode reviews a terminal's grid and scrollback. A component pane has
+    // neither — its content is renderables, not cells — so there is nothing for
+    // the mode to walk and the key simply does nothing there.
+    if (!(pane instanceof TerminalPane)) return;
     copyMode.enter(pane);
   }
 

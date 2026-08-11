@@ -1,6 +1,6 @@
 import { test, expect, afterEach } from "bun:test";
 import { createHarness, run } from "./harness.ts";
-import type { TerminalPane } from "./pane.ts";
+import type { Pane } from "./pane.ts";
 import { makeLayout } from "./layout.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -28,7 +28,7 @@ test("focusDirection crosses nesting levels rather than walking siblings", async
   const bottomRight = run(window.splitSpawn("column"))!;
   await layout();
 
-  const at = (p: TerminalPane) => `${p.x},${p.y}`;
+  const at = (p: Pane) => `${p.x},${p.y}`;
   expect(at(right)).not.toBe(at(bottomRight));
 
   window.focus(left);
@@ -371,7 +371,7 @@ test("synchronize-panes still reaches a pane the zoom is hiding", async () => {
   const second = run(window.splitSpawn("row"))!;
   await layout();
 
-  const wrote: TerminalPane[] = [];
+  const wrote: Pane[] = [];
   for (const pane of window.panes) pane.write = () => void wrote.push(pane);
 
   window.toggleSync();

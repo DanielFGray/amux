@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { MouseEvent, BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { Session } from "./agent.ts";
-import { TerminalPane } from "./pane.ts";
+import { TerminalPane, type Pane } from "./pane.ts";
 import {
   CopyMode,
   backwardWordStart,
@@ -841,7 +841,13 @@ async function makeWindow(count: number) {
   const agents = Array.from({ length: count }, () =>
     run(win.startSession({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 })),
   );
-  const panes = agents.map((agent, i) => win.split(i === 0 ? "row" : "column", agent)!);
+  // Narrowed rather than cast: copy mode walks a grid, so a test about it is
+  // only meaningful on terminal panes, and these sessions are all ptys.
+  const panes = agents.map((agent, i) => {
+    const pane = win.split(i === 0 ? "row" : "column", agent)!;
+    if (!(pane instanceof TerminalPane)) throw new Error("expected a terminal pane");
+    return pane;
+  });
   return { t, spaces, space, win, agents, panes };
 }
 
@@ -849,7 +855,7 @@ async function makeWindow(count: number) {
  *  pane leaving the tree, and `stepDown` is the exit-before-teardown the
  *  destructive commands call first. */
 function wireCopyModeTeardown(spaces: SpaceSet, mode: CopyMode) {
-  const stillMounted = (pane: TerminalPane): boolean =>
+  const stillMounted = (pane: Pane): boolean =>
     spaces.spaces.some((s) => s.windows.some((w) => w.panes.includes(pane)));
   const prior = spaces.onChange;
   spaces.onChange = () => {
@@ -857,7 +863,7 @@ function wireCopyModeTeardown(spaces: SpaceSet, mode: CopyMode) {
     const pane = mode.active ? mode.pane : null;
     if (pane && !stillMounted(pane)) mode.exit();
   };
-  const stepDown = (panes: TerminalPane | readonly TerminalPane[]) => {
+  const stepDown = (panes: Pane | readonly Pane[]) => {
     const pane = mode.pane;
     if (!pane) return;
     const affected = Array.isArray(panes) ? panes.includes(pane) : panes === pane;
@@ -868,7 +874,7 @@ function wireCopyModeTeardown(spaces: SpaceSet, mode: CopyMode) {
 
 /** Flag any call to the pane's invalidate that happens after the pane was
  *  destroyed — the exact call the teardown fixes must prevent. */
-function trackInvalidateAfterDestroy(pane: TerminalPane) {
+function trackInvalidateAfterDestroy(pane: Pane) {
   let afterDestroy = false;
   const real = pane.invalidate.bind(pane);
   pane.invalidate = () => {

@@ -3,7 +3,7 @@ import { Context, Effect, Exit, Scope } from "effect";
 import { Window } from "./window.ts";
 import type { Session } from "./agent.ts";
 import { AgentState } from "./agent-state.ts";
-import type { TerminalPane } from "./pane.ts";
+import type { Pane } from "./pane.ts";
 import { RenderCtx, type WorkspaceEnv } from "./env.ts";
 import {
   activateSpaceState,
@@ -198,7 +198,7 @@ export class Space {
    * tmux's session_select after a break. Returns the new window, or null when
    * the pane is not in this space.
    */
-  breakPane(pane: TerminalPane): Effect.Effect<Window | null> {
+  breakPane(pane: Pane): Effect.Effect<Window | null> {
     return Effect.gen(this, function* () {
       const source = this.#windows.find((w) => w.panes.includes(pane));
       if (!source) return null;
@@ -221,7 +221,7 @@ export class Space {
   }
 
   /** Move a pane into the active window, preserving its agent and lifetime. */
-  joinPane(pane: TerminalPane, sourceNumber?: number): Effect.Effect<Window | null> {
+  joinPane(pane: Pane, sourceNumber?: number): Effect.Effect<Window | null> {
     return Effect.gen(this, function* () {
       const destination = this.active;
       const source = this.#windows.find(

@@ -3,6 +3,7 @@ import { expect, describe, it, afterEach } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { workspaceEnv } from "./env.ts";
+import type { TerminalPane } from "./pane.ts";
 import { runtime } from "./options.ts";
 
 describe("scroll", () => {
@@ -60,7 +61,8 @@ describe("scroll", () => {
 
     const space = run(spaces.create("test", process.cwd()));
     const window = run(space.newWindow());
-    const pane = run(window.init());
+    // The display list is the terminal pane's cache; a shell session gets one.
+    const pane = run(window.init()) as TerminalPane;
     await t.renderOnce();
     const before = pane.rebuildCount;
 

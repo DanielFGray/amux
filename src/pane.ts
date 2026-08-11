@@ -75,14 +75,214 @@ const OPENTUI_TO_GHOSTTY_BUTTON: Record<number, number> = {
 };
 
 /**
- * A viewport onto an Agent.
+ * A viewport onto a session: one leaf of a window's split tree.
  *
- * Owns nothing about the process — only the read side (a RenderState), a mouse
- * encoder, and a cached display list. Destroying a pane closes the view; the
- * agent keeps running.
+ * A pane is a frame around content plus the identity the layout addresses it
+ * by. What fills the frame is the session's substrate (Session.kind) and is the
+ * subclass's business: a pty draws a terminal grid, a component draws a Solid
+ * subtree. Everything a window does to a leaf — place it, size it, focus it,
+ * draw its share of the split frame, close it — is the same either way, and
+ * lives here.
+ *
+ * Owns nothing about the process. Destroying a pane closes the view; the
+ * session keeps running.
  */
-export class TerminalPane extends Renderable {
+export abstract class Pane extends Renderable {
   readonly session: Session;
+
+  /** Whether this pane is the workspace's active viewport. Named `active`, not
+   *  `focused`: Renderable already exposes a read-only `focused` accessor for
+   *  OpenTUI's own keyboard-focus tree, and overriding it would break that. */
+  active = false;
+  hovered = false;
+  onFocusRequest?: (pane: Pane) => void;
+  onCopy?: (text: string) => boolean | void;
+  onCopyError?: (error: Error) => void;
+
+  #edges: Edges = { ...ALL_EDGES };
+
+  constructor(ctx: RenderContext, options: { id: string; session: Session } & Record<string, any>) {
+    super(ctx, options);
+    this.session = options.session;
+    this.session.addViewer();
+    // The session is sized here rather than through #applyEdges: a subclass's
+    // own fields do not exist yet, so nothing may call back into it.
+    const { width, height } = this.content;
+    this.session.resize(width, height);
+  }
+
+  get edges(): Edges {
+    return this.#edges;
+  }
+
+  /** Set by the window after any structural change; the session is resized to
+   *  whatever the border leaves over. */
+  set edges(edges: Edges) {
+    const e = this.#edges;
+    if (
+      e.top === edges.top &&
+      e.right === edges.right &&
+      e.bottom === edges.bottom &&
+      e.left === edges.left
+    ) {
+      return;
+    }
+    this.#edges = { ...edges };
+    this.#applyEdges();
+    this.invalidate();
+  }
+
+  /** Columns/rows the border eats on each axis. */
+  protected get padX(): number {
+    return (this.#edges.left ? 1 : 0) + (this.#edges.right ? 1 : 0);
+  }
+  protected get padY(): number {
+    return (this.#edges.top ? 1 : 0) + (this.#edges.bottom ? 1 : 0);
+  }
+
+  /** Where a pane's content starts and how big it is: its own rect less the
+   *  sides it draws. The one statement of "the frame eats a cell". */
+  protected get content(): { x: number; y: number; width: number; height: number } {
+    return {
+      x: this.x + (this.#edges.left ? 1 : 0),
+      y: this.y + (this.#edges.top ? 1 : 0),
+      width: Math.max(1, this.width - this.padX),
+      height: Math.max(1, this.height - this.padY),
+    };
+  }
+
+  /**
+   * Told to the session, and told to whatever the subclass draws with.
+   *
+   * Deliberately NOT yoga padding on this node. A flex item's automatic minimum
+   * is its min-content size, which includes padding, so a padded pane refuses
+   * to shrink past its own border — the split then distributes differently from
+   * geometry.ts's model and the two disagree about where the pane is. A pane is
+   * a share of its parent and nothing else; the inset is the subclass's to
+   * apply inside that share.
+   */
+  #applyEdges() {
+    const { width, height } = this.content;
+    this.session.resize(width, height);
+    this.onContentResize();
+  }
+
+  /** Hook for a subclass that lays renderables out rather than drawing cells:
+   *  the content rect has moved or changed size. Never fires before the
+   *  subclass is constructed, so an override may use its own fields. */
+  protected onContentResize(): void {}
+
+  /** Called by the workspace when the session produces output. */
+  invalidate() {
+    this.requestRender();
+  }
+
+  protected override onResize(width: number, height: number): void {
+    // The arguments, not this.width: the node's own size is not published until
+    // after the layout pass that raised this.
+    this.session.resize(Math.max(1, width - this.padX), Math.max(1, height - this.padY));
+    this.onContentResize();
+  }
+
+  write(data: string | Uint8Array) {
+    this.session.write(data);
+  }
+
+  /**
+   * Hover tracking and click-to-focus, which every pane wants whatever it
+   * draws. True means the event was pane chrome and the subclass is done with
+   * it.
+   */
+  protected trackPointer(event: MouseEvent): boolean {
+    switch (event.type) {
+      case "over":
+        this.hovered = true;
+        this.requestRender();
+        return true;
+      case "out":
+        this.hovered = false;
+        this.requestRender();
+        return true;
+    }
+    if (event.type === "down") this.onFocusRequest?.(this);
+    return false;
+  }
+
+  protected override onMouseEvent(event: MouseEvent): void {
+    this.trackPointer(event);
+  }
+
+  /** Hand a string to the copy chain (OSC 52 to the host terminal). The one
+   *  path both mouse-drag selection and keyboard copy mode use, so a rejected
+   *  write reports the same way from either. */
+  copyText(text: string) {
+    if (!text || !this.onCopy) return;
+    try {
+      if (this.onCopy(text) === false) this.onCopyError?.(new Error("clipboard rejected OSC 52"));
+    } catch (error) {
+      this.onCopyError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  protected override renderSelf(buffer: OptimizedBuffer): void {
+    buffer.fillRect(this.x, this.y, this.width, this.height, DEFAULT_BG);
+    this.drawBorder(buffer);
+  }
+
+  /**
+   * Draw only the sides this pane owns.
+   *
+   * A corner glyph is used where two owned sides meet; where only one of the
+   * pair is owned the line simply runs to the end of the pane and the Divider
+   * next to it draws the tee. That is what keeps a split looking like one
+   * continuous frame rather than two boxes pushed together.
+   */
+  protected drawBorder(buffer: OptimizedBuffer): void {
+    const fg = this.active ? BORDER_FOCUS : this.hovered ? BORDER_HOVER : BORDER_IDLE;
+    const { top, right, bottom, left } = this.#edges;
+    const x0 = this.x;
+    const y0 = this.y;
+    const x1 = this.x + this.width - 1;
+    const y1 = this.y + this.height - 1;
+
+    if (top) {
+      const title = this.session.term.title;
+      const titleWidth = cellWidth(title);
+      if (title && runtime["appearance.gap"] && this.width >= titleWidth + 4) {
+        if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
+        else buffer.setCell(x0, y0, "─", fg, DEFAULT_BG);
+        buffer.drawText(` ${title} `, x0 + 1, y0, fg, DEFAULT_BG);
+        const dashStart = x0 + 3 + titleWidth;
+        const dashEnd = right ? x1 - 1 : x1;
+        for (let x = dashStart; x <= dashEnd; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG);
+      } else {
+        for (let x = x0; x <= x1; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG);
+      }
+    }
+    if (bottom) for (let x = x0; x <= x1; x++) buffer.setCell(x, y1, "─", fg, DEFAULT_BG);
+    if (left) for (let y = y0; y <= y1; y++) buffer.setCell(x0, y, "│", fg, DEFAULT_BG);
+    if (right) for (let y = y0; y <= y1; y++) buffer.setCell(x1, y, "│", fg, DEFAULT_BG);
+
+    if (top && right) buffer.setCell(x1, y0, "┐", fg, DEFAULT_BG);
+    if (bottom && left) buffer.setCell(x0, y1, "└", fg, DEFAULT_BG);
+    if (bottom && right) buffer.setCell(x1, y1, "┘", fg, DEFAULT_BG);
+    if (top && left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
+  }
+
+  protected override destroySelf(): void {
+    // Closes the view only; the session keeps running.
+    this.session.removeViewer();
+    super.destroySelf();
+  }
+}
+
+/**
+ * A pane showing a pty: the terminal grid, its mouse encoding and its selection.
+ *
+ * Owns the read side of the emulator (a RenderState), a mouse encoder, and a
+ * cached display list — nothing about the process itself.
+ */
+export class TerminalPane extends Pane {
   /** Owns this pane's FFI handles, so closing it frees them all — see the note
    *  on Agent's scope. A pane is destroyed from OpenTUI's tree rather than from
    *  an Effect, so the scope is closed by destroySelf rather than by a parent. */
@@ -96,14 +296,6 @@ export class TerminalPane extends Renderable {
     (mouse) => mouse.free(),
   );
 
-  /** Whether this pane is the workspace's active viewport. Named `active`, not
-   *  `focused`: Renderable already exposes a read-only `focused` accessor for
-   *  OpenTUI's own keyboard-focus tree, and overriding it would break that. */
-  active = false;
-  hovered = false;
-  onFocusRequest?: (pane: TerminalPane) => void;
-  onCopy?: (text: string) => boolean | void;
-  onCopyError?: (error: Error) => void;
   /** Fired when the mouse takes over the pane: a drag selection claims the
    *  terminal's selection slot, or a sequence routed to a mouse-reporting child
    *  hands the mouse to that program. Copy mode steps out on either. */
@@ -114,57 +306,12 @@ export class TerminalPane extends Renderable {
   #cursorText = " ";
   #haveCache = false;
   #rebuildCount = 0;
-  #edges: Edges = { ...ALL_EDGES };
   #selectionAnchor: CellPoint | null = null;
   #selectionEnd: CellPoint | null = null;
   #selecting = false;
 
-  constructor(ctx: RenderContext, options: { id: string; session: Session } & Record<string, any>) {
-    super(ctx, options);
-    this.session = options.session;
-    this.session.addViewer();
-    this.#sync();
-  }
-
-  get edges(): Edges {
-    return this.#edges;
-  }
-
-  /** Set by the window after any structural change; the agent is resized to
-   *  whatever the border leaves over. */
-  set edges(edges: Edges) {
-    const e = this.#edges;
-    if (
-      e.top === edges.top &&
-      e.right === edges.right &&
-      e.bottom === edges.bottom &&
-      e.left === edges.left
-    ) {
-      return;
-    }
-    this.#edges = { ...edges };
-    this.#sync();
-    this.#haveCache = false;
-    this.requestRender();
-  }
-
-  /** Columns/rows the border eats on each axis. */
-  get #padX(): number {
-    return (this.#edges.left ? 1 : 0) + (this.#edges.right ? 1 : 0);
-  }
-  get #padY(): number {
-    return (this.#edges.top ? 1 : 0) + (this.#edges.bottom ? 1 : 0);
-  }
-
-  #sync() {
-    this.session.resize(
-      Math.max(1, this.width - this.#padX),
-      Math.max(1, this.height - this.#padY),
-    );
-  }
-
   /** Called by the workspace when the agent produces output. */
-  invalidate() {
+  override invalidate() {
     this.#haveCache = false;
     this.requestRender();
   }
@@ -175,33 +322,22 @@ export class TerminalPane extends Renderable {
   }
 
   protected override onResize(width: number, height: number): void {
-    this.session.resize(Math.max(1, width - this.#padX), Math.max(1, height - this.#padY));
+    super.onResize(width, height);
     this.#haveCache = false;
   }
 
-  write(data: string | Uint8Array) {
-    this.session.write(data);
+  override write(data: string | Uint8Array) {
+    super.write(data);
     this.#haveCache = false;
   }
 
   protected override onMouseEvent(event: MouseEvent): void {
     // opentui resolved the target from its native hit grid, so local
     // coordinates are just the offset — no rect math, no layout duplication.
-    const x = event.x - this.x - (this.#edges.left ? 1 : 0);
-    const y = event.y - this.y - (this.#edges.top ? 1 : 0);
+    const x = event.x - this.x - (this.edges.left ? 1 : 0);
+    const y = event.y - this.y - (this.edges.top ? 1 : 0);
 
-    switch (event.type) {
-      case "over":
-        this.hovered = true;
-        this.requestRender();
-        return;
-      case "out":
-        this.hovered = false;
-        this.requestRender();
-        return;
-    }
-
-    if (event.type === "down") this.onFocusRequest?.(this);
+    if (this.trackPointer(event)) return;
     // On the border: focus only. Forwarding it would hand the child a click at
     // coordinates that are off its grid.
     if (x < 0 || y < 0 || x >= this.session.term.cols || y >= this.session.term.rows) return;
@@ -305,23 +441,9 @@ export class TerminalPane extends Renderable {
     this.copyText(new TextDecoder().decode(bytes));
   }
 
-  /** Hand a string to the copy chain (OSC 52 to the host terminal). The one
-   *  path both mouse-drag selection and keyboard copy mode use, so a rejected
-   *  write reports the same way from either. */
-  copyText(text: string) {
-    if (!text || !this.onCopy) return;
-    try {
-      if (this.onCopy(text) === false) this.onCopyError?.(new Error("clipboard rejected OSC 52"));
-    } catch (error) {
-      this.onCopyError?.(error instanceof Error ? error : new Error(String(error)));
-    }
-  }
-
   protected override renderSelf(buffer: OptimizedBuffer): void {
-    const ox = this.x + (this.#edges.left ? 1 : 0);
-    const oy = this.y + (this.#edges.top ? 1 : 0);
-    buffer.fillRect(this.x, this.y, this.width, this.height, DEFAULT_BG);
-    this.#drawBorder(buffer);
+    const { x: ox, y: oy } = this.content;
+    super.renderSelf(buffer);
 
     this.#state.update(this.session.term);
 
@@ -336,49 +458,9 @@ export class TerminalPane extends Renderable {
     for (const r of this.#runs) buffer.drawText(r.text, ox + r.x, oy + r.y, r.fg, r.bg);
 
     const cur = this.#cachedCursor;
-    if (cur && cur.x < this.width - this.#padX && cur.y < this.height - this.#padY) {
+    if (cur && cur.x < this.width - this.padX && cur.y < this.height - this.padY) {
       this.#drawCursor(buffer, ox + cur.x, oy + cur.y, cur.style, this.#cursorText);
     }
-  }
-
-  /**
-   * Draw only the sides this pane owns.
-   *
-   * A corner glyph is used where two owned sides meet; where only one of the
-   * pair is owned the line simply runs to the end of the pane and the Divider
-   * next to it draws the tee. That is what keeps a split looking like one
-   * continuous frame rather than two boxes pushed together.
-   */
-  #drawBorder(buffer: OptimizedBuffer): void {
-    const fg = this.active ? BORDER_FOCUS : this.hovered ? BORDER_HOVER : BORDER_IDLE;
-    const { top, right, bottom, left } = this.#edges;
-    const x0 = this.x;
-    const y0 = this.y;
-    const x1 = this.x + this.width - 1;
-    const y1 = this.y + this.height - 1;
-
-    if (top) {
-      const title = this.session.term.title;
-      const titleWidth = cellWidth(title);
-      if (title && runtime["appearance.gap"] && this.width >= titleWidth + 4) {
-        if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
-        else buffer.setCell(x0, y0, "─", fg, DEFAULT_BG);
-        buffer.drawText(` ${title} `, x0 + 1, y0, fg, DEFAULT_BG);
-        const dashStart = x0 + 3 + titleWidth;
-        const dashEnd = right ? x1 - 1 : x1;
-        for (let x = dashStart; x <= dashEnd; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG);
-      } else {
-        for (let x = x0; x <= x1; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG);
-      }
-    }
-    if (bottom) for (let x = x0; x <= x1; x++) buffer.setCell(x, y1, "─", fg, DEFAULT_BG);
-    if (left) for (let y = y0; y <= y1; y++) buffer.setCell(x0, y, "│", fg, DEFAULT_BG);
-    if (right) for (let y = y0; y <= y1; y++) buffer.setCell(x1, y, "│", fg, DEFAULT_BG);
-
-    if (top && right) buffer.setCell(x1, y0, "┐", fg, DEFAULT_BG);
-    if (bottom && left) buffer.setCell(x0, y1, "└", fg, DEFAULT_BG);
-    if (bottom && right) buffer.setCell(x1, y1, "┘", fg, DEFAULT_BG);
-    if (top && left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
   }
 
   /** Walk the grid once and batch contiguous same-style cells into runs.
@@ -403,8 +485,8 @@ export class TerminalPane extends Renderable {
       text = "";
     };
 
-    const maxY = this.height - this.#padY;
-    const maxX = this.width - this.#padX;
+    const maxY = this.height - this.padY;
+    const maxX = this.width - this.padX;
     this.#state.forEachCell((x, y, t, fg, bg, width, selected) => {
       if (y >= maxY || x >= maxX) return;
       if (cur && x === cur.x && y === cur.y) this.#cursorText = t;
@@ -458,8 +540,6 @@ export class TerminalPane extends Renderable {
   }
 
   protected override destroySelf(): void {
-    // Closes the view only; the agent keeps running.
-    this.session.removeViewer();
     Effect.runFork(Scope.close(this.#scope, Exit.void));
     super.destroySelf();
   }
