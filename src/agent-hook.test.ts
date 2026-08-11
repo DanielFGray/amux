@@ -12,7 +12,8 @@ import {
 } from "./agent-hook.ts";
 // The installed asset itself, so these assertions cover the bytes that land in
 // the user's opencode rather than a TypeScript restatement of them.
-import { AmuxAgentStatePlugin } from "./agent-hook/opencode.js";
+import { AmuxAgentStatePlugin, STATE_BY_EVENT } from "./agent-hook/opencode.js";
+import { isReportedAgentState } from "./agent-state.ts";
 import { testEffect } from "./test-effect.ts";
 
 const scoped = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Scope.Scope>) =>
@@ -64,6 +65,14 @@ const pluginWith = (env: Record<string, string | undefined>) =>
 
 const statusEvent = (status: string) => ({
   event: { type: "session.status", properties: { status } },
+});
+
+/* The hook is the one piece of this that cannot import the vocabulary — it
+ * runs inside opencode. A state it invents would be refused by the socket and
+ * lost in silence, so the crossing is checked here instead. */
+test("every state the opencode hook can send is one amux accepts", () => {
+  const unknown = [...STATE_BY_EVENT.values()].filter((state) => !isReportedAgentState(state));
+  expect(unknown).toEqual([]);
 });
 
 testEffect("installs and uninstalls only the amux opencode plugin", () =>

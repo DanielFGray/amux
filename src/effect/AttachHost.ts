@@ -30,11 +30,7 @@ import {
   type PreparedSession,
 } from "./SessionSupervisor.ts";
 import type { ManagedSession, PtyError, SessionSpec } from "./SessionRegistry.ts";
-import { AGENT_STATES, type AgentState } from "../agent-state.ts";
-
-/** The only self-reports the agent-state socket accepts. */
-const isAgentState = (value: unknown): value is AgentState =>
-  AGENT_STATES.includes(value as AgentState);
+import { isReportedAgentState, type ReportedAgentState } from "../agent-state.ts";
 
 export interface AttachHostOptions {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
@@ -60,7 +56,10 @@ export interface AttachHostOptions {
   ) => Effect.Effect<void, unknown>;
   /** A supervised backend actually terminated (not merely an observer detaching). */
   readonly onSessionExit?: (session: string, code: number | null) => Effect.Effect<void, unknown>;
-  readonly onAgentState?: (session: string, state: AgentState) => Effect.Effect<void, unknown>;
+  readonly onAgentState?: (
+    session: string,
+    state: ReportedAgentState,
+  ) => Effect.Effect<void, unknown>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -148,7 +147,7 @@ const make = (
                       // Built, not run: an Effect is a description, so this costs
                       // nothing when the report turns out to be malformed.
                       const report =
-                        request.method === "agent.state" && agent && isAgentState(state)
+                        request.method === "agent.state" && agent && isReportedAgentState(state)
                           ? (options.onAgentState?.(agent, state) ?? Effect.void)
                           : undefined;
                       const ok = request.method === "ping" || report !== undefined;

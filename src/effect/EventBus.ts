@@ -1,8 +1,9 @@
 import { Effect, PubSub, Schema as S, Scope, Stream } from "effect";
+import { AgentState } from "../agent-state.ts";
 
 const AgentStateChanged = S.TaggedStruct("agent.state", {
   session: S.String,
-  state: S.Literal("idle", "working", "blocked", "failed", "detached", "done"),
+  state: AgentState,
 });
 const Notification = S.TaggedStruct("notification", {
   session: S.String,

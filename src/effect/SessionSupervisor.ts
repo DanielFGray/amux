@@ -18,6 +18,7 @@ import {
   type SessionSpec,
 } from "./SessionRegistry.ts";
 import { isTerminalSize } from "../limits.ts";
+import type { ReportedAgentState } from "../agent-state.ts";
 
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
 const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
@@ -41,7 +42,7 @@ export interface SessionExitObserverService {
 export interface SessionStateObserverService {
   readonly onState: (
     id: string,
-    state: "idle" | "working" | "blocked" | "failed" | "done",
+    state: ReportedAgentState,
   ) => Effect.Effect<void, unknown>;
 }
 
@@ -217,7 +218,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       let phase: "prepared" | "activating" | "active" | "aborted" = "prepared";
       const pending: Uint8Array[] = [];
       const pendingEvents: AgentFrame[] = [];
-      let lastAgentState: "idle" | "working" | "blocked" | "failed" | "done" | null = null;
+      let lastAgentState: ReportedAgentState | null = null;
       let exitPublished = false;
 
       const publishExit = (code: number | null) =>

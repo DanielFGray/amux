@@ -15,7 +15,7 @@ import { SessionStore, isSessionId } from "./session.ts";
 import { controlCall } from "./control-client.ts";
 import { commandDefinition, COMMAND_META, Command, type CommandTag } from "./commands.ts";
 import { parseArgs, generateHelp } from "./command-cli.ts";
-import { AGENT_STATES, reportAgentState, type AgentState } from "./agent-state.ts";
+import { isReportedAgentState, reportAgentState, ReportedAgentState } from "./agent-state.ts";
 import { installOpencodeHook, uninstallOpencodeHook } from "./agent-hook.ts";
 
 function isCommandTag(s: string): s is CommandTag {
@@ -73,19 +73,20 @@ async function runAgentState(argv: string[]): Promise<number> {
   const state =
     argv.find((value) => value.startsWith("--state="))?.slice(8) ??
     (argv.includes("--state") ? argv[argv.indexOf("--state") + 1] : undefined);
-  // Keep agent callbacks on the same managed-pane addressing contract as notify.
-  const session = resolveCommandSession("notify", undefined, {});
+  // The same two-variable contract the installed hooks read: a pane that can be
+  // reported on is a pane that was told its own id and where to write.
+  const socketPath = process.env.AMUX_AGENT_STATE_SOCKET;
   const agent = process.env.AMUX_PANE_ID;
-  if (!session || !agent) {
+  if (!socketPath || !agent) {
     console.error("error: 'agent-state' requires a managed pane");
     return 2;
   }
-  if (!state || !AGENT_STATES.includes(state as AgentState)) {
-    console.error(`error: --state must be one of ${AGENT_STATES.join(", ")}`);
+  if (!isReportedAgentState(state)) {
+    console.error(`error: --state must be one of ${ReportedAgentState.literals.join(", ")}`);
     return 2;
   }
   try {
-    await reportAgentState(session, agent, state as AgentState);
+    await reportAgentState(socketPath, agent, state);
     return 0;
   } catch (error) {
     console.error(`error: ${String(error)}`);

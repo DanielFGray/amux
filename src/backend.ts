@@ -16,7 +16,7 @@
 import { spawnPty, readPty } from "./pty.ts";
 import { Effect, Fiber, Mailbox, Stream } from "effect";
 import type { AttachClientShape } from "./attach.ts";
-import type { AgentState } from "./detect.ts";
+import type { AgentState } from "./agent-state.ts";
 
 export interface SessionBackend {
   /** True once the stream is over: the process exited, or the attachment was

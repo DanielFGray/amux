@@ -13,7 +13,7 @@
  * we project here — a supervised PTY has no hooks to lean on.
  */
 
-export type AgentState = "idle" | "working" | "blocked" | "failed" | "detached" | "done";
+import type { AgentState } from "./agent-state.ts";
 
 /**
  * Executable names that mean "this is an agent CLI", mapped to a short label.
@@ -47,7 +47,18 @@ const AGENT_EXECUTABLES: Record<string, string> = {
 
 /** Runtimes an agent is commonly launched through, where the name worth reading
  *  is the script in argv[1] rather than the binary in argv[0]. */
-const INTERPRETERS = new Set(["node", "bun", "deno", "python", "python3", "sh", "bash", "zsh"]);
+const INTERPRETERS = new Set([
+  "node",
+  "bun",
+  "deno",
+  "python",
+  "python3",
+  "sh",
+  "bash",
+  "fish",
+  "zsh",
+  process.env.SHELL?.split("/").pop()?.toLowerCase() ?? "",
+]);
 
 const executableName = (token: string): string =>
   token

@@ -9,7 +9,8 @@ import { applyOptions, resolveOptions } from "./options.ts";
 import { rollUp, nextBlockedAfter } from "./space.ts";
 import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
-import type { Session, AgentState } from "./agent.ts";
+import type { Session } from "./agent.ts";
+import type { AgentState } from "./agent-state.ts";
 
 const SHELL = ["bash"];
 

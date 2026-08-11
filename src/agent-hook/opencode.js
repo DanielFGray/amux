@@ -11,7 +11,10 @@ import net from "node:net";
 /** Longest an opencode event handler may be delayed by a report. */
 const TIMEOUT_MS = 500;
 
-const STATE_BY_EVENT = new Map([
+// Exported so amux's own tests can check these values against the one schema
+// that defines them. This file cannot import that schema: it is loaded by
+// opencode, not by amux, and may not reach into a codebase that is not there.
+export const STATE_BY_EVENT = new Map([
   // OpenCode is actively making progress during these events.
   ["session.status:active", "working"],
   ["session.status:busy", "working"],

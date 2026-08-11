@@ -1,7 +1,8 @@
 import { BoxRenderable, type RenderContext } from "@opentui/core";
 import { Context, Effect, Exit, Scope } from "effect";
 import { Window } from "./window.ts";
-import type { Session, AgentState } from "./agent.ts";
+import type { Session } from "./agent.ts";
+import type { AgentState } from "./agent-state.ts";
 import type { TerminalPane } from "./pane.ts";
 import { RenderCtx, type WorkspaceEnv } from "./env.ts";
 import {

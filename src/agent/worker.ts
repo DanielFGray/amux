@@ -1,6 +1,7 @@
 import type { Chat, LanguageModel, Response, Tool, Toolkit } from "@effect/ai";
 import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
 import type { AgentEventPayload, AgentDelta } from "../effect/AttachProtocol.ts";
+import type { ReportedAgentState } from "../agent-state.ts";
 
 export type AgentWorker = {
   readonly steer: (message: string) => Effect.Effect<void>;
@@ -11,7 +12,7 @@ export type AgentWorker = {
 type AgentFramePayload =
   | {
       readonly _tag: "agent.status";
-      readonly state: "idle" | "working" | "blocked" | "failed" | "done";
+      readonly state: ReportedAgentState;
     }
   | { readonly _tag: "turn.start"; readonly turn: string; readonly prompt: string }
   | { readonly _tag: "text.delta"; readonly turn: string; readonly text: string }

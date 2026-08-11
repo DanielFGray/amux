@@ -2,17 +2,8 @@ import { Clock, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { Terminal, RenderState } from "./ghostty.ts";
 import { localPty, exitedBackend, type SessionBackend, type SessionBackendFactory } from "./backend.ts";
 import { scrollViewport, ScrollTo } from "./shim.ts";
-import {
-  splitActivity,
-  looksBlocked,
-  identifyAgent,
-  commandName,
-  type AgentState,
-} from "./detect.ts";
-
-export type { AgentState };
-/** @deprecated use AgentState — kept so older call sites keep compiling. */
-export type AgentStatus = AgentState;
+import { splitActivity, looksBlocked, identifyAgent, commandName } from "./detect.ts";
+import type { AgentState } from "./agent-state.ts";
 
 /** How often the screen is re-scanned for a "waiting on you" prompt. Blocked
  *  state changes are human-paced, so a few times a second is ample and keeps

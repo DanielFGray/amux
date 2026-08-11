@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show } from "solid-js";
-import { SPINNER_FRAMES, STATE_GLYPH, type AgentState } from "../detect.ts";
+import { SPINNER_FRAMES, STATE_GLYPH } from "../detect.ts";
+import type { AgentState } from "../agent-state.ts";
 import type { Window } from "../window.ts";
 import type { AppState } from "./state.ts";
 import { theme } from "./theme.ts";
