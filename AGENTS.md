@@ -44,6 +44,10 @@ bun run daemon        # daemon (same as `bun src/cli.ts daemon <session>`)
 bun run cli           # unified `amux` CLI entry
 ```
 
+TypeScript diagnostics include suggestions. Treat suggestions as actionable
+feedback: fix them when they are correct, and do not suppress or ignore them
+until they accumulate.
+
 Tasks live in `prog`:
 
 ```bash

@@ -286,7 +286,7 @@ function lifecycleSession(workspace: WorkspaceSnapshot, spawn: SessionBackendFac
     events: Stream.never,
     backend: () => spawn,
     runWorkspace: () => Effect.succeed(structuredClone(workspace)),
-    run: () => Effect.succeed(undefined),
+    run: () => Effect.void,
     close() {},
     stop: () => Effect.void,
     setBuffer: () => Effect.succeed("buffer"),

@@ -27,8 +27,8 @@ function fakeIntegrations(has: Record<string, boolean>): IntegrationService {
           ? { type: "credential" as const, id: `cred-${id}` as never, label: "default" }
           : undefined,
       ),
-    resolve: () => Effect.succeed(undefined),
-    model: () => Effect.succeed(undefined),
+    resolve: () => Effect.void.pipe(Effect.as(undefined)),
+    model: () => Effect.void.pipe(Effect.as(undefined)),
   };
 }
 
@@ -40,10 +40,10 @@ function fakeModelCatalog(models: Record<string, Model | undefined>): ModelCatal
   }
   return {
     providers: () => Effect.succeed({}),
-    provider: () => Effect.succeed(undefined),
+    provider: () => Effect.void.pipe(Effect.as(undefined)),
     model: (providerID, modelID) => Effect.succeed(index[providerID]?.[modelID]),
-    refresh: () => Effect.succeed(undefined),
-    invalidate: Effect.succeed(undefined),
+    refresh: () => Effect.void,
+    invalidate: Effect.void,
   };
 }
 
