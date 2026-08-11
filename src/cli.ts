@@ -26,39 +26,62 @@ function isCommandTag(s: string): s is CommandTag {
   return s in COMMAND_META;
 }
 
-const runRpc = (id: string, value: Command) =>
-  controlCall(id, (control) => control.Run({ value })).pipe(
-    Effect.provide(SessionStore.Default),
-    Effect.provide(BunFileSystem.layer),
-  );
+const runRpc = (id: string, values: readonly Command[]) =>
+  controlCall(id, (control) => {
+    const context = {
+      size: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
+      shell: [process.env.SHELL ?? "sh"],
+      cwd: process.cwd(),
+    };
+    return control.Batch({ values: [...values], context });
+  }).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer));
 
-async function runCommand(
-  id: string,
-  tag: CommandTag,
-  parsed: Record<string, unknown>,
-): Promise<number> {
-  if (!parsed) {
-    console.error(`error: could not parse arguments for '${tag}'`);
-    return 2;
-  }
-
-  const meta = COMMAND_META[tag]!;
-  if (!parsed) return 2;
-
+async function runCommands(id: string, values: readonly Command[]): Promise<number> {
   try {
-    const value = Schema.decodeUnknownSync(Command)({ _tag: tag, ...parsed });
-    const { result } = await Effect.runPromise(runRpc(id, value));
-
-    if (result !== undefined) {
-      if (typeof result === "object") process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-      else process.stdout.write(String(result) + "\n");
+    const { outputs } = await Effect.runPromise(runRpc(id, values));
+    for (const { result } of outputs) {
+      if (result !== undefined) {
+        if (typeof result === "object")
+          process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+        else process.stdout.write(String(result) + "\n");
+      }
     }
-
     return 0;
   } catch (error) {
     console.error(`error: ${String(error)}`);
     return 1;
   }
+}
+
+export function splitCommandArgs(argv: readonly string[]): string[][] {
+  const groups: string[][] = [[]];
+  for (const arg of argv) {
+    if (arg === ";") groups.push([]);
+    else groups.at(-1)!.push(arg);
+  }
+  return groups;
+}
+
+function parseCommandGroup(argv: string[]):
+  | {
+      tag: CommandTag;
+      parsed: Record<string, unknown>;
+      positionalSession?: string;
+    }
+  | { errors: string[] } {
+  const tag = argv[0];
+  if (!tag || !isCommandTag(tag))
+    return { errors: [`unknown command: ${JSON.stringify(tag ?? "")}`] };
+
+  const direct = parseArgs(tag, argv.slice(1));
+  if (direct.parsed) return { tag, parsed: direct.parsed };
+
+  const positionalSession = argv[1];
+  if (positionalSession && isSessionId(positionalSession)) {
+    const legacy = parseArgs(tag, argv.slice(2));
+    if (legacy.parsed) return { tag, parsed: legacy.parsed, positionalSession };
+  }
+  return { errors: direct.errors };
 }
 
 export function resolveCommandSession(
@@ -151,24 +174,28 @@ async function main(): Promise<number> {
 
   // Command dispatch
   if (isCommandTag(sub)) {
-    const positionalSession =
-      argv[1] && !argv[1].startsWith("--") && isSessionId(argv[1]) ? argv[1] : undefined;
-    const cmdArgs = positionalSession ? argv.slice(2) : argv.slice(1);
-    const { parsed, errors } = parseArgs(sub, cmdArgs);
-    if (errors.length > 0) {
-      console.error(`error: ${errors.join("\n  ")}`);
-      return 2;
+    const groups = splitCommandArgs(argv);
+    const commands: Command[] = [];
+    let id: string | undefined;
+    for (const group of groups) {
+      const parsed = parseCommandGroup(group);
+      if ("errors" in parsed) {
+        console.error(`error: ${parsed.errors.join("\n  ")}`);
+        return 2;
+      }
+      const commandId = resolveCommandSession(parsed.tag, parsed.positionalSession, parsed.parsed);
+      if (!commandId) {
+        console.error(`error: '${parsed.tag}' requires a session id or a managed pane`);
+        return 2;
+      }
+      if (id !== undefined && commandId !== id) {
+        console.error("error: chained commands must target the same daemon session");
+        return 2;
+      }
+      id = commandId;
+      commands.push(Schema.decodeUnknownSync(Command)({ _tag: parsed.tag, ...parsed.parsed }));
     }
-    if (!parsed) {
-      console.error(`error: could not parse arguments for '${sub}'`);
-      return 2;
-    }
-    const id = resolveCommandSession(sub, positionalSession, parsed);
-    if (!id) {
-      console.error(`error: '${sub}' requires a session id or a managed pane`);
-      return 2;
-    }
-    return await runCommand(id, sub, parsed);
+    return await runCommands(id!, commands);
   }
 
   // Session attach (default)

@@ -86,15 +86,15 @@ const program = Effect.gen(function* () {
     const tag = resolveCommand(tool);
     const value = command(tag as never, input as never);
     return controlCallPath(controlSocket, (control) =>
-      control.Run({
-        value: value as never,
+      control.Batch({
+        values: [value as never],
         context: {
           size: agentSize,
           shell: [process.env.SHELL ?? "sh"],
           cwd: process.env.AMUX_AGENT_CWD ?? process.cwd(),
           agent: session,
         },
-      }).pipe(Effect.map((result) => result.result)),
+      }).pipe(Effect.map(({ outputs }) => outputs[0]?.result)),
     );
   };
   const definitions = agentDefs.map((def) =>

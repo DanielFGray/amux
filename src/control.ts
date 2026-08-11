@@ -55,31 +55,24 @@ const StatusSchema = S.Struct({
  * so it cannot be narrowed at the group level; the caller decodes it with the
  * schema its own tag declares.
  */
-const RunResultSchema = S.Struct({
+const BatchOutputSchema = S.Struct({
   result: S.optional(S.Unknown),
   workspace: S.optional(WorkspaceJson),
 });
+
+const BatchResultSchema = S.Struct({ outputs: S.Array(BatchOutputSchema) });
 
 export class ControlRpcs extends RpcGroup.make(
   Rpc.make("Ping", { success: AttachInfoSchema, error: ControlError }),
   Rpc.make("Status", { success: StatusSchema, error: ControlError }),
   Rpc.make("Stop", { success: S.Void, error: ControlError }),
-  Rpc.make("WorkspaceCommand", {
+  Rpc.make("Batch", {
     payload: {
-      value: Command,
-      expectedRevision: S.Int,
-      context: WorkspaceCommandContextSchema,
-    },
-    success: WorkspaceJson,
-    error: ControlError,
-  }),
-  Rpc.make("Run", {
-    payload: {
-      value: Command,
+      values: S.Array(Command),
       expectedRevision: S.optional(S.Int),
       context: S.optional(WorkspaceCommandContextSchema),
     },
-    success: RunResultSchema,
+    success: BatchResultSchema,
     error: ControlError,
   }),
   Rpc.make("SetBuffer", {

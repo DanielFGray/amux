@@ -81,4 +81,5 @@ test("generateHelp is non-empty", () => {
   expect(help).toContain("pane.split");
   expect(help).toContain("buffer.set");
   expect(help).toContain("daemon");
+  expect(help).toContain("\\;");
 });

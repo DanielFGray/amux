@@ -52,7 +52,6 @@ import {
   type SessionPaths,
 } from "./session.ts";
 import { command, COMMAND_META, type Command } from "./commands.ts";
-import { parseCommandText } from "./command-text.ts";
 import {
   markSessionExited,
   parseWorkspaceCommandContext,
@@ -640,7 +639,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             h.buffers.delete(value.name);
             return {};
         }
-        return yield* controlFail(`buffer command '${value._tag}' is not implemented for run`);
+        return yield* controlFail(`buffer command '${value._tag}' is not implemented for batch`);
       }
       if (meta.target === "server") {
         if (value._tag === "app.quit") {
@@ -649,7 +648,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           );
           return {};
         }
-        return yield* controlFail(`server command '${value._tag}' is not implemented for run`);
+        return yield* controlFail(`server command '${value._tag}' is not implemented for batch`);
       }
       if (meta.target === "session") {
         if (value._tag === "pane.capture") {
@@ -665,9 +664,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           });
           return {};
         }
-        return yield* controlFail(`session command '${value._tag}' is not implemented for run`);
+        return yield* controlFail(`session command '${value._tag}' is not implemented for batch`);
       }
-      return yield* controlFail("session commands are not yet implemented for run");
+      return yield* controlFail("session commands are not yet implemented for batch");
     });
 
   const controlHandlers = ControlRpcs.toLayer({
@@ -706,35 +705,20 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         ).pipe(Effect.asVoid),
       ),
 
-    WorkspaceCommand: ({ value, expectedRevision, context }) =>
+    Batch: ({ values, expectedRevision, context }) =>
       guard(
         Effect.gen(function* () {
-          const cur = yield* model.get;
-          const ctx = yield* parseWorkspaceCommandContext(context, cur.workspace);
-          const ws = yield* runWorkspaceCommand(value, expectedRevision, ctx);
-          return JSON.stringify(ws);
-        }),
-      ),
-
-    Run: ({ value, expectedRevision, context }) =>
-      guard(runRemote(value, expectedRevision, context)),
-
-    RunText: ({ text, expectedRevision, context }) =>
-      guard(
-        Effect.gen(function* () {
-          const commands = yield* parseCommandText(text);
-          const results: unknown[] = [];
+          if (values.length === 0) return yield* controlFail("command batch must not be empty");
+          const outputs: Array<{ result?: unknown; workspace?: string }> = [];
           let revision = expectedRevision;
-          let workspace: string | undefined;
-          for (const value of commands) {
+          for (const value of values) {
             const output = yield* runRemote(value, revision, context);
-            if ("result" in output && output.result !== undefined) results.push(output.result);
-            if ("workspace" in output && output.workspace !== undefined) {
-              workspace = output.workspace;
-              revision = JSON.parse(workspace).revision;
+            outputs.push(output);
+            if (output.workspace !== undefined) {
+              revision = JSON.parse(output.workspace).revision;
             }
           }
-          return { results, ...(workspace === undefined ? {} : { workspace }) };
+          return { outputs };
         }),
       ),
 

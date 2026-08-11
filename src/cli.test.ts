@@ -1,5 +1,15 @@
 import { expect, test } from "bun:test";
-import { resolveCommandSession } from "./cli.ts";
+import { resolveCommandSession, splitCommandArgs } from "./cli.ts";
+
+test("escaped shell semicolons divide command argument groups", () => {
+  expect(splitCommandArgs(["pane.split", "row", ";", "pane.focus", "right"])).toEqual([
+    ["pane.split", "row"],
+    ["pane.focus", "right"],
+  ]);
+  expect(splitCommandArgs(["pane.send-keys", "hello world"])).toEqual([
+    ["pane.send-keys", "hello world"],
+  ]);
+});
 
 test("commands use the pane session unless an explicit session is supplied", () => {
   const previous = process.env.AMUX_DAEMON_SESSION;

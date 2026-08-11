@@ -160,13 +160,15 @@ const make = (
           Effect.tryPromise({
             try: () => {
               const request = async () => {
-                const next = await Runtime.runPromise(runtime)(
-                  control.WorkspaceCommand({
-                    value: command,
+                const { outputs } = await Runtime.runPromise(runtime)(
+                  control.Batch({
+                    values: [command],
                     expectedRevision: workspace.revision,
                     context,
                   }),
                 );
+                const next = outputs[0]?.workspace;
+                if (next === undefined) throw new Error("workspace command returned no workspace");
                 const parsed = await Runtime.runPromise(runtime)(parseWorkspaceJson(next));
                 accept(parsed);
                 return structuredClone(workspace);
@@ -182,8 +184,8 @@ const make = (
           }),
         ),
       run: (command) =>
-        control.Run({ value: command }).pipe(
-          Effect.map(({ result }) => result),
+        control.Batch({ values: [command] }).pipe(
+          Effect.map(({ outputs }) => outputs[0]?.result),
           Effect.mapError(toControlError),
         ),
       backend: () => daemonBackend(service, service.live),

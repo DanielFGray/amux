@@ -138,8 +138,8 @@ test("a refused command arrives as the daemon's typed failure, not a crash", asy
 
   const error = await ctl(daemon.id, env, (c) =>
     Effect.flip(
-      c.WorkspaceCommand({
-        value: command("space.rename", { name: "loser" }),
+      c.Batch({
+        values: [command("space.rename", { name: "loser" })],
         expectedRevision: workspace.revision + 99,
         context,
       }),
@@ -152,36 +152,50 @@ test("a refused command arrives as the daemon's typed failure, not a crash", asy
   expect((await ctl(daemon.id, env, (c) => c.Status())).degraded).toBeUndefined();
 });
 
-test("a workspace command run over the socket installs the new generation", async () => {
-  const { daemon, env } = await started("control-run");
+test("a command batch runs in order and carries its workspace revision forward", async () => {
+  const { daemon, env } = await started("control-batch");
   const before = Effect.runSync(daemon.getWorkspace);
 
-  const { workspace } = await ctl(daemon.id, env, (c) =>
-    c.Run({
-      value: command("space.rename", { name: "named-remotely" }),
+  const { outputs } = await ctl(daemon.id, env, (c) =>
+    c.Batch({
+      values: [
+        command("space.rename", { name: "first" }),
+        command("space.rename", { name: "named-remotely" }),
+      ],
       expectedRevision: before.revision,
       context,
     }),
   );
-  expect(JSON.parse(workspace!).spaces[0].name).toBe("named-remotely");
+  expect(outputs).toHaveLength(2);
+  expect(JSON.parse(outputs[0]!.workspace!).revision).toBe(before.revision + 1);
+  expect(JSON.parse(outputs[1]!.workspace!).revision).toBe(before.revision + 2);
   expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("named-remotely");
 });
 
-test("command text runs in order and carries the workspace revision forward", async () => {
-  const { daemon, env } = await started("control-run-text");
+test("an empty command batch is rejected", async () => {
+  const { daemon, env } = await started("control-empty-batch");
+  const error = await ctl(daemon.id, env, (control) => Effect.flip(control.Batch({ values: [] })));
+  expect(error.message).toContain("must not be empty");
+});
+
+test("the CLI runs escaped-semicolon command groups in order", async () => {
+  const id = "control-cli-chain";
+  const { daemon, env } = await started(id);
   const before = Effect.runSync(daemon.getWorkspace);
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
 
-  const output = await ctl(daemon.id, env, (client) =>
-    client.RunText({
-      text: "space.rename first ; space.rename second",
-      expectedRevision: before.revision,
-      context,
-    }),
-  );
+  const child = Bun.spawn({
+    cmd: [process.execPath, entry, "space.rename", "first", ";", "space.rename", "second"],
+    env: { ...process.env, ...env, AMUX_DAEMON_SESSION: id },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
-  expect(JSON.parse(output.workspace!).revision).toBe(before.revision + 2);
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(stderr).toBe("");
+  expect(exitCode).toBe(0);
+  expect(Effect.runSync(daemon.getWorkspace).revision).toBe(before.revision + 2);
   expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("second");
-  expect(output.results).toEqual([]);
 });
 
 test("a native agent can capture a live session through the command surface", async () => {
@@ -197,10 +211,10 @@ test("a native agent can capture a live session through the command surface", as
     }),
   );
   await Bun.sleep(50);
-  const { result } = await ctl(daemon.id, env, (c) =>
-    c.Run({ value: command("pane.capture", { session: id }) }),
+  const { outputs } = await ctl(daemon.id, env, (c) =>
+    c.Batch({ values: [command("pane.capture", { session: id })] }),
   );
-  expect(result).toContain("capture-me");
+  expect(outputs[0]!.result).toContain("capture-me");
   await Effect.runPromise(daemon.killSession(id));
 });
 
