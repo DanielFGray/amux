@@ -14,7 +14,7 @@ export const anthropic: Integration = {
   methods: [
     { type: "key", label: "API key" },
   ],
-  model: (model, transformClient) =>
+  model: ({ model, transformClient }) =>
     AnthropicLanguageModel.layer({ model }).pipe(
       Layer.provide(AnthropicClient.layer({ transformClient })),
       Layer.provide(FetchHttpClient.layer),

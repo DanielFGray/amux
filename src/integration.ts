@@ -1,7 +1,8 @@
 import { Clock, Context, Duration, Effect, Layer } from "effect";
-import { HttpClient, HttpClientRequest } from "@effect/platform";
+import { FileSystem, HttpClient, HttpClientRequest } from "@effect/platform";
 import { Credential } from "./credential.ts";
 import { EventBus } from "./effect/EventBus.ts";
+import * as ModelCatalog from "./model-catalog.ts";
 import { integrations, type Connection, type Integration } from "./auth/integration/index.ts";
 
 export type { Connection, Integration } from "./auth/integration/index.ts";
@@ -28,12 +29,25 @@ export interface Interface {
 
 export class Service extends Context.Tag("amux/Integration")<Service, Interface>() {}
 
-export const makeLayer = (definitions: readonly Integration[] = integrations) =>
+/**
+ * The registry, over a set of integration definitions and a model catalog.
+ *
+ * The catalog is a parameter for the same reason the catalog's own fetcher is
+ * one: it is where a provider's API host is written down, and a check about
+ * which host an integration ends up asking should not have to reach the
+ * network to state it.
+ */
+export const makeLayer = (
+  definitions: readonly Integration[] = integrations,
+  catalogLayer: Layer.Layer<ModelCatalog.Service, never, FileSystem.FileSystem> =
+    ModelCatalog.Default,
+) =>
   Layer.effect(
     Service,
     Effect.gen(function* () {
       const credentials = yield* Credential.Service;
       const events = yield* EventBus;
+      const catalog = yield* ModelCatalog.Service;
       const byID = new Map(definitions.map((integration) => [integration.id, integration]));
 
       const connections = (saved: readonly Credential.Info[]): readonly Connection[] =>
@@ -116,13 +130,25 @@ export const makeLayer = (definitions: readonly Integration[] = integrations) =>
                 if (!value) return yield* Effect.fail("credential missing");
                 return integration.authorize(value, request);
               });
-            return integration.model(model, (client) =>
-              HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
-            );
+            // The catalog is the one place a provider's host is written down,
+            // so an OpenAI-compatible integration reads it from there rather
+            // than carrying a copy. Absent for a provider the catalog does not
+            // list, and for every provider whose SDK already knows its host.
+            const provider = yield* catalog.provider(integrationID);
+            return integration.model({
+              model,
+              transformClient: (client) =>
+                HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
+              ...(provider?.api ? { apiUrl: provider.api } : {}),
+            });
           }),
       } satisfies Interface;
     }),
-  ).pipe(Layer.provide(Credential.Default), Layer.provide(EventBus.Default));
+  ).pipe(
+    Layer.provide(Credential.Default),
+    Layer.provide(EventBus.Default),
+    Layer.provide(catalogLayer),
+  );
 
 export const layer = makeLayer();
 

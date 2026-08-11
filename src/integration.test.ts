@@ -2,11 +2,14 @@ import { expect } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Redacted, TestClock } from "effect";
+import { ConfigProvider, Effect, Layer, Redacted, TestClock } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Credential } from "./credential.ts";
+import { ModelCatalog } from "./model-catalog.ts";
+import { EventBus } from "./effect/EventBus.ts";
 import { makeLayer, Service, type Integration } from "./integration.ts";
+import type { ModelRequest } from "./auth/integration/index.ts";
 import { testEffect } from "./test-effect.ts";
 
 const env = (root: string): NodeJS.ProcessEnv => ({
@@ -49,6 +52,64 @@ testEffect("stored credentials are the active connection", () =>
       variables,
     );
     expect(value && value.type === "key" ? Redacted.value(value.key) : undefined).toBe("stored");
+  }),
+);
+
+testEffect("an integration is told the API host the catalog names for it", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => rm(root, { recursive: true, force: true })),
+    );
+    const variables = env(root);
+    // Two providers: one the catalog gives a host, one it does not. An
+    // OpenAI-compatible provider is nothing but its host, and a first-party one
+    // must not have its SDK's own default overwritten with an absent value.
+    const catalog = {
+      "opencode-go": {
+        id: "opencode-go",
+        name: "OpenCode Go",
+        env: [],
+        api: "https://opencode.ai/zen/go/v1",
+        models: {},
+      },
+      anthropic: { id: "anthropic", name: "Anthropic", env: [], models: {} },
+    };
+    const asked: ModelRequest[] = [];
+    const spy = (id: string): Integration => ({
+      id,
+      label: id,
+      methods: [{ type: "key", label: "API key" }],
+      model: (request) => {
+        asked.push(request);
+        return Layer.empty as never;
+      },
+      authorize: (_credential, request) => request,
+    });
+    const registry = makeLayer(
+      [spy("opencode-go"), spy("anthropic")],
+      ModelCatalog.testLayer(Effect.succeed(JSON.stringify(catalog))).pipe(
+        Layer.provide(EventBus.Default),
+      ),
+    );
+    const build = (id: string, model: string) =>
+      Service.pipe(
+        Effect.flatMap((integration) => integration.model(id, model)),
+        Effect.provide(registry),
+        Effect.provide(Credential.Default),
+        Effect.provide(BunFileSystem.layer),
+        Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
+      ) as Effect.Effect<unknown, any, never>;
+
+    yield* build("opencode-go", "glm-5");
+    yield* build("anthropic", "claude-opus-4-5");
+
+    expect(asked.map((request) => [request.model, request.apiUrl])).toEqual([
+      ["glm-5", "https://opencode.ai/zen/go/v1"],
+      // Undefined rather than absent-and-defaulted-to-something: the client's
+      // own host is right for a provider the catalog names none for.
+      ["claude-opus-4-5", undefined],
+    ]);
   }),
 );
 
