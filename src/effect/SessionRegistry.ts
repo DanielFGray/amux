@@ -37,6 +37,8 @@ export interface SessionSpec {
   readonly cmd: readonly string[];
   readonly cwd?: string;
   readonly rpcPath?: string;
+  /** Where a hook inside a foreign agent reports that agent's state. */
+  readonly agentStatePath?: string;
   /** The pane's owning daemon session, distinct from the agent id. */
   readonly daemonSession?: string;
   readonly cols: number;
@@ -112,6 +114,7 @@ function ptyBackend(spec: SessionSpec): Backend {
     env: {
       AMUX_PANE_ID: spec.id,
       ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
+      ...(spec.agentStatePath ? { AMUX_AGENT_STATE_SOCKET: spec.agentStatePath } : {}),
       ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
     },
   });

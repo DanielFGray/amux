@@ -16,7 +16,7 @@
  * the wrong thing impossible to write rather than merely discouraged.
  */
 
-import { Context, Effect, ExecutionStrategy, Layer, Scope } from "effect";
+import { Context, Effect, ExecutionStrategy, Layer, Runtime, Scope } from "effect";
 import { createServer, type Server } from "node:net";
 import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame } from "./AttachProtocol.ts";
@@ -30,11 +30,17 @@ import {
   type PreparedSession,
 } from "./SessionSupervisor.ts";
 import type { ManagedSession, PtyError, SessionSpec } from "./SessionRegistry.ts";
+import { AGENT_STATES, type AgentState } from "../agent-state.ts";
+
+/** The only self-reports the agent-state socket accepts. */
+const isAgentState = (value: unknown): value is AgentState =>
+  AGENT_STATES.includes(value as AgentState);
 
 export interface AttachHostOptions {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
   readonly path: string;
-  readonly controlPath?: string;
+  /** Plain-JSON endpoint for agent self-reports (SessionPaths.agentState). */
+  readonly agentStatePath?: string;
   readonly rpcPath?: string;
   readonly daemonSession?: string;
   readonly idleTimeoutSeconds?: number;
@@ -54,10 +60,7 @@ export interface AttachHostOptions {
   ) => Effect.Effect<void, unknown>;
   /** A supervised backend actually terminated (not merely an observer detaching). */
   readonly onSessionExit?: (session: string, code: number | null) => Effect.Effect<void, unknown>;
-  readonly onAgentState?: (
-    session: string,
-    state: "idle" | "working" | "blocked" | "failed" | "done",
-  ) => Effect.Effect<void, unknown>;
+  readonly onAgentState?: (session: string, state: AgentState) => Effect.Effect<void, unknown>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -115,9 +118,14 @@ const make = (
     // detach before session shutdown can publish process exit frames.
     const sessions = yield* Scope.fork(host, ExecutionStrategy.sequential);
 
-    if (options.controlPath) {
-      const controlPath = options.controlPath;
-      const server = yield* Effect.acquireRelease(
+    if (options.agentStatePath) {
+      const agentStatePath = options.agentStatePath;
+      // This listener is a raw node:net callback, so it cannot `yield*` the
+      // way the attach server's callbacks do. Without a runtime to run it in,
+      // `onAgentState` would only ever be *constructed* here and discarded —
+      // an Effect that is never run reports nothing.
+      const runtime = yield* Effect.runtime<never>();
+      yield* Effect.acquireRelease(
         Effect.promise(
           () =>
             new Promise<Server>((resolve, reject) => {
@@ -135,22 +143,16 @@ const make = (
                         method?: string;
                         params?: { agent?: string; state?: string };
                       };
-                      const validState = ["idle", "working", "blocked", "failed", "done"].includes(
-                        request.params?.state ?? "",
-                      );
-                      const ok =
-                        request.method === "ping" ||
-                        (request.method === "agent.state" && validState);
-                      if (
-                        ok &&
-                        request.method === "agent.state" &&
-                        request.params?.agent &&
-                        request.params.state
-                      )
-                        void options.onAgentState?.(
-                          request.params.agent,
-                          request.params.state as any,
-                        );
+                      const agent = request.params?.agent;
+                      const state = request.params?.state;
+                      // Built, not run: an Effect is a description, so this costs
+                      // nothing when the report turns out to be malformed.
+                      const report =
+                        request.method === "agent.state" && agent && isAgentState(state)
+                          ? (options.onAgentState?.(agent, state) ?? Effect.void)
+                          : undefined;
+                      const ok = request.method === "ping" || report !== undefined;
+                      if (report) Runtime.runFork(runtime)(report);
                       socket.write(
                         JSON.stringify({
                           id: request.id,
@@ -165,13 +167,12 @@ const make = (
                 });
               });
               value.once("error", reject);
-              value.listen(controlPath, () => resolve(value));
+              value.listen(agentStatePath, () => resolve(value));
             }),
         ),
         (value) =>
           Effect.promise(() => new Promise<void>((resolve) => value.close(() => resolve()))),
       );
-      yield* Effect.addFinalizer(() => Effect.sync(() => void server));
     }
 
     yield* startAttachServer({
@@ -206,6 +207,7 @@ const make = (
           supervisor.prepare({
             ...spec,
             ...(options.rpcPath ? { rpcPath: options.rpcPath } : {}),
+            ...(options.agentStatePath ? { agentStatePath: options.agentStatePath } : {}),
             ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
           }),
           sessions,
@@ -215,6 +217,7 @@ const make = (
           supervisor.prepare({
             ...spec,
             ...(options.rpcPath ? { rpcPath: options.rpcPath } : {}),
+            ...(options.agentStatePath ? { agentStatePath: options.agentStatePath } : {}),
             ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
           }),
           sessions,

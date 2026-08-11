@@ -397,7 +397,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     const rt = ManagedRuntime.make(
       layerAttachHost({
         path: paths.attach,
-        controlPath: paths.control,
+        agentStatePath: paths.agentState,
         rpcPath: paths.socket,
         daemonSession: id,
         onAttach: attachEffect,

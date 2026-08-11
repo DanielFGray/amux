@@ -10,7 +10,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Option, Scope, Stream } from "effect";
+import { ConfigProvider, Deferred, Effect, Fiber, Option, Scope, Stream } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
@@ -221,12 +221,12 @@ test("a native worker invokes pane.capture through the amux CLI", async () => {
   await Effect.runPromise(daemon.killSession(worker));
 });
 
-test("the pane control socket accepts ping and agent state reports", async () => {
+test("the agent state socket accepts ping and agent state reports", async () => {
   const { daemon, env } = await started("pane-control");
   const paths = await run(sessionPaths(daemon.id), env);
   const lines: string[] = [];
   const socket = await Bun.connect({
-    unix: paths.control,
+    unix: paths.agentState,
     socket: {
       data: (_socket, data) => {
         lines.push(data.toString());
@@ -246,6 +246,59 @@ test("the pane control socket accepts ping and agent state reports", async () =>
   socket.end();
   expect(lines.join("\n")).toContain('"id":"one"');
   expect(lines.join("\n")).toContain('"id":"two"');
+});
+
+/* A reply of `ok:true` only proves the socket parsed the line. What callers
+ * subscribe to is the event bus, and the two came apart once already: the
+ * listener built the publish Effect and discarded it, so every agent looked
+ * idle forever while the socket kept answering ok. Assert the publication. */
+test("an agent self-report reaches the event bus, not just the socket", async () => {
+  const { daemon, env } = await started("agent-state-publish");
+  const paths = await run(sessionPaths(daemon.id), env);
+
+  const report = Effect.promise(async () => {
+    const socket = await Bun.connect({ unix: paths.agentState, socket: { data: () => {} } });
+    socket.write(
+      JSON.stringify({
+        id: "report",
+        method: "agent.state",
+        params: { agent: "pane-a", state: "working" },
+      }) + "\n",
+    );
+    await Bun.sleep(50);
+    socket.end();
+  });
+
+  const published = await run(
+    Effect.gen(function* () {
+      const control = yield* connectControl(daemon.id);
+      const ready = yield* Deferred.make<void>();
+      const head = yield* Effect.fork(
+        Stream.runHead(
+          control.Events().pipe(
+            Stream.tap((frame) =>
+              frame.event._tag === "events.ready"
+                ? Deferred.succeed(ready, undefined)
+                : Effect.void,
+            ),
+            Stream.filter((frame) => frame.event._tag === "agent.state"),
+          ),
+        ),
+      );
+      // Report only once the handshake proves this subscriber is live, so the
+      // event cannot be published before anyone is listening for it.
+      yield* Deferred.await(ready);
+      yield* report;
+      return yield* Fiber.join(head).pipe(Effect.timeout("5 seconds"));
+    }),
+    env,
+  );
+
+  expect(Option.getOrNull(published)?.event).toEqual({
+    _tag: "agent.state",
+    session: "pane-a",
+    state: "working",
+  });
 });
 
 test("malformed and oversized frames are refused without taking the daemon down", async () => {

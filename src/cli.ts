@@ -15,6 +15,8 @@ import { SessionStore, isSessionId } from "./session.ts";
 import { controlCall } from "./control-client.ts";
 import { commandDefinition, COMMAND_META, Command, type CommandTag } from "./commands.ts";
 import { parseArgs, generateHelp } from "./command-cli.ts";
+import { AGENT_STATES, reportAgentState, type AgentState } from "./agent-state.ts";
+import { installOpencodeHook, uninstallOpencodeHook } from "./agent-hook.ts";
 
 function isCommandTag(s: string): s is CommandTag {
   return s in COMMAND_META;
@@ -67,6 +69,54 @@ export function resolveCommandSession(
   return commandDefinition(tag).target === "session" ? null : "default";
 }
 
+async function runAgentState(argv: string[]): Promise<number> {
+  const state =
+    argv.find((value) => value.startsWith("--state="))?.slice(8) ??
+    (argv.includes("--state") ? argv[argv.indexOf("--state") + 1] : undefined);
+  // Keep agent callbacks on the same managed-pane addressing contract as notify.
+  const session = resolveCommandSession("notify", undefined, {});
+  const agent = process.env.AMUX_PANE_ID;
+  if (!session || !agent) {
+    console.error("error: 'agent-state' requires a managed pane");
+    return 2;
+  }
+  if (!state || !AGENT_STATES.includes(state as AgentState)) {
+    console.error(`error: --state must be one of ${AGENT_STATES.join(", ")}`);
+    return 2;
+  }
+  try {
+    await reportAgentState(session, agent, state as AgentState);
+    return 0;
+  } catch (error) {
+    console.error(`error: ${String(error)}`);
+    return 1;
+  }
+}
+
+async function runAgentHook(argv: string[]): Promise<number> {
+  const [vendor, action] = argv;
+  if (vendor !== "opencode" || (action !== "install" && action !== "uninstall")) {
+    console.error("usage: amux agent-hook opencode <install|uninstall> --yes");
+    return 2;
+  }
+  if (!argv.includes("--yes")) {
+    console.error("error: editing opencode config requires explicit consent; add --yes");
+    return 2;
+  }
+  try {
+    if (action === "install") {
+      console.log(`installed opencode hook at ${await installOpencodeHook()}`);
+    } else {
+      const removed = await uninstallOpencodeHook();
+      console.log(removed ? "removed opencode hook" : "no opencode hook installed");
+    }
+    return 0;
+  } catch (error) {
+    console.error(`error: ${String(error)}`);
+    return 1;
+  }
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const sub = argv[0];
@@ -90,6 +140,9 @@ async function main(): Promise<number> {
     const { runSessionCli } = await import("./session-cli.ts");
     return await runSessionCli([sub, argv[1] ?? "default"]);
   }
+
+  if (sub === "agent-state") return await runAgentState(argv.slice(1));
+  if (sub === "agent-hook") return await runAgentHook(argv.slice(1));
 
   // Command dispatch
   if (isCommandTag(sub)) {

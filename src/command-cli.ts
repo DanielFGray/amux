@@ -166,6 +166,8 @@ function coerce(value: string | undefined, field: FieldShape): unknown {
 export function generateHelp(): string {
   const lines: string[] = [
     "usage: amux <command> [args] [--flag=value] [--session=<id>]",
+    "       amux agent-state --state <idle|working|blocked|failed|done>",
+    "       amux agent-hook opencode <install|uninstall> --yes",
     "",
     "Commands:",
   ];

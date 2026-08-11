@@ -279,14 +279,21 @@ test("native sessions spawned without rpcPath do not set AMUX_CONTROL_SOCKET", a
 });
 
 /** A foreign agent CLI in a shell pane can only call back into the mux if the
- *  pane tells it which pane it is and where the control socket lives. */
-testEffect("pty sessions carry pane identity and the control socket", () =>
+ *  pane tells it which pane it is and where the sockets live. The hook a
+ *  foreign agent loads reads AMUX_AGENT_STATE_SOCKET, so an unset one is a
+ *  silently permanently-idle pane. */
+testEffect("pty sessions carry pane identity and both sockets", () =>
   Effect.gen(function* () {
     const registry = yield* SessionRegistry;
     const pty = yield* registry.spawn({
       id: "addressable-pty",
-      cmd: ["sh", "-c", 'printf "pane=%s socket=%s\\n" "$AMUX_PANE_ID" "$AMUX_CONTROL_SOCKET"'],
+      cmd: [
+        "sh",
+        "-c",
+        'printf "pane=%s socket=%s state=%s\\n" "$AMUX_PANE_ID" "$AMUX_CONTROL_SOCKET" "$AMUX_AGENT_STATE_SOCKET"',
+      ],
       rpcPath: "/tmp/test-pane-rpc.sock",
+      agentStatePath: "/tmp/test-pane-agent-state.sock",
       cols: 80,
       rows: 24,
     });
@@ -297,6 +304,7 @@ testEffect("pty sessions carry pane identity and the control socket", () =>
     );
     expect(text).toContain("pane=addressable-pty");
     expect(text).toContain("socket=/tmp/test-pane-rpc.sock");
+    expect(text).toContain("state=/tmp/test-pane-agent-state.sock");
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 

@@ -246,7 +246,17 @@ export interface SessionPaths {
    * from an attachment going away.
    */
   attach: string;
-  control: string;
+  /**
+   * Where foreign agents report their own lifecycle state.
+   *
+   * Deliberately *not* the RPC socket. `socket` speaks the typed ControlRpcs
+   * plane, which only an Effect client can talk to; this one accepts a line of
+   * plain JSON, because the code writing to it is a hook installed inside
+   * somebody else's agent and has to stay small enough to be obviously
+   * harmless. Two sockets, because "the command surface" and "the one message
+   * third-party code is allowed to send" are different trust boundaries.
+   */
+  agentState: string;
 }
 
 export function sessionRoot(): Effect.Effect<string> {
@@ -520,7 +530,7 @@ function sessionPathsFromRoot(id: string, root: string): SessionPaths {
     lock: path.join(rootPath, "daemon.lock"),
     socket: path.join(rootPath, "daemon.sock"),
     attach: path.join(rootPath, "attach.sock"),
-    control: path.join(rootPath, "control.sock"),
+    agentState: path.join(rootPath, "agent-state.sock"),
   };
 }
 
