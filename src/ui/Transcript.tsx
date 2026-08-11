@@ -17,7 +17,7 @@ export interface TranscriptProps {
 export function Transcript(props: TranscriptProps) {
   const transcript = new TranscriptModel();
   const [revision, setRevision] = createSignal(0);
-  const agentId = createMemo(() => (props.agent?.kind === "agent" ? props.agent.id : null));
+  const agentId = createMemo(() => (props.agent?.kind === "component" ? props.agent.id : null));
   const lines = createMemo(() => {
     revision();
     return serializeTranscript(transcript.snapshot(), Math.max(1, props.width - 2));

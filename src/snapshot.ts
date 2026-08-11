@@ -65,7 +65,8 @@ export function snapshotSessionEntry(agent: Session): PersistedSession {
   return {
     id: agent.id,
     name: agent.name,
-    ...(agent.kind === "agent" ? { kind: "agent" as const } : {}),
+    ...(agent.kind === "component" ? { kind: "component" as const } : {}),
+    ...(agent.declaredAgent ? { agent: agent.declaredAgent } : {}),
     cmd: [...agent.cmd],
     ...(agent.cwd ? { cwd: agent.cwd } : {}),
     cols: agent.term.cols,
@@ -179,6 +180,7 @@ export const restoreWindow = Effect.fnUntraced(function* (
       id: agent.id,
       name: agent.name,
       kind: agent.kind,
+      agent: agent.agent,
       cmd: agent.cmd,
       cwd: agent.cwd,
       cols: agent.cols,

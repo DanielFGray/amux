@@ -25,14 +25,32 @@ export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   message: S.String,
 }) {}
 
-/** What runs behind a session. A pty is a real process today; an agent is a
- *  stub until the out-of-process LLM backend (ts-a3d8cf) lands. */
-export type SessionKind = "pty" | "agent";
+/**
+ * What a session's content *is*, which decides what can draw it.
+ *
+ * A pty produces bytes for a terminal grid. A component produces semantic
+ * frames for a UI surface — a transcript, a form, a picker — and has no screen
+ * to replay, which is why `sync` answers one from the agent log instead.
+ *
+ * Not "is this an LLM agent": that is orthogonal and lives in `agent` below.
+ * A pty session running opencode is an agent drawn on a grid, and a component
+ * session need not be an agent at all.
+ */
+export type SessionKind = "pty" | "component";
 
 export interface SessionSpec {
-  /** Defaults to "pty": every caller that predates agent sessions is silently
-   *  still asking for one. */
+  /** Defaults to "pty": a session that does not say otherwise is a terminal. */
   readonly kind?: SessionKind;
+  /**
+   * The agent CLI or worker this session runs, if it runs one.
+   *
+   * Declared for sessions the mux starts as an agent; a foreign agent launched
+   * inside a shell pane is detected rather than declared (see identifyAgent and
+   * the agent-state hook), so this being absent does not mean "not an agent".
+   * What it does mean is that the session's *exit* is an agent's exit, and so
+   * worth reporting as agent lifecycle.
+   */
+  readonly agent?: string;
   readonly id: string;
   readonly cmd: readonly string[];
   readonly cwd?: string;
@@ -172,9 +190,10 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
 const isAgentFrame = (frame: AttachFrame): frame is AgentFrame =>
   isAgentEvent(frame) || S.is(AgentDelta)(frame);
 
-/** A native worker is isolated from the daemon and speaks semantic frames on stdout. */
-function agentProcessBackend(spec: SessionSpec): Backend {
-  if (!spec.cmd.length) throw new Error("native agent session requires a worker command");
+/** A component's content comes from a worker isolated from the daemon, speaking
+ *  semantic frames on stdout instead of terminal bytes. */
+function componentBackend(spec: SessionSpec): Backend {
+  if (!spec.cmd.length) throw new Error("component session requires a worker command");
   const child = Bun.spawn([...spec.cmd], {
     cwd: spec.cwd,
     env: {
@@ -320,7 +339,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
         });
         const backend = yield* Effect.acquireRelease(
           Effect.try({
-            try: () => (kind === "agent" ? agentProcessBackend(spec) : ptyBackend(spec)),
+            try: () => (kind === "component" ? componentBackend(spec) : ptyBackend(spec)),
             catch: (error) => asPtyError("spawn", error),
           }).pipe(Effect.tapError(() => release)),
           (owned) =>

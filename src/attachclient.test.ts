@@ -168,13 +168,13 @@ test("native agent status frames become authoritative projected state", async ()
     `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"native-status-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
   ];
   await Effect.runPromise(
-    daemon.spawnSession({ kind: "agent", id: "native-status-agent", cmd, cols: 80, rows: 24 }),
+    daemon.spawnSession({ kind: "component", id: "native-status-agent", cmd, cols: 80, rows: 24 }),
   );
   (client.live as Set<string>).add("native-status-agent");
   const agent = new Session({
     id: "native-status-agent",
     cmd,
-    kind: "agent",
+    kind: "component",
     backend: client.backend(),
   });
   agents.push(agent);
@@ -204,7 +204,7 @@ test("reattaching replays the completed transcript but not live-only deltas", as
   const liveFiber = Effect.runFork(
     first.attach.stream(id).pipe(Stream.runForEach((frame) => Effect.sync(() => void live.push(frame)))),
   );
-  await Effect.runPromise(daemon.spawnSession({ kind: "agent", id, cmd, cols: 80, rows: 24 }));
+  await Effect.runPromise(daemon.spawnSession({ kind: "component", id, cmd, cols: 80, rows: 24 }));
   first.attach.sync(id);
   await until(() => live.some((frame) => frame._tag === "turn.end"), "the completed turn");
   expect(live.some((frame) => frame._tag === "text.delta")).toBe(true);

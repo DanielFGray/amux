@@ -673,7 +673,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
   s.spaces[0]!.windows[0]!.agents.push({
     id: "agent-b",
     name: "worker",
-    kind: "agent",
+    kind: "component",
     cmd: ["worker"],
     cols: 80,
     rows: 24,
@@ -697,7 +697,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
       _tag: "spawn",
       agent: expect.objectContaining({
         id: "agent-b",
-        kind: "agent",
+        kind: "component",
         exited: false,
         exitCode: null,
       }),
@@ -754,7 +754,7 @@ test("agent.new creates an agent session and queues its initial prompt", () => {
     },
   );
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
-  expect(agent.kind).toBe("agent");
+  expect(agent.kind).toBe("component");
   expect(agent.cmd.at(-1)).toContain("src/agent/native-worker.ts");
   expect(mutation.actions).toContainEqual({
     _tag: "steer",
@@ -775,7 +775,7 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
   });
 
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
-  expect(agent.kind).toBe("agent");
+  expect(agent.kind).toBe("component");
   expect(mutation.actions).toContainEqual({ _tag: "spawn", agent });
   expect(mutation.actions.some((action) => action._tag === "steer")).toBe(false);
 });

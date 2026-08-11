@@ -21,8 +21,13 @@ const BLOCKED_SCAN_ROWS = 20;
 const AGENT_POLL_MS = 500;
 
 export interface SessionOptions {
-  /** Native sessions use semantic worker frames; omitted means a foreign PTY. */
-  kind?: "pty" | "agent";
+  /** What draws this session: a terminal grid, or a component fed by semantic
+   *  worker frames. Omitted means a pty. */
+  kind?: "pty" | "component";
+  /** The agent this session was started as, when the mux started it as one.
+   *  A shell pane the user later runs an agent in leaves this unset and is
+   *  detected instead — see agentKind. */
+  agent?: string;
   /** Display name before the child reports an OSC title. Defaults to the
    *  executable being run, which is nearly always the better answer. */
   name?: string;
@@ -73,7 +78,7 @@ function reserveAgentId(id: string) {
  */
 export class Session {
   readonly id: string;
-  readonly kind: "pty" | "agent";
+  readonly kind: "pty" | "component";
   readonly name: string;
   readonly cmd: string[];
   readonly cwd: string | undefined;
@@ -92,6 +97,8 @@ export class Session {
   #blockedCache = false;
   #blockedAt = 0;
   #blockedSeenOutput = -1;
+  /** Declared by whoever started this session as an agent. Fixed for its life. */
+  readonly #declaredAgent: string | null;
   /** Agent CLI this pane was launched as, if any. Fixed for the agent's life. */
   #spawnedAs: string | null;
   #runningAs: string | null = null;
@@ -125,6 +132,7 @@ export class Session {
     this.name = opts.name ?? commandName(opts.cmd);
     this.cmd = opts.cmd;
     this.cwd = opts.cwd;
+    this.#declaredAgent = opts.agent ?? null;
     this.#spawnedAs = identifyAgent(opts.cmd.join(" "));
     const cols = opts.cols ?? 80;
     const rows = opts.rows ?? 24;
@@ -277,14 +285,25 @@ export class Session {
   }
 
   /**
-   * Which agent CLI this pane is, if any — "claude", "codex", or null.
+   * Which agent this pane is, if any — "claude", "codex", "native", or null.
    *
-   * Either the pane was launched as one, or a shell in it is running one right
-   * now. The second case is the common one: you open a shell, cd somewhere, and
-   * type `claude`. Polled, because a process starting is not something the pty
-   * tells us about.
+   * Three ways to know, in order of authority: the mux started it as an agent
+   * and said so; the command it was launched with is a known agent CLI; or a
+   * shell in it is running one right now. The last is the common case — you
+   * open a shell, cd somewhere, and type `claude` — and is polled, because a
+   * process starting is not something the pty tells us about.
+   *
+   * Independent of `kind`: a grid can hold an agent and a component need not.
    */
+  /** What this session was declared as, for persistence. `agentKind` is the
+   *  question worth asking everywhere else, because it also answers for the
+   *  panes nobody declared. */
+  get declaredAgent(): string | null {
+    return this.#declaredAgent;
+  }
+
   get agentKind(): string | null {
+    if (this.#declaredAgent) return this.#declaredAgent;
     if (this.#spawnedAs) return this.#spawnedAs;
     if (this.#exited) return null;
     const now = Date.now();

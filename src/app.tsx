@@ -612,7 +612,7 @@ function buildApp(
 
   const promptSteerAgent = Effect.gen(function* () {
     const focused = spaces.activeWindow?.focused?.session;
-    if (!focused || focused.kind !== "agent") {
+    if (!focused || focused.kind !== "component") {
       setPromptError("");
       setPromptRequest({
         title: "steer agent",
@@ -633,7 +633,7 @@ function buildApp(
 
   const promptInterruptAgent = Effect.gen(function* () {
     const focused = spaces.activeWindow?.focused?.session;
-    if (!focused || focused.kind !== "agent") {
+    if (!focused || focused.kind !== "component") {
       setPromptError("");
       setPromptRequest({
         title: "interrupt agent",
@@ -1910,7 +1910,7 @@ function buildApp(
         region: "right",
         anchor: "center",
         title: "transcript",
-        visible: () => spaces.activeWindow?.focused?.session.kind === "agent",
+        visible: () => spaces.activeWindow?.focused?.session.kind === "component",
         size: () => 42,
         component: () => (
           <Transcript

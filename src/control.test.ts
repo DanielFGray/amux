@@ -167,6 +167,23 @@ test("a workspace command run over the socket installs the new generation", asyn
   expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("named-remotely");
 });
 
+test("command text runs in order and carries the workspace revision forward", async () => {
+  const { daemon, env } = await started("control-run-text");
+  const before = Effect.runSync(daemon.getWorkspace);
+
+  const output = await ctl(daemon.id, env, (client) =>
+    client.RunText({
+      text: "space.rename first ; space.rename second",
+      expectedRevision: before.revision,
+      context,
+    }),
+  );
+
+  expect(JSON.parse(output.workspace!).revision).toBe(before.revision + 2);
+  expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("second");
+  expect(output.results).toEqual([]);
+});
+
 test("a native agent can capture a live session through the command surface", async () => {
   const { daemon, env } = await started("agent-tools");
   const id = "capture-agent";
@@ -207,7 +224,7 @@ test("a native worker invokes pane.capture through the amux CLI", async () => {
   `;
   await Effect.runPromise(
     daemon.spawnSession({
-      kind: "agent",
+      kind: "component",
       id: worker,
       cmd: [process.execPath, "-e", script],
       cols: 80,

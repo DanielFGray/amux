@@ -80,7 +80,12 @@ export function isSessionId(id: string): boolean {
 export interface PersistedSession {
   id: string;
   name: string;
-  kind?: "pty" | "agent";
+  /** What draws it: a terminal grid, or a component fed by semantic frames. */
+  kind?: "pty" | "component";
+  /** The agent this session was started as, for the sessions the mux starts as
+   *  agents. Independent of `kind` — a shell pane the user launches an agent in
+   *  is detected, not declared, and leaves this absent. */
+  agent?: string;
   cmd: string[];
   cwd?: string;
   cols: number;
@@ -166,7 +171,8 @@ const LayoutMetadataSchema = S.Struct({ focus: S.optional(S.Unknown) });
 const PersistedSessionSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
-  kind: S.optional(S.Literal("pty", "agent")),
+  kind: S.optional(S.Literal("pty", "component")),
+  agent: S.optional(NonEmptyString),
   cmd: S.Array(NonEmptyString).pipe(S.minItems(1)),
   cwd: S.optional(S.String),
   cols: TerminalDimension,

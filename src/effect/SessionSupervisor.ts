@@ -291,7 +291,10 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           const code = yield* session.exit.pipe(Effect.orElseSucceed(() => null));
           yield* Deferred.succeed(termination, code);
           if ((yield* Deferred.await(disposition)) === "active") {
-            if (spec.kind === "agent" && code !== null) {
+            // An agent's process ending is an agent lifecycle event; a
+            // component's is not, and the two are only the same thing while
+            // every component happens to be an agent.
+            if (spec.agent && code !== null) {
               const failed = yield* agentLog.append({
                 _tag: "agent.status",
                 session: spec.id,
@@ -468,9 +471,9 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             sid: fg.sid,
           } satisfies AttachFrame);
         }
-        if (session?.kind === "agent") {
-          // Agent panes render their semantic transcript; the native worker's
-          // terminal screen is not the transcript and must not replace it.
+        if (session?.kind === "component") {
+          // A component has no screen to replay — its content is the frames it
+          // emitted, and the worker's own terminal is not those frames.
           const history = yield* agentLog.read(id, after);
           for (const event of history) yield* hub.publishTo(client, connection, event);
           return;

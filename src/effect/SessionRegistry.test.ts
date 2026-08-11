@@ -183,7 +183,7 @@ testEffect("an agent worker registers, emits semantic events, and is killed", ()
   Effect.gen(function* () {
     const registry = yield* SessionRegistry;
     const agent = yield* registry.spawn({
-      kind: "agent",
+      kind: "component",
       id: "worker-agent",
       cmd: [
         process.execPath,
@@ -193,7 +193,7 @@ testEffect("an agent worker registers, emits semantic events, and is killed", ()
       cols: 80,
       rows: 24,
     });
-    expect(agent.kind).toBe("agent");
+    expect(agent.kind).toBe("component");
     expect(yield* registry.sessions).toEqual(new Set(["worker-agent"]));
 
     yield* agent.kill;
@@ -207,7 +207,7 @@ test("native workers receive stable amux identity environment", async () => {
     Effect.gen(function* () {
       const registry = yield* SessionRegistry;
       const agent = yield* registry.spawn({
-        kind: "agent",
+        kind: "component",
         id: "env-agent",
         cmd: [
           "sh",
@@ -232,7 +232,7 @@ test("native sessions spawned with rpcPath receive it as AMUX_CONTROL_SOCKET", a
     Effect.gen(function* () {
       const registry = yield* SessionRegistry;
       const agent = yield* registry.spawn({
-        kind: "agent",
+        kind: "component",
         id: "rpc-agent",
         cmd: [
           "sh",
@@ -258,7 +258,7 @@ test("native sessions spawned without rpcPath do not set AMUX_CONTROL_SOCKET", a
     Effect.gen(function* () {
       const registry = yield* SessionRegistry;
       const agent = yield* registry.spawn({
-        kind: "agent",
+        kind: "component",
         id: "null-rpc-agent",
         cmd: [
           "sh",

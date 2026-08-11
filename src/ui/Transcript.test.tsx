@@ -33,7 +33,7 @@ test("native transcript renders semantic text and tool results", async () => {
       isError: false,
     },
   ]);
-  const agent = { id: "native", kind: "agent" } as any;
+  const agent = { id: "native", kind: "component" } as any;
   await render(() => <Transcript agent={agent} frames={() => events} sync={() => {}} width={42} />, target.renderer);
   await target.renderOnce();
   await Bun.sleep(10);

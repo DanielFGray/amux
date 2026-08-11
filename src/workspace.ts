@@ -126,6 +126,9 @@ export interface WorkspaceCommandContext {
   worktreesRoot?: string;
 }
 
+/** The agent amux runs itself, as opposed to a foreign CLI in a shell pane. */
+export const NATIVE_AGENT = "native";
+
 const NonEmptyString = S.String.pipe(S.minLength(1));
 const PositiveInt = S.Int.pipe(S.greaterThan(0));
 const TerminalDimension = S.Int.pipe(S.greaterThan(0), S.lessThanOrEqualTo(MAX_TERMINAL_DIMENSION));
@@ -140,7 +143,8 @@ const TerminalSize = S.Struct({
 const PersistedAgentShape = S.Struct({
   id: NonEmptyString,
   name: S.String,
-  kind: S.optional(S.Literal("pty", "agent")),
+  kind: S.optional(S.Literal("pty", "component")),
+  agent: S.optional(NonEmptyString),
   cmd: S.Array(NonEmptyString).pipe(S.minItems(1)),
   cwd: S.optional(S.String),
   cols: TerminalDimension,
@@ -512,7 +516,10 @@ export function applyWorkspaceCommand(
         ? [process.execPath, new URL("./agent/native-worker.ts", import.meta.url).pathname]
         : [...context.shell],
       cwd: dir,
-      ...(native ? { kind: "agent" as const } : {}),
+      // Both axes: the worker's content is frames a component draws, and it is
+      // an agent. A shell pane is neither, even when the user starts an agent
+      // in it — that one is detected from its foreground process instead.
+      ...(native ? { kind: "component" as const, agent: NATIVE_AGENT } : {}),
       cols: Math.max(1, context.size.cols),
       rows: Math.max(1, context.size.rows),
       exited: false,

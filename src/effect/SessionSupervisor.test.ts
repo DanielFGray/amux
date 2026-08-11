@@ -80,7 +80,7 @@ testEffect("a file-backed agent log survives rebuilding the supervisor", () =>
         `process.stdout.write(${JSON.stringify(JSON.stringify(event) + "\n")}); setTimeout(()=>{},30000)`,
       ];
       yield* supervisor.spawn({
-        kind: "agent",
+        kind: "component",
         id: "persisted-agent",
         cmd: command,
         cols: 80,
@@ -358,7 +358,7 @@ testEffect("a native agent worker is listed and killed through the supervisor", 
     const subscription = yield* hub.subscribe("client");
     const supervisor = yield* SessionSupervisor;
     const agent = yield* supervisor.spawn({
-      kind: "agent",
+      kind: "component",
       id: "worker-agent",
       cmd: [
         process.execPath,
@@ -368,7 +368,7 @@ testEffect("a native agent worker is listed and killed through the supervisor", 
       cols: 80,
       rows: 24,
     });
-    expect(agent.kind).toBe("agent");
+    expect(agent.kind).toBe("component");
     expect(yield* supervisor.live).toEqual(["worker-agent"]);
     yield* supervisor.kill("worker-agent");
     expect(yield* supervisor.live).toEqual([]);
@@ -386,8 +386,12 @@ testEffect("a crashed native agent reports failure and can be restarted", () =>
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
     const supervisor = yield* SessionSupervisor;
+    // Both axes, because this asserts on both: the substrate decides there is
+    // no screen to replay, and `agent` is what makes the exit a failed agent
+    // rather than a component that merely stopped.
     const spec = {
-      kind: "agent" as const,
+      kind: "component" as const,
+      agent: "native",
       id: "crashed-worker",
       cmd: [process.execPath, "-e", "process.exit(17)"],
       cols: 80,

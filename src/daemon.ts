@@ -52,6 +52,7 @@ import {
   type SessionPaths,
 } from "./session.ts";
 import { command, COMMAND_META, type Command } from "./commands.ts";
+import { parseCommandText } from "./command-text.ts";
 import {
   markSessionExited,
   parseWorkspaceCommandContext,
@@ -436,6 +437,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             if (a.exited) continue;
             yield* spawnSession({
               kind: a.kind,
+              ...(a.agent ? { agent: a.agent } : {}),
               id: a.id,
               cmd: a.cmd,
               cwd: a.cwd,
@@ -608,6 +610,66 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
 
+  const runRemote = (value: Command, expectedRevision?: number, context?: unknown) =>
+    Effect.gen(function* () {
+      const meta = COMMAND_META[value._tag]!;
+      if (meta.target === "view")
+        return yield* controlFail(
+          `command '${value._tag}' is a view command, not remotely invocable`,
+        );
+      if (meta.target === "workspace") {
+        const cur = yield* model.get;
+        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+        const ws = yield* runWorkspaceCommand(
+          value,
+          expectedRevision ?? cur.workspace.revision,
+          ctx,
+        );
+        return { workspace: JSON.stringify(ws) };
+      }
+      if (meta.target === "buffers") {
+        const h = requireHost();
+        switch (value._tag) {
+          case "buffer.set":
+            return { result: h.buffers.set(value.name, value.data) };
+          case "buffer.list":
+            return { result: h.buffers.list().map((buffer) => ({ ...buffer })) };
+          case "buffer.show":
+            return { result: new TextDecoder().decode(h.buffers.show(value.name)) };
+          case "buffer.delete":
+            h.buffers.delete(value.name);
+            return {};
+        }
+        return yield* controlFail(`buffer command '${value._tag}' is not implemented for run`);
+      }
+      if (meta.target === "server") {
+        if (value._tag === "app.quit") {
+          yield* Effect.forkDaemon(
+            Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore),
+          );
+          return {};
+        }
+        return yield* controlFail(`server command '${value._tag}' is not implemented for run`);
+      }
+      if (meta.target === "session") {
+        if (value._tag === "pane.capture") {
+          if (!value.session) return yield* controlFail("pane.capture requires a session id");
+          return { result: yield* requireHost().capture(value.session) };
+        }
+        if (value._tag === "notify") {
+          yield* eventBus.publish({
+            _tag: "notification",
+            session: id,
+            title: value.title,
+            body: value.body,
+          });
+          return {};
+        }
+        return yield* controlFail(`session command '${value._tag}' is not implemented for run`);
+      }
+      return yield* controlFail("session commands are not yet implemented for run");
+    });
+
   const controlHandlers = ControlRpcs.toLayer({
     Ping: () =>
       guard(
@@ -655,64 +717,24 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       ),
 
     Run: ({ value, expectedRevision, context }) =>
+      guard(runRemote(value, expectedRevision, context)),
+
+    RunText: ({ text, expectedRevision, context }) =>
       guard(
         Effect.gen(function* () {
-          const meta = COMMAND_META[value._tag]!;
-          if (meta.target === "view")
-            return yield* controlFail(
-              `command '${value._tag}' is a view command, not remotely invocable`,
-            );
-          if (meta.target === "workspace") {
-            const cur = yield* model.get;
-            const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
-            const ws = yield* runWorkspaceCommand(
-              value,
-              expectedRevision ?? cur.workspace.revision,
-              ctx,
-            );
-            return { workspace: JSON.stringify(ws) };
-          }
-          if (meta.target === "buffers") {
-            const h = requireHost();
-            switch (value._tag) {
-              case "buffer.set":
-                return { result: h.buffers.set(value.name, value.data) };
-              case "buffer.list":
-                return { result: h.buffers.list().map((b) => ({ ...b })) };
-              case "buffer.show":
-                return { result: new TextDecoder().decode(h.buffers.show(value.name)) };
-              case "buffer.delete":
-                h.buffers.delete(value.name);
-                return {};
+          const commands = yield* parseCommandText(text);
+          const results: unknown[] = [];
+          let revision = expectedRevision;
+          let workspace: string | undefined;
+          for (const value of commands) {
+            const output = yield* runRemote(value, revision, context);
+            if ("result" in output && output.result !== undefined) results.push(output.result);
+            if ("workspace" in output && output.workspace !== undefined) {
+              workspace = output.workspace;
+              revision = JSON.parse(workspace).revision;
             }
-            return yield* controlFail(`buffer command '${value._tag}' is not implemented for run`);
           }
-          if (meta.target === "server") {
-            if (value._tag === "app.quit") {
-              yield* Effect.forkDaemon(
-                Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore),
-              );
-              return {};
-            }
-            return yield* controlFail(`server command '${value._tag}' is not implemented for run`);
-          }
-          if (meta.target === "session") {
-            if (value._tag === "pane.capture") {
-              if (!value.session) return yield* controlFail("pane.capture requires a session id");
-              return { result: yield* requireHost().capture(value.session) };
-            }
-            if (value._tag === "notify") {
-              yield* eventBus.publish({
-                _tag: "notification",
-                session: id,
-                title: value.title,
-                body: value.body,
-              });
-              return {};
-            }
-            return yield* controlFail(`session command '${value._tag}' is not implemented for run`);
-          }
-          return yield* controlFail("session commands are not yet implemented for run");
+          return { results, ...(workspace === undefined ? {} : { workspace }) };
         }),
       ),
 

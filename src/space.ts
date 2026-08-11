@@ -612,6 +612,8 @@ const projectWindow = Effect.fnUntraced(function* (
     yield* window.startSession({
       id: saved.id,
       name: saved.name,
+      kind: saved.kind,
+      agent: saved.agent,
       cmd: saved.cmd,
       cwd: saved.cwd,
       cols: saved.cols,
