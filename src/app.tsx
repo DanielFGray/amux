@@ -11,6 +11,7 @@ import { Effect, Either, Exit, FiberMap, Redacted, Scope, Stream } from "effect"
 import { theme } from "./ui/theme.ts";
 import { basename, dirname, join } from "node:path";
 import { writeFile } from "node:fs/promises";
+import { AgentState } from "./agent-state.ts";
 
 import { projectWorkspace, SpaceSet } from "./space.ts";
 import { frame } from "./window.ts";
@@ -174,7 +175,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
           if (
             resolveOptions(options.config.options)["notifications.blocked"] &&
             event._tag === "agent.state" &&
-            event.state === "blocked"
+            event.state === AgentState.Blocked
           )
             process.stdout.write("\x07");
         }),
@@ -351,7 +352,7 @@ function buildApp(
     ],
     cwd: spaces.active?.dir ?? process.cwd(),
     blockedAgents: spaces.allAgents
-      .filter((agent) => agent.state === "blocked")
+      .filter((agent) => agent.state === AgentState.Blocked)
       .map((agent) => agent.id),
   });
   const runPanelCommand = (
@@ -505,7 +506,7 @@ function buildApp(
     }
 
     const allAgents = spaces.allAgents.filter((a) => !a.exited);
-    const blocked = allAgents.filter((a) => a.state === "blocked").length;
+    const blocked = allAgents.filter((a) => a.state === AgentState.Blocked).length;
 
     return {
       rows,

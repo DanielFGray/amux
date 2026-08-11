@@ -4,8 +4,9 @@
  * Every plane carries this word — the attach protocol, the event bus, the
  * supervisor, the sidebar glyph, the socket a foreign agent's hook writes — and
  * a state that exists in one module's union and not another's is a state that
- * silently disappears somewhere along the wire. So it is defined once, as a
- * schema, and every union and every `Record<AgentState, _>` is derived from it.
+ * silently disappears somewhere along the wire. So its names and schemas are
+ * defined once, and every union and every `Record<AgentState, _>` is derived
+ * from them.
  *
  * This module deliberately depends on nothing but Node and Effect: the leaf
  * modules that need the vocabulary (detect, backend) must not inherit the
@@ -15,21 +16,40 @@ import net from "node:net";
 import { Schema as S } from "effect";
 
 /**
- * What an agent can say about itself, over the agent-state socket or the
- * `agent.status` frame.
+ * The name for every state, so no call site spells one out.
+ *
+ * A value and a type share this name deliberately: TypeScript keeps the two in
+ * separate namespaces, so one import gives a call site both `AgentState.Idle`
+ * to write and `AgentState` to annotate with.
  */
-export const ReportedAgentState = S.Literal("idle", "working", "blocked", "failed", "done");
-export type ReportedAgentState = typeof ReportedAgentState.Type;
+export const AgentState = {
+  Idle: "idle",
+  Working: "working",
+  Blocked: "blocked",
+  Failed: "failed",
+  Done: "done",
+  Detached: "detached",
+} as const;
+
+export const ReportedAgentStateSchema = S.Literal(
+  AgentState.Idle,
+  AgentState.Working,
+  AgentState.Blocked,
+  AgentState.Failed,
+  AgentState.Done,
+);
+export type ReportedAgentState = typeof ReportedAgentStateSchema.Type;
 
 /**
- * What amux can say about an agent: everything the agent can report, plus the
- * one fact only the mux is in a position to know — that the pane lost it.
+ * Schema for what amux can say about an agent: everything the agent can report,
+ * plus the one fact only the mux is in a position to know — that the pane lost
+ * it.
  */
-export const AgentState = S.Literal(...ReportedAgentState.literals, "detached");
-export type AgentState = typeof AgentState.Type;
+export const AgentStateSchema = S.Literal(...ReportedAgentStateSchema.literals, AgentState.Detached);
+export type AgentState = typeof AgentStateSchema.Type;
 
 export const isReportedAgentState = (value: unknown): value is ReportedAgentState =>
-  ReportedAgentState.literals.includes(value as ReportedAgentState);
+  ReportedAgentStateSchema.literals.includes(value as ReportedAgentState);
 
 /**
  * Write one self-report to a session's agent-state socket.

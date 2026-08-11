@@ -157,3 +157,20 @@ Keep the scope narrow, then run formatting, typecheck, and the affected tests.
 The installed ast-grep CLI accepts `--lang` on `ast-grep run`, but not on
 `ast-grep scan` in this environment; use `ast-grep run` for a syntax rewrite
 and inspect its preview before adding `--update-all`.
+
+## State Constant Rewrite
+
+For a repeated property comparison, bind the receiver as a metavariable and
+preview the exact AST rewrite before applying it:
+
+```bash
+ast-grep run --lang ts \
+  --pattern '$OBJ.state === "blocked"' \
+  --rewrite '$OBJ.state === AgentState.Blocked' \
+  src --globs '**/*.ts' --globs '**/*.tsx' \
+  --globs '!**/*.test.ts' --globs '!**/*.test.tsx'
+```
+
+The pattern matches the whole comparison, so it does not change unrelated
+strings such as turn outcomes or comments. The replacement assumes the target
+file already imports `AgentState`; add that import separately when required.

@@ -2,7 +2,7 @@ import { BoxRenderable, type RenderContext } from "@opentui/core";
 import { Context, Effect, Exit, Scope } from "effect";
 import { Window } from "./window.ts";
 import type { Session } from "./agent.ts";
-import type { AgentState } from "./agent-state.ts";
+import { AgentState } from "./agent-state.ts";
 import type { TerminalPane } from "./pane.ts";
 import { RenderCtx, type WorkspaceEnv } from "./env.ts";
 import {
@@ -213,7 +213,7 @@ export class Space {
       const window = yield* this.newWindow();
       window.adopt(handoff.agent, pane, handoff.scope);
 
-      if (source.panes.length === 0 && !source.agents.some((a) => a.state !== "done")) {
+      if (source.panes.length === 0 && !source.agents.some((a) => a.state !== AgentState.Done)) {
         yield* this.closeWindow(source);
       }
       return window;
@@ -234,7 +234,7 @@ export class Space {
       const handoff = source.releasePane(pane);
       if (!handoff) return null;
       destination.adopt(handoff.agent, pane, handoff.scope);
-      if (source.panes.length === 0 && !source.agents.some((agent) => agent.state !== "done")) {
+      if (source.panes.length === 0 && !source.agents.some((agent) => agent.state !== AgentState.Done)) {
         yield* this.closeWindow(source);
       }
       this.selectWindow(destination);
@@ -300,17 +300,17 @@ export class Space {
 /** Ranked by how much it wants your attention. Shared by spaces and windows. */
 export function rollUp(agents: readonly Session[]): AgentState {
   const RANK: Record<AgentState, number> = {
-    blocked: 4,
-    working: 3,
-    failed: 3,
-    detached: 2,
-    idle: 1,
-    done: 0,
+    [AgentState.Blocked]: 4,
+    [AgentState.Working]: 3,
+    [AgentState.Failed]: 3,
+    [AgentState.Detached]: 2,
+    [AgentState.Idle]: 1,
+    [AgentState.Done]: 0,
   };
-  let best: AgentState = "done";
+  let best: AgentState = AgentState.Done;
   for (const a of agents) {
     const s = a.state;
-    if (s === "blocked") return "blocked";
+    if (s === AgentState.Blocked) return AgentState.Blocked;
     if (RANK[s] > RANK[best]) best = s;
   }
   return best;
@@ -333,7 +333,7 @@ export function nextBlockedAfter(order: readonly Session[], from: Session | null
   const start = from ? order.indexOf(from) + 1 : 0;
   for (let step = 0; step < n; step++) {
     const agent = order[(start + step) % n]!;
-    if (agent.state === "blocked") return agent;
+    if (agent.state === AgentState.Blocked) return agent;
   }
   return null;
 }

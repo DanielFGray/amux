@@ -1,5 +1,5 @@
 import { Schema as S } from "effect";
-import { ReportedAgentState } from "../agent-state.ts";
+import { ReportedAgentStateSchema } from "../agent-state.ts";
 
 /**
  * The framed wire protocol between a client and the attach daemon.
@@ -186,7 +186,7 @@ const PermissionResponse = S.TaggedStruct("permission.response", {
 
 const agentStatusFields = {
   session: S.String,
-  state: ReportedAgentState,
+  state: ReportedAgentStateSchema,
 };
 const AgentStatusPayload = S.TaggedStruct("agent.status", agentStatusFields);
 const AgentStatus = S.TaggedStruct("agent.status", {

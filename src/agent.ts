@@ -3,7 +3,7 @@ import { Terminal, RenderState } from "./ghostty.ts";
 import { localPty, exitedBackend, type SessionBackend, type SessionBackendFactory } from "./backend.ts";
 import { scrollViewport, ScrollTo } from "./shim.ts";
 import { splitActivity, looksBlocked, identifyAgent, commandName } from "./detect.ts";
-import type { AgentState } from "./agent-state.ts";
+import { AgentState } from "./agent-state.ts";
 
 /** How often the screen is re-scanned for a "waiting on you" prompt. Blocked
  *  state changes are human-paced, so a few times a second is ample and keeps
@@ -329,14 +329,14 @@ export class Session {
    *    BLOCKED_POLL_MS.
    */
   get state(): AgentState {
-    if (this.#exited) return "done";
-    if (this.#detached) return "detached";
+    if (this.#exited) return AgentState.Done;
+    if (this.#detached) return AgentState.Detached;
     const authoritative = this.#backend.agentState?.();
     if (authoritative) return authoritative;
-    if (!this.agentKind) return "idle";
-    if (splitActivity(this.term.title).spinning) return "working";
-    if (this.#blocked()) return "blocked";
-    return "idle";
+    if (!this.agentKind) return AgentState.Idle;
+    if (splitActivity(this.term.title).spinning) return AgentState.Working;
+    if (this.#blocked()) return AgentState.Blocked;
+    return AgentState.Idle;
   }
 
   /** @deprecated use `state`. */

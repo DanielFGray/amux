@@ -1,7 +1,7 @@
 import type { Chat, LanguageModel, Response, Tool, Toolkit } from "@effect/ai";
 import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
 import type { AgentEventPayload, AgentDelta } from "../effect/AttachProtocol.ts";
-import type { ReportedAgentState } from "../agent-state.ts";
+import { AgentState, type ReportedAgentState } from "../agent-state.ts";
 
 export type AgentWorker = {
   readonly steer: (message: string) => Effect.Effect<void>;
@@ -133,7 +133,10 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
           : ("failed" as const);
       return emit({ _tag: "turn.end", turn, outcome, ...(text ? { text } : {}) }).pipe(
         Effect.andThen(
-          emit({ _tag: "agent.status", state: outcome === "failed" ? "failed" : "idle" }),
+          emit({
+            _tag: "agent.status",
+            state: outcome === "failed" ? AgentState.Failed : AgentState.Idle,
+          }),
         ),
       );
     };
@@ -143,7 +146,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
         Effect.flatMap((n) => {
           const turn = `turn-${n}`;
           let responseText = "";
-          return emit({ _tag: "agent.status", state: "working" }).pipe(
+          return emit({ _tag: "agent.status", state: AgentState.Working }).pipe(
             Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
             Effect.andThen(
               options.chat

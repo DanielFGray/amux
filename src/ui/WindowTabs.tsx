@@ -1,13 +1,13 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show } from "solid-js";
 import { SPINNER_FRAMES, STATE_GLYPH } from "../detect.ts";
-import type { AgentState } from "../agent-state.ts";
+import { AgentState } from "../agent-state.ts";
 import type { Window } from "../window.ts";
 import type { AppState } from "./state.ts";
 import { theme } from "./theme.ts";
 
 const stateColor = (state: AgentState) =>
-  state === "blocked" ? theme.red : state === "working" ? theme.green : theme.overlay1;
+  state === AgentState.Blocked ? theme.red : state === AgentState.Working ? theme.green : theme.overlay1;
 
 /**
  * The window list, herdr-style: a single row at the top of the pane area rather
@@ -30,7 +30,7 @@ export function WindowTabs(props: {
   const glyph = (window: Window) => {
     props.app.tick();
     const state = window.state;
-    if (state !== "working") return STATE_GLYPH[state];
+    if (state !== AgentState.Working) return STATE_GLYPH[state];
     return SPINNER_FRAMES[props.app.frame() % SPINNER_FRAMES.length]!;
   };
 

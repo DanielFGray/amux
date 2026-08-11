@@ -18,7 +18,7 @@ import {
   type SessionSpec,
 } from "./SessionRegistry.ts";
 import { isTerminalSize } from "../limits.ts";
-import type { ReportedAgentState } from "../agent-state.ts";
+import { AgentState, type ReportedAgentState } from "../agent-state.ts";
 
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
 const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
@@ -295,9 +295,9 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               const failed = yield* agentLog.append({
                 _tag: "agent.status",
                 session: spec.id,
-                state: "failed",
+                state: AgentState.Failed,
               });
-              yield* stateObserver.onState(spec.id, "failed");
+              yield* stateObserver.onState(spec.id, AgentState.Failed);
               yield* hub.publish(failed);
             }
             yield* publishExit(code);

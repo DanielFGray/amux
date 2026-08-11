@@ -13,7 +13,7 @@
  * we project here — a supervised PTY has no hooks to lean on.
  */
 
-import type { AgentState } from "./agent-state.ts";
+import { AgentState } from "./agent-state.ts";
 
 /**
  * Executable names that mean "this is an agent CLI", mapped to a short label.
@@ -161,10 +161,10 @@ export function looksBlocked(lines: string[]): boolean {
 export const SPINNER_FRAMES = [..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"];
 
 export const STATE_GLYPH: Record<AgentState, string> = {
-  blocked: "●",
-  working: "⠹", // replaced with the live spinner frame when rendering
-  idle: "○",
-  failed: "!",
-  detached: "⊘",
-  done: "✓",
+  [AgentState.Blocked]: "●",
+  [AgentState.Working]: "⠹", // replaced with the live spinner frame when rendering
+  [AgentState.Idle]: "○",
+  [AgentState.Failed]: "!",
+  [AgentState.Detached]: "⊘",
+  [AgentState.Done]: "✓",
 };

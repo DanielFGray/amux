@@ -6,6 +6,7 @@ import type { DockPanel } from "../../ui/regions.tsx";
 import type { PluginDefinition } from "../types.ts";
 import type { SidebarDisplayRow } from "../../ui/panel.ts";
 import { SPINNER_FRAMES, STATE_GLYPH } from "../../detect.ts";
+import { AgentState } from "../../agent-state.ts";
 import { command } from "../../commands.ts";
 
 export const SIDEBAR_PLUGIN_ID = "amux.sidebar";
@@ -193,9 +194,9 @@ function SidebarView(props: {
 }
 
 function stateColor(state: string) {
-  return state === "blocked" || state === "failed"
+  return state === AgentState.Blocked || state === AgentState.Failed
     ? theme.red
-    : state === "working"
+    : state === AgentState.Working
       ? theme.green
       : theme.overlay1;
 }
@@ -223,7 +224,7 @@ function SidebarRow(props: {
   const glyph = (): string => {
     if (row.kind !== "agent" || !row.agentState) return "·";
     const s = row.agentState;
-    if (s !== "working") return STATE_GLYPH[s as keyof typeof STATE_GLYPH] ?? "·";
+    if (s !== AgentState.Working) return STATE_GLYPH[s as keyof typeof STATE_GLYPH] ?? "·";
     return SPINNER_FRAMES[props.frame % SPINNER_FRAMES.length]!;
   };
 
@@ -236,9 +237,9 @@ function SidebarRow(props: {
     if (row.kind === "space") return theme.mauve;
     if (row.kind === "window") return theme.blue;
     if (!row.agentState) return theme.text;
-    return row.agentState === "done"
+    return row.agentState === AgentState.Done
       ? theme.overlay1
-      : row.agentState === "failed"
+      : row.agentState === AgentState.Failed
         ? theme.red
         : row.unseen
           ? theme.peach

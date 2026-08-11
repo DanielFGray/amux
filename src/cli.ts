@@ -15,7 +15,11 @@ import { SessionStore, isSessionId } from "./session.ts";
 import { controlCall } from "./control-client.ts";
 import { commandDefinition, COMMAND_META, Command, type CommandTag } from "./commands.ts";
 import { parseArgs, generateHelp } from "./command-cli.ts";
-import { isReportedAgentState, reportAgentState, ReportedAgentState } from "./agent-state.ts";
+import {
+  isReportedAgentState,
+  reportAgentState,
+  ReportedAgentStateSchema,
+} from "./agent-state.ts";
 import { installOpencodeHook, uninstallOpencodeHook } from "./agent-hook.ts";
 
 function isCommandTag(s: string): s is CommandTag {
@@ -82,7 +86,7 @@ async function runAgentState(argv: string[]): Promise<number> {
     return 2;
   }
   if (!isReportedAgentState(state)) {
-    console.error(`error: --state must be one of ${ReportedAgentState.literals.join(", ")}`);
+    console.error(`error: --state must be one of ${ReportedAgentStateSchema.literals.join(", ")}`);
     return 2;
   }
   try {
