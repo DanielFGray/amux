@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
 import { Effect, Fiber, Schema as S, Stream, type Stream as StreamType } from "effect";
 import type { Session } from "../agent.ts";
 import { serializeTranscript, Transcript as TranscriptModel } from "../transcript.ts";
@@ -7,37 +7,38 @@ import { AgentFrame, type AttachFrame } from "../effect/AttachProtocol.ts";
 import { theme } from "./theme.ts";
 
 export interface TranscriptProps {
-  agent: Session | null;
+  session: Session;
   frames: (session: string) => StreamType.Stream<AttachFrame, unknown>;
   sync: (session: string) => void;
+  /** Columns to wrap at. Reactive: the pane it lives in is resizable. */
   width: number;
 }
 
-/** A retained semantic view of the active native agent conversation. */
+/**
+ * The retained, semantic view of one agent conversation.
+ *
+ * One session for the component's whole life, because it is a pane's content
+ * and a pane views one session — so the stream is opened once and the model is
+ * never reset under a running subscription.
+ *
+ * Draws no frame of its own: the pane around it already has a border and a
+ * title, and the composer below it is the other half of the same column.
+ */
 export function Transcript(props: TranscriptProps) {
   const transcript = new TranscriptModel();
   const [revision, setRevision] = createSignal(0);
-  const agentId = createMemo(() => (props.agent?.kind === "component" ? props.agent.id : null));
   const lines = createMemo(() => {
     revision();
-    return serializeTranscript(transcript.snapshot(), Math.max(1, props.width - 2));
+    return serializeTranscript(transcript.snapshot(), Math.max(1, props.width));
   });
 
-  createEffect(() => {
-    agentId();
-    transcript.clear();
-    if (agentId()) props.sync(agentId()!);
-    setRevision((value) => value + 1);
-  });
-
+  // Asking for the history before the stream fiber is running is safe: the
+  // attach client creates a session's queue when a frame ARRIVES, not when the
+  // stream is subscribed, and stream() then adopts that queue. So the replay
+  // waits in it rather than being dropped on the floor.
+  props.sync(props.session.id);
   const fiber = Effect.runFork(
-    Stream.unwrap(
-      Effect.gen(function* () {
-        const id = agentId();
-        if (id === null) return Stream.never;
-        return props.frames(id);
-      }),
-    ).pipe(
+    props.frames(props.session.id).pipe(
       Stream.runForEach((event) =>
         Effect.sync(() => {
           if (!S.is(AgentFrame)(event)) return;
@@ -50,16 +51,11 @@ export function Transcript(props: TranscriptProps) {
   onCleanup(() => void Effect.runFork(Fiber.interrupt(fiber)));
 
   return (
-    <box
-      style={{
-        width: "100%",
-        height: "100%",
-        flexDirection: "column",
-        padding: 1,
-        backgroundColor: theme.base,
-      }}
+    <scrollbox
+      stickyScroll
+      stickyStart="bottom"
+      style={{ flexGrow: 1, backgroundColor: theme.base }}
     >
-      <text style={{ height: 1, flexShrink: 0, fg: theme.mauve }}>native transcript</text>
       <Show
         when={lines().length > 0}
         fallback={<text style={{ fg: theme.overlay1 }}>waiting for agent events...</text>}
@@ -72,6 +68,6 @@ export function Transcript(props: TranscriptProps) {
           )}
         </For>
       </Show>
-    </box>
+    </scrollbox>
   );
 }

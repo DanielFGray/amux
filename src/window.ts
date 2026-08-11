@@ -1,4 +1,9 @@
-import { BoxRenderable, type RenderContext, type Renderable } from "@opentui/core";
+import {
+  BoxRenderable,
+  type KeyEvent,
+  type RenderContext,
+  type Renderable,
+} from "@opentui/core";
 import { Pane, TerminalPane } from "./pane.ts";
 import { ComponentPane, type PaneView } from "./component-pane.tsx";
 import { Session, type SessionOptions } from "./agent.ts";
@@ -439,6 +444,29 @@ export class Window {
       return;
     }
     this.focused?.write(bytes);
+  }
+
+  /**
+   * Hand an unbound keystroke to the pane it belongs to.
+   *
+   * Separate from `write` because a keystroke is not bytes until a leaf that
+   * wants bytes says so: a terminal encodes it, a component leaves it for the
+   * renderable holding focus inside its subtree. Follows sync mode for the same
+   * reason `write` does — the user typing into one pane of a synchronized
+   * window is typing into all of them.
+   *
+   * True when some pane took it; see the note on preventDefault in bindings.ts.
+   */
+  key(event: KeyEvent): boolean {
+    if (!this.#state.sync) return this.focused?.handleKey(event) ?? false;
+    const seen = new Set<Session>();
+    let taken = false;
+    for (const pane of this.#panes) {
+      if (seen.has(pane.session)) continue;
+      seen.add(pane.session);
+      if (pane.handleKey(event)) taken = true;
+    }
+    return taken;
   }
 
   /** Flip synchronize-panes for this window. */

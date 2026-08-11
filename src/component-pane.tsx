@@ -1,9 +1,28 @@
 /** @jsxImportSource @opentui/solid */
 import { RendererContext, _render } from "@opentui/solid";
 import type { JSX } from "@opentui/solid";
+import { createSignal, type Accessor, type Signal } from "solid-js";
 import { BoxRenderable, type CliRenderer, type RenderContext } from "@opentui/core";
 import { Pane } from "./pane.ts";
 import type { Session } from "./agent.ts";
+
+/**
+ * What a component session's view is told about the frame it lives in.
+ *
+ * Everything here changes while the view is mounted — a split resizes it, a
+ * focus change moves the keyboard — so each is an accessor rather than a value.
+ * The session is not: a pane views one session for its whole life.
+ */
+export interface PaneViewProps {
+  session: Session;
+  /** The content rect, the pane's own less the sides it draws. */
+  width: Accessor<number>;
+  height: Accessor<number>;
+  /** Whether this pane is the window's focused one. A view that takes typing
+   *  must gate its input's `focused` on this, or an unfocused pane's composer
+   *  swallows the keys meant for whichever pane the user is actually in. */
+  active: Accessor<boolean>;
+}
 
 /**
  * What draws a component session.
@@ -12,7 +31,7 @@ import type { Session } from "./agent.ts";
  * session gets is decided by the session, and a pane is a frame that mounts
  * whatever this answers. See PaneContent in env.ts for where it comes from.
  */
-export type PaneView = (session: Session) => JSX.Element;
+export type PaneView = (props: PaneViewProps) => JSX.Element;
 
 /**
  * A pane whose content is a Solid subtree rather than a terminal grid.
@@ -32,6 +51,11 @@ export type PaneView = (session: Session) => JSX.Element;
 export class ComponentPane extends Pane {
   #content: BoxRenderable;
   #dispose: (() => void) | null = null;
+  // The frame, as the view sees it. Signals rather than fields because the
+  // subtree is Solid: a resize or a focus change has to propagate, not just be
+  // readable.
+  #size: Signal<{ width: number; height: number }> = createSignal({ width: 1, height: 1 });
+  #focus: Signal<boolean> = createSignal(false);
 
   constructor(
     ctx: RenderContext,
@@ -55,12 +79,32 @@ export class ComponentPane extends Pane {
     // and a Renderable is constructed with the very object that implements it —
     // the interface is the narrow half of the renderer, not a different thing.
     const renderer = ctx as CliRenderer;
+    const props: PaneViewProps = {
+      session: this.session,
+      width: () => this.#size[0]().width,
+      height: () => this.#size[0]().height,
+      active: this.#focus[0],
+    };
     this.#dispose = _render(
-      () => (
-        <RendererContext.Provider value={renderer}>{view(this.session)}</RendererContext.Provider>
-      ),
+      () => <RendererContext.Provider value={renderer}>{view(props)}</RendererContext.Provider>,
       this.#content,
     );
+  }
+
+  /**
+   * Not this pane's to consume.
+   *
+   * OpenTUI already routes a keystroke to whichever renderable holds focus, and
+   * the composer inside this subtree is one. Claiming the key here would
+   * preventDefault it and that input would never see a character — the whole
+   * reason bindings.ts only prevents the default when the app really took it.
+   */
+  override handleKey(): boolean {
+    return false;
+  }
+
+  protected override onActiveChange(active: boolean): void {
+    this.#focus[1](active);
   }
 
   protected override onContentResize(): void {
@@ -71,6 +115,7 @@ export class ComponentPane extends Pane {
     this.#content.top = this.edges.top ? 1 : 0;
     this.#content.width = width;
     this.#content.height = height;
+    this.#size[1]({ width, height });
   }
 
   protected override destroySelf(): void {

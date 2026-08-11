@@ -1,6 +1,7 @@
 import {
   Renderable,
   RGBA,
+  type KeyEvent,
   type MouseEvent,
   type OptimizedBuffer,
   type RenderContext,
@@ -21,6 +22,7 @@ import { STATE_GLYPH } from "./detect.ts";
 import { captureRange } from "./shim.ts";
 import { clearSelection, setSelection } from "./shim.ts";
 import { cellWidth } from "./copy.ts";
+import { encodeKey } from "./keys.ts";
 
 const DEFAULT_FG = RGBA.fromInts(205, 214, 244, 255);
 const DEFAULT_BG = RGBA.fromInts(30, 30, 46, 255);
@@ -90,16 +92,13 @@ const OPENTUI_TO_GHOSTTY_BUTTON: Record<number, number> = {
 export abstract class Pane extends Renderable {
   readonly session: Session;
 
-  /** Whether this pane is the workspace's active viewport. Named `active`, not
-   *  `focused`: Renderable already exposes a read-only `focused` accessor for
-   *  OpenTUI's own keyboard-focus tree, and overriding it would break that. */
-  active = false;
   hovered = false;
   onFocusRequest?: (pane: Pane) => void;
   onCopy?: (text: string) => boolean | void;
   onCopyError?: (error: Error) => void;
 
   #edges: Edges = { ...ALL_EDGES };
+  #active = false;
 
   constructor(ctx: RenderContext, options: { id: string; session: Session } & Record<string, any>) {
     super(ctx, options);
@@ -110,6 +109,34 @@ export abstract class Pane extends Renderable {
     const { width, height } = this.content;
     this.session.resize(width, height);
   }
+
+  /** Whether this pane is the workspace's active viewport. Named `active`, not
+   *  `focused`: Renderable already exposes a read-only `focused` accessor for
+   *  OpenTUI's own keyboard-focus tree, and overriding it would break that. */
+  get active(): boolean {
+    return this.#active;
+  }
+
+  set active(active: boolean) {
+    if (this.#active === active) return;
+    this.#active = active;
+    this.onActiveChange(active);
+    this.requestRender();
+  }
+
+  /** Hook for a subclass whose content cares who has the keyboard — a composer
+   *  may only hold OpenTUI's focus while its own pane is the active one. */
+  protected onActiveChange(_active: boolean): void {}
+
+  /**
+   * Take a keystroke the app's bindings did not claim.
+   *
+   * The substrate's own question, like drawing: a grid wants the key as the
+   * bytes a child process reads, a Solid subtree wants it delivered to whatever
+   * renderable holds focus inside it. True means the pane consumed it and the
+   * app should stop the event; see the note on preventDefault in bindings.ts.
+   */
+  abstract handleKey(event: KeyEvent): boolean;
 
   get edges(): Edges {
     return this.#edges;
@@ -329,6 +356,15 @@ export class TerminalPane extends Pane {
   override write(data: string | Uint8Array) {
     super.write(data);
     this.#haveCache = false;
+  }
+
+  /** A grid's answer: the bytes the child would have read from a real
+   *  terminal. A key with no terminal encoding is not this pane's to take. */
+  override handleKey(event: KeyEvent): boolean {
+    const bytes = encodeKey(event);
+    if (bytes === null) return false;
+    this.write(bytes);
+    return true;
   }
 
   protected override onMouseEvent(event: MouseEvent): void {

@@ -18,7 +18,6 @@ import { frame } from "./window.ts";
 import { LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts";
 import { TerminalPane } from "./pane.ts";
 import { readGit } from "./git.ts";
-import { encodeKey } from "./keys.ts";
 import { sendKeys, type SendTarget } from "./send.ts";
 import {
   createBindings,
@@ -85,7 +84,8 @@ import { captureSpan, pickCaptureTarget, type CaptureSpan, type CaptureTarget } 
 import { Capture, type CaptureView } from "./ui/Capture.tsx";
 import { BufferChoose, type BufferChooseView } from "./ui/BufferChoose.tsx";
 import { KeybindPicker, sortKeybindEntries, type KeybindPickerView } from "./ui/KeybindPicker.tsx";
-import { Transcript } from "./ui/Transcript.tsx";
+import { Chat } from "./ui/Chat.tsx";
+import type { PaneView } from "./component-pane.tsx";
 import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import { workspaceEnv } from "./env.ts";
@@ -125,6 +125,8 @@ export interface AppHandle {
 
 interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly release: Effect.Effect<void>;
+  /** What a component pane mounts. See the note where createApp installs it. */
+  readonly chatPane: PaneView;
 }
 
 /** A synchronous launcher captured from the app's scoped FiberMap. */
@@ -153,8 +155,19 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     yield* Effect.addFinalizer(() => Scope.close(fiberScope, Exit.void));
     const fibers = yield* Scope.extend(FiberMap.make<string>(), fiberScope);
     const runFiber = yield* FiberMap.runtime(fibers)<never>();
+    // A component pane's view sends what the user types through the app's
+    // command pipeline, and the app is built from the workspace — so the
+    // workspace cannot be handed a finished view. It is handed a call into
+    // whichever one the app installs, the same deferred wiring as
+    // window.onModelFocus, which is likewise attached after projection rather
+    // than at construction.
+    let chat: PaneView | null = null;
     const spaces = yield* SpaceSet.make(
-      workspaceEnv(options.renderer, { shell: initialShell, backend: options.session.backend() }),
+      workspaceEnv(options.renderer, {
+        shell: initialShell,
+        backend: options.session.backend(),
+        paneContent: (props) => chat?.(props) ?? null,
+      }),
       options.paneHost,
     );
     const regions = createRegions(options.renderer);
@@ -162,6 +175,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber, regions)),
       (app) => app.release,
     );
+    chat = app.chatPane;
     const pluginHost = yield* createPluginHost(app.panel, regions);
     yield* loadPluginsFromConfig(
       options.config,
@@ -600,15 +614,27 @@ function buildApp(
     yield* commands.run(command("pane.move", { space: wanted.id }));
   });
 
-  const promptNewAgent = Effect.gen(function* () {
-    const answers = yield* ask("New native agent", [
-      { label: "Prompt", value: "", placeholder: "what should the agent do?" },
-    ]);
-    if (!answers) return;
-    const prompt = answers[0]?.trim();
-    if (!prompt) return;
-    yield* commands.run(command("agent.new", { prompt }));
-  });
+  /**
+   * The conversation a component pane draws.
+   *
+   * One function for every such pane: which session it is talking to comes from
+   * the pane, not from focus, so two chat panes are two conversations rather
+   * than one view chasing whichever is selected.
+   *
+   * Sending goes through the same `agent.steer` command the keybinding uses.
+   * The view knows nothing about where the session runs — a local worker and a
+   * daemon-owned one are the same command from here.
+   */
+  const chatPane: PaneView = (props) => (
+    <Chat
+      {...props}
+      frames={(id) => session.attach.stream(id)}
+      sync={(id) => session.attach.sync(id)}
+      onSubmit={(message) =>
+        runProjectedCommand(command("agent.steer", { session: props.session.id, message }))
+      }
+    />
+  );
 
   const promptSteerAgent = Effect.gen(function* () {
     const focused = spaces.activeWindow?.focused?.session;
@@ -1437,7 +1463,11 @@ function buildApp(
     ),
 
     // Agents.
-    bindPrompt("agent.new", "<leader>shift+n", promptNewAgent),
+    // No prompt: the pane it opens is where you type. A modal asking for the
+    // first message would be a second, worse composer in front of the real one.
+    bind("agent.new", "<leader>shift+n", command("agent.new", {}), {
+      desc: "open a chat pane with a new native agent",
+    }),
     bindPrompt("agent.steer", "<leader>shift+e", promptSteerAgent, "steer the focused native agent"),
     bindPrompt("agent.interrupt", "<leader>shift+i", promptInterruptAgent, "interrupt the focused native agent"),
     // shift+k: plain ^a k is directional pane focus, and killing an agent is not
@@ -1504,9 +1534,10 @@ function buildApp(
     if (copyMode.active && copyMode.pane === spaces.activeWindow?.focused) {
       return copyMode.onKey(event);
     }
-    const bytes = encodeKey(event);
-    if (bytes !== null) activeWin()?.write(bytes);
-    return true;
+    // The pane decides what an unbound key means, because that depends on what
+    // fills it: a terminal wants the bytes a child would have read, a component
+    // wants the event left alone for the renderable holding focus inside it.
+    return activeWin()?.key(event) ?? false;
   }
 
   function paletteKey(event: KeyEvent) {
@@ -1908,22 +1939,6 @@ function buildApp(
    */
   function registerPanels(): () => void {
     const disposers = [
-      regions.register({
-        id: "amux.transcript",
-        region: "right",
-        anchor: "center",
-        title: "transcript",
-        visible: () => spaces.activeWindow?.focused?.session.kind === "component",
-        size: () => 42,
-        component: () => (
-          <Transcript
-            agent={spaces.activeWindow?.focused?.session ?? null}
-            frames={(id) => session.attach.stream(id)}
-            sync={(id) => session.attach.sync(id)}
-            width={42}
-          />
-        ),
-      }),
       regions.register({
         id: "amux.windows",
         region: "top",
@@ -2327,5 +2342,5 @@ function buildApp(
     selectedAgentId,
     setSelectedAgentId,
   );
-  return { View, panel, release };
+  return { View, panel, release, chatPane };
 }

@@ -7,8 +7,8 @@ import { workspaceEnv } from "./env.ts";
 import { frame } from "./window.ts";
 import { computeRects } from "./geometry.ts";
 import { ComponentPane, type PaneView } from "./component-pane.tsx";
-import { TerminalPane } from "./pane.ts";
-import type { Session } from "./agent.ts";
+import { TerminalPane, type Pane } from "./pane.ts";
+import type { KeyEvent } from "@opentui/core";
 
 /**
  * The component leaf: a pane whose content is a Solid subtree.
@@ -37,7 +37,7 @@ const draw = async (t: { renderOnce: () => Promise<void> }) => {
 
 /** A view that names the session it was given, so a check can tell mounted
  *  content from an empty frame and can tell the two panes apart. */
-const label: PaneView = (session: Session) => <text>view:{session.name}</text>;
+const label: PaneView = (props) => <text>view:{props.session.name}</text>;
 
 /** `null` registers no view at all — the default parameter would swallow an
  *  `undefined` and quietly test the opposite of what that case is about. */
@@ -177,6 +177,69 @@ test("closing a component leaf disposes its subtree", async () => {
   await draw(t);
 
   expect(t.captureCharFrame()).not.toContain("view:chat");
+});
+
+/** Enough of a keystroke for the encoder: the raw bytes the outer terminal
+ *  produced, which is all a pass-through needs. */
+const keystroke = (raw: string) => ({ raw, sequence: raw, eventType: "press" }) as KeyEvent;
+
+/** The pane less only the sides it actually draws. A pane facing a split does
+ *  not own that border — the divider between them does. */
+const inner = (pane: Pane) => pane.width - (pane.edges.left ? 1 : 0) - (pane.edges.right ? 1 : 0);
+
+test("an unbound key is bytes to a terminal leaf and untouched by a component one", async () => {
+  const { win } = await workspace();
+  const chat = run(win.startSession(componentSession("chat")));
+  const shell = run(win.startSession({ name: "shell", cmd: ["true"], exited: { code: 0 } }));
+  const chatPane = win.mount(chat);
+  const shellPane = win.split("row", shell)!;
+
+  const written: string[] = [];
+  shellPane.session.write = (data) => {
+    written.push(typeof data === "string" ? data : new TextDecoder().decode(data));
+  };
+
+  win.focus(shellPane);
+  expect(win.key(keystroke("h"))).toBe(true);
+  expect(written).toEqual(["h"]);
+
+  // False, and nothing written: the key belongs to whichever renderable inside
+  // the subtree holds focus, and consuming it here would stop it ever arriving.
+  win.focus(chatPane);
+  expect(win.key(keystroke("h"))).toBe(false);
+  expect(written).toEqual(["h"]);
+});
+
+test("a component's view sees the frame move under it", async () => {
+  let mounts = 0;
+  const probe: PaneView = (props) => {
+    mounts++;
+    return <text>{`w=${props.width()} active=${props.active()}`}</text>;
+  };
+  const { t, win } = await workspace(probe);
+  const chat = run(win.startSession(componentSession("chat")));
+  const shell = run(win.startSession({ name: "shell", cmd: ["true"], exited: { code: 0 } }));
+  const chatPane = win.mount(chat);
+  await draw(t);
+
+  const full = inner(chatPane);
+  expect(t.captureCharFrame()).toContain(`w=${full} active=true`);
+
+  // A split narrows the pane; the composer inside it has to be told, or it
+  // wraps its text to a width the pane no longer has.
+  const shellPane = win.split("row", shell)!;
+  await draw(t);
+  expect(inner(chatPane)).toBeLessThan(full);
+  expect(t.captureCharFrame()).toContain(`w=${inner(chatPane)} active=false`);
+
+  win.focus(chatPane);
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("active=true");
+  expect(shellPane.active).toBe(false);
+
+  // The view function ran once: a resize and a focus change are signal updates,
+  // not a remount, which is what lets a composer keep a half-typed message.
+  expect(mounts).toBe(1);
 });
 
 test("killing the session behind a component leaf closes its pane", async () => {
