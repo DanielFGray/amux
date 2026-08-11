@@ -9,10 +9,13 @@ import {
   encodeLayout,
   appendPane,
   layoutPanes,
+  layoutRefs,
   makeLayout,
   nextPreset,
+  placementOf,
   presetLayout,
   prune,
+  setPlacement,
   splitLayout,
   swapLayout,
   windowState,
@@ -106,7 +109,7 @@ export function workspaceSessionIds(workspace: WorkspaceSnapshot): Set<string> {
 export function workspacePaneIds(workspace: WorkspaceSnapshot): Set<string> {
   const ids = new Set<string>();
   for (const { window } of workspaceWindows(workspace))
-    for (const pane of layoutPanes(window.layout.root)) ids.add(pane.id);
+    for (const pane of layoutRefs(window.layout)) ids.add(pane.id);
   return ids;
 }
 
@@ -168,9 +171,25 @@ const LayoutNodeShape: S.Schema<any> = S.suspend(() =>
     }),
   ),
 );
+/** Fractions of the window. Bounds are parseLayout's, restated here because a
+ *  schema that merely said "number" would strip nothing and admit anything. */
+const LayoutFloatShape = S.Struct({
+  id: NonEmptyString,
+  agent: NonEmptyString,
+  x: S.Number.pipe(S.greaterThanOrEqualTo(0), S.lessThan(1)),
+  y: S.Number.pipe(S.greaterThanOrEqualTo(0), S.lessThan(1)),
+  width: S.Number.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1)),
+  height: S.Number.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1)),
+});
 const LayoutShape = S.Struct({
   version: S.Literal(1),
   root: S.NullOr(LayoutNodeShape),
+  // Optional, because a snapshot written before floats existed has no such key
+  // and meant that nothing floats. Not optional in the Layout it decodes to:
+  // a schema field this one omits is a field silently DROPPED from every
+  // snapshot crossing the wire, which is how a float reached the daemon and
+  // never reached the client.
+  floats: S.optional(S.Array(LayoutFloatShape)),
   focus: S.optional(NonEmptyString),
 });
 const WindowStateShape = S.Struct({
@@ -268,7 +287,7 @@ export function workspaceFromSession(
       for (const window of saved.windows) {
         if (!window.layout) continue;
         const layout = yield* decodeLayout(window.layout);
-        for (const pane of layoutPanes(layout.root)) usedPaneIds.add(pane.id);
+        for (const pane of layoutRefs(layout)) usedPaneIds.add(pane.id);
       }
     }
     const paneId = () => allocateId("pane", usedPaneIds);
@@ -298,9 +317,9 @@ export function workspaceFromSession(
                 const panes = [...live].map((agent) => ({ id: paneId(), agent }));
                 layout = presetLayout(panes, "tiled", panes[0]?.id);
               }
-              layout ??= makeLayout(null);
-              if (layout.root && !layout.focus)
-                layout = makeLayout(layout.root, layoutPanes(layout.root)[0]?.id);
+              layout ??= makeLayout({ root: null });
+              if (!layout.focus)
+                layout = makeLayout({ ...layout, focus: layoutRefs(layout)[0]?.id });
               const state = windowState();
               state.focus = layout.focus ?? null;
               windows.push({
@@ -408,7 +427,7 @@ export function parseWorkspace(
               }),
           ),
         );
-        const paneIds = new Set(layoutPanes(window.layout.root).map((pane) => pane.id));
+        const paneIds = new Set(layoutRefs(window.layout).map((pane) => pane.id));
         if (
           window.state.focus !== (window.layout.focus ?? null) ||
           (window.state.last !== null && !paneIds.has(window.state.last))
@@ -434,7 +453,7 @@ export function parseWorkspace(
           const agents = new Set(
             window.agents.filter((agent) => !agent.exited).map((agent) => agent.id),
           );
-          if (layoutPanes(from.root).some((pane) => !agents.has(pane.agent))) {
+          if (layoutRefs(from).some((pane) => !agents.has(pane.agent))) {
             return yield* new WorkspaceParseError({
               message: "workspace zoom layout names an invalid agent",
             });
@@ -505,7 +524,7 @@ export function applyWorkspaceCommand(
     target.state.zoom = target.state.zoom?.pane === id ? target.state.zoom : null;
     target.state.last = target.state.focus;
     target.state.focus = id;
-    target.layout = makeLayout(target.layout.root, id);
+    target.layout = makeLayout({ ...target.layout, focus: id });
   };
   const addAgent = (target: WorkspaceWindow, dir: string): PersistedSession => {
     const native = command._tag === "agent.new";
@@ -538,7 +557,7 @@ export function applyWorkspaceCommand(
       number,
       name: null,
       agents: [],
-      layout: makeLayout(null),
+      layout: makeLayout({ root: null }),
       state: windowState(),
     };
     target.windows.push(created);
@@ -549,7 +568,10 @@ export function applyWorkspaceCommand(
     );
     const agent = addAgent(created, target.dir);
     const pane = newPaneId();
-    created.layout = makeLayout({ type: "pane", id: pane, agent: agent.id, weight: 1 }, pane);
+    created.layout = makeLayout({
+      root: { type: "pane", id: pane, agent: agent.id, weight: 1 },
+      focus: pane,
+    });
     created.state.focus = pane;
     return created;
   };
@@ -571,7 +593,7 @@ export function applyWorkspaceCommand(
       const pane = { id: newPaneId(), agent: agent.id };
       target.window.layout = target.window.layout.root
         ? splitLayout(target.window.layout, 0, "row", pane)
-        : makeLayout({ type: "pane", ...pane, weight: 1 }, pane.id);
+        : appendPane(target.window.layout, pane);
       target.window.state.focus = pane.id;
       break;
     }
@@ -584,7 +606,7 @@ export function applyWorkspaceCommand(
       const ref = { id: newPaneId(), agent: agent.id };
       found.window.layout =
         at === -1
-          ? makeLayout({ type: "pane", ...ref, weight: 1 }, ref.id)
+          ? appendPane(found.window.layout, ref)
           : splitLayout(found.window.layout, at, command.axis, ref);
       found.window.state.focus = ref.id;
       found.window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
@@ -595,7 +617,10 @@ export function applyWorkspaceCommand(
     case "pane.next": {
       const target = activeWindow();
       if (!target) break;
-      const panes = layoutPanes(target.window.layout.root);
+      // Every placed pane, floats included. Cycling is how a float is reached
+      // and left at all: directional focus stays inside the tiled plane,
+      // because a float shares no edge with what it covers.
+      const panes = layoutRefs(target.window.layout);
       const at = panes.findIndex((pane) => pane.id === target.window.state.focus);
       setFocus(target.window, panes[(at + 1 + panes.length) % panes.length]?.id);
       break;
@@ -621,7 +646,7 @@ export function applyWorkspaceCommand(
     }
     case "pane.select": {
       const target = activeWindow()?.window;
-      if (target && layoutPanes(target.layout.root).some((pane) => pane.id === command.pane)) {
+      if (target && layoutRefs(target.layout).some((pane) => pane.id === command.pane)) {
         setFocus(target, command.pane);
       }
       break;
@@ -659,10 +684,28 @@ export function applyWorkspaceCommand(
     }
     case "pane.zoom": {
       const target = activeWindow()?.window;
-      if (!target?.state.focus || layoutPanes(target.layout.root).length < 2) break;
+      if (!target?.state.focus || layoutRefs(target.layout).length < 2) break;
       target.state.zoom = target.state.zoom
         ? null
         : { pane: target.state.focus, from: target.layout };
+      break;
+    }
+    case "pane.float": {
+      const target = activeWindow()?.window;
+      const focus = target?.state.focus;
+      if (!target || !focus) break;
+      const placement = placementOf(target.layout, focus);
+      if (!placement) break;
+      target.layout = setPlacement(
+        target.layout,
+        focus,
+        placement === "floating" ? "tiled" : "floating",
+      );
+      // A float is outside the tiled arrangement, so putting one in or taking
+      // one out changes which panes the preset describes — and a zoom is a
+      // capture of an arrangement that no longer holds.
+      target.state.zoom = null;
+      target.state.preset = null;
       break;
     }
     case "pane.swap": {
@@ -691,13 +734,11 @@ export function applyWorkspaceCommand(
       const found = activeWindow();
       const pane = found?.window.state.focus;
       if (!found || !pane) break;
-      const slot = layoutPanes(found.window.layout.root).find((item) => item.id === pane);
+      const slot = layoutRefs(found.window.layout).find((item) => item.id === pane);
       const agent = found.window.agents.find((item) => item.id === slot?.agent);
       if (!slot || !agent) break;
       closePane(found.window, pane);
-      const stillReferenced = layoutPanes(found.window.layout.root).some(
-        (p) => p.agent === agent.id,
-      );
+      const stillReferenced = layoutRefs(found.window.layout).some((p) => p.agent === agent.id);
       if (!stillReferenced)
         found.window.agents = found.window.agents.filter((item) => item.id !== agent.id);
       let number: number;
@@ -706,7 +747,9 @@ export function applyWorkspaceCommand(
         number,
         name: null,
         agents: [stillReferenced ? structuredClone(agent) : agent],
-        layout: makeLayout({ ...slot, weight: 1 }, slot.id),
+        // Tiled in its new window whichever plane it was in here: a break makes
+        // the pane the whole window, and a float filling a window is a tile.
+        layout: makeLayout({ root: { type: "pane", ...slot, weight: 1 }, focus: slot.id }),
         state: { ...windowState(), focus: slot.id },
       };
       found.space.windows.push(created);
@@ -728,13 +771,13 @@ export function applyWorkspaceCommand(
       const source = findWindow(next, { space: destination.space.id, window: sourceNumber });
       if (!source || source.window === destination.window) break;
       const paneId = source.window.state.focus;
-      const slot = layoutPanes(source.window.layout.root).find((item) => item.id === paneId);
+      const slot = layoutRefs(source.window.layout).find((item) => item.id === paneId);
       if (!slot) break;
       const agent = source.window.agents.find((item) => item.id === slot.agent);
       if (!agent) break;
 
       closePane(source.window, slot.id);
-      const stillReferenced = layoutPanes(source.window.layout.root).some(
+      const stillReferenced = layoutRefs(source.window.layout).some(
         (pane) => pane.agent === agent.id,
       );
       if (!stillReferenced)
@@ -755,12 +798,12 @@ export function applyWorkspaceCommand(
       );
       if (!source || !destination || !target || destination === source.space) break;
       const paneId = source.window.state.focus;
-      const slot = layoutPanes(source.window.layout.root).find((item) => item.id === paneId);
+      const slot = layoutRefs(source.window.layout).find((item) => item.id === paneId);
       const agent = source.window.agents.find((item) => item.id === slot?.agent);
       if (!slot || !agent) break;
 
       closePane(source.window, slot.id);
-      const stillReferenced = layoutPanes(source.window.layout.root).some(
+      const stillReferenced = layoutRefs(source.window.layout).some(
         (pane) => pane.agent === agent.id,
       );
       if (!stillReferenced)
@@ -785,11 +828,11 @@ export function applyWorkspaceCommand(
     }
     case "pane.send-keys": {
       const target = activeWindow()?.window;
-      const focused = layoutPanes(target?.layout.root ?? null).find(
+      const focused = (target ? layoutRefs(target.layout) : []).find(
         (pane) => pane.id === target?.state.focus,
       );
       if (target?.state.sync) {
-        for (const agent of new Set(layoutPanes(target.layout.root).map((pane) => pane.agent))) {
+        for (const agent of new Set(layoutRefs(target.layout).map((pane) => pane.agent))) {
           actions.push({ _tag: "input", agent, data: context.input ?? command.keys });
         }
       } else if (focused)
@@ -851,11 +894,13 @@ export function applyWorkspaceCommand(
       if (!target) break;
       const preset =
         command._tag === "window.next-layout" ? nextPreset(target.state.preset) : command.preset;
-      target.layout = presetLayout(
-        layoutPanes(target.layout.root),
-        preset,
-        target.state.focus ?? undefined,
-      );
+      // A preset rearranges the tiled plane; the floats stay where they are,
+      // over whatever it becomes.
+      target.layout = makeLayout({
+        ...presetLayout(layoutPanes(target.layout.root), preset, target.state.focus ?? undefined),
+        floats: target.layout.floats,
+        focus: target.state.focus ?? undefined,
+      });
       target.state.zoom = null;
       target.state.preset = preset;
       break;
@@ -881,11 +926,11 @@ export function applyWorkspaceCommand(
       target.agent.exited = false;
       target.agent.exitCode = null;
       target.agent.kind ??= "pty";
-      if (!layoutPanes(target.window.layout.root).some((pane) => pane.agent === target.agent.id)) {
+      if (!layoutRefs(target.window.layout).some((pane) => pane.agent === target.agent.id)) {
         const pane = { id: newPaneId(), agent: target.agent.id };
         target.window.layout = target.window.layout.root
           ? splitLayout(target.window.layout, 0, "row", pane)
-          : makeLayout({ type: "pane", ...pane, weight: 1 }, pane.id);
+          : appendPane(target.window.layout, pane);
         target.window.state.focus = pane.id;
       }
       actions.push({ _tag: "spawn", agent: structuredClone(target.agent) });
@@ -904,7 +949,7 @@ export function applyWorkspaceCommand(
         target.space.windows.map((window) => window.number),
         target.window.number,
       );
-      let pane = layoutPanes(target.window.layout.root).find(
+      let pane = layoutRefs(target.window.layout).find(
         (candidate) => candidate.agent === target.agent.id,
       );
       if (!pane) {
@@ -920,8 +965,8 @@ export function applyWorkspaceCommand(
               "row",
               ref,
             )
-          : makeLayout({ type: "pane", ...ref, weight: 1 }, ref.id);
-        pane = layoutPanes(target.window.layout.root).find((candidate) => candidate.id === ref.id);
+          : appendPane(target.window.layout, ref);
+        pane = layoutRefs(target.window.layout).find((candidate) => candidate.id === ref.id);
       }
       setFocus(target.window, pane?.id);
       break;
@@ -931,7 +976,7 @@ export function applyWorkspaceCommand(
       const focused = activeWindow()?.window.state.focus;
       const currentAgent = next.spaces
         .flatMap((item) => item.windows)
-        .flatMap((item) => layoutPanes(item.layout.root))
+        .flatMap((item) => layoutRefs(item.layout))
         .find((pane) => pane.id === focused)?.agent;
       const at = currentAgent ? blocked.indexOf(currentAgent) : -1;
       const id = blocked[(at + 1 + blocked.length) % blocked.length];
@@ -947,7 +992,7 @@ export function applyWorkspaceCommand(
           target.space.windows.map((item) => item.number),
           target.window.number,
         );
-        const pane = layoutPanes(target.window.layout.root).find((item) => item.agent === id);
+        const pane = layoutRefs(target.window.layout).find((item) => item.agent === id);
         if (pane) setFocus(target.window, pane.id);
       }
       break;
@@ -1041,16 +1086,19 @@ export function markSessionExited(
   found.agent.exitCode = code;
   found.window.layout = prune(found.window.layout, (agent) => agent !== id);
   found.window.state.focus = found.window.layout.focus ?? null;
-  if (!found.window.layout.root) {
+  if (layoutRefs(found.window.layout).length === 0) {
     const live = found.window.agents.find((agent) => !agent.exited);
     if (live) {
       const used = new Set(
         next.spaces.flatMap((space) =>
-          space.windows.flatMap((window) => layoutPanes(window.layout.root).map((pane) => pane.id)),
+          space.windows.flatMap((window) => layoutRefs(window.layout).map((pane) => pane.id)),
         ),
       );
       const pane = allocateId("pane", used);
-      found.window.layout = makeLayout({ type: "pane", id: pane, agent: live.id, weight: 1 }, pane);
+      found.window.layout = makeLayout({
+        root: { type: "pane", id: pane, agent: live.id, weight: 1 },
+        focus: pane,
+      });
       found.window.state.focus = pane;
     } else {
       removeWindow(next, found.space, found.window, []);
@@ -1079,7 +1127,7 @@ function findWindow(
 function findSession(workspace: WorkspaceSnapshot, id?: string): AgentEntry | null {
   if (!id) {
     const target = findWindow(workspace, {});
-    const pane = layoutPanes(target?.window.layout.root ?? null).find(
+    const pane = (target ? layoutRefs(target.window.layout) : []).find(
       (item) => item.id === target?.window.state.focus,
     );
     const agent = target?.window.agents.find((item) => item.id === pane?.agent);
@@ -1090,10 +1138,9 @@ function findSession(workspace: WorkspaceSnapshot, id?: string): AgentEntry | nu
 }
 
 function closePane(window: WorkspaceWindow, id: string): void {
-  const panes = layoutPanes(window.layout.root);
-  const at = panes.findIndex((pane) => pane.id === id);
-  if (at === -1) return;
-  window.layout = closeLayout(window.layout, at);
+  const closed = closeLayout(window.layout, id);
+  if (closed === window.layout) return;
+  window.layout = closed;
   window.state.focus = window.layout.focus ?? null;
   window.state.zoom = null;
   window.state.preset = null;
@@ -1101,23 +1148,28 @@ function closePane(window: WorkspaceWindow, id: string): void {
 
 /** When a pane leaves a window without its agent dying, the window may become
  *  empty. A window with no panes has no focus and silently swallows keyboard
- *  input — so either reveal a surviving live agent or close the window. */
+ *  input — so either reveal a surviving live agent or close the window. A
+ *  window down to one float is not empty: it still places a pane, and that pane
+ *  still takes the keyboard. */
 function afterPaneRemoved(
   workspace: WorkspaceSnapshot,
   space: WorkspaceSpace,
   window: WorkspaceWindow,
   actions: WorkspaceAction[],
 ): void {
-  if (window.layout.root) return;
+  if (layoutRefs(window.layout).length > 0) return;
   const live = window.agents.find((agent) => !agent.exited);
   if (live) {
     const used = new Set(
       workspace.spaces.flatMap((s) =>
-        s.windows.flatMap((w) => layoutPanes(w.layout.root).map((pane) => pane.id)),
+        s.windows.flatMap((w) => layoutRefs(w.layout).map((pane) => pane.id)),
       ),
     );
     const pane = allocateId("pane", used);
-    window.layout = makeLayout({ type: "pane", id: pane, agent: live.id, weight: 1 }, pane);
+    window.layout = makeLayout({
+      root: { type: "pane", id: pane, agent: live.id, weight: 1 },
+      focus: pane,
+    });
     window.state.focus = pane;
   } else {
     removeWindow(workspace, space, window, actions);
@@ -1125,13 +1177,13 @@ function afterPaneRemoved(
 }
 
 function normalizeWindowState(window: WorkspaceWindow): void {
-  const panes = new Set(layoutPanes(window.layout.root).map((pane) => pane.id));
+  const panes = new Set(layoutRefs(window.layout).map((pane) => pane.id));
   window.state.focus = window.layout.focus ?? null;
   if (window.state.last !== null && !panes.has(window.state.last)) window.state.last = null;
   if (
     window.state.zoom &&
     (!panes.has(window.state.zoom.pane) ||
-      !layoutPanes(window.state.zoom.from.root).some((pane) => pane.id === window.state.zoom!.pane))
+      !layoutRefs(window.state.zoom.from).some((pane) => pane.id === window.state.zoom!.pane))
   ) {
     window.state.zoom = null;
   }

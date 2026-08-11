@@ -16,7 +16,8 @@ import { MAX_SPACES } from "./limits.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0))
+    await rm(dir, { recursive: true, force: true });
 });
 
 async function env() {
@@ -26,7 +27,14 @@ async function env() {
 }
 
 function state(id: string) {
-  return { version: 1 as const, id, createdAt: 1, updatedAt: 1, attached: false, spaces: [] };
+  return {
+    version: 1 as const,
+    id,
+    createdAt: 1,
+    updatedAt: 1,
+    attached: false,
+    spaces: [],
+  };
 }
 
 const run = <A, E>(
@@ -48,7 +56,9 @@ test("session writes are atomic and recover the previous generation", async () =
   await run(SessionStore.save(next), e);
   expect((await run(SessionStore.load("one"), e))?.attached).toBe(true);
   expect(
-    JSON.parse(await readFile((await run(sessionPaths("one"), e)).backup, "utf8")).attached,
+    JSON.parse(
+      await readFile((await run(sessionPaths("one"), e)).backup, "utf8"),
+    ).attached,
   ).toBe(false);
 });
 
@@ -56,7 +66,10 @@ test("a truncated current file falls back to the previous generation", async () 
   const e = await env();
   await run(SessionStore.save(state("recover")), e);
   await run(SessionStore.save({ ...state("recover"), attached: true }), e);
-  await Bun.write((await run(sessionPaths("recover"), e)).state, '{"version":1');
+  await Bun.write(
+    (await run(sessionPaths("recover"), e)).state,
+    '{"version":1',
+  );
   expect((await run(SessionStore.load("recover"), e))?.attached).toBe(false);
 });
 
@@ -132,11 +145,15 @@ test("lease files are schema-validated before ownership checks", async () => {
       heartbeatAt: 2,
       attachedSince: 3,
       attachLastSeen: 4,
-      attachments: [{ client: "client-a", attachedSince: 3, attachLastSeen: 4 }],
+      attachments: [
+        { client: "client-a", attachedSince: 3, attachLastSeen: 4 },
+      ],
     }),
     e,
   );
-  expect(await run(SessionStore.readLease("lease-validation"), e)).toMatchObject({
+  expect(
+    await run(SessionStore.readLease("lease-validation"), e),
+  ).toMatchObject({
     session: "lease-validation",
     attachedSince: 3,
     attachments: [{ client: "client-a" }],
@@ -220,7 +237,9 @@ test("traversal ids cannot read or delete files outside the sessions root", asyn
   const e = await env();
   const victim = join(e.HOME!, "victim.json");
   await Bun.write(victim, "secret");
-  await expect(run(SessionStore.save({ ...state("../..") }), e)).rejects.toThrow();
+  await expect(
+    run(SessionStore.save({ ...state("../..") }), e),
+  ).rejects.toThrow();
   await expect(run(SessionStore.remove(".."), e)).rejects.toThrow();
   await expect(run(SessionStore.remove("../.."), e)).rejects.toThrow();
   expect(await Bun.file(victim).exists()).toBe(true);
@@ -275,20 +294,28 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
   expect(Effect.runSync(parseSessionState(value))).toEqual(value);
   const duplicate = structuredClone(value);
   duplicate.spaces.push(structuredClone(value.spaces[0]));
-  expect(() => Effect.runSync(parseSessionState(duplicate))).toThrow("invalid persisted space");
+  expect(() => Effect.runSync(parseSessionState(duplicate))).toThrow(
+    "invalid persisted space",
+  );
   const missing = structuredClone(value);
   missing.spaces[0].windows[0].layout = JSON.stringify({
     version: 1,
     root: { type: "pane", id: "pane-a", agent: "missing", weight: 1 },
   });
-  expect(() => Effect.runSync(parseSessionState(missing))).toThrow("absent or exited agent");
+  expect(() => Effect.runSync(parseSessionState(missing))).toThrow(
+    "absent or exited agent",
+  );
   const malformed = structuredClone(value);
   malformed.spaces[0].windows[0].agents[0].rows = -1;
-  expect(() => Effect.runSync(parseSessionState(malformed))).toThrow("invalid persisted agent");
+  expect(() => Effect.runSync(parseSessionState(malformed))).toThrow(
+    "invalid persisted agent",
+  );
   const huge = structuredClone(value);
   huge.spaces[0].windows[0].agents[0].cols = 1_000_000;
   huge.spaces[0].windows[0].agents[0].rows = 1_000_000;
-  expect(() => Effect.runSync(parseSessionState(huge))).toThrow("invalid persisted agent");
+  expect(() => Effect.runSync(parseSessionState(huge))).toThrow(
+    "invalid persisted agent",
+  );
 });
 
 test("persisted snapshots bound aggregate model size", () => {
@@ -301,5 +328,7 @@ test("persisted snapshots bound aggregate model size", () => {
     windows: [],
   }));
   crowded.activeSpace = crowded.spaces[0].id;
-  expect(() => Effect.runSync(parseSessionState(crowded))).toThrow("too many spaces");
+  expect(() => Effect.runSync(parseSessionState(crowded))).toThrow(
+    "too many spaces",
+  );
 });

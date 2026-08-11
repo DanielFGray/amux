@@ -26,8 +26,10 @@ import { SessionStore } from "./session.ts";
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
 afterEach(async () => {
-  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
+  for (const daemon of daemons.splice(0))
+    await Effect.runPromise(daemon.stop).catch(() => {});
+  for (const dir of dirs.splice(0))
+    await rm(dir, { recursive: true, force: true });
 });
 
 async function started(id: string) {
@@ -63,7 +65,10 @@ const refusal = <A, E>(
   id: string,
   use: (control: ControlClient) => Effect.Effect<A, E>,
   env: NodeJS.ProcessEnv,
-) => rpc(id, (control) => Effect.flip(use(control)), env).then((error) => String(error));
+) =>
+  rpc(id, (control) => Effect.flip(use(control)), env).then((error) =>
+    String(error),
+  );
 
 /** A raw client of the attach socket, keeping every output frame it receives. */
 async function attach(path: string, client: string) {
@@ -96,12 +101,18 @@ const output = (frames: AttachFrame[]) =>
 
 test("a copy pushed onto the stack pastes into a real pane's PTY", async () => {
   const { daemon, env } = await started("copy-paste");
-  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(
+    daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }),
+  );
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
   // A copy is set-buffer with no name: it becomes the top of the stack.
-  const set = await rpc(daemon.id, (c) => c.SetBuffer({ data: "pasted text\n" }), env);
+  const set = await rpc(
+    daemon.id,
+    (c) => c.SetBuffer({ data: "pasted text\n" }),
+    env,
+  );
   expect(set).toBe("0");
 
   await rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env);
@@ -116,7 +127,9 @@ test("a copy pushed onto the stack pastes into a real pane's PTY", async () => {
 
 test("the stack is a stack: the newest copy is what a default paste reads", async () => {
   const { daemon, env } = await started("stack-order");
-  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(
+    daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }),
+  );
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
@@ -133,30 +146,50 @@ test("the stack is a stack: the newest copy is what a default paste reads", asyn
 
 test("a named buffer pastes, shows, and deletes by name", async () => {
   const { daemon, env } = await started("named-buffer");
-  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(
+    daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }),
+  );
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
-  await rpc(daemon.id, (c) => c.SetBuffer({ name: "clip", data: "named\n" }), env);
-  expect(await rpc(daemon.id, (c) => c.ShowBuffer({ name: "clip" }), env)).toBe("named\n");
+  await rpc(
+    daemon.id,
+    (c) => c.SetBuffer({ name: "clip", data: "named\n" }),
+    env,
+  );
+  expect(await rpc(daemon.id, (c) => c.ShowBuffer({ name: "clip" }), env)).toBe(
+    "named\n",
+  );
 
-  await rpc(daemon.id, (c) => c.PasteBuffer({ name: "clip", target: "pane" }), env);
+  await rpc(
+    daemon.id,
+    (c) => c.PasteBuffer({ name: "clip", target: "pane" }),
+    env,
+  );
   await settle(200);
   expect(output(viewer.frames)).toContain("named");
 
   await rpc(daemon.id, (c) => c.DeleteBuffer({ name: "clip" }), env);
-  expect(await refusal(daemon.id, (c) => c.ShowBuffer({ name: "clip" }), env)).toContain("clip");
+  expect(
+    await refusal(daemon.id, (c) => c.ShowBuffer({ name: "clip" }), env),
+  ).toContain("clip");
   viewer.socket.end();
 });
 
 test("paste-buffer -d deletes the buffer only after it was pasted", async () => {
   const { daemon, env } = await started("paste-delete");
-  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(
+    daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }),
+  );
   const viewer = await attach(daemon.paths.attach, "watcher");
   await settle();
 
   await rpc(daemon.id, (c) => c.SetBuffer({ data: "gone after\n" }), env);
-  await rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane", deleteAfter: true }), env);
+  await rpc(
+    daemon.id,
+    (c) => c.PasteBuffer({ target: "pane", deleteAfter: true }),
+    env,
+  );
   await settle(200);
   expect(output(viewer.frames)).toContain("gone after");
 
@@ -193,21 +226,27 @@ test("a paste into a bracketed-paste-enabled child arrives wrapped", async () =>
 
 test("buffer failures are answers, not crashes", async () => {
   const { daemon, env } = await started("buffer-errors");
-  await Effect.runPromise(daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }));
+  await Effect.runPromise(
+    daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 }),
+  );
   await settle();
 
-  expect(await refusal(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env)).toContain(
-    "no buffers",
-  );
+  expect(
+    await refusal(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env),
+  ).toContain("no buffers");
 
   await rpc(daemon.id, (c) => c.SetBuffer({ data: "x" }), env);
   expect(
-    await refusal(daemon.id, (c) => c.PasteBuffer({ target: "no-such-session" }), env),
+    await refusal(
+      daemon.id,
+      (c) => c.PasteBuffer({ target: "no-such-session" }),
+      env,
+    ),
   ).toContain("unknown session 'no-such-session'");
 
   // A missing `data` field is a schema violation, not a refusal: the payload
   // fails to encode and the request never reaches the daemon at all.
-  await expect(rpc(daemon.id, (c) => c.SetBuffer({} as { data: string }), env)).rejects.toThrow(
-    "is missing",
-  );
+  await expect(
+    rpc(daemon.id, (c) => c.SetBuffer({} as { data: string }), env),
+  ).rejects.toThrow("is missing");
 });

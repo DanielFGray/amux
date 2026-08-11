@@ -53,7 +53,11 @@ test("input round-trips through the pty", async () => {
 
 test("forkpty child owns the controlling terminal session", async () => {
   const p = spawnPty(
-    ["sh", "-c", 'printf \'%s %s %s\\n\' "$$" "$(ps -o sid= -p $$)" "$(ps -o tpgid= -p $$)"'],
+    [
+      "sh",
+      "-c",
+      'printf \'%s %s %s\\n\' "$$" "$(ps -o sid= -p $$)" "$(ps -o tpgid= -p $$)"',
+    ],
     {
       cols: 80,
       rows: 24,
@@ -70,7 +74,13 @@ test("forkpty child owns the controlling terminal session", async () => {
 
 test("native exec preserves argv, cwd, environment and exit status", async () => {
   const p = spawnPty(
-    ["sh", "-c", 'printf \'%s|%s|%s\\n\' "$1" "$OH_PTY_TEST" "$PWD"; exit 7', "sh", "two words"],
+    [
+      "sh",
+      "-c",
+      'printf \'%s|%s|%s\\n\' "$1" "$OH_PTY_TEST" "$PWD"; exit 7',
+      "sh",
+      "two words",
+    ],
     { cols: 80, rows: 24, cwd: "/tmp", env: { OH_PTY_TEST: "native env" } },
   );
   const out = collect(p);
@@ -82,11 +92,14 @@ test("native exec preserves argv, cwd, environment and exit status", async () =>
 
 test("environment variables override process.env and inherit unset values", async () => {
   const originalPath = process.env.PATH;
-  const p = spawnPty(["/bin/sh", "-c", 'printf \'%s\\n%s\\n\' "$PATH" "$OH_INHERITED"'], {
-    cols: 80,
-    rows: 24,
-    env: { PATH: "/custom/path", OH_INHERITED: "inherited" },
-  });
+  const p = spawnPty(
+    ["/bin/sh", "-c", 'printf \'%s\\n%s\\n\' "$PATH" "$OH_INHERITED"'],
+    {
+      cols: 80,
+      rows: 24,
+      env: { PATH: "/custom/path", OH_INHERITED: "inherited" },
+    },
+  );
   const out = collect(p);
   await p.processExited;
   await out.done;
@@ -99,7 +112,10 @@ test("TERM is forced to xterm-256color regardless of caller environment", async 
   const originalTerm = process.env.TERM;
   process.env.TERM = "dumb";
   try {
-    const p = spawnPty(["sh", "-c", "printf '%s\\n' \"$TERM\""], { cols: 80, rows: 24 });
+    const p = spawnPty(["sh", "-c", "printf '%s\\n' \"$TERM\""], {
+      cols: 80,
+      rows: 24,
+    });
     const out = collect(p);
     await p.processExited;
     await out.done;
@@ -111,9 +127,9 @@ test("TERM is forced to xterm-256color regardless of caller environment", async 
 });
 
 test("environment with NUL bytes is refused", async () => {
-  expect(() => spawnPty(["sh"], { cols: 80, rows: 24, env: { BAD: "value\0with\0nuls" } })).toThrow(
-    /NUL/,
-  );
+  expect(() =>
+    spawnPty(["sh"], { cols: 80, rows: 24, env: { BAD: "value\0with\0nuls" } }),
+  ).toThrow(/NUL/);
 });
 
 test("close() is idempotent and stops the pump", async () => {
@@ -127,7 +143,10 @@ test("close() is idempotent and stops the pump", async () => {
 });
 
 test("kill terminates the whole session, background jobs included", async () => {
-  const p = spawnPty(["sh", "-c", "sleep 30 & sleep 30"], { cols: 80, rows: 24 });
+  const p = spawnPty(["sh", "-c", "sleep 30 & sleep 30"], {
+    cols: 80,
+    rows: 24,
+  });
   await waitFor(() => p.sessionId() > 0);
   const session = p.sessionId();
   await waitFor(() => sessionPids(session).length >= 3); // shell + bg + fg sleeps
@@ -138,7 +157,11 @@ test("kill terminates the whole session, background jobs included", async () => 
 
 test("kill escalates a session whose children trap HUP and TERM", async () => {
   const p = spawnPty(
-    ["bash", "-c", "trap '' HUP TERM; (trap '' HUP TERM; printf CHILD_READY\\n; sleep 30) & wait"],
+    [
+      "bash",
+      "-c",
+      "trap '' HUP TERM; (trap '' HUP TERM; printf CHILD_READY\\n; sleep 30) & wait",
+    ],
     { cols: 80, rows: 24 },
   );
   const out = collect(p);
@@ -216,7 +239,10 @@ test("a child that exits on its own closes the pty exactly once, after its outpu
 });
 
 test("output written immediately before exiting is not lost", async () => {
-  const p = spawnPty(["sh", "-c", "printf 'last-words\\n'; exit 0"], { cols: 80, rows: 24 });
+  const p = spawnPty(["sh", "-c", "printf 'last-words\\n'; exit 0"], {
+    cols: 80,
+    rows: 24,
+  });
   const out = collect(p);
   await out.done;
   expect(out.text()).toContain("last-words");
@@ -226,7 +252,10 @@ test("output that only arrives after a delay is not mistaken for end-of-file", a
   // A zero-length read at spawn means "no process holds the slave yet", not
   // "the child is done". Treating it as EOF loses everything a slow-starting
   // agent ever prints.
-  const p = spawnPty(["sh", "-c", "sleep 0.3; printf 'late\\n'"], { cols: 80, rows: 24 });
+  const p = spawnPty(["sh", "-c", "sleep 0.3; printf 'late\\n'"], {
+    cols: 80,
+    rows: 24,
+  });
   const out = collect(p);
   await out.done;
   expect(out.text()).toContain("late");

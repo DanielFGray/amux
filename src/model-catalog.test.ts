@@ -1,5 +1,12 @@
 import { expect } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigProvider, Effect, Stream } from "effect";
@@ -12,7 +19,7 @@ const catalog = {
   openai: {
     id: "openai",
     name: "OpenAI",
-     env: [],
+    env: [],
     models: {
       "gpt-test": {
         id: "gpt-test",
@@ -47,7 +54,9 @@ function provide<A>(
 }
 
 const cleanup = (env: NodeJS.ProcessEnv) =>
-  Effect.addFinalizer(() => Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })));
+  Effect.addFinalizer(() =>
+    Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
+  );
 
 testEffect("fetches, caches, and lists the catalog", () =>
   Effect.gen(function* () {
@@ -59,7 +68,9 @@ testEffect("fetches, caches, and lists the catalog", () =>
       return JSON.stringify(catalog);
     });
     const providers = yield* provide(
-      ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers())),
+      ModelCatalog.Service.pipe(
+        Effect.flatMap((service) => service.providers()),
+      ),
       env,
       fetch,
     );
@@ -67,9 +78,9 @@ testEffect("fetches, caches, and lists the catalog", () =>
     expect(calls).toBe(1);
     const file = join(env.XDG_STATE_HOME!, "amux", "cache", "models.json");
     expect((yield* Effect.promise(() => stat(file))).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(yield* Effect.promise(() => readFile(file, "utf8"))).openai.id).toBe(
-      "openai",
-    );
+    expect(
+      JSON.parse(yield* Effect.promise(() => readFile(file, "utf8"))).openai.id,
+    ).toBe("openai");
   }),
 );
 
@@ -85,8 +96,12 @@ testEffect("shares one fetch between concurrent callers", () =>
     });
     const result = yield* Effect.all(
       [
-        ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers())),
-        ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers())),
+        ModelCatalog.Service.pipe(
+          Effect.flatMap((service) => service.providers()),
+        ),
+        ModelCatalog.Service.pipe(
+          Effect.flatMap((service) => service.providers()),
+        ),
       ],
       { concurrency: "unbounded" },
     ).pipe(
@@ -106,10 +121,17 @@ testEffect("falls back to a stale valid cache and skips corrupt rows", () =>
     yield* cleanup(env);
     const directory = join(env.XDG_STATE_HOME!, "amux", "cache");
     yield* Effect.promise(() => mkdir(directory, { recursive: true }));
-    const stale = { ...catalog, broken: { id: "broken", name: 42, env: [], models: {} } };
-    yield* Effect.promise(() => writeFile(join(directory, "models.json"), JSON.stringify(stale)));
+    const stale = {
+      ...catalog,
+      broken: { id: "broken", name: 42, env: [], models: {} },
+    };
+    yield* Effect.promise(() =>
+      writeFile(join(directory, "models.json"), JSON.stringify(stale)),
+    );
     const providers = yield* provide(
-      ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers())),
+      ModelCatalog.Service.pipe(
+        Effect.flatMap((service) => service.providers()),
+      ),
       env,
       Effect.succeed("network unavailable"),
     );
@@ -125,10 +147,14 @@ testEffect("forced refresh publishes a refresh event", () =>
     const fetch = Effect.succeed(JSON.stringify(catalog));
     const effect = Effect.gen(function* () {
       const service = yield* ModelCatalog.Service;
-      const events = yield* EventBus.pipe(Effect.flatMap((bus) => bus.subscribe()));
+      const events = yield* EventBus.pipe(
+        Effect.flatMap((bus) => bus.subscribe()),
+      );
       yield* service.refresh(true);
       expect(
-        (yield* Stream.runCollect(Stream.take(events, 1))).pipe((chunk) => [...chunk][0]?.event),
+        (yield* Stream.runCollect(Stream.take(events, 1))).pipe(
+          (chunk) => [...chunk][0]?.event,
+        ),
       ).toEqual({ _tag: "models.refreshed" });
     });
     yield* provide(effect, env, fetch);

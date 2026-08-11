@@ -63,11 +63,42 @@ export interface LayoutSplit {
   children: LayoutNode[];
 }
 
+/**
+ * A pane placed over the tiled tree instead of inside it.
+ *
+ * Where a pane is placed is independent of what fills it: a terminal can float
+ * and a component can tile. So a float is the same PaneRef, differing only in
+ * how it is sized — by its own rectangle rather than against siblings, which is
+ * why it has a rect where a LayoutPane has a weight.
+ *
+ * The rect is fractions of the window rather than cells, because a float has to
+ * survive a resize: a rectangle captured at 200 columns is off the edge at 100.
+ * Fractions are also what the renderer wants, since an absolutely positioned
+ * node takes percentages and yoga reflows it without the model being touched.
+ *
+ * No `type` discriminant. A LayoutNode needs one because pane and split share a
+ * union; a float does not, because the array it lives in is what says it floats.
+ */
+export interface LayoutFloat extends PaneRef {
+  /** Left and top edges, as a fraction of the window. */
+  x: number;
+  y: number;
+  /** Size, as a fraction of the window. */
+  width: number;
+  height: number;
+}
+
+/** Where a pane sits. The other axis of a pane, orthogonal to what fills it. */
+export type Placement = "tiled" | "floating";
+
 export interface Layout {
   version: typeof LAYOUT_VERSION;
-  /** Absent for a window with no panes, which is a real state during teardown. */
+  /** The tiled plane. Null for a window with nothing tiled — a real state
+   *  during teardown, and while a float is all a window has. */
   root: LayoutNode | null;
-  /** PaneRef.id of the pane that had focus, if it is still in the tree. */
+  /** The floating plane, bottom to top. Usually empty. */
+  floats: readonly LayoutFloat[];
+  /** PaneRef.id of the pane that had focus, if the layout still places it. */
   focus?: string;
 }
 
@@ -101,13 +132,25 @@ export function layoutPanes(node: LayoutNode | null): LayoutPane[] {
   return node.children.flatMap(layoutPanes);
 }
 
+/**
+ * Every pane the layout places, whichever plane it is in: tiled in walk order,
+ * then floating bottom to top.
+ *
+ * Anything asking "does this layout have that pane" wants this rather than
+ * layoutPanes — focus, pruning and the window's slot filling are all about
+ * placement in general, and a float is placed.
+ */
+export function layoutRefs(layout: Layout): PaneRef[] {
+  return [...layoutPanes(layout.root), ...layout.floats];
+}
+
 /** Agent ids the layout expects to exist, in pane order. */
 export function layoutAgents(layout: Layout): string[] {
-  return layoutPanes(layout.root).map((pane) => pane.agent);
+  return layoutRefs(layout).map((pane) => pane.agent);
 }
 
 /**
- * Assemble a layout, keeping the focus only if its pane is still in the tree.
+ * Assemble a layout, keeping the focus only if the result still places its pane.
  *
  * Every path that produces a Layout has to answer this, because every one of
  * them can drop the focused pane: collapsing, pruning dead agents, parsing
@@ -115,12 +158,27 @@ export function layoutAgents(layout: Layout): string[] {
  * naming a pane that is not there would rebuild a window with nothing focused,
  * so it is dropped here rather than at four separate call sites.
  *
+ * Takes the layout as an object so that a transform of one plane spreads the
+ * other through — `makeLayout({ ...layout, root })` cannot forget the floats
+ * the way a positional argument list silently would.
+ *
  * Key order is fixed for the same reason encodeLayout is stable — two equal
  * layouts must serialize to equal strings.
  */
-export function makeLayout(root: LayoutNode | null, focus?: string): Layout {
-  const present = focus !== undefined && layoutPanes(root).some((pane) => pane.id === focus);
-  return present ? { version: LAYOUT_VERSION, root, focus } : { version: LAYOUT_VERSION, root };
+export function makeLayout({
+  root,
+  floats = [],
+  focus,
+}: {
+  root: LayoutNode | null;
+  floats?: readonly LayoutFloat[];
+  focus?: string;
+}): Layout {
+  const placed = [...layoutPanes(root), ...floats];
+  const present = focus !== undefined && placed.some((pane) => pane.id === focus);
+  return present
+    ? { version: LAYOUT_VERSION, root, floats, focus }
+    : { version: LAYOUT_VERSION, root, floats };
 }
 
 /**
@@ -228,13 +286,13 @@ export function splitLayout(
           ],
         },
   );
-  return makeLayout(collapse(root), pane.id);
+  return makeLayout({ ...layout, root: collapse(root), focus: pane.id });
 }
 
 /** Append a pane to the root row, preserving the existing slots and weights. */
 export function appendPane(layout: Layout, ref: PaneRef): Layout {
   const pane: LayoutPane = { type: "pane", ...ref, weight: 1 };
-  if (!layout.root) return makeLayout(pane, ref.id);
+  if (!layout.root) return makeLayout({ ...layout, root: pane, focus: ref.id });
   const root =
     layout.root.type === "split" && layout.root.direction === "row"
       ? { ...layout.root, children: [...layout.root.children, pane] }
@@ -244,7 +302,7 @@ export function appendPane(layout: Layout, ref: PaneRef): Layout {
           weight: 1,
           children: [{ ...layout.root, weight: 1 }, pane],
         };
-  return makeLayout(root, ref.id);
+  return makeLayout({ ...layout, root, focus: ref.id });
 }
 
 /**
@@ -269,38 +327,96 @@ export function swapLayout(layout: Layout, from: number, to: number): Layout {
   const root = rewritePanes(layout.root, (pane, at) =>
     at === from ? move(pane, b) : at === to ? move(pane, a) : pane,
   );
-  return makeLayout(collapse(root), layout.focus);
+  return makeLayout({ ...layout, root: collapse(root) });
 }
 
 /**
- * Take the pane at `index` out of the arrangement.
+ * Take a pane out of the arrangement, whichever plane it was placed in.
  *
- * The survivors keep their relative proportions and grow into the freed space,
- * which is what tmux's layout_close_pane does — and here it needs no arithmetic
- * at all, because weights are relative to siblings. Two panes left at 0.25 and
- * 0.5 simply become a third and two thirds of the row. The one case that WOULD
- * have needed a fixup, a lone survivor stranded at its old half share, is the
- * one collapse() already handles by giving it the husk's weight.
+ * By id rather than by position, because position only orders the tiled plane —
+ * a float has none, and every caller was looking the id up to get an index
+ * anyway.
  *
- * Focus moves to the pane that took its place, or to the last one when the
- * closed pane was at the end — tmux's rule, and the reason it is decided here
- * rather than by the caller: after the collapse there is no longer an index to
- * count from, only pane ids.
+ * Tiled survivors keep their relative proportions and grow into the freed
+ * space, which is what tmux's layout_close_pane does — and here it needs no
+ * arithmetic at all, because weights are relative to siblings. Two panes left
+ * at 0.25 and 0.5 simply become a third and two thirds of the row. The one case
+ * that WOULD have needed a fixup, a lone survivor stranded at its old half
+ * share, is the one collapse() already handles by giving it the husk's weight.
+ *
+ * Focus moves to the tiled pane that took its place, or to the last one when
+ * the closed pane was at the end — tmux's rule. Failing that it falls to
+ * whatever the layout still places, topmost first, which is the only sensible
+ * answer for a closed float and for a tiled pane whose window is now just a
+ * float. Decided here rather than by the caller because after the collapse
+ * there is no longer an index to count from, only pane ids.
  *
  * Closing the last pane leaves an empty layout. That is a real state, not an
  * error: a window with nothing in it is what the app closes.
  */
-export function closeLayout(layout: Layout, index: number): Layout {
-  const target = layoutPanes(layout.root)[index];
-  if (!target) return layout;
+export function closeLayout(layout: Layout, paneId: string): Layout {
+  const index = layoutPanes(layout.root).findIndex((pane) => pane.id === paneId);
+  const floats = layout.floats.filter((float) => float.id !== paneId);
+  if (index === -1 && floats.length === layout.floats.length) return layout;
 
-  const root = collapse(rewritePanes(layout.root, (pane, at) => (at === index ? null : pane)));
+  const root =
+    index === -1
+      ? layout.root
+      : collapse(rewritePanes(layout.root, (pane) => (pane.id === paneId ? null : pane)));
   const survivors = layoutPanes(root);
-  const focus =
-    layout.focus === target.id
-      ? survivors[Math.min(index, survivors.length - 1)]?.id
-      : layout.focus;
-  return makeLayout(root, focus);
+  const heir = index === -1 ? undefined : survivors[Math.min(index, survivors.length - 1)];
+  const remaining = [...survivors, ...floats];
+  const focus = layout.focus === paneId ? (heir ?? remaining.at(-1))?.id : layout.focus;
+  return makeLayout({ ...layout, root, floats, focus });
+}
+
+/** Which plane a layout places a pane in, or null if it does not place it. */
+export function placementOf(layout: Layout, paneId: string): Placement | null {
+  if (layout.floats.some((float) => float.id === paneId)) return "floating";
+  return layoutPanes(layout.root).some((pane) => pane.id === paneId) ? "tiled" : null;
+}
+
+/**
+ * A new float's rectangle: centred, two thirds of the window each way.
+ *
+ * One constant rather than an argument because nothing yet has an opinion —
+ * moving and resizing a float is its own gesture, and until that exists every
+ * float would be handed the same numbers by every caller.
+ */
+const NEW_FLOAT = { x: 1 / 6, y: 1 / 6, width: 2 / 3, height: 2 / 3 };
+
+/**
+ * Move a pane between the tiled and floating planes.
+ *
+ * The tiled half is exactly closeLayout's removal, and the floating half is
+ * exactly appendPane's insertion, because a pane leaving a plane is a pane
+ * leaving a plane no matter where it goes next. What is NOT shared is focus:
+ * changing a pane's placement never moves the focus off it, so the pane comes
+ * out of one plane and into the other still focused, unlike a close.
+ *
+ * A pane the layout does not place, or one already in the plane asked for, is
+ * left alone — this is a statement about where a pane is, so both are already
+ * true.
+ */
+export function setPlacement(layout: Layout, paneId: string, placement: Placement): Layout {
+  const current = placementOf(layout, paneId);
+  if (current === null || current === placement) return layout;
+
+  if (placement === "floating") {
+    const target = layoutPanes(layout.root).find((pane) => pane.id === paneId)!;
+    const root = collapse(rewritePanes(layout.root, (pane) => (pane.id === paneId ? null : pane)));
+    const float: LayoutFloat = { id: target.id, agent: target.agent, ...NEW_FLOAT };
+    // Onto the end: the newly floated pane is the one the user is looking at,
+    // and the end of the list is the top of the stack.
+    return makeLayout({ ...layout, root, floats: [...layout.floats, float], focus: paneId });
+  }
+
+  const target = layout.floats.find((float) => float.id === paneId)!;
+  const without = makeLayout({
+    ...layout,
+    floats: layout.floats.filter((float) => float.id !== paneId),
+  });
+  return appendPane(without, { id: target.id, agent: target.agent });
 }
 
 /**
@@ -321,7 +437,11 @@ export function prune(layout: Layout, alive: (agent: string) => boolean): Layout
   };
 
   const root = layout.root ? collapse(filter(layout.root)) : null;
-  return makeLayout(root, layout.focus);
+  return makeLayout({
+    ...layout,
+    root,
+    floats: layout.floats.filter((float) => alive(float.agent)),
+  });
 }
 
 /**
@@ -424,13 +544,17 @@ const split = (direction: SplitDirection, children: LayoutNode[], weight = 1): L
  * Everything is passed through collapse(), so degenerate cases (one pane, a
  * main layout with nothing beside the main pane, a single-row tiling) come back
  * as the flat tree the live window would actually build.
+ *
+ * It arranges the tiled plane and takes no floats, because a preset is a shape
+ * for panes that are sized against each other and a float is not one. A caller
+ * holding floats keeps them: `makeLayout({ ...presetLayout(...), floats })`.
  */
 export function presetLayout(
   panes: readonly PaneRef[],
   preset: LayoutPreset,
   focus?: string,
 ): Layout {
-  if (panes.length === 0) return makeLayout(null);
+  if (panes.length === 0) return makeLayout({ root: null });
   const [first, ...rest] = panes as [PaneRef, ...PaneRef[]];
 
   const build = (): LayoutNode => {
@@ -468,7 +592,7 @@ export function presetLayout(
     }
   };
 
-  return makeLayout(collapse(rest.length === 0 ? pane(first) : build()), focus);
+  return makeLayout({ root: collapse(rest.length === 0 ? pane(first) : build()), focus });
 }
 
 /** A grid as square as the count allows, filled row by row — tmux layout-set.c,
@@ -495,8 +619,23 @@ export class LayoutFormatError extends S.TaggedError<LayoutFormatError>()("Layou
 /** Serialize for session.json or the wire. Stable key order, so two equal
  *  layouts encode to equal strings and a diff of session.json stays readable. */
 export function encodeLayout(layout: Layout): string {
-  const normalized = makeLayout(collapse(layout.root), layout.focus);
-  return JSON.stringify({ ...normalized, root: order(normalized.root) });
+  const normalized = makeLayout({ ...layout, root: collapse(layout.root) });
+  return JSON.stringify({
+    ...normalized,
+    root: order(normalized.root),
+    floats: normalized.floats.map(orderFloat),
+  });
+}
+
+function orderFloat(float: LayoutFloat): LayoutFloat {
+  return {
+    id: float.id,
+    agent: float.agent,
+    x: float.x,
+    y: float.y,
+    width: float.width,
+    height: float.height,
+  };
 }
 
 function order(node: LayoutNode | null): LayoutNode | null {
@@ -547,7 +686,65 @@ export function parseLayout(value: unknown): Effect.Effect<Layout, LayoutFormatE
     if (raw.focus !== undefined && typeof raw.focus !== "string") {
       return yield* new LayoutFormatError({ message: "focus must be a pane id" });
     }
-    return makeLayout(collapse(root), raw.focus);
+    // Absent means no floats rather than a malformed layout: every layout
+    // written before floats existed says nothing about them, and "nothing
+    // floats" is what those layouts meant.
+    if (raw.floats !== undefined && !Array.isArray(raw.floats)) {
+      return yield* new LayoutFormatError({ message: "floats must be an array" });
+    }
+    const floats: LayoutFloat[] = [];
+    for (const [at, value] of (raw.floats ?? []).entries()) {
+      floats.push(yield* parseFloat(value, `floats[${at}]`, budget));
+    }
+    return makeLayout({ root: collapse(root), floats, focus: raw.focus });
+  });
+}
+
+/** A float counts against the same node budget as a tiled pane: it is a pane,
+ *  and the budget is about how much a layout can ask the window to build. */
+function parseFloat(
+  value: unknown,
+  at: string,
+  budget: { nodes: number },
+): Effect.Effect<LayoutFloat, LayoutFormatError> {
+  return Effect.gen(function* () {
+    if (++budget.nodes > MAX_LAYOUT_NODES)
+      return yield* new LayoutFormatError({
+        message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
+      });
+    if (!value || typeof value !== "object")
+      return yield* new LayoutFormatError({ message: `${at} must be an object` });
+    const raw = value as Record<string, unknown>;
+    if (typeof raw.agent !== "string" || !raw.agent)
+      return yield* new LayoutFormatError({ message: `${at} float needs an agent id` });
+    if (typeof raw.id !== "string" || !raw.id)
+      return yield* new LayoutFormatError({ message: `${at} float needs a pane id` });
+    reservePaneId(raw.id);
+
+    // Fractions of the window. An origin outside it or a size of zero would
+    // rebuild as a pane nobody can see or reach, which is the class of layout
+    // this function exists to refuse.
+    const fraction = (key: "x" | "y" | "width" | "height") =>
+      Effect.gen(function* () {
+        const n = raw[key];
+        if (typeof n !== "number" || !Number.isFinite(n))
+          return yield* new LayoutFormatError({ message: `${at} ${key} must be a number` });
+        const size = key === "width" || key === "height";
+        if (size ? n <= 0 || n > 1 : n < 0 || n >= 1)
+          return yield* new LayoutFormatError({
+            message: `${at} ${key} must be a fraction of the window`,
+          });
+        return n;
+      });
+
+    return {
+      id: raw.id,
+      agent: raw.agent,
+      x: yield* fraction("x"),
+      y: yield* fraction("y"),
+      width: yield* fraction("width"),
+      height: yield* fraction("height"),
+    };
   });
 }
 

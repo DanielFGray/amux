@@ -23,8 +23,20 @@ test("every declared sequence compiles, including multi-char key names", async (
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const commands: CommandSpec[] = [
-      { name: "t.letter", key: "<leader>h", desc: "letter", group: "t", run: Effect.void },
-      { name: "t.arrow", key: "<leader>left", desc: "arrow", group: "t", run: Effect.void },
+      {
+        name: "t.letter",
+        key: "<leader>h",
+        desc: "letter",
+        group: "t",
+        run: Effect.void,
+      },
+      {
+        name: "t.arrow",
+        key: "<leader>left",
+        desc: "arrow",
+        group: "t",
+        run: Effect.void,
+      },
       {
         name: "t.brace",
         key: ["<leader>{", "<leader>}"],
@@ -33,10 +45,16 @@ test("every declared sequence compiles, including multi-char key names", async (
         run: Effect.void,
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     const entries = helpGroups(bindings, commands)[0]!.entries;
 
-    expect(entries.map((e) => e.keys)).toEqual(["^a h", "^a left", "^a { / ^a }"]);
+    expect(entries.map((e) => e.keys)).toEqual([
+      "^a h",
+      "^a left",
+      "^a { / ^a }",
+    ]);
   } finally {
     t.renderer.destroy();
   }
@@ -54,17 +72,34 @@ test("a sequence claimed by two commands is reported as a conflict", async () =>
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const commands: CommandSpec[] = [
-      { name: "pane.up", key: "<leader>k", desc: "focus up", group: "t", run: Effect.void },
-      { name: "agent.kill", key: "<leader>k", desc: "kill agent", group: "t", run: Effect.void },
+      {
+        name: "pane.up",
+        key: "<leader>k",
+        desc: "focus up",
+        group: "t",
+        run: Effect.void,
+      },
+      {
+        name: "agent.kill",
+        key: "<leader>k",
+        desc: "kill agent",
+        group: "t",
+        run: Effect.void,
+      },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
 
     expect(bindings.conflicts()).toEqual([
       { sequence: "^a k", commands: ["pane.up", "agent.kill"] },
     ]);
     // Moving one of them off the shared key clears it.
     expect(
-      bindings.apply({ leader: "ctrl+a", bindings: { "agent.kill": ["<leader>shift+k"] } }),
+      bindings.apply({
+        leader: "ctrl+a",
+        bindings: { "agent.kill": ["<leader>shift+k"] },
+      }),
     ).toEqual([]);
   } finally {
     t.renderer.destroy();
@@ -98,7 +133,9 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
         run: Effect.sync(() => fired.push("S")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
 
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("s");
@@ -107,7 +144,9 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
     expect(fired).toEqual(["s", "S"]);
 
     // Written shift+s, shown as the key you actually press.
-    expect(helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys)).toEqual(["^a s", "^a S"]);
+    expect(
+      helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys),
+    ).toEqual(["^a s", "^a S"]);
   } finally {
     t.renderer.destroy();
   }
@@ -126,7 +165,9 @@ test("pane move uses the encodable shifted-letter binding", async () => {
         run: Effect.sync(() => fired.push("move")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("M", { shift: true });
     expect(fired).toEqual(["move"]);
@@ -184,7 +225,9 @@ test("ctrl+arrow is a distinct binding from the bare arrow", async () => {
         run: Effect.sync(() => fired.push("resize-down")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
 
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressArrow("left", { ctrl: true });
@@ -196,15 +239,17 @@ test("ctrl+arrow is a distinct binding from the bare arrow", async () => {
     t.mockInput.pressArrow("up", { ctrl: true });
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressArrow("down", { ctrl: true });
-    expect(fired).toEqual(["resize", "focus", "resize-right", "resize-up", "resize-down"]);
-
-    expect(helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys)).toEqual([
-      "^a left",
-      "^a ^left",
-      "^a ^right",
-      "^a ^up",
-      "^a ^down",
+    expect(fired).toEqual([
+      "resize",
+      "focus",
+      "resize-right",
+      "resize-up",
+      "resize-down",
     ]);
+
+    expect(
+      helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys),
+    ).toEqual(["^a left", "^a ^left", "^a ^right", "^a ^up", "^a ^down"]);
   } finally {
     t.renderer.destroy();
   }
@@ -239,7 +284,9 @@ test("a command hidden from help still dispatches", async () => {
         run: Effect.sync(() => fired.push("2")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
 
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("2");
@@ -249,7 +296,13 @@ test("a command hidden from help still dispatches", async () => {
 
     // ...while staying out of the listing it is hidden from.
     expect(helpGroups(bindings, commands)[0]!.entries).toEqual([
-      { name: "t.shown", keys: "^a 1", desc: "select 1..9", custom: false, fixed: false },
+      {
+        name: "t.shown",
+        keys: "^a 1",
+        desc: "select 1..9",
+        custom: false,
+        fixed: false,
+      },
     ]);
   } finally {
     t.renderer.destroy();
@@ -276,7 +329,9 @@ test("an override replaces a command's default sequences", async () => {
         run: Effect.sync(() => fired.push("z")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     bindings.apply({ leader: "ctrl+a", bindings: { "t.zoom": ["<leader>f"] } });
 
     t.mockInput.pressKey("a", { ctrl: true });
@@ -312,9 +367,16 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
         run: Effect.void,
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     expect(paletteEntries(bindings, commands)).toEqual([
-      { name: "pane.split-row", group: "panes", keys: "^a |", desc: "split left/right" },
+      {
+        name: "pane.split-row",
+        group: "panes",
+        keys: "^a |",
+        desc: "split left/right",
+      },
       {
         name: "window.select-layout.tiled",
         group: "windows",
@@ -323,7 +385,9 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
       },
     ]);
     expect(
-      filterPaletteEntries(paletteEntries(bindings, commands), "pane.s").map((e) => e.name),
+      filterPaletteEntries(paletteEntries(bindings, commands), "pane.s").map(
+        (e) => e.name,
+      ),
     ).toEqual(["pane.split-row"]);
     expect(bindings.dispatch("pane.split-row")).toBe(true);
     expect(fired).toEqual(["split"]);
@@ -346,7 +410,9 @@ test("an empty override unbinds the command", async () => {
         run: Effect.sync(() => fired.push("q")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     bindings.apply({ leader: "ctrl+a", bindings: { "t.quit": [] } });
 
     t.mockInput.pressKey("a", { ctrl: true });
@@ -378,7 +444,9 @@ test("rebinding the prefix moves every binding and how they read", async () => {
         run: Effect.sync(() => fired.push("c")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     bindings.apply({ leader: "ctrl+b", bindings: {} });
 
     t.mockInput.pressKey("a", { ctrl: true });
@@ -415,7 +483,9 @@ test("capture takes the next keystroke, bound or not, and skips modifiers", asyn
         run: Effect.sync(() => fired.push("c")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
 
     const seen: string[] = [];
     bindings.capture((_event, key) => seen.push(key));
@@ -506,11 +576,16 @@ test("keysFor prefers the override, including an empty one", () => {
     group: "t",
     run: Effect.void,
   };
-  expect(keysFor(cmd, { leader: "ctrl+a", bindings: {} })).toEqual(["<leader>a", "<leader>b"]);
-  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": ["<leader>z"] } })).toEqual([
-    "<leader>z",
+  expect(keysFor(cmd, { leader: "ctrl+a", bindings: {} })).toEqual([
+    "<leader>a",
+    "<leader>b",
   ]);
-  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": [] } })).toEqual([]);
+  expect(
+    keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": ["<leader>z"] } }),
+  ).toEqual(["<leader>z"]);
+  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": [] } })).toEqual(
+    [],
+  );
 });
 
 test("agent.new compiles its shifted-letter binding", async () => {
@@ -526,7 +601,9 @@ test("agent.new compiles its shifted-letter binding", async () => {
         run: Effect.sync(() => fired.push("agent.new")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("N", { shift: true });
     expect(fired).toEqual(["agent.new"]);
@@ -549,7 +626,9 @@ test("agent.steer compiles its shifted-letter binding", async () => {
         run: Effect.sync(() => fired.push("agent.steer")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("E", { shift: true });
     expect(fired).toEqual(["agent.steer"]);
@@ -572,7 +651,9 @@ test("agent.interrupt compiles its shifted-letter binding", async () => {
         run: Effect.sync(() => fired.push("agent.interrupt")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("I", { shift: true });
     expect(fired).toEqual(["agent.interrupt"]);

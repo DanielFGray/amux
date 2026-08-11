@@ -31,10 +31,13 @@ import type { WorkspaceSnapshot } from "./workspace.ts";
  *
  * By id, not by count. A count cannot tell "killed the agent you asked for"
  * from "killed a different one instead" — and that is a real mutation: making
-  * `killSession` release every session in the window still leaves the count at one
+ * `killSession` release every session in the window still leaves the count at one
  * once the target has already been spliced out of the list.
  */
-function spyBackend(): { backend: SessionBackendFactory; killed: () => string[] } {
+function spyBackend(): {
+  backend: SessionBackendFactory;
+  killed: () => string[];
+} {
   const killed: string[] = [];
   const backend: SessionBackendFactory = (opts) => {
     // Per instance, not shared: `closed` describes THIS backend, while the
@@ -73,7 +76,10 @@ async function fixture() {
   const spy = spyBackend();
   const scope = Effect.runSync(Scope.make());
   const spaces = run(
-    Scope.extend(SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host), scope),
+    Scope.extend(
+      SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host),
+      scope,
+    ),
   );
   return {
     spaces,
@@ -172,7 +178,10 @@ test("a broken-out pane survives its source window closing", async () => {
 test("scoped app release detaches daemon projections and terminates local owners", async () => {
   for (const ownership of ["daemon", "local"] as const) {
     const t = await createTestRenderer({ width: 60, height: 20 });
-    const host = new BoxRenderable(t.renderer, { id: `pane-host-${ownership}`, flexGrow: 1 });
+    const host = new BoxRenderable(t.renderer, {
+      id: `pane-host-${ownership}`,
+      flexGrow: 1,
+    });
     const closed: string[] = [];
     const killed: string[] = [];
     const backend: SessionBackendFactory = (opts) => {
@@ -212,7 +221,10 @@ test("scoped app release detaches daemon projections and terminates local owners
           createApp({
             renderer: t.renderer,
             paneHost: host,
-            config: { ...structuredClone(DEFAULT_CONFIG), options: { "sidebar.open": false } },
+            config: {
+              ...structuredClone(DEFAULT_CONFIG),
+              options: { "sidebar.open": false },
+            },
             session,
             quit() {},
           }),
@@ -224,7 +236,9 @@ test("scoped app release detaches daemon projections and terminates local owners
       await runAsync(Scope.close(scope, Exit.void));
 
       expect(closed).toEqual([`agent-${ownership}`]);
-      expect(killed).toEqual(ownership === "local" ? [`agent-${ownership}`] : []);
+      expect(killed).toEqual(
+        ownership === "local" ? [`agent-${ownership}`] : [],
+      );
       // The terminal is freed only after its entire renderable window has been
       // removed. A subsequent frame therefore has no path back to that handle.
       expect(host.getChildren()).toHaveLength(0);
@@ -238,7 +252,10 @@ test("scoped app release detaches daemon projections and terminates local owners
 
 function lifecycleWorkspace(agent: string): WorkspaceSnapshot {
   const pane = `pane-${agent}`;
-  const layout = makeLayout({ type: "pane", id: pane, agent, weight: 1 }, pane);
+  const layout = makeLayout({
+    root: { type: "pane", id: pane, agent, weight: 1 },
+    focus: pane,
+  });
   return {
     revision: 1,
     state: { ...spaceSetState(), activeSpace: "space-lifecycle" },
@@ -272,13 +289,18 @@ function lifecycleWorkspace(agent: string): WorkspaceSnapshot {
   };
 }
 
-function lifecycleSession(workspace: WorkspaceSnapshot, spawn: SessionBackendFactory): SessionClientShape {
+function lifecycleSession(
+  workspace: WorkspaceSnapshot,
+  spawn: SessionBackendFactory,
+): SessionClientShape {
   return {
     id: "lifecycle",
     session: null,
     live: new Set(
       workspace.spaces.flatMap((space) =>
-        space.windows.flatMap((window) => window.agents.map((agent) => agent.id)),
+        space.windows.flatMap((window) =>
+          window.agents.map((agent) => agent.id),
+        ),
       ),
     ),
     workspace: () => structuredClone(workspace),

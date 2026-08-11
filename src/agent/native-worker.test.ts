@@ -1,6 +1,10 @@
 import { test, expect } from "bun:test";
 import { COMMAND_DEFS } from "../commands.ts";
-import { buildNativeMapping, nativeToolName, nativeToolkit } from "./native-worker.ts";
+import {
+  buildNativeMapping,
+  nativeToolName,
+  nativeToolkit,
+} from "./native-worker.ts";
 
 const agentDefs = COMMAND_DEFS.filter((def) => def.exposure === "agent");
 
@@ -36,7 +40,9 @@ test("buildNativeMapping has no safe-name collisions across all agent commands",
       existing.push(def.tag);
     }
   }
-  const collisions = [...bySafe.entries()].filter(([, tags]) => tags.length > 1);
+  const collisions = [...bySafe.entries()].filter(
+    ([, tags]) => tags.length > 1,
+  );
   expect(collisions).toEqual([]);
 });
 
@@ -75,7 +81,9 @@ test("nativeToolkit produces tools with safe names", () => {
 test("nativeToolkit tools match agent-exposed commands 1:1", () => {
   const toolkit = nativeToolkit();
   const { safeToCommand } = buildNativeMapping(agentDefs);
-  const originalTags = Object.values(toolkit.tools).map((t) => safeToCommand.get(t.name));
+  const originalTags = Object.values(toolkit.tools).map((t) =>
+    safeToCommand.get(t.name),
+  );
   const set = new Set(originalTags);
   expect(set.size).toBe(agentDefs.length);
   for (const def of agentDefs) {

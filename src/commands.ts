@@ -153,6 +153,16 @@ const PaneZoom = define(
   {},
   { desc: "zoom the focused pane", group: "panes", target: "workspace", exposure: "agent" },
 );
+const PaneFloat = define(
+  "pane.float",
+  {},
+  {
+    desc: "toggle the focused pane between floating and tiled",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
+);
 const PaneSwap = define(
   "pane.swap",
   { to: S.Literal("previous", "next") },
@@ -529,6 +539,7 @@ export const COMMAND_DEFS = [
   PaneResize,
   PaneResizeDivider,
   PaneZoom,
+  PaneFloat,
   PaneSwap,
   PaneClose,
   PaneBreak,
@@ -742,6 +753,7 @@ export const Commands = {
   PaneResize,
   PaneResizeDivider,
   PaneZoom,
+  PaneFloat,
   PaneSwap,
   PaneClose,
   PaneBreak,

@@ -26,7 +26,9 @@ test("a hand-edited file cannot put a value into the app the UI would refuse", (
   expect(options["behaviour.scrollRows"]).toBe(2);
   // Wrong type is not clamped into range, it is not a value at all.
   expect(options["sidebar.open"]).toBe(OPTIONS["sidebar.open"].default);
-  expect(options["appearance.whichKeyDelay"]).toBe(OPTIONS["appearance.whichKeyDelay"].default);
+  expect(options["appearance.whichKeyDelay"]).toBe(
+    OPTIONS["appearance.whichKeyDelay"].default,
+  );
   expect(options["behaviour.shell"]).toBe(OPTIONS["behaviour.shell"].default);
 });
 
@@ -44,15 +46,25 @@ test("a value equal to the default is not stored at all", () => {
   const changed = writeOption({}, "sidebar.width", 42);
   expect(changed).toEqual({ "sidebar.width": 42 });
 
-  const back = writeOption(changed, "sidebar.width", OPTIONS["sidebar.width"].default);
+  const back = writeOption(
+    changed,
+    "sidebar.width",
+    OPTIONS["sidebar.width"].default,
+  );
   expect(back).toEqual({});
-  expect(resolveOptions(back)["sidebar.width"]).toBe(OPTIONS["sidebar.width"].default);
+  expect(resolveOptions(back)["sidebar.width"]).toBe(
+    OPTIONS["sidebar.width"].default,
+  );
 });
 
 test("entries belonging to names this build does not declare are left alone", () => {
   const stored = { "clock.format": "%H:%M", "sidebar.width": 42 };
-  expect(writeOption(stored, "sidebar.width", 20)["clock.format"]).toBe("%H:%M");
-  expect(clearOption(stored, "sidebar.width")).toEqual({ "clock.format": "%H:%M" });
+  expect(writeOption(stored, "sidebar.width", 20)["clock.format"]).toBe(
+    "%H:%M",
+  );
+  expect(clearOption(stored, "sidebar.width")).toEqual({
+    "clock.format": "%H:%M",
+  });
 });
 
 test("reset drops the entry rather than storing the default", () => {
@@ -76,7 +88,9 @@ test("coerce refuses rather than inventing a value", () => {
   expect(coerceOption(OPTIONS["sidebar.width"], "30")).toBeUndefined();
   expect(coerceOption(OPTIONS["sidebar.open"], 1)).toBeUndefined();
   expect(coerceOption(OPTIONS["behaviour.shell"], null)).toBeUndefined();
-  expect(coerceOption(OPTIONS["sidebar.width"], 999)).toBe(OPTIONS["sidebar.width"].max);
+  expect(coerceOption(OPTIONS["sidebar.width"], 999)).toBe(
+    OPTIONS["sidebar.width"].max,
+  );
 });
 
 test("an unknown name has no declaration to act on", () => {
@@ -86,17 +100,29 @@ test("an unknown name has no declaration to act on", () => {
 });
 
 test("sections are the name prefixes, so declaring an option places its row", () => {
-  expect(optionSections).toEqual(["sidebar", "appearance", "behaviour", "agent", "notifications"]);
-  expect(optionsIn("sidebar")).toEqual(["sidebar.open", "sidebar.width", "sidebar.agentsOnly"]);
+  expect(optionSections).toEqual([
+    "sidebar",
+    "appearance",
+    "behaviour",
+    "agent",
+    "notifications",
+  ]);
+  expect(optionsIn("sidebar")).toEqual([
+    "sidebar.open",
+    "sidebar.width",
+    "sidebar.agentsOnly",
+  ]);
   expect(optionsIn("nonesuch")).toEqual([]);
 });
 
 test("the native agent model is a provider/model config value", () => {
   expect(resolveOptions({})["agent.model"]).toBe("openai/gpt-4o-mini");
-  expect(resolveOptions({ "agent.model": "anthropic/claude-sonnet" })["agent.model"]).toBe(
-    "anthropic/claude-sonnet",
+  expect(
+    resolveOptions({ "agent.model": "anthropic/claude-sonnet" })["agent.model"],
+  ).toBe("anthropic/claude-sonnet");
+  expect(resolveOptions({ "agent.model": 42 })["agent.model"]).toBe(
+    "openai/gpt-4o-mini",
   );
-  expect(resolveOptions({ "agent.model": 42 })["agent.model"]).toBe("openai/gpt-4o-mini");
 });
 
 test("model references split provider from model and reject incomplete values", () => {
@@ -112,5 +138,7 @@ test("values read as something a person can act on", () => {
   expect(formatOption(OPTIONS["sidebar.open"], true)).toBe("yes");
   expect(formatOption(OPTIONS["sidebar.width"], 30)).toBe("30");
   expect(formatOption(OPTIONS["behaviour.shell"], "")).toBe("unset");
-  expect(formatOption(OPTIONS["behaviour.shell"], "/bin/fish")).toBe("/bin/fish");
+  expect(formatOption(OPTIONS["behaviour.shell"], "/bin/fish")).toBe(
+    "/bin/fish",
+  );
 });

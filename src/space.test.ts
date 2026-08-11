@@ -55,7 +55,9 @@ async function waitForBlocked(agent: Session, tries = 20): Promise<void> {
 
 /** Spawn a detached fake agent and put a confirmation prompt on its screen. */
 async function blockedAgent(window: Window, name: string): Promise<Session> {
-  const agent = run(window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]));
+  const agent = run(
+    window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]),
+  );
   await Bun.sleep(300);
   agent.write("printf 'Do you want to proceed?\\n'\n");
   await waitForBlocked(agent);
@@ -165,7 +167,9 @@ test("an agent with no view is detached but keeps running", async () => {
 test("output on a detached agent marks it unseen", async () => {
   const s = await setup();
   try {
-    const chatter = run(s.win.spawn("chatter", ["sh", "-c", "echo hello-from-detached; sleep 5"]));
+    const chatter = run(
+      s.win.spawn("chatter", ["sh", "-c", "echo hello-from-detached; sleep 5"]),
+    );
     await Bun.sleep(400);
     expect(chatter.unseen).toBe(true);
     // Opening a view is what clears it.
@@ -279,7 +283,9 @@ test("joining a pane preserves its live agent and transfers ownership", async ()
     const destination = run(s.space.newWindow());
     run(destination.init("destination"));
 
-    expect(await runAsync(s.space.joinPane(pane, source.number))).toBe(destination);
+    expect(await runAsync(s.space.joinPane(pane, source.number))).toBe(
+      destination,
+    );
     expect(source.panes).toHaveLength(0);
     expect(destination.panes).toContain(pane);
     expect(destination.agents).toContain(agent);
@@ -582,25 +588,55 @@ test("a pane draws only the edges facing the window, never one a divider covers"
   try {
     // One pane owns the whole frame.
     const only = s.win.panes[0]!;
-    expect(only.edges).toEqual({ top: true, right: true, bottom: true, left: true });
+    expect(only.edges).toEqual({
+      top: true,
+      right: true,
+      bottom: true,
+      left: true,
+    });
 
     // Split left/right: the seam between them belongs to the divider, so
     // neither pane draws a border there and the frame stays one cell thick.
     const right = run(s.win.splitSpawn("row"))!;
     const left = s.win.panes[0]!;
-    expect(left.edges).toEqual({ top: true, right: false, bottom: true, left: true });
-    expect(right.edges).toEqual({ top: true, right: true, bottom: true, left: false });
+    expect(left.edges).toEqual({
+      top: true,
+      right: false,
+      bottom: true,
+      left: true,
+    });
+    expect(right.edges).toEqual({
+      top: true,
+      right: true,
+      bottom: true,
+      left: false,
+    });
 
     // Split the right pane top/bottom. Its halves inherit the missing left
     // edge from the box that replaced it — the walk has to go up the tree, not
     // just look at immediate siblings.
     const bottom = run(s.win.splitSpawn("column"))!;
-    expect(right.edges).toEqual({ top: true, right: true, bottom: false, left: false });
-    expect(bottom.edges).toEqual({ top: false, right: true, bottom: true, left: false });
+    expect(right.edges).toEqual({
+      top: true,
+      right: true,
+      bottom: false,
+      left: false,
+    });
+    expect(bottom.edges).toEqual({
+      top: false,
+      right: true,
+      bottom: true,
+      left: false,
+    });
 
     // Closing the survivor's neighbour hands its edges back.
     s.win.close(bottom);
-    expect(right.edges).toEqual({ top: true, right: true, bottom: true, left: false });
+    expect(right.edges).toEqual({
+      top: true,
+      right: true,
+      bottom: true,
+      left: false,
+    });
   } finally {
     await s.dispose();
   }
@@ -657,15 +693,34 @@ test("outer border can be hidden in gap mode", async () => {
   try {
     applyOptions(resolveOptions({ "appearance.outerBorder": false }));
     s.win.refreshChrome();
-    expect(s.win.panes[0]!.edges).toEqual({ top: false, right: false, bottom: false, left: false });
+    expect(s.win.panes[0]!.edges).toEqual({
+      top: false,
+      right: false,
+      bottom: false,
+      left: false,
+    });
 
-    applyOptions(resolveOptions({ "appearance.gap": true, "appearance.outerBorder": false }));
+    applyOptions(
+      resolveOptions({
+        "appearance.gap": true,
+        "appearance.outerBorder": false,
+      }),
+    );
     s.win.refreshChrome();
-    expect(s.win.panes[0]!.edges).toEqual({ top: true, right: true, bottom: true, left: true });
+    expect(s.win.panes[0]!.edges).toEqual({
+      top: true,
+      right: true,
+      bottom: true,
+      left: true,
+    });
 
     run(s.win.splitSpawn("row"));
-    expect(s.win.panes.every((pane) => pane.edges.top && pane.edges.bottom)).toBe(true);
-    expect(s.win.panes.every((pane) => pane.edges.left || pane.edges.right)).toBe(true);
+    expect(
+      s.win.panes.every((pane) => pane.edges.top && pane.edges.bottom),
+    ).toBe(true);
+    expect(
+      s.win.panes.every((pane) => pane.edges.left || pane.edges.right),
+    ).toBe(true);
   } finally {
     applyOptions(resolveOptions({}));
     s.win.refreshChrome();
@@ -682,8 +737,18 @@ test("gap gives each pane a complete border and remains draggable", async () => 
     const children = s.win.root.getChildren() as any[];
     const [left, divider, right] = children;
     expect(divider.width).toBe(1);
-    expect(left.edges).toEqual({ top: true, right: true, bottom: true, left: true });
-    expect(right.edges).toEqual({ top: true, right: true, bottom: true, left: true });
+    expect(left.edges).toEqual({
+      top: true,
+      right: true,
+      bottom: true,
+      left: true,
+    });
+    expect(right.edges).toEqual({
+      top: true,
+      right: true,
+      bottom: true,
+      left: true,
+    });
     expect(left.x + left.width).toBe(divider.x);
     expect(divider.x + divider.width).toBe(right.x);
     const total = left.width + right.width;
@@ -748,7 +813,9 @@ test("the focused pane's shared border highlights with it", async () => {
     s.win.focus(right);
     const deep = run(s.win.splitSpawn("column"))!;
     expect(divider.adjacentToFocus).toBe(true);
-    const inner = (s.win.root.getChildren()[2] as BoxRenderable).getChildren()[1] as Divider;
+    const inner = (
+      s.win.root.getChildren()[2] as BoxRenderable
+    ).getChildren()[1] as Divider;
     expect(inner.adjacentToFocus).toBe(true);
     expect(deep.edges.left).toBe(false);
   } finally {

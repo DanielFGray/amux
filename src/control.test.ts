@@ -10,11 +10,23 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigProvider, Deferred, Effect, Fiber, Option, Scope, Stream } from "effect";
+import {
+  ConfigProvider,
+  Deferred,
+  Effect,
+  Fiber,
+  Option,
+  Scope,
+  Stream,
+} from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
-import { controlCall, connectControl, type ControlClient } from "./control-client.ts";
+import {
+  controlCall,
+  connectControl,
+  type ControlClient,
+} from "./control-client.ts";
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { SessionStore, sessionPaths } from "./session.ts";
@@ -23,12 +35,18 @@ import { parseWorkspaceJson } from "./workspace.ts";
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
 afterEach(async () => {
-  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
+  for (const daemon of daemons.splice(0))
+    await Effect.runPromise(daemon.stop).catch(() => {});
+  for (const dir of dirs.splice(0))
+    await rm(dir, { recursive: true, force: true });
 });
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Scope.Scope>,
+  effect: Effect.Effect<
+    A,
+    E,
+    SessionStore | FileSystem.FileSystem | Scope.Scope
+  >,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
@@ -42,7 +60,10 @@ const run = <A, E>(
 async function started(id: string) {
   const home = await mkdtemp(join(tmpdir(), "amux-control-"));
   dirs.push(home);
-  const env = { HOME: home, XDG_STATE_HOME: join(home, "state") } as NodeJS.ProcessEnv;
+  const env = {
+    HOME: home,
+    XDG_STATE_HOME: join(home, "state"),
+  } as NodeJS.ProcessEnv;
   const daemon = await run(startDaemon(id), env);
   daemons.push(daemon);
   return { daemon, env };
@@ -77,7 +98,9 @@ async function raw(path: string, line: string) {
 test("ping and status answer over the session's unix socket", async () => {
   const { daemon, env } = await started("control-status");
 
-  expect(await ctl(daemon.id, env, (c) => c.Ping())).toEqual({ attached: false });
+  expect(await ctl(daemon.id, env, (c) => c.Ping())).toEqual({
+    attached: false,
+  });
 
   const status = await ctl(daemon.id, env, (c) => c.Status());
   expect(status.session.id).toBe("control-status");
@@ -91,11 +114,16 @@ test("workspace JSON responses are schema-validated before projection", async ()
   const { daemon, env } = await started("control-workspace-validation");
   const status = await ctl(daemon.id, env, (c) => c.Status());
 
-  expect(Effect.runSyncExit(parseWorkspaceJson("not json"))._tag).toBe("Failure");
-  expect(Effect.runSyncExit(parseWorkspaceJson(JSON.stringify({ revision: 0 })))._tag).toBe(
+  expect(Effect.runSyncExit(parseWorkspaceJson("not json"))._tag).toBe(
     "Failure",
   );
-  expect(Effect.runSync(parseWorkspaceJson(status.workspace)).revision).toBeGreaterThanOrEqual(0);
+  expect(
+    Effect.runSyncExit(parseWorkspaceJson(JSON.stringify({ revision: 0 })))
+      ._tag,
+  ).toBe("Failure");
+  expect(
+    Effect.runSync(parseWorkspaceJson(status.workspace)).revision,
+  ).toBeGreaterThanOrEqual(0);
 });
 
 test("one connection serves many requests for its whole scope", async () => {
@@ -149,7 +177,9 @@ test("a refused command arrives as the daemon's typed failure, not a crash", asy
   expect(error.message).toContain("stale workspace revision");
 
   // The connection that carried the failure is still a working connection.
-  expect((await ctl(daemon.id, env, (c) => c.Status())).degraded).toBeUndefined();
+  expect(
+    (await ctl(daemon.id, env, (c) => c.Status())).degraded,
+  ).toBeUndefined();
 });
 
 test("a command batch runs in order and carries its workspace revision forward", async () => {
@@ -169,12 +199,16 @@ test("a command batch runs in order and carries its workspace revision forward",
   expect(outputs).toHaveLength(2);
   expect(JSON.parse(outputs[0]!.workspace!).revision).toBe(before.revision + 1);
   expect(JSON.parse(outputs[1]!.workspace!).revision).toBe(before.revision + 2);
-  expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("named-remotely");
+  expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe(
+    "named-remotely",
+  );
 });
 
 test("an empty command batch is rejected", async () => {
   const { daemon, env } = await started("control-empty-batch");
-  const error = await ctl(daemon.id, env, (control) => Effect.flip(control.Batch({ values: [] })));
+  const error = await ctl(daemon.id, env, (control) =>
+    Effect.flip(control.Batch({ values: [] })),
+  );
   expect(error.message).toContain("must not be empty");
 });
 
@@ -185,16 +219,29 @@ test("the CLI runs escaped-semicolon command groups in order", async () => {
   const entry = new URL("./cli.ts", import.meta.url).pathname;
 
   const child = Bun.spawn({
-    cmd: [process.execPath, entry, "space.rename", "first", ";", "space.rename", "second"],
+    cmd: [
+      process.execPath,
+      entry,
+      "space.rename",
+      "first",
+      ";",
+      "space.rename",
+      "second",
+    ],
     env: { ...process.env, ...env, AMUX_DAEMON_SESSION: id },
     stdout: "pipe",
     stderr: "pipe",
   });
 
-  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  const [exitCode, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stderr).text(),
+  ]);
   expect(stderr).toBe("");
   expect(exitCode).toBe(0);
-  expect(Effect.runSync(daemon.getWorkspace).revision).toBe(before.revision + 2);
+  expect(Effect.runSync(daemon.getWorkspace).revision).toBe(
+    before.revision + 2,
+  );
   expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("second");
 });
 
@@ -288,7 +335,10 @@ test("an agent self-report reaches the event bus, not just the socket", async ()
   const paths = await run(sessionPaths(daemon.id), env);
 
   const report = Effect.promise(async () => {
-    const socket = await Bun.connect({ unix: paths.agentState, socket: { data: () => {} } });
+    const socket = await Bun.connect({
+      unix: paths.agentState,
+      socket: { data: () => {} },
+    });
     socket.write(
       JSON.stringify({
         id: "report",
@@ -345,13 +395,18 @@ test("malformed and oversized frames are refused without taking the daemon down"
   expect((await ctl(daemon.id, env, (c) => c.Ping())).attached).toBe(false);
 
   // Past the frame limit: the framer gives up on the line before parsing it.
-  const oversized = await raw(paths.socket, "x".repeat(MAX_RPC_BYTES + 1) + "\n");
+  const oversized = await raw(
+    paths.socket,
+    "x".repeat(MAX_RPC_BYTES + 1) + "\n",
+  );
   expect(oversized.closed).toBe(true);
   expect((await ctl(daemon.id, env, (c) => c.Ping())).attached).toBe(false);
 
   // The same limit applies to a well-formed request that is simply too big.
   await expect(
-    ctl(daemon.id, env, (c) => c.SetBuffer({ data: "x".repeat(MAX_RPC_BYTES) })),
+    ctl(daemon.id, env, (c) =>
+      c.SetBuffer({ data: "x".repeat(MAX_RPC_BYTES) }),
+    ),
   ).rejects.toThrow();
   expect((await ctl(daemon.id, env, (c) => c.Ping())).attached).toBe(false);
 });

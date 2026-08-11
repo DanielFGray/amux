@@ -35,13 +35,17 @@ function roundTrip(vt: string, cols = 40, rows = 10) {
 }
 
 test("formatScreen reproduces a plain screen in a fresh terminal", () => {
-  const { source, target } = roundTrip("\x1b[2Jline one\r\nline two\r\nline three");
+  const { source, target } = roundTrip(
+    "\x1b[2Jline one\r\nline two\r\nline three",
+  );
   expect(captureVisible(target)).toBe(captureVisible(source));
   expect(target.mode(MODE_ALT_SCREEN)).toBe(false);
 });
 
 test("formatScreen carries the alternate screen across a replay", () => {
-  const { source, target } = roundTrip("\x1b[?1049h\x1b[2J\x1b[2;3Halt-mode-content");
+  const { source, target } = roundTrip(
+    "\x1b[?1049h\x1b[2J\x1b[2;3Halt-mode-content",
+  );
   expect(source.mode(MODE_ALT_SCREEN)).toBe(true);
   expect(target.mode(MODE_ALT_SCREEN)).toBe(true);
   expect(captureVisible(target)).toBe(captureVisible(source));
@@ -70,7 +74,11 @@ test("formatScreen replays modes a byte suffix cannot", () => {
 test("the replay is the current screen, not the scrollback", () => {
   const cols = 40;
   const rows = 4;
-  const { source, target } = roundTrip("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix", cols, rows);
+  const { source, target } = roundTrip(
+    "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix",
+    cols,
+    rows,
+  );
   // Six lines on a four-row screen: the first two scrolled away. A replay that
   // restored history would be a compatibility lie; the current screen is all
   // the daemon keeps (the replay terminal is created with scrollback 0).

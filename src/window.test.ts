@@ -55,7 +55,9 @@ test("zoom fills the window with one pane and restores the layout exactly", asyn
   const bottomRight = run(window.splitSpawn("column"))!;
   await layout();
 
-  const before = window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`);
+  const before = window.panes.map(
+    (p) => `${p.x},${p.y},${p.width},${p.height}`,
+  );
 
   window.focus(right);
   window.zoom();
@@ -72,7 +74,9 @@ test("zoom fills the window with one pane and restores the layout exactly", asyn
 
   expect(window.zoomed).toBe(false);
   expect(window.label).not.toContain(" Z");
-  expect(window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`)).toEqual(before);
+  expect(
+    window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`),
+  ).toEqual(before);
   expect(window.panes).toEqual([first, right, bottomRight]);
 });
 
@@ -85,13 +89,15 @@ test("zoom survives a resize and an uneven split's weights", async () => {
   // Apply an uneven model, so an approximate restore would show.
   window.applyLayout(
     makeLayout({
-      type: "split",
-      direction: "row",
-      weight: 1,
-      children: [
-        { type: "pane", id: first.id, agent: first.session.id, weight: 5 },
-        { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
-      ],
+      root: {
+        type: "split",
+        direction: "row",
+        weight: 1,
+        children: [
+          { type: "pane", id: first.id, agent: first.session.id, weight: 5 },
+          { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
+        ],
+      },
     }),
   );
   await layout();
@@ -235,7 +241,11 @@ test("resizeFocus moves the outer divider when the focused pane is nested", asyn
   const bottomRight = run(window.splitSpawn("column"))!;
   await layout();
 
-  const before = { left: left.width, right: right.width, bottom: bottomRight.width };
+  const before = {
+    left: left.width,
+    right: right.width,
+    bottom: bottomRight.width,
+  };
   window.focus(right);
   window.resizeFocus("left");
   await layout();
@@ -268,7 +278,9 @@ test("resizeFocus while zoomed does nothing and leaves the parked layout intact"
   const first = window.panes[0]!;
   const second = run(window.splitSpawn("row"))!;
   await layout();
-  const before = window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`);
+  const before = window.panes.map(
+    (p) => `${p.x},${p.y},${p.width},${p.height}`,
+  );
 
   window.focus(second);
   window.zoom();
@@ -282,7 +294,9 @@ test("resizeFocus while zoomed does nothing and leaves the parked layout intact"
 
   window.zoom();
   await layout();
-  expect(window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`)).toEqual(before);
+  expect(
+    window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`),
+  ).toEqual(before);
 });
 
 test("lastPane toggles between the two most recent panes", async () => {

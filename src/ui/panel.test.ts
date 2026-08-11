@@ -15,7 +15,9 @@ function emptyDisplay(): SidebarDisplay {
 }
 
 test("snapshot accessor reads the current signal value", () => {
-  const [snapshot, setSnapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot(0));
+  const [snapshot, setSnapshot] = createSignal<WorkspaceSnapshot>(
+    emptySnapshot(0),
+  );
   const [tick] = createSignal(0);
   const [options] = createSignal(resolveOptions({}));
   const [display] = createSignal(emptyDisplay());
@@ -112,7 +114,9 @@ test("run delegates to the provided command invoker and returns an Effect", asyn
     () => {},
   );
 
-  const result = await Effect.runPromise(ctx.run(command("pane.split", { axis: "row" })));
+  const result = await Effect.runPromise(
+    ctx.run(command("pane.split", { axis: "row" })),
+  );
   expect(calledWith).toBe("pane.split");
   expect(result.revision).toBe(1);
 });
@@ -135,7 +139,9 @@ test("run propagates a CommandError", async () => {
     () => {},
   );
 
-  const exit = await Effect.runPromise(Effect.exit(ctx.run(command("window.close"))));
+  const exit = await Effect.runPromise(
+    Effect.exit(ctx.run(command("window.close"))),
+  );
   expect(exit._tag).toBe("Failure");
 });
 
@@ -212,7 +218,9 @@ test("run passes the optional input string to the invoker", async () => {
     () => {},
   );
 
-  await Effect.runPromise(ctx.run(command("pane.send-keys", { keys: "ls" }), "\x1b[B"));
+  await Effect.runPromise(
+    ctx.run(command("pane.send-keys", { keys: "ls" }), "\x1b[B"),
+  );
   expect(receivedInput).toBe("\x1b[B");
 });
 

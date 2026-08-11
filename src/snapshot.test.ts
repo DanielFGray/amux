@@ -10,7 +10,11 @@ import {
   snapshotSpace,
   snapshotWindow,
 } from "./snapshot.ts";
-import { SESSION_VERSION, type PersistedSpace, type SessionState } from "./session.ts";
+import {
+  SESSION_VERSION,
+  type PersistedSpace,
+  type SessionState,
+} from "./session.ts";
 import type { Session } from "./agent.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -24,7 +28,10 @@ async function setup(options?: Parameters<typeof createHarness>[0]) {
   return harness;
 }
 
-const session = (spaces: PersistedSpace[], activeSpace?: string | null): SessionState => ({
+const session = (
+  spaces: PersistedSpace[],
+  activeSpace?: string | null,
+): SessionState => ({
   version: SESSION_VERSION,
   id: "test",
   createdAt: 1,
@@ -54,7 +61,10 @@ test("a window snapshot records its agents and the arrangement of them", async (
 
   const saved = snapshotWindow(window);
   expect(saved.number).toBe(window.number);
-  expect(saved.agents.map((a) => a.id)).toEqual([first.session.id, second.session.id]);
+  expect(saved.agents.map((a) => a.id)).toEqual([
+    first.session.id,
+    second.session.id,
+  ]);
   // The flat list cannot say how they were placed, nor which of them was
   // focused; the layout string says both, and is the only record of either.
   expect(layoutAgents(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([
@@ -100,7 +110,9 @@ test("agents with no pane open are recorded, and are absent from the layout", as
 
   const saved = snapshotWindow(window);
   expect(saved.agents.map((a) => a.id)).toContain(hidden.id);
-  expect(layoutAgents(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([kept.session.id]);
+  expect(layoutAgents(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([
+    kept.session.id,
+  ]);
 });
 
 // Restore.
@@ -118,7 +130,9 @@ test("a restored window comes back with the same panes in the same shape", async
 
   const restored = target.spaces[0]!.windows[0]!;
   expect(restored.panes).toHaveLength(3);
-  expect(restored.panes.map((p) => p.session.id)).toEqual(source.window.panes.map((p) => p.session.id));
+  expect(restored.panes.map((p) => p.session.id)).toEqual(
+    source.window.panes.map((p) => p.session.id),
+  );
   expect(encodeLayout(restored.exportLayout())).toBe(saved.windows[0]!.layout!);
 });
 
@@ -232,7 +246,9 @@ test("two panes on one agent are still two panes after a restore", async () => {
   await source.layout();
 
   const restored = space!.windows[0]!;
-  expect(restored.panes.filter((p) => p.session.id === shared.id)).toHaveLength(2);
+  expect(restored.panes.filter((p) => p.session.id === shared.id)).toHaveLength(
+    2,
+  );
 });
 
 // Terminal geometry is part of the arrangement: a restored agent whose shell
@@ -251,7 +267,9 @@ test("a restored agent's terminal is sized to the pane it lands in", async () =>
   expect(restored.panes.map((p) => p.session.term.cols)).toEqual(
     source.window.panes.map((p) => p.session.term.cols),
   );
-  expect(restored.panes[0]!.session.term.cols).toBeLessThan(source.window.root.width);
+  expect(restored.panes[0]!.session.term.cols).toBeLessThan(
+    source.window.root.width,
+  );
 });
 
 // Exited agents.
@@ -335,7 +353,9 @@ test("a tombstone named by the saved layout still gets no pane", async () => {
   await source.layout();
   const saved = snapshotSpace(source.space);
   // The layout still mentions both, but one is recorded as already finished.
-  expect(layoutAgents(Effect.runSync(decodeLayout(saved.windows[0]!.layout!)))).toHaveLength(2);
+  expect(
+    layoutAgents(Effect.runSync(decodeLayout(saved.windows[0]!.layout!))),
+  ).toHaveLength(2);
   const dead = saved.windows[0]!.agents.find((a) => a.id === doomed.id)!;
   dead.exited = true;
   dead.exitCode = 1;

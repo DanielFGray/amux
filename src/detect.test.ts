@@ -16,16 +16,28 @@ test("a leading braille spinner marks the agent working and is stripped from the
 
 test("Claude Code's own activity glyphs count as spinners", () => {
   for (const glyph of ["·", "✢", "✳", "✶", "✻", "✽"]) {
-    expect(splitActivity(`${glyph} task`)).toEqual({ spinning: true, text: "task" });
+    expect(splitActivity(`${glyph} task`)).toEqual({
+      spinning: true,
+      text: "task",
+    });
   }
 });
 
 test("a symbol that is part of the title is left alone", () => {
   // Only a single leading glyph followed by whitespace counts, so a title that
   // legitimately opens with a symbol keeps its text and reports not-working.
-  expect(splitActivity("★ production")).toEqual({ spinning: false, text: "★ production" });
-  expect(splitActivity("✨ task")).toEqual({ spinning: false, text: "✨ task" });
-  expect(splitActivity("nvim ~/src")).toEqual({ spinning: false, text: "nvim ~/src" });
+  expect(splitActivity("★ production")).toEqual({
+    spinning: false,
+    text: "★ production",
+  });
+  expect(splitActivity("✨ task")).toEqual({
+    spinning: false,
+    text: "✨ task",
+  });
+  expect(splitActivity("nvim ~/src")).toEqual({
+    spinning: false,
+    text: "nvim ~/src",
+  });
   // Two spinners: only the first is stripped, matching herdr's behaviour.
   expect(splitActivity("⠋ ⠙ task")).toEqual({ spinning: true, text: "⠙ task" });
 });
@@ -36,7 +48,9 @@ test("empty and whitespace titles are not spinners", () => {
 });
 
 test("confirmation prompts read as blocked", () => {
-  expect(looksBlocked(["", "Do you want to proceed?", "❯ 1. Yes", "  2. No", ""])).toBe(true);
+  expect(
+    looksBlocked(["", "Do you want to proceed?", "❯ 1. Yes", "  2. No", ""]),
+  ).toBe(true);
   expect(looksBlocked(["Overwrite existing file? [y/N]"])).toBe(true);
   expect(looksBlocked(["Press enter to continue"])).toBe(true);
   expect(looksBlocked(["Waiting for your approval"])).toBe(true);
@@ -83,7 +97,10 @@ async function fakeAgent(name: string): Promise<string> {
 test("a plain shell is idle whatever it is running", async () => {
   // The old behaviour reported any foreground process as "working", so opening
   // nvim in a pane put a spinner next to it. Only agents get a state now.
-  using agent = new Session({ name: "t", cmd: ["bash", "--norc", "--noprofile"] });
+  using agent = new Session({
+    name: "t",
+    cmd: ["bash", "--norc", "--noprofile"],
+  });
   await Bun.sleep(400);
   expect(agent.state).toBe("idle");
   agent.write("sleep 3\n");
@@ -108,7 +125,10 @@ test("a blocked prompt on an agent's screen reads as blocked", async () => {
 
 test("an agent started from a shell is picked up from the foreground process", async () => {
   const claude = await fakeAgent("claude");
-  using agent = new Session({ name: "t", cmd: ["bash", "--norc", "--noprofile"] });
+  using agent = new Session({
+    name: "t",
+    cmd: ["bash", "--norc", "--noprofile"],
+  });
   await Bun.sleep(300);
   expect(agent.agentKind).toBe(null);
   agent.write(`${claude} --norc --noprofile\n`);
@@ -117,7 +137,10 @@ test("an agent started from a shell is picked up from the foreground process", a
 });
 
 test("an exited agent is done regardless of what is left on screen", async () => {
-  using agent = new Session({ name: "t", cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"] });
+  using agent = new Session({
+    name: "t",
+    cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"],
+  });
   await Bun.sleep(500);
   expect(agent.state).toBe("done");
 });

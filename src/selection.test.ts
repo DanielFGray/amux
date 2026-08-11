@@ -73,7 +73,10 @@ test("drag selection copies through the pane and survives pane borders", async (
   const t = await createTestRenderer({ width: 30, height: 8 });
   const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
   t.renderer.root.add(host);
-  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
+  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(
+    workspaceEnv(t.renderer),
+    host,
+  );
   const copied: string[] = [];
   spaces.onCopy = (text) => {
     copied.push(text);

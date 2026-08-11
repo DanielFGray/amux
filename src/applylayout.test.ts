@@ -2,7 +2,13 @@ import { test, expect, afterEach } from "bun:test";
 import { Divider } from "./divider.ts";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
-import { encodeLayout, decodeLayout, layoutAgents, makeLayout, type LayoutNode } from "./layout.ts";
+import {
+  encodeLayout,
+  decodeLayout,
+  layoutAgents,
+  makeLayout,
+  type LayoutNode,
+} from "./layout.ts";
 import type { Session } from "./agent.ts";
 import { Effect } from "effect";
 
@@ -57,7 +63,9 @@ test("a layout survives the wire format and rebuilds the same tree", async () =>
   // Reshape it into something else entirely, then restore.
   window.selectLayout("even-vertical");
   await layout();
-  expect(shape(window.exportLayout().root)).toEqual({ column: ["pane", "pane", "pane"] });
+  expect(shape(window.exportLayout().root)).toEqual({
+    column: ["pane", "pane", "pane"],
+  });
 
   expect(window.applyLayout(Effect.runSync(decodeLayout(saved)))).toBe(true);
   await layout();
@@ -77,13 +85,15 @@ test("panes are reused, keeping their terminal and its output", async () => {
 
   window.applyLayout(
     makeLayout({
-      type: "split",
-      direction: "column",
-      weight: 1,
-      children: [
-        { type: "pane", id: second.id, agent: agent.id, weight: 1 },
-        { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
-      ],
+      root: {
+        type: "split",
+        direction: "column",
+        weight: 1,
+        children: [
+          { type: "pane", id: second.id, agent: agent.id, weight: 1 },
+          { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
+        ],
+      },
     }),
   );
   await layout();
@@ -119,18 +129,23 @@ test("weights in the layout become real geometry", async () => {
 
   window.applyLayout(
     makeLayout({
-      type: "split",
-      direction: "row",
-      weight: 1,
-      children: [
-        { type: "pane", id: first.id, agent: first.session.id, weight: 3 },
-        { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
-      ],
+      root: {
+        type: "split",
+        direction: "row",
+        weight: 1,
+        children: [
+          { type: "pane", id: first.id, agent: first.session.id, weight: 3 },
+          { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
+        ],
+      },
     }),
   );
   await layout();
 
-  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>;
+  const root = window.exportLayout().root as Extract<
+    LayoutNode,
+    { type: "split" }
+  >;
   expect(root.children[0]!.weight).toBe(3);
   // Roughly 3:1 across the window, less the divider column.
   expect(first.width).toBeGreaterThan(second.width * 2);
@@ -157,7 +172,7 @@ test("a layout with no focus still leaves a pane focused", async () => {
   await layout();
   const { root } = window.exportLayout();
 
-  expect(window.applyLayout(makeLayout(root))).toBe(true);
+  expect(window.applyLayout(makeLayout({ root: root }))).toBe(true);
   await layout();
   expect(window.focused).toBe(first);
 });
@@ -172,26 +187,30 @@ test("panes naming an agent this window does not own are pruned away", async () 
 
   const applied = window.applyLayout(
     makeLayout({
-      type: "split",
-      direction: "row",
-      weight: 1,
-      children: [
-        { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
-        {
-          type: "pane",
-          id: "pane-that-never-existed",
-          agent: "agent-that-never-existed",
-          weight: 1,
-        },
-        { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
-      ],
+      root: {
+        type: "split",
+        direction: "row",
+        weight: 1,
+        children: [
+          { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
+          {
+            type: "pane",
+            id: "pane-that-never-existed",
+            agent: "agent-that-never-existed",
+            weight: 1,
+          },
+          { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
+        ],
+      },
     }),
   );
   await layout();
 
   expect(applied).toBe(true);
   expect(window.panes).toEqual([first, second]);
-  expect(window.root.getChildren().filter((k) => k instanceof Divider)).toHaveLength(1);
+  expect(
+    window.root.getChildren().filter((k) => k instanceof Divider),
+  ).toHaveLength(1);
 });
 
 // Pruning to nothing must not be a way to empty the window: a stale string is
@@ -204,7 +223,9 @@ test("a layout naming nothing this window owns is refused, changing nothing", as
   const before = window.exportLayout();
 
   const applied = window.applyLayout(
-    makeLayout({ type: "pane", id: "nobody-pane", agent: "nobody", weight: 1 }),
+    makeLayout({
+      root: { type: "pane", id: "nobody-pane", agent: "nobody", weight: 1 },
+    }),
   );
 
   expect(applied).toBe(false);
@@ -214,7 +235,7 @@ test("a layout naming nothing this window owns is refused, changing nothing", as
 
 test("an empty layout is refused rather than closing every pane", async () => {
   const { window } = await setup();
-  expect(window.applyLayout(makeLayout(null))).toBe(false);
+  expect(window.applyLayout(makeLayout({ root: null }))).toBe(false);
   expect(window.panes).toHaveLength(1);
 });
 
@@ -226,7 +247,11 @@ test("a pane the layout has no slot for is closed, but its agent survives", asyn
   const dropped = second.session;
   await layout();
 
-  window.applyLayout(makeLayout({ type: "pane", id: first.id, agent: first.session.id, weight: 1 }));
+  window.applyLayout(
+    makeLayout({
+      root: { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
+    }),
+  );
   await layout();
 
   expect(window.panes).toEqual([first]);
@@ -265,7 +290,9 @@ test("two panes on one agent stay two panes across a rebuild", async () => {
   await layout();
 
   expect(window.panes.filter((p) => p.session === shared)).toHaveLength(2);
-  expect(layoutAgents(window.exportLayout()).filter((id) => id === shared.id)).toHaveLength(2);
+  expect(
+    layoutAgents(window.exportLayout()).filter((id) => id === shared.id),
+  ).toHaveLength(2);
 });
 
 /**
@@ -327,18 +354,28 @@ test("a layout naming panes this window does not have reuses them by agent", asy
   const ids: [string, string] = [first.id, second.id];
 
   const applied = window.applyLayout(
-    makeLayout(
-      {
+    makeLayout({
+      root: {
         type: "split",
         direction: "column",
         weight: 1,
         children: [
-          { type: "pane", id: "pane-from-elsewhere-1", agent: second.session.id, weight: 1 },
-          { type: "pane", id: "pane-from-elsewhere-2", agent: first.session.id, weight: 1 },
+          {
+            type: "pane",
+            id: "pane-from-elsewhere-1",
+            agent: second.session.id,
+            weight: 1,
+          },
+          {
+            type: "pane",
+            id: "pane-from-elsewhere-2",
+            agent: first.session.id,
+            weight: 1,
+          },
         ],
       },
-      "pane-from-elsewhere-1",
-    ),
+      focus: "pane-from-elsewhere-1",
+    }),
   );
   await layout();
 
@@ -368,13 +405,20 @@ test("a slot naming a pane outright beats an earlier slot matching on the agent"
 
   window.applyLayout(
     makeLayout({
-      type: "split",
-      direction: "row",
-      weight: 1,
-      children: [
-        { type: "pane", id: "pane-from-elsewhere", agent: shared.id, weight: 1 },
-        { type: "pane", id: a.id, agent: shared.id, weight: 1 },
-      ],
+      root: {
+        type: "split",
+        direction: "row",
+        weight: 1,
+        children: [
+          {
+            type: "pane",
+            id: "pane-from-elsewhere",
+            agent: shared.id,
+            weight: 1,
+          },
+          { type: "pane", id: a.id, agent: shared.id, weight: 1 },
+        ],
+      },
     }),
   );
   await layout();
@@ -454,7 +498,9 @@ test("dragging a seam forgets the preset, so next-layout advances", async () => 
 
   const before = window.exportLayout();
   const widths = window.panes.map((pane) => pane.width);
-  const divider = window.root.getChildren().find((k) => k instanceof Divider) as Divider;
+  const divider = window.root
+    .getChildren()
+    .find((k) => k instanceof Divider) as Divider;
   divider.onDrag!(-1);
 
   // The drag changes the resident model synchronously; the next frame is only
@@ -462,7 +508,10 @@ test("dragging a seam forgets the preset, so next-layout advances", async () => 
   expect(window.exportLayout()).not.toEqual(before);
   expect(window.preset).toBeNull();
   await layout();
-  expect(window.panes.map((pane) => pane.width)).toEqual([widths[0]! - 1, widths[1]! + 1]);
+  expect(window.panes.map((pane) => pane.width)).toEqual([
+    widths[0]! - 1,
+    widths[1]! + 1,
+  ]);
 });
 
 test("a preset on a single pane is a no-op that still reports success", async () => {
@@ -519,17 +568,29 @@ test("resized weights survive the export", async () => {
   await layout();
   window.applyLayout(
     makeLayout({
-      type: "split",
-      direction: "row",
-      weight: 1,
-      children: [
-        { type: "pane", id: first.id, agent: first.session.id, weight: 7 },
-        { type: "pane", id: window.panes[1]!.id, agent: window.panes[1]!.session.id, weight: 1 },
-      ],
+      root: {
+        type: "split",
+        direction: "row",
+        weight: 1,
+        children: [
+          { type: "pane", id: first.id, agent: first.session.id, weight: 7 },
+          {
+            type: "pane",
+            id: window.panes[1]!.id,
+            agent: window.panes[1]!.session.id,
+            weight: 1,
+          },
+        ],
+      },
     }),
   );
-  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>;
-  const exported = root.children.find((c) => c.type === "pane" && c.agent === first.session.id);
+  const root = window.exportLayout().root as Extract<
+    LayoutNode,
+    { type: "split" }
+  >;
+  const exported = root.children.find(
+    (c) => c.type === "pane" && c.agent === first.session.id,
+  );
   expect(exported?.weight).toBe(7);
 });
 
@@ -552,13 +613,20 @@ test("a zoomed pane keeps the weight it had in the layout, not its zoom weight",
   const first = window.panes[0]!;
   run(window.splitSpawn("row"));
   await layout();
-  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>;
+  const root = window.exportLayout().root as Extract<
+    LayoutNode,
+    { type: "split" }
+  >;
   window.applyLayout(
     makeLayout({
-      ...root,
-      children: root.children.map((child) =>
-        child.type === "pane" && child.id === first.id ? { ...child, weight: 5 } : child,
-      ),
+      root: {
+        ...root,
+        children: root.children.map((child) =>
+          child.type === "pane" && child.id === first.id
+            ? { ...child, weight: 5 }
+            : child,
+        ),
+      },
     }),
   );
   window.focus(first);

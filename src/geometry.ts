@@ -1,5 +1,11 @@
 import type { Direction, SplitDirection } from "./window.ts";
-import { makeLayout, type Layout, type LayoutNode, type LayoutSplit } from "./layout.ts";
+import {
+  layoutPanes,
+  makeLayout,
+  type Layout,
+  type LayoutNode,
+  type LayoutSplit,
+} from "./layout.ts";
 
 export interface LayoutSize {
   cols: number;
@@ -25,21 +31,34 @@ const MIN_CELLS = 3;
  * cells are divided by weight. Yoga rounds absolute boundaries, rather than
  * rounding each child's size independently, so the same cumulative rounding
  * is used here.
+ *
+ * Floats are in here too, at the cells their fractions name. They overlap the
+ * tiled rectangles rather than displacing them, which is what floating means
+ * and why the result is a map and not a partition of the window.
  */
 export function computeRects(layout: Layout, size: LayoutSize): ReadonlyMap<string, Rect> {
   return geometry(layout, size).panes;
 }
 
-/** The pane tmux-style directional focus reaches, or null at an outer edge. */
+/**
+ * The pane tmux-style directional focus reaches, or null at an outer edge.
+ *
+ * The tiled plane only. "The pane to the right" is a fact about tiling — it
+ * means the one across a shared edge — and a float shares an edge with nothing,
+ * it covers. So directional focus neither enters the floating plane nor leaves
+ * it, and from a float there is no direction to go.
+ */
 export function paneInDirection(
   layout: Layout,
   size: LayoutSize,
   fromId: string,
   direction: Direction,
 ): string | null {
+  const tiled = new Set(layoutPanes(layout.root).map((pane) => pane.id));
+  if (!tiled.has(fromId) || tiled.size < 2) return null;
   const rects = computeRects(layout, size);
   const from = rects.get(fromId);
-  if (!from || rects.size < 2) return null;
+  if (!from) return null;
   const horizontal = direction === "left" || direction === "right";
   const backwards = direction === "left" || direction === "up";
   const start = (rect: Rect) => (horizontal ? rect.x : rect.y);
@@ -51,7 +70,7 @@ export function paneInDirection(
   let bestGap = Infinity;
   let bestOverlap = 0;
   for (const [id, rect] of rects) {
-    if (id === fromId) continue;
+    if (id === fromId || !tiled.has(id)) continue;
     const gap = backwards ? start(from) - end(rect) : start(rect) - end(from);
     if (gap < 0 || gap > bestGap) continue;
     const overlap =
@@ -122,7 +141,7 @@ export function resizeDivider(
       weight: Math.max(0.0001, sizes[at]!),
     })),
   };
-  return makeLayout(replaceAt(layout.root, path, replacement), layout.focus);
+  return makeLayout({ ...layout, root: replaceAt(layout.root, path, replacement) });
 }
 
 export function paneHasNeighbour(
@@ -168,6 +187,23 @@ function geometry(
 } {
   const panes = new Map<string, Rect>();
   const nodes = new Map<LayoutNode, Rect>();
+  const cols = Math.max(0, Math.floor(size.cols));
+  const rows = Math.max(0, Math.floor(size.rows));
+
+  // Same rounding as the tiled walk, and for the same reason: yoga rounds a
+  // node's absolute edges, so a float placed by percentage lands where rounding
+  // its own edges says it does.
+  for (const float of layout.floats) {
+    panes.set(
+      float.id,
+      rounded({
+        x: float.x * cols,
+        y: float.y * rows,
+        width: float.width * cols,
+        height: float.height * rows,
+      }),
+    );
+  }
   if (!layout.root) return { panes, nodes };
 
   const walk = (node: LayoutNode, exact: ExactRect) => {
@@ -195,12 +231,7 @@ function geometry(
     }
   };
 
-  walk(layout.root, {
-    x: 0,
-    y: 0,
-    width: Math.max(0, Math.floor(size.cols)),
-    height: Math.max(0, Math.floor(size.rows)),
-  });
+  walk(layout.root, { x: 0, y: 0, width: cols, height: rows });
   return { panes, nodes };
 }
 

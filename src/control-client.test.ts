@@ -5,8 +5,14 @@ describe("eventGap", () => {
   it("reports missing sliding events", () => {
     expect(
       eventGap(
-        { sequence: 3, event: { _tag: "agent.state", session: "a", state: "working" } },
-        { sequence: 8, event: { _tag: "agent.state", session: "b", state: "blocked" } },
+        {
+          sequence: 3,
+          event: { _tag: "agent.state", session: "a", state: "working" },
+        },
+        {
+          sequence: 8,
+          event: { _tag: "agent.state", session: "b", state: "blocked" },
+        },
       ),
     ).toBe(4);
   });

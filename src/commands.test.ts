@@ -68,25 +68,30 @@ test("a command can fail with a message the caller can read", () => {
   const { handlers } = recording();
   const commands = makeCommands({
     ...handlers,
-    "pane.send-keys": () => Effect.fail(new CommandError({ message: "unterminated quote" })),
+    "pane.send-keys": () =>
+      Effect.fail(new CommandError({ message: "unterminated quote" })),
   });
 
   const result = Effect.runSync(
     Effect.either(commands.run(command("pane.send-keys", { keys: "'" }))),
   );
 
-  expect(Either.isLeft(result) && result.left.message).toBe("unterminated quote");
+  expect(Either.isLeft(result) && result.left.message).toBe(
+    "unterminated quote",
+  );
 });
 
 test("the wire decodes into a command, and rejects one it cannot type", () => {
-  expect(Effect.runSync(decodeCommand({ _tag: "window.select", number: 2 }))).toEqual(
-    command("window.select", { number: 2 }),
-  );
+  expect(
+    Effect.runSync(decodeCommand({ _tag: "window.select", number: 2 })),
+  ).toEqual(command("window.select", { number: 2 }));
   // Optional targets stay optional over the wire.
-  expect(Effect.runSync(decodeCommand({ _tag: "session.kill" }))).toEqual(command("session.kill"));
-  expect(Effect.runSync(decodeCommand({ _tag: "pane.resize", direction: "left" }))).toEqual(
-    command("pane.resize", { direction: "left" }),
+  expect(Effect.runSync(decodeCommand({ _tag: "session.kill" }))).toEqual(
+    command("session.kill"),
   );
+  expect(
+    Effect.runSync(decodeCommand({ _tag: "pane.resize", direction: "left" })),
+  ).toEqual(command("pane.resize", { direction: "left" }));
 
   const rejects = (input: unknown) =>
     Either.isLeft(Effect.runSync(Effect.either(decodeCommand(input))));
@@ -101,12 +106,12 @@ test("the wire decodes into a command, and rejects one it cannot type", () => {
 test("the buffer verbs carry their stack arguments over the wire", () => {
   const rejects = (input: unknown) =>
     Either.isLeft(Effect.runSync(Effect.either(decodeCommand(input))));
-  expect(Effect.runSync(decodeCommand({ _tag: "buffer.set", data: "x" }))).toEqual(
-    command("buffer.set", { data: "x" }),
-  );
-  expect(Effect.runSync(decodeCommand({ _tag: "buffer.paste", name: "clip" }))).toEqual(
-    command("buffer.paste", { name: "clip" }),
-  );
+  expect(
+    Effect.runSync(decodeCommand({ _tag: "buffer.set", data: "x" })),
+  ).toEqual(command("buffer.set", { data: "x" }));
+  expect(
+    Effect.runSync(decodeCommand({ _tag: "buffer.paste", name: "clip" })),
+  ).toEqual(command("buffer.paste", { name: "clip" }));
   expect(Effect.runSync(decodeCommand({ _tag: "buffer.choose" }))).toEqual(
     command("buffer.choose"),
   );
@@ -120,9 +125,16 @@ test("the buffer verbs carry their stack arguments over the wire", () => {
 test("notify carries its title, body, and optional session over the wire", () => {
   expect(
     Effect.runSync(
-      decodeCommand({ _tag: "notify", title: "Build", body: "Finished", session: "work" }),
+      decodeCommand({
+        _tag: "notify",
+        title: "Build",
+        body: "Finished",
+        session: "work",
+      }),
     ),
-  ).toEqual(command("notify", { title: "Build", body: "Finished", session: "work" }));
+  ).toEqual(
+    command("notify", { title: "Build", body: "Finished", session: "work" }),
+  );
 });
 
 /**
@@ -134,7 +146,9 @@ test("target derivation: workspace commands are in the workspace, view commands 
   const commands = makeCommands(recording().handlers);
 
   for (const def of COMMAND_DEFS) {
-    expect(commands.isWorkspaceCommand(def.tag)).toBe(def.target === "workspace");
+    expect(commands.isWorkspaceCommand(def.tag)).toBe(
+      def.target === "workspace",
+    );
     expect(commands.isRemoteCommand(def.tag)).toBe(def.target !== "view");
   }
 });
@@ -145,7 +159,9 @@ test("filtering by target and exposure produces the expected subsets", () => {
   const allNames = commands.list().map((c) => c.name);
   expect(allNames).toEqual(COMMAND_DEFS.map((def) => def.tag));
 
-  const workspaceNames = commands.list({ target: "workspace" }).map((c) => c.name);
+  const workspaceNames = commands
+    .list({ target: "workspace" })
+    .map((c) => c.name);
   expect(workspaceNames.length).toBeGreaterThan(0);
   for (const name of workspaceNames) {
     expect(commands.isWorkspaceCommand(name)).toBe(true);
@@ -174,7 +190,9 @@ test("filtering by target and exposure produces the expected subsets", () => {
   for (const name of viewOnly) expect(remote).not.toContain(name);
   // app.quit targets "server" — remotely invocable but not agent-visible.
   expect(remote).toContain("app.quit");
-  expect(commands.list({ exposure: "agent" }).map((c) => c.name)).not.toContain("app.quit");
+  expect(commands.list({ exposure: "agent" }).map((c) => c.name)).not.toContain(
+    "app.quit",
+  );
 });
 
 /**
@@ -210,7 +228,9 @@ test("agent tools are generated from the command definitions", () => {
   const capture = tools.find((tool) => tool.name === "pane.capture");
 
   expect(tools.map((tool) => tool.name)).toEqual(
-    COMMAND_DEFS.filter((def) => def.exposure === "agent").map((def) => def.tag),
+    COMMAND_DEFS.filter((def) => def.exposure === "agent").map(
+      (def) => def.tag,
+    ),
   );
   expect(split).toMatchObject({
     name: "pane.split",
@@ -244,7 +264,10 @@ test("a detached command reports its failure", () => {
   const original = console.error;
   console.error = (message: string) => void errors.push(message);
   try {
-    runDetached("pane.send-keys", Effect.fail(new CommandError({ message: "no pane to send to" })));
+    runDetached(
+      "pane.send-keys",
+      Effect.fail(new CommandError({ message: "no pane to send to" })),
+    );
     runDetached("pane.zoom", Effect.void);
   } finally {
     console.error = original;
@@ -260,19 +283,27 @@ test("a detached command reports its failure", () => {
  */
 test("commands with declared results carry them through the handler", () => {
   const handlers: CommandHandlers = {
-    ...Object.fromEntries(COMMAND_DEFS.map((def) => [def.tag, () => Effect.void])),
-    "buffer.set": ({ name, data }: any) => Effect.succeed(name ?? `buffer-${data.length}`),
-    "buffer.show": ({ name }: any) => Effect.succeed(`content of ${name ?? "top"}`),
+    ...Object.fromEntries(
+      COMMAND_DEFS.map((def) => [def.tag, () => Effect.void]),
+    ),
+    "buffer.set": ({ name, data }: any) =>
+      Effect.succeed(name ?? `buffer-${data.length}`),
+    "buffer.show": ({ name }: any) =>
+      Effect.succeed(`content of ${name ?? "top"}`),
     "pane.capture": () => Effect.succeed("captured text"),
   } as unknown as CommandHandlers;
 
   const commands = makeCommands(handlers);
 
-  expect(Effect.runSync(commands.run(command("buffer.set", { data: "hello" })))).toBe("buffer-5");
-  expect(Effect.runSync(commands.run(command("buffer.show", { name: "buf1" })))).toBe(
-    "content of buf1",
+  expect(
+    Effect.runSync(commands.run(command("buffer.set", { data: "hello" }))),
+  ).toBe("buffer-5");
+  expect(
+    Effect.runSync(commands.run(command("buffer.show", { name: "buf1" }))),
+  ).toBe("content of buf1");
+  expect(Effect.runSync(commands.run(command("pane.capture")))).toBe(
+    "captured text",
   );
-  expect(Effect.runSync(commands.run(command("pane.capture")))).toBe("captured text");
   expect(Effect.runSync(commands.run(command("pane.zoom")))).toBe(undefined);
 });
 
@@ -285,11 +316,17 @@ test("command result types match the declared schema", () => {
   expect(Schema.decodeUnknownSync(bufSetDef.result)("hello")).toBe("hello");
   // buffer.list → array of {name, bytes, preview}
   expect(
-    Schema.decodeUnknownSync(bufListDef.result)([{ name: "x", bytes: 3, preview: "..." }]),
+    Schema.decodeUnknownSync(bufListDef.result)([
+      { name: "x", bytes: 3, preview: "..." },
+    ]),
   ).toEqual([{ name: "x", bytes: 3, preview: "..." }]);
   // pane.capture → string
-  expect(Schema.decodeUnknownSync(paneCaptureDef.result)("captured text")).toBe("captured text");
+  expect(Schema.decodeUnknownSync(paneCaptureDef.result)("captured text")).toBe(
+    "captured text",
+  );
   // void-schema decodes to undefined
   const paneZoomDef = COMMAND_DEFS.find((d) => d.tag === "pane.zoom")!;
-  expect(Schema.decodeUnknownSync(paneZoomDef.result)(undefined)).toBe(undefined);
+  expect(Schema.decodeUnknownSync(paneZoomDef.result)(undefined)).toBe(
+    undefined,
+  );
 });

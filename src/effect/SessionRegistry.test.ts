@@ -7,7 +7,11 @@ const session = Effect.gen(function* () {
   const registry = yield* SessionRegistry;
   const pty = yield* registry.spawn({
     id: "effect-pty",
-    cmd: ["bash", "-c", "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\""],
+    cmd: [
+      "bash",
+      "-c",
+      "printf 'ready\\n'; read line; printf 'got:%s\\n' \"$line\"",
+    ],
     cols: 80,
     rows: 24,
   });
@@ -33,25 +37,32 @@ testEffect("SessionRegistry exposes PTY output and writes within a scope", () =>
 testEffect("SessionRegistry releases sessions when the scope closes", () =>
   Effect.gen(function* () {
     const registry = yield* SessionRegistry;
-    yield* registry.spawn({ id: "scoped-pty", cmd: ["sleep", "10"], cols: 80, rows: 24 });
+    yield* registry.spawn({
+      id: "scoped-pty",
+      cmd: ["sleep", "10"],
+      cols: 80,
+      rows: 24,
+    });
     expect(yield* registry.sessions).toEqual(new Set(["scoped-pty"]));
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
-testEffect("SessionRegistry rejects oversized terminals before allocating a PTY", () =>
-  Effect.gen(function* () {
-    const registry = yield* SessionRegistry;
-    const result = yield* Effect.either(
-      registry.spawn({
-        id: "oversized-pty",
-        cmd: ["sh"],
-        cols: 1_000_000,
-        rows: 1_000_000,
-      }),
-    );
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") expect(result.left.operation).toBe("spawn");
-  }).pipe(Effect.provide(SessionRegistry.Default)),
+testEffect(
+  "SessionRegistry rejects oversized terminals before allocating a PTY",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* SessionRegistry;
+      const result = yield* Effect.either(
+        registry.spawn({
+          id: "oversized-pty",
+          cmd: ["sh"],
+          cols: 1_000_000,
+          rows: 1_000_000,
+        }),
+      );
+      expect(result._tag).toBe("Left");
+      if (result._tag === "Left") expect(result.left.operation).toBe("spawn");
+    }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
 test("a non-reading child cannot wedge writes, kill, or another session", async () => {
@@ -108,7 +119,9 @@ test("interrupting a registry write cancels the PTY operation", async () => {
           cols: 80,
           rows: 24,
         });
-        const write = yield* Effect.fork(pty.write("x".repeat(16 * 1024 * 1024)));
+        const write = yield* Effect.fork(
+          pty.write("x".repeat(16 * 1024 * 1024)),
+        );
         yield* Effect.sleep(25);
         yield* Fiber.interrupt(write);
         const exit = yield* Fiber.await(write);
@@ -146,10 +159,13 @@ testEffect("duplicate reservations fail and failed spawns release the id", () =>
       }),
     );
     const firstResult = yield* Fiber.join(first);
-    expect([firstResult._tag, second._tag].sort()).toEqual(["Failure", "Success"]);
-    expect(String(firstResult._tag === "Failure" ? firstResult : second)).toContain(
-      "already live or starting",
-    );
+    expect([firstResult._tag, second._tag].sort()).toEqual([
+      "Failure",
+      "Success",
+    ]);
+    expect(
+      String(firstResult._tag === "Failure" ? firstResult : second),
+    ).toContain("already live or starting");
 
     const failed = yield* Effect.exit(
       registry.spawn({
@@ -179,27 +195,29 @@ testEffect("duplicate reservations fail and failed spawns release the id", () =>
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
-testEffect("an agent worker registers, emits semantic events, and is killed", () =>
-  Effect.gen(function* () {
-    const registry = yield* SessionRegistry;
-    const agent = yield* registry.spawn({
-      kind: "component",
-      id: "worker-agent",
-      cmd: [
-        process.execPath,
-        "-e",
-        `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"worker-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
-      ],
-      cols: 80,
-      rows: 24,
-    });
-    expect(agent.kind).toBe("component");
-    expect(yield* registry.sessions).toEqual(new Set(["worker-agent"]));
+testEffect(
+  "an agent worker registers, emits semantic events, and is killed",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* SessionRegistry;
+      const agent = yield* registry.spawn({
+        kind: "component",
+        id: "worker-agent",
+        cmd: [
+          process.execPath,
+          "-e",
+          `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"worker-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+        ],
+        cols: 80,
+        rows: 24,
+      });
+      expect(agent.kind).toBe("component");
+      expect(yield* registry.sessions).toEqual(new Set(["worker-agent"]));
 
-    yield* agent.kill;
-    expect(yield* agent.exit).toBeNull();
-    expect(yield* registry.sessions).toEqual(new Set());
-  }).pipe(Effect.provide(SessionRegistry.Default)),
+      yield* agent.kill;
+      expect(yield* agent.exit).toBeNull();
+      expect(yield* registry.sessions).toEqual(new Set());
+    }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
 test("native workers receive stable amux identity environment", async () => {
@@ -308,22 +326,28 @@ testEffect("pty sessions carry pane identity and both sockets", () =>
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
-testEffect("a pty session without an rpcPath leaves AMUX_CONTROL_SOCKET unset", () =>
-  Effect.gen(function* () {
-    const registry = yield* SessionRegistry;
-    const pty = yield* registry.spawn({
-      id: "socketless-pty",
-      cmd: ["sh", "-c", 'printf "socket=%s\\n" "${AMUX_CONTROL_SOCKET-unset}"'],
-      cols: 80,
-      rows: 24,
-    });
-    const output = yield* Stream.runCollect(pty.output);
-    yield* pty.exit;
-    const text = new TextDecoder().decode(
-      Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
-    );
-    expect(text).toContain("socket=unset");
-  }).pipe(Effect.provide(SessionRegistry.Default)),
+testEffect(
+  "a pty session without an rpcPath leaves AMUX_CONTROL_SOCKET unset",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* SessionRegistry;
+      const pty = yield* registry.spawn({
+        id: "socketless-pty",
+        cmd: [
+          "sh",
+          "-c",
+          'printf "socket=%s\\n" "${AMUX_CONTROL_SOCKET-unset}"',
+        ],
+        cols: 80,
+        rows: 24,
+      });
+      const output = yield* Stream.runCollect(pty.output);
+      yield* pty.exit;
+      const text = new TextDecoder().decode(
+        Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
+      );
+      expect(text).toContain("socket=unset");
+    }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 
 /** The pane's own shell, so its environment is extended and never replaced —

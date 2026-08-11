@@ -1080,6 +1080,7 @@ function buildApp(
     "pane.resize": (value) => runPanelCommand(value),
     "pane.resize-divider": (value) => runPanelCommand(value),
     "pane.zoom": (value) => runPanelCommand(value),
+    "pane.float": (value) => runPanelCommand(value),
     "pane.swap": (value) => runPanelCommand(value),
     "pane.close": (value) => runPanelCommand(value),
     "pane.break": (value) => runPanelCommand(value),
@@ -1385,6 +1386,9 @@ function buildApp(
     ),
     bind("pane.zoom", "<leader>z", command("pane.zoom"), {
       desc: "zoom the focused pane (Z in the tab)",
+    }),
+    bind("pane.float", "<leader>f", command("pane.float"), {
+      desc: "float the focused pane over the others, or put it back",
     }),
     bind("pane.swap-previous", "<leader>{", command("pane.swap", { to: "previous" }), {
       desc: "swap pane with the previous one",

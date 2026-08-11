@@ -262,7 +262,9 @@ test("break updates what the sidebar and the tab list would show", async () => {
 
     const win2 = (await runAsync(s.space.breakPane(right)))!;
 
-    const agentWindow = s.space.windows.find((window) => window.agents.includes(agent));
+    const agentWindow = s.space.windows.find((window) =>
+      window.agents.includes(agent),
+    );
     expect(agentWindow).toBe(win2);
     // The agent now hangs under the new window, not the source one.
     expect(agentWindow!.agents).toContain(agent);
@@ -271,7 +273,9 @@ test("break updates what the sidebar and the tab list would show", async () => {
     // Tabs render from window.label; the new window carries a fresh number and
     // is the one on screen.
     const labels = s.space.windows.map((w) => w.label);
-    expect(labels.some((l) => l.startsWith(`${agentWindow!.number}:`))).toBe(true);
+    expect(labels.some((l) => l.startsWith(`${agentWindow!.number}:`))).toBe(
+      true,
+    );
     expect(s.space.active).toBe(agentWindow!);
   } finally {
     await s.dispose();
@@ -285,7 +289,9 @@ test("breakPane refuses a pane that is not in this space", async () => {
     const otherWin = run(other.newWindow());
     run(otherWin.init("shell"));
 
-    expect(await runAsync(s.space.breakPane(otherWin.panes[0] as TerminalPane))).toBeNull();
+    expect(
+      await runAsync(s.space.breakPane(otherWin.panes[0] as TerminalPane)),
+    ).toBeNull();
     expect(s.space.windows).toEqual([s.win]);
   } finally {
     await s.dispose();

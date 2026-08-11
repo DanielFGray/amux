@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { Schema as S } from "effect";
 import { DaemonEvent } from "./EventBus.ts";
-import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
+import {
+  decodeAttachFrames,
+  encodeAttachFrame,
+  type AttachFrame,
+} from "./AttachProtocol.ts";
 
 test("attach frames preserve binary payloads across the wire format", () => {
   const frame: AttachFrame = {
@@ -41,11 +45,18 @@ test("multiple frames and an incomplete tail are decoded independently", () => {
 
 test("heartbeat frames round-trip without special client state", () => {
   const encoded = encodeAttachFrame({ _tag: "ping", nonce: "17" });
-  expect(decodeAttachFrames(encoded).frames).toEqual([{ _tag: "ping", nonce: "17" }]);
+  expect(decodeAttachFrames(encoded).frames).toEqual([
+    { _tag: "ping", nonce: "17" },
+  ]);
 });
 
 test("foreground frames carry a negative pgid and sid across the wire", () => {
-  const encoded = encodeAttachFrame({ _tag: "foreground", session: "agent-1", pgid: -1, sid: -1 });
+  const encoded = encodeAttachFrame({
+    _tag: "foreground",
+    session: "agent-1",
+    pgid: -1,
+    sid: -1,
+  });
   expect(decodeAttachFrames(encoded).frames).toEqual([
     { _tag: "foreground", session: "agent-1", pgid: -1, sid: -1 },
   ]);
@@ -102,7 +113,13 @@ test("native agent lifecycle frames round-trip as semantic events", () => {
       output: { passed: 42 },
       isError: false,
     },
-    { _tag: "turn.end", session: "agent-1", sequence: 7, turn: "turn-1", outcome: "completed" },
+    {
+      _tag: "turn.end",
+      session: "agent-1",
+      sequence: 7,
+      turn: "turn-1",
+      outcome: "completed",
+    },
     { _tag: "agent.status", session: "agent-1", sequence: 8, state: "idle" },
   ];
 
@@ -113,11 +130,21 @@ test("native agent lifecycle frames round-trip as semantic events", () => {
 
 test("native agent control frames round-trip without provider or transport details", () => {
   const frames: AttachFrame[] = [
-    { _tag: "agent.steer", session: "agent-1", message: "Stop after the current command." },
-    { _tag: "agent.interrupt", session: "agent-1", reason: "Human requested a pause" },
+    {
+      _tag: "agent.steer",
+      session: "agent-1",
+      message: "Stop after the current command.",
+    },
+    {
+      _tag: "agent.interrupt",
+      session: "agent-1",
+      reason: "Human requested a pause",
+    },
   ];
 
-  expect(decodeAttachFrames(frames.map(encodeAttachFrame).join("")).frames).toEqual(frames);
+  expect(
+    decodeAttachFrames(frames.map(encodeAttachFrame).join("")).frames,
+  ).toEqual(frames);
 });
 
 test("tool.params-start round-trips as a self-contained semantic event", () => {
@@ -160,10 +187,33 @@ test("tool.params-end terminates a streaming call", () => {
 
 test("tool.params-start, deltas, end stream as an ordered lifecycle", () => {
   const frames: AttachFrame[] = [
-    { _tag: "tool.params-start", session: "agent-1", turn: "turn-1", call: "call-1", tool: "write" },
-    { _tag: "tool.params-delta", session: "agent-1", turn: "turn-1", call: "call-1", delta: '{"path":' },
-    { _tag: "tool.params-delta", session: "agent-1", turn: "turn-1", call: "call-1", delta: '"/tmp/f"' },
-    { _tag: "tool.params-end", session: "agent-1", turn: "turn-1", call: "call-1" },
+    {
+      _tag: "tool.params-start",
+      session: "agent-1",
+      turn: "turn-1",
+      call: "call-1",
+      tool: "write",
+    },
+    {
+      _tag: "tool.params-delta",
+      session: "agent-1",
+      turn: "turn-1",
+      call: "call-1",
+      delta: '{"path":',
+    },
+    {
+      _tag: "tool.params-delta",
+      session: "agent-1",
+      turn: "turn-1",
+      call: "call-1",
+      delta: '"/tmp/f"',
+    },
+    {
+      _tag: "tool.params-end",
+      session: "agent-1",
+      turn: "turn-1",
+      call: "call-1",
+    },
   ];
 
   const decoded = decodeAttachFrames(frames.map(encodeAttachFrame).join(""));
@@ -191,7 +241,13 @@ test("daemon agent events reject malformed tool.params-start frame", () => {
       event: {
         _tag: "agent.frame",
         session: "agent-1",
-        frame: { _tag: "tool.params-start", session: "agent-1", sequence: 1, turn: "turn-1", call: "call-1" },
+        frame: {
+          _tag: "tool.params-start",
+          session: "agent-1",
+          sequence: 1,
+          turn: "turn-1",
+          call: "call-1",
+        },
       },
     }),
   ).toThrow();
@@ -204,7 +260,12 @@ test("daemon agent events reject malformed tool.params-delta frame", () => {
       event: {
         _tag: "agent.frame",
         session: "agent-1",
-        frame: { _tag: "tool.params-delta", session: "agent-1", sequence: 2, turn: "turn-1" },
+        frame: {
+          _tag: "tool.params-delta",
+          session: "agent-1",
+          sequence: 2,
+          turn: "turn-1",
+        },
       },
     }),
   ).toThrow();

@@ -79,8 +79,14 @@ test("emoji with variation selector is one grapheme", () => {
 
 test("ZWJ emoji family is one grapheme", () => {
   const t = term();
-  t.write(new TextEncoder().encode("\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}"));
-  expect(captureVisible(t)).toBe("\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}");
+  t.write(
+    new TextEncoder().encode(
+      "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}",
+    ),
+  );
+  expect(captureVisible(t)).toBe(
+    "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}",
+  );
 });
 
 test("mixed wide and combining characters survive capture", () => {
@@ -164,7 +170,10 @@ test("pickCaptureTarget reports an explicit miss", () => {
 test("a selected agent is captured without a viewport and without moving it", () => {
   const t = term(10, 4);
   t.write(new TextEncoder().encode("l0\r\nl1\r\nl2\r\nl3"));
-  const target = pickCaptureTarget(null, { term: t, describe: () => "detached" });
+  const target = pickCaptureTarget(null, {
+    term: t,
+    describe: () => "detached",
+  });
   expect(target).not.toBeNull();
   const before = t.scrollbar;
   // No pane is mounted anywhere — the terminal alone is the target, exactly

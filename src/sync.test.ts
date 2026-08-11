@@ -28,7 +28,9 @@ function captureAgentWrites() {
     spy,
     agents: () => spy.mock.contexts as Session[],
     data: () =>
-      spy.mock.calls.map(([d]) => (typeof d === "string" ? d : new TextDecoder().decode(d))),
+      spy.mock.calls.map(([d]) =>
+        typeof d === "string" ? d : new TextDecoder().decode(d),
+      ),
     clear: () => spy.mockClear(),
   };
 }
@@ -90,7 +92,9 @@ test("input goes to the focused pane alone, then to every pane once sync is on",
     // On: every pane in the window, identical bytes.
     window.toggleSync();
     window.write("b");
-    expect(new Set(writes.agents())).toEqual(new Set([first.session, second.session, third.session]));
+    expect(new Set(writes.agents())).toEqual(
+      new Set([first.session, second.session, third.session]),
+    );
     expect(writes.data().slice(-3)).toEqual(["b", "b", "b"]);
 
     // Moving focus does not change the set.
@@ -187,7 +191,9 @@ test("a detached agent receives no broadcast until a view is opened on it", asyn
   try {
     window.write("x");
     // The broadcast set is exactly the window's panes.
-    expect(new Set(writes.agents())).toEqual(new Set(window.panes.map((p) => p.session)));
+    expect(new Set(writes.agents())).toEqual(
+      new Set(window.panes.map((p) => p.session)),
+    );
     expect(writes.agents()).not.toContain(hidden);
 
     // Opening a view makes it a pane, and it joins the fan-out.
@@ -225,7 +231,9 @@ test("the fan-out set follows the layout: a split joins, a close leaves, a new w
   const writes = captureAgentWrites();
   try {
     window.write("a");
-    expect(new Set(writes.agents())).toEqual(new Set([first.session, second.session]));
+    expect(new Set(writes.agents())).toEqual(
+      new Set([first.session, second.session]),
+    );
 
     // Closing a pane drops it from the set.
     writes.clear();
@@ -280,5 +288,9 @@ test("broadcast input actually reaches every child process", async () => {
   window.split("row", b);
   window.toggleSync();
   window.write("hello-sync\n");
-  await waitFor(() => screenText(a).includes("hello-sync") && screenText(b).includes("hello-sync"));
+  await waitFor(
+    () =>
+      screenText(a).includes("hello-sync") &&
+      screenText(b).includes("hello-sync"),
+  );
 });

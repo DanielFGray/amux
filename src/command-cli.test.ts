@@ -61,7 +61,14 @@ test("parseArgs handles optional command args with all flags", () => {
 
 test("parseArgs accepts separated notify flags", () => {
   expect(
-    parseArgs("notify", ["--title", "Build", "--body", "Finished", "--session", "work"]),
+    parseArgs("notify", [
+      "--title",
+      "Build",
+      "--body",
+      "Finished",
+      "--session",
+      "work",
+    ]),
   ).toEqual({
     parsed: { title: "Build", body: "Finished", session: "work" },
     errors: [],

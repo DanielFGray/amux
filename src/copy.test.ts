@@ -25,7 +25,12 @@ const bytes = (value: string) => new TextEncoder().encode(value);
  *  calls invalidate/copyText, neither of which needs layout. */
 async function makePane(vt: string) {
   const t = await createTestRenderer({ width: 80, height: 24 });
-  const agent = new Session({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 });
+  const agent = new Session({
+    cmd: ["true"],
+    exited: { code: 0 },
+    cols: 40,
+    rows: 10,
+  });
   const pane = new TerminalPane(t.renderer, { id: "pane", session: agent });
   agent.term.resize(40, 10);
   if (vt) agent.term.write(bytes(vt));
@@ -171,7 +176,12 @@ test("y without a selection just leaves", async () => {
  *  renderer delivers it. The pane is never mounted in these tests, so its
  *  origin is the renderer's (0,0) and its default edges add one column and one
  *  row of border padding: terminal cell (x, y) sits at event (x + 1, y + 1). */
-function mouseDown(pane: TerminalPane, x: number, y: number, opts: { shift?: boolean } = {}) {
+function mouseDown(
+  pane: TerminalPane,
+  x: number,
+  y: number,
+  opts: { shift?: boolean } = {},
+) {
   const event = new MouseEvent(pane, {
     type: "down",
     button: 0,
@@ -188,7 +198,9 @@ test("a real mouse-down starts the selection path and interrupts copy mode", asy
   const writes: string[] = [];
   const origWrite = agent.write.bind(agent);
   agent.write = (data) => {
-    writes.push(typeof data === "string" ? data : new TextDecoder().decode(data));
+    writes.push(
+      typeof data === "string" ? data : new TextDecoder().decode(data),
+    );
     origWrite(data);
   };
   expect(mode.active).toBe(true);
@@ -214,7 +226,9 @@ test("a click routed to a mouse-reporting child interrupts copy mode first", asy
   const origWrite = agent.write.bind(agent);
   agent.write = (data) => {
     atChildWrite.active = mode.active;
-    writes.push(typeof data === "string" ? data : new TextDecoder().decode(data));
+    writes.push(
+      typeof data === "string" ? data : new TextDecoder().decode(data),
+    );
     origWrite(data);
   };
   expect(mode.active).toBe(true);
@@ -344,7 +358,9 @@ test("page and half-page motions move the cursor by a screen", async () => {
  * ------------------------------------------------------------------ */
 
 test("v starts a selection that yank copies and then leaves", async () => {
-  const { agent, pane, mode, dispose } = await modeOn("alpha beta\r\ngamma delta");
+  const { agent, pane, mode, dispose } = await modeOn(
+    "alpha beta\r\ngamma delta",
+  );
   cleanup.push(dispose);
   const copied: string[] = [];
   pane.onCopy = (text) => {
@@ -761,7 +777,12 @@ test("moving up off the live bottom pins the viewport against new output", async
 
 test("the keymap enters copy mode and the leader keeps its meaning inside it", async () => {
   const t = await createTestRenderer({ width: 60, height: 12 });
-  const agent = new Session({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 });
+  const agent = new Session({
+    cmd: ["true"],
+    exited: { code: 0 },
+    cols: 40,
+    rows: 10,
+  });
   const pane = new TerminalPane(t.renderer, { id: "pane", session: agent });
   agent.term.resize(40, 10);
   agent.term.write(bytes("alpha beta\r\ngamma"));
@@ -834,18 +855,32 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
  *  `split` leaves the last-created pane focused and every earlier one parked. */
 async function makeWindow(count: number) {
   const t = await createTestRenderer({ width: 80, height: 24 });
-  const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
-  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
+  const paneHost = new BoxRenderable(t.renderer, {
+    id: "pane-host",
+    flexGrow: 1,
+  });
+  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(
+    workspaceEnv(t.renderer),
+    paneHost,
+  );
   const space = run(spaces.create("proj", process.cwd()));
   const win = run(space.newWindow());
   const agents = Array.from({ length: count }, () =>
-    run(win.startSession({ cmd: ["true"], exited: { code: 0 }, cols: 40, rows: 10 })),
+    run(
+      win.startSession({
+        cmd: ["true"],
+        exited: { code: 0 },
+        cols: 40,
+        rows: 10,
+      }),
+    ),
   );
   // Narrowed rather than cast: copy mode walks a grid, so a test about it is
   // only meaningful on terminal panes, and these sessions are all ptys.
   const panes = agents.map((agent, i) => {
     const pane = win.split(i === 0 ? "row" : "column", agent)!;
-    if (!(pane instanceof TerminalPane)) throw new Error("expected a terminal pane");
+    if (!(pane instanceof TerminalPane))
+      throw new Error("expected a terminal pane");
     return pane;
   });
   return { t, spaces, space, win, agents, panes };
@@ -866,7 +901,9 @@ function wireCopyModeTeardown(spaces: SpaceSet, mode: CopyMode) {
   const stepDown = (panes: Pane | readonly Pane[]) => {
     const pane = mode.pane;
     if (!pane) return;
-    const affected = Array.isArray(panes) ? panes.includes(pane) : panes === pane;
+    const affected = Array.isArray(panes)
+      ? panes.includes(pane)
+      : panes === pane;
     if (affected) mode.exit();
   };
   return { stepDown };
@@ -932,8 +969,8 @@ test("replacing the layout ends copy mode before leftover panes are destroyed", 
   // destroyed pane is never invalidated.
   stepDown(win.panes);
   win.applyLayout(
-    makeLayout(
-      {
+    makeLayout({
+      root: {
         type: "split",
         direction: "column",
         weight: 1,
@@ -942,8 +979,8 @@ test("replacing the layout ends copy mode before leftover panes are destroyed", 
           { type: "pane", id: panes[2]!.id, agent: agentC.id, weight: 1 },
         ],
       },
-      panes[1]!.id,
-    ),
+      focus: panes[1]!.id,
+    }),
   );
 
   expect(paneA.isDestroyed).toBe(true);

@@ -17,17 +17,20 @@ import {
   appendPane,
   closeLayout,
   layoutPanes,
+  layoutRefs,
   makeLayout,
   newPaneId,
+  placementOf,
   presetLayout,
   prune,
   splitLayout,
   swapLayout,
   windowState,
   type Layout,
+  type LayoutFloat,
   type LayoutNode,
-  type LayoutPane,
   type LayoutPreset,
+  type PaneRef,
   type WindowState,
 } from "./layout.ts";
 import {
@@ -59,6 +62,25 @@ let nextId = 0;
 export const frame = { externalLeft: false };
 
 /**
+ * Put a pane back in the flex pass, sized by weight against its siblings.
+ *
+ * The undo of the absolute placement a float gets, and unconditional because
+ * panes are reused across rebuilds: a pane that floated yesterday is still
+ * carrying `position: absolute`, and a tiled pane that kept it would be lifted
+ * out of the split it was just put into.
+ */
+function tile(pane: Pane, weight: number) {
+  pane.position = "relative";
+  // "auto", not undefined: undefined leaves the edge as yoga last had it, so a
+  // pane that had been floating would keep offsetting itself inside its slot.
+  pane.left = "auto";
+  pane.top = "auto";
+  pane.width = "auto";
+  pane.height = "auto";
+  setWeight(pane, weight);
+}
+
+/**
  * A window: one split tree of panes, and the agents behind them.
  *
  * The middle level of the tmux hierarchy — a space holds windows, a window
@@ -80,7 +102,7 @@ export class Window {
   #panes: Pane[] = [];
   #agents: Session[] = [];
   /** The arrangement is authoritative here; renderables are only its projection. */
-  #layout: Layout = makeLayout(null);
+  #layout: Layout = makeLayout({ root: null });
   #dividerRefs = new WeakMap<Divider, { path: LayoutPath; index: number }>();
   /**
    * Everything about this window that is not its arrangement: focus,
@@ -236,7 +258,7 @@ export class Window {
     this.#state = structuredClone(state);
     for (const evicted of this.#mount(layout, state.preset)) evicted.destroyRecursively();
     this.#state = structuredClone(state);
-    this.#layout = makeLayout(layout.root, state.focus ?? undefined);
+    this.#layout = makeLayout({ ...layout, focus: state.focus ?? undefined });
     for (const pane of this.#panes) pane.active = pane.id === state.focus;
     this.#refreshChrome();
     this.#ctx.requestRender();
@@ -401,8 +423,13 @@ export class Window {
   }
 
   /**
-   * Where a pane sits in the arrangement — the index splitLayout, swapLayout
-   * and closeLayout all address panes by.
+   * Where a pane sits in the tiled arrangement — the index splitLayout and
+   * swapLayout address panes by, and -1 for a float.
+   *
+   * -1 is the right answer for a float rather than a gap to fill: both of those
+   * transforms subdivide or reorder slots that are sized against each other,
+   * and a float has no such slot. So a float cannot be split or swapped, and
+   * that falls out of the index rather than needing a guard.
    *
    * Read out of the layout rather than by walking the tree, because under a
    * zoom the tree is down to one pane while the arrangement still has all of
@@ -527,7 +554,10 @@ export class Window {
    *  pane to split. */
   mount(agent: Session): Pane {
     const id = newPaneId();
-    this.#mount(makeLayout({ type: "pane", id, agent: agent.id, weight: 1 }, id), null);
+    this.#mount(
+      makeLayout({ root: { type: "pane", id, agent: agent.id, weight: 1 }, focus: id }),
+      null,
+    );
     return this.#pane(id)!;
   }
 
@@ -543,7 +573,7 @@ export class Window {
     if (pane.id !== this.#state.focus) {
       this.#state.last = this.#state.focus;
       this.#state.focus = pane.id;
-      this.#layout = makeLayout(this.#layout.root, pane.id);
+      this.#layout = makeLayout({ ...this.#layout, focus: pane.id });
     }
     for (const p of this.#panes) p.active = p === pane;
     this.#refreshChrome();
@@ -594,7 +624,10 @@ export class Window {
       // Zooming the only pane changes nothing but would still show a marker.
       if (!pane || this.#panes.length < 2) return;
       const from = this.exportLayout();
-      if (this.#slotOf(from, pane) === -1) return;
+      // Placed, not tiled: a float fills the window when zoomed like anything
+      // else. Zoom is about how much of the window one pane gets, which is a
+      // different question from which plane it normally sits in.
+      if (placementOf(from, pane.id) === null) return;
       this.#state.zoom = { pane: pane.id, from };
       this.#mount(from, this.#state.preset);
     }
@@ -634,7 +667,16 @@ export class Window {
     const edge = (pane: Pane, axis: SplitDirection, direction: -1 | 1) =>
       gap || (!this.#hasNeighbour(pane, axis, direction) && showOuterBorder);
     const focused = this.focused;
+    const floating = new Set(this.#layout.floats.map((float) => float.id));
     for (const pane of this.#panes) {
+      // A float draws all four sides, always. There is no divider at any of its
+      // edges to draw them for it, and nothing but its own frame separating it
+      // from the panes it covers — so the outer-border setting, which is about
+      // whether the window has a rim, has nothing to say about a float.
+      if (floating.has(pane.id)) {
+        pane.edges = { top: true, right: true, bottom: true, left: true };
+        continue;
+      }
       pane.edges = {
         // frame.externalLeft: the sidebar handle owns that column, so no pane
         // draws a left border while the sidebar is open.
@@ -928,11 +970,10 @@ export class Window {
     // a zoom is the one the zoom captured, and projecting the result is what
     // drops the zoom. Closing the zoomed pane itself is the same path.
     const layout = this.exportLayout();
-    const at = this.#slotOf(layout, pane);
-    if (at === -1) return null;
+    if (placementOf(layout, pane.id) === null) return null;
     // Losing a pane moves the window off whatever preset it matched: the
     // arrangement now has one fewer pane than the preset describes.
-    const [evicted] = this.#project(closeLayout(layout, at), null);
+    const [evicted] = this.#project(closeLayout(layout, pane.id), null);
     return evicted ?? null;
   }
 
@@ -1015,7 +1056,10 @@ export class Window {
    */
   applyLayout(layout: Layout, preset: LayoutPreset | null = null): boolean {
     const wanted = prune(layout, (id) => this.#agents.some((agent) => agent.id === id));
-    if (!wanted.root) return false;
+    // Placed nothing, in either plane. A window whose tiled tree is empty but
+    // which still has a float is not a layout that pruned away to nothing — it
+    // is a window showing a float over bare ground, which is a real state.
+    if (!wanted.root && wanted.floats.length === 0) return false;
     // Whatever the layout had no slot for is a closed view, not a killed agent.
     for (const evicted of this.#project(wanted, preset)) evicted.destroyRecursively();
     return true;
@@ -1064,7 +1108,7 @@ export class Window {
     this.#panes.length = 0;
     const filled = new Map<string, Pane>();
 
-    const claim = (slot: LayoutPane, match: (pane: Pane) => boolean) => {
+    const claim = (slot: PaneRef, match: (pane: Pane) => boolean) => {
       if (filled.has(slot.id)) return;
       for (const pane of spare) {
         if (!match(pane)) continue;
@@ -1073,7 +1117,10 @@ export class Window {
         return;
       }
     };
-    const slots = wanted.root ? layoutPanes(wanted.root) : [];
+    // Both planes, in one list: which pane fills a slot has nothing to do with
+    // where that slot is placed, and a pane that floats after a rebuild may
+    // well be the same one that was tiled before it.
+    const slots = layoutRefs(wanted);
     for (const slot of slots) claim(slot, (pane) => pane.id === slot.id);
     for (const slot of slots) claim(slot, (pane) => pane.session.id === slot.agent);
 
@@ -1100,12 +1147,21 @@ export class Window {
       }
       return { ...node, children: node.children.map(materialize) };
     };
-    this.#layout = makeLayout(wanted.root ? materialize(wanted.root) : null, next?.id);
+    const materializeFloat = (float: LayoutFloat): LayoutFloat => {
+      const pane = filled.get(float.id)!;
+      panesById.set(pane.id, pane);
+      return { ...float, id: pane.id, agent: pane.session.id };
+    };
+    this.#layout = makeLayout({
+      root: wanted.root ? materialize(wanted.root) : null,
+      floats: wanted.floats.map(materializeFloat),
+      focus: next?.id,
+    });
 
     const build = (node: LayoutNode, path: LayoutPath): Renderable => {
       if (node.type === "pane") {
         const pane = panesById.get(node.id)!;
-        setWeight(pane, node.weight);
+        tile(pane, node.weight);
         return pane;
       }
       const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` });
@@ -1139,17 +1195,35 @@ export class Window {
       // arrangement, and projecting it again is what restores it.
       const pane = panesById.get(zoom.pane);
       if (pane) {
-        setWeight(pane, 1);
+        tile(pane, 1);
         this.root.add(pane);
       }
     } else if (this.#layout.root === null) {
       // Nothing to build: closing the last pane empties the window, which is a
-      // state it really has until the app decides to close it.
+      // state it really has until the app decides to close it. A window that is
+      // only floats lands here too, and the loop below puts them up.
     } else if (this.#layout.root.type === "split") {
       setDirection(this.root, this.#layout.root.direction);
       fill(this.root, this.#layout.root, []);
     } else {
       this.root.add(build(this.#layout.root, []));
+    }
+
+    // Floats last, so they are over the tiled tree in paint order, and by
+    // percentage so a terminal resize reflows them without the model being
+    // touched. Absolute takes them out of the flex pass entirely: the tiled
+    // panes size as though the float were not there, which is the whole
+    // difference between floating and tiling.
+    for (const float of this.#layout.floats) {
+      const pane = panesById.get(float.id);
+      // A float that IS the zoom target was already mounted filling the window.
+      if (!pane || zoom?.pane === float.id) continue;
+      pane.position = "absolute";
+      pane.left = `${float.x * 100}%`;
+      pane.top = `${float.y * 100}%`;
+      pane.width = `${float.width * 100}%`;
+      pane.height = `${float.height * 100}%`;
+      this.root.add(pane);
     }
 
     if (next) {
@@ -1163,7 +1237,7 @@ export class Window {
     } else {
       // An empty window has no focus and nothing for last-pane to toggle to.
       this.#state.focus = null;
-      this.#layout = makeLayout(this.#layout.root);
+      this.#layout = makeLayout({ ...this.#layout, focus: undefined });
     }
     this.#refreshChrome();
     this.onChange?.();

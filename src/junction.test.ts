@@ -44,7 +44,8 @@ test("two aligned horizontal seams meeting the vertical seam draw a ┼", async 
   const col = dividerColumn(rows);
   const crosses: [number, number][] = [];
   rows.forEach((row, y) => {
-    for (let x = 0; x < row.length; x++) if (row[x] === "┼") crosses.push([x, y]);
+    for (let x = 0; x < row.length; x++)
+      if (row[x] === "┼") crosses.push([x, y]);
   });
 
   // Exactly one cross, where both horizontal seams meet the vertical seam.
@@ -102,7 +103,9 @@ test("a tee stays a tee when the two seams do not align", async () => {
   expect(rows.join("\n")).not.toContain("┼");
   // Both seams meet the vertical divider as tees coming from the left.
   const col = dividerColumn(rows);
-  const tees = rows.map((row, y) => (row[col] === "┤" ? y : -1)).filter((y) => y >= 0);
+  const tees = rows
+    .map((row, y) => (row[col] === "┤" ? y : -1))
+    .filter((y) => y >= 0);
   expect(tees).toEqual([5, 9]);
 });
 
@@ -163,7 +166,8 @@ test("a 3-by-2 grid draws a ┼ at every seam crossing", async () => {
   const rows = t.captureCharFrame().split("\n");
   const crosses: [number, number][] = [];
   rows.forEach((row, y) => {
-    for (let x = 0; x < row.length; x++) if (row[x] === "┼") crosses.push([x, y]);
+    for (let x = 0; x < row.length; x++)
+      if (row[x] === "┼") crosses.push([x, y]);
   });
 
   const [left, right] = [rows[0]!.indexOf("┬"), rows[0]!.lastIndexOf("┬")];

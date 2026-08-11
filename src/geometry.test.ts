@@ -1,15 +1,29 @@
 import { afterEach, expect, test } from "bun:test";
-import { computeRects, resizeDivider, resizePane } from "./geometry.ts";
+import { computeRects, paneInDirection, resizeDivider, resizePane } from "./geometry.ts";
 import { createHarness, run } from "./harness.ts";
-import { LAYOUT_VERSION, makeLayout, type Layout, type LayoutNode } from "./layout.ts";
+import {
+  LAYOUT_VERSION,
+  makeLayout,
+  type Layout,
+  type LayoutNode,
+} from "./layout.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const dispose of cleanup.splice(0)) await dispose();
 });
 
-const pane = (id: string, weight = 1): LayoutNode => ({ type: "pane", id, agent: id, weight });
-const split = (direction: "row" | "column", children: LayoutNode[], weight = 1): LayoutNode => ({
+const pane = (id: string, weight = 1): LayoutNode => ({
+  type: "pane",
+  id,
+  agent: id,
+  weight,
+});
+const split = (
+  direction: "row" | "column",
+  children: LayoutNode[],
+  weight = 1,
+): LayoutNode => ({
   type: "split",
   direction,
   weight,
@@ -18,33 +32,46 @@ const split = (direction: "row" | "column", children: LayoutNode[], weight = 1):
 const layout = (root: LayoutNode, focus?: string): Layout => ({
   version: LAYOUT_VERSION,
   root,
+  floats: [],
   focus,
 });
 
 test("computeRects rounds cumulative boundaries and charges one cell per divider", () => {
-  const rects = computeRects(layout(split("row", [pane("a", 2), pane("b"), pane("c")])), {
-    cols: 13,
-    rows: 7,
-  });
+  const rects = computeRects(
+    layout(split("row", [pane("a", 2), pane("b"), pane("c")])),
+    {
+      cols: 13,
+      rows: 7,
+    },
+  );
 
   expect([...rects.values()]).toEqual([
     { x: 0, y: 0, width: 6, height: 7 },
     { x: 7, y: 0, width: 2, height: 7 },
     { x: 10, y: 0, width: 3, height: 7 },
   ]);
-  expect([...rects.values()].reduce((sum, rect) => sum + rect.width, 0) + 2).toBe(13);
+  expect(
+    [...rects.values()].reduce((sum, rect) => sum + rect.width, 0) + 2,
+  ).toBe(13);
 });
 
 test("borders stay inside pane rectangles and nested axes use their parent's exact allocation", () => {
   const rects = computeRects(
-    layout(split("row", [pane("left"), split("column", [pane("top"), pane("bottom", 2)], 2)])),
+    layout(
+      split("row", [
+        pane("left"),
+        split("column", [pane("top"), pane("bottom", 2)], 2),
+      ]),
+    ),
     { cols: 20, rows: 11 },
   );
 
   expect(rects.get("left")).toEqual({ x: 0, y: 0, width: 6, height: 11 });
   expect(rects.get("top")).toEqual({ x: 7, y: 0, width: 13, height: 3 });
   expect(rects.get("bottom")).toEqual({ x: 7, y: 4, width: 13, height: 7 });
-  expect(computeRects(layout(pane("only")), { cols: 20, rows: 11 }).get("only")).toEqual({
+  expect(
+    computeRects(layout(pane("only")), { cols: 20, rows: 11 }).get("only"),
+  ).toEqual({
     x: 0,
     y: 0,
     width: 20,
@@ -61,19 +88,24 @@ test("pure rectangles are a fixed point of OpenTUI flex layout", async () => {
   const bottom = run(window.splitSpawn("column"))!;
 
   window.applyLayout(
-    makeLayout(
-      split("row", [
+    makeLayout({
+      root: split("row", [
         { type: "pane", id: left.id, agent: left.session.id, weight: 3 },
         split(
           "column",
           [
             { type: "pane", id: top.id, agent: top.session.id, weight: 2 },
-            { type: "pane", id: bottom.id, agent: bottom.session.id, weight: 1 },
+            {
+              type: "pane",
+              id: bottom.id,
+              agent: bottom.session.id,
+              weight: 1,
+            },
           ],
           5,
         ),
       ]),
-    ),
+    }),
   );
   await harness.layout();
 
@@ -91,6 +123,116 @@ test("pure rectangles are a fixed point of OpenTUI flex layout", async () => {
   }
 });
 
+// The float's fractions and the percentages yoga is handed are the same
+// numbers, so this is the test that they round to the same cells. Everything
+// downstream of a rect — click routing, directional focus, the copy overlay —
+// reads computeRects rather than the renderable, so a disagreement here would
+// show up as a pane that is not where the model thinks it is.
+test("a rendered float is the exact rectangle computeRects gives it", async () => {
+  const harness = await createHarness({ width: 37, height: 17 });
+  cleanup.push(harness.dispose);
+  const { window } = harness;
+  const tiled = window.panes[0]!;
+  const floated = run(window.splitSpawn("row"))!;
+
+  window.applyLayout(
+    makeLayout({
+      root: { type: "pane", id: tiled.id, agent: tiled.session.id, weight: 1 },
+      floats: [
+        {
+          id: floated.id,
+          agent: floated.session.id,
+          x: 0.25,
+          y: 0.1,
+          width: 0.5,
+          height: 0.75,
+        },
+      ],
+      focus: floated.id,
+    }),
+  );
+  await harness.layout();
+
+  const expected = computeRects(window.exportLayout(), {
+    cols: window.root.width,
+    rows: window.root.height,
+  });
+  expect(expected.get(floated.id)).toEqual({
+    x: floated.x - window.root.x,
+    y: floated.y - window.root.y,
+    width: floated.width,
+    height: floated.height,
+  });
+  // The tiled pane still has the whole window: a float overlaps rather than
+  // taking space, which is the entire difference between the two planes.
+  expect(expected.get(tiled.id)).toEqual({
+    x: 0,
+    y: 0,
+    width: window.root.width,
+    height: window.root.height,
+  });
+  // Nothing draws a float's edges but the float, so it draws all four.
+  expect(floated.edges).toEqual({ top: true, right: true, bottom: true, left: true });
+});
+
+// Panes are reused across rebuilds, so the absolute placement a float is given
+// outlives the float unless the tiled path takes it back off. A pane still
+// carrying it would be lifted straight out of the split it was just put into.
+test("a pane that was floating is sized by the split again once tiled", async () => {
+  const harness = await createHarness({ width: 40, height: 12 });
+  cleanup.push(harness.dispose);
+  const { window } = harness;
+  const first = window.panes[0]!;
+  const second = run(window.splitSpawn("row"))!;
+  const both = window.exportLayout();
+
+  window.applyLayout(
+    makeLayout({
+      root: { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
+      floats: [
+        { id: second.id, agent: second.session.id, x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+      ],
+    }),
+  );
+  await harness.layout();
+  window.applyLayout(both);
+  await harness.layout();
+
+  const rects = computeRects(window.exportLayout(), {
+    cols: window.root.width,
+    rows: window.root.height,
+  });
+  for (const pane of window.panes) {
+    expect(rects.get(pane.id)).toEqual({
+      x: pane.x - window.root.x,
+      y: pane.y - window.root.y,
+      width: pane.width,
+      height: pane.height,
+    });
+  }
+  // Side by side, sharing the window between them rather than one of them
+  // still hovering at a quarter of it.
+  expect(first.width + second.width).toBe(window.root.width - 1);
+});
+
+// "The pane to the right" means the one across a shared edge. A float shares no
+// edge with what it covers, so there is no direction between the planes.
+test("directional focus neither enters the floating plane nor leaves it", () => {
+  const size = { cols: 30, rows: 10 };
+  const current: Layout = {
+    version: LAYOUT_VERSION,
+    root: split("row", [pane("a"), pane("b")]),
+    floats: [{ id: "f", agent: "f", x: 0, y: 0, width: 1, height: 1 }],
+    focus: "f",
+  };
+  // The float covers everything, so a rect-only rule would make it every
+  // pane's nearest neighbour in every direction.
+  expect(paneInDirection(current, size, "a", "right")).toBe("b");
+  expect(paneInDirection(current, size, "b", "left")).toBe("a");
+  expect(paneInDirection(current, size, "f", "left")).toBeNull();
+  expect(paneInDirection(current, size, "f", "right")).toBeNull();
+});
+
 test("resize rewrites the model, preserves other siblings, and stops at three cells", () => {
   const size = { cols: 30, rows: 10 };
   let current = layout(split("row", [pane("a"), pane("b"), pane("c")]), "b");
@@ -102,7 +244,8 @@ test("resize rewrites the model, preserves other siblings, and stops at three ce
   expect(moved.get("b")!.width).toBe(before.get("b")!.width - 2);
   expect(moved.get("c")).toEqual(before.get("c"));
 
-  for (let i = 0; i < 100; i++) current = resizePane(current, size, "a", "right");
+  for (let i = 0; i < 100; i++)
+    current = resizePane(current, size, "a", "right");
   expect(computeRects(current, size).get("b")!.width).toBe(3);
   expect(current.focus).toBe("b");
 });
