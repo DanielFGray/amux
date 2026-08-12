@@ -52,6 +52,8 @@ Plugins are trusted in-process TypeScript modules loaded at startup. The default
 
 Relative paths resolve from the config directory. A plugin must default-export an object with `id`, `apiVersion: "1"`, and an Effect `effect` function. The effect receives a value-only `PanelContext`, registers panels with `ctx.registerPanel`, and everything registered is removed when the plugin is disabled or fails. `PanelContext.display()` provides cloned space, window, and agent rows with state and blocked counts; `examples/agent-dashboard.tsx` uses that projection for a live agent roster. See `examples/status-bar.tsx` for a minimal bottom-bar plugin, or `examples/agent-triage.tsx` for a right-side attention rail.
 
+In addition to configured entries, amux discovers entry files in `$XDG_CONFIG_HOME/opentui-herdr/plugins/` (or `~/.config/opentui-herdr/plugins/`). Discovery uses the same validation and failure isolation as configured plugins. The host can enable or disable a plugin at runtime; disabling closes its scope immediately and enabling it acquires a new one. Module state is not persistence: use `ctx.kv` for state that must survive disable and re-enable.
+
 Plugins must invoke workspace commands through `ctx.panel.run()` and must not mutate client projection objects or access terminal handles.
 
 ### Reloading a plugin

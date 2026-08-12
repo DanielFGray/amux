@@ -1,6 +1,7 @@
 import { Cause, Effect, Exit, JSONSchema, Schema as S } from "effect";
 import { LAYOUT_PRESETS } from "./layout.ts";
 import { PermissionDecisionSchema } from "./permission.ts";
+import { ReportedAgentStateSchema } from "./agent-state.ts";
 
 /**
  * The commands, as values.
@@ -383,8 +384,19 @@ const SessionKill = define("session.kill", SessionTarget, {
 });
 const AgentPrompt = define(
   "agent.prompt",
-  { target: S.String, text: S.String },
+  {
+    target: S.String,
+    text: S.String,
+    wait: S.optional(S.Boolean),
+    until: S.optional(ReportedAgentStateSchema),
+    timeout: S.optional(S.NonNegativeInt),
+  },
   { desc: "send a prompt to an agent", group: "agents", target: "session", exposure: "human" },
+);
+const AgentWatch = define(
+  "agent.watch",
+  { target: S.String, after: S.optional(S.NonNegativeInt) },
+  { desc: "stream durable agent events from a replay cursor", group: "agents", target: "session", exposure: "human" },
 );
 const AgentPermission = define(
   "agent.permission",
@@ -540,6 +552,16 @@ const PluginReload = define(
     exposure: "agent",
   },
 );
+const PluginEnable = define(
+  "plugin.enable",
+  { plugin: S.String },
+  { desc: "enable a plugin in this client", group: "plugins", target: "view", exposure: "human" },
+);
+const PluginDisable = define(
+  "plugin.disable",
+  { plugin: S.String },
+  { desc: "disable a plugin in this client", group: "plugins", target: "view", exposure: "human" },
+);
 
 // The app itself. These drive overlays and the local terminal.
 const AppHelp = define(
@@ -605,6 +627,7 @@ export const COMMAND_DEFS = [
   WindowSynchronize,
   AgentNew,
   AgentPrompt,
+  AgentWatch,
   AgentInterrupt,
   AgentPermission,
   Notify,
@@ -623,6 +646,8 @@ export const COMMAND_DEFS = [
   ConfigAdjust,
   ConfigReset,
   PluginReload,
+  PluginEnable,
+  PluginDisable,
   AppHelp,
   AppPalette,
   AppSettings,

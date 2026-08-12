@@ -9,6 +9,8 @@ export interface PluginReloader {
   readonly reload: (id: string) => Effect.Effect<void, string>;
   /** Every plugin amux can reload, for a request that names none. */
   readonly reloadable: () => readonly string[];
+  readonly enable: (id: string) => Effect.Effect<void, string>;
+  readonly disable: (id: string) => Effect.Effect<void, string>;
 }
 
 /**
@@ -29,6 +31,22 @@ export const createReloader = (host: PluginHost, plugins: readonly HotPlugin[]):
   );
 
   const isActive = (id: string) => host.status().some((status) => status.id === id);
+
+  const enable = (id: string): Effect.Effect<void, string> =>
+    Effect.gen(function* () {
+      const current = running.get(id);
+      if (!current) return yield* Effect.fail(`unknown plugin '${id}'`);
+      if (isActive(id)) return;
+      yield* host.enable(current.definition);
+      if (!isActive(id)) return yield* Effect.fail(`plugin '${id}' did not start`);
+    });
+
+  const disable = (id: string): Effect.Effect<void, string> =>
+    Effect.gen(function* () {
+      if (!running.has(id)) return yield* Effect.fail(`unknown plugin '${id}'`);
+      if (!isActive(id)) return;
+      yield* host.disable(id);
+    });
 
   const reload = (id: string): Effect.Effect<void, string> =>
     Effect.gen(function* () {
@@ -52,5 +70,5 @@ export const createReloader = (host: PluginHost, plugins: readonly HotPlugin[]):
       );
     });
 
-  return { reload, reloadable: () => [...running.keys()] };
+  return { reload, reloadable: () => [...running.keys()], enable, disable };
 };

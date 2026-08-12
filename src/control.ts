@@ -17,6 +17,7 @@ import * as RpcSerialization from "@effect/rpc/RpcSerialization";
 import { Layer, Schema as S } from "effect";
 import { Command } from "./commands.ts";
 import { DaemonEvent } from "./effect/EventBus.ts";
+import { AgentEvent } from "./effect/AttachProtocol.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { SessionStateSchema } from "./session.ts";
 import { WorkspaceCommandContextSchema } from "./workspace.ts";
@@ -101,6 +102,16 @@ export class ControlRpcs extends RpcGroup.make(
     error: ControlError,
   }),
   Rpc.make("Events", { success: DaemonEvent, stream: true }),
+  Rpc.make("AgentCursor", {
+    payload: { session: S.String },
+    success: S.Int,
+    error: ControlError,
+  }),
+  Rpc.make("AgentWatch", {
+    payload: { session: S.String, after: S.optional(S.NonNegativeInt) },
+    success: AgentEvent,
+    stream: true,
+  }),
 ) {}
 
 /**

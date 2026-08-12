@@ -15,6 +15,7 @@ import type * as RpcGroup from "@effect/rpc/RpcGroup";
 import { Effect, Layer, Scope, Stream } from "effect";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { DaemonEvent, DaemonEventPayload } from "./effect/EventBus.ts";
+import type { AgentEvent } from "./effect/AttachProtocol.ts";
 import { sessionPaths } from "./session.ts";
 import { errorMessage } from "./error-message.ts";
 
@@ -90,6 +91,16 @@ export const filterControlEvents = <T extends DaemonEventPayload["_tag"]>(
       (event): event is Extract<DaemonEventPayload, { readonly _tag: T }> => event._tag === tag,
     ),
   );
+
+export const agentCursor = (control: ControlClient, session: string) =>
+  control.AgentCursor({ session });
+
+export const agentWatch = (
+  control: ControlClient,
+  session: string,
+  after?: number,
+): Stream.Stream<AgentEvent, RpcClientError> =>
+  control.AgentWatch({ session, ...(after === undefined || after < 0 ? {} : { after }) });
 
 /** Return the number of events missed between two retained bus frames. */
 export const eventGap = (previous: DaemonEvent, current: DaemonEvent): number =>

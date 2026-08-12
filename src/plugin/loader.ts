@@ -1,7 +1,7 @@
 import { Effect } from "effect";
-import { realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost } from "./host.ts";
@@ -35,8 +35,21 @@ interface BuiltinEntry {
 /** A plugin whose source amux can see, and can therefore load again. */
 export interface HotPlugin {
   readonly id: string;
+  readonly path?: string;
   readonly source: URL;
   readonly definition: PluginDefinition;
+}
+
+/** Discover user entry files without making discovery a second loading path. */
+function discoveredPlugins(configDir: string): readonly string[] {
+  const root = join(dirname(configDir), "opentui-herdr", "plugins");
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.(?:[cm]?js|[cm]?ts)x?$/.test(entry.name))
+      .map((entry) => join(root, entry.name));
+  } catch {
+    return [];
+  }
 }
 
 export const loadPluginsFromConfig = Effect.fnUntraced(function* (
@@ -46,9 +59,15 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
 ) {
   const hot: HotPlugin[] = [];
 
-  for (const spec of config.plugins) {
-    if (!spec.enabled) continue;
+  const configured = new Map(config.plugins.map((spec) => [spec.path, spec]));
+  const specs = [
+    ...config.plugins,
+    ...discoveredPlugins(configDir)
+      .filter((path) => !configured.has(path))
+      .map((path) => ({ path, enabled: true })),
+  ];
 
+  for (const spec of specs) {
     const source = sourceOf(spec.path, configDir);
     if (!source) {
       yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
@@ -75,9 +94,10 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
     );
     if (!loaded) continue;
 
-    yield* host.add(loaded.definition).pipe(Effect.catchAllCause(() => Effect.void));
+    if (spec.enabled)
+      yield* host.add(loaded.definition).pipe(Effect.catchAllCause(() => Effect.void));
     if (loaded.reloadable)
-      hot.push({ id: loaded.definition.id, source, definition: loaded.definition });
+      hot.push({ id: loaded.definition.id, path: spec.path, source, definition: loaded.definition });
   }
 
   return hot as readonly HotPlugin[];

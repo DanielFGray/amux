@@ -257,6 +257,67 @@ test("a native worker invokes pane.capture through the amux CLI", async () => {
   await Effect.runPromise(daemon.killSession(worker));
 });
 
+test("agent.prompt --wait returns the anchored turn completion", async () => {
+  const { daemon, env } = await started("agent-prompt-wait");
+  const target = "wait-target";
+  const script = `
+    for await (const chunk of process.stdin) {
+      for (const line of chunk.toString().split("\\n")) {
+        if (!line) continue;
+        const frame = JSON.parse(line);
+        if (frame._tag !== "agent.prompt") continue;
+        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.start",session:process.env.AMUX_PANE_ID,turn:"turn-e2e",prompt:frame.text}})+"\\n");
+        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.end",session:process.env.AMUX_PANE_ID,turn:"turn-e2e",outcome:"completed",text:"finished"}})+"\\n");
+      }
+    }
+  `;
+  await Effect.runPromise(
+    daemon.spawnSession({
+      kind: "component",
+      id: target,
+      cmd: [process.execPath, "-e", script],
+      cols: 80,
+      rows: 24,
+    }),
+  );
+
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const child = Bun.spawn(
+    [process.execPath, entry, "agent.prompt", target, "inspect", "--wait", "--timeout=1000"],
+    { env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id }, stdout: "pipe", stderr: "pipe" },
+  );
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  expect(JSON.parse(stdout)).toMatchObject({ turn: "turn-e2e", outcome: "completed" });
+});
+
+test("agent.prompt --wait fails fast with the named stall error", async () => {
+  const { daemon, env } = await started("agent-prompt-stall");
+  await Effect.runPromise(
+    daemon.spawnSession({
+      kind: "component",
+      id: "stall-target",
+      cmd: [process.execPath, "-e", "setTimeout(() => {}, 30000)"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const startedAt = Date.now();
+  const child = Bun.spawn(
+    [process.execPath, entry, "agent.prompt", "stall-target", "inspect", "--wait", "--timeout=10000"],
+    { env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id }, stdout: "pipe", stderr: "pipe" },
+  );
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(exitCode).toBe(1);
+  expect(stderr).toContain("agent_prompt_stalled");
+  expect(Date.now() - startedAt).toBeLessThan(10_000);
+}, 10_000);
+
 test("the agent state socket accepts ping and agent state reports", async () => {
   const { daemon, env } = await started("pane-control");
   const paths = await run(sessionPaths(daemon.id), env);

@@ -363,6 +363,33 @@ testEffect("KV values survive a remove/add cycle", () =>
   }),
 );
 
+testEffect("runtime enable and disable release and reacquire the plugin scope", () =>
+  Effect.gen(function* () {
+    const { host, regions } = yield* makeHost();
+    const panel = {
+      id: "runtime.panel",
+      region: "bottom" as const,
+      anchor: "app" as const,
+      size: () => 1,
+      component: () => null as never,
+    };
+    const plugin = mkPlugin({
+      id: "runtime",
+      effect: (ctx) =>
+        Effect.sync(() => {
+          ctx.registerPanel(panel);
+        }),
+    });
+
+    yield* host.enable(plugin);
+    expect(regions.declared("bottom", "app")).toBe(true);
+    yield* host.disable("runtime");
+    expect(host.status()).toEqual([]);
+    yield* host.enable(plugin);
+    expect(host.status().map((status) => status.id)).toEqual(["runtime"]);
+  }),
+);
+
 // --- Defect scope cleanup ---
 
 testEffect("defect closes the plugin scope so the id can be re-added", () =>

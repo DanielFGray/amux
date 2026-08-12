@@ -24,6 +24,8 @@ export type {
 export interface PluginHost {
   readonly add: (plugin: PluginDefinition) => Effect.Effect<void>;
   readonly remove: (id: string) => Effect.Effect<void>;
+  readonly enable: (plugin: PluginDefinition) => Effect.Effect<void>;
+  readonly disable: (id: string) => Effect.Effect<void>;
   readonly onError: Stream.Stream<PluginErrorEvent>;
   readonly status: () => readonly PluginStatus[];
   readonly dispose: Effect.Effect<void>;
@@ -183,6 +185,8 @@ export function createPluginHost(
     return {
       add: addPlugin,
       remove: removePlugin,
+      enable: addPlugin,
+      disable: removePlugin,
       onError: Stream.fromQueue(errorQueue),
       status() {
         if (disposed) return [];

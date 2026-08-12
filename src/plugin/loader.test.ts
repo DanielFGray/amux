@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -182,6 +182,20 @@ testEffect("loads multiple plugins in order", () =>
       .map((s) => s.id)
       .sort();
     expect(ids).toEqual(["a", "b"]);
+  }),
+);
+
+testEffect("discovers plugins in the XDG opentui-herdr directory", () =>
+  Effect.gen(function* () {
+    const configHome = yield* Effect.promise(() => tempDir());
+    const pluginDir = join(configHome, "opentui-herdr", "plugins");
+    yield* Effect.promise(() => mkdir(pluginDir, { recursive: true }));
+    yield* Effect.promise(() => writePluginFile(pluginDir, "discovered.ts", mkPluginSrc("discovered")));
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(baseConfig(), host, join(configHome, "amux"));
+
+    expect(host.status().map((status) => status.id)).toEqual(["discovered"]);
   }),
 );
 

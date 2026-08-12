@@ -119,7 +119,7 @@ async function main(): Promise<number> {
   }
 
   // Command dispatch — needs Effect, control-client, commands, etc.
-  const [effectMod, { SessionStore, isSessionId }, { controlCall }, commandsMod, { parseArgs }] =
+  const [effectMod, { SessionStore, isSessionId }, { controlCall, agentWatch }, commandsMod, { parseArgs }] =
     await Promise.all([
       import("effect"),
       import("./session.ts"),
@@ -127,7 +127,7 @@ async function main(): Promise<number> {
       import("./commands.ts"),
       import("./command-cli.ts"),
     ]);
-  const { Effect, Schema } = effectMod;
+  const { Effect, Option, Schema, Stream } = effectMod;
   const { COMMAND_META, Command, commandDefinition } = commandsMod;
   type CommandTag = (typeof Command.Type)["_tag"];
 
@@ -181,6 +181,23 @@ async function main(): Promise<number> {
     }
 
     const { BunFileSystem } = await import("@effect/platform-bun");
+    const prompt = cmds.length === 1 && cmds[0]?._tag === "agent.prompt" ? cmds[0] : undefined;
+    const watch = cmds.length === 1 && cmds[0]?._tag === "agent.watch" ? cmds[0] : undefined;
+    if (watch) {
+      try {
+        await Effect.runPromise(
+          controlCall(id!, (control) =>
+            agentWatch(control, watch.target, watch.after).pipe(
+              Stream.runForEach((event) => Effect.sync(() => process.stdout.write(JSON.stringify(event) + "\n"))),
+            ),
+          ).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+        );
+        return 0;
+      } catch (error) {
+        console.error(`error: ${String(error)}`);
+        return 1;
+      }
+    }
     const runResult = Effect.runPromise(
       controlCall(id!, (control) => {
         const context = {
@@ -188,7 +205,56 @@ async function main(): Promise<number> {
           shell: [process.env.SHELL ?? "sh"],
           cwd: process.cwd(),
         };
-        return control.Batch({ values: [...cmds], context });
+        if (!prompt || (prompt.wait !== true && prompt.until === undefined))
+          return control.Batch({ values: [...cmds], context });
+
+        return Effect.gen(function* () {
+          const after = yield* control.AgentCursor({ session: prompt.target });
+          const { outputs } = yield* control.Batch({ values: [...cmds], context });
+          const timeout = prompt.timeout ?? 30000;
+          const deadline = Date.now() + timeout;
+          const first = yield* agentWatch(control, prompt.target, after).pipe(
+            Stream.filter(
+              (event): event is any => event._tag === "turn.start" || event._tag === "agent.status",
+            ),
+            Stream.runHead,
+            Effect.timeoutFail({
+              duration: Math.min(5000, timeout),
+              onTimeout: () => new Error("agent_prompt_stalled"),
+            }),
+          );
+          if (Option.isNone(first)) return { outputs: [...outputs, { result: { error: "agent_prompt_stalled" } }] };
+          let turn: string | undefined;
+          let result: unknown;
+          const fold = (event: any) => {
+            if (event._tag === "turn.start" && turn === undefined) turn = event.turn;
+            if (event._tag === "turn.end" && event.turn === turn) {
+              result = event;
+              return true;
+            }
+            if (
+              prompt.until !== undefined &&
+              event._tag === "agent.status" &&
+              event.state === prompt.until
+            ) {
+              result = event;
+              return true;
+            }
+            return false;
+          };
+          if (!fold(first.value))
+            yield* agentWatch(control, prompt.target, first.value.sequence).pipe(
+              Stream.takeUntil((event) => {
+                return fold(event);
+              }),
+              Stream.runDrain,
+              Effect.timeoutFail({
+                duration: Math.max(0, deadline - Date.now()),
+                onTimeout: () => new Error("agent_wait_timeout"),
+              }),
+            );
+          return { outputs: [...outputs, { result: result ?? { turn } }] };
+        });
       }).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
     );
 

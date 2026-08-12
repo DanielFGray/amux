@@ -10,8 +10,10 @@ Commands:
   agents:
     agent.new [harness] [cmd] [prompt]
         start a coding agent
-    agent.prompt [session] <target> <text>
-        send a prompt to an agent
+    agent.prompt [session] <target> <text> [wait] [until] [timeout]
+        send a prompt to an agent; optionally wait for its anchored lifecycle
+    agent.watch [session] <target> [after]
+        stream durable agent events as JSON lines
     agent.interrupt [session] [reason]
         interrupt an agent turn
     agent.permission [session] <request> <decision> [feedback]
@@ -65,6 +67,10 @@ Commands:
     pane.capture [session]
         capture the focused pane
   plugins:
+    plugin.enable <plugin>
+        enable a plugin in this client
+    plugin.disable <plugin>
+        disable a plugin in this client
     plugin.reload [plugin]
         load a plugin's source again; all of them if none is named
   sessions:

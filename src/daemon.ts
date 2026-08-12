@@ -770,6 +770,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         Stream.succeed({ sequence: 0, event: { _tag: "events.ready" } } as const),
         Stream.unwrapScoped(eventBus.subscribe()),
       ),
+
+    AgentCursor: ({ session }) => guard(agentLog.bounds(session).pipe(Effect.map(({ latest }) => latest))),
+
+    AgentWatch: ({ session, after }) =>
+      Stream.unwrapScoped(agentLog.watch(session, after).pipe(Effect.map(Stream.orDie), Effect.orDie)),
   });
 
   const spawnSessionService = spawnSession;

@@ -1,5 +1,5 @@
 import { FileSystem } from "@effect/platform";
-import { Context, Effect, Layer, Schema as S } from "effect";
+import { Context, Effect, Layer, PubSub, Schema as S, Scope, Stream } from "effect";
 import { join } from "node:path";
 import { AgentEvent, type AgentEventPayload } from "./AttachProtocol.ts";
 import { isSessionId } from "../session.ts";
@@ -21,19 +21,34 @@ export interface AgentLogService {
   readonly bounds: (
     session: string,
   ) => Effect.Effect<{ readonly oldest: number; readonly latest: number }, AgentLogError>;
+  /** Subscribe before reading replay so events cannot be lost at the seam. */
+  readonly watch: (
+    session: string,
+    after?: number,
+  ) => Effect.Effect<Stream.Stream<AgentEvent, AgentLogError>, AgentLogError, Scope.Scope>;
 }
 
 export class AgentLog extends Context.Tag("AgentLog")<AgentLog, AgentLogService>() {}
 
 const memoryLog = (): AgentLogService => {
   const values = new Map<string, AgentEvent[]>();
+  const feeds = new Map<string, PubSub.PubSub<AgentEvent>>();
+  const feed = (session: string) =>
+    Effect.gen(function* () {
+      const existing = feeds.get(session);
+      if (existing) return existing;
+      const created = yield* PubSub.unbounded<AgentEvent>();
+      feeds.set(session, created);
+      return created;
+    });
   return {
     append: (frame) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         const current = values.get(frame.session) ?? [];
         const event = { ...frame, sequence: current.length } as AgentEvent;
         current.push(event);
         values.set(frame.session, current);
+        yield* feed(frame.session).pipe(Effect.flatMap((bus) => PubSub.publish(bus, event)));
         return event;
       }),
     read: (session, after = -1) =>
@@ -41,7 +56,18 @@ const memoryLog = (): AgentLogService => {
     bounds: (session) =>
       Effect.sync(() => {
         const current = values.get(session) ?? [];
-        return { oldest: current[0]?.sequence ?? 0, latest: current.at(-1)?.sequence ?? 0 };
+        return { oldest: current[0]?.sequence ?? 0, latest: current.at(-1)?.sequence ?? -1 };
+      }),
+    watch: (session, after = -1) =>
+      Effect.gen(function* () {
+        const bus = yield* feed(session);
+        const queue = yield* PubSub.subscribe(bus);
+        const replay = (values.get(session) ?? []).filter((event) => event.sequence > after);
+        const boundary = replay.at(-1)?.sequence ?? after;
+        return Stream.concat(
+          Stream.fromIterable(replay),
+          Stream.fromQueue(queue).pipe(Stream.filter((event) => event.sequence > boundary)),
+        );
       }),
   };
 };
@@ -55,6 +81,15 @@ export function makeAgentLog(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const entries = new Map<string, Entry[]>();
+    const feeds = new Map<string, PubSub.PubSub<AgentEvent>>();
+    const feed = (session: string) =>
+      Effect.gen(function* () {
+        const existing = feeds.get(session);
+        if (existing) return existing;
+        const created = yield* PubSub.unbounded<AgentEvent>();
+        feeds.set(session, created);
+        return created;
+      });
 
     const pathFor = (session: string) => join(root, "agent-events", `${session}.json`);
 
@@ -123,6 +158,7 @@ export function makeAgentLog(
         const entry = { sequence, event: { ...frame, sequence } } as Entry;
         current.push(entry);
         yield* write(frame.session, current);
+        yield* feed(frame.session).pipe(Effect.flatMap((bus) => PubSub.publish(bus, entry.event as AgentEvent)));
         return entry.event as AgentEvent;
       }).pipe(
         Effect.mapError((error) =>
@@ -140,13 +176,27 @@ export function makeAgentLog(
       );
 
     const bounds = (session: string) =>
-      load(session).pipe(
+        load(session).pipe(
         Effect.map((current) => ({
           oldest: current[0]?.sequence ?? 0,
-          latest: current.at(-1)?.sequence ?? 0,
+          latest: current.at(-1)?.sequence ?? -1,
         })),
       );
 
-    return { append, read, bounds } satisfies AgentLogService;
+    const watch = (session: string, after = -1) =>
+      Effect.gen(function* () {
+        // This subscription intentionally precedes load/read. The queue holds
+        // events appended while the durable replay is being decoded.
+        const bus = yield* feed(session);
+        const queue = yield* PubSub.subscribe(bus);
+        const replay = yield* read(session, after);
+        const boundary = replay.at(-1)?.sequence ?? after;
+        return Stream.concat(
+          Stream.fromIterable(replay),
+          Stream.fromQueue(queue).pipe(Stream.filter((event) => event.sequence > boundary)),
+        );
+      });
+
+    return { append, read, bounds, watch } satisfies AgentLogService;
   });
 }

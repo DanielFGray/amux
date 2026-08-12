@@ -69,6 +69,7 @@ import { createRegions } from "./ui/regions.tsx";
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
 import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import { createReloader } from "./plugin/reloader.ts";
+import type { PluginReloader } from "./plugin/reloader.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "./ui/Prompt.tsx";
@@ -104,6 +105,19 @@ export interface AppOptions {
   /** Ask the program to exit. The app does not own the process, the renderer or
    *  the session, so leaving is a request rather than a teardown. */
   readonly quit: () => void;
+}
+
+export interface PluginRuntime {
+  reloader?: PluginReloader;
+  pathFor?: (id: string) => string | undefined;
+}
+
+function setPluginEnabled(config: Config, path: string, enabled: boolean): Config {
+  const index = config.plugins.findIndex((entry) => entry.path === path);
+  if (index < 0) return { ...config, plugins: [...config.plugins, { path, enabled }] };
+  const plugins = [...config.plugins];
+  plugins[index] = { ...plugins[index]!, enabled };
+  return { ...config, plugins };
 }
 
 export interface AppHandle {
@@ -164,8 +178,9 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       options.paneHost,
     );
     const regions = createRegions(options.renderer);
+    const pluginRuntime: PluginRuntime = {};
     const app = yield* Effect.acquireRelease(
-      Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber, regions)),
+      Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber, regions, pluginRuntime)),
       (app) => app.release,
     );
     const pluginHost = yield* createPluginHost({
@@ -192,6 +207,8 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     // `plugin.reload` goes out through the daemon and comes back here, so a
     // client reloads whether the request was typed into it or into another one.
     const reloader = createReloader(pluginHost, hotPlugins);
+    pluginRuntime.reloader = reloader;
+    pluginRuntime.pathFor = (id) => hotPlugins.find((plugin) => plugin.id === id)?.path;
     runFiber(
       "plugin-reload",
       Stream.runForEach(options.session.events, (event) =>
@@ -281,6 +298,7 @@ function buildApp(
   fiberScope: Scope.CloseableScope,
   runFiber: AppFiberRunner,
   regions: ReturnType<typeof createRegions>,
+  pluginRuntime: PluginRuntime,
 ): ManagedAppHandle {
   const initialFrameExternalLeft = frame.externalLeft;
 
@@ -1133,6 +1151,7 @@ function buildApp(
         Effect.asVoid,
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
+    "agent.watch": runPanelCommand,
     "agent.interrupt": runPanelCommand,
     "agent.permission": runPanelCommand,
     notify: (value) =>
@@ -1221,6 +1240,30 @@ function buildApp(
     "plugin.reload": (value) =>
       session.run(value).pipe(
         Effect.asVoid,
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      ),
+    "plugin.enable": ({ plugin }) =>
+      Effect.suspend(() => (pluginRuntime.reloader?.enable(plugin) ?? Effect.fail("plugin runtime is unavailable"))).pipe(
+        Effect.tap(() =>
+          Effect.promise(async () => {
+            const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
+            const next = setPluginEnabled(configState(), path, true);
+            setConfigState(next);
+            await saveConfig(next);
+          }),
+        ),
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      ),
+    "plugin.disable": ({ plugin }) =>
+      Effect.suspend(() => (pluginRuntime.reloader?.disable(plugin) ?? Effect.fail("plugin runtime is unavailable"))).pipe(
+        Effect.tap(() =>
+          Effect.promise(async () => {
+            const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
+            const next = setPluginEnabled(configState(), path, false);
+            setConfigState(next);
+            await saveConfig(next);
+          }),
+        ),
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
     "app.quit": () => Effect.sync(shutdown),
