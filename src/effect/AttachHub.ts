@@ -1,7 +1,7 @@
 import { Effect, Queue, Ref, Schema as S, Scope, Stream } from "effect";
 import { encodeAttachFrame, isAgentEvent, type AttachFrame } from "./AttachProtocol.ts";
+import { MAX_PENDING_BYTES } from "../limits.ts";
 
-const MAX_PENDING_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
 
 interface QueuedFrame {

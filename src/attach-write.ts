@@ -1,3 +1,5 @@
+import { MAX_PENDING_BYTES } from "./limits.ts";
+
 export interface SocketWriter {
   readonly closed: boolean;
   send(value: Uint8Array): boolean;
@@ -5,8 +7,6 @@ export interface SocketWriter {
   close(): void;
   closeAfterFlush(onFlushed: () => void): void;
 }
-
-const MAX_PENDING_BYTES = 4 * 1024 * 1024;
 
 /** Serialize unbuffered Bun socket writes without losing partial frames. */
 export const createSocketWriter = (

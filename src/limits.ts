@@ -7,6 +7,7 @@ export const MAX_LAYOUT_BYTES = 1_048_576;
 export const MAX_SESSION_BYTES = 8 * 1_048_576;
 export const MAX_RPC_BYTES = 1_048_576;
 export const MAX_ATTACH_FRAME_BYTES = 8 * 1_048_576;
+export const MAX_PENDING_BYTES = 4 * 1_048_576;
 export const MAX_SPACES = 256;
 export const MAX_WINDOWS = 2_048;
 export const MAX_SESSIONS = 4_096;
