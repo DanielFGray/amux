@@ -16,6 +16,7 @@ import { DEFAULT_RULES } from "../../../permission.ts";
 import { projectRoot } from "../../../git.ts";
 import { layer as projectStoreLayer, Service as ProjectStore } from "../../../project-store.ts";
 import { makeAgentWorker } from "./worker.ts";
+import { initialContext } from "./context.ts";
 
 // --- Process entry point ---
 
@@ -75,7 +76,12 @@ else {
       const savedConversation = yield* store.conversation(session);
       const chat =
         savedConversation === undefined
-          ? yield* Chat.empty
+          ? yield* Chat.fromPrompt([
+              {
+                role: "system",
+                content: yield* Effect.promise(() => initialContext({ workspace })),
+              },
+            ])
           : yield* Chat.fromJson(savedConversation);
       const worker = yield* makeAgentWorker({
         session,
