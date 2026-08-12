@@ -6,9 +6,11 @@ import type { Config } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost } from "./host.ts";
 import { sidebarPlugin } from "./builtin/sidebar.tsx";
+import { agentHarnessPlugin } from "./builtin/agent-harness.tsx";
 
 const BUILTIN_PLUGINS: Readonly<Record<string, PluginDefinition>> = {
   "builtin:amux.sidebar": sidebarPlugin,
+  "builtin:amux.agent-harness": agentHarnessPlugin,
 };
 
 function resolvePluginPath(specPath: string, configDir: string): string | null {

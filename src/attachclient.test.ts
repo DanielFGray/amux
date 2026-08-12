@@ -16,7 +16,8 @@ import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { which } from "bun";
-import { Session, type SessionOptions } from "./agent.ts";
+import { SessionHandle, type SessionHandleOptions } from "./session-handle.ts";
+type SessionOptions = SessionHandleOptions;
 import { snapshotSessionEntry } from "./snapshot.ts";
 import { AttachClient } from "./attach.ts";
 import { SessionClient, type SessionClientShape } from "./client.ts";
@@ -31,16 +32,14 @@ import {
   type AttachFrame,
   AgentFrame,
 } from "./effect/AttachProtocol.ts";
-import { Transcript, serializeTranscript } from "./transcript.ts";
+import { Transcript, serializeTranscript } from "./plugin/builtin/agent-harness/transcript.ts";
 import { command } from "./commands.ts";
 import { controlCall } from "./control-client.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
-const attachedClient = (d: SessionDaemonService) =>
-  Effect.runPromise(d.getAttachedClient);
-const attachedClients = (d: SessionDaemonService) =>
-  Effect.runPromise(d.getAttachedClients);
+const attachedClient = (d: SessionDaemonService) => Effect.runPromise(d.getAttachedClient);
+const attachedClients = (d: SessionDaemonService) => Effect.runPromise(d.getAttachedClients);
 const clients: SessionClientShape[] = [];
 /** A client's control and attach sockets live in its scope, so tests own one. */
 const scopes: Scope.CloseableScope[] = [];
@@ -53,7 +52,7 @@ const connect = (
   scopes.push(scope);
   return run(Scope.extend(SessionClient.connect(id, options), scope), env);
 };
-const agents: Session[] = [];
+const agents: SessionHandle[] = [];
 let nextProjection = 0;
 const run = <A, E>(
   effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
@@ -72,10 +71,8 @@ afterEach(async () => {
   for (const client of clients.splice(0)) client.close();
   for (const scope of scopes.splice(0))
     await Effect.runPromise(Scope.close(scope, Exit.void)).catch(() => {});
-  for (const daemon of daemons.splice(0))
-    await Effect.runPromise(daemon.stop).catch(() => {});
-  for (const dir of dirs.splice(0))
-    await rm(dir, { recursive: true, force: true });
+  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
 async function session(id: string) {
@@ -106,7 +103,7 @@ async function projectAgent(
   const id = options.id ?? `transport-${nextProjection++}`;
   const live = await Effect.runPromise(daemon.liveSessions());
   (client.live as Set<string>).add(id);
-  const projected = new Session({ ...options, id, backend: client.backend() });
+  const projected = new SessionHandle({ ...options, id, backend: client.backend() });
   agents.push(projected);
   if (!live.includes(id)) {
     await Effect.runPromise(
@@ -138,11 +135,7 @@ function modeledAgent(client: SessionClientShape): {
 }
 
 /** Wait for a predicate, so tests assert on outcomes rather than on sleeps. */
-async function until(
-  predicate: () => boolean | Promise<boolean>,
-  what: string,
-  timeoutMs = 5_000,
-) {
+async function until(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
@@ -153,7 +146,7 @@ async function until(
 
 /** What the agent's terminal is actually showing, as text. The app's own
  *  capture path, so these assertions read the screen the user would. */
-const screen = (agent: Session) => captureVisible(agent.term);
+const screen = (agent: SessionHandle) => captureVisible(agent.term);
 
 test("an agent's bytes travel to the daemon and its output comes back", async () => {
   const { daemon, env } = await session("roundtrip");
@@ -164,10 +157,7 @@ test("an agent's bytes travel to the daemon and its output comes back", async ()
   // The spawn is a round trip over RPC, so the first write has to be held until
   // the daemon actually has an agent by this name to give it to.
   agent.write("hello-from-the-client\n");
-  await until(
-    () => screen(agent).includes("hello-from-the-client"),
-    "cat to echo the input",
-  );
+  await until(() => screen(agent).includes("hello-from-the-client"), "cat to echo the input");
 
   // And the daemon, not this process, is the one holding the PTY.
   expect(await Effect.runPromise(daemon.liveSessions())).toContain(agent.id);
@@ -191,7 +181,7 @@ test("native agent status frames become authoritative projected state", async ()
     }),
   );
   (client.live as Set<string>).add("native-status-agent");
-  const agent = new Session({
+  const agent = new SessionHandle({
     id: "native-status-agent",
     cmd,
     kind: "component",
@@ -247,50 +237,30 @@ test("reattaching replays the completed transcript but not live-only deltas", as
   const liveFiber = Effect.runFork(
     first.attach
       .stream(id)
-      .pipe(
-        Stream.runForEach((frame) => Effect.sync(() => void live.push(frame))),
-      ),
+      .pipe(Stream.runForEach((frame) => Effect.sync(() => void live.push(frame)))),
   );
-  await Effect.runPromise(
-    daemon.spawnSession({ kind: "component", id, cmd, cols: 80, rows: 24 }),
-  );
+  await Effect.runPromise(daemon.spawnSession({ kind: "component", id, cmd, cols: 80, rows: 24 }));
   first.attach.sync(id);
-  await until(
-    () => live.some((frame) => frame._tag === "turn.end"),
-    "the completed turn",
-  );
+  await until(() => live.some((frame) => frame._tag === "turn.end"), "the completed turn");
   expect(live.some((frame) => frame._tag === "text.delta")).toBe(true);
   await Effect.runPromise(Fiber.interrupt(liveFiber));
   first.close();
-  await until(
-    async () => (await attachedClient(daemon)) === null,
-    "the first client to detach",
-  );
+  await until(async () => (await attachedClient(daemon)) === null, "the first client to detach");
 
   const second = await attach("agent-replay", env, "second");
   const replay: AttachFrame[] = [];
   const replayFiber = Effect.runFork(
     second.attach
       .stream(id)
-      .pipe(
-        Stream.runForEach((frame) =>
-          Effect.sync(() => void replay.push(frame)),
-        ),
-      ),
+      .pipe(Stream.runForEach((frame) => Effect.sync(() => void replay.push(frame)))),
   );
   second.attach.sync(id);
-  await until(
-    () => replay.some((frame) => frame._tag === "agent.status"),
-    "durable history",
-  );
+  await until(() => replay.some((frame) => frame._tag === "agent.status"), "durable history");
   await Effect.runPromise(Fiber.interrupt(replayFiber));
 
   const transcript = new Transcript();
-  for (const frame of replay)
-    if (S.is(AgentFrame)(frame)) transcript.append(frame);
-  expect(serializeTranscript(transcript.snapshot(), 80)).toContain(
-    "assistant> live answer",
-  );
+  for (const frame of replay) if (S.is(AgentFrame)(frame)) transcript.append(frame);
+  expect(serializeTranscript(transcript.snapshot(), 80)).toContain("assistant> live answer");
   expect(replay.some((frame) => frame._tag === "text.delta")).toBe(false);
 });
 
@@ -338,16 +308,13 @@ test("two clients share output and input, and one can leave without detaching th
 
   firstAgent.write("first-input\n");
   await until(
-    () =>
-      screen(firstAgent).includes("first-input") &&
-      screen(secondAgent).includes("first-input"),
+    () => screen(firstAgent).includes("first-input") && screen(secondAgent).includes("first-input"),
     "both clients to see first input",
   );
   secondAgent.write("second-input\n");
   await until(
     () =>
-      screen(firstAgent).includes("second-input") &&
-      screen(secondAgent).includes("second-input"),
+      screen(firstAgent).includes("second-input") && screen(secondAgent).includes("second-input"),
     "both clients to see second input",
   );
 
@@ -389,10 +356,7 @@ test("an agent outlives the client, and the next client adopts it", async () => 
     exited = true;
   };
   agent.write("first-life\n");
-  await until(
-    () => screen(agent).includes("first-life"),
-    "the first client's echo",
-  );
+  await until(() => screen(agent).includes("first-life"), "the first client's echo");
 
   // Detach, exactly as closing the terminal would.
   first.close();
@@ -422,14 +386,9 @@ test("an agent outlives the client, and the next client adopts it", async () => 
     cmd: ["cat"],
   });
   readopted.write("second-life\n");
-  await until(
-    () => screen(readopted).includes("second-life"),
-    "the adopted agent's echo",
-  );
+  await until(() => screen(readopted).includes("second-life"), "the adopted agent's echo");
   expect(
-    (await Effect.runPromise(daemon.liveSessions())).filter(
-      (id) => id === agent.id,
-    ),
+    (await Effect.runPromise(daemon.liveSessions())).filter((id) => id === agent.id),
   ).toHaveLength(1);
 });
 
@@ -492,17 +451,11 @@ test("an agent started from a shell is detected through the daemon backend", asy
 
   // A fresh shell at a prompt has no foreground command to name: its pgid is
   // its own session id, and detection must not mistake the shell for an agent.
-  await until(
-    () => agent.foregroundCommand === "",
-    "the shell at a prompt to report no command",
-  );
+  await until(() => agent.foregroundCommand === "", "the shell at a prompt to report no command");
   expect(agent.agentKind).toBe(null);
 
   agent.write(`${claude} --norc --noprofile\n`);
-  await until(
-    () => agent.agentKind === "claude",
-    "the foreground agent to be detected",
-  );
+  await until(() => agent.agentKind === "claude", "the foreground agent to be detected");
   expect(agent.foregroundCommand).toBe("claude");
   // The visible consequence of the fix: the agents-only filter would keep this
   // pane now.
@@ -526,15 +479,9 @@ test("a reattaching client detects an agent already in the foreground", async ()
     name: "shell",
     cmd: ["bash", "--norc", "--noprofile"],
   });
-  await until(
-    () => agent.foregroundCommand === "",
-    "the shell at a prompt to report no command",
-  );
+  await until(() => agent.foregroundCommand === "", "the shell at a prompt to report no command");
   agent.write(`${claude} --norc --noprofile\n`);
-  await until(
-    () => agent.agentKind === "claude",
-    "the foreground agent to be detected",
-  );
+  await until(() => agent.agentKind === "claude", "the foreground agent to be detected");
 
   first.close();
   await until(
@@ -550,10 +497,7 @@ test("a reattaching client detects an agent already in the foreground", async ()
 
   // Nothing changes on this session after adoption — no keystroke, no output,
   // no foreground switch. The daemon's sync reply must carry the answer.
-  await until(
-    () => readopted.agentKind === "claude",
-    "the adopted agent to be detected",
-  );
+  await until(() => readopted.agentKind === "claude", "the adopted agent to be detected");
   expect(readopted.foregroundCommand).toBe("claude");
 });
 
@@ -605,9 +549,7 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
   // is not a contract any more — collect through the exit instead.
   const secondDone = Effect.runPromise(
     Stream.runCollect(
-      client
-        .stream("agent-1")
-        .pipe(Stream.takeUntil((frame) => frame._tag === "exit")),
+      client.stream("agent-1").pipe(Stream.takeUntil((frame) => frame._tag === "exit")),
     ),
   );
   const second = await Effect.runPromise(
@@ -627,9 +569,7 @@ test("an exited session queue is reclaimed only after its exit is consumed", asy
   ]);
   expect(
     [...frames].some(
-      (frame) =>
-        frame._tag === "output" &&
-        Buffer.from(frame.data).toString().includes("second"),
+      (frame) => frame._tag === "output" && Buffer.from(frame.data).toString().includes("second"),
     ),
   ).toBe(true);
   client.close();
@@ -657,9 +597,7 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
 
   const replacement = Effect.runPromise(
     Stream.runCollect(
-      client
-        .stream("agent-1")
-        .pipe(Stream.takeUntil((frame) => frame._tag === "exit")),
+      client.stream("agent-1").pipe(Stream.takeUntil((frame) => frame._tag === "exit")),
     ),
   );
   const second = await Effect.runPromise(
@@ -679,14 +617,10 @@ test("an unconsumed exit cannot poison a same-id replacement session", async () 
   ]);
 
   expect([...frames].at(-1)?._tag).toBe("exit");
-  expect(
-    [...frames].every((frame) => frame._tag !== "exit" || frame.code === 4),
-  ).toBe(true);
+  expect([...frames].every((frame) => frame._tag !== "exit" || frame.code === 4)).toBe(true);
   expect(
     [...frames].some(
-      (frame) =>
-        frame._tag === "output" &&
-        Buffer.from(frame.data).toString().includes("second"),
+      (frame) => frame._tag === "output" && Buffer.from(frame.data).toString().includes("second"),
     ),
   ).toBe(true);
   client.close();
@@ -712,9 +646,7 @@ test("rotates generations at exit without losing ordered frames in one chunk", a
         buffer = decoded.rest;
         for (const frame of decoded.frames) {
           if (frame._tag === "ping")
-            socket.write(
-              encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }),
-            );
+            socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }));
         }
       },
     },
@@ -724,9 +656,7 @@ test("rotates generations at exit without losing ordered frames in one chunk", a
     client: "generation-test",
   });
 
-  const firstDone = Effect.runPromise(
-    Stream.runCollect(client.stream("agent-1")),
-  );
+  const firstDone = Effect.runPromise(Stream.runCollect(client.stream("agent-1")));
   await Bun.sleep(0);
   peer!.write(
     encodeAttachFrame({
@@ -781,9 +711,7 @@ test("an unacquired stream does not retain a terminal generation", async () => {
         buffer = decoded.rest;
         for (const frame of decoded.frames) {
           if (frame._tag === "ping")
-            socket.write(
-              encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }),
-            );
+            socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }));
         }
       },
     },
@@ -843,8 +771,7 @@ test("an unsubscribed session disconnects rather than silently dropping frames",
         buffer = decoded.rest;
         if (decoded.frames.some((frame) => frame._tag === "ping")) {
           const ping = decoded.frames.find(
-            (frame): frame is Extract<AttachFrame, { _tag: "ping" }> =>
-              frame._tag === "ping",
+            (frame): frame is Extract<AttachFrame, { _tag: "ping" }> => frame._tag === "ping",
           )!;
           socket.write(encodeAttachFrame({ _tag: "pong", nonce: ping.nonce }));
         }
@@ -857,12 +784,9 @@ test("an unsubscribed session disconnects rather than silently dropping frames",
       encodeAttachFrame({
         _tag: "output",
         session: "agent-1",
-        data: new TextEncoder().encode(
-          `frame-${String(index).padStart(3, "0")}\n`,
-        ),
+        data: new TextEncoder().encode(`frame-${String(index).padStart(3, "0")}\n`),
       }),
-    ).join("") +
-      encodeAttachFrame({ _tag: "exit", session: "agent-1", code: 0 }),
+    ).join("") + encodeAttachFrame({ _tag: "exit", session: "agent-1", code: 0 }),
   );
 
   await Bun.sleep(100);
@@ -895,9 +819,7 @@ test("a delayed handshake closes its socket and rejects on timeout", async () =>
           if (frame._tag !== "ping") continue;
           void Bun.sleep(80).then(() => {
             latePongs += 1;
-            socket.write(
-              encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }),
-            );
+            socket.write(encodeAttachFrame({ _tag: "pong", nonce: frame.nonce }));
           });
         }
       },
@@ -941,10 +863,7 @@ test("a delayed handshake closes its socket and rejects on timeout", async () =>
   } finally {
     Bun.connect = originalConnect;
   }
-  await until(
-    () => closed === 1,
-    "the socket delivered by the late open callback to close",
-  );
+  await until(() => closed === 1, "the socket delivered by the late open callback to close");
 
   await expect(acquire("late-pong")).rejects.toThrow("timed out");
   await until(() => closed === 2, "the delayed pong handshake socket to close");
@@ -993,13 +912,9 @@ test("the connection scope emits heartbeats and stops them when released", async
       client.onClose = () => {
         finalized += 1;
       };
-      yield* Effect.promise(() =>
-        until(() => beats >= 2, "the client heartbeat", 1_000),
-      );
+      yield* Effect.promise(() => until(() => beats >= 2, "the client heartbeat", 1_000));
     }).pipe(
-      Effect.provide(
-        AttachClient.layer({ path, client: "heartbeat", pingSeconds: 0.02 }),
-      ),
+      Effect.provide(AttachClient.layer({ path, client: "heartbeat", pingSeconds: 0.02 })),
       Effect.scoped,
     ),
   );
@@ -1047,7 +962,7 @@ test("killing through the daemon ends the agent here too", async () => {
   const client = await attach("killed", env);
 
   const saved = modeledAgent(client);
-  const agent = new Session({ ...saved, backend: client.backend() });
+  const agent = new SessionHandle({ ...saved, backend: client.backend() });
   agents.push(agent);
 
   let live: readonly string[] = [];
@@ -1088,7 +1003,7 @@ test("a projection of an unmodeled id never asks the daemon to spawn it", async 
   const client = await attach("unreachable", env);
 
   const before = await Effect.runPromise(daemon.liveSessions());
-  const agent = new Session({
+  const agent = new SessionHandle({
     id: "not-modeled",
     cmd: ["cat"],
     backend: client.backend(),
@@ -1106,10 +1021,7 @@ test("a client whose daemon stops sees a detach, not a process exit", async () =
 
   const agent = await projectAgent(daemon, client, { cmd: ["cat"] });
   agent.write("before-death\n");
-  await until(
-    () => screen(agent).includes("before-death"),
-    "the client's echo",
-  );
+  await until(() => screen(agent).includes("before-death"), "the client's echo");
 
   // Explicit stop ends the daemon, its socket and its agents in one move. No
   // exit frame is in flight, so the client learns about it the same way it
@@ -1119,10 +1031,7 @@ test("a client whose daemon stops sees a detach, not a process exit", async () =
   await Effect.runPromise(daemon.stop);
   daemons.splice(daemons.indexOf(daemon), 1);
 
-  await until(
-    () => agent.detached,
-    "the client to notice the daemon went away",
-  );
+  await until(() => agent.detached, "the client to notice the daemon went away");
   expect(agent.exited).toBe(false);
   expect(agent.exitCode).toBeNull();
   expect(agent.state).toBe("detached");
@@ -1135,10 +1044,7 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
 
   const agent = await projectAgent(daemon, first, { cmd: ["cat"] });
   agent.write("left-on-screen\n");
-  await until(
-    () => screen(agent).includes("left-on-screen"),
-    "the first client's echo",
-  );
+  await until(() => screen(agent).includes("left-on-screen"), "the first client's echo");
 
   first.close();
   await until(
@@ -1154,10 +1060,7 @@ test("a reattaching client sees an adopted agent's screen without it redrawing",
 
   // cat never redraws. The old line can reach this fresh pane only through the
   // daemon's replay; without it the pane stays blank until some later echo.
-  await until(
-    () => screen(readopted).includes("left-on-screen"),
-    "the replayed screen",
-  );
+  await until(() => screen(readopted).includes("left-on-screen"), "the replayed screen");
   expect(await Effect.runPromise(daemon.liveSessions())).toContain(agent.id);
 });
 
@@ -1170,10 +1073,7 @@ test("an adopted agent is resized before its screen replay", async () => {
     rows: 24,
   });
   agent.write("resized-replay\n");
-  await until(
-    () => screen(agent).includes("resized-replay"),
-    "the first client's echo",
-  );
+  await until(() => screen(agent).includes("resized-replay"), "the first client's echo");
 
   first.close();
   await until(
@@ -1189,10 +1089,7 @@ test("an adopted agent is resized before its screen replay", async () => {
     rows: 10,
   });
 
-  await until(
-    () => screen(readopted).includes("resized-replay"),
-    "the resized replay",
-  );
+  await until(() => screen(readopted).includes("resized-replay"), "the resized replay");
   expect(readopted.term.cols).toBe(40);
   expect(readopted.term.rows).toBe(10);
 });
@@ -1228,10 +1125,7 @@ test("daemon replay keeps only the current screen, with no scrollback", async ()
     rows: 4,
   });
 
-  await until(
-    () => screen(readopted).includes("last"),
-    "the current screen replay",
-  );
+  await until(() => screen(readopted).includes("last"), "the current screen replay");
   expect(screen(readopted)).not.toContain("old-3");
 });
 
@@ -1239,11 +1133,7 @@ test("an alternate-screen app's view is replayed intact to a reattaching client"
   const { daemon, env } = await session("replay-alt");
   const first = await attach("replay-alt", env);
 
-  const cmd = [
-    "sh",
-    "-c",
-    "printf '\\033[?1049h\\033[2J\\033[2;2Halt-mode-view'; sleep 30",
-  ];
+  const cmd = ["sh", "-c", "printf '\\033[?1049h\\033[2J\\033[2;2Halt-mode-view'; sleep 30"];
   const agent = await projectAgent(daemon, first, { cmd });
   await until(
     () => screen(agent).includes("alt-mode-view"),
@@ -1262,10 +1152,7 @@ test("an alternate-screen app's view is replayed intact to a reattaching client"
 
   // The content alone could have landed on the wrong screen; the mode check is
   // the discriminator. A raw byte-suffix replay would fail exactly here.
-  await until(
-    () => screen(readopted).includes("alt-mode-view"),
-    "the replayed alternate screen",
-  );
+  await until(() => screen(readopted).includes("alt-mode-view"), "the replayed alternate screen");
   expect(readopted.term.mode(MODE_ALT_SCREEN)).toBe(true);
 });
 
@@ -1298,25 +1185,19 @@ test("a daemon started on demand keeps agents between two separate clients", asy
     expect(lease!.pid).not.toBe(process.pid);
 
     const saved = modeledAgent(first);
-    const agent = new Session({ ...saved, backend: first.backend() });
+    const agent = new SessionHandle({ ...saved, backend: first.backend() });
     agents.push(agent);
     agent.write("printf 'across-processes\\n'\n");
-    await until(
-      () => screen(agent).includes("across-processes"),
-      "the daemon's echo",
-    );
+    await until(() => screen(agent).includes("across-processes"), "the daemon's echo");
     first.close();
 
     // A second client, with no memory of the first, finds the agent still there.
     const second = await connect(id, env, { client: "second" });
     expect(second.live).toContain(agent.id);
-    const readopted = new Session({ ...saved, backend: second.backend() });
+    const readopted = new SessionHandle({ ...saved, backend: second.backend() });
     agents.push(readopted);
     readopted.write("printf 'still-alive\\n'\n");
-    await until(
-      () => screen(readopted).includes("still-alive"),
-      "the adopted agent's echo",
-    );
+    await until(() => screen(readopted).includes("still-alive"), "the adopted agent's echo");
     await run(second.stop(), env);
   } finally {
     const lease = await run(SessionStore.readLease(id), env);
@@ -1389,9 +1270,7 @@ test("a natural terminal exit is published only after its workspace generation i
     client
       .workspace()
       .spaces.flatMap((space) =>
-        space.windows.flatMap((window) =>
-          window.agents.map((agent) => agent.id),
-        ),
+        space.windows.flatMap((window) => window.agents.map((agent) => agent.id)),
       ),
   );
   const created = await run(
@@ -1436,9 +1315,7 @@ test("a transient natural-exit write failure does not consume the terminal exit 
     client
       .workspace()
       .spaces.flatMap((space) =>
-        space.windows.flatMap((window) =>
-          window.agents.map((agent) => agent.id),
-        ),
+        space.windows.flatMap((window) => window.agents.map((agent) => agent.id)),
       ),
   );
   const created = await run(
@@ -1557,7 +1434,8 @@ test("every subscriber to a session receives every frame", async () => {
   );
   client.attach.sync(id);
   await until(
-    () => watchers.every((seen) => seen.filter((f) => f._tag === "text.delta").length === words.length),
+    () =>
+      watchers.every((seen) => seen.filter((f) => f._tag === "text.delta").length === words.length),
     "both subscribers to see the whole answer",
   );
   for (const fiber of fibers) await Effect.runPromise(Fiber.interrupt(fiber));

@@ -90,9 +90,7 @@ test("tool.params-start creates a block that tool.params-delta appends to", () =
     blocks,
     frame({ _tag: "tool.params-start", turn: "t1", call: "c1", tool: "grep" }),
   );
-  expect(blocks).toEqual([
-    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: "" },
-  ]);
+  expect(blocks).toEqual([{ kind: "tool", turn: "t1", call: "c1", name: "grep", input: "" }]);
   blocks = appendTranscriptFrame(
     blocks,
     frame({ _tag: "tool.params-delta", turn: "t1", call: "c1", delta: "pat" }),
@@ -153,9 +151,7 @@ test("tool.params-delta without prior start creates a loose block", () => {
       delta: "orphan",
     }),
   );
-  expect(blocks).toEqual([
-    { kind: "tool", turn: "t1", call: "c1", name: "", input: "orphan" },
-  ]);
+  expect(blocks).toEqual([{ kind: "tool", turn: "t1", call: "c1", name: "", input: "orphan" }]);
 });
 
 test("tool.params-delta after tool.start does not corrupt the resolved input", () => {
@@ -282,10 +278,7 @@ test("a failed turn.end renders the cause above the failed status", () => {
 
 test("a completed turn.end adds no error block", () => {
   let blocks: readonly TranscriptBlock[] = [];
-  blocks = appendTranscriptFrame(
-    blocks,
-    frame({ _tag: "text.delta", turn: "t1", text: "done" }),
-  );
+  blocks = appendTranscriptFrame(blocks, frame({ _tag: "text.delta", turn: "t1", text: "done" }));
   blocks = appendTranscriptFrame(
     blocks,
     frame({ _tag: "turn.end", turn: "t1", outcome: "completed", text: "done" }),

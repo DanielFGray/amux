@@ -4,7 +4,7 @@ import { createBindings } from "./bindings.ts";
 import { createHarness, run } from "./harness.ts";
 import { encodeKey } from "./keys.ts";
 import { RenderState } from "./ghostty.ts";
-import { Session } from "./agent.ts";
+import { SessionHandle } from "./session-handle.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
 const spies: ReturnType<typeof spyOn>[] = [];
@@ -21,16 +21,14 @@ async function setup(opts?: { init?: boolean }) {
 
 /** Intercept every child-input write and record which agent got which bytes. */
 function captureAgentWrites() {
-  const spy = spyOn(Session.prototype, "write");
+  const spy = spyOn(SessionHandle.prototype, "write");
   spy.mockImplementation(() => {});
   spies.push(spy);
   return {
     spy,
-    agents: () => spy.mock.contexts as Session[],
+    agents: () => spy.mock.contexts as SessionHandle[],
     data: () =>
-      spy.mock.calls.map(([d]) =>
-        typeof d === "string" ? d : new TextDecoder().decode(d),
-      ),
+      spy.mock.calls.map(([d]) => (typeof d === "string" ? d : new TextDecoder().decode(d))),
     clear: () => spy.mockClear(),
   };
 }
@@ -45,7 +43,7 @@ async function waitFor(fn: () => boolean, ms = 5000) {
 }
 
 /** The last few written lines of an agent's screen, for reading cat's echo. */
-function screenText(agent: Session): string {
+function screenText(agent: SessionHandle): string {
   const state = new RenderState();
   try {
     state.update(agent.term);
@@ -191,9 +189,7 @@ test("a detached agent receives no broadcast until a view is opened on it", asyn
   try {
     window.write("x");
     // The broadcast set is exactly the window's panes.
-    expect(new Set(writes.agents())).toEqual(
-      new Set(window.panes.map((p) => p.session)),
-    );
+    expect(new Set(writes.agents())).toEqual(new Set(window.panes.map((p) => p.session)));
     expect(writes.agents()).not.toContain(hidden);
 
     // Opening a view makes it a pane, and it joins the fan-out.
@@ -231,9 +227,7 @@ test("the fan-out set follows the layout: a split joins, a close leaves, a new w
   const writes = captureAgentWrites();
   try {
     window.write("a");
-    expect(new Set(writes.agents())).toEqual(
-      new Set([first.session, second.session]),
-    );
+    expect(new Set(writes.agents())).toEqual(new Set([first.session, second.session]));
 
     // Closing a pane drops it from the set.
     writes.clear();
@@ -288,9 +282,5 @@ test("broadcast input actually reaches every child process", async () => {
   window.split("row", b);
   window.toggleSync();
   window.write("hello-sync\n");
-  await waitFor(
-    () =>
-      screenText(a).includes("hello-sync") &&
-      screenText(b).includes("hello-sync"),
-  );
+  await waitFor(() => screenText(a).includes("hello-sync") && screenText(b).includes("hello-sync"));
 });

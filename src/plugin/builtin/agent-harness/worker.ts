@@ -1,7 +1,27 @@
-import type { Chat, LanguageModel, Response, Tool, Toolkit } from "@effect/ai";
-import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
-import type { AgentEventPayload, AgentDelta } from "../effect/AttachProtocol.ts";
-import { AgentState, type ReportedAgentState } from "../agent-state.ts";
+import {
+  Prompt,
+  type Chat,
+  type LanguageModel,
+  type Response,
+  type Tool,
+  type Toolkit,
+} from "@effect/ai";
+import {
+  Cause,
+  Effect,
+  Exit,
+  Fiber,
+  FiberHandle,
+  Queue,
+  Ref,
+  Scope,
+  Stream,
+} from "effect";
+import type {
+  AgentEventPayload,
+  AgentDelta,
+} from "../../../effect/AttachProtocol.ts";
+import { AgentState, type ReportedAgentState } from "../../../agent-state.ts";
 
 export type AgentWorker = {
   readonly steer: (message: string) => Effect.Effect<void>;
@@ -14,8 +34,16 @@ type AgentFramePayload =
       readonly _tag: "agent.status";
       readonly state: ReportedAgentState;
     }
-  | { readonly _tag: "turn.start"; readonly turn: string; readonly prompt: string }
-  | { readonly _tag: "text.delta"; readonly turn: string; readonly text: string }
+  | {
+      readonly _tag: "turn.start";
+      readonly turn: string;
+      readonly prompt: string;
+    }
+  | {
+      readonly _tag: "text.delta";
+      readonly turn: string;
+      readonly text: string;
+    }
   | {
       readonly _tag: "tool.params-start";
       readonly turn: string;
@@ -64,15 +92,24 @@ type AgentFramePayload =
 export function frameForPart(
   turn: string,
   part: Response.StreamPart<Record<string, Tool.Any>>,
-  toolName: (name: string) => string,
 ): AgentFramePayload | undefined {
   switch (part.type) {
     case "text-delta":
       return { _tag: "text.delta", turn, text: part.delta };
     case "tool-params-start":
-      return { _tag: "tool.params-start", turn, call: part.id, tool: toolName(part.name) };
+      return {
+        _tag: "tool.params-start",
+        turn,
+        call: part.id,
+        tool: part.name,
+      };
     case "tool-params-delta":
-      return { _tag: "tool.params-delta", turn, call: part.id, delta: part.delta };
+      return {
+        _tag: "tool.params-delta",
+        turn,
+        call: part.id,
+        delta: part.delta,
+      };
     case "tool-params-end":
       return { _tag: "tool.params-end", turn, call: part.id };
     case "tool-call":
@@ -80,7 +117,7 @@ export function frameForPart(
         _tag: "tool.start",
         turn,
         call: part.id,
-        tool: toolName(part.name),
+        tool: part.name,
         input: part.params,
       };
     case "tool-result":
@@ -104,26 +141,28 @@ export function frameForPart(
  * ours is the scheduler above it: a mailbox, one turn at a time, and
  * interruption that leaves the transcript intact.
  */
-export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options: {
+export function makeAgentWorker<
+  Tools extends Record<string, Tool.Any>,
+>(options: {
   readonly session: string;
   readonly chat: Chat.Service;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
   readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Tools>>;
-  /** Provider-safe tool names map back to command tags for the transcript. */
-  readonly toolName?: (name: string) => string;
 }): Effect.Effect<
   AgentWorker,
   never,
-  Scope.Scope | LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
+  | Scope.Scope
+  | LanguageModel.LanguageModel
+  | Tool.Requirements<Tools[keyof Tools]>
 > {
   return Effect.gen(function* () {
     const inbox = yield* Queue.unbounded<string>();
     const turns = yield* Ref.make(0);
     const running = yield* FiberHandle.make<void, never>();
-    const toolName = options.toolName ?? ((name: string) => name);
 
     const emit = (frame: AgentFramePayload) =>
-      options.emit({ ...frame, session: options.session } as AgentEventPayload | AgentDelta);
+      options.emit({ ...frame, session: options.session } as
+        AgentEventPayload | AgentDelta);
 
     /**
      * Terminal frames for every exit, so no path leaves the pane mid-turn.
@@ -132,14 +171,20 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
      * reported, because runTurn absorbs it afterwards. Dropping it here makes a
      * provider rejecting the request indistinguishable from an empty answer.
      */
-    const settle = (turn: string, exit: Exit.Exit<void, unknown>, text: string) => {
+    const settle = (
+      turn: string,
+      exit: Exit.Exit<void, unknown>,
+      text: string,
+    ) => {
       const outcome = Exit.isSuccess(exit)
         ? ("completed" as const)
         : Cause.isInterruptedOnly(exit.cause)
           ? ("interrupted" as const)
           : ("failed" as const);
       const error =
-        Exit.isFailure(exit) && outcome === "failed" ? Cause.pretty(exit.cause) : undefined;
+        Exit.isFailure(exit) && outcome === "failed"
+          ? Cause.pretty(exit.cause)
+          : undefined;
       return emit({
         _tag: "turn.end",
         turn,
@@ -161,26 +206,39 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
         Effect.flatMap((n) => {
           const turn = `turn-${n}`;
           let responseText = "";
+          const runStep = (
+            stepPrompt: string | Prompt.Prompt,
+          ): Effect.Effect<
+            void,
+            unknown,
+            LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
+          > => {
+            let needsContinuation = false;
+            return options.chat
+              .streamText(
+                options.toolkit
+                  ? { prompt: stepPrompt, toolkit: options.toolkit }
+                  : { prompt: stepPrompt },
+              )
+              .pipe(
+                Stream.runForEach((part) => {
+                  const frame = frameForPart(
+                    turn,
+                    part as Response.StreamPart<Record<string, Tool.Any>>,
+                  );
+                  if (frame?._tag === "text.delta") responseText += frame.text;
+                  if (frame?._tag === "tool.start") needsContinuation = true;
+                  return frame ? emit(frame) : Effect.void;
+                }),
+                Effect.flatMap(() =>
+                  needsContinuation ? runStep(Prompt.empty) : Effect.void,
+                ),
+              );
+          };
           return emit({ _tag: "agent.status", state: AgentState.Working }).pipe(
             Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
-            Effect.andThen(
-              options.chat
-                .streamText(
-                  options.toolkit ? { prompt, toolkit: options.toolkit } : { prompt },
-                )
-                .pipe(
-                  Stream.runForEach((part) => {
-                    const frame = frameForPart(
-                      turn,
-                      part as Response.StreamPart<Record<string, Tool.Any>>,
-                      toolName,
-                    );
-                     if (frame?._tag === "text.delta") responseText += frame.text;
-                     return frame ? emit(frame) : Effect.void;
-                  }),
-                ),
-            ),
-             Effect.onExit((exit) => settle(turn, exit, responseText)),
+            Effect.andThen(runStep(prompt)),
+            Effect.onExit((exit) => settle(turn, exit, responseText)),
             // settle has already reported the failure as turn.end{failed}, so the
             // transcript is this turn's error channel and there is nothing left to
             // raise. A provider 500 ends a turn, never the session. catchAll takes

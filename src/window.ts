@@ -1,18 +1,20 @@
-import {
-  BoxRenderable,
-  type KeyEvent,
-  type RenderContext,
-  type Renderable,
-} from "@opentui/core";
+import { BoxRenderable, type KeyEvent, type RenderContext, type Renderable } from "@opentui/core";
 import { Pane, TerminalPane } from "./pane.ts";
 import { ComponentPane, type PaneView } from "./component-pane.tsx";
-import { Session, type SessionOptions } from "./agent.ts";
+import { SessionHandle, type SessionHandleOptions } from "./session-handle.ts";
 import type { SessionBackendFactory } from "./backend.ts";
 import { Context, Effect, Exit, Scope } from "effect";
-import { RenderCtx, Shell, Backend, PaneContent, type WorkspaceEnv } from "./env.ts";
+import {
+  RenderCtx,
+  Shell,
+  Backend as BackendContext,
+  PaneContent,
+  type WorkspaceEnv,
+} from "./env.ts";
 import { rollUp } from "./space.ts";
 import { Divider, setWeight, setDirection, type JunctionFrame } from "./divider.ts";
 import { runtime } from "./options.ts";
+
 import {
   appendPane,
   closeLayout,
@@ -100,7 +102,7 @@ export class Window {
   customName: string | null = null;
   #ctx: RenderContext;
   #panes: Pane[] = [];
-  #agents: Session[] = [];
+  #sessions: SessionHandle[] = [];
   /** The arrangement is authoritative here; renderables are only its projection. */
   #layout: Layout = makeLayout({ root: null });
   #dividerRefs = new WeakMap<Divider, { path: LayoutPath; index: number }>();
@@ -119,10 +121,10 @@ export class Window {
   /** Directory agents spawn in — the owning space's attached directory. */
   #cwd: string | undefined;
   onChange?: () => void;
-  /** Fired after an agent's process exits and its views have been closed. The
+  /** Fired after a session's process exits and its views have been closed. The
    *  app uses it to decide what to show next; it is deliberately not the same
    *  as "a pane closed", because closing a view by hand is a detach, not an end. */
-  onAgentExit?: (agent: Session) => void;
+  onSessionExit?: (session: SessionHandle) => void;
   onCopy?: (text: string) => boolean | void;
   onCopyError?: (error: Error) => void;
   onModelFocus?: (pane: string) => void;
@@ -154,7 +156,7 @@ export class Window {
    * between two windows (see relinquishAgent/adopt), and make killAgent the
    * closing of exactly one of them.
    */
-  #scopes = new Map<Session, Scope.CloseableScope>();
+  #scopes = new Map<SessionHandle, Scope.CloseableScope>();
   /** In a daemon client, exits are projected from model revisions, never authored here. */
   #authoritativeProjection = false;
 
@@ -162,7 +164,7 @@ export class Window {
     this.#env = env;
     this.#ctx = Context.get(env, RenderCtx);
     this.#shell = Context.get(env, Shell);
-    this.#backend = Context.get(env, Backend);
+    this.#backend = Context.get(env, BackendContext);
     this.#paneContent = Context.get(env, PaneContent);
     this.#cwd = cwd;
     this.number = number;
@@ -181,7 +183,7 @@ export class Window {
    *  the same "what is this actually running" cue tmux gives a window. */
   get title(): string {
     if (this.customName) return this.customName;
-    const agent = this.focused?.session ?? this.#agents[0];
+    const agent = this.focused?.session ?? this.#sessions[0];
     return agent?.title ?? "window";
   }
 
@@ -203,18 +205,18 @@ export class Window {
 
   /** Every agent, including ones no pane is currently showing. This is what
    *  the sidebar lists. */
-  get agents(): readonly Session[] {
-    return this.#agents;
+  get sessions(): readonly SessionHandle[] {
+    return this.#sessions;
   }
 
   /** Most urgent state among this window's agents, for its sidebar row. */
   get state() {
-    return rollUp(this.#agents);
+    return rollUp(this.#sessions);
   }
 
   /** Agents with no viewport open — running, but off-screen. */
-  get detached(): Session[] {
-    return this.#agents.filter((a) => a.viewers === 0);
+  get detached(): SessionHandle[] {
+    return this.#sessions.filter((a) => a.viewers === 0);
   }
 
   /**
@@ -222,10 +224,10 @@ export class Window {
    *
    * Shared by spawn and by break-pane, which hands a live agent and its hooks
    * to a new window rather than restarting it. The callbacks close panes and
-   * fire onAgentExit against THIS window, so an agent that changes windows
+   * fire onSessionExit against THIS window, so a session that changes windows
    * must be re-bound or an exit would act on stale ownership.
    */
-  #bind(agent: Session) {
+  #bind(agent: SessionHandle) {
     agent.onOutput = () => {
       for (const p of this.#panes) if (p.session === agent) p.invalidate();
       this.onChange?.();
@@ -242,7 +244,7 @@ export class Window {
       // sidebar as "done" and revealing it again still shows its final output.
       for (const pane of [...this.#panes]) if (pane.session === agent) this.close(pane);
       this.onChange?.();
-      this.onAgentExit?.(agent);
+      this.onSessionExit?.(agent);
       this.#ctx.requestRender();
     };
     agent.onScroll = () => {
@@ -265,11 +267,11 @@ export class Window {
   }
 
   /** Drop a client projection after the daemon has removed its owner. */
-  removeProjectedSession(agent: Session): Effect.Effect<void> {
+  removeProjectedSession(agent: SessionHandle): Effect.Effect<void> {
     return Effect.gen(this, function* () {
       for (const pane of [...this.#panes]) if (pane.session === agent) this.close(pane);
-      const at = this.#agents.indexOf(agent);
-      if (at !== -1) this.#agents.splice(at, 1);
+      const at = this.#sessions.indexOf(agent);
+      if (at !== -1) this.#sessions.splice(at, 1);
       yield* this.#releaseAgent(agent);
     });
   }
@@ -294,7 +296,7 @@ export class Window {
 
   /** Start an agent without opening a view onto it. The name defaults to the
    *  command being run — "zsh", not a generic "shell". */
-  spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Effect.Effect<Session> {
+  spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Effect.Effect<SessionHandle> {
     return this.startSession({ name, cmd, cwd });
   }
 
@@ -305,18 +307,18 @@ export class Window {
    * positional arguments cannot carry — a persisted id, a size, and the fact
    * that this one's process is already over and must not be run again.
    */
-  startSession(opts: SessionOptions): Effect.Effect<Session> {
+  startSession(opts: SessionHandleOptions): Effect.Effect<SessionHandle> {
     return Effect.gen(this, function* () {
       const scope = yield* Scope.make();
       // The window's backend is a default, not an override: restore passes its
       // own per-agent choice, and a tombstone must keep having no backend at all.
       // Spread order is what encodes that — opts wins where it says anything.
-      const agent = yield* Session.make({ backend: this.#backend, ...opts }).pipe(
+      const agent = yield* SessionHandle.make({ backend: this.#backend, ...opts }).pipe(
         Scope.extend(scope),
       );
       this.#scopes.set(agent, scope);
       this.#bind(agent);
-      this.#agents.push(agent);
+      this.#sessions.push(agent);
       this.onChange?.();
       return agent;
     });
@@ -332,10 +334,10 @@ export class Window {
    *
    * Returns the scope to transfer, or null when the agent is not ours.
    */
-  relinquishSession(agent: Session): Scope.CloseableScope | null {
-    const i = this.#agents.indexOf(agent);
+  relinquishSession(agent: SessionHandle): Scope.CloseableScope | null {
+    const i = this.#sessions.indexOf(agent);
     if (i === -1) return null;
-    this.#agents.splice(i, 1);
+    this.#sessions.splice(i, 1);
     const scope = this.#scopes.get(agent) ?? null;
     this.#scopes.delete(agent);
     this.onChange?.();
@@ -348,14 +350,14 @@ export class Window {
    * All preconditions are checked before the layout or ownership maps change,
    * so callers cannot leave a pane detached when its lifetime is unavailable.
    */
-  releasePane(pane: Pane): { agent: Session; scope: Scope.CloseableScope } | null {
+  releasePane(pane: Pane): { agent: SessionHandle; scope: Scope.CloseableScope } | null {
     const agent = pane.session;
-    if (!this.#panes.includes(pane) || !this.#agents.includes(agent)) return null;
+    if (!this.#panes.includes(pane) || !this.#sessions.includes(agent)) return null;
     const scope = this.#scopes.get(agent);
     if (!scope) return null;
     if (this.#slotOf(this.exportLayout(), pane) === -1) return null;
     if (!this.detachPane(pane)) return null;
-    this.#agents.splice(this.#agents.indexOf(agent), 1);
+    this.#sessions.splice(this.#sessions.indexOf(agent), 1);
     this.#scopes.delete(agent);
     this.onChange?.();
     return { agent, scope };
@@ -375,15 +377,15 @@ export class Window {
    * the "is anything still running here" question it asks has to see the answer
    * after this kill, not before.
    */
-  killSession(agent: Session): Effect.Effect<void> {
+  killSession(agent: SessionHandle): Effect.Effect<void> {
     return Effect.gen(this, function* () {
       for (const p of [...this.#panes]) if (p.session === agent) this.close(p);
-      const i = this.#agents.indexOf(agent);
-      if (i !== -1) this.#agents.splice(i, 1);
+      const i = this.#sessions.indexOf(agent);
+      if (i !== -1) this.#sessions.splice(i, 1);
       yield* this.#releaseAgent(agent);
       this.onChange?.();
       this.#ctx.requestRender();
-      this.onAgentExit?.(agent);
+      this.onSessionExit?.(agent);
     });
   }
 
@@ -396,7 +398,7 @@ export class Window {
    * a fallback that quietly does the same work would make a lost scope
    * invisible, and a leaked scope is exactly the bug worth seeing.
    */
-  #releaseAgent(agent: Session): Effect.Effect<void> {
+  #releaseAgent(agent: SessionHandle): Effect.Effect<void> {
     const scope = this.#scopes.get(agent);
     this.#scopes.delete(agent);
     if (scope) return Scope.close(scope, Exit.void);
@@ -462,7 +464,7 @@ export class Window {
    */
   write(bytes: string | Uint8Array) {
     if (this.#state.sync) {
-      const seen = new Set<Session>();
+      const seen = new Set<SessionHandle>();
       for (const pane of this.#panes) {
         if (seen.has(pane.session)) continue;
         seen.add(pane.session);
@@ -486,7 +488,7 @@ export class Window {
    */
   key(event: KeyEvent): boolean {
     if (!this.#state.sync) return this.focused?.handleKey(event) ?? false;
-    const seen = new Set<Session>();
+    const seen = new Set<SessionHandle>();
     let taken = false;
     for (const pane of this.#panes) {
       if (seen.has(pane.session)) continue;
@@ -531,7 +533,7 @@ export class Window {
    * asks: everything else in the window addresses a Pane, so a component leaf
    * tiles, splits and closes without a second path through any of it.
    */
-  #makePane(agent: Session, id = newPaneId()): Pane {
+  #makePane(agent: SessionHandle, id = newPaneId()): Pane {
     const pane =
       agent.kind === "component"
         ? new ComponentPane(this.#ctx, { id, session: agent, view: this.#paneContent ?? undefined })
@@ -552,7 +554,7 @@ export class Window {
   /** Put a pane for an existing agent at the root of an empty window. The
    *  synchronous half of init, and what split falls back to when there is no
    *  pane to split. */
-  mount(agent: Session): Pane {
+  mount(agent: SessionHandle): Pane {
     const id = newPaneId();
     this.#mount(
       makeLayout({ root: { type: "pane", id, agent: agent.id, weight: 1 }, focus: id }),
@@ -902,7 +904,7 @@ export class Window {
    * inserted as a sibling; otherwise the pane is swapped for a nested Box so
    * the tree stays a proper h/v alternation instead of a flat list.
    */
-  split(direction: SplitDirection, agent: Session): Pane | null {
+  split(direction: SplitDirection, agent: SessionHandle): Pane | null {
     const target = this.focused;
     if (!target) return this.mount(agent);
 
@@ -944,7 +946,7 @@ export class Window {
 
   /** Open an existing agent in a new split — the way a detached agent gets a
    *  viewport back. */
-  reveal(agent: Session): Pane | null {
+  reveal(agent: SessionHandle): Pane | null {
     const existing = this.#panes.find((p) => p.session === agent);
     if (existing) {
       this.focus(existing);
@@ -982,13 +984,13 @@ export class Window {
    *  ownership moves, so the agent's hooks are re-pointed here and an exit
    *  closes the pane in the window it now lives in. The caller detaches first,
    *  so the pane arrives unmounted and with no other owner. */
-  adopt(agent: Session, pane: Pane, scope: Scope.CloseableScope) {
+  adopt(agent: SessionHandle, pane: Pane, scope: Scope.CloseableScope) {
     // The newcomer is hung straight off the root rather than projected, so the
     // zoom has to come down first: a zoomed window has its other panes
     // unmounted, and adding a second pane beside the zoomed one would leave
     // them stranded there with no arrangement on screen to rejoin.
     this.#unzoom();
-    this.#agents.push(agent);
+    this.#sessions.push(agent);
     // The scope comes from the window that relinquished it — see the note on
     // #scopes for why it travels rather than being re-forked here. Required,
     // not optional: an agent in a window without a scope is one nothing will
@@ -1001,8 +1003,8 @@ export class Window {
     this.#mount(appendPane(this.#layout, { id: pane.id, agent: agent.id }), null);
   }
 
-  /** Close a pane: take it out of the layout, then destroy the view. The agent
-   *  survives as detached, which is what makes this a close and not a kill. */
+  /** Close a pane and destroy its view. The daemon owns stopping a backend when
+   * this was its last view; a pane projection never owns that decision. */
   close(pane: Pane) {
     if (!this.detachPane(pane)) return;
     pane.destroyRecursively();
@@ -1055,7 +1057,7 @@ export class Window {
    * (a split, a close) has nothing to validate and may legitimately be empty.
    */
   applyLayout(layout: Layout, preset: LayoutPreset | null = null): boolean {
-    const wanted = prune(layout, (id) => this.#agents.some((agent) => agent.id === id));
+    const wanted = prune(layout, (id) => this.#sessions.some((agent) => agent.id === id));
     // Placed nothing, in either plane. A window whose tiled tree is empty but
     // which still has a float is not a layout that pruned away to nothing — it
     // is a window showing a float over bare ground, which is a real state.
@@ -1094,7 +1096,7 @@ export class Window {
    * window, still in `#panes`, still fed by the sync fan-out — just not shown.
    */
   #mount(wanted: Layout, preset: LayoutPreset | null): Pane[] {
-    const byId = new Map(this.#agents.map((agent) => [agent.id, agent]));
+    const byId = new Map(this.#sessions.map((agent) => [agent.id, agent]));
     // An arbitrary layout matches no preset, so that is the default. A caller
     // that knows better says so: select-layout builds its arrangement FROM a
     // preset, and swapping two panes inside one leaves it that preset.
@@ -1304,8 +1306,8 @@ export class Window {
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
       for (const pane of [...this.#panes]) this.close(pane);
-      for (const agent of [...this.#agents]) yield* this.#releaseAgent(agent);
-      this.#agents.length = 0;
+      for (const agent of [...this.#sessions]) yield* this.#releaseAgent(agent);
+      this.#sessions.length = 0;
     });
   }
 }

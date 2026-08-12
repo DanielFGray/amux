@@ -8,7 +8,7 @@ import type { Options, OptionName, OptionValue } from "../options.ts";
  * A single row of display data for the sidebar tree.
  *
  * Carries only plain values derived from the app's live projections; a plugin
-  * never references Space, Window, Session, TerminalPane, or any FFI handle.
+ * never references Space, Window, SessionHandle, TerminalPane, or any FFI handle.
  */
 export interface SidebarDisplayRow {
   readonly kind: "space" | "branch" | "window" | "agent";
@@ -46,8 +46,8 @@ export interface SidebarDisplay {
  * The read-model projection a panel receives: plain data, no live domain objects.
  *
  * Every field is derived from the daemon-owned workspace and the client's option
-  * store, so a panel never holds a reference to SpaceSet, Space, Window, Session,
-  * TerminalPane, or any FFI handle. The snapshot carries `PersistedSession`,
+ * store, so a panel never holds a reference to SpaceSet, Space, Window, SessionHandle,
+ * TerminalPane, or any FFI handle. The snapshot carries `PersistedSession`,
  * `Layout`, `WindowState`, and `SpaceSetState` — the full authoritative
  * immutable model the daemon and the control socket already speak.
  */
@@ -69,6 +69,11 @@ export interface PanelContext {
   /** Set an option value. Clamping and delta storage are the option table's job;
    *  this just routes the change into the app's config state. */
   readonly setOption: (name: OptionName, value: OptionValue) => void;
+  /** Write the option store to the config file. Separate from `setOption`
+   *  because a drag changes an option many times a second and a settings window
+   *  has a save key; a panel that commits a choice calls both. Failure is
+   *  reported to the user, not returned. */
+  readonly saveOptions: () => void;
   /** Value-only display data derived from live projections, recomputed on poll. */
   readonly display: Accessor<SidebarDisplay>;
   /** User-visible command error callback. */
@@ -79,27 +84,17 @@ export interface PanelContext {
   readonly setSelectedAgentId: (id: string | null) => void;
 }
 
-/** Make the panel context from app-owned signals so it carries no domain objects. */
-export function createPanelContext(
-  snapshot: Accessor<WorkspaceSnapshot>,
-  tick: Accessor<number>,
-  run: (command: Command, input?: string) => Effect.Effect<WorkspaceSnapshot, CommandError>,
-  options: Accessor<Options>,
-  setOption: (name: OptionName, value: OptionValue) => void,
-  display: Accessor<SidebarDisplay>,
-  reportError: (message: string) => void,
-  selectedAgentId: Accessor<string | null>,
-  setSelectedAgentId: (id: string | null) => void,
-): PanelContext {
+/**
+ * Make the panel context from app-owned signals so it carries no domain objects.
+ *
+ * Named rather than positional: half of these are bare callbacks of the same
+ * shape, and a transposed pair of them type-checks.
+ */
+export function createPanelContext(app: PanelContext): PanelContext {
   return {
-    snapshot: () => structuredClone(snapshot()),
-    tick,
-    run,
-    options: () => ({ ...options() }),
-    setOption,
-    display: () => structuredClone(display()),
-    reportError,
-    selectedAgentId,
-    setSelectedAgentId,
+    ...app,
+    snapshot: () => structuredClone(app.snapshot()),
+    options: () => ({ ...app.options() }),
+    display: () => structuredClone(app.display()),
   };
 }

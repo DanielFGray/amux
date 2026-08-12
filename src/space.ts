@@ -1,7 +1,7 @@
 import { BoxRenderable, type RenderContext } from "@opentui/core";
 import { Context, Effect, Exit, Scope } from "effect";
 import { Window } from "./window.ts";
-import type { Session } from "./agent.ts";
+import type { SessionHandle } from "./session-handle.ts";
 import { AgentState } from "./agent-state.ts";
 import type { Pane } from "./pane.ts";
 import { RenderCtx, type WorkspaceEnv } from "./env.ts";
@@ -59,7 +59,7 @@ export class Space {
   #state: SpaceState = spaceState();
 
   onChange?: () => void;
-  onAgentExit?: (session: Session, window: Window, space: Space) => void;
+  onSessionExit?: (session: SessionHandle, window: Window, space: Space) => void;
   onCopy?: (text: string) => boolean | void;
   onCopyError?: (error: Error) => void;
 
@@ -94,20 +94,18 @@ export class Space {
   }
 
   /** Every agent across every window in this space. */
-  get agents(): Session[] {
-    return this.#windows.flatMap((w) => [...w.agents]);
+  get sessions(): SessionHandle[] {
+    return this.#windows.flatMap((w) => [...w.sessions]);
   }
 
   /**
    * The space's state icon is the most urgent state among its agents: an agent
    * waiting on you matters more than one that is merely busy, which matters
-   * more than an idle prompt. A detached agent is surfaced above idle because
-   * the UI cannot know whether it is waiting or still working without an
-   * attachment. "done" is last, so a space with one live idle agent and one
+   * more than an idle prompt. "done" is last, so a space with one live idle agent and one
    * finished agent reads as idle, not finished.
    */
   get state(): AgentState {
-    return rollUp(this.agents);
+    return rollUp(this.sessions);
   }
 
   /**
@@ -127,7 +125,7 @@ export class Space {
       this.#scopes.set(window, scope);
       if (name) window.customName = name;
       window.onChange = () => this.onChange?.();
-      window.onAgentExit = (agent) => this.onAgentExit?.(agent, window, this);
+      window.onSessionExit = (agent) => this.onSessionExit?.(agent, window, this);
       window.onCopy = this.onCopy;
       window.onCopyError = this.onCopyError;
       this.#windows.push(window);
@@ -185,7 +183,7 @@ export class Space {
    * PTY, its terminal, its scrollback and its title. Only ownership changes,
    * which is why the agent's lifecycle hooks are re-pointed at the destination
    * window — an exit must close the pane in the window it now lives in and
-   * fire that window's onAgentExit, or the app-level cascade would act on
+   * fire that window's onSessionExit, or the app-level cascade would act on
    * stale ownership.
    *
    * The source window collapses to its remaining panes (the same tree surgery
@@ -213,7 +211,7 @@ export class Space {
       const window = yield* this.newWindow();
       window.adopt(handoff.agent, pane, handoff.scope);
 
-      if (source.panes.length === 0 && !source.agents.some((a) => a.state !== AgentState.Done)) {
+      if (source.panes.length === 0 && !source.sessions.some((a) => a.state !== AgentState.Done)) {
         yield* this.closeWindow(source);
       }
       return window;
@@ -234,7 +232,10 @@ export class Space {
       const handoff = source.releasePane(pane);
       if (!handoff) return null;
       destination.adopt(handoff.agent, pane, handoff.scope);
-      if (source.panes.length === 0 && !source.agents.some((agent) => agent.state !== AgentState.Done)) {
+      if (
+        source.panes.length === 0 &&
+        !source.sessions.some((agent) => agent.state !== AgentState.Done)
+      ) {
         yield* this.closeWindow(source);
       }
       this.selectWindow(destination);
@@ -298,7 +299,7 @@ export class Space {
 }
 
 /** Ranked by how much it wants your attention. Shared by spaces and windows. */
-export function rollUp(agents: readonly Session[]): AgentState {
+export function rollUp(agents: readonly SessionHandle[]): AgentState {
   const RANK: Record<AgentState, number> = {
     [AgentState.Blocked]: 4,
     [AgentState.Working]: 3,
@@ -327,7 +328,10 @@ export function rollUp(agents: readonly Session[]): AgentState {
  *
  * Returns null when no agent is blocked.
  */
-export function nextBlockedAfter(order: readonly Session[], from: Session | null): Session | null {
+export function nextBlockedAfter(
+  order: readonly SessionHandle[],
+  from: SessionHandle | null,
+): SessionHandle | null {
   const n = order.length;
   if (!n) return null;
   const start = from ? order.indexOf(from) + 1 : 0;
@@ -353,7 +357,7 @@ export class SpaceSet {
   #state: SpaceSetState = spaceSetState();
   #mounted: Window | null = null;
   onChange?: () => void;
-  onAgentExit?: (session: Session, window: Window, space: Space) => void;
+  onSessionExit?: (session: SessionHandle, window: Window, space: Space) => void;
   onCopy?: (text: string) => boolean | void;
   onCopyError?: (error: Error) => void;
 
@@ -390,8 +394,8 @@ export class SpaceSet {
   }
 
   /** Every agent across every space — what a global "N agents" count means. */
-  get allAgents(): Session[] {
-    return this.#spaces.flatMap((s) => s.agents);
+  get allSessions(): SessionHandle[] {
+    return this.#spaces.flatMap((s) => s.sessions);
   }
 
   create(name: string, dir = process.cwd(), id?: string): Effect.Effect<Space> {
@@ -403,7 +407,7 @@ export class SpaceSet {
         if (space === this.active) this.#project();
         this.onChange?.();
       };
-      space.onAgentExit = (agent, window) => this.onAgentExit?.(agent, window, space);
+      space.onSessionExit = (agent, window) => this.onSessionExit?.(agent, window, space);
       space.onCopy = this.onCopy;
       space.onCopyError = this.onCopyError;
       this.#spaces.push(space);
@@ -443,8 +447,8 @@ export class SpaceSet {
     this.activate(this.#spaces[(i + step + this.#spaces.length) % this.#spaces.length]!);
   }
 
-  find(session: Session): Space | null {
-    return this.#spaces.find((s) => s.agents.includes(session)) ?? null;
+  find(session: SessionHandle): Space | null {
+    return this.#spaces.find((s) => s.sessions.includes(session)) ?? null;
   }
 
   /**
@@ -459,11 +463,13 @@ export class SpaceSet {
    * focused) even when no pane shows it. Returns the agent, or null when
    * nothing is blocked.
    */
-  nextBlocked(from: Session | null = this.activeWindow?.focused?.session ?? null): Session | null {
-    const target = nextBlockedAfter(this.allAgents, from);
+  nextBlocked(
+    from: SessionHandle | null = this.activeWindow?.focused?.session ?? null,
+  ): SessionHandle | null {
+    const target = nextBlockedAfter(this.allSessions, from);
     if (!target) return null;
     const space = this.find(target);
-    const window = space?.windows.find((w) => w.agents.includes(target));
+    const window = space?.windows.find((w) => w.sessions.includes(target));
     if (!space || !window) return null;
     this.activate(space);
     space.selectWindow(window);
@@ -603,12 +609,12 @@ const projectWindow = Effect.fnUntraced(function* (
   source: WorkspaceWindow,
   backend: SessionBackendFactory,
 ) {
-  for (const agent of [...window.agents]) {
+  for (const agent of [...window.sessions]) {
     if (!source.agents.some((candidate) => candidate.id === agent.id))
       yield* window.removeProjectedSession(agent);
   }
   for (const saved of source.agents) {
-    if (window.agents.some((candidate) => candidate.id === saved.id)) continue;
+    if (window.sessions.some((candidate) => candidate.id === saved.id)) continue;
     yield* window.startSession({
       id: saved.id,
       name: saved.name,

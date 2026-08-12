@@ -130,8 +130,6 @@ export interface WorkspaceCommandContext {
 }
 
 /** The agent amux runs itself, as opposed to a foreign CLI in a shell pane. */
-export const NATIVE_AGENT = "native";
-
 const NonEmptyString = S.String.pipe(S.minLength(1));
 const PositiveInt = S.Int.pipe(S.greaterThan(0));
 const TerminalDimension = S.Int.pipe(S.greaterThan(0), S.lessThanOrEqualTo(MAX_TERMINAL_DIMENSION));
@@ -515,9 +513,9 @@ export function applyWorkspaceCommand(
   const window = () => findWindow(next, command as { space?: string; window?: number });
   const activeWindow = () =>
     context.agent
-      ? [...workspaceWindows(next)].find((entry) =>
+      ? ([...workspaceWindows(next)].find((entry) =>
           entry.window.agents.some((agent) => agent.id === context.agent),
-        ) ?? null
+        ) ?? null)
       : findWindow(next, {});
   const setFocus = (target: WorkspaceWindow, id: string | undefined) => {
     if (!id || target.state.focus === id) return;
@@ -527,18 +525,18 @@ export function applyWorkspaceCommand(
     target.layout = makeLayout({ ...target.layout, focus: id });
   };
   const addAgent = (target: WorkspaceWindow, dir: string): PersistedSession => {
-    const native = command._tag === "agent.new";
+    const component = command._tag === "agent.new";
+    if (component && (!command.harness || !command.cmd))
+      throw new Error("agent.new must be resolved by a harness provider");
     const agent: PersistedSession = {
       id: newAgentId(),
-      name: native ? "native-agent" : commandName(context.shell),
-      cmd: native
-        ? [process.execPath, new URL("./agent/native-worker.ts", import.meta.url).pathname]
-        : [...context.shell],
+      name: component ? `${command.harness!}-agent` : commandName(context.shell),
+      cmd: component ? [...command.cmd!] : [...context.shell],
       cwd: dir,
       // Both axes: the worker's content is frames a component draws, and it is
       // an agent. A shell pane is neither, even when the user starts an agent
       // in it — that one is detected from its foreground process instead.
-      ...(native ? { kind: "component" as const, agent: NATIVE_AGENT } : {}),
+      ...(component ? { kind: "component" as const, agent: command.harness! } : {}),
       cols: Math.max(1, context.size.cols),
       rows: Math.max(1, context.size.rows),
       exited: false,
@@ -546,7 +544,7 @@ export function applyWorkspaceCommand(
     };
     target.agents.push(agent);
     actions.push({ _tag: "spawn", agent });
-    if (native && command.prompt)
+    if (component && command.prompt)
       actions.push({ _tag: "steer", agent: agent.id, message: command.prompt });
     return agent;
   };
@@ -578,12 +576,17 @@ export function applyWorkspaceCommand(
 
   switch (command._tag) {
     case "agent.steer": {
-      if (command.session) actions.push({ _tag: "steer", agent: command.session, message: command.message });
+      if (command.session)
+        actions.push({ _tag: "steer", agent: command.session, message: command.message });
       break;
     }
     case "agent.interrupt": {
       if (command.session)
-        actions.push({ _tag: "interrupt", agent: command.session, ...(command.reason ? { reason: command.reason } : {}) });
+        actions.push({
+          _tag: "interrupt",
+          agent: command.session,
+          ...(command.reason ? { reason: command.reason } : {}),
+        });
       break;
     }
     case "agent.new": {
@@ -1146,34 +1149,27 @@ function closePane(window: WorkspaceWindow, id: string): void {
   window.state.preset = null;
 }
 
-/** When a pane leaves a window without its agent dying, the window may become
- *  empty. A window with no panes has no focus and silently swallows keyboard
- *  input — so either reveal a surviving live agent or close the window. A
- *  window down to one float is not empty: it still places a pane, and that pane
- *  still takes the keyboard. */
+/** Keep the model honest when a pane leaves its window.
+ *
+ * A backend has a viewport or it is gone. There is no detached backend state:
+ * closing the last pane that names one stops it and removes it from the model.
+ * Move and break operations transfer the pane before this runs, so their
+ * backends remain referenced and survive normally.
+ */
 function afterPaneRemoved(
   workspace: WorkspaceSnapshot,
   space: WorkspaceSpace,
   window: WorkspaceWindow,
   actions: WorkspaceAction[],
 ): void {
-  if (layoutRefs(window.layout).length > 0) return;
-  const live = window.agents.find((agent) => !agent.exited);
-  if (live) {
-    const used = new Set(
-      workspace.spaces.flatMap((s) =>
-        s.windows.flatMap((w) => layoutRefs(w.layout).map((pane) => pane.id)),
-      ),
-    );
-    const pane = allocateId("pane", used);
-    window.layout = makeLayout({
-      root: { type: "pane", id: pane, agent: live.id, weight: 1 },
-      focus: pane,
-    });
-    window.state.focus = pane;
-  } else {
-    removeWindow(workspace, space, window, actions);
+  const referenced = new Set(layoutRefs(window.layout).map((pane) => pane.agent));
+  const removed = window.agents.filter((agent) => !referenced.has(agent.id));
+  for (const agent of removed) {
+    if (!agent.exited) actions.push({ _tag: "kill", agent: agent.id });
   }
+  if (removed.length > 0) window.agents = window.agents.filter((agent) => referenced.has(agent.id));
+  if (layoutRefs(window.layout).length > 0) return;
+  removeWindow(workspace, space, window, actions);
 }
 
 function normalizeWindowState(window: WorkspaceWindow): void {

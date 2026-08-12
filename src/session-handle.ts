@@ -1,6 +1,11 @@
 import { Clock, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { Terminal, RenderState } from "./ghostty.ts";
-import { localPty, exitedBackend, type SessionBackend, type SessionBackendFactory } from "./backend.ts";
+import {
+  localPty,
+  exitedBackend,
+  type SessionBackend,
+  type SessionBackendFactory,
+} from "./backend.ts";
 import { scrollViewport, ScrollTo } from "./shim.ts";
 import { splitActivity, looksBlocked, identifyAgent, commandName } from "./detect.ts";
 import { AgentState } from "./agent-state.ts";
@@ -20,7 +25,7 @@ const BLOCKED_SCAN_ROWS = 20;
  *  agent is a human-paced event. */
 const AGENT_POLL_MS = 500;
 
-export interface SessionOptions {
+export interface SessionHandleOptions {
   /** What draws this session: a terminal grid, or a component fed by semantic
    *  worker frames. Omitted means a pty. */
   kind?: "pty" | "component";
@@ -65,18 +70,25 @@ function reserveAgentId(id: string) {
 }
 
 /**
- * A running process and its terminal state.
+ * The client's handle on one daemon-owned session: a running process and its
+ * terminal state.
  *
- * Agents are the real entities: they own the emulator and the process behind
+ * Sessions are the real entities: they own the emulator and the process behind
  * it, they keep running whether or not anything is displaying them, and they
  * outlive the panes that view them. A TerminalPane is only a viewport.
  *
- * "The process behind it" is an AgentBackend rather than a PTY directly — see
- * backend.ts. A local PTY is the default and the only one the UI creates today;
- * the seam is what lets a daemon-owned PTY and a restored tombstone be the same
- * kind of thing to everything above.
+ * A handle rather than a Session because the session itself is the daemon's —
+ * `id` is the id the attach socket speaks, `PersistedSession` in session.ts is
+ * the same session written down, and this is what the client holds while it is
+ * running. Nothing here is authoritative; closing it loses a view, not a process.
+ *
+ * "The process behind it" is a SessionBackend rather than a PTY directly — see
+ * backend.ts, which owns the word *backend* for where the bytes come from. A
+ * local PTY is the default and the only one the UI creates today; the seam is
+ * what lets a daemon-owned PTY and a restored tombstone be the same kind of
+ * thing to everything above.
  */
-export class Session {
+export class SessionHandle {
   readonly id: string;
   readonly kind: "pty" | "component";
   readonly name: string;
@@ -119,13 +131,13 @@ export class Session {
   #disposed = false;
 
   /** Bumped whenever output arrives, so views can invalidate caches. */
-  onOutput?: (agent: Session) => void;
-  onExit?: (agent: Session) => void;
+  onOutput?: (session: SessionHandle) => void;
+  onExit?: (session: SessionHandle) => void;
   /** Fired when scrolled state changes (scrollback entered or exited), so the
    *  sidebar's ▲ indicator stays accurate. */
-  onScroll?: (agent: Session) => void;
+  onScroll?: (session: SessionHandle) => void;
 
-  constructor(opts: SessionOptions) {
+  constructor(opts: SessionHandleOptions) {
     this.id = opts.id ?? `agent-${nextAgentId++}`;
     this.kind = opts.kind ?? "pty";
     if (opts.id) reserveAgentId(opts.id);
@@ -180,9 +192,9 @@ export class Session {
    * The lifetime-correct way to make one. `new Agent` still works and still
    * needs dispose(); this is what the call sites become as they convert.
    */
-  static make(opts: SessionOptions): Effect.Effect<Session, never, Scope.Scope> {
+  static make(opts: SessionHandleOptions): Effect.Effect<SessionHandle, never, Scope.Scope> {
     return Effect.acquireRelease(
-      Effect.sync(() => new Session(opts)),
+      Effect.sync(() => new SessionHandle(opts)),
       (agent) => agent.release(),
     );
   }

@@ -18,35 +18,15 @@ import { resolveOptions } from "../../options.ts";
 import { workspaceEnv } from "../../env.ts";
 import type { WorkspaceSnapshot } from "../../workspace.ts";
 import { createPluginHost, type PluginHost } from "../../plugin/host.ts";
+import { testPluginEnvironment } from "../test-environment.ts";
+import { testPanelContext } from "../../ui/test-panel.ts";
 import { testEffect } from "../../test-effect.ts";
 
 const WIDTH = 60;
 const HEIGHT = 20;
 
-function emptySnapshot(revision = 0): WorkspaceSnapshot {
-  return { revision, spaces: [], state: { activeSpace: null } };
-}
-
-function emptyDisplay(): SidebarDisplay {
-  return { rows: [], spaceCount: 0, agentCount: 0, blockedCount: 0 };
-}
-
-function makePanelContext(displayAccessor: () => SidebarDisplay): PanelContext {
-  const [snapshot] = createSignal<WorkspaceSnapshot>(emptySnapshot());
-  const [tick] = createSignal(0);
-  const [opts] = createSignal(resolveOptions({}));
-  const [selected] = createSignal<string | null>(null);
-  return createPanelContext(
-    snapshot,
-    tick,
-    () => Effect.succeed(emptySnapshot()),
-    opts,
-    () => {},
-    displayAccessor,
-    (_msg: string) => {},
-    selected,
-    () => {},
-  );
+function makePanelContext(display: () => SidebarDisplay): PanelContext {
+  return testPanelContext({ display });
 }
 
 function computeDisplay(spaces: SpaceSet): SidebarDisplay {
@@ -91,7 +71,7 @@ function computeDisplay(spaces: SpaceSet): SidebarDisplay {
         windowLabel: window.label,
       });
 
-      for (const agent of window.agents) {
+      for (const agent of window.sessions) {
         const isFocusedAgent = isActiveWindow && agent === focusedAgent;
         rows.push({
           kind: "agent",
@@ -116,7 +96,7 @@ function computeDisplay(spaces: SpaceSet): SidebarDisplay {
     }
   }
 
-  const allAgents = spaces.allAgents.filter((a) => !a.exited);
+  const allAgents = spaces.allSessions.filter((a) => !a.exited);
   const blocked = allAgents.filter((a) => a.state === "blocked").length;
 
   return {
@@ -152,7 +132,9 @@ async function setup(options?: { width?: number; height?: number }) {
   const panelCtx = makePanelContext(displaySignal);
   const host: PluginHost = Effect.runSync(
     Scope.extend(
-      createPluginHost(panelCtx, regions).pipe(Effect.provideService(Scope.Scope, scope)),
+      createPluginHost(testPluginEnvironment({ panel: panelCtx, regions })).pipe(
+        Effect.provideService(Scope.Scope, scope),
+      ),
       scope,
     ),
   );

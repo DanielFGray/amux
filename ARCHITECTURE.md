@@ -62,20 +62,37 @@ requires a worker process nor gives one an easier path.
 framed-protocol child_, not _our loop_: a third-party harness is the same kind.
 The pane host is not pluggable — panes are the product.
 
-The tree does not satisfy this yet, and the deviations are tracked rather than
-tolerated: `workspace.ts` hardcodes the built-in worker's entry path so no other
-harness can be spawned (`ts-ade8f7`); `main.tsx` provides the integration,
-credential and model-catalog layers globally; and `app.tsx` registers the
-transcript panel through the privileged path, handing it the live session
-object. Do not add consumers to any of those. The boundary and the conversion
-order are recorded in `ts-8305f4`.
+The harness is a plugin now: `plugin/builtin/agent-harness.tsx` registers the
+`agent.new` binding, contributes the `native` pane view, owns the model picker,
+and builds its own credential and model-catalog layers, so core hands it
+nothing. `agent.new` carries the command to spawn, which is what makes a
+competing harness possible — core no longer names an entry point.
 
-Surviving vocabulary (the attach protocol was renamed off `agent`): a
-_session_ is a daemon-owned backend instance — a supervised PTY today, an LLM
-coding-agent session later — and every attach-frame field named `session`
-identifies one; a _pane_ is a view of a session in a layout; _agent_ means an
-LLM coding agent, never the supervised PTY. Session lifecycle commands use the
-`session.*` namespace; `agent.*` is reserved for LLM interaction.
+The model picker is the worked example of a plugin owning a modal. It is an
+ordinary overlay panel with its own `visible` and `keys`, registered through
+`registerPanel` like any other, and it reads and writes `agent.model` through
+the panel context. Nothing in core mentions a model. The settings window reaches
+it without knowing what it is: an option whose value is chosen from a list
+cannot be edited with ←/→, so enter on that row dispatches the command with the
+option's own name, and whoever owns the option registers it.
+
+One deviation is left, and it is tracked rather than tolerated: `main.tsx` still
+provides the integration and credential layers globally, because the settings
+auth tab is still core UI for what is a plugin's concern (`ts-e70401`). Do not
+add consumers to those layers. The boundary is recorded in `ts-8305f4`.
+
+Vocabulary. A _session_ is a daemon-owned backend instance — a supervised PTY
+today, an LLM coding-agent session later — and every attach-frame field named
+`session` identifies one. The client's live handle on one is a `SessionHandle`
+(`session-handle.ts`): the terminal, the process and the state projection, keyed
+by the same id the attach socket speaks. It is a handle rather than a `Session`
+because the session is the daemon's — `session.ts` holds the persisted record of
+the same thing, and closing a handle loses a view, not a process. _Backend_
+belongs to `backend.ts` and means where a session's bytes come from, which is
+why the handle is not called that. A _pane_ is a view of a session in a layout;
+_agent_ means an LLM coding agent, never the supervised PTY. Session lifecycle
+commands use the `session.*` namespace; `agent.*` is reserved for LLM
+interaction.
 
 The daemon migration uses Effect at the ownership boundary. `SessionRegistry.ts`
 owns scoped backend acquisition and release, `AttachProtocol.ts` and

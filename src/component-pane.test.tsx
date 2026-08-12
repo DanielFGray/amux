@@ -7,6 +7,7 @@ import { workspaceEnv } from "./env.ts";
 import { frame } from "./window.ts";
 import { computeRects } from "./geometry.ts";
 import { ComponentPane, type PaneView } from "./component-pane.tsx";
+import { createSessionViews } from "./plugin/session-views.tsx";
 import { TerminalPane, type Pane } from "./pane.ts";
 import type { KeyEvent } from "@opentui/core";
 
@@ -37,7 +38,7 @@ const draw = async (t: { renderOnce: () => Promise<void> }) => {
 
 /** A view that names the session it was given, so a check can tell mounted
  *  content from an empty frame and can tell the two panes apart. */
-const label: PaneView = (props) => <text>view:{props.session.name}</text>;
+const label: PaneView = (props) => <text>view:{props.sessionId}</text>;
 
 /** `null` registers no view at all — the default parameter would swallow an
  *  `undefined` and quietly test the opposite of what that case is about. */
@@ -87,7 +88,7 @@ test("the registered view is mounted inside the pane's border", async () => {
   // Row 0 is the pane's own top border, so the view starts on row 1, one column
   // in from the left border.
   expect(rows[0]!.startsWith("┌")).toBe(true);
-  expect(rows[1]!.slice(1)).toStartWith("view:chat");
+  expect(rows[1]!.slice(1)).toStartWith(`view:${chat.id}`);
 });
 
 test("a workspace that registered no view draws the frame and nothing in it", async () => {
@@ -99,6 +100,23 @@ test("a workspace that registered no view draws the frame and nothing in it", as
   const rows = t.captureCharFrame().split("\n");
   expect(rows[0]!.startsWith("┌")).toBe(true);
   expect(rows[1]).not.toContain("view:");
+});
+
+test("a mounted component pane reacts when its harness view is registered and removed", async () => {
+  const views = createSessionViews();
+  const { t, win } = await workspace(views.view);
+  const chat = run(win.startSession(componentSession("chat")));
+  win.mount(chat);
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("Pane type 'native' is unavailable.");
+
+  const dispose = views.register("native", () => <text>native harness</text>);
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("native harness");
+
+  dispose();
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("Pane type 'native' is unavailable.");
 });
 
 test("a component leaf tiles as the exact rectangle the layout model says", async () => {
@@ -163,7 +181,7 @@ test("a component leaf survives a rebuild rather than being remounted", async ()
 
   expect(win.panes).toContain(chatPane);
   expect(chatPane.isDestroyed).toBe(false);
-  expect(t.captureCharFrame()).toContain("view:chat");
+  expect(t.captureCharFrame()).toContain(`view:${chat.id}`);
 });
 
 test("closing a component leaf disposes its subtree", async () => {
@@ -171,12 +189,12 @@ test("closing a component leaf disposes its subtree", async () => {
   const chat = run(win.startSession(componentSession("chat")));
   const pane = win.mount(chat);
   await draw(t);
-  expect(t.captureCharFrame()).toContain("view:chat");
+  expect(t.captureCharFrame()).toContain(`view:${chat.id}`);
 
   pane.destroyRecursively();
   await draw(t);
 
-  expect(t.captureCharFrame()).not.toContain("view:chat");
+  expect(t.captureCharFrame()).not.toContain(`view:${chat.id}`);
 });
 
 /** Enough of a keystroke for the encoder: the raw bytes the outer terminal

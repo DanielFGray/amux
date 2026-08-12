@@ -1,6 +1,9 @@
-import type { Effect, Scope } from "effect";
+import type { Effect, Scope, Stream } from "effect";
 import type { PanelContext } from "../ui/panel.ts";
 import type { Panel } from "../ui/regions.tsx";
+import type { PaneView } from "../component-pane.tsx";
+import type { AttachFrame } from "../effect/AttachProtocol.ts";
+import type { CommandSpec } from "../bindings.ts";
 
 export interface PluginDefinition<R = Scope.Scope> {
   readonly id: string;
@@ -13,6 +16,10 @@ export interface PluginHostContext {
   readonly panel: PanelContext;
   readonly kv: PluginKV;
   readonly registerPanel: (panel: Panel) => () => void;
+  readonly registerPaneType: (type: string, view: PaneView) => () => void;
+  readonly registerBinding: (binding: CommandSpec) => () => void;
+  readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
+  readonly sync: (session: string) => void;
 }
 
 export interface PluginKV {

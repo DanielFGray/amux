@@ -25,7 +25,7 @@ beforeAll(async () => {
     "agent.new to reach its preflight",
   );
   screen = app.screen();
-});
+}, E2E_TIMEOUT);
 
 afterAll(async () => {
   await app?.stop();

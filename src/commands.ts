@@ -177,7 +177,7 @@ const PaneClose = define(
   "pane.close",
   {},
   {
-    desc: "close the focused pane, leaving its agent running",
+    desc: "close the focused pane and stop its backend if it has no other view",
     group: "panes",
     target: "workspace",
     exposure: "agent",
@@ -404,8 +404,12 @@ const Notify = define(
  *  anything, and the pane's own composer is the normal way to give it work. */
 const AgentNew = define(
   "agent.new",
-  { prompt: S.optional(S.String) },
-  { desc: "start a native coding agent", group: "agents", target: "workspace", exposure: "human" },
+  {
+    harness: S.optional(S.String.pipe(S.minLength(1))),
+    cmd: S.optional(S.Array(S.String.pipe(S.minLength(1))).pipe(S.minItems(1))),
+    prompt: S.optional(S.String),
+  },
+  { desc: "start a coding agent", group: "agents", target: "workspace", exposure: "human" },
 );
 const SessionRestart = define("session.restart", SessionTarget, {
   desc: "restart an exited session",

@@ -7,7 +7,7 @@ import {
 } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
-import { Effect, Either, Exit, FiberMap, Redacted, Scope, Stream } from "effect";
+import { Effect, Exit, FiberMap, Redacted, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
 import { basename, dirname, join } from "node:path";
 import { writeFile } from "node:fs/promises";
@@ -84,17 +84,13 @@ import { captureSpan, pickCaptureTarget, type CaptureSpan, type CaptureTarget } 
 import { Capture, type CaptureView } from "./ui/Capture.tsx";
 import { BufferChoose, type BufferChooseView } from "./ui/BufferChoose.tsx";
 import { KeybindPicker, sortKeybindEntries, type KeybindPickerView } from "./ui/KeybindPicker.tsx";
-import { Chat } from "./ui/Chat.tsx";
-import type { PaneView } from "./component-pane.tsx";
 import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 import type { Interface as IntegrationService, Info as IntegrationInfo } from "./integration.ts";
 import { Credential } from "./credential.ts";
-import { ModelCatalog, type Provider } from "./model-catalog.ts";
-import { ModelPicker, type ModelPickerEntry, type ModelPickerView } from "./ui/ModelPicker.tsx";
-import { agentPreflight } from "./agent-preflight.ts";
+import { createSessionViews } from "./plugin/session-views.tsx";
 
 export interface AppOptions {
   readonly renderer: CliRenderer;
@@ -110,7 +106,6 @@ export interface AppOptions {
   readonly quit: () => void;
   readonly integrations?: IntegrationService;
   readonly credentials?: Credential.Interface;
-  readonly modelCatalog?: ModelCatalog.Interface;
 }
 
 export interface AppHandle {
@@ -125,8 +120,7 @@ export interface AppHandle {
 
 interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly release: Effect.Effect<void>;
-  /** What a component pane mounts. See the note where createApp installs it. */
-  readonly chatPane: PaneView;
+  readonly registerBinding: (binding: CommandSpec) => () => void;
 }
 
 /** A synchronous launcher captured from the app's scoped FiberMap. */
@@ -161,12 +155,12 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     // whichever one the app installs, the same deferred wiring as
     // window.onModelFocus, which is likewise attached after projection rather
     // than at construction.
-    let chat: PaneView | null = null;
+    const sessionViews = createSessionViews();
     const spaces = yield* SpaceSet.make(
       workspaceEnv(options.renderer, {
         shell: initialShell,
         backend: options.session.backend(),
-        paneContent: (props) => chat?.(props) ?? null,
+        paneContent: sessionViews.view,
       }),
       options.paneHost,
     );
@@ -175,8 +169,14 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber, regions)),
       (app) => app.release,
     );
-    chat = app.chatPane;
-    const pluginHost = yield* createPluginHost(app.panel, regions);
+    const pluginHost = yield* createPluginHost({
+      panel: app.panel,
+      regions,
+      sessionViews,
+      registerBinding: app.registerBinding,
+      frames: (id) => options.session.attach.stream(id),
+      sync: (id) => options.session.attach.sync(id),
+    });
     yield* loadPluginsFromConfig(
       options.config,
       pluginHost,
@@ -249,7 +249,7 @@ export function runModelProjections<A>(
 }
 
 function buildApp(
-  { renderer, paneHost, config, session, quit, integrations, credentials, modelCatalog }: AppOptions,
+  { renderer, paneHost, config, session, quit, integrations, credentials }: AppOptions,
   spaces: SpaceSet,
   fiberScope: Scope.CloseableScope,
   runFiber: AppFiberRunner,
@@ -365,7 +365,7 @@ function buildApp(
       resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash",
     ],
     cwd: spaces.active?.dir ?? process.cwd(),
-    blockedAgents: spaces.allAgents
+    blockedAgents: spaces.allSessions
       .filter((agent) => agent.state === AgentState.Blocked)
       .map((agent) => agent.id),
   });
@@ -428,7 +428,6 @@ function buildApp(
   const [capturing, setCapturing] = createSignal(false);
   const [conflicts, setConflicts] = createSignal<Conflict[]>([]);
   const [keybindPicker, setKeybindPicker] = createSignal<KeybindPickerView | null>(null);
-  const [modelPicker, setModelPicker] = createSignal<ModelPickerView | null>(null);
   const [paletteQuery, setPaletteQuery] = createSignal("");
   const [paletteSelected, setPaletteSelected] = createSignal(0);
   /** The keybind tab's scroll container, so ↑↓ can drive a list that is much
@@ -445,9 +444,11 @@ function buildApp(
 
   const refreshIntegrations = () => {
     if (!integrations) return;
-    void Effect.runPromise(integrations.list()).then(setIntegrationInfo).catch((error) => {
-      setSettingsError(errorMessage(error));
-    });
+    void Effect.runPromise(integrations.list())
+      .then(setIntegrationInfo)
+      .catch((error) => {
+        setSettingsError(errorMessage(error));
+      });
   };
   refreshIntegrations();
 
@@ -494,7 +495,7 @@ function buildApp(
           windowLabel: window.label,
         });
 
-        for (const agent of window.agents) {
+        for (const agent of window.sessions) {
           const isFocusedAgent = isActiveWindow && agent === focusedAgent;
           rows.push({
             kind: "agent",
@@ -519,7 +520,7 @@ function buildApp(
       }
     }
 
-    const allAgents = spaces.allAgents.filter((a) => !a.exited);
+    const allAgents = spaces.allSessions.filter((a) => !a.exited);
     const blocked = allAgents.filter((a) => a.state === AgentState.Blocked).length;
 
     return {
@@ -612,64 +613,6 @@ function buildApp(
     );
     if (!wanted) return yield* new CommandError({ message: "unknown target space" });
     yield* commands.run(command("pane.move", { space: wanted.id }));
-  });
-
-  /**
-   * The conversation a component pane draws.
-   *
-   * One function for every such pane: which session it is talking to comes from
-   * the pane, not from focus, so two chat panes are two conversations rather
-   * than one view chasing whichever is selected.
-   *
-   * Sending goes through the same `agent.steer` command the keybinding uses.
-   * The view knows nothing about where the session runs — a local worker and a
-   * daemon-owned one are the same command from here.
-   */
-  const chatPane: PaneView = (props) => (
-    <Chat
-      {...props}
-      frames={(id) => session.attach.stream(id)}
-      sync={(id) => session.attach.sync(id)}
-      onSubmit={(message) =>
-        runProjectedCommand(command("agent.steer", { session: props.session.id, message }))
-      }
-    />
-  );
-
-  const promptSteerAgent = Effect.gen(function* () {
-    const focused = spaces.activeWindow?.focused?.session;
-    if (!focused || focused.kind !== "component") {
-      setPromptError("");
-      setPromptRequest({
-        title: "steer agent",
-        notice: "no native agent focused",
-        fields: [],
-        resolve: () => setPromptRequest(null),
-      });
-      return;
-    }
-    const answers = yield* ask(`Steer ${focused.title}`, [
-      { label: "Message", value: "", placeholder: "what to tell the agent" },
-    ]);
-    if (!answers) return;
-    const message = answers[0]?.trim();
-    if (!message) return;
-    yield* commands.run(command("agent.steer", { session: focused.id, message }));
-  });
-
-  const promptInterruptAgent = Effect.gen(function* () {
-    const focused = spaces.activeWindow?.focused?.session;
-    if (!focused || focused.kind !== "component") {
-      setPromptError("");
-      setPromptRequest({
-        title: "interrupt agent",
-        notice: "no native agent focused",
-        fields: [],
-        resolve: () => setPromptRequest(null),
-      });
-      return;
-    }
-    yield* commands.run(command("agent.interrupt", { session: focused.id }));
   });
 
   const promptRenameWindow = Effect.gen(function* () {
@@ -769,7 +712,7 @@ function buildApp(
   function availableKeyHints(): string[] {
     const active = bindings.keymap.getCommandBindings({
       visibility: "registered",
-      commands: COMMANDS.map((command) => command.name),
+      commands: registeredBindings().map((command) => command.name),
     });
     const used = new Set(
       [...active.values()].flatMap((list) =>
@@ -824,14 +767,14 @@ function buildApp(
         return;
       }
       const keys = configState().keys;
-      const spec = COMMANDS.find((candidate) => candidate.name === command);
+      const spec = registeredBindings().find((candidate) => candidate.name === command);
       if (!spec) return;
       const next = `<leader>${key}`;
       const compiled = bindings.keymap.parseKeySequence(next);
       const display = formatSequence(compiled, bindings.leader());
       const active = bindings.keymap.getCommandBindings({
         visibility: "registered",
-        commands: COMMANDS.map((candidate) => candidate.name),
+        commands: registeredBindings().map((candidate) => candidate.name),
       });
       const owner = [...active].find(([, list]) =>
         list.some((binding) => formatSequence(binding.sequence, bindings.leader()) === display),
@@ -1165,42 +1108,7 @@ function buildApp(
     "window.select-layout": (value) => runPanelCommand(value),
     "window.synchronize-panes": (value) => runPanelCommand(value),
 
-    "agent.new": (value) =>
-      Effect.gen(function* () {
-        const outcome = yield* Effect.either(
-          agentPreflight(options()["agent.model"] as string, integrations, modelCatalog),
-        );
-        if (Either.isLeft(outcome)) {
-          const error = outcome.left;
-          let notice: string;
-          if (error._tag === "InvalidModel") {
-            notice = `invalid agent.model '${error.value}', expected provider/model`;
-          } else if (error._tag === "NoCredential") {
-            notice = `no credential stored for ${error.providerID}`;
-          } else {
-            notice = `model ${error.providerID}/${error.modelID} is not available`;
-          }
-          yield* Effect.sync(() => {
-            setSettingsSection(
-              error._tag === "NoCredential" ? "auth" : "agent",
-            );
-            setSettingsSelected(
-              error._tag === "NoCredential"
-                ? 0
-                : Math.max(0, optionsIn("agent").indexOf("agent.model")),
-            );
-            setOverlay("settings");
-            setPromptRequest({
-              title: "agent.new",
-              notice,
-              fields: [],
-              resolve: () => setPromptRequest(null),
-            });
-          });
-          return;
-        }
-        yield* runPanelCommand(value);
-      }),
+    "agent.new": (value) => runPanelCommand(value),
     "agent.steer": (value) => runPanelCommand(value),
     "agent.interrupt": (value) => runPanelCommand(value),
     notify: (value) =>
@@ -1397,7 +1305,7 @@ function buildApp(
       desc: "swap pane with the next one",
     }),
     bind("pane.close", "<leader>x", command("pane.close"), {
-      desc: "close pane (agent keeps running)",
+      desc: "close pane (stops its backend if it has no other view)",
     }),
     // shift+c: plain ^a c is new window, and this is near pane.close's ^a x.
     bind("pane.capture", "<leader>shift+c", command("pane.capture"), {
@@ -1466,14 +1374,8 @@ function buildApp(
       ),
     ),
 
-    // Agents.
-    // No prompt: the pane it opens is where you type. A modal asking for the
-    // first message would be a second, worse composer in front of the real one.
-    bind("agent.new", "<leader>shift+n", command("agent.new", {}), {
-      desc: "open a chat pane with a new native agent",
-    }),
-    bindPrompt("agent.steer", "<leader>shift+e", promptSteerAgent, "steer the focused native agent"),
-    bindPrompt("agent.interrupt", "<leader>shift+i", promptInterruptAgent, "interrupt the focused native agent"),
+    // Agent-aware session controls remain core. Launch policy is contributed by
+    // each harness plugin through the scoped binding registry.
     // shift+k: plain ^a k is directional pane focus, and killing an agent is not
     // something to put one keystroke away from "move up" anyway.
     bind("session.kill", "<leader>shift+k", command("session.kill"), {
@@ -1642,14 +1544,17 @@ function buildApp(
           ask(`${selected.label} API key`, [
             { label: "API key", placeholder: "paste key", masked: true },
           ]).pipe(
-          Effect.flatMap((values) =>
-                values?.[0] && credentials
+            Effect.flatMap((values) =>
+              values?.[0] && credentials
                 ? selected.connections[0]
                   ? credentials.update(selected.connections[0].id, {
                       value: { type: "key", key: Redacted.make(values[0]) },
                     })
                   : credentials
-                      .create({ integrationID: selected.id, value: { type: "key", key: Redacted.make(values[0]) } })
+                      .create({
+                        integrationID: selected.id,
+                        value: { type: "key", key: Redacted.make(values[0]) },
+                      })
                       .pipe(Effect.asVoid)
                 : Effect.void,
             ),
@@ -1661,9 +1566,13 @@ function buildApp(
       }
     }
     if (event.name === "return" || event.name === "enter") {
+      // An option whose value is chosen from a list cannot be edited with ←/→,
+      // so the row belongs to the command of the same name and whoever owns the
+      // option registers it. `agent.model` is the harness's; core knows only
+      // that a command with the option's name exists.
       const option = selectedOption();
-      if (option === "agent.model") {
-        openModelPicker();
+      if (option && registeredBindings().some((binding) => binding.name === option)) {
+        bindings.dispatch(option);
         return;
       }
     }
@@ -1688,85 +1597,6 @@ function buildApp(
         void saveSettings();
         return;
     }
-  }
-
-  function modelEntries(
-    providers: Readonly<Record<string, Provider>>,
-    connectedProviders: ReadonlySet<string>,
-  ): ModelPickerEntry[] {
-    return Object.values(providers)
-      .filter((provider) => connectedProviders.has(provider.id))
-      .flatMap((provider) =>
-        Object.values(provider.models)
-          .filter((model) => model.status !== "deprecated")
-          .filter((model) => model.tool_call && (model.modalities?.input ?? ["text"]).includes("text"))
-          .map((model) => ({
-            value: `${provider.id}/${model.id}`,
-            provider: provider.name,
-            name: model.name,
-            description: model.family ?? model.id,
-          })),
-      )
-      .sort((a, b) => a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name));
-  }
-
-  function openModelPicker() {
-    if (!modelCatalog || !integrations) return setSettingsError("model catalog unavailable");
-    void Effect.runPromise(
-      Effect.all({ providers: modelCatalog.providers(), integrations: integrations.list() }),
-    )
-      .then(({ providers, integrations: availableIntegrations }) => {
-        const connectedProviders = new Set(
-          availableIntegrations
-            .filter((integration) => integration.connections.length > 0)
-            .map((integration) => integration.id),
-        );
-        const entries = modelEntries(providers, connectedProviders);
-        const selected = entries.findIndex((entry) => entry.value === options()["agent.model"]);
-        setModelPicker({ allEntries: entries, entries, query: "", selected: Math.max(0, selected) });
-      })
-      .catch((error) => setSettingsError(errorMessage(error)));
-  }
-
-  function filterModelPicker(query: string) {
-    setModelPicker((current) => {
-      if (!current) return current;
-      const needle = query.trim().toLowerCase();
-      const entries = current.allEntries.filter((entry) =>
-        `${entry.value} ${entry.provider} ${entry.name} ${entry.description}`.toLowerCase().includes(needle),
-      );
-      return { ...current, entries, query, selected: 0 };
-    });
-  }
-
-  function chooseModel() {
-    const entry = modelPicker()?.entries[modelPicker()?.selected ?? -1];
-    if (!entry) return;
-    changeOption("agent.model", entry.value);
-    setModelPicker(null);
-    void saveSettings();
-  }
-
-  function modelPickerKey(event: KeyEvent) {
-    const view = modelPicker();
-    if (!view) return true;
-    if (event.name === "escape") {
-      setModelPicker(null);
-      return true;
-    }
-    if (event.name === "j" || event.name === "down") {
-      setModelPicker((current) => current ? { ...current, selected: Math.min(current.entries.length - 1, current.selected + 1) } : current);
-      return true;
-    }
-    if (event.name === "k" || event.name === "up") {
-      setModelPicker((current) => current ? { ...current, selected: Math.max(0, current.selected - 1) } : current);
-      return true;
-    }
-    if (event.name === "return" || event.name === "enter") {
-      chooseModel();
-      return true;
-    }
-    return false;
   }
 
   function keybindPickerKey(event: KeyEvent) {
@@ -1804,20 +1634,56 @@ function buildApp(
     return false;
   }
 
-  async function saveSettings() {
+  /** Write the config file. Answers with the failure message, because the two
+   *  callers show it in different places: the settings window has an error line,
+   *  a panel that saves has only the command-error banner. */
+  async function persistConfig(): Promise<string | null> {
     try {
       await saveConfig(configState());
       setSettingsDirty(false);
-      setSettingsError("");
+      return null;
     } catch (error) {
-      setSettingsError(
-        `could not save settings: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      return `could not save settings: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 
-  const bindings = createBindings(renderer, COMMANDS, { keys: config.keys, onUnhandled });
+  async function saveSettings() {
+    setSettingsError((await persistConfig()) ?? "");
+  }
+
+  function saveOptions() {
+    void persistConfig().then((failure) => {
+      if (failure) showCommandError(failure);
+    });
+  }
+
+  const bindings = createBindings(renderer, COMMANDS, {
+    keys: config.keys,
+    onUnhandled,
+    onError: showCommandError,
+  });
   setConflicts(bindings.conflicts());
+  const pluginBindings = new Map<string, CommandSpec>();
+  const [registeredBindings, setRegisteredBindings] =
+    createSignal<readonly CommandSpec[]>(COMMANDS);
+  const refreshBindings = () => {
+    const next = [...COMMANDS, ...pluginBindings.values()];
+    setRegisteredBindings(next);
+    setConflicts(bindings.setCommands(next));
+  };
+  const registerBinding = (binding: CommandSpec) => {
+    if (COMMANDS.some((entry) => entry.name === binding.name) || pluginBindings.has(binding.name))
+      throw new Error(`binding '${binding.name}' is already registered`);
+    pluginBindings.set(binding.name, binding);
+    refreshBindings();
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      pluginBindings.delete(binding.name);
+      refreshBindings();
+    };
+  };
 
   function updateHintVisibility(sequence: readonly { display: string }[]) {
     runFiber("hint-delay", Effect.void);
@@ -1878,13 +1744,15 @@ function buildApp(
   const pending = createMemo(() =>
     pendingParts().length ? [formatSequence(pendingParts(), configState().keys.leader)] : [],
   );
-  const hints = createMemo(() => nextKeys(bindings, COMMANDS, pendingParts()));
+  const hints = createMemo(() => nextKeys(bindings, [...registeredBindings()], pendingParts()));
 
   // Recomputed whenever the keys change, since that is what the list is *for*:
   // the reference and the editor are the same rows, read back out of the keymap
   // that was just rebuilt.
-  const groups = createMemo(() => helpGroups(bindings, COMMANDS, configState().keys));
-  const allPaletteEntries = createMemo(() => paletteEntries(bindings, COMMANDS));
+  const groups = createMemo(() =>
+    helpGroups(bindings, [...registeredBindings()], configState().keys),
+  );
+  const allPaletteEntries = createMemo(() => paletteEntries(bindings, [...registeredBindings()]));
   const filteredPalette = createMemo(() =>
     filterPaletteEntries(allPaletteEntries(), paletteQuery()),
   );
@@ -2035,26 +1903,6 @@ function buildApp(
                       : current,
                   )
                 }
-              />
-            )}
-          </Show>
-        ),
-      }),
-      regions.register({
-        id: "amux.model-picker",
-        region: "overlay",
-        order: 15,
-        title: "model picker",
-        visible: () => modelPicker() !== null,
-        keys: modelPickerKey,
-        component: (props) => (
-          <Show when={modelPicker()}>
-            {(view: () => ModelPickerView) => (
-              <ModelPicker
-                view={view()}
-                width={props.width}
-                onInput={filterModelPicker}
-                onSubmit={chooseModel}
               />
             )}
           </Show>
@@ -2261,7 +2109,11 @@ function buildApp(
             style={{
               position: "absolute",
               width: "100%",
-              height: 1,
+              // Border rows are part of the box, so a bordered banner holding
+              // one line of text is three rows tall. Asking for one row put the
+              // message on the bottom border — below the screen, where nothing
+              // reported a command failure at all.
+              height: 3,
               backgroundColor: theme.base,
               border: true,
               borderColor: theme.red,
@@ -2335,16 +2187,17 @@ function buildApp(
     renderer.removeListener("resize", onResize);
   });
 
-  const panel = createPanelContext(
+  const panel = createPanelContext({
     snapshot,
-    app.tick,
-    runPanelCommand,
+    tick: app.tick,
+    run: runPanelCommand,
     options,
-    changeOption,
+    setOption: changeOption,
+    saveOptions,
     display,
-    showCommandError,
+    reportError: showCommandError,
     selectedAgentId,
     setSelectedAgentId,
-  );
-  return { View, panel, release, chatPane };
+  });
+  return { View, panel, release, registerBinding };
 }

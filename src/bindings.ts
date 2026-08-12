@@ -234,6 +234,8 @@ export interface Bindings {
   conflicts(): Conflict[];
   /** Rebuild under `keys`, returning whatever collided. */
   apply(keys: Keys): Conflict[];
+  /** Replace the active command list and rebuild under the current keys. */
+  setCommands(commands: readonly CommandSpec[]): Conflict[];
   /**
    * Take the next real keystroke instead of dispatching it, for recording a
    * binding. Modifiers alone do not end the capture. Returns a canceller.
@@ -253,13 +255,16 @@ export interface Bindings {
  */
 export function createBindings(
   renderer: CliRenderer,
-  commands: CommandSpec[],
+  initialCommands: readonly CommandSpec[],
   opts: {
     keys?: Keys;
     /** Return true if the app consumed the key. Returning false leaves it for
      *  whichever renderable holds focus — that is how a focused text input
      *  receives characters. */
     onUnhandled: (event: KeyEvent, reason: string) => boolean;
+    /** User-visible command failure sink. Plugins use the same dispatch path as
+     * core bindings, so failures must not disappear into stderr. */
+    onError?: (message: string) => void;
   },
 ): Bindings {
   const keymap = createOpenTuiKeymap(renderer);
@@ -271,6 +276,8 @@ export function createBindings(
   registerEscapeClearsPendingSequence(keymap);
 
   let leader = opts.keys?.leader ?? DEFAULT_LEADER;
+  let commands = [...initialCommands];
+  let currentKeys = opts.keys ?? { leader: DEFAULT_LEADER, bindings: {} };
   let conflicts: Conflict[] = [];
   let disposeLayer: (() => void) | null = null;
   let disposeLeader: (() => void) | null = null;
@@ -308,6 +315,7 @@ export function createBindings(
   });
 
   function apply(keys: Keys): Conflict[] {
+    currentKeys = keys;
     const requestedLeader = keys.leader || DEFAULT_LEADER;
     leader = parseable(requestedLeader, true) ? requestedLeader : DEFAULT_LEADER;
     disposeLayer?.();
@@ -326,7 +334,7 @@ export function createBindings(
         name: cmd.name,
         desc: cmd.desc,
         group: cmd.group,
-        run: () => runDetached(cmd.name, cmd.run),
+        run: () => runDetached(cmd.name, cmd.run, opts.onError),
       })),
     });
 
@@ -342,6 +350,10 @@ export function createBindings(
     leader: () => leader,
     conflicts: () => conflicts,
     apply,
+    setCommands(next) {
+      commands = [...next];
+      return apply(currentKeys);
+    },
     capture(onKey) {
       capturing = onKey;
       return () => {

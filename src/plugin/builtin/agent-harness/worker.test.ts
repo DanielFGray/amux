@@ -13,7 +13,7 @@ import { makeAgentWorker } from "./worker.ts";
 import type {
   AgentEventPayload,
   AgentDelta,
-} from "../effect/AttachProtocol.ts";
+} from "../../../effect/AttachProtocol.ts";
 type WorkerFrame = AgentEventPayload | AgentDelta;
 
 const waitFor = async (predicate: () => boolean) => {
@@ -117,6 +117,7 @@ test("drains a prompt and emits semantic frames", async () => {
 
 test("a tool call is resolved by the toolkit and reported as a result frame", async () => {
   const frames: WorkerFrame[] = [];
+  const seen: Prompt.Prompt[] = [];
   const capture = Tool.make("pane_capture", {
     description: "capture a pane",
     parameters: { session: S.String },
@@ -130,22 +131,24 @@ test("a tool call is resolved by the toolkit and reported as a result frame", as
   const resolved = toolkit.pipe(Effect.provide(toolkit.toLayer(handlers)));
 
   await runWorker(
-    scriptedModel((call) =>
-      call === 0
-        ? [
-            {
-              type: "tool-call",
-              id: "call-1",
-              name: "pane_capture",
-              params: { session: "target" },
-              providerExecuted: false,
-            },
-          ]
-        : [
-            { type: "text-start", id: "t1" },
-            { type: "text-delta", id: "t1", delta: "done" },
-            { type: "text-end", id: "t1" },
-          ],
+    scriptedModel(
+      (call) =>
+        call === 0
+          ? [
+              {
+                type: "tool-call",
+                id: "call-1",
+                name: "pane_capture",
+                params: { session: "target" },
+                providerExecuted: false,
+              },
+            ]
+          : [
+              { type: "text-start", id: "t1" },
+              { type: "text-delta", id: "t1", delta: "done" },
+              { type: "text-end", id: "t1" },
+            ],
+      { seen },
     ),
     (worker) =>
       worker
@@ -153,7 +156,7 @@ test("a tool call is resolved by the toolkit and reported as a result frame", as
         .pipe(
           Effect.andThen(
             Effect.promise(() =>
-              waitFor(() => frames.some((f) => f._tag === "tool.result")),
+              waitFor(() => frames.some((f) => f._tag === "turn.end")),
             ),
           ),
         ),
@@ -170,6 +173,64 @@ test("a tool call is resolved by the toolkit and reported as a result frame", as
   expect(frames.find((frame) => frame._tag === "tool.result")).toMatchObject({
     call: "call-1",
     isError: false,
+  });
+  expect(seen).toHaveLength(2);
+  expect(roles(seen[0]!)).toEqual(["user"]);
+  expect(roles(seen[1]!)).toEqual(["user", "assistant", "tool"]);
+  expect(frames.filter((frame) => frame._tag === "turn.end")).toHaveLength(1);
+  expect(frames.find((frame) => frame._tag === "turn.end")).toMatchObject({
+    text: "done",
+  });
+});
+
+test("continues through successive tool calls before ending the turn", async () => {
+  const frames: WorkerFrame[] = [];
+  const lookup = Tool.make("lookup", {
+    description: "look up a value",
+    parameters: { value: S.String },
+    success: S.String,
+  });
+  const toolkit = Toolkit.make(lookup);
+  const handlers = toolkit.of({
+    lookup: ({ value }: { value: string }) => Effect.succeed(`found ${value}`),
+  } as never);
+
+  await runWorker(
+    scriptedModel((call) =>
+      call < 2
+        ? [
+            {
+              type: "tool-call",
+              id: `call-${call + 1}`,
+              name: "lookup",
+              params: { value: String(call + 1) },
+              providerExecuted: false,
+            },
+          ]
+        : [{ type: "text-delta", id: "t1", delta: "finished" }],
+    ),
+    (worker) =>
+      worker
+        .steer("look twice")
+        .pipe(
+          Effect.andThen(
+            Effect.promise(() =>
+              waitFor(() => frames.some((frame) => frame._tag === "turn.end")),
+            ),
+          ),
+        ),
+    {
+      emit: (frame) => Effect.sync(() => void frames.push(frame)),
+      toolkit: toolkit.pipe(Effect.provide(toolkit.toLayer(handlers))) as never,
+    },
+  );
+
+  expect(frames.filter((frame) => frame._tag === "tool.result")).toHaveLength(
+    2,
+  );
+  expect(frames.filter((frame) => frame._tag === "turn.end")).toHaveLength(1);
+  expect(frames.find((frame) => frame._tag === "turn.end")).toMatchObject({
+    text: "finished",
   });
 });
 
@@ -270,7 +331,9 @@ test("a turn that fails reports the cause and leaves the session usable", async 
         );
         yield* worker.steer("second");
         yield* Effect.promise(() =>
-          waitFor(() => frames.filter((f) => f._tag === "turn.end").length === 2),
+          waitFor(
+            () => frames.filter((f) => f._tag === "turn.end").length === 2,
+          ),
         );
       }),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
@@ -281,7 +344,9 @@ test("a turn that fails reports the cause and leaves the session usable", async 
   expect((failed as { error?: string }).error).toContain(
     "provider rejected the tool schema",
   );
-  expect(frames.some((f) => f._tag === "agent.status" && f.state === "failed")).toBe(true);
+  expect(
+    frames.some((f) => f._tag === "agent.status" && f.state === "failed"),
+  ).toBe(true);
   // The next turn still runs: a failure ends the turn, never the worker.
   expect(recovered).toMatchObject({ outcome: "completed" });
   expect((recovered as { error?: string }).error).toBeUndefined();

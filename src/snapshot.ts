@@ -46,7 +46,7 @@ import {
   type Layout,
 } from "./layout.ts";
 import type { SessionBackendFactory } from "./backend.ts";
-import type { Session } from "./agent.ts";
+import type { SessionHandle } from "./session-handle.ts";
 import type { Window } from "./window.ts";
 import type { Space, SpaceSet } from "./space.ts";
 import {
@@ -61,7 +61,7 @@ import {
  *  when the one recorded no longer parses. */
 const FALLBACK_PRESET = "tiled";
 
-export function snapshotSessionEntry(agent: Session): PersistedSession {
+export function snapshotSessionEntry(agent: SessionHandle): PersistedSession {
   return {
     id: agent.id,
     name: agent.name,
@@ -89,7 +89,7 @@ export function snapshotWindow(window: Window): PersistedWindow {
   return {
     number: window.number,
     name: window.customName,
-    agents: window.agents.map(snapshotSessionEntry),
+    agents: window.sessions.map(snapshotSessionEntry),
     layout: encodeLayout(window.exportLayout()),
   };
 }
@@ -193,7 +193,7 @@ export const restoreWindow = Effect.fnUntraced(function* (
 
   // Only the live agents get panes: an exited one has no view in the running
   // app either, and applyLayout would happily build it one.
-  const live = window.agents.filter((a) => !a.exited).map((a) => a.id);
+  const live = window.sessions.filter((a) => !a.exited).map((a) => a.id);
   if (live.length > 0) {
     const layout = yield* restoredLayout(saved, live);
     window.applyLayout(layout);

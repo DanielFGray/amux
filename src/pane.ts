@@ -16,7 +16,7 @@ import {
   type CursorInfo,
 } from "./ghostty.ts";
 import { Effect, Exit, Scope } from "effect";
-import type { Session } from "./agent.ts";
+import type { SessionHandle } from "./session-handle.ts";
 import { runtime } from "./options.ts";
 import { STATE_GLYPH } from "./detect.ts";
 import { captureRange } from "./shim.ts";
@@ -90,7 +90,7 @@ const OPENTUI_TO_GHOSTTY_BUTTON: Record<number, number> = {
  * session keeps running.
  */
 export abstract class Pane extends Renderable {
-  readonly session: Session;
+  readonly session: SessionHandle;
 
   hovered = false;
   onFocusRequest?: (pane: Pane) => void;
@@ -100,7 +100,10 @@ export abstract class Pane extends Renderable {
   #edges: Edges = { ...ALL_EDGES };
   #active = false;
 
-  constructor(ctx: RenderContext, options: { id: string; session: Session } & Record<string, any>) {
+  constructor(
+    ctx: RenderContext,
+    options: { id: string; session: SessionHandle } & Record<string, any>,
+  ) {
     super(ctx, options);
     this.session = options.session;
     this.session.addViewer();

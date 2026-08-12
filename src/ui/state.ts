@@ -1,7 +1,7 @@
 import { createSignal, createMemo, type Accessor } from "solid-js";
 import type { SpaceSet, Space } from "../space.ts";
 import type { Window } from "../window.ts";
-import type { Session } from "../agent.ts";
+import type { SessionHandle } from "../session-handle.ts";
 import type { Pane } from "../pane.ts";
 
 /** How often polled state (agent status, spinner frame) is re-read. */
@@ -13,7 +13,7 @@ export interface AppState {
   /** The window keystrokes land in. */
   activeWindow: Accessor<Window | null>;
   focusedPane: Accessor<Pane | null>;
-  allAgents: Accessor<Session[]>;
+  allAgents: Accessor<SessionHandle[]>;
   /** Advances on a timer. Read this in anything that displays polled state. */
   tick: Accessor<number>;
   /** Current spinner frame index, derived from the tick. */
@@ -90,7 +90,7 @@ export function createAppState(spaces: SpaceSet): AppState {
     ),
     allAgents: createMemo(() => {
       revision();
-      return spaces.allAgents;
+      return spaces.allSessions;
     }),
     tick,
     frame: tick,

@@ -1,6 +1,9 @@
 import { Effect, ExecutionStrategy, Exit, Fiber, Queue, Runtime, Scope, Stream } from "effect";
 import type { PanelContext } from "../ui/panel.ts";
 import type { Panel, Regions } from "../ui/regions.tsx";
+import type { AttachFrame } from "../effect/AttachProtocol.ts";
+import type { SessionViews } from "./session-views.tsx";
+import type { CommandSpec } from "../bindings.ts";
 import { createPluginKV } from "./kv.ts";
 import type {
   PluginDefinition,
@@ -34,9 +37,25 @@ interface PluginState {
   error: string | null;
 }
 
+/**
+ * Everything a plugin can reach, in one place.
+ *
+ * Every field is required. An optional collaborator here would mean a host that
+ * accepts a registration and silently drops it — a plugin cannot tell that from
+ * a registration that worked, and the caller who left the field out cannot tell
+ * either.
+ */
+export interface PluginEnvironment {
+  readonly panel: PanelContext;
+  readonly regions: Regions;
+  readonly sessionViews: SessionViews;
+  readonly registerBinding: (binding: CommandSpec) => () => void;
+  readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
+  readonly sync: (session: string) => void;
+}
+
 export function createPluginHost(
-  panelCtx: PanelContext,
-  regions: Regions,
+  env: PluginEnvironment,
 ): Effect.Effect<PluginHost, never, Scope.Scope> {
   return Effect.gen(function* () {
     const rt = yield* Effect.runtime<Scope.Scope>();
@@ -63,15 +82,21 @@ export function createPluginHost(
     }
 
     function makeContext(pluginId: string, scope: Scope.CloseableScope): PluginHostContext {
+      /** Every registration is undone when the plugin's scope closes, so a
+       *  disabled or crashed plugin leaves nothing of itself behind. */
+      const scoped = (dispose: () => void): (() => void) => {
+        Runtime.runSync(rt)(Scope.addFinalizer(scope, Effect.sync(dispose)));
+        return dispose;
+      };
       return {
         id: pluginId,
-        panel: panelCtx,
+        panel: env.panel,
         kv: kvFor(pluginId),
-        registerPanel(panel: Panel) {
-          const dispose = regions.register(panel);
-          Runtime.runSync(rt)(Scope.addFinalizer(scope, Effect.sync(dispose)));
-          return dispose;
-        },
+        registerPanel: (panel: Panel) => scoped(env.regions.register(panel)),
+        registerPaneType: (type, view) => scoped(env.sessionViews.register(type, view)),
+        registerBinding: (binding) => scoped(env.registerBinding(binding)),
+        frames: env.frames,
+        sync: env.sync,
       };
     }
 

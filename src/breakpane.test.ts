@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { Divider } from "./divider.ts";
 import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
-import type { Session } from "./agent.ts";
+import type { SessionHandle } from "./session-handle.ts";
 import type { TerminalPane } from "./pane.ts";
 import { RenderState } from "./ghostty.ts";
 
@@ -24,7 +24,7 @@ async function setup() {
 
 /** The agent's on-screen text, so a move's effect on terminal state is read
  *  from the terminal itself rather than from our bookkeeping. */
-function screenTail(agent: Session): string {
+function screenTail(agent: SessionHandle): string {
   const state = new RenderState();
   state.update(agent.term);
   const text = state.tailText(8).join("\n");
@@ -52,8 +52,8 @@ test("break moves the pane and its running agent into a new window, unchanged", 
     // Ownership moved: the source window no longer lists it, the new window
     // does, and the window took a fresh number.
     expect(s.win.panes).not.toContain(right);
-    expect(s.win.agents).not.toContain(agent);
-    expect(win2.agents).toEqual([agent]);
+    expect(s.win.sessions).not.toContain(agent);
+    expect(win2.sessions).toEqual([agent]);
     expect(win2.number).toBeGreaterThan(s.win.number);
 
     // Focus followed the pane, tmux's session_select after a break.
@@ -132,7 +132,7 @@ test("a detached agent left in the source window survives the break", async () =
     // The window kept its detached, still-running agent instead of closing.
     expect(s.space.windows).toContain(s.win);
     expect(s.win.panes).toHaveLength(0);
-    expect(s.win.agents).toContain(sleepy);
+    expect(s.win.sessions).toContain(sleepy);
     expect(sleepy.exited).toBe(false);
     expect(win2.panes).toEqual([pane]);
   } finally {
@@ -143,8 +143,8 @@ test("a detached agent left in the source window survives the break", async () =
 test("a moved agent's exit closes its pane in the NEW window and reports it", async () => {
   const s = await setup();
   try {
-    const exits: { agent: Session; window: Window }[] = [];
-    s.space.onAgentExit = (agent, window) => {
+    const exits: { agent: SessionHandle; window: Window }[] = [];
+    s.space.onSessionExit = (agent, window) => {
       exits.push({ agent, window });
     };
 
@@ -163,7 +163,7 @@ test("a moved agent's exit closes its pane in the NEW window and reports it", as
     expect(win2.panes).toHaveLength(0);
     expect(s.win.panes).toHaveLength(2);
     // The agent stays listed where it now lives, exited, output readable.
-    expect(win2.agents).toContain(agent);
+    expect(win2.sessions).toContain(agent);
     expect(agent.state).toBe("done");
   } finally {
     await s.dispose();
@@ -262,20 +262,16 @@ test("break updates what the sidebar and the tab list would show", async () => {
 
     const win2 = (await runAsync(s.space.breakPane(right)))!;
 
-    const agentWindow = s.space.windows.find((window) =>
-      window.agents.includes(agent),
-    );
+    const agentWindow = s.space.windows.find((window) => window.sessions.includes(agent));
     expect(agentWindow).toBe(win2);
     // The agent now hangs under the new window, not the source one.
-    expect(agentWindow!.agents).toContain(agent);
-    expect(s.win.agents).not.toContain(agent);
+    expect(agentWindow!.sessions).toContain(agent);
+    expect(s.win.sessions).not.toContain(agent);
 
     // Tabs render from window.label; the new window carries a fresh number and
     // is the one on screen.
     const labels = s.space.windows.map((w) => w.label);
-    expect(labels.some((l) => l.startsWith(`${agentWindow!.number}:`))).toBe(
-      true,
-    );
+    expect(labels.some((l) => l.startsWith(`${agentWindow!.number}:`))).toBe(true);
     expect(s.space.active).toBe(agentWindow!);
   } finally {
     await s.dispose();
@@ -289,9 +285,7 @@ test("breakPane refuses a pane that is not in this space", async () => {
     const otherWin = run(other.newWindow());
     run(otherWin.init("shell"));
 
-    expect(
-      await runAsync(s.space.breakPane(otherWin.panes[0] as TerminalPane)),
-    ).toBeNull();
+    expect(await runAsync(s.space.breakPane(otherWin.panes[0] as TerminalPane))).toBeNull();
     expect(s.space.windows).toEqual([s.win]);
   } finally {
     await s.dispose();

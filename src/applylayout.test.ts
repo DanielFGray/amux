@@ -2,14 +2,8 @@ import { test, expect, afterEach } from "bun:test";
 import { Divider } from "./divider.ts";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
-import {
-  encodeLayout,
-  decodeLayout,
-  layoutAgents,
-  makeLayout,
-  type LayoutNode,
-} from "./layout.ts";
-import type { Session } from "./agent.ts";
+import { encodeLayout, decodeLayout, layoutAgents, makeLayout, type LayoutNode } from "./layout.ts";
+import type { SessionHandle } from "./session-handle.ts";
 import { Effect } from "effect";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -31,7 +25,7 @@ const shape = (node: LayoutNode | null): unknown => {
 
 /** The agent's on-screen text, so "the pane was reused" is checked against the
  *  terminal itself rather than against object identity alone. */
-function screenTail(agent: Session): string {
+function screenTail(agent: SessionHandle): string {
   const state = new RenderState();
   try {
     state.update(agent.term);
@@ -142,10 +136,7 @@ test("weights in the layout become real geometry", async () => {
   );
   await layout();
 
-  const root = window.exportLayout().root as Extract<
-    LayoutNode,
-    { type: "split" }
-  >;
+  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>;
   expect(root.children[0]!.weight).toBe(3);
   // Roughly 3:1 across the window, less the divider column.
   expect(first.width).toBeGreaterThan(second.width * 2);
@@ -208,9 +199,7 @@ test("panes naming an agent this window does not own are pruned away", async () 
 
   expect(applied).toBe(true);
   expect(window.panes).toEqual([first, second]);
-  expect(
-    window.root.getChildren().filter((k) => k instanceof Divider),
-  ).toHaveLength(1);
+  expect(window.root.getChildren().filter((k) => k instanceof Divider)).toHaveLength(1);
 });
 
 // Pruning to nothing must not be a way to empty the window: a stale string is
@@ -255,7 +244,7 @@ test("a pane the layout has no slot for is closed, but its agent survives", asyn
   await layout();
 
   expect(window.panes).toEqual([first]);
-  expect(window.agents).toContain(dropped);
+  expect(window.sessions).toContain(dropped);
   expect(dropped.exited).toBe(false);
   expect(window.detached).toContain(dropped);
   // The survivor fills the window rather than keeping its old half-share.
@@ -290,9 +279,7 @@ test("two panes on one agent stay two panes across a rebuild", async () => {
   await layout();
 
   expect(window.panes.filter((p) => p.session === shared)).toHaveLength(2);
-  expect(
-    layoutAgents(window.exportLayout()).filter((id) => id === shared.id),
-  ).toHaveLength(2);
+  expect(layoutAgents(window.exportLayout()).filter((id) => id === shared.id)).toHaveLength(2);
 });
 
 /**
@@ -498,9 +485,7 @@ test("dragging a seam forgets the preset, so next-layout advances", async () => 
 
   const before = window.exportLayout();
   const widths = window.panes.map((pane) => pane.width);
-  const divider = window.root
-    .getChildren()
-    .find((k) => k instanceof Divider) as Divider;
+  const divider = window.root.getChildren().find((k) => k instanceof Divider) as Divider;
   divider.onDrag!(-1);
 
   // The drag changes the resident model synchronously; the next frame is only
@@ -508,10 +493,7 @@ test("dragging a seam forgets the preset, so next-layout advances", async () => 
   expect(window.exportLayout()).not.toEqual(before);
   expect(window.preset).toBeNull();
   await layout();
-  expect(window.panes.map((pane) => pane.width)).toEqual([
-    widths[0]! - 1,
-    widths[1]! + 1,
-  ]);
+  expect(window.panes.map((pane) => pane.width)).toEqual([widths[0]! - 1, widths[1]! + 1]);
 });
 
 test("a preset on a single pane is a no-op that still reports success", async () => {
@@ -584,13 +566,8 @@ test("resized weights survive the export", async () => {
       },
     }),
   );
-  const root = window.exportLayout().root as Extract<
-    LayoutNode,
-    { type: "split" }
-  >;
-  const exported = root.children.find(
-    (c) => c.type === "pane" && c.agent === first.session.id,
-  );
+  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>;
+  const exported = root.children.find((c) => c.type === "pane" && c.agent === first.session.id);
   expect(exported?.weight).toBe(7);
 });
 
@@ -613,18 +590,13 @@ test("a zoomed pane keeps the weight it had in the layout, not its zoom weight",
   const first = window.panes[0]!;
   run(window.splitSpawn("row"));
   await layout();
-  const root = window.exportLayout().root as Extract<
-    LayoutNode,
-    { type: "split" }
-  >;
+  const root = window.exportLayout().root as Extract<LayoutNode, { type: "split" }>;
   window.applyLayout(
     makeLayout({
       root: {
         ...root,
         children: root.children.map((child) =>
-          child.type === "pane" && child.id === first.id
-            ? { ...child, weight: 5 }
-            : child,
+          child.type === "pane" && child.id === first.id ? { ...child, weight: 5 } : child,
         ),
       },
     }),

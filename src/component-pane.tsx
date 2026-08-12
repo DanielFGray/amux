@@ -4,17 +4,18 @@ import type { JSX } from "@opentui/solid";
 import { createSignal, type Accessor, type Signal } from "solid-js";
 import { BoxRenderable, type CliRenderer, type RenderContext } from "@opentui/core";
 import { Pane } from "./pane.ts";
-import type { Session } from "./agent.ts";
+import type { SessionHandle } from "./session-handle.ts";
 
 /**
  * What a component session's view is told about the frame it lives in.
  *
  * Everything here changes while the view is mounted — a split resizes it, a
  * focus change moves the keyboard — so each is an accessor rather than a value.
- * The session is not: a pane views one session for its whole life.
+ * The session id is not: a pane views one session for its whole life.
  */
 export interface PaneViewProps {
-  session: Session;
+  sessionId: string;
+  paneType: string;
   /** The content rect, the pane's own less the sides it draws. */
   width: Accessor<number>;
   height: Accessor<number>;
@@ -36,7 +37,7 @@ export type PaneView = (props: PaneViewProps) => JSX.Element;
 /**
  * A pane whose content is a Solid subtree rather than a terminal grid.
  *
- * The other half of Session.kind: a pty session's bytes go through an emulator
+ * The other half of SessionHandle.kind: a pty session's bytes go through an emulator
  * to a grid, and a component session's semantic frames go through a Solid
  * component to renderables. Both are leaves of the same split tree — they tile,
  * split, focus, zoom and close identically, because all of that is the Pane
@@ -59,7 +60,7 @@ export class ComponentPane extends Pane {
 
   constructor(
     ctx: RenderContext,
-    options: { id: string; session: Session; view?: PaneView } & Record<string, any>,
+    options: { id: string; session: SessionHandle; view?: PaneView } & Record<string, any>,
   ) {
     super(ctx, options);
     this.#content = new BoxRenderable(ctx, {
@@ -80,7 +81,8 @@ export class ComponentPane extends Pane {
     // the interface is the narrow half of the renderer, not a different thing.
     const renderer = ctx as CliRenderer;
     const props: PaneViewProps = {
-      session: this.session,
+      sessionId: this.session.id,
+      paneType: this.session.declaredAgent ?? "",
       width: () => this.#size[0]().width,
       height: () => this.#size[0]().height,
       active: this.#focus[0],

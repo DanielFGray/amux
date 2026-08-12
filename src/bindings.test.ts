@@ -50,11 +50,7 @@ test("every declared sequence compiles, including multi-char key names", async (
     });
     const entries = helpGroups(bindings, commands)[0]!.entries;
 
-    expect(entries.map((e) => e.keys)).toEqual([
-      "^a h",
-      "^a left",
-      "^a { / ^a }",
-    ]);
+    expect(entries.map((e) => e.keys)).toEqual(["^a h", "^a left", "^a { / ^a }"]);
   } finally {
     t.renderer.destroy();
   }
@@ -144,9 +140,7 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
     expect(fired).toEqual(["s", "S"]);
 
     // Written shift+s, shown as the key you actually press.
-    expect(
-      helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys),
-    ).toEqual(["^a s", "^a S"]);
+    expect(helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys)).toEqual(["^a s", "^a S"]);
   } finally {
     t.renderer.destroy();
   }
@@ -239,17 +233,15 @@ test("ctrl+arrow is a distinct binding from the bare arrow", async () => {
     t.mockInput.pressArrow("up", { ctrl: true });
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressArrow("down", { ctrl: true });
-    expect(fired).toEqual([
-      "resize",
-      "focus",
-      "resize-right",
-      "resize-up",
-      "resize-down",
-    ]);
+    expect(fired).toEqual(["resize", "focus", "resize-right", "resize-up", "resize-down"]);
 
-    expect(
-      helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys),
-    ).toEqual(["^a left", "^a ^left", "^a ^right", "^a ^up", "^a ^down"]);
+    expect(helpGroups(bindings, commands)[0]!.entries.map((e) => e.keys)).toEqual([
+      "^a left",
+      "^a ^left",
+      "^a ^right",
+      "^a ^up",
+      "^a ^down",
+    ]);
   } finally {
     t.renderer.destroy();
   }
@@ -385,9 +377,7 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
       },
     ]);
     expect(
-      filterPaletteEntries(paletteEntries(bindings, commands), "pane.s").map(
-        (e) => e.name,
-      ),
+      filterPaletteEntries(paletteEntries(bindings, commands), "pane.s").map((e) => e.name),
     ).toEqual(["pane.split-row"]);
     expect(bindings.dispatch("pane.split-row")).toBe(true);
     expect(fired).toEqual(["split"]);
@@ -576,16 +566,11 @@ test("keysFor prefers the override, including an empty one", () => {
     group: "t",
     run: Effect.void,
   };
-  expect(keysFor(cmd, { leader: "ctrl+a", bindings: {} })).toEqual([
-    "<leader>a",
-    "<leader>b",
+  expect(keysFor(cmd, { leader: "ctrl+a", bindings: {} })).toEqual(["<leader>a", "<leader>b"]);
+  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": ["<leader>z"] } })).toEqual([
+    "<leader>z",
   ]);
-  expect(
-    keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": ["<leader>z"] } }),
-  ).toEqual(["<leader>z"]);
-  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": [] } })).toEqual(
-    [],
-  );
+  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": [] } })).toEqual([]);
 });
 
 test("agent.new compiles its shifted-letter binding", async () => {
@@ -611,6 +596,43 @@ test("agent.new compiles its shifted-letter binding", async () => {
   } finally {
     t.renderer.destroy();
   }
+});
+
+test("a user override replaces a plugin default instead of adding to it", async () => {
+  const t = await createTestRenderer({ width: 20, height: 5 });
+  const commands: CommandSpec[] = [
+    {
+      name: "plugin.agent.new",
+      key: "<leader>n",
+      desc: "new agent",
+      group: "agents",
+      run: Effect.void,
+    },
+  ];
+  const bindings = createBindings(t.renderer, commands, {
+    keys: {
+      leader: "ctrl+a",
+      bindings: { "plugin.agent.new": ["<leader>g"] },
+    },
+    onUnhandled: () => false,
+  });
+
+  expect(
+    helpGroups(bindings, commands, {
+      leader: "ctrl+a",
+      bindings: { "plugin.agent.new": ["<leader>g"] },
+    })[0]!.entries[0],
+  ).toMatchObject({ keys: "^a g", custom: true });
+  expect(
+    bindings.keymap
+      .getCommandBindings({
+        visibility: "registered",
+        commands: ["plugin.agent.new"],
+      })
+      .get("plugin.agent.new"),
+  ).toHaveLength(1);
+  bindings.dispose();
+  t.renderer.destroy();
 });
 
 test("agent.steer compiles its shifted-letter binding", async () => {

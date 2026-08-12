@@ -1,4 +1,4 @@
-import type { AgentFrame } from "./effect/AttachProtocol.ts";
+import type { AgentFrame } from "../../../effect/AttachProtocol.ts";
 
 export type TranscriptBlock =
   | { readonly kind: "user"; readonly turn: string; readonly text: string }
@@ -58,7 +58,13 @@ export class Transcript {
         const key = `${frame.turn}\0${frame.call}`;
         if (!this.#tools.has(key)) {
           this.#tools.set(key, this.#blocks.length);
-          this.#blocks.push({ kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: "" });
+          this.#blocks.push({
+            kind: "tool",
+            turn: frame.turn,
+            call: frame.call,
+            name: frame.tool,
+            input: "",
+          });
         }
         break;
       }
@@ -66,10 +72,17 @@ export class Transcript {
         const index = this.#tools.get(`${frame.turn}\0${frame.call}`);
         if (index === undefined) {
           this.#tools.set(`${frame.turn}\0${frame.call}`, this.#blocks.length);
-          this.#blocks.push({ kind: "tool", turn: frame.turn, call: frame.call, name: "", input: frame.delta });
+          this.#blocks.push({
+            kind: "tool",
+            turn: frame.turn,
+            call: frame.call,
+            name: "",
+            input: frame.delta,
+          });
         } else {
           const block = this.#blocks[index];
-          if (block?.kind === "tool" && typeof block.input === "string") this.#blocks[index] = { ...block, input: block.input + frame.delta };
+          if (block?.kind === "tool" && typeof block.input === "string")
+            this.#blocks[index] = { ...block, input: block.input + frame.delta };
         }
         break;
       }
@@ -80,27 +93,43 @@ export class Transcript {
         const index = this.#tools.get(key);
         if (index === undefined) {
           this.#tools.set(key, this.#blocks.length);
-          this.#blocks.push({ kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: frame.input });
+          this.#blocks.push({
+            kind: "tool",
+            turn: frame.turn,
+            call: frame.call,
+            name: frame.tool,
+            input: frame.input,
+          });
         } else {
           const block = this.#blocks[index];
-          if (block?.kind === "tool" && typeof block.input === "string") this.#blocks[index] = { ...block, name: frame.tool, input: frame.input };
+          if (block?.kind === "tool" && typeof block.input === "string")
+            this.#blocks[index] = { ...block, name: frame.tool, input: frame.input };
         }
         break;
       }
       case "tool.result": {
         const index = this.#tools.get(`${frame.turn}\0${frame.call}`);
         const block = index === undefined ? undefined : this.#blocks[index];
-        if (index !== undefined && block?.kind === "tool") this.#blocks[index] = { ...block, output: frame.output, isError: frame.isError };
+        if (index !== undefined && block?.kind === "tool")
+          this.#blocks[index] = { ...block, output: frame.output, isError: frame.isError };
         break;
       }
       case "permission.request":
         this.#permissions.set(frame.request, this.#blocks.length);
-        this.#blocks.push({ kind: "permission", turn: frame.turn, request: frame.request, tool: frame.tool, description: frame.description, input: frame.input });
+        this.#blocks.push({
+          kind: "permission",
+          turn: frame.turn,
+          request: frame.request,
+          tool: frame.tool,
+          description: frame.description,
+          input: frame.input,
+        });
         break;
       case "permission.response": {
         const index = this.#permissions.get(frame.request);
         const block = index === undefined ? undefined : this.#blocks[index];
-        if (index !== undefined && block?.kind === "permission") this.#blocks[index] = { ...block, approved: frame.approved };
+        if (index !== undefined && block?.kind === "permission")
+          this.#blocks[index] = { ...block, approved: frame.approved };
         break;
       }
       case "agent.status":
@@ -112,8 +141,7 @@ export class Transcript {
           this.#assistantChunks.set(this.#blocks.length, [frame.text]);
           this.#blocks.push({ kind: "assistant", turn: frame.turn, text: frame.text });
         }
-        if (frame.error)
-          this.#blocks.push({ kind: "error", turn: frame.turn, text: frame.error });
+        if (frame.error) this.#blocks.push({ kind: "error", turn: frame.turn, text: frame.error });
         break;
     }
     this.#dirty = true;
@@ -160,7 +188,11 @@ export function appendTranscriptFrame(
         (block) => block.kind === "tool" && block.turn === frame.turn && block.call === frame.call,
       );
       // Replace a block that was built from tool.params-delta (string input).
-      if (index >= 0 && blocks[index]!.kind === "tool" && typeof blocks[index]!.input === "string") {
+      if (
+        index >= 0 &&
+        blocks[index]!.kind === "tool" &&
+        typeof blocks[index]!.input === "string"
+      ) {
         const prev = blocks[index]!;
         if (prev.kind !== "tool") return blocks;
         return [
@@ -260,7 +292,11 @@ export function appendTranscriptFrame(
 /** Render blocks into plain lines using the same word-wrapping contract as the TUI. */
 export function serializeTranscript(blocks: readonly TranscriptBlock[], width: number): string[] {
   if (!Number.isInteger(width) || width < 1) throw new Error("transcript width must be positive");
-  return blocks.flatMap((block) => wrap(transcriptLine(block), width));
+  return blocks.flatMap((block) => wrapText(transcriptLine(block), width));
+}
+
+export function toolDetails(block: Extract<TranscriptBlock, { kind: "tool" }>): string {
+  return `${json(block.input)}${block.output === undefined ? "" : ` -> ${json(block.output)}`}`;
 }
 
 function transcriptLine(block: TranscriptBlock): string {
@@ -280,7 +316,7 @@ function transcriptLine(block: TranscriptBlock): string {
   }
 }
 
-function wrap(text: string, width: number): string[] {
+export function wrapText(text: string, width: number): string[] {
   if (text.length === 0) return [""];
   const lines: string[] = [];
   let rest = text;

@@ -20,6 +20,7 @@ const session = { id: "native", kind: "component", name: "chat" } as any;
 async function chat(
   active = true,
   frames: () => Stream.Stream<any, unknown> = () => Stream.never,
+  onSlashCommand?: (command: string) => boolean,
 ) {
   const t = await createTestRenderer({ width: 40, height: 8 });
   const [focused, setFocused] = createSignal(active);
@@ -28,13 +29,17 @@ async function chat(
   await render(
     () => (
       <Chat
-        session={session}
+        sessionId={session.id}
+        paneType="test"
+        model="openai/gpt-4o-mini"
         width={width}
         height={() => 8}
         active={focused}
         frames={frames}
         sync={() => {}}
         onSubmit={(message) => sent.push(message)}
+        onSlashCommand={onSlashCommand}
+        slashCommands={[{ name: "model", description: "choose the agent model" }]}
       />
     ),
     t.renderer,
@@ -43,14 +48,38 @@ async function chat(
   return { t, sent, setFocused, setWidth };
 }
 
+test("the /model slash command opens the model picker without sending", async () => {
+  const { t, sent } = await chat(true, () => Stream.never, () => true);
+  await t.mockInput.typeText("/model");
+  t.mockInput.pressEnter();
+  await Bun.sleep(10);
+  await t.renderOnce();
+  expect(sent).toEqual([]);
+  t.renderer.destroy();
+});
+
+test("slash autocomplete filters and selects a command without sending", async () => {
+  const { t, sent } = await chat(true, () => Stream.never, () => true);
+  await t.mockInput.typeText("/mo");
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("/model");
+  t.mockInput.pressEnter();
+  await Bun.sleep(10);
+  await t.renderOnce();
+  expect(sent).toEqual([]);
+  expect(t.captureCharFrame()).not.toContain("/model");
+  t.renderer.destroy();
+});
+
 test("the composer sends what was typed and clears itself", async () => {
   const { t, sent } = await chat();
 
-  t.mockInput.typeText("find the bug");
+  await t.mockInput.typeText("find the bug");
   await t.renderOnce();
   expect(t.captureCharFrame()).toContain("find the bug");
 
   t.mockInput.pressEnter();
+  await Bun.sleep(10);
   await t.renderOnce();
 
   expect(sent).toEqual(["find the bug"]);
@@ -62,8 +91,9 @@ test("the composer sends what was typed and clears itself", async () => {
 test("whitespace alone is not a message", async () => {
   const { t, sent } = await chat();
 
-  t.mockInput.typeText("   ");
+  await t.mockInput.typeText("   ");
   t.mockInput.pressEnter();
+  await Bun.sleep(10);
   await t.renderOnce();
 
   expect(sent).toEqual([]);
@@ -78,28 +108,50 @@ test("the transcript rewraps when the pane it lives in is resized", async () => 
   );
   await Bun.sleep(10);
   await t.renderOnce();
-  expect(t.captureCharFrame()).toContain("assistant> the quick brown fox jumps");
+  expect(t.captureCharFrame()).toContain("the quick brown fox");
 
   // A split narrows the pane. The width reaches the transcript through Chat, so
   // a break that only worked at the mounted size would show up here.
   setWidth(20);
   await t.renderOnce();
-  expect(t.captureCharFrame()).not.toContain("assistant> the quick brown fox jumps");
-  expect(t.captureCharFrame()).toContain("assistant> the");
+  expect(t.captureCharFrame()).toContain("the quick brown fox jumps");
+  expect(t.captureCharFrame()).toContain("over the lazy");
+  t.renderer.destroy();
+});
+
+test("working status is shown as a spinner below the editor", async () => {
+  const { t } = await chat(
+    true,
+    () =>
+      Stream.make({
+        _tag: "agent.status",
+        session: "native",
+        sequence: 1,
+        state: "working",
+      }) as any,
+  );
+  await Bun.sleep(10);
+  await t.renderOnce();
+
+  const output = t.captureCharFrame();
+  expect(output).toContain("working");
+  expect(output).not.toContain("status> working");
+  expect(output).toContain("openai/gpt-4o-mini");
   t.renderer.destroy();
 });
 
 test("the composer only takes keys while its own pane is focused", async () => {
   const { t, sent, setFocused } = await chat(false);
 
-  t.mockInput.typeText("stray");
+  await t.mockInput.typeText("stray");
   await t.renderOnce();
   expect(t.captureCharFrame()).not.toContain("stray");
 
   setFocused(true);
   await t.renderOnce();
-  t.mockInput.typeText("mine");
+  await t.mockInput.typeText("mine");
   t.mockInput.pressEnter();
+  await Bun.sleep(10);
   await t.renderOnce();
 
   expect(sent).toEqual(["mine"]);

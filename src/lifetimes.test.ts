@@ -76,10 +76,7 @@ async function fixture() {
   const spy = spyBackend();
   const scope = Effect.runSync(Scope.make());
   const spaces = run(
-    Scope.extend(
-      SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host),
-      scope,
-    ),
+    Scope.extend(SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host), scope),
   );
   return {
     spaces,
@@ -144,7 +141,7 @@ test("killSession releases the session it was given and no other", async () => {
     // out of #agents before releasing, so a release loop over the survivors
     // would kill the bystander and still leave the count at one.
     expect(f.killed()).toEqual([second.id]);
-    expect(window.agents).toContain(bystander);
+    expect(window.sessions).toContain(bystander);
   } finally {
     await f.cleanup();
   }
@@ -236,9 +233,7 @@ test("scoped app release detaches daemon projections and terminates local owners
       await runAsync(Scope.close(scope, Exit.void));
 
       expect(closed).toEqual([`agent-${ownership}`]);
-      expect(killed).toEqual(
-        ownership === "local" ? [`agent-${ownership}`] : [],
-      );
+      expect(killed).toEqual(ownership === "local" ? [`agent-${ownership}`] : []);
       // The terminal is freed only after its entire renderable window has been
       // removed. A subsequent frame therefore has no path back to that handle.
       expect(host.getChildren()).toHaveLength(0);
@@ -298,9 +293,7 @@ function lifecycleSession(
     session: null,
     live: new Set(
       workspace.spaces.flatMap((space) =>
-        space.windows.flatMap((window) =>
-          window.agents.map((agent) => agent.id),
-        ),
+        space.windows.flatMap((window) => window.agents.map((agent) => agent.id)),
       ),
     ),
     workspace: () => structuredClone(workspace),

@@ -4,7 +4,7 @@ import { mkdtemp, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitActivity, looksBlocked, identifyAgent } from "./detect.ts";
-import { Session } from "./agent.ts";
+import { SessionHandle } from "./session-handle.ts";
 
 test("a leading braille spinner marks the agent working and is stripped from the title", () => {
   for (const frame of ["⠋", "⠙", "⠹", "⠿"]) {
@@ -48,9 +48,7 @@ test("empty and whitespace titles are not spinners", () => {
 });
 
 test("confirmation prompts read as blocked", () => {
-  expect(
-    looksBlocked(["", "Do you want to proceed?", "❯ 1. Yes", "  2. No", ""]),
-  ).toBe(true);
+  expect(looksBlocked(["", "Do you want to proceed?", "❯ 1. Yes", "  2. No", ""])).toBe(true);
   expect(looksBlocked(["Overwrite existing file? [y/N]"])).toBe(true);
   expect(looksBlocked(["Press enter to continue"])).toBe(true);
   expect(looksBlocked(["Waiting for your approval"])).toBe(true);
@@ -97,7 +95,7 @@ async function fakeAgent(name: string): Promise<string> {
 test("a plain shell is idle whatever it is running", async () => {
   // The old behaviour reported any foreground process as "working", so opening
   // nvim in a pane put a spinner next to it. Only agents get a state now.
-  using agent = new Session({
+  using agent = new SessionHandle({
     name: "t",
     cmd: ["bash", "--norc", "--noprofile"],
   });
@@ -112,7 +110,7 @@ test("a plain shell is idle whatever it is running", async () => {
 });
 
 test("a blocked prompt on an agent's screen reads as blocked", async () => {
-  using agent = new Session({
+  using agent = new SessionHandle({
     name: "t",
     cmd: [await fakeAgent("claude"), "--norc", "--noprofile"],
   });
@@ -125,7 +123,7 @@ test("a blocked prompt on an agent's screen reads as blocked", async () => {
 
 test("an agent started from a shell is picked up from the foreground process", async () => {
   const claude = await fakeAgent("claude");
-  using agent = new Session({
+  using agent = new SessionHandle({
     name: "t",
     cmd: ["bash", "--norc", "--noprofile"],
   });
@@ -137,7 +135,7 @@ test("an agent started from a shell is picked up from the foreground process", a
 });
 
 test("an exited agent is done regardless of what is left on screen", async () => {
-  using agent = new Session({
+  using agent = new SessionHandle({
     name: "t",
     cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"],
   });

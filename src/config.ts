@@ -30,7 +30,10 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   options: {},
   keys: { leader: DEFAULT_LEADER, bindings: {} },
-  plugins: [{ path: "builtin:amux.sidebar", enabled: true }],
+  plugins: [
+    { path: "builtin:amux.sidebar", enabled: true },
+    { path: "builtin:amux.agent-harness", enabled: true },
+  ],
 };
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config");
@@ -56,8 +59,18 @@ export function decodeConfig(loaded: unknown): Config {
     plugins:
       loaded.plugins === undefined
         ? structuredClone(DEFAULT_CONFIG.plugins)
-        : sanitizePlugins(loaded.plugins),
+        : mergeDefaultPlugins(sanitizePlugins(loaded.plugins)),
   };
+}
+
+/** New bundled plugins are enabled for existing configs unless the user has an
+ * explicit entry for that path. An explicit disabled entry remains authoritative. */
+function mergeDefaultPlugins(saved: PluginSpec[]): PluginSpec[] {
+  const byPath = new Map(saved.map((plugin) => [plugin.path, plugin]));
+  return [
+    ...DEFAULT_CONFIG.plugins.map((plugin) => byPath.get(plugin.path) ?? structuredClone(plugin)),
+    ...saved.filter((plugin) => !DEFAULT_CONFIG.plugins.some((item) => item.path === plugin.path)),
+  ];
 }
 
 /** Keep hand-edited key bindings from breaking keymap compilation. */

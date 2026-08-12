@@ -9,7 +9,7 @@ import { applyOptions, resolveOptions } from "./options.ts";
 import { rollUp, nextBlockedAfter } from "./space.ts";
 import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
-import type { Session } from "./agent.ts";
+import type { SessionHandle } from "./session-handle.ts";
 import type { AgentState } from "./agent-state.ts";
 
 const SHELL = ["bash"];
@@ -45,7 +45,7 @@ async function fakeAgent(name: string): Promise<string> {
 }
 
 /** Poll until the agent's screen scan reports blocked; fail loudly otherwise. */
-async function waitForBlocked(agent: Session, tries = 20): Promise<void> {
+async function waitForBlocked(agent: SessionHandle, tries = 20): Promise<void> {
   for (let i = 0; i < tries; i++) {
     if (agent.state === "blocked") return;
     await Bun.sleep(100);
@@ -54,10 +54,8 @@ async function waitForBlocked(agent: Session, tries = 20): Promise<void> {
 }
 
 /** Spawn a detached fake agent and put a confirmation prompt on its screen. */
-async function blockedAgent(window: Window, name: string): Promise<Session> {
-  const agent = run(
-    window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]),
-  );
+async function blockedAgent(window: Window, name: string): Promise<SessionHandle> {
+  const agent = run(window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]));
   await Bun.sleep(300);
   agent.write("printf 'Do you want to proceed?\\n'\n");
   await waitForBlocked(agent);
@@ -65,7 +63,7 @@ async function blockedAgent(window: Window, name: string): Promise<Session> {
 }
 
 test("nextBlockedAfter walks the blocked set in a stable order, wrapping", () => {
-  const stub = (state: AgentState) => ({ state }) as unknown as Session;
+  const stub = (state: AgentState) => ({ state }) as unknown as SessionHandle;
   const idle = stub("idle");
   const blocked1 = stub("blocked");
   const blocked2 = stub("blocked");
@@ -167,9 +165,7 @@ test("an agent with no view is detached but keeps running", async () => {
 test("output on a detached agent marks it unseen", async () => {
   const s = await setup();
   try {
-    const chatter = run(
-      s.win.spawn("chatter", ["sh", "-c", "echo hello-from-detached; sleep 5"]),
-    );
+    const chatter = run(s.win.spawn("chatter", ["sh", "-c", "echo hello-from-detached; sleep 5"]));
     await Bun.sleep(400);
     expect(chatter.unseen).toBe(true);
     // Opening a view is what clears it.
@@ -186,8 +182,8 @@ test("killing an agent removes it and leaves the others alone", async () => {
     const killme = run(s.win.spawn("killme", ["sleep", "30"]));
     const keep = run(s.win.spawn("keep", ["sleep", "30"]));
     await runAsync(s.win.killSession(killme));
-    expect(s.win.agents).not.toContain(killme);
-    expect(s.win.agents).toContain(keep);
+    expect(s.win.sessions).not.toContain(killme);
+    expect(s.win.sessions).toContain(keep);
   } finally {
     await s.dispose();
   }
@@ -205,13 +201,13 @@ test("killing an agent reports it the way an exit does", async () => {
   const s = await setup();
   try {
     const killme = run(s.win.spawn("killme", ["sleep", "30"]));
-    const seen: { agent: Session; remaining: number }[] = [];
-    s.space.onAgentExit = (agent, window) =>
+    const seen: { agent: SessionHandle; remaining: number }[] = [];
+    s.space.onSessionExit = (agent, window) =>
       // Captured from inside the handler: the cascade decides what to do by
       // asking what is left, so the removal must already have happened.
-      seen.push({ agent, remaining: window.agents.length });
+      seen.push({ agent, remaining: window.sessions.length });
 
-    const before = s.win.agents.length;
+    const before = s.win.sessions.length;
     await runAsync(s.win.killSession(killme));
 
     expect(seen.map((s) => s.agent)).toEqual([killme]);
@@ -264,11 +260,11 @@ test("each space keeps its own windows and layouts across activation", async () 
     s.spaces.activate(other);
     expect(s.spaces.active).toBe(other);
     expect(s.win.panes.length).toBe(1);
-    expect(s.win.agents.length).toBe(1);
+    expect(s.win.sessions.length).toBe(1);
 
     s.spaces.activate(s.space);
     expect(otherWin.panes.length).toBe(2);
-    expect(otherWin.agents.length).toBe(2);
+    expect(otherWin.sessions.length).toBe(2);
   } finally {
     await s.dispose();
   }
@@ -283,12 +279,10 @@ test("joining a pane preserves its live agent and transfers ownership", async ()
     const destination = run(s.space.newWindow());
     run(destination.init("destination"));
 
-    expect(await runAsync(s.space.joinPane(pane, source.number))).toBe(
-      destination,
-    );
+    expect(await runAsync(s.space.joinPane(pane, source.number))).toBe(destination);
     expect(source.panes).toHaveLength(0);
     expect(destination.panes).toContain(pane);
-    expect(destination.agents).toContain(agent);
+    expect(destination.sessions).toContain(agent);
     expect(agent.exited).toBe(false);
     expect(s.space.windows).toEqual([destination]);
 
@@ -307,7 +301,7 @@ test("a space of plain shells is idle, and an exited one still reads as idle", a
     await Bun.sleep(300);
     expect(s.space.state).toBe("idle");
 
-    const agent = s.win.agents[0]!;
+    const agent = s.win.sessions[0]!;
     agent.write("sleep 5\n");
     await Bun.sleep(400);
     expect(agent.state).toBe("idle");
@@ -318,7 +312,7 @@ test("a space of plain shells is idle, and an exited one still reads as idle", a
 });
 
 test("a roll-up reports the most urgent state present, and 'done' never wins", () => {
-  const stub = (state: AgentState) => ({ state }) as unknown as Session;
+  const stub = (state: AgentState) => ({ state }) as unknown as SessionHandle;
   expect(rollUp([])).toBe("done");
   expect(rollUp([stub("idle"), stub("working"), stub("done")])).toBe("working");
   expect(rollUp([stub("working"), stub("blocked")])).toBe("blocked");
@@ -342,7 +336,7 @@ test("a pane closes when its agent's process exits, and the agent stays as done"
     // The view is gone so the layout reclaims the space...
     expect(s.win.panes.length).toBe(1);
     // ...but the agent is still listed, exited, with its output still readable.
-    const agent = s.win.agents.find((a) => a.name === "shortlived");
+    const agent = s.win.sessions.find((a) => a.name === "shortlived");
     expect(agent).toBeDefined();
     expect(agent!.state).toBe("done");
     expect(s.win.detached).toContain(agent!);
@@ -357,7 +351,7 @@ test("a finished agent does not make its space look finished", async () => {
     run(s.win.spawn("shortlived", ["sh", "-c", "exit 0"]));
     await Bun.sleep(500);
     // One agent is done, the seeded shell is still alive at its prompt.
-    expect(s.win.agents.some((a) => a.state === "done")).toBe(true);
+    expect(s.win.sessions.some((a) => a.state === "done")).toBe(true);
     expect(s.space.state).toBe("idle");
   } finally {
     await s.dispose();
@@ -375,9 +369,9 @@ test("windows keep separate agents and layouts within one space", async () => {
     expect(s.space.windows.length).toBe(2);
     expect(s.space.active).toBe(second);
     // Agents belong to the window they were started in, not to the space.
-    expect(s.win.agents.length).toBe(2);
-    expect(second.agents.length).toBe(2);
-    expect(s.space.agents.length).toBe(4);
+    expect(s.win.sessions.length).toBe(2);
+    expect(second.sessions.length).toBe(2);
+    expect(s.space.sessions.length).toBe(4);
     // Switching back restores the first window's layout untouched.
     s.space.selectWindow(s.win);
     expect(s.win.panes.length).toBe(1);
@@ -418,7 +412,7 @@ test("closing a window stops the agents that live in it", async () => {
     await runAsync(s.space.closeWindow(second));
     await Bun.sleep(300);
     expect(s.space.windows).not.toContain(second);
-    expect(s.space.agents).not.toContain(doomed);
+    expect(s.space.sessions).not.toContain(doomed);
   } finally {
     await s.dispose();
   }
@@ -715,12 +709,8 @@ test("outer border can be hidden in gap mode", async () => {
     });
 
     run(s.win.splitSpawn("row"));
-    expect(
-      s.win.panes.every((pane) => pane.edges.top && pane.edges.bottom),
-    ).toBe(true);
-    expect(
-      s.win.panes.every((pane) => pane.edges.left || pane.edges.right),
-    ).toBe(true);
+    expect(s.win.panes.every((pane) => pane.edges.top && pane.edges.bottom)).toBe(true);
+    expect(s.win.panes.every((pane) => pane.edges.left || pane.edges.right)).toBe(true);
   } finally {
     applyOptions(resolveOptions({}));
     s.win.refreshChrome();
@@ -813,9 +803,7 @@ test("the focused pane's shared border highlights with it", async () => {
     s.win.focus(right);
     const deep = run(s.win.splitSpawn("column"))!;
     expect(divider.adjacentToFocus).toBe(true);
-    const inner = (
-      s.win.root.getChildren()[2] as BoxRenderable
-    ).getChildren()[1] as Divider;
+    const inner = (s.win.root.getChildren()[2] as BoxRenderable).getChildren()[1] as Divider;
     expect(inner.adjacentToFocus).toBe(true);
     expect(deep.edges.left).toBe(false);
   } finally {

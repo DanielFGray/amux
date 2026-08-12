@@ -54,7 +54,7 @@ export class Backend extends Context.Reference<Backend>()("Backend", {
  *
  * Null is the default and a real state — a workspace that registered no view (a
  * test, a headless client) draws such a pane as an empty frame rather than
- * failing, exactly as it draws a detached agent as no pane at all.
+ * failing, exactly as it draws an unavailable component backend as no pane at all.
  */
 export class PaneContent extends Context.Reference<PaneContent>()("PaneContent", {
   defaultValue: (): PaneView | null => null,
