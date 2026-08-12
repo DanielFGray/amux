@@ -21,15 +21,15 @@ function fakeIntegrations(has: Record<string, boolean>): IntegrationService {
       }),
     list: () => Effect.succeed([]),
     active: (id) => Effect.succeed(connections(id)[0]),
-    resolve: () => Effect.succeed(undefined),
-    model: () => Effect.succeed(undefined),
+    resolve: () => Effect.as(Effect.void, undefined),
+    model: () => Effect.as(Effect.void, undefined),
   };
 }
 
 function fakeModelCatalog(models: Record<string, Model>): ModelCatalogService {
   return {
     providers: () => Effect.succeed({}),
-    provider: () => Effect.succeed(undefined),
+    provider: () => Effect.as(Effect.void, undefined),
     model: (providerID, modelID) => Effect.succeed(models[`${providerID}/${modelID}`]),
     refresh: () => Effect.void,
     invalidate: Effect.void,
