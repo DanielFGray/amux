@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { FileSystem } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
 import { Clock, Config, Context, Effect, Exit, Option, Schema as S } from "effect";
-import { decodeLayout, layoutPanes } from "./layout.ts";
+import { layoutPanes, parseLayout } from "./layout.ts";
 import {
   MAX_SESSIONS,
   MAX_LAYOUT_BYTES,
@@ -166,8 +166,6 @@ const SessionIdSchema = S.String.pipe(
   S.filter(isSessionId, { message: () => "invalid session id" }),
 );
 const TerminalDimension = S.Int.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1_000));
-const LayoutMetadataSchema = S.Struct({ focus: S.optional(S.Unknown) });
-
 const PersistedSessionSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
@@ -340,12 +338,13 @@ export function parseSessionState(
           owned.set(entry.id, entry.exited);
         }
         if (candidate.layout) {
-          const raw = yield* S.decodeUnknown(S.parseJson(LayoutMetadataSchema))(
-            candidate.layout,
-          ).pipe(Effect.mapError(schemaError));
-          const layout = yield* decodeLayout(candidate.layout!).pipe(
+          const parsed = yield* S.decodeUnknown(S.parseJson(S.Unknown))(candidate.layout).pipe(
+            Effect.mapError(schemaError),
+          );
+          const layout = yield* parseLayout(parsed).pipe(
             Effect.mapError((error) => new SessionStateError({ message: error.message })),
           );
+          const raw = parsed as { focus?: unknown };
           if (raw.focus !== undefined && layout.focus !== raw.focus) return yield* layoutFocus;
           for (const pane of layoutPanes(layout.root)) {
             if (paneIds.has(pane.id)) return yield* duplicatePane(pane.id);
