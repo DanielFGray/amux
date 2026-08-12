@@ -356,6 +356,15 @@ function buildApp(
   let projection = Promise.resolve();
   let disposed = false;
   let runProjectedCommand: (value: Command) => void = () => {};
+  const installModelCallbacks = () => {
+    for (const space of spaces.spaces) {
+      for (const window of space.windows) {
+        window.onModelFocus = (pane) => runProjectedCommand(command("pane.select", { pane }));
+        window.onModelResizeDivider = (path, index, delta) =>
+          runProjectedCommand(command("pane.resize-divider", { path: [...path], index, delta }));
+      }
+    }
+  };
   const project = (model: WorkspaceSnapshot): Promise<void> => {
     if (disposed) return Promise.resolve();
     if (model.revision <= projectedRevision) return projection;
@@ -368,15 +377,7 @@ function buildApp(
         if (model.revision <= projectedRevision) return;
         projectedRevision = model.revision;
         setSnapshot(structuredClone(model));
-        for (const space of spaces.spaces) {
-          for (const window of space.windows) {
-            window.onModelFocus = (pane) => runProjectedCommand(command("pane.select", { pane }));
-            window.onModelResizeDivider = (path, index, delta) =>
-              runProjectedCommand(
-                command("pane.resize-divider", { path: [...path], index, delta }),
-              );
-          }
-        }
+        installModelCallbacks();
         app.refresh();
         if (model.spaces.length === 0) shutdown();
       })
@@ -2145,13 +2146,7 @@ function buildApp(
   const initialWorkspace = session.workspace();
   run(projectWorkspace(spaces, initialWorkspace, session.backend()));
   projectedRevision = initialWorkspace.revision;
-  for (const space of spaces.spaces) {
-    for (const window of space.windows) {
-      window.onModelFocus = (pane) => runProjectedCommand(command("pane.select", { pane }));
-      window.onModelResizeDivider = (path, index, delta) =>
-        runProjectedCommand(command("pane.resize-divider", { path: [...path], index, delta }));
-    }
-  }
+  installModelCallbacks();
   syncPaneFrame();
   // Keyed, so a refresh still running when the next one is due is replaced
   // rather than queued behind it: a git call that hangs must not build a

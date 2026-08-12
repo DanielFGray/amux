@@ -2,9 +2,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { Effect, Exit, Scope } from "effect";
 import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core";
-import { render } from "@opentui/solid";
-import { createTestRenderer } from "@opentui/core/testing";
-import { createSignal } from "solid-js";
+import { testRender, useRenderer } from "@opentui/solid";
+import { createSignal, onMount } from "solid-js";
 import { SpaceSet, type Space } from "../../space.ts";
 import { sidebarPlugin, SIDEBAR_PLUGIN_ID } from "./sidebar.tsx";
 import {
@@ -107,63 +106,79 @@ function computeDisplay(spaces: SpaceSet): SidebarDisplay {
   };
 }
 
-const cleanupFns: (() => void)[] = [];
+const cleanupFns: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
-  for (const fn of cleanupFns.splice(0)) fn();
+  for (const fn of cleanupFns.splice(0)) await fn();
 });
 
 async function setup(options?: { width?: number; height?: number }) {
   const w = options?.width ?? WIDTH;
   const h = options?.height ?? HEIGHT;
-  const t = await createTestRenderer({ width: w, height: h });
-  const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
-  const regions = createRegions(t.renderer);
   const shell = ["bash", "--norc", "--noprofile"];
 
-  const scope = Effect.runSync(Scope.make());
-  const spaces: SpaceSet = Effect.runSync(
-    Scope.extend(SpaceSet.make(workspaceEnv(t.renderer, { shell }), paneHost), scope),
-  );
-  const space: Space = Effect.runSync(spaces.create("proj", process.cwd()));
-  const win = Effect.runSync(space.newWindow());
-  Effect.runSync(win.init("shell"));
-  const [displaySignal, setDisplaySignal] = createSignal(computeDisplay(spaces));
-  spaces.onChange = () => setDisplaySignal(computeDisplay(spaces));
-  const panelCtx = makePanelContext(displaySignal);
-  const host: PluginHost = Effect.runSync(
-    Scope.extend(
-      createPluginHost(testPluginEnvironment({ panel: panelCtx, regions })).pipe(
-        Effect.provideService(Scope.Scope, scope),
-      ),
-      scope,
-    ),
-  );
-  Effect.runSync(Scope.extend(host.add(sidebarPlugin), scope));
-  await render(
-    () => (
-      <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
-        <box
-          style={{
-            width: 30,
-            height: "100%",
-            flexShrink: 0,
-            flexDirection: "column",
-            position: "relative",
-          }}
-        >
-          <regions.Slot name="left.app" side="left" anchor="app" />
-          {regions.divider("left", "app")}
+  let spaces!: SpaceSet;
+  let space!: Space;
+  let win!: Space["windows"][number];
+  let regions!: ReturnType<typeof createRegions>;
+  let scope!: Scope.CloseableScope;
+  let ready!: () => void;
+  const initialized = new Promise<void>((resolve) => (ready = resolve));
+
+  const t = await testRender(
+    () => {
+      const renderer = useRenderer();
+      const registeredRegions = createRegions(renderer);
+      const paneHost = new BoxRenderable(renderer, { id: "pane-host", flexGrow: 1 });
+      onMount(() => {
+        regions = registeredRegions;
+        scope = Effect.runSync(Scope.make());
+        spaces = Effect.runSync(
+          Scope.extend(SpaceSet.make(workspaceEnv(renderer, { shell }), paneHost), scope),
+        );
+        space = Effect.runSync(spaces.create("proj", process.cwd()));
+        win = Effect.runSync(space.newWindow());
+        Effect.runSync(win!.init("shell"));
+        const [displaySignal, setDisplaySignal] = createSignal(computeDisplay(spaces));
+        spaces.onChange = () => setDisplaySignal(computeDisplay(spaces));
+        const panelCtx = makePanelContext(displaySignal);
+        const host: PluginHost = Effect.runSync(
+          Scope.extend(
+            createPluginHost(
+              testPluginEnvironment({ panel: panelCtx, regions: registeredRegions }),
+            ).pipe(Effect.provideService(Scope.Scope, scope)),
+            scope,
+          ),
+        );
+        Effect.runSync(Scope.extend(host.add(sidebarPlugin), scope));
+        ready();
+      });
+
+      return (
+        <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
+          <box
+            style={{
+              width: 30,
+              height: "100%",
+              flexShrink: 0,
+              flexDirection: "column",
+              position: "relative",
+            }}
+          >
+            <registeredRegions.Slot name="left.app" side="left" anchor="app" />
+            {registeredRegions.divider("left", "app")}
+          </box>
+          {paneHost}
         </box>
-        <box style={{ flexGrow: 1 }}>{paneHost}</box>
-      </box>
-    ),
-    t.renderer,
+      );
+    },
+    { width: w, height: h },
   );
-  await t.waitForVisualIdle();
+  await initialized;
+  await t.renderOnce();
   cleanupFns.push(async () => {
     await Effect.runPromise(Scope.close(scope, Exit.void));
+    await Bun.sleep(50);
     t.renderer.destroy();
-    await Bun.sleep(20);
   });
   return { t, spaces, space, win, regions };
 }
@@ -296,47 +311,36 @@ test("window label carries the window number and title", () => {
 
 test("renders the space/agent tree with a state glyph per row", async () => {
   const s = await setup();
-  try {
-    const frame = s.t.captureCharFrame();
-    expect(frame).toContain("proj");
-    expect(frame).toContain("1 space · 1 agent");
-    expect(frame).toMatch(/[○●!✓⊘⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
-  } finally {
-    await s.t.renderer.destroy();
-  }
+  const frame = s.t.captureCharFrame();
+  expect(frame).toContain("proj");
+  expect(frame).toContain("1 space · 1 agent");
+  expect(frame).toMatch(/[○●!✓⊘⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
 });
 
 test("the footer counts what the tree shows", async () => {
   const s = await setup();
-  try {
-    const frame = s.t.captureCharFrame();
-    expect(frame).toContain("1 space · 1 agent");
-    const second = Effect.runSync(s.space.newWindow());
-    Effect.runSync(second.init("shell"));
-    refreshDisplay(s.spaces);
-    await s.t.waitForVisualIdle();
-    expect(s.t.captureCharFrame()).toContain("1 space · 2 agents");
-  } finally {
-    await s.t.renderer.destroy();
-  }
+  const frame = s.t.captureCharFrame();
+  expect(frame).toContain("1 space · 1 agent");
+  const second = Effect.runSync(s.space.newWindow());
+  Effect.runSync(second.init("shell"));
+  refreshDisplay(s.spaces);
+  await s.t.renderOnce();
+  expect(s.t.captureCharFrame()).toContain("1 space · 2 agents");
 });
 
 test("the branch row appears under its space once git info arrives", async () => {
   const s = await setup();
-  try {
-    expect(s.t.captureCharFrame()).not.toContain("feat/thing");
-    s.space.branch = "feat/thing";
-    s.space.ahead = 2;
-    s.space.behind = 1;
-    const display = computeDisplay(s.spaces);
-    const branch = display.rows.find((r) => r.kind === "branch");
-    expect(branch).toBeDefined();
-    expect(branch!.branch).toBe("feat/thing");
-    expect(branch!.ahead).toBe(2);
-    expect(branch!.behind).toBe(1);
-  } finally {
-    await s.t.renderer.destroy();
-  }
+  expect(s.t.captureCharFrame()).not.toContain("feat/thing");
+  s.space.branch = "feat/thing";
+  s.space.ahead = 2;
+  s.space.behind = 1;
+  await s.t.renderOnce();
+  const display = computeDisplay(s.spaces);
+  const branch = display.rows.find((r) => r.kind === "branch");
+  expect(branch).toBeDefined();
+  expect(branch!.branch).toBe("feat/thing");
+  expect(branch!.ahead).toBe(2);
+  expect(branch!.behind).toBe(1);
 });
 
 test("agents-only filtering shows only agent CLI agents", () => {
@@ -404,11 +408,7 @@ function findScrollBox(root: unknown): ScrollBoxRenderable | null {
 
 test("a tree that fits shows no scrollbar thumb on the first frame", async () => {
   const s = await setup();
-  try {
-    expect(s.t.captureCharFrame()).toContain("proj");
-    const scrollBox = findScrollBox(s.t.renderer.root);
-    expect(scrollBox?.verticalScrollBar.visible).toBe(false);
-  } finally {
-    await s.t.renderer.destroy();
-  }
+  expect(s.t.captureCharFrame()).toContain("proj");
+  const scrollBox = findScrollBox(s.t.renderer.root);
+  expect(scrollBox?.verticalScrollBar.visible).toBe(false);
 });

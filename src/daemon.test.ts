@@ -1073,6 +1073,8 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
                 {
                   id: "agent-restore",
                   name: "bad",
+                  agent: "missing-harness",
+                  kind: "component",
                   cmd: ["bad"],
                   cols: 80,
                   rows: 24,
@@ -1087,22 +1089,29 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     }),
     e,
   );
-  const daemon = await run(
-    makeDaemonService("restore-failure", {
+  expect((await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]?.agents[0]).toMatchObject({
+    id: "agent-restore",
+    agent: "missing-harness",
+  });
+  const daemon = await open("restore-failure", e, {
       spawnSession: (spec) =>
         spec.id === "agent-restore"
-          ? Effect.fail(
-              new DaemonError({ message: "injected restore spawn failure" }),
-            )
+          ? Effect.fail(new DaemonError({ message: "provider 'missing-harness' is unavailable" }))
           : Effect.die(
               new DaemonError({ message: "unexpected restore spawn" }),
             ),
-    }),
-    e,
-  );
-  await Effect.runPromise(daemon.start);
-  const saved = await run(SessionStore.load("restore-failure"), e);
-  expect(JSON.stringify(saved)).not.toContain("agent-restore");
+    });
+  const restored = (await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]
+    ?.agents[0];
+  expect(restored).toMatchObject({
+    id: "agent-restore",
+    name: "bad (unavailable: provider 'missing-harness' is unavailable)",
+    agent: "missing-harness",
+    kind: "component",
+    cmd: ["bad"],
+    exited: true,
+    exitCode: null,
+  });
   await S(daemon);
 });
 

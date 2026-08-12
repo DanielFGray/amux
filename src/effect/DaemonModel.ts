@@ -123,9 +123,6 @@ export const layerDaemonModel = (initial: {
         enqueue(
           Effect.gen(function* () {
             const cur = yield* Ref.get(daemonRef);
-            if (cur.attachments.has(connection)) {
-              return yield* new DaemonModelError({ message: "attachment already registered" });
-            }
             const now = Date.now();
             const attachments = new Map(cur.attachments);
             attachments.set(connection, { client, attachedSince: now, attachLastSeen: now });

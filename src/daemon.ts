@@ -55,6 +55,7 @@ import {
 import { command, COMMAND_META, type Command } from "./commands.ts";
 import {
   markSessionExited,
+  markSessionUnavailable,
   parseWorkspaceCommandContext,
   workspaceFromSession,
   workspaceSession,
@@ -449,8 +450,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               cols: a.cols,
               rows: a.rows,
             }).pipe(
-              Effect.catchAll(() => {
-                next = markSessionExited(next, a.id, null);
+              Effect.catchAll((error) => {
+                next = markSessionUnavailable(next, a.id, describe(error));
                 changed = true;
                 return Effect.void;
               }),

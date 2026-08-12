@@ -1121,6 +1121,23 @@ export function markSessionExited(
   return { ...next, revision: current.revision + 1 };
 }
 
+/** Restore failure is not a natural exit: keep the record so its owner can see why it is unavailable. */
+export function markSessionUnavailable(
+  current: WorkspaceSnapshot,
+  id: string,
+  reason: string,
+): WorkspaceSnapshot {
+  const next = structuredClone(current);
+  const found = findSession(next, id);
+  if (!found) return current;
+  found.agent.exited = true;
+  found.agent.exitCode = null;
+  found.agent.name = `${found.agent.name} (unavailable: ${reason})`;
+  found.window.layout = prune(found.window.layout, (agent) => agent !== id);
+  found.window.state.focus = found.window.layout.focus ?? null;
+  return next;
+}
+
 function findSpace(workspace: WorkspaceSnapshot, id?: string): WorkspaceSpace | null {
   const wanted = id ?? workspace.state.activeSpace;
   return workspace.spaces.find((space) => space.id === wanted) ?? null;

@@ -115,22 +115,6 @@ testEffect("attach registers a client and updates state", () =>
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 
-testEffect("attach rejects duplicate connections", () =>
-  Effect.gen(function* () {
-    const model = yield* DaemonModel;
-    const noop = () => Effect.void;
-
-    yield* model.attach("client-a", "conn-1", noop);
-    const result = yield* Effect.exit(model.attach("client-b", "conn-1", noop));
-
-    expect(result._tag).toBe("Failure");
-    if (result._tag === "Failure") {
-      const error = Cause.squash(result.cause) as DaemonModelError;
-      expect(error.message).toContain("already registered");
-    }
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
-);
-
 testEffect("detach removes a client and updates state", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
