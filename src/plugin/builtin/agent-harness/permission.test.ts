@@ -13,7 +13,12 @@ import {
   type Assertion,
 } from "./permission.ts";
 import { DEFAULT_RULES, type PermissionRule } from "../../../permission.ts";
-import type { AgentDelta, AgentEventPayload } from "../../../effect/AttachProtocol.ts";
+import {
+  decodeAttachFrames,
+  encodeAttachFrame,
+  type AgentDelta,
+  type AgentEventPayload,
+} from "../../../effect/AttachProtocol.ts";
 
 test("a command is split into the parts policy must clear", () => {
   expect(bashResources("ls; rm -rf ~")).toEqual(["ls", "rm -rf ~"]);
@@ -212,6 +217,109 @@ test("an approved write runs, is remembered on disk, and does not ask again", as
         fs.remove(workspace, { recursive: true }),
       ]).pipe(Effect.ignore),
     );
+  }
+});
+
+test("the second answer to a resolved request is dropped", async () => {
+  const world = harness();
+  const workspace = await Effect.runPromise(
+    Effect.provide(FileSystem.FileSystem, BunFileSystem.layer).pipe(
+      Effect.flatMap((fs) => fs.makeTempDirectory({ prefix: "amux-framed-" })),
+    ),
+  );
+
+  try {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const gate = yield* world.gate;
+        const toolkit = yield* agentToolkit(workspace, gate);
+        const running = yield* Effect.fork(
+          toolkit.handle("write", { path: "answer.txt", content: "first" }),
+        );
+        const request = yield* world.awaitRequest;
+
+        // Each pane sends a complete framed command for the same request.
+        const first = decodeAttachFrames(
+          encodeAttachFrame({
+            _tag: "agent.permission",
+            session: "agent-1",
+            request,
+            decision: "once",
+          }),
+        ).frames[0]!;
+        const later = decodeAttachFrames(
+          encodeAttachFrame({
+            _tag: "agent.permission",
+            session: "agent-1",
+            request,
+            decision: "reject",
+            feedback: "too late",
+          }),
+        ).frames[0]!;
+        if (first._tag !== "agent.permission" || later._tag !== "agent.permission")
+          return yield* Effect.fail("permission frame did not decode");
+
+        yield* gate.resolve(first.request, first.decision, first.feedback);
+        yield* gate.resolve(later.request, later.decision, later.feedback);
+        yield* Fiber.join(running);
+      }),
+    );
+
+    expect(await Bun.file(`${workspace}/answer.txt`).text()).toBe("first");
+    expect(world.emitted().filter((frame) => frame._tag === "permission.response")).toHaveLength(1);
+    expect(world.emitted().find((frame) => frame._tag === "permission.response")).toMatchObject({
+      decision: "once",
+    });
+  } finally {
+    const fs = await Effect.runPromise(Effect.provide(FileSystem.FileSystem, BunFileSystem.layer));
+    await Effect.runPromise(fs.remove(workspace, { recursive: true }).pipe(Effect.ignore));
+  }
+});
+
+test("a framed rejection becomes the model-visible tool result with correction feedback", async () => {
+  const world = harness();
+  const workspace = await Effect.runPromise(
+    Effect.provide(FileSystem.FileSystem, BunFileSystem.layer).pipe(
+      Effect.flatMap((fs) => fs.makeTempDirectory({ prefix: "amux-framed-" })),
+    ),
+  );
+
+  try {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const gate = yield* world.gate;
+        const toolkit = yield* agentToolkit(workspace, gate);
+        const running = yield* Effect.fork(
+          toolkit.handle("write", { path: "rejected.txt", content: "must not exist" }),
+        );
+        const request = yield* world.awaitRequest;
+        const response = decodeAttachFrames(
+          encodeAttachFrame({
+            _tag: "agent.permission",
+            session: "agent-1",
+            request,
+            decision: "reject",
+            feedback: "Use notes.md instead.",
+          }),
+        ).frames[0]!;
+        if (response._tag !== "agent.permission") return yield* Effect.fail("permission frame did not decode");
+        yield* gate.resolve(response.request, response.decision, response.feedback);
+        return yield* Fiber.join(running);
+      }),
+    );
+
+    expect(result).toMatchObject({
+      isFailure: true,
+      result: "Denied by the user: Use notes.md instead.",
+    });
+    expect(await Bun.file(`${workspace}/rejected.txt`).exists()).toBe(false);
+    expect(world.emitted().find((frame) => frame._tag === "permission.response")).toMatchObject({
+      decision: "reject",
+      feedback: "Use notes.md instead.",
+    });
+  } finally {
+    const fs = await Effect.runPromise(Effect.provide(FileSystem.FileSystem, BunFileSystem.layer));
+    await Effect.runPromise(fs.remove(workspace, { recursive: true }).pipe(Effect.ignore));
   }
 });
 
