@@ -117,9 +117,26 @@ class AttachClientConnection {
   private readonly _closedSignal: Deferred.Deferred<void>;
   private _releaseScope: (() => void) | null = null;
   private readonly _pongs = new Map<string, Deferred.Deferred<boolean>>();
+  /**
+   * A session's frames, fanned out to everyone watching it.
+   *
+   * One queue per subscriber, not one queue per session: taking from a queue
+   * consumes the item, so subscribers sharing one would split the stream
+   * between them rather than each see all of it — a pane's transcript and the
+   * backend's status watch would get alternate halves of the same answer.
+   *
+   * `backlog` holds what arrives while nobody is watching, because a client
+   * asks for a session's history before it subscribes and the replay must wait
+   * rather than be dropped. The first subscriber drains it and from then on
+   * every frame goes straight to every queue.
+   */
   private readonly _queued = new Map<
     string,
-    { queue: Queue.Queue<AttachFrame>; active: number; terminal: boolean }
+    {
+      readonly queues: Queue.Queue<AttachFrame>[];
+      readonly backlog: AttachFrame[];
+      terminal: boolean;
+    }
   >();
   private readonly _workspaceQ: Queue.Queue<WorkspaceSnapshot>;
   private _onClose: ((error: Error | null) => void) | undefined;
@@ -154,18 +171,13 @@ class AttachClientConnection {
     const self = this;
     return Stream.unwrap(
       Effect.gen(function* () {
-        let entry = self._queued.get(session);
-        if (!entry || entry.terminal) {
-          if (entry?.terminal) yield* Queue.shutdown(entry.queue);
-          entry = {
-            queue: yield* Queue.bounded<AttachFrame>(QUEUE_LIMIT),
-            active: 0,
-            terminal: false,
-          };
-          self._queued.set(session, entry);
-        }
-        entry.active += 1;
-        const queue = entry.queue;
+        if (self._queued.get(session)?.terminal) self._queued.delete(session);
+        const entry = self._entryFor(session);
+        const queue = yield* Queue.bounded<AttachFrame>(QUEUE_LIMIT);
+        // Only the first subscriber finds anything here, and it is that
+        // subscriber's history — later ones join live and call sync() instead.
+        for (const frame of entry.backlog.splice(0)) yield* Queue.offer(queue, frame);
+        entry.queues.push(queue);
         return Stream.unfoldEffect(false, (done) => {
           if (done) return Effect.succeed(Option.none());
           return Queue.take(queue).pipe(
@@ -175,20 +187,24 @@ class AttachClientConnection {
           Stream.ensuring(
             Effect.suspend(() => {
               const current = self._queued.get(session);
-              if (current?.queue !== queue) {
-                return Queue.shutdown(queue);
-              }
-              current.active -= 1;
-              if (current.terminal && current.active === 0) {
+              const index = current?.queues.indexOf(queue) ?? -1;
+              if (current && index !== -1) current.queues.splice(index, 1);
+              if (current && current.terminal && current.queues.length === 0)
                 self._queued.delete(session);
-                return Queue.shutdown(queue);
-              }
-              return Effect.void;
+              return Queue.shutdown(queue);
             }),
           ),
         );
       }),
     );
+  }
+
+  private _entryFor(session: string) {
+    const existing = this._queued.get(session);
+    if (existing) return existing;
+    const entry = { queues: [], backlog: [], terminal: false };
+    this._queued.set(session, entry);
+    return entry;
   }
 
   workspace(): Stream.Stream<WorkspaceSnapshot> {
@@ -293,7 +309,8 @@ class AttachClientConnection {
     Effect.runSync(Deferred.succeed(this._closedSignal, undefined));
     for (const pong of this._pongs.values()) Effect.runSync(Deferred.succeed(pong, false));
     this._pongs.clear();
-    for (const { queue } of this._queued.values()) this._shutdownQueue(queue);
+    for (const { queues } of this._queued.values())
+      for (const queue of queues) this._shutdownQueue(queue);
     this._shutdownQueue(this._workspaceQ);
     this._queued.clear();
     this._onClose?.(error);
@@ -356,37 +373,26 @@ class AttachClientConnection {
     )
       return;
 
-    let entry = this._queued.get(frame.session);
-    if (entry?.terminal) {
-      if (entry.active === 0) this._shutdownQueue(entry.queue);
-      entry = {
-        queue: Effect.runSync(Queue.bounded<AttachFrame>(QUEUE_LIMIT)),
-        active: 0,
-        terminal: false,
-      };
-      this._queued.set(frame.session, entry);
-    }
-    if (!entry) {
-      entry = {
-        queue: Effect.runSync(Queue.bounded<AttachFrame>(QUEUE_LIMIT)),
-        active: 0,
-        terminal: false,
-      };
-      this._queued.set(frame.session, entry);
-    }
-    const queue = entry.queue;
-    if (!queue.unsafeOffer(frame)) {
+    // A frame after `exit` belongs to the next session of that name, so the
+    // entry rotates. The old subscribers keep their own queues and close them
+    // when their streams end — the queues are theirs, not the entry's.
+    if (this._queued.get(frame.session)?.terminal) this._queued.delete(frame.session);
+    const entry = this._entryFor(frame.session);
+
+    // Every subscriber sees every frame; with none, the backlog stands in for
+    // the one they will each be given a copy of.
+    const overloaded =
+      entry.queues.length === 0
+        ? (entry.backlog.push(frame), entry.backlog.length > QUEUE_LIMIT)
+        : entry.queues.map((queue) => queue.unsafeOffer(frame)).includes(false);
+    if (overloaded) {
       this._finish(new AttachError({ message: "attach receive queue is overloaded" }));
       this._socket.end();
       return;
     }
     entry.terminal ||= frame._tag === "exit";
-    if (frame._tag === "exit") {
-      if (entry.active === 0) {
-        this._queued.delete(frame.session);
-        this._shutdownQueue(queue);
-      }
-    }
+    if (frame._tag === "exit" && entry.queues.length === 0)
+      this._queued.delete(frame.session);
   }
 
   private _shutdownQueue<A>(queue: Queue.Queue<A>): void {

@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import {
+  AiError,
   Chat,
   LanguageModel,
   Prompt,
@@ -250,11 +251,17 @@ test("a turn that fails reports the cause and leaves the session usable", async 
       generateText: () => Effect.succeed([] as never),
       streamText: () =>
         calls++ === 0
-          ? Stream.fail(new Error("provider rejected the tool schema"))
+          ? Stream.fail(
+              new AiError.MalformedOutput({
+                module: "test",
+                method: "streamText",
+                description: "provider rejected the tool schema",
+              }),
+            )
           : Stream.fromIterable([
               { type: "text-delta", id: "t1", delta: "second" },
             ] as Response.StreamPartEncoded[]),
-    }) as never,
+    }),
     (worker) =>
       Effect.gen(function* () {
         yield* worker.steer("first");

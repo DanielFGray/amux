@@ -1517,3 +1517,57 @@ test("attached clients subscribe to ordered workspace generations", async () => 
     expect(received.value.spaces[0]!.name).toBe("shared");
   }
 });
+
+/**
+ * Two watchers of one session each see all of it.
+ *
+ * A pane's transcript is not the only subscriber: the backend streams the same
+ * session to track its status and output. They used to share one queue, and a
+ * queue hands each item to exactly one taker — so an answer arrived split
+ * between them, every other delta missing from the pane and the words that
+ * remained running together.
+ */
+test("every subscriber to a session receives every frame", async () => {
+  const { daemon, env } = await session("fanout");
+  const client = await attach("fanout", env);
+  const id = "fanout-agent";
+  const words = ["alpha ", "beta ", "gamma ", "delta ", "epsilon"];
+  const frames = words.map((text, index) =>
+    JSON.stringify({ _tag: "text.delta", session: id, turn: "t1", sequence: index + 1, text }),
+  );
+  await Effect.runPromise(
+    daemon.spawnSession({
+      kind: "component",
+      id,
+      cmd: [
+        process.execPath,
+        "-e",
+        `for (const frame of ${JSON.stringify(frames)}) process.stdout.write(frame + "\\n"); setTimeout(()=>{},30000)`,
+      ],
+      cols: 80,
+      rows: 24,
+    }),
+  );
+
+  const watchers = [[], []] as AttachFrame[][];
+  const fibers = watchers.map((seen) =>
+    Effect.runFork(
+      client.attach.stream(id).pipe(Stream.runForEach((f) => Effect.sync(() => void seen.push(f)))),
+    ),
+  );
+  client.attach.sync(id);
+  await until(
+    () => watchers.every((seen) => seen.filter((f) => f._tag === "text.delta").length === words.length),
+    "both subscribers to see the whole answer",
+  );
+  for (const fiber of fibers) await Effect.runPromise(Fiber.interrupt(fiber));
+
+  for (const seen of watchers) {
+    const transcript = new Transcript();
+    for (const frame of seen) if (S.is(AgentFrame)(frame)) transcript.append(frame);
+    expect(serializeTranscript(transcript.snapshot(), 80)).toEqual([
+      "assistant> alpha beta gamma delta epsilon",
+    ]);
+  }
+  await Effect.runPromise(daemon.killSession(id));
+});

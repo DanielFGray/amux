@@ -92,7 +92,7 @@ test("nativeToolkit produces tools with safe names", () => {
 test("no tool declares a schema that is not an object", () => {
   const toolkit = nativeToolkit();
   for (const tool of Object.values(toolkit.tools)) {
-    const schema = Tool.getJsonSchema(tool) as Record<string, unknown>;
+    const schema = Tool.getJsonSchema(tool) as unknown as Record<string, unknown>;
     expect({ name: tool.name, ...schema }).toMatchObject({
       name: tool.name,
       type: "object",
