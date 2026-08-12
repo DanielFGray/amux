@@ -265,8 +265,10 @@ export function spawnPty(
  * Async iterator over raw PTY output bytes.
  *
  * Each yielded view is borrowed until the consumer resumes this iterator.
- * Direct terminal consumers pass it synchronously to Terminal.write; consumers
- * that retain it copy at their ownership boundary.
+ * Stream.fromAsyncIterable pulls the next value only after the current
+ * Stream.runForEach effect completes; the direct consumer calls Terminal.write
+ * synchronously, and ghostty_terminal_vt_write does not retain the pointer.
+ * Consumers that retain a chunk must copy it at their ownership boundary.
  */
 export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
   const fs = require("node:fs");
