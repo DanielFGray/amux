@@ -149,9 +149,14 @@ const make = (
                       const state = request.params?.state;
                       // Built, not run: an Effect is a description, so this costs
                       // nothing when the report turns out to be malformed.
+                      // Through the supervisor, not straight to the observer: a
+                      // self-report is committed to the session's log like any
+                      // other agent event, and the observer fires from there. A
+                      // report that skipped the log would be visible live and
+                      // absent on replay.
                       const report =
                         request.method === "agent.state" && agent && isReportedAgentState(state)
-                          ? (options.onAgentState?.(agent, state) ?? Effect.void)
+                          ? supervisor.report(agent, state)
                           : undefined;
                       const ok = request.method === "ping" || report !== undefined;
                       if (report) Runtime.runFork(runtime)(report);

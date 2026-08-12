@@ -2,7 +2,12 @@ import { Context, Deferred, Effect, FiberMap, Layer, Match, Ref, Stream } from "
 import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
-import { isAgentEventPayload, type AgentFrame, type AttachFrame } from "./AttachProtocol.ts";
+import {
+  isAgentEventPayload,
+  type AgentEventPayload,
+  type AgentFrame,
+  type AttachFrame,
+} from "./AttachProtocol.ts";
 import { AgentLog } from "./AgentLog.ts";
 import {
   PtyError,
@@ -104,6 +109,13 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     // active screen is ever needed, and an emulator per session is cost enough
     // without history.
     const replays = yield* Ref.make<ReadonlyMap<string, Terminal>>(new Map());
+    /** Per-session entry point for state a process reports about itself. The
+     *  error channel is the observer's own `unknown` (see ts-f58aa1), not the
+     *  log's: ingest can fail either way and the caller cannot tell them apart
+     *  until both are typed. */
+    const reporters = yield* Ref.make<
+      ReadonlyMap<string, (state: ReportedAgentState) => Effect.Effect<void, unknown>>
+    >(new Map());
     yield* Effect.addFinalizer(() =>
       Ref.get(replays).pipe(
         Effect.flatMap((screens) =>
@@ -176,6 +188,12 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
         return next;
       });
       yield* Ref.update(terminations, (current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+      yield* Ref.update(reporters, (current) => {
         if (!current.has(id)) return current;
         const next = new Map(current);
         next.delete(id);
@@ -312,25 +330,41 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
         ),
       );
 
+      /**
+       * The one door every agent event enters by, whoever produced it.
+       *
+       * A payload is committed to the session log before anybody hears about
+       * it, so an observer cannot see a state the log does not have and a
+       * replaying client cannot miss an edge a live client saw. Events that
+       * arrive before activation are held, not dropped: a prepared session is
+       * absent from the hub, and publishing there would address nobody.
+       */
+      const ingest = (event: AgentFrame | AgentEventPayload) =>
+        Effect.gen(function* () {
+          const committed = isAgentEventPayload(event) ? yield* agentLog.append(event) : event;
+          if (committed._tag === "agent.status" && committed.state !== lastAgentState) {
+            lastAgentState = committed.state;
+            yield* stateObserver.onState(spec.id, committed.state);
+          }
+          if (phase === "active") yield* hub.publish(committed);
+          else pendingEvents.push(committed);
+        });
+
+      // A foreign agent reporting over the control socket is the same fact as
+      // our own harness emitting `agent.status`, so it takes the same door and
+      // lands in the same log. Without this a self-reported state would be live
+      // only, and a watcher resuming from a cursor would never see it.
+      yield* Ref.update(reporters, (current) =>
+        new Map(current).set(spec.id, (state: ReportedAgentState) =>
+          ingest({ _tag: "agent.status", session: spec.id, state }),
+        ),
+      );
+
       if (session.events) {
         yield* FiberMap.run(
           pumps,
           `events:${spec.id}`,
-          session.events.pipe(
-            Stream.runForEach((event) =>
-              Effect.gen(function* () {
-                const committed = isAgentEventPayload(event)
-                  ? yield* agentLog.append(event)
-                  : event;
-                if (committed._tag === "agent.status" && committed.state !== lastAgentState) {
-                  lastAgentState = committed.state;
-                  yield* stateObserver.onState(spec.id, committed.state);
-                }
-                if (phase === "active") yield* hub.publish(committed);
-                else pendingEvents.push(committed);
-              }),
-            ),
-          ),
+          session.events.pipe(Stream.runForEach(ingest)),
         );
       }
 
@@ -382,6 +416,17 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     return {
       prepare,
       spawn,
+      /**
+       * A process's report about itself, from the control socket.
+       *
+       * Unknown sessions are ignored rather than failed: the reporter is a hook
+       * inside somebody else's agent, and a pane that closed while its hook was
+       * mid-write is ordinary, not an error anyone can act on.
+       */
+      report: (id: string, state: ReportedAgentState) =>
+        Ref.get(reporters).pipe(
+          Effect.flatMap((current) => current.get(id)?.(state) ?? Effect.void),
+        ),
 
       handle: Effect.fnUntraced(function* (frame: AttachFrame) {
         yield* Match.value(frame).pipe(
