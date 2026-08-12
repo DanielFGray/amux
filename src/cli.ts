@@ -8,50 +8,12 @@
  * - `amux status|stop [id]` — one-shot RPC lifecycle commands
  * - `amux <command> [args]` — invoke a remote command via the daemon RPC
  * - `amux help` — show usage
+ *
+ * Static imports are deliberately absent: Bun evaluates them before main() runs,
+ * so this file has none. Every subcommand lazy-loads only what it needs, keeping
+ * `--help`, `agent-state`, and `agent-hook` sub-millisecond.
  */
-import { Effect, Schema } from "effect";
-import { BunFileSystem } from "@effect/platform-bun";
-import { SessionStore, isSessionId } from "./session.ts";
-import { controlCall } from "./control-client.ts";
-import { commandDefinition, COMMAND_META, Command, type CommandTag } from "./commands.ts";
-import { parseArgs, generateHelp } from "./command-cli.ts";
-import {
-  isReportedAgentState,
-  reportAgentState,
-  ReportedAgentStateSchema,
-} from "./agent-state.ts";
-import { installOpencodeHook, uninstallOpencodeHook } from "./agent-hook.ts";
-
-function isCommandTag(s: string): s is CommandTag {
-  return s in COMMAND_META;
-}
-
-const runRpc = (id: string, values: readonly Command[]) =>
-  controlCall(id, (control) => {
-    const context = {
-      size: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
-      shell: [process.env.SHELL ?? "sh"],
-      cwd: process.cwd(),
-    };
-    return control.Batch({ values: [...values], context });
-  }).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer));
-
-async function runCommands(id: string, values: readonly Command[]): Promise<number> {
-  try {
-    const { outputs } = await Effect.runPromise(runRpc(id, values));
-    for (const { result } of outputs) {
-      if (result !== undefined) {
-        if (typeof result === "object")
-          process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-        else process.stdout.write(String(result) + "\n");
-      }
-    }
-    return 0;
-  } catch (error) {
-    console.error(`error: ${String(error)}`);
-    return 1;
-  }
-}
+import { HELP_TEXT } from "./command-help.ts";
 
 export function splitCommandArgs(argv: readonly string[]): string[][] {
   const groups: string[][] = [[]];
@@ -62,30 +24,14 @@ export function splitCommandArgs(argv: readonly string[]): string[][] {
   return groups;
 }
 
-function parseCommandGroup(argv: string[]):
-  | {
-      tag: CommandTag;
-      parsed: Record<string, unknown>;
-      positionalSession?: string;
-    }
-  | { errors: string[] } {
-  const tag = argv[0];
-  if (!tag || !isCommandTag(tag))
-    return { errors: [`unknown command: ${JSON.stringify(tag ?? "")}`] };
-
-  const direct = parseArgs(tag, argv.slice(1));
-  if (direct.parsed) return { tag, parsed: direct.parsed };
-
-  const positionalSession = argv[1];
-  if (positionalSession && isSessionId(positionalSession)) {
-    const legacy = parseArgs(tag, argv.slice(2));
-    if (legacy.parsed) return { tag, parsed: legacy.parsed, positionalSession };
-  }
-  return { errors: direct.errors };
-}
-
+/**
+ * Resolve the daemon session id for a command invocation.
+ *
+ * Accepts the target string directly (not a CommandTag) so this
+ * file avoids importing the full commands module.
+ */
 export function resolveCommandSession(
-  tag: CommandTag,
+  target: string,
   positionalSession: string | undefined,
   parsed: Record<string, unknown>,
 ): string | null {
@@ -93,56 +39,7 @@ export function resolveCommandSession(
   if (positionalSession) return positionalSession;
   const fromPane = process.env.AMUX_DAEMON_SESSION;
   if (fromPane) return fromPane;
-  return commandDefinition(tag).target === "session" ? null : "default";
-}
-
-async function runAgentState(argv: string[]): Promise<number> {
-  const state =
-    argv.find((value) => value.startsWith("--state="))?.slice(8) ??
-    (argv.includes("--state") ? argv[argv.indexOf("--state") + 1] : undefined);
-  // The same two-variable contract the installed hooks read: a pane that can be
-  // reported on is a pane that was told its own id and where to write.
-  const socketPath = process.env.AMUX_AGENT_STATE_SOCKET;
-  const agent = process.env.AMUX_PANE_ID;
-  if (!socketPath || !agent) {
-    console.error("error: 'agent-state' requires a managed pane");
-    return 2;
-  }
-  if (!isReportedAgentState(state)) {
-    console.error(`error: --state must be one of ${ReportedAgentStateSchema.literals.join(", ")}`);
-    return 2;
-  }
-  try {
-    await reportAgentState(socketPath, agent, state);
-    return 0;
-  } catch (error) {
-    console.error(`error: ${String(error)}`);
-    return 1;
-  }
-}
-
-async function runAgentHook(argv: string[]): Promise<number> {
-  const [vendor, action] = argv;
-  if (vendor !== "opencode" || (action !== "install" && action !== "uninstall")) {
-    console.error("usage: amux agent-hook opencode <install|uninstall> --yes");
-    return 2;
-  }
-  if (!argv.includes("--yes")) {
-    console.error("error: editing opencode config requires explicit consent; add --yes");
-    return 2;
-  }
-  try {
-    if (action === "install") {
-      console.log(`installed opencode hook at ${await installOpencodeHook()}`);
-    } else {
-      const removed = await uninstallOpencodeHook();
-      console.log(removed ? "removed opencode hook" : "no opencode hook installed");
-    }
-    return 0;
-  } catch (error) {
-    console.error(`error: ${String(error)}`);
-    return 1;
-  }
+  return target === "session" ? null : "default";
 }
 
 async function main(): Promise<number> {
@@ -150,14 +47,10 @@ async function main(): Promise<number> {
   const sub = argv[0];
 
   if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
-    if (sub === "--help" || sub === "-h" || !sub) {
-      process.stdout.write(generateHelp() + "\n");
-      return 0;
-    }
-    return 1;
+    process.stdout.write(HELP_TEXT + "\n");
+    return 0;
   }
 
-  // Legacy commands
   if (sub === "daemon") {
     const { runDaemonMain } = await import("./daemon-main.ts");
     runDaemonMain(argv[1]);
@@ -169,13 +62,100 @@ async function main(): Promise<number> {
     return await runSessionCli([sub, argv[1] ?? "default"]);
   }
 
-  if (sub === "agent-state") return await runAgentState(argv.slice(1));
-  if (sub === "agent-hook") return await runAgentHook(argv.slice(1));
+  if (sub === "agent-state") {
+    return await (async () => {
+      const state =
+        argv.find((v) => v.startsWith("--state="))?.slice(8) ??
+        (argv.includes("--state") ? argv[argv.indexOf("--state") + 1] : undefined);
+      const socketPath = process.env.AMUX_AGENT_STATE_SOCKET;
+      const agent = process.env.AMUX_PANE_ID;
+      if (!socketPath || !agent) {
+        console.error("error: 'agent-state' requires a managed pane");
+        return 2;
+      }
+      const { isReportedAgentState, reportAgentState, ReportedAgentStateSchema } =
+        await import("./agent-state.ts");
+      if (!isReportedAgentState(state)) {
+        console.error(
+          `error: --state must be one of ${ReportedAgentStateSchema.literals.join(", ")}`,
+        );
+        return 2;
+      }
+      try {
+        await reportAgentState(socketPath, agent, state);
+        return 0;
+      } catch (error) {
+        console.error(`error: ${String(error)}`);
+        return 1;
+      }
+    })();
+  }
 
-  // Command dispatch
+  if (sub === "agent-hook") {
+    return await (async () => {
+      const { installOpencodeHook, uninstallOpencodeHook } = await import("./agent-hook.ts");
+      const [vendor, action] = argv.slice(1);
+      if (vendor !== "opencode" || (action !== "install" && action !== "uninstall")) {
+        console.error("usage: amux agent-hook opencode <install|uninstall> --yes");
+        return 2;
+      }
+      if (!argv.includes("--yes")) {
+        console.error("error: editing opencode config requires explicit consent; add --yes");
+        return 2;
+      }
+      try {
+        if (action === "install") {
+          console.log(`installed opencode hook at ${await installOpencodeHook()}`);
+        } else {
+          const removed = await uninstallOpencodeHook();
+          console.log(removed ? "removed opencode hook" : "no opencode hook installed");
+        }
+        return 0;
+      } catch (error) {
+        console.error(`error: ${String(error)}`);
+        return 1;
+      }
+    })();
+  }
+
+  // Command dispatch — needs Effect, control-client, commands, etc.
+  const [effectMod, { SessionStore, isSessionId }, { controlCall }, commandsMod, { parseArgs }] =
+    await Promise.all([
+      import("effect"),
+      import("./session.ts"),
+      import("./control-client.ts"),
+      import("./commands.ts"),
+      import("./command-cli.ts"),
+    ]);
+  const { Effect, Schema } = effectMod;
+  const { COMMAND_META, Command, commandDefinition } = commandsMod;
+  type CommandTag = (typeof Command.Type)["_tag"];
+
+  function isCommandTag(s: string): s is CommandTag {
+    return s in COMMAND_META;
+  }
+
+  function parseCommandGroup(argv: string[]):
+    | { tag: CommandTag; parsed: Record<string, unknown>; positionalSession?: string }
+    | { errors: string[] } {
+    const tag = argv[0];
+    if (!tag || !isCommandTag(tag))
+      return { errors: [`unknown command: ${JSON.stringify(tag ?? "")}`] };
+
+    const direct = parseArgs(tag, argv.slice(1));
+    if (direct.parsed) return { tag, parsed: direct.parsed };
+
+    const positionalSession = argv[1];
+    if (positionalSession && isSessionId(positionalSession)) {
+      const legacy = parseArgs(tag, argv.slice(2));
+      if (legacy.parsed) return { tag, parsed: legacy.parsed, positionalSession };
+    }
+    return { errors: direct.errors };
+  }
+
   if (isCommandTag(sub)) {
     const groups = splitCommandArgs(argv);
-    const commands: Command[] = [];
+    const cmds: (typeof Command.Type)[] = [];
     let id: string | undefined;
     for (const group of groups) {
       const parsed = parseCommandGroup(group);
@@ -183,28 +163,57 @@ async function main(): Promise<number> {
         console.error(`error: ${parsed.errors.join("\n  ")}`);
         return 2;
       }
-      const commandId = resolveCommandSession(parsed.tag, parsed.positionalSession, parsed.parsed);
-      if (!commandId) {
+      const targetId: string | null = resolveCommandSession(
+        commandDefinition(parsed.tag).target,
+        parsed.positionalSession,
+        parsed.parsed,
+      );
+      if (!targetId) {
         console.error(`error: '${parsed.tag}' requires a session id or a managed pane`);
         return 2;
       }
-      if (id !== undefined && commandId !== id) {
+      if (id !== undefined && targetId !== id) {
         console.error("error: chained commands must target the same daemon session");
         return 2;
       }
-      id = commandId;
-      commands.push(Schema.decodeUnknownSync(Command)({ _tag: parsed.tag, ...parsed.parsed }));
+      id = targetId;
+      cmds.push(Schema.decodeUnknownSync(Command)({ _tag: parsed.tag, ...parsed.parsed }));
     }
-    return await runCommands(id!, commands);
+
+    const { BunFileSystem } = await import("@effect/platform-bun");
+    const runResult = Effect.runPromise(
+      controlCall(id!, (control) => {
+        const context = {
+          size: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
+          shell: [process.env.SHELL ?? "sh"],
+          cwd: process.cwd(),
+        };
+        return control.Batch({ values: [...cmds], context });
+      }).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+    );
+
+    try {
+      const { outputs } = await runResult;
+      for (const { result } of outputs) {
+        if (result !== undefined) {
+          if (typeof result === "object")
+            process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+          else process.stdout.write(String(result) + "\n");
+        }
+      }
+      return 0;
+    } catch (error) {
+      console.error(`error: ${String(error)}`);
+      return 1;
+    }
   }
 
-  // Session attach (default)
-  const sessionId = sub;
-  if (!isSessionId(sessionId)) {
-    console.error(`unknown command or invalid session id: ${JSON.stringify(sessionId)}`);
+  // Session attach
+  if (!isSessionId(sub)) {
+    console.error(`unknown command or invalid session id: ${JSON.stringify(sub)}`);
     return 2;
   }
-  process.env.AMUX_SESSION = sessionId;
+  process.env.AMUX_SESSION = sub;
   await import("./main.tsx");
   return 0;
 }

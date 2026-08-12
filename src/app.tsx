@@ -328,7 +328,7 @@ function buildApp(
   let projectedRevision = -1;
   let projection = Promise.resolve();
   let disposed = false;
-  let runProjectedCommand: (value: Command) => void = () => {};
+  let runProjectedCommand: (value: Command) => void = () => { };
   const project = (model: WorkspaceSnapshot): Promise<void> => {
     if (disposed) return Promise.resolve();
     if (model.revision <= projectedRevision) return projection;
@@ -369,6 +369,7 @@ function buildApp(
       .filter((agent) => agent.state === AgentState.Blocked)
       .map((agent) => agent.id),
   });
+
   const runPanelCommand = (
     value: Command,
     input?: string,
@@ -887,9 +888,9 @@ function buildApp(
               setCaptureView((view) =>
                 view
                   ? {
-                      ...view,
-                      error: `could not save capture to ${path}: ${error instanceof Error ? error.message : String(error)}`,
-                    }
+                    ...view,
+                    error: `could not save capture to ${path}: ${error instanceof Error ? error.message : String(error)}`,
+                  }
                   : view,
               );
             });
@@ -928,10 +929,10 @@ function buildApp(
             setChooseView((view) =>
               view
                 ? {
-                    ...view,
-                    buffers: [...buffers],
-                    selected: Math.min(view.selected, Math.max(0, buffers.length - 1)),
-                  }
+                  ...view,
+                  buffers: [...buffers],
+                  selected: Math.min(view.selected, Math.max(0, buffers.length - 1)),
+                }
                 : view,
             );
           })
@@ -948,7 +949,7 @@ function buildApp(
    */
   function sendKeysTarget(): SendTarget | null {
     const focused = spaces.activeWindow?.focused ?? null;
-    if (focused) return { write() {}, describe: () => focused.session.title || "pane" };
+    if (focused) return { write() { }, describe: () => focused.session.title || "pane" };
     return null;
   }
 
@@ -1015,20 +1016,20 @@ function buildApp(
   const handlers: CommandHandlers = {
     // Suspended rather than `sync`: the window has to be read when the command
     // runs, not when the table is built.
-    "pane.split": (value) => runPanelCommand(value),
-    "pane.next": (value) => runPanelCommand(value),
-    "pane.last": (value) => runPanelCommand(value),
-    "pane.focus": (value) => runPanelCommand(value),
-    "pane.select": (value) => runPanelCommand(value),
-    "pane.resize": (value) => runPanelCommand(value),
-    "pane.resize-divider": (value) => runPanelCommand(value),
-    "pane.zoom": (value) => runPanelCommand(value),
-    "pane.float": (value) => runPanelCommand(value),
-    "pane.swap": (value) => runPanelCommand(value),
-    "pane.close": (value) => runPanelCommand(value),
-    "pane.break": (value) => runPanelCommand(value),
-    "pane.join": (value) => runPanelCommand(value),
-    "pane.move": (value) => runPanelCommand(value),
+    "pane.split": runPanelCommand,
+    "pane.next": runPanelCommand,
+    "pane.last": runPanelCommand,
+    "pane.focus": runPanelCommand,
+    "pane.select": runPanelCommand,
+    "pane.resize": runPanelCommand,
+    "pane.resize-divider": runPanelCommand,
+    "pane.zoom": runPanelCommand,
+    "pane.float": runPanelCommand,
+    "pane.swap": runPanelCommand,
+    "pane.close": runPanelCommand,
+    "pane.break": runPanelCommand,
+    "pane.join": runPanelCommand,
+    "pane.move": runPanelCommand,
     "pane.send-keys": ({ keys }) =>
       Effect.suspend(() => {
         let input = "";
@@ -1097,36 +1098,37 @@ function buildApp(
         openChooseBuffer(buffers);
       }),
 
-    "window.new": (value) => runPanelCommand(value),
-    "window.next": (value) => runPanelCommand(value),
-    "window.previous": (value) => runPanelCommand(value),
-    "window.last": (value) => runPanelCommand(value),
-    "window.select": (value) => runPanelCommand(value),
-    "window.rename": (value) => runPanelCommand(value),
-    "window.close": (value) => runPanelCommand(value),
-    "window.next-layout": (value) => runPanelCommand(value),
-    "window.select-layout": (value) => runPanelCommand(value),
-    "window.synchronize-panes": (value) => runPanelCommand(value),
+    "window.new": runPanelCommand,
+    "window.next": runPanelCommand,
+    "window.previous": runPanelCommand,
+    "window.last": runPanelCommand,
+    "window.select": runPanelCommand,
+    "window.rename": runPanelCommand,
+    "window.close": runPanelCommand,
+    "window.next-layout": runPanelCommand,
+    "window.select-layout": runPanelCommand,
+    "window.synchronize-panes": runPanelCommand,
 
-    "agent.new": (value) => runPanelCommand(value),
-    "agent.steer": (value) => runPanelCommand(value),
-    "agent.interrupt": (value) => runPanelCommand(value),
+    "agent.new": runPanelCommand,
+    "agent.steer": runPanelCommand,
+    "agent.interrupt": runPanelCommand,
+    "agent.permission": runPanelCommand,
     notify: (value) =>
       session.run(value).pipe(
         Effect.asVoid,
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
-    "session.kill": (value) => runPanelCommand(value),
-    "session.restart": (value) => runPanelCommand(value),
-    "session.reveal": (value) => runPanelCommand(value),
-    "session.next-blocked": (value) => runPanelCommand(value),
+    "session.kill": runPanelCommand,
+    "session.restart": runPanelCommand,
+    "session.reveal": runPanelCommand,
+    "session.next-blocked": runPanelCommand,
 
-    "space.new": (value) => runPanelCommand(value),
-    "space.select": (value) => runPanelCommand(value),
-    "space.rename": (value) => runPanelCommand(value),
-    "space.close": (value) => runPanelCommand(value),
-    "space.next": (value) => runPanelCommand(value),
-    "space.previous": (value) => runPanelCommand(value),
+    "space.new": runPanelCommand,
+    "space.select": runPanelCommand,
+    "space.rename": runPanelCommand,
+    "space.close": runPanelCommand,
+    "space.next": runPanelCommand,
+    "space.previous": runPanelCommand,
 
     // The name arrives as a string from every surface, so it is checked here
     // rather than trusted: the table is what says whether it exists and what it
@@ -1548,14 +1550,14 @@ function buildApp(
               values?.[0] && credentials
                 ? selected.connections[0]
                   ? credentials.update(selected.connections[0].id, {
+                    value: { type: "key", key: Redacted.make(values[0]) },
+                  })
+                  : credentials
+                    .create({
+                      integrationID: selected.id,
                       value: { type: "key", key: Redacted.make(values[0]) },
                     })
-                  : credentials
-                      .create({
-                        integrationID: selected.id,
-                        value: { type: "key", key: Redacted.make(values[0]) },
-                      })
-                      .pipe(Effect.asVoid)
+                    .pipe(Effect.asVoid)
                 : Effect.void,
             ),
           ),
@@ -1893,13 +1895,13 @@ function buildApp(
                   setKeybindPicker((current) =>
                     current
                       ? {
-                          ...current,
-                          query,
-                          selected: 0,
-                          entries: sortKeybindEntries(
-                            filterPaletteEntries(allPaletteEntries(), query),
-                          ),
-                        }
+                        ...current,
+                        query,
+                        selected: 0,
+                        entries: sortKeybindEntries(
+                          filterPaletteEntries(allPaletteEntries(), query),
+                        ),
+                      }
                       : current,
                   )
                 }

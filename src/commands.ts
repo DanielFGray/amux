@@ -1,5 +1,6 @@
 import { Cause, Effect, Exit, JSONSchema, Schema as S } from "effect";
 import { LAYOUT_PRESETS } from "./layout.ts";
+import { PermissionDecisionSchema } from "./permission.ts";
 
 /**
  * The commands, as values.
@@ -385,6 +386,21 @@ const AgentSteer = define(
   { ...SessionTarget, message: S.String },
   { desc: "send a message to an agent", group: "agents", target: "workspace", exposure: "human" },
 );
+const AgentPermission = define(
+  "agent.permission",
+  {
+    ...SessionTarget,
+    request: S.String,
+    decision: PermissionDecisionSchema,
+    feedback: S.optional(S.String),
+  },
+  {
+    desc: "answer an agent's permission request",
+    group: "agents",
+    target: "workspace",
+    exposure: "human",
+  },
+);
 const AgentInterrupt = define(
   "agent.interrupt",
   { ...SessionTarget, reason: S.optional(S.String) },
@@ -571,6 +587,7 @@ export const COMMAND_DEFS = [
   AgentNew,
   AgentSteer,
   AgentInterrupt,
+  AgentPermission,
   Notify,
   SessionKill,
   SessionRestart,

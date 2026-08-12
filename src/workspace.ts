@@ -1,4 +1,5 @@
 import type { Command } from "./commands.ts";
+import type { PermissionAnswer } from "./effect/AttachProtocol.ts";
 import { randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 import { worktreeDirname } from "./git.ts";
@@ -258,6 +259,7 @@ export type WorkspaceAction =
   | { readonly _tag: "spawn"; readonly agent: PersistedSession }
   | { readonly _tag: "steer"; readonly agent: string; readonly message: string }
   | { readonly _tag: "interrupt"; readonly agent: string; readonly reason?: string }
+  | { readonly _tag: "decide"; readonly agent: string; readonly answer: PermissionAnswer }
   | { readonly _tag: "kill"; readonly agent: string }
   | { readonly _tag: "restart"; readonly agent: string }
   | { readonly _tag: "input"; readonly agent: string; readonly data: string };
@@ -578,6 +580,19 @@ export function applyWorkspaceCommand(
     case "agent.steer": {
       if (command.session)
         actions.push({ _tag: "steer", agent: command.session, message: command.message });
+      break;
+    }
+    case "agent.permission": {
+      if (command.session)
+        actions.push({
+          _tag: "decide",
+          agent: command.session,
+          answer: {
+            request: command.request,
+            decision: command.decision,
+            ...(command.feedback === undefined ? {} : { feedback: command.feedback }),
+          },
+        });
       break;
     }
     case "agent.interrupt": {

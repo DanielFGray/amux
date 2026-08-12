@@ -130,16 +130,21 @@ export const makeLayer = (
                 if (!value) return yield* Effect.fail("credential missing");
                 return integration.authorize(value, request);
               });
-            // The catalog is the one place a provider's host is written down,
-            // so an OpenAI-compatible integration reads it from there rather
-            // than carrying a copy. Absent for a provider the catalog does not
-            // list, and for every provider whose SDK already knows its host.
+            // The catalog is the one place a provider's host and protocol are
+            // written down, so an integration reads them from there rather than
+            // carrying a copy. Both are stated per model and fall back to the
+            // provider: a gateway names its own protocol once and overrides it
+            // only on the models that differ.
             const provider = yield* catalog.provider(integrationID);
+            const entry = yield* catalog.model(integrationID, model);
+            const apiUrl = entry?.provider?.api ?? provider?.api;
+            const npm = entry?.provider?.npm ?? provider?.npm;
             return integration.model({
               model,
               transformClient: (client) =>
                 HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
-              ...(provider?.api ? { apiUrl: provider.api } : {}),
+              ...(apiUrl ? { apiUrl } : {}),
+              ...(npm ? { npm } : {}),
             });
           }),
       } satisfies Interface;

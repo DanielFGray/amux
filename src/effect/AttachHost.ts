@@ -19,7 +19,7 @@
 import { Context, Effect, ExecutionStrategy, Layer, Runtime, Scope } from "effect";
 import { createServer, type Server } from "node:net";
 import { AttachHub } from "./AttachHub.ts";
-import type { AttachFrame } from "./AttachProtocol.ts";
+import type { AttachFrame, PermissionAnswer } from "./AttachProtocol.ts";
 import { AgentLog, AgentLogDefault, type AgentLogService } from "./AgentLog.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
@@ -90,6 +90,8 @@ export interface AttachHostService {
   /** Raw child input used by daemon-side pane.send-keys. */
   readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
+  /** Answer a permission request a native agent session is blocked on. */
+  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly capture: (id: string) => Effect.Effect<string, PtyError>;
   /**
    * The server's paste buffer stack. Owned here because it belongs to the
@@ -236,6 +238,8 @@ const make = (
         }),
       interrupt: (id, reason) =>
         supervisor.handle({ _tag: "agent.interrupt", session: id, ...(reason ? { reason } : {}) }),
+      decide: (id, answer) =>
+        supervisor.handle({ _tag: "agent.permission", session: id, ...answer }),
       capture: supervisor.capture,
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),

@@ -1,5 +1,6 @@
 import { Schema as S } from "effect";
 import { ReportedAgentStateSchema } from "../agent-state.ts";
+import { PermissionDecisionSchema, PermissionRuleSchema } from "../permission.ts";
 
 /**
  * The framed wire protocol between a client and the attach daemon.
@@ -157,12 +158,27 @@ const toolResultFields = {
 const ToolResultPayload = S.TaggedStruct("tool.result", toolResultFields);
 const ToolResult = S.TaggedStruct("tool.result", { ...toolResultFields, sequence: S.NonNegativeInt });
 
+/**
+ * An agent asking to be allowed to do something, and blocked until it is answered.
+ *
+ * `action` and `resources` are what policy is evaluated against — the verb a
+ * tool declares and the paths or shell segments it would touch — while `tool`
+ * and `input` are what the pane shows. `save` is what "always" would record, so
+ * the human is choosing between rules they can read rather than trusting the UI
+ * to invent one afterwards.
+ *
+ * There is no call id: a tool handler is given its parameters and nothing else,
+ * so the asking tool cannot name the call it belongs to. The transcript places
+ * the question after the call that raised it, which is the same answer.
+ */
 const permissionRequestFields = {
   session: S.String,
   turn: S.String,
   request: S.String,
   tool: S.String,
-  description: S.String,
+  action: S.String,
+  resources: S.Array(S.String),
+  save: S.Array(PermissionRuleSchema),
   input: S.Unknown,
 };
 const PermissionRequestPayload = S.TaggedStruct("permission.request", permissionRequestFields);
@@ -171,12 +187,24 @@ const PermissionRequest = S.TaggedStruct("permission.request", {
   sequence: S.NonNegativeInt,
 });
 
+/**
+ * The answer, from a client or echoed by the agent once it has taken one.
+ *
+ * The agent re-emits the decision it acted on, so every attached client
+ * converges on the answer that actually happened rather than on the one it
+ * sent: with several panes on one session, only the first reply resolves the
+ * request and the rest are dropped.
+ *
+ * There is no `turn`: the request id names the pending question, and the agent
+ * holding it already knows which turn asked. A client that echoed the turn back
+ * could only ever agree or be wrong.
+ */
 const permissionResponseFields = {
   session: S.String,
-  turn: S.String,
   request: S.String,
-  approved: S.Boolean,
-  reason: S.optional(S.String),
+  decision: PermissionDecisionSchema,
+  /** What to tell the model about a refusal, so a rejected turn can correct itself. */
+  feedback: S.optional(S.String),
 };
 const PermissionResponsePayload = S.TaggedStruct("permission.response", permissionResponseFields);
 const PermissionResponse = S.TaggedStruct("permission.response", {
@@ -228,6 +256,23 @@ const AgentInterrupt = S.TaggedStruct("agent.interrupt", {
   session: S.String,
   reason: S.optional(S.String),
 });
+
+/**
+ * A client answering a question the agent is blocked on.
+ *
+ * Distinct from `permission.response`, which is the durable event the agent
+ * emits once it has acted: an answer is a request to the session, and several
+ * clients may send one for the same request. The agent decides which is the
+ * answer, then says so in its own frame.
+ */
+const AgentPermission = S.TaggedStruct("agent.permission", {
+  session: S.String,
+  request: S.String,
+  decision: PermissionDecisionSchema,
+  feedback: S.optional(S.String),
+});
+/** An answer travelling towards a session, before the session it belongs to is known. */
+export type PermissionAnswer = Omit<S.Schema.Type<typeof AgentPermission>, "_tag" | "session">;
 
 const ErrorFrame = S.TaggedStruct("error", {
   message: S.String,
@@ -284,6 +329,7 @@ export const AttachFrame = S.Union(
   TurnEnd,
   AgentSteer,
   AgentInterrupt,
+  AgentPermission,
   ErrorFrame,
   Ping,
   Pong,

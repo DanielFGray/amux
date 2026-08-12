@@ -2,6 +2,8 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DEFAULT_LEADER, type Keys } from "./bindings.ts";
 import { type OptionDeltas } from "./options.ts";
+import { Option, Schema as S } from "effect";
+import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
 
 export interface PluginSpec {
   readonly path: string;
@@ -25,6 +27,11 @@ export interface Config {
    * { path, enabled } object. Relative paths resolve against the config
    * directory. Malformed entries are silently skipped. */
   plugins: PluginSpec[];
+  /** Standing agent permission policy, in force in every project. Written by
+   * hand: what the user approves in a pane is recorded against that project
+   * instead, so an approval given in one repository cannot follow an agent into
+   * the next. This is where a refusal that should hold everywhere belongs. */
+  permissions: PermissionRule[];
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -34,6 +41,7 @@ export const DEFAULT_CONFIG: Config = {
     { path: "builtin:amux.sidebar", enabled: true },
     { path: "builtin:amux.agent-harness", enabled: true },
   ],
+  permissions: [],
 };
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config");
@@ -60,8 +68,21 @@ export function decodeConfig(loaded: unknown): Config {
       loaded.plugins === undefined
         ? structuredClone(DEFAULT_CONFIG.plugins)
         : mergeDefaultPlugins(sanitizePlugins(loaded.plugins)),
+    permissions: sanitizePermissions(loaded.permissions),
   };
 }
+
+/** Drop rules the evaluator could not read rather than the file that holds
+ *  them: a typo in one rule must not silently discard the refusals under it. */
+function sanitizePermissions(raw: unknown): PermissionRule[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    const rule = decodePermissionRule(entry);
+    return Option.isSome(rule) ? [rule.value] : [];
+  });
+}
+
+const decodePermissionRule = S.decodeUnknownOption(PermissionRuleSchema);
 
 /** New bundled plugins are enabled for existing configs unless the user has an
  * explicit entry for that path. An explicit disabled entry remains authoritative. */

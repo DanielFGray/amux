@@ -161,6 +161,7 @@ function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
         }));
       }),
     interrupt: () => Effect.void,
+    decide: () => Effect.void,
   };
 }
 

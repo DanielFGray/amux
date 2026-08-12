@@ -53,3 +53,22 @@ Plugins are trusted in-process TypeScript modules loaded at startup. The default
 Relative paths resolve from the config directory. A plugin must default-export an object with `id`, `apiVersion: "1"`, and an Effect `effect` function. The effect receives a value-only `PanelContext`, registers panels with `ctx.registerPanel`, and everything registered is removed when the plugin is disabled or fails. `PanelContext.display()` provides cloned space, window, and agent rows with state and blocked counts; `examples/agent-dashboard.tsx` uses that projection for a live agent roster. See `examples/status-bar.tsx` for a minimal bottom-bar plugin, or `examples/agent-triage.tsx` for a right-side attention rail.
 
 Plugins must invoke workspace commands through `ctx.panel.run()` and must not mutate client projection objects or access terminal handles.
+
+## Agent permissions
+
+Everything the bundled agent does that changes something asks first. Reading, globbing and grepping do not. A blocked pane shows the call and four answers: `o` once, `a` always, `d` deny, `e` deny with a reason the model is told.
+
+`always` records a rule, and the rule is shown before you accept it — `git status --porcelain` records `bash git status *`, a file write records `write ./**`. A command is split on `;`, `&&`, `||` and `|` before it is judged, so a rule for `ls *` does not let `ls; rm -rf ~` through; a command containing `$(…)`, backticks, `<(…)` or `eval` always asks, because its text is not what runs.
+
+Approvals are per project. They live in `$XDG_STATE_HOME/amux/projects/<project>/amux.db`, keyed on the repository root, so a rule follows every worktree of one repo and reaches no other.
+
+A standing rule for every project goes in `config.json`. `deny` there cannot be overridden by an approval:
+
+```json
+{
+  "permissions": [
+    { "action": "bash", "resource": "rm *", "effect": "deny" },
+    { "action": "read", "resource": "*.env", "effect": "ask" }
+  ]
+}
+```

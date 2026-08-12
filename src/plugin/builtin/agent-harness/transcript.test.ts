@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import {
   Transcript,
   appendTranscriptFrame,
+  pendingPermission,
+  permissionSummary,
   serializeTranscript,
+  toolSummary,
   type TranscriptBlock,
 } from "./transcript.ts";
 
@@ -90,7 +93,9 @@ test("tool.params-start creates a block that tool.params-delta appends to", () =
     blocks,
     frame({ _tag: "tool.params-start", turn: "t1", call: "c1", tool: "grep" }),
   );
-  expect(blocks).toEqual([{ kind: "tool", turn: "t1", call: "c1", name: "grep", input: "" }]);
+  expect(blocks).toEqual([
+    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: "", streaming: true },
+  ]);
   blocks = appendTranscriptFrame(
     blocks,
     frame({ _tag: "tool.params-delta", turn: "t1", call: "c1", delta: "pat" }),
@@ -100,7 +105,7 @@ test("tool.params-start creates a block that tool.params-delta appends to", () =
     frame({ _tag: "tool.params-delta", turn: "t1", call: "c1", delta: "tern" }),
   );
   expect(blocks).toEqual([
-    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: "pattern" },
+    { kind: "tool", turn: "t1", call: "c1", name: "grep", input: "pattern", streaming: true },
   ]);
 });
 
@@ -136,11 +141,12 @@ test("tool.start after partial streaming replaces the accumulated input", () => 
       call: "c1",
       name: "grep",
       input: { pattern: "real" },
+      streaming: false,
     },
   ]);
 });
 
-test("tool.params-delta without prior start creates a loose block", () => {
+test("tool.params-delta without prior start creates a loose streaming block", () => {
   let blocks: readonly TranscriptBlock[] = [];
   blocks = appendTranscriptFrame(
     blocks,
@@ -151,7 +157,9 @@ test("tool.params-delta without prior start creates a loose block", () => {
       delta: "orphan",
     }),
   );
-  expect(blocks).toEqual([{ kind: "tool", turn: "t1", call: "c1", name: "", input: "orphan" }]);
+  expect(blocks).toEqual([
+    { kind: "tool", turn: "t1", call: "c1", name: "", input: "orphan", streaming: true },
+  ]);
 });
 
 test("tool.params-delta after tool.start does not corrupt the resolved input", () => {
@@ -316,4 +324,90 @@ test("a retained transcript keeps the cause of a failed turn", () => {
     "error> 400 bad schema",
     "status> failed",
   ]);
+});
+
+const toolBlock = (overrides: Partial<Extract<TranscriptBlock, { kind: "tool" }>>) => ({
+  kind: "tool" as const,
+  turn: "t1",
+  call: "c1",
+  name: "bash",
+  input: {},
+  ...overrides,
+});
+
+/**
+ * The opencode-style reveal: while params stream the pane shows a placeholder
+ * ("Writing command..." / "Preparing write..."), and once the input resolves it
+ * shows the actual command or path instead of raw partial JSON.
+ */
+test("a streaming bash tool renders the writing placeholder, then the command", () => {
+  expect(toolSummary(toolBlock({ name: "bash", streaming: true, input: "" }))).toBe(
+    "~ Writing command...",
+  );
+  expect(
+    toolSummary(toolBlock({ name: "bash", input: { command: "bun test" } })),
+  ).toBe("$ bun test");
+  expect(
+    toolSummary(
+      toolBlock({ name: "bash", input: { command: "bun test" }, output: "ok", isError: false }),
+    ),
+  ).toBe("$ bun test -> ok");
+});
+
+test("write and read tools reveal their paths, grep its pattern", () => {
+  expect(toolSummary(toolBlock({ name: "write", streaming: true, input: "" }))).toBe(
+    "~ Preparing write...",
+  );
+  expect(
+    toolSummary(toolBlock({ name: "write", input: { path: "src/a.ts", content: "x" } })),
+  ).toBe("\u2190 src/a.ts");
+  expect(toolSummary(toolBlock({ name: "read", input: { path: "ARCHITECTURE.md" } }))).toBe(
+    "ARCHITECTURE.md",
+  );
+  expect(toolSummary(toolBlock({ name: "grep", input: { pattern: "createSignal" } }))).toBe(
+    "createSignal",
+  );
+});
+
+test("a resolved string input is not mistaken for streaming", () => {
+  expect(toolSummary(toolBlock({ name: "grep", input: "src", output: "12 matches" }))).toBe(
+    "src -> 12 matches",
+  );
+});
+
+test("unknown tools fall back to the raw input while streaming", () => {
+  expect(toolSummary(toolBlock({ name: "search", streaming: true, input: "" }))).toBe(
+    "~ Running...",
+  );
+});
+
+test("a permission request is pending until its answer arrives", () => {
+  const request = frame({
+    _tag: "permission.request",
+    turn: "t1",
+    request: "r1",
+    tool: "bash",
+    action: "bash",
+    resources: ["rm -rf build"],
+    save: [{ action: "bash", resource: "rm *", effect: "allow" }],
+    input: { command: "rm -rf build" },
+  });
+  const asked = appendTranscriptFrame([], request);
+  expect(pendingPermission(asked)).toMatchObject({ request: "r1", action: "bash" });
+  expect(permissionSummary(pendingPermission(asked)!)).toBe("bash: $ rm -rf build");
+
+  const answered = appendTranscriptFrame(
+    asked,
+    frame({ _tag: "permission.response", request: "r1", decision: "reject", feedback: "no" }),
+  );
+  expect(pendingPermission(answered)).toBeUndefined();
+  expect(serializeTranscript(answered, 80)).toEqual([
+    "permission> bash: $ rm -rf build [reject]",
+  ]);
+
+  // The retained model reduces the same pair the same way.
+  const transcript = new Transcript();
+  transcript.append(request);
+  transcript.append(frame({ _tag: "permission.response", request: "r1", decision: "always" }));
+  expect(transcript.snapshot()).toMatchObject([{ kind: "permission", decision: "always" }]);
 });

@@ -1,4 +1,5 @@
 import type { AgentFrame } from "../../../effect/AttachProtocol.ts";
+import type { PermissionDecision, PermissionRule } from "../../../permission.ts";
 
 export type TranscriptBlock =
   | { readonly kind: "user"; readonly turn: string; readonly text: string }
@@ -9,6 +10,9 @@ export type TranscriptBlock =
       readonly call: string;
       readonly name: string;
       readonly input: unknown;
+      /** Params are still arriving as partial JSON fragments. A resolved input
+       *  can legitimately be a bare string, so type alone cannot say pending. */
+      readonly streaming?: boolean;
       readonly output?: unknown;
       readonly isError?: boolean;
     }
@@ -17,9 +21,14 @@ export type TranscriptBlock =
       readonly turn: string;
       readonly request: string;
       readonly tool: string;
-      readonly description: string;
+      readonly action: string;
+      readonly resources: readonly string[];
+      /** What "always" would record, so the human approves a rule they can read. */
+      readonly save: readonly PermissionRule[];
       readonly input: unknown;
-      readonly approved?: boolean;
+      /** Absent while the request is still pending — the pane's cue to ask. */
+      readonly decision?: PermissionDecision;
+      readonly feedback?: string;
     }
   | {
       readonly kind: "status";
@@ -64,6 +73,7 @@ export class Transcript {
             call: frame.call,
             name: frame.tool,
             input: "",
+            streaming: true,
           });
         }
         break;
@@ -78,6 +88,7 @@ export class Transcript {
             call: frame.call,
             name: "",
             input: frame.delta,
+            streaming: true,
           });
         } else {
           const block = this.#blocks[index];
@@ -103,7 +114,12 @@ export class Transcript {
         } else {
           const block = this.#blocks[index];
           if (block?.kind === "tool" && typeof block.input === "string")
-            this.#blocks[index] = { ...block, name: frame.tool, input: frame.input };
+            this.#blocks[index] = {
+              ...block,
+              name: frame.tool,
+              input: frame.input,
+              streaming: false,
+            };
         }
         break;
       }
@@ -116,20 +132,13 @@ export class Transcript {
       }
       case "permission.request":
         this.#permissions.set(frame.request, this.#blocks.length);
-        this.#blocks.push({
-          kind: "permission",
-          turn: frame.turn,
-          request: frame.request,
-          tool: frame.tool,
-          description: frame.description,
-          input: frame.input,
-        });
+        this.#blocks.push(permissionBlock(frame));
         break;
       case "permission.response": {
         const index = this.#permissions.get(frame.request);
         const block = index === undefined ? undefined : this.#blocks[index];
         if (index !== undefined && block?.kind === "permission")
-          this.#blocks[index] = { ...block, approved: frame.approved };
+          this.#blocks[index] = decided(block, frame);
         break;
       }
       case "agent.status":
@@ -168,6 +177,44 @@ export class Transcript {
   }
 }
 
+type PermissionBlock = Extract<TranscriptBlock, { kind: "permission" }>;
+
+const permissionBlock = (
+  frame: Extract<AgentFrame, { _tag: "permission.request" }>,
+): PermissionBlock => ({
+  kind: "permission",
+  turn: frame.turn,
+  request: frame.request,
+  tool: frame.tool,
+  action: frame.action,
+  resources: frame.resources,
+  save: frame.save,
+  input: frame.input,
+});
+
+const decided = (
+  block: PermissionBlock,
+  frame: Extract<AgentFrame, { _tag: "permission.response" }>,
+): PermissionBlock => ({
+  ...block,
+  decision: frame.decision,
+  ...(frame.feedback === undefined ? {} : { feedback: frame.feedback }),
+});
+
+/**
+ * The request the pane must answer before the agent can continue, if any.
+ *
+ * A pending request is one with no decision. Only the last matters: the agent
+ * blocks on one question at a time, so an earlier undecided block can only be
+ * a request whose answer was lost with the session that asked it.
+ */
+export function pendingPermission(
+  blocks: readonly TranscriptBlock[],
+): PermissionBlock | undefined {
+  const last = blocks.findLast((block) => block.kind === "permission");
+  return last?.kind === "permission" && last.decision === undefined ? last : undefined;
+}
+
 /** Reduce semantic agent frames into stable render blocks. */
 export function appendTranscriptFrame(
   blocks: readonly TranscriptBlock[],
@@ -197,7 +244,7 @@ export function appendTranscriptFrame(
         if (prev.kind !== "tool") return blocks;
         return [
           ...blocks.slice(0, index),
-          { ...prev, input: frame.input },
+          { ...prev, name: frame.tool, input: frame.input, streaming: false },
           ...blocks.slice(index + 1),
         ];
       }
@@ -216,7 +263,7 @@ export function appendTranscriptFrame(
       }
       return [
         ...blocks,
-        { kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: "" },
+        { kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: "", streaming: true },
       ];
     }
     case "tool.params-delta": {
@@ -237,7 +284,7 @@ export function appendTranscriptFrame(
       }
       return [
         ...blocks,
-        { kind: "tool", turn: frame.turn, call: frame.call, name: "", input: frame.delta },
+        { kind: "tool", turn: frame.turn, call: frame.call, name: "", input: frame.delta, streaming: true },
       ];
     }
     case "tool.params-end":
@@ -256,17 +303,7 @@ export function appendTranscriptFrame(
       ];
     }
     case "permission.request":
-      return [
-        ...blocks,
-        {
-          kind: "permission",
-          turn: frame.turn,
-          request: frame.request,
-          tool: frame.tool,
-          description: frame.description,
-          input: frame.input,
-        },
-      ];
+      return [...blocks, permissionBlock(frame)];
     case "permission.response": {
       const index = blocks.findLastIndex(
         (block) => block.kind === "permission" && block.request === frame.request,
@@ -276,7 +313,7 @@ export function appendTranscriptFrame(
       if (permission.kind !== "permission") return blocks;
       return [
         ...blocks.slice(0, index),
-        { ...permission, approved: frame.approved },
+        decided(permission, frame),
         ...blocks.slice(index + 1),
       ];
     }
@@ -299,6 +336,50 @@ export function toolDetails(block: Extract<TranscriptBlock, { kind: "tool" }>): 
   return `${json(block.input)}${block.output === undefined ? "" : ` -> ${json(block.output)}`}`;
 }
 
+/**
+ * One tool's "about to act" placeholder and how to reveal the resolved call,
+ * mirroring opencode's pending=/complete= split: while params stream, the pane
+ * shows what the agent is about to run; once they resolve, it shows the call.
+ */
+type ToolFace = {
+  readonly pending: string;
+  readonly reveal: (input: Record<string, unknown>) => string;
+};
+
+const toolFaces: Readonly<Record<string, ToolFace>> = {
+  bash: { pending: "Writing command...", reveal: (input) => `$ ${stringField(input, "command")}` },
+  write: { pending: "Preparing write...", reveal: (input) => `\u2190 ${stringField(input, "path")}` },
+  read: { pending: "Reading file...", reveal: (input) => stringField(input, "path") },
+  glob: { pending: "Finding files...", reveal: (input) => stringField(input, "pattern") },
+  grep: { pending: "Searching content...", reveal: (input) => stringField(input, "pattern") },
+};
+
+export function toolSummary(block: Extract<TranscriptBlock, { kind: "tool" }>): string {
+  if (block.streaming) return `~ ${toolFaces[block.name]?.pending ?? "Running..."}`;
+  const detail = describeCall(block.name, block.input);
+  return block.output === undefined ? detail : `${detail} -> ${json(block.output)}`;
+}
+
+/**
+ * What the agent is asking to be allowed to do, in the words the tool card uses.
+ * The request carries no description of its own: the tool and its input are the
+ * description, and the pane must not show the question differently from the call.
+ */
+export function permissionSummary(block: PermissionBlock): string {
+  return `${block.tool}: ${describeCall(block.tool, block.input)}`;
+}
+
+function describeCall(tool: string, input: unknown): string {
+  const face = toolFaces[tool];
+  return typeof input === "object" && input !== null && face
+    ? face.reveal(input as Record<string, unknown>) || json(input)
+    : json(input);
+}
+
+function stringField(input: Record<string, unknown>, key: string): string {
+  return typeof input[key] === "string" ? (input[key] as string) : "";
+}
+
 function transcriptLine(block: TranscriptBlock): string {
   switch (block.kind) {
     case "user":
@@ -308,7 +389,7 @@ function transcriptLine(block: TranscriptBlock): string {
     case "tool":
       return `tool> ${block.name} ${json(block.input)}${block.output === undefined ? "" : ` -> ${json(block.output)}`}`;
     case "permission":
-      return `permission> ${block.tool}: ${block.description}${block.approved === undefined ? "" : block.approved ? " [approved]" : " [denied]"}`;
+      return `permission> ${permissionSummary(block)}${block.decision === undefined ? "" : ` [${block.decision}]`}`;
     case "status":
       return `status> ${block.state}`;
     case "error":

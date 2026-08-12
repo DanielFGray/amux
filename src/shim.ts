@@ -1,30 +1,39 @@
-import { cc, CString, FFIType as T, ptr } from "bun:ffi";
-import { LIB_DIR } from "./ghostty-library.ts";
+import { dlopen, CString, FFIType as T, ptr } from "bun:ffi";
+import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 
-/** Compiled at startup by bun:ffi's cc(). See src/shim.c for why this exists. */
-const { symbols } = cc({
-  source: new URL("./shim.c", import.meta.url).pathname,
-  library: process.platform === "win32" ? ["ghostty-vt"] : ["ghostty-vt", "util"],
-  flags: [`-L${LIB_DIR}`],
-  symbols: {
-    oh_terminal_new: { args: [T.ptr, T.ptr], returns: T.i32 },
-    oh_scroll_viewport: { args: [T.u64, T.i32, T.i64], returns: T.void },
-    oh_capture_range: {
-      args: [T.u64, T.ptr, T.ptr, T.u64, T.ptr],
-      returns: T.i32,
-    },
-    oh_set_selection: { args: [T.u64, T.u32, T.u32, T.u32, T.u32], returns: T.i32 },
-    oh_clear_selection: { args: [T.u64], returns: T.i32 },
-    oh_format_screen: { args: [T.u64, T.ptr, T.u64, T.ptr], returns: T.i32 },
-    oh_spawn_pty: { args: [T.ptr, T.ptr], returns: T.i32 },
-    oh_wait_pid: { args: [T.i32, T.ptr], returns: T.i32 },
-    oh_resize_pty: { args: [T.i32, T.u16, T.u16], returns: T.i32 },
-    oh_tcgetpgrp: { args: [T.i32], returns: T.i32 },
-    oh_close_fd: { args: [T.i32], returns: T.i32 },
-    oh_flock: { args: [T.i32, T.i32], returns: T.i32 },
-    oh_flock_unlock: { args: [T.i32], returns: T.i32 },
-    oh_error_message: { args: [T.i32], returns: T.ptr },
+/** See src/shim.c for why the shim exists. The native library is pre-built;
+ *  `bun run build:shim` recompiles it when shim.c changes. */
+function resolveShimPath(): string {
+  const sourcePath = new URL("../vendor/libamux-shim.so", import.meta.url).pathname;
+  if (existsSync(sourcePath)) return sourcePath;
+  // Compiled binary: look next to the executable
+  const binaryDir = dirname(process.argv[0] ?? "");
+  const adjacentPath = `${binaryDir}/libamux-shim.so`;
+  if (existsSync(adjacentPath)) return adjacentPath;
+  return sourcePath;
+}
+
+const shimPath = resolveShimPath();
+
+const { symbols } = dlopen(shimPath, {
+  oh_terminal_new: { args: [T.ptr, T.ptr], returns: T.i32 },
+  oh_scroll_viewport: { args: [T.u64, T.i32, T.i64], returns: T.void },
+  oh_capture_range: {
+    args: [T.u64, T.ptr, T.ptr, T.u64, T.ptr],
+    returns: T.i32,
   },
+  oh_set_selection: { args: [T.u64, T.u32, T.u32, T.u32, T.u32], returns: T.i32 },
+  oh_clear_selection: { args: [T.u64], returns: T.i32 },
+  oh_format_screen: { args: [T.u64, T.ptr, T.u64, T.ptr], returns: T.i32 },
+  oh_spawn_pty: { args: [T.ptr, T.ptr], returns: T.i32 },
+  oh_wait_pid: { args: [T.i32, T.ptr], returns: T.i32 },
+  oh_resize_pty: { args: [T.i32, T.u16, T.u16], returns: T.i32 },
+  oh_tcgetpgrp: { args: [T.i32], returns: T.i32 },
+  oh_close_fd: { args: [T.i32], returns: T.i32 },
+  oh_flock: { args: [T.i32, T.i32], returns: T.i32 },
+  oh_flock_unlock: { args: [T.i32], returns: T.i32 },
+  oh_error_message: { args: [T.i32], returns: T.ptr },
 });
 
 export function terminalNew(

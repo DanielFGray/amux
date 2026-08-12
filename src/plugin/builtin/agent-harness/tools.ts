@@ -2,6 +2,7 @@ import { Tool, Toolkit } from "@effect/ai";
 import { Effect, Schema as S } from "effect";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { bashResources, pathResource, type PermissionGate } from "./permission.ts";
 
 const DEFAULT_LIMIT = 2_000;
 const DEFAULT_TIMEOUT = 120_000;
@@ -66,11 +67,29 @@ const Bash = Tool.make("bash", {
   failureMode: "return",
 });
 
-export function agentToolkit(workspace: string) {
+/**
+ * The five tools, each declaring what it is about to do before it does it.
+ *
+ * Only the tool knows what its own arguments mean, so the assertion is written
+ * here rather than derived from the call by a layer above: `read` on a directory
+ * is still a read, and `bash` names shell segments, not files.
+ */
+export function agentToolkit(workspace: string, gate: PermissionGate) {
   const toolkit = Toolkit.make(Read, Write, Glob, Grep, Bash);
+  /** Clear the call, then run it. A refusal is the tool's failure text. */
+  const gated = (
+    tool: string,
+    action: string,
+    resources: readonly string[],
+    input: unknown,
+    body: () => Promise<string>,
+  ) => gate.assert({ tool, action, resources, input }).pipe(Effect.andThen(tryTool(body)));
+  const paths = (...values: string[]) =>
+    values.map((value) => pathResource(workspace, fromWorkspace(workspace, value)));
   const handlers = toolkit.of({
-    read: ({ path, offset, limit }) =>
-      tryTool(async () => {
+    read: (input) =>
+      gated("read", "read", paths(input.path), input, async () => {
+        const { path, offset, limit } = input;
         const target = fromWorkspace(workspace, path);
         const stat = await Bun.file(target).stat();
         if (stat.isDirectory()) {
@@ -87,46 +106,48 @@ export function agentToolkit(workspace: string) {
           .map((line, index) => `${start + index + 1}: ${line}`)
           .join("\n");
       }),
-    write: ({ path, content }) =>
-      tryTool(async () => {
-        const target = fromWorkspace(workspace, path);
+    write: (input) =>
+      gated("write", "write", paths(input.path), input, async () => {
+        const target = fromWorkspace(workspace, input.path);
         await mkdir(dirname(target), { recursive: true });
-        await writeFile(target, content, "utf8");
+        await writeFile(target, input.content, "utf8");
         return `Wrote ${target}`;
       }),
-    glob: ({ pattern, path, limit }) =>
-      tryTool(async () => {
-        const root = fromWorkspace(workspace, path ?? ".");
+    glob: (input) =>
+      gated("glob", "read", paths(input.path ?? "."), input, async () => {
+        const root = fromWorkspace(workspace, input.path ?? ".");
         const matches: string[] = [];
-        for await (const match of new Bun.Glob(pattern).scan({ cwd: root, onlyFiles: true })) {
+        for await (const match of new Bun.Glob(input.pattern).scan({ cwd: root, onlyFiles: true })) {
           matches.push(resolve(root, match));
-          if (matches.length >= (limit ?? DEFAULT_LIMIT)) break;
+          if (matches.length >= (input.limit ?? DEFAULT_LIMIT)) break;
         }
         return matches.length ? matches.join("\n") : "No files found";
       }),
-    grep: ({ pattern, path, include, limit }) =>
-      tryTool(async () => {
+    grep: (input) =>
+      gated("grep", "read", paths(input.path ?? "."), input, async () => {
         const args = [
           "rg",
           "--line-number",
           "--color=never",
           "--max-count",
-          String(limit ?? DEFAULT_LIMIT),
+          String(input.limit ?? DEFAULT_LIMIT),
         ];
-        if (include) args.push("--glob", include);
-        args.push("--", pattern, fromWorkspace(workspace, path ?? "."));
+        if (input.include) args.push("--glob", input.include);
+        args.push("--", input.pattern, fromWorkspace(workspace, input.path ?? "."));
         const result = await run(args, workspace, DEFAULT_TIMEOUT);
         if (result.exit === 1) return "No files found";
         if (result.exit !== 0)
           throw new Error(result.output || `rg exited with code ${result.exit}`);
         return result.output || "No files found";
       }),
-    bash: ({ command, workdir, timeout }) =>
-      tryTool(async () => {
+    // The workdir is where the command runs, but what is judged is the command:
+    // a rule about `git status` is about the words, not the directory.
+    bash: (input) =>
+      gated("bash", "bash", bashResources(input.command), input, async () => {
         const result = await run(
-          ["bash", "-lc", command],
-          fromWorkspace(workspace, workdir ?? "."),
-          timeout ?? DEFAULT_TIMEOUT,
+          ["bash", "-lc", input.command],
+          fromWorkspace(workspace, input.workdir ?? "."),
+          input.timeout ?? DEFAULT_TIMEOUT,
         );
         return `${result.output}${result.output ? "\n\n" : ""}Command exited with code ${result.exit}.`;
       }),

@@ -52,6 +52,17 @@ export type ModelRequest = {
    * down — repeating it here would be a second copy free to drift.
    */
   readonly apiUrl?: string;
+  /**
+   * The npm package the catalog names for this model, which is the catalog's
+   * way of saying which wire protocol the model speaks.
+   *
+   * It is read per model, not per provider: a gateway serves many models and
+   * the catalog states an override on the ones that do not speak the
+   * provider's own protocol. Guessing it from the provider is how a
+   * chat-completions model ends up being asked over `/responses`, which fails
+   * silently — the frames simply do not decode.
+   */
+  readonly npm?: string;
 };
 
 export type Integration = {

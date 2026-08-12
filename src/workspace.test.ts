@@ -823,6 +823,38 @@ test("pane.resize-divider adjusts neighbour weights", () => {
   expect(result.snapshot.spaces[0]!.windows[0]!.state.preset).toBeNull();
 });
 
+/* The answer has to reach the session that asked, and only that one: a
+ * permission command names its session, and a command that names none is a
+ * decision with nowhere to go rather than one applied to whatever is focused. */
+test("agent.permission carries the answer to the session that asked", () => {
+  const current = run(workspaceFromSession(base(twoPaneLayout)));
+  const context = { cwd: "/tmp", shell: ["sh"], size: { cols: 80, rows: 24 } };
+  const answered = applyWorkspaceCommand(
+    current,
+    command("agent.permission", {
+      session: "agent-7",
+      request: "req-1",
+      decision: "reject",
+      feedback: "not that file",
+    }),
+    context,
+  );
+  expect(answered.actions).toEqual([
+    {
+      _tag: "decide",
+      agent: "agent-7",
+      answer: { request: "req-1", decision: "reject", feedback: "not that file" },
+    },
+  ]);
+
+  const unaddressed = applyWorkspaceCommand(
+    current,
+    command("agent.permission", { request: "req-1", decision: "once" }),
+    context,
+  );
+  expect(unaddressed.actions).toEqual([]);
+});
+
 test("agent.new creates an agent session and queues its initial prompt", () => {
   const current = run(workspaceFromSession(base(twoPaneLayout)));
   const mutation = applyWorkspaceCommand(

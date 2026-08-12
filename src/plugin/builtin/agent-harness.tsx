@@ -71,6 +71,13 @@ export const agentHarnessPlugin: PluginDefinition = {
         run: openModelPicker,
       });
 
+      const run = (value: Parameters<typeof ctx.panel.run>[0]) =>
+        Effect.runFork(
+          ctx.panel
+            .run(value)
+            .pipe(Effect.catchAll((error) => Effect.sync(() => ctx.panel.reportError(error.message)))),
+        );
+
       ctx.registerPaneType("native", (props) => (
         <Chat
           {...props}
@@ -83,17 +90,19 @@ export const agentHarnessPlugin: PluginDefinition = {
           slashCommands={[{ name: "model", description: "choose the agent model" }]}
           frames={ctx.frames}
           sync={ctx.sync}
-          onSubmit={(message) => {
-            Effect.runFork(
-              ctx.panel
-                .run(command("agent.steer", { session: props.sessionId, message }))
-                .pipe(
-                  Effect.catchAll((error) =>
-                    Effect.sync(() => ctx.panel.reportError(error.message)),
-                  ),
-                ),
-            );
-          }}
+          onSubmit={(message) =>
+            run(command("agent.steer", { session: props.sessionId, message }))
+          }
+          onPermission={(request, decision, feedback) =>
+            run(
+              command("agent.permission", {
+                session: props.sessionId,
+                request,
+                decision,
+                ...(feedback ? { feedback } : {}),
+              }),
+            )
+          }
         />
       ));
     }),

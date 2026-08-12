@@ -4,9 +4,11 @@ import type { TextareaRenderable } from "@opentui/core";
 import type { Stream } from "effect";
 import type { AttachFrame } from "../../../effect/AttachProtocol.ts";
 import type { PaneViewProps } from "../../../component-pane.tsx";
-import { Transcript } from "./Transcript.tsx";
+import { Transcript, type PermissionBlock } from "./Transcript.tsx";
+import { permissionSummary } from "./transcript.ts";
 import { theme } from "../../../ui/theme.ts";
 import { AgentState, type ReportedAgentState } from "../../../agent-state.ts";
+import type { PermissionDecision } from "../../../permission.ts";
 
 export interface ChatProps extends PaneViewProps {
   model: string;
@@ -17,6 +19,8 @@ export interface ChatProps extends PaneViewProps {
   /** Send what the user typed to the agent. The command layer's business: a
    *  view does not know whether the session is local or on a daemon. */
   onSubmit: (message: string) => void;
+  /** Answer the question the agent is blocked on. */
+  onPermission: (request: string, decision: PermissionDecision, feedback?: string) => void;
 }
 
 export interface SlashCommand {
@@ -39,7 +43,21 @@ export function Chat(props: ChatProps) {
   const [editorLines, setEditorLines] = createSignal(1);
   const [status, setStatus] = createSignal<ReportedAgentState | undefined>();
   const [selectedCommand, setSelectedCommand] = createSignal(0);
+  const [pending, setPending] = createSignal<PermissionBlock | undefined>();
+  // The request whose refusal the user is typing a reason for. While it is set,
+  // the composer is a composer again and Enter sends the rejection.
+  const [explaining, setExplaining] = createSignal<string | undefined>();
   let editor: TextareaRenderable | undefined;
+
+  const awaiting = () => {
+    const request = pending();
+    return request && explaining() !== request.request ? request : undefined;
+  };
+
+  const decide = (decision: PermissionDecision) => {
+    const request = pending();
+    if (request) props.onPermission(request.request, decision);
+  };
 
   const commands = createMemo(() => {
     const query = draft().slice(1).trimStart().toLowerCase();
@@ -64,6 +82,14 @@ export function Chat(props: ChatProps) {
 
   const submitEditor = () => {
     const text = editor?.plainText.trim() ?? "";
+    const explained = explaining();
+    if (explained !== undefined) {
+      editor?.clear();
+      setDraft("");
+      setExplaining(undefined);
+      props.onPermission(explained, "reject", text || undefined);
+      return;
+    }
     if (text.startsWith("/") && props.onSlashCommand?.(text)) {
       editor?.clear();
       setDraft("");
@@ -91,7 +117,20 @@ export function Chat(props: ChatProps) {
         width={props.width}
         model={props.model}
         onStatus={setStatus}
+        onPending={(request) => {
+          setPending(request);
+          if (!request) setExplaining(undefined);
+        }}
       />
+      <Show when={awaiting()}>
+        {(request: () => PermissionBlock) => (
+          <ApprovalBar
+            request={request()}
+            onDecide={decide}
+            onExplain={() => setExplaining(request().request)}
+          />
+        )}
+      </Show>
       <Show when={commandMenuVisible()}>
         <CommandPicker
           commands={commands()}
@@ -102,7 +141,13 @@ export function Chat(props: ChatProps) {
       </Show>
       <textarea
         ref={(value) => (editor = value)}
-        placeholder="message the agent"
+        placeholder={
+          awaiting()
+            ? "o once · a always · d deny · e deny with a reason"
+            : explaining()
+              ? "why not? enter sends the refusal"
+              : "message the agent"
+        }
         focused={props.active()}
         onContentChange={() => {
           setDraft(editor?.plainText ?? "");
@@ -110,6 +155,16 @@ export function Chat(props: ChatProps) {
           syncEditorHeight();
         }}
         onKeyDown={(event) => {
+          // A blocked agent owns the keyboard: nothing the user types is a
+          // message until the question in front of them is answered.
+          if (awaiting()) {
+            if (event.name === "o") decide("once");
+            else if (event.name === "a") decide("always");
+            else if (event.name === "d") decide("reject");
+            else if (event.name === "e") setExplaining(pending()?.request);
+            event.preventDefault();
+            return;
+          }
           if (!commandMenuVisible()) return;
           if (event.name === "down") {
             setSelectedCommand((value) => Math.min(commands().length - 1, value + 1));
@@ -136,6 +191,61 @@ export function Chat(props: ChatProps) {
         }}
       />
       <StatusBar model={props.model} working={status() === AgentState.Working} />
+    </box>
+  );
+}
+
+/**
+ * The question, the rule that answering "always" would write, and the four ways
+ * to answer it. The rule is shown rather than described: "always" is a choice
+ * about a pattern, and a pattern the user cannot read is not a choice.
+ */
+function ApprovalBar(props: {
+  request: PermissionBlock;
+  onDecide: (decision: PermissionDecision) => void;
+  onExplain: () => void;
+}) {
+  const choices = [
+    { key: "o", label: "once", color: theme.green, run: () => props.onDecide("once") },
+    ...(props.request.save.length > 0
+      ? [
+          {
+            key: "a",
+            label: `always (${props.request.save.map((rule) => `${rule.action} ${rule.resource}`).join(", ")})`,
+            color: theme.green,
+            run: () => props.onDecide("always"),
+          },
+        ]
+      : []),
+    { key: "d", label: "deny", color: theme.red, run: () => props.onDecide("reject") },
+    { key: "e", label: "deny with a reason", color: theme.red, run: props.onExplain },
+  ];
+
+  return (
+    <box
+      style={{
+        width: "100%",
+        flexDirection: "column",
+        flexShrink: 0,
+        backgroundColor: theme.mantle,
+        border: true,
+        borderColor: theme.yellow,
+      }}
+    >
+      <text style={{ wrapMode: "word", width: "100%", fg: theme.text }}>
+        {permissionSummary(props.request)}
+      </text>
+      <For each={choices}>
+        {(choice) => (
+          <box
+            style={{ height: 1, flexShrink: 0, flexDirection: "row" }}
+            onMouseUp={choice.run}
+          >
+            <text style={{ width: 4, flexShrink: 0, fg: theme.mauve }}>{`[${choice.key}]`}</text>
+            <text style={{ flexGrow: 1, fg: choice.color }}>{choice.label}</text>
+          </box>
+        )}
+      </For>
     </box>
   );
 }

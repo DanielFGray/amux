@@ -1,11 +1,13 @@
 /** @jsxImportSource @opentui/solid */
-import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
 import { Effect, Fiber, Schema as S, Stream, type Stream as StreamType } from "effect";
 import {
+  pendingPermission,
+  permissionSummary,
   serializeTranscript,
   Transcript as TranscriptModel,
-  toolDetails,
+  toolSummary,
   wrapText,
   type TranscriptBlock,
 } from "./transcript.ts";
@@ -21,7 +23,11 @@ export interface TranscriptProps {
   width: number | Accessor<number>;
   model?: string;
   onStatus?: (state: ReportedAgentState) => void;
+  /** The question the agent is blocked on, or undefined once it is answered. */
+  onPending?: (request: PermissionBlock | undefined) => void;
 }
+
+export type PermissionBlock = Extract<TranscriptBlock, { kind: "permission" }>;
 
 /**
  * The retained, semantic view of one agent conversation.
@@ -45,6 +51,9 @@ export function Transcript(props: TranscriptProps) {
       .snapshot()
       .filter((block) => block.kind !== "status" || (block.state !== "working" && block.state !== "idle"));
   });
+  // The pending question is a fact about the transcript, not a second stream to
+  // keep in step with it: the pane above is told what the blocks already say.
+  createEffect(() => props.onPending?.(pendingPermission(blocks())));
 
   // Asking for the history before the stream fiber is running is safe: the
   // attach client creates a session's queue when a frame ARRIVES, not when the
@@ -69,7 +78,7 @@ export function Transcript(props: TranscriptProps) {
     <scrollbox
       stickyScroll
       stickyStart="bottom"
-      style={{ flexGrow: 1, backgroundColor: theme.base }}
+      style={{ height: 0, flexGrow: 1, flexShrink: 1, backgroundColor: theme.base }}
     >
       <Show
         when={blocks().length > 0}
@@ -118,9 +127,12 @@ function TranscriptCard(props: {
   };
 
   if (props.block.kind === "tool") {
-    const lines = wrapText(toolDetails(props.block), Math.max(1, props.width() - 2));
-    const overflow = lines.length > 10;
-    const visible = props.expanded || !overflow ? lines : lines.slice(0, 10);
+    const block = props.block;
+    // Memoized, not computed once: the expand toggle and the pane resize must
+    // both re-wrap and re-slice this card's lines.
+    const lines = createMemo(() => wrapText(toolSummary(block), Math.max(1, props.width() - 2)));
+    const overflow = createMemo(() => lines().length > 10);
+    const visible = createMemo(() => (props.expanded || !overflow() ? lines() : lines().slice(0, 10)));
     return (
       <box
         style={{ ...cardStyle, backgroundColor: hovered() ? undefined : theme.surface0 }}
@@ -128,14 +140,53 @@ function TranscriptCard(props: {
         onMouseOut={() => setHovered(false)}
         onMouseUp={props.onToggle}
       >
-        <text style={{ height: 1, fg: theme.text }}>{`tool> ${props.block.name}`}</text>
-        <For each={visible}>
-          {(line) => <text style={{ wrapMode: "word", width: "100%", fg: theme.subtext0 }}>{line}</text>}
+        <text style={{ height: 1, fg: theme.text }}>{`tool> ${block.name}`}</text>
+        <For each={visible()}>
+          {(line) => (
+            <text
+              style={{
+                wrapMode: "word",
+                width: "100%",
+                fg: block.streaming ? theme.overlay1 : theme.subtext0,
+              }}
+            >
+              {line}
+            </text>
+          )}
         </For>
-        <Show when={overflow}>
+        <Show when={overflow()}>
           <text style={{ height: 1, fg: theme.overlay1 }}>
             {props.expanded ? "click to collapse" : "click to expand"}
           </text>
+        </Show>
+      </box>
+    );
+  }
+
+  if (props.block.kind === "permission") {
+    const block = props.block;
+    const lines = createMemo(() =>
+      wrapText(permissionSummary(block), Math.max(1, props.width() - 2)),
+    );
+    // Pending is the loud state: the agent is stopped until this is answered.
+    const accent = () =>
+      block.decision === undefined
+        ? theme.yellow
+        : block.decision === "reject"
+          ? theme.red
+          : theme.green;
+    return (
+      <box style={{ ...cardStyle, backgroundColor: theme.surface0 }}>
+        <text style={{ height: 1, fg: accent() }}>
+          {`permission> ${block.action}${block.decision ? ` [${block.decision}]` : ""}`}
+        </text>
+        <For each={lines()}>
+          {(line) => (
+            <text style={{ wrapMode: "word", width: "100%", fg: theme.subtext0 }}>{line}</text>
+          )}
+        </For>
+        <Show when={block.feedback}>
+          <text style={{ height: 1, fg: theme.overlay1 }}>{block.feedback}</text>
         </Show>
       </box>
     );

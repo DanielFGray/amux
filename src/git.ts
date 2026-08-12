@@ -1,6 +1,7 @@
 /**
  * Branch mark, ahead/behind, and worktree operations for a space's directory.
  */
+import { dirname, resolve } from "node:path";
 
 export interface GitInfo {
   branch: string;
@@ -37,6 +38,23 @@ export interface WorktreeSpec {
 }
 
 export const worktreeDirname = (branch: string): string => branch.replace(/\//g, "-");
+
+/**
+ * The project a directory belongs to: the repository, not the checkout.
+ *
+ * `--git-common-dir` answers with the main repository's `.git` from inside any
+ * linked worktree, so every worktree of one repo resolves to one project — the
+ * unit a permission rule or a conversation is scoped to. A directory that is
+ * not in a repository is its own project, which keeps the notion total.
+ */
+export async function projectRoot(dir: string): Promise<string> {
+  try {
+    const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], dir);
+    return common ? dirname(common) : resolve(dir);
+  } catch {
+    return resolve(dir);
+  }
+}
 
 /** Imperative git operations for daemon-side use. The daemon runs outside the
  *  client's Effect scope and calls these through its promise queue.

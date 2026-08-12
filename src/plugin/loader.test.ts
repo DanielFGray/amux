@@ -74,6 +74,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     options: {},
     keys: { leader: "ctrl+a", bindings: {} },
     plugins: [],
+    permissions: [],
     ...overrides,
   };
 }

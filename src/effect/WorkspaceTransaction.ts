@@ -23,6 +23,7 @@ import {
 import { COMMAND_META, type Command } from "../commands.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
+import type { PermissionAnswer } from "./AttachProtocol.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { errorMessage } from "../error-message.ts";
 
@@ -38,6 +39,7 @@ interface SessionOps {
   readonly kill: (id: string) => Effect.Effect<void>;
   readonly write: (id: string, data: string) => Effect.Effect<void>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void>;
+  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void>;
 }
 
 interface WorktreeOps {
@@ -215,6 +217,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                   for (const a of mutation.actions) {
                     if (a._tag === "steer") yield* sessionOps.write(a.agent, a.message);
                     if (a._tag === "interrupt") yield* sessionOps.interrupt(a.agent, a.reason);
+                    if (a._tag === "decide") yield* sessionOps.decide(a.agent, a.answer);
                   }
                   const final = yield* model.get;
                   return structuredClone(final.workspace);
@@ -288,7 +291,7 @@ export function gitWorktreesFor(
 }
 
 export const makeSessionOps = (
-  hostRef: { current: { prepare: any; write: any; interrupt: any } | null },
+  hostRef: { current: { prepare: any; write: any; interrupt: any; decide: any } | null },
   killFn: (id: string) => Effect.Effect<void, unknown>,
 ): Layer.Layer<WorkspaceTransactionSessionOps> =>
   Layer.succeed(WorkspaceTransactionSessionOps, {
@@ -309,6 +312,12 @@ export const makeSessionOps = (
       Effect.suspend(() =>
         hostRef.current
           ? hostRef.current.interrupt(id, reason).pipe(Effect.orDie)
+          : Effect.die(new Error("host not started")),
+      ),
+    decide: (id, answer) =>
+      Effect.suspend(() =>
+        hostRef.current
+          ? hostRef.current.decide(id, answer).pipe(Effect.orDie)
           : Effect.die(new Error("host not started")),
       ),
   } satisfies SessionOps);

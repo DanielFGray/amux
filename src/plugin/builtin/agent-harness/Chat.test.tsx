@@ -1,10 +1,11 @@
 /** @jsxImportSource @opentui/solid */
+import { Effect, Stream } from "effect";
 import { expect, test } from "bun:test";
-import { Stream } from "effect";
 import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Chat } from "./Chat.tsx";
+import type { AttachFrame } from "../../../effect/AttachProtocol.ts";
 
 /**
  * The chat pane's content: a transcript with a composer under it.
@@ -26,6 +27,7 @@ async function chat(
   const [focused, setFocused] = createSignal(active);
   const [width, setWidth] = createSignal(40);
   const sent: string[] = [];
+  const answered: { request: string; decision: string; feedback?: string }[] = [];
   await render(
     () => (
       <Chat
@@ -38,6 +40,9 @@ async function chat(
         frames={frames}
         sync={() => {}}
         onSubmit={(message) => sent.push(message)}
+        onPermission={(request, decision, feedback) =>
+          answered.push({ request, decision, ...(feedback ? { feedback } : {}) })
+        }
         onSlashCommand={onSlashCommand}
         slashCommands={[{ name: "model", description: "choose the agent model" }]}
       />
@@ -45,8 +50,95 @@ async function chat(
     t.renderer,
   );
   await t.renderOnce();
-  return { t, sent, setFocused, setWidth };
+  return { t, sent, answered, setFocused, setWidth };
 }
+
+/** Poll the rendered frame until it satisfies the condition, re-rendering each
+ *  tick. Borrowed from opencode's data.test.tsx wait(): a sleep then a single
+ *  render would miss frames that arrive between the two. */
+async function waitFrame(
+  t: Awaited<ReturnType<typeof chat>>["t"],
+  condition: (frame: string) => boolean,
+  label = "condition",
+) {
+  const start = Date.now();
+  while (Date.now() - start < 2000) {
+    await t.renderOnce();
+    if (condition(t.captureCharFrame())) return;
+    await Bun.sleep(10);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+/** A chat pane sitting on one unanswered permission request. */
+async function blocked() {
+  let push: (frame: AttachFrame) => void = () => {};
+  const world = await chat(true, () =>
+    Stream.asyncPush<AttachFrame>((emit) => {
+      push = (frame) => emit.single(frame);
+      return Effect.void;
+    }),
+  );
+  push({
+    _tag: "permission.request",
+    session: "native",
+    sequence: 1,
+    turn: "t1",
+    request: "req-1",
+    tool: "bash",
+    action: "bash",
+    resources: ["git status"],
+    save: [{ action: "bash", resource: "git status *", effect: "allow" }],
+    input: { command: "git status" },
+  });
+  await waitFrame(world.t, (frame) => frame.includes("[o]"), "the approval bar");
+  return { ...world, push: (frame: AttachFrame) => push(frame) };
+}
+
+test("a pending request shows the rule that always would write", async () => {
+  const { t } = await blocked();
+  const frame = t.captureCharFrame();
+  expect(frame).toContain("git status");
+  expect(frame).toContain("bash git status *");
+  t.renderer.destroy();
+});
+
+test("a key answers the question instead of typing into the composer", async () => {
+  const { t, sent, answered, push } = await blocked();
+  await t.mockInput.typeText("a");
+  await t.renderOnce();
+  expect(answered).toEqual([{ request: "req-1", decision: "always" }]);
+  expect(sent).toEqual([]);
+
+  // The bar stands until the agent says what it did: the answer the pane sent
+  // is a request, and with several panes on one session it may not be the one
+  // that won.
+  expect(t.captureCharFrame()).toContain("[o]");
+  push({
+    _tag: "permission.response",
+    session: "native",
+    sequence: 2,
+    request: "req-1",
+    decision: "always",
+  });
+  await waitFrame(t, (frame) => !frame.includes("[o]"), "the bar to clear");
+  t.renderer.destroy();
+});
+
+test("deny with a reason returns the composer, and enter sends the refusal", async () => {
+  const { t, sent, answered } = await blocked();
+  await t.mockInput.typeText("e");
+  await t.renderOnce();
+  await t.mockInput.typeText("not that repo");
+  t.mockInput.pressEnter();
+  await Bun.sleep(10);
+  await t.renderOnce();
+  expect(answered).toEqual([
+    { request: "req-1", decision: "reject", feedback: "not that repo" },
+  ]);
+  expect(sent).toEqual([]);
+  t.renderer.destroy();
+});
 
 test("the /model slash command opens the model picker without sending", async () => {
   const { t, sent } = await chat(true, () => Stream.never, () => true);
@@ -155,5 +247,153 @@ test("the composer only takes keys while its own pane is focused", async () => {
   await t.renderOnce();
 
   expect(sent).toEqual(["mine"]);
+  t.renderer.destroy();
+});
+
+/**
+ * The answer to "the agent said nothing": a submitted message has to become a
+ * response in the pane. Frames are pushed into the transcript's stream after
+ * submit, the way the daemon delivers them, and the rendered frame has to show
+ * the turn. Anything upstream of this — steer never reaching the worker, frames
+ * never leaving it — leaves the pane stuck on the user message, and this test
+ * fails loudly instead of looking like a quiet pane.
+ */
+test("a submitted message is answered by the agent in the transcript", async () => {
+  const t = await createTestRenderer({ width: 40, height: 20 });
+  let push: (frame: AttachFrame) => void = () => {};
+  const sent: string[] = [];
+  await render(
+    () => (
+      <Chat
+        sessionId="native"
+        paneType="test"
+        model="openai/gpt-4o-mini"
+        width={() => 40}
+        height={() => 20}
+        active={() => true}
+        frames={() =>
+          Stream.asyncPush<AttachFrame>((emit) => {
+            push = (frame) => emit.single(frame);
+            return Effect.void;
+          })
+        }
+        sync={() => {}}
+        onSubmit={(message) => sent.push(message)}
+        onPermission={() => {}}
+      />
+    ),
+    t.renderer,
+  );
+  await t.renderOnce();
+  await t.mockInput.typeText("fix the bug");
+  t.mockInput.pressEnter();
+  await Bun.sleep(10);
+  expect(sent).toEqual(["fix the bug"]);
+
+  push({
+    _tag: "agent.status",
+    session: "native",
+    sequence: 1,
+    state: "working",
+  });
+  push({
+    _tag: "turn.start",
+    session: "native",
+    sequence: 2,
+    turn: "t1",
+    prompt: "fix the bug",
+  });
+  push({ _tag: "text.delta", session: "native", turn: "t1", text: "I will " });
+  await t.renderOnce();
+  push({ _tag: "text.delta", session: "native", turn: "t1", text: "inspect." });
+  push({
+    _tag: "turn.end",
+    session: "native",
+    sequence: 3,
+    turn: "t1",
+    outcome: "completed",
+    text: "I will inspect.",
+  });
+
+  await waitFrame(t, (frame) => frame.includes("I will inspect."), "the agent's answer");
+  expect(t.captureCharFrame()).toContain("fix the bug");
+  t.renderer.destroy();
+});
+
+test("the latest agent response stays visible in a short chat pane", async () => {
+  const response = Array.from({ length: 12 }, (_, index) => `answer ${index}`).join("\n");
+  const { t } = await chat(
+    true,
+    () => Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: response }) as any,
+  );
+
+  await waitFrame(t, (frame) => frame.includes("answer 11"), "the latest response line");
+  expect(t.captureCharFrame()).toContain("message the agent");
+  expect(t.captureCharFrame()).toContain("openai/gpt-4o-mini");
+  t.renderer.destroy();
+});
+
+test("a tool call streams through the pane as about-to-run, then revealed", async () => {
+  const t = await createTestRenderer({ width: 40, height: 20 });
+  let push: (frame: AttachFrame) => void = () => {};
+  await render(
+    () => (
+      <Chat
+        sessionId="native"
+        paneType="test"
+        model="openai/gpt-4o-mini"
+        width={() => 40}
+        height={() => 20}
+        active={() => true}
+        frames={() =>
+          Stream.asyncPush<AttachFrame>((emit) => {
+            push = (frame) => emit.single(frame);
+            return Effect.void;
+          })
+        }
+        sync={() => {}}
+        onSubmit={() => {}}
+        onPermission={() => {}}
+      />
+    ),
+    t.renderer,
+  );
+  await t.renderOnce();
+
+  push({
+    _tag: "agent.status",
+    session: "native",
+    sequence: 1,
+    state: "working",
+  });
+  push({ _tag: "turn.start", session: "native", sequence: 2, turn: "t1", prompt: "run it" });
+  push({
+    _tag: "tool.params-start",
+    session: "native",
+    turn: "t1",
+    call: "c1",
+    tool: "bash",
+  });
+  push({
+    _tag: "tool.params-delta",
+    session: "native",
+    turn: "t1",
+    call: "c1",
+    delta: '{"command": "git s',
+  });
+  await t.renderOnce();
+  await waitFrame(t, (frame) => frame.includes("~ Writing command..."), "the pending placeholder");
+
+  push({
+    _tag: "tool.start",
+    session: "native",
+    sequence: 3,
+    turn: "t1",
+    call: "c1",
+    tool: "bash",
+    input: { command: "git status" },
+  });
+  await waitFrame(t, (frame) => frame.includes("$ git status"), "the revealed command");
+  expect(t.captureCharFrame()).not.toContain("~ Writing command...");
   t.renderer.destroy();
 });
