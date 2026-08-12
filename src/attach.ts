@@ -63,13 +63,14 @@ const HELLO_TIMEOUT_MS = 5_000;
 const QUEUE_LIMIT = 256;
 
 /** Frames handled outside session streams never enter those streams. */
-const EXCLUDED_SESSION_FRAME_TAGS = new Set([
+const EXCLUDED_SESSION_FRAME_TAGS: Set<AttachFrame["_tag"]> = new Set([
   "hello",
   "input",
   "resize",
   "sync",
   "agent.event",
   "agent.prompt",
+  // Client -> daemon -> worker stdin only; the daemon never emits it here.
   "agent.interrupt",
   "agent.permission",
   "error",
@@ -80,8 +81,10 @@ const EXCLUDED_SESSION_FRAME_TAGS = new Set([
 
 const isDeliverableFrame = (
   frame: AttachFrame,
-): frame is Extract<AttachFrame, { readonly session: string }> =>
-  AttachFrameTags.has(frame._tag) && !EXCLUDED_SESSION_FRAME_TAGS.has(frame._tag);
+): frame is Extract<AttachFrame, { readonly session: string }> => {
+  if (!AttachFrameTags.has(frame._tag) || EXCLUDED_SESSION_FRAME_TAGS.has(frame._tag)) return false;
+  return "session" in frame && typeof frame.session === "string";
+};
 
 export interface AttachClientOptions {
   /** Unix socket path — SessionPaths.attach. */
