@@ -200,6 +200,10 @@ const turnEndFields = {
   outcome: S.Literal("completed", "interrupted", "failed"),
   // The final text makes a completed turn reconstructible after live deltas expire.
   text: S.optional(S.String),
+  // Why a failed turn failed. Without it the pane can only say that something
+  // went wrong, which leaves a rejected request or a bad credential looking
+  // exactly like a model that had nothing to say.
+  error: S.optional(S.String),
 };
 const TurnEndPayload = S.TaggedStruct("turn.end", turnEndFields);
 const TurnEnd = S.TaggedStruct("turn.end", { ...turnEndFields, sequence: S.NonNegativeInt });

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  Transcript,
   appendTranscriptFrame,
   serializeTranscript,
   type TranscriptBlock,
@@ -245,5 +246,81 @@ test("tool lookups match on both turn and call to prevent cross-turn collisions"
       output: "done",
       isError: false,
     },
+  ]);
+});
+
+/**
+ * The reason a turn failed reaches the pane.
+ *
+ * `turn.end` used to be a no-op here, so a failure rendered as a bare
+ * `status> failed` with nothing to act on. The error block sits before that
+ * status because settle emits the turn's end first.
+ */
+test("a failed turn.end renders the cause above the failed status", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "turn.start", turn: "t1", prompt: "hello" }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({
+      _tag: "turn.end",
+      turn: "t1",
+      outcome: "failed",
+      error: "HttpResponseError: 400 invalid schema for function 'pane_next'",
+    }),
+  );
+  blocks = appendTranscriptFrame(blocks, frame({ _tag: "agent.status", state: "failed" }));
+
+  expect(serializeTranscript(blocks, 80)).toEqual([
+    "user> hello",
+    "error> HttpResponseError: 400 invalid schema for function 'pane_next'",
+    "status> failed",
+  ]);
+});
+
+test("a completed turn.end adds no error block", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "text.delta", turn: "t1", text: "done" }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "turn.end", turn: "t1", outcome: "completed", text: "done" }),
+  );
+
+  expect(blocks).toEqual([{ kind: "assistant", turn: "t1", text: "done" }]);
+});
+
+/**
+ * Live and replay both deliver the answer, and the class must not double it.
+ *
+ * Streaming sends the text twice — once as deltas, once as `turn.end.text` so
+ * the turn survives the deltas expiring. A reattach sends only the latter.
+ */
+test("turn.end text rebuilds an answer on replay without duplicating a streamed one", () => {
+  const live = new Transcript();
+  live.append(frame({ _tag: "text.delta", turn: "t1", text: "answer" }));
+  live.append(frame({ _tag: "turn.end", turn: "t1", outcome: "completed", text: "answer" }));
+  expect(serializeTranscript(live.snapshot(), 80)).toEqual(["assistant> answer"]);
+
+  const replayed = new Transcript();
+  replayed.append(frame({ _tag: "turn.end", turn: "t1", outcome: "completed", text: "answer" }));
+  expect(serializeTranscript(replayed.snapshot(), 80)).toEqual(["assistant> answer"]);
+});
+
+test("a retained transcript keeps the cause of a failed turn", () => {
+  const transcript = new Transcript();
+  transcript.append(frame({ _tag: "turn.start", turn: "t1", prompt: "go" }));
+  transcript.append(
+    frame({ _tag: "turn.end", turn: "t1", outcome: "failed", error: "400 bad schema" }),
+  );
+  transcript.append(frame({ _tag: "agent.status", state: "failed" }));
+  expect(serializeTranscript(transcript.snapshot(), 80)).toEqual([
+    "user> go",
+    "error> 400 bad schema",
+    "status> failed",
   ]);
 });

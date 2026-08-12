@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { Tool } from "@effect/ai";
 import { COMMAND_DEFS } from "../commands.ts";
 import {
   buildNativeMapping,
@@ -75,6 +76,28 @@ test("nativeToolkit produces tools with safe names", () => {
   expect(toolNames.length).toBe(agentDefs.length);
   for (const name of toolNames) {
     expect(name.includes(".")).toBe(false);
+  }
+});
+
+/**
+ * Every tool must describe an object, argument-less ones included.
+ *
+ * `Schema.Struct({})` is TypeScript's `{}` — any non-null value — and its JSON
+ * Schema says so, with an `anyOf` of object and array under the relative `$id`
+ * `/schemas/%7B%7D`. OpenAI and Anthropic ignore that; an OpenAI-compatible
+ * gateway resolved the `$id` as a URL and rejected the whole request, so every
+ * turn failed at the first tool with no arguments. The 16 such commands are the
+ * majority of the risk, which is why this walks all of them.
+ */
+test("no tool declares a schema that is not an object", () => {
+  const toolkit = nativeToolkit();
+  for (const tool of Object.values(toolkit.tools)) {
+    const schema = Tool.getJsonSchema(tool) as Record<string, unknown>;
+    expect({ name: tool.name, ...schema }).toMatchObject({
+      name: tool.name,
+      type: "object",
+    });
+    expect(schema.$id).toBeUndefined();
   }
 });
 

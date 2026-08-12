@@ -234,6 +234,52 @@ test("interrupt ends the turn as interrupted and keeps the partial text", async 
   expect(frames.at(-1)).toMatchObject({ _tag: "agent.status", state: "idle" });
 });
 
+/**
+ * A failed turn has to say why.
+ *
+ * The turn is the error's only channel: runTurn absorbs the failure afterwards
+ * so a provider 500 cannot end the session, which means anything settle drops
+ * is lost for good. Without the reason a rejected request looks exactly like a
+ * model with nothing to say — the pane shows `status> failed` and nothing else.
+ */
+test("a turn that fails reports the cause and leaves the session usable", async () => {
+  const frames: WorkerFrame[] = [];
+  let calls = 0;
+  await runWorker(
+    LanguageModel.make({
+      generateText: () => Effect.succeed([] as never),
+      streamText: () =>
+        calls++ === 0
+          ? Stream.fail(new Error("provider rejected the tool schema"))
+          : Stream.fromIterable([
+              { type: "text-delta", id: "t1", delta: "second" },
+            ] as Response.StreamPartEncoded[]),
+    }) as never,
+    (worker) =>
+      Effect.gen(function* () {
+        yield* worker.steer("first");
+        yield* Effect.promise(() =>
+          waitFor(() => frames.some((f) => f._tag === "turn.end")),
+        );
+        yield* worker.steer("second");
+        yield* Effect.promise(() =>
+          waitFor(() => frames.filter((f) => f._tag === "turn.end").length === 2),
+        );
+      }),
+    { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
+  );
+
+  const [failed, recovered] = frames.filter((f) => f._tag === "turn.end");
+  expect(failed).toMatchObject({ outcome: "failed" });
+  expect((failed as { error?: string }).error).toContain(
+    "provider rejected the tool schema",
+  );
+  expect(frames.some((f) => f._tag === "agent.status" && f.state === "failed")).toBe(true);
+  // The next turn still runs: a failure ends the turn, never the worker.
+  expect(recovered).toMatchObject({ outcome: "completed" });
+  expect((recovered as { error?: string }).error).toBeUndefined();
+});
+
 test("streamed tool parameters emit params frames before the call", async () => {
   const frames: WorkerFrame[] = [];
   await runWorker(

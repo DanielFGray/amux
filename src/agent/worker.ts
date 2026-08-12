@@ -52,6 +52,7 @@ type AgentFramePayload =
       readonly turn: string;
       readonly outcome: "completed" | "interrupted" | "failed";
       readonly text?: string;
+      readonly error?: string;
     };
 
 /**
@@ -124,14 +125,28 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
     const emit = (frame: AgentFramePayload) =>
       options.emit({ ...frame, session: options.session } as AgentEventPayload | AgentDelta);
 
-    /** Terminal frames for every exit, so no path leaves the pane mid-turn. */
+    /**
+     * Terminal frames for every exit, so no path leaves the pane mid-turn.
+     *
+     * A failure carries its cause: the turn is the only place the error is ever
+     * reported, because runTurn absorbs it afterwards. Dropping it here makes a
+     * provider rejecting the request indistinguishable from an empty answer.
+     */
     const settle = (turn: string, exit: Exit.Exit<void, unknown>, text: string) => {
       const outcome = Exit.isSuccess(exit)
         ? ("completed" as const)
         : Cause.isInterruptedOnly(exit.cause)
           ? ("interrupted" as const)
           : ("failed" as const);
-      return emit({ _tag: "turn.end", turn, outcome, ...(text ? { text } : {}) }).pipe(
+      const error =
+        Exit.isFailure(exit) && outcome === "failed" ? Cause.pretty(exit.cause) : undefined;
+      return emit({
+        _tag: "turn.end",
+        turn,
+        outcome,
+        ...(text ? { text } : {}),
+        ...(error ? { error } : {}),
+      }).pipe(
         Effect.andThen(
           emit({
             _tag: "agent.status",

@@ -24,7 +24,9 @@ export type TranscriptBlock =
   | {
       readonly kind: "status";
       readonly state: Extract<AgentFrame, { _tag: "agent.status" }>["state"];
-    };
+    }
+  /** Why a turn failed. The status block says that it did; this says what. */
+  | { readonly kind: "error"; readonly turn: string; readonly text: string };
 
 /** Mutable retained transcript; streamed text is accumulated without copying the block list. */
 export class Transcript {
@@ -105,11 +107,13 @@ export class Transcript {
         this.#blocks.push({ kind: "status", state: frame.state });
         break;
       case "turn.end":
-        if (frame.text) {
+        if (frame.text && !this.#assistant.has(frame.turn)) {
           this.#assistant.set(frame.turn, this.#blocks.length);
           this.#assistantChunks.set(this.#blocks.length, [frame.text]);
           this.#blocks.push({ kind: "assistant", turn: frame.turn, text: frame.text });
         }
+        if (frame.error)
+          this.#blocks.push({ kind: "error", turn: frame.turn, text: frame.error });
         break;
     }
     this.#dirty = true;
@@ -247,7 +251,9 @@ export function appendTranscriptFrame(
     case "agent.status":
       return [...blocks, { kind: "status", state: frame.state }];
     case "turn.end":
-      return blocks;
+      return frame.error
+        ? [...blocks, { kind: "error", turn: frame.turn, text: frame.error }]
+        : blocks;
   }
 }
 
@@ -269,6 +275,8 @@ function transcriptLine(block: TranscriptBlock): string {
       return `permission> ${block.tool}: ${block.description}${block.approved === undefined ? "" : block.approved ? " [approved]" : " [denied]"}`;
     case "status":
       return `status> ${block.state}`;
+    case "error":
+      return `error> ${block.text}`;
   }
 }
 

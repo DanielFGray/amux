@@ -28,13 +28,24 @@ const buildNativeMapping = (defs: readonly { tag: string }[]) => {
   return { safeToCommand, commandToSafe };
 };
 
+/**
+ * Every agent-exposed command as a provider tool.
+ *
+ * A command with no arguments needs `Tool.EmptyParams`, not its own empty field
+ * record: `Schema.Struct({})` is TypeScript's `{}`, which means any non-null
+ * value, and its JSON Schema says so — an `anyOf` of object and array under a
+ * relative `$id`. Providers that resolve `$id` as a URL reject the whole
+ * request. `Tool.EmptyParams` is `Record<string, never>`, an object with no
+ * properties, which is what "takes no arguments" actually means.
+ */
 export function nativeToolkit() {
   const agentDefs = COMMAND_DEFS.filter((def) => def.exposure === "agent");
   const mapping = buildNativeMapping(agentDefs);
   const tools = agentDefs.map((def) =>
     Tool.make(mapping.commandToSafe.get(def.tag)!, {
       description: def.desc,
-      parameters: def.argumentFields,
+      parameters:
+        Object.keys(def.argumentFields).length === 0 ? Tool.EmptyParams : def.argumentFields,
       success: S.Unknown,
     }),
   );
@@ -80,7 +91,7 @@ const program = Effect.gen(function* () {
   );
   yield* Effect.gen(function* () {
   const agentDefs = COMMAND_DEFS.filter((def) => def.exposure === "agent");
-  const { safeToCommand, commandToSafe } = buildNativeMapping(agentDefs);
+  const { safeToCommand } = buildNativeMapping(agentDefs);
   const resolveCommand = (name: string): string => safeToCommand.get(name) ?? name;
   const executeTool = (tool: string, input: unknown) => {
     const tag = resolveCommand(tool);
@@ -97,22 +108,12 @@ const program = Effect.gen(function* () {
       }).pipe(Effect.map(({ outputs }) => outputs[0]?.result)),
     );
   };
-  const definitions = agentDefs.map((def) =>
-    Tool.make(commandToSafe.get(def.tag)!, {
-      description: def.desc,
-      parameters: def.argumentFields,
-      success: S.Unknown,
-    }),
-  );
-  const toolkit = Toolkit.make(...definitions);
+  const toolkit = nativeToolkit();
   // `toolkit.of` is only a type-level helper; the handlers have to be supplied
   // as a layer, and the Toolkit itself is the effect that yields them.
   const handlers = toolkit.of(
     Object.fromEntries(
-      definitions.map((definition) => [
-        definition.name,
-        (input: unknown) => executeTool(definition.name, input),
-      ]),
+      Object.keys(toolkit.tools).map((name) => [name, (input: unknown) => executeTool(name, input)]),
     ) as never,
   );
   const resolvedToolkit = toolkit.pipe(Effect.provide(toolkit.toLayer(handlers)));
