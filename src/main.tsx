@@ -80,6 +80,35 @@ const program = Effect.gen(function* () {
   yield* Deferred.await(quit);
 });
 
+/**
+ * Counts the outcome of every native frame flush, when AMUX_FRAME_PROBE=1.
+ *
+ * OpenTUI drops a frame and reschedules for three of its four rejection
+ * statuses. The fourth, "failed", clears the render timeout and schedules
+ * nothing, so the screen stays stale until unrelated input revives the loop.
+ * amux can only ever reach that one: it renders to process.stdout, so it has no
+ * NativeSpanFeed, and OpenTUI forces useThread=false on Linux — which is the
+ * pair of conditions that routes a skipped frame past the "backpressured"
+ * branch and into "failed". The two console.error calls on that path go to
+ * OpenTUI's own TerminalConsole, invisible inside a running TUI, so the stall
+ * reports itself nowhere. Hence a probe that writes outside the terminal.
+ *
+ * Three constraints shape the writing, and each one cost a run to learn:
+ *
+ * The steady state must add no syscalls. Flushing per frame puts a synchronous
+ * write in the render loop at 60fps, which slows the producer, spaces out the
+ * output, and suppresses the rejection being hunted — the probe would hide its
+ * own quarry. Counts stay in memory instead.
+ *
+ * A rejection writes immediately rather than at exit, because a probe run
+ * usually ends by killing the pane, and an exit handler never fires. Writing on
+ * the spot makes an absent file a real result: no file means no rejection, not
+ * a lost run.
+ *
+ * The write is synchronous node:fs rather than the platform FileSystem the rest
+ * of the codebase uses. This runs inside a monkey-patched render callback that
+ * must return a status synchronously; there is no Effect to run it in.
+ */
 function installFrameProbe(renderer: import("@opentui/core").CliRenderer): void {
   if (process.env.AMUX_FRAME_PROBE !== "1") return;
 
