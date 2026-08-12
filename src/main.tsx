@@ -1,5 +1,6 @@
 import { createCliRenderer, BoxRenderable } from "@opentui/core";
 import { dirname } from "node:path";
+import { writeFileSync } from "node:fs";
 import { render } from "@opentui/solid";
 import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
 import { Schema as S, Deferred, Effect, Exit } from "effect";
@@ -46,6 +47,7 @@ const program = Effect.gen(function* () {
     ),
     (r) => Effect.sync(() => r.destroy()),
   );
+  installFrameProbe(renderer);
   renderer.useKittyKeyboard = false;
 
   const paneHost = new BoxRenderable(renderer, {
@@ -77,6 +79,28 @@ const program = Effect.gen(function* () {
   yield* Effect.promise(() => render(app.View, renderer));
   yield* Deferred.await(quit);
 });
+
+function installFrameProbe(renderer: import("@opentui/core").CliRenderer): void {
+  if (process.env.AMUX_FRAME_PROBE !== "1") return;
+
+  const path = `/tmp/amux-frame-probe-${process.pid}.json`;
+  const counts: Record<string, number> = {};
+  const native = renderer as unknown as {
+    renderNative: () => string | undefined;
+  };
+  const renderNative = native.renderNative.bind(renderer);
+  const write = () =>
+    writeFileSync(path, JSON.stringify({ pid: process.pid, counts }, null, 2) + "\n");
+
+  native.renderNative = () => {
+    const status = renderNative() ?? "rendered";
+    counts[status] = (counts[status] ?? 0) + 1;
+    write();
+    return status;
+  };
+  process.on("exit", write);
+  process.stdout.write(`AMUX frame probe: ${path}\n`);
+}
 
 BunRuntime.runMain(
   program.pipe(
