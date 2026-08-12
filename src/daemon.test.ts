@@ -20,8 +20,7 @@ import { controlCall, type ControlClient } from "./control-client.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
-  for (const dir of dirs.splice(0))
-    await rm(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
 async function env() {
@@ -31,11 +30,7 @@ async function env() {
 }
 
 const run = <A, E>(
-  effect: Effect.Effect<
-    A,
-    E,
-    SessionStore | FileSystem.FileSystem | Scope.Scope
-  >,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Scope.Scope>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
@@ -47,11 +42,8 @@ const run = <A, E>(
       ),
     ),
   );
-const open = (
-  id: string,
-  e: NodeJS.ProcessEnv,
-  options?: SessionDaemonOptions,
-) => run(startDaemon(id, options), e);
+const open = (id: string, e: NodeJS.ProcessEnv, options?: SessionDaemonOptions) =>
+  run(startDaemon(id, options), e);
 const paths = (id: string, e: NodeJS.ProcessEnv) => run(sessionPaths(id), e);
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
@@ -81,15 +73,14 @@ const status = (d: SessionDaemonService, e: NodeJS.ProcessEnv) =>
 const healthy = async (d: SessionDaemonService, e: NodeJS.ProcessEnv) =>
   (await status(d, e)).degraded === undefined;
 
-const saveEffect =
-  (save: (state: any, signal: AbortSignal) => Promise<void>) => (state: any) =>
-    Effect.tryPromise({
-      try: (signal) => save(state, signal),
-      catch: (error) =>
-        new DaemonError({
-          message: error instanceof Error ? error.message : String(error),
-        }),
-    });
+const saveEffect = (save: (state: any, signal: AbortSignal) => Promise<void>) => (state: any) =>
+  Effect.tryPromise({
+    try: (signal) => save(state, signal),
+    catch: (error) =>
+      new DaemonError({
+        message: error instanceof Error ? error.message : String(error),
+      }),
+  });
 
 async function waitForPid(path: string): Promise<number> {
   const deadline = Date.now() + 2_000;
@@ -255,16 +246,8 @@ test("a competing acquisition that detects a live owner never deletes the owner'
 test("the daemon-owned workspace survives closing and reopening", async () => {
   const e = await env();
   const first = await open("workspace", e);
-  await rwc(first)(
-    command("space.rename", { name: "proj" }),
-    ws(first).revision,
-    context,
-  );
-  await rwc(first)(
-    command("window.rename", { name: "build" }),
-    ws(first).revision,
-    context,
-  );
+  await rwc(first)(command("space.rename", { name: "proj" }), ws(first).revision, context);
+  await rwc(first)(command("window.rename", { name: "build" }), ws(first).revision, context);
   await C(first);
 
   const second = await open("workspace", e);
@@ -291,11 +274,7 @@ test("a new session starts with a default 80x24 space", async () => {
 test("last pane removal closes the daemon so the next attach starts fresh", async () => {
   const e = await env();
   const d = await open("empty", e);
-  await rwc(d)(
-    command("space.close", { space: ws(d).spaces[0]!.id }),
-    ws(d).revision,
-    context,
-  );
+  await rwc(d)(command("space.close", { space: ws(d).spaces[0]!.id }), ws(d).revision, context);
   await Bun.sleep(100);
   expect(await run(SessionStore.readLease("empty"), e)).toBeNull();
   const next = await open("empty", e);
@@ -327,7 +306,10 @@ test("a daemon killed by a signal leaves its session restorable", async () => {
   const p = await run(sessionPaths("signalled"), e);
   let ready = false;
   for (let waited = 0; waited < 10000 && !ready; waited += 50) {
-    ready = await run(controlCall("signalled", (c) => c.Ping()), e).then(
+    ready = await run(
+      controlCall("signalled", (c) => c.Ping()),
+      e,
+    ).then(
       () => true,
       () => false,
     );
@@ -354,11 +336,7 @@ test("stopping a daemon discards the workspace it was keeping", async () => {
 test("stopping waits for an in-flight workspace mutation before removing metadata", async () => {
   const e = await env();
   const d = await open("stop-save-race", e);
-  const save = rwc(d)(
-    command("space.rename", { name: "p" }),
-    ws(d).revision,
-    context,
-  );
+  const save = rwc(d)(command("space.rename", { name: "p" }), ws(d).revision, context);
   const stop = S(d);
   await Promise.all([save, stop]);
   expect(await run(SessionStore.load("stop-save-race"), e)).toBeNull();
@@ -369,9 +347,9 @@ test("the daemon rejects a stale client instead of rebasing its command", async 
   const d = await open("stale-model", e);
   const stale = ws(d).revision;
   await rwc(d)(command("space.rename", { name: "winner" }), stale, context);
-  await expect(
-    rwc(d)(command("space.rename", { name: "loser" }), stale, context),
-  ).rejects.toThrow("stale workspace revision");
+  await expect(rwc(d)(command("space.rename", { name: "loser" }), stale, context)).rejects.toThrow(
+    "stale workspace revision",
+  );
   expect(ws(d).spaces[0]!.name).toBe("winner");
   await S(d);
 });
@@ -393,9 +371,7 @@ test("RPC rejects aggregate command bodies before decoding their payload", async
   // The NDJSON framer tears the connection down before the oversized line is
   // ever parsed, so an over-limit request fails rather than being served.
   await expect(
-    ctl("bounded-rpc", e, (c) =>
-      c.SetBuffer({ data: "x".repeat(MAX_RPC_BYTES) }),
-    ),
+    ctl("bounded-rpc", e, (c) => c.SetBuffer({ data: "x".repeat(MAX_RPC_BYTES) })),
   ).rejects.toThrow();
   // The daemon is still serving afterwards.
   expect(await healthy(d, e)).toBe(true);
@@ -430,8 +406,7 @@ test("a fast prepared exit cannot deadlock failed-write compensation", async () 
       );
       if (rejectCandidate && agents.length > 1) {
         const deadline = Date.now() + 1_000;
-        while (!(await Bun.file(marker).exists()) && Date.now() < deadline)
-          await Bun.sleep(5);
+        while (!(await Bun.file(marker).exists()) && Date.now() < deadline) await Bun.sleep(5);
         await Bun.sleep(50);
         throw new Error("injected candidate failure");
       }
@@ -490,36 +465,24 @@ test("a prepared session is absent from status and subscribers until its model i
   });
   const beforeLive = await Effect.runPromise(daemon.liveSessions());
   const model = Effect.runPromise(Stream.runHead(subscriber.workspace()));
-  const commandRun = rwc(daemon)(
-    command("pane.split", { axis: "row" }),
-    ws(daemon).revision,
-    {
-      ...context,
-      shell: ["sh", "-c", "printf private; sleep 30"],
-    },
-  );
+  const commandRun = rwc(daemon)(command("pane.split", { axis: "row" }), ws(daemon).revision, {
+    ...context,
+    shell: ["sh", "-c", "printf private; sleep 30"],
+  });
   await saveStarted;
   // Let the private child produce output before acquiring a stream. If the hub
   // leaked it, AttachClient would already have created an unknown-session queue
   // and runHead would consume that stale frame immediately.
   await Bun.sleep(30);
-  const terminal = Effect.runPromise(
-    Stream.runHead(subscriber.stream(preparedId)),
-  );
+  const terminal = Effect.runPromise(Stream.runHead(subscriber.stream(preparedId)));
   const live = await status(daemon, e);
   expect(live.agents).toEqual([...beforeLive]);
   expect(await Effect.runPromise(daemon.liveSessions())).toEqual(beforeLive);
   expect(
-    await Promise.race([
-      model.then(() => "published"),
-      Bun.sleep(30).then(() => "private"),
-    ]),
+    await Promise.race([model.then(() => "published"), Bun.sleep(30).then(() => "private")]),
   ).toBe("private");
   expect(
-    await Promise.race([
-      terminal.then(() => "published"),
-      Bun.sleep(30).then(() => "private"),
-    ]),
+    await Promise.race([terminal.then(() => "published"), Bun.sleep(30).then(() => "private")]),
   ).toBe("private");
 
   release();
@@ -551,11 +514,7 @@ test("a one-shot reversible write failure does not poison the next command", asy
     rwc(daemon)(command("pane.split", { axis: "row" }), revision, context),
   ).rejects.toThrow("one-shot candidate failure");
   expect(await healthy(daemon, e)).toBe(true);
-  const recovered = await rwc(daemon)(
-    command("pane.split", { axis: "row" }),
-    revision,
-    context,
-  );
+  const recovered = await rwc(daemon)(command("pane.split", { axis: "row" }), revision, context);
   expect(recovered.spaces[0]!.windows[0]!.agents).toHaveLength(2);
   await S(daemon);
 });
@@ -568,18 +527,13 @@ test("a rejected candidate never reaches current or backup state", async () => {
       const agents = state.spaces.flatMap((space: any) =>
         space.windows.flatMap((window: any) => window.agents),
       );
-      if (rejectCandidate && agents.length > 1)
-        throw new Error("injected candidate failure");
+      if (rejectCandidate && agents.length > 1) throw new Error("injected candidate failure");
       await run(SessionStore.save(state), e);
     }),
   });
   // started by startDaemon;
   await expect(
-    rwc(daemon)(
-      command("pane.split", { axis: "row" }),
-      ws(daemon).revision,
-      context,
-    ),
+    rwc(daemon)(command("pane.split", { axis: "row" }), ws(daemon).revision, context),
   ).rejects.toThrow("injected candidate failure");
   rejectCandidate = false;
   await C(daemon);
@@ -679,11 +633,7 @@ test("a destructive commit retries its single durable write after process comple
   // started by startDaemon;
   armed = true;
   const agent = ws(daemon).spaces[0]!.windows[0]!.agents[0]!.id;
-  await rwc(daemon)(
-    command("session.kill", { session: agent }),
-    ws(daemon).revision,
-    context,
-  );
+  await rwc(daemon)(command("session.kill", { session: agent }), ws(daemon).revision, context);
   expect(failed).toBe(true);
   expect(ws(daemon).spaces).toHaveLength(0);
   await Bun.sleep(100);
@@ -756,18 +706,15 @@ test("the first heartbeat waits one interval after the startup lease write", asy
   expect(initial).not.toBeNull();
 
   await Bun.sleep(700);
-  expect(
-    (await run(SessionStore.readLease("heartbeat-first-fire"), e))?.heartbeatAt,
-  ).toBe(initial!.heartbeatAt);
+  expect((await run(SessionStore.readLease("heartbeat-first-fire"), e))?.heartbeatAt).toBe(
+    initial!.heartbeatAt,
+  );
 
   const firstBeatBy = Date.now() + 1_000;
   let heartbeatAt = initial!.heartbeatAt;
   while (heartbeatAt === initial!.heartbeatAt && Date.now() < firstBeatBy) {
     await Bun.sleep(10);
-    heartbeatAt = (await run(
-      SessionStore.readLease("heartbeat-first-fire"),
-      e,
-    ))!.heartbeatAt;
+    heartbeatAt = (await run(SessionStore.readLease("heartbeat-first-fire"), e))!.heartbeatAt;
   }
   expect(heartbeatAt).toBeGreaterThan(initial!.heartbeatAt);
   await C(daemon);
@@ -808,16 +755,11 @@ test("a heartbeat queued behind attachment persistence publishes the committed a
   const client = await connecting;
   const heartbeatBy = Date.now() + 1_000;
   let lease = await run(SessionStore.readLease("heartbeat-attach-race"), e);
-  while (
-    lease?.heartbeatAt === initial?.heartbeatAt &&
-    Date.now() < heartbeatBy
-  ) {
+  while (lease?.heartbeatAt === initial?.heartbeatAt && Date.now() < heartbeatBy) {
     await Bun.sleep(10);
     lease = await run(SessionStore.readLease("heartbeat-attach-race"), e);
   }
-  expect(lease?.attachments).toEqual([
-    expect.objectContaining({ client: "lease-race" }),
-  ]);
+  expect(lease?.attachments).toEqual([expect.objectContaining({ client: "lease-race" })]);
 
   blockAttach = false;
   client.close();
@@ -842,8 +784,7 @@ test("heartbeat failure is visible and the heartbeat stops with the daemon scope
 
   await rm(p.lease, { recursive: true, force: true });
   const recoveredBy = Date.now() + 3_500;
-  while (!(await healthy(daemon, e)) && Date.now() < recoveredBy)
-    await Bun.sleep(10);
+  while (!(await healthy(daemon, e)) && Date.now() < recoveredBy) await Bun.sleep(10);
   expect(await healthy(daemon, e)).toBe(true);
 
   await C(daemon);
@@ -896,14 +837,10 @@ test("a transient natural-exit write failure retries before making the exit visi
     }),
   });
   // started by startDaemon;
-  await rwc(daemon)(
-    command("pane.split", { axis: "row" }),
-    ws(daemon).revision,
-    {
-      ...context,
-      shell: ["sh", "-c", "exit 7"],
-    },
-  );
+  await rwc(daemon)(command("pane.split", { axis: "row" }), ws(daemon).revision, {
+    ...context,
+    shell: ["sh", "-c", "exit 7"],
+  });
   const deadline = Date.now() + 2_000;
   while (
     !ws(daemon).spaces[0]!.windows[0]!.agents.some((agent) => agent.exited) &&
@@ -913,9 +850,7 @@ test("a transient natural-exit write failure retries before making the exit visi
   }
   expect(failed).toBe(true);
   expect(
-    ws(daemon).spaces[0]!.windows[0]!.agents.some(
-      (agent) => agent.exited && agent.exitCode === 7,
-    ),
+    ws(daemon).spaces[0]!.windows[0]!.agents.some((agent) => agent.exited && agent.exitCode === 7),
   ).toBe(true);
   expect(await healthy(daemon, e)).toBe(true);
   await S(daemon);
@@ -935,14 +870,10 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
     }),
   });
   // started by startDaemon;
-  await rwc(daemon)(
-    command("pane.split", { axis: "row" }),
-    ws(daemon).revision,
-    {
-      ...context,
-      shell: ["sh", "-c", "exit 0"],
-    },
-  );
+  await rwc(daemon)(command("pane.split", { axis: "row" }), ws(daemon).revision, {
+    ...context,
+    shell: ["sh", "-c", "exit 0"],
+  });
   const deadline = Date.now() + 2_000;
   let report = await status(daemon, e);
   while (!report.degraded?.includes("disk offline") && Date.now() < deadline) {
@@ -965,8 +896,7 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
   unavailable = false;
   const client = await connecting;
   const recovered = Date.now() + 2_000;
-  while (!(await healthy(daemon, e)) && Date.now() < recovered)
-    await Bun.sleep(10);
+  while (!(await healthy(daemon, e)) && Date.now() < recovered) await Bun.sleep(10);
   expect(await healthy(daemon, e)).toBe(true);
   client.close();
   await S(daemon);
@@ -1011,14 +941,10 @@ test("close interrupts and joins a never-settling natural-exit persistence opera
   );
   const heldPid = await waitForPid(marker);
   armed = true;
-  await rwc(daemon)(
-    command("pane.split", { axis: "row" }),
-    ws(daemon).revision,
-    {
-      ...context,
-      shell: ["sh", "-c", "exit 0"],
-    },
-  );
+  await rwc(daemon)(command("pane.split", { axis: "row" }), ws(daemon).revision, {
+    ...context,
+    shell: ["sh", "-c", "exit 0"],
+  });
   await saveStarted;
   const started = Date.now();
   await Promise.race([
@@ -1040,19 +966,13 @@ test("a failed destructive action leaves durable state untouched", async () => {
   const before = ws(daemon);
   const agent = before.spaces[0]!.windows[0]!.agents[0]!.id;
   const kill = daemon.killSession.bind(daemon);
-  daemon.killSession = () =>
-    Effect.fail(new DaemonError({ message: "injected kill failure" }));
+  daemon.killSession = () => Effect.fail(new DaemonError({ message: "injected kill failure" }));
   await expect(
-    rwc(daemon)(
-      command("session.kill", { session: agent }),
-      before.revision,
-      context,
-    ),
+    rwc(daemon)(command("session.kill", { session: agent }), before.revision, context),
   ).rejects.toThrow("injected kill failure");
   expect(ws(daemon)).toEqual(before);
   expect(
-    (await run(SessionStore.load("kill-transaction"), e))?.spaces[0]?.windows[0]
-      ?.agents[0]?.id,
+    (await run(SessionStore.load("kill-transaction"), e))?.spaces[0]?.windows[0]?.agents[0]?.id,
   ).toBe(agent);
   daemon.killSession = kill;
   await S(daemon);
@@ -1109,18 +1029,18 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     }),
     e,
   );
-  expect((await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]?.agents[0]).toMatchObject({
+  expect(
+    (await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]?.agents[0],
+  ).toMatchObject({
     id: "agent-restore",
     agent: "missing-harness",
   });
   const daemon = await open("restore-failure", e, {
-      spawnSession: (spec) =>
-        spec.id === "agent-restore"
-          ? Effect.fail(new DaemonError({ message: "provider 'missing-harness' is unavailable" }))
-          : Effect.die(
-              new DaemonError({ message: "unexpected restore spawn" }),
-            ),
-    });
+    spawnSession: (spec) =>
+      spec.id === "agent-restore"
+        ? Effect.fail(new DaemonError({ message: "provider 'missing-harness' is unavailable" }))
+        : Effect.die(new DaemonError({ message: "unexpected restore spawn" })),
+  });
   const restored = (await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]
     ?.agents[0];
   expect(restored).toMatchObject({
@@ -1202,8 +1122,7 @@ test("daemon shutdown is bounded when session children trap termination signals"
   const readyUntil = Date.now() + 2_000;
   while (Date.now() < readyUntil) {
     try {
-      if ((await readFile(marker, "utf8")).trim().split("\n").length >= 2)
-        break;
+      if ((await readFile(marker, "utf8")).trim().split("\n").length >= 2) break;
     } catch {}
     await Bun.sleep(10);
   }

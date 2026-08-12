@@ -396,7 +396,12 @@ const AgentPrompt = define(
 const AgentWatch = define(
   "agent.watch",
   { target: S.String, after: S.optional(S.NonNegativeInt) },
-  { desc: "stream durable agent events from a replay cursor", group: "agents", target: "session", exposure: "human" },
+  {
+    desc: "stream durable agent events from a replay cursor",
+    group: "agents",
+    target: "session",
+    exposure: "human",
+  },
 );
 const AgentPermission = define(
   "agent.permission",
