@@ -365,6 +365,7 @@ class AttachClientConnection {
       frame._tag !== "permission.request" &&
       frame._tag !== "permission.response" &&
       frame._tag !== "agent.status" &&
+      frame._tag !== "agent.error" &&
       frame._tag !== "turn.end" &&
       frame._tag !== "agent.interrupt"
     )

@@ -36,7 +36,7 @@ export type TranscriptBlock =
       readonly state: Extract<AgentFrame, { _tag: "agent.status" }>["state"];
     }
   /** Why a turn failed. The status block says that it did; this says what. */
-  | { readonly kind: "error"; readonly turn: string; readonly text: string };
+  | { readonly kind: "error"; readonly turn?: string; readonly text: string };
 
 /** Mutable retained transcript backed by the shared frame reducer. */
 export class Transcript {
@@ -251,6 +251,8 @@ export function appendTranscriptFrame(
           : []),
         ...(frame.error ? [{ kind: "error" as const, turn: frame.turn, text: frame.error }] : []),
       ];
+    case "agent.error":
+      return [...blocks, { kind: "error", text: frame.message }];
   }
 }
 

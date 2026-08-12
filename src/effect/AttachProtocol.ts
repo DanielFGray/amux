@@ -239,6 +239,16 @@ const AgentStatus = S.TaggedStruct("agent.status", {
   sequence: S.NonNegativeInt,
 });
 
+const AgentErrorFields = {
+  session: S.String,
+  message: S.String,
+};
+const AgentErrorPayload = S.TaggedStruct("agent.error", AgentErrorFields);
+const AgentError = S.TaggedStruct("agent.error", {
+  ...AgentErrorFields,
+  sequence: S.NonNegativeInt,
+});
+
 const turnEndFields = {
   session: S.String,
   turn: S.String,
@@ -261,6 +271,7 @@ export const AgentEventPayloadSchema = S.Union(
   PermissionRequestPayload,
   PermissionResponsePayload,
   AgentStatusPayload,
+  AgentErrorPayload,
   TurnEndPayload,
 );
 const AgentEventInputFrame = S.TaggedStruct("agent.event", { event: AgentEventPayloadSchema });
@@ -315,6 +326,7 @@ export const AgentEvent = S.Union(
   PermissionRequest,
   PermissionResponse,
   AgentStatus,
+  AgentError,
   TurnEnd,
 );
 export type AgentEvent = S.Schema.Type<typeof AgentEvent>;
@@ -349,6 +361,7 @@ export const AttachFrame = S.Union(
   PermissionRequest,
   PermissionResponse,
   AgentStatus,
+  AgentError,
   TurnEnd,
   AgentPrompt,
   AgentInterrupt,

@@ -16,6 +16,19 @@ export type AgentWorker = {
   readonly close: Effect.Effect<void>;
 };
 
+/** Keep provider diagnostics useful without allowing credentials or raw transport data into the UI. */
+export function sanitizeAgentError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").toLowerCase();
+  if (/credential|api key|api_key|unauthori[sz]ed|forbidden|authentication|401|403/.test(normalized))
+    return "Provider authentication failed. Check Settings > auth.";
+  if (/model (?:not found|unavailable|invalid)|deployment|not found|404|invalid.*config|configuration/.test(normalized))
+    return "Provider model configuration failed. Choose another model.";
+  if (/network|timeout|timed out|connect|dns|fetch|rate limit|429|500|502|503|504/.test(normalized))
+    return "Provider is unavailable. Check your network and try again.";
+  return "The agent worker failed while processing the request.";
+}
+
 /**
  * What the worker hands to `emit`: any agent frame except the `session` field,
  * which `emit` supplies because the worker runs one session and cannot name
@@ -125,7 +138,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
           ? ("interrupted" as const)
           : ("failed" as const);
       const error =
-        Exit.isFailure(exit) && outcome === "failed" ? Cause.pretty(exit.cause) : undefined;
+        Exit.isFailure(exit) && outcome === "failed" ? sanitizeAgentError(Cause.pretty(exit.cause)) : undefined;
       return emit({
         _tag: "turn.end",
         turn,

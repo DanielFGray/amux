@@ -15,7 +15,7 @@ import { makePermissionGate } from "./permission.ts";
 import { DEFAULT_RULES } from "../../../permission.ts";
 import { projectRoot } from "../../../git.ts";
 import { layer as projectStoreLayer, Service as ProjectStore } from "../../../project-store.ts";
-import { makeAgentWorker } from "./worker.ts";
+import { makeAgentWorker, sanitizeAgentError } from "./worker.ts";
 
 // --- Process entry point ---
 
@@ -115,9 +115,9 @@ else {
     Effect.scoped(
       program.pipe(Effect.provide(IntegrationDefault), Effect.provide(BunFileSystem.layer)),
     ) as Effect.Effect<void, unknown, never>,
-  ).catch((error) => {
-    process.stderr.write(
-      `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+  ).catch(async (error) => {
+    await Effect.runPromise(
+      emit({ _tag: "agent.error", message: sanitizeAgentError(error), session }),
     );
     process.exitCode = 1;
   });

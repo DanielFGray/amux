@@ -104,6 +104,22 @@ test("transcript serialization reflows semantic blocks at the requested width", 
   ]);
 });
 
+test("worker startup errors appear as actionable transcript errors", () => {
+  const blocks = appendTranscriptFrame(
+    [],
+    frame({
+      _tag: "agent.error",
+      message: "Provider authentication failed. Check Settings > auth.",
+    }),
+  );
+  expect(blocks).toEqual([
+    { kind: "error", text: "Provider authentication failed. Check Settings > auth." },
+  ]);
+  expect(serializeTranscript(blocks, 80)).toEqual([
+    "error> Provider authentication failed. Check Settings > auth.",
+  ]);
+});
+
 test("tool.params-start creates a block that tool.params-delta appends to", () => {
   let blocks: readonly TranscriptBlock[] = [];
   blocks = appendTranscriptFrame(

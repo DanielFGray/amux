@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { AiError, Chat, LanguageModel, Prompt, Response, Tool, Toolkit } from "@effect/ai";
 import { Effect, Schema as S, Stream } from "effect";
-import { makeAgentWorker } from "./worker.ts";
+import { makeAgentWorker, sanitizeAgentError } from "./worker.ts";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 type WorkerFrame = AgentEventPayload | AgentDelta;
 
@@ -389,11 +389,23 @@ test("a turn that fails reports the cause and leaves the session usable", async 
 
   const [failed, recovered] = frames.filter((f) => f._tag === "turn.end");
   expect(failed).toMatchObject({ outcome: "failed" });
-  expect((failed as { error?: string }).error).toContain("provider rejected the tool schema");
+  expect((failed as { error?: string }).error).toBe("The agent worker failed while processing the request.");
   expect(frames.some((f) => f._tag === "agent.status" && f.state === "failed")).toBe(true);
   // The next turn still runs: a failure ends the turn, never the worker.
   expect(recovered).toMatchObject({ outcome: "completed" });
   expect((recovered as { error?: string }).error).toBeUndefined();
+});
+
+test("sanitizes provider failure categories without exposing diagnostics", () => {
+  expect(sanitizeAgentError(new Error("401 invalid api key sk-secret"))).toBe(
+    "Provider authentication failed. Check Settings > auth.",
+  );
+  expect(sanitizeAgentError(new Error("fetch failed: connection reset"))).toBe(
+    "Provider is unavailable. Check your network and try again.",
+  );
+  expect(sanitizeAgentError(new Error("unexpected provider detail"))).toBe(
+    "The agent worker failed while processing the request.",
+  );
 });
 
 test("streamed tool parameters emit params frames before the call", async () => {
