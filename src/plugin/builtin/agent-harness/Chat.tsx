@@ -21,6 +21,9 @@ export interface ChatProps extends PaneViewProps {
   onSubmit: (message: string) => void;
   /** Answer the question the agent is blocked on. */
   onPermission: (request: string, decision: PermissionDecision, feedback?: string) => void;
+  /** Interrupt the active turn, including a tool currently awaiting completion. */
+  onInterrupt: () => void;
+  showThinking?: boolean;
 }
 
 export interface SlashCommand {
@@ -47,6 +50,7 @@ export function Chat(props: ChatProps) {
   // The request whose refusal the user is typing a reason for. While it is set,
   // the composer is a composer again and Enter sends the rejection.
   const [explaining, setExplaining] = createSignal<string | undefined>();
+  const [view, setView] = createSignal<"chat" | "raw">("chat");
   let editor: TextareaRenderable | undefined;
 
   const awaiting = () => {
@@ -116,6 +120,8 @@ export function Chat(props: ChatProps) {
         sync={props.sync}
         width={props.width}
         model={props.model}
+        view={view()}
+        showThinking={props.showThinking}
         onStatus={setStatus}
         onPending={(request) => {
           setPending(request);
@@ -155,6 +161,11 @@ export function Chat(props: ChatProps) {
           syncEditorHeight();
         }}
         onKeyDown={(event) => {
+          if (event.ctrl && event.name === "c") {
+            props.onInterrupt();
+            event.preventDefault();
+            return;
+          }
           // A blocked agent owns the keyboard: nothing the user types is a
           // message until the question in front of them is answered.
           if (awaiting()) {
@@ -162,6 +173,11 @@ export function Chat(props: ChatProps) {
             else if (event.name === "a") decide("always");
             else if (event.name === "d") decide("reject");
             else if (event.name === "e") setExplaining(pending()?.request);
+            event.preventDefault();
+            return;
+          }
+          if (event.ctrl && event.name === "t") {
+            setView((current) => (current === "chat" ? "raw" : "chat"));
             event.preventDefault();
             return;
           }
@@ -177,9 +193,7 @@ export function Chat(props: ChatProps) {
             event.preventDefault();
           }
         }}
-        keyBindings={[
-          { name: "return", action: "submit" },
-        ]}
+        keyBindings={[{ name: "return", action: "submit" }]}
         onSubmit={submitEditor}
         style={{
           height: editorLines(),
@@ -190,7 +204,7 @@ export function Chat(props: ChatProps) {
           focusedTextColor: theme.text,
         }}
       />
-      <StatusBar model={props.model} working={status() === AgentState.Working} />
+      <StatusBar model={props.model} working={status() === AgentState.Working} view={view()} />
     </box>
   );
 }
@@ -237,10 +251,7 @@ function ApprovalBar(props: {
       </text>
       <For each={choices}>
         {(choice) => (
-          <box
-            style={{ height: 1, flexShrink: 0, flexDirection: "row" }}
-            onMouseUp={choice.run}
-          >
+          <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }} onMouseUp={choice.run}>
             <text style={{ width: 4, flexShrink: 0, fg: theme.mauve }}>{`[${choice.key}]`}</text>
             <text style={{ flexGrow: 1, fg: choice.color }}>{choice.label}</text>
           </box>
@@ -291,10 +302,12 @@ function CommandPicker(props: {
   );
 }
 
-function StatusBar(props: { model: string; working: boolean }) {
+function StatusBar(props: { model: string; working: boolean; view: "chat" | "raw" }) {
   return (
     <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
-      <text style={{ flexGrow: 1, fg: theme.overlay1 }}>{props.model}</text>
+      <text
+        style={{ flexGrow: 1, fg: theme.overlay1 }}
+      >{`${props.model} · ${props.view} · ^t`}</text>
       <Show when={props.working}>
         <WorkingSpinner />
       </Show>

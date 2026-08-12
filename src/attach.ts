@@ -368,7 +368,6 @@ class AttachClientConnection {
       frame._tag !== "permission.response" &&
       frame._tag !== "agent.status" &&
       frame._tag !== "turn.end" &&
-      frame._tag !== "agent.steer" &&
       frame._tag !== "agent.interrupt"
     )
       return;
@@ -391,8 +390,7 @@ class AttachClientConnection {
       return;
     }
     entry.terminal ||= frame._tag === "exit";
-    if (frame._tag === "exit" && entry.queues.length === 0)
-      this._queued.delete(frame.session);
+    if (frame._tag === "exit" && entry.queues.length === 0) this._queued.delete(frame.session);
   }
 
   private _shutdownQueue<A>(queue: Queue.Queue<A>): void {

@@ -381,10 +381,10 @@ const SessionKill = define("session.kill", SessionTarget, {
   target: "workspace",
   exposure: "agent",
 });
-const AgentSteer = define(
-  "agent.steer",
-  { ...SessionTarget, message: S.String },
-  { desc: "send a message to an agent", group: "agents", target: "workspace", exposure: "human" },
+const AgentPrompt = define(
+  "agent.prompt",
+  { target: S.String, text: S.String },
+  { desc: "send a prompt to an agent", group: "agents", target: "session", exposure: "human" },
 );
 const AgentPermission = define(
   "agent.permission",
@@ -522,6 +522,25 @@ const ConfigReset = define(
   { desc: "put an option back to its default", group: "config", target: "view", exposure: "human" },
 );
 
+/**
+ * Plugins run in the client, not the daemon, so this is an announcement rather
+ * than a mutation: the daemon carries it to everyone attached and each client
+ * reloads its own. It targets the server because it names no session — the
+ * agent that just edited a plugin runs `amux plugin.reload` and means all of
+ * them — and it is not a view command because a view command never leaves the
+ * client it was typed into, which is the one place the agent is not.
+ */
+const PluginReload = define(
+  "plugin.reload",
+  { plugin: S.optional(S.String) },
+  {
+    desc: "load a plugin's source again; all of them if none is named",
+    group: "plugins",
+    target: "server",
+    exposure: "agent",
+  },
+);
+
 // The app itself. These drive overlays and the local terminal.
 const AppHelp = define(
   "app.help",
@@ -585,7 +604,7 @@ export const COMMAND_DEFS = [
   WindowSelectLayout,
   WindowSynchronize,
   AgentNew,
-  AgentSteer,
+  AgentPrompt,
   AgentInterrupt,
   AgentPermission,
   Notify,
@@ -603,6 +622,7 @@ export const COMMAND_DEFS = [
   ConfigToggle,
   ConfigAdjust,
   ConfigReset,
+  PluginReload,
   AppHelp,
   AppPalette,
   AppSettings,
@@ -814,6 +834,7 @@ export const Commands = {
   ConfigToggle,
   ConfigAdjust,
   ConfigReset,
+  PluginReload,
   AppHelp,
   AppPalette,
   AppSettings,

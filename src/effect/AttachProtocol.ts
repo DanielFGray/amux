@@ -101,6 +101,20 @@ const TextDelta = S.TaggedStruct("text.delta", {
   text: S.String,
 });
 
+// Reasoning is an event, not a live-only delta: the pane rebuilds its blocks by
+// folding the durable log, so thinking that was never appended vanishes on the
+// next remount. It therefore carries a sequence like every other event.
+const reasoningDeltaFields = {
+  session: S.String,
+  turn: S.String,
+  text: S.String,
+};
+const ReasoningDeltaPayload = S.TaggedStruct("reasoning.delta", reasoningDeltaFields);
+const ReasoningDelta = S.TaggedStruct("reasoning.delta", {
+  ...reasoningDeltaFields,
+  sequence: S.NonNegativeInt,
+});
+
 const toolStartFields = {
   session: S.String,
   turn: S.String,
@@ -156,7 +170,10 @@ const toolResultFields = {
   isError: S.Boolean,
 };
 const ToolResultPayload = S.TaggedStruct("tool.result", toolResultFields);
-const ToolResult = S.TaggedStruct("tool.result", { ...toolResultFields, sequence: S.NonNegativeInt });
+const ToolResult = S.TaggedStruct("tool.result", {
+  ...toolResultFields,
+  sequence: S.NonNegativeInt,
+});
 
 /**
  * An agent asking to be allowed to do something, and blocked until it is answered.
@@ -238,6 +255,7 @@ const TurnEnd = S.TaggedStruct("turn.end", { ...turnEndFields, sequence: S.NonNe
 
 export const AgentEventPayloadSchema = S.Union(
   TurnStartPayload,
+  ReasoningDeltaPayload,
   ToolStartPayload,
   ToolResultPayload,
   PermissionRequestPayload,
@@ -247,9 +265,9 @@ export const AgentEventPayloadSchema = S.Union(
 );
 const AgentEventInputFrame = S.TaggedStruct("agent.event", { event: AgentEventPayloadSchema });
 
-const AgentSteer = S.TaggedStruct("agent.steer", {
+const AgentPrompt = S.TaggedStruct("agent.prompt", {
   session: S.String,
-  message: S.String,
+  text: S.String,
 });
 
 const AgentInterrupt = S.TaggedStruct("agent.interrupt", {
@@ -288,6 +306,7 @@ const Pong = S.TaggedStruct("pong", {
 
 export const AgentEvent = S.Union(
   TurnStart,
+  ReasoningDelta,
   ToolStart,
   ToolResult,
   PermissionRequest,
@@ -318,6 +337,7 @@ export const AttachFrame = S.Union(
   AgentEventInputFrame,
   TurnStart,
   TextDelta,
+  ReasoningDelta,
   ToolStart,
   ToolParamsStart,
   ToolParamsDelta,
@@ -327,7 +347,7 @@ export const AttachFrame = S.Union(
   PermissionResponse,
   AgentStatus,
   TurnEnd,
-  AgentSteer,
+  AgentPrompt,
   AgentInterrupt,
   AgentPermission,
   ErrorFrame,

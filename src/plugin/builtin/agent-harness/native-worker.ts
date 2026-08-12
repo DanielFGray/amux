@@ -16,7 +16,6 @@ import { DEFAULT_RULES } from "../../../permission.ts";
 import { projectRoot } from "../../../git.ts";
 import { layer as projectStoreLayer, Service as ProjectStore } from "../../../project-store.ts";
 import { makeAgentWorker } from "./worker.ts";
-import { initialContext } from "./context.ts";
 
 // --- Process entry point ---
 
@@ -26,20 +25,20 @@ if (!import.meta.main) {
   // Imported as a module — exports only, don't validate env or start the daemon.
 } else if (!session) throw new Error("AMUX_SESSION is required");
 else {
-  // The turn a permission request belongs to is on the wire already: every
-  // request is raised by a tool inside the turn whose start frame went out last.
+  // The turn a permission request belongs to is the one currently executing.
+  // `turn.start` is emitted when a prompt is queued, which can happen while an
+  // earlier turn is still running, so it cannot stand in for that.
   let turn = "";
   const emit = (frame: AgentEventPayload | AgentDelta) =>
-    Effect.sync(() => {
-      if (frame._tag === "turn.start") turn = frame.turn;
-      return process.stdout.write(
+    Effect.sync(() =>
+      process.stdout.write(
         encodeAttachFrame(
           frame._tag === "text.delta" || frame._tag.startsWith("tool.params-")
             ? (frame as AttachFrame)
             : ({ _tag: "agent.event", event: frame } as AttachFrame),
         ),
-      );
-    });
+      ),
+    );
 
   const workspace = process.env.AMUX_AGENT_CWD ?? process.cwd();
 
@@ -76,12 +75,7 @@ else {
       const savedConversation = yield* store.conversation(session);
       const chat =
         savedConversation === undefined
-          ? yield* Chat.fromPrompt([
-              {
-                role: "system",
-                content: yield* Effect.promise(() => initialContext({ workspace })),
-              },
-            ])
+          ? yield* Chat.empty
           : yield* Chat.fromJson(savedConversation);
       const worker = yield* makeAgentWorker({
         session,
@@ -92,6 +86,10 @@ else {
           Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
           Effect.orDie,
         ),
+        onTurnStart: (turnId) =>
+          Effect.sync(() => {
+            turn = turnId;
+          }),
       });
       yield* Stream.fromAsyncIterable(Bun.stdin.stream(), (error) => error).pipe(
         Stream.decodeText(),
@@ -99,8 +97,8 @@ else {
         Stream.filter((line) => line.length > 0),
         Stream.map((line) => JSON.parse(line) as AttachFrame),
         Stream.runForEach((frame) =>
-          frame._tag === "agent.steer"
-            ? worker.steer(frame.message)
+          frame._tag === "agent.prompt"
+            ? worker.prompt(frame.text)
             : frame._tag === "agent.interrupt"
               ? worker.interrupt(frame.reason)
               : frame._tag === "agent.permission"

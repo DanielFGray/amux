@@ -3,6 +3,7 @@ import {
   Cause,
   Clock,
   Context,
+  Deferred,
   Effect,
   Either,
   Exit,
@@ -101,6 +102,8 @@ export interface SessionDaemonService {
   readonly start: Effect.Effect<void, DaemonError>;
   readonly stop: Effect.Effect<void, DaemonError>;
   readonly close: Effect.Effect<void, DaemonError>;
+  /** Completes when stop or close has finished releasing daemon resources. */
+  readonly closed: Effect.Effect<void>;
   readonly runWorkspaceCommand: (
     value: Command,
     expectedRevision: number,
@@ -139,6 +142,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const daemonWorktreesRoot = yield* worktreesRoot();
   const defaultShell = Option.getOrElse(yield* optionalEnvVar("SHELL"), () => "bash");
   const session = yield* SessionStore;
+  const closed = yield* Deferred.make<void>();
   const fs = yield* FileSystem.FileSystem;
   const agentLog = yield* makeAgentLog(paths.root);
 
@@ -574,6 +578,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           yield* fs.remove(paths.lease).pipe(Effect.ignore);
           yield* Scope.close(lockScope, Exit.void);
           yield* Scope.close(daemonScope, Exit.void);
+          yield* Deferred.succeed(closed, undefined);
           if (finalFailure !== undefined) return yield* Effect.fail(finalFailure);
         }),
       );
@@ -642,6 +647,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         return yield* controlFail(`buffer command '${value._tag}' is not implemented for batch`);
       }
       if (meta.target === "server") {
+        // The daemon runs no plugins; it only tells the clients that do.
+        if (value._tag === "plugin.reload") {
+          yield* eventBus.publish({
+            _tag: "plugins.reload",
+            ...(value.plugin === undefined ? {} : { plugin: value.plugin }),
+          });
+          return {};
+        }
         if (value._tag === "app.quit") {
           yield* Effect.forkDaemon(
             Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore),
@@ -651,6 +664,10 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         return yield* controlFail(`server command '${value._tag}' is not implemented for batch`);
       }
       if (meta.target === "session") {
+        if (value._tag === "agent.prompt") {
+          yield* requireHost().prompt(value.target, value.text);
+          return {};
+        }
         if (value._tag === "pane.capture") {
           if (!value.session) return yield* controlFail("pane.capture requires a session id");
           return { result: yield* requireHost().capture(value.session) };
@@ -788,6 +805,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     start,
     stop,
     close,
+    closed: Deferred.await(closed),
     runWorkspaceCommand,
     spawnSession: spawnSessionService,
     get killSession() {

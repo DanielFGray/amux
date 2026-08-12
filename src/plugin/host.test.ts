@@ -1,13 +1,9 @@
-import { afterEach, expect, test } from "bun:test";
-import { createSignal } from "solid-js";
-import { Chunk, Effect, Exit, Fiber, Queue, Scope, Stream } from "effect";
-import { createPanelContext, type PanelContext, type SidebarDisplay } from "../ui/panel.ts";
+import { afterEach, expect } from "bun:test";
+import { Chunk, Effect, Fiber, Queue, Scope, Stream } from "effect";
 import { createRegions, type Regions } from "../ui/regions.tsx";
-import { resolveOptions } from "../options.ts";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
 import type { PluginDefinition, PluginErrorEvent } from "./types.ts";
-import type { WorkspaceSnapshot } from "../workspace.ts";
 import type { CliRenderer } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { createSessionViews } from "./session-views.tsx";
@@ -90,31 +86,34 @@ testEffect("dispose removes every active plugin", () =>
   }),
 );
 
-// --- Duplicate IDs ---
+// --- Adding an id that is already running ---
 
-testEffect("add with a duplicate id reports an error and does not replace", () =>
+testEffect("add replaces a running plugin, taking its registrations with it", () =>
   Effect.gen(function* () {
-    const { host } = yield* makeHost();
-    yield* host.add(mkPlugin({ id: "dup" }));
+    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
+    cleanupFns.push(dispose);
+    const sessionViews = createSessionViews();
+    const host = yield* createPluginHost(mockEnvironment(regions, { sessionViews }));
+    const ran: string[] = [];
 
-    const errors = yield* Queue.unbounded<PluginErrorEvent>();
-    const drain = yield* host.onError.pipe(
-      Stream.runForEach((e) => Queue.offer(errors, e)),
-      Effect.forkDaemon,
-    );
-    yield* Effect.yieldNow();
+    const version = (name: string) =>
+      mkPlugin({
+        id: "swap",
+        effect: (ctx) =>
+          Effect.sync(() => {
+            ran.push(name);
+            // The same name twice: session-views refuses a second owner, so this
+            // only works if the old instance is gone before the new one starts.
+            ctx.registerPaneType("chat", () => null);
+          }),
+      });
 
-    yield* host.add(mkPlugin({ id: "dup" }));
-    yield* Effect.yieldNow();
+    yield* host.add(version("first"));
+    yield* host.add(version("second"));
 
-    const reported = Chunk.toReadonlyArray(yield* Queue.takeAll(errors));
-    yield* Fiber.interrupt(drain);
-
-    const duplicate = reported.filter((e) => e.phase === "activate" && e.pluginId === "dup");
-    expect(duplicate.length).toBe(1);
-    expect(duplicate[0]!.source).toBe("host");
-    expect(duplicate[0]!.error.message).toContain("already active");
-    expect(host.status()).toEqual([{ id: "dup", active: true, error: null }]);
+    expect(ran).toEqual(["first", "second"]);
+    expect(sessionViews.has("chat")).toBe(true);
+    expect(host.status()).toEqual([{ id: "swap", active: true, error: null }]);
   }),
 );
 
@@ -313,15 +312,22 @@ testEffect("onError delivers events to subscribers after add/remove", () =>
     );
     yield* Effect.yieldNow();
 
-    yield* host.add(mkPlugin({ id: "already" }));
-    yield* host.add(mkPlugin({ id: "already" }));
+    yield* host.add(mkPlugin({ id: "fine" }));
+    yield* host.add(
+      mkPlugin({
+        id: "broken",
+        effect: () =>
+          Effect.sync(() => {
+            throw new Error("no");
+          }),
+      }),
+    );
     yield* Effect.yieldNow();
 
     const reported = Chunk.toReadonlyArray(yield* Queue.takeAll(errors));
     yield* Fiber.interrupt(drain);
 
-    const dups = reported.filter((e) => e.pluginId === "already");
-    expect(dups.length).toBe(1);
+    expect(reported.map((e) => e.pluginId)).toEqual(["broken"]);
   }),
 );
 

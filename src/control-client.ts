@@ -56,13 +56,13 @@ export const connectControlPath = (
 export const controlCall = <A, E>(
   id: string,
   use: (client: ControlClient) => Effect.Effect<A, E>,
-): Effect.Effect<A, ControlError | E> =>
-  Effect.scoped(Effect.flatMap(connectControl(id), use));
+): Effect.Effect<A, ControlError | E> => Effect.scoped(Effect.flatMap(connectControl(id), use));
 
 export const controlCallPath = <A, E>(
   socket: string,
   use: (client: ControlClient) => Effect.Effect<A, E>,
-): Effect.Effect<A, ControlError | E> => Effect.scoped(Effect.flatMap(connectControlPath(socket), use));
+): Effect.Effect<A, ControlError | E> =>
+  Effect.scoped(Effect.flatMap(connectControlPath(socket), use));
 
 /**
  * Subscribe to daemon events for the enclosing control connection scope. The
@@ -71,23 +71,20 @@ export const controlCallPath = <A, E>(
  */
 export const controlEvents = (
   id: string,
-): Effect.Effect<
-  Stream.Stream<DaemonEventPayload, unknown>,
-  ControlError,
-  Scope.Scope
-> => Effect.map(controlEventFrames(id), (events) => events.pipe(Stream.map(({ event }) => event)));
+): Effect.Effect<Stream.Stream<DaemonEventPayload, RpcClientError>, ControlError, Scope.Scope> =>
+  Effect.map(controlEventFrames(id), (events) => events.pipe(Stream.map(({ event }) => event)));
 
 /** Subscribe while retaining sequence numbers for gap detection. */
 export const controlEventFrames = (
   id: string,
-): Effect.Effect<Stream.Stream<DaemonEvent, unknown>, ControlError, Scope.Scope> =>
+): Effect.Effect<Stream.Stream<DaemonEvent, RpcClientError>, ControlError, Scope.Scope> =>
   Effect.map(connectControl(id), (control) => control.Events().pipe(Stream.drop(1)));
 
 /** Keep only one family of daemon events while preserving stream lifetime. */
 export const filterControlEvents = <T extends DaemonEventPayload["_tag"]>(
-  events: Stream.Stream<DaemonEventPayload, unknown>,
+  events: Stream.Stream<DaemonEventPayload, RpcClientError>,
   tag: T,
-): Stream.Stream<Extract<DaemonEventPayload, { readonly _tag: T }>, unknown> =>
+): Stream.Stream<Extract<DaemonEventPayload, { readonly _tag: T }>, RpcClientError> =>
   events.pipe(
     Stream.filter(
       (event): event is Extract<DaemonEventPayload, { readonly _tag: T }> => event._tag === tag,

@@ -1,27 +1,105 @@
 import { Effect } from "effect";
 import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { isAbsolute, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost } from "./host.ts";
-import { sidebarPlugin } from "./builtin/sidebar.tsx";
-import { agentHarnessPlugin } from "./builtin/agent-harness.tsx";
+import { decodePlugin, hotImport } from "./hot.ts";
 
-const BUILTIN_PLUGINS: Readonly<Record<string, PluginDefinition>> = {
-  "builtin:amux.sidebar": sidebarPlugin,
-  "builtin:amux.agent-harness": agentHarnessPlugin,
+/**
+ * The plugins amux ships, named twice on purpose.
+ *
+ * `load` is a literal specifier so `bun build --compile` still finds them and
+ * puts them in the binary. `source` is the same module as a file on disk, which
+ * is what a reload re-imports. A run from source uses `source` and is therefore
+ * reloadable; a compiled binary falls back to `load`, because there is no source
+ * there to reload and nothing to watch.
+ */
+const BUILTIN_PLUGINS: Readonly<Record<string, BuiltinEntry>> = {
+  "builtin:amux.sidebar": {
+    load: () => import("./builtin/sidebar.tsx"),
+    source: new URL("./builtin/sidebar.tsx", import.meta.url),
+  },
+  "builtin:amux.agent-harness": {
+    load: () => import("./builtin/agent-harness.tsx"),
+    source: new URL("./builtin/agent-harness.tsx", import.meta.url),
+  },
 };
 
-function resolvePluginPath(specPath: string, configDir: string): string | null {
+interface BuiltinEntry {
+  readonly load: () => Promise<unknown>;
+  readonly source: URL;
+}
+
+/** A plugin whose source amux can see, and can therefore load again. */
+export interface HotPlugin {
+  readonly id: string;
+  readonly source: URL;
+  readonly definition: PluginDefinition;
+}
+
+export const loadPluginsFromConfig = Effect.fnUntraced(function* (
+  config: Config,
+  host: PluginHost,
+  configDir: string,
+) {
+  const hot: HotPlugin[] = [];
+
+  for (const spec of config.plugins) {
+    if (!spec.enabled) continue;
+
+    const source = sourceOf(spec.path, configDir);
+    if (!source) {
+      yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
+      continue;
+    }
+
+    // A builtin that cannot be read from disk is a compiled binary, not a
+    // broken install: the module is in the bundle, and only reloading is lost.
+    const builtin = BUILTIN_PLUGINS[spec.path];
+    const loaded = yield* hotImport(source).pipe(
+      Effect.map((definition) => ({ definition, reloadable: true })),
+      Effect.catchAll((error) =>
+        builtin
+          ? Effect.tryPromise({ try: builtin.load, catch: String }).pipe(
+              Effect.flatMap(decodePlugin),
+              Effect.map((definition) => ({ definition, reloadable: false })),
+            )
+          : Effect.fail(error),
+      ),
+      Effect.tapError((error) =>
+        Effect.logWarning(`Could not load plugin '${spec.path}': ${error}`),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+    if (!loaded) continue;
+
+    yield* host.add(loaded.definition).pipe(Effect.catchAllCause(() => Effect.void));
+    if (loaded.reloadable)
+      hot.push({ id: loaded.definition.id, source, definition: loaded.definition });
+  }
+
+  return hot as readonly HotPlugin[];
+});
+
+/**
+ * Where a configured plugin's entry file is, or null if it is somewhere a
+ * plugin is not allowed to be. A relative path must stay inside the config
+ * directory, symlinks included — that check is why this resolves rather than
+ * merely joins.
+ */
+function sourceOf(specPath: string, configDir: string): URL | null {
+  const builtin = BUILTIN_PLUGINS[specPath];
+  if (builtin) return builtin.source;
   if (specPath.startsWith("file://")) {
     try {
-      return fileURLToPath(specPath);
+      return pathToFileURL(fileURLToPath(specPath));
     } catch {
       return null;
     }
   }
-  if (isAbsolute(specPath)) return specPath;
+  if (isAbsolute(specPath)) return pathToFileURL(specPath);
   const resolved = resolve(configDir, specPath);
   let realConfigDir: string;
   let realPath: string;
@@ -32,62 +110,5 @@ function resolvePluginPath(specPath: string, configDir: string): string | null {
     return null;
   }
   if (!realPath.startsWith(realConfigDir + "/") && realPath !== realConfigDir) return null;
-  return resolved;
+  return pathToFileURL(resolved);
 }
-
-function validatePluginShape(mod: unknown): PluginDefinition | null {
-  if (mod === null || typeof mod !== "object") return null;
-  const m = mod as Record<string, unknown>;
-  if (!m.default || typeof m.default !== "object" || m.default === null) return null;
-  const d = m.default as Record<string, unknown>;
-  if (typeof d.id !== "string" || d.id.length === 0) return null;
-  if (typeof d.apiVersion !== "string") return null;
-  if (typeof d.effect !== "function") return null;
-  return {
-    id: d.id,
-    apiVersion: d.apiVersion,
-    effect: d.effect as PluginDefinition["effect"],
-  };
-}
-
-export const loadPluginsFromConfig = Effect.fnUntraced(function* (
-  config: Config,
-  host: PluginHost,
-  configDir: string,
-) {
-  for (const spec of config.plugins) {
-    if (!spec.enabled) continue;
-
-    const builtin = BUILTIN_PLUGINS[spec.path];
-    if (builtin) {
-      yield* host.add(builtin).pipe(Effect.catchAllCause(() => Effect.void));
-      continue;
-    }
-
-    const resolved = resolvePluginPath(spec.path, configDir);
-    if (!resolved) {
-      yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
-      continue;
-    }
-
-    const mod = yield* Effect.tryPromise({
-      try: () => import(resolved),
-      catch: (cause) => ({ _tag: "PluginLoadError" as const, cause }),
-    }).pipe(
-      Effect.tapError((error) =>
-        Effect.logWarning(`Could not import plugin '${spec.path}': ${String(error.cause)}`),
-      ),
-      Effect.orElseSucceed(() => null),
-    );
-
-    if (mod === null) continue;
-
-    const plugin = validatePluginShape(mod);
-    if (!plugin) {
-      yield* Effect.logWarning(`Ignoring plugin with invalid default export: ${spec.path}`);
-      continue;
-    }
-
-    yield* host.add(plugin).pipe(Effect.catchAllCause(() => Effect.void));
-  }
-});

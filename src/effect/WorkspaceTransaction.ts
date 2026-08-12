@@ -38,6 +38,7 @@ interface SessionOps {
   readonly prepare: (session: PersistedSession) => Effect.Effect<PreparedSession>;
   readonly kill: (id: string) => Effect.Effect<void>;
   readonly write: (id: string, data: string) => Effect.Effect<void>;
+  readonly prompt: (id: string, text: string) => Effect.Effect<void>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void>;
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void>;
 }
@@ -215,7 +216,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                   yield* Deferred.succeed(exitsSettled, true);
                   for (const p of prepared) yield* p.activate;
                   for (const a of mutation.actions) {
-                    if (a._tag === "steer") yield* sessionOps.write(a.agent, a.message);
+                    if (a._tag === "prompt") yield* sessionOps.prompt(a.agent, a.text);
                     if (a._tag === "interrupt") yield* sessionOps.interrupt(a.agent, a.reason);
                     if (a._tag === "decide") yield* sessionOps.decide(a.agent, a.answer);
                   }
@@ -291,7 +292,9 @@ export function gitWorktreesFor(
 }
 
 export const makeSessionOps = (
-  hostRef: { current: { prepare: any; write: any; interrupt: any; decide: any } | null },
+  hostRef: {
+    current: { prepare: any; write: any; prompt: any; interrupt: any; decide: any } | null;
+  },
   killFn: (id: string) => Effect.Effect<void, unknown>,
 ): Layer.Layer<WorkspaceTransactionSessionOps> =>
   Layer.succeed(WorkspaceTransactionSessionOps, {
@@ -306,6 +309,12 @@ export const makeSessionOps = (
       Effect.suspend(() =>
         hostRef.current
           ? hostRef.current.write(id, data).pipe(Effect.orDie)
+          : Effect.die(new Error("host not started")),
+      ),
+    prompt: (id, text) =>
+      Effect.suspend(() =>
+        hostRef.current
+          ? hostRef.current.prompt(id, text).pipe(Effect.orDie)
           : Effect.die(new Error("host not started")),
       ),
     interrupt: (id, reason) =>

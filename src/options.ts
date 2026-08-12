@@ -97,6 +97,11 @@ export const OPTIONS = {
     desc: "provider/model for native agents",
     editable: true,
   },
+  "agent.showThinking": {
+    kind: "boolean",
+    default: false,
+    desc: "show agent thinking traces",
+  },
   "notifications.blocked": {
     kind: "boolean",
     default: true,
@@ -106,9 +111,9 @@ export const OPTIONS = {
 
 export type OptionName = keyof typeof OPTIONS;
 
-export function parseModelReference(value: string):
-  | { readonly providerID: string; readonly modelID: string }
-  | undefined {
+export function parseModelReference(
+  value: string,
+): { readonly providerID: string; readonly modelID: string } | undefined {
   const separator = value.indexOf("/");
   if (separator <= 0 || separator === value.length - 1) return undefined;
   return { providerID: value.slice(0, separator), modelID: value.slice(separator + 1) };

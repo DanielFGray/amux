@@ -2,6 +2,7 @@ import type { AgentFrame } from "../../../effect/AttachProtocol.ts";
 import type { PermissionDecision, PermissionRule } from "../../../permission.ts";
 
 export type TranscriptBlock =
+  | { readonly kind: "reasoning"; readonly turn: string; readonly text: string }
   | { readonly kind: "user"; readonly turn: string; readonly text: string }
   | { readonly kind: "assistant"; readonly turn: string; readonly text: string }
   | {
@@ -37,143 +38,20 @@ export type TranscriptBlock =
   /** Why a turn failed. The status block says that it did; this says what. */
   | { readonly kind: "error"; readonly turn: string; readonly text: string };
 
-/** Mutable retained transcript; streamed text is accumulated without copying the block list. */
+/** Mutable retained transcript backed by the shared frame reducer. */
 export class Transcript {
   #blocks: TranscriptBlock[] = [];
-  #assistant = new Map<string, number>();
-  #assistantChunks = new Map<number, string[]>();
-  #tools = new Map<string, number>();
-  #permissions = new Map<string, number>();
-  #dirty = true;
-  #view: readonly TranscriptBlock[] = [];
 
   append(frame: AgentFrame): void {
-    switch (frame._tag) {
-      case "turn.start":
-        this.#blocks.push({ kind: "user", turn: frame.turn, text: frame.prompt });
-        break;
-      case "text.delta": {
-        const index = this.#assistant.get(frame.turn);
-        if (index === undefined) {
-          this.#assistant.set(frame.turn, this.#blocks.length);
-          this.#assistantChunks.set(this.#blocks.length, [frame.text]);
-          this.#blocks.push({ kind: "assistant", turn: frame.turn, text: frame.text });
-        } else {
-          this.#assistantChunks.get(index)?.push(frame.text);
-        }
-        break;
-      }
-      case "tool.params-start": {
-        const key = `${frame.turn}\0${frame.call}`;
-        if (!this.#tools.has(key)) {
-          this.#tools.set(key, this.#blocks.length);
-          this.#blocks.push({
-            kind: "tool",
-            turn: frame.turn,
-            call: frame.call,
-            name: frame.tool,
-            input: "",
-            streaming: true,
-          });
-        }
-        break;
-      }
-      case "tool.params-delta": {
-        const index = this.#tools.get(`${frame.turn}\0${frame.call}`);
-        if (index === undefined) {
-          this.#tools.set(`${frame.turn}\0${frame.call}`, this.#blocks.length);
-          this.#blocks.push({
-            kind: "tool",
-            turn: frame.turn,
-            call: frame.call,
-            name: "",
-            input: frame.delta,
-            streaming: true,
-          });
-        } else {
-          const block = this.#blocks[index];
-          if (block?.kind === "tool" && typeof block.input === "string")
-            this.#blocks[index] = { ...block, input: block.input + frame.delta };
-        }
-        break;
-      }
-      case "tool.params-end":
-        break;
-      case "tool.start": {
-        const key = `${frame.turn}\0${frame.call}`;
-        const index = this.#tools.get(key);
-        if (index === undefined) {
-          this.#tools.set(key, this.#blocks.length);
-          this.#blocks.push({
-            kind: "tool",
-            turn: frame.turn,
-            call: frame.call,
-            name: frame.tool,
-            input: frame.input,
-          });
-        } else {
-          const block = this.#blocks[index];
-          if (block?.kind === "tool" && typeof block.input === "string")
-            this.#blocks[index] = {
-              ...block,
-              name: frame.tool,
-              input: frame.input,
-              streaming: false,
-            };
-        }
-        break;
-      }
-      case "tool.result": {
-        const index = this.#tools.get(`${frame.turn}\0${frame.call}`);
-        const block = index === undefined ? undefined : this.#blocks[index];
-        if (index !== undefined && block?.kind === "tool")
-          this.#blocks[index] = { ...block, output: frame.output, isError: frame.isError };
-        break;
-      }
-      case "permission.request":
-        this.#permissions.set(frame.request, this.#blocks.length);
-        this.#blocks.push(permissionBlock(frame));
-        break;
-      case "permission.response": {
-        const index = this.#permissions.get(frame.request);
-        const block = index === undefined ? undefined : this.#blocks[index];
-        if (index !== undefined && block?.kind === "permission")
-          this.#blocks[index] = decided(block, frame);
-        break;
-      }
-      case "agent.status":
-        this.#blocks.push({ kind: "status", state: frame.state });
-        break;
-      case "turn.end":
-        if (frame.text && !this.#assistant.has(frame.turn)) {
-          this.#assistant.set(frame.turn, this.#blocks.length);
-          this.#assistantChunks.set(this.#blocks.length, [frame.text]);
-          this.#blocks.push({ kind: "assistant", turn: frame.turn, text: frame.text });
-        }
-        if (frame.error) this.#blocks.push({ kind: "error", turn: frame.turn, text: frame.error });
-        break;
-    }
-    this.#dirty = true;
+    this.#blocks = [...appendTranscriptFrame(this.#blocks, frame)];
   }
 
   clear(): void {
     this.#blocks = [];
-    this.#assistant.clear();
-    this.#assistantChunks.clear();
-    this.#tools.clear();
-    this.#permissions.clear();
-    this.#dirty = true;
   }
 
   snapshot(): readonly TranscriptBlock[] {
-    if (this.#dirty) {
-      this.#view = this.#blocks.map((block, index) => {
-        const chunks = this.#assistantChunks.get(index);
-        return chunks && block.kind === "assistant" ? { ...block, text: chunks.join("") } : block;
-      });
-      this.#dirty = false;
-    }
-    return this.#view;
+    return this.#blocks;
   }
 }
 
@@ -208,11 +86,23 @@ const decided = (
  * blocks on one question at a time, so an earlier undecided block can only be
  * a request whose answer was lost with the session that asked it.
  */
-export function pendingPermission(
-  blocks: readonly TranscriptBlock[],
-): PermissionBlock | undefined {
+export function pendingPermission(blocks: readonly TranscriptBlock[]): PermissionBlock | undefined {
   const last = blocks.findLast((block) => block.kind === "permission");
   return last?.kind === "permission" && last.decision === undefined ? last : undefined;
+}
+
+/** The permission that gates this tool call, if the call needed human approval. */
+export function toolPermission(
+  blocks: readonly TranscriptBlock[],
+  tool: Extract<TranscriptBlock, { kind: "tool" }>,
+): PermissionBlock | undefined {
+  return blocks.find(
+    (block): block is PermissionBlock =>
+      block.kind === "permission" &&
+      block.turn === tool.turn &&
+      block.tool === tool.name &&
+      sameJson(block.input, tool.input),
+  );
 }
 
 /** Reduce semantic agent frames into stable render blocks. */
@@ -224,11 +114,34 @@ export function appendTranscriptFrame(
     case "turn.start":
       return [...blocks, { kind: "user", turn: frame.turn, text: frame.prompt }];
     case "text.delta": {
-      const last = blocks.at(-1);
-      if (last?.kind === "assistant" && last.turn === frame.turn) {
-        return [...blocks.slice(0, -1), { ...last, text: last.text + frame.text }];
+      const index = blocks.findLastIndex(
+        (block) => block.kind === "assistant" && block.turn === frame.turn,
+      );
+      if (index >= 0) {
+        const assistant = blocks[index]!;
+        if (assistant.kind !== "assistant") return blocks;
+        return [
+          ...blocks.slice(0, index),
+          { ...assistant, text: assistant.text + frame.text },
+          ...blocks.slice(index + 1),
+        ];
       }
       return [...blocks, { kind: "assistant", turn: frame.turn, text: frame.text }];
+    }
+    case "reasoning.delta": {
+      const index = blocks.findLastIndex(
+        (block) => block.kind === "reasoning" && block.turn === frame.turn,
+      );
+      if (index >= 0) {
+        const reasoning = blocks[index]!;
+        if (reasoning.kind !== "reasoning") return blocks;
+        return [
+          ...blocks.slice(0, index),
+          { ...reasoning, text: reasoning.text + frame.text },
+          ...blocks.slice(index + 1),
+        ];
+      }
+      return [...blocks, { kind: "reasoning", turn: frame.turn, text: frame.text }];
     }
     case "tool.start": {
       const index = blocks.findLastIndex(
@@ -263,7 +176,14 @@ export function appendTranscriptFrame(
       }
       return [
         ...blocks,
-        { kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: "", streaming: true },
+        {
+          kind: "tool",
+          turn: frame.turn,
+          call: frame.call,
+          name: frame.tool,
+          input: "",
+          streaming: true,
+        },
       ];
     }
     case "tool.params-delta": {
@@ -284,7 +204,14 @@ export function appendTranscriptFrame(
       }
       return [
         ...blocks,
-        { kind: "tool", turn: frame.turn, call: frame.call, name: "", input: frame.delta, streaming: true },
+        {
+          kind: "tool",
+          turn: frame.turn,
+          call: frame.call,
+          name: "",
+          input: frame.delta,
+          streaming: true,
+        },
       ];
     }
     case "tool.params-end":
@@ -311,18 +238,19 @@ export function appendTranscriptFrame(
       if (index < 0) return blocks;
       const permission = blocks[index]!;
       if (permission.kind !== "permission") return blocks;
-      return [
-        ...blocks.slice(0, index),
-        decided(permission, frame),
-        ...blocks.slice(index + 1),
-      ];
+      return [...blocks.slice(0, index), decided(permission, frame), ...blocks.slice(index + 1)];
     }
     case "agent.status":
       return [...blocks, { kind: "status", state: frame.state }];
     case "turn.end":
-      return frame.error
-        ? [...blocks, { kind: "error", turn: frame.turn, text: frame.error }]
-        : blocks;
+      return [
+        ...blocks,
+        ...(frame.text &&
+        !blocks.some((block) => block.kind === "assistant" && block.turn === frame.turn)
+          ? [{ kind: "assistant" as const, turn: frame.turn, text: frame.text }]
+          : []),
+        ...(frame.error ? [{ kind: "error" as const, turn: frame.turn, text: frame.error }] : []),
+      ];
   }
 }
 
@@ -334,6 +262,11 @@ export function serializeTranscript(blocks: readonly TranscriptBlock[], width: n
 
 export function toolDetails(block: Extract<TranscriptBlock, { kind: "tool" }>): string {
   return `${json(block.input)}${block.output === undefined ? "" : ` -> ${json(block.output)}`}`;
+}
+
+/** Plain result text for a tool card. Non-string results retain their JSON form. */
+export function toolOutput(block: Extract<TranscriptBlock, { kind: "tool" }>): string | undefined {
+  return block.output === undefined ? undefined : json(block.output);
 }
 
 /**
@@ -348,7 +281,10 @@ type ToolFace = {
 
 const toolFaces: Readonly<Record<string, ToolFace>> = {
   bash: { pending: "Writing command...", reveal: (input) => `$ ${stringField(input, "command")}` },
-  write: { pending: "Preparing write...", reveal: (input) => `\u2190 ${stringField(input, "path")}` },
+  write: {
+    pending: "Preparing write...",
+    reveal: (input) => `\u2190 ${stringField(input, "path")}`,
+  },
   read: { pending: "Reading file...", reveal: (input) => stringField(input, "path") },
   glob: { pending: "Finding files...", reveal: (input) => stringField(input, "pattern") },
   grep: { pending: "Searching content...", reveal: (input) => stringField(input, "pattern") },
@@ -386,6 +322,8 @@ function transcriptLine(block: TranscriptBlock): string {
       return `user> ${block.text}`;
     case "assistant":
       return `assistant> ${block.text}`;
+    case "reasoning":
+      return `thinking> ${block.text}`;
     case "tool":
       return `tool> ${block.name} ${json(block.input)}${block.output === undefined ? "" : ` -> ${json(block.output)}`}`;
     case "permission":
@@ -397,10 +335,20 @@ function transcriptLine(block: TranscriptBlock): string {
   }
 }
 
+/**
+ * Split into display lines: each newline is a hard break, and each hard line
+ * wraps at word boundaries. The renderer treats `\n` the same way, so the two
+ * must agree or a model's markdown lists and blank lines reflow oddly.
+ */
 export function wrapText(text: string, width: number): string[] {
   if (text.length === 0) return [""];
+  return text.split("\n").flatMap((line) => wrapLine(line, width));
+}
+
+function wrapLine(line: string, width: number): string[] {
+  if (line.length === 0) return [""];
   const lines: string[] = [];
-  let rest = text;
+  let rest = line;
   while (rest.length > width) {
     let cut = rest.lastIndexOf(" ", width);
     if (cut <= 0) cut = width;
@@ -417,5 +365,13 @@ function json(value: unknown): string {
     return JSON.stringify(value);
   } catch {
     return "[unserializable]";
+  }
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
   }
 }

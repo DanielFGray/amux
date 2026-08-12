@@ -22,7 +22,7 @@ export function runDaemonMain(id?: string): void {
     // `startDaemon` already unwinds its own partial state on failure.
     const daemon = yield* startDaemon(id);
     yield* Effect.addFinalizer(() => daemon.stop.pipe(Effect.ignore));
-    return yield* Effect.never;
+    yield* daemon.closed;
   });
 
   BunRuntime.runMain(

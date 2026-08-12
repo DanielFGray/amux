@@ -1,14 +1,8 @@
-import { Context, Deferred, Effect, FiberMap, Layer, Match, Ref, Scope, Stream } from "effect";
+import { Context, Deferred, Effect, FiberMap, Layer, Match, Ref, Stream } from "effect";
 import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
-import {
-  isAgentEventPayload,
-  type AgentEventPayload,
-  type AgentDelta,
-  type AgentFrame,
-  type AttachFrame,
-} from "./AttachProtocol.ts";
+import { isAgentEventPayload, type AgentFrame, type AttachFrame } from "./AttachProtocol.ts";
 import { AgentLog } from "./AgentLog.ts";
 import {
   PtyError,
@@ -40,10 +34,7 @@ export interface SessionExitObserverService {
 }
 
 export interface SessionStateObserverService {
-  readonly onState: (
-    id: string,
-    state: ReportedAgentState,
-  ) => Effect.Effect<void, unknown>;
+  readonly onState: (id: string, state: ReportedAgentState) => Effect.Effect<void, unknown>;
 }
 
 export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
@@ -424,11 +415,11 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               );
             }),
           ),
-          Match.tag("agent.steer", (command) =>
+          Match.tag("agent.prompt", (command) =>
             Effect.gen(function* () {
               const session = (yield* Ref.get(sessions)).get(command.session);
               if (!session) return;
-              yield* session.steer(command.message);
+              yield* session.prompt(command.text);
             }),
           ),
           Match.tag("agent.permission", (command) =>

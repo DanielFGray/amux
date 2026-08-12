@@ -11,6 +11,7 @@ import type {
   PluginHostContext,
   PluginKV,
   PluginStatus,
+  PluginSettingsSection,
 } from "./types.ts";
 
 export type {
@@ -50,6 +51,7 @@ export interface PluginEnvironment {
   readonly regions: Regions;
   readonly sessionViews: SessionViews;
   readonly registerBinding: (binding: CommandSpec) => () => void;
+  readonly registerSettingsSection: (section: PluginSettingsSection) => () => void;
   readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
   readonly sync: (session: string) => void;
 }
@@ -95,6 +97,7 @@ export function createPluginHost(
         registerPanel: (panel: Panel) => scoped(env.regions.register(panel)),
         registerPaneType: (type, view) => scoped(env.sessionViews.register(type, view)),
         registerBinding: (binding) => scoped(env.registerBinding(binding)),
+        registerSettingsSection: (section) => scoped(env.registerSettingsSection(section)),
         frames: env.frames,
         sync: env.sync,
       };
@@ -112,17 +115,6 @@ export function createPluginHost(
         return;
       }
 
-      if (activePlugins.has(plugin.id)) {
-        emitError({
-          pluginId: plugin.id,
-          phase: "activate",
-          source: "host",
-          error: new Error(`Plugin '${plugin.id}' is already active`),
-          timestamp: Date.now(),
-        });
-        return;
-      }
-
       if (plugin.apiVersion !== SUPPORTED_API_VERSION) {
         emitError({
           pluginId: plugin.id,
@@ -135,6 +127,12 @@ export function createPluginHost(
         });
         return;
       }
+
+      // Adding an id that is already running replaces it. There is no separate
+      // reload: a plugin is its id, and the newest definition of it is the one
+      // that runs. The old scope closes first, so a registration the new
+      // instance makes under the same name finds the name free.
+      yield* removePlugin(plugin.id);
 
       const pluginScope = yield* Scope.fork(hostScope, ExecutionStrategy.sequential);
       const context = makeContext(plugin.id, pluginScope);

@@ -4,9 +4,10 @@ import type { Accessor } from "solid-js";
 import { Effect, Fiber, Schema as S, Stream, type Stream as StreamType } from "effect";
 import {
   pendingPermission,
-  permissionSummary,
   serializeTranscript,
   Transcript as TranscriptModel,
+  toolOutput,
+  toolPermission,
   toolSummary,
   wrapText,
   type TranscriptBlock,
@@ -25,12 +26,15 @@ export interface TranscriptProps {
   onStatus?: (state: ReportedAgentState) => void;
   /** The question the agent is blocked on, or undefined once it is answered. */
   onPending?: (request: PermissionBlock | undefined) => void;
+  /** Chat is a compact presentation. Raw retains every semantic event. */
+  view?: "chat" | "raw";
+  showThinking?: boolean;
 }
 
 export type PermissionBlock = Extract<TranscriptBlock, { kind: "permission" }>;
 
 /**
- * The retained, semantic view of one agent conversation.
+ * The retained source for both views of one agent conversation.
  *
  * One session for the component's whole life, because it is a pane's content
  * and a pane views one session — so the stream is opened once and the model is
@@ -43,13 +47,12 @@ export function Transcript(props: TranscriptProps) {
   const transcript = new TranscriptModel();
   const [revision, setRevision] = createSignal(0);
   const [expandedTools, setExpandedTools] = createSignal<ReadonlySet<string>>(new Set());
+  const [expandedThinking, setExpandedThinking] = createSignal<ReadonlySet<string>>(new Set());
   const width = () => (typeof props.width === "function" ? props.width() : props.width);
   const blocks = createMemo(() => {
-      revision();
+    revision();
     width();
-    return transcript
-      .snapshot()
-      .filter((block) => block.kind !== "status" || (block.state !== "working" && block.state !== "idle"));
+    return transcript.snapshot();
   });
   // The pending question is a fact about the transcript, not a second stream to
   // keep in step with it: the pane above is told what the blocks already say.
@@ -65,8 +68,8 @@ export function Transcript(props: TranscriptProps) {
       Stream.runForEach((event) =>
         Effect.sync(() => {
           if (!S.is(AgentFrame)(event)) return;
-           if (event._tag === "agent.status") props.onStatus?.(event.state);
-           transcript.append(event);
+          if (event._tag === "agent.status") props.onStatus?.(event.state);
+          transcript.append(event);
           setRevision((value) => value + 1);
         }),
       ),
@@ -84,38 +87,85 @@ export function Transcript(props: TranscriptProps) {
         when={blocks().length > 0}
         fallback={<text style={{ fg: theme.overlay1 }}>waiting for agent events...</text>}
       >
-        <For each={blocks()}>
-          {(block) => (
-            <TranscriptCard
-              block={block}
-              width={() => Math.max(1, width())}
-              model={props.model}
-              expanded={block.kind === "tool" && expandedTools().has(block.call)}
-              onToggle={
-                block.kind === "tool"
-                  ? () =>
-                      setExpandedTools((previous) => {
-                        const next = new Set(previous);
-                        if (next.has(block.call)) next.delete(block.call);
-                        else next.add(block.call);
-                        return next;
-                      })
-                  : undefined
-              }
-            />
-          )}
-        </For>
+        <Show
+          when={props.view === "raw"}
+          fallback={
+            <For
+              each={blocks().filter(
+                (block) =>
+                  block.kind !== "status" &&
+                  block.kind !== "permission" &&
+                  (props.showThinking || block.kind !== "reasoning"),
+              )}
+            >
+              {(block) => (
+                <ChatCard
+                  block={block}
+                  permission={block.kind === "tool" ? toolPermission(blocks(), block) : undefined}
+                  width={() => Math.max(1, width())}
+                  model={props.model}
+                  expanded={block.kind === "tool" && expandedTools().has(block.call)}
+                  onToggle={
+                    block.kind === "tool"
+                      ? () =>
+                          setExpandedTools((previous) => {
+                            const next = new Set(previous);
+                            if (next.has(block.call)) next.delete(block.call);
+                            else next.add(block.call);
+                            return next;
+                          })
+                      : undefined
+                  }
+                  thinkingExpanded={
+                    block.kind === "reasoning" && expandedThinking().has(block.turn)
+                  }
+                  onThinkingToggle={
+                    block.kind === "reasoning"
+                      ? () =>
+                          setExpandedThinking((previous) => {
+                            const next = new Set(previous);
+                            if (next.has(block.turn)) next.delete(block.turn);
+                            else next.add(block.turn);
+                            return next;
+                          })
+                      : undefined
+                  }
+                />
+              )}
+            </For>
+          }
+        >
+          <For each={blocks()}>
+            {(block) => <RawTranscriptLine block={block} width={() => Math.max(1, width())} />}
+          </For>
+        </Show>
       </Show>
     </scrollbox>
   );
 }
 
-function TranscriptCard(props: {
+function RawTranscriptLine(props: { block: TranscriptBlock; width: Accessor<number> }) {
+  const lines = createMemo(() => serializeTranscript([props.block], props.width()));
+  return (
+    <box style={{ width: "100%", flexShrink: 0, flexDirection: "column", marginTop: 1 }}>
+      <For each={lines()}>
+        {(line) => (
+          <text style={{ wrapMode: "word", width: "100%", fg: theme.subtext0 }}>{line}</text>
+        )}
+      </For>
+    </box>
+  );
+}
+
+function ChatCard(props: {
   block: TranscriptBlock;
+  permission?: PermissionBlock;
   width: Accessor<number>;
   model?: string;
   expanded: boolean;
   onToggle?: () => void;
+  thinkingExpanded: boolean;
+  onThinkingToggle?: () => void;
 }) {
   const [hovered, setHovered] = createSignal(false);
   const cardStyle = {
@@ -128,17 +178,30 @@ function TranscriptCard(props: {
 
   if (props.block.kind === "tool") {
     const block = props.block;
+    const output = () => (block.name === "bash" ? toolOutput(block)?.trim() : undefined);
+    const collapsedOutput = createMemo(() => collapseOutput(output() ?? "", 10));
     // Memoized, not computed once: the expand toggle and the pane resize must
     // both re-wrap and re-slice this card's lines.
-    const lines = createMemo(() => wrapText(toolSummary(block), Math.max(1, props.width() - 2)));
+    const lines = createMemo(() =>
+      wrapText(
+        output() === undefined ? toolSummary(block) : toolSummary({ ...block, output: undefined }),
+        Math.max(1, props.width() - 2),
+      ),
+    );
     const overflow = createMemo(() => lines().length > 10);
-    const visible = createMemo(() => (props.expanded || !overflow() ? lines() : lines().slice(0, 10)));
+    const visible = createMemo(() =>
+      props.expanded || !overflow() ? lines() : lines().slice(0, 10),
+    );
+    const expandable = createMemo(() => overflow() || collapsedOutput().overflow);
+    const visibleOutput = createMemo(() =>
+      props.expanded || !collapsedOutput().overflow ? output() : collapsedOutput().text,
+    );
     return (
       <box
         style={{ ...cardStyle, backgroundColor: hovered() ? undefined : theme.surface0 }}
         onMouseOver={() => setHovered(true)}
         onMouseOut={() => setHovered(false)}
-        onMouseUp={props.onToggle}
+        onMouseUp={expandable() ? props.onToggle : undefined}
       >
         <text style={{ height: 1, fg: theme.text }}>{`tool> ${block.name}`}</text>
         <For each={visible()}>
@@ -154,7 +217,32 @@ function TranscriptCard(props: {
             </text>
           )}
         </For>
-        <Show when={overflow()}>
+        <Show when={output()}>
+          <text
+            style={{
+              wrapMode: "word",
+              width: "100%",
+              fg: block.isError ? theme.red : theme.subtext0,
+            }}
+          >
+            {visibleOutput()}
+          </text>
+        </Show>
+        <Show when={props.permission}>
+          {(permission: () => PermissionBlock) => (
+            <text
+              style={{
+                height: 1,
+                fg: permission().decision === undefined ? theme.yellow : theme.overlay1,
+              }}
+            >
+              {permission().decision === undefined
+                ? "awaiting approval"
+                : `approved ${permission().decision}`}
+            </text>
+          )}
+        </Show>
+        <Show when={expandable()}>
           <text style={{ height: 1, fg: theme.overlay1 }}>
             {props.expanded ? "click to collapse" : "click to expand"}
           </text>
@@ -163,30 +251,23 @@ function TranscriptCard(props: {
     );
   }
 
-  if (props.block.kind === "permission") {
+  if (props.block.kind === "reasoning") {
     const block = props.block;
-    const lines = createMemo(() =>
-      wrapText(permissionSummary(block), Math.max(1, props.width() - 2)),
-    );
-    // Pending is the loud state: the agent is stopped until this is answered.
-    const accent = () =>
-      block.decision === undefined
-        ? theme.yellow
-        : block.decision === "reject"
-          ? theme.red
-          : theme.green;
+    const lines = createMemo(() => wrapText(block.text, Math.max(1, props.width() - 2)));
     return (
-      <box style={{ ...cardStyle, backgroundColor: theme.surface0 }}>
-        <text style={{ height: 1, fg: accent() }}>
-          {`permission> ${block.action}${block.decision ? ` [${block.decision}]` : ""}`}
+      <box
+        style={{ ...cardStyle, backgroundColor: theme.surface0 }}
+        onMouseUp={props.onThinkingToggle}
+      >
+        <text style={{ height: 1, fg: theme.overlay1 }}>
+          {props.thinkingExpanded ? "Thinking" : "Thinking (click to expand)"}
         </text>
-        <For each={lines()}>
-          {(line) => (
-            <text style={{ wrapMode: "word", width: "100%", fg: theme.subtext0 }}>{line}</text>
-          )}
-        </For>
-        <Show when={block.feedback}>
-          <text style={{ height: 1, fg: theme.overlay1 }}>{block.feedback}</text>
+        <Show when={props.thinkingExpanded}>
+          <For each={lines()}>
+            {(line) => (
+              <text style={{ wrapMode: "word", width: "100%", fg: theme.subtext0 }}>{line}</text>
+            )}
+          </For>
         </Show>
       </box>
     );
@@ -195,7 +276,10 @@ function TranscriptCard(props: {
   const isUser = props.block.kind === "user";
   const isAssistant = props.block.kind === "assistant";
   const content = isUser || isAssistant ? (props.block as { text: string }).text : undefined;
-  const lines = content === undefined ? serializeTranscript([props.block], props.width()) : wrapText(content, isUser ? Math.max(1, Math.floor(props.width() * 0.85)) : props.width());
+  const lines =
+    content === undefined
+      ? serializeTranscript([props.block], props.width())
+      : wrapText(content, isUser ? Math.max(1, Math.floor(props.width() * 0.85)) : props.width());
   return (
     <box
       style={{
@@ -226,4 +310,10 @@ function TranscriptCard(props: {
       </Show>
     </box>
   );
+}
+
+function collapseOutput(output: string, maxLines: number): { text: string; overflow: boolean } {
+  const lines = output.split("\n");
+  if (lines.length <= maxLines) return { text: output, overflow: false };
+  return { text: `${lines.slice(0, maxLines).join("\n")}\n...`, overflow: true };
 }

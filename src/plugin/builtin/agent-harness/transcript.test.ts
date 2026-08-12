@@ -6,6 +6,8 @@ import {
   permissionSummary,
   serializeTranscript,
   toolSummary,
+  toolPermission,
+  wrapText,
   type TranscriptBlock,
 } from "./transcript.ts";
 
@@ -59,6 +61,21 @@ test("transcript reduction joins text deltas and attaches tool results", () => {
       isError: false,
     },
   ]);
+});
+
+test("transcript reduction retains and joins reasoning deltas", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "reasoning.delta", turn: "t1", text: "I will " }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "reasoning.delta", turn: "t1", text: "inspect." }),
+  );
+
+  expect(blocks).toEqual([{ kind: "reasoning", turn: "t1", text: "I will inspect." }]);
+  expect(serializeTranscript(blocks, 80)).toEqual(["thinking> I will inspect."]);
 });
 
 test("transcript serialization reflows semantic blocks at the requested width", () => {
@@ -344,9 +361,9 @@ test("a streaming bash tool renders the writing placeholder, then the command", 
   expect(toolSummary(toolBlock({ name: "bash", streaming: true, input: "" }))).toBe(
     "~ Writing command...",
   );
-  expect(
-    toolSummary(toolBlock({ name: "bash", input: { command: "bun test" } })),
-  ).toBe("$ bun test");
+  expect(toolSummary(toolBlock({ name: "bash", input: { command: "bun test" } }))).toBe(
+    "$ bun test",
+  );
   expect(
     toolSummary(
       toolBlock({ name: "bash", input: { command: "bun test" }, output: "ok", isError: false }),
@@ -358,9 +375,9 @@ test("write and read tools reveal their paths, grep its pattern", () => {
   expect(toolSummary(toolBlock({ name: "write", streaming: true, input: "" }))).toBe(
     "~ Preparing write...",
   );
-  expect(
-    toolSummary(toolBlock({ name: "write", input: { path: "src/a.ts", content: "x" } })),
-  ).toBe("\u2190 src/a.ts");
+  expect(toolSummary(toolBlock({ name: "write", input: { path: "src/a.ts", content: "x" } }))).toBe(
+    "\u2190 src/a.ts",
+  );
   expect(toolSummary(toolBlock({ name: "read", input: { path: "ARCHITECTURE.md" } }))).toBe(
     "ARCHITECTURE.md",
   );
@@ -401,13 +418,82 @@ test("a permission request is pending until its answer arrives", () => {
     frame({ _tag: "permission.response", request: "r1", decision: "reject", feedback: "no" }),
   );
   expect(pendingPermission(answered)).toBeUndefined();
-  expect(serializeTranscript(answered, 80)).toEqual([
-    "permission> bash: $ rm -rf build [reject]",
-  ]);
+  expect(serializeTranscript(answered, 80)).toEqual(["permission> bash: $ rm -rf build [reject]"]);
 
   // The retained model reduces the same pair the same way.
   const transcript = new Transcript();
   transcript.append(request);
   transcript.append(frame({ _tag: "permission.response", request: "r1", decision: "always" }));
   expect(transcript.snapshot()).toMatchObject([{ kind: "permission", decision: "always" }]);
+});
+
+test("a permission joins the tool it gates without removing either raw event", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "tool.start", turn: "t1", call: "c1", tool: "bash", input: { command: "ls" } }),
+  );
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({
+      _tag: "permission.request",
+      turn: "t1",
+      request: "r1",
+      tool: "bash",
+      action: "bash",
+      resources: ["ls"],
+      save: [],
+      input: { command: "ls" },
+    }),
+  );
+
+  expect(
+    toolPermission(blocks, blocks[0] as Extract<TranscriptBlock, { kind: "tool" }>),
+  ).toMatchObject({
+    request: "r1",
+  });
+  expect(serializeTranscript(blocks, 80)).toEqual([
+    'tool> bash {"command":"ls"}',
+    "permission> bash: $ ls",
+  ]);
+});
+
+test("wrapText preserves newlines as hard breaks and wraps each hard line", () => {
+  expect(wrapText("a\n\nb", 10)).toEqual(["a", "", "b"]);
+  expect(
+    wrapText(
+      "Here's the plan:\n\n1. Update the daemon model queue\n2. Add a regression test\n3. Ship it",
+      60,
+    ),
+  ).toEqual([
+    "Here's the plan:",
+    "",
+    "1. Update the daemon model queue",
+    "2. Add a regression test",
+    "3. Ship it",
+  ]);
+  expect(
+    wrapText(
+      "I'll take a look.\n\nThe daemon owns the workspace state. Let me start there and see how generations are published.",
+      60,
+    ),
+  ).toEqual([
+    "I'll take a look.",
+    "",
+    "The daemon owns the workspace state. Let me start there and",
+    "see how generations are published.",
+  ]);
+});
+
+test("wrapText still word-wraps a single logical line as before", () => {
+  expect(
+    wrapText(
+      "Single line that just keeps going with many words so it wraps at word boundaries like a normal sentence would in a narrow pane.",
+      60,
+    ),
+  ).toEqual([
+    "Single line that just keeps going with many words so it",
+    "wraps at word boundaries like a normal sentence would in a",
+    "narrow pane.",
+  ]);
 });

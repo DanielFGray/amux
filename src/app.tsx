@@ -7,7 +7,7 @@ import {
 } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
-import { Effect, Exit, FiberMap, Redacted, Scope, Stream } from "effect";
+import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
 import { basename, dirname, join } from "node:path";
 import { writeFile } from "node:fs/promises";
@@ -68,13 +68,14 @@ import { App } from "./ui/App.tsx";
 import { createRegions } from "./ui/regions.tsx";
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
 import { loadPluginsFromConfig } from "./plugin/loader.ts";
+import { createReloader } from "./plugin/reloader.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "./ui/Prompt.tsx";
 import { Hints, hintVisibility } from "./ui/Hints.tsx";
 import {
   Settings,
-  SETTINGS_SECTIONS,
+  settingsSections,
   settingsFields,
   keybindTargets,
   keybindLine,
@@ -88,8 +89,7 @@ import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
-import type { Interface as IntegrationService, Info as IntegrationInfo } from "./integration.ts";
-import { Credential } from "./credential.ts";
+import type { PluginSettingsSection } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
 
 export interface AppOptions {
@@ -104,8 +104,6 @@ export interface AppOptions {
   /** Ask the program to exit. The app does not own the process, the renderer or
    *  the session, so leaving is a request rather than a teardown. */
   readonly quit: () => void;
-  readonly integrations?: IntegrationService;
-  readonly credentials?: Credential.Interface;
 }
 
 export interface AppHandle {
@@ -121,6 +119,7 @@ export interface AppHandle {
 interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly release: Effect.Effect<void>;
   readonly registerBinding: (binding: CommandSpec) => () => void;
+  readonly registerSettingsSection: (section: PluginSettingsSection) => () => void;
 }
 
 /** A synchronous launcher captured from the app's scoped FiberMap. */
@@ -174,13 +173,41 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       regions,
       sessionViews,
       registerBinding: app.registerBinding,
+      registerSettingsSection: app.registerSettingsSection,
       frames: (id) => options.session.attach.stream(id),
       sync: (id) => options.session.attach.sync(id),
     });
-    yield* loadPluginsFromConfig(
+    const hotPlugins = yield* loadPluginsFromConfig(
       options.config,
       pluginHost,
       options.configDir ?? dirname(CONFIG_PATH),
+    );
+    // A plugin that dies on activation used to be silent outside the tests.
+    runFiber(
+      "plugin-errors",
+      Stream.runForEach(pluginHost.onError, (event) =>
+        Effect.sync(() => app.panel.reportError(`${event.pluginId}: ${event.error.message}`)),
+      ),
+    );
+    // `plugin.reload` goes out through the daemon and comes back here, so a
+    // client reloads whether the request was typed into it or into another one.
+    const reloader = createReloader(pluginHost, hotPlugins);
+    runFiber(
+      "plugin-reload",
+      Stream.runForEach(options.session.events, (event) =>
+        event._tag !== "plugins.reload"
+          ? Effect.void
+          : Effect.forEach(
+              event.plugin === undefined ? reloader.reloadable() : [event.plugin],
+              (id) =>
+                reloader
+                  .reload(id)
+                  .pipe(
+                    Effect.catchAll((message) => Effect.sync(() => app.panel.reportError(message))),
+                  ),
+              { discard: true },
+            ),
+      ),
     );
     runFiber(
       "agent-notifications",
@@ -249,7 +276,7 @@ export function runModelProjections<A>(
 }
 
 function buildApp(
-  { renderer, paneHost, config, session, quit, integrations, credentials }: AppOptions,
+  { renderer, paneHost, config, session, quit }: AppOptions,
   spaces: SpaceSet,
   fiberScope: Scope.CloseableScope,
   runFiber: AppFiberRunner,
@@ -328,7 +355,7 @@ function buildApp(
   let projectedRevision = -1;
   let projection = Promise.resolve();
   let disposed = false;
-  let runProjectedCommand: (value: Command) => void = () => { };
+  let runProjectedCommand: (value: Command) => void = () => {};
   const project = (model: WorkspaceSnapshot): Promise<void> => {
     if (disposed) return Promise.resolve();
     if (model.revision <= projectedRevision) return projection;
@@ -424,7 +451,7 @@ function buildApp(
   const [settingsSelected, setSettingsSelected] = createSignal(0);
   const [settingsDirty, setSettingsDirty] = createSignal(false);
   const [settingsError, setSettingsError] = createSignal("");
-  const [integrationInfo, setIntegrationInfo] = createSignal<readonly IntegrationInfo[]>([]);
+  const [pluginSettings, setPluginSettings] = createSignal<readonly PluginSettingsSection[]>([]);
   /** True while the keybind editor is waiting for the keystroke to record. */
   const [capturing, setCapturing] = createSignal(false);
   const [conflicts, setConflicts] = createSignal<Conflict[]>([]);
@@ -442,16 +469,6 @@ function buildApp(
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false);
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null);
   const [size, setSize] = createSignal({ width: renderer.width, height: renderer.height });
-
-  const refreshIntegrations = () => {
-    if (!integrations) return;
-    void Effect.runPromise(integrations.list())
-      .then(setIntegrationInfo)
-      .catch((error) => {
-        setSettingsError(errorMessage(error));
-      });
-  };
-  refreshIntegrations();
 
   const display = createMemo<SidebarDisplay>(() => {
     app.tick();
@@ -888,9 +905,9 @@ function buildApp(
               setCaptureView((view) =>
                 view
                   ? {
-                    ...view,
-                    error: `could not save capture to ${path}: ${error instanceof Error ? error.message : String(error)}`,
-                  }
+                      ...view,
+                      error: `could not save capture to ${path}: ${error instanceof Error ? error.message : String(error)}`,
+                    }
                   : view,
               );
             });
@@ -929,10 +946,10 @@ function buildApp(
             setChooseView((view) =>
               view
                 ? {
-                  ...view,
-                  buffers: [...buffers],
-                  selected: Math.min(view.selected, Math.max(0, buffers.length - 1)),
-                }
+                    ...view,
+                    buffers: [...buffers],
+                    selected: Math.min(view.selected, Math.max(0, buffers.length - 1)),
+                  }
                 : view,
             );
           })
@@ -949,7 +966,7 @@ function buildApp(
    */
   function sendKeysTarget(): SendTarget | null {
     const focused = spaces.activeWindow?.focused ?? null;
-    if (focused) return { write() { }, describe: () => focused.session.title || "pane" };
+    if (focused) return { write() {}, describe: () => focused.session.title || "pane" };
     return null;
   }
 
@@ -1110,7 +1127,11 @@ function buildApp(
     "window.synchronize-panes": runPanelCommand,
 
     "agent.new": runPanelCommand,
-    "agent.steer": runPanelCommand,
+    "agent.prompt": (value) =>
+      session.run(value).pipe(
+        Effect.asVoid,
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      ),
     "agent.interrupt": runPanelCommand,
     "agent.permission": runPanelCommand,
     notify: (value) =>
@@ -1194,6 +1215,13 @@ function buildApp(
         const bytes = leaderBytes(bindings.leader());
         if (bytes) activeWin()?.write(bytes);
       }),
+    // Through the daemon and back, so that every client attached to this
+    // workspace reloads — including the one the agent is not looking at.
+    "plugin.reload": (value) =>
+      session.run(value).pipe(
+        Effect.asVoid,
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      ),
     "app.quit": () => Effect.sync(shutdown),
   };
 
@@ -1469,10 +1497,9 @@ function buildApp(
   }
 
   function cycleSettingsSection(step: 1 | -1) {
-    const i = SETTINGS_SECTIONS.indexOf(settingsSection());
-    setSettingsSection(
-      SETTINGS_SECTIONS[(i + step + SETTINGS_SECTIONS.length) % SETTINGS_SECTIONS.length]!,
-    );
+    const sections = settingsSections(pluginSettings());
+    const i = sections.indexOf(settingsSection());
+    setSettingsSection(sections[(i + step + sections.length) % sections.length]!);
     setSettingsSelected(0);
   }
 
@@ -1522,50 +1549,13 @@ function buildApp(
 
   function settingsKey(event: KeyEvent) {
     const fields = settingsFields(options(), settingsSection());
-    if (settingsSection() === "auth") {
-      const selected = integrationInfo()[settingsSelected()];
-      if (event.name === "j" || event.name === "down") {
-        setSettingsSelected((s) => Math.min(Math.max(0, integrationInfo().length - 1), s + 1));
-        return;
-      }
-      if (event.name === "k" || event.name === "up") {
-        setSettingsSelected((s) => Math.max(0, s - 1));
-        return;
-      }
-      if (event.name === "d" && selected?.connections[0]) {
-        if (!credentials) return;
-        void Effect.runPromise(credentials.remove(selected.connections[0].id))
-          .then(refreshIntegrations)
-          .catch((error) => setSettingsError(errorMessage(error)));
-        return;
-      }
-      if ((event.name === "return" || event.name === "enter") && selected) {
-        const method = selected.methods.find((entry) => entry.type === "key");
-        if (!method) return;
-        void Effect.runPromise(
-          ask(`${selected.label} API key`, [
-            { label: "API key", placeholder: "paste key", masked: true },
-          ]).pipe(
-            Effect.flatMap((values) =>
-              values?.[0] && credentials
-                ? selected.connections[0]
-                  ? credentials.update(selected.connections[0].id, {
-                    value: { type: "key", key: Redacted.make(values[0]) },
-                  })
-                  : credentials
-                    .create({
-                      integrationID: selected.id,
-                      value: { type: "key", key: Redacted.make(values[0]) },
-                    })
-                    .pipe(Effect.asVoid)
-                : Effect.void,
-            ),
-          ),
-        )
-          .then(refreshIntegrations)
-          .catch((error) => setSettingsError(errorMessage(error)));
-        return;
-      }
+    const pluginSection = pluginSettings().find((section) => section.id === settingsSection());
+    if (pluginSection) {
+      pluginSection.keys?.(event, settingsSelected());
+      if (event.name === "j" || event.name === "down")
+        setSettingsSelected((s) => Math.min(Math.max(0, pluginSection.rows() - 1), s + 1));
+      if (event.name === "k" || event.name === "up") setSettingsSelected((s) => Math.max(0, s - 1));
+      return;
     }
     if (event.name === "return" || event.name === "enter") {
       // An option whose value is chosen from a list cannot be edited with ←/→,
@@ -1684,6 +1674,18 @@ function buildApp(
       active = false;
       pluginBindings.delete(binding.name);
       refreshBindings();
+    };
+  };
+  const registerSettingsSection = (section: PluginSettingsSection) => {
+    setPluginSettings((current) => [
+      ...current.filter((entry) => entry.id !== section.id),
+      section,
+    ]);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      setPluginSettings((current) => current.filter((entry) => entry !== section));
     };
   };
 
@@ -1869,7 +1871,7 @@ function buildApp(
             onKeybindList={(box) => {
               keybindList = box;
             }}
-            integrations={integrationInfo()}
+            pluginSections={pluginSettings()}
           />
         ),
       }),
@@ -1895,13 +1897,13 @@ function buildApp(
                   setKeybindPicker((current) =>
                     current
                       ? {
-                        ...current,
-                        query,
-                        selected: 0,
-                        entries: sortKeybindEntries(
-                          filterPaletteEntries(allPaletteEntries(), query),
-                        ),
-                      }
+                          ...current,
+                          query,
+                          selected: 0,
+                          entries: sortKeybindEntries(
+                            filterPaletteEntries(allPaletteEntries(), query),
+                          ),
+                        }
                       : current,
                   )
                 }
@@ -2201,5 +2203,5 @@ function buildApp(
     selectedAgentId,
     setSelectedAgentId,
   });
-  return { View, panel, release, registerBinding };
+  return { View, panel, release, registerBinding, registerSettingsSection };
 }

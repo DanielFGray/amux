@@ -76,10 +76,16 @@ it without knowing what it is: an option whose value is chosen from a list
 cannot be edited with ←/→, so enter on that row dispatches the command with the
 option's own name, and whoever owns the option registers it.
 
-One deviation is left, and it is tracked rather than tolerated: `main.tsx` still
-provides the integration and credential layers globally, because the settings
-auth tab is still core UI for what is a plugin's concern (`ts-e70401`). Do not
-add consumers to those layers. The boundary is recorded in `ts-8305f4`.
+Plugins may register user-configurable settings sections. Core renders and
+navigates those sections without knowing their contents; the harness registers
+provider authentication and owns the integration and credential layers it
+needs. A client without the harness has no LLM settings or provider services.
+
+Plugin reloads do not restart agent work. A plugin scope owns registrations and
+its UI fibers only. Agent workers, conversation persistence, and the daemon's
+semantic event log belong to the session supervisor. Reloading may remount a
+pane view, but the replacement view synchronizes from that log before showing
+the conversation, so an in-progress turn continues while the UI code changes.
 
 Vocabulary. A _session_ is a daemon-owned backend instance — a supervised PTY
 today, an LLM coding-agent session later — and every attach-frame field named

@@ -13,12 +13,16 @@ import {
   type Options,
 } from "../options.ts";
 import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts";
-import type { Info as IntegrationInfo } from "../integration.ts";
+import type { PluginSettingsSection } from "../plugin/types.ts";
 
 /** The option sections, plus the keybinds tab — which is not a section of the
  *  options table because a binding is not an option. */
-export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "auth", "keybinds"];
-export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "keybinds"];
+export type SettingsSection = string;
+
+export function settingsSections(plugins: readonly PluginSettingsSection[]): readonly string[] {
+  return [...optionSections, ...plugins.map((plugin) => plugin.id), "keybinds"];
+}
 
 /** One row of the settings window. */
 interface Field {
@@ -161,8 +165,10 @@ export function Settings(props: {
   /** Handed the keybind list's scroll container so the app can drive it from
    *  the keyboard — the list is longer than the window by some margin. */
   onKeybindList?: (box: ScrollBoxRenderable) => void;
-  integrations?: readonly IntegrationInfo[];
+  pluginSections?: readonly PluginSettingsSection[];
 }) {
+  const plugin = () => props.pluginSections?.find((entry) => entry.id === props.section);
+  const sections = () => settingsSections(props.pluginSections ?? []);
   const fields = createMemo(() => settingsFields(props.options, props.section));
   const rows = createMemo(() => keybindGroups(props.groups, props.leader));
 
@@ -185,7 +191,7 @@ export function Settings(props: {
       onMouseDown={(event) => event.stopPropagation()}
     >
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-        <For each={SETTINGS_SECTIONS}>
+        <For each={sections()}>
           {(section) => (
             <text
               style={{
@@ -200,80 +206,71 @@ export function Settings(props: {
       </box>
       <text style={{ height: 1, flexShrink: 0 }}> </text>
 
-      <Show when={props.section === "auth"}>
+      <Show when={plugin()}>
+        {(entry: () => PluginSettingsSection) =>
+          entry().component({ width: props.width, height: props.height, selected: props.selected })
+        }
+      </Show>
+      <Show when={props.section === "keybinds"}>
+        <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
+          <For each={rows()}>
+            {(group) => (
+              <box style={{ flexDirection: "column", flexShrink: 0 }}>
+                <text style={{ fg: theme.mauve, height: 1, flexShrink: 0 }}>{group.group}</text>
+                <For each={group.entries}>
+                  {(entry) => {
+                    const active = () => entry.index === props.selected;
+                    return (
+                      <box
+                        style={{
+                          flexDirection: "row",
+                          height: 1,
+                          flexShrink: 0,
+                          backgroundColor: active() ? theme.surface1 : theme.base,
+                        }}
+                      >
+                        <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
+                          {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
+                        </text>
+                        <text
+                          style={{
+                            fg: entry.index === null ? theme.overlay1 : theme.text,
+                            flexGrow: 1,
+                          }}
+                        >
+                          {entry.desc + (entry.custom ? " *" : "")}
+                        </text>
+                      </box>
+                    );
+                  }}
+                </For>
+                <text style={{ height: 1, flexShrink: 0 }}> </text>
+              </box>
+            )}
+          </For>
+        </scrollbox>
+      </Show>
+      <Show when={!plugin() && props.section !== "keybinds"}>
         <box style={{ flexDirection: "column", flexGrow: 1 }}>
-          <For each={props.integrations ?? []}>
-            {(integration, i) => (
-              <box style={{ flexDirection: "row", height: 1, flexShrink: 0, backgroundColor: i() === props.selected ? theme.surface1 : theme.base }}>
-                <text style={{ fg: theme.text, width: 18, flexShrink: 0 }}>{integration.label}</text>
-                <text style={{ fg: integration.connections.length ? theme.green : theme.overlay1 }}>
-                  {integration.connections.length ? integration.connections.map((connection) => connection.label).join(", ") : "not connected"}
+          <For each={fields()}>
+            {(field, i) => (
+              <box
+                style={{
+                  flexDirection: "row",
+                  height: 1,
+                  flexShrink: 0,
+                  backgroundColor: i() === props.selected ? theme.surface1 : theme.base,
+                }}
+              >
+                <text style={{ fg: theme.subtext0, width: 18, flexShrink: 0 }}>
+                  {` ${field.label}`}
                 </text>
+                <text style={{ fg: theme.text, width: 14, flexShrink: 0 }}>{field.value}</text>
+                <text style={{ fg: theme.overlay1, flexGrow: 1 }}>{field.hint}</text>
               </box>
             )}
           </For>
         </box>
-      </Show>
-      <Show when={props.section === "keybinds"}>
-       <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
-        <For each={rows()}>
-          {(group) => (
-            <box style={{ flexDirection: "column", flexShrink: 0 }}>
-              <text style={{ fg: theme.mauve, height: 1, flexShrink: 0 }}>{group.group}</text>
-              <For each={group.entries}>
-                {(entry) => {
-                  const active = () => entry.index === props.selected;
-                  return (
-                    <box
-                      style={{
-                        flexDirection: "row",
-                        height: 1,
-                        flexShrink: 0,
-                        backgroundColor: active() ? theme.surface1 : theme.base,
-                      }}
-                    >
-                      <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
-                        {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
-                      </text>
-                      <text
-                        style={{
-                          fg: entry.index === null ? theme.overlay1 : theme.text,
-                          flexGrow: 1,
-                        }}
-                      >
-                        {entry.desc + (entry.custom ? " *" : "")}
-                      </text>
-                    </box>
-                  );
-                }}
-              </For>
-              <text style={{ height: 1, flexShrink: 0 }}> </text>
-            </box>
-          )}
-        </For>
-       </scrollbox>
-      </Show>
-      <Show when={props.section !== "keybinds" && props.section !== "auth"}>
-       <box style={{ flexDirection: "column", flexGrow: 1 }}>
-        <For each={fields()}>
-          {(field, i) => (
-            <box
-              style={{
-                flexDirection: "row",
-                height: 1,
-                flexShrink: 0,
-                backgroundColor: i() === props.selected ? theme.surface1 : theme.base,
-              }}
-            >
-              <text style={{ fg: theme.subtext0, width: 18, flexShrink: 0 }}>
-                {` ${field.label}`}
-              </text>
-              <text style={{ fg: theme.text, width: 14, flexShrink: 0 }}>{field.value}</text>
-              <text style={{ fg: theme.overlay1, flexGrow: 1 }}>{field.hint}</text>
-            </box>
-          )}
-        </For>
-       </box>
       </Show>
 
       {/* A collision is not fatal — one of the two commands is simply dead — so
@@ -294,13 +291,13 @@ export function Settings(props: {
 
       <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
         {(props.dirty ? "● unsaved · " : "") +
-          (props.section === "auth"
-            ? "⇥ section · ↑↓ provider · ⏎ connect · d disconnect · esc closes"
+          (plugin()
+            ? `${plugin()!.label} · ↑↓ row · esc closes`
             : props.section !== "keybinds"
-            ? "⇥ section · ↑↓ field · ←→ change · s saves · esc closes"
-            : props.capturing
-              ? "press the key to bind · esc cancels"
-              : "↑↓ row · ⏎ rebind · a add key · u default · d unbind · s saves")}
+              ? "⇥ section · ↑↓ field · ←→ change · s saves · esc closes"
+              : props.capturing
+                ? "press the key to bind · esc cancels"
+                : "↑↓ row · ⏎ rebind · a add key · u default · d unbind · s saves")}
       </text>
     </box>
   );

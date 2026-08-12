@@ -14,9 +14,6 @@ import { applyOptions, resolveOptions } from "./options.ts";
 import { SessionClient } from "./client.ts";
 import { isSessionId, SessionStore } from "./session.ts";
 import { createApp } from "./app.tsx";
-import { Default as IntegrationDefault, Service as Integration } from "./integration.ts";
-import { Credential } from "./credential.ts";
-import { Default as ModelCatalogDefault } from "./model-catalog.ts";
 
 /**
  * The entry point, and the only place in the client that owns a lifetime.
@@ -76,8 +73,6 @@ const program = Effect.gen(function* () {
     configDir: dirname(CONFIG_PATH),
     session,
     quit: () => Deferred.unsafeDone(quit, Exit.void),
-    integrations: yield* Integration,
-    credentials: yield* Credential.Service,
   });
   yield* Effect.promise(() => render(app.View, renderer));
   yield* Deferred.await(quit);
@@ -87,9 +82,6 @@ BunRuntime.runMain(
   program.pipe(
     Effect.scoped,
     Effect.provide(SessionStore.Default),
-    Effect.provide(IntegrationDefault),
-    Effect.provide(Credential.Default),
-    Effect.provide(ModelCatalogDefault),
     Effect.provide(BunFileSystem.layer),
   ),
 );

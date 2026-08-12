@@ -1,11 +1,7 @@
 import { expect, test } from "bun:test";
 import { Schema as S } from "effect";
 import { DaemonEvent } from "./EventBus.ts";
-import {
-  decodeAttachFrames,
-  encodeAttachFrame,
-  type AttachFrame,
-} from "./AttachProtocol.ts";
+import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
 
 test("attach frames preserve binary payloads across the wire format", () => {
   const frame: AttachFrame = {
@@ -45,9 +41,7 @@ test("multiple frames and an incomplete tail are decoded independently", () => {
 
 test("heartbeat frames round-trip without special client state", () => {
   const encoded = encodeAttachFrame({ _tag: "ping", nonce: "17" });
-  expect(decodeAttachFrames(encoded).frames).toEqual([
-    { _tag: "ping", nonce: "17" },
-  ]);
+  expect(decodeAttachFrames(encoded).frames).toEqual([{ _tag: "ping", nonce: "17" }]);
 });
 
 test("foreground frames carry a negative pgid and sid across the wire", () => {
@@ -132,9 +126,9 @@ test("native agent lifecycle frames round-trip as semantic events", () => {
 test("native agent control frames round-trip without provider or transport details", () => {
   const frames: AttachFrame[] = [
     {
-      _tag: "agent.steer",
+      _tag: "agent.prompt",
       session: "agent-1",
-      message: "Stop after the current command.",
+      text: "Stop after the current command.",
     },
     {
       _tag: "agent.interrupt",
@@ -143,9 +137,7 @@ test("native agent control frames round-trip without provider or transport detai
     },
   ];
 
-  expect(
-    decodeAttachFrames(frames.map(encodeAttachFrame).join("")).frames,
-  ).toEqual(frames);
+  expect(decodeAttachFrames(frames.map(encodeAttachFrame).join("")).frames).toEqual(frames);
 });
 
 test("tool.params-start round-trips as a self-contained semantic event", () => {

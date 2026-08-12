@@ -28,6 +28,7 @@ async function chat(
   const [width, setWidth] = createSignal(40);
   const sent: string[] = [];
   const answered: { request: string; decision: string; feedback?: string }[] = [];
+  const interrupted: string[] = [];
   await render(
     () => (
       <Chat
@@ -43,6 +44,7 @@ async function chat(
         onPermission={(request, decision, feedback) =>
           answered.push({ request, decision, ...(feedback ? { feedback } : {}) })
         }
+        onInterrupt={() => interrupted.push(session.id)}
         onSlashCommand={onSlashCommand}
         slashCommands={[{ name: "model", description: "choose the agent model" }]}
       />
@@ -50,8 +52,15 @@ async function chat(
     t.renderer,
   );
   await t.renderOnce();
-  return { t, sent, answered, setFocused, setWidth };
+  return { t, sent, answered, interrupted, setFocused, setWidth };
 }
+
+test("Ctrl-C interrupts the active agent turn", async () => {
+  const { t, interrupted } = await chat();
+  t.mockInput.pressKey("c", { ctrl: true });
+  expect(interrupted).toEqual(["native"]);
+  t.renderer.destroy();
+});
 
 /** Poll the rendered frame until it satisfies the condition, re-rendering each
  *  tick. Borrowed from opencode's data.test.tsx wait(): a sleep then a single
@@ -133,15 +142,17 @@ test("deny with a reason returns the composer, and enter sends the refusal", asy
   t.mockInput.pressEnter();
   await Bun.sleep(10);
   await t.renderOnce();
-  expect(answered).toEqual([
-    { request: "req-1", decision: "reject", feedback: "not that repo" },
-  ]);
+  expect(answered).toEqual([{ request: "req-1", decision: "reject", feedback: "not that repo" }]);
   expect(sent).toEqual([]);
   t.renderer.destroy();
 });
 
 test("the /model slash command opens the model picker without sending", async () => {
-  const { t, sent } = await chat(true, () => Stream.never, () => true);
+  const { t, sent } = await chat(
+    true,
+    () => Stream.never,
+    () => true,
+  );
   await t.mockInput.typeText("/model");
   t.mockInput.pressEnter();
   await Bun.sleep(10);
@@ -151,7 +162,11 @@ test("the /model slash command opens the model picker without sending", async ()
 });
 
 test("slash autocomplete filters and selects a command without sending", async () => {
-  const { t, sent } = await chat(true, () => Stream.never, () => true);
+  const { t, sent } = await chat(
+    true,
+    () => Stream.never,
+    () => true,
+  );
   await t.mockInput.typeText("/mo");
   await t.renderOnce();
   expect(t.captureCharFrame()).toContain("/model");
@@ -254,7 +269,7 @@ test("the composer only takes keys while its own pane is focused", async () => {
  * The answer to "the agent said nothing": a submitted message has to become a
  * response in the pane. Frames are pushed into the transcript's stream after
  * submit, the way the daemon delivers them, and the rendered frame has to show
- * the turn. Anything upstream of this — steer never reaching the worker, frames
+ * the turn. Anything upstream of this — prompt never reaching the worker, frames
  * never leaving it — leaves the pane stuck on the user message, and this test
  * fails loudly instead of looking like a quiet pane.
  */
@@ -280,6 +295,7 @@ test("a submitted message is answered by the agent in the transcript", async () 
         sync={() => {}}
         onSubmit={(message) => sent.push(message)}
         onPermission={() => {}}
+        onInterrupt={() => {}}
       />
     ),
     t.renderer,
@@ -354,6 +370,7 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
         sync={() => {}}
         onSubmit={() => {}}
         onPermission={() => {}}
+        onInterrupt={() => {}}
       />
     ),
     t.renderer,
@@ -395,5 +412,58 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
   });
   await waitFrame(t, (frame) => frame.includes("$ git status"), "the revealed command");
   expect(t.captureCharFrame()).not.toContain("~ Writing command...");
+  t.renderer.destroy();
+});
+
+test("chat joins an approved permission to its tool instead of rendering a second card", async () => {
+  let push: (frame: AttachFrame) => void = () => {};
+  const { t } = await chat(true, () =>
+    Stream.asyncPush<AttachFrame>((emit) => {
+      push = (frame) => emit.single(frame);
+      return Effect.void;
+    }),
+  );
+  push({
+    _tag: "tool.start",
+    session: "native",
+    sequence: 1,
+    turn: "t1",
+    call: "c1",
+    tool: "bash",
+    input: { command: "ls" },
+  });
+  push({
+    _tag: "permission.request",
+    session: "native",
+    sequence: 2,
+    turn: "t1",
+    request: "r1",
+    tool: "bash",
+    action: "bash",
+    resources: ["ls"],
+    save: [],
+    input: { command: "ls" },
+  });
+  await waitFrame(t, (rendered) => rendered.includes("$ ls"), "the approval request");
+  push({
+    _tag: "permission.response",
+    session: "native",
+    sequence: 3,
+    request: "r1",
+    decision: "once",
+  });
+  push({
+    _tag: "tool.result",
+    session: "native",
+    sequence: 4,
+    turn: "t1",
+    call: "c1",
+    output: "AGENTS.md",
+    isError: false,
+  });
+  await waitFrame(t, (rendered) => rendered.includes("AGENTS.md"), "the tool result");
+  const rendered = t.captureCharFrame();
+  expect(rendered).not.toContain("permission>");
+  expect(rendered).not.toContain("status>");
   t.renderer.destroy();
 });

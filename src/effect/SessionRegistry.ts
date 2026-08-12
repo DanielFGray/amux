@@ -71,7 +71,7 @@ export interface ManagedSession {
   readonly events?: Stream.Stream<AgentEventPayload | AgentDelta, PtyError>;
   readonly exit: Effect.Effect<number | null, PtyError>;
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-  readonly steer: (message: string) => Effect.Effect<void, PtyError>;
+  readonly prompt: (text: string) => Effect.Effect<void, PtyError>;
   /** Answer a permission request this session is blocked on. */
   readonly decide: (answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly interrupt: (reason?: string) => Effect.Effect<void, PtyError>;
@@ -115,7 +115,7 @@ interface Backend {
   /** Resolves once the backend has fully terminated, with its exit code. */
   readonly wait: Promise<number | null>;
   write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>;
-  steer(message: string): Promise<void>;
+  prompt(text: string): Promise<void>;
   decide(answer: PermissionAnswer): Promise<void>;
   interrupt(reason?: string): Promise<void>;
   resize(cols: number, rows: number): void;
@@ -150,7 +150,9 @@ function ptyBackend(spec: SessionSpec): Backend {
       return pty.wait.then(() => pty.exitCode);
     },
     write: (data, signal) => pty.write(data, signal),
-    steer: async () => {},
+    prompt: async () => {
+      throw new Error("pty sessions do not accept agent prompts");
+    },
     decide: async () => {},
     interrupt: async () => {},
     resize: (cols, rows) => pty.resize(cols, rows),
@@ -242,7 +244,8 @@ function componentBackend(spec: SessionSpec): Backend {
           for (const frame of decodeAttachFrames(`${line}\n`).frames) {
             if (frame._tag === "output" && frame.session === spec.id)
               output.offer(new Uint8Array(frame.data));
-            else if (frame._tag === "agent.event" && frame.event.session === spec.id) events.offer(frame.event);
+            else if (frame._tag === "agent.event" && frame.event.session === spec.id)
+              events.offer(frame.event);
             else if (isAgentFrame(frame) && frame.session === spec.id) events.offer(frame);
           }
         }
@@ -267,11 +270,11 @@ function componentBackend(spec: SessionSpec): Backend {
     wait,
     write: (data) =>
       send({
-        _tag: "agent.steer",
+        _tag: "input",
         session: spec.id,
-        message: typeof data === "string" ? data : new TextDecoder().decode(data),
+        data: typeof data === "string" ? new TextEncoder().encode(data) : data,
       }),
-    steer: (message) => send({ _tag: "agent.steer", session: spec.id, message }),
+    prompt: (text) => send({ _tag: "agent.prompt", session: spec.id, text }),
     decide: (answer) => send({ _tag: "agent.permission", session: spec.id, ...answer }),
     interrupt: (reason) =>
       send({ _tag: "agent.interrupt", session: spec.id, ...(reason ? { reason } : {}) }),
@@ -430,10 +433,10 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
                   : Effect.fail(asPtyError("write", error)),
               ),
             ),
-          steer: (message) =>
+          prompt: (text) =>
             Effect.tryPromise({
-              try: () => backend.steer(message),
-              catch: (error) => asPtyError("steer", error),
+              try: () => backend.prompt(text),
+              catch: (error) => asPtyError("prompt", error),
             }),
           decide: (answer) =>
             Effect.tryPromise({

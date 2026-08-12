@@ -213,7 +213,8 @@ test("scoped app release detaches daemon projections and terminates local owners
     const scope = Effect.runSync(Scope.make());
 
     try {
-      run(
+      // Starting the app reads its plugins off disk, so this is not synchronous.
+      await runAsync(
         Scope.extend(
           createApp({
             renderer: t.renderer,

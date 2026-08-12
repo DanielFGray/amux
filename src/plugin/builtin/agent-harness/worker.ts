@@ -8,73 +8,32 @@ import {
 } from "@effect/ai";
 import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
-import { AgentState, type ReportedAgentState } from "../../../agent-state.ts";
+import { AgentState } from "../../../agent-state.ts";
 
 export type AgentWorker = {
-  readonly steer: (message: string) => Effect.Effect<void>;
+  readonly prompt: (text: string) => Effect.Effect<void>;
   readonly interrupt: (reason?: string) => Effect.Effect<void>;
   readonly close: Effect.Effect<void>;
 };
 
-type AgentFramePayload =
-  | {
-      readonly _tag: "agent.status";
-      readonly state: ReportedAgentState;
-    }
-  | {
-      readonly _tag: "turn.start";
-      readonly turn: string;
-      readonly prompt: string;
-    }
-  | {
-      readonly _tag: "text.delta";
-      readonly turn: string;
-      readonly text: string;
-    }
-  | {
-      readonly _tag: "tool.params-start";
-      readonly turn: string;
-      readonly call: string;
-      readonly tool: string;
-    }
-  | {
-      readonly _tag: "tool.params-delta";
-      readonly turn: string;
-      readonly call: string;
-      readonly delta: string;
-    }
-  | {
-      readonly _tag: "tool.params-end";
-      readonly turn: string;
-      readonly call: string;
-    }
-  | {
-      readonly _tag: "tool.start";
-      readonly turn: string;
-      readonly call: string;
-      readonly tool: string;
-      readonly input: unknown;
-    }
-  | {
-      readonly _tag: "tool.result";
-      readonly turn: string;
-      readonly call: string;
-      readonly output: unknown;
-      readonly isError: boolean;
-    }
-  | {
-      readonly _tag: "turn.end";
-      readonly turn: string;
-      readonly outcome: "completed" | "interrupted" | "failed";
-      readonly text?: string;
-      readonly error?: string;
-    };
+/**
+ * What the worker hands to `emit`: any agent frame except the `session` field,
+ * which `emit` supplies because the worker runs one session and cannot name
+ * another. Derived from the protocol rather than restated, so a frame added to
+ * the wire is emittable here without a second edit that can be forgotten.
+ */
+type AgentFramePayload = WithoutSession<AgentEventPayload | AgentDelta>;
+type WithoutSession<Frame> = Frame extends unknown ? Omit<Frame, "session"> : never;
+
+type QueuedTurn = {
+  readonly turn: string;
+  readonly prompt: string;
+};
 
 /**
  * Project one provider stream part onto the wire frame the mux already speaks.
  *
- * Parts with no transcript meaning (reasoning, sources, finish metadata) return
- * undefined rather than being forced into a frame.
+ * Parts with no transcript meaning (sources, finish metadata) return undefined.
  */
 export function frameForPart(
   turn: string,
@@ -83,6 +42,8 @@ export function frameForPart(
   switch (part.type) {
     case "text-delta":
       return { _tag: "text.delta", turn, text: part.delta };
+    case "reasoning-delta":
+      return { _tag: "reasoning.delta", turn, text: part.delta };
     case "tool-params-start":
       return {
         _tag: "tool.params-start",
@@ -135,13 +96,15 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
   readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Tools>>;
   /** Commit the provider-valid history only after a provider step has settled. */
   readonly persist?: Effect.Effect<void>;
+  /** Fire when a turn actually begins executing, not when it is queued. */
+  readonly onTurnStart?: (turn: string) => Effect.Effect<void>;
 }): Effect.Effect<
   AgentWorker,
   never,
   Scope.Scope | LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
 > {
   return Effect.gen(function* () {
-    const inbox = yield* Queue.unbounded<string>();
+    const inbox = yield* Queue.unbounded<QueuedTurn>();
     const turns = yield* Ref.make(0);
     const running = yield* FiberHandle.make<void, never>();
 
@@ -179,61 +142,67 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
       );
     };
 
-    const runTurn = (prompt: string) =>
-      Ref.updateAndGet(turns, (n) => n + 1).pipe(
-        Effect.flatMap((n) => {
-          const turn = `turn-${n}`;
-          let responseText = "";
-          const runStep = (
-            stepPrompt: string | Prompt.Prompt,
-          ): Effect.Effect<
-            void,
-            unknown,
-            LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
-          > => {
-            let needsContinuation = false;
-            return options.chat
-              .streamText(
-                options.toolkit
-                  ? { prompt: stepPrompt, toolkit: options.toolkit }
-                  : { prompt: stepPrompt },
-              )
-              .pipe(
-                Stream.runForEach((part) => {
-                  const frame = frameForPart(
-                    turn,
-                    part as Response.StreamPart<Record<string, Tool.Any>>,
-                  );
-                  if (frame?._tag === "text.delta") responseText += frame.text;
-                  if (frame?._tag === "tool.start") needsContinuation = true;
-                  return frame ? emit(frame) : Effect.void;
-                }),
-                // Chat commits its response when stream consumption releases.
-                // Checkpoint afterwards, or recovery misses the just-finished step.
-                Effect.andThen(options.persist ?? Effect.void),
-                Effect.flatMap(() => (needsContinuation ? runStep(Prompt.empty) : Effect.void)),
+    // Total by construction: the catchAll below absorbs every typed failure
+    // after settle has reported it, which is what lets a turn fail without
+    // ending the session and what FiberHandle<void, never> requires.
+    const runTurn = (
+      queued: QueuedTurn,
+    ): Effect.Effect<
+      void,
+      never,
+      LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
+    > => {
+      const { turn, prompt } = queued;
+      let responseText = "";
+      const runStep = (
+        stepPrompt: string | Prompt.Prompt,
+      ): Effect.Effect<
+        void,
+        unknown,
+        LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
+      > => {
+        let needsContinuation = false;
+        return options.chat
+          .streamText(
+            options.toolkit
+              ? { prompt: stepPrompt, toolkit: options.toolkit }
+              : { prompt: stepPrompt },
+          )
+          .pipe(
+            Stream.runForEach((part) => {
+              const frame = frameForPart(
+                turn,
+                part as Response.StreamPart<Record<string, Tool.Any>>,
               );
-          };
-          return emit({ _tag: "agent.status", state: AgentState.Working }).pipe(
-            Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
-            Effect.andThen(runStep(prompt)),
-            Effect.onExit((exit) => settle(turn, exit, responseText)),
-            // settle has already reported the failure as turn.end{failed}, so the
-            // transcript is this turn's error channel and there is nothing left to
-            // raise. A provider 500 ends a turn, never the session. catchAll takes
-            // only typed failures: interruption still unwinds, defects still crash.
-            Effect.catchAll(() => Effect.void),
+              if (frame?._tag === "text.delta") responseText += frame.text;
+              if (frame?._tag === "tool.start") needsContinuation = true;
+              return frame ? emit(frame) : Effect.void;
+            }),
+            // Chat commits its response when stream consumption releases.
+            // Checkpoint afterwards, or recovery misses the just-finished step.
+            Effect.andThen(options.persist ?? Effect.void),
+            Effect.flatMap(() => (needsContinuation ? runStep(Prompt.empty) : Effect.void)),
           );
-        }),
+      };
+      return (options.onTurnStart?.(turn) ?? Effect.void).pipe(
+        Effect.andThen(emit({ _tag: "agent.status", state: AgentState.Working })),
+        Effect.andThen(runStep(prompt)),
+        Effect.onExit((exit) => settle(turn, exit, responseText)),
+        // settle has already reported the failure as turn.end{failed}, so the
+        // transcript is this turn's error channel and there is nothing left to
+        // raise. A provider 500 ends a turn, never the session. catchAll takes
+        // only typed failures: interruption still unwinds, defects still crash.
+        Effect.catchAll(() => Effect.void),
       );
+    };
 
-    // One turn at a time: a steer that lands mid-turn queues the next prompt
+    // One turn at a time: a prompt that lands mid-turn queues the next prompt
     // rather than racing the running one. An interrupted turn must not end the
     // session, so the join failure is absorbed here.
     const drain = Effect.forever(
       Queue.take(inbox).pipe(
-        Effect.flatMap((prompt) =>
-          FiberHandle.run(running, runTurn(prompt)).pipe(
+        Effect.flatMap((queued) =>
+          FiberHandle.run(running, runTurn(queued)).pipe(
             Effect.flatMap(Fiber.join),
             Effect.catchAllCause(() => Effect.void),
           ),
@@ -243,7 +212,20 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
     const drainFiber = yield* Effect.forkScoped(drain);
 
     return {
-      steer: (message) => Queue.offer(inbox, message).pipe(Effect.asVoid),
+      // `turn.start` is emitted here, at enqueue time, so the transcript shows
+      // the user's message the moment it is submitted — even while an earlier
+      // turn is still running. The queued turn keeps its turn id, so the later
+      // Working/end frames attach to the prompt the user already saw.
+      prompt: (text) =>
+        Ref.updateAndGet(turns, (n) => n + 1).pipe(
+          Effect.flatMap((n) => {
+            const turn = `turn-${n}`;
+            return emit({ _tag: "turn.start", turn, prompt: text }).pipe(
+              Effect.andThen(Queue.offer(inbox, { turn, prompt: text })),
+              Effect.asVoid,
+            );
+          }),
+        ),
       // Interruption is Effect's, so the provider request, the stream and every
       // finalizer unwind together; there is no abort flag to keep in sync.
       interrupt: () => FiberHandle.clear(running),

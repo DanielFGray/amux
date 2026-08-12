@@ -257,7 +257,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
 
 export type WorkspaceAction =
   | { readonly _tag: "spawn"; readonly agent: PersistedSession }
-  | { readonly _tag: "steer"; readonly agent: string; readonly message: string }
+  | { readonly _tag: "prompt"; readonly agent: string; readonly text: string }
   | { readonly _tag: "interrupt"; readonly agent: string; readonly reason?: string }
   | { readonly _tag: "decide"; readonly agent: string; readonly answer: PermissionAnswer }
   | { readonly _tag: "kill"; readonly agent: string }
@@ -547,7 +547,7 @@ export function applyWorkspaceCommand(
     target.agents.push(agent);
     actions.push({ _tag: "spawn", agent });
     if (component && command.prompt)
-      actions.push({ _tag: "steer", agent: agent.id, message: command.prompt });
+      actions.push({ _tag: "prompt", agent: agent.id, text: command.prompt });
     return agent;
   };
   const addWindow = (target: WorkspaceSpace): WorkspaceWindow => {
@@ -577,11 +577,6 @@ export function applyWorkspaceCommand(
   };
 
   switch (command._tag) {
-    case "agent.steer": {
-      if (command.session)
-        actions.push({ _tag: "steer", agent: command.session, message: command.message });
-      break;
-    }
     case "agent.permission": {
       if (command.session)
         actions.push({

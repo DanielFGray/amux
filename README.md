@@ -54,6 +54,16 @@ Relative paths resolve from the config directory. A plugin must default-export a
 
 Plugins must invoke workspace commands through `ctx.panel.run()` and must not mutate client projection objects or access terminal handles.
 
+### Reloading a plugin
+
+`amux plugin.reload [plugin]` loads a plugin's source again and runs the new version in place of the old one — from the command palette, from a shell, or from an agent that has just edited it. With no argument every plugin reloads. The request goes through the daemon, so every attached client reloads, not only the one you typed it into.
+
+A plugin's reloadable unit is its entry file plus the directory named after it: `agent-harness.tsx` reloads together with everything in `agent-harness/`. Modules outside that directory — amux itself, `effect`, `solid-js` — stay the single instance the whole client shares, so a plugin never ends up talking to its own private copy of a registry.
+
+Nothing a plugin held in module scope survives; that is what makes it a reload. `ctx.kv` does survive, and so does anything the daemon owns, which is why a chat pane comes back mid-conversation with its transcript intact. The last version that worked is the floor: a source that will not import is refused before the running one is touched, and a version that fails to start gives way to the one it replaced.
+
+A reload replaces the running plugin with whatever the file says now, so a plugin that cannot be read from disk — inside a compiled binary — cannot be reloaded.
+
 ## Agent permissions
 
 Everything the bundled agent does that changes something asks first. Reading, globbing and grepping do not. A blocked pane shows the call and four answers: `o` once, `a` always, `d` deny, `e` deny with a reason the model is told.

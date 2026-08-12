@@ -74,6 +74,9 @@ export const sidebarPlugin: PluginDefinition = {
     }),
 };
 
+/** Loaded from its own source like any other plugin, and so exported like one. */
+export default sidebarPlugin;
+
 function filterRows(
   rows: readonly SidebarDisplayRow[],
   agentsOnly: boolean,

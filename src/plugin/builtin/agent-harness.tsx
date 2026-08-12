@@ -1,5 +1,7 @@
 /** @jsxImportSource @opentui/solid */
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Redacted } from "effect";
+import { For, createSignal } from "solid-js";
+import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem } from "@effect/platform-bun";
 import { command } from "../../commands.ts";
 import { Default as IntegrationDefault } from "../../integration.ts";
@@ -8,6 +10,9 @@ import type { PluginDefinition } from "../types.ts";
 import { Chat } from "./agent-harness/Chat.tsx";
 import { registerModelPicker } from "./agent-harness/ModelPicker.tsx";
 import { agentPreflight } from "./agent-harness/preflight.ts";
+import { theme } from "../../ui/theme.ts";
+import { Service as Integration, type Info as IntegrationInfo } from "../../integration.ts";
+import { Credential } from "../../credential.ts";
 
 export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
 
@@ -31,6 +36,43 @@ export const agentHarnessPlugin: PluginDefinition = {
   effect: (ctx) =>
     Effect.sync(() => {
       const openModelPicker = registerModelPicker(ctx).pipe(Effect.provide(llmServices));
+      const [providers, setProviders] = createSignal<readonly IntegrationInfo[]>([]);
+      const [selected, setSelected] = createSignal(0);
+      const refreshProviders = Effect.gen(function* () {
+        const integrations = yield* Integration;
+        setProviders(yield* integrations.list());
+      }).pipe(Effect.provide(llmServices));
+      Effect.runFork(refreshProviders);
+      ctx.registerSettingsSection({
+        id: "auth",
+        label: "auth",
+        rows: () => providers().length,
+        keys: (event: KeyEvent) => {
+          if (event.name === "j" || event.name === "down")
+            setSelected((value) => Math.min(providers().length - 1, value + 1));
+          if (event.name === "k" || event.name === "up")
+            setSelected((value) => Math.max(0, value - 1));
+          if (event.name === "d") {
+            const connection = providers()[selected()]?.connections[0];
+            if (connection)
+              Effect.runFork(
+                yieldCredential().pipe(
+                  Effect.flatMap((credentials) => credentials.remove(connection.id)),
+                  Effect.provide(Credential.Default),
+                  Effect.provide(BunFileSystem.layer),
+                  Effect.tap(() => refreshProviders),
+                ),
+              );
+          }
+        },
+        component: (props) => (
+          <AuthSettings
+            providers={providers()}
+            selected={props.selected}
+            onSubmit={(key) => connect(providers()[props.selected], key)}
+          />
+        ),
+      });
 
       // A binding's effect is built once, so the option has to be read inside
       // it: `agent.model` is settings the user changes while amux runs, and a
@@ -75,13 +117,16 @@ export const agentHarnessPlugin: PluginDefinition = {
         Effect.runFork(
           ctx.panel
             .run(value)
-            .pipe(Effect.catchAll((error) => Effect.sync(() => ctx.panel.reportError(error.message)))),
+            .pipe(
+              Effect.catchAll((error) => Effect.sync(() => ctx.panel.reportError(error.message))),
+            ),
         );
 
       ctx.registerPaneType("native", (props) => (
         <Chat
           {...props}
           model={ctx.panel.options()["agent.model"] as string}
+          showThinking={ctx.panel.options()["agent.showThinking"] as boolean}
           onSlashCommand={(command) => {
             if (command !== "/model") return false;
             Effect.runFork(openModelPicker);
@@ -91,7 +136,7 @@ export const agentHarnessPlugin: PluginDefinition = {
           frames={ctx.frames}
           sync={ctx.sync}
           onSubmit={(message) =>
-            run(command("agent.steer", { session: props.sessionId, message }))
+            run(command("agent.prompt", { target: props.sessionId, text: message }))
           }
           onPermission={(request, decision, feedback) =>
             run(
@@ -103,10 +148,40 @@ export const agentHarnessPlugin: PluginDefinition = {
               }),
             )
           }
+          onInterrupt={() => run(command("agent.interrupt", { session: props.sessionId }))}
         />
       ));
+
+      function yieldCredential() {
+        return Credential.Service;
+      }
+      const connect = (provider: IntegrationInfo | undefined, key: string) => {
+        if (!provider || !key) return;
+        Effect.runFork(
+          yieldCredential().pipe(
+            Effect.flatMap((credentials) =>
+              provider.connections[0]
+                ? credentials.update(provider.connections[0].id, {
+                    value: { type: "key", key: Redacted.make(key) },
+                  })
+                : credentials
+                    .create({
+                      integrationID: provider.id,
+                      value: { type: "key", key: Redacted.make(key) },
+                    })
+                    .pipe(Effect.asVoid),
+            ),
+            Effect.provide(Credential.Default),
+            Effect.provide(BunFileSystem.layer),
+            Effect.tap(() => refreshProviders),
+          ),
+        );
+      };
     }),
 };
+
+/** Loaded from its own source like any other plugin, and so exported like one. */
+export default agentHarnessPlugin;
 
 /** The catalog is behind the integration registry as well, but only the registry
  *  can see it there — the preflight asks the catalog directly, so both are
@@ -114,3 +189,39 @@ export const agentHarnessPlugin: PluginDefinition = {
 const llmServices = Layer.mergeAll(IntegrationDefault, ModelCatalogDefault).pipe(
   Layer.provide(BunFileSystem.layer),
 );
+
+function AuthSettings(props: {
+  readonly providers: readonly IntegrationInfo[];
+  readonly selected: number;
+  readonly onSubmit: (key: string) => void;
+}) {
+  const [key, setKey] = createSignal("");
+  return (
+    <box style={{ flexDirection: "column", flexGrow: 1 }}>
+      <For each={props.providers}>
+        {(provider, index) => (
+          <box
+            style={{
+              flexDirection: "row",
+              height: 1,
+              backgroundColor: index() === props.selected ? theme.surface1 : theme.base,
+            }}
+          >
+            <text style={{ fg: theme.text, width: 18 }}>{provider.label}</text>
+            <text style={{ fg: provider.connections.length ? theme.green : theme.overlay1 }}>
+              {provider.connections.length
+                ? provider.connections.map((connection) => connection.label).join(", ")
+                : "not connected"}
+            </text>
+          </box>
+        )}
+      </For>
+      <input
+        placeholder="API key, then enter"
+        value={key()}
+        onInput={(value: string) => setKey(value)}
+        onSubmit={() => props.onSubmit(key())}
+      />
+    </box>
+  );
+}

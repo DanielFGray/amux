@@ -635,17 +635,17 @@ test("a user override replaces a plugin default instead of adding to it", async 
   t.renderer.destroy();
 });
 
-test("agent.steer compiles its shifted-letter binding", async () => {
+test("agent.prompt compiles its shifted-letter binding", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const fired: string[] = [];
     const commands: CommandSpec[] = [
       {
-        name: "agent.steer",
+        name: "agent.prompt",
         key: "<leader>shift+e",
-        desc: "steer the focused native agent",
+        desc: "prompt the focused native agent",
         group: "agents",
-        run: Effect.sync(() => fired.push("agent.steer")),
+        run: Effect.sync(() => fired.push("agent.prompt")),
       },
     ];
     const bindings = createBindings(t.renderer, commands, {
@@ -653,7 +653,7 @@ test("agent.steer compiles its shifted-letter binding", async () => {
     });
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("E", { shift: true });
-    expect(fired).toEqual(["agent.steer"]);
+    expect(fired).toEqual(["agent.prompt"]);
     expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^a E");
   } finally {
     t.renderer.destroy();

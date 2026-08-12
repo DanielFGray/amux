@@ -10,8 +10,8 @@ Commands:
   agents:
     agent.new [harness] [cmd] [prompt]
         start a coding agent
-    agent.steer [session] <message>
-        send a message to an agent
+    agent.prompt [session] <target> <text>
+        send a prompt to an agent
     agent.interrupt [session] [reason]
         interrupt an agent turn
     agent.permission [session] <request> <decision> [feedback]
@@ -64,6 +64,9 @@ Commands:
         send keys to the focused pane
     pane.capture [session]
         capture the focused pane
+  plugins:
+    plugin.reload [plugin]
+        load a plugin's source again; all of them if none is named
   sessions:
     session.kill [session]
         stop a session

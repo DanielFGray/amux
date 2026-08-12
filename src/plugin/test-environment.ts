@@ -18,6 +18,7 @@ export function testPluginEnvironment(
     panel: testPanelContext(),
     sessionViews: createSessionViews(),
     registerBinding: () => () => {},
+    registerSettingsSection: () => () => {},
     frames: () => Stream.empty,
     sync: () => {},
     ...parts,
