@@ -220,7 +220,7 @@ test("an approved write runs, is remembered on disk, and does not ask again", as
   }
 });
 
-test("two attached clients answer through the framed protocol, and the first answer wins", async () => {
+test("the second answer to a resolved request is dropped", async () => {
   const world = harness();
   const workspace = await Effect.runPromise(
     Effect.provide(FileSystem.FileSystem, BunFileSystem.layer).pipe(
