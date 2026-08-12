@@ -1,4 +1,4 @@
-import { Schema as S } from "effect";
+import { Schema as S, SchemaAST as AST } from "effect";
 import { ReportedAgentStateSchema } from "../agent-state.ts";
 import { PermissionDecisionSchema, PermissionRuleSchema } from "../permission.ts";
 
@@ -372,6 +372,20 @@ export const AttachFrame = S.Union(
 );
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
 export type AgentEventInputFrame = S.Schema.Type<typeof AgentEventInputFrame>;
+
+function taggedSchemaTag(ast: AST.AST): string | undefined {
+  if (!AST.isTypeLiteral(ast)) return undefined;
+  const tag = ast.propertySignatures.find((property) => property.name === "_tag")?.type;
+  return tag && AST.isLiteral(tag) && typeof tag.literal === "string" ? tag.literal : undefined;
+}
+
+/** Every wire tag is deliverable unless the attach client explicitly excludes it. */
+export const AttachFrameTags = new Set(
+  (AST.isUnion(AttachFrame.ast) ? AttachFrame.ast.types : [AttachFrame.ast])
+    .map(taggedSchemaTag)
+    .filter((tag): tag is string => tag !== undefined),
+);
+
 export const AgentFrame = S.Union(AgentEvent, AgentDelta);
 export type AgentFrame = AgentEvent | AgentDelta;
 export const isAgentEvent = S.is(AgentEvent);

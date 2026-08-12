@@ -13,6 +13,7 @@
 
 import {
   AttachFrameAccumulator,
+  AttachFrameTags,
   decodeAttachFrames,
   encodeAttachFrameBytes,
   type AttachFrame,
@@ -60,6 +61,27 @@ const HELLO_TIMEOUT_MS = 5_000;
  * a fresh screen with sync.
  */
 const QUEUE_LIMIT = 256;
+
+/** Frames handled outside session streams never enter those streams. */
+const EXCLUDED_SESSION_FRAME_TAGS = new Set([
+  "hello",
+  "input",
+  "resize",
+  "sync",
+  "agent.event",
+  "agent.prompt",
+  "agent.interrupt",
+  "agent.permission",
+  "error",
+  "ping",
+  "pong",
+  "workspace",
+]);
+
+const isDeliverableFrame = (
+  frame: AttachFrame,
+): frame is Extract<AttachFrame, { readonly session: string }> =>
+  AttachFrameTags.has(frame._tag) && !EXCLUDED_SESSION_FRAME_TAGS.has(frame._tag);
 
 export interface AttachClientOptions {
   /** Unix socket path — SessionPaths.attach. */
@@ -351,25 +373,7 @@ class AttachClientConnection {
       }
       return;
     }
-    if (
-      frame._tag !== "output" &&
-      frame._tag !== "exit" &&
-      frame._tag !== "foreground" &&
-      frame._tag !== "turn.start" &&
-      frame._tag !== "text.delta" &&
-      frame._tag !== "tool.start" &&
-      frame._tag !== "tool.params-start" &&
-      frame._tag !== "tool.params-delta" &&
-      frame._tag !== "tool.params-end" &&
-      frame._tag !== "tool.result" &&
-      frame._tag !== "permission.request" &&
-      frame._tag !== "permission.response" &&
-      frame._tag !== "agent.status" &&
-      frame._tag !== "agent.error" &&
-      frame._tag !== "turn.end" &&
-      frame._tag !== "agent.interrupt"
-    )
-      return;
+    if (!isDeliverableFrame(frame)) return;
 
     // A frame after `exit` belongs to the next session of that name, so the
     // entry rotates. The old subscribers keep their own queues and close them

@@ -194,6 +194,32 @@ test("native agent status frames become authoritative projected state", async ()
   await Effect.runPromise(daemon.killSession(agent.id));
 });
 
+test("every schema event tag reaches an attached client", async () => {
+  const { daemon, env } = await session("native-error");
+  const client = await attach("native-error", env);
+  const id = "native-error-agent";
+  const stream = client.attach.stream(id).pipe(
+    Stream.filter((frame) => frame._tag === "agent.error"),
+    Stream.runHead,
+  );
+  const cmd = [
+    process.execPath,
+    "-e",
+    `process.stdout.write(JSON.stringify({_tag:"agent.error",session:"${id}",message:"startup failed",sequence:1})+"\\n"); setTimeout(()=>{},30000)`,
+  ];
+  await Effect.runPromise(daemon.spawnSession({ kind: "component", id, cmd, cols: 80, rows: 24 }));
+  const frame = Option.getOrThrow(
+    await Effect.runPromise(stream.pipe(Effect.timeout("5 seconds"))),
+  );
+  expect(frame).toEqual({
+    _tag: "agent.error",
+    session: id,
+    message: "startup failed",
+    sequence: 0,
+  });
+  await Effect.runPromise(daemon.killSession(id));
+});
+
 test("reattaching replays the completed transcript but not live-only deltas", async () => {
   const { daemon, env } = await session("agent-replay");
   const first = await attach("agent-replay", env, "first");
