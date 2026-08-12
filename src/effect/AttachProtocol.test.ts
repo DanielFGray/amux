@@ -1,7 +1,39 @@
 import { expect, test } from "bun:test";
 import { Schema as S } from "effect";
 import { DaemonEvent } from "./EventBus.ts";
-import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
+import {
+  AttachFrameAccumulator,
+  decodeAttachFrames,
+  encodeAttachFrame,
+  encodeAttachFrameBytes,
+  type AttachFrame,
+} from "./AttachProtocol.ts";
+
+test("attach framing splits at newline bytes before decoding UTF-8", () => {
+  const accumulator = new AttachFrameAccumulator();
+  const bytes = encodeAttachFrameBytes({ _tag: "hello", client: "café" });
+  const newline = bytes.indexOf(0x0a);
+
+  expect(accumulator.push(bytes.slice(0, newline))).toEqual([]);
+  const frames = accumulator.push(bytes.slice(newline));
+  expect(frames).toHaveLength(1);
+  expect(decodeAttachFrames(new TextDecoder().decode(frames[0])).frames).toEqual([
+    { _tag: "hello", client: "café" },
+  ]);
+  expect(accumulator.byteLength).toBe(0);
+});
+
+test("attach framing keeps a multibyte boundary intact across chunks", () => {
+  const accumulator = new AttachFrameAccumulator();
+  const bytes = encodeAttachFrameBytes({ _tag: "hello", client: "界" });
+  const split = bytes.findIndex((byte) => byte >= 0x80) + 1;
+
+  expect(accumulator.push(bytes.slice(0, split))).toEqual([]);
+  const frames = accumulator.push(bytes.slice(split));
+  expect(decodeAttachFrames(new TextDecoder().decode(frames[0])).frames).toEqual([
+    { _tag: "hello", client: "界" },
+  ]);
+});
 
 test("attach frames preserve binary payloads across the wire format", () => {
   const frame: AttachFrame = {

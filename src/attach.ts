@@ -12,8 +12,9 @@
  */
 
 import {
+  AttachFrameAccumulator,
   decodeAttachFrames,
-  encodeAttachFrame,
+  encodeAttachFrameBytes,
   type AttachFrame,
 } from "./effect/AttachProtocol.ts";
 import { errorMessage } from "./error-message.ts";
@@ -111,7 +112,7 @@ class AttachClientConnection {
   readonly client: string;
 
   private _closed = false;
-  private _recvBuffer = Buffer.alloc(0);
+  private readonly _recvBuffer = new AttachFrameAccumulator();
   private readonly _runtime: Runtime.Runtime<never>;
   private _handshake: { nonce: string; accept: () => void } | null;
   private readonly _closedSignal: Deferred.Deferred<void>;
@@ -280,14 +281,11 @@ class AttachClientConnection {
   }
 
   _receive(chunk: Buffer, onProtocolError: (error: Error) => void): void {
-    this._recvBuffer = Buffer.concat([this._recvBuffer, chunk]);
-    const lastNewline = this._recvBuffer.lastIndexOf(0x0a);
-    if (lastNewline === -1) return;
-    const complete = this._recvBuffer.subarray(0, lastNewline + 1);
-    this._recvBuffer = this._recvBuffer.subarray(lastNewline + 1);
     let decoded;
     try {
-      decoded = decodeAttachFrames(complete.toString("utf8"));
+      decoded = this._recvBuffer
+        .push(chunk)
+        .flatMap((frame) => decodeAttachFrames(new TextDecoder().decode(frame)).frames);
     } catch (error) {
       const protocolError =
         error instanceof AttachError ? error : new AttachError({ message: errorMessage(error) });
@@ -296,7 +294,7 @@ class AttachClientConnection {
       this._socket.end();
       return;
     }
-    for (const frame of decoded.frames) this._route(frame);
+    for (const frame of decoded) this._route(frame);
   }
 
   private _finish(error: Error | null): void {
@@ -319,7 +317,7 @@ class AttachClientConnection {
 
   private _send(frame: AttachFrame): void {
     if (this._closed) return;
-    this._writer.send(this._textEncoder.encode(encodeAttachFrame(frame)));
+    this._writer.send(encodeAttachFrameBytes(frame));
   }
 
   private _route(frame: AttachFrame): void {
@@ -457,10 +455,10 @@ const makeScoped = (
                 });
                 if (
                   !attached._writer.send(
-                    new TextEncoder().encode(
-                      encodeAttachFrame({ _tag: "hello", client: options.client }) +
-                        encodeAttachFrame({ _tag: "ping", nonce }),
-                    ),
+                    new Uint8Array([
+                      ...encodeAttachFrameBytes({ _tag: "hello", client: options.client }),
+                      ...encodeAttachFrameBytes({ _tag: "ping", nonce }),
+                    ]),
                   )
                 )
                   fail(new AttachError({ message: "attach handshake could not write" }));

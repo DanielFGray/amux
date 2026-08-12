@@ -367,9 +367,37 @@ export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()(
   },
 ) {}
 
+/** Accumulates raw socket bytes and emits complete newline-delimited frames. */
+export class AttachFrameAccumulator {
+  private buffer = new Uint8Array(0);
+
+  get byteLength(): number {
+    return this.buffer.byteLength;
+  }
+
+  push(chunk: Uint8Array): Uint8Array[] {
+    const joined = new Uint8Array(this.buffer.byteLength + chunk.byteLength);
+    joined.set(this.buffer);
+    joined.set(chunk, this.buffer.byteLength);
+    const frames: Uint8Array[] = [];
+    let start = 0;
+    for (let index = 0; index < joined.byteLength; index++) {
+      if (joined[index] !== 0x0a) continue;
+      frames.push(joined.slice(start, index + 1));
+      start = index + 1;
+    }
+    this.buffer = joined.slice(start);
+    return frames;
+  }
+}
+
 /** Encode one frame. Newline is the framing boundary, not part of the payload. */
 export function encodeAttachFrame(frame: AttachFrame): string {
   return `${JSON.stringify(S.encodeSync(AttachFrame)(frame))}\n`;
+}
+
+export function encodeAttachFrameBytes(frame: AttachFrame): Uint8Array {
+  return new TextEncoder().encode(encodeAttachFrame(frame));
 }
 
 /**

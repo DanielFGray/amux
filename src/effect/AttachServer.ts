@@ -15,7 +15,12 @@ import { randomUUID } from "node:crypto";
 import { AttachHub } from "./AttachHub.ts";
 import { createSocketWriter } from "../attach-write.ts";
 import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
-import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
+import {
+  AttachFrameAccumulator,
+  decodeAttachFrames,
+  encodeAttachFrameBytes,
+  type AttachFrame,
+} from "./AttachProtocol.ts";
 import { errorMessage } from "../error-message.ts";
 
 export class AttachServerError extends S.TaggedError<AttachServerError>()("AttachServerError", {
@@ -67,7 +72,7 @@ export interface AttachServerOptions {
 }
 
 interface ClientState {
-  buffer: Buffer;
+  buffer: AttachFrameAccumulator;
   client: string | null;
   connection: string;
   scope: Scope.CloseableScope | null;
@@ -106,7 +111,7 @@ export const createAttachWriter = (
     get closed() {
       return writer.closed;
     },
-    send: (frame: AttachFrame) => writer.send(new TextEncoder().encode(encodeAttachFrame(frame))),
+    send: (frame: AttachFrame) => writer.send(encodeAttachFrameBytes(frame)),
     drain: () => writer.drain(),
     close: () => writer.close(),
     closeAfterFlush: (onFlushed: () => void) => writer.closeAfterFlush(onFlushed),
@@ -329,13 +334,9 @@ export const startAttachServer = (
               if (state.buffer.byteLength + data.byteLength > MAX_ATTACH_FRAME_BYTES) {
                 return yield* new AttachServerError({ message: "attach frame is too large" });
               }
-              state.buffer = Buffer.concat([state.buffer, data]);
-              const lastNewline = state.buffer.lastIndexOf(0x0a);
-              if (lastNewline === -1) return;
-              const complete = state.buffer.subarray(0, lastNewline + 1);
-              state.buffer = state.buffer.subarray(lastNewline + 1);
-              const decoded = decodeAttachFrames(complete.toString("utf8"));
-              for (const frame of decoded.frames) dispatchFrame(socket, frame);
+              for (const complete of state.buffer.push(data))
+                for (const frame of decodeAttachFrames(new TextDecoder().decode(complete)).frames)
+                  dispatchFrame(socket, frame);
             }),
           ),
           Effect.catchAll((error) =>
@@ -402,7 +403,7 @@ export const startAttachServer = (
           Bun.listen<ClientState>({
             unix: options.path,
             data: {
-              buffer: Buffer.alloc(0),
+              buffer: new AttachFrameAccumulator(),
               client: null,
               connection: "",
               scope: null,
@@ -420,7 +421,7 @@ export const startAttachServer = (
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
                 socket.data = {
-                  buffer: Buffer.alloc(0),
+                  buffer: new AttachFrameAccumulator(),
                   client: null,
                   connection: randomUUID(),
                   scope: null,
