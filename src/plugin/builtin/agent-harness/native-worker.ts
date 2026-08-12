@@ -72,12 +72,20 @@ else {
       const toolkit = agentToolkit(workspace, gate);
       // Chat owns the conversation: history, tool-call/result pairing and the
       // provider message shape are all its job, not ours.
-      const chat = yield* Chat.empty;
+      const savedConversation = yield* store.conversation(session);
+      const chat =
+        savedConversation === undefined
+          ? yield* Chat.empty
+          : yield* Chat.fromJson(savedConversation);
       const worker = yield* makeAgentWorker({
         session,
         chat,
         emit,
         toolkit,
+        persist: chat.exportJson.pipe(
+          Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
+          Effect.orDie,
+        ),
       });
       yield* Stream.fromAsyncIterable(Bun.stdin.stream(), (error) => error).pipe(
         Stream.decodeText(),

@@ -14,7 +14,6 @@ import {
 } from "./permission.ts";
 import { DEFAULT_RULES, type PermissionRule } from "../../../permission.ts";
 import type { AgentDelta, AgentEventPayload } from "../../../effect/AttachProtocol.ts";
-import type { Interface as ProjectStoreInterface } from "../../../project-store.ts";
 
 test("a command is split into the parts policy must clear", () => {
   expect(bashResources("ls; rm -rf ~")).toEqual(["ls", "rm -rf ~"]);
@@ -56,7 +55,9 @@ test("a project-wide file rule covers the project and nothing outside it", () =>
 
 test("a read runs without asking, and nothing is emitted for it", async () => {
   const world = harness();
-  await Effect.runPromise(world.gate.pipe(Effect.flatMap((gate) => gate.assert(assertion("read", ["./a.ts"])))));
+  await Effect.runPromise(
+    world.gate.pipe(Effect.flatMap((gate) => gate.assert(assertion("read", ["./a.ts"])))),
+  );
   expect(world.emitted()).toEqual([]);
 });
 
@@ -157,9 +158,7 @@ test("a standing deny is refused without ever asking", async () => {
  * process to read.
  */
 test("an approved write runs, is remembered on disk, and does not ask again", async () => {
-  const fs = await Effect.runPromise(
-    Effect.provide(FileSystem.FileSystem, BunFileSystem.layer),
-  );
+  const fs = await Effect.runPromise(Effect.provide(FileSystem.FileSystem, BunFileSystem.layer));
   const state = await Effect.runPromise(fs.makeTempDirectory({ prefix: "amux-gate-" }));
   const workspace = await Effect.runPromise(fs.makeTempDirectory({ prefix: "amux-work-" }));
   const previous = process.env.XDG_STATE_HOME;
@@ -208,9 +207,10 @@ test("an approved write runs, is remembered on disk, and does not ask again", as
     if (previous === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = previous;
     await Effect.runPromise(
-      Effect.all([fs.remove(state, { recursive: true }), fs.remove(workspace, { recursive: true })]).pipe(
-        Effect.ignore,
-      ),
+      Effect.all([
+        fs.remove(state, { recursive: true }),
+        fs.remove(workspace, { recursive: true }),
+      ]).pipe(Effect.ignore),
     );
   }
 });
@@ -226,10 +226,10 @@ const assertion = (action: string, resources: readonly string[]): Assertion => (
 function harness(extra: readonly PermissionRule[] = []) {
   const frames: (AgentEventPayload | AgentDelta)[] = [];
   const saved: PermissionRule[] = [];
-  const store: ProjectStoreInterface = {
+  const store = {
     root: "/repo",
     rules: Effect.succeed(saved),
-    addRules: (rules) => Effect.sync(() => void saved.push(...rules)),
+    addRules: (rules: readonly PermissionRule[]) => Effect.sync(() => void saved.push(...rules)),
   };
   const gate = makePermissionGate({
     session: "agent-1",
@@ -248,8 +248,5 @@ function awaitRequest(frames: readonly (AgentEventPayload | AgentDelta)[]) {
     return frame?._tag === "permission.request"
       ? Effect.succeed(frame.request)
       : Effect.fail("no request yet" as const);
-  }).pipe(
-    Effect.retry(Schedule.spaced("1 millis").pipe(Schedule.upTo("2 seconds"))),
-    Effect.orDie,
-  );
+  }).pipe(Effect.retry(Schedule.spaced("1 millis").pipe(Schedule.upTo("2 seconds"))), Effect.orDie);
 }

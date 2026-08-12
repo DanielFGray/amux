@@ -1,19 +1,8 @@
 import { test, expect } from "bun:test";
-import {
-  AiError,
-  Chat,
-  LanguageModel,
-  Prompt,
-  Response,
-  Tool,
-  Toolkit,
-} from "@effect/ai";
+import { AiError, Chat, LanguageModel, Prompt, Response, Tool, Toolkit } from "@effect/ai";
 import { Effect, Schema as S, Stream } from "effect";
 import { makeAgentWorker } from "./worker.ts";
-import type {
-  AgentEventPayload,
-  AgentDelta,
-} from "../../../effect/AttachProtocol.ts";
+import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 type WorkerFrame = AgentEventPayload | AgentDelta;
 
 const waitFor = async (predicate: () => boolean) => {
@@ -59,9 +48,7 @@ const runWorker = <A>(
   ) => Effect.Effect<A>,
   options?: {
     readonly emit?: (frame: WorkerFrame) => Effect.Effect<void>;
-    readonly toolkit?: Effect.Effect<
-      Toolkit.WithHandler<Record<string, Tool.Any>>
-    >;
+    readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Record<string, Tool.Any>>>;
   },
 ) =>
   Effect.runPromise(
@@ -79,8 +66,7 @@ const runWorker = <A>(
     ),
   );
 
-const roles = (prompt: Prompt.Prompt) =>
-  prompt.content.map((message) => message.role);
+const roles = (prompt: Prompt.Prompt) => prompt.content.map((message) => message.role);
 
 test("drains a prompt and emits semantic frames", async () => {
   const frames: WorkerFrame[] = [];
@@ -95,9 +81,7 @@ test("drains a prompt and emits semantic frames", async () => {
         .steer("inspect the pane")
         .pipe(
           Effect.andThen(
-            Effect.promise(() =>
-              waitFor(() => frames.some((f) => f._tag === "turn.end")),
-            ),
+            Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end"))),
           ),
         ),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
@@ -155,9 +139,7 @@ test("a tool call is resolved by the toolkit and reported as a result frame", as
         .steer("capture it")
         .pipe(
           Effect.andThen(
-            Effect.promise(() =>
-              waitFor(() => frames.some((f) => f._tag === "turn.end")),
-            ),
+            Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end"))),
           ),
         ),
     {
@@ -214,9 +196,7 @@ test("continues through successive tool calls before ending the turn", async () 
         .steer("look twice")
         .pipe(
           Effect.andThen(
-            Effect.promise(() =>
-              waitFor(() => frames.some((frame) => frame._tag === "turn.end")),
-            ),
+            Effect.promise(() => waitFor(() => frames.some((frame) => frame._tag === "turn.end"))),
           ),
         ),
     {
@@ -225,9 +205,7 @@ test("continues through successive tool calls before ending the turn", async () 
     },
   );
 
-  expect(frames.filter((frame) => frame._tag === "tool.result")).toHaveLength(
-    2,
-  );
+  expect(frames.filter((frame) => frame._tag === "tool.result")).toHaveLength(2);
   expect(frames.filter((frame) => frame._tag === "turn.end")).toHaveLength(1);
   expect(frames.find((frame) => frame._tag === "turn.end")).toMatchObject({
     text: "finished",
@@ -263,6 +241,59 @@ test("a second steer carries prior turns as structured messages, not concatenate
   expect(roles(seen[1]!)).toEqual(["user", "assistant", "user"]);
 });
 
+test("a restored chat sends prior structured history exactly once", async () => {
+  const saved: string[] = [];
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chat = yield* Chat.empty;
+        const worker = yield* makeAgentWorker({
+          session: "agent-test",
+          chat,
+          emit: () => Effect.void,
+          persist: chat.exportJson.pipe(
+            Effect.tap((history) => Effect.sync(() => saved.push(history))),
+            Effect.orDie,
+          ),
+        });
+        yield* worker.steer("first");
+        yield* Effect.promise(() => waitFor(() => saved.length === 1));
+      }).pipe(
+        Effect.provideServiceEffect(
+          LanguageModel.LanguageModel,
+          scriptedModel(() => [
+            { type: "text-start", id: "t1" },
+            { type: "text-delta", id: "t1", delta: "answer" },
+            { type: "text-end", id: "t1" },
+          ]),
+        ),
+      ),
+    ),
+  );
+  const seen: Prompt.Prompt[] = [];
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chat = yield* Chat.fromJson(saved[0]!);
+        const worker = yield* makeAgentWorker({
+          session: "agent-test",
+          chat,
+          emit: () => Effect.void,
+        });
+        yield* worker.steer("second");
+        yield* Effect.promise(() => waitFor(() => seen.length === 1));
+      }).pipe(
+        Effect.provideServiceEffect(
+          LanguageModel.LanguageModel,
+          scriptedModel(() => [{ type: "text-delta", id: "t2", delta: "again" }], { seen }),
+        ),
+      ),
+    ),
+  );
+
+  expect(roles(seen[0]!)).toEqual(["user", "assistant", "user"]);
+});
+
 test("interrupt ends the turn as interrupted and keeps the partial text", async () => {
   const frames: WorkerFrame[] = [];
   await runWorker(
@@ -276,20 +307,14 @@ test("interrupt ends the turn as interrupted and keeps the partial text", async 
     (worker) =>
       Effect.gen(function* () {
         yield* worker.steer("start");
-        yield* Effect.promise(() =>
-          waitFor(() => frames.some((f) => f._tag === "text.delta")),
-        );
+        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "text.delta")));
         yield* worker.interrupt("human correction");
-        yield* Effect.promise(() =>
-          waitFor(() => frames.some((f) => f._tag === "turn.end")),
-        );
+        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end")));
       }),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
   );
 
-  expect(
-    frames.some((f) => f._tag === "text.delta" && f.text === "partial"),
-  ).toBe(true);
+  expect(frames.some((f) => f._tag === "text.delta" && f.text === "partial")).toBe(true);
   expect(frames.find((f) => f._tag === "turn.end")).toMatchObject({
     outcome: "interrupted",
   });
@@ -326,14 +351,10 @@ test("a turn that fails reports the cause and leaves the session usable", async 
     (worker) =>
       Effect.gen(function* () {
         yield* worker.steer("first");
-        yield* Effect.promise(() =>
-          waitFor(() => frames.some((f) => f._tag === "turn.end")),
-        );
+        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end")));
         yield* worker.steer("second");
         yield* Effect.promise(() =>
-          waitFor(
-            () => frames.filter((f) => f._tag === "turn.end").length === 2,
-          ),
+          waitFor(() => frames.filter((f) => f._tag === "turn.end").length === 2),
         );
       }),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
@@ -341,12 +362,8 @@ test("a turn that fails reports the cause and leaves the session usable", async 
 
   const [failed, recovered] = frames.filter((f) => f._tag === "turn.end");
   expect(failed).toMatchObject({ outcome: "failed" });
-  expect((failed as { error?: string }).error).toContain(
-    "provider rejected the tool schema",
-  );
-  expect(
-    frames.some((f) => f._tag === "agent.status" && f.state === "failed"),
-  ).toBe(true);
+  expect((failed as { error?: string }).error).toContain("provider rejected the tool schema");
+  expect(frames.some((f) => f._tag === "agent.status" && f.state === "failed")).toBe(true);
   // The next turn still runs: a failure ends the turn, never the worker.
   expect(recovered).toMatchObject({ outcome: "completed" });
   expect((recovered as { error?: string }).error).toBeUndefined();
@@ -366,9 +383,7 @@ test("streamed tool parameters emit params frames before the call", async () => 
         .steer("search")
         .pipe(
           Effect.andThen(
-            Effect.promise(() =>
-              waitFor(() => frames.some((f) => f._tag === "turn.end")),
-            ),
+            Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end"))),
           ),
         ),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
@@ -404,13 +419,9 @@ test("a turn interrupted mid-tool-call leaves no unpaired tool call in history",
     (worker, chat) =>
       Effect.gen(function* () {
         yield* worker.steer("run it");
-        yield* Effect.promise(() =>
-          waitFor(() => frames.some((f) => f._tag === "tool.start")),
-        );
+        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "tool.start")));
         yield* worker.interrupt();
-        yield* Effect.promise(() =>
-          waitFor(() => frames.some((f) => f._tag === "turn.end")),
-        );
+        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end")));
         return yield* chat.history;
       }),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },

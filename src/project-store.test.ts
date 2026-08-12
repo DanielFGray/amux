@@ -70,7 +70,7 @@ test("a fresh database migrates, records its own root, and starts with no rules"
   );
   expect(
     database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
-  ).toBe(1);
+  ).toBe(2);
   database.close();
 });
 
@@ -127,4 +127,13 @@ test("two open handles on one project both land their writes", async () => {
     ),
   );
   expect(rules.map((rule) => rule.resource).sort()).toEqual(["cat *", "ls *"]);
+});
+
+test("a conversation survives reopening and is isolated by daemon session", async () => {
+  await isolate();
+  await run("/tmp/project-chat", (store) => store.saveConversation("agent-a", '{"messages":[]}'));
+  expect(await run("/tmp/project-chat", (store) => store.conversation("agent-a"))).toBe(
+    '{"messages":[]}',
+  );
+  expect(await run("/tmp/project-chat", (store) => store.conversation("agent-b"))).toBeUndefined();
 });

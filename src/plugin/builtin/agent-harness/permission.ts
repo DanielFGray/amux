@@ -11,13 +11,11 @@ import { Deferred, Effect, Ref } from "effect";
 import { relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgentState } from "../../../agent-state.ts";
-import {
-  evaluateAll,
-  type PermissionDecision,
-  type PermissionRule,
-} from "../../../permission.ts";
+import { evaluateAll, type PermissionDecision, type PermissionRule } from "../../../permission.ts";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 import type { Interface as ProjectStore } from "../../../project-store.ts";
+
+type PermissionStore = Pick<ProjectStore, "addRules">;
 
 /** What a tool asks the gate: a verb, what it would touch, and how to say it. */
 export interface Assertion {
@@ -45,14 +43,12 @@ export function makePermissionGate(options: {
   readonly session: string;
   readonly turn: Effect.Effect<string>;
   readonly rules: readonly PermissionRule[];
-  readonly store: ProjectStore;
+  readonly store: PermissionStore;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
 }): Effect.Effect<PermissionGate> {
   return Effect.gen(function* () {
     const rules = yield* Ref.make(options.rules);
-    const pending = yield* Ref.make(
-      new Map<string, Deferred.Deferred<Answer>>(),
-    );
+    const pending = yield* Ref.make(new Map<string, Deferred.Deferred<Answer>>());
 
     const answer = (request: string, decision: PermissionDecision, feedback?: string) =>
       Ref.get(pending).pipe(
@@ -64,11 +60,7 @@ export function makePermissionGate(options: {
         }),
       );
 
-    const emitRequest = (
-      request: string,
-      assertion: Assertion,
-      save: readonly PermissionRule[],
-    ) =>
+    const emitRequest = (request: string, assertion: Assertion, save: readonly PermissionRule[]) =>
       options.turn.pipe(
         Effect.flatMap((turn) =>
           options.emit({
@@ -169,8 +161,7 @@ export function makePermissionGate(options: {
 
 type Answer = { readonly decision: PermissionDecision; readonly feedback?: string };
 
-const refusal = (feedback?: string) =>
-  `Denied by the user${feedback ? `: ${feedback}` : "."}`;
+const refusal = (feedback?: string) => `Denied by the user${feedback ? `: ${feedback}` : "."}`;
 
 /**
  * What "always" would record for one assertion.

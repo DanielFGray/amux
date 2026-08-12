@@ -32,8 +32,13 @@ export interface Interface {
   /** Rules the user has approved here, oldest first: the order `evaluate` reads as precedence. */
   readonly rules: Effect.Effect<readonly PermissionRule[], ProjectStoreError>;
   /** Record approvals. Re-deciding an action and resource moves the existing rule. */
-  readonly addRules: (
-    rules: readonly PermissionRule[],
+  readonly addRules: (rules: readonly PermissionRule[]) => Effect.Effect<void, ProjectStoreError>;
+  /** The provider-valid conversation for one daemon-owned agent session. */
+  readonly conversation: (session: string) => Effect.Effect<string | undefined, ProjectStoreError>;
+  /** Replace one complete provider-valid conversation after a provider step settles. */
+  readonly saveConversation: (
+    session: string,
+    conversation: string,
   ) => Effect.Effect<void, ProjectStoreError>;
 }
 
@@ -82,7 +87,12 @@ const MIGRATIONS: readonly string[] = [
        .join(", ")})),
      created  INTEGER NOT NULL
    );
-   CREATE UNIQUE INDEX permission_rule_unique ON permission_rule (action, resource);`,
+    CREATE UNIQUE INDEX permission_rule_unique ON permission_rule (action, resource);`,
+  `CREATE TABLE conversation (
+      session      TEXT PRIMARY KEY,
+      conversation TEXT NOT NULL,
+      updated      INTEGER NOT NULL
+    );`,
 ];
 
 const open = (
@@ -114,8 +124,8 @@ function migrate(database: Database, root: string): void {
   database.exec("PRAGMA journal_mode = WAL");
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA busy_timeout = 5000");
-  const applied = database.query<{ user_version: number }, []>("PRAGMA user_version").get()
-    ?.user_version ?? 0;
+  const applied =
+    database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
   for (const [index, statements] of MIGRATIONS.entries()) {
     if (index < applied) continue;
     database.transaction(() => {
@@ -141,6 +151,13 @@ function queries(database: Database, root: string): Interface {
      ON CONFLICT (action, resource)
      DO UPDATE SET effect = excluded.effect, created = excluded.created`,
   );
+  const selectConversation = database.query<{ conversation: string }, [string]>(
+    "SELECT conversation FROM conversation WHERE session = ?",
+  );
+  const saveConversation = database.query(
+    `INSERT INTO conversation (session, conversation, updated) VALUES (?, ?, ?)
+     ON CONFLICT (session) DO UPDATE SET conversation = excluded.conversation, updated = excluded.updated`,
+  );
   return {
     root,
     rules: attempt("rules", () => select.all()),
@@ -152,6 +169,10 @@ function queries(database: Database, root: string): Interface {
             insert.run(randomUUID(), rule.action, rule.resource, rule.effect, now);
         })(),
       ),
+    conversation: (session) =>
+      attempt("conversation", () => selectConversation.get(session)?.conversation),
+    saveConversation: (session, conversation) =>
+      attempt("saveConversation", () => saveConversation.run(session, conversation, Date.now())),
   };
 }
 

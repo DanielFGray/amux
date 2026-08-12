@@ -6,21 +6,8 @@ import {
   type Tool,
   type Toolkit,
 } from "@effect/ai";
-import {
-  Cause,
-  Effect,
-  Exit,
-  Fiber,
-  FiberHandle,
-  Queue,
-  Ref,
-  Scope,
-  Stream,
-} from "effect";
-import type {
-  AgentEventPayload,
-  AgentDelta,
-} from "../../../effect/AttachProtocol.ts";
+import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
+import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 import { AgentState, type ReportedAgentState } from "../../../agent-state.ts";
 
 export type AgentWorker = {
@@ -141,19 +128,17 @@ export function frameForPart(
  * ours is the scheduler above it: a mailbox, one turn at a time, and
  * interruption that leaves the transcript intact.
  */
-export function makeAgentWorker<
-  Tools extends Record<string, Tool.Any>,
->(options: {
+export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options: {
   readonly session: string;
   readonly chat: Chat.Service;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
   readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Tools>>;
+  /** Commit the provider-valid history only after a provider step has settled. */
+  readonly persist?: Effect.Effect<void>;
 }): Effect.Effect<
   AgentWorker,
   never,
-  | Scope.Scope
-  | LanguageModel.LanguageModel
-  | Tool.Requirements<Tools[keyof Tools]>
+  Scope.Scope | LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
 > {
   return Effect.gen(function* () {
     const inbox = yield* Queue.unbounded<string>();
@@ -161,8 +146,7 @@ export function makeAgentWorker<
     const running = yield* FiberHandle.make<void, never>();
 
     const emit = (frame: AgentFramePayload) =>
-      options.emit({ ...frame, session: options.session } as
-        AgentEventPayload | AgentDelta);
+      options.emit({ ...frame, session: options.session } as AgentEventPayload | AgentDelta);
 
     /**
      * Terminal frames for every exit, so no path leaves the pane mid-turn.
@@ -171,20 +155,14 @@ export function makeAgentWorker<
      * reported, because runTurn absorbs it afterwards. Dropping it here makes a
      * provider rejecting the request indistinguishable from an empty answer.
      */
-    const settle = (
-      turn: string,
-      exit: Exit.Exit<void, unknown>,
-      text: string,
-    ) => {
+    const settle = (turn: string, exit: Exit.Exit<void, unknown>, text: string) => {
       const outcome = Exit.isSuccess(exit)
         ? ("completed" as const)
         : Cause.isInterruptedOnly(exit.cause)
           ? ("interrupted" as const)
           : ("failed" as const);
       const error =
-        Exit.isFailure(exit) && outcome === "failed"
-          ? Cause.pretty(exit.cause)
-          : undefined;
+        Exit.isFailure(exit) && outcome === "failed" ? Cause.pretty(exit.cause) : undefined;
       return emit({
         _tag: "turn.end",
         turn,
@@ -230,9 +208,10 @@ export function makeAgentWorker<
                   if (frame?._tag === "tool.start") needsContinuation = true;
                   return frame ? emit(frame) : Effect.void;
                 }),
-                Effect.flatMap(() =>
-                  needsContinuation ? runStep(Prompt.empty) : Effect.void,
-                ),
+                // Chat commits its response when stream consumption releases.
+                // Checkpoint afterwards, or recovery misses the just-finished step.
+                Effect.andThen(options.persist ?? Effect.void),
+                Effect.flatMap(() => (needsContinuation ? runStep(Prompt.empty) : Effect.void)),
               );
           };
           return emit({ _tag: "agent.status", state: AgentState.Working }).pipe(
