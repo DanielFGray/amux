@@ -584,10 +584,19 @@ const AppSendPrefix = define(
   {},
   { desc: "send a literal prefix key", group: "global", target: "view", exposure: "human" },
 );
+/**
+ * Leaving the app detaches from the session; it does not end it.
+ *
+ * A view target rather than a server one, because the daemon has nothing to do
+ * here: the client closes its own scope, the attach socket drops, and the
+ * daemon records the detach like any other. The session, its layout and its
+ * agents outlive the client and are restored by the next attach. Ending a
+ * session is a separate act — close its last pane, or `amux stop`.
+ */
 const AppQuit = define(
   "app.quit",
   {},
-  { desc: "quit", group: "global", target: "server", exposure: "human" },
+  { desc: "detach from the session", group: "global", target: "view", exposure: "human" },
 );
 
 /** Every verb, in the order the surfaces list them. */

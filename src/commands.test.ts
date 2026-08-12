@@ -171,6 +171,7 @@ test("filtering by target and exposure produces the expected subsets", () => {
     "app.settings",
     "app.command-palette",
     "app.help",
+    "app.quit",
     "app.send-prefix",
     "buffer.choose",
     "buffer.paste",
@@ -188,8 +189,9 @@ test("filtering by target and exposure produces the expected subsets", () => {
     .concat(commands.list({ target: "server" }).map((c) => c.name));
   // View-targeted commands are NOT in the remote set.
   for (const name of viewOnly) expect(remote).not.toContain(name);
-  // app.quit targets "server" — remotely invocable but not agent-visible.
-  expect(remote).toContain("app.quit");
+  // Quitting detaches this client and says nothing about the session, so it
+  // never leaves the view: a daemon asked to quit would have to guess whose.
+  expect(remote).not.toContain("app.quit");
   expect(commands.list({ exposure: "agent" }).map((c) => c.name)).not.toContain(
     "app.quit",
   );

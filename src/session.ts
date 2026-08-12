@@ -44,8 +44,10 @@ export interface SessionService {
   ) => Effect.Effect<void, SessionIdError | SessionStateError | SessionSizeError | PlatformError>;
   readonly readLease: (id: string) => Effect.Effect<SessionLease | null, SessionIdError>;
   readonly writeLease: (lease: SessionLease) => Effect.Effect<void, SessionIdError | PlatformError>;
+  /** Ends a session for good. Only an explicit end may call this: the last pane
+   *  closing, or `amux stop`. A daemon exiting for any other reason must leave
+   *  the directory alone, or the session cannot be restored. */
   readonly remove: (id: string) => Effect.Effect<void, SessionIdError | PlatformError>;
-  readonly cleanupStale: Effect.Effect<string[], SessionIdError | PlatformError>;
   readonly exists: (id: string) => Effect.Effect<boolean>;
 }
 
@@ -477,33 +479,6 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
         fs.remove(sessionPaths.root, { recursive: true, force: true }),
       );
 
-    const cleanupStale = Effect.gen(function* () {
-      const entries = yield* fs
-        .readDirectory(root)
-        .pipe(
-          Effect.catchTag("SystemError", (error) =>
-            error.reason === "NotFound" ? Effect.succeed([]) : Effect.fail(error),
-          ),
-        );
-      const removed: string[] = [];
-      for (const id of entries) {
-        if (!isSessionId(id)) continue;
-        const paths = sessionPathsFromRoot(id, root);
-        const locked = yield* fs.stat(paths.lock).pipe(
-          Effect.map(() => true),
-          Effect.catchTag("SystemError", (error) =>
-            error.reason === "NotFound" ? Effect.succeed(false) : Effect.fail(error),
-          ),
-        );
-        if (locked) continue;
-        const lease = yield* readLease(id);
-        if (lease && processAlive(lease.pid)) continue;
-        yield* remove(id);
-        removed.push(id);
-      }
-      return removed;
-    });
-
     const exists = Effect.fnUntraced(function* (id: string) {
       if (!isSessionId(id)) return false;
       const sessionPaths = sessionPathsFromRoot(id, root);
@@ -519,7 +494,6 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
       readLease,
       writeLease,
       remove,
-      cleanupStale,
       exists,
     };
   }),

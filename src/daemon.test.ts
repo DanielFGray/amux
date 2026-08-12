@@ -252,25 +252,6 @@ test("a competing acquisition that detects a live owner never deletes the owner'
   expect(await readFile(p.lock, "utf8")).toBe(`${process.pid}\n`);
 });
 
-test("cleanup leaves a locked startup session for its owner", async () => {
-  const e = await env();
-  const p = await run(sessionPaths("starting"), e);
-  await Bun.write(
-    p.state,
-    JSON.stringify({
-      version: 1,
-      id: "starting",
-      createdAt: 1,
-      updatedAt: 1,
-      attached: false,
-      spaces: [],
-    }),
-  );
-  await writeFile(p.lock, `${process.pid}\n`);
-  expect(await run(SessionStore.cleanupStale, e)).toEqual([]);
-  expect(await run(SessionStore.load("starting"), e)).not.toBeNull();
-});
-
 test("the daemon-owned workspace survives closing and reopening", async () => {
   const e = await env();
   const first = await open("workspace", e);
@@ -322,6 +303,45 @@ test("last pane removal closes the daemon so the next attach starts fresh", asyn
   expect(nextWorkspace.spaces).toHaveLength(1);
   expect(nextWorkspace.spaces[0]!.windows[0]!.agents[0]!.exited).toBe(false);
   await C(next);
+});
+
+/**
+ * The signal path, through a real process because that is the only place the
+ * finalizer runs. A reboot, an OOM kill or a stray `kill` must cost the user
+ * nothing but the daemon: persisting the layout buys nothing if the state dies
+ * with the process that held it.
+ */
+test("a daemon killed by a signal leaves its session restorable", async () => {
+  const e = await env();
+  const entry = new URL("./daemon-main.ts", import.meta.url).pathname;
+  const child = Bun.spawn({
+    cmd: [process.execPath, entry, "signalled"],
+    env: { ...process.env, ...e },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  // Answering on the control socket is what "started" means, and only a
+  // started daemon has registered the finalizer under test. Waiting for the
+  // lease instead would race it: the lease is written first.
+  const p = await run(sessionPaths("signalled"), e);
+  let ready = false;
+  for (let waited = 0; waited < 10000 && !ready; waited += 50) {
+    ready = await run(controlCall("signalled", (c) => c.Ping()), e).then(
+      () => true,
+      () => false,
+    );
+    if (!ready) await Bun.sleep(50);
+  }
+  expect(ready).toBe(true);
+
+  child.kill("SIGTERM");
+  await child.exited;
+
+  expect(await run(SessionStore.load("signalled"), e)).not.toBeNull();
+  // The daemon is gone even though the session is not: what a signal ends is
+  // the process, and the lease is the thing that names a running one.
+  expect(await Bun.file(p.lease).exists()).toBe(false);
 });
 
 test("stopping a daemon discards the workspace it was keeping", async () => {

@@ -336,7 +336,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       Layer.provide(makeWorktreeOps()),
       Layer.provide(
         Layer.succeed(WorkspaceTransactionLifecycle, {
-          onEmpty: Effect.suspend(() => closeWhenEmpty),
+          onEmpty: Effect.suspend(() => stopWhenEmpty),
         }),
       ),
       Layer.provide(
@@ -371,7 +371,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     requireHost()
       .kill(sessionId)
       .pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
-  let closeWhenEmpty: Effect.Effect<void> = Effect.void;
+  let stopWhenEmpty: Effect.Effect<void> = Effect.void;
 
   const start = Effect.gen(function* () {
     if (controlScope) return;
@@ -519,6 +519,23 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     );
   }).pipe(Effect.mapError((e) => new DaemonError({ message: describe(e) })));
 
+  /**
+   * Shuts the daemon down, in one of two modes that differ only in what
+   * survives on disk.
+   *
+   * `stop` ends the session: its directory goes, layout and agent-event logs
+   * with it. That is what the user asked for when they closed the last pane or
+   * ran `amux stop`, and nothing else may assume it.
+   *
+   * `close` ends the process and leaves the session to be restored. It is what
+   * a signal means — a reboot, an OOM kill, a stray `kill` — because none of
+   * those carry any intent about the session. Persisting every authoritative
+   * revision only buys anything if the state outlives the process that held it.
+   *
+   * Both remove the lock, lease and socket: those describe a running daemon,
+   * not a session, and a later `startDaemon` recovers a dead owner's lock on
+   * its own.
+   */
   const terminate = Effect.fnUntraced(
     function* (mode: "stop" | "close") {
       if (terminationShared) return;
@@ -590,7 +607,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const stop = terminate("stop");
   const close = terminate("close");
-  closeWhenEmpty = Effect.forkDaemon(close).pipe(Effect.asVoid);
+  stopWhenEmpty = Effect.forkDaemon(stop).pipe(Effect.asVoid);
 
   const runWorkspaceCommand = (
     value: Command,
@@ -654,12 +671,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             _tag: "plugins.reload",
             ...(value.plugin === undefined ? {} : { plugin: value.plugin }),
           });
-          return {};
-        }
-        if (value._tag === "app.quit") {
-          yield* Effect.forkDaemon(
-            Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore),
-          );
           return {};
         }
         return yield* controlFail(`server command '${value._tag}' is not implemented for batch`);

@@ -67,7 +67,7 @@ test("a truncated current file falls back to the previous generation", async () 
   expect((await run(SessionStore.load("recover"), e))?.attached).toBe(false);
 });
 
-test("stale cleanup removes dead leases but never live leases", async () => {
+test("a dead lease leaves the session it owned intact", async () => {
   const e = await env();
   await run(SessionStore.save(state("dead")), e);
   await run(
@@ -81,21 +81,9 @@ test("stale cleanup removes dead leases but never live leases", async () => {
     }),
     e,
   );
-  await run(SessionStore.save(state("live")), e);
-  await run(
-    SessionStore.writeLease({
-      version: 1,
-      session: "live",
-      pid: process.pid,
-      socket: "/tmp/live.sock",
-      startedAt: 1,
-      heartbeatAt: 1,
-    }),
-    e,
-  );
-  expect(await run(SessionStore.cleanupStale, e)).toEqual(["dead"]);
-  expect(await run(SessionStore.load("dead"), e)).toBeNull();
-  expect(await run(SessionStore.load("live"), e)).not.toBeNull();
+  // A lease says who is running the session, never whether it should exist.
+  // Its owner dying is how a session waits to be restored, not how one ends.
+  expect(await run(SessionStore.load("dead"), e)).not.toBeNull();
 });
 
 test("lease files are schema-validated before ownership checks", async () => {
@@ -232,16 +220,6 @@ test("traversal ids cannot read or delete files outside the sessions root", asyn
   await expect(run(SessionStore.remove("../.."), e)).rejects.toThrow();
   expect(await Bun.file(victim).exists()).toBe(true);
   expect(await Bun.file(victim).text()).toBe("secret");
-});
-
-test("cleanup ignores entries that are not valid session ids", async () => {
-  const e = await env();
-  const root = await run(sessionRoot(), e);
-  await mkdir(join(root, "dead"), { recursive: true });
-  await mkdir(join(root, "weird name"), { recursive: true });
-  expect(await run(SessionStore.cleanupStale, e)).toEqual(["dead"]);
-  expect(await run(SessionStore.exists("dead"), e)).toBe(false);
-  await expect(stat(join(root, "weird name"))).resolves.toBeDefined();
 });
 
 test("nested persisted state rejects duplicate identities and invalid layout relationships", () => {

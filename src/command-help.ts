@@ -27,9 +27,6 @@ Commands:
         delete the top paste buffer (or a named one)
     buffer.show [name]
         show a paste buffer's contents
-  global:
-    app.quit
-        quit
   notifications:
     notify <title> <body> [session]
         send a notification to a session
