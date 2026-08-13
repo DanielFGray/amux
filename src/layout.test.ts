@@ -345,6 +345,7 @@ test("tiled grows as square as the count allows, filling row by row", () => {
 });
 
 test("every preset keeps the agents, in order, exactly once", () => {
+  expect(LAYOUT_PRESETS.length).toBeGreaterThan(0);
   for (const preset of LAYOUT_PRESETS) {
     for (const n of [1, 2, 3, 5, 8]) {
       expect(layoutAgents(presetLayout(refs(n), preset))).toEqual(ids(n));
@@ -360,10 +361,14 @@ test("every preset alternates axes, so the live tree can rebuild it", () => {
     expect(node.direction).not.toBe(parent);
     for (const child of node.children) check(child, node.direction);
   };
+  expect(LAYOUT_PRESETS.length).toBeGreaterThan(0);
   for (const preset of LAYOUT_PRESETS) {
     for (const n of [1, 2, 3, 4, 5, 9]) {
+      // A preset over at least one pane always has a root; skipping a null one
+      // would let an empty preset satisfy the alternation rule by default.
       const root = presetLayout(refs(n), preset).root;
-      if (root) check(root);
+      expect(root).not.toBeNull();
+      check(root!);
     }
   }
 });

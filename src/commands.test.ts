@@ -138,6 +138,7 @@ test("notify carries its title, body, and optional session over the wire", () =>
 test("target derivation: workspace commands are in the workspace, view commands are not", () => {
   const commands = makeCommands(recording().handlers);
 
+  expect(COMMAND_DEFS.length).toBeGreaterThan(0);
   for (const def of COMMAND_DEFS) {
     expect(commands.isWorkspaceCommand(def.tag)).toBe(def.target === "workspace");
     expect(commands.isRemoteCommand(def.tag)).toBe(def.target !== "view");

@@ -32,6 +32,7 @@ test("a hand-edited file cannot put a value into the app the UI would refuse", (
 
 test("resolve is total: every declared option comes back", () => {
   const options = resolveOptions({});
+  expect(Object.keys(OPTIONS).length).toBeGreaterThan(0);
   for (const [name, spec] of Object.entries(OPTIONS)) {
     expect(options[name as keyof typeof OPTIONS]).toBe(spec.default);
   }

@@ -92,6 +92,7 @@ test("pure rectangles are a fixed point of OpenTUI flex layout", async () => {
     cols: window.root.width,
     rows: window.root.height,
   });
+  expect(window.panes).toHaveLength(3);
   for (const pane of window.panes) {
     expect(expected.get(pane.id)).toEqual({
       x: pane.x - window.root.x,
@@ -181,6 +182,7 @@ test("a pane that was floating is sized by the split again once tiled", async ()
     cols: window.root.width,
     rows: window.root.height,
   });
+  expect(window.panes).toHaveLength(2);
   for (const pane of window.panes) {
     expect(rects.get(pane.id)).toEqual({
       x: pane.x - window.root.x,

@@ -24,6 +24,7 @@ test("every registered integration is named as the model catalog names it", () =
 });
 
 test("every integration offers a way to connect", () => {
+  expect(integrations.length).toBeGreaterThan(0);
   for (const integration of integrations) {
     expect(integration.methods.length).toBeGreaterThan(0);
     expect(integration.label).not.toBe("");

@@ -134,6 +134,7 @@ test("a component leaf tiles as the exact rectangle the layout model says", asyn
     cols: win.root.width,
     rows: win.root.height,
   });
+  expect(win.panes).toHaveLength(2);
   for (const pane of win.panes) {
     expect(expected.get(pane.id)).toEqual({
       x: pane.x - win.root.x,
