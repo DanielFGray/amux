@@ -5,6 +5,7 @@ import type { Window } from "./window.ts";
 import type { SessionHandle } from "./session-handle.ts";
 import type { TerminalPane } from "./pane.ts";
 import { RenderState } from "./ghostty.ts";
+import { waitFor } from "./test-wait.ts";
 
 const SHELL = ["bash"];
 
@@ -38,7 +39,7 @@ test("break moves the pane and its running agent into a new window, unchanged", 
     const right = run(s.win.splitSpawn("row"))!;
     const agent = right.session;
     agent.write("echo breakpane-marker-42\n");
-    await Bun.sleep(300);
+    await waitFor(() => screenTail(agent).includes("breakpane-marker-42"), "pane output");
     expect(screenTail(agent)).toContain("breakpane-marker-42");
 
     const win2 = (await runAsync(s.space.breakPane(right)))!;
@@ -149,14 +150,18 @@ test("a moved agent's exit closes its pane in the NEW window and reports it", as
     };
 
     run(s.win.splitSpawn("row")); // stays behind in the source window
+    // Held open on a read until the move is done: the claim under test is
+    // where the exit is REPORTED, so the exit must not be allowed to race the
+    // break. Releasing it explicitly is what makes the order a fact.
     const pane = s.win.split(
       "row",
-      run(s.win.spawn("shortlived", ["sh", "-c", "sleep 1; echo bye"])),
+      run(s.win.spawn("shortlived", ["sh", "-c", "read _; echo bye"])),
     )!;
     const win2 = (await runAsync(s.space.breakPane(pane)))!;
     const agent = pane.session;
+    agent.write("\n");
 
-    await Bun.sleep(2200);
+    await waitFor(() => exits.length === 1, "the moved agent to exit");
     expect(exits).toHaveLength(1);
     // Ownership moved, so the exit landed on the new window, not the source.
     expect(exits[0]!.window).toBe(win2);

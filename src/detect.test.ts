@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitActivity, looksBlocked, identifyAgent } from "./detect.ts";
 import { SessionHandle } from "./session-handle.ts";
+import { waitFor } from "./test-wait.ts";
 
 test("a leading braille spinner marks the agent working and is stripped from the title", () => {
   for (const frame of ["⠋", "⠙", "⠹", "⠿"]) {
@@ -99,10 +100,10 @@ test("a plain shell is idle whatever it is running", async () => {
     name: "t",
     cmd: ["bash", "--norc", "--noprofile"],
   });
-  await Bun.sleep(400);
+  await waitFor(() => agent.foregroundCommand === "", "the shell prompt");
   expect(agent.state).toBe("idle");
   agent.write("sleep 3\n");
-  await Bun.sleep(400);
+  await waitFor(() => agent.foregroundCommand === "sleep", "the foreground command");
   expect(agent.state).toBe("idle");
   // Still visible as a running process — it is only the state that changed.
   expect(agent.foregroundCommand).toBe("sleep");
@@ -114,10 +115,10 @@ test("a blocked prompt on an agent's screen reads as blocked", async () => {
     name: "t",
     cmd: [await fakeAgent("claude"), "--norc", "--noprofile"],
   });
-  await Bun.sleep(300);
+  await waitFor(() => agent.agentKind === "claude", "the agent process");
   expect(agent.agentKind).toBe("claude");
   agent.write("printf 'Do you want to proceed?\\n'\n");
-  await Bun.sleep(500);
+  await waitFor(() => agent.state === "blocked", "the blocked prompt");
   expect(agent.state).toBe("blocked");
 });
 
@@ -127,10 +128,10 @@ test("an agent started from a shell is picked up from the foreground process", a
     name: "t",
     cmd: ["bash", "--norc", "--noprofile"],
   });
-  await Bun.sleep(300);
+  await waitFor(() => agent.foregroundCommand === "", "the shell prompt");
   expect(agent.agentKind).toBe(null);
   agent.write(`${claude} --norc --noprofile\n`);
-  await Bun.sleep(700);
+  await waitFor(() => agent.agentKind === "claude", "the foreground agent");
   expect(agent.agentKind).toBe("claude");
 });
 
@@ -139,6 +140,6 @@ test("an exited agent is done regardless of what is left on screen", async () =>
     name: "t",
     cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"],
   });
-  await Bun.sleep(500);
+  await waitFor(() => agent.exited, "the process to exit");
   expect(agent.state).toBe("done");
 });

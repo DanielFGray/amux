@@ -11,6 +11,8 @@ import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
 import type { SessionHandle } from "./session-handle.ts";
 import type { AgentState } from "./agent-state.ts";
+import { waitFor } from "./test-wait.ts";
+import { captureScrollback } from "./capture.ts";
 
 const SHELL = ["bash"];
 
@@ -44,21 +46,12 @@ async function fakeAgent(name: string): Promise<string> {
   return path;
 }
 
-/** Poll until the agent's screen scan reports blocked; fail loudly otherwise. */
-async function waitForBlocked(agent: SessionHandle, tries = 20): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    if (agent.state === "blocked") return;
-    await Bun.sleep(100);
-  }
-  throw new Error(`agent ${agent.name} never read as blocked`);
-}
-
 /** Spawn a detached fake agent and put a confirmation prompt on its screen. */
 async function blockedAgent(window: Window, name: string): Promise<SessionHandle> {
   const agent = run(window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]));
-  await Bun.sleep(300);
+  await waitFor(() => agent.agentKind === "claude", `${name} to start`);
   agent.write("printf 'Do you want to proceed?\\n'\n");
-  await waitForBlocked(agent);
+  await waitFor(() => agent.state === "blocked", `${name} to become blocked`);
   return agent;
 }
 
@@ -166,7 +159,7 @@ test("output on a detached agent marks it unseen", async () => {
   const s = await setup();
   try {
     const chatter = run(s.win.spawn("chatter", ["sh", "-c", "echo hello-from-detached; sleep 5"]));
-    await Bun.sleep(400);
+    await waitFor(() => chatter.unseen, "detached output");
     expect(chatter.unseen).toBe(true);
     // Opening a view is what clears it.
     s.win.reveal(chatter);
@@ -223,7 +216,7 @@ test("scrolled reflects the real viewport, including past both edges", async () 
     // Real scrollback is required: `scrolled` is read back from ghostty's
     // viewport, so scrolling a terminal with no history is correctly a no-op.
     const bg = run(s.win.spawn("scrolly", ["sh", "-c", "seq 1 200; sleep 30"]));
-    await Bun.sleep(400);
+    await waitFor(() => captureScrollback(bg.term).includes("200"), "terminal output");
     expect(bg.scrolled).toBe(false);
 
     bg.scrollBy(-5);
@@ -332,7 +325,7 @@ test("a pane closes when its agent's process exits, and the agent stays as done"
     expect(pane).not.toBeNull();
     expect(s.win.panes.length).toBe(2);
 
-    await Bun.sleep(600);
+    await waitFor(() => s.win.panes.length === 1, "the exited pane to close");
     // The view is gone so the layout reclaims the space...
     expect(s.win.panes.length).toBe(1);
     // ...but the agent is still listed, exited, with its output still readable.
@@ -349,7 +342,7 @@ test("a finished agent does not make its space look finished", async () => {
   const s = await setup();
   try {
     run(s.win.spawn("shortlived", ["sh", "-c", "exit 0"]));
-    await Bun.sleep(500);
+    await waitFor(() => s.win.sessions.some((a) => a.state === "done"), "the agent to exit");
     // One agent is done, the seeded shell is still alive at its prompt.
     expect(s.win.sessions.some((a) => a.state === "done")).toBe(true);
     expect(s.space.state).toBe("idle");
@@ -410,7 +403,6 @@ test("closing a window stops the agents that live in it", async () => {
     expect(doomed.exited).toBe(false);
 
     await runAsync(s.space.closeWindow(second));
-    await Bun.sleep(300);
     expect(s.space.windows).not.toContain(second);
     expect(s.space.sessions).not.toContain(doomed);
   } finally {
