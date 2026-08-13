@@ -843,7 +843,11 @@ test("agent.permission carries the answer to the session that asked", () => {
     {
       _tag: "decide",
       agent: "agent-7",
-      answer: { request: "req-1", decision: "reject", feedback: "not that file" },
+      answer: {
+        request: "req-1",
+        decision: "reject",
+        feedback: "not that file",
+      },
     },
   ]);
 
@@ -860,8 +864,7 @@ test("agent.new creates an agent session and queues its initial prompt", () => {
   const mutation = applyWorkspaceCommand(
     current,
     command("agent.new", {
-      harness: "test",
-      cmd: ["test-agent"],
+      provider: "test",
       prompt: "Inspect this",
     }),
     {
@@ -872,7 +875,7 @@ test("agent.new creates an agent session and queues its initial prompt", () => {
   );
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
   expect(agent.kind).toBe("component");
-  expect(agent.cmd).toEqual(["test-agent"]);
+  expect(agent.cmd).toBeUndefined();
   expect(agent.agent).toBe("test");
   expect(mutation.actions).toContainEqual({
     _tag: "prompt",
@@ -889,8 +892,7 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
   const mutation = applyWorkspaceCommand(
     current,
     command("agent.new", {
-      harness: "test",
-      cmd: ["test-agent"],
+      provider: "test",
     }),
     {
       cwd: "/tmp",

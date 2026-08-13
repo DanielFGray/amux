@@ -59,6 +59,7 @@ import {
   parseWorkspaceCommandContext,
   workspaceFromSession,
   workspaceSession,
+  workspaceSessions,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
@@ -137,7 +138,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   options: SessionDaemonOptions,
 ) {
   if (!isSessionId(id))
-    return yield* new SessionDaemonError({ message: `invalid session id ${JSON.stringify(id)}` });
+    return yield* new SessionDaemonError({
+      message: `invalid session id ${JSON.stringify(id)}`,
+    });
 
   const paths = yield* sessionPaths(id);
   const daemonWorktreesRoot = yield* worktreesRoot();
@@ -186,7 +189,10 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       for (;;) {
         const result = yield* Effect.either(
           Effect.gen(function* () {
-            const file = yield* fs.open(paths.lock, { flag: "wx", mode: 0o600 });
+            const file = yield* fs.open(paths.lock, {
+              flag: "wx",
+              mode: 0o600,
+            });
             yield* file.write(new TextEncoder().encode(`${process.pid}\n`));
             return file;
           }),
@@ -257,7 +263,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   let hostRuntime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError> | null = null;
   let host: AttachHostService | null = null;
   let heartbeatFiber: Fiber.RuntimeFiber<unknown, never> | null = null;
-  const activeSaveRef = { current: null as Fiber.RuntimeFiber<void, unknown> | null };
+  const activeSaveRef = {
+    current: null as Fiber.RuntimeFiber<void, unknown> | null,
+  };
   let terminationShared: Promise<void> | null = null;
 
   const hostRef = { current: null as AttachHostService | null };
@@ -438,12 +446,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         }
         for (const w of space.windows) {
           for (const a of w.agents) {
-            if (a.exited) continue;
+            if (a.exited || a.kind === "component") continue;
             yield* spawnSession({
               kind: a.kind,
               ...(a.agent ? { agent: a.agent } : {}),
               id: a.id,
-              cmd: a.cmd,
+              cmd: a.cmd ?? [],
               cwd: a.cwd,
               rpcPath: paths.socket,
               daemonSession: id,
@@ -483,9 +491,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
     const scope = yield* Scope.make();
     controlScope = scope;
-    const socketServer = yield* NodeSocketServer.make({ path: paths.socket }).pipe(
-      Scope.extend(scope),
-    );
+    const socketServer = yield* NodeSocketServer.make({
+      path: paths.socket,
+    }).pipe(Scope.extend(scope));
     yield* Layer.build(
       RpcServer.layer(ControlRpcs, { disableTracing: true }).pipe(
         Layer.provide(RpcServer.layerProtocolSocketServer),
@@ -503,7 +511,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               Effect.gen(function* () {
                 const info = yield* attachInfo();
                 const hbAt = yield* Clock.currentTimeMillis;
-                yield* session.writeLease({ ...lease, heartbeatAt: hbAt, ...info });
+                yield* session.writeLease({
+                  ...lease,
+                  heartbeatAt: hbAt,
+                  ...info,
+                });
                 yield* model.setHeartbeatError(null);
               }),
             ),
@@ -580,7 +592,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             yield* enqueue(
               Effect.gen(function* () {
                 const cur = yield* model.get;
-                const newState = { ...cur.state, attached: false, updatedAt: Date.now() };
+                const newState = {
+                  ...cur.state,
+                  attached: false,
+                  updatedAt: Date.now(),
+                };
                 const result = yield* Effect.exit(
                   persist(newState).pipe(Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`)),
                 );
@@ -615,7 +631,10 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     context: WorkspaceCommandContext,
   ): Effect.Effect<WorkspaceSnapshot, DaemonError> => {
     return transaction
-      .run(value, expectedRevision, { ...context, worktreesRoot: daemonWorktreesRoot })
+      .run(value, expectedRevision, {
+        ...context,
+        worktreesRoot: daemonWorktreesRoot,
+      })
       .pipe(Effect.mapError((e) => new DaemonError({ message: e.message })));
   };
 
@@ -655,9 +674,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           case "buffer.set":
             return { result: h.buffers.set(value.name, value.data) };
           case "buffer.list":
-            return { result: h.buffers.list().map((buffer) => ({ ...buffer })) };
+            return {
+              result: h.buffers.list().map((buffer) => ({ ...buffer })),
+            };
           case "buffer.show":
-            return { result: new TextDecoder().decode(h.buffers.show(value.name)) };
+            return {
+              result: new TextDecoder().decode(h.buffers.show(value.name)),
+            };
           case "buffer.delete":
             h.buffers.delete(value.name);
             return {};
@@ -751,6 +774,66 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         }),
       ),
 
+    ResumeAgent: ({ session: sessionId, provider, argv, env }) =>
+      guard(
+        enqueue(
+          Effect.gen(function* () {
+            const cur = yield* model.get;
+            const found = [...workspaceSessions(cur.workspace)].find(
+              ({ agent }) => agent.id === sessionId,
+            );
+            if (!found) return yield* controlFail(`session '${sessionId}' does not exist`);
+            if (found.agent.exited) return yield* controlFail(`session '${sessionId}' has exited`);
+            if (found.agent.provider !== provider)
+              return yield* controlFail(`session '${sessionId}' provider does not match`);
+            if ((yield* liveSessions()).includes(sessionId)) return;
+            if (!argv) {
+              const next = markSessionUnavailable(
+                cur.workspace,
+                sessionId,
+                `provider '${provider}' is unavailable`,
+              );
+              const state = workspaceSession(next, cur.state);
+              yield* persist(state);
+              yield* model.commitWorkspace(next, state);
+              yield* hostRef.current!.publish({
+                _tag: "workspace",
+                revision: next.revision,
+                state: JSON.stringify(next),
+              } as never);
+              return;
+            }
+            yield* spawnSession({
+              kind: found.agent.kind,
+              agent: found.agent.agent,
+              id: found.agent.id,
+              cmd: argv,
+              env,
+              cwd: found.agent.cwd,
+              rpcPath: paths.socket,
+              daemonSession: id,
+              cols: found.agent.cols,
+              rows: found.agent.rows,
+            }).pipe(
+              Effect.catchAll((error) =>
+                Effect.gen(function* () {
+                  const next = markSessionUnavailable(cur.workspace, sessionId, describe(error));
+                  const state = workspaceSession(next, cur.state);
+                  yield* persist(state);
+                  yield* model.commitWorkspace(next, state);
+                  yield* hostRef.current!.publish({
+                    _tag: "workspace",
+                    revision: next.revision,
+                    state: JSON.stringify(next),
+                  } as never);
+                  return yield* controlFail(describe(error));
+                }),
+              ),
+            );
+          }),
+        ),
+      ),
+
     SetBuffer: ({ name, data }) => guard(Effect.sync(() => requireHost().buffers.set(name, data))),
 
     PasteBuffer: ({ name, target, deleteAfter }) =>
@@ -778,7 +861,10 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
     Events: () =>
       Stream.concat(
-        Stream.succeed({ sequence: 0, event: { _tag: "events.ready" } } as const),
+        Stream.succeed({
+          sequence: 0,
+          event: { _tag: "events.ready" },
+        } as const),
         Stream.unwrapScoped(eventBus.subscribe()),
       ),
 

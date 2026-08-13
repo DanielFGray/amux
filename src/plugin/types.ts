@@ -7,6 +7,11 @@ import type { PaneView } from "../component-pane.tsx";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import type { CommandSpec } from "../bindings.ts";
 
+export interface SpawnProvider {
+  readonly argv: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+}
+
 export interface PluginDefinition<R = Scope.Scope> {
   readonly id: string;
   readonly apiVersion: string;
@@ -21,6 +26,7 @@ export interface PluginHostContext {
   readonly registerPaneType: (type: string, view: PaneView) => () => void;
   readonly registerBinding: (binding: CommandSpec) => () => void;
   readonly registerSettingsSection: (section: PluginSettingsSection) => () => void;
+  readonly registerSpawnProvider: (id: string, provider: () => SpawnProvider) => () => void;
   readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
   readonly sync: (session: string) => void;
 }

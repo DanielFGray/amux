@@ -54,6 +54,7 @@ export interface SessionSpec {
   readonly agent?: string;
   readonly id: string;
   readonly cmd: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
   readonly cwd?: string;
   readonly rpcPath?: string;
   /** Where a hook inside a foreign agent reports that agent's state. */
@@ -138,6 +139,7 @@ function ptyBackend(spec: SessionSpec): Backend {
       ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
       ...(spec.agentStatePath ? { AMUX_AGENT_STATE_SOCKET: spec.agentStatePath } : {}),
       ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
+      ...(spec.env ?? {}),
     },
   });
   return {
@@ -216,6 +218,7 @@ function componentBackend(spec: SessionSpec): Backend {
       AMUX_PANE_ID: spec.id,
       ...(spec.cwd ? { AMUX_AGENT_CWD: spec.cwd } : {}),
       AMUX_AGENT_SIZE: JSON.stringify({ cols: spec.cols, rows: spec.rows }),
+      ...(spec.env ?? {}),
     },
     stdin: "pipe",
     stdout: "pipe",
@@ -277,7 +280,11 @@ function componentBackend(spec: SessionSpec): Backend {
     prompt: (text) => send({ _tag: "agent.prompt", session: spec.id, text }),
     decide: (answer) => send({ _tag: "agent.permission", session: spec.id, ...answer }),
     interrupt: (reason) =>
-      send({ _tag: "agent.interrupt", session: spec.id, ...(reason ? { reason } : {}) }),
+      send({
+        _tag: "agent.interrupt",
+        session: spec.id,
+        ...(reason ? { reason } : {}),
+      }),
     resize: (cols, rows) => void send({ _tag: "resize", session: spec.id, cols, rows }),
     kill: async () => {
       if (!closed) {
@@ -320,7 +327,10 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
     const spawn = (spec: SessionSpec): Effect.Effect<ManagedSession, PtyError, Scope.Scope> =>
       Effect.gen(function* () {
         if (!isTerminalSize(spec.cols, spec.rows)) {
-          return yield* new PtyError({ operation: "spawn", message: "invalid terminal size" });
+          return yield* new PtyError({
+            operation: "spawn",
+            message: "invalid terminal size",
+          });
         }
         const kind: SessionKind = spec.kind ?? "pty";
         const token = Symbol(spec.id);
@@ -450,9 +460,17 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
             }),
           resize: (cols, rows) =>
             isTerminalSize(cols, rows)
-              ? commandResult((done) => ({ _tag: "resize", cols, rows, done }))
+              ? commandResult((done) => ({
+                  _tag: "resize",
+                  cols,
+                  rows,
+                  done,
+                }))
               : Effect.fail(
-                  new PtyError({ operation: "resize", message: "invalid terminal size" }),
+                  new PtyError({
+                    operation: "resize",
+                    message: "invalid terminal size",
+                  }),
                 ),
           // Kill must not wait behind a write whose child stopped reading.
           kill: Effect.tryPromise(() => backend.kill()).pipe(

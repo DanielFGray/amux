@@ -8,6 +8,9 @@ import type { CliRenderer } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { createSessionViews } from "./session-views.tsx";
 import { testPluginEnvironment } from "./test-environment.ts";
+import { command } from "../commands.ts";
+import { runCommandByTarget } from "../app.tsx";
+import type { PanelContext } from "../ui/panel.ts";
 
 async function mockRegions(): Promise<{
   regions: Regions;
@@ -55,6 +58,43 @@ testEffect("add activates a plugin and status reports it", () =>
     const { host } = yield* makeHost();
     yield* host.add(mkPlugin({ id: "p1" }));
     expect(host.status()).toEqual([{ id: "p1", active: true, error: null }]);
+  }),
+);
+
+testEffect("plugin panel run accepts session-target commands", () =>
+  Effect.gen(function* () {
+    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
+    cleanupFns.push(dispose);
+    const calls: string[] = [];
+    const basePanel = testPluginEnvironment({ regions }).panel;
+    const panel: PanelContext = {
+      ...basePanel,
+      run: (value) =>
+        runCommandByTarget(
+          value,
+          () =>
+            Effect.sync(() => {
+              calls.push("workspace");
+              return basePanel.snapshot();
+            }),
+          () =>
+            Effect.sync(() => {
+              calls.push("session");
+              return basePanel.snapshot();
+            }),
+        ),
+    };
+    const host = yield* createPluginHost(mockEnvironment(regions, { panel }));
+    yield* host.add(
+      mkPlugin({
+        id: "session-command-plugin",
+        effect: (ctx) =>
+          ctx.panel
+            .run(command("agent.prompt", { target: "agent", text: "hello" }))
+            .pipe(Effect.asVoid, Effect.orDie),
+      }),
+    );
+    expect(calls).toEqual(["session"]);
   }),
 );
 
@@ -226,6 +266,30 @@ testEffect("registered bindings are disposed when the plugin is removed", () =>
     expect(active.has("binding-plugin.open")).toBe(true);
     yield* host.remove(plugin.id);
     expect(active.has("binding-plugin.open")).toBe(false);
+  }),
+);
+
+testEffect("spawn providers are collision-safe and scoped", () =>
+  Effect.gen(function* () {
+    const { host } = yield* makeHost();
+    yield* host.add(
+      mkPlugin({
+        id: "provider-one",
+        effect: (ctx) =>
+          Effect.sync(() => ctx.registerSpawnProvider("test", () => ({ argv: ["one"] }))),
+      }),
+    );
+    expect(host.spawnProvider("test")?.argv).toEqual(["one"]);
+    yield* host.add(
+      mkPlugin({
+        id: "provider-two",
+        effect: (ctx) =>
+          Effect.sync(() => ctx.registerSpawnProvider("test", () => ({ argv: ["two"] }))),
+      }),
+    );
+    expect(host.spawnProvider("test")?.argv).toEqual(["one"]);
+    yield* host.remove("provider-one");
+    expect(host.spawnProvider("test")).toBeUndefined();
   }),
 );
 

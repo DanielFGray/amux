@@ -37,6 +37,7 @@ export interface SessionHandleOptions {
    *  executable being run, which is nearly always the better answer. */
   name?: string;
   cmd: string[];
+  provider?: string;
   cwd?: string;
   cols?: number;
   rows?: number;
@@ -111,6 +112,7 @@ export class SessionHandle {
   #blockedSeenOutput = -1;
   /** Declared by whoever started this session as an agent. Fixed for its life. */
   readonly #declaredAgent: string | null;
+  readonly provider: string | undefined;
   /** Agent CLI this pane was launched as, if any. Fixed for the agent's life. */
   #spawnedAs: string | null;
   #runningAs: string | null = null;
@@ -145,6 +147,7 @@ export class SessionHandle {
     this.cmd = opts.cmd;
     this.cwd = opts.cwd;
     this.#declaredAgent = opts.agent ?? null;
+    this.provider = opts.provider;
     this.#spawnedAs = identifyAgent(opts.cmd.join(" "));
     const cols = opts.cols ?? 80;
     const rows = opts.rows ?? 24;
@@ -162,6 +165,7 @@ export class SessionHandle {
     this.#backend = (opts.backend ?? localPty)({
       id: this.id,
       cmd: opts.cmd,
+      provider: opts.provider,
       cwd: opts.cwd,
       cols,
       rows,

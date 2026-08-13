@@ -76,6 +76,16 @@ export class ControlRpcs extends RpcGroup.make(
     success: BatchResultSchema,
     error: ControlError,
   }),
+  Rpc.make("ResumeAgent", {
+    payload: {
+      session: S.String,
+      provider: S.String,
+      argv: S.optional(S.Array(S.String).pipe(S.minItems(1))),
+      env: S.optional(S.Record({ key: S.String, value: S.String })),
+    },
+    success: S.Void,
+    error: ControlError,
+  }),
   Rpc.make("SetBuffer", {
     payload: { name: S.optional(S.String), data: S.String },
     success: S.String,
@@ -90,7 +100,10 @@ export class ControlRpcs extends RpcGroup.make(
     success: S.Void,
     error: ControlError,
   }),
-  Rpc.make("ListBuffers", { success: S.Array(BufferEntrySchema), error: ControlError }),
+  Rpc.make("ListBuffers", {
+    success: S.Array(BufferEntrySchema),
+    error: ControlError,
+  }),
   Rpc.make("DeleteBuffer", {
     payload: { name: S.optional(S.String) },
     success: S.Void,

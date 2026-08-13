@@ -103,7 +103,11 @@ async function projectAgent(
   const id = options.id ?? `transport-${nextProjection++}`;
   const live = await Effect.runPromise(daemon.liveSessions());
   (client.live as Set<string>).add(id);
-  const projected = new SessionHandle({ ...options, id, backend: client.backend() });
+  const projected = new SessionHandle({
+    ...options,
+    id,
+    backend: client.backend(),
+  });
   agents.push(projected);
   if (!live.includes(id)) {
     await Effect.runPromise(
@@ -131,7 +135,7 @@ function modeledAgent(client: SessionClientShape): {
     .workspace()
     .spaces[0]?.windows[0]?.agents.find((candidate) => !candidate.exited);
   if (!agent) throw new Error("no modeled live agent");
-  return agent;
+  return { ...agent, cmd: agent.cmd ?? [] };
 }
 
 /** Wait for a predicate, so tests assert on outcomes rather than on sleeps. */
@@ -1220,7 +1224,10 @@ test("a daemon started on demand keeps agents between two separate clients", asy
     // A second client, with no memory of the first, finds the agent still there.
     const second = await connect(id, env, { client: "second" });
     expect(second.live).toContain(agent.id);
-    const readopted = new SessionHandle({ ...saved, backend: second.backend() });
+    const readopted = new SessionHandle({
+      ...saved,
+      backend: second.backend(),
+    });
     agents.push(readopted);
     readopted.write("printf 'still-alive\\n'\n");
     await until(() => screen(readopted).includes("still-alive"), "the adopted agent's echo");
@@ -1436,7 +1443,13 @@ test("every subscriber to a session receives every frame", async () => {
   const id = "fanout-agent";
   const words = ["alpha ", "beta ", "gamma ", "delta ", "epsilon"];
   const frames = words.map((text, index) =>
-    JSON.stringify({ _tag: "text.delta", session: id, turn: "t1", sequence: index + 1, text }),
+    JSON.stringify({
+      _tag: "text.delta",
+      session: id,
+      turn: "t1",
+      sequence: index + 1,
+      text,
+    }),
   );
   await Effect.runPromise(
     daemon.spawnSession({

@@ -83,8 +83,14 @@ export class ComponentPane extends Pane {
     const props: PaneViewProps = {
       sessionId: this.session.id,
       paneType: this.session.declaredAgent ?? "",
-      width: () => this.#size[0]().width,
-      height: () => this.#size[0]().height,
+      width: () => {
+        this.#size[0]();
+        return this.content.width;
+      },
+      height: () => {
+        this.#size[0]();
+        return this.content.height;
+      },
       active: this.#focus[0],
     };
     this.#dispose = _render(

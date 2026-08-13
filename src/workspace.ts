@@ -147,7 +147,8 @@ const PersistedAgentShape = S.Struct({
   name: S.String,
   kind: S.optional(S.Literal("pty", "component")),
   agent: S.optional(NonEmptyString),
-  cmd: S.Array(NonEmptyString).pipe(S.minItems(1)),
+  cmd: S.optional(S.Array(NonEmptyString).pipe(S.minItems(1))),
+  provider: S.optional(NonEmptyString),
   cwd: S.optional(S.String),
   cols: TerminalDimension,
   rows: TerminalDimension,
@@ -239,7 +240,9 @@ export function parseWorkspaceJson(
   return S.decodeUnknown(WorkspaceSnapshotJson)(value).pipe(
     Effect.mapError(
       (error) =>
-        new WorkspaceParseError({ message: `workspace JSON is invalid: ${String(error)}` }),
+        new WorkspaceParseError({
+          message: `workspace JSON is invalid: ${String(error)}`,
+        }),
     ),
     Effect.flatMap(parseWorkspace),
   );
@@ -258,8 +261,16 @@ export const WorkspaceCommandContextSchema = S.Struct({
 export type WorkspaceAction =
   | { readonly _tag: "spawn"; readonly agent: PersistedSession }
   | { readonly _tag: "prompt"; readonly agent: string; readonly text: string }
-  | { readonly _tag: "interrupt"; readonly agent: string; readonly reason?: string }
-  | { readonly _tag: "decide"; readonly agent: string; readonly answer: PermissionAnswer }
+  | {
+      readonly _tag: "interrupt";
+      readonly agent: string;
+      readonly reason?: string;
+    }
+  | {
+      readonly _tag: "decide";
+      readonly agent: string;
+      readonly answer: PermissionAnswer;
+    }
   | { readonly _tag: "kill"; readonly agent: string }
   | { readonly _tag: "restart"; readonly agent: string }
   | { readonly _tag: "input"; readonly agent: string; readonly data: string };
@@ -314,12 +325,18 @@ export function workspaceFromSession(
                 }
               }
               if (!layout?.root && live.size > 0) {
-                const panes = [...live].map((agent) => ({ id: paneId(), agent }));
+                const panes = [...live].map((agent) => ({
+                  id: paneId(),
+                  agent,
+                }));
                 layout = presetLayout(panes, "tiled", panes[0]?.id);
               }
               layout ??= makeLayout({ root: null });
               if (!layout.focus)
-                layout = makeLayout({ ...layout, focus: layoutRefs(layout)[0]?.id });
+                layout = makeLayout({
+                  ...layout,
+                  focus: layoutRefs(layout)[0]?.id,
+                });
               const state = windowState();
               state.focus = layout.focus ?? null;
               windows.push({
@@ -528,17 +545,22 @@ export function applyWorkspaceCommand(
   };
   const addAgent = (target: WorkspaceWindow, dir: string): PersistedSession => {
     const component = command._tag === "agent.new";
-    if (component && (!command.harness || !command.cmd))
-      throw new Error("agent.new must be resolved by a harness provider");
+    if (component && !command.provider) throw new Error("agent.new requires a spawn provider");
     const agent: PersistedSession = {
       id: newAgentId(),
-      name: component ? `${command.harness!}-agent` : commandName(context.shell),
-      cmd: component ? [...command.cmd!] : [...context.shell],
+      name: component ? `${command.provider!}-agent` : commandName(context.shell),
+      ...(component ? {} : { cmd: [...context.shell] }),
       cwd: dir,
       // Both axes: the worker's content is frames a component draws, and it is
       // an agent. A shell pane is neither, even when the user starts an agent
       // in it — that one is detected from its foreground process instead.
-      ...(component ? { kind: "component" as const, agent: command.harness! } : {}),
+      ...(component
+        ? {
+            kind: "component" as const,
+            agent: command.provider,
+            provider: command.provider,
+          }
+        : {}),
       cols: Math.max(1, context.size.cols),
       rows: Math.max(1, context.size.rows),
       exited: false,
@@ -762,7 +784,10 @@ export function applyWorkspaceCommand(
         agents: [stillReferenced ? structuredClone(agent) : agent],
         // Tiled in its new window whichever plane it was in here: a break makes
         // the pane the whole window, and a float filling a window is a tile.
-        layout: makeLayout({ root: { type: "pane", ...slot, weight: 1 }, focus: slot.id }),
+        layout: makeLayout({
+          root: { type: "pane", ...slot, weight: 1 },
+          focus: slot.id,
+        }),
         state: { ...windowState(), focus: slot.id },
       };
       found.space.windows.push(created);
@@ -781,7 +806,10 @@ export function applyWorkspaceCommand(
         command.source ??
         destination.space.state.lastWindow ??
         destination.space.windows.find((window) => window !== destination.window)?.number;
-      const source = findWindow(next, { space: destination.space.id, window: sourceNumber });
+      const source = findWindow(next, {
+        space: destination.space.id,
+        window: sourceNumber,
+      });
       if (!source || source.window === destination.window) break;
       const paneId = source.window.state.focus;
       const slot = layoutRefs(source.window.layout).find((item) => item.id === paneId);
@@ -846,10 +874,18 @@ export function applyWorkspaceCommand(
       );
       if (target?.state.sync) {
         for (const agent of new Set(layoutRefs(target.layout).map((pane) => pane.agent))) {
-          actions.push({ _tag: "input", agent, data: context.input ?? command.keys });
+          actions.push({
+            _tag: "input",
+            agent,
+            data: context.input ?? command.keys,
+          });
         }
       } else if (focused)
-        actions.push({ _tag: "input", agent: focused.agent, data: context.input ?? command.keys });
+        actions.push({
+          _tag: "input",
+          agent: focused.agent,
+          data: context.input ?? command.keys,
+        });
       break;
     }
     case "window.new": {
@@ -1135,7 +1171,7 @@ export function markSessionUnavailable(
   found.agent.name = `${found.agent.name} (unavailable: ${reason})`;
   found.window.layout = prune(found.window.layout, (agent) => agent !== id);
   found.window.state.focus = found.window.layout.focus ?? null;
-  return next;
+  return { ...next, revision: current.revision + 1 };
 }
 
 function findSpace(workspace: WorkspaceSnapshot, id?: string): WorkspaceSpace | null {

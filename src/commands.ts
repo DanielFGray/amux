@@ -113,12 +113,22 @@ const Direction = S.Literal("left", "right", "up", "down");
 const PaneSplit = define(
   "pane.split",
   { axis: Axis },
-  { desc: "split the focused pane", group: "panes", target: "workspace", exposure: "agent" },
+  {
+    desc: "split the focused pane",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const PaneNext = define(
   "pane.next",
   {},
-  { desc: "focus the next pane", group: "panes", target: "workspace", exposure: "agent" },
+  {
+    desc: "focus the next pane",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const PaneLast = define(
   "pane.last",
@@ -133,27 +143,52 @@ const PaneLast = define(
 const PaneFocus = define(
   "pane.focus",
   { direction: Direction },
-  { desc: "focus the pane in a direction", group: "panes", target: "workspace", exposure: "agent" },
+  {
+    desc: "focus the pane in a direction",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const PaneSelect = define(
   "pane.select",
   { pane: S.String },
-  { desc: "focus a pane by id", group: "panes", target: "workspace", exposure: "agent" },
+  {
+    desc: "focus a pane by id",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const PaneResize = define(
   "pane.resize",
   { direction: Direction },
-  { desc: "resize the focused pane", group: "panes", target: "workspace", exposure: "agent" },
+  {
+    desc: "resize the focused pane",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const PaneResizeDivider = define(
   "pane.resize-divider",
   { path: S.Array(S.Int), index: S.Int, delta: S.Int },
-  { desc: "move a layout divider", group: "panes", target: "workspace", exposure: "human" },
+  {
+    desc: "move a layout divider",
+    group: "panes",
+    target: "workspace",
+    exposure: "human",
+  },
 );
 const PaneZoom = define(
   "pane.zoom",
   {},
-  { desc: "zoom the focused pane", group: "panes", target: "workspace", exposure: "agent" },
+  {
+    desc: "zoom the focused pane",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const PaneFloat = define(
   "pane.float",
@@ -218,7 +253,12 @@ const PaneMove = define(
 const PaneSendKeys = define(
   "pane.send-keys",
   { keys: S.String },
-  { desc: "send keys to the focused pane", group: "panes", target: "workspace", exposure: "agent" },
+  {
+    desc: "send keys to the focused pane",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 // Capture and copy mode open a local overlay. The remote way to read a pane is
 // a daemon-side terminal capture: pane.capture's result is the text.
@@ -236,7 +276,12 @@ const PaneCapture = define(
 const PaneCopyMode = define(
   "pane.copy-mode",
   {},
-  { desc: "review pane history", group: "panes", target: "view", exposure: "human" },
+  {
+    desc: "review pane history",
+    group: "panes",
+    target: "view",
+    exposure: "human",
+  },
 );
 
 // Buffers — tmux's paste-buffer family. The stack itself lives on the daemon,
@@ -267,7 +312,12 @@ const BufferPaste = define(
 const BufferList = define(
   "buffer.list",
   {},
-  { desc: "list the paste buffers", group: "buffers", target: "buffers", exposure: "agent" },
+  {
+    desc: "list the paste buffers",
+    group: "buffers",
+    target: "buffers",
+    exposure: "agent",
+  },
   S.Array(S.Struct({ name: S.String, bytes: S.Int, preview: S.String })),
 );
 const BufferDelete = define(
@@ -294,29 +344,54 @@ const BufferShow = define(
 const BufferChoose = define(
   "buffer.choose",
   {},
-  { desc: "choose a paste buffer to paste", group: "buffers", target: "view", exposure: "human" },
+  {
+    desc: "choose a paste buffer to paste",
+    group: "buffers",
+    target: "view",
+    exposure: "human",
+  },
 );
 
 // Windows.
 const WindowNew = define(
   "window.new",
   {},
-  { desc: "new window", group: "windows", target: "workspace", exposure: "agent" },
+  {
+    desc: "new window",
+    group: "windows",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const WindowNext = define(
   "window.next",
   {},
-  { desc: "next window", group: "windows", target: "workspace", exposure: "agent" },
+  {
+    desc: "next window",
+    group: "windows",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const WindowPrevious = define(
   "window.previous",
   {},
-  { desc: "previous window", group: "windows", target: "workspace", exposure: "agent" },
+  {
+    desc: "previous window",
+    group: "windows",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const WindowLast = define(
   "window.last",
   {},
-  { desc: "toggle to the last window", group: "windows", target: "workspace", exposure: "agent" },
+  {
+    desc: "toggle to the last window",
+    group: "windows",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const WindowSelect = define(
   "window.select",
@@ -391,7 +466,12 @@ const AgentPrompt = define(
     until: S.optional(ReportedAgentStateSchema),
     timeout: S.optional(S.NonNegativeInt),
   },
-  { desc: "send a prompt to an agent", group: "agents", target: "session", exposure: "human" },
+  {
+    desc: "send a prompt to an agent",
+    group: "agents",
+    target: "session",
+    exposure: "human",
+  },
 );
 const AgentWatch = define(
   "agent.watch",
@@ -421,7 +501,12 @@ const AgentPermission = define(
 const AgentInterrupt = define(
   "agent.interrupt",
   { ...SessionTarget, reason: S.optional(S.String) },
-  { desc: "interrupt an agent turn", group: "agents", target: "workspace", exposure: "human" },
+  {
+    desc: "interrupt an agent turn",
+    group: "agents",
+    target: "session",
+    exposure: "human",
+  },
 );
 const Notify = define(
   "notify",
@@ -438,11 +523,15 @@ const Notify = define(
 const AgentNew = define(
   "agent.new",
   {
-    harness: S.optional(S.String.pipe(S.minLength(1))),
-    cmd: S.optional(S.Array(S.String.pipe(S.minLength(1))).pipe(S.minItems(1))),
+    provider: S.optional(S.String.pipe(S.minLength(1))),
     prompt: S.optional(S.String),
   },
-  { desc: "start a coding agent", group: "agents", target: "workspace", exposure: "human" },
+  {
+    desc: "start a coding agent",
+    group: "agents",
+    target: "workspace",
+    exposure: "human",
+  },
 );
 const SessionRestart = define("session.restart", SessionTarget, {
   desc: "restart an exited session",
@@ -453,7 +542,12 @@ const SessionRestart = define("session.restart", SessionTarget, {
 const SessionReveal = define(
   "session.reveal",
   { session: S.String },
-  { desc: "show and focus a session", group: "sessions", target: "workspace", exposure: "agent" },
+  {
+    desc: "show and focus a session",
+    group: "sessions",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const SessionNextBlocked = define(
   "session.next-blocked",
@@ -475,17 +569,32 @@ const SpaceNew = define(
     branch: S.optional(S.String),
     base: S.optional(S.String),
   },
-  { desc: "new space", group: "spaces", target: "workspace", exposure: "agent" },
+  {
+    desc: "new space",
+    group: "spaces",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const SpaceSelect = define(
   "space.select",
   { space: S.String },
-  { desc: "select a space by id", group: "spaces", target: "workspace", exposure: "agent" },
+  {
+    desc: "select a space by id",
+    group: "spaces",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const SpaceRename = define(
   "space.rename",
   { ...Space, name: S.String },
-  { desc: "rename a space", group: "spaces", target: "workspace", exposure: "agent" },
+  {
+    desc: "rename a space",
+    group: "spaces",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const SpaceClose = define("space.close", Space, {
   desc: "close a space and everything in it",
@@ -496,12 +605,22 @@ const SpaceClose = define("space.close", Space, {
 const SpaceNext = define(
   "space.next",
   {},
-  { desc: "next space", group: "spaces", target: "workspace", exposure: "agent" },
+  {
+    desc: "next space",
+    group: "spaces",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 const SpacePrevious = define(
   "space.previous",
   {},
-  { desc: "previous space", group: "spaces", target: "workspace", exposure: "agent" },
+  {
+    desc: "previous space",
+    group: "spaces",
+    target: "workspace",
+    exposure: "agent",
+  },
 );
 
 /**
@@ -526,17 +645,32 @@ const ConfigSet = define(
 const ConfigToggle = define(
   "config.toggle",
   { name: S.String },
-  { desc: "flip a yes/no option", group: "config", target: "view", exposure: "human" },
+  {
+    desc: "flip a yes/no option",
+    group: "config",
+    target: "view",
+    exposure: "human",
+  },
 );
 const ConfigAdjust = define(
   "config.adjust",
   { name: S.String, by: S.Int },
-  { desc: "move a numeric option by a step", group: "config", target: "view", exposure: "human" },
+  {
+    desc: "move a numeric option by a step",
+    group: "config",
+    target: "view",
+    exposure: "human",
+  },
 );
 const ConfigReset = define(
   "config.reset",
   { name: S.String },
-  { desc: "put an option back to its default", group: "config", target: "view", exposure: "human" },
+  {
+    desc: "put an option back to its default",
+    group: "config",
+    target: "view",
+    exposure: "human",
+  },
 );
 
 /**
@@ -560,12 +694,22 @@ const PluginReload = define(
 const PluginEnable = define(
   "plugin.enable",
   { plugin: S.String },
-  { desc: "enable a plugin in this client", group: "plugins", target: "view", exposure: "human" },
+  {
+    desc: "enable a plugin in this client",
+    group: "plugins",
+    target: "view",
+    exposure: "human",
+  },
 );
 const PluginDisable = define(
   "plugin.disable",
   { plugin: S.String },
-  { desc: "disable a plugin in this client", group: "plugins", target: "view", exposure: "human" },
+  {
+    desc: "disable a plugin in this client",
+    group: "plugins",
+    target: "view",
+    exposure: "human",
+  },
 );
 
 // The app itself. These drive overlays and the local terminal.
@@ -577,7 +721,12 @@ const AppHelp = define(
 const AppPalette = define(
   "app.command-palette",
   {},
-  { desc: "search and run commands", group: "global", target: "view", exposure: "human" },
+  {
+    desc: "search and run commands",
+    group: "global",
+    target: "view",
+    exposure: "human",
+  },
 );
 const AppSettings = define(
   "app.settings",
@@ -587,7 +736,12 @@ const AppSettings = define(
 const AppSendPrefix = define(
   "app.send-prefix",
   {},
-  { desc: "send a literal prefix key", group: "global", target: "view", exposure: "human" },
+  {
+    desc: "send a literal prefix key",
+    group: "global",
+    target: "view",
+    exposure: "human",
+  },
 );
 /**
  * Leaving the app detaches from the session; it does not end it.
@@ -601,7 +755,12 @@ const AppSendPrefix = define(
 const AppQuit = define(
   "app.quit",
   {},
-  { desc: "detach from the session", group: "global", target: "view", exposure: "human" },
+  {
+    desc: "detach from the session",
+    group: "global",
+    target: "view",
+    exposure: "human",
+  },
 );
 
 /** Every verb, in the order the surfaces list them. */

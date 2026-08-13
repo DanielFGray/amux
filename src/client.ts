@@ -49,6 +49,12 @@ export interface SessionClientShape extends DaemonSession {
   ) => Effect.Effect<WorkspaceSnapshot, ControlError | SessionClientError, never>;
   /** Raw control-protocol Run for commands that do not produce a workspace snapshot. */
   readonly run: (command: Command) => Effect.Effect<unknown, ControlError>;
+  readonly resumeAgent: (input: {
+    session: string;
+    provider: string;
+    argv?: readonly string[];
+    env?: Readonly<Record<string, string>>;
+  }) => Effect.Effect<void, ControlError>;
   readonly backend: () => SessionBackendFactory;
   readonly close: () => void;
   readonly stop: () => Effect.Effect<void, ControlError, never>;
@@ -188,6 +194,14 @@ const make = (
           Effect.map(({ outputs }) => outputs[0]?.result),
           Effect.mapError(toControlError),
         ),
+      resumeAgent: (input) =>
+        control
+          .ResumeAgent({
+            ...input,
+            ...(input.argv ? { argv: [...input.argv] } : {}),
+            env: input.env,
+          })
+          .pipe(Effect.mapError(toControlError)),
       backend: () => daemonBackend(service, service.live),
       setBuffer: (name, data) =>
         control.SetBuffer({ name, data }).pipe(Effect.mapError(toControlError)),

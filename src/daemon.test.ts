@@ -47,6 +47,52 @@ const open = (id: string, e: NodeJS.ProcessEnv, options?: SessionDaemonOptions) 
 const paths = (id: string, e: NodeJS.ProcessEnv) => run(sessionPaths(id), e);
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
+const componentState = (id: string, provider: string) => ({
+  version: 1 as const,
+  id,
+  createdAt: 1,
+  updatedAt: 1,
+  attached: false,
+  activeSpace: "space-component",
+  spaces: [
+    {
+      id: "space-component",
+      name: "component",
+      dir: "/tmp",
+      activeWindow: 1,
+      windows: [
+        {
+          number: 1,
+          name: null,
+          layout: JSON.stringify({
+            version: 1,
+            root: {
+              type: "pane",
+              id: "pane-component",
+              agent: "component-session",
+              weight: 1,
+            },
+            focus: "pane-component",
+          }),
+          agents: [
+            {
+              id: "component-session",
+              name: "component",
+              agent: provider,
+              provider,
+              kind: "component" as const,
+              cols: 80,
+              rows: 24,
+              exited: false,
+              exitCode: null,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+});
+
 const st = (d: SessionDaemonService) => Effect.runSync(d.getState);
 const ws = (d: SessionDaemonService) => Effect.runSync(d.getWorkspace);
 const S = (d: SessionDaemonService) => Effect.runPromise(d.stop);
@@ -1035,23 +1081,105 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     id: "agent-restore",
     agent: "missing-harness",
   });
-  const daemon = await open("restore-failure", e, {
-    spawnSession: (spec) =>
-      spec.id === "agent-restore"
-        ? Effect.fail(new DaemonError({ message: "provider 'missing-harness' is unavailable" }))
-        : Effect.die(new DaemonError({ message: "unexpected restore spawn" })),
-  });
+  const daemon = await open("restore-failure", e);
   const restored = (await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]
     ?.agents[0];
   expect(restored).toMatchObject({
     id: "agent-restore",
-    name: "bad (unavailable: provider 'missing-harness' is unavailable)",
+    name: "bad",
     agent: "missing-harness",
     kind: "component",
     cmd: ["bad"],
-    exited: true,
+    exited: false,
     exitCode: null,
   });
+  await S(daemon);
+});
+
+test("a component provider identity survives session persistence and restore", async () => {
+  const e = await env();
+  await run(SessionStore.save(componentState("identity", "native")), e);
+
+  const first = await open("identity", e);
+  const saved = await run(SessionStore.load("identity"), e);
+  const restored = saved!.spaces[0]!.windows[0]!.agents[0]!;
+  expect(restored).toMatchObject({
+    agent: "native",
+    provider: "native",
+    kind: "component",
+  });
+  expect(restored.cmd).toBeUndefined();
+  await C(first);
+
+  const second = await open("identity", e);
+  const afterRestart = (await run(SessionStore.load("identity"), e))!.spaces[0]!.windows[0]!
+    .agents[0]!;
+  expect(afterRestart.provider).toBe("native");
+  expect(afterRestart.cmd).toBeUndefined();
+  await S(second);
+});
+
+test("component restore is attach-gated and ResumeAgent does not create a second child", async () => {
+  const e = await env();
+  const marker = join(e.HOME!, "component-spawns");
+  await run(SessionStore.save(componentState("attach-gated", "test")), e);
+  const daemon = await open("attach-gated", e);
+
+  expect(await Effect.runPromise(daemon.liveSessions())).not.toContain("component-session");
+
+  const argv = ["sh", "-c", `printf 'spawned\\n' >> ${marker}; sleep 30`];
+  await ctl("attach-gated", e, (control) =>
+    control.ResumeAgent({
+      session: "component-session",
+      provider: "test",
+      argv,
+    }),
+  );
+  const spawnedBy = Date.now() + 2_000;
+  while (!(await Bun.file(marker).exists()) && Date.now() < spawnedBy) await Bun.sleep(10);
+  expect((await readFile(marker, "utf8")).trim().split("\n")).toEqual(["spawned"]);
+
+  await ctl("attach-gated", e, (control) =>
+    control.ResumeAgent({
+      session: "component-session",
+      provider: "test",
+      argv,
+    }),
+  );
+  await Bun.sleep(50);
+  expect((await readFile(marker, "utf8")).trim().split("\n")).toHaveLength(1);
+  const restored = (await run(SessionStore.load("attach-gated"), e))!.spaces[0]!.windows[0]!
+    .agents[0]!;
+  expect(restored).toMatchObject({
+    name: "component",
+    exited: false,
+  });
+  await S(daemon);
+});
+
+test("an unavailable component provider becomes a tombstone without spawning", async () => {
+  const e = await env();
+  await run(SessionStore.save(componentState("unavailable", "missing")), e);
+  let spawned = 0;
+  const daemon = await open("unavailable", e, {
+    spawnSession: () => {
+      spawned++;
+      return Effect.die(new Error("unexpected fallback spawn"));
+    },
+  });
+
+  await ctl("unavailable", e, (control) =>
+    control.ResumeAgent({
+      session: "component-session",
+      provider: "missing",
+    }),
+  );
+
+  const restored = (await run(SessionStore.load("unavailable"), e))!.spaces[0]!.windows[0]!
+    .agents[0]!;
+  expect(spawned).toBe(0);
+  expect(restored.exited).toBe(true);
+  expect(restored.name).toContain("unavailable: provider 'missing' is unavailable");
   await S(daemon);
 });
 

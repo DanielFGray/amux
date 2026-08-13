@@ -68,6 +68,6 @@ prog ready -p amux    # unblocked tasks
 - ../herdr/ - the rust project we are cloning to match features
 - ../cmux/ - similar agent-aware multiplexor in swift
 - ../opencode/ — opentui + effect-ts agent harness
-- ../zaly/ — example agent harness on an inhouse stack
+- ../zaly/ — another agent harness on an inhouse stack
 - ../opentui/ - opentui source including lots of examples
 - ../tsdoctor/ — TypeScript LSP features from CLI, very helpful when debugging type issues

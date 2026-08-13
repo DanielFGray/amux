@@ -108,7 +108,10 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
       const events = yield* WorkspaceTransactionEvents;
       const lifecycle = yield* Effect.serviceOption(WorkspaceTransactionLifecycle);
       const closeIfEmpty = lifecycle.pipe(
-        Option.match({ onNone: () => Effect.void, onSome: (value) => value.onEmpty }),
+        Option.match({
+          onNone: () => Effect.void,
+          onSome: (value) => value.onEmpty,
+        }),
       );
 
       const exitCommits = new Map<string, (code: number | null) => Promise<void>>();
@@ -184,6 +187,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                   }
                   for (const a of mutation.actions) {
                     if (a._tag !== "spawn") continue;
+                    if (a.agent.kind === "component") continue;
                     prepared.push(yield* sessionOps.prepare(a.agent));
                   }
                   for (const a of mutation.actions) {
@@ -293,7 +297,13 @@ export function gitWorktreesFor(
 
 export const makeSessionOps = (
   hostRef: {
-    current: { prepare: any; write: any; prompt: any; interrupt: any; decide: any } | null;
+    current: {
+      prepare: any;
+      write: any;
+      prompt: any;
+      interrupt: any;
+      decide: any;
+    } | null;
   },
   killFn: (id: string) => Effect.Effect<void, unknown>,
 ): Layer.Layer<WorkspaceTransactionSessionOps> =>

@@ -12,6 +12,7 @@ import type {
   PluginKV,
   PluginStatus,
   PluginSettingsSection,
+  SpawnProvider,
 } from "./types.ts";
 
 export type {
@@ -28,6 +29,7 @@ export interface PluginHost {
   readonly disable: (id: string) => Effect.Effect<void>;
   readonly onError: Stream.Stream<PluginErrorEvent>;
   readonly status: () => readonly PluginStatus[];
+  readonly spawnProvider: (id: string) => SpawnProvider | undefined;
   readonly dispose: Effect.Effect<void>;
 }
 
@@ -66,6 +68,7 @@ export function createPluginHost(
     const errorQueue = yield* Queue.unbounded<PluginErrorEvent>();
     const activePlugins = new Map<string, PluginState>();
     const kvStores = new Map<string, PluginKV>();
+    const spawnProviders = new Map<string, { owner: string; provider: () => SpawnProvider }>();
     const hostScope = yield* Scope.make();
     let disposed = false;
 
@@ -100,6 +103,14 @@ export function createPluginHost(
         registerPaneType: (type, view) => scoped(env.sessionViews.register(type, view)),
         registerBinding: (binding) => scoped(env.registerBinding(binding)),
         registerSettingsSection: (section) => scoped(env.registerSettingsSection(section)),
+        registerSpawnProvider: (id, provider) => {
+          if (spawnProviders.has(id))
+            throw new Error(`spawn provider '${id}' is already registered`);
+          spawnProviders.set(id, { owner: pluginId, provider });
+          return scoped(() => {
+            if (spawnProviders.get(id)?.owner === pluginId) spawnProviders.delete(id);
+          });
+        },
         frames: env.frames,
         sync: env.sync,
       };
@@ -196,6 +207,7 @@ export function createPluginHost(
         }
         return result;
       },
+      spawnProvider: (id) => spawnProviders.get(id)?.provider(),
       dispose: Effect.suspend(disposeAll),
     };
   });

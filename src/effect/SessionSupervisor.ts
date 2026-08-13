@@ -505,6 +505,11 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
         after?: number,
       ) {
         const session = (yield* Ref.get(sessions)).get(id);
+        // Restored component sessions are pending until the client resolves
+        // their provider and respawns the worker. Their durable transcript
+        // must still be available while the pane is waiting for that step.
+        const history = yield* agentLog.read(id, after);
+        for (const event of history) yield* hub.publishTo(client, connection, event);
         // "Bring me up to date" includes which process is in the foreground.
         // The poller only publishes changes, so an adopting client would stay
         // blind until the next one without this — exactly the reattach case a
@@ -518,13 +523,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             sid: fg.sid,
           } satisfies AttachFrame);
         }
-        if (session?.kind === "component") {
-          // A component has no screen to replay — its content is the frames it
-          // emitted, and the worker's own terminal is not those frames.
-          const history = yield* agentLog.read(id, after);
-          for (const event of history) yield* hub.publishTo(client, connection, event);
-          return;
-        }
+        if (session?.kind === "component") return;
         const screen = (yield* Ref.get(replays)).get(id);
         if (!screen) return;
         const data = yield* Effect.sync(() => formatScreen(screen.handle));

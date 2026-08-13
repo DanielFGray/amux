@@ -88,7 +88,9 @@ export interface PersistedSession {
    *  agents. Independent of `kind` — a shell pane the user launches an agent in
    *  is detected, not declared, and leaves this absent. */
   agent?: string;
-  cmd: string[];
+  cmd?: string[];
+  /** Identity of the plugin that supplies this component session's process. */
+  provider?: string;
   cwd?: string;
   cols: number;
   rows: number;
@@ -173,7 +175,8 @@ const PersistedSessionSchema = S.Struct({
   name: S.String,
   kind: S.optional(S.Literal("pty", "component")),
   agent: S.optional(NonEmptyString),
-  cmd: S.Array(NonEmptyString).pipe(S.minItems(1)),
+  cmd: S.optional(S.Array(NonEmptyString).pipe(S.minItems(1))),
+  provider: S.optional(NonEmptyString),
   cwd: S.optional(S.String),
   cols: TerminalDimension,
   rows: TerminalDimension,
@@ -277,7 +280,9 @@ export function worktreesRoot(): Effect.Effect<string> {
 export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdError> {
   return Effect.gen(function* () {
     if (!isSessionId(id)) {
-      return yield* new SessionIdError({ message: `invalid session id ${JSON.stringify(id)}` });
+      return yield* new SessionIdError({
+        message: `invalid session id ${JSON.stringify(id)}`,
+      });
     }
     const root = yield* sessionRoot();
     return sessionPathsFromRoot(id, root);
@@ -372,20 +377,42 @@ export function parseSessionState(
   });
 }
 
-const invalidState = new SessionStateError({ message: "invalid session state" });
-const tooManySpaces = new SessionStateError({ message: "session has too many spaces" });
-const invalidSpace = new SessionStateError({ message: "invalid persisted space" });
-const tooManyWindows = new SessionStateError({ message: "session has too many windows" });
-const invalidWindow = new SessionStateError({ message: "invalid persisted window" });
-const tooManyAgents = new SessionStateError({ message: "session has too many agents" });
-const invalidAgent = new SessionStateError({ message: "invalid persisted agent" });
-const layoutFocus = new SessionStateError({ message: "layout focus names no pane" });
-const missingWindow = new SessionStateError({ message: "active window does not exist" });
-const missingSpace = new SessionStateError({ message: "active space does not exist" });
+const invalidState = new SessionStateError({
+  message: "invalid session state",
+});
+const tooManySpaces = new SessionStateError({
+  message: "session has too many spaces",
+});
+const invalidSpace = new SessionStateError({
+  message: "invalid persisted space",
+});
+const tooManyWindows = new SessionStateError({
+  message: "session has too many windows",
+});
+const invalidWindow = new SessionStateError({
+  message: "invalid persisted window",
+});
+const tooManyAgents = new SessionStateError({
+  message: "session has too many agents",
+});
+const invalidAgent = new SessionStateError({
+  message: "invalid persisted agent",
+});
+const layoutFocus = new SessionStateError({
+  message: "layout focus names no pane",
+});
+const missingWindow = new SessionStateError({
+  message: "active window does not exist",
+});
+const missingSpace = new SessionStateError({
+  message: "active space does not exist",
+});
 const duplicatePane = (id: string) =>
   new SessionStateError({ message: `duplicate pane id '${id}'` });
 const absentAgent = (id: string) =>
-  new SessionStateError({ message: `pane '${id}' names an absent or exited agent` });
+  new SessionStateError({
+    message: `pane '${id}' names an absent or exited agent`,
+  });
 
 function schemaError(error: unknown): SessionStateError {
   const message = String(error);
@@ -424,7 +451,11 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
     const pathFor = (id: string): Effect.Effect<SessionPaths, SessionIdError> =>
       isSessionId(id)
         ? Effect.succeed(sessionPathsFromRoot(id, root))
-        : Effect.fail(new SessionIdError({ message: `invalid session id ${JSON.stringify(id)}` }));
+        : Effect.fail(
+            new SessionIdError({
+              message: `invalid session id ${JSON.stringify(id)}`,
+            }),
+          );
 
     const load = Effect.fnUntraced(function* (id: string) {
       const sessionPaths = yield* pathFor(id);
@@ -443,7 +474,9 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
       const bytes =
         JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt }, null, 2) + "\n";
       if (Buffer.byteLength(bytes) > MAX_SESSION_BYTES)
-        return yield* new SessionSizeError({ message: "session state is too large" });
+        return yield* new SessionSizeError({
+          message: "session state is too large",
+        });
       yield* fs.writeFileString(temp, bytes, { mode: 0o600 });
       const tempFile = yield* fs.open(temp, { flag: "r+" });
       yield* tempFile.sync;
@@ -470,7 +503,9 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
       const paths = yield* pathFor(lease.session);
       yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
       const temp = `${paths.lease}.${process.pid}.tmp`;
-      yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", { mode: 0o600 });
+      yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", {
+        mode: 0o600,
+      });
       yield* fs.rename(temp, paths.lease);
     });
 

@@ -57,6 +57,7 @@ export interface BackendOptions {
    */
   id: string;
   cmd: string[];
+  provider?: string;
   cwd?: string;
   cols: number;
   rows: number;
@@ -212,6 +213,9 @@ export function daemonBackend(
       // next redraws. The resize frame precedes the sync, and the daemon
       // serializes at the resize it just applied.
       session.attach.sync(opts.id);
+    } else if (opts.provider) {
+      // Restored component sessions are pending plans. The client resolves
+      // their provider after plugins load and starts them through the daemon.
     } else {
       Effect.runFork(
         output.offer(

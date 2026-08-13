@@ -147,6 +147,38 @@ testEffect("a file-backed agent log survives rebuilding the supervisor", () =>
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
+testEffect("sync replays a pending component transcript before respawn", () =>
+  Effect.gen(function* () {
+    const hub = yield* AttachHub;
+    const subscription = yield* hub.subscribe("client");
+    const log = yield* AgentLog;
+    const supervisor = yield* SessionSupervisor;
+    yield* log.append({
+      _tag: "turn.start",
+      session: "pending-agent",
+      turn: "turn-1",
+      prompt: "hello",
+    });
+    yield* log.append({
+      _tag: "turn.end",
+      session: "pending-agent",
+      turn: "turn-1",
+      outcome: "completed",
+      text: "world",
+    });
+
+    const replay = Stream.runCollect(Stream.take(subscription.frames, 2));
+    yield* supervisor.sync("client", "", "pending-agent");
+    const frames = Chunk.toReadonlyArray(yield* replay);
+
+    expect(frames.map((frame) => frame._tag)).toEqual(["turn.start", "turn.end"]);
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
+);
+
 /**
  * The daemon is the only process that can ask a session's tty what is in the
  * foreground (tcgetpgrp goes through the master it owns), so the supervisor is

@@ -26,9 +26,8 @@ export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
  * fix belongs in the API.
  *
  * The turn loop runs in a worker child rather than in the client, which is this
- * harness's own choice about crash isolation and not a contract: `agent.new`
- * carries the command to spawn, so another harness names its own entry point —
- * or none, and runs its loop inline.
+ * harness's own choice about crash isolation and not a contract. Its provider
+ * registration supplies launch details only when a pending session resumes.
  */
 export const agentHarnessPlugin: PluginDefinition = {
   id: AGENT_HARNESS_PLUGIN_ID,
@@ -83,16 +82,19 @@ export const agentHarnessPlugin: PluginDefinition = {
         Effect.flatMap(() =>
           ctx.panel.run({
             _tag: "agent.new",
-            harness: "native",
-            cmd: [
-              process.execPath,
-              new URL("./agent-harness/native-worker.ts", import.meta.url).pathname,
-            ],
+            provider: "native",
           }),
         ),
         Effect.asVoid,
         Effect.provide(llmServices),
       );
+
+      ctx.registerSpawnProvider("native", () => ({
+        argv: [
+          process.execPath,
+          new URL("./agent-harness/native-worker.ts", import.meta.url).pathname,
+        ],
+      }));
 
       ctx.registerBinding({
         name: "agent.new",
@@ -136,7 +138,12 @@ export const agentHarnessPlugin: PluginDefinition = {
           frames={ctx.frames}
           sync={ctx.sync}
           onSubmit={(message) =>
-            run(command("agent.prompt", { target: props.sessionId, text: message }))
+            run(
+              command("agent.prompt", {
+                target: props.sessionId,
+                text: message,
+              }),
+            )
           }
           onPermission={(request, decision, feedback) =>
             run(
@@ -208,7 +215,11 @@ function AuthSettings(props: {
             }}
           >
             <text style={{ fg: theme.text, width: 18 }}>{provider.label}</text>
-            <text style={{ fg: provider.connections.length ? theme.green : theme.overlay1 }}>
+            <text
+              style={{
+                fg: provider.connections.length ? theme.green : theme.overlay1,
+              }}
+            >
               {provider.connections.length
                 ? provider.connections.map((connection) => connection.label).join(", ")
                 : "not connected"}

@@ -61,7 +61,7 @@ import {
   type OptionValue,
 } from "./options.ts";
 import type { SessionClientShape } from "./client.ts";
-import type { WorkspaceSnapshot } from "./workspace.ts";
+import { workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
 import { createAppState, POLL_MS } from "./ui/state.ts";
 import { createPanelContext, type PanelContext } from "./ui/panel.ts";
 import { App } from "./ui/App.tsx";
@@ -92,6 +92,7 @@ import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 import type { PluginSettingsSection } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
+import { errorMessage } from "./error-message.ts";
 
 export interface AppOptions {
   readonly renderer: CliRenderer;
@@ -110,6 +111,7 @@ export interface AppOptions {
 export interface PluginRuntime {
   reloader?: PluginReloader;
   pathFor?: (id: string) => string | undefined;
+  resumePending?: (workspace: WorkspaceSnapshot) => Effect.Effect<void>;
 }
 
 function setPluginEnabled(config: Config, path: string, enabled: boolean): Config {
@@ -128,6 +130,14 @@ export interface AppHandle {
   /** Value-only context available to in-process panels and plugins. */
   readonly panel: PanelContext;
   readonly pluginHost: PluginHost;
+}
+
+export function runCommandByTarget<A, B>(
+  command: Command,
+  workspace: () => Effect.Effect<A, CommandError>,
+  session: () => Effect.Effect<B, CommandError>,
+): Effect.Effect<A | B, CommandError> {
+  return COMMAND_META[command._tag].target === "workspace" ? workspace() : session();
 }
 
 interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
@@ -197,6 +207,41 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       pluginHost,
       options.configDir ?? dirname(CONFIG_PATH),
     );
+    const resumedPending = new Set<string>();
+    pluginRuntime.resumePending = (workspace) =>
+      Effect.forEach(
+        [...workspaceSessions(workspace)].filter(
+          ({ agent }) =>
+            agent.kind === "component" &&
+            !agent.exited &&
+            agent.provider &&
+            !resumedPending.has(agent.id),
+        ),
+        ({ agent }) => {
+          resumedPending.add(agent.id);
+          const provider = pluginHost.spawnProvider(agent.provider!);
+          return options.session
+            .resumeAgent({
+              session: agent.id,
+              provider: agent.provider!,
+              ...(provider
+                ? {
+                    argv: provider.argv,
+                    ...(provider.env ? { env: provider.env } : {}),
+                  }
+                : {}),
+            })
+            .pipe(
+              Effect.catchAll((error) =>
+                Effect.sync(() => {
+                  app.panel.reportError(errorMessage(error));
+                }),
+              ),
+            );
+        },
+        { discard: true },
+      );
+    yield* pluginRuntime.resumePending(options.session.workspace());
     // A plugin that dies on activation used to be silent outside the tests.
     runFiber(
       "plugin-errors",
@@ -312,10 +357,6 @@ function buildApp(
    */
   const run = <A,>(effect: Effect.Effect<A>): A => Effect.runSync(effect);
 
-  /** A failure's message, whatever shape the socket threw it in. */
-  const errorMessage = (error: unknown): string =>
-    error instanceof Error ? error.message : String(error);
-
   // Copy goes to the clipboard AND the server's buffer stack — tmux's model,
   // and what makes copy/paste work over ssh, between panes, and from a
   // script: the stack lives beside the daemon's PTYs, so paste needs no
@@ -406,7 +447,10 @@ function buildApp(
   };
   runFiber("workspace-models", runModelProjections(session.models, project));
   const workspaceContext = () => ({
-    size: { cols: Math.max(1, paneHost.width), rows: Math.max(1, paneHost.height) },
+    size: {
+      cols: Math.max(1, paneHost.width),
+      rows: Math.max(1, paneHost.height),
+    },
     shell: [
       resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash",
     ],
@@ -421,11 +465,29 @@ function buildApp(
     input?: string,
   ): Effect.Effect<WorkspaceSnapshot, CommandError> =>
     session
-      .runWorkspace(value, { ...workspaceContext(), ...(input === undefined ? {} : { input }) })
+      .runWorkspace(value, {
+        ...workspaceContext(),
+        ...(input === undefined ? {} : { input }),
+      })
       .pipe(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
         Effect.tap((model) => Effect.promise(() => project(model))),
+        Effect.tap((model) => pluginRuntime.resumePending?.(model) ?? Effect.void),
       );
+
+  const runCommand = (
+    value: Command,
+    input?: string,
+  ): Effect.Effect<WorkspaceSnapshot, CommandError> =>
+    runCommandByTarget(
+      value,
+      () => runPanelCommand(value, input),
+      () =>
+        session.run(value).pipe(
+          Effect.flatMap(() => Effect.sync(() => session.workspace())),
+          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        ),
+    );
 
   const [configState, setConfigState] = createSignal<Config>(config);
   /** Every option resolved against its declared default — what the app reads.
@@ -441,7 +503,10 @@ function buildApp(
    * save's error no longer describes what is on it.
    */
   function changeOption(name: OptionName, value: OptionValue) {
-    setConfigState((c) => ({ ...c, options: writeOption(c.options, name, value) }));
+    setConfigState((c) => ({
+      ...c,
+      options: writeOption(c.options, name, value),
+    }));
     setSettingsError("");
     setSettingsDirty(true);
   }
@@ -487,7 +552,10 @@ function buildApp(
   }
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false);
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null);
-  const [size, setSize] = createSignal({ width: renderer.width, height: renderer.height });
+  const [size, setSize] = createSignal({
+    width: renderer.width,
+    height: renderer.height,
+  });
 
   const display = createMemo<SidebarDisplay>(() => {
     app.tick();
@@ -657,13 +725,21 @@ function buildApp(
     const window = space?.active;
     if (!space || !window) return;
     const answers = yield* ask("Rename window", [
-      { label: "Name", value: window.customName ?? "", placeholder: window.title },
+      {
+        label: "Name",
+        value: window.customName ?? "",
+        placeholder: window.title,
+      },
     ]);
     if (!answers) return;
     // Named rather than left implicit: the answer arrives whenever the user
     // finishes typing, and "the active window" may have moved by then.
     yield* commands.run(
-      command("window.rename", { space: space.id, window: window.number, name: answers[0] ?? "" }),
+      command("window.rename", {
+        space: space.id,
+        window: window.number,
+        name: answers[0] ?? "",
+      }),
     );
   });
 
@@ -819,7 +895,11 @@ function buildApp(
       if (owner && (add || owner !== command)) {
         setKeybindPicker((view) =>
           view
-            ? { ...view, capturing: false, error: `${display} is already used by ${owner}` }
+            ? {
+                ...view,
+                capturing: false,
+                error: `${display} is already used by ${owner}`,
+              }
             : view,
         );
         return;
@@ -1052,20 +1132,20 @@ function buildApp(
   const handlers: CommandHandlers = {
     // Suspended rather than `sync`: the window has to be read when the command
     // runs, not when the table is built.
-    "pane.split": runPanelCommand,
-    "pane.next": runPanelCommand,
-    "pane.last": runPanelCommand,
-    "pane.focus": runPanelCommand,
-    "pane.select": runPanelCommand,
-    "pane.resize": runPanelCommand,
-    "pane.resize-divider": runPanelCommand,
-    "pane.zoom": runPanelCommand,
-    "pane.float": runPanelCommand,
-    "pane.swap": runPanelCommand,
-    "pane.close": runPanelCommand,
-    "pane.break": runPanelCommand,
-    "pane.join": runPanelCommand,
-    "pane.move": runPanelCommand,
+    "pane.split": runCommand,
+    "pane.next": runCommand,
+    "pane.last": runCommand,
+    "pane.focus": runCommand,
+    "pane.select": runCommand,
+    "pane.resize": runCommand,
+    "pane.resize-divider": runCommand,
+    "pane.zoom": runCommand,
+    "pane.float": runCommand,
+    "pane.swap": runCommand,
+    "pane.close": runCommand,
+    "pane.break": runCommand,
+    "pane.join": runCommand,
+    "pane.move": runCommand,
     "pane.send-keys": ({ keys }) =>
       Effect.suspend(() => {
         let input = "";
@@ -1114,7 +1194,11 @@ function buildApp(
     "buffer.list": () =>
       session.listBuffers().pipe(
         Effect.map((bufs) =>
-          bufs.map((b) => ({ name: b.name, bytes: b.bytes, preview: b.preview })),
+          bufs.map((b) => ({
+            name: b.name,
+            bytes: b.bytes,
+            preview: b.preview,
+          })),
         ),
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
@@ -1134,42 +1218,34 @@ function buildApp(
         openChooseBuffer(buffers);
       }),
 
-    "window.new": runPanelCommand,
-    "window.next": runPanelCommand,
-    "window.previous": runPanelCommand,
-    "window.last": runPanelCommand,
-    "window.select": runPanelCommand,
-    "window.rename": runPanelCommand,
-    "window.close": runPanelCommand,
-    "window.next-layout": runPanelCommand,
-    "window.select-layout": runPanelCommand,
-    "window.synchronize-panes": runPanelCommand,
+    "window.new": runCommand,
+    "window.next": runCommand,
+    "window.previous": runCommand,
+    "window.last": runCommand,
+    "window.select": runCommand,
+    "window.rename": runCommand,
+    "window.close": runCommand,
+    "window.next-layout": runCommand,
+    "window.select-layout": runCommand,
+    "window.synchronize-panes": runCommand,
 
-    "agent.new": runPanelCommand,
-    "agent.prompt": (value) =>
-      session.run(value).pipe(
-        Effect.asVoid,
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-      ),
-    "agent.watch": runPanelCommand,
-    "agent.interrupt": runPanelCommand,
-    "agent.permission": runPanelCommand,
-    notify: (value) =>
-      session.run(value).pipe(
-        Effect.asVoid,
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-      ),
-    "session.kill": runPanelCommand,
-    "session.restart": runPanelCommand,
-    "session.reveal": runPanelCommand,
-    "session.next-blocked": runPanelCommand,
+    "agent.new": runCommand,
+    "agent.prompt": runCommand,
+    "agent.watch": runCommand,
+    "agent.interrupt": runCommand,
+    "agent.permission": runCommand,
+    notify: runCommand,
+    "session.kill": runCommand,
+    "session.restart": runCommand,
+    "session.reveal": runCommand,
+    "session.next-blocked": runCommand,
 
-    "space.new": runPanelCommand,
-    "space.select": runPanelCommand,
-    "space.rename": runPanelCommand,
-    "space.close": runPanelCommand,
-    "space.next": runPanelCommand,
-    "space.previous": runPanelCommand,
+    "space.new": runCommand,
+    "space.select": runCommand,
+    "space.rename": runCommand,
+    "space.close": runCommand,
+    "space.next": runCommand,
+    "space.previous": runCommand,
 
     // The name arrives as a string from every surface, so it is checked here
     // rather than trusted: the table is what says whether it exists and what it
@@ -1189,7 +1265,9 @@ function buildApp(
       Effect.gen(function* () {
         const { spec, option } = yield* knownOption(name);
         if (spec.kind !== "boolean") {
-          return yield* new CommandError({ message: `${name} is not a yes/no option` });
+          return yield* new CommandError({
+            message: `${name} is not a yes/no option`,
+          });
         }
         changeOption(option, !options()[option]);
       }),
@@ -1201,7 +1279,10 @@ function buildApp(
     "config.reset": ({ name }) =>
       Effect.gen(function* () {
         const { option } = yield* knownOption(name);
-        setConfigState((c) => ({ ...c, options: clearOption(c.options, option) }));
+        setConfigState((c) => ({
+          ...c,
+          options: clearOption(c.options, option),
+        }));
         setSettingsError("");
         setSettingsDirty(true);
       }),
@@ -1243,7 +1324,10 @@ function buildApp(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
     "plugin.enable": ({ plugin }) =>
-      Effect.suspend(() => (pluginRuntime.reloader?.enable(plugin) ?? Effect.fail("plugin runtime is unavailable"))).pipe(
+      Effect.suspend(
+        () =>
+          pluginRuntime.reloader?.enable(plugin) ?? Effect.fail("plugin runtime is unavailable"),
+      ).pipe(
         Effect.tap(() =>
           Effect.promise(async () => {
             const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
@@ -1255,7 +1339,10 @@ function buildApp(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
     "plugin.disable": ({ plugin }) =>
-      Effect.suspend(() => (pluginRuntime.reloader?.disable(plugin) ?? Effect.fail("plugin runtime is unavailable"))).pipe(
+      Effect.suspend(
+        () =>
+          pluginRuntime.reloader?.disable(plugin) ?? Effect.fail("plugin runtime is unavailable"),
+      ).pipe(
         Effect.tap(() =>
           Effect.promise(async () => {
             const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
@@ -1284,7 +1371,12 @@ function buildApp(
     name: string,
     key: string | string[] | undefined,
     cmd: Command,
-    opts: { desc?: string; group?: string; hidden?: boolean; fixed?: boolean } = {},
+    opts: {
+      desc?: string;
+      group?: string;
+      hidden?: boolean;
+      fixed?: boolean;
+    } = {},
   ): CommandSpec {
     const meta = COMMAND_META[cmd._tag]!;
     return {
@@ -1413,7 +1505,9 @@ function buildApp(
     bind("window.previous", "<leader>p", command("window.previous")),
     // tmux's last-window, on tmux's own binding — which is also why focus-right
     // no longer answers to ^a l.
-    bind("window.last", "<leader>l", command("window.last"), { desc: "toggle to the last window" }),
+    bind("window.last", "<leader>l", command("window.last"), {
+      desc: "toggle to the last window",
+    }),
     bindPrompt("window.rename", "<leader>,", promptRenameWindow, "rename window"),
     bind("window.close", "<leader>&", command("window.close"), {
       desc: "kill window and its agents",
@@ -1491,7 +1585,9 @@ function buildApp(
     // The prefix twice, written as the token so it follows a rebind — and sent
     // as whatever bytes that prefix actually produces. Not offered in the
     // editor: its sequence is the prefix, and the prefix row already edits that.
-    bind("app.send-prefix", "<leader><leader>", command("app.send-prefix"), { fixed: true }),
+    bind("app.send-prefix", "<leader><leader>", command("app.send-prefix"), {
+      fixed: true,
+    }),
     bind("app.quit", "<leader>q", command("app.quit")),
   ];
 
@@ -1651,7 +1747,10 @@ function buildApp(
     if (event.name === "j" || event.name === "down") {
       setKeybindPicker((current) =>
         current
-          ? { ...current, selected: Math.min(current.entries.length - 1, current.selected + 1) }
+          ? {
+              ...current,
+              selected: Math.min(current.entries.length - 1, current.selected + 1),
+            }
           : current,
       );
       return true;
@@ -1881,7 +1980,10 @@ function buildApp(
               const space = spaces.active;
               if (space) {
                 runProjectedCommand(
-                  command("window.select", { space: space.id, number: w.number }),
+                  command("window.select", {
+                    space: space.id,
+                    number: w.number,
+                  }),
                 );
               }
             }}
@@ -2000,13 +2102,23 @@ function buildApp(
           const count = view.buffers.length;
           if (event.name === "j" || event.name === "down") {
             setChooseView((v) =>
-              v ? { ...v, selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 1) } : v,
+              v
+                ? {
+                    ...v,
+                    selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 1),
+                  }
+                : v,
             );
           } else if (event.name === "k" || event.name === "up") {
             setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v));
           } else if (event.name === "pagedown") {
             setChooseView((v) =>
-              v ? { ...v, selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 10) } : v,
+              v
+                ? {
+                    ...v,
+                    selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 10),
+                  }
+                : v,
             );
           } else if (event.name === "pageup") {
             setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v));
@@ -2232,7 +2344,7 @@ function buildApp(
   const panel = createPanelContext({
     snapshot,
     tick: app.tick,
-    run: runPanelCommand,
+    run: runCommand,
     options,
     setOption: changeOption,
     saveOptions,
