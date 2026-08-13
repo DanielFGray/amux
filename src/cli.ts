@@ -135,7 +135,7 @@ async function main(): Promise<number> {
   const [
     effectMod,
     { SessionStore, isSessionId },
-    { controlCall, agentWatch },
+    { controlCall, agentWatch, AgentWaitError },
     commandsMod,
     { parseArgs },
   ] = await Promise.all([
@@ -242,7 +242,7 @@ async function main(): Promise<number> {
             Stream.runHead,
             Effect.timeoutFail({
               duration: Math.min(5000, timeout),
-              onTimeout: () => new Error("agent_prompt_stalled"),
+              onTimeout: () => new AgentWaitError({ reason: "agent_prompt_stalled" }),
             }),
           );
           if (Option.isNone(first))
@@ -273,7 +273,7 @@ async function main(): Promise<number> {
               Stream.runDrain,
               Effect.timeoutFail({
                 duration: Math.max(0, deadline - Date.now()),
-                onTimeout: () => new Error("agent_wait_timeout"),
+                onTimeout: () => new AgentWaitError({ reason: "agent_wait_timeout" }),
               }),
             );
           return { outputs: [...outputs, { result: result ?? { turn } }] };

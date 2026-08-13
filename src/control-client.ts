@@ -12,7 +12,7 @@ import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import * as RpcClient from "@effect/rpc/RpcClient";
 import type { RpcClientError } from "@effect/rpc/RpcClientError";
 import type * as RpcGroup from "@effect/rpc/RpcGroup";
-import { Effect, Layer, Scope, Stream } from "effect";
+import { Effect, Layer, Schema as S, Scope, Stream } from "effect";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { DaemonEvent, DaemonEventPayload } from "./effect/EventBus.ts";
 import type { AgentEvent } from "./effect/AttachProtocol.ts";
@@ -101,6 +101,31 @@ export const agentWatch = (
   after?: number,
 ): Stream.Stream<AgentEvent, RpcClientError> =>
   control.AgentWatch({ session, ...(after === undefined || after < 0 ? {} : { after }) });
+
+/**
+ * Why a wait on an agent ended without the turn it was waiting for.
+ *
+ * Both names are machine-facing: a caller matches on the token, so they are
+ * defined once here and every union, guard, and rendering derives from this
+ * literal rather than restating the members.
+ *
+ * `agent_prompt_stalled` is the five-second guard — a prompt submitted from a
+ * settled state produced no lifecycle change at all, which means the agent
+ * never took the work rather than that it is slow. `agent_wait_timeout` is the
+ * caller's own deadline elapsing while the turn was genuinely in progress.
+ */
+export const AgentWaitReason = S.Literal("agent_prompt_stalled", "agent_wait_timeout");
+export type AgentWaitReason = typeof AgentWaitReason.Type;
+
+export class AgentWaitError extends S.TaggedError<AgentWaitError>()("AgentWaitError", {
+  reason: AgentWaitReason,
+}) {
+  /** The token alone: it is what a caller greps for, and what the CLI printed
+   *  back when this was an untagged Error carrying the same string. */
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 /** Return the number of events missed between two retained bus frames. */
 export const eventGap = (previous: DaemonEvent, current: DaemonEvent): number =>
