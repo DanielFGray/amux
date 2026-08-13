@@ -2,12 +2,14 @@ import {
   Cause,
   Context,
   Deferred,
+  Duration,
   Effect,
   Exit,
   Fiber,
   Layer,
   Runtime,
   Schema as S,
+  Schedule,
   Scope,
   Option,
 } from "effect";
@@ -380,41 +382,34 @@ export const makePersistence = (
         reason: string,
       ) {
         const obligation = yield* model.addObligation(reason);
-        let delay = 10;
         try {
-          for (;;) {
-            if (yield* model.isClosing)
-              throw new WorkspaceTransactionError({
-                message: `daemon shut down with outstanding durable obligation: ${reason}`,
-              });
-            const result = yield* Effect.exit(
-              Effect.gen(function* () {
-                const fiber = yield* Effect.forkIn(
-                  persistFn(state).pipe(
-                    Effect.mapError((e) => new WorkspaceTransactionError({ message: describe(e) })),
-                  ),
-                  scope,
-                );
-                activeSaveRef.current = fiber;
-                const value = yield* Fiber.join(fiber);
-                activeSaveRef.current = null;
-                return value;
-              }),
-            );
-            if (Exit.isSuccess(result)) return;
-            {
-              const error = Cause.squash(result.cause);
-              activeSaveRef.current = null;
-              yield* model.updateObligation(
+          // Retrying is unbounded in time but not across shutdown: a daemon that
+          // is closing must stop waiting for storage that is not coming back,
+          // or teardown blocks on a fiber that will never settle.
+          const retrySchedule = Schedule.exponential("10 millis").pipe(
+            Schedule.modifyDelay((_, duration) => Duration.min(duration, Duration.seconds(1))),
+            Schedule.tapInput((error) =>
+              model.updateObligation(
                 obligation,
                 `${reason} is waiting for durable storage: ${describe(error)}`,
-              );
-              if (yield* model.isClosing) throw error;
-              yield* Effect.raceFirst(Effect.sleep(`${delay} millis`), Effect.never);
-              delay = Math.min(delay * 2, 1_000);
-            }
-          }
+              ),
+            ),
+            Schedule.whileInputEffect(() => Effect.map(model.isClosing, (closing) => !closing)),
+          );
+          const save = Effect.gen(function* () {
+            if (yield* model.isClosing)
+              return yield* new WorkspaceTransactionError({
+                message: `daemon shut down with outstanding durable obligation: ${reason}`,
+              });
+            return yield* persistFn(state).pipe(
+              Effect.mapError((e) => new WorkspaceTransactionError({ message: describe(e) })),
+            );
+          });
+          const fiber = yield* Effect.forkIn(save.pipe(Effect.retry(retrySchedule)), scope);
+          activeSaveRef.current = fiber;
+          yield* Fiber.join(fiber).pipe(Effect.orDie, Effect.asVoid);
         } finally {
+          activeSaveRef.current = null;
           yield* model.clearObligation(obligation);
         }
       });
