@@ -561,7 +561,7 @@ test("a one-shot reversible write failure does not poison the next command", asy
   ).rejects.toThrow("one-shot candidate failure");
   expect(await healthy(daemon, e)).toBe(true);
   const recovered = await rwc(daemon)(command("pane.split", { axis: "row" }), revision, context);
-  expect(recovered.spaces[0]!.windows[0]!.agents).toHaveLength(2);
+  expect(recovered.snapshot.spaces[0]!.windows[0]!.agents).toHaveLength(2);
   await S(daemon);
 });
 

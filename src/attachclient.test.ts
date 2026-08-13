@@ -312,14 +312,14 @@ test("a workspace change by one client reaches the other as a snapshot", async (
     }),
     env,
   );
-  expect(after.revision).toBeGreaterThan(before.revision);
+  expect(after.snapshot.revision).toBeGreaterThan(before.revision);
 
   // The client holds broadcast snapshots in a sliding queue of one and only
   // folds them into `workspace()` as the stream is drained, so a test must
   // drain it exactly as the app's projection fiber does.
   const received = await run(Stream.runHead(observer.models), env);
   expect(Option.map(received, (snapshot) => snapshot.revision)).toEqual(
-    Option.some(after.revision),
+    Option.some(after.snapshot.revision),
   );
   expect(observer.workspace().spaces[0]!.name).toBe("renamed-space");
   expect(await attachedClients(daemon)).toEqual(["author", "observer"]);
@@ -1314,7 +1314,7 @@ test("a natural terminal exit is published only after its workspace generation i
     }),
     env,
   );
-  const id = created.spaces
+  const id = created.snapshot.spaces
     .flatMap((space) => space.windows)
     .flatMap((window) => window.agents)
     .find((agent) => !before.has(agent.id))!.id;
@@ -1359,7 +1359,7 @@ test("a transient natural-exit write failure does not consume the terminal exit 
     }),
     env,
   );
-  const id = created.spaces
+  const id = created.snapshot.spaces
     .flatMap((space) => space.windows)
     .flatMap((window) => window.agents)
     .find((agent) => !before.has(agent.id))!.id;
@@ -1423,7 +1423,7 @@ test("attached clients subscribe to ordered workspace generations", async () => 
 
   expect(Option.isSome(received)).toBe(true);
   if (Option.isSome(received)) {
-    expect(received.value.revision).toBe(changed.revision);
+    expect(received.value.revision).toBe(changed.snapshot.revision);
     expect(received.value.spaces[0]!.name).toBe("shared");
   }
 });

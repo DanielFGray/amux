@@ -1,4 +1,5 @@
-import type { Command } from "./commands.ts";
+import type { AnyCommandResult, Command } from "./commands.ts";
+import type { CreationResult } from "./creation-result.ts";
 import type { PermissionAnswer } from "./effect/AttachProtocol.ts";
 import { randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
@@ -279,6 +280,7 @@ export interface WorkspaceMutation {
   readonly snapshot: WorkspaceSnapshot;
   readonly actions: readonly WorkspaceAction[];
   readonly changed: boolean;
+  readonly result?: AnyCommandResult;
 }
 
 /**
@@ -527,6 +529,7 @@ export function applyWorkspaceCommand(
   const newPaneId = () => allocateId("pane", paneIds);
   const newSpaceId = () => allocateId("space", spaceIds);
   const actions: WorkspaceAction[] = [];
+  let result: AnyCommandResult | undefined;
   const before = JSON.stringify(next);
   const space = () => findSpace(next, "space" in command ? command.space : undefined);
   const window = () => findWindow(next, command as { space?: string; window?: number });
@@ -630,6 +633,7 @@ export function applyWorkspaceCommand(
         ? splitLayout(target.window.layout, 0, "row", pane)
         : appendPane(target.window.layout, pane);
       target.window.state.focus = pane.id;
+      result = { session: agent.id, pane: pane.id } satisfies CreationResult<"agent.new">;
       break;
     }
     case "pane.split": {
@@ -647,6 +651,7 @@ export function applyWorkspaceCommand(
       found.window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
       found.window.state.zoom = null;
       found.window.state.preset = null;
+      result = { session: agent.id, pane: ref.id } satisfies CreationResult<"pane.split">;
       break;
     }
     case "pane.next": {
@@ -890,7 +895,15 @@ export function applyWorkspaceCommand(
     }
     case "window.new": {
       const target = space();
-      if (target) addWindow(target);
+      if (target) {
+        const created = addWindow(target);
+        const pane = layoutRefs(created.layout)[0]!;
+        result = {
+          window: created.number,
+          pane: pane.id,
+          session: pane.agent,
+        } satisfies CreationResult<"window.new">;
+      }
       break;
     }
     case "window.next":
@@ -1077,7 +1090,14 @@ export function applyWorkspaceCommand(
         next.spaces.map((item) => item.id),
         created.id,
       );
-      addWindow(created);
+      const window = addWindow(created);
+      const pane = layoutRefs(window.layout)[0]!;
+      result = {
+        space: created.id,
+        window: window.number,
+        pane: pane.id,
+        session: pane.agent,
+      } satisfies CreationResult<"space.new">;
       break;
     }
     case "space.select": {
@@ -1119,6 +1139,7 @@ export function applyWorkspaceCommand(
     snapshot: changed ? { ...next, revision: current.revision + 1 } : current,
     actions,
     changed,
+    ...(result === undefined ? {} : { result }),
   };
 }
 

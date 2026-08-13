@@ -177,6 +177,17 @@ test("a command batch runs in order and carries its workspace revision forward",
   expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("named-remotely");
 });
 
+test("workspace creation returns created ids with its snapshot", async () => {
+  const { daemon, env } = await started("control-creation-result");
+  const { outputs } = await ctl(daemon.id, env, (control) =>
+    control.Batch({ values: [command("pane.split", { axis: "row" })], context }),
+  );
+  const output = outputs[0]!;
+  const snapshot = JSON.parse(output.workspace!);
+  const panes = snapshot.spaces[0].windows[0].layout.root.children;
+  expect(output.result).toEqual({ session: panes[1].agent, pane: panes[1].id });
+});
+
 test("an empty command batch is rejected", async () => {
   const { daemon, env } = await started("control-empty-batch");
   const error = await ctl(daemon.id, env, (control) => Effect.flip(control.Batch({ values: [] })));
@@ -284,7 +295,11 @@ test("agent.prompt --wait returns the anchored turn completion", async () => {
   const entry = new URL("./cli.ts", import.meta.url).pathname;
   const child = Bun.spawn(
     [process.execPath, entry, "agent.prompt", target, "inspect", "--wait", "--timeout=1000"],
-    { env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id }, stdout: "pipe", stderr: "pipe" },
+    {
+      env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   );
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
@@ -309,8 +324,20 @@ test("agent.prompt --wait fails fast with the named stall error", async () => {
   const entry = new URL("./cli.ts", import.meta.url).pathname;
   const startedAt = Date.now();
   const child = Bun.spawn(
-    [process.execPath, entry, "agent.prompt", "stall-target", "inspect", "--wait", "--timeout=10000"],
-    { env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id }, stdout: "pipe", stderr: "pipe" },
+    [
+      process.execPath,
+      entry,
+      "agent.prompt",
+      "stall-target",
+      "inspect",
+      "--wait",
+      "--timeout=10000",
+    ],
+    {
+      env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   );
   const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   expect(exitCode).toBe(1);

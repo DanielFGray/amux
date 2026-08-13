@@ -337,8 +337,8 @@ testEffect("executes a non-destructive command and publishes events", () => {
       initial.workspace.revision,
       context,
     );
-    expect(result.revision).toBe(1);
-    expect(result.spaces[0]!.name).toBe("renamed");
+    expect(result.snapshot.revision).toBe(1);
+    expect(result.snapshot.spaces[0]!.name).toBe("renamed");
   }).pipe(Effect.provide(layer));
 });
 
@@ -372,9 +372,10 @@ testEffect("activates prepared sessions after successful commit", () => {
       initial.workspace.revision,
       context,
     );
-    expect(result.revision).toBe(1);
-    const panes = layoutPanes(result.spaces[0]!.windows[0]!.layout.root);
+    expect(result.snapshot.revision).toBe(1);
+    const panes = layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root);
     expect(panes).toHaveLength(2);
+    expect(result.result).toEqual({ session: panes[1]!.agent, pane: panes[1]!.id });
 
     const sessions = yield* Ref.get(sessionRef);
     expect(sessions.prepared.length).toBe(1);

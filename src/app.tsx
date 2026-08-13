@@ -44,6 +44,7 @@ import {
   type Command,
   type CommandHandlers,
   type CommandTag,
+  type CommandResult,
 } from "./commands.ts";
 import { CONFIG_PATH, saveConfig, type Config } from "./config.ts";
 import {
@@ -460,10 +461,10 @@ function buildApp(
       .map((agent) => agent.id),
   });
 
-  const runPanelCommand = (
-    value: Command,
+  const runPanelCommand = <T extends CommandTag>(
+    value: Extract<Command, { _tag: T }>,
     input?: string,
-  ): Effect.Effect<WorkspaceSnapshot, CommandError> =>
+  ): Effect.Effect<CommandResult<T>, CommandError> =>
     session
       .runWorkspace(value, {
         ...workspaceContext(),
@@ -471,21 +472,22 @@ function buildApp(
       })
       .pipe(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-        Effect.tap((model) => Effect.promise(() => project(model))),
-        Effect.tap((model) => pluginRuntime.resumePending?.(model) ?? Effect.void),
+        Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
+        Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
+        Effect.map(({ result }) => result as CommandResult<T>),
       );
 
-  const runCommand = (
-    value: Command,
+  const runCommand = <T extends CommandTag>(
+    value: Extract<Command, { _tag: T }>,
     input?: string,
-  ): Effect.Effect<WorkspaceSnapshot, CommandError> =>
+  ): Effect.Effect<CommandResult<T>, CommandError> =>
     runCommandByTarget(
       value,
       () => runPanelCommand(value, input),
       () =>
         session.run(value).pipe(
-          Effect.flatMap(() => Effect.sync(() => session.workspace())),
           Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+          Effect.map((result) => result as CommandResult<T>),
         ),
     );
 
@@ -2344,7 +2346,7 @@ function buildApp(
   const panel = createPanelContext({
     snapshot,
     tick: app.tick,
-    run: runCommand,
+    run: (command, input) => runCommand(command, input).pipe(Effect.as(session.workspace())),
     options,
     setOption: changeOption,
     saveOptions,

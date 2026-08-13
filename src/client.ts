@@ -5,7 +5,7 @@ import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SessionBackendFactory } from "./backend.ts";
 import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
-import type { Command } from "./commands.ts";
+import type { AnyCommandResult, Command } from "./commands.ts";
 import {
   parseWorkspaceJson,
   workspaceSessions,
@@ -46,7 +46,11 @@ export interface SessionClientShape extends DaemonSession {
   readonly runWorkspace: (
     command: Command,
     context: WorkspaceCommandContext,
-  ) => Effect.Effect<WorkspaceSnapshot, ControlError | SessionClientError, never>;
+  ) => Effect.Effect<
+    { readonly snapshot: WorkspaceSnapshot; readonly result?: AnyCommandResult },
+    ControlError | SessionClientError,
+    never
+  >;
   /** Raw control-protocol Run for commands that do not produce a workspace snapshot. */
   readonly run: (command: Command) => Effect.Effect<unknown, ControlError>;
   readonly resumeAgent: (input: {
@@ -177,7 +181,12 @@ const make = (
                 if (next === undefined) throw new Error("workspace command returned no workspace");
                 const parsed = await Runtime.runPromise(runtime)(parseWorkspaceJson(next));
                 accept(parsed);
-                return structuredClone(workspace);
+                return {
+                  snapshot: structuredClone(workspace),
+                  ...(outputs[0]?.result === undefined
+                    ? {}
+                    : { result: outputs[0].result as AnyCommandResult }),
+                };
               };
               const queued = commandQueue.then(request);
               commandQueue = queued.then(

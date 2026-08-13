@@ -20,7 +20,7 @@ import {
   type WorkspaceSnapshot,
   type WorkspaceSpace,
 } from "../workspace.ts";
-import { COMMAND_META, type Command } from "../commands.ts";
+import { COMMAND_META, type AnyCommandResult, type Command } from "../commands.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { PermissionAnswer } from "./AttachProtocol.ts";
@@ -90,11 +90,16 @@ export interface WorkspaceTransactionService {
     value: Command,
     expectedRevision: number,
     context: WorkspaceCommandContext,
-  ) => Effect.Effect<WorkspaceSnapshot, WorkspaceTransactionError>;
+  ) => Effect.Effect<WorkspaceTransactionResult, WorkspaceTransactionError>;
   readonly onSessionExit: (
     sid: string,
     code: number | null,
   ) => Effect.Effect<void, WorkspaceTransactionError>;
+}
+
+export interface WorkspaceTransactionResult {
+  readonly snapshot: WorkspaceSnapshot;
+  readonly result?: AnyCommandResult;
 }
 
 export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()(
@@ -144,7 +149,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
         value: Command,
         expectedRevision: number,
         context: WorkspaceCommandContext,
-      ): Effect.Effect<WorkspaceSnapshot, WorkspaceTransactionError> =>
+      ): Effect.Effect<WorkspaceTransactionResult, WorkspaceTransactionError> =>
         model
           .enqueue(
             Effect.gen(function* () {
@@ -225,7 +230,10 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                     if (a._tag === "decide") yield* sessionOps.decide(a.agent, a.answer);
                   }
                   const final = yield* model.get;
-                  return structuredClone(final.workspace);
+                  return {
+                    snapshot: structuredClone(final.workspace),
+                    ...(mutation.result === undefined ? {} : { result: mutation.result }),
+                  };
                 }),
               );
 

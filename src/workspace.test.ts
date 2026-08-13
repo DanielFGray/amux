@@ -874,6 +874,8 @@ test("agent.new creates an agent session and queues its initial prompt", () => {
     },
   );
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
+  const pane = mutation.snapshot.spaces[0]!.windows[0]!.layout.focus!;
+  expect(mutation.result).toEqual({ session: agent.id, pane });
   expect(agent.kind).toBe("component");
   expect(agent.cmd).toBeUndefined();
   expect(agent.agent).toBe("test");

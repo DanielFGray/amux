@@ -33,6 +33,7 @@ import {
   makeWorktreeOps,
   makePersistence,
   makeEvents,
+  type WorkspaceTransactionResult,
 } from "./effect/WorkspaceTransaction.ts";
 import type { PlatformError } from "@effect/platform/Error";
 import type { AttachServerError } from "./effect/AttachServer.ts";
@@ -110,7 +111,7 @@ export interface SessionDaemonService {
     value: Command,
     expectedRevision: number,
     context: WorkspaceCommandContext,
-  ) => Effect.Effect<WorkspaceSnapshot, DaemonError>;
+  ) => Effect.Effect<WorkspaceTransactionResult, DaemonError>;
   readonly spawnSession: (spec: SessionSpec) => Effect.Effect<ManagedSession, DaemonError>;
   killSession: (id: string) => Effect.Effect<void, DaemonError>;
   readonly liveSessions: () => Effect.Effect<readonly string[], never>;
@@ -629,7 +630,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     value: Command,
     expectedRevision: number,
     context: WorkspaceCommandContext,
-  ): Effect.Effect<WorkspaceSnapshot, DaemonError> => {
+  ): Effect.Effect<WorkspaceTransactionResult, DaemonError> => {
     return transaction
       .run(value, expectedRevision, {
         ...context,
@@ -661,12 +662,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       if (meta.target === "workspace") {
         const cur = yield* model.get;
         const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
-        const ws = yield* runWorkspaceCommand(
+        const output = yield* runWorkspaceCommand(
           value,
           expectedRevision ?? cur.workspace.revision,
           ctx,
         );
-        return { workspace: JSON.stringify(ws) };
+        return {
+          workspace: JSON.stringify(output.snapshot),
+          ...(output.result === undefined ? {} : { result: output.result }),
+        };
       }
       if (meta.target === "buffers") {
         const h = requireHost();
@@ -766,7 +770,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           for (const value of values) {
             const output = yield* runRemote(value, revision, context);
             outputs.push(output);
-            if (output.workspace !== undefined) {
+            if ("workspace" in output && output.workspace !== undefined) {
               revision = JSON.parse(output.workspace).revision;
             }
           }

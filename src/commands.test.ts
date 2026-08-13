@@ -299,4 +299,8 @@ test("command result types match the declared schema", () => {
   // void-schema decodes to undefined
   const paneZoomDef = COMMAND_DEFS.find((d) => d.tag === "pane.zoom")!;
   expect(Schema.decodeUnknownSync(paneZoomDef.result)(undefined)).toBe(undefined);
+  const agentNewDef = COMMAND_DEFS.find((d) => d.tag === "agent.new")!;
+  expect(
+    Schema.decodeUnknownSync(agentNewDef.result)({ session: "agent-2", pane: "pane-2" }),
+  ).toEqual({ session: "agent-2", pane: "pane-2" });
 });

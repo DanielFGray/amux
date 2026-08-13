@@ -2,6 +2,7 @@ import { Cause, Effect, Exit, JSONSchema, Schema as S } from "effect";
 import { LAYOUT_PRESETS } from "./layout.ts";
 import { PermissionDecisionSchema } from "./permission.ts";
 import { ReportedAgentStateSchema } from "./agent-state.ts";
+import { creationResultSchema } from "./creation-result.ts";
 
 /**
  * The commands, as values.
@@ -119,6 +120,7 @@ const PaneSplit = define(
     target: "workspace",
     exposure: "agent",
   },
+  creationResultSchema("pane.split"),
 );
 const PaneNext = define(
   "pane.next",
@@ -362,6 +364,7 @@ const WindowNew = define(
     target: "workspace",
     exposure: "agent",
   },
+  creationResultSchema("window.new"),
 );
 const WindowNext = define(
   "window.next",
@@ -532,6 +535,7 @@ const AgentNew = define(
     target: "workspace",
     exposure: "human",
   },
+  creationResultSchema("agent.new"),
 );
 const SessionRestart = define("session.restart", SessionTarget, {
   desc: "restart an exited session",
@@ -575,6 +579,7 @@ const SpaceNew = define(
     target: "workspace",
     exposure: "agent",
   },
+  creationResultSchema("space.new"),
 );
 const SpaceSelect = define(
   "space.select",

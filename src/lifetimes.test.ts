@@ -301,7 +301,7 @@ function lifecycleSession(
     models: Stream.never,
     events: Stream.never,
     backend: () => spawn,
-    runWorkspace: () => Effect.succeed(structuredClone(workspace)),
+    runWorkspace: () => Effect.succeed({ snapshot: structuredClone(workspace) }),
     resumeAgent: () => Effect.void,
     run: () => Effect.void,
     close() {},
