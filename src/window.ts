@@ -357,6 +357,15 @@ export class Window {
     if (!scope) return null;
     if (this.#slotOf(this.exportLayout(), pane) === -1) return null;
     if (!this.detachPane(pane)) return null;
+    // Session ownership moves as one unit. Any other viewport onto this session
+    // belongs to the source window only while the session does, so close it
+    // before the callback and lifetime are handed to the destination. It runs
+    // after the detach, not before: closing a sibling re-projects the layout,
+    // and a detach that then failed would leave those views destroyed behind a
+    // null return that tells the caller nothing happened.
+    for (const sibling of [...this.#panes]) {
+      if (sibling !== pane && sibling.session === agent) this.close(sibling);
+    }
     this.#sessions.splice(this.#sessions.indexOf(agent), 1);
     this.#scopes.delete(agent);
     this.onChange?.();

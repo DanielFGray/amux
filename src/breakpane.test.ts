@@ -73,6 +73,34 @@ test("break moves the pane and its running agent into a new window, unchanged", 
   }
 });
 
+test("breaking one of two views transfers sole ownership and output still invalidates", async () => {
+  const s = await setup();
+  try {
+    const agent = s.win.panes[0]!.session;
+    const moved = s.win.split("row", agent)!;
+    const oldView = s.win.panes.find((pane) => pane !== moved && pane.session === agent)!;
+    let invalidations = 0;
+    const invalidate = moved.invalidate.bind(moved);
+    moved.invalidate = () => {
+      invalidations++;
+      invalidate();
+    };
+
+    const destination = (await runAsync(s.space.breakPane(moved)))!;
+    expect(s.win.panes).not.toContain(oldView);
+    expect(s.win.sessions).not.toContain(agent);
+    expect(destination.panes).toEqual([moved]);
+    expect(destination.sessions).toEqual([agent]);
+
+    invalidations = 0;
+    agent.write("echo ownership-transfer-output\n");
+    await waitFor(() => invalidations > 0, "moved pane output invalidation");
+    expect(screenTail(agent)).toContain("ownership-transfer-output");
+  } finally {
+    await s.dispose();
+  }
+});
+
 test("break collapses the source layout: dividers and empty boxes go", async () => {
   const s = await setup();
   try {

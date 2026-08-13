@@ -777,16 +777,13 @@ export function applyWorkspaceCommand(
       const slot = layoutRefs(found.window.layout).find((item) => item.id === pane);
       const agent = found.window.agents.find((item) => item.id === slot?.agent);
       if (!slot || !agent) break;
-      closePane(found.window, pane);
-      const stillReferenced = layoutRefs(found.window.layout).some((p) => p.agent === agent.id);
-      if (!stillReferenced)
-        found.window.agents = found.window.agents.filter((item) => item.id !== agent.id);
+      takeSession(found.window, agent.id);
       let number: number;
       [found.space.state, number] = claimWindowNumber(found.space.state);
       const created: WorkspaceWindow = {
         number,
         name: null,
-        agents: [stillReferenced ? structuredClone(agent) : agent],
+        agents: [agent],
         // Tiled in its new window whichever plane it was in here: a break makes
         // the pane the whole window, and a float filling a window is a tile.
         layout: makeLayout({
@@ -822,14 +819,9 @@ export function applyWorkspaceCommand(
       const agent = source.window.agents.find((item) => item.id === slot.agent);
       if (!agent) break;
 
-      closePane(source.window, slot.id);
-      const stillReferenced = layoutRefs(source.window.layout).some(
-        (pane) => pane.agent === agent.id,
-      );
-      if (!stillReferenced)
-        source.window.agents = source.window.agents.filter((item) => item.id !== agent.id);
+      takeSession(source.window, agent.id);
       destination.window.layout = appendPane(destination.window.layout, slot);
-      destination.window.agents.push(stillReferenced ? structuredClone(agent) : agent);
+      destination.window.agents.push(agent);
       destination.window.state.focus = slot.id;
       destination.window.state.last = null;
       destination.window.state.zoom = null;
@@ -848,14 +840,9 @@ export function applyWorkspaceCommand(
       const agent = source.window.agents.find((item) => item.id === slot?.agent);
       if (!slot || !agent) break;
 
-      closePane(source.window, slot.id);
-      const stillReferenced = layoutRefs(source.window.layout).some(
-        (pane) => pane.agent === agent.id,
-      );
-      if (!stillReferenced)
-        source.window.agents = source.window.agents.filter((item) => item.id !== agent.id);
+      takeSession(source.window, agent.id);
       target.layout = appendPane(target.layout, slot);
-      target.agents.push(stillReferenced ? structuredClone(agent) : agent);
+      target.agents.push(agent);
       target.state.focus = slot.id;
       target.state.last = null;
       target.state.zoom = null;
@@ -1231,6 +1218,20 @@ function closePane(window: WorkspaceWindow, id: string): void {
   window.state.focus = window.layout.focus ?? null;
   window.state.zoom = null;
   window.state.preset = null;
+}
+
+/** Remove a session and every source view of it before ownership moves.
+ *
+ * A session belongs to one window. Moving only one of several panes would leave
+ * the other panes displaying a session their window no longer owns. Closing
+ * those views follows the same rule as process exit: the session goes away, so
+ * its old viewports go away and the remaining layout takes their space.
+ */
+function takeSession(window: WorkspaceWindow, agent: string): void {
+  for (const pane of layoutRefs(window.layout)) {
+    if (pane.agent === agent) closePane(window, pane.id);
+  }
+  window.agents = window.agents.filter((item) => item.id !== agent);
 }
 
 /** Keep the model honest when a pane leaves its window.

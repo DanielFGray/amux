@@ -364,19 +364,14 @@ test("pane.break moves the focused pane into a new window", () => {
   expect(result.snapshot.revision).toBe(adopted.revision + 1);
 });
 
-test("pane.break when two panes show the same agent clones the agent to both windows", () => {
+test("pane.break moves a shared session once and closes its other source views", () => {
   const adopted = run(workspaceFromSession(dupAgentSession()));
   const result = applyWorkspaceCommand(adopted, command("pane.break"), context);
   expect(result.changed).toBe(true);
   const space = result.snapshot.spaces[0]!;
-  expect(space.windows).toHaveLength(2);
+  expect(space.windows).toHaveLength(1);
 
-  const origin = space.windows[0]!;
-  const originPanes = JSON.stringify(origin.layout.root);
-  expect(originPanes).toContain("pane-b");
-  expect(originPanes).not.toContain("pane-a");
-
-  const broken = space.windows[1]!;
+  const broken = space.windows[0]!;
   expect(broken.layout.root).toMatchObject({
     type: "pane",
     id: "pane-a",
@@ -384,11 +379,27 @@ test("pane.break when two panes show the same agent clones the agent to both win
   });
   expect(broken.state.focus).toBe("pane-a");
 
-  expect(origin.agents[0]!.id).toBe("agent-a");
-  expect(broken.agents[0]!.id).toBe("agent-a");
-  expect(origin.agents[0]).not.toBe(broken.agents[0]);
+  expect(layoutPanes(broken.layout.root).map((pane) => pane.id)).toEqual(["pane-a"]);
+  expect(broken.agents.map((agent) => agent.id)).toEqual(["agent-a"]);
 
   expect(result.snapshot.revision).toBe(adopted.revision + 1);
+});
+
+test("pane.join moves a shared session once and closes its other source views", () => {
+  const adopted = run(workspaceFromSession(dupAgentSession()));
+  const withDestination = applyWorkspaceCommand(adopted, command("window.new"), context).snapshot;
+  const result = applyWorkspaceCommand(
+    withDestination,
+    command("pane.join", { source: 1 }),
+    context,
+  );
+
+  const space = result.snapshot.spaces[0]!;
+  expect(space.windows).toHaveLength(1);
+  const destination = space.windows[0]!;
+  expect(layoutPanes(destination.layout.root).map((pane) => pane.id)).toContain("pane-a");
+  expect(layoutPanes(destination.layout.root).map((pane) => pane.id)).not.toContain("pane-b");
+  expect(destination.agents.filter((agent) => agent.id === "agent-a")).toHaveLength(1);
 });
 
 test("pane.join moves a focused pane from the named window into the active window", () => {
