@@ -4,6 +4,7 @@ import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
 import { encodeLayout, decodeLayout, layoutAgents, makeLayout, type LayoutNode } from "./layout.ts";
 import type { SessionHandle } from "./session-handle.ts";
+import { waitFor } from "./test-wait.ts";
 import { Effect } from "effect";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -74,7 +75,10 @@ test("panes are reused, keeping their terminal and its output", async () => {
   const second = run(window.splitSpawn("row"))!;
   const agent = second.session;
   agent.write("echo applylayout-marker-7\n");
-  await Bun.sleep(300);
+  await waitFor(
+    () => screenTail(agent).includes("applylayout-marker-7"),
+    "the pane to echo its marker",
+  );
   expect(screenTail(agent)).toContain("applylayout-marker-7");
 
   window.applyLayout(

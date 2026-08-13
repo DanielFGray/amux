@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigProvider, Effect } from "effect";
+import { waitFor } from "./test-wait.ts";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
@@ -90,15 +91,14 @@ test("git kills a process that exceeds its timeout", async () => {
     effectGit(["hash-object", "--stdin", "--path", token], tmpdir(), 25),
   ).rejects.toThrow("git hash-object timed out after 25ms");
 
-  const deadline = Date.now() + 2_000;
-  let matches: string[] = [];
-  do {
-    const result = Bun.spawnSync(["pgrep", "-f", token], { stdout: "pipe", stderr: "ignore" });
-    matches = result.stdout.toString().trim().split("\n").filter(Boolean);
-    if (matches.length === 0) break;
-    await Bun.sleep(25);
-  } while (Date.now() < deadline);
-  expect(matches).toEqual([]);
+  const survivors = () =>
+    Bun.spawnSync(["pgrep", "-f", token], { stdout: "pipe", stderr: "ignore" })
+      .stdout.toString()
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+  await waitFor(() => survivors().length === 0, "the worktree's processes to exit", 2_000);
+  expect(survivors()).toEqual([]);
   expect(Date.now() - started).toBeLessThan(2_000);
 });
 

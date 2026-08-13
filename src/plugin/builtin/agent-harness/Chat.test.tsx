@@ -6,6 +6,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Chat } from "./Chat.tsx";
 import type { AttachFrame } from "../../../effect/AttachProtocol.ts";
+import { waitFor } from "../../../test-wait.ts";
 
 /**
  * The chat pane's content: a transcript with a composer under it.
@@ -62,22 +63,22 @@ test("Ctrl-C interrupts the active agent turn", async () => {
   t.renderer.destroy();
 });
 
-/** Poll the rendered frame until it satisfies the condition, re-rendering each
- *  tick. Borrowed from opencode's data.test.tsx wait(): a sleep then a single
- *  render would miss frames that arrive between the two. */
-async function waitFrame(
-  t: Awaited<ReturnType<typeof chat>>["t"],
-  condition: (frame: string) => boolean,
-  label = "condition",
-) {
-  const start = Date.now();
-  while (Date.now() - start < 2000) {
-    await t.renderOnce();
-    if (condition(t.captureCharFrame())) return;
-    await Bun.sleep(10);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
+type Renderer = Awaited<ReturnType<typeof chat>>["t"];
+
+/** Re-render until the condition holds. A sleep then a single render would miss
+ *  frames that arrive between the two, and guesses at how long the UI takes. */
+const waitUi = (t: Renderer, condition: () => boolean, what: string) =>
+  waitFor(
+    async () => {
+      await t.renderOnce();
+      return condition();
+    },
+    what,
+    2_000,
+  );
+
+const waitFrame = (t: Renderer, condition: (frame: string) => boolean, label = "condition") =>
+  waitUi(t, () => condition(t.captureCharFrame()), label);
 
 /** A chat pane sitting on one unanswered permission request. */
 async function blocked() {
@@ -140,8 +141,7 @@ test("deny with a reason returns the composer, and enter sends the refusal", asy
   await t.renderOnce();
   await t.mockInput.typeText("not that repo");
   t.mockInput.pressEnter();
-  await Bun.sleep(10);
-  await t.renderOnce();
+  await waitUi(t, () => answered.length > 0, "the refusal to be answered");
   expect(answered).toEqual([{ request: "req-1", decision: "reject", feedback: "not that repo" }]);
   expect(sent).toEqual([]);
   t.renderer.destroy();
@@ -186,8 +186,7 @@ test("the composer sends what was typed and clears itself", async () => {
   expect(t.captureCharFrame()).toContain("find the bug");
 
   t.mockInput.pressEnter();
-  await Bun.sleep(10);
-  await t.renderOnce();
+  await waitUi(t, () => sent.length > 0, "the message to be sent");
 
   expect(sent).toEqual(["find the bug"]);
   // Cleared, or the next enter sends the same message a second time.
@@ -213,9 +212,7 @@ test("the transcript rewraps when the pane it lives in is resized", async () => 
     true,
     () => Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: line }) as any,
   );
-  await Bun.sleep(10);
-  await t.renderOnce();
-  expect(t.captureCharFrame()).toContain("the quick brown fox");
+  await waitFrame(t, (frame) => frame.includes("the quick brown fox"), "the delta to render");
 
   // A split narrows the pane. The width reaches the transcript through Chat, so
   // a break that only worked at the mounted size would show up here.
@@ -237,8 +234,7 @@ test("working status is shown as a spinner below the editor", async () => {
         state: "working",
       }) as any,
   );
-  await Bun.sleep(10);
-  await t.renderOnce();
+  await waitFrame(t, (frame) => frame.includes("working"), "the status to render");
 
   const output = t.captureCharFrame();
   expect(output).toContain("working");
@@ -258,8 +254,7 @@ test("the composer only takes keys while its own pane is focused", async () => {
   await t.renderOnce();
   await t.mockInput.typeText("mine");
   t.mockInput.pressEnter();
-  await Bun.sleep(10);
-  await t.renderOnce();
+  await waitUi(t, () => sent.length > 0, "the focused composer to send");
 
   expect(sent).toEqual(["mine"]);
   t.renderer.destroy();
@@ -303,7 +298,7 @@ test("a submitted message is answered by the agent in the transcript", async () 
   await t.renderOnce();
   await t.mockInput.typeText("fix the bug");
   t.mockInput.pressEnter();
-  await Bun.sleep(10);
+  await waitUi(t, () => sent.length > 0, "the message to be sent");
   expect(sent).toEqual(["fix the bug"]);
 
   push({

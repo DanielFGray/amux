@@ -819,7 +819,6 @@ test("an unsubscribed session disconnects rather than silently dropping frames",
     ).join("") + encodeAttachFrame({ _tag: "exit", session: "agent-1", code: 0 }),
   );
 
-  await Bun.sleep(100);
   await until(() => client.closed, "the overflowing client to disconnect");
   expect(client.closed).toBe(true);
   client.close();

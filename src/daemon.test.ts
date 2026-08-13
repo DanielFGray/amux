@@ -17,6 +17,7 @@ import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { AttachClient } from "./attach.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
+import { waitFor } from "./test-wait.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -129,27 +130,28 @@ const saveEffect = (save: (state: any, signal: AbortSignal) => Promise<void>) =>
   });
 
 async function waitForPid(path: string): Promise<number> {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    const pid = Number(await readFile(path, "utf8").catch(() => ""));
-    if (Number.isInteger(pid) && pid > 0) return pid;
-    await Bun.sleep(10);
-  }
-  throw new Error(`timed out waiting for pid in ${path}`);
+  let pid = 0;
+  await waitFor(
+    async () => {
+      pid = Number(await readFile(path, "utf8").catch(() => ""));
+      return Number.isInteger(pid) && pid > 0;
+    },
+    `a pid in ${path}`,
+    2_000,
+  );
+  return pid;
 }
 
-async function expectProcessGone(pid: number): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    try {
-      await readFile(`/proc/${pid}/stat`);
-    } catch {
-      return;
-    }
-    await Bun.sleep(10);
-  }
-  await expect(readFile(`/proc/${pid}/stat`)).rejects.toThrow();
-}
+const expectProcessGone = (pid: number) =>
+  waitFor(
+    () =>
+      readFile(`/proc/${pid}/stat`).then(
+        () => false,
+        () => true,
+      ),
+    `process ${pid} to exit`,
+    2_000,
+  );
 
 test("concurrent opens reject the second owner and release on stop", async () => {
   const e = await env();
@@ -319,7 +321,10 @@ test("last pane removal closes the daemon so the next attach starts fresh", asyn
   const e = await env();
   const d = await open("empty", e);
   await rwc(d)(command("space.close", { space: ws(d).spaces[0]!.id }), ws(d).revision, context);
-  await Bun.sleep(100);
+  await waitFor(
+    async () => (await run(SessionStore.readLease("empty"), e)) === null,
+    "the daemon to release its lease",
+  );
   expect(await run(SessionStore.readLease("empty"), e)).toBeNull();
   const next = await open("empty", e);
   const nextWorkspace = await Effect.runPromise(next.getWorkspace);
@@ -754,12 +759,15 @@ test("the first heartbeat waits one interval after the startup lease write", asy
     initial!.heartbeatAt,
   );
 
-  const firstBeatBy = Date.now() + 1_000;
   let heartbeatAt = initial!.heartbeatAt;
-  while (heartbeatAt === initial!.heartbeatAt && Date.now() < firstBeatBy) {
-    await Bun.sleep(10);
-    heartbeatAt = (await run(SessionStore.readLease("heartbeat-first-fire"), e))!.heartbeatAt;
-  }
+  await waitFor(
+    async () => {
+      heartbeatAt = (await run(SessionStore.readLease("heartbeat-first-fire"), e))!.heartbeatAt;
+      return heartbeatAt !== initial!.heartbeatAt;
+    },
+    "the first heartbeat",
+    1_000,
+  );
   expect(heartbeatAt).toBeGreaterThan(initial!.heartbeatAt);
   await C(daemon);
 });
@@ -797,12 +805,15 @@ test("a heartbeat queued behind attachment persistence publishes the committed a
   await Bun.sleep(1_100);
   releaseAttach();
   const client = await connecting;
-  const heartbeatBy = Date.now() + 1_000;
   let lease = await run(SessionStore.readLease("heartbeat-attach-race"), e);
-  while (lease?.heartbeatAt === initial?.heartbeatAt && Date.now() < heartbeatBy) {
-    await Bun.sleep(10);
-    lease = await run(SessionStore.readLease("heartbeat-attach-race"), e);
-  }
+  await waitFor(
+    async () => {
+      lease = await run(SessionStore.readLease("heartbeat-attach-race"), e);
+      return lease?.heartbeatAt !== initial?.heartbeatAt;
+    },
+    "the heartbeat behind the attachment",
+    1_000,
+  );
   expect(lease?.attachments).toEqual([expect.objectContaining({ client: "lease-race" })]);
 
   blockAttach = false;
@@ -818,17 +829,19 @@ test("heartbeat failure is visible and the heartbeat stops with the daemon scope
   await rm(p.lease, { force: true });
   await mkdir(p.lease);
 
-  const failedBy = Date.now() + 3_500;
   let report = await status(daemon, e);
-  while (report.degraded === undefined && Date.now() < failedBy) {
-    await Bun.sleep(10);
-    report = await status(daemon, e);
-  }
+  await waitFor(
+    async () => {
+      report = await status(daemon, e);
+      return report.degraded !== undefined;
+    },
+    "the heartbeat failure to be reported",
+    3_500,
+  );
   expect(report.degraded).toContain("lease heartbeat failed");
 
   await rm(p.lease, { recursive: true, force: true });
-  const recoveredBy = Date.now() + 3_500;
-  while (!(await healthy(daemon, e)) && Date.now() < recoveredBy) await Bun.sleep(10);
+  await waitFor(() => healthy(daemon, e), "the daemon to recover", 3_500);
   expect(await healthy(daemon, e)).toBe(true);
 
   await C(daemon);
@@ -885,13 +898,11 @@ test("a transient natural-exit write failure retries before making the exit visi
     ...context,
     shell: ["sh", "-c", "exit 7"],
   });
-  const deadline = Date.now() + 2_000;
-  while (
-    !ws(daemon).spaces[0]!.windows[0]!.agents.some((agent) => agent.exited) &&
-    Date.now() < deadline
-  ) {
-    await Bun.sleep(10);
-  }
+  await waitFor(
+    () => ws(daemon).spaces[0]!.windows[0]!.agents.some((agent) => agent.exited),
+    "the spawned shell to exit",
+    2_000,
+  );
   expect(failed).toBe(true);
   expect(
     ws(daemon).spaces[0]!.windows[0]!.agents.some((agent) => agent.exited && agent.exitCode === 7),
@@ -918,12 +929,15 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
     ...context,
     shell: ["sh", "-c", "exit 0"],
   });
-  const deadline = Date.now() + 2_000;
   let report = await status(daemon, e);
-  while (!report.degraded?.includes("disk offline") && Date.now() < deadline) {
-    await Bun.sleep(10);
-    report = await status(daemon, e);
-  }
+  await waitFor(
+    async () => {
+      report = await status(daemon, e);
+      return report.degraded?.includes("disk offline") === true;
+    },
+    "the disk failure to be reported",
+    2_000,
+  );
   expect(report.degraded).toContain("disk offline");
   const p = await paths("exit-unhealthy", e);
   let attached = false;
@@ -939,8 +953,7 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
   expect(await healthy(daemon, e)).toBe(false);
   unavailable = false;
   const client = await connecting;
-  const recovered = Date.now() + 2_000;
-  while (!(await healthy(daemon, e)) && Date.now() < recovered) await Bun.sleep(10);
+  await waitFor(() => healthy(daemon, e), "the daemon to recover", 2_000);
   expect(await healthy(daemon, e)).toBe(true);
   client.close();
   await S(daemon);
@@ -1133,8 +1146,7 @@ test("component restore is attach-gated and ResumeAgent does not create a second
       argv,
     }),
   );
-  const spawnedBy = Date.now() + 2_000;
-  while (!(await Bun.file(marker).exists()) && Date.now() < spawnedBy) await Bun.sleep(10);
+  await waitFor(() => Bun.file(marker).exists(), "the component provider to spawn", 2_000);
   expect((await readFile(marker, "utf8")).trim().split("\n")).toEqual(["spawned"]);
 
   await ctl("attach-gated", e, (control) =>
@@ -1245,13 +1257,15 @@ test("daemon shutdown is bounded when session children trap termination signals"
       rows: 24,
     }),
   );
-  const readyUntil = Date.now() + 2_000;
-  while (Date.now() < readyUntil) {
-    try {
-      if ((await readFile(marker, "utf8")).trim().split("\n").length >= 2) break;
-    } catch {}
-    await Bun.sleep(10);
-  }
+  await waitFor(
+    () =>
+      readFile(marker, "utf8").then(
+        (text) => text.trim().split("\n").length >= 2,
+        () => false,
+      ),
+    "the shell and its child to report their pids",
+    2_000,
+  );
   const pids = (await readFile(marker, "utf8")).trim().split("\n").map(Number);
   expect(pids).toHaveLength(2);
 
@@ -1263,16 +1277,5 @@ test("daemon shutdown is bounded when session children trap termination signals"
     }),
   ]);
   expect(Date.now() - started).toBeLessThan(2_000);
-  for (const pid of pids) {
-    const goneUntil = Date.now() + 2_000;
-    while (Date.now() < goneUntil) {
-      try {
-        await readFile(`/proc/${pid}/stat`);
-        await Bun.sleep(10);
-      } catch {
-        break;
-      }
-    }
-    await expect(readFile(`/proc/${pid}/stat`)).rejects.toThrow();
-  }
+  for (const pid of pids) await expectProcessGone(pid);
 });

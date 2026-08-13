@@ -7,6 +7,7 @@ import { AttachHub } from "./AttachHub.ts";
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
 import { createAttachWriter, startAttachServer } from "./AttachServer.ts";
 import { createSocketWriter } from "../attach-write.ts";
+import { waitFor } from "../test-wait.ts";
 
 const concatenate = (parts: Uint8Array[]) => {
   const result = new Uint8Array(parts.reduce((size, part) => size + part.length, 0));
@@ -184,7 +185,7 @@ test("one blocked session handler does not stall another session on the same soc
         }),
       );
       socket.write(encodeAttachFrame({ _tag: "ping", nonce: "fast" }));
-      yield* waitUntil(() => messages.join("").includes("fast"));
+      yield* waitUntil(() => messages.join("").includes("fast"), "the fast pong");
       socket.end();
       return { messages, server };
     }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
@@ -215,14 +216,8 @@ const connect = (path: string, onData: (text: string) => void, onClose?: () => v
     },
   });
 
-const waitUntil = (predicate: () => boolean, timeout = 500) =>
-  Effect.promise(async () => {
-    const deadline = Date.now() + timeout;
-    while (!predicate()) {
-      if (Date.now() >= deadline) throw new Error("condition was not met");
-      await Bun.sleep(5);
-    }
-  });
+const waitUntil = (predicate: () => boolean, what: string, timeout = 500) =>
+  Effect.promise(() => waitFor(predicate, what, timeout));
 
 test("native attach server routes output and releases clients on close", async () => {
   const root = await mkdtemp(join(tmpdir(), "amux-attach-"));
@@ -377,10 +372,13 @@ test("inbound traffic interrupts the replaced idle deadline", async () => {
     Effect.gen(function* () {
       const server = yield* startAttachServer({ path });
       const socket = yield* Effect.promise(() => connect(path, () => {}));
-      yield* waitUntil(() => sleeps >= 1);
+      yield* waitUntil(() => sleeps >= 1, "the first heartbeat sleep");
       const beforePing = interrupted;
       socket.write(encodeAttachFrame({ _tag: "ping", nonce: "replace" }));
-      yield* waitUntil(() => interrupted > beforePing && sleeps >= 2);
+      yield* waitUntil(
+        () => interrupted > beforePing && sleeps >= 2,
+        "the ping to interrupt the sleep",
+      );
       return { interruptedBeforeClose: interrupted, server, socket };
     }).pipe(Effect.withClock(clock), Effect.provide(AttachHub.Default), Effect.scoped),
   );
@@ -432,9 +430,12 @@ test("client close interrupts a blocked frame callback before detach", async () 
           data: new Uint8Array([1]),
         }),
       );
-      yield* waitUntil(() => started === 1);
+      yield* waitUntil(() => started === 1, "the session to start");
       socket.end();
-      yield* waitUntil(() => finalized === 1 && detached === 1);
+      yield* waitUntil(
+        () => finalized === 1 && detached === 1,
+        "the session to finalize and detach",
+      );
       return { detached, finalized, postClose, server };
     }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
   );
@@ -502,11 +503,11 @@ test("server close delivers remote EOF and joins detach cleanup exactly once", a
       );
       yield* Effect.promise(() => Bun.sleep(20));
       socket.write(encodeAttachFrame({ _tag: "sync", session: "blocked" }));
-      yield* waitUntil(() => started === 1);
+      yield* waitUntil(() => started === 1, "the session to start");
       yield* Scope.close(serverScope, Exit.succeed(undefined));
-      yield* waitUntil(() => remoteClosed === 1);
+      yield* waitUntil(() => remoteClosed === 1, "the remote to close");
       socket.end();
-      yield* Effect.promise(() => Bun.sleep(50));
+      yield* waitUntil(() => finalized === 1, "the blocked session to finalize");
     }).pipe(Effect.provide(AttachHub.Default)),
   );
 
@@ -550,13 +551,16 @@ test("close interrupts asynchronous acceptance and permits reconnect", async () 
           }),
       });
       const first = yield* Effect.promise(() => connect(path, () => {}));
-      yield* waitUntil(() => attempts === 1);
+      yield* waitUntil(() => attempts === 1, "the first attach attempt");
       first.end();
-      yield* waitUntil(() => attachFinalized === 1 && detached === 1);
+      yield* waitUntil(
+        () => attachFinalized === 1 && detached === 1,
+        "the attach to finalize and detach",
+      );
       const second = yield* Effect.promise(() => connect(path, () => {}));
-      yield* waitUntil(() => attached === 1);
+      yield* waitUntil(() => attached === 1, "the reattach");
       second.end();
-      yield* waitUntil(() => detached === 2);
+      yield* waitUntil(() => detached === 2, "the second detach");
       return { attached, attachFinalized, detached, server };
     }).pipe(Effect.provide(AttachHub.Default), Effect.scoped),
   );

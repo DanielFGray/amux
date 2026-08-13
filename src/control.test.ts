@@ -18,6 +18,7 @@ import { controlCall, connectControl, type ControlClient } from "./control-clien
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { SessionStore, sessionPaths } from "./session.ts";
+import { waitFor } from "./test-wait.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
 
 const dirs: string[] = [];
@@ -226,10 +227,13 @@ test("a native agent can capture a live session through the command surface", as
       rows: 24,
     }),
   );
-  await Bun.sleep(50);
-  const { outputs } = await ctl(daemon.id, env, (c) =>
-    c.Batch({ values: [command("pane.capture", { session: id })] }),
-  );
+  const capture = () =>
+    ctl(daemon.id, env, (c) => c.Batch({ values: [command("pane.capture", { session: id })] }));
+  let outputs = (await capture()).outputs;
+  await waitFor(async () => {
+    outputs = (await capture()).outputs;
+    return String(outputs[0]!.result).includes("capture-me");
+  }, "the pane to print before it is captured");
   expect(outputs[0]!.result).toContain("capture-me");
   await Effect.runPromise(daemon.killSession(id));
 });
@@ -366,7 +370,10 @@ test("the agent state socket accepts ping and agent state reports", async () => 
       params: { agent: "pane-a", state: "blocked" },
     }) + "\n",
   );
-  await Bun.sleep(50);
+  await waitFor(
+    () => lines.join("\n").includes('"id":"one"') && lines.join("\n").includes('"id":"two"'),
+    "both pipelined replies",
+  );
   socket.end();
   expect(lines.join("\n")).toContain('"id":"one"');
   expect(lines.join("\n")).toContain('"id":"two"');
