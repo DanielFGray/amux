@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { spawnPty, readPty, type Pty } from "./pty.ts";
+import { waitFor } from "./test-wait.ts";
 
 const fs = require("node:fs");
 
@@ -23,15 +24,6 @@ function sessionPids(session: number): number[] {
   return pids;
 }
 
-async function waitFor(fn: () => boolean, ms = 5000) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (fn()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error("waitFor: condition never became true");
-}
-
 /** Iterate a pty's pump in the background and collect everything it yields. */
 function collect(p: Pty): { text: () => string; done: Promise<void> } {
   const chunks: Uint8Array[] = [];
@@ -45,7 +37,7 @@ test("input round-trips through the pty", async () => {
   const p = spawnPty(["cat"], { cols: 80, rows: 24 });
   const out = collect(p);
   p.write("hello-pty\n");
-  await waitFor(() => out.text().includes("hello-pty"));
+  await waitFor(() => out.text().includes("hello-pty"), "the pty to echo its input");
   await p.kill();
   await out.done;
   expect(p.closed).toBe(true);
@@ -134,11 +126,12 @@ test("kill terminates the whole session, background jobs included", async () => 
     cols: 80,
     rows: 24,
   });
-  await waitFor(() => p.sessionId() > 0);
+  await waitFor(() => p.sessionId() > 0, "the pty session");
   const session = p.sessionId();
-  await waitFor(() => sessionPids(session).length >= 3); // shell + bg + fg sleeps
+  // shell + bg + fg sleeps
+  await waitFor(() => sessionPids(session).length >= 3, "all three session processes");
   await p.kill();
-  await waitFor(() => sessionPids(session).length === 0);
+  await waitFor(() => sessionPids(session).length === 0, "the session to empty");
   expect(p.closed).toBe(true);
 });
 
@@ -148,10 +141,10 @@ test("kill escalates a session whose children trap HUP and TERM", async () => {
     { cols: 80, rows: 24 },
   );
   const out = collect(p);
-  await waitFor(() => p.sessionId() > 0);
+  await waitFor(() => p.sessionId() > 0, "the pty session");
   const session = p.sessionId();
-  await waitFor(() => sessionPids(session).length >= 2);
-  await waitFor(() => out.text().includes("CHILD_READY"));
+  await waitFor(() => sessionPids(session).length >= 2, "the shell and its child");
+  await waitFor(() => out.text().includes("CHILD_READY"), "the child to announce itself");
 
   const started = Date.now();
   await p.kill();
@@ -172,7 +165,7 @@ test("kill drains output written by a termination trap before closing", async ()
     { cols: 80, rows: 24 },
   );
   const out = collect(p);
-  await waitFor(() => out.text().includes("READY"));
+  await waitFor(() => out.text().includes("READY"), "the trap to be installed");
   await p.kill();
   await out.done;
   expect(out.text()).toContain("DYING_OUTPUT");
@@ -199,7 +192,7 @@ test("a dead pump never reads an fd reused by a newer pty", async () => {
 
   const outB = collect(b);
   b.write("SECRET\n");
-  await waitFor(() => outB.text().includes("SECRET"));
+  await waitFor(() => outB.text().includes("SECRET"), "the second pty to echo");
   await Bun.sleep(50);
   expect(outA.text()).not.toContain("SECRET");
   await b.kill();
@@ -214,7 +207,7 @@ test("a child that exits on its own closes the pty exactly once, after its outpu
   // master deliberately outlives that moment: closing it on exit would discard
   // whatever the child printed on its way out.
   expect(p.exited).toBe(true);
-  await waitFor(() => p.closed);
+  await waitFor(() => p.closed, "the master to close after the child is gone");
   expect(p.closed).toBe(true);
   // Idempotent no matter how many paths reach it.
   p.close();
@@ -273,7 +266,7 @@ test("writes copy input and retain FIFO ordering", async () => {
   second.fill(67);
   await first;
   await later;
-  await waitFor(() => out.text().includes("AAABBB"));
+  await waitFor(() => out.text().includes("AAABBB"), "both queued writes to land in order");
   expect(out.text()).toContain("AAABBB");
   await p.kill();
   await out.done;

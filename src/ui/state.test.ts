@@ -3,6 +3,7 @@ import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
 import type { SpaceSet } from "../space.ts";
 import { runModelProjections, scheduledPoll, scheduleHintVisibility } from "../app.tsx";
 import { createAppState, POLL_MS } from "./state.ts";
+import { waitFor } from "../test-wait.ts";
 
 function scopedRunner() {
   const scope = Effect.runSync(Scope.make());
@@ -16,15 +17,6 @@ function scopedRunner() {
     ),
   );
   return { run, close: () => Effect.runPromise(Scope.close(scope, Exit.void)) };
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 500) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(2);
-  }
-  throw new Error("timed out waiting for scheduled callback");
 }
 
 test("the UI poll keeps one fixed cadence and does not slow down when idle", async () => {
@@ -58,7 +50,7 @@ test("closing the app fiber scope stops the UI poll", async () => {
     }),
   );
 
-  await waitFor(() => polls > 0);
+  await waitFor(() => polls > 0, "the first poll");
   await fibers.close();
   const stopped = polls;
   await Bun.sleep(50);
@@ -99,7 +91,7 @@ test("git refresh is keyed, so a slow scan is replaced rather than queued", asyn
   const refreshNow = () => fibers.run("git-refresh", refresh);
   refreshNow();
   fibers.run("git-poll", scheduledPoll(10, refreshNow));
-  await waitFor(() => starts >= 3);
+  await waitFor(() => starts >= 3, "three git scans");
   // Every scan but the newest was interrupted: a git call slower than the
   // cadence must not leave a growing pile of superseded scans behind it.
   expect(interrupted).toBeGreaterThanOrEqual(starts - 1);
@@ -165,7 +157,7 @@ test("model projection starts in stream order and stops with the scope", async (
     }),
   );
 
-  await waitFor(() => projected.length >= 1);
+  await waitFor(() => projected.length >= 1, "the first projection");
   expect(projected[0]).toBe(1);
   await fibers.close();
   const stopped = [...projected];

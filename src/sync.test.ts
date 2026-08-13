@@ -5,6 +5,7 @@ import { createHarness, run } from "./harness.ts";
 import { encodeKey } from "./keys.ts";
 import { RenderState } from "./ghostty.ts";
 import { SessionHandle } from "./session-handle.ts";
+import { waitFor } from "./test-wait.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
 const spies: ReturnType<typeof spyOn>[] = [];
@@ -31,15 +32,6 @@ function captureAgentWrites() {
       spy.mock.calls.map(([d]) => (typeof d === "string" ? d : new TextDecoder().decode(d))),
     clear: () => spy.mockClear(),
   };
-}
-
-async function waitFor(fn: () => boolean, ms = 5000) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (fn()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error("waitFor: condition never became true");
 }
 
 /** The last few written lines of an agent's screen, for reading cat's echo. */
@@ -282,5 +274,8 @@ test("broadcast input actually reaches every child process", async () => {
   window.split("row", b);
   window.toggleSync();
   window.write("hello-sync\n");
-  await waitFor(() => screenText(a).includes("hello-sync") && screenText(b).includes("hello-sync"));
+  await waitFor(
+    () => screenText(a).includes("hello-sync") && screenText(b).includes("hello-sync"),
+    "the input to reach both synced panes",
+  );
 });

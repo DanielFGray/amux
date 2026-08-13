@@ -264,6 +264,7 @@ test("applying a layout drops a zoom first", async () => {
   await layout();
 
   expect(window.zoomed).toBe(false);
+  expect(window.panes).toHaveLength(2);
   for (const pane of window.panes) expect(pane.width).toBeGreaterThan(0);
 });
 
