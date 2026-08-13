@@ -90,6 +90,13 @@ export async function git(
             pipe(
               Command.make("git", ...args),
               Command.workingDirectory(cwd),
+              // amux observes a repository it does not own. `git status` would
+              // otherwise take .git/index.lock to refresh the index, so a poll
+              // landing between the user's own `git add` and `git commit` makes
+              // their command fail — and a poll killed mid-refresh leaves the
+              // lock behind. This disables only the locks git takes for its own
+              // convenience; the ones an operation requires are unaffected.
+              Command.env({ GIT_OPTIONAL_LOCKS: "0" }),
               Command.stdout("pipe"),
               Command.stderr("pipe"),
             ),
