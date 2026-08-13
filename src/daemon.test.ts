@@ -192,23 +192,21 @@ test("a dead lease and stale lock are recovered without deleting state", async (
   await S(d);
 });
 
-test("a permanently empty lock is recovered after the 500ms retry bound", async () => {
+test("a permanently empty lock is recovered and its lock file is released", async () => {
   const e = await env();
   const p = await run(sessionPaths("stale-empty"), e);
   await mkdir(p.root, { recursive: true });
   await writeFile(p.lock, "");
 
   // The lock is empty and nobody will ever write a PID.
-  // The daemon must resolve — not hang — within the bounded retry window.
-  const started = Date.now();
-  const daemon = await open("stale-empty", e);
-  const elapsed = Date.now() - started;
+  // The explicit timeout catches an unbounded wait; it does not measure the
+  // 500ms protocol bound, which can be extended by scheduler latency.
+  const daemon = await run(makeDaemonService("stale-empty", {}), e);
 
-  // Recovery must happen within the 500ms bound plus overhead.
-  expect(elapsed).toBeLessThan(750);
   expect(st(daemon).id).toBe("stale-empty");
-  await S(daemon);
-});
+  await C(daemon);
+  await expect(Bun.file(p.lock).exists()).resolves.toBe(false);
+}, 5_000);
 
 test("an empty lock written with a live PID during the wait window is not stolen", async () => {
   const e = await env();

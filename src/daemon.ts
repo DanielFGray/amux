@@ -86,6 +86,8 @@ export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
  */
 class LockContended extends S.TaggedError<LockContended>()("LockContended", {}) {}
 
+class StaleLock extends S.TaggedError<StaleLock>()("StaleLock", {}) {}
+
 export interface SessionDaemonOptions {
   readonly saveState?: (
     state: SessionState,
@@ -187,7 +189,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         }),
       );
 
-      for (;;) {
+      const acquire = Effect.gen(function* () {
         const result = yield* Effect.either(
           Effect.gen(function* () {
             const file = yield* fs.open(paths.lock, {
@@ -207,7 +209,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         if (Either.isLeft(owner)) {
           // Never written: the claimant died between the open and the write.
           yield* fs.remove(paths.lock).pipe(Effect.ignore);
-          continue;
+          return yield* new StaleLock();
         }
         if (processAlive(owner.right))
           return yield* new DaemonError({
@@ -222,7 +224,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
         // A dead owner's lock is stale; recover it and reclaim immediately.
         yield* fs.remove(paths.lock);
-      }
+        return yield* new StaleLock();
+      }).pipe(
+        Effect.retry({
+          schedule: Schedule.forever,
+          while: (error) => error._tag === "StaleLock",
+        }),
+      );
+
+      return yield* acquire;
     }).pipe(
       Effect.mapError((e) =>
         e instanceof DaemonError ? e : new DaemonError({ message: describe(e) }),
