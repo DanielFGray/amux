@@ -47,6 +47,26 @@ export const DEFAULT_CONFIG: Config = {
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config");
 export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json");
 
+const KeysSchema = S.Struct({
+  leader: S.optionalWith(S.Unknown, { default: () => DEFAULT_LEADER }),
+  bindings: S.optionalWith(S.Record({ key: S.String, value: S.Unknown }), { default: () => ({}) }),
+});
+
+const PluginSpecSchema = S.Struct({
+  path: S.String.pipe(S.minLength(1)),
+  enabled: S.optionalWith(S.Boolean, { default: () => true }),
+});
+
+const PluginEntrySchema = S.Union(S.String.pipe(S.minLength(1)), PluginSpecSchema);
+const ConfigSchema = S.Struct({
+  options: S.optionalWith(S.Record({ key: S.String, value: S.Unknown }), { default: () => ({}) }),
+  keys: S.optionalWith(KeysSchema, {
+    default: () => ({ leader: DEFAULT_LEADER, bindings: {} }),
+  }),
+  plugins: S.optionalWith(S.Array(S.Unknown), { default: () => DEFAULT_CONFIG.plugins }),
+  permissions: S.optionalWith(S.Array(S.Unknown), { default: () => [] }),
+});
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -60,26 +80,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * dropped by the decoder that failed to recognise it.
  */
 export function decodeConfig(loaded: unknown): Config {
-  if (!isRecord(loaded)) return structuredClone(DEFAULT_CONFIG);
-  return {
-    options: isRecord(loaded.options) ? { ...loaded.options } : {},
-    keys: sanitizeKeys(loaded.keys),
-    plugins:
-      loaded.plugins === undefined
-        ? structuredClone(DEFAULT_CONFIG.plugins)
-        : mergeDefaultPlugins(sanitizePlugins(loaded.plugins)),
-    permissions: sanitizePermissions(loaded.permissions),
-  };
-}
-
-/** Drop rules the evaluator could not read rather than the file that holds
- *  them: a typo in one rule must not silently discard the refusals under it. */
-function sanitizePermissions(raw: unknown): PermissionRule[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((entry) => {
+  const decoded = S.decodeUnknownSync(ConfigSchema)(isRecord(loaded) ? loaded : {});
+  const keys = decoded.keys;
+  const leader = Option.getOrElse(
+    S.decodeUnknownOption(S.String.pipe(S.filter((value) => value.trim().length > 0)))(keys.leader),
+    () => DEFAULT_LEADER,
+  );
+  const bindings = Object.fromEntries(
+    Object.entries(keys.bindings).flatMap(([name, value]) => {
+      const entries = S.decodeUnknownOption(S.Array(S.Unknown))(value);
+      if (Option.isNone(entries)) return [];
+      return [
+        [
+          name,
+          entries.value.flatMap((key) => {
+            const decoded = S.decodeUnknownOption(S.String.pipe(S.minLength(1)))(key);
+            return Option.isSome(decoded) ? [decoded.value] : [];
+          }),
+        ],
+      ];
+    }),
+  );
+  const plugins = decoded.plugins.flatMap((entry) => {
+    const plugin = S.decodeUnknownOption(PluginEntrySchema)(entry);
+    if (Option.isNone(plugin)) return [];
+    return [
+      typeof plugin.value === "string" ? { path: plugin.value, enabled: true } : plugin.value,
+    ];
+  });
+  const permissions = decoded.permissions.flatMap((entry) => {
     const rule = decodePermissionRule(entry);
     return Option.isSome(rule) ? [rule.value] : [];
   });
+  return {
+    options: { ...decoded.options },
+    keys: { leader, bindings },
+    plugins: mergeDefaultPlugins(plugins),
+    permissions,
+  };
 }
 
 const decodePermissionRule = S.decodeUnknownOption(PermissionRuleSchema);
@@ -94,59 +132,17 @@ function mergeDefaultPlugins(saved: PluginSpec[]): PluginSpec[] {
   ];
 }
 
-/** Keep hand-edited key bindings from breaking keymap compilation. */
-function sanitizeKeys(keys: unknown): Keys {
-  const raw = isRecord(keys) ? keys : {};
-  const leader = typeof raw.leader === "string" && raw.leader.trim() ? raw.leader : DEFAULT_LEADER;
-  const bindings: Record<string, string[]> = {};
-  const rawBindings = isRecord(raw.bindings) ? raw.bindings : {};
-  for (const [name, value] of Object.entries(rawBindings)) {
-    // An empty array is meaningful: it deliberately leaves a command unbound.
-    if (!Array.isArray(value)) continue;
-    Object.defineProperty(bindings, name, {
-      value: value.filter((key): key is string => typeof key === "string" && key.length > 0),
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-  }
-  return { leader, bindings };
-}
-
 export async function loadConfig(path = CONFIG_PATH): Promise<Config> {
   try {
     const file = Bun.file(path);
     if (!(await file.exists())) return structuredClone(DEFAULT_CONFIG);
-    const raw = await file.json();
-    if (!isRecord(raw)) {
-      console.warn(`Ignoring malformed config at ${path}: expected a JSON object`);
-      return structuredClone(DEFAULT_CONFIG);
-    }
-    return decodeConfig(raw);
+    return decodeConfig(await file.json());
   } catch (error) {
     console.warn(
       `Ignoring unreadable config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
     );
     return structuredClone(DEFAULT_CONFIG);
   }
-}
-
-function sanitizePlugins(raw: unknown): PluginSpec[] {
-  if (!Array.isArray(raw)) return [];
-  const result: PluginSpec[] = [];
-  for (const entry of raw) {
-    if (typeof entry === "string" && entry.length > 0) {
-      result.push({ path: entry, enabled: true });
-      continue;
-    }
-    if (isRecord(entry)) {
-      const path = typeof entry.path === "string" && entry.path.length > 0 ? entry.path : null;
-      if (!path) continue;
-      const enabled = typeof entry.enabled === "boolean" ? entry.enabled : true;
-      result.push({ path, enabled });
-    }
-  }
-  return result;
 }
 
 export async function saveConfig(config: Config, path = CONFIG_PATH): Promise<void> {

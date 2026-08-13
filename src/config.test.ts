@@ -33,6 +33,14 @@ test("malformed key bindings cannot break keymap compilation", () => {
   });
 });
 
+test("a whitespace-only leader uses the default", () => {
+  expect(decodeConfig({ keys: { leader: "   " } }).keys.leader).toBe(DEFAULT_CONFIG.keys.leader);
+});
+
+test("a non-object config uses defaults", () => {
+  expect(decodeConfig(null)).toEqual(DEFAULT_CONFIG);
+});
+
 test("options are stored as written and judged on the way out", () => {
   // Nothing is rejected at decode, because the decoder is not what knows the
   // bounds — and an entry it refused would be an entry a later build could not
