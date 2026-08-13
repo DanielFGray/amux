@@ -41,11 +41,7 @@ const pane = (agent: string, weight = 1, id = agent): LayoutNode => ({
   agent,
   weight,
 });
-const split = (
-  direction: "row" | "column",
-  children: LayoutNode[],
-  weight = 1,
-): LayoutNode => ({
+const split = (direction: "row" | "column", children: LayoutNode[], weight = 1): LayoutNode => ({
   type: "split",
   direction,
   weight,
@@ -73,11 +69,7 @@ const float = (id: string, agent = id): LayoutFloat => ({
 });
 
 test("panes are listed left to right, depth first", () => {
-  const tree = split("row", [
-    pane("a"),
-    split("column", [pane("b"), pane("c")]),
-    pane("d"),
-  ]);
+  const tree = split("row", [pane("a"), split("column", [pane("b"), pane("c")]), pane("d")]);
   expect(layoutPanes(tree).map((p) => p.agent)).toEqual(["a", "b", "c", "d"]);
 });
 
@@ -86,9 +78,7 @@ test("a layout round-trips through encode and decode", () => {
     split("row", [pane("a", 2), split("column", [pane("b"), pane("c", 3)], 5)]),
     "c",
   );
-  expect(run(parseLayout(JSON.parse(encodeLayout(original))))).toEqual(
-    original,
-  );
+  expect(run(parseLayout(JSON.parse(encodeLayout(original))))).toEqual(original);
 });
 
 test("encoding is stable, so equal layouts produce equal strings", () => {
@@ -105,50 +95,36 @@ test("a split with one child collapses to that child and inherits its weight", (
 });
 
 test("collapsing is recursive, so nested husks all disappear", () => {
-  const nested = split(
-    "row",
-    [split("column", [split("row", [pane("deep")])])],
-    4,
-  );
+  const nested = split("row", [split("column", [split("row", [pane("deep")])])], 4);
   expect(collapse(nested)).toEqual(pane("deep", 4));
 });
 
 // Window.split only nests when the axis alternates, so a same-axis nesting is a
 // shape the live tree would never build and could not round-trip as written.
 test("a same-axis child split is flattened into its parent", () => {
-  const tree = split("row", [
-    pane("a", 1),
-    split("row", [pane("b"), pane("c")], 2),
-  ]);
+  const tree = split("row", [pane("a", 1), split("row", [pane("b"), pane("c")], 2)]);
   const flattened = collapse(tree) as Extract<LayoutNode, { type: "split" }>;
-  expect(
-    flattened.children.map((c) => (c.type === "pane" ? c.agent : "?")),
-  ).toEqual(["a", "b", "c"]);
+  expect(flattened.children.map((c) => (c.type === "pane" ? c.agent : "?"))).toEqual([
+    "a",
+    "b",
+    "c",
+  ]);
 });
 
 test("flattening preserves the share of space the nested split occupied", () => {
-  const tree = split("row", [
-    pane("a", 2),
-    split("row", [pane("b", 1), pane("c", 3)], 4),
-  ]);
+  const tree = split("row", [pane("a", 2), split("row", [pane("b", 1), pane("c", 3)], 4)]);
   const flattened = collapse(tree) as Extract<LayoutNode, { type: "split" }>;
   // b and c split the nested weight of 4 in a 1:3 ratio.
   expect(flattened.children.map((c) => c.weight)).toEqual([2, 1, 3]);
 });
 
 test("an alternating-axis nesting is left alone", () => {
-  const tree = split("row", [
-    pane("a"),
-    split("column", [pane("b"), pane("c")]),
-  ]);
+  const tree = split("row", [pane("a"), split("column", [pane("b"), pane("c")])]);
   expect(collapse(tree)).toEqual(tree);
 });
 
 test("pruning drops panes whose agent is gone and keeps the survivors' shape", () => {
-  const tree = split("row", [
-    pane("a"),
-    split("column", [pane("dead"), pane("c")]),
-  ]);
+  const tree = split("row", [pane("a"), split("column", [pane("dead"), pane("c")])]);
   const pruned = prune(layout(tree), (id) => id !== "dead");
   // The column had two panes; losing one collapses it into the row.
   expect(layoutAgents(pruned)).toEqual(["a", "c"]);
@@ -156,35 +132,24 @@ test("pruning drops panes whose agent is gone and keeps the survivors' shape", (
 });
 
 test("pruning every pane leaves an empty layout rather than a husk", () => {
-  const pruned = prune(
-    layout(split("row", [pane("a"), pane("b")])),
-    () => false,
-  );
+  const pruned = prune(layout(split("row", [pane("a"), pane("b")])), () => false);
   expect(pruned.root).toBeNull();
 });
 
 test("pruning clears a focus whose agent did not survive", () => {
-  const pruned = prune(
-    layout(split("row", [pane("a"), pane("b")]), "b"),
-    (id) => id === "a",
-  );
+  const pruned = prune(layout(split("row", [pane("a"), pane("b")]), "b"), (id) => id === "a");
   expect(pruned.focus).toBeUndefined();
 });
 
 test("pruning keeps a focus that did survive", () => {
-  const pruned = prune(
-    layout(split("row", [pane("a"), pane("b")]), "a"),
-    (id) => id === "a",
-  );
+  const pruned = prune(layout(split("row", [pane("a"), pane("b")]), "a"), (id) => id === "a");
   expect(pruned.focus).toBe("a");
 });
 
 // A focus naming a pane that is not in the tree would leave a rebuilt window
 // with nothing focused, so it is dropped at the boundary rather than carried.
 test("a focus not present in the tree is dropped on parse", () => {
-  const parsed = run(
-    parseLayout({ version: LAYOUT_VERSION, root: pane("a"), focus: "ghost" }),
-  );
+  const parsed = run(parseLayout({ version: LAYOUT_VERSION, root: pane("a"), focus: "ghost" }));
   expect(parsed.focus).toBeUndefined();
 });
 
@@ -207,9 +172,7 @@ test("a missing weight defaults to an even share", () => {
 });
 
 test("malformed JSON is refused as a value, not thrown from deep in a rebuild", () => {
-  expect(runFailMessage(decodeLayout("{not json"))).toContain(
-    "layout is not JSON",
-  );
+  expect(runFailMessage(decodeLayout("{not json"))).toContain("layout is not JSON");
 });
 
 test("recursive layouts are bounded before they can exhaust the stack", () => {
@@ -224,15 +187,10 @@ test("recursive layouts are bounded before they can exhaust the stack", () => {
       type: "split",
       direction: "row",
       weight: 1,
-      children: [
-        root,
-        { type: "pane", id: `p-${i}`, agent: `a-${i}`, weight: 1 },
-      ],
+      children: [root, { type: "pane", id: `p-${i}`, agent: `a-${i}`, weight: 1 }],
     };
   }
-  expect(
-    runFailMessage(parseLayout({ version: LAYOUT_VERSION, root })),
-  ).toContain("maximum depth");
+  expect(runFailMessage(parseLayout({ version: LAYOUT_VERSION, root }))).toContain("maximum depth");
 });
 
 test("an unsupported version is refused rather than guessed at", () => {
@@ -301,16 +259,12 @@ test("a split with no children is refused", () => {
 // A zero or negative weight renders as a pane with no cells, which reads as a
 // pane that silently vanished.
 test("a non-positive weight is refused", () => {
-  expect(
-    runFailMessage(
-      parseLayout({ version: LAYOUT_VERSION, root: pane("a", 0) }),
-    ),
-  ).toContain("positive number");
-  expect(
-    runFailMessage(
-      parseLayout({ version: LAYOUT_VERSION, root: pane("a", -3) }),
-    ),
-  ).toContain("positive number");
+  expect(runFailMessage(parseLayout({ version: LAYOUT_VERSION, root: pane("a", 0) }))).toContain(
+    "positive number",
+  );
+  expect(runFailMessage(parseLayout({ version: LAYOUT_VERSION, root: pane("a", -3) }))).toContain(
+    "positive number",
+  );
 });
 
 test("an unknown node type is refused", () => {
@@ -348,8 +302,7 @@ const shape = (node: LayoutNode | null): unknown => {
   return { [node.direction]: node.children.map(shape) };
 };
 
-const ids = (n: number) =>
-  Array.from({ length: n }, (_, i) => String.fromCharCode(97 + i));
+const ids = (n: number) => Array.from({ length: n }, (_, i) => String.fromCharCode(97 + i));
 const refs = (n: number) => ids(n).map((agent) => ({ id: agent, agent }));
 
 test("even-horizontal is one row, even-vertical one column", () => {
@@ -427,13 +380,10 @@ test("no agents is an empty layout, not a crash", () => {
 test("nextPreset walks the cycle and restarts from a hand-built layout", () => {
   expect(nextPreset(null)).toBe(LAYOUT_PRESETS[0]);
   const seen = [nextPreset(null)];
-  for (let i = 1; i < LAYOUT_PRESETS.length; i++)
-    seen.push(nextPreset(seen[i - 1]!));
+  for (let i = 1; i < LAYOUT_PRESETS.length; i++) seen.push(nextPreset(seen[i - 1]!));
   expect(seen).toEqual([...LAYOUT_PRESETS]);
   // And wraps.
-  expect(nextPreset(LAYOUT_PRESETS[LAYOUT_PRESETS.length - 1]!)).toBe(
-    LAYOUT_PRESETS[0],
-  );
+  expect(nextPreset(LAYOUT_PRESETS[LAYOUT_PRESETS.length - 1]!)).toBe(LAYOUT_PRESETS[0]);
 });
 
 /**
@@ -467,9 +417,7 @@ test("splitting a resized pane gives the newcomer half of it", () => {
 
   // Flat, because the axis did not change: three panes in a row, which is what
   // tmux shows after two horizontal splits.
-  expect(after.root).toEqual(
-    split("row", [pane("a", 69), pane("b", 15.5), pane("c", 15.5)]),
-  );
+  expect(after.root).toEqual(split("row", [pane("a", 69), pane("b", 15.5), pane("c", 15.5)]));
 });
 
 test("splitting across the axis nests, and the new split inherits the slot", () => {
@@ -482,17 +430,11 @@ test("splitting across the axis nests, and the new split inherits the slot", () 
 });
 
 test("a split names a pane by position, so two panes on one agent are distinct", () => {
-  const before = layout(
-    split("row", [pane("a", 1, "p1"), pane("a", 1, "p2")]),
-    "p1",
-  );
+  const before = layout(split("row", [pane("a", 1, "p1"), pane("a", 1, "p2")]), "p1");
   const after = splitLayout(before, 1, "column", { id: "p3", agent: "b" });
 
   expect(after.root).toEqual(
-    split("row", [
-      pane("a", 1, "p1"),
-      split("column", [pane("a", 1, "p2"), pane("b", 1, "p3")]),
-    ]),
+    split("row", [pane("a", 1, "p1"), split("column", [pane("a", 1, "p2"), pane("b", 1, "p3")])]),
   );
 });
 
@@ -516,9 +458,7 @@ test("focus names the pane a split just made, not another showing the same agent
 
 test("a split at a position no pane has changes nothing", () => {
   const before = layout(split("row", [pane("a"), pane("b")]), "a");
-  expect(splitLayout(before, 7, "row", { id: "c", agent: "c" }).root).toEqual(
-    before.root,
-  );
+  expect(splitLayout(before, 7, "row", { id: "c", agent: "c" }).root).toEqual(before.root);
 });
 
 /**
@@ -551,10 +491,7 @@ test("a swap exchanges two panes and leaves the weights alone", () => {
  * without being touched.
  */
 test("closing a pane leaves the survivors' proportions alone", () => {
-  const before = layout(
-    split("row", [pane("a", 1), pane("b", 2), pane("c", 3)]),
-    "a",
-  );
+  const before = layout(split("row", [pane("a", 1), pane("b", 2), pane("c", 3)]), "a");
   const after = closeLayout(before, "b");
   expect(after.root).toEqual(split("row", [pane("a", 1), pane("c", 3)]));
 });
@@ -568,14 +505,9 @@ test("the last survivor of a split inherits the whole slot", () => {
 });
 
 test("closing collapses the husk it leaves, so the tree stays rebuildable", () => {
-  const before = layout(
-    split("row", [pane("a"), split("column", [pane("b"), pane("c")])]),
-    "a",
-  );
+  const before = layout(split("row", [pane("a"), split("column", [pane("b"), pane("c")])]), "a");
   // The column is down to one child, which is the column's parent's child now.
-  expect(closeLayout(before, "b").root).toEqual(
-    split("row", [pane("a"), pane("c")]),
-  );
+  expect(closeLayout(before, "b").root).toEqual(split("row", [pane("a"), pane("c")]));
 });
 
 test("closing the focused pane moves focus to the one that took its place", () => {

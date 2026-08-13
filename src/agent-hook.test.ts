@@ -16,9 +16,8 @@ import { AmuxAgentStatePlugin, STATE_BY_EVENT } from "./agent-hook/opencode.js";
 import { isReportedAgentState } from "./agent-state.ts";
 import { testEffect } from "./test-effect.ts";
 
-const scoped = <A, E>(
-  effect: Effect.Effect<A, E, FileSystem.FileSystem | Scope.Scope>,
-) => effect.pipe(Effect.provide(BunFileSystem.layer));
+const scoped = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Scope.Scope>) =>
+  effect.pipe(Effect.provide(BunFileSystem.layer));
 
 /** A temporary HOME that dies with the enclosing scope. */
 const temporaryHome = Effect.gen(function* () {
@@ -72,9 +71,7 @@ const statusEvent = (status: string) => ({
  * runs inside opencode. A state it invents would be refused by the socket and
  * lost in silence, so the crossing is checked here instead. */
 test("every state the opencode hook can send is one amux accepts", () => {
-  const unknown = [...STATE_BY_EVENT.values()].filter(
-    (state) => !isReportedAgentState(state),
-  );
+  const unknown = [...STATE_BY_EVENT.values()].filter((state) => !isReportedAgentState(state));
   expect(unknown).toEqual([]);
 });
 
@@ -82,20 +79,12 @@ testEffect("installs and uninstalls only the amux opencode plugin", () =>
   scoped(
     Effect.gen(function* () {
       const home = yield* temporaryHome;
-      yield* Effect.promise(() =>
-        mkdir(join(home, ".config/opencode"), { recursive: true }),
-      );
+      yield* Effect.promise(() => mkdir(join(home, ".config/opencode"), { recursive: true }));
 
       const path = yield* Effect.promise(() => installOpencodeHook(home));
-      expect(yield* Effect.promise(() => readFile(path, "utf8"))).toContain(
-        OPENCODE_PLUGIN_MARKER,
-      );
-      expect(yield* Effect.promise(() => uninstallOpencodeHook(home))).toBe(
-        true,
-      );
-      expect(yield* Effect.promise(() => uninstallOpencodeHook(home))).toBe(
-        false,
-      );
+      expect(yield* Effect.promise(() => readFile(path, "utf8"))).toContain(OPENCODE_PLUGIN_MARKER);
+      expect(yield* Effect.promise(() => uninstallOpencodeHook(home))).toBe(true);
+      expect(yield* Effect.promise(() => uninstallOpencodeHook(home))).toBe(false);
     }),
   ),
 );
@@ -112,9 +101,7 @@ testEffect("does not remove an unrelated opencode plugin", () =>
 
       // A rejection here surfaces as a defect, not a typed failure — assert on
       // the cause so a silently-succeeding uninstall cannot pass this test.
-      const exit = yield* Effect.promise(() =>
-        uninstallOpencodeHook(home),
-      ).pipe(Effect.exit);
+      const exit = yield* Effect.promise(() => uninstallOpencodeHook(home)).pipe(Effect.exit);
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {
         expect(String(Cause.squash(exit.cause))).toContain("unrecognised");
@@ -124,76 +111,60 @@ testEffect("does not remove an unrelated opencode plugin", () =>
   ),
 );
 
-testEffect(
-  "reports opencode lifecycle transitions to the agent-state socket",
-  () =>
-    scoped(
-      Effect.gen(function* () {
-        const home = yield* temporaryHome;
-        const path = join(home, "agent-state.sock");
-        const { received } = yield* agentStateSocket(path);
-        const plugin = yield* pluginWith({
-          AMUX_AGENT_STATE_SOCKET: path,
-          AMUX_PANE_ID: "w1:p1",
-        });
+testEffect("reports opencode lifecycle transitions to the agent-state socket", () =>
+  scoped(
+    Effect.gen(function* () {
+      const home = yield* temporaryHome;
+      const path = join(home, "agent-state.sock");
+      const { received } = yield* agentStateSocket(path);
+      const plugin = yield* pluginWith({
+        AMUX_AGENT_STATE_SOCKET: path,
+        AMUX_PANE_ID: "w1:p1",
+      });
 
-        yield* Effect.promise(() => plugin.event!(statusEvent("streaming")));
-        yield* Effect.promise(() =>
-          plugin.event!({ event: { type: "permission.asked" } }),
-        );
-        yield* Effect.promise(() =>
-          plugin.event!({ event: { type: "session.idle" } }),
-        );
+      yield* Effect.promise(() => plugin.event!(statusEvent("streaming")));
+      yield* Effect.promise(() => plugin.event!({ event: { type: "permission.asked" } }));
+      yield* Effect.promise(() => plugin.event!({ event: { type: "session.idle" } }));
 
-        expect(received).toEqual([
-          {
-            id: expect.any(String),
-            method: "agent.state",
-            params: { agent: "w1:p1", state: "working" },
-          },
-          {
-            id: expect.any(String),
-            method: "agent.state",
-            params: { agent: "w1:p1", state: "blocked" },
-          },
-          {
-            id: expect.any(String),
-            method: "agent.state",
-            params: { agent: "w1:p1", state: "idle" },
-          },
-        ]);
-      }),
-    ),
+      expect(received).toEqual([
+        {
+          id: expect.any(String),
+          method: "agent.state",
+          params: { agent: "w1:p1", state: "working" },
+        },
+        {
+          id: expect.any(String),
+          method: "agent.state",
+          params: { agent: "w1:p1", state: "blocked" },
+        },
+        {
+          id: expect.any(String),
+          method: "agent.state",
+          params: { agent: "w1:p1", state: "idle" },
+        },
+      ]);
+    }),
+  ),
 );
 
-testEffect(
-  "collapses repeated states so streaming does not flood the socket",
-  () =>
-    scoped(
-      Effect.gen(function* () {
-        const home = yield* temporaryHome;
-        const path = join(home, "agent-state.sock");
-        const { received } = yield* agentStateSocket(path);
-        const plugin = yield* pluginWith({
-          AMUX_AGENT_STATE_SOCKET: path,
-          AMUX_PANE_ID: "w1:p1",
-        });
+testEffect("collapses repeated states so streaming does not flood the socket", () =>
+  scoped(
+    Effect.gen(function* () {
+      const home = yield* temporaryHome;
+      const path = join(home, "agent-state.sock");
+      const { received } = yield* agentStateSocket(path);
+      const plugin = yield* pluginWith({
+        AMUX_AGENT_STATE_SOCKET: path,
+        AMUX_PANE_ID: "w1:p1",
+      });
 
-        for (const status of [
-          "running",
-          "streaming",
-          "streaming",
-          "busy",
-          "active",
-        ])
-          yield* Effect.promise(() => plugin.event!(statusEvent(status)));
+      for (const status of ["running", "streaming", "streaming", "busy", "active"])
+        yield* Effect.promise(() => plugin.event!(statusEvent(status)));
 
-        expect(received).toHaveLength(1);
-        expect(
-          (received[0] as { params: { state: string } }).params.state,
-        ).toBe("working");
-      }),
-    ),
+      expect(received).toHaveLength(1);
+      expect((received[0] as { params: { state: string } }).params.state).toBe("working");
+    }),
+  ),
 );
 
 testEffect("contributes nothing outside an amux pane", () =>
@@ -210,10 +181,7 @@ testEffect("contributes nothing outside an amux pane", () =>
 // the agent a bounded pause, never a hang and never a thrown event handler.
 test("a report to a socket nobody is listening on settles quickly", async () => {
   const previous = { ...process.env };
-  process.env.AMUX_AGENT_STATE_SOCKET = join(
-    process.cwd(),
-    "does-not-exist.sock",
-  );
+  process.env.AMUX_AGENT_STATE_SOCKET = join(process.cwd(), "does-not-exist.sock");
   process.env.AMUX_PANE_ID = "w1:p1";
   try {
     const plugin = await AmuxAgentStatePlugin();

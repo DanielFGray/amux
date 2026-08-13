@@ -43,17 +43,17 @@ export const openAiCompatible = (spec: {
         Layer.provide(AnthropicClient.layer(client)),
         Layer.provide(FetchHttpClient.layer),
       );
-    if (npm === undefined || npm === CHAT)
-      return OpenAiChat.layer({ model, ...client });
+    if (npm === undefined || npm === CHAT) return OpenAiChat.layer({ model, ...client });
     return Layer.effect(
       LanguageModel.LanguageModel,
       Effect.dieMessage(`unsupported model protocol '${npm}'`),
     );
   },
   authorize: (credential, request) =>
-    HttpClientRequest.setHeader("Authorization", `Bearer ${Redacted.value(key(credential))}`)(
-      request,
-    ),
+    HttpClientRequest.setHeader(
+      "Authorization",
+      `Bearer ${Redacted.value(key(credential))}`,
+    )(request),
 });
 
 /**

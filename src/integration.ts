@@ -39,8 +39,11 @@ export class Service extends Context.Tag("amux/Integration")<Service, Interface>
  */
 export const makeLayer = (
   definitions: readonly Integration[] = integrations,
-  catalogLayer: Layer.Layer<ModelCatalog.Service, never, FileSystem.FileSystem> =
-    ModelCatalog.Default,
+  catalogLayer: Layer.Layer<
+    ModelCatalog.Service,
+    never,
+    FileSystem.FileSystem
+  > = ModelCatalog.Default,
 ) =>
   Layer.effect(
     Service,
@@ -66,7 +69,9 @@ export const makeLayer = (
         const now = yield* Clock.currentTimeMillis;
         if (credential.value.expires > now + Duration.minutes(5).pipe(Duration.toMillis))
           return credential.value;
-        const value = yield* credentials.refreshOAuth(credential.id, now, integration.refresh).pipe(Effect.orDie);
+        const value = yield* credentials
+          .refreshOAuth(credential.id, now, integration.refresh)
+          .pipe(Effect.orDie);
         if (!value) return credential.value;
         yield* events.publish({
           _tag: "credential.changed",
@@ -101,7 +106,9 @@ export const makeLayer = (
               id: integration.id,
               label: integration.label,
               methods: integration.methods,
-              connections: connections(saved.filter((credential) => credential.integrationID === integration.id)),
+              connections: connections(
+                saved.filter((credential) => credential.integrationID === integration.id),
+              ),
             }));
           }),
         active: (id) =>
@@ -123,8 +130,16 @@ export const makeLayer = (
             if (!integration) return undefined;
             const authorize = (request: HttpClientRequest.HttpClientRequest) =>
               Effect.gen(function* () {
-                const connection = yield* Effect.flatMap(credentials.list(integrationID), (items) =>
-                  items[0] ? Effect.succeed({ type: "credential" as const, id: items[0].id, label: items[0].label }) : Effect.fail("credential missing"),
+                const connection = yield* Effect.flatMap(
+                  credentials.list(integrationID),
+                  (items) =>
+                    items[0]
+                      ? Effect.succeed({
+                          type: "credential" as const,
+                          id: items[0].id,
+                          label: items[0].label,
+                        })
+                      : Effect.fail("credential missing"),
                 );
                 const value = yield* resolve(connection);
                 if (!value) return yield* Effect.fail("credential missing");

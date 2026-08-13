@@ -7,7 +7,11 @@ import type { AppState } from "./state.ts";
 import { theme } from "./theme.ts";
 
 const stateColor = (state: AgentState) =>
-  state === AgentState.Blocked ? theme.red : state === AgentState.Working ? theme.green : theme.overlay1;
+  state === AgentState.Blocked
+    ? theme.red
+    : state === AgentState.Working
+      ? theme.green
+      : theme.overlay1;
 
 /**
  * The window list, herdr-style: a single row at the top of the pane area rather

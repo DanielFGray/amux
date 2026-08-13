@@ -79,14 +79,8 @@ test("emoji with variation selector is one grapheme", () => {
 
 test("ZWJ emoji family is one grapheme", () => {
   const t = term();
-  t.write(
-    new TextEncoder().encode(
-      "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}",
-    ),
-  );
-  expect(captureVisible(t)).toBe(
-    "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}",
-  );
+  t.write(new TextEncoder().encode("\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}"));
+  expect(captureVisible(t)).toBe("\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}");
 });
 
 test("mixed wide and combining characters survive capture", () => {

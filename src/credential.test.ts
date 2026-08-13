@@ -14,10 +14,7 @@ async function environment() {
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
-function provide<A>(
-  effect: Effect.Effect<A, any, any>,
-  env: NodeJS.ProcessEnv,
-) {
+function provide<A>(effect: Effect.Effect<A, any, any>, env: NodeJS.ProcessEnv) {
   return effect.pipe(
     Effect.provide(Credential.Default),
     Effect.provide(BunFileSystem.layer),
@@ -62,9 +59,7 @@ testEffect("stores multiple credentials and redacts values", () =>
     );
     expect(
       (yield* provide(
-        Credential.Service.pipe(
-          Effect.flatMap((store) => store.list("openai")),
-        ),
+        Credential.Service.pipe(Effect.flatMap((store) => store.list("openai"))),
         env,
       )).map((item) => item.id),
     ).toEqual([first.id, second.id]);
@@ -117,20 +112,15 @@ testEffect("creates private state and credential files", () =>
     );
     yield* provide(
       Credential.Service.pipe(
-        Effect.flatMap((store) =>
-          store.create({ integrationID: "openai", value: key("secret") }),
-        ),
+        Effect.flatMap((store) => store.create({ integrationID: "openai", value: key("secret") })),
       ),
       env,
     );
     const directory = join(env.XDG_STATE_HOME!, "amux");
-    expect((yield* Effect.promise(() => stat(directory))).mode & 0o777).toBe(
-      0o700,
+    expect((yield* Effect.promise(() => stat(directory))).mode & 0o777).toBe(0o700);
+    expect((yield* Effect.promise(() => stat(join(directory, "auth.json")))).mode & 0o777).toBe(
+      0o600,
     );
-    expect(
-      (yield* Effect.promise(() => stat(join(directory, "auth.json")))).mode &
-        0o777,
-    ).toBe(0o600);
   }),
 );
 
@@ -142,9 +132,7 @@ testEffect("repairs permissions before reading existing credentials", () =>
     );
     const directory = join(env.XDG_STATE_HOME!, "amux");
     const file = join(directory, "auth.json");
-    yield* Effect.promise(() =>
-      mkdir(directory, { recursive: true, mode: 0o777 }),
-    );
+    yield* Effect.promise(() => mkdir(directory, { recursive: true, mode: 0o777 }));
     yield* Effect.promise(() =>
       writeFile(
         file,
@@ -160,13 +148,8 @@ testEffect("repairs permissions before reading existing credentials", () =>
     );
     yield* Effect.promise(() => chmod(directory, 0o777));
     yield* Effect.promise(() => chmod(file, 0o644));
-    yield* provide(
-      Credential.Service.pipe(Effect.flatMap((store) => store.all())),
-      env,
-    );
-    expect((yield* Effect.promise(() => stat(directory))).mode & 0o777).toBe(
-      0o700,
-    );
+    yield* provide(Credential.Service.pipe(Effect.flatMap((store) => store.all())), env);
+    expect((yield* Effect.promise(() => stat(directory))).mode & 0o777).toBe(0o700);
     expect((yield* Effect.promise(() => stat(file))).mode & 0o777).toBe(0o600);
   }),
 );
@@ -204,9 +187,7 @@ testEffect("updates and removes by credential id", () =>
     );
     const created = yield* provide(
       Credential.Service.pipe(
-        Effect.flatMap((store) =>
-          store.create({ integrationID: "openai", value: key("secret") }),
-        ),
+        Effect.flatMap((store) => store.create({ integrationID: "openai", value: key("secret") })),
       ),
       env,
     );
@@ -220,38 +201,30 @@ testEffect("updates and removes by credential id", () =>
     );
     expect(
       (yield* provide(
-        Credential.Service.pipe(
-          Effect.flatMap((store) => store.get(created.id)),
-        ),
+        Credential.Service.pipe(Effect.flatMap((store) => store.get(created.id))),
         env,
       ))?.label,
     ).toBe("updated");
     yield* provide(
-      Credential.Service.pipe(
-        Effect.flatMap((store) => store.remove(created.id)),
-      ),
+      Credential.Service.pipe(Effect.flatMap((store) => store.remove(created.id))),
       env,
     );
     expect(
       yield* provide(
-        Credential.Service.pipe(
-          Effect.flatMap((store) => store.get(created.id)),
-        ),
+        Credential.Service.pipe(Effect.flatMap((store) => store.get(created.id))),
         env,
       ),
     ).toBeUndefined();
   }),
 );
 
-testEffect(
-  "serializes mutations from separate processes without losing writes",
-  () =>
-    Effect.gen(function* () {
-      const env = yield* Effect.promise(environment);
-      yield* Effect.addFinalizer(() =>
-        Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
-      );
-      const worker = `
+testEffect("serializes mutations from separate processes without losing writes", () =>
+  Effect.gen(function* () {
+    const env = yield* Effect.promise(environment);
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
+    );
+    const worker = `
     import { FileSystem } from "@effect/platform";
     import { BunFileSystem } from "@effect/platform-bun";
     import { Effect, Redacted } from "effect";
@@ -263,32 +236,27 @@ testEffect(
     }).pipe(Effect.provide(Credential.Default), Effect.provide(BunFileSystem.layer));
     await Effect.runPromise(program);
   `;
-      const children = ["a", "b"].map((workerID) =>
-        Bun.spawn([process.execPath, "-e", worker], {
-          env: { ...process.env, ...env, WORKER: workerID },
-          stdout: "pipe",
-          stderr: "pipe",
-        }),
-      );
-      const results = yield* Effect.promise(() =>
-        Promise.all(
-          children.map(async (child) => ({
-            code: await child.exited,
-            stderr: await new Response(child.stderr).text(),
-          })),
-        ),
-      );
-      expect(results).toEqual([
-        { code: 0, stderr: "" },
-        { code: 0, stderr: "" },
-      ]);
-      expect(
-        yield* provide(
-          Credential.Service.pipe(
-            Effect.flatMap((store) => store.list("openai")),
-          ),
-          env,
-        ),
-      ).toHaveLength(16);
-    }),
+    const children = ["a", "b"].map((workerID) =>
+      Bun.spawn([process.execPath, "-e", worker], {
+        env: { ...process.env, ...env, WORKER: workerID },
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+    );
+    const results = yield* Effect.promise(() =>
+      Promise.all(
+        children.map(async (child) => ({
+          code: await child.exited,
+          stderr: await new Response(child.stderr).text(),
+        })),
+      ),
+    );
+    expect(results).toEqual([
+      { code: 0, stderr: "" },
+      { code: 0, stderr: "" },
+    ]);
+    expect(
+      yield* provide(Credential.Service.pipe(Effect.flatMap((store) => store.list("openai"))), env),
+    ).toHaveLength(16);
+  }),
 );

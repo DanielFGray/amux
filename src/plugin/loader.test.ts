@@ -190,7 +190,9 @@ testEffect("discovers plugins in the XDG opentui-herdr directory", () =>
     const configHome = yield* Effect.promise(() => tempDir());
     const pluginDir = join(configHome, "opentui-herdr", "plugins");
     yield* Effect.promise(() => mkdir(pluginDir, { recursive: true }));
-    yield* Effect.promise(() => writePluginFile(pluginDir, "discovered.ts", mkPluginSrc("discovered")));
+    yield* Effect.promise(() =>
+      writePluginFile(pluginDir, "discovered.ts", mkPluginSrc("discovered")),
+    );
     const { host } = yield* makeHost();
 
     yield* loadPluginsFromConfig(baseConfig(), host, join(configHome, "amux"));

@@ -389,7 +389,9 @@ test("a turn that fails reports the cause and leaves the session usable", async 
 
   const [failed, recovered] = frames.filter((f) => f._tag === "turn.end");
   expect(failed).toMatchObject({ outcome: "failed" });
-  expect((failed as { error?: string }).error).toBe("The agent worker failed while processing the request.");
+  expect((failed as { error?: string }).error).toBe(
+    "The agent worker failed while processing the request.",
+  );
   expect(frames.some((f) => f._tag === "agent.status" && f.state === "failed")).toBe(true);
   // The next turn still runs: a failure ends the turn, never the worker.
   expect(recovered).toMatchObject({ outcome: "completed" });

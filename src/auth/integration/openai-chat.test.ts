@@ -19,7 +19,11 @@ import { testEffect } from "../../test-effect.ts";
 // A gateway, recorded
 // =============================================================================
 
-type Recorded = { readonly status?: number | readonly number[]; readonly body: string; readonly chunks?: number };
+type Recorded = {
+  readonly status?: number | readonly number[];
+  readonly body: string;
+  readonly chunks?: number;
+};
 
 /** The requests a run made, and the client that answers them. */
 const gateway = (recorded: Recorded) => {
@@ -82,7 +86,10 @@ const API = "https://opencode.ai/zen/v1";
 const parts = (model: LanguageModel.Service, options?: Record<string, unknown>) =>
   Stream.runCollect(
     model.streamText({ prompt: "hello", ...options } as never) as Stream.Stream<any, any, never>,
-  ).pipe(Effect.map(Chunk.toReadonlyArray), Effect.map((all) => all.map(shape)));
+  ).pipe(
+    Effect.map(Chunk.toReadonlyArray),
+    Effect.map((all) => all.map(shape)),
+  );
 
 const shape = (part: unknown) => {
   const { metadata: _metadata, ...rest } = JSON.parse(JSON.stringify(part));
@@ -254,8 +261,20 @@ testEffect("two tools called in one turn are kept apart by their index", () =>
       (model) => parts(model, { toolkit }),
     );
     expect(result.filter((part: any) => part.type === "tool-call")).toEqual([
-      { type: "tool-call", id: "call_a", name: "read", params: { path: "a" }, providerExecuted: false },
-      { type: "tool-call", id: "call_b", name: "list", params: { dir: "b" }, providerExecuted: false },
+      {
+        type: "tool-call",
+        id: "call_a",
+        name: "read",
+        params: { path: "a" },
+        providerExecuted: false,
+      },
+      {
+        type: "tool-call",
+        id: "call_b",
+        name: "list",
+        params: { dir: "b" },
+        providerExecuted: false,
+      },
     ]);
   }),
 );
@@ -282,7 +301,11 @@ testEffect("a tool call whose arguments never parse fails the turn", () =>
 testEffect("a tool call delta that never states its identity fails the turn", () =>
   Effect.gen(function* () {
     const failure = yield* run(
-      { body: sse(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`) },
+      {
+        body: sse(
+          `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+        ),
+      },
       (model) => parts(model),
     ).pipe(Effect.flip);
     expect((failure as any)._tag).toBe("MalformedOutput");
@@ -461,8 +484,7 @@ testEffect("a `oneOf` choice is applied by withholding the other tools", () =>
   Effect.gen(function* () {
     const { sent } = yield* run(
       { body: sse(`{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`) },
-      (model) =>
-        parts(model, { toolkit, toolChoice: { mode: "required", oneOf: ["list"] } }),
+      (model) => parts(model, { toolkit, toolChoice: { mode: "required", oneOf: ["list"] } }),
     );
     expect((sent[0] as any).tools.map((tool: any) => tool.function.name)).toEqual(["list"]);
     expect((sent[0] as any).tool_choice).toBe("required");

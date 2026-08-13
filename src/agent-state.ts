@@ -45,7 +45,10 @@ export type ReportedAgentState = typeof ReportedAgentStateSchema.Type;
  * plus the one fact only the mux is in a position to know — that the pane lost
  * it.
  */
-export const AgentStateSchema = S.Literal(...ReportedAgentStateSchema.literals, AgentState.Detached);
+export const AgentStateSchema = S.Literal(
+  ...ReportedAgentStateSchema.literals,
+  AgentState.Detached,
+);
 export type AgentState = typeof AgentStateSchema.Type;
 
 export const isReportedAgentState = (value: unknown): value is ReportedAgentState =>

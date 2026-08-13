@@ -1,12 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { computeRects, paneInDirection, resizeDivider, resizePane } from "./geometry.ts";
 import { createHarness, run } from "./harness.ts";
-import {
-  LAYOUT_VERSION,
-  makeLayout,
-  type Layout,
-  type LayoutNode,
-} from "./layout.ts";
+import { LAYOUT_VERSION, makeLayout, type Layout, type LayoutNode } from "./layout.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -19,11 +14,7 @@ const pane = (id: string, weight = 1): LayoutNode => ({
   agent: id,
   weight,
 });
-const split = (
-  direction: "row" | "column",
-  children: LayoutNode[],
-  weight = 1,
-): LayoutNode => ({
+const split = (direction: "row" | "column", children: LayoutNode[], weight = 1): LayoutNode => ({
   type: "split",
   direction,
   weight,
@@ -37,41 +28,29 @@ const layout = (root: LayoutNode, focus?: string): Layout => ({
 });
 
 test("computeRects rounds cumulative boundaries and charges one cell per divider", () => {
-  const rects = computeRects(
-    layout(split("row", [pane("a", 2), pane("b"), pane("c")])),
-    {
-      cols: 13,
-      rows: 7,
-    },
-  );
+  const rects = computeRects(layout(split("row", [pane("a", 2), pane("b"), pane("c")])), {
+    cols: 13,
+    rows: 7,
+  });
 
   expect([...rects.values()]).toEqual([
     { x: 0, y: 0, width: 6, height: 7 },
     { x: 7, y: 0, width: 2, height: 7 },
     { x: 10, y: 0, width: 3, height: 7 },
   ]);
-  expect(
-    [...rects.values()].reduce((sum, rect) => sum + rect.width, 0) + 2,
-  ).toBe(13);
+  expect([...rects.values()].reduce((sum, rect) => sum + rect.width, 0) + 2).toBe(13);
 });
 
 test("borders stay inside pane rectangles and nested axes use their parent's exact allocation", () => {
   const rects = computeRects(
-    layout(
-      split("row", [
-        pane("left"),
-        split("column", [pane("top"), pane("bottom", 2)], 2),
-      ]),
-    ),
+    layout(split("row", [pane("left"), split("column", [pane("top"), pane("bottom", 2)], 2)])),
     { cols: 20, rows: 11 },
   );
 
   expect(rects.get("left")).toEqual({ x: 0, y: 0, width: 6, height: 11 });
   expect(rects.get("top")).toEqual({ x: 7, y: 0, width: 13, height: 3 });
   expect(rects.get("bottom")).toEqual({ x: 7, y: 4, width: 13, height: 7 });
-  expect(
-    computeRects(layout(pane("only")), { cols: 20, rows: 11 }).get("only"),
-  ).toEqual({
+  expect(computeRects(layout(pane("only")), { cols: 20, rows: 11 }).get("only")).toEqual({
     x: 0,
     y: 0,
     width: 20,
@@ -244,8 +223,7 @@ test("resize rewrites the model, preserves other siblings, and stops at three ce
   expect(moved.get("b")!.width).toBe(before.get("b")!.width - 2);
   expect(moved.get("c")).toEqual(before.get("c"));
 
-  for (let i = 0; i < 100; i++)
-    current = resizePane(current, size, "a", "right");
+  for (let i = 0; i < 100; i++) current = resizePane(current, size, "a", "right");
   expect(computeRects(current, size).get("b")!.width).toBe(3);
   expect(current.focus).toBe("b");
 });

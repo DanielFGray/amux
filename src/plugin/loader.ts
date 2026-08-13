@@ -97,7 +97,12 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
     if (spec.enabled)
       yield* host.add(loaded.definition).pipe(Effect.catchAllCause(() => Effect.void));
     if (loaded.reloadable)
-      hot.push({ id: loaded.definition.id, path: spec.path, source, definition: loaded.definition });
+      hot.push({
+        id: loaded.definition.id,
+        path: spec.path,
+        source,
+        definition: loaded.definition,
+      });
   }
 
   return hot as readonly HotPlugin[];

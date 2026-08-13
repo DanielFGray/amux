@@ -34,8 +34,11 @@ export type Method =
       readonly prompts?: readonly Prompt[];
     };
 
-export type Connection =
-  | { readonly type: "credential"; readonly id: Credential.ID; readonly label: string };
+export type Connection = {
+  readonly type: "credential";
+  readonly id: Credential.ID;
+  readonly label: string;
+};
 
 /** What an integration needs to build a language model. */
 export type ModelRequest = {

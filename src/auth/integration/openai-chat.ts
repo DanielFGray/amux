@@ -24,7 +24,9 @@ import { Chunk, Effect, Layer, Schedule, Schema as S, Stream } from "effect";
  * one state machine to be correct about instead of two.
  */
 export const layer = (options: Options): Layer.Layer<LanguageModel.LanguageModel> =>
-  Layer.effect(LanguageModel.LanguageModel, make(options)).pipe(Layer.provide(FetchHttpClient.layer));
+  Layer.effect(LanguageModel.LanguageModel, make(options)).pipe(
+    Layer.provide(FetchHttpClient.layer),
+  );
 
 export type Options = {
   readonly model: string;
@@ -53,7 +55,11 @@ export const make = Effect.fnUntraced(function* (options: Options) {
           Stream.unwrapScoped,
           Stream.catchTag("ResponseError", (error) =>
             Stream.fromEffect(
-              AiError.HttpResponseError.fromResponseError({ module: MODULE, method: "streamText", error }),
+              AiError.HttpResponseError.fromResponseError({
+                module: MODULE,
+                method: "streamText",
+                error,
+              }),
             ),
           ),
         ),
@@ -74,7 +80,10 @@ export const make = Effect.fnUntraced(function* (options: Options) {
   return yield* LanguageModel.make({
     streamText: stream,
     generateText: (provider) =>
-      Stream.runCollect(stream(provider)).pipe(Effect.map(Chunk.toReadonlyArray), Effect.map(gather)),
+      Stream.runCollect(stream(provider)).pipe(
+        Effect.map(Chunk.toReadonlyArray),
+        Effect.map(gather),
+      ),
   });
 });
 
@@ -298,9 +307,19 @@ const request = <A>(effect: Effect.Effect<A, HttpClientError.HttpClientError>) =
   effect.pipe(
     Effect.catchTags({
       RequestError: (error) =>
-        Effect.fail(AiError.HttpRequestError.fromRequestError({ module: MODULE, method: "streamText", error })),
+        Effect.fail(
+          AiError.HttpRequestError.fromRequestError({
+            module: MODULE,
+            method: "streamText",
+            error,
+          }),
+        ),
       ResponseError: (error) =>
-        AiError.HttpResponseError.fromResponseError({ module: MODULE, method: "streamText", error }),
+        AiError.HttpResponseError.fromResponseError({
+          module: MODULE,
+          method: "streamText",
+          error,
+        }),
     }),
     Effect.retry({
       times: 3,

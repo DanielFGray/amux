@@ -158,7 +158,9 @@ export function makeAgentLog(
         const entry = { sequence, event: { ...frame, sequence } } as Entry;
         current.push(entry);
         yield* write(frame.session, current);
-        yield* feed(frame.session).pipe(Effect.flatMap((bus) => PubSub.publish(bus, entry.event as AgentEvent)));
+        yield* feed(frame.session).pipe(
+          Effect.flatMap((bus) => PubSub.publish(bus, entry.event as AgentEvent)),
+        );
         return entry.event as AgentEvent;
       }).pipe(
         Effect.mapError((error) =>
@@ -176,7 +178,7 @@ export function makeAgentLog(
       );
 
     const bounds = (session: string) =>
-        load(session).pipe(
+      load(session).pipe(
         Effect.map((current) => ({
           oldest: current[0]?.sequence ?? 0,
           latest: current.at(-1)?.sequence ?? -1,

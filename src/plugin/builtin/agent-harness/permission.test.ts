@@ -302,7 +302,8 @@ test("a framed rejection becomes the model-visible tool result with correction f
             feedback: "Use notes.md instead.",
           }),
         ).frames[0]!;
-        if (response._tag !== "agent.permission") return yield* Effect.fail("permission frame did not decode");
+        if (response._tag !== "agent.permission")
+          return yield* Effect.fail("permission frame did not decode");
         yield* gate.resolve(response.request, response.decision, response.feedback);
         return yield* Fiber.join(running);
       }),

@@ -117,7 +117,10 @@ export function agentToolkit(workspace: string, gate: PermissionGate) {
       gated("glob", "read", paths(input.path ?? "."), input, async () => {
         const root = fromWorkspace(workspace, input.path ?? ".");
         const matches: string[] = [];
-        for await (const match of new Bun.Glob(input.pattern).scan({ cwd: root, onlyFiles: true })) {
+        for await (const match of new Bun.Glob(input.pattern).scan({
+          cwd: root,
+          onlyFiles: true,
+        })) {
           matches.push(resolve(root, match));
           if (matches.length >= (input.limit ?? DEFAULT_LIMIT)) break;
         }

@@ -16,17 +16,11 @@ import {
 const fakeParse: SendKeyParser = (token: string) => {
   switch (token) {
     case "Enter":
-      return [
-        { name: "enter", ctrl: false, shift: false, meta: false, super: false },
-      ];
+      return [{ name: "enter", ctrl: false, shift: false, meta: false, super: false }];
     case "ctrl+a":
-      return [
-        { name: "a", ctrl: true, shift: false, meta: false, super: false },
-      ];
+      return [{ name: "a", ctrl: true, shift: false, meta: false, super: false }];
     case "space":
-      return [
-        { name: "space", ctrl: false, shift: false, meta: false, super: false },
-      ];
+      return [{ name: "space", ctrl: false, shift: false, meta: false, super: false }];
     default:
       return null;
   }
@@ -121,18 +115,14 @@ test("pickSendTarget prefers the focused pane", () => {
   const focused = target();
   const selected = target();
   const revealed: string[] = [];
-  expect(
-    pickSendTarget(focused, selected, (s) => revealed.push(s.describe())),
-  ).toBe(focused);
+  expect(pickSendTarget(focused, selected, (s) => revealed.push(s.describe()))).toBe(focused);
   expect(revealed).toEqual([]);
 });
 
 test("pickSendTarget falls back to the selection and reveals it", () => {
   const selected = target();
   const revealed: string[] = [];
-  expect(
-    pickSendTarget(null, selected, (s) => revealed.push(s.describe())),
-  ).toBe(selected);
+  expect(pickSendTarget(null, selected, (s) => revealed.push(s.describe()))).toBe(selected);
   expect(revealed).toEqual(["test pane"]);
 });
 
@@ -150,8 +140,7 @@ test("the app's own key strings drive encodeSendKeys end to end", async () => {
     });
     // createBindings arms the leader under the default prefix, so <leader> is
     // meaningful right away — exactly as it is for the command bindings.
-    const viaKeymap: SendKeyParser = (token) =>
-      parseKeyStrokes(bindings.keymap, token);
+    const viaKeymap: SendKeyParser = (token) => parseKeyStrokes(bindings.keymap, token);
     expect(encodeSendKeys("'ls -la' Enter", viaKeymap)).toBe("ls -la\r");
     expect(encodeSendKeys("ctrl+a", viaKeymap)).toBe("\x01");
     expect(encodeSendKeys("<leader>:", viaKeymap)).toBe("\x01:");
@@ -173,8 +162,7 @@ test("a token holding a key among plain letters encodes the whole sequence", asy
     const bindings = createBindings(t.renderer, [], {
       onUnhandled: () => true,
     });
-    const viaKeymap: SendKeyParser = (token) =>
-      parseKeyStrokes(bindings.keymap, token);
+    const viaKeymap: SendKeyParser = (token) => parseKeyStrokes(bindings.keymap, token);
     expect(encodeSendKeys("<leader> q", viaKeymap)).toBe("\x01q");
     expect(encodeSendKeys("'cd /tmp' Enter", viaKeymap)).toBe("cd /tmp\r");
     expect(encodeSendKeys("cd /tmp Enter", viaKeymap)).toBe("cd /tmp\r");

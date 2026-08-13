@@ -1,11 +1,7 @@
 import { expect, test } from "bun:test";
 import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
 import type { SpaceSet } from "../space.ts";
-import {
-  runModelProjections,
-  scheduledPoll,
-  scheduleHintVisibility,
-} from "../app.tsx";
+import { runModelProjections, scheduledPoll, scheduleHintVisibility } from "../app.tsx";
 import { createAppState, POLL_MS } from "./state.ts";
 
 function scopedRunner() {

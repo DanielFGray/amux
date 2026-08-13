@@ -53,11 +53,7 @@ test("input round-trips through the pty", async () => {
 
 test("forkpty child owns the controlling terminal session", async () => {
   const p = spawnPty(
-    [
-      "sh",
-      "-c",
-      'printf \'%s %s %s\\n\' "$$" "$(ps -o sid= -p $$)" "$(ps -o tpgid= -p $$)"',
-    ],
+    ["sh", "-c", 'printf \'%s %s %s\\n\' "$$" "$(ps -o sid= -p $$)" "$(ps -o tpgid= -p $$)"'],
     {
       cols: 80,
       rows: 24,
@@ -74,13 +70,7 @@ test("forkpty child owns the controlling terminal session", async () => {
 
 test("native exec preserves argv, cwd, environment and exit status", async () => {
   const p = spawnPty(
-    [
-      "sh",
-      "-c",
-      'printf \'%s|%s|%s\\n\' "$1" "$OH_PTY_TEST" "$PWD"; exit 7',
-      "sh",
-      "two words",
-    ],
+    ["sh", "-c", 'printf \'%s|%s|%s\\n\' "$1" "$OH_PTY_TEST" "$PWD"; exit 7', "sh", "two words"],
     { cols: 80, rows: 24, cwd: "/tmp", env: { OH_PTY_TEST: "native env" } },
   );
   const out = collect(p);
@@ -92,14 +82,11 @@ test("native exec preserves argv, cwd, environment and exit status", async () =>
 
 test("environment variables override process.env and inherit unset values", async () => {
   const originalPath = process.env.PATH;
-  const p = spawnPty(
-    ["/bin/sh", "-c", 'printf \'%s\\n%s\\n\' "$PATH" "$OH_INHERITED"'],
-    {
-      cols: 80,
-      rows: 24,
-      env: { PATH: "/custom/path", OH_INHERITED: "inherited" },
-    },
-  );
+  const p = spawnPty(["/bin/sh", "-c", 'printf \'%s\\n%s\\n\' "$PATH" "$OH_INHERITED"'], {
+    cols: 80,
+    rows: 24,
+    env: { PATH: "/custom/path", OH_INHERITED: "inherited" },
+  });
   const out = collect(p);
   await p.processExited;
   await out.done;
@@ -127,9 +114,9 @@ test("TERM is forced to xterm-256color regardless of caller environment", async 
 });
 
 test("environment with NUL bytes is refused", async () => {
-  expect(() =>
-    spawnPty(["sh"], { cols: 80, rows: 24, env: { BAD: "value\0with\0nuls" } }),
-  ).toThrow(/NUL/);
+  expect(() => spawnPty(["sh"], { cols: 80, rows: 24, env: { BAD: "value\0with\0nuls" } })).toThrow(
+    /NUL/,
+  );
 });
 
 test("close() is idempotent and stops the pump", async () => {
@@ -157,11 +144,7 @@ test("kill terminates the whole session, background jobs included", async () => 
 
 test("kill escalates a session whose children trap HUP and TERM", async () => {
   const p = spawnPty(
-    [
-      "bash",
-      "-c",
-      "trap '' HUP TERM; (trap '' HUP TERM; printf CHILD_READY\\n; sleep 30) & wait",
-    ],
+    ["bash", "-c", "trap '' HUP TERM; (trap '' HUP TERM; printf CHILD_READY\\n; sleep 30) & wait"],
     { cols: 80, rows: 24 },
   );
   const out = collect(p);

@@ -250,16 +250,22 @@ const implementation = Effect.gen(function* () {
         false,
         readRows().pipe(
           Effect.flatMap((loaded) => {
-            if (!loaded.valid) return Effect.die(new Error("credential store contains invalid JSON"));
+            if (!loaded.valid)
+              return Effect.die(new Error("credential store contains invalid JSON"));
             const row = loaded.rows.find((item) => item.id === id);
             if (!row) return Effect.void;
-            if (row.value.type === "key" || row.value.expires > now + Duration.minutes(5).pipe(Duration.toMillis))
+            if (
+              row.value.type === "key" ||
+              row.value.expires > now + Duration.minutes(5).pipe(Duration.toMillis)
+            )
               return Effect.succeed(redact(row.value));
             return refresh(redact(row.value) as OAuth).pipe(
               Effect.flatMap((value) =>
-                writeRows(loaded.rows.map((item) => item.id === id ? { ...item, value: unredact(value) } : item)).pipe(
-                  Effect.as(value),
-                ),
+                writeRows(
+                  loaded.rows.map((item) =>
+                    item.id === id ? { ...item, value: unredact(value) } : item,
+                  ),
+                ).pipe(Effect.as(value)),
               ),
             );
           }),

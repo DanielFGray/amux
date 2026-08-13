@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { Effect, Either, Layer } from "effect";
 import { agentPreflight } from "./preflight.ts";
-import { Service as Integration, type Interface as IntegrationService } from "../../../integration.ts";
+import {
+  Service as Integration,
+  type Interface as IntegrationService,
+} from "../../../integration.ts";
 import {
   Service as ModelCatalog,
   type Interface as ModelCatalogService,

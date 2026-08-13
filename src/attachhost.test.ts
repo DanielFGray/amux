@@ -37,10 +37,8 @@ const run = <A, E>(
     ),
   );
 afterEach(async () => {
-  for (const daemon of daemons.splice(0))
-    await Effect.runPromise(daemon.stop).catch(() => {});
-  for (const dir of dirs.splice(0))
-    await rm(dir, { recursive: true, force: true });
+  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
 const envs = new Map<string, NodeJS.ProcessEnv>();
@@ -72,9 +70,7 @@ async function client(path: string, hello: string, extra: string = "") {
       open(socket) {
         // Written as one payload on purpose: a real client will batch its
         // hello with whatever it already wanted to say, and both must land.
-        socket.write(
-          encodeAttachFrame({ _tag: "hello", client: hello }) + extra,
-        );
+        socket.write(encodeAttachFrame({ _tag: "hello", client: hello }) + extra);
       },
       data(_socket, data) {
         buffer += data.toString("utf8");
@@ -124,9 +120,7 @@ test("a session outlives the client that was watching it", async () => {
 
 test("hello is honoured alongside frames batched behind it in one write", async () => {
   const daemon = await started("batched");
-  await Effect.runPromise(
-    daemon.spawnSession({ id: "agent-1", cmd: ["cat"], cols: 80, rows: 24 }),
-  );
+  await Effect.runPromise(daemon.spawnSession({ id: "agent-1", cmd: ["cat"], cols: 80, rows: 24 }));
 
   const attached = await client(
     daemon.paths.attach,
@@ -154,10 +148,7 @@ test("multiple clients hold independent attachments", async () => {
   await settle();
   expect(second.frames.some((f) => f._tag === "error")).toBe(false);
   // Both, not "whichever arrived first": there is no owner to name any more.
-  expect((await Effect.runPromise(daemon.getAttachedClients)).sort()).toEqual([
-    "one",
-    "two",
-  ]);
+  expect((await Effect.runPromise(daemon.getAttachedClients)).sort()).toEqual(["one", "two"]);
 
   first.socket.end();
   await settle();
@@ -182,9 +173,7 @@ test("a reconnect with the same client id cannot be released by the old socket",
 
   expect(await Effect.runPromise(daemon.getAttachedClient)).toBe("stable");
   expect(second.frames.some((frame) => frame._tag === "error")).toBe(false);
-  second.socket.write(
-    encodeAttachFrame({ _tag: "ping", nonce: "replacement-alive" }),
-  );
+  second.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "replacement-alive" }));
   await settle();
   expect(second.frames).toContainEqual({
     _tag: "pong",
@@ -223,9 +212,7 @@ test("an input naming a dead session is ignored rather than dropping the attachm
   expect(await Effect.runPromise(daemon.getAttachedClient)).toBe("racer");
   attached.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "alive" }));
   await settle();
-  expect(
-    attached.frames.some((f) => f._tag === "pong" && f.nonce === "alive"),
-  ).toBe(true);
+  expect(attached.frames.some((f) => f._tag === "pong" && f.nonce === "alive")).toBe(true);
   attached.socket.end();
 });
 
@@ -244,9 +231,7 @@ test("stopping the daemon closes the attach socket and its sessions", async () =
   await Effect.runPromise(daemon.stop);
   daemons.splice(daemons.indexOf(daemon), 1);
 
-  await expect(
-    Bun.connect({ unix: path, socket: { data() {} } }),
-  ).rejects.toThrow();
+  await expect(Bun.connect({ unix: path, socket: { data() {} } })).rejects.toThrow();
   // The scope that owned the PTY is gone, so the process it was supervising is
   // gone with it rather than being orphaned. `sleep 30` would still be running
   // if the finalizer had not fired.
@@ -290,9 +275,7 @@ test("the daemon tracks when the attached client was last seen", async () => {
   // Any inbound frame refreshes last-seen — a heartbeat above all, because an
   // attached UI showing an idle agent sends nothing else for hours.
   const before = (await control(daemon, (c) => c.Ping())).attachLastSeen!;
-  attached.socket.write(
-    encodeAttachFrame({ _tag: "ping", nonce: "keepalive" }),
-  );
+  attached.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "keepalive" }));
   await settle(25);
   const after = (await control(daemon, (c) => c.Ping())).attachLastSeen!;
   expect(after).toBeGreaterThan(before);

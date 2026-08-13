@@ -29,11 +29,7 @@ const isPrintable = (s: string): boolean =>
  * edit buffer. The renderable displays only stars, updated directly via the
  * captured ref. The real secret lives only in the `values` signal.
  */
-export function Prompt(props: {
-  request: PromptRequest;
-  width: number;
-  error?: string;
-}) {
+export function Prompt(props: { request: PromptRequest; width: number; error?: string }) {
   const [field, setField] = createSignal(0);
   const [values, setValues] = createSignal<string[]>([]);
 
@@ -88,13 +84,21 @@ export function Prompt(props: {
 
                 return (
                   <box style={{ flexDirection: "column", flexShrink: 0 }}>
-                    <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>{spec.label}</text>
+                    <text style={{ fg: theme.subtext0, height: 1, flexShrink: 0 }}>
+                      {spec.label}
+                    </text>
                     <box style={{ position: "relative", height: 1, flexShrink: 0 }}>
                       <input
                         value={spec.masked ? "" : (values()[idx] ?? "")}
                         placeholder={spec.placeholder ?? ""}
                         focused={field() === idx}
-                        ref={spec.masked ? (el: InputRenderable) => { maskedInputs.set(idx, el); } : undefined}
+                        ref={
+                          spec.masked
+                            ? (el: InputRenderable) => {
+                                maskedInputs.set(idx, el);
+                              }
+                            : undefined
+                        }
                         onKeyDown={(key) => {
                           if (field() !== idx) return;
                           if (key.name === "tab") {
@@ -103,7 +107,11 @@ export function Prompt(props: {
                             return;
                           }
                           if (spec.masked) {
-                            if (key.name === "return" || key.name === "kpenter" || key.name === "linefeed") {
+                            if (
+                              key.name === "return" ||
+                              key.name === "kpenter" ||
+                              key.name === "linefeed"
+                            ) {
                               submit();
                               key.preventDefault();
                               return;
@@ -129,7 +137,9 @@ export function Prompt(props: {
                         onPaste={
                           spec.masked
                             ? (event) => {
-                                const text = new TextDecoder().decode(event.bytes).replace(/[\n\r]/g, "");
+                                const text = new TextDecoder()
+                                  .decode(event.bytes)
+                                  .replace(/[\n\r]/g, "");
                                 if (text) {
                                   set(idx, (values()[idx] ?? "") + text);
                                   syncMask();

@@ -1,10 +1,6 @@
 import { Cause, Effect, Ref } from "effect";
 import { expect } from "bun:test";
-import {
-  DaemonModel,
-  DaemonModelError,
-  layerDaemonModel,
-} from "./DaemonModel.ts";
+import { DaemonModel, DaemonModelError, layerDaemonModel } from "./DaemonModel.ts";
 import type { SessionState } from "../session.ts";
 import { workspaceFromSession } from "../workspace.ts";
 import { testEffect } from "../test-effect.ts";
@@ -161,9 +157,7 @@ testEffect("touch updates attachLastSeen", () =>
     yield* model.touch("client-a", "conn-1");
 
     const after = yield* model.get;
-    expect(
-      after.attachments.get("conn-1")!.attachLastSeen,
-    ).toBeGreaterThanOrEqual(beforeSeen);
+    expect(after.attachments.get("conn-1")!.attachLastSeen).toBeGreaterThanOrEqual(beforeSeen);
   }).pipe(Effect.provide(layerDaemonModel(initial))),
 );
 

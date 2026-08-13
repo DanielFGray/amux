@@ -99,9 +99,9 @@ export function evaluateAll(
  * `git status` and the user does not need two rules for one decision.
  */
 export function matchWildcard(input: string, pattern: string): boolean {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/[*?]/g, (token) =>
-    token === "*" ? ".*" : ".",
-  );
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/[*?]/g, (token) => (token === "*" ? ".*" : "."));
   const optionalTail = escaped.endsWith(" .*") ? `${escaped.slice(0, -3)}( .*)?` : escaped;
   return new RegExp(`^${optionalTail}$`, "s").test(input);
 }

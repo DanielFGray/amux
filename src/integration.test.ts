@@ -17,10 +17,7 @@ const env = (root: string): NodeJS.ProcessEnv => ({
   XDG_STATE_HOME: join(root, "state"),
 });
 
-const run = <A>(
-  effect: Effect.Effect<A, any, any>,
-  variables: NodeJS.ProcessEnv,
-) =>
+const run = <A>(effect: Effect.Effect<A, any, any>, variables: NodeJS.ProcessEnv) =>
   effect.pipe(
     Effect.provide(makeLayer()),
     Effect.provide(Credential.Default),
@@ -35,9 +32,7 @@ const key = (value: string) => ({
 
 testEffect("stored credentials are the active connection", () =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() =>
-      mkdtemp(join(tmpdir(), "amux-integration-")),
-    );
+    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
     yield* Effect.addFinalizer(() =>
       Effect.promise(() => rm(root, { recursive: true, force: true })),
     );
@@ -55,9 +50,7 @@ testEffect("stored credentials are the active connection", () =>
       variables,
     );
     const active = yield* run(
-      Service.pipe(
-        Effect.flatMap((integration) => integration.active("openai")),
-      ),
+      Service.pipe(Effect.flatMap((integration) => integration.active("openai"))),
       variables,
     );
     expect(active).toEqual({
@@ -66,22 +59,16 @@ testEffect("stored credentials are the active connection", () =>
       label: "stored",
     });
     const value = yield* run(
-      Service.pipe(
-        Effect.flatMap((integration) => integration.resolve(active!)),
-      ),
+      Service.pipe(Effect.flatMap((integration) => integration.resolve(active!))),
       variables,
     );
-    expect(
-      value && value.type === "key" ? Redacted.value(value.key) : undefined,
-    ).toBe("stored");
+    expect(value && value.type === "key" ? Redacted.value(value.key) : undefined).toBe("stored");
   }),
 );
 
 testEffect("an integration is told the API host the catalog names for it", () =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() =>
-      mkdtemp(join(tmpdir(), "amux-integration-")),
-    );
+    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
     yield* Effect.addFinalizer(() =>
       Effect.promise(() => rm(root, { recursive: true, force: true })),
     );
@@ -139,9 +126,7 @@ testEffect("an integration is told the API host the catalog names for it", () =>
 
 testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() =>
-      mkdtemp(join(tmpdir(), "amux-integration-")),
-    );
+    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
     yield* Effect.addFinalizer(() =>
       Effect.promise(() => rm(root, { recursive: true, force: true })),
     );
@@ -196,15 +181,11 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
       label: "fake",
     };
     yield* runRegistry(
-      Service.pipe(
-        Effect.flatMap((integration) => integration.resolve(connection)),
-      ),
+      Service.pipe(Effect.flatMap((integration) => integration.resolve(connection))),
     );
     expect(refreshed).toBe(1);
     yield* runRegistry(
-      Service.pipe(
-        Effect.flatMap((integration) => integration.resolve(connection)),
-      ),
+      Service.pipe(Effect.flatMap((integration) => integration.resolve(connection))),
     );
     expect(refreshed).toBe(1);
   }),
