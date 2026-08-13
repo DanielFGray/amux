@@ -2,9 +2,7 @@ import { expect, test } from "bun:test";
 import { resolveCommandSession, splitCommandArgs } from "./cli.ts";
 
 test("escaped shell semicolons divide command argument groups", () => {
-  expect(
-    splitCommandArgs(["pane.split", "row", ";", "pane.focus", "right"]),
-  ).toEqual([
+  expect(splitCommandArgs(["pane.split", "row", ";", "pane.focus", "right"])).toEqual([
     ["pane.split", "row"],
     ["pane.focus", "right"],
   ]);
@@ -17,9 +15,9 @@ test("commands use the pane session unless an explicit session is supplied", () 
   const previous = process.env.AMUX_DAEMON_SESSION;
   process.env.AMUX_DAEMON_SESSION = "pane-session";
   try {
-    expect(
-      resolveCommandSession("session", undefined, { title: "t", body: "b" }),
-    ).toBe("pane-session");
+    expect(resolveCommandSession("session", undefined, { title: "t", body: "b" })).toBe(
+      "pane-session",
+    );
     expect(
       resolveCommandSession("session", undefined, {
         title: "t",
@@ -27,9 +25,7 @@ test("commands use the pane session unless an explicit session is supplied", () 
         session: "override",
       }),
     ).toBe("override");
-    expect(resolveCommandSession("workspace", undefined, {})).toBe(
-      "pane-session",
-    );
+    expect(resolveCommandSession("workspace", undefined, {})).toBe("pane-session");
   } finally {
     if (previous === undefined) delete process.env.AMUX_DAEMON_SESSION;
     else process.env.AMUX_DAEMON_SESSION = previous;
@@ -41,9 +37,7 @@ test("ordinary commands retain the default session outside a managed pane", () =
   delete process.env.AMUX_DAEMON_SESSION;
   try {
     expect(resolveCommandSession("workspace", undefined, {})).toBe("default");
-    expect(
-      resolveCommandSession("session", undefined, { title: "t", body: "b" }),
-    ).toBeNull();
+    expect(resolveCommandSession("session", undefined, { title: "t", body: "b" })).toBeNull();
   } finally {
     if (previous === undefined) delete process.env.AMUX_DAEMON_SESSION;
     else process.env.AMUX_DAEMON_SESSION = previous;
@@ -60,4 +54,23 @@ test("session-required commands report missing pane identity from the CLI", () =
   expect(Buffer.from(result.stderr).toString()).toContain(
     "'notify' requires a session id or a managed pane",
   );
+});
+
+test("skill output teaches managed discovery and safety", () => {
+  const result = Bun.spawnSync([process.execPath, "src/cli.ts", "--skill"]);
+  const stdout = Buffer.from(result.stdout).toString();
+  expect(result.exitCode).toBe(0);
+  expect(stdout).toContain("name: amux");
+  expect(stdout).toContain('test -n "${AMUX_DAEMON_SESSION:-}"');
+  expect(stdout).toContain("amux agents");
+  expect(stdout).toContain("Do not close spaces, windows, panes, or sessions");
+});
+
+test("a bare command group prints its derived syntax", () => {
+  const result = Bun.spawnSync([process.execPath, "src/cli.ts", "agents"]);
+  const stdout = Buffer.from(result.stdout).toString();
+  expect(result.exitCode).toBe(0);
+  expect(stdout).toContain("usage: amux agents <command>");
+  expect(stdout).toContain("agent.new");
+  expect(stdout).toContain("agent.prompt");
 });

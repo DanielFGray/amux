@@ -163,6 +163,24 @@ function coerce(value: string | undefined, field: FieldShape): unknown {
   }
 }
 
+export function commandGroups(): readonly string[] {
+  return [
+    ...new Set(COMMAND_DEFS.filter((def) => def.target !== "view").map((def) => def.group)),
+  ].sort();
+}
+
+export function generateGroupHelp(group: string): string | undefined {
+  const definitions = COMMAND_DEFS.filter((def) => def.target !== "view" && def.group === group);
+  if (definitions.length === 0) return undefined;
+
+  return [
+    `usage: amux ${group} <command>`,
+    "",
+    `${group}:`,
+    ...definitions.flatMap(commandHelp),
+  ].join("\n");
+}
+
 export function generateHelp(): string {
   const lines: string[] = [
     "usage: amux <command> [args] [--flag=value] [--session=<id>]",
@@ -176,9 +194,7 @@ export function generateHelp(): string {
   const groups = new Map<string, string[]>();
   for (const def of COMMAND_DEFS) {
     if (def.target === "view") continue;
-    const fields = fieldNames(def.tag);
-    const fieldStr = fields.map((f) => (f.required ? `<${f.name}>` : `[${f.name}]`)).join(" ");
-    const entry = `    ${def.tag} ${fieldStr}`.trimEnd() + `\n        ${def.desc}`;
+    const entry = commandHelp(def);
     const groupEntries = groups.get(def.group) ?? [];
     groupEntries.push(entry);
     groups.set(def.group, groupEntries);
@@ -197,4 +213,14 @@ export function generateHelp(): string {
   lines.push("  amux [session-id]   attach to a session (autostart daemon);");
   lines.push("                        defaults to 'default'");
   return lines.join("\n");
+}
+
+function commandHelp(def: (typeof COMMAND_DEFS)[number]): string {
+  const syntax = fieldNames(def.tag)
+    .map((field) => {
+      const value = field.literals?.join("|") ?? field.name;
+      return field.required ? `<${value}>` : `[--${field.name}=<${value}>]`;
+    })
+    .join(" ");
+  return `  ${def.tag} ${syntax}`.trimEnd() + `\n      ${COMMAND_META[def.tag].desc}`;
 }

@@ -1,5 +1,11 @@
 import { test, expect } from "bun:test";
-import { parseArgs, fieldNames, generateHelp } from "./command-cli.ts";
+import {
+  commandGroups,
+  parseArgs,
+  fieldNames,
+  generateGroupHelp,
+  generateHelp,
+} from "./command-cli.ts";
 import type { CommandTag } from "./commands.ts";
 
 test("parseArgs handles commands with no arguments", () => {
@@ -61,14 +67,7 @@ test("parseArgs handles optional command args with all flags", () => {
 
 test("parseArgs accepts separated notify flags", () => {
   expect(
-    parseArgs("notify", [
-      "--title",
-      "Build",
-      "--body",
-      "Finished",
-      "--session",
-      "work",
-    ]),
+    parseArgs("notify", ["--title", "Build", "--body", "Finished", "--session", "work"]),
   ).toEqual({
     parsed: { title: "Build", body: "Finished", session: "work" },
     errors: [],
@@ -89,4 +88,12 @@ test("generateHelp is non-empty", () => {
   expect(help).toContain("buffer.set");
   expect(help).toContain("daemon");
   expect(help).toContain("\\;");
+});
+
+test("group help derives command syntax from schemas", () => {
+  expect(commandGroups()).toContain("agents");
+  expect(generateGroupHelp("agents")).toContain(
+    "agent.prompt <target> <text> [--wait=<wait>] [--until=<idle|working|blocked|failed|done>] [--timeout=<timeout>]",
+  );
+  expect(generateGroupHelp("missing")).toBeUndefined();
 });

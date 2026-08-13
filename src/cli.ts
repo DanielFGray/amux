@@ -51,6 +51,19 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  if (sub === "--skill") {
+    const { generateSkill } = await import("./skill.ts");
+    process.stdout.write(generateSkill());
+    return 0;
+  }
+
+  const { generateGroupHelp } = await import("./command-cli.ts");
+  const groupHelp = argv.length === 1 ? generateGroupHelp(sub) : undefined;
+  if (groupHelp) {
+    process.stdout.write(groupHelp + "\n");
+    return 0;
+  }
+
   if (sub === "daemon") {
     const { runDaemonMain } = await import("./daemon-main.ts");
     runDaemonMain(argv[1]);
@@ -119,14 +132,19 @@ async function main(): Promise<number> {
   }
 
   // Command dispatch — needs Effect, control-client, commands, etc.
-  const [effectMod, { SessionStore, isSessionId }, { controlCall, agentWatch }, commandsMod, { parseArgs }] =
-    await Promise.all([
-      import("effect"),
-      import("./session.ts"),
-      import("./control-client.ts"),
-      import("./commands.ts"),
-      import("./command-cli.ts"),
-    ]);
+  const [
+    effectMod,
+    { SessionStore, isSessionId },
+    { controlCall, agentWatch },
+    commandsMod,
+    { parseArgs },
+  ] = await Promise.all([
+    import("effect"),
+    import("./session.ts"),
+    import("./control-client.ts"),
+    import("./commands.ts"),
+    import("./command-cli.ts"),
+  ]);
   const { Effect, Option, Schema, Stream } = effectMod;
   const { COMMAND_META, Command, commandDefinition } = commandsMod;
   type CommandTag = (typeof Command.Type)["_tag"];
@@ -135,7 +153,9 @@ async function main(): Promise<number> {
     return s in COMMAND_META;
   }
 
-  function parseCommandGroup(argv: string[]):
+  function parseCommandGroup(
+    argv: string[],
+  ):
     | { tag: CommandTag; parsed: Record<string, unknown>; positionalSession?: string }
     | { errors: string[] } {
     const tag = argv[0];
@@ -188,7 +208,9 @@ async function main(): Promise<number> {
         await Effect.runPromise(
           controlCall(id!, (control) =>
             agentWatch(control, watch.target, watch.after).pipe(
-              Stream.runForEach((event) => Effect.sync(() => process.stdout.write(JSON.stringify(event) + "\n"))),
+              Stream.runForEach((event) =>
+                Effect.sync(() => process.stdout.write(JSON.stringify(event) + "\n")),
+              ),
             ),
           ).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
         );
@@ -223,7 +245,8 @@ async function main(): Promise<number> {
               onTimeout: () => new Error("agent_prompt_stalled"),
             }),
           );
-          if (Option.isNone(first)) return { outputs: [...outputs, { result: { error: "agent_prompt_stalled" } }] };
+          if (Option.isNone(first))
+            return { outputs: [...outputs, { result: { error: "agent_prompt_stalled" } }] };
           let turn: string | undefined;
           let result: unknown;
           const fold = (event: any) => {
