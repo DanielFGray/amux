@@ -3,11 +3,17 @@ import { AiError, Chat, LanguageModel, Prompt, Response, Tool, Toolkit } from "@
 import { Effect, Schema as S, Stream } from "effect";
 import { makeAgentWorker, sanitizeAgentError } from "./worker.ts";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
+import { waitFor } from "../../../test-wait.ts";
 type WorkerFrame = AgentEventPayload | AgentDelta;
 
-const waitFor = async (predicate: () => boolean) => {
-  for (let i = 0; i < 200 && !predicate(); i++) await Bun.sleep(5);
-};
+/** Wait for the worker to emit a frame, since a turn ends asynchronously. */
+const awaitFrame = (frames: readonly WorkerFrame[], tag: WorkerFrame["_tag"], count = 1) =>
+  Effect.promise(() =>
+    waitFor(
+      () => frames.filter((frame) => frame._tag === tag).length >= count,
+      count === 1 ? `a ${tag} frame` : `${count} ${tag} frames`,
+    ),
+  );
 
 /**
  * A provider that replays scripted parts and records the prompt it was handed.
@@ -77,13 +83,7 @@ test("drains a prompt and emits semantic frames", async () => {
       { type: "text-end", id: "t1" },
     ]),
     (worker) =>
-      worker
-        .prompt("inspect the pane")
-        .pipe(
-          Effect.andThen(
-            Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end"))),
-          ),
-        ),
+      worker.prompt("inspect the pane").pipe(Effect.andThen(awaitFrame(frames, "turn.end"))),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
   );
 
@@ -107,14 +107,7 @@ test("forwards provider reasoning deltas", async () => {
       { type: "reasoning-delta", id: "r1", delta: "checking files" },
       { type: "reasoning-end", id: "r1" },
     ]),
-    (worker) =>
-      worker
-        .prompt("inspect")
-        .pipe(
-          Effect.andThen(
-            Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end"))),
-          ),
-        ),
+    (worker) => worker.prompt("inspect").pipe(Effect.andThen(awaitFrame(frames, "turn.end"))),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
   );
 
@@ -161,14 +154,7 @@ test("a tool call is resolved by the toolkit and reported as a result frame", as
             ],
       { seen },
     ),
-    (worker) =>
-      worker
-        .prompt("capture it")
-        .pipe(
-          Effect.andThen(
-            Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end"))),
-          ),
-        ),
+    (worker) => worker.prompt("capture it").pipe(Effect.andThen(awaitFrame(frames, "turn.end"))),
     {
       emit: (frame) => Effect.sync(() => void frames.push(frame)),
       toolkit: resolved as never,
@@ -218,14 +204,7 @@ test("continues through successive tool calls before ending the turn", async () 
           ]
         : [{ type: "text-delta", id: "t1", delta: "finished" }],
     ),
-    (worker) =>
-      worker
-        .prompt("look twice")
-        .pipe(
-          Effect.andThen(
-            Effect.promise(() => waitFor(() => frames.some((frame) => frame._tag === "turn.end"))),
-          ),
-        ),
+    (worker) => worker.prompt("look twice").pipe(Effect.andThen(awaitFrame(frames, "turn.end"))),
     {
       emit: (frame) => Effect.sync(() => void frames.push(frame)),
       toolkit: toolkit.pipe(Effect.provide(toolkit.toLayer(handlers))) as never,
@@ -254,9 +233,9 @@ test("a second prompt carries prior turns as structured messages, not concatenat
       worker
         .prompt("check the logs")
         .pipe(
-          Effect.andThen(Effect.promise(() => waitFor(() => seen.length > 0))),
+          Effect.andThen(Effect.promise(() => waitFor(() => seen.length > 0, "the first turn"))),
           Effect.andThen(worker.prompt("now check the error")),
-          Effect.andThen(Effect.promise(() => waitFor(() => seen.length > 1))),
+          Effect.andThen(Effect.promise(() => waitFor(() => seen.length > 1, "the second turn"))),
         ),
   );
 
@@ -284,7 +263,7 @@ test("a restored chat sends prior structured history exactly once", async () => 
           ),
         });
         yield* worker.prompt("first");
-        yield* Effect.promise(() => waitFor(() => saved.length === 1));
+        yield* Effect.promise(() => waitFor(() => saved.length === 1, "the history to be saved"));
       }).pipe(
         Effect.provideServiceEffect(
           LanguageModel.LanguageModel,
@@ -308,7 +287,7 @@ test("a restored chat sends prior structured history exactly once", async () => 
           emit: () => Effect.void,
         });
         yield* worker.prompt("second");
-        yield* Effect.promise(() => waitFor(() => seen.length === 1));
+        yield* Effect.promise(() => waitFor(() => seen.length === 1, "the resumed turn"));
       }).pipe(
         Effect.provideServiceEffect(
           LanguageModel.LanguageModel,
@@ -334,9 +313,9 @@ test("interrupt ends the turn as interrupted and keeps the partial text", async 
     (worker) =>
       Effect.gen(function* () {
         yield* worker.prompt("start");
-        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "text.delta")));
+        yield* awaitFrame(frames, "text.delta");
         yield* worker.interrupt("human correction");
-        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end")));
+        yield* awaitFrame(frames, "turn.end");
       }),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
   );
@@ -378,11 +357,9 @@ test("a turn that fails reports the cause and leaves the session usable", async 
     (worker) =>
       Effect.gen(function* () {
         yield* worker.prompt("first");
-        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end")));
+        yield* awaitFrame(frames, "turn.end");
         yield* worker.prompt("second");
-        yield* Effect.promise(() =>
-          waitFor(() => frames.filter((f) => f._tag === "turn.end").length === 2),
-        );
+        yield* awaitFrame(frames, "turn.end", 2);
       }),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
   );
@@ -419,14 +396,7 @@ test("streamed tool parameters emit params frames before the call", async () => 
       { type: "tool-params-delta", id: "call-1", delta: 'tern":"x"}' },
       { type: "tool-params-end", id: "call-1" },
     ]),
-    (worker) =>
-      worker
-        .prompt("search")
-        .pipe(
-          Effect.andThen(
-            Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end"))),
-          ),
-        ),
+    (worker) => worker.prompt("search").pipe(Effect.andThen(awaitFrame(frames, "turn.end"))),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
   );
 
@@ -444,6 +414,16 @@ test("streamed tool parameters emit params frames before the call", async () => 
 
 test("a turn interrupted mid-tool-call leaves no unpaired tool call in history", async () => {
   const frames: WorkerFrame[] = [];
+  // The tool never returns, so the interrupt below lands while the call is
+  // still open — the only state that can strand an unpaired call.
+  const slow = Tool.make("slow_tool", {
+    description: "never finishes",
+    parameters: {},
+    success: S.String,
+  });
+  const toolkit = Toolkit.make(slow);
+  const handlers = toolkit.of({ slow_tool: () => Effect.never } as never);
+
   const chatHistory = await runWorker(
     scriptedModel(
       () => [
@@ -460,12 +440,15 @@ test("a turn interrupted mid-tool-call leaves no unpaired tool call in history",
     (worker, chat) =>
       Effect.gen(function* () {
         yield* worker.prompt("run it");
-        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "tool.start")));
+        yield* awaitFrame(frames, "tool.start");
         yield* worker.interrupt();
-        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end")));
+        yield* awaitFrame(frames, "turn.end");
         return yield* chat.history;
       }),
-    { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
+    {
+      emit: (frame) => Effect.sync(() => void frames.push(frame)),
+      toolkit: toolkit.pipe(Effect.provide(toolkit.toLayer(handlers))) as never,
+    },
   );
 
   // An assistant message carrying a tool call with no matching tool result is
@@ -479,6 +462,9 @@ test("a turn interrupted mid-tool-call leaves no unpaired tool call in history",
       if (part.type === "tool-result") results.add(part.id);
     }
   }
+  // Without this the loop below is vacuous: a history that recorded no call at
+  // all would satisfy "every call is paired" while testing nothing.
+  expect(calls).toContain("call-1");
   for (const id of calls) expect(results.has(id)).toBe(true);
 });
 
@@ -495,11 +481,11 @@ test("a prompt queued behind a running turn announces its prompt immediately", a
     (worker) =>
       Effect.gen(function* () {
         yield* worker.prompt("first");
-        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "text.delta")));
+        yield* awaitFrame(frames, "text.delta");
         yield* worker.prompt("second");
         const announced = frames.some((f) => f._tag === "turn.start" && f.prompt === "second");
         yield* worker.interrupt("enough");
-        yield* Effect.promise(() => waitFor(() => frames.some((f) => f._tag === "turn.end")));
+        yield* awaitFrame(frames, "turn.end");
         return announced;
       }),
     { emit: (frame) => Effect.sync(() => void frames.push(frame)) },

@@ -131,6 +131,38 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
       options.emit({ ...frame, session: options.session } as AgentEventPayload | AgentDelta);
 
     /**
+     * Pair every tool call the history left open with a cancelled result.
+     *
+     * The provider contract is that each tool call is answered exactly once.
+     * Interrupting a turn while a handler is still running satisfies neither
+     * the caller nor the provider, so the worker answers on the tool's behalf
+     * and the transcript stays a valid prompt for the next turn.
+     */
+    const closeOpenToolCalls = Ref.update(options.chat.history, (prompt) => {
+      const answered = new Set<string>();
+      const open = new Map<string, string>();
+      for (const message of prompt.content) {
+        if (message.role !== "assistant" && message.role !== "tool") continue;
+        for (const part of message.content) {
+          if (part.type === "tool-call") open.set(part.id, part.name);
+          if (part.type === "tool-result") answered.add(part.id);
+        }
+      }
+      for (const id of answered) open.delete(id);
+      if (open.size === 0) return prompt;
+      const results = [...open].map(([id, name]) =>
+        Prompt.makePart("tool-result", {
+          id,
+          name,
+          isFailure: true,
+          result: "The tool call was cancelled because the turn was interrupted.",
+          providerExecuted: false,
+        }),
+      );
+      return Prompt.make([...prompt.content, Prompt.makeMessage("tool", { content: results })]);
+    });
+
+    /**
      * Terminal frames for every exit, so no path leaves the pane mid-turn.
      *
      * A failure carries its cause: the turn is the only place the error is ever
@@ -143,17 +175,24 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
         : Cause.isInterruptedOnly(exit.cause)
           ? ("interrupted" as const)
           : ("failed" as const);
+      // A turn cut short between a tool call and its result leaves the call
+      // unpaired, and a provider rejects that history outright — so the session
+      // would be dead from the next prompt on, not just this turn.
+      const repair = outcome === "completed" ? Effect.void : closeOpenToolCalls;
       const error =
         Exit.isFailure(exit) && outcome === "failed"
           ? sanitizeAgentError(Cause.pretty(exit.cause))
           : undefined;
-      return emit({
-        _tag: "turn.end",
-        turn,
-        outcome,
-        ...(text ? { text } : {}),
-        ...(error ? { error } : {}),
-      }).pipe(
+      return repair.pipe(
+        Effect.andThen(
+          emit({
+            _tag: "turn.end",
+            turn,
+            outcome,
+            ...(text ? { text } : {}),
+            ...(error ? { error } : {}),
+          }),
+        ),
         Effect.andThen(
           emit({
             _tag: "agent.status",
