@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { Effect, Option, Runtime, Schedule, Scope, Stream, Schema as S } from "effect";
+import { Deferred, Effect, Option, Queue, Schedule, Scope, Stream, Schema as S } from "effect";
 import { FileSystem } from "@effect/platform";
 import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SessionBackendFactory } from "./backend.ts";
@@ -141,7 +141,16 @@ const make = (
       ),
     );
     let workspace = initialWorkspace;
-    let commandQueue: Promise<void> = Promise.resolve();
+    const commandQueue = yield* Queue.unbounded<{
+      readonly command: Command;
+      readonly context: WorkspaceCommandContext;
+      readonly done: Deferred.Deferred<
+        { readonly snapshot: WorkspaceSnapshot; readonly result?: AnyCommandResult },
+        SessionClientError
+      >;
+    }>();
+    const closed = yield* Deferred.make<void>();
+    const closingError = () => new SessionClientError({ message: "client is closing" });
     const accept = (next: WorkspaceSnapshot) => {
       if (next.revision > workspace.revision) {
         workspace = next;
@@ -151,6 +160,51 @@ const make = (
       }
       return workspace;
     };
+    const runQueuedWorkspaceCommand = (request: {
+      readonly command: Command;
+      readonly context: WorkspaceCommandContext;
+    }) =>
+      Effect.gen(function* () {
+        const { outputs } = yield* control.Batch({
+          values: [request.command],
+          expectedRevision: workspace.revision,
+          context: request.context,
+        });
+        const next = outputs[0]?.workspace;
+        if (next === undefined) {
+          return yield* new SessionClientError({
+            message: "workspace command returned no workspace",
+          });
+        }
+        const parsed = yield* parseWorkspaceJson(next);
+        accept(parsed);
+        return {
+          snapshot: structuredClone(workspace),
+          ...(outputs[0]?.result === undefined
+            ? {}
+            : { result: outputs[0].result as AnyCommandResult }),
+        };
+      }).pipe(Effect.mapError((error) => new SessionClientError({ message: errorMessage(error) })));
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Queue.take(commandQueue).pipe(
+          Effect.flatMap((request) =>
+            Effect.exit(
+              Effect.raceFirst(
+                runQueuedWorkspaceCommand(request),
+                Deferred.await(closed).pipe(Effect.flatMap(() => Effect.fail(closingError()))),
+              ),
+            ).pipe(Effect.flatMap((exit) => Deferred.done(request.done, exit))),
+          ),
+        ),
+      ),
+    );
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        yield* Queue.takeAll(commandQueue);
+        yield* Deferred.succeed(closed, undefined);
+      }),
+    );
     service = {
       id,
       attach,
@@ -166,38 +220,18 @@ const make = (
         Stream.mapError(toControlError),
       ),
       runWorkspace: (command, context) =>
-        Effect.flatMap(Effect.runtime<never>(), (runtime) =>
-          Effect.tryPromise({
-            try: () => {
-              const request = async () => {
-                const { outputs } = await Runtime.runPromise(runtime)(
-                  control.Batch({
-                    values: [command],
-                    expectedRevision: workspace.revision,
-                    context,
-                  }),
-                );
-                const next = outputs[0]?.workspace;
-                if (next === undefined) throw new Error("workspace command returned no workspace");
-                const parsed = await Runtime.runPromise(runtime)(parseWorkspaceJson(next));
-                accept(parsed);
-                return {
-                  snapshot: structuredClone(workspace),
-                  ...(outputs[0]?.result === undefined
-                    ? {}
-                    : { result: outputs[0].result as AnyCommandResult }),
-                };
-              };
-              const queued = commandQueue.then(request);
-              commandQueue = queued.then(
-                () => {},
-                () => {},
-              );
-              return queued;
-            },
-            catch: (error) => new SessionClientError({ message: errorMessage(error) }),
-          }),
-        ),
+        Effect.gen(function* () {
+          const done = yield* Deferred.make<
+            { readonly snapshot: WorkspaceSnapshot; readonly result?: AnyCommandResult },
+            SessionClientError
+          >();
+          return yield* Effect.raceFirst(
+            Queue.offer(commandQueue, { command, context, done }).pipe(
+              Effect.andThen(Deferred.await(done)),
+            ),
+            Deferred.await(closed).pipe(Effect.flatMap(() => Effect.fail(closingError()))),
+          );
+        }),
       run: (command) =>
         control.Batch({ values: [command] }).pipe(
           Effect.map(({ outputs }) => outputs[0]?.result),

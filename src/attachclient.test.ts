@@ -1296,6 +1296,49 @@ test("a failed workspace response is neither accepted nor left as a phantom PTY"
   expect(await Effect.runPromise(daemon.liveSessions())).toEqual(beforeLive);
 });
 
+test("closing a client rejects queued workspace commands", async () => {
+  const { env } = await session("client-command-close");
+  const scope = Effect.runSync(Scope.make());
+  scopes.push(scope);
+  const client = await run(
+    Scope.extend(SessionClient.connect("client-command-close", { autostart: false }), scope),
+    env,
+  );
+  const pending = Effect.runPromise(
+    client.runWorkspace(command("space.rename", { name: "closing" }), {
+      size: { cols: 80, rows: 24 },
+      shell: ["sh"],
+      cwd: "/tmp",
+    }),
+  );
+  await Effect.runPromise(Scope.close(scope, Exit.void));
+  await expect(pending).rejects.toBeDefined();
+});
+
+// Blocked by ts-d99630: interrupting a split strands a half-created PTY, and
+// the daemon can then neither stop gracefully nor be torn down without hanging
+// the whole file. The client contract this would assert — a caller woken with
+// "client is closing" rather than left waiting — is covered for queued commands
+// by the test above. Unskip when the daemon defect is fixed.
+test.skip("closing a client rejects a workspace command in flight", async () => {
+  const { env } = await session("client-command-in-flight");
+  const client = await attach("client-command-in-flight", env);
+  const pending = run(
+    client.runWorkspace(command("pane.split", { axis: "row" }), {
+      size: { cols: 80, rows: 24 },
+      shell: ["sh", "-c", "sleep 30"],
+      cwd: "/tmp",
+    }),
+    env,
+  );
+  await Bun.sleep(10);
+  const close = scopes[scopes.length - 1]!;
+  await Effect.runPromise(Scope.close(close, Exit.void));
+  scopes.splice(scopes.indexOf(close), 1);
+  clients.splice(clients.indexOf(client), 1);
+  await expect(pending).rejects.toBeDefined();
+});
+
 test("a natural terminal exit is published only after its workspace generation is durable", async () => {
   const { daemon, env } = await session("exit-order");
   const client = await attach("exit-order", env);
