@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, FiberMap, Layer, Match, Ref, Stream } from "effect";
+import { Context, Deferred, Effect, FiberMap, Layer, Match, Queue, Ref, Stream } from "effect";
 import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
@@ -225,8 +225,8 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       const termination = yield* Deferred.make<number | null>();
       const disposition = yield* Deferred.make<"active" | "aborted">();
       let phase: "prepared" | "activating" | "active" | "aborted" = "prepared";
-      const pending: Uint8Array[] = [];
-      const pendingEvents: AgentFrame[] = [];
+      const pending = yield* Queue.unbounded<Uint8Array>();
+      const pendingEvents = yield* Queue.unbounded<AgentFrame>();
       let lastAgentState: ReportedAgentState | null = null;
       let exitPublished = false;
 
@@ -290,7 +290,8 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
                     session: spec.id,
                     data: chunk,
                   } satisfies AttachFrame);
-                } else if (phase === "activating") pending.push(new Uint8Array(chunk));
+                } else if (phase === "activating")
+                  yield* Queue.offer(pending, new Uint8Array(chunk));
               }),
             ),
             Effect.catchAll((error) =>
@@ -347,7 +348,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             yield* stateObserver.onState(spec.id, committed.state);
           }
           if (phase === "active") yield* hub.publish(committed);
-          else pendingEvents.push(committed);
+          else yield* Queue.offer(pendingEvents, committed);
         });
 
       // A foreign agent reporting over the control socket is the same fact as
@@ -384,14 +385,19 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               data: replay,
             } satisfies AttachFrame);
           }
-          while (pending.length > 0) {
-            yield* hub.publish({
-              _tag: "output",
-              session: spec.id,
-              data: pending.shift()!,
-            } satisfies AttachFrame);
+          // Offers can arrive while hub publication yields, so drain again.
+          while ((yield* Queue.size(pending)) > 0) {
+            for (const data of yield* Queue.takeAll(pending)) {
+              yield* hub.publish({
+                _tag: "output",
+                session: spec.id,
+                data,
+              } satisfies AttachFrame);
+            }
           }
-          while (pendingEvents.length > 0) yield* hub.publish(pendingEvents.shift()!);
+          while ((yield* Queue.size(pendingEvents)) > 0) {
+            for (const event of yield* Queue.takeAll(pendingEvents)) yield* hub.publish(event);
+          }
           phase = "active";
           yield* FiberMap.run(pumps, `foreground:${spec.id}`, foreground);
           yield* Deferred.succeed(disposition, "active");
