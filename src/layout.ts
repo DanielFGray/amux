@@ -21,7 +21,7 @@
  * either, and a headless window is the two of them together.
  */
 
-import { Effect, Schema as S } from "effect";
+import { Effect, ParseResult, Schema as S } from "effect";
 import type { SplitDirection } from "./window.ts";
 import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts";
 
@@ -616,6 +616,71 @@ export class LayoutFormatError extends S.TaggedError<LayoutFormatError>()("Layou
   message: S.String,
 }) {}
 
+const paneId = S.String.pipe(S.minLength(1)).annotations({ message: () => "pane needs a pane id" });
+const agentId = S.String.pipe(S.minLength(1)).annotations({
+  message: () => "pane needs an agent id",
+});
+const weight = S.Number.pipe(
+  S.finite(),
+  S.positive({ message: () => "weight must be a positive number" }),
+);
+const origin = S.Number.pipe(S.finite(), S.greaterThanOrEqualTo(0), S.lessThan(1)).annotations({
+  message: () => "must be a fraction of the window",
+});
+const size = S.Number.pipe(
+  S.finite(),
+  S.positive({ message: () => "must be a fraction of the window" }),
+  S.lessThanOrEqualTo(1, { message: () => "must be a fraction of the window" }),
+);
+
+const LayoutPaneSchema = S.Struct({
+  type: S.Literal("pane"),
+  agent: S.propertySignature(agentId).annotations({
+    missingMessage: () => "pane needs an agent id",
+  }),
+  id: S.propertySignature(paneId).annotations({ missingMessage: () => "pane needs a pane id" }),
+  weight: S.optionalWith(weight, { default: () => 1 }),
+});
+
+// The recursive schema's array is readonly and its optional field encoding does
+// not match the mutable, defaulted public node model, so the boundary cast is
+// required to use the decoded value as LayoutNode.
+const LayoutNodeSchema = S.Union(
+  LayoutPaneSchema,
+  S.Struct({
+    type: S.Literal("split"),
+    direction: S.Literal("row", "column").annotations({
+      message: () => 'split needs direction "row" or "column"',
+    }),
+    weight: S.optionalWith(weight, { default: () => 1 }),
+    children: S.Array(S.suspend((): S.Schema<LayoutNode> => LayoutNodeSchema))
+      .pipe(S.minItems(1))
+      .annotations({ message: () => "split needs children" }),
+  }),
+) as S.Schema<LayoutNode>;
+
+const LayoutSchema = S.Struct({
+  version: S.Number,
+  root: S.optional(S.NullOr(LayoutNodeSchema)),
+  floats: S.optional(
+    S.Array(
+      S.Struct({
+        id: S.propertySignature(paneId).annotations({
+          missingMessage: () => "float needs a pane id",
+        }),
+        agent: S.propertySignature(agentId).annotations({
+          missingMessage: () => "float needs an agent id",
+        }),
+        x: origin,
+        y: origin,
+        width: size,
+        height: size,
+      }),
+    ),
+  ),
+  focus: S.optional(paneId),
+});
+
 /** Serialize for session.json or the wire. Stable key order, so two equal
  *  layouts encode to equal strings and a diff of session.json stays readable. */
 export function encodeLayout(layout: Layout): string {
@@ -661,153 +726,76 @@ function order(node: LayoutNode | null): LayoutNode | null {
 export function decodeLayout(text: string): Effect.Effect<Layout, LayoutFormatError> {
   if (Buffer.byteLength(text) > MAX_LAYOUT_BYTES)
     return Effect.fail(new LayoutFormatError({ message: "layout is too large" }));
-  return Effect.try({
-    try: () => JSON.parse(text),
-    catch: (error) =>
-      new LayoutFormatError({ message: `layout is not JSON: ${(error as Error).message}` }),
-  }).pipe(Effect.flatMap((parsed) => parseLayout(parsed)));
+  return S.decodeUnknown(S.parseJson(S.Unknown) as S.Schema<unknown, string, never>)(text).pipe(
+    Effect.mapError((error) => new LayoutFormatError({ message: `layout is not JSON: ${error}` })),
+    Effect.flatMap(parseLayout),
+  );
 }
 
 export function parseLayout(value: unknown): Effect.Effect<Layout, LayoutFormatError> {
-  return Effect.gen(function* () {
-    if (!value || typeof value !== "object")
-      return yield* new LayoutFormatError({ message: "layout must be an object" });
-    const raw = value as Partial<Layout>;
-    if (raw.version !== LAYOUT_VERSION) {
-      return yield* new LayoutFormatError({
-        message: `unsupported layout version ${String(raw.version)}`,
-      });
-    }
-    const budget = { nodes: 0 };
-    const root =
-      raw.root === null || raw.root === undefined
-        ? null
-        : yield* parseNode(raw.root, "root", 1, budget);
-    if (raw.focus !== undefined && typeof raw.focus !== "string") {
-      return yield* new LayoutFormatError({ message: "focus must be a pane id" });
-    }
-    // Absent means no floats rather than a malformed layout: every layout
-    // written before floats existed says nothing about them, and "nothing
-    // floats" is what those layouts meant.
-    if (raw.floats !== undefined && !Array.isArray(raw.floats)) {
-      return yield* new LayoutFormatError({ message: "floats must be an array" });
-    }
-    const floats: LayoutFloat[] = [];
-    for (const [at, value] of (raw.floats ?? []).entries()) {
-      floats.push(yield* parseFloat(value, `floats[${at}]`, budget));
-    }
-    return makeLayout({ root: collapse(root), floats, focus: raw.focus });
-  });
+  return S.decodeUnknown(LayoutSchema)(value).pipe(
+    Effect.mapError((error) => new LayoutFormatError({ message: formatSchemaError(error) })),
+    Effect.flatMap(validateDecodedLayout),
+  );
 }
 
-/** A float counts against the same node budget as a tiled pane: it is a pane,
- *  and the budget is about how much a layout can ask the window to build. */
-function parseFloat(
-  value: unknown,
-  at: string,
-  budget: { nodes: number },
-): Effect.Effect<LayoutFloat, LayoutFormatError> {
-  return Effect.gen(function* () {
-    if (++budget.nodes > MAX_LAYOUT_NODES)
-      return yield* new LayoutFormatError({
-        message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
-      });
-    if (!value || typeof value !== "object")
-      return yield* new LayoutFormatError({ message: `${at} must be an object` });
-    const raw = value as Record<string, unknown>;
-    if (typeof raw.agent !== "string" || !raw.agent)
-      return yield* new LayoutFormatError({ message: `${at} float needs an agent id` });
-    if (typeof raw.id !== "string" || !raw.id)
-      return yield* new LayoutFormatError({ message: `${at} float needs a pane id` });
-    reservePaneId(raw.id);
-
-    // Fractions of the window. An origin outside it or a size of zero would
-    // rebuild as a pane nobody can see or reach, which is the class of layout
-    // this function exists to refuse.
-    const fraction = (key: "x" | "y" | "width" | "height") =>
-      Effect.gen(function* () {
-        const n = raw[key];
-        if (typeof n !== "number" || !Number.isFinite(n))
-          return yield* new LayoutFormatError({ message: `${at} ${key} must be a number` });
-        const size = key === "width" || key === "height";
-        if (size ? n <= 0 || n > 1 : n < 0 || n >= 1)
-          return yield* new LayoutFormatError({
-            message: `${at} ${key} must be a fraction of the window`,
-          });
-        return n;
-      });
-
-    return {
-      id: raw.id,
-      agent: raw.agent,
-      x: yield* fraction("x"),
-      y: yield* fraction("y"),
-      width: yield* fraction("width"),
-      height: yield* fraction("height"),
-    };
-  });
-}
-
-function parseNode(
-  value: unknown,
-  at: string,
-  depth: number,
-  budget: { nodes: number },
-): Effect.Effect<LayoutNode, LayoutFormatError> {
-  return Effect.gen(function* () {
-    if (depth > MAX_LAYOUT_DEPTH)
-      return yield* new LayoutFormatError({
-        message: `layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}`,
-      });
-    if (++budget.nodes > MAX_LAYOUT_NODES)
-      return yield* new LayoutFormatError({
-        message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
-      });
-    if (!value || typeof value !== "object")
-      return yield* new LayoutFormatError({ message: `${at} must be an object` });
-    const raw = value as Record<string, unknown>;
-    const weight = yield* parseWeight(raw.weight, at);
-
-    if (raw.type === "pane") {
-      if (typeof raw.agent !== "string" || !raw.agent) {
-        return yield* new LayoutFormatError({ message: `${at} pane needs an agent id` });
-      }
-      if (typeof raw.id !== "string" || !raw.id) {
-        return yield* new LayoutFormatError({ message: `${at} pane needs a pane id` });
-      }
-      reservePaneId(raw.id);
-      return { type: "pane", id: raw.id, agent: raw.agent, weight };
-    }
-
-    if (raw.type === "split") {
-      if (raw.direction !== "row" && raw.direction !== "column") {
-        return yield* new LayoutFormatError({
-          message: `${at} split needs direction "row" or "column"`,
-        });
-      }
-      if (!Array.isArray(raw.children) || raw.children.length === 0) {
-        return yield* new LayoutFormatError({ message: `${at} split needs children` });
-      }
-      const children = yield* Effect.all(
-        raw.children.map((child, i) => parseNode(child, `${at}.children[${i}]`, depth + 1, budget)),
-      );
-      return { type: "split", direction: raw.direction, weight, children };
-    }
-
-    return yield* new LayoutFormatError({
-      message: `${at} has unknown type ${JSON.stringify(raw.type)}`,
-    });
-  });
-}
-
-/** Weights are relative, so any positive finite number is meaningful; a
- *  non-positive one would render as a zero-width pane and is refused. */
-function parseWeight(value: unknown, at: string): Effect.Effect<number, LayoutFormatError> {
-  if (value === undefined) return Effect.succeed(1);
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return Effect.fail(
-      new LayoutFormatError({ message: `${at} weight must be a positive number` }),
-    );
+function formatSchemaError(error: ParseResult.ParseError): string {
+  const issues = ParseResult.ArrayFormatter.formatErrorSync(error);
+  // Prefer the deepest issue; at equal depth, a missing field is more specific than a type error.
+  const issue = [...issues].sort(
+    (left, right) => right.path.length - left.path.length || (left._tag === "Missing" ? -1 : 1),
+  )[0];
+  if (!issue) return "layout is invalid";
+  if (issue.path.at(-1) === "type") {
+    return `${formatPath(issue.path.slice(0, -1))} has unknown type`;
   }
-  return Effect.succeed(value);
+  const path = formatPath(issue.path);
+  return path ? `${path} ${issue.message}` : issue.message;
+}
+
+function formatPath(path: ReadonlyArray<PropertyKey>): string {
+  return path
+    .map((part, index) =>
+      typeof part === "number" ? `[${part}]` : index === 0 ? String(part) : `.${String(part)}`,
+    )
+    .join("");
+}
+
+function validateDecodedLayout(
+  decoded: S.Schema.Type<typeof LayoutSchema>,
+): Effect.Effect<Layout, LayoutFormatError> {
+  return Effect.gen(function* () {
+    if (decoded.version !== LAYOUT_VERSION)
+      return yield* new LayoutFormatError({
+        message: `unsupported layout version ${String(decoded.version)}`,
+      });
+    let nodes = 0;
+    const visit = (node: LayoutNode, depth: number): Effect.Effect<void, LayoutFormatError> => {
+      if (depth > MAX_LAYOUT_DEPTH)
+        return Effect.fail(
+          new LayoutFormatError({ message: `layout exceeds maximum depth ${MAX_LAYOUT_DEPTH}` }),
+        );
+      if (++nodes > MAX_LAYOUT_NODES)
+        return Effect.fail(
+          new LayoutFormatError({
+            message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
+          }),
+        );
+      if (node.type === "pane") reservePaneId(node.id);
+      return node.type === "split"
+        ? Effect.forEach(node.children, (child) => visit(child, depth + 1)).pipe(Effect.asVoid)
+        : Effect.void;
+    };
+    const root = decoded.root ?? null;
+    if (root) yield* visit(root, 1);
+    const floats = decoded.floats ?? [];
+    for (const float of floats) {
+      if (++nodes > MAX_LAYOUT_NODES)
+        return yield* new LayoutFormatError({
+          message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
+        });
+      reservePaneId(float.id);
+    }
+    return makeLayout({ root: collapse(root), floats, focus: decoded.focus });
+  });
 }
