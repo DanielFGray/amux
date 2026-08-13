@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigProvider, Effect } from "effect";
@@ -9,6 +10,7 @@ import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { SessionStore } from "./session.ts";
 import { Command, command } from "./commands.ts";
 import {
+  git as effectGit,
   gitWorktreeAdd,
   gitWorktreeDirty,
   gitWorktreeExists,
@@ -75,6 +77,32 @@ async function initRepo(): Promise<string> {
   await git(["commit", "-m", "groceries"], repo);
   return repo;
 }
+
+test("git rejects with git's stderr for a nonzero exit", async () => {
+  const repo = await initRepo();
+
+  await expect(effectGit(["rev-parse", "not-a-ref"], repo)).rejects.toThrow("not-a-ref");
+});
+
+test("git kills a process that exceeds its timeout", async () => {
+  const started = Date.now();
+  const token = `amux-timeout-${randomUUID()}`;
+
+  await expect(
+    effectGit(["hash-object", "--stdin", "--path", token], tmpdir(), 25),
+  ).rejects.toThrow("git hash-object timed out after 25ms");
+
+  const deadline = Date.now() + 2_000;
+  let matches: string[] = [];
+  do {
+    const result = Bun.spawnSync(["pgrep", "-f", token], { stdout: "pipe", stderr: "ignore" });
+    matches = result.stdout.toString().trim().split("\n").filter(Boolean);
+    if (matches.length === 0) break;
+    await Bun.sleep(25);
+  } while (Date.now() < deadline);
+  expect(matches).toEqual([]);
+  expect(Date.now() - started).toBeLessThan(2_000);
+});
 
 test("gitWorktreeAdd creates a branch and worktree; remove tears it down", async () => {
   const repo = await initRepo();

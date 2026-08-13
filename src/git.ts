@@ -2,6 +2,16 @@
  * Branch mark, ahead/behind, and worktree operations for a space's directory.
  */
 import { dirname, resolve } from "node:path";
+import * as BunContext from "@effect/platform-bun/BunContext";
+import * as Command from "@effect/platform/Command";
+import * as Chunk from "effect/Chunk";
+import * as Cause from "effect/Cause";
+import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import { pipe } from "effect/Function";
+import * as Stream from "effect/Stream";
 
 export interface GitInfo {
   branch: string;
@@ -63,34 +73,57 @@ export async function projectRoot(dir: string): Promise<string> {
  *  model-queue head, so the subprocess is killed after #GIT_TIMEOUT_MS. */
 const GIT_TIMEOUT_MS = 10_000;
 
-async function git(args: string[], cwd: string): Promise<string> {
-  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => proc.kill(), GIT_TIMEOUT_MS);
-  try {
-    const out = await new Response(proc.stdout).text();
-    const code = await proc.exited;
-    if (code !== 0) {
-      const err = await new Response(proc.stderr).text();
-      throw new Error(err.trim() || `git ${args[0]} failed`);
-    }
-    return out.trim();
-  } finally {
-    clearTimeout(timer);
-  }
-}
+class GitError extends Data.TaggedError("GitError")<{
+  readonly message: string;
+}> {}
 
-async function gitNull(args: string[], cwd: string): Promise<void> {
-  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "pipe" });
-  const timer = setTimeout(() => proc.kill(), GIT_TIMEOUT_MS);
-  try {
-    const code = await proc.exited;
-    if (code !== 0) {
-      const err = await new Response(proc.stderr).text();
-      throw new Error(err.trim() || `git ${args[0]} failed`);
-    }
-  } finally {
-    clearTimeout(timer);
-  }
+export async function git(
+  args: string[],
+  cwd: string,
+  timeoutMs = GIT_TIMEOUT_MS,
+): Promise<string> {
+  const result = await Effect.runPromiseExit(
+    pipe(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const process = yield* Command.start(
+            pipe(
+              Command.make("git", ...args),
+              Command.workingDirectory(cwd),
+              Command.stdout("pipe"),
+              Command.stderr("pipe"),
+            ),
+          );
+          const stdout = yield* Effect.fork(
+            Stream.decodeText()(process.stdout).pipe(Stream.runCollect),
+          );
+          const stderr = yield* Effect.fork(
+            Stream.decodeText()(process.stderr).pipe(Stream.runCollect),
+          );
+          const code = yield* process.exitCode.pipe(
+            Effect.timeoutFail({
+              duration: `${timeoutMs} millis`,
+              onTimeout: () =>
+                new GitError({ message: `git ${args[0]} timed out after ${timeoutMs}ms` }),
+            }),
+          );
+          const out = yield* Fiber.join(stdout);
+          const err = yield* Fiber.join(stderr);
+          if (code !== 0) {
+            return yield* new GitError({
+              message: Chunk.toReadonlyArray(err).join("").trim() || `git ${args[0]} failed`,
+            });
+          }
+          return Chunk.toReadonlyArray(out).join("").trim();
+        }),
+      ),
+      Effect.provide(BunContext.layer),
+    ),
+  );
+  return Exit.match(result, {
+    onFailure: (cause) => Promise.reject(Cause.squash(cause)),
+    onSuccess: (value) => value,
+  });
 }
 
 /** Create a new branch and a worktree checked out to it. Branch creation is the
@@ -103,7 +136,7 @@ export async function gitWorktreeAdd(
 ): Promise<void> {
   const args = ["worktree", "add", "-b", spec.branch, path];
   if (spec.base) args.push(spec.base);
-  await gitNull(args, repo);
+  await git(args, repo);
 }
 
 /** The repo is the cwd: a worktree being removed cannot be the git invocation's
@@ -111,7 +144,7 @@ export async function gitWorktreeAdd(
  *  repository itself. */
 export async function gitWorktreeRemove(repo: string, path: string, force = false): Promise<void> {
   const args = force ? ["worktree", "remove", "--force", path] : ["worktree", "remove", path];
-  await gitNull(args, repo);
+  await git(args, repo);
 }
 
 export async function gitWorktreeDirty(path: string): Promise<boolean> {
