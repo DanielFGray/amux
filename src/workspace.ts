@@ -639,7 +639,10 @@ export function applyWorkspaceCommand(
     case "pane.split": {
       const found = activeWindow();
       if (!found) break;
-      const agent = addAgent(found.window, found.space.dir);
+      // A split inherits the caller's directory, not the space's: an agent
+      // delegating from a worktree pane must not land the sibling in the repo
+      // root. The flag overrides that default.
+      const agent = addAgent(found.window, resolve(context.cwd, command.cwd?.trim() || "."));
       const panes = layoutPanes(found.window.layout.root);
       const at = panes.findIndex((pane) => pane.id === found.window.state.focus);
       const ref = { id: newPaneId(), agent: agent.id };

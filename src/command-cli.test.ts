@@ -19,6 +19,13 @@ test("parseArgs handles required positional arguments", () => {
   expect(result.errors).toEqual([]);
 });
 
+test("parseArgs exposes an optional cwd override on pane.split", () => {
+  expect(parseArgs("pane.split", ["row", "--cwd=/work/tree"]).parsed).toEqual({
+    axis: "row",
+    cwd: "/work/tree",
+  });
+});
+
 test("parseArgs handles optional arguments via flags", () => {
   const result = parseArgs("buffer.set", ["my-data", "--name=buf1"]);
   expect(result.parsed).toEqual({ data: "my-data", name: "buf1" });
@@ -95,5 +102,6 @@ test("group help derives command syntax from schemas", () => {
   expect(generateGroupHelp("agents")).toContain(
     "agent.prompt <target> <text> [--wait=<wait>] [--until=<idle|working|blocked|failed|done>] [--timeout=<timeout>]",
   );
+  expect(generateGroupHelp("panes")).toContain("pane.split <row|column> [--cwd=<cwd>]");
   expect(generateGroupHelp("missing")).toBeUndefined();
 });

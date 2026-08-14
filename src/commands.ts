@@ -113,7 +113,7 @@ const Direction = S.Literal("left", "right", "up", "down");
 // Panes.
 const PaneSplit = define(
   "pane.split",
-  { axis: Axis },
+  { axis: Axis, cwd: S.optional(S.String) },
   {
     desc: "split the focused pane",
     group: "panes",

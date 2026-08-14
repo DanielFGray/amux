@@ -226,7 +226,10 @@ test("agent tools are generated from the command definitions", () => {
     parameters: {
       type: "object",
       required: ["axis"],
-      properties: { axis: { type: "string", enum: ["row", "column"] } },
+      properties: {
+        axis: { type: "string", enum: ["row", "column"] },
+        cwd: { type: "string" },
+      },
     },
   });
   expect(capture).toMatchObject({

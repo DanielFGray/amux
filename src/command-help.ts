@@ -31,7 +31,7 @@ Commands:
     notify <title> <body> [session]
         send a notification to a session
   panes:
-    pane.split <axis>
+    pane.split <axis> [--cwd=<cwd>]
         split the focused pane
     pane.next
         focus the next pane

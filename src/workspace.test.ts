@@ -210,6 +210,33 @@ test("new identities are UUID-based, unique, and disjoint from adopted ids", () 
   expect(agents).not.toContain("pane-adopted");
 });
 
+test("pane.split inherits the caller's cwd and accepts an override", () => {
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+      ),
+    ),
+  );
+  // The space's own dir is /tmp; a caller working in a worktree must win.
+  const worktree = { ...context, cwd: "/srv/worktrees/feature" };
+  const inherited = applyWorkspaceCommand(
+    adopted,
+    command("pane.split", { axis: "row" }),
+    worktree,
+  ).snapshot;
+  expect(inherited.spaces[0]!.windows[0]!.agents.at(-1)!.cwd).toBe("/srv/worktrees/feature");
+
+  const overridden = applyWorkspaceCommand(
+    adopted,
+    command("pane.split", { axis: "row", cwd: "packages/app" }),
+    worktree,
+  ).snapshot;
+  expect(overridden.spaces[0]!.windows[0]!.agents.at(-1)!.cwd).toBe(
+    "/srv/worktrees/feature/packages/app",
+  );
+});
+
 test("pane.close transfers focus to a survivor when the focused pane is closed", () => {
   const saved = base(
     '{"version":1,"root":{"type":"split","direction":"column","children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1},{"type":"pane","id":"pane-c","agent":"agent-c","weight":1}]},"focus":"pane-b"}',
