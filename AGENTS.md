@@ -44,11 +44,13 @@ bun run cli           # unified `amux` CLI entry
 
 TypeScript diagnostics include suggestions. Treat suggestions as actionable feedback: fix them when they are correct, **do not** suppress or ignore them such that they accumulate.
 
+## Task tracking
+
 Tasks live in `prog`:
 
 ```bash
-prog prime            # workflow context
 prog ready -p amux    # unblocked tasks
+prog prime | head -130
 ```
 
 ## Gotchas
@@ -67,4 +69,5 @@ prog ready -p amux    # unblocked tasks
 - ../zaly/ — another agent harness on an inhouse stack
 - ../opentui/ - opentui source including examples with solidjs
 - ../effect/ - source for effect-ts [v3, see also ../effect-v4]
-- ../tsdoctor/ — TypeScript LSP features from CLI, very helpful when debugging type issues
+
+Remember there should be no hard architecture choices in this app, we're borrowing from and standing on the shoulders of these aforementioned giants

@@ -174,3 +174,43 @@ ast-grep run --lang ts \
 The pattern matches the whole comparison, so it does not change unrelated
 strings such as turn outcomes or comments. The replacement assumes the target
 file already imports `AgentState`; add that import separately when required.
+
+## Nullable-Field Migration
+
+When a field becomes nullable (e.g. `Pane.session` is now `SessionHandle |
+null`), the caller sites in tests can be migrated with two narrow rules:
+
+```yaml
+id: session-nullassert
+language: TypeScript
+rule:
+  pattern: $PANE.session.$FIELD
+fix: $PANE.session!.$FIELD
+```
+
+```yaml
+id: session-const-nullassert
+language: TypeScript
+rule:
+  pattern: const $NAME = $PANE.session;
+fix: const $NAME = $PANE.session!;
+```
+
+The member-access rule handled ~60 call sites; the const-declaration rule
+handled the rest (`const agent = pane.session;` → `... session!;`), which in
+turn fixed the follow-on argument errors at those sites.
+
+Gotchas learned on this migration:
+
+- **`language: TypeScript` does not parse `.tsx`.** The member-access rule
+  silently skipped `src/component-pane.test.tsx`; only the one remaining error
+  there after the run revealed it. Fix those files by hand, or write the rule
+  against TSX.
+- The member-access pattern `$PANE.session.$FIELD` only fires when a field
+  follows `.session`, so `content.session` (a `string` on a pane-content
+  object) was never touched — but a bare `x.session` in a comparison or a Set
+  literal is NOT matched and needs a separate pass (or manual edits).
+- Run `bunx tsc --noEmit` between passes; the remaining errors tell you exactly
+  which shapes the rules missed.
+- These are one-off migrations: delete the rule files after the rewrite lands,
+  keeping only the documentation of what worked.

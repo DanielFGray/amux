@@ -95,8 +95,10 @@ by the same id the attach socket speaks. It is a handle rather than a `Session`
 because the session is the daemon's — `session.ts` holds the persisted record of
 the same thing, and closing a handle loses a view, not a process. _Backend_
 belongs to `backend.ts` and means where a session's bytes come from, which is
-why the handle is not called that. A _pane_ is a view of a session in a layout;
-_agent_ means an LLM coding agent, never the supervised PTY. Session lifecycle
+why the handle is not called that. A _pane_ is a placed leaf of a window holding
+`{ id, content }`, where content is a pty session or a plugin view (with an
+optional backend session — see layout.ts PaneContent); _agent_ means an LLM
+coding agent, never the supervised PTY. Session lifecycle
 commands use the `session.*` namespace; `agent.*` is reserved for LLM
 interaction.
 
