@@ -16,7 +16,7 @@ async function setup() {
 
 test("a pane is named after the command it runs, not a generic 'shell'", async () => {
   const { window } = await setup();
-  expect(window.panes[0]!.session.name).toBe("bash");
+  expect(window.panes[0]!.session!.name).toBe("bash");
 });
 
 test("focusDirection crosses nesting levels rather than walking siblings", async () => {
@@ -90,8 +90,8 @@ test("zoom survives a resize and an uneven split's weights", async () => {
         direction: "row",
         weight: 1,
         children: [
-          { type: "pane", id: first.id, agent: first.session.id, weight: 5 },
-          { type: "pane", id: second.id, agent: second.session.id, weight: 1 },
+          { type: "pane", id: first.id, content: { kind: "pty", session: first.session!.id }, weight: 5 },
+          { type: "pane", id: second.id, content: { kind: "pty", session: second.session!.id }, weight: 1 },
         ],
       },
     }),

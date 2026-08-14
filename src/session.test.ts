@@ -249,7 +249,7 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
             ],
             layout: JSON.stringify({
               version: 1,
-              root: { type: "pane", id: "pane-a", agent: "agent-a", weight: 1 },
+              root: { type: "pane", id: "pane-a", content: { kind: "pty", session: "agent-a" }, weight: 1 },
               focus: "pane-a",
             }),
           },
@@ -264,9 +264,9 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
   const missing = structuredClone(value);
   missing.spaces[0].windows[0].layout = JSON.stringify({
     version: 1,
-    root: { type: "pane", id: "pane-a", agent: "missing", weight: 1 },
+    root: { type: "pane", id: "pane-a", content: { kind: "pty", session: "missing" }, weight: 1 },
   });
-  expect(() => Effect.runSync(parseSessionState(missing))).toThrow("absent or exited agent");
+  expect(() => Effect.runSync(parseSessionState(missing))).toThrow("absent or exited session");
   const malformed = structuredClone(value);
   malformed.spaces[0].windows[0].agents[0].rows = -1;
   expect(() => Effect.runSync(parseSessionState(malformed))).toThrow("invalid persisted agent");

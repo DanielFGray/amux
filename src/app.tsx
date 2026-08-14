@@ -1032,7 +1032,7 @@ function buildApp(
       selected: 0,
       onPaste: (name) => {
         const pane = spaces.activeWindow?.focused;
-        if (pane) {
+        if (pane?.session) {
           void Effect.runPromise(session.pasteBuffer(name, pane.session.id)).catch((error) =>
             console.error(`could not paste buffer '${name}': ${String(error)}`),
           );
@@ -1067,7 +1067,7 @@ function buildApp(
    */
   function sendKeysTarget(): SendTarget | null {
     const focused = spaces.activeWindow?.focused ?? null;
-    if (focused) return { write() {}, describe: () => focused.session.title || "pane" };
+    if (focused) return { write() {}, describe: () => focused.session?.title || "pane" };
     return null;
   }
 
@@ -1188,7 +1188,7 @@ function buildApp(
     "buffer.paste": ({ name }) =>
       Effect.gen(function* () {
         const pane = spaces.activeWindow?.focused;
-        if (!pane) return yield* new CommandError({ message: "no pane to paste into" });
+        if (!pane?.session) return yield* new CommandError({ message: "no pane to paste into" });
         yield* session
           .pasteBuffer(name, pane.session.id)
           .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));

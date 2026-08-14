@@ -84,14 +84,14 @@ test(
     const focused = JSON.parse(source.layout).focus;
     const movedAgent = JSON.parse(source.layout).root.children.find(
       (pane: any) => pane.id === focused,
-    ).agent;
+    ).content.session;
     await step(`${LEADER}!`, "1sp 2win 2ag");
     const after = await app.session();
     const projected = after!.spaces[0].windows.find(
       (window: any) => window.number === after!.spaces[0].activeWindow,
     );
     expect(projected.agents.map((agent: any) => agent.id)).toEqual([movedAgent]);
-    expect(JSON.parse(projected.layout).root.agent).toBe(movedAgent);
+    expect(JSON.parse(projected.layout).root.content.session).toBe(movedAgent);
     app.send("printf 'break-still-live\\n'\n");
     await app.until(
       () => app.screen().includes("break-still-live"),

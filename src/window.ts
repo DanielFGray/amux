@@ -8,7 +8,7 @@ import {
   RenderCtx,
   Shell,
   Backend as BackendContext,
-  PaneContent,
+  PaneViews,
   type WorkspaceEnv,
 } from "./env.ts";
 import { rollUp } from "./space.ts";
@@ -28,10 +28,13 @@ import {
   splitLayout,
   swapLayout,
   windowState,
+  paneSession,
+  withSession,
   type Layout,
   type LayoutFloat,
   type LayoutNode,
   type LayoutPreset,
+  type PaneContent,
   type PaneRef,
   type WindowState,
 } from "./layout.ts";
@@ -50,6 +53,21 @@ export type SplitDirection = "row" | "column";
 
 /** Which way `focusDirection` looks. Screen directions, not tree axes. */
 export type Direction = "left" | "right" | "up" | "down";
+
+/** The content a live session's pane shows: a pty view, or the plugin view of
+ *  a component session (the agent harness). Mirrors paneContentFor in
+ *  workspace.ts for the client's own layouts — the resident model records
+ *  content, so a round trip through applyLayout keeps it. */
+function contentFor(session: SessionHandle): PaneContent {
+  return session.kind === "component"
+    ? {
+        kind: "plugin",
+        type: session.declaredAgent ?? "component",
+        descriptor: {},
+        session: session.id,
+      }
+    : { kind: "pty", session: session.id };
+}
 
 let nextId = 0;
 
@@ -142,7 +160,7 @@ export class Window {
   #backend: SessionBackendFactory;
 
   /** What a component session's pane mounts. Null in a workspace that
-   *  registered none; see PaneContent in env.ts. */
+   *  registered none; see PaneViews in env.ts. */
   #paneContent: PaneView | null;
 
   /**
@@ -165,7 +183,7 @@ export class Window {
     this.#ctx = Context.get(env, RenderCtx);
     this.#shell = Context.get(env, Shell);
     this.#backend = Context.get(env, BackendContext);
-    this.#paneContent = Context.get(env, PaneContent);
+    this.#paneContent = Context.get(env, PaneViews);
     this.#cwd = cwd;
     this.number = number;
     this.root = new BoxRenderable(this.#ctx, {
@@ -352,6 +370,9 @@ export class Window {
    */
   releasePane(pane: Pane): { agent: SessionHandle; scope: Scope.CloseableScope } | null {
     const agent = pane.session;
+    // A sessionless pane (client-rendered plugin) owns no session, so there is
+    // nothing to hand over.
+    if (!agent) return null;
     if (!this.#panes.includes(pane) || !this.#sessions.includes(agent)) return null;
     const scope = this.#scopes.get(agent);
     if (!scope) return null;
@@ -473,7 +494,9 @@ export class Window {
    */
   write(bytes: string | Uint8Array) {
     if (this.#state.sync) {
-      const seen = new Set<SessionHandle>();
+      // Null keys (sessionless plugin panes) collapse into one bucket; their
+      // write is a no-op, so the fan-out is just cheaply redundant for them.
+      const seen = new Set<SessionHandle | null>();
       for (const pane of this.#panes) {
         if (seen.has(pane.session)) continue;
         seen.add(pane.session);
@@ -497,7 +520,7 @@ export class Window {
    */
   key(event: KeyEvent): boolean {
     if (!this.#state.sync) return this.focused?.handleKey(event) ?? false;
-    const seen = new Set<SessionHandle>();
+    const seen = new Set<SessionHandle | null>();
     let taken = false;
     for (const pane of this.#panes) {
       if (seen.has(pane.session)) continue;
@@ -538,15 +561,26 @@ export class Window {
    * The caller adds it to `#panes`, because where a pane lands in that list is
    * layout order and only the projection knows it.
    *
-   * The session decides which kind of leaf it gets. This is the one place that
-   * asks: everything else in the window addresses a Pane, so a component leaf
-   * tiles, splits and closes without a second path through any of it.
+   * The content decides which kind of leaf it gets, and whether it needs a
+   * session. This is the one place that asks: everything else in the window
+   * addresses a Pane, so a plugin leaf tiles, splits and closes without a second
+   * path through any of it. A pty always names a session and shows its terminal
+   * grid; a plugin shows the Solid subtree a pane type registered, fed by the
+   * session's frames when it has one and rendered from the descriptor alone when
+   * it does not (the editor).
    */
-  #makePane(agent: SessionHandle, id = newPaneId()): Pane {
+  #makePane(content: PaneContent, session: SessionHandle | null, id = newPaneId()): Pane {
     const pane =
-      agent.kind === "component"
-        ? new ComponentPane(this.#ctx, { id, session: agent, view: this.#paneContent ?? undefined })
-        : new TerminalPane(this.#ctx, { id, session: agent });
+      content.kind === "plugin"
+        ? new ComponentPane(this.#ctx, {
+            id,
+            session,
+            paneType: content.type,
+            descriptor: content.descriptor,
+            view: this.#paneContent ?? undefined,
+          })
+        // pty content always names a session — the wire schema says so.
+        : new TerminalPane(this.#ctx, { id, session: session! });
     setWeight(pane, 1);
     pane.onFocusRequest = (p) =>
       this.#authoritativeProjection ? this.onModelFocus?.(p.id) : this.focus(p);
@@ -566,7 +600,7 @@ export class Window {
   mount(agent: SessionHandle): Pane {
     const id = newPaneId();
     this.#mount(
-      makeLayout({ root: { type: "pane", id, agent: agent.id, weight: 1 }, focus: id }),
+      makeLayout({ root: { type: "pane", id, content: contentFor(agent), weight: 1 }, focus: id }),
       null,
     );
     return this.#pane(id)!;
@@ -929,7 +963,7 @@ export class Window {
     // apply builds it under that id and focuses it, which is why nothing here
     // has to find the new pane by position afterwards.
     const id = newPaneId();
-    const next = splitLayout(layout, at, direction, { id, agent: agent.id });
+    const next = splitLayout(layout, at, direction, { id, content: contentFor(agent) });
     if (!this.applyLayout(next)) return null;
     return this.#panes.find((pane) => pane.id === id) ?? null;
   }
@@ -1009,7 +1043,7 @@ export class Window {
     this.#panes.push(pane);
     pane.onFocusRequest = (p) =>
       this.#authoritativeProjection ? this.onModelFocus?.(p.id) : this.focus(p);
-    this.#mount(appendPane(this.#layout, { id: pane.id, agent: agent.id }), null);
+    this.#mount(appendPane(this.#layout, { id: pane.id, content: contentFor(agent) }), null);
   }
 
   /** Close a pane and destroy its view. The daemon owns stopping a backend when
@@ -1133,13 +1167,24 @@ export class Window {
     // well be the same one that was tiled before it.
     const slots = layoutRefs(wanted);
     for (const slot of slots) claim(slot, (pane) => pane.id === slot.id);
-    for (const slot of slots) claim(slot, (pane) => pane.session.id === slot.agent);
+    for (const slot of slots)
+      claim(slot, (pane) => {
+        const session = paneSession(slot.content);
+        // A sessionless spare pane (client-rendered plugin) has no session to
+        // match a session-backed slot by.
+        return session !== undefined && pane.session !== null && pane.session.id === session;
+      });
 
     // PASS ONE — which panes exist. Every slot ends up with a pane, reused or
     // freshly made, and `#panes` comes out in layout order whether or not the
     // pane is going to be mounted.
     for (const slot of slots) {
-      const pane = filled.get(slot.id) ?? this.#makePane(byId.get(slot.agent)!, slot.id);
+      const session = paneSession(slot.content);
+      const pane =
+        filled.get(slot.id) ??
+        // A sessionless plugin slot makes no session lookup; it fills from its
+        // content alone.
+        this.#makePane(slot.content, session ? (byId.get(session) ?? null) : null, slot.id);
       filled.set(slot.id, pane);
       this.#panes.push(pane);
     }
@@ -1154,14 +1199,14 @@ export class Window {
       if (node.type === "pane") {
         const pane = filled.get(node.id)!;
         panesById.set(pane.id, pane);
-        return { ...node, id: pane.id, agent: pane.session.id };
+        return { ...node, id: pane.id, content: withSession(node.content, pane.session?.id) };
       }
       return { ...node, children: node.children.map(materialize) };
     };
     const materializeFloat = (float: LayoutFloat): LayoutFloat => {
       const pane = filled.get(float.id)!;
       panesById.set(pane.id, pane);
-      return { ...float, id: pane.id, agent: pane.session.id };
+      return { ...float, id: pane.id, content: withSession(float.content, pane.session?.id) };
     };
     this.#layout = makeLayout({
       root: wanted.root ? materialize(wanted.root) : null,
@@ -1294,9 +1339,17 @@ export class Window {
    * on the pane the user was in.
    */
   selectLayout(preset: LayoutPreset): boolean {
-    if (this.#panes.length === 0) return false;
-    const panes = this.#panes.map((pane) => ({ id: pane.id, agent: pane.session.id }));
-    return this.applyLayout(presetLayout(panes, preset, this.#state.focus ?? undefined), preset);
+    // The resident layout is the arrangement, so it is also the pane list: its
+    // refs carry the materialized content — the session a pty resolves to, and
+    // the type and descriptor a sessionless plugin pane lives on. Rebuilding
+    // content from each pane's session (the pre-split way) would invent a
+    // descriptor out of thin air for the panes that have none.
+    const refs = layoutRefs(this.#layout);
+    if (refs.length === 0) return false;
+    return this.applyLayout(
+      presetLayout(refs, preset, this.#state.focus ?? undefined),
+      preset,
+    );
   }
 
   /** The preset this window was last arranged by, or null once a split, close

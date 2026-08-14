@@ -77,13 +77,13 @@ test("input goes to the focused pane alone, then to every pane once sync is on",
   try {
     // Off: only the focused pane.
     window.write("a");
-    expect(writes.agents()).toEqual([second.session]);
+    expect(writes.agents()).toEqual([second.session!]);
 
     // On: every pane in the window, identical bytes.
     window.toggleSync();
     window.write("b");
     expect(new Set(writes.agents())).toEqual(
-      new Set([first.session, second.session, third.session]),
+      new Set([first.session!, second.session!, third.session!]),
     );
     expect(writes.data().slice(-3)).toEqual(["b", "b", "b"]);
 
@@ -91,14 +91,14 @@ test("input goes to the focused pane alone, then to every pane once sync is on",
     window.focus(first);
     window.write("c");
     expect(new Set(writes.agents().slice(-3))).toEqual(
-      new Set([first.session, second.session, third.session]),
+      new Set([first.session!, second.session!, third.session!]),
     );
     expect(writes.data().slice(-3)).toEqual(["c", "c", "c"]);
 
     // Off again: back to focused-only.
     window.toggleSync();
     window.write("d");
-    expect(writes.agents().slice(-1)).toEqual([first.session]);
+    expect(writes.agents().slice(-1)).toEqual([first.session!]);
   } finally {
     writes.spy.mockRestore();
   }
@@ -181,7 +181,7 @@ test("a detached agent receives no broadcast until a view is opened on it", asyn
   try {
     window.write("x");
     // The broadcast set is exactly the window's panes.
-    expect(new Set(writes.agents())).toEqual(new Set(window.panes.map((p) => p.session)));
+    expect(new Set(writes.agents())).toEqual(new Set(window.panes.map((p) => p.session!)));
     expect(writes.agents()).not.toContain(hidden);
 
     // Opening a view makes it a pane, and it joins the fan-out.
@@ -189,7 +189,7 @@ test("a detached agent receives no broadcast until a view is opened on it", asyn
     window.write("y");
     const after = writes.agents().slice(-3);
     expect(after).toContain(hidden);
-    expect(new Set(after)).toEqual(new Set(window.panes.map((p) => p.session)));
+    expect(new Set(after)).toEqual(new Set(window.panes.map((p) => p.session!)));
   } finally {
     writes.spy.mockRestore();
   }
@@ -219,13 +219,13 @@ test("the fan-out set follows the layout: a split joins, a close leaves, a new w
   const writes = captureAgentWrites();
   try {
     window.write("a");
-    expect(new Set(writes.agents())).toEqual(new Set([first.session, second.session]));
+    expect(new Set(writes.agents())).toEqual(new Set([first.session!, second.session!]));
 
     // Closing a pane drops it from the set.
     writes.clear();
     window.close(second);
     window.write("b");
-    expect(writes.agents()).toEqual([first.session]);
+    expect(writes.agents()).toEqual([first.session!]);
 
     // A new window starts unsynced, whatever the old one was doing.
     const other = run(spaces.active!.newWindow());
@@ -233,7 +233,7 @@ test("the fan-out set follows the layout: a split joins, a close leaves, a new w
     expect(other.sync).toBe(false);
     writes.clear();
     other.write("c");
-    expect(writes.agents()).toEqual([other.panes[0]!.session]);
+    expect(writes.agents()).toEqual([other.panes[0]!.session!]);
   } finally {
     writes.spy.mockRestore();
   }
@@ -245,7 +245,7 @@ test("pane-local mouse stays pane-local even while synced", async () => {
   window.toggleSync();
   // Negotiate SGR mouse reporting on the right pane's terminal, the way a
   // full-screen app would, so the click produces bytes at all.
-  right.session.term.write(new TextEncoder().encode("\x1b[?1002h\x1b[?1006h"));
+  right.session!.term.write(new TextEncoder().encode("\x1b[?1002h\x1b[?1006h"));
   await layout();
 
   const writes = captureAgentWrites();
@@ -260,7 +260,7 @@ test("pane-local mouse stays pane-local even while synced", async () => {
       stopPropagation() {},
     });
     // The click reached exactly the pane under the pointer — no fan-out.
-    expect(writes.agents()).toEqual([right.session]);
+    expect(writes.agents()).toEqual([right.session!]);
   } finally {
     writes.spy.mockRestore();
   }

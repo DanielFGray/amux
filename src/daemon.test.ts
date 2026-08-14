@@ -18,6 +18,7 @@ import { MAX_RPC_BYTES } from "./limits.ts";
 import { AttachClient } from "./attach.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
 import { waitFor } from "./test-wait.ts";
+import type { PaneContent } from "./layout.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -70,7 +71,12 @@ const componentState = (id: string, provider: string) => ({
             root: {
               type: "pane",
               id: "pane-component",
-              agent: "component-session",
+              content: {
+                kind: "plugin",
+                type: provider,
+                descriptor: {},
+                session: "component-session",
+              },
               weight: 1,
             },
             focus: "pane-component",
@@ -1042,7 +1048,12 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     root: {
       type: "pane",
       id: "pane-restore",
-      agent: "agent-restore",
+      content: {
+        kind: "plugin",
+        type: "missing-harness",
+        descriptor: {},
+        session: "agent-restore",
+      },
       weight: 1,
     },
     focus: "pane-restore",
@@ -1190,6 +1201,61 @@ test("an unavailable component provider becomes a tombstone without spawning", a
   expect(spawned).toBe(0);
   expect(restored.exited).toBe(true);
   expect(restored.name).toContain("unavailable: provider 'missing' is unavailable");
+  await S(daemon);
+});
+
+test("a sessionless plugin pane restores without a backend and without a tombstone", async () => {
+  const e = await env();
+  const editor: PaneContent = {
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: { file: "/work/note.txt" },
+  };
+  await run(
+    SessionStore.save({
+      version: 1,
+      id: "sessionless",
+      createdAt: 1,
+      updatedAt: 1,
+      attached: false,
+      activeSpace: "space-sessionless",
+      spaces: [
+        {
+          id: "space-sessionless",
+          name: "sessionless",
+          dir: "/tmp",
+          activeWindow: 1,
+          windows: [
+            {
+              number: 1,
+              name: null,
+              layout: JSON.stringify({
+                version: 1,
+                root: { type: "pane", id: "pane-editor", content: editor, weight: 1 },
+                focus: "pane-editor",
+              }),
+              // No session backs the pane, so the daemon has nothing to spawn,
+              // resume, or tombstone.
+              agents: [],
+            },
+          ],
+        },
+      ],
+    }),
+    e,
+  );
+  let spawned = 0;
+  const daemon = await open("sessionless", e, {
+    spawnSession: () => {
+      spawned++;
+      return Effect.die(new Error("a sessionless plugin pane must not spawn a backend"));
+    },
+  });
+
+  expect(spawned).toBe(0);
+  const restored = (await run(SessionStore.load("sessionless"), e))!.spaces[0]!.windows[0]!;
+  expect(restored.agents).toHaveLength(0);
+  expect(JSON.parse(restored.layout!).root.content).toEqual(editor);
   await S(daemon);
 });
 

@@ -64,7 +64,7 @@ test("pane.close kills and removes the backend when its last pane closes", () =>
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -82,7 +82,7 @@ test("transient window state stays live but is omitted from persistence", () => 
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -104,7 +104,7 @@ test("commands transform a private generation and leave their input untouched", 
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -120,7 +120,7 @@ test("commands transform a private generation and leave their input untouched", 
 
 test("a natural exit reveals a surviving detached agent", () => {
   const saved = base(
-    '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+    '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
   saved.spaces[0]!.windows[0]!.agents.push({
     id: "agent-b",
@@ -133,7 +133,7 @@ test("a natural exit reveals a surviving detached agent", () => {
   });
   const exited = markSessionExited(run(workspaceFromSession(saved)), "agent-a", 0);
   const window = exited.spaces[0]!.windows[0]!;
-  expect(window.layout.root).toMatchObject({ type: "pane", agent: "agent-b" });
+  expect(window.layout.root).toMatchObject({ type: "pane", content: { kind: "pty", session: "agent-b" } });
   expect(window.state.focus).toBe(window.layout.focus ?? null);
 });
 
@@ -141,7 +141,7 @@ test("workspace and command context parsers reject malformed nested state and re
   const valid = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -154,8 +154,8 @@ test("workspace and command context parsers reject malformed nested state and re
   badFocus.spaces[0]!.windows[0]!.state.focus = "missing-pane";
   expect(runFailMessage(parseWorkspace(badFocus))).toContain("invalid pane");
   const badRelation = structuredClone(valid);
-  (badRelation.spaces[0]!.windows[0]!.layout.root as any).agent = "missing-agent";
-  expect(runFailMessage(parseWorkspace(badRelation))).toContain("absent or exited agent");
+  (badRelation.spaces[0]!.windows[0]!.layout.root as any).content.session = "missing-agent";
+  expect(runFailMessage(parseWorkspace(badRelation))).toContain("absent or exited session");
 
   expect(
     runFailMessage(
@@ -188,7 +188,7 @@ test("new identities are UUID-based, unique, and disjoint from adopted ids", () 
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-adopted","agent":"agent-a","weight":1},"focus":"pane-adopted"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-adopted","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-adopted"}',
       ),
     ),
   );
@@ -214,7 +214,7 @@ test("pane.split inherits the caller's cwd and accepts an override", () => {
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -239,7 +239,7 @@ test("pane.split inherits the caller's cwd and accepts an override", () => {
 
 test("pane.close transfers focus to a survivor when the focused pane is closed", () => {
   const saved = base(
-    '{"version":1,"root":{"type":"split","direction":"column","children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1},{"type":"pane","id":"pane-c","agent":"agent-c","weight":1}]},"focus":"pane-b"}',
+    '{"version":1,"root":{"type":"split","direction":"column","children":[{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},{"type":"pane","id":"pane-b","content":{"kind":"pty","session":"agent-b"},"weight":1},{"type":"pane","id":"pane-c","content":{"kind":"pty","session":"agent-c"},"weight":1}]},"focus":"pane-b"}',
   );
   saved.spaces[0]!.windows[0]!.agents.push(
     {
@@ -271,7 +271,7 @@ test("pane.close transfers focus to a survivor when the focused pane is closed",
 
 test("pane.close does not reveal an unreferenced backend", () => {
   const saved = base(
-    '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+    '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
   saved.spaces[0]!.windows[0]!.agents.push({
     id: "agent-b",
@@ -295,7 +295,7 @@ test("space.new uses node path resolution and basename semantics", () => {
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -312,7 +312,7 @@ test("space.new uses node path resolution and basename semantics", () => {
 // ── helpers for model-level command tests ──
 
 const twoPaneLayout =
-  '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1}]},"focus":"pane-a"}';
+  '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},{"type":"pane","id":"pane-b","content":{"kind":"pty","session":"agent-b"},"weight":1}]},"focus":"pane-a"}';
 
 function twoPaneSession(): SessionState {
   const s = base(twoPaneLayout);
@@ -329,14 +329,14 @@ function twoPaneSession(): SessionState {
 }
 
 const dupAgentLayout =
-  '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-a","weight":1}]},"focus":"pane-a"}';
+  '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},{"type":"pane","id":"pane-b","content":{"kind":"pty","session":"agent-a"},"weight":1}]},"focus":"pane-a"}';
 
 function dupAgentSession(): SessionState {
   return base(dupAgentLayout);
 }
 
 const threePaneLayout =
-  '{"version":1,"root":{"type":"split","direction":"column","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1},{"type":"pane","id":"pane-c","agent":"agent-c","weight":1}]},"focus":"pane-b"}';
+  '{"version":1,"root":{"type":"split","direction":"column","weight":1,"children":[{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},{"type":"pane","id":"pane-b","content":{"kind":"pty","session":"agent-b"},"weight":1},{"type":"pane","id":"pane-c","content":{"kind":"pty","session":"agent-c"},"weight":1}]},"focus":"pane-b"}';
 
 function threePaneSession(): SessionState {
   const s = base(threePaneLayout);
@@ -382,7 +382,7 @@ test("pane.break moves the focused pane into a new window", () => {
   expect(created.layout.root).toMatchObject({
     type: "pane",
     id: "pane-a",
-    agent: "agent-a",
+    content: { kind: "pty", session: "agent-a" },
   });
   expect(created.state.focus).toBe("pane-a");
   expect(created.agents).toHaveLength(1);
@@ -402,7 +402,7 @@ test("pane.break moves a shared session once and closes its other source views",
   expect(broken.layout.root).toMatchObject({
     type: "pane",
     id: "pane-a",
-    agent: "agent-a",
+    content: { kind: "pty", session: "agent-a" },
   });
   expect(broken.state.focus).toBe("pane-a");
 
@@ -442,7 +442,7 @@ test("pane.join moves a focused pane from the named window into the active windo
   const space = result.snapshot.spaces[0]!;
   expect(space.windows).toHaveLength(2);
   const destination = space.windows[1]!;
-  expect(layoutPanes(destination.layout.root).map((pane) => pane.agent)).toEqual([
+  expect(layoutPanes(destination.layout.root).map((pane) => pane.content.session)).toEqual([
     expect.any(String),
     "agent-a",
   ]);
@@ -457,7 +457,7 @@ test("pane.join without a source uses the previously active window", () => {
 
   expect(result.changed).toBe(true);
   expect(
-    layoutPanes(result.snapshot.spaces[0]!.windows[1]!.layout.root).map((pane) => pane.agent),
+    layoutPanes(result.snapshot.spaces[0]!.windows[1]!.layout.root).map((pane) => pane.content.session),
   ).toContain("agent-a");
 });
 
@@ -480,10 +480,10 @@ test("pane.move transfers the focused pane to another space without killing it",
   expect(result.actions.filter((action) => action._tag === "kill")).toHaveLength(0);
   expect(result.snapshot.state.activeSpace).toBe(other.id);
   expect(
-    layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root).map((pane) => pane.agent),
+    layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root).map((pane) => pane.content.session),
   ).toEqual(["agent-b"]);
   const movedSpace = result.snapshot.spaces.find((space) => space.id === other.id)!;
-  expect(layoutPanes(movedSpace.windows[0]!.layout.root).map((pane) => pane.agent)).toContain(
+  expect(layoutPanes(movedSpace.windows[0]!.layout.root).map((pane) => pane.content.session)).toContain(
     "agent-a",
   );
 });
@@ -509,7 +509,7 @@ test("pane.zoom on a single-pane window is a no-op", () => {
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -556,6 +556,34 @@ test("a window with a float survives the save-and-reload round trip", () => {
   expect(reloaded.spaces[0]!.windows[0]!.layout).toEqual(floated.spaces[0]!.windows[0]!.layout);
 });
 
+// A sessionless plugin pane (the editor) is a real model state: it names a
+// registered pane type and a descriptor, and no session. Both the wire and the
+// save must carry the pane's type and descriptor verbatim — a schema that
+// dropped them would leave the client unable to remount the view after a
+// reconnect or restart.
+test("a sessionless plugin pane survives the wire and the save round trip", () => {
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  const withEditor = applyWorkspaceCommand(
+    adopted,
+    command("pane.split", { axis: "row" }),
+    context,
+  ).snapshot;
+  const target = withEditor.spaces[0]!.windows[0]!;
+  const pane = layoutPanes(target.layout.root)[1]!;
+  pane.content = {
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: { file: "/work/note.txt" },
+  };
+  const expected = target.layout;
+
+  const received = run(parseWorkspaceJson(JSON.stringify(withEditor)));
+  expect(received.spaces[0]!.windows[0]!.layout).toEqual(expected);
+
+  const reloaded = run(workspaceFromSession(workspaceSession(withEditor, base("null"))));
+  expect(reloaded.spaces[0]!.windows[0]!.layout).toEqual(expected);
+});
+
 // Cycling is the only way in and out of a float, since directional focus stays
 // inside the tiled plane.
 test("pane.next reaches a float and comes back out of it", () => {
@@ -579,9 +607,9 @@ test("pane.swap next exchanges the focused pane with its neighbour", () => {
   expect(panes).toHaveLength(3);
   // pane-b was focused at index 1; swapped with pane-c at index 2
   // after swap: pane order is [pane-a (agent-a), pane-c (agent-c), pane-b (agent-b)]
-  expect(panes[0]!.agent).toBe("agent-a");
-  expect(panes[1]!.agent).toBe("agent-c");
-  expect(panes[2]!.agent).toBe("agent-b");
+  expect(panes[0]!.content.session).toBe("agent-a");
+  expect(panes[1]!.content.session).toBe("agent-c");
+  expect(panes[2]!.content.session).toBe("agent-b");
 });
 
 // ── window.next / window.previous ──
@@ -590,7 +618,7 @@ test("window.next cycles to the next window", () => {
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -608,7 +636,7 @@ test("window.previous cycles to the previous window", () => {
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -626,7 +654,7 @@ test("window.last returns to the last focused window", () => {
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -650,7 +678,7 @@ test("space.next cycles to the next space", () => {
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -672,7 +700,7 @@ test("space.previous cycles to the previous space", () => {
   const adopted = run(
     workspaceFromSession(
       base(
-        '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
       ),
     ),
   );
@@ -693,7 +721,7 @@ test("space.previous cycles to the previous space", () => {
 
 test("agent.reveal creates a pane for an unrevealed agent", () => {
   const s = base(
-    '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+    '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
   s.spaces[0]!.windows[0]!.agents.push({
     id: "agent-b",
@@ -735,7 +763,7 @@ test("agent.reveal on an already revealed agent just focuses it", () => {
 
 test("agent.next-blocked jumps to the next blocked agent", () => {
   const s = base(
-    '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+    '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
   s.spaces[0]!.windows[0]!.agents.push({
     id: "agent-b",
@@ -748,7 +776,7 @@ test("agent.next-blocked jumps to the next blocked agent", () => {
   });
   // Give agent-b its own pane so it can be focused
   s.spaces[0]!.windows[0]!.layout =
-    '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},{"type":"pane","id":"pane-b","agent":"agent-b","weight":1}]},"focus":"pane-a"}';
+    '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},{"type":"pane","id":"pane-b","content":{"kind":"pty","session":"agent-b"},"weight":1}]},"focus":"pane-a"}';
   const adopted = run(workspaceFromSession(s));
   const ctx = { ...context, blockedAgents: ["agent-a", "agent-b"] };
   const result = applyWorkspaceCommand(adopted, command("session.next-blocked"), ctx);
@@ -760,7 +788,7 @@ test("agent.next-blocked jumps to the next blocked agent", () => {
 
 test("session.kill removes unreferenced backends", () => {
   const s = base(
-    '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+    '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
   s.spaces[0]!.windows[0]!.agents.push({
     id: "agent-b",
@@ -787,7 +815,7 @@ test("session.kill removes unreferenced backends", () => {
 
 test("agent.restart revives an exited agent without changing its identity or pane", () => {
   const s = base(
-    '{"version":1,"root":{"type":"pane","id":"pane-a","agent":"agent-a","weight":1},"focus":"pane-a"}',
+    '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
   s.spaces[0]!.windows[0]!.agents.push({
     id: "agent-b",
@@ -824,8 +852,8 @@ test("agent.restart revives an exited agent without changing its identity or pan
   ]);
   expect(layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root)).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ agent: "agent-a" }),
-      expect.objectContaining({ agent: "agent-b" }),
+      expect.objectContaining({ content: expect.objectContaining({ kind: "pty", session: "agent-a" }) }),
+      expect.objectContaining({ content: expect.objectContaining({ kind: "plugin", session: "agent-b" }) }),
     ]),
   );
 });

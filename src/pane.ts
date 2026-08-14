@@ -90,7 +90,11 @@ const OPENTUI_TO_GHOSTTY_BUTTON: Record<number, number> = {
  * session keeps running.
  */
 export abstract class Pane extends Renderable {
-  readonly session: SessionHandle;
+  /** The session this pane views, or null for a client-rendered plugin pane
+   *  whose content declares no backend (see PaneContent in layout.ts). A pane
+   *  with no session has nothing to resize, write to or count viewers on, so
+   *  every use of the session is guarded rather than asserted. */
+  readonly session: SessionHandle | null;
 
   hovered = false;
   onFocusRequest?: (pane: Pane) => void;
@@ -102,15 +106,17 @@ export abstract class Pane extends Renderable {
 
   constructor(
     ctx: RenderContext,
-    options: { id: string; session: SessionHandle } & Record<string, any>,
+    options: { id: string; session: SessionHandle | null } & Record<string, any>,
   ) {
     super(ctx, options);
     this.session = options.session;
-    this.session.addViewer();
-    // The session is sized here rather than through #applyEdges: a subclass's
-    // own fields do not exist yet, so nothing may call back into it.
-    const { width, height } = this.content;
-    this.session.resize(width, height);
+    if (this.session) {
+      this.session.addViewer();
+      // The session is sized here rather than through #applyEdges: a subclass's
+      // own fields do not exist yet, so nothing may call back into it.
+      const { width, height } = this.content;
+      this.session.resize(width, height);
+    }
   }
 
   /** Whether this pane is the workspace's active viewport. Named `active`, not
@@ -193,7 +199,7 @@ export abstract class Pane extends Renderable {
    */
   #applyEdges() {
     const { width, height } = this.content;
-    this.session.resize(width, height);
+    this.session?.resize(width, height);
     this.onContentResize();
   }
 
@@ -210,12 +216,12 @@ export abstract class Pane extends Renderable {
   protected override onResize(width: number, height: number): void {
     // The arguments, not this.width: the node's own size is not published until
     // after the layout pass that raised this.
-    this.session.resize(Math.max(1, width - this.padX), Math.max(1, height - this.padY));
+    this.session?.resize(Math.max(1, width - this.padX), Math.max(1, height - this.padY));
     this.onContentResize();
   }
 
   write(data: string | Uint8Array) {
-    this.session.write(data);
+    this.session?.write(data);
   }
 
   /**
@@ -276,7 +282,7 @@ export abstract class Pane extends Renderable {
     const y1 = this.y + this.height - 1;
 
     if (top) {
-      const title = this.session.term.title;
+      const title = this.session?.term.title ?? "";
       const titleWidth = cellWidth(title);
       if (title && runtime["appearance.gap"] && this.width >= titleWidth + 4) {
         if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
@@ -301,7 +307,7 @@ export abstract class Pane extends Renderable {
 
   protected override destroySelf(): void {
     // Closes the view only; the session keeps running.
-    this.session.removeViewer();
+    this.session?.removeViewer();
     super.destroySelf();
   }
 }
@@ -313,6 +319,11 @@ export abstract class Pane extends Renderable {
  * cached display list — nothing about the process itself.
  */
 export class TerminalPane extends Pane {
+  /** A pty pane always views a session — TerminalPane is only ever built for
+   *  content that names one. Narrowing the base's nullable field keeps the
+   *  emulator code free of null checks. */
+  declare readonly session: SessionHandle;
+
   /** Owns this pane's FFI handles, so closing it frees them all — see the note
    *  on Agent's scope. A pane is destroyed from OpenTUI's tree rather than from
    *  an Effect, so the scope is closed by destroySelf rather than by a parent. */

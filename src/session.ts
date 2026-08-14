@@ -356,8 +356,9 @@ export function parseSessionState(
           for (const pane of layoutPanes(layout.root)) {
             if (paneIds.has(pane.id)) return yield* duplicatePane(pane.id);
             paneIds.add(pane.id);
-            if (!owned.has(pane.agent) || owned.get(pane.agent)) {
-              return yield* absentAgent(pane.id);
+            const session = pane.content.session;
+            if (session !== undefined && (!owned.has(session) || owned.get(session))) {
+              return yield* absentSession(pane.id);
             }
           }
         }
@@ -409,9 +410,9 @@ const missingSpace = new SessionStateError({
 });
 const duplicatePane = (id: string) =>
   new SessionStateError({ message: `duplicate pane id '${id}'` });
-const absentAgent = (id: string) =>
+const absentSession = (id: string) =>
   new SessionStateError({
-    message: `pane '${id}' names an absent or exited agent`,
+    message: `pane '${id}' names an absent or exited session`,
   });
 
 function schemaError(error: unknown): SessionStateError {

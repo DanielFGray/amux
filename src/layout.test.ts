@@ -6,7 +6,7 @@ import {
   collapse,
   decodeLayout,
   encodeLayout,
-  layoutAgents,
+  layoutSessions,
   layoutPanes,
   newPaneId,
   nextPreset,
@@ -22,6 +22,7 @@ import {
   type Layout,
   type LayoutFloat,
   type LayoutNode,
+  type PaneRef,
 } from "./layout.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
@@ -33,12 +34,13 @@ const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
   return error instanceof Error ? error.message : String(error);
 };
 
-/** Panes are named after the agent they show, since most cases here have one
- *  pane per agent; the cases that do not say so explicitly. */
-const pane = (agent: string, weight = 1, id = agent): LayoutNode => ({
+/** Panes are named after the session they show, since most cases here have one
+ *  pane per session; the cases that do not say so explicitly. A pane of pty
+ *  content is the default — a plugin pane is the exception the tests call out. */
+const pane = (session: string, weight = 1, id = session): LayoutNode => ({
   type: "pane",
   id,
-  agent,
+  content: { kind: "pty", session },
   weight,
 });
 const split = (direction: "row" | "column", children: LayoutNode[], weight = 1): LayoutNode => ({
@@ -59,9 +61,9 @@ const layout = (
 
 /** A float over the whole window, which is all most of these tests need it to
  *  be — where it sits only matters to geometry. */
-const float = (id: string, agent = id): LayoutFloat => ({
+const float = (id: string, session = id): LayoutFloat => ({
   id,
-  agent,
+  content: { kind: "pty", session },
   x: 0,
   y: 0,
   width: 1,
@@ -70,7 +72,7 @@ const float = (id: string, agent = id): LayoutFloat => ({
 
 test("panes are listed left to right, depth first", () => {
   const tree = split("row", [pane("a"), split("column", [pane("b"), pane("c")]), pane("d")]);
-  expect(layoutPanes(tree).map((p) => p.agent)).toEqual(["a", "b", "c", "d"]);
+  expect(layoutPanes(tree).map((p) => p.content.session)).toEqual(["a", "b", "c", "d"]);
 });
 
 test("a layout round-trips through encode and decode", () => {
@@ -104,7 +106,7 @@ test("collapsing is recursive, so nested husks all disappear", () => {
 test("a same-axis child split is flattened into its parent", () => {
   const tree = split("row", [pane("a", 1), split("row", [pane("b"), pane("c")], 2)]);
   const flattened = collapse(tree) as Extract<LayoutNode, { type: "split" }>;
-  expect(flattened.children.map((c) => (c.type === "pane" ? c.agent : "?"))).toEqual([
+  expect(flattened.children.map((c) => (c.type === "pane" ? c.content.session : "?"))).toEqual([
     "a",
     "b",
     "c",
@@ -127,7 +129,7 @@ test("pruning drops panes whose agent is gone and keeps the survivors' shape", (
   const tree = split("row", [pane("a"), split("column", [pane("dead"), pane("c")])]);
   const pruned = prune(layout(tree), (id) => id !== "dead");
   // The column had two panes; losing one collapses it into the row.
-  expect(layoutAgents(pruned)).toEqual(["a", "c"]);
+  expect(layoutSessions(pruned)).toEqual(["a", "c"]);
   expect(pruned.root).toEqual(split("row", [pane("a"), pane("c")]));
 });
 
@@ -164,7 +166,7 @@ test("a missing weight defaults to an even share", () => {
       root: {
         type: "split",
         direction: "row",
-        children: [{ type: "pane", id: "a", agent: "a" }],
+        children: [{ type: "pane", id: "a", content: { kind: "pty", session: "a" } }],
       },
     }),
   );
@@ -179,7 +181,7 @@ test("recursive layouts are bounded before they can exhaust the stack", () => {
   let root: any = {
     type: "pane",
     id: "deep-pane",
-    agent: "deep-agent",
+    content: { kind: "pty", session: "deep-agent" },
     weight: 1,
   };
   for (let i = 0; i < 65; i++) {
@@ -187,7 +189,10 @@ test("recursive layouts are bounded before they can exhaust the stack", () => {
       type: "split",
       direction: "row",
       weight: 1,
-      children: [root, { type: "pane", id: `p-${i}`, agent: `a-${i}`, weight: 1 }],
+      children: [
+        root,
+        { type: "pane", id: `p-${i}`, content: { kind: "pty", session: `a-${i}` }, weight: 1 },
+      ],
     };
   }
   expect(runFailMessage(parseLayout({ version: LAYOUT_VERSION, root }))).toContain("maximum depth");
@@ -199,7 +204,7 @@ test("an unsupported version is refused rather than guessed at", () => {
   );
 });
 
-test("a pane without an agent id is refused", () => {
+test("a pane without content is refused", () => {
   expect(
     runFailMessage(
       parseLayout({
@@ -207,7 +212,7 @@ test("a pane without an agent id is refused", () => {
         root: { type: "pane", weight: 1 },
       }),
     ),
-  ).toContain("needs an agent id");
+  ).toContain("needs content");
 });
 
 test("a pane without a pane id is refused", () => {
@@ -215,7 +220,7 @@ test("a pane without a pane id is refused", () => {
     runFailMessage(
       parseLayout({
         version: LAYOUT_VERSION,
-        root: { type: "pane", agent: "a", weight: 1 },
+        root: { type: "pane", content: { kind: "pty", session: "a" }, weight: 1 },
       }),
     ),
   ).toContain("needs a pane id");
@@ -228,7 +233,7 @@ test("parsing reserves the pane ids it read, so fresh ones cannot collide", () =
   run(
     parseLayout({
       version: LAYOUT_VERSION,
-      root: { type: "pane", id: `pane-${minted + 500}`, agent: "a", weight: 1 },
+      root: { type: "pane", id: `pane-${minted + 500}`, content: { kind: "pty", session: "a" }, weight: 1 },
     }),
   );
   expect(Number(/\d+/.exec(newPaneId())![0])).toBeGreaterThan(minted + 500);
@@ -298,12 +303,18 @@ test("the error names where in the tree the problem is", () => {
 /** The tree's shape, ignoring weights — what a preset is actually choosing. */
 const shape = (node: LayoutNode | null): unknown => {
   if (!node) return null;
-  if (node.type === "pane") return node.agent;
+  if (node.type === "pane") return node.content.session;
   return { [node.direction]: node.children.map(shape) };
 };
 
 const ids = (n: number) => Array.from({ length: n }, (_, i) => String.fromCharCode(97 + i));
-const refs = (n: number) => ids(n).map((agent) => ({ id: agent, agent }));
+const refs = (n: number) =>
+  ids(n).map((session) => ({ id: session, content: { kind: "pty", session } as const }));
+/** A pane reference, for the transforms that take a ref rather than a node. */
+const ref = (session: string, id = session): PaneRef => ({
+  id,
+  content: { kind: "pty", session },
+});
 
 test("even-horizontal is one row, even-vertical one column", () => {
   expect(shape(presetLayout(refs(3), "even-horizontal").root)).toEqual({
@@ -348,7 +359,7 @@ test("every preset keeps the agents, in order, exactly once", () => {
   expect(LAYOUT_PRESETS.length).toBeGreaterThan(0);
   for (const preset of LAYOUT_PRESETS) {
     for (const n of [1, 2, 3, 5, 8]) {
-      expect(layoutAgents(presetLayout(refs(n), preset))).toEqual(ids(n));
+      expect(layoutSessions(presetLayout(refs(n), preset))).toEqual(ids(n));
     }
   }
 });
@@ -398,10 +409,7 @@ test("nextPreset walks the cycle and restarts from a hand-built layout", () => {
  * the model (ep-ceb468), the whole of it.
  */
 test("a split replaces a pane with itself and the newcomer", () => {
-  const after = splitLayout(layout(pane("a")), 0, "row", {
-    id: "b",
-    agent: "b",
-  });
+  const after = splitLayout(layout(pane("a")), 0, "row", ref("b"));
   expect(after.root).toEqual(split("row", [pane("a"), pane("b")]));
   // tmux moves you into the pane you just made.
   expect(after.focus).toBe("b");
@@ -418,7 +426,7 @@ test("a split replaces a pane with itself and the newcomer", () => {
  */
 test("splitting a resized pane gives the newcomer half of it", () => {
   const before = layout(split("row", [pane("a", 69), pane("b", 31)]), "b");
-  const after = splitLayout(before, 1, "row", { id: "c", agent: "c" });
+  const after = splitLayout(before, 1, "row", ref("c"));
 
   // Flat, because the axis did not change: three panes in a row, which is what
   // tmux shows after two horizontal splits.
@@ -427,7 +435,7 @@ test("splitting a resized pane gives the newcomer half of it", () => {
 
 test("splitting across the axis nests, and the new split inherits the slot", () => {
   const before = layout(split("row", [pane("a", 3), pane("b", 1)]), "a");
-  const after = splitLayout(before, 0, "column", { id: "c", agent: "c" });
+  const after = splitLayout(before, 0, "column", ref("c"));
 
   expect(after.root).toEqual(
     split("row", [split("column", [pane("a"), pane("c")], 3), pane("b", 1)]),
@@ -436,7 +444,7 @@ test("splitting across the axis nests, and the new split inherits the slot", () 
 
 test("a split names a pane by position, so two panes on one agent are distinct", () => {
   const before = layout(split("row", [pane("a", 1, "p1"), pane("a", 1, "p2")]), "p1");
-  const after = splitLayout(before, 1, "column", { id: "p3", agent: "b" });
+  const after = splitLayout(before, 1, "column", ref("b", "p3"));
 
   expect(after.root).toEqual(
     split("row", [pane("a", 1, "p1"), split("column", [pane("a", 1, "p2"), pane("b", 1, "p3")])]),
@@ -454,16 +462,16 @@ test("a split names a pane by position, so two panes on one agent are distinct",
  */
 test("focus names the pane a split just made, not another showing the same agent", () => {
   const before = layout(pane("a", 1, "p1"), "p1");
-  const after = splitLayout(before, 0, "row", { id: "p2", agent: "a" });
+  const after = splitLayout(before, 0, "row", ref("a", "p2"));
 
   expect(layoutPanes(after.root).map((p) => p.id)).toEqual(["p1", "p2"]);
-  expect(layoutPanes(after.root).map((p) => p.agent)).toEqual(["a", "a"]);
+  expect(layoutPanes(after.root).map((p) => p.content.session)).toEqual(["a", "a"]);
   expect(after.focus).toBe("p2");
 });
 
 test("a split at a position no pane has changes nothing", () => {
   const before = layout(split("row", [pane("a"), pane("b")]), "a");
-  expect(splitLayout(before, 7, "row", { id: "c", agent: "c" }).root).toEqual(before.root);
+  expect(splitLayout(before, 7, "row", ref("c")).root).toEqual(before.root);
 });
 
 /**
@@ -587,7 +595,7 @@ test("placement says which plane a pane is in, or nothing for one not placed", (
 // other through, so no tiling operation has to remember that floats exist.
 test("reshaping the tiled plane leaves the floats untouched", () => {
   const before = layout(split("row", [pane("a"), pane("b")]), "a", [float("f")]);
-  expect(splitLayout(before, 0, "column", { id: "c", agent: "c" }).floats).toEqual(before.floats);
+  expect(splitLayout(before, 0, "column", ref("c")).floats).toEqual(before.floats);
   expect(swapLayout(before, 0, 1).floats).toEqual(before.floats);
   expect(closeLayout(before, "a").floats).toEqual(before.floats);
 });
@@ -618,12 +626,12 @@ test("pruning drops a float whose agent is gone", () => {
 });
 
 test("a float's agent is one the layout expects to exist", () => {
-  expect(layoutAgents(layout(pane("a"), "a", [float("f", "other")]))).toEqual(["a", "other"]);
+  expect(layoutSessions(layout(pane("a"), "a", [float("f", "other")]))).toEqual(["a", "other"]);
 });
 
 test("a layout with floats round-trips through encode and decode", () => {
   const original = layout(split("row", [pane("a"), pane("b")]), "f", [
-    { id: "f", agent: "c", x: 0.25, y: 0.1, width: 0.5, height: 0.75 },
+    { id: "f", content: { kind: "pty", session: "c" }, x: 0.25, y: 0.1, width: 0.5, height: 0.75 },
   ]);
   expect(run(parseLayout(JSON.parse(encodeLayout(original))))).toEqual(original);
 });
@@ -641,7 +649,9 @@ test("a float outside the window is refused rather than rebuilt unreachable", ()
       parseLayout({
         version: LAYOUT_VERSION,
         root: pane("a"),
-        floats: [{ id: "f", agent: "c", x: 0.1, y: 0.1, width: 0.5, height: 0.5, ...rect }],
+        floats: [
+          { id: "f", content: { kind: "pty", session: "c" }, x: 0.1, y: 0.1, width: 0.5, height: 0.5, ...rect },
+        ],
       }),
     );
   expect(withRect({ x: 1.5 })).toContain("x must be a fraction");
@@ -655,7 +665,7 @@ test("a float without a pane id is refused", () => {
       parseLayout({
         version: LAYOUT_VERSION,
         root: pane("a"),
-        floats: [{ agent: "c", x: 0, y: 0, width: 1, height: 1 }],
+        floats: [{ content: { kind: "pty", session: "c" }, x: 0, y: 0, width: 1, height: 1 }],
       }),
     ),
   ).toContain("needs a pane id");

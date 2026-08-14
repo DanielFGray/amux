@@ -37,7 +37,7 @@ test("break moves the pane and its running agent into a new window, unchanged", 
   const s = await setup();
   try {
     const right = run(s.win.splitSpawn("row"))!;
-    const agent = right.session;
+    const agent = right.session!;
     agent.write("echo breakpane-marker-42\n");
     await waitFor(() => screenTail(agent).includes("breakpane-marker-42"), "pane output");
     expect(screenTail(agent)).toContain("breakpane-marker-42");
@@ -76,7 +76,7 @@ test("break moves the pane and its running agent into a new window, unchanged", 
 test("breaking one of two views transfers sole ownership and output still invalidates", async () => {
   const s = await setup();
   try {
-    const agent = s.win.panes[0]!.session;
+    const agent = s.win.panes[0]!.session!;
     const moved = s.win.split("row", agent)!;
     const oldView = s.win.panes.find((pane) => pane !== moved && pane.session === agent)!;
     let invalidations = 0;
@@ -186,7 +186,7 @@ test("a moved agent's exit closes its pane in the NEW window and reports it", as
       run(s.win.spawn("shortlived", ["sh", "-c", "read _; echo bye"])),
     )!;
     const win2 = (await runAsync(s.space.breakPane(pane)))!;
-    const agent = pane.session;
+    const agent = pane.session!;
     agent.write("\n");
 
     await waitFor(() => exits.length === 1, "the moved agent to exit");
@@ -245,9 +245,9 @@ test("adopting into a zoomed window puts the hidden panes back on screen", async
     const other = (await runAsync(s.space.newWindow()))!;
     const moved = run(other.init())!;
     expect(other.detachPane(moved)).toBe(moved);
-    const scope = other.relinquishSession(moved.session)!;
+    const scope = other.relinquishSession(moved.session!)!;
 
-    s.win.adopt(moved.session, moved, scope);
+    s.win.adopt(moved.session!, moved, scope);
 
     // The newcomer is hung straight off the root, so the zoom has to come down
     // with it — otherwise a and b would be left unmounted with no arrangement
@@ -291,7 +291,7 @@ test("break updates what the sidebar and the tab list would show", async () => {
   const s = await setup();
   try {
     const right = run(s.win.splitSpawn("row"))!;
-    const agent = right.session;
+    const agent = right.session!;
 
     const win2 = (await runAsync(s.space.breakPane(right)))!;
 

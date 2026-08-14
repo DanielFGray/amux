@@ -9,6 +9,7 @@ import { computeRects } from "./geometry.ts";
 import { ComponentPane, type PaneView } from "./component-pane.tsx";
 import { createSessionViews } from "./plugin/session-views.tsx";
 import { TerminalPane, type Pane } from "./pane.ts";
+import { makeLayout, newPaneId, type PaneContent } from "./layout.ts";
 import type { KeyEvent } from "@opentui/core";
 
 /**
@@ -100,6 +101,35 @@ test("a workspace that registered no view draws the frame and nothing in it", as
   const rows = t.captureCharFrame().split("\n");
   expect(rows[0]!.startsWith("┌")).toBe(true);
   expect(rows[1]).not.toContain("view:");
+});
+
+test("a sessionless plugin pane mounts the registered view from its descriptor", async () => {
+  const { t, win } = await workspace((props) => (
+    <text>session:{props.sessionId}|file:{JSON.stringify(props.descriptor)}</text>
+  ));
+  const editor: PaneContent = {
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: { file: "/note.txt" },
+  };
+  const id = newPaneId();
+  expect(
+    win.applyLayout(makeLayout({ root: { type: "pane", id, content: editor, weight: 1 }, focus: id })),
+  ).toBe(true);
+
+  const pane = win.panes.find((candidate) => candidate.id === id)!;
+  // A backend-less view: a component leaf, owning no session to resize or write
+  // to, and surviving the window's own layout round trip.
+  expect(pane).toBeInstanceOf(ComponentPane);
+  expect(pane.session).toBeNull();
+  expect(win.exportLayout().floats).toHaveLength(0);
+
+  await draw(t);
+  const frame = t.captureCharFrame();
+  // No session id and the descriptor verbatim — the view was mounted from the
+  // content alone.
+  expect(frame).toContain(`session:|file:{"file":"/note.txt"}`);
+  expect(win.focused).toBe(pane);
 });
 
 test("a mounted component pane reacts when its harness view is registered and removed", async () => {
@@ -214,7 +244,7 @@ test("an unbound key is bytes to a terminal leaf and untouched by a component on
   const shellPane = win.split("row", shell)!;
 
   const written: string[] = [];
-  shellPane.session.write = (data) => {
+  shellPane.session!.write = (data) => {
     written.push(typeof data === "string" ? data : new TextDecoder().decode(data));
   };
 

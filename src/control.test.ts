@@ -186,7 +186,7 @@ test("workspace creation returns created ids with its snapshot", async () => {
   const output = outputs[0]!;
   const snapshot = JSON.parse(output.workspace!);
   const panes = snapshot.spaces[0].windows[0].layout.root.children;
-  expect(output.result).toEqual({ session: panes[1].agent, pane: panes[1].id });
+  expect(output.result).toEqual({ session: panes[1].content.session, pane: panes[1].id });
 });
 
 test("an empty command batch is rejected", async () => {

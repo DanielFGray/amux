@@ -16,7 +16,7 @@ import type { WorkspaceSnapshot } from "../workspace.ts";
 import { command } from "../commands.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
-import { makeLayout, layoutPanes } from "../layout.ts";
+import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
@@ -29,7 +29,12 @@ function singlePaneState(): {
   const agentId = "agent-1";
   const paneId = "pane-1";
   const layout = makeLayout({
-    root: { type: "pane" as const, id: paneId, agent: agentId, weight: 1 },
+    root: {
+      type: "pane" as const,
+      id: paneId,
+      content: { kind: "pty" as const, session: agentId },
+      weight: 1,
+    },
     focus: paneId,
   });
   const state: SessionState = {
@@ -375,7 +380,7 @@ testEffect("activates prepared sessions after successful commit", () => {
     expect(result.snapshot.revision).toBe(1);
     const panes = layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root);
     expect(panes).toHaveLength(2);
-    expect(result.result).toEqual({ session: panes[1]!.agent, pane: panes[1]!.id });
+    expect(result.result).toEqual({ session: paneSession(panes[1]!.content)!, pane: panes[1]!.id });
 
     const sessions = yield* Ref.get(sessionRef);
     expect(sessions.prepared.length).toBe(1);

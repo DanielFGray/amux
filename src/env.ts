@@ -56,12 +56,12 @@ export class Backend extends Context.Reference<Backend>()("Backend", {
  * test, a headless client) draws such a pane as an empty frame rather than
  * failing, exactly as it draws an unavailable component backend as no pane at all.
  */
-export class PaneContent extends Context.Reference<PaneContent>()("PaneContent", {
+export class PaneViews extends Context.Reference<PaneViews>()("PaneViews", {
   defaultValue: (): PaneView | null => null,
 }) {}
 
 /** Everything a workspace reads out of its context. */
-export type WorkspaceEnv = RenderCtx | Shell | Backend | PaneContent;
+export type WorkspaceEnv = RenderCtx | Shell | Backend | PaneViews;
 
 /**
  * Build a workspace's context.
@@ -79,6 +79,6 @@ export const workspaceEnv = (
   let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>;
   if (options.shell) env = Context.add(env, Shell, options.shell);
   if (options.backend) env = Context.add(env, Backend, options.backend);
-  if (options.paneContent) env = Context.add(env, PaneContent, options.paneContent);
+  if (options.paneContent) env = Context.add(env, PaneViews, options.paneContent);
   return env;
 };

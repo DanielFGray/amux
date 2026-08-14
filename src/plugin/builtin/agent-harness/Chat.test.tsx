@@ -35,6 +35,7 @@ async function chat(
       <Chat
         sessionId={session.id}
         paneType="test"
+        descriptor={{}}
         model="openai/gpt-4o-mini"
         width={width}
         height={() => 8}
@@ -277,6 +278,7 @@ test("a submitted message is answered by the agent in the transcript", async () 
       <Chat
         sessionId="native"
         paneType="test"
+        descriptor={{}}
         model="openai/gpt-4o-mini"
         width={() => 40}
         height={() => 20}
@@ -352,6 +354,7 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
       <Chat
         sessionId="native"
         paneType="test"
+        descriptor={{}}
         model="openai/gpt-4o-mini"
         width={() => 40}
         height={() => 20}

@@ -268,7 +268,7 @@ test("joining a pane preserves its live agent and transfers ownership", async ()
   try {
     const source = s.win;
     const pane = source.panes[0]!;
-    const agent = pane.session;
+    const agent = pane.session!;
     const destination = run(s.space.newWindow());
     run(destination.init("destination"));
 

@@ -11,7 +11,7 @@ afterEach(async () => {
 const pane = (id: string, weight = 1): LayoutNode => ({
   type: "pane",
   id,
-  agent: id,
+  content: { kind: "pty", session: id },
   weight,
 });
 const split = (direction: "row" | "column", children: LayoutNode[], weight = 1): LayoutNode => ({
@@ -69,15 +69,15 @@ test("pure rectangles are a fixed point of OpenTUI flex layout", async () => {
   window.applyLayout(
     makeLayout({
       root: split("row", [
-        { type: "pane", id: left.id, agent: left.session.id, weight: 3 },
+        { type: "pane", id: left.id, content: { kind: "pty", session: left.session!.id }, weight: 3 },
         split(
           "column",
           [
-            { type: "pane", id: top.id, agent: top.session.id, weight: 2 },
+            { type: "pane", id: top.id, content: { kind: "pty", session: top.session!.id }, weight: 2 },
             {
               type: "pane",
               id: bottom.id,
-              agent: bottom.session.id,
+              content: { kind: "pty", session: bottom.session!.id },
               weight: 1,
             },
           ],
@@ -117,11 +117,11 @@ test("a rendered float is the exact rectangle computeRects gives it", async () =
 
   window.applyLayout(
     makeLayout({
-      root: { type: "pane", id: tiled.id, agent: tiled.session.id, weight: 1 },
+      root: { type: "pane", id: tiled.id, content: { kind: "pty", session: tiled.session!.id }, weight: 1 },
       floats: [
         {
           id: floated.id,
-          agent: floated.session.id,
+          content: { kind: "pty", session: floated.session!.id },
           x: 0.25,
           y: 0.1,
           width: 0.5,
@@ -168,9 +168,9 @@ test("a pane that was floating is sized by the split again once tiled", async ()
 
   window.applyLayout(
     makeLayout({
-      root: { type: "pane", id: first.id, agent: first.session.id, weight: 1 },
+      root: { type: "pane", id: first.id, content: { kind: "pty", session: first.session!.id }, weight: 1 },
       floats: [
-        { id: second.id, agent: second.session.id, x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+        { id: second.id, content: { kind: "pty", session: second.session!.id }, x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
       ],
     }),
   );
@@ -203,7 +203,7 @@ test("directional focus neither enters the floating plane nor leaves it", () => 
   const current: Layout = {
     version: LAYOUT_VERSION,
     root: split("row", [pane("a"), pane("b")]),
-    floats: [{ id: "f", agent: "f", x: 0, y: 0, width: 1, height: 1 }],
+    floats: [{ id: "f", content: { kind: "pty", session: "f" }, x: 0, y: 0, width: 1, height: 1 }],
     focus: "f",
   };
   // The float covers everything, so a rect-only rule would make it every

@@ -195,7 +195,7 @@ export const restoreWindow = Effect.fnUntraced(function* (
 
   // Only the live agents get panes: an exited one has no view in the running
   // app either, and applyLayout would happily build it one.
-  const live = window.sessions.filter((a) => !a.exited).map((a) => a.id);
+  const live = window.sessions.filter((a) => !a.exited);
   if (live.length > 0) {
     const layout = yield* restoredLayout(saved, live);
     window.applyLayout(layout);
@@ -224,8 +224,11 @@ export const restoreWindow = Effect.fnUntraced(function* (
  * The invented fallback gets fresh pane ids: those panes are being created here
  * and now, and nothing else has ever named them.
  */
-function restoredLayout(saved: PersistedWindow, live: string[]): Effect.Effect<Layout, never> {
-  const alive = new Set(live);
+function restoredLayout(
+  saved: PersistedWindow,
+  live: SessionHandle[],
+): Effect.Effect<Layout, never> {
+  const alive = new Set(live.map((session) => session.id));
   return Effect.gen(function* () {
     let recorded: Layout | null = null;
     if (saved.layout) {
@@ -235,7 +238,18 @@ function restoredLayout(saved: PersistedWindow, live: string[]): Effect.Effect<L
     const pruned = recorded ? prune(recorded, (id) => alive.has(id)) : null;
     if (pruned?.root) return pruned;
     return presetLayout(
-      live.map((agent) => ({ id: newPaneId(), agent })),
+      live.map((session) => ({
+        id: newPaneId(),
+        content:
+          session.kind === "component"
+            ? {
+                kind: "plugin",
+                type: session.declaredAgent ?? "component",
+                descriptor: {},
+                session: session.id,
+              }
+            : { kind: "pty", session: session.id },
+      })),
       FALLBACK_PRESET,
     );
   });

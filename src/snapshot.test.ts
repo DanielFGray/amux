@@ -1,7 +1,7 @@
 import { test, expect, afterEach } from "bun:test";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
-import { encodeLayout, decodeLayout, layoutAgents } from "./layout.ts";
+import { encodeLayout, decodeLayout, layoutSessions } from "./layout.ts";
 import { Effect } from "effect";
 import {
   restoreSession,
@@ -54,12 +54,12 @@ test("a window snapshot records its agents and the arrangement of them", async (
 
   const saved = snapshotWindow(window);
   expect(saved.number).toBe(window.number);
-  expect(saved.agents.map((a) => a.id)).toEqual([first.session.id, second.session.id]);
+  expect(saved.agents.map((a) => a.id)).toEqual([first.session!.id, second.session!.id]);
   // The flat list cannot say how they were placed, nor which of them was
   // focused; the layout string says both, and is the only record of either.
-  expect(layoutAgents(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([
-    first.session.id,
-    second.session.id,
+  expect(layoutSessions(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([
+    first.session!.id,
+    second.session!.id,
   ]);
   expect(Effect.runSync(decodeLayout(saved.layout!)).focus).toBe(second.id);
 });
@@ -70,8 +70,8 @@ test("a snapshot records an agent's command, directory and terminal size", async
   const [agent] = snapshotWindow(window).agents;
   expect(agent!.cmd).toEqual(["bash"]);
   expect(agent!.cwd).toBe(process.cwd());
-  expect(agent!.cols).toBe(window.panes[0]!.session.term.cols);
-  expect(agent!.rows).toBe(window.panes[0]!.session.term.rows);
+  expect(agent!.cols).toBe(window.panes[0]!.session!.term.cols);
+  expect(agent!.rows).toBe(window.panes[0]!.session!.term.rows);
   expect(agent!.exited).toBe(false);
 });
 
@@ -94,13 +94,13 @@ test("agents with no pane open are recorded, and are absent from the layout", as
   const kept = window.panes[0]!;
   const detached = run(window.splitSpawn("row"))!;
   await layout();
-  const hidden = detached.session;
+  const hidden = detached.session!;
   window.close(detached);
   await layout();
 
   const saved = snapshotWindow(window);
   expect(saved.agents.map((a) => a.id)).toContain(hidden.id);
-  expect(layoutAgents(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([kept.session.id]);
+  expect(layoutSessions(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([kept.session!.id]);
 });
 
 // Restore.
@@ -118,8 +118,8 @@ test("a restored window comes back with the same panes in the same shape", async
 
   const restored = target.spaces[0]!.windows[0]!;
   expect(restored.panes).toHaveLength(3);
-  expect(restored.panes.map((p) => p.session.id)).toEqual(
-    source.window.panes.map((p) => p.session.id),
+  expect(restored.panes.map((p) => p.session!.id)).toEqual(
+    source.window.panes.map((p) => p.session!.id),
   );
   expect(encodeLayout(restored.exportLayout())).toBe(saved.windows[0]!.layout!);
 });
@@ -143,7 +143,7 @@ test("a restored window focuses the pane that had focus, not merely its agent", 
   await source.layout();
 
   const restored = target.spaces[0]!.windows[0]!;
-  const onShared = restored.panes.filter((p) => p.session.id === shared.id);
+  const onShared = restored.panes.filter((p) => p.session!.id === shared.id);
   expect(onShared).toHaveLength(2);
   // Pane ids survive the round trip, so the SECOND one is focused rather than
   // whichever pane showing that agent happened to come first.
@@ -203,7 +203,7 @@ test("the focused pane and the selected window come back", async () => {
   await source.layout();
 
   expect(space!.active?.number).toBe(1);
-  expect(space!.active?.focused?.session.id).toBe(first.session.id);
+  expect(space!.active?.focused?.session?.id).toBe(first.session!.id);
 });
 
 test("the active space comes back, not merely the first one restored", async () => {
@@ -234,7 +234,7 @@ test("two panes on one agent are still two panes after a restore", async () => {
   await source.layout();
 
   const restored = space!.windows[0]!;
-  expect(restored.panes.filter((p) => p.session.id === shared.id)).toHaveLength(2);
+  expect(restored.panes.filter((p) => p.session!.id === shared.id)).toHaveLength(2);
 });
 
 // Terminal geometry is part of the arrangement: a restored agent whose shell
@@ -250,10 +250,10 @@ test("a restored agent's terminal is sized to the pane it lands in", async () =>
   await source.layout();
 
   const restored = space!.windows[0]!;
-  expect(restored.panes.map((p) => p.session.term.cols)).toEqual(
-    source.window.panes.map((p) => p.session.term.cols),
+  expect(restored.panes.map((p) => p.session!.term.cols)).toEqual(
+    source.window.panes.map((p) => p.session!.term.cols),
   );
-  expect(restored.panes[0]!.session.term.cols).toBeLessThan(source.window.root.width);
+  expect(restored.panes[0]!.session!.term.cols).toBeLessThan(source.window.root.width);
 });
 
 // Exited agents.
@@ -306,7 +306,7 @@ test("an agent that had exited comes back as a tombstone, not a second run", asy
 
 test("a window restores its live agents even when one of them is a tombstone", async () => {
   const source = await setup();
-  const alive = source.window.panes[0]!.session;
+  const alive = source.window.panes[0]!.session!;
   await source.layout();
   const saved = snapshotSpace(source.space);
   saved.windows[0]!.agents.push({
@@ -325,19 +325,19 @@ test("a window restores its live agents even when one of them is a tombstone", a
 
   const window = space!.windows[0]!;
   expect(window.sessions).toHaveLength(2);
-  expect(window.panes.map((p) => p.session.id)).toEqual([alive.id]);
+  expect(window.panes.map((p) => p.session!.id)).toEqual([alive.id]);
 });
 
 // A layout that names a dead agent would otherwise build it a pane, which is a
 // view onto a terminal nothing will ever write to again.
 test("a tombstone named by the saved layout still gets no pane", async () => {
   const source = await setup();
-  const alive = source.window.panes[0]!.session;
-  const doomed = run(source.window.splitSpawn("row"))!.session;
+  const alive = source.window.panes[0]!.session!;
+  const doomed = run(source.window.splitSpawn("row"))!.session!;
   await source.layout();
   const saved = snapshotSpace(source.space);
   // The layout still mentions both, but one is recorded as already finished.
-  expect(layoutAgents(Effect.runSync(decodeLayout(saved.windows[0]!.layout!)))).toHaveLength(2);
+  expect(layoutSessions(Effect.runSync(decodeLayout(saved.windows[0]!.layout!)))).toHaveLength(2);
   const dead = saved.windows[0]!.agents.find((a) => a.id === doomed.id)!;
   dead.exited = true;
   dead.exitCode = 1;
@@ -347,7 +347,7 @@ test("a tombstone named by the saved layout still gets no pane", async () => {
   await source.layout();
 
   const window = space!.windows[0]!;
-  expect(window.panes.map((p) => p.session.id)).toEqual([alive.id]);
+  expect(window.panes.map((p) => p.session!.id)).toEqual([alive.id]);
   // The survivor takes the whole window rather than half of a stale split.
   expect(window.panes[0]!.width).toBe(window.root.width);
 });
@@ -366,7 +366,7 @@ test("a session file with no layout recorded still restores every agent", async 
   const [space] = run(restoreSpaces(target, [saved]));
   await source.layout();
 
-  expect(space!.windows[0]!.panes.map((p) => p.session.id)).toEqual(ids);
+  expect(space!.windows[0]!.panes.map((p) => p.session!.id)).toEqual(ids);
 });
 
 test("a layout string that no longer parses falls back rather than losing the window", async () => {
@@ -381,7 +381,7 @@ test("a layout string that no longer parses falls back rather than losing the wi
   const [space] = run(restoreSpaces(target, [saved]));
   await source.layout();
 
-  expect(space!.windows[0]!.panes.map((p) => p.session.id)).toEqual(ids);
+  expect(space!.windows[0]!.panes.map((p) => p.session!.id)).toEqual(ids);
 });
 
 test("a layout naming an agent that did not come back restores the ones that did", async () => {
@@ -398,7 +398,7 @@ test("a layout naming an agent that did not come back restores the ones that did
   const [space] = run(restoreSpaces(target, [saved]));
   await source.layout();
 
-  expect(space!.windows[0]!.panes.map((p) => p.session.id)).toEqual([kept]);
+  expect(space!.windows[0]!.panes.map((p) => p.session!.id)).toEqual([kept]);
 });
 
 // Identity.
@@ -447,7 +447,7 @@ test("an agent created after a restore cannot collide with a restored id", async
 
 test("a restored agent runs its command again and does NOT get its screen back", async () => {
   const source = await setup({ shell: ["bash", "--norc", "-i"] });
-  const agent = source.window.panes[0]!.session;
+  const agent = source.window.panes[0]!.session!;
   agent.write("echo snapshot-marker-42\n");
   await Bun.sleep(400);
   expect(screenTail(agent)).toContain("snapshot-marker-42");
@@ -461,7 +461,7 @@ test("a restored agent runs its command again and does NOT get its screen back",
   await source.layout();
   await Bun.sleep(400);
 
-  const restored = space!.windows[0]!.panes[0]!.session;
+  const restored = space!.windows[0]!.panes[0]!.session!;
   // A live process, at the same command — but a fresh screen. See snapshot.ts.
   expect(restored.exited).toBe(false);
   expect(restored.cmd).toEqual(["bash", "--norc", "-i"]);

@@ -30,14 +30,57 @@ export const LAYOUT_VERSION = 1;
 
 export type LayoutNode = LayoutPane | LayoutSplit;
 
+/** A JSON value, the shape a plugin pane's descriptor is validated against. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
+/**
+ * What fills a pane: a pty session, or a plugin view.
+ *
+ * This is the split the plugin stress test forced. A pane used to BE a view of
+ * a session — its identity and its content were one `agent` id, so nothing that
+ * was not a session could ever fill a pane. Content now stands apart: a pty
+ * pane references a session; a plugin pane references a registered pane type
+ * plus a descriptor, and may additionally reference a session when it has a
+ * daemon backend (the agent harness does). A plugin pane with no session is a
+ * real state, not an error — it is a client-rendered view (the editor).
+ */
+export type PaneContent =
+  | { readonly kind: "pty"; readonly session: string }
+  | {
+      readonly kind: "plugin";
+      readonly type: string;
+      readonly descriptor: JsonValue;
+      readonly session?: string;
+    };
+
+/** The session a pane's content views, if its content has one. */
+export function paneSession(content: PaneContent): string | undefined {
+  return content.kind === "pty" ? content.session : content.session;
+}
+
+/** Rewrite a pane's content with a resolved session id. Materializing an
+ *  imported layout hands the resident model the session that actually fills the
+ *  pane — the pty case already names it, a session-backed plugin pane gets its
+ *  worker confirmed. A pane that resolves to no session (a client-rendered
+ *  plugin pane, and a bug for pty content) keeps its content as it is. */
+export function withSession(content: PaneContent, session: string | undefined): PaneContent {
+  return session === undefined ? content : { ...content, session };
+}
+
 /**
  * A pane's identity, and what it is a viewport onto.
  *
- * Two panes can show the same agent — that is what revealing an agent twice
- * leaves behind — so an agent id cannot name a pane, and a layout that had only
- * agent ids could not say which of the two had focus, or which one a command
- * meant. The pane id is the missing half: `agent` says what you are looking at,
- * `id` says which viewport you are looking through.
+ * Two panes can show the same session — that is what revealing an agent twice
+ * leaves behind — so a session id cannot name a pane, and a layout that had
+ * only session ids could not say which of the two had focus, or which one a
+ * command meant. The pane id is the missing half: `content` says what you are
+ * looking at, `id` says which viewport you are looking through.
  *
  * Ids are unique across the whole process rather than within a window, because
  * break-pane moves a pane between windows and its identity has to survive that.
@@ -45,8 +88,7 @@ export type LayoutNode = LayoutPane | LayoutSplit;
  */
 export interface PaneRef {
   id: string;
-  /** Agent.id. */
-  agent: string;
+  content: PaneContent;
 }
 
 export interface LayoutPane extends PaneRef {
@@ -144,9 +186,13 @@ export function layoutRefs(layout: Layout): PaneRef[] {
   return [...layoutPanes(layout.root), ...layout.floats];
 }
 
-/** Agent ids the layout expects to exist, in pane order. */
-export function layoutAgents(layout: Layout): string[] {
-  return layoutRefs(layout).map((pane) => pane.agent);
+/** Session ids the layout expects to exist, in pane order, dropping panes whose
+ *  content has no session (a client-only plugin pane names none). */
+export function layoutSessions(layout: Layout): string[] {
+  return layoutRefs(layout).flatMap((pane) => {
+    const session = paneSession(pane.content);
+    return session === undefined ? [] : [session];
+  });
 }
 
 /**
@@ -322,7 +368,7 @@ export function swapLayout(layout: Layout, from: number, to: number): Layout {
   const move = (pane: LayoutPane, into: LayoutPane): LayoutPane => ({
     ...pane,
     id: into.id,
-    agent: into.agent,
+    content: into.content,
   });
   const root = rewritePanes(layout.root, (pane, at) =>
     at === from ? move(pane, b) : at === to ? move(pane, a) : pane,
@@ -405,7 +451,7 @@ export function setPlacement(layout: Layout, paneId: string, placement: Placemen
   if (placement === "floating") {
     const target = layoutPanes(layout.root).find((pane) => pane.id === paneId)!;
     const root = collapse(rewritePanes(layout.root, (pane) => (pane.id === paneId ? null : pane)));
-    const float: LayoutFloat = { id: target.id, agent: target.agent, ...NEW_FLOAT };
+    const float: LayoutFloat = { id: target.id, content: target.content, ...NEW_FLOAT };
     // Onto the end: the newly floated pane is the one the user is looking at,
     // and the end of the list is the top of the stack.
     return makeLayout({ ...layout, root, floats: [...layout.floats, float], focus: paneId });
@@ -416,7 +462,7 @@ export function setPlacement(layout: Layout, paneId: string, placement: Placemen
     ...layout,
     floats: layout.floats.filter((float) => float.id !== paneId),
   });
-  return appendPane(without, { id: target.id, agent: target.agent });
+  return appendPane(without, { id: target.id, content: target.content });
 }
 
 /**
@@ -427,9 +473,14 @@ export function setPlacement(layout: Layout, paneId: string, placement: Placemen
  * leaves and collapsing what is left preserves the arrangement of the
  * survivors, which is much closer to what the user had than starting over.
  */
-export function prune(layout: Layout, alive: (agent: string) => boolean): Layout {
+export function prune(layout: Layout, alive: (session: string) => boolean): Layout {
   const filter = (node: LayoutNode): LayoutNode | null => {
-    if (node.type === "pane") return alive(node.agent) ? node : null;
+    if (node.type === "pane") {
+      const session = paneSession(node.content);
+      // A sessionless pane (client-only plugin) has nothing to outlive and is
+      // never pruned: it does not depend on a process to exist.
+      return session === undefined || alive(session) ? node : null;
+    }
     const children = node.children
       .map(filter)
       .filter((child): child is LayoutNode => child !== null);
@@ -440,7 +491,10 @@ export function prune(layout: Layout, alive: (agent: string) => boolean): Layout
   return makeLayout({
     ...layout,
     root,
-    floats: layout.floats.filter((float) => alive(float.agent)),
+    floats: layout.floats.filter((float) => {
+      const session = paneSession(float.content);
+      return session === undefined || alive(session);
+    }),
   });
 }
 
@@ -617,9 +671,30 @@ export class LayoutFormatError extends S.TaggedError<LayoutFormatError>()("Layou
 }) {}
 
 const paneId = S.String.pipe(S.minLength(1)).annotations({ message: () => "pane needs a pane id" });
-const agentId = S.String.pipe(S.minLength(1)).annotations({
-  message: () => "pane needs an agent id",
+const sessionId = S.String.pipe(S.minLength(1)).annotations({
+  message: () => "content needs a session id",
 });
+// A plugin pane's descriptor is opaque JSON the plugin validates; layout only
+// carries it. Bounded by ts-a4e25e, which also defines what a pane type may put
+// in it — here a value has to be JSON-shaped, and S.Unknown admits it.
+export const PaneContentSchema: S.Schema<PaneContent> = S.Union(
+  S.Struct({
+    kind: S.Literal("pty"),
+    session: S.propertySignature(sessionId).annotations({
+      missingMessage: () => "pty content needs a session id",
+    }),
+  }),
+  S.Struct({
+    kind: S.Literal("plugin"),
+    type: S.propertySignature(S.String.pipe(S.minLength(1))).annotations({
+      missingMessage: () => "plugin content needs a pane type",
+    }),
+    descriptor: S.propertySignature(S.Unknown).annotations({
+      missingMessage: () => "plugin content needs a descriptor",
+    }),
+    session: S.optional(sessionId),
+  }),
+) as S.Schema<PaneContent>;
 const weight = S.Number.pipe(
   S.finite(),
   S.positive({ message: () => "weight must be a positive number" }),
@@ -635,8 +710,8 @@ const size = S.Number.pipe(
 
 const LayoutPaneSchema = S.Struct({
   type: S.Literal("pane"),
-  agent: S.propertySignature(agentId).annotations({
-    missingMessage: () => "pane needs an agent id",
+  content: S.propertySignature(PaneContentSchema).annotations({
+    missingMessage: () => "pane needs content",
   }),
   id: S.propertySignature(paneId).annotations({ missingMessage: () => "pane needs a pane id" }),
   weight: S.optionalWith(weight, { default: () => 1 }),
@@ -668,8 +743,8 @@ const LayoutSchema = S.Struct({
         id: S.propertySignature(paneId).annotations({
           missingMessage: () => "float needs a pane id",
         }),
-        agent: S.propertySignature(agentId).annotations({
-          missingMessage: () => "float needs an agent id",
+        content: S.propertySignature(PaneContentSchema).annotations({
+          missingMessage: () => "float needs content",
         }),
         x: origin,
         y: origin,
@@ -695,7 +770,7 @@ export function encodeLayout(layout: Layout): string {
 function orderFloat(float: LayoutFloat): LayoutFloat {
   return {
     id: float.id,
-    agent: float.agent,
+    content: float.content,
     x: float.x,
     y: float.y,
     width: float.width,
@@ -706,7 +781,7 @@ function orderFloat(float: LayoutFloat): LayoutFloat {
 function order(node: LayoutNode | null): LayoutNode | null {
   if (!node) return null;
   if (node.type === "pane") {
-    return { type: "pane", id: node.id, agent: node.agent, weight: node.weight };
+    return { type: "pane", id: node.id, content: node.content, weight: node.weight };
   }
   return {
     type: "split",

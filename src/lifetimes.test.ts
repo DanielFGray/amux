@@ -95,7 +95,7 @@ test("closing the top scope kills agents three levels down", async () => {
   try {
     const space = run(f.spaces.create("proj", process.cwd()));
     const window = run(space.newWindow());
-    const first = run(window.init()).session;
+    const first = run(window.init()).session!;
     const second = run(window.spawn("second"));
     expect(f.killed()).toEqual([]);
 
@@ -113,9 +113,9 @@ test("closing one window releases its agents and leaves its siblings running", a
   try {
     const space = run(f.spaces.create("proj", process.cwd()));
     const doomed = run(space.newWindow());
-    const doomedAgent = run(doomed.init()).session;
+    const doomedAgent = run(doomed.init()).session!;
     const survivor = run(space.newWindow());
-    const survivorAgent = run(survivor.init()).session;
+    const survivorAgent = run(survivor.init()).session!;
 
     await runAsync(space.closeWindow(doomed));
     expect(f.killed()).toEqual([doomedAgent.id]);
@@ -133,7 +133,7 @@ test("killSession releases the session it was given and no other", async () => {
   try {
     const space = run(f.spaces.create("proj", process.cwd()));
     const window = run(space.newWindow());
-    const bystander = run(window.init()).session;
+    const bystander = run(window.init()).session!;
     const second = run(window.spawn("second"));
 
     await runAsync(window.killSession(second));
@@ -153,7 +153,7 @@ test("a broken-out pane survives its source window closing", async () => {
     const space = run(f.spaces.create("proj", process.cwd()));
     const source = run(space.newWindow());
     const pane = run(source.init());
-    const moved = pane.session;
+    const moved = pane.session!;
 
     // breakPane moves the agent AND its scope. The source window is emptied and
     // closed by the break itself, so if the scope had stayed behind — or been
@@ -249,7 +249,7 @@ test("scoped app release detaches daemon projections and terminates local owners
 function lifecycleWorkspace(agent: string): WorkspaceSnapshot {
   const pane = `pane-${agent}`;
   const layout = makeLayout({
-    root: { type: "pane", id: pane, agent, weight: 1 },
+    root: { type: "pane", id: pane, content: { kind: "pty", session: agent }, weight: 1 },
     focus: pane,
   });
   return {

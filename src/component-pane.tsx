@@ -5,17 +5,26 @@ import { createSignal, type Accessor, type Signal } from "solid-js";
 import { BoxRenderable, type CliRenderer, type RenderContext } from "@opentui/core";
 import { Pane } from "./pane.ts";
 import type { SessionHandle } from "./session-handle.ts";
+import type { JsonValue } from "./layout.ts";
 
 /**
- * What a component session's view is told about the frame it lives in.
+ * What a plugin pane's view is told about the frame it lives in.
  *
  * Everything here changes while the view is mounted — a split resizes it, a
  * focus change moves the keyboard — so each is an accessor rather than a value.
- * The session id is not: a pane views one session for its whole life.
+ * The pane's content is not: a pane shows the content it was given for its
+ * whole life. `type` and `descriptor` come straight from the content; `session`
+ * is that content's backend, empty when it has none (a client-rendered view
+ * such as the editor). A view that needs a backend must gate on session being
+ * non-empty, the same way an active gate is required of one that takes typing.
  */
 export interface PaneViewProps {
+  /** The pane's session id, or empty when the content has no backend. */
   sessionId: string;
+  /** The pane type, which is what selected this view. */
   paneType: string;
+  /** The content's descriptor — the plugin's own, opaque to the pane host. */
+  descriptor: JsonValue;
   /** The content rect, the pane's own less the sides it draws. */
   width: Accessor<number>;
   height: Accessor<number>;
@@ -30,7 +39,7 @@ export interface PaneViewProps {
  *
  * One function for the whole workspace rather than one per pane: which view a
  * session gets is decided by the session, and a pane is a frame that mounts
- * whatever this answers. See PaneContent in env.ts for where it comes from.
+ * whatever this answers. See PaneViews in env.ts for where it comes from.
  */
 export type PaneView = (props: PaneViewProps) => JSX.Element;
 
@@ -60,7 +69,13 @@ export class ComponentPane extends Pane {
 
   constructor(
     ctx: RenderContext,
-    options: { id: string; session: SessionHandle; view?: PaneView } & Record<string, any>,
+    options: {
+      id: string;
+      session: SessionHandle | null;
+      paneType?: string;
+      descriptor?: JsonValue;
+      view?: PaneView;
+    } & Record<string, any>,
   ) {
     super(ctx, options);
     this.#content = new BoxRenderable(ctx, {
@@ -81,8 +96,13 @@ export class ComponentPane extends Pane {
     // the interface is the narrow half of the renderer, not a different thing.
     const renderer = ctx as CliRenderer;
     const props: PaneViewProps = {
-      sessionId: this.session.id,
-      paneType: this.session.declaredAgent ?? "",
+      sessionId: this.session?.id ?? "",
+      // The pane type is the content's, not the session's declared agent: a
+      // plugin pane's view is decided by what fills the pane. The declared
+      // agent was the only source before the model split, and the fallback
+      // keeps a view that was registered before the pane carried its own type.
+      paneType: options.paneType ?? this.session?.declaredAgent ?? "",
+      descriptor: options.descriptor ?? {},
       width: () => {
         this.#size[0]();
         return this.content.width;
