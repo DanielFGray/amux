@@ -1,9 +1,6 @@
-A terminal multiplexer with agent-aware features. Daemon/client architecture: the daemon owns PTYs and workspace state; clients attach over Unix sockets and project the model into OpenTUI renderables. Built with Effect, OpenTUI+Solid, using libghostty-vt via Bun FFI.
+`amux` is an agent-aware terminal multiplexer with an advanced plugin system. Built with Effect-TS, OpenTUI, Solid-JS, and libghostty-vt via Bun FFI.
 
 ## Architectural invariants
-
-These rules must not be violated — the dead "second authority" in the client
-exists because they were once broken:
 
 - The daemon owns all PTYs and workspace state. The client is a read-only projection. Never mutate workspace state in `Window`, `Space`, or `Pane`.
 - All workspace mutations go through ordered commands via the daemon's model queue. A client-side mutation will diverge from the daemon's generation.
@@ -11,15 +8,16 @@ exists because they were once broken:
 - State persistence is write-temp-then-rename (atomic against process crash). Durability obligations in the daemon treat a completed write as discharged. `ARCHITECTURE.md` documents the transaction ordering in detail.
 - **Core is agent-AWARE, not an agent.** Core knows a pane is running claude/codex/opencode and what state it is in. It must never contain a provider, model, credential, prompt, or turn loop. An agent _harness_ is a plugin — including ours. See `ARCHITECTURE.md` and `ts-8305f4`.
 
-Full architecture is in ARCHITECTURE.md — read it before touching the daemon or
-workspace model.
+These rules must not be violated — the dead "second authority" in the client exists because they were once broken
+
+Full architecture is in ARCHITECTURE.md — read it before touching the daemon or workspace model.
 
 ## Vocabulary
 
 session: daemon-owned backend (supervised PTY today, agent later)
 pane: view of a session in a layout
-agent: LLM coding agent — never the supervised PTY
-harness: the thing that runs an agent's turn loop. Always a plugin, never core
+agent: LLM coding agent
+harness: the thing that runs an agent's turn loop. may be an external command or in-process plugin
 workspace: renderer-free transform model (the thing the daemon owns)
 
 ## Code conventions
@@ -31,9 +29,7 @@ workspace: renderer-free transform model (the thing the daemon owns)
 
 ## Working with this project
 
-Before performing multiple mechanical rewrites, read
-`tools/ast-grep/README.md`. Keep transformations narrow, dry-run them first,
-and add newly discovered ast-grep examples and gotchas to that document.
+Before performing multiple mechanical rewrites, read `tools/ast-grep/README.md`. Keep transformations narrow, dry-run them first, and add newly discovered ast-grep examples and gotchas to that document.
 
 ```bash
 bun test              # both suites — what a change must pass before it lands
@@ -46,9 +42,7 @@ bun run daemon        # daemon (same as `bun src/cli.ts daemon <session>`)
 bun run cli           # unified `amux` CLI entry
 ```
 
-TypeScript diagnostics include suggestions. Treat suggestions as actionable
-feedback: fix them when they are correct, and do not suppress or ignore them
-until they accumulate.
+TypeScript diagnostics include suggestions. Treat suggestions as actionable feedback: fix them when they are correct, **do not** suppress or ignore them such that they accumulate.
 
 Tasks live in `prog`:
 
@@ -71,5 +65,6 @@ prog ready -p amux    # unblocked tasks
 - ../cmux/ - similar agent-aware multiplexor in swift
 - ../opencode/ — opentui + effect-ts agent harness
 - ../zaly/ — another agent harness on an inhouse stack
-- ../opentui/ - opentui source including lots of examples
+- ../opentui/ - opentui source including examples with solidjs
+- ../effect/ - source for effect-ts [v3, see also ../effect-v4]
 - ../tsdoctor/ — TypeScript LSP features from CLI, very helpful when debugging type issues
