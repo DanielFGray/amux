@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,6 +100,24 @@ test("git kills a process that exceeds its timeout", async () => {
   await waitFor(() => survivors().length === 0, "the worktree's processes to exit", 2_000);
   expect(survivors()).toEqual([]);
   expect(Date.now() - started).toBeLessThan(2_000);
+});
+
+test("git status does not refresh the index, so it never takes index.lock", async () => {
+  const repo = await initRepo();
+  const file = join(repo, "readme.md");
+  const index = join(repo, ".git", "index");
+
+  // Make the working tree newer than the index without changing content. A
+  // plain `git status` would then opportunistically refresh the index, taking
+  // .git/index.lock and rewriting the index under a new inode. With
+  // GIT_OPTIONAL_LOCKS=0 that refresh is skipped, so the index is untouched.
+  await utimes(file, new Date(Date.now() + 2_000), new Date(Date.now() + 2_000));
+  const before = (await stat(index)).ino;
+
+  expect(await gitWorktreeDirty(repo)).toBe(false);
+
+  const after = (await stat(index)).ino;
+  expect(after).toBe(before);
 });
 
 test("gitWorktreeAdd creates a branch and worktree; remove tears it down", async () => {
