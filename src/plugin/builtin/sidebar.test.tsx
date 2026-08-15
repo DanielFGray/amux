@@ -13,6 +13,7 @@ import {
   type SidebarDisplayRow,
 } from "../../ui/panel.ts";
 import { createRegions } from "../../ui/regions.tsx";
+import { createPluginContributions } from "../contributions.ts";
 import { resolveOptions } from "../../options.ts";
 import { workspaceEnv } from "../../env.ts";
 import type { WorkspaceSnapshot } from "../../workspace.ts";
@@ -127,7 +128,8 @@ async function setup(options?: { width?: number; height?: number }) {
   const t = await testRender(
     () => {
       const renderer = useRenderer();
-      const registeredRegions = createRegions(renderer);
+      const contributions = createPluginContributions();
+      const registeredRegions = createRegions(renderer, contributions);
       const paneHost = new BoxRenderable(renderer, { id: "pane-host", flexGrow: 1 });
       onMount(() => {
         regions = registeredRegions;
@@ -141,11 +143,14 @@ async function setup(options?: { width?: number; height?: number }) {
         const [displaySignal, setDisplaySignal] = createSignal(computeDisplay(spaces));
         spaces.onChange = () => setDisplaySignal(computeDisplay(spaces));
         const panelCtx = makePanelContext(displaySignal);
+        const environment = testPluginEnvironment(renderer, {
+          panel: panelCtx,
+          contributions,
+          regions: registeredRegions,
+        });
         const host: PluginHost = Effect.runSync(
           Scope.extend(
-            createPluginHost(
-              testPluginEnvironment({ panel: panelCtx, regions: registeredRegions }),
-            ).pipe(Effect.provideService(Scope.Scope, scope)),
+            createPluginHost(environment).pipe(Effect.provideService(Scope.Scope, scope)),
             scope,
           ),
         );

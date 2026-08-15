@@ -1,4 +1,5 @@
-import type { Effect, Scope, Stream } from "effect";
+import type { Context, Effect, Option, Scope, Stream } from "effect";
+import type { PluginService } from "./services.ts";
 import type { JSX } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import type { PanelContext } from "../ui/panel.ts";
@@ -12,16 +13,47 @@ export interface SpawnProvider {
   readonly env?: Readonly<Record<string, string>>;
 }
 
-export interface PluginDefinition<R = Scope.Scope> {
+export interface PluginDefinition {
   readonly id: string;
   readonly apiVersion: string;
-  readonly effect: (context: PluginHostContext) => Effect.Effect<void, never, R>;
+  /**
+   * Services this plugin cannot run without. It does not start until every one
+   * of them has a provider, and it is torn down and re-gated when a provider
+   * leaves. `definePlugin` is what checks these against the effect's
+   * requirements; the host holds them erased, because it holds many plugins
+   * with different requirements in one map.
+   */
+  readonly inject?: readonly PluginService[];
+  /** The injected services are already provided by the time the host runs this,
+   *  so the only requirement left is the plugin's own scope. */
+  readonly effect: (context: PluginHostContext) => Effect.Effect<void, never, Scope.Scope>;
 }
+
+/**
+ * A plugin, with its injected tags checked against what its effect requires.
+ *
+ * Writing the object literal directly types the effect's requirements as
+ * whatever the author wrote, and a tag left out of `inject` would then be a
+ * plugin that suspends on nothing and dies on a missing service. Inferring the
+ * tags here makes the two halves one declaration.
+ */
+export const definePlugin = <const Tags extends readonly PluginService[] = []>(definition: {
+  readonly id: string;
+  readonly apiVersion: string;
+  readonly inject?: Tags;
+  readonly effect: (
+    context: PluginHostContext,
+  ) => Effect.Effect<void, never, Context.Tag.Identifier<Tags[number]> | Scope.Scope>;
+}): PluginDefinition => definition as PluginDefinition;
 
 export interface PluginHostContext {
   readonly id: string;
   readonly panel: PanelContext;
   readonly kv: PluginKV;
+  /** Publish a service other plugins may inject. It is withdrawn when this plugin stops. */
+  readonly provide: <Id, S>(tag: Context.Tag<Id, S>, service: S) => () => void;
+  /** Read a service without depending on it. `inject` is what makes the host wait. */
+  readonly get: <Id, S>(tag: Context.Tag<Id, S>) => Option.Option<S>;
   readonly registerPanel: (panel: Panel) => () => void;
   readonly registerPaneType: (type: string, view: PaneView) => () => void;
   readonly registerBinding: (binding: CommandSpec) => () => void;
@@ -56,8 +88,13 @@ export interface PluginErrorEvent {
   readonly timestamp: number;
 }
 
+/**
+ * A plugin the host is holding. Being listed at all is what "running" means —
+ * a plugin that failed is removed, and its failure goes out on `onError`, so
+ * there is no error to report here and no `active` flag to set.
+ */
 export interface PluginStatus {
   readonly id: string;
-  readonly active: boolean;
-  readonly error: string | null;
+  /** Injected tags with no provider yet; empty for a plugin that has started. */
+  readonly waitingFor: readonly string[];
 }

@@ -1,4 +1,4 @@
-import { Effect, Schema as S } from "effect";
+import { Context, Effect, Schema as S } from "effect";
 import { plugin } from "bun";
 import { fileURLToPath } from "node:url";
 import type { PluginDefinition } from "./types.ts";
@@ -75,10 +75,18 @@ export const decodePlugin = (module: unknown): Effect.Effect<PluginDefinition, s
     Effect.mapError((error) => error.message),
   );
 
+/**
+ * A module is only a plugin if it says so in full.
+ *
+ * Every field a plugin can declare has to appear here: the struct drops what it
+ * does not name, so a field left out would be read from disk and thrown away —
+ * a plugin that declares `inject` and silently starts without waiting for it.
+ */
 const PluginModule = S.Struct({
   default: S.Struct({
     id: S.NonEmptyString,
     apiVersion: S.String,
+    inject: S.optional(S.Array(S.declare(Context.isTag, { identifier: "PluginService" }))),
     effect: S.declare(
       (input: unknown): input is PluginDefinition["effect"] => typeof input === "function",
       { identifier: "PluginEffect" },

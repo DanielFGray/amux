@@ -62,6 +62,28 @@ test("a module outside the plugin's directory is the same instance after a reloa
   expect(first.id).toBe(second.id);
 });
 
+/**
+ * The decode schema drops every property it does not name, so a plugin field
+ * the schema forgets is read off disk and thrown away — and the plugin then
+ * runs without it, which for `inject` means starting before its services
+ * exist. Nothing else catches that: the plugin still loads and still works in
+ * memory, where the definition never goes through the schema at all.
+ */
+test("a declared dependency survives the trip through the decoder", async () => {
+  const dir = await scratch();
+  await writeFile(
+    join(dir, "needs.ts"),
+    `import { Context, Effect } from "effect";
+     class Pool extends Context.Tag("test/Pool")<Pool, number>() {}
+     export default { id: "needs", apiVersion: "1", inject: [Pool],
+       effect: () => Effect.void };`,
+  );
+
+  const definition = await Effect.runPromise(hotImport(pathToFileURL(join(dir, "needs.ts"))));
+
+  expect(definition.inject?.map((tag) => tag.key)).toEqual(["test/Pool"]);
+});
+
 test("a module that is not a plugin is refused with the reason", async () => {
   const dir = await scratch();
   await writeFile(join(dir, "nope.ts"), `export default { id: "nope" };`);

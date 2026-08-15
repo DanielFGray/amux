@@ -37,7 +37,7 @@ export const createReloader = (host: PluginHost, plugins: readonly HotPlugin[]):
       const current = running.get(id);
       if (!current) return yield* Effect.fail(`unknown plugin '${id}'`);
       if (isActive(id)) return;
-      yield* host.enable(current.definition);
+      yield* host.add(current.definition);
       if (!isActive(id)) return yield* Effect.fail(`plugin '${id}' did not start`);
     });
 
@@ -45,7 +45,7 @@ export const createReloader = (host: PluginHost, plugins: readonly HotPlugin[]):
     Effect.gen(function* () {
       if (!running.has(id)) return yield* Effect.fail(`unknown plugin '${id}'`);
       if (!isActive(id)) return;
-      yield* host.disable(id);
+      yield* host.remove(id);
     });
 
   const reload = (id: string): Effect.Effect<void, string> =>

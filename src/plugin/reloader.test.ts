@@ -8,7 +8,6 @@ import { createPluginHost, type PluginHost } from "./host.ts";
 import { createReloader, type PluginReloader } from "./reloader.ts";
 import { testPluginEnvironment } from "./test-environment.ts";
 import { hotImport } from "./hot.ts";
-import { createRegions } from "../ui/regions.tsx";
 import { testEffect } from "../test-effect.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
@@ -146,9 +145,7 @@ const start = (
 
     const renderer = yield* Effect.promise(() => createTestRenderer({ width: 80, height: 24 }));
     cleanupFns.push(() => renderer.renderer.destroy());
-    const host = yield* createPluginHost(
-      testPluginEnvironment({ regions: createRegions(renderer.renderer) }),
-    );
+    const host = yield* createPluginHost(testPluginEnvironment(renderer.renderer));
 
     const definition = yield* hotImport(pathToFileURL(entry)).pipe(Effect.orDie);
     yield* host.add(definition);

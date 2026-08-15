@@ -56,6 +56,25 @@ In addition to configured entries, amux discovers entry files in `$XDG_CONFIG_HO
 
 Plugins must invoke workspace commands through `ctx.panel.run()` and must not mutate client projection objects or access terminal handles.
 
+### Plugins that depend on plugins
+
+A plugin publishes a service with `ctx.provide(Tag, service)` and names the services it cannot run without in `inject`. Wrap the definition in `definePlugin` so the two halves are checked against each other:
+
+```ts
+export default definePlugin({
+  id: "amux.mentions",
+  apiVersion: "1",
+  inject: [SearchService],
+  effect: (ctx) =>
+    Effect.gen(function* () {
+      const search = yield* SearchService
+      // ...
+    }),
+})
+```
+
+A plugin waits until every injected service has a provider, so load order follows who provides what, not the order of the config file. When a provider stops or is reloaded, its dependents unwind first, while its services are still theirs to use, and then go back to waiting; the replacement picks them up as soon as it provides. `ctx.get(Tag)` is the soft read for a capability a plugin can do without: it never waits, and it returns nothing once the provider leaves.
+
 ### Reloading a plugin
 
 `amux plugin.reload [plugin]` loads a plugin's source again and runs the new version in place of the old one — from the command palette, from a shell, or from an agent that has just edited it. With no argument every plugin reloads. The request goes through the daemon, so every attached client reloads, not only the one you typed it into.

@@ -66,7 +66,12 @@ import { workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
 import { createAppState, POLL_MS } from "./ui/state.ts";
 import { createPanelContext, type PanelContext } from "./ui/panel.ts";
 import { App } from "./ui/App.tsx";
-import { createRegions } from "./ui/regions.tsx";
+import { createRegions, type Panel } from "./ui/regions.tsx";
+import {
+  createPluginContributions,
+  type PluginContributions,
+  type PluginInstance,
+} from "./plugin/contributions.ts";
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
 import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import { createReloader } from "./plugin/reloader.ts";
@@ -143,9 +148,21 @@ export function runCommandByTarget<A, B>(
 
 interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly release: Effect.Effect<void>;
-  readonly registerBinding: (binding: CommandSpec) => () => void;
-  readonly registerSettingsSection: (section: PluginSettingsSection) => () => void;
+  readonly registerBinding: (owner: PluginInstance, binding: CommandSpec) => () => void;
+  readonly registerSettingsSection: (
+    owner: PluginInstance,
+    section: PluginSettingsSection,
+  ) => () => void;
 }
+
+/**
+ * Who the app's own panels and bindings belong to.
+ *
+ * They go through the same tables as a plugin's, so that a plugin claiming a
+ * name the app already uses is refused by the same rule that stops two plugins
+ * colliding. There is only ever one generation of it: the app does not reload.
+ */
+const CORE_CONTRIBUTOR: PluginInstance = { id: "amux", generation: 0 };
 
 /** A synchronous launcher captured from the app's scoped FiberMap. */
 export type AppFiberRunner = (key: string, effect: Effect.Effect<void>) => void;
@@ -179,7 +196,8 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     // whichever one the app installs, the same deferred wiring as
     // window.onModelFocus, which is likewise attached after projection rather
     // than at construction.
-    const sessionViews = createSessionViews();
+    const contributions = createPluginContributions();
+    const sessionViews = createSessionViews(contributions);
     const spaces = yield* SpaceSet.make(
       workspaceEnv(options.renderer, {
         shell: initialShell,
@@ -188,14 +206,17 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       }),
       options.paneHost,
     );
-    const regions = createRegions(options.renderer);
+    const regions = createRegions(options.renderer, contributions);
     const pluginRuntime: PluginRuntime = {};
     const app = yield* Effect.acquireRelease(
-      Effect.sync(() => buildApp(options, spaces, fiberScope, runFiber, regions, pluginRuntime)),
+      Effect.sync(() =>
+        buildApp(options, spaces, fiberScope, runFiber, regions, contributions, pluginRuntime),
+      ),
       (app) => app.release,
     );
     const pluginHost = yield* createPluginHost({
       panel: app.panel,
+      contributions,
       regions,
       sessionViews,
       registerBinding: app.registerBinding,
@@ -344,9 +365,11 @@ function buildApp(
   fiberScope: Scope.CloseableScope,
   runFiber: AppFiberRunner,
   regions: ReturnType<typeof createRegions>,
+  contributions: PluginContributions,
   pluginRuntime: PluginRuntime,
 ): ManagedAppHandle {
   const initialFrameExternalLeft = frame.externalLeft;
+  contributions.commit(CORE_CONTRIBUTOR);
 
   /**
    * Run one of the workspace's Effect-returning methods here and now.
@@ -537,7 +560,8 @@ function buildApp(
   const [settingsSelected, setSettingsSelected] = createSignal(0);
   const [settingsDirty, setSettingsDirty] = createSignal(false);
   const [settingsError, setSettingsError] = createSignal("");
-  const [pluginSettings, setPluginSettings] = createSignal<readonly PluginSettingsSection[]>([]);
+  const settingsSectionTable = contributions.table<PluginSettingsSection>();
+  const pluginSettings = () => settingsSectionTable.all().map((entry) => entry.value);
   /** True while the keybind editor is waiting for the keystroke to record. */
   const [capturing, setCapturing] = createSignal(false);
   const [conflicts, setConflicts] = createSignal<Conflict[]>([]);
@@ -1800,39 +1824,25 @@ function buildApp(
     onError: showCommandError,
   });
   setConflicts(bindings.conflicts());
-  const pluginBindings = new Map<string, CommandSpec>();
+  const bindingTable = contributions.table<CommandSpec>();
   const [registeredBindings, setRegisteredBindings] =
     createSignal<readonly CommandSpec[]>(COMMANDS);
-  const refreshBindings = () => {
-    const next = [...COMMANDS, ...pluginBindings.values()];
+  // Bindings reach the keymap through an effect rather than a call in
+  // `registerBinding`, because a plugin's bindings also appear and disappear
+  // when the host commits or retires the instance that registered them, and
+  // nobody calls `registerBinding` at that moment.
+  createEffect(() => {
+    const next = [...COMMANDS, ...bindingTable.all().map((entry) => entry.value)];
     setRegisteredBindings(next);
     setConflicts(bindings.setCommands(next));
+  });
+  const registerBinding = (owner: PluginInstance, binding: CommandSpec) => {
+    if (COMMANDS.some((entry) => entry.name === binding.name))
+      throw new Error(`binding '${binding.name}' is a built-in command`);
+    return bindingTable.add(owner, binding.name, binding);
   };
-  const registerBinding = (binding: CommandSpec) => {
-    if (COMMANDS.some((entry) => entry.name === binding.name) || pluginBindings.has(binding.name))
-      throw new Error(`binding '${binding.name}' is already registered`);
-    pluginBindings.set(binding.name, binding);
-    refreshBindings();
-    let active = true;
-    return () => {
-      if (!active) return;
-      active = false;
-      pluginBindings.delete(binding.name);
-      refreshBindings();
-    };
-  };
-  const registerSettingsSection = (section: PluginSettingsSection) => {
-    setPluginSettings((current) => [
-      ...current.filter((entry) => entry.id !== section.id),
-      section,
-    ]);
-    let active = true;
-    return () => {
-      if (!active) return;
-      active = false;
-      setPluginSettings((current) => current.filter((entry) => entry !== section));
-    };
-  };
+  const registerSettingsSection = (owner: PluginInstance, section: PluginSettingsSection) =>
+    settingsSectionTable.add(owner, section.id, section);
 
   function updateHintVisibility(sequence: readonly { display: string }[]) {
     runFiber("hint-delay", Effect.void);
@@ -1959,8 +1969,9 @@ function buildApp(
    * the one asked about a keystroke first.
    */
   function registerPanels(): () => void {
+    const registerCorePanel = (panel: Panel) => regions.register(CORE_CONTRIBUTOR, panel);
     const disposers = [
-      regions.register({
+      registerCorePanel({
         id: "amux.windows",
         region: "top",
         // The pane area, not the app: amux has no app-wide bar, and a tab row
@@ -1992,7 +2003,7 @@ function buildApp(
           />
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.settings",
         region: "overlay",
         order: 10,
@@ -2023,7 +2034,7 @@ function buildApp(
           />
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.keybind-picker",
         region: "overlay",
         order: 15,
@@ -2060,7 +2071,7 @@ function buildApp(
           </Show>
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.palette",
         region: "overlay",
         // Same rung as settings: one signal holds both, so they cannot be up at
@@ -2089,7 +2100,7 @@ function buildApp(
           />
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.buffers",
         region: "overlay",
         order: 20,
@@ -2143,7 +2154,7 @@ function buildApp(
           </Show>
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.capture",
         region: "overlay",
         order: 30,
@@ -2167,7 +2178,7 @@ function buildApp(
           </Show>
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.prompt",
         region: "overlay",
         // Top of the stack: a prompt is opened *by* the overlays below it, and
@@ -2203,7 +2214,7 @@ function buildApp(
           </Show>
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.hints",
         region: "float",
         title: "which-key",
@@ -2221,7 +2232,7 @@ function buildApp(
           />
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.disconnected",
         region: "overlay",
         order: 50,
@@ -2256,7 +2267,7 @@ function buildApp(
           </box>
         ),
       }),
-      regions.register({
+      registerCorePanel({
         id: "amux.error",
         region: "overlay",
         order: 55,

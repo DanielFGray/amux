@@ -1,32 +1,29 @@
 import { afterEach, expect } from "bun:test";
 import { Chunk, Effect, Fiber, Queue, Scope, Stream } from "effect";
-import { createRegions, type Regions } from "../ui/regions.tsx";
+import type { Regions } from "../ui/regions.tsx";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
 import type { PluginDefinition, PluginErrorEvent } from "./types.ts";
-import type { CliRenderer } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
-import { createSessionViews } from "./session-views.tsx";
+import type { SessionViews } from "./session-views.tsx";
 import { testPluginEnvironment } from "./test-environment.ts";
+import { testPanelContext } from "../ui/test-panel.ts";
 import { command } from "../commands.ts";
 import { runCommandByTarget } from "../app.tsx";
 import type { PanelContext } from "../ui/panel.ts";
 
-async function mockRegions(): Promise<{
-  regions: Regions;
-  renderer: CliRenderer;
-  dispose: () => void;
-}> {
-  const t = await createTestRenderer({ width: 80, height: 24 });
-  const regions = createRegions(t.renderer);
-  return { regions, renderer: t.renderer, dispose: () => t.renderer.destroy() };
-}
+type EnvironmentOverrides = Partial<
+  Omit<PluginEnvironment, "regions" | "contributions" | "sessionViews">
+>;
 
-function mockEnvironment(
-  regions: Regions,
-  overrides: Partial<PluginEnvironment> = {},
-): PluginEnvironment {
-  return testPluginEnvironment({ regions, ...overrides });
+async function mockEnvironment(
+  overrides: EnvironmentOverrides = {},
+): Promise<{ env: PluginEnvironment; dispose: () => void }> {
+  const t = await createTestRenderer({ width: 80, height: 24 });
+  return {
+    env: testPluginEnvironment(t.renderer, overrides),
+    dispose: () => t.renderer.destroy(),
+  };
 }
 
 function mkPlugin(overrides: Partial<PluginDefinition> = {}): PluginDefinition {
@@ -43,11 +40,21 @@ afterEach(() => {
   for (const fn of cleanupFns.splice(0)) fn();
 });
 
-function makeHost(): Effect.Effect<{ host: PluginHost; regions: Regions }, never, Scope.Scope> {
+function makeHost(
+  overrides: EnvironmentOverrides = {},
+): Effect.Effect<
+  { host: PluginHost; regions: Regions; sessionViews: SessionViews },
+  never,
+  Scope.Scope
+> {
   return Effect.gen(function* () {
-    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
+    const { env, dispose } = yield* Effect.promise(() => mockEnvironment(overrides));
     cleanupFns.push(dispose);
-    return { host: yield* createPluginHost(mockEnvironment(regions)), regions };
+    return {
+      host: yield* createPluginHost(env),
+      regions: env.regions,
+      sessionViews: env.sessionViews,
+    };
   });
 }
 
@@ -57,16 +64,14 @@ testEffect("add activates a plugin and status reports it", () =>
   Effect.gen(function* () {
     const { host } = yield* makeHost();
     yield* host.add(mkPlugin({ id: "p1" }));
-    expect(host.status()).toEqual([{ id: "p1", active: true, error: null }]);
+    expect(host.status()).toEqual([{ id: "p1", waitingFor: [] }]);
   }),
 );
 
 testEffect("plugin panel run accepts session-target commands", () =>
   Effect.gen(function* () {
-    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
-    cleanupFns.push(dispose);
     const calls: string[] = [];
-    const basePanel = testPluginEnvironment({ regions }).panel;
+    const basePanel = testPanelContext();
     const panel: PanelContext = {
       ...basePanel,
       run: (value) =>
@@ -84,7 +89,7 @@ testEffect("plugin panel run accepts session-target commands", () =>
             }),
         ),
     };
-    const host = yield* createPluginHost(mockEnvironment(regions, { panel }));
+    const { host } = yield* makeHost({ panel });
     yield* host.add(
       mkPlugin({
         id: "session-command-plugin",
@@ -112,7 +117,7 @@ testEffect("remove of an unknown id is a no-op", () =>
     const { host } = yield* makeHost();
     yield* host.add(mkPlugin({ id: "p1" }));
     yield* host.remove("nope");
-    expect(host.status()).toEqual([{ id: "p1", active: true, error: null }]);
+    expect(host.status()).toEqual([{ id: "p1", waitingFor: [] }]);
   }),
 );
 
@@ -130,10 +135,7 @@ testEffect("dispose removes every active plugin", () =>
 
 testEffect("add replaces a running plugin, taking its registrations with it", () =>
   Effect.gen(function* () {
-    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
-    cleanupFns.push(dispose);
-    const sessionViews = createSessionViews();
-    const host = yield* createPluginHost(mockEnvironment(regions, { sessionViews }));
+    const { host, sessionViews } = yield* makeHost();
     const ran: string[] = [];
 
     const version = (name: string) =>
@@ -142,8 +144,9 @@ testEffect("add replaces a running plugin, taking its registrations with it", ()
         effect: (ctx) =>
           Effect.sync(() => {
             ran.push(name);
-            // The same name twice: session-views refuses a second owner, so this
-            // only works if the old instance is gone before the new one starts.
+            // Both versions claim the same pane type. Two generations of one id
+            // may hold a name at once, so what this proves is that the pane
+            // type still resolves afterwards and resolves to the newer one.
             ctx.registerPaneType("chat", () => null);
           }),
       });
@@ -153,7 +156,7 @@ testEffect("add replaces a running plugin, taking its registrations with it", ()
 
     expect(ran).toEqual(["first", "second"]);
     expect(sessionViews.has("chat")).toBe(true);
-    expect(host.status()).toEqual([{ id: "swap", active: true, error: null }]);
+    expect(host.status()).toEqual([{ id: "swap", waitingFor: [] }]);
   }),
 );
 
@@ -216,10 +219,7 @@ testEffect("registered panels are disposed when the plugin is removed", () =>
 
 testEffect("registered session views are disposed when the plugin is removed", () =>
   Effect.gen(function* () {
-    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
-    cleanupFns.push(dispose);
-    const views = createSessionViews();
-    const host = yield* createPluginHost(mockEnvironment(regions, { sessionViews: views }));
+    const { host, sessionViews: views } = yield* makeHost();
     const plugin = mkPlugin({
       id: "view-plugin",
       effect: (ctx) =>
@@ -237,17 +237,13 @@ testEffect("registered session views are disposed when the plugin is removed", (
 
 testEffect("registered bindings are disposed when the plugin is removed", () =>
   Effect.gen(function* () {
-    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
-    cleanupFns.push(dispose);
     const active = new Set<string>();
-    const host = yield* createPluginHost(
-      mockEnvironment(regions, {
-        registerBinding: (binding) => {
-          active.add(binding.name);
-          return () => active.delete(binding.name);
-        },
-      }),
-    );
+    const { host } = yield* makeHost({
+      registerBinding: (_owner, binding) => {
+        active.add(binding.name);
+        return () => active.delete(binding.name);
+      },
+    });
     const plugin = mkPlugin({
       id: "binding-plugin",
       effect: (ctx) =>
@@ -427,7 +423,7 @@ testEffect("KV values survive a remove/add cycle", () =>
   }),
 );
 
-testEffect("runtime enable and disable release and reacquire the plugin scope", () =>
+testEffect("removing and adding a plugin releases and reacquires its scope", () =>
   Effect.gen(function* () {
     const { host, regions } = yield* makeHost();
     const panel = {
@@ -445,11 +441,11 @@ testEffect("runtime enable and disable release and reacquire the plugin scope", 
         }),
     });
 
-    yield* host.enable(plugin);
+    yield* host.add(plugin);
     expect(regions.declared("bottom", "app")).toBe(true);
-    yield* host.disable("runtime");
+    yield* host.remove("runtime");
     expect(host.status()).toEqual([]);
-    yield* host.enable(plugin);
+    yield* host.add(plugin);
     expect(host.status().map((status) => status.id)).toEqual(["runtime"]);
   }),
 );

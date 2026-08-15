@@ -5,7 +5,8 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { createSignal } from "solid-js";
 import { App } from "./App.tsx";
-import { createRegions, type Regions } from "./regions.tsx";
+import type { Panel, Regions } from "./regions.tsx";
+import { testRegions } from "./test-regions.ts";
 
 const WIDTH = 24;
 const HEIGHT = 6;
@@ -16,14 +17,18 @@ afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
 
+/** Regions with the owner already applied: no check here is about who owns a
+ *  panel, only about where it lands. */
+type DockedRegions = Omit<Regions, "register"> & { register: (panel: Panel) => () => void };
+
 /** A renderer with the region layout mounted on it, and nothing docked yet. */
 async function mount() {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
-  const regions = createRegions(t.renderer);
+  const { regions, owner } = testRegions(t.renderer);
   cleanup.push(() => t.renderer.destroy());
   return {
-    regions,
+    regions: { ...regions, register: (panel: Panel) => regions.register(owner, panel) },
     async draw() {
       await render(
         () => <App regions={regions} paneHost={paneHost} size={{ width: WIDTH, height: HEIGHT }} />,
@@ -42,7 +47,7 @@ const filled = (char: string) => () => (
   <text style={{ width: "100%", height: 1 }}>{char.repeat(WIDTH)}</text>
 );
 
-function leftDock(regions: Regions, size = () => LEFT) {
+function leftDock(regions: DockedRegions, size = () => LEFT) {
   regions.register({
     id: "test.left",
     region: "left",

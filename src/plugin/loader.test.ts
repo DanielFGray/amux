@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Scope } from "effect";
-import { createPluginHost, type PluginHost } from "./host.ts";
+import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
 import { loadPluginsFromConfig } from "./loader.ts";
 import { testPluginEnvironment } from "./test-environment.ts";
 import type { PluginDefinition } from "./types.ts";
@@ -12,12 +12,11 @@ import type { Config, PluginSpec } from "../config.ts";
 import { decodeConfig } from "../config.ts";
 import { testEffect } from "../test-effect.ts";
 import { createPanelContext, type PanelContext } from "../ui/panel.ts";
-import { createRegions, type Regions } from "../ui/regions.tsx";
+import type { Regions } from "../ui/regions.tsx";
 import { createSignal } from "solid-js";
 import type { WorkspaceSnapshot } from "../workspace.ts";
 import type { SidebarDisplay } from "../ui/panel.ts";
 import { resolveOptions } from "../options.ts";
-import type { CliRenderer } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
@@ -51,21 +50,19 @@ function emptySnapshot(revision = 0): WorkspaceSnapshot {
 }
 
 async function mockRegions(): Promise<{
-  regions: Regions;
-  renderer: CliRenderer;
+  environment: PluginEnvironment;
   dispose: () => void;
 }> {
   const t = await createTestRenderer({ width: 80, height: 24 });
-  const regions = createRegions(t.renderer);
-  return { regions, renderer: t.renderer, dispose: () => t.renderer.destroy() };
+  const environment = testPluginEnvironment(t.renderer);
+  return { environment, dispose: () => t.renderer.destroy() };
 }
 
 function makeHost(): Effect.Effect<{ host: PluginHost; regions: Regions }, never, Scope.Scope> {
   return Effect.gen(function* () {
-    const { regions, dispose } = yield* Effect.promise(() => mockRegions());
+    const { environment, dispose } = yield* Effect.promise(() => mockRegions());
     cleanupFns.push(dispose);
-    const environment = testPluginEnvironment({ regions });
-    return { host: yield* createPluginHost(environment), regions };
+    return { host: yield* createPluginHost(environment), regions: environment.regions };
   });
 }
 

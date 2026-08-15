@@ -1,8 +1,13 @@
 /** @jsxImportSource @opentui/solid */
-import { Show, createComponent, createSignal, type JSX } from "solid-js";
+import { Show, createComponent, type JSX } from "solid-js";
 import type { CliRenderer, KeyEvent } from "@opentui/core";
 import { createSlot, createSolidSlotRegistry, type SolidPlugin } from "@opentui/solid";
 import { Divider } from "../divider.ts";
+import type {
+  ContributionTable,
+  PluginContributions,
+  PluginInstance,
+} from "../plugin/contributions.ts";
 
 /**
  * Where a panel can be put, and what the app draws around it.
@@ -112,8 +117,8 @@ const INNER_EDGE = {
 
 export interface Regions {
   /** Put a panel on screen. Returns its disposer, the shape a scope finalizer
-   *  wants. */
-  register: (panel: Panel) => () => void;
+   *  wants. The panel appears once the host commits the instance that made it. */
+  register: (owner: PluginInstance, panel: Panel) => () => void;
   /** The slot component the layout renders. */
   Slot: ReturnType<typeof createSlot<RegionSlots>>;
   /** Whether anything is registered for a dock at all, visible or not. */
@@ -140,8 +145,13 @@ export interface Regions {
  * `register` call, and the geometry read out of the values is order-independent
  * (a maximum, an existence check), so it cannot disagree with the order the
  * registry renders in.
+ *
+ * The values live in a contribution table, which is what keeps an uncommitted
+ * plugin's panels out of the layout: geometry reads only see the committed
+ * ones, and a panel's own renderer checks that the table still points at it.
  */
-export function createRegions(renderer: CliRenderer): Regions {
+export function createRegions(renderer: CliRenderer, contributions: PluginContributions): Regions {
+  const panels = contributions.table<Panel>();
   const registry = createSolidSlotRegistry<RegionSlots>(
     renderer,
     {},
@@ -156,11 +166,11 @@ export function createRegions(renderer: CliRenderer): Regions {
     },
   );
   const Slot = createSlot<RegionSlots>(registry);
-  const [panels, setPanels] = createSignal<readonly Panel[]>([]);
   const dividers = new Map<DockSlot, Divider>();
 
+  const registered = () => panels.all().map((entry) => entry.value);
   const inDock = (side: DockSide, anchor: Anchor) =>
-    panels().filter(
+    registered().filter(
       (panel): panel is DockPanel => panel.region === side && panel.anchor === anchor,
     );
   const showing = (panel: Panel) => panel.visible?.() ?? true;
@@ -211,7 +221,7 @@ export function createRegions(renderer: CliRenderer): Regions {
     thickness,
     divider,
     topOverlay() {
-      const open = panels()
+      const open = registered()
         .filter((panel): panel is OverlayPanel => panel.region === "overlay")
         .filter(showing);
       // Registration order breaks ties, which is the registry's own rule, so
@@ -219,31 +229,42 @@ export function createRegions(renderer: CliRenderer): Regions {
       const stacked = open.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
       return stacked[stacked.length - 1] ?? null;
     },
-    register(panel) {
-      const dispose = registry.register(panelPlugin(panel));
-      setPanels((current) => [...current, panel]);
+    register(owner, panel) {
+      const remove = panels.add(owner, panel.id, panel);
+      const dispose = registry.register(panelPlugin(owner, panel, panels));
       return () => {
         dispose();
-        setPanels((current) => current.filter((registered) => registered !== panel));
+        remove();
       };
     },
   };
 }
 
-/** A panel as the slot registry sees it: one renderer, in one slot. */
-function panelPlugin(panel: Panel): SolidPlugin<RegionSlots> {
-  const visible = () => panel.visible?.() ?? true;
+/**
+ * A panel as the slot registry sees it: one renderer, in one slot.
+ *
+ * The slot registry keys plugins by id, so the generation goes into the id —
+ * two generations of one plugin are two entries there, and only the one the
+ * contribution table still points at draws anything.
+ */
+function panelPlugin(
+  owner: PluginInstance,
+  panel: Panel,
+  panels: ContributionTable<Panel>,
+): SolidPlugin<RegionSlots> {
+  const visible = () => panels.get(panel.id) === panel && (panel.visible?.() ?? true);
+  const id = `${panel.id}#${owner.generation}`;
   switch (panel.region) {
     case "overlay":
-      return slotPlugin(panel, "overlay", (_ctx, props) => (
+      return slotPlugin(id, panel, "overlay", (_ctx, props) => (
         <Show when={visible()}>{createComponent(panel.component, props)}</Show>
       ));
     case "float":
-      return slotPlugin(panel, "float", (_ctx, props) => (
+      return slotPlugin(id, panel, "float", (_ctx, props) => (
         <Show when={visible()}>{createComponent(panel.component, props)}</Show>
       ));
     default:
-      return slotPlugin(panel, `${panel.region}.${panel.anchor}`, (_ctx, props) => (
+      return slotPlugin(id, panel, `${panel.region}.${panel.anchor}`, (_ctx, props) => (
         <Show when={visible()}>{createComponent(panel.component, props)}</Show>
       ));
   }
@@ -251,12 +272,13 @@ function panelPlugin(panel: Panel): SolidPlugin<RegionSlots> {
 
 /** The one place a slot name is a computed key, so the cast is one line. */
 function slotPlugin<K extends SlotName>(
+  id: string,
   panel: Panel,
   name: K,
   render: (ctx: object, props: RegionSlots[K]) => JSX.Element,
 ): SolidPlugin<RegionSlots> {
   return {
-    id: panel.id,
+    id,
     order: panel.order ?? 0,
     slots: { [name]: render } as SolidPlugin<RegionSlots>["slots"],
   };

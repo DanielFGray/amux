@@ -11,7 +11,8 @@ import { frame } from "../window.ts";
 import { resolveOptions } from "../options.ts";
 import { createAppState } from "./state.ts";
 import { App } from "./App.tsx";
-import { createRegions } from "./regions.tsx";
+import type { Panel } from "./regions.tsx";
+import { testRegions } from "./test-regions.ts";
 import { WindowTabs } from "./WindowTabs.tsx";
 import { Settings } from "./Settings.tsx";
 import { Hints } from "./Hints.tsx";
@@ -59,9 +60,10 @@ async function screen(
   spaces.refreshChrome();
 
   // The same panels the app registers, minus the ones no check here draws.
-  const regions = createRegions(t.renderer);
+  const { regions, owner } = testRegions(t.renderer);
+  const register = (panel: Panel) => regions.register(owner, panel);
   cleanup.push(
-    regions.register({
+    register({
       id: "test.sidebar",
       region: "left",
       anchor: "app",
@@ -77,7 +79,7 @@ async function screen(
     }),
   );
   cleanup.push(
-    regions.register({
+    register({
       id: "test.windows",
       region: "top",
       anchor: "center",
@@ -95,7 +97,7 @@ async function screen(
     }),
   );
   cleanup.push(
-    regions.register({
+    register({
       id: "test.settings",
       region: "overlay",
       visible: () => extra.overlay ?? false,
@@ -116,7 +118,7 @@ async function screen(
     }),
   );
   cleanup.push(
-    regions.register({
+    register({
       id: "test.hints",
       region: "float",
       visible: () =>

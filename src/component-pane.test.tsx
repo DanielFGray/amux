@@ -8,6 +8,7 @@ import { frame } from "./window.ts";
 import { computeRects } from "./geometry.ts";
 import { ComponentPane, type PaneView } from "./component-pane.tsx";
 import { createSessionViews } from "./plugin/session-views.tsx";
+import { testContributor } from "./plugin/test-contributor.ts";
 import { TerminalPane, type Pane } from "./pane.ts";
 import { makeLayout, newPaneId, type PaneContent } from "./layout.ts";
 import type { KeyEvent } from "@opentui/core";
@@ -133,14 +134,15 @@ test("a sessionless plugin pane mounts the registered view from its descriptor",
 });
 
 test("a mounted component pane reacts when its harness view is registered and removed", async () => {
-  const views = createSessionViews();
+  const { contributions, owner } = testContributor();
+  const views = createSessionViews(contributions);
   const { t, win } = await workspace(views.view);
   const chat = run(win.startSession(componentSession("chat")));
   win.mount(chat);
   await draw(t);
   expect(t.captureCharFrame()).toContain("Pane type 'native' is unavailable.");
 
-  const dispose = views.register("native", () => <text>native harness</text>);
+  const dispose = views.register(owner, "native", () => <text>native harness</text>);
   await draw(t);
   expect(t.captureCharFrame()).toContain("native harness");
 
