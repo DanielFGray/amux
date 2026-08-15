@@ -472,7 +472,6 @@ test("stop answers before it tears its own socket down", async () => {
   const { daemon, env } = await started("control-stop");
   const paths = await run(sessionPaths(daemon.id), env);
   daemons.pop();
-
   await ctl(daemon.id, env, (c) => c.Stop());
 
   const gone = async (path: string) => {
@@ -488,3 +487,176 @@ test("stop answers before it tears its own socket down", async () => {
   // A stopped session is discarded, not merely unreachable.
   expect(await run(SessionStore.load(daemon.id), env)).toBeNull();
 });
+
+// The machine-facing contract from inside a pane (ts-33067b): with only the
+// injected env, an agent resolves its own pane, reads geometry and listings,
+// and drives named panes without stealing the human's focus. Everything here
+// goes through the real CLI over the real socket.
+// Many CLI spawns, each a cold Bun process, so the default 5s is not enough.
+test(
+  "the CLI read surface resolves the calling pane from inside one",
+  async () => {
+  const { daemon, env } = await started("cli-read-surface");
+  const workspace = Effect.runSync(daemon.getWorkspace);
+  const space = workspace.spaces[0]!;
+  const pane = workspacePaneId(workspace);
+  const session = space.windows[0]!.agents[0]!.id;
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const cli = (args: string[]) =>
+    Bun.spawn([process.execPath, entry, ...args], {
+      env: {
+        ...process.env,
+        ...env,
+        AMUX_DAEMON_SESSION: daemon.id,
+        AMUX_PANE_ID: pane,
+        AMUX_AGENT_ID: session,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  const run = async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
+    const child = cli(args);
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  };
+
+  const current = await run(["pane.current", "--current"]);
+  expect(current.code).toBe(0);
+  expect(JSON.parse(current.stdout)).toMatchObject({
+    id: pane,
+    space: space.id,
+    window: 1,
+    session,
+  });
+
+  const layout = await run(["pane.layout", "--current"]);
+  expect(layout.code).toBe(0);
+  const geometry = JSON.parse(layout.stdout);
+  expect(geometry.pane).toBe(pane);
+  expect(geometry.size).toEqual({ cols: 80, rows: 24 });
+
+  const panes = await run(["pane.list"]);
+  expect(panes.code).toBe(0);
+  expect(JSON.parse(panes.stdout)).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: pane, space: space.id })]),
+  );
+
+  const agents = await run(["agent.list"]);
+  expect(agents.code).toBe(0);
+  expect(JSON.parse(agents.stdout)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: session, pane, space: space.id, exited: false }),
+    ]),
+  );
+
+  const got = await run(["agent.get", session]);
+  expect(got.code).toBe(0);
+  expect(JSON.parse(got.stdout)).toMatchObject({ id: session, pane });
+
+  const spaces = await run(["space.list"]);
+  expect(spaces.code).toBe(0);
+  expect(JSON.parse(spaces.stdout)).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: space.id, windows: 1 })]),
+  );
+
+  const windows = await run(["window.list"]);
+  expect(windows.code).toBe(0);
+  expect(JSON.parse(windows.stdout)).toEqual(
+    expect.arrayContaining([expect.objectContaining({ space: space.id, number: 1 })]),
+  );
+
+  // A read never moves focus or changes the model.
+  expect(Effect.runSync(daemon.getWorkspace).revision).toBe(workspace.revision);
+  },
+  30000,
+);
+
+// Multiple CLI spawns plus terminal waits.
+test(
+  "the CLI splits, sends keys to, captures and closes a named pane without moving focus",
+  async () => {
+  const { daemon, env } = await started("cli-pane-tools");
+  const workspace = Effect.runSync(daemon.getWorkspace);
+  const pane = workspacePaneId(workspace);
+  const session = workspace.spaces[0]!.windows[0]!.agents[0]!.id;
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const cli = (args: string[]) =>
+    Bun.spawn([process.execPath, entry, ...args], {
+      env: {
+        ...process.env,
+        ...env,
+        AMUX_DAEMON_SESSION: daemon.id,
+        AMUX_PANE_ID: pane,
+        AMUX_AGENT_ID: session,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  const run = async (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
+    const child = cli(args);
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  };
+
+  const split = await run(["pane.split", "--axis", "row", "--no-focus"]);
+  expect(split.code).toBe(0);
+  const created = JSON.parse(split.stdout) as { session: string; pane: string };
+  // The split happened, but the human's focus did not move.
+  const afterSplit = Effect.runSync(daemon.getWorkspace);
+  const splitWindow = afterSplit.spaces[0]!.windows[0]!;
+  expect(afterSplit.spaces[0]!.windows[0]!.state.focus).toBe(pane);
+  expect(JSON.stringify(splitWindow.layout)).toContain(created.pane);
+
+  const sent = await run([
+    "pane.send-keys",
+    "--pane",
+    created.pane,
+    "--keys",
+    "echo from-the-cli",
+  ]);
+  expect(sent.code).toBe(0);
+
+  const captured = await waitForCapture(daemon, env, created.pane, "from-the-cli");
+
+  const closed = await run(["pane.close", "--pane", created.pane]);
+  expect(closed.code).toBe(0);
+  expect(JSON.stringify(Effect.runSync(daemon.getWorkspace))).not.toContain(created.pane);
+  expect(captured).toContain("from-the-cli");
+  },
+  30000,
+);
+
+/** The first pane id the default space's window places. */
+function workspacePaneId(workspace: { spaces: Array<{ windows: Array<{ layout: { root: unknown } }> }> }): string {
+  const layout = workspace.spaces[0]!.windows[0]!.layout as {
+    root: { type: "pane"; id: string } | { type: "split"; children: Array<{ type: "pane"; id: string }> };
+  };
+  if (layout.root.type === "pane") return layout.root.id;
+  return layout.root.children[0]!.id;
+}
+
+/** Capture a pane by id until its terminal shows the expected text. */
+async function waitForCapture(
+  daemon: { id: string },
+  env: NodeJS.ProcessEnv,
+  paneId: string,
+  needle: string,
+): Promise<string> {
+  let text = "";
+  await waitFor(async () => {
+    const { outputs } = await ctl(daemon.id, env, (c) =>
+      c.Batch({ values: [command("pane.capture", { pane: paneId })] }),
+    );
+    text = String(outputs[0]!.result ?? "");
+    return text.includes(needle);
+  }, "the pane to echo before it is captured");
+  return text;
+}

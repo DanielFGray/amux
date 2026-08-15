@@ -596,7 +596,7 @@ const AgentList = define(
 );
 const AgentGet = define(
   "agent.get",
-  { session: S.String },
+  { target: S.String },
   {
     desc: "one agent, by its session id",
     group: "agents",

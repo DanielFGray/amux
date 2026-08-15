@@ -105,3 +105,30 @@ test("group help derives command syntax from schemas", () => {
   expect(generateGroupHelp("panes")).toContain("pane.split <row|column> [--cwd=<cwd>]");
   expect(generateGroupHelp("missing")).toBeUndefined();
 });
+
+test("pane targets are schema fields the CLI parses", () => {
+  expect(parseArgs("pane.send-keys", ["--keys", "ls", "--pane", "s1:p3"]).parsed).toEqual({
+    keys: "ls",
+    pane: "s1:p3",
+  });
+  expect(parseArgs("pane.close", ["--current"]).parsed).toEqual({ current: true });
+  expect(parseArgs("pane.capture", ["--pane", "s1:p3"]).parsed).toEqual({ pane: "s1:p3" });
+  // --no-focus is a batch-level context flag, not a command field, so the
+  // schema parser refuses it: the CLI strips it before parsing.
+  expect(parseArgs("pane.close", ["--no-focus"]).parsed).toBeNull();
+});
+
+test("the read surface is exposed to agents with derived fields", () => {
+  const panes = fieldNames("pane.list");
+  expect(panes.map((f) => f.name)).toEqual([]);
+  expect(fieldNames("pane.current").map((f) => f.name)).toEqual(["pane", "current"]);
+  expect(fieldNames("pane.layout").map((f) => f.name)).toEqual(["pane", "current"]);
+  expect(fieldNames("agent.get").map((f) => f.name)).toEqual(["target"]);
+  expect(generateGroupHelp("panes")).toContain("pane.current");
+  expect(generateGroupHelp("panes")).toContain("pane.layout");
+  expect(generateGroupHelp("panes")).toContain("pane.list");
+  expect(generateGroupHelp("spaces")).toContain("space.list");
+  expect(generateGroupHelp("windows")).toContain("window.list");
+  expect(generateGroupHelp("agents")).toContain("agent.list");
+  expect(generateGroupHelp("agents")).toContain("agent.get");
+});

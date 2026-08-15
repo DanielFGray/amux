@@ -1364,7 +1364,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "agent.get": {
-      const found = findSession(next, command.session);
+      const found = findSession(next, command.target);
       result = found ? agentEntry(found.space, found.window, found.agent) : null;
       break;
     }
