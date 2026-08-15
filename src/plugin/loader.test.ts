@@ -46,7 +46,7 @@ async function writePluginFile(dir: string, name: string, content: string): Prom
 }
 
 function emptySnapshot(revision = 0): WorkspaceSnapshot {
-  return { revision, spaces: [], state: { activeSpace: null } };
+  return { revision, spaces: [], state: { activeSpace: null, nextSpace: 1 } };
 }
 
 async function mockRegions(): Promise<{

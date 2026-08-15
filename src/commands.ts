@@ -109,13 +109,24 @@ const Space = { space: S.optional(S.String) };
 const Window = { ...Space, window: S.optional(S.Int) };
 const SessionTarget = { session: S.optional(S.String) };
 
+/**
+ * Where a pane command acts: a named pane, the caller's own pane (resolved
+ * server-side from the command context, never substituted by the CLI), or —
+ * absent both — the focused pane. On the command schema, so the harness tool
+ * surface and every other surface inherit the target.
+ */
+const PaneTarget = {
+  pane: S.optional(S.String.pipe(S.minLength(1))),
+  current: S.optional(S.Boolean),
+};
+
 const Axis = S.Literal("row", "column");
 const Direction = S.Literal("left", "right", "up", "down");
 
 // Panes.
 const PaneSplit = define(
   "pane.split",
-  { axis: Axis, cwd: S.optional(S.String) },
+  { axis: Axis, cwd: S.optional(S.String), ...PaneTarget },
   {
     desc: "split the focused pane",
     group: "panes",
@@ -166,7 +177,7 @@ const PaneSelect = define(
 );
 const PaneResize = define(
   "pane.resize",
-  { direction: Direction },
+  { direction: Direction, ...PaneTarget },
   {
     desc: "resize the focused pane",
     group: "panes",
@@ -186,7 +197,7 @@ const PaneResizeDivider = define(
 );
 const PaneZoom = define(
   "pane.zoom",
-  {},
+  { ...PaneTarget },
   {
     desc: "zoom the focused pane",
     group: "panes",
@@ -196,7 +207,7 @@ const PaneZoom = define(
 );
 const PaneFloat = define(
   "pane.float",
-  {},
+  { ...PaneTarget },
   {
     desc: "toggle the focused pane between floating and tiled",
     group: "panes",
@@ -206,7 +217,7 @@ const PaneFloat = define(
 );
 const PaneSwap = define(
   "pane.swap",
-  { to: S.Literal("previous", "next") },
+  { to: S.Literal("previous", "next"), ...PaneTarget },
   {
     desc: "swap the focused pane with its neighbour",
     group: "panes",
@@ -216,7 +227,7 @@ const PaneSwap = define(
 );
 const PaneClose = define(
   "pane.close",
-  {},
+  { ...PaneTarget },
   {
     desc: "close the focused pane and stop its backend if it has no other view",
     group: "panes",
@@ -226,7 +237,7 @@ const PaneClose = define(
 );
 const PaneBreak = define(
   "pane.break",
-  {},
+  { ...PaneTarget },
   {
     desc: "break the focused pane into its own window",
     group: "panes",
@@ -236,7 +247,7 @@ const PaneBreak = define(
 );
 const PaneJoin = define(
   "pane.join",
-  { source: S.optional(S.Int) },
+  { source: S.optional(S.Int), ...PaneTarget },
   {
     desc: "join a pane from another window into the focused window",
     group: "panes",
@@ -244,19 +255,32 @@ const PaneJoin = define(
     exposure: "agent",
   },
 );
+/**
+ * A pane moved to another space gets a new space-qualified id. The move
+ * reports the new id and the old one, so a caller holding the stale handle can
+ * re-anchor deterministically rather than guessing that the pane it knew is
+ * gone.
+ */
+const PaneMoveResult = S.Struct({
+  pane: S.String,
+  previous_pane_id: S.String,
+});
+export type PaneMoveResult = S.Schema.Type<typeof PaneMoveResult>;
+
 const PaneMove = define(
   "pane.move",
-  { space: S.String },
+  { space: S.String, ...PaneTarget },
   {
     desc: "move the focused pane into another space",
     group: "panes",
     target: "workspace",
     exposure: "agent",
   },
+  PaneMoveResult,
 );
 const PaneSendKeys = define(
   "pane.send-keys",
-  { keys: S.String },
+  { keys: S.String, ...PaneTarget },
   {
     desc: "send keys to the focused pane",
     group: "panes",
@@ -268,7 +292,7 @@ const PaneSendKeys = define(
 // a daemon-side terminal capture: pane.capture's result is the text.
 const PaneCapture = define(
   "pane.capture",
-  { session: S.optional(S.String) },
+  { session: S.optional(S.String), ...PaneTarget },
   {
     desc: "capture the focused pane",
     group: "panes",

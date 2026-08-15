@@ -314,7 +314,7 @@ test("parseWorkspace accepts an exited agent no pane references", () => {
   ]);
 });
 
-test("new identities are UUID-based, unique, and disjoint from adopted ids", () => {
+test("new identities are hierarchical, unique, and disjoint from adopted ids", () => {
   const adopted = run(
     workspaceFromSession(
       base(
@@ -333,10 +333,17 @@ test("new identities are UUID-based, unique, and disjoint from adopted ids", () 
     context,
   ).snapshot;
   const agents = second.spaces[0]!.windows[0]!.agents.map((agent) => agent.id);
-  const panes = JSON.stringify(second).match(/pane-[0-9a-f-]{36}/g) ?? [];
+  const panes = second.spaces[0]!.windows[0]!.layout.root
+    ? JSON.stringify(second.spaces[0]!.windows[0]!.layout).match(/"id":"([^"]+)"/g) ?? []
+    : [];
+  const paneIds = panes.map((match) => match.match(/"id":"([^"]+)"/)![1]);
+  const minted = paneIds.filter((id) => !id.startsWith("pane-"));
   expect(new Set(agents).size).toBe(agents.length);
   expect(agents.slice(1).every((id) => /^agent-[0-9a-f-]{36}$/.test(id))).toBe(true);
-  expect(new Set(panes).size).toBeGreaterThanOrEqual(2);
+  expect(new Set(paneIds).size).toBeGreaterThanOrEqual(2);
+  expect(minted.length).toBeGreaterThanOrEqual(2);
+  expect(minted.every((id) => /^[a-z0-9._-]+:p\d+$/.test(id))).toBe(true);
+  expect(minted.every((id) => id.startsWith(second.spaces[0]!.id))).toBe(true);
   expect(agents).not.toContain("pane-adopted");
 });
 

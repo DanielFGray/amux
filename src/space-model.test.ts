@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   activateSpaceState,
+  claimPaneNumber,
   claimWindowNumber,
   closeWindowState,
   removeSpaceState,
@@ -13,24 +14,35 @@ test("window selection and last-window are pure ID transitions", () => {
   let state = spaceState();
   state = selectWindowState(state, [1, 2, 3], 1);
   state = selectWindowState(state, [1, 2, 3], 3);
-  expect(state).toEqual({ activeWindow: 3, lastWindow: 1, nextWindow: 1 });
+  expect(state).toEqual({ activeWindow: 3, lastWindow: 1, nextWindow: 1, nextPane: 1 });
 
   state = selectWindowState(state, [1, 2, 3], state.lastWindow!);
-  expect(state).toEqual({ activeWindow: 1, lastWindow: 3, nextWindow: 1 });
+  expect(state).toEqual({ activeWindow: 1, lastWindow: 3, nextWindow: 1, nextPane: 1 });
   expect(selectWindowState(state, [1, 2, 3], 99)).toBe(state);
 });
 
 test("closing the active window prefers last, then its neighbour", () => {
-  const withLast = { activeWindow: 3, lastWindow: 1, nextWindow: 4 };
+  const withLast = { activeWindow: 3, lastWindow: 1, nextWindow: 4, nextPane: 1 };
   expect(closeWindowState(withLast, [1, 2], 3, 2)).toEqual({
     activeWindow: 1,
     lastWindow: null,
     nextWindow: 4,
+    nextPane: 1,
   });
 
-  const withoutLast = { activeWindow: 2, lastWindow: null, nextWindow: 4 };
+  const withoutLast = { activeWindow: 2, lastWindow: null, nextWindow: 4, nextPane: 1 };
   expect(closeWindowState(withoutLast, [1, 3], 2, 1).activeWindow).toBe(3);
   expect(closeWindowState(withoutLast, [], 2, 0).activeWindow).toBeNull();
+});
+
+test("pane counters advance and never repeat", () => {
+  let state = spaceState();
+  let counter: number;
+  [state, counter] = claimPaneNumber(state);
+  expect(counter).toBe(1);
+  [state, counter] = claimPaneNumber(state);
+  expect(counter).toBe(2);
+  expect(state.nextPane).toBe(3);
 });
 
 test("restored window numbers advance the automatic counter", () => {
