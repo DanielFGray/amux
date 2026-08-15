@@ -178,9 +178,10 @@ const make = (
               // A pane runs arbitrary commands, so the socket it dials must be
               // owner-only even when the daemon inherited a permissive umask —
               // nothing a pane process runs may fabricate another pane's report.
+              // Resolve only once the mode is pinned, so a daemon that is up is
+              // one whose agent-state socket is already private.
               value.listen(agentStatePath, () => {
-                void chmod(agentStatePath, 0o600).catch(() => {});
-                resolve(value);
+                chmod(agentStatePath, 0o600).then(() => resolve(value), reject);
               });
             }),
         ),
