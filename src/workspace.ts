@@ -346,11 +346,14 @@ export function workspaceFromSession(
               // parseWorkspace then refuses. The model has no detached backend
               // state, so the agent is pruned rather than given a viewport.
               const placed = new Set(layoutSessions(layout));
-              const detached = window.agents.filter(
-                (agent) => !agent.exited && !placed.has(agent.id),
+              // A live agent the layout does not reference would restore as a
+              // roster entry no pane shows — supervised but invisible, a snapshot
+              // parseWorkspace then refuses. The model has no detached backend
+              // state, so the agent is pruned rather than given a viewport. An
+              // exited agent stays: it is the restart target its panes left.
+              const roster = window.agents.filter(
+                (agent) => agent.exited || placed.has(agent.id),
               );
-              if (detached.length > 0)
-                window.agents = window.agents.filter((agent) => !detached.includes(agent));
               if (!layout.focus)
                 layout = makeLayout({
                   ...layout,
@@ -361,7 +364,7 @@ export function workspaceFromSession(
               windows.push({
                 number: window.number,
                 name: window.name,
-                agents: structuredClone(window.agents),
+                agents: structuredClone(roster),
                 layout,
                 state,
               });
