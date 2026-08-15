@@ -6,6 +6,24 @@
     },
     "herdr": {
       "path": "../herdr"
+    },
+    "cmux": {
+      "path": "../cmux"
+    },
+    "opencode": {
+      "path": "../opencode"
+    },
+    "zaly": {
+      "path": "../zaly"
+    },
+    "effect": {
+      "path": "../effect"
+    },
+    "effect-v4": {
+      "path": "../effect-v4"
+    },
+    "vendor": {
+      "path": "/home/dan/build/amux/vendor"
     }
   }
 }
