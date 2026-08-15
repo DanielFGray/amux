@@ -13,7 +13,6 @@
  * so this file has none. Every subcommand lazy-loads only what it needs, keeping
  * `agent-state`, and `agent-hook` sub-millisecond.
  */
-
 export function splitCommandArgs(argv: readonly string[]): string[][] {
   const groups: string[][] = [[]];
   for (const arg of argv) {
