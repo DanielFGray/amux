@@ -445,11 +445,12 @@ test("the agent state socket is private to the session owner", async () => {
   const paths = await run(sessionPaths(daemon.id), env);
   const { stat } = await import("node:fs/promises");
   const socket = await stat(paths.agentState);
-  // Group/world write bits off: a pane runs arbitrary user commands, and none
-  // of them may fabricate another pane's reports.
-  expect(socket.mode & 0o022).toBe(0);
+  // Owner-only: a pane runs arbitrary user commands, and none of them may
+  // fabricate another pane's reports. The daemon pins this after listen so it
+  // holds under any umask.
+  expect(socket.mode & 0o777).toBe(0o600);
   // The socket lives under the session's 0700 root, so only the owner can even
-  // reach it — a defense in depth that holds under any umask.
+  // reach it — a second wall that no umask can open.
   expect((await stat(paths.root)).mode & 0o077).toBe(0);
 });
 
