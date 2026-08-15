@@ -473,7 +473,7 @@ const AgentPrompt = define(
     desc: "send a prompt to an agent",
     group: "agents",
     target: "session",
-    exposure: "human",
+    exposure: "agent",
   },
 );
 const AgentWatch = define(
@@ -483,7 +483,7 @@ const AgentWatch = define(
     desc: "stream durable agent events from a replay cursor",
     group: "agents",
     target: "session",
-    exposure: "human",
+    exposure: "agent",
   },
 );
 const AgentPermission = define(
@@ -533,7 +533,7 @@ const AgentNew = define(
     desc: "start a coding agent",
     group: "agents",
     target: "workspace",
-    exposure: "human",
+    exposure: "agent",
   },
   creationResultSchema("agent.new"),
 );

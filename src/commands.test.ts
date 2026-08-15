@@ -186,6 +186,25 @@ test("filtering by target and exposure produces the expected subsets", () => {
 });
 
 /**
+ * The delegate-loop decision (ts-e7dcbf): a hosted agent can spawn, prompt and
+ * watch another agent, but the human stays in the approval loop. The cap that
+ * governs spawn depth is ts-bd1d66; exposure is only what puts a verb on the
+ * tool surface, so this pins the surface, not the policy.
+ */
+test("the agent tool surface exposes the delegate loop, not the human loop", () => {
+  const commands = makeCommands(recording().handlers);
+  const exposed = commands.list({ exposure: "agent" }).map((c) => c.name);
+  const delegateLoop: CommandTag[] = ["agent.new", "agent.prompt", "agent.watch"];
+  for (const verb of delegateLoop) {
+    expect(exposed).toContain(verb);
+  }
+  const humanLoop: CommandTag[] = ["agent.permission", "agent.interrupt"];
+  for (const verb of humanLoop) {
+    expect(exposed).not.toContain(verb);
+  }
+});
+
+/**
  * Descriptions live in the Schema annotation, not only on the metadata record.
  *
  * That is what makes the agent tool surface a derivation: a JSON Schema built
