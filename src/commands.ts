@@ -26,7 +26,9 @@ import { creationResultSchema } from "./creation-result.ts";
 export const COMMAND_TARGETS = ["workspace", "session", "buffers", "server", "view"] as const;
 export type CommandTarget = (typeof COMMAND_TARGETS)[number];
 
-/** Who the command is exposed TO — a human or an agent. */
+/** Who the command is exposed TO — a human or an agent. Exposure is the tool
+ *  surface, not the policy: what an agent may do under a permission policy is
+ *  decided above the command registry, never by this field alone (ts-e7dcbf). */
 export type CommandExposure = "human" | "agent";
 
 /** Derived from target: commands whose state is daemon-owned are remotely
