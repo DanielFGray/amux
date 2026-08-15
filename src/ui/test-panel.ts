@@ -26,4 +26,8 @@ export function testPanelContext(parts: Partial<PanelContext> = {}): PanelContex
   });
 }
 
-const EMPTY_SNAPSHOT: WorkspaceSnapshot = { revision: 0, spaces: [], state: { activeSpace: null, nextSpace: 1 } };
+const EMPTY_SNAPSHOT: WorkspaceSnapshot = {
+  revision: 0,
+  spaces: [],
+  state: { activeSpace: null, nextSpace: 1 },
+};

@@ -76,9 +76,7 @@ export function activateSpaceState(
   spaces: readonly string[],
   id: string,
 ): SpaceSetState {
-  return state.activeSpace === id || !spaces.includes(id)
-    ? state
-    : { ...state, activeSpace: id };
+  return state.activeSpace === id || !spaces.includes(id) ? state : { ...state, activeSpace: id };
 }
 
 /** Remove a space and, when necessary, activate its next neighbour. */

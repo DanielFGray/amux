@@ -493,9 +493,7 @@ test("stop answers before it tears its own socket down", async () => {
 // and drives named panes without stealing the human's focus. Everything here
 // goes through the real CLI over the real socket.
 // Many CLI spawns, each a cold Bun process, so the default 5s is not enough.
-test(
-  "the CLI read surface resolves the calling pane from inside one",
-  async () => {
+test("the CLI read surface resolves the calling pane from inside one", async () => {
   const { daemon, env } = await started("cli-read-surface");
   const workspace = Effect.runSync(daemon.getWorkspace);
   const space = workspace.spaces[0]!;
@@ -571,14 +569,10 @@ test(
 
   // A read never moves focus or changes the model.
   expect(Effect.runSync(daemon.getWorkspace).revision).toBe(workspace.revision);
-  },
-  30000,
-);
+}, 30000);
 
 // Multiple CLI spawns plus terminal waits.
-test(
-  "the CLI splits, sends keys to, captures and closes a named pane without moving focus",
-  async () => {
+test("the CLI splits, sends keys to, captures and closes a named pane without moving focus", async () => {
   const { daemon, env } = await started("cli-pane-tools");
   const workspace = Effect.runSync(daemon.getWorkspace);
   const pane = workspacePaneId(workspace);
@@ -615,13 +609,7 @@ test(
   expect(afterSplit.spaces[0]!.windows[0]!.state.focus).toBe(pane);
   expect(JSON.stringify(splitWindow.layout)).toContain(created.pane);
 
-  const sent = await run([
-    "pane.send-keys",
-    "--pane",
-    created.pane,
-    "--keys",
-    "echo from-the-cli",
-  ]);
+  const sent = await run(["pane.send-keys", "--pane", created.pane, "--keys", "echo from-the-cli"]);
   expect(sent.code).toBe(0);
 
   const captured = await waitForCapture(daemon, env, created.pane, "from-the-cli");
@@ -630,14 +618,16 @@ test(
   expect(closed.code).toBe(0);
   expect(JSON.stringify(Effect.runSync(daemon.getWorkspace))).not.toContain(created.pane);
   expect(captured).toContain("from-the-cli");
-  },
-  30000,
-);
+}, 30000);
 
 /** The first pane id the default space's window places. */
-function workspacePaneId(workspace: { spaces: Array<{ windows: Array<{ layout: { root: unknown } }> }> }): string {
+function workspacePaneId(workspace: {
+  spaces: Array<{ windows: Array<{ layout: { root: unknown } }> }>;
+}): string {
   const layout = workspace.spaces[0]!.windows[0]!.layout as {
-    root: { type: "pane"; id: string } | { type: "split"; children: Array<{ type: "pane"; id: string }> };
+    root:
+      | { type: "pane"; id: string }
+      | { type: "split"; children: Array<{ type: "pane"; id: string }> };
   };
   if (layout.root.type === "pane") return layout.root.id;
   return layout.root.children[0]!.id;

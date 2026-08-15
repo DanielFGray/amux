@@ -736,14 +736,17 @@ export function applyWorkspaceCommand(
       }
       return null;
     }
-    return callingPane() ?? (() => {
-      const target = activeWindow();
-      if (!target) return null;
-      const pane = layoutRefs(target.window.layout).find(
-        (item) => item.id === target.window.state.focus,
-      );
-      return pane ? { window: target, pane } : null;
-    })();
+    return (
+      callingPane() ??
+      (() => {
+        const target = activeWindow();
+        if (!target) return null;
+        const pane = layoutRefs(target.window.layout).find(
+          (item) => item.id === target.window.state.focus,
+        );
+        return pane ? { window: target, pane } : null;
+      })()
+    );
   };
   const setFocus = (target: WorkspaceWindow, id: string | undefined) => {
     if (!id || target.state.focus === id) return;
@@ -1400,8 +1403,7 @@ export function applyWorkspaceCommand(
         if (!priorWindow) continue;
         const priorFocus = priorWindow.state.focus;
         const placed =
-          priorFocus !== null &&
-          layoutRefs(window.layout).some((pane) => pane.id === priorFocus);
+          priorFocus !== null && layoutRefs(window.layout).some((pane) => pane.id === priorFocus);
         window.layout = makeLayout({
           ...window.layout,
           focus: placed ? priorFocus : window.layout.focus,
@@ -1500,9 +1502,7 @@ function findSession(workspace: WorkspaceSnapshot, id?: string): AgentEntry | nu
  *  exactly one pane; when it has several, the first in walk order wins. */
 export function findPaneBySession(workspace: WorkspaceSnapshot, id: string): PaneRef | null {
   for (const { window } of workspaceWindows(workspace)) {
-    const pane = layoutRefs(window.layout).find(
-      (item) => paneSession(item.content) === id,
-    );
+    const pane = layoutRefs(window.layout).find((item) => paneSession(item.content) === id);
     if (pane) return pane;
   }
   return null;
@@ -1694,11 +1694,7 @@ export function paneEntries(workspace: WorkspaceSnapshot): ReadPaneEntry[] {
   return entries;
 }
 
-function paneEntry(
-  space: WorkspaceSpace,
-  window: WorkspaceWindow,
-  pane: PaneRef,
-): ReadPaneEntry {
+function paneEntry(space: WorkspaceSpace, window: WorkspaceWindow, pane: PaneRef): ReadPaneEntry {
   const session = paneSession(pane.content);
   return {
     id: pane.id,
@@ -1723,9 +1719,7 @@ function agentEntry(
   window: WorkspaceWindow,
   agent: PersistedSession,
 ): ReadAgentEntry {
-  const pane = layoutRefs(window.layout).find(
-    (item) => paneSession(item.content) === agent.id,
-  );
+  const pane = layoutRefs(window.layout).find((item) => paneSession(item.content) === agent.id);
   return {
     id: agent.id,
     name: agent.name,

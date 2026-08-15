@@ -334,7 +334,7 @@ test("new identities are hierarchical, unique, and disjoint from adopted ids", (
   ).snapshot;
   const agents = second.spaces[0]!.windows[0]!.agents.map((agent) => agent.id);
   const panes = second.spaces[0]!.windows[0]!.layout.root
-    ? JSON.stringify(second.spaces[0]!.windows[0]!.layout).match(/"id":"([^"]+)"/g) ?? []
+    ? (JSON.stringify(second.spaces[0]!.windows[0]!.layout).match(/"id":"([^"]+)"/g) ?? [])
     : [];
   const paneIds = panes
     .map((match) => match.match(/"id":"([^"]+)"/)?.[1])
@@ -1143,8 +1143,19 @@ const wideBase = (): SessionState => ({
         {
           number: 1,
           name: null,
-          agents: [{ id: "agent-a", name: "cat", cmd: ["cat"], cols: 80, rows: 24, exited: false, exitCode: null }],
-          layout: '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
+          agents: [
+            {
+              id: "agent-a",
+              name: "cat",
+              cmd: ["cat"],
+              cols: 80,
+              rows: 24,
+              exited: false,
+              exitCode: null,
+            },
+          ],
+          layout:
+            '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
         },
       ],
     },
@@ -1158,10 +1169,27 @@ const wideBase = (): SessionState => ({
           number: 1,
           name: null,
           agents: [
-            { id: "agent-b1", name: "cat", cmd: ["cat"], cols: 80, rows: 24, exited: false, exitCode: null },
-            { id: "agent-b2", name: "cat", cmd: ["cat"], cols: 80, rows: 24, exited: false, exitCode: null },
+            {
+              id: "agent-b1",
+              name: "cat",
+              cmd: ["cat"],
+              cols: 80,
+              rows: 24,
+              exited: false,
+              exitCode: null,
+            },
+            {
+              id: "agent-b2",
+              name: "cat",
+              cmd: ["cat"],
+              cols: 80,
+              rows: 24,
+              exited: false,
+              exitCode: null,
+            },
           ],
-          layout: '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-b1","content":{"kind":"pty","session":"agent-b1"},"weight":1},{"type":"pane","id":"pane-b2","content":{"kind":"pty","session":"agent-b2"},"weight":1}]},"focus":"pane-b2"}',
+          layout:
+            '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-b1","content":{"kind":"pty","session":"agent-b1"},"weight":1},{"type":"pane","id":"pane-b2","content":{"kind":"pty","session":"agent-b2"},"weight":1}]},"focus":"pane-b2"}',
         },
       ],
     },
@@ -1202,8 +1230,22 @@ test("pane.list reports every pane with its home, session and focus flags", () =
   expect(mutation.changed).toBe(false);
   expect(mutation.result).toEqual([
     { id: "pane-a", space: "space-a", window: 1, session: "agent-a", focused: true, zoomed: false },
-    { id: "pane-b1", space: "space-b", window: 1, session: "agent-b1", focused: false, zoomed: false },
-    { id: "pane-b2", space: "space-b", window: 1, session: "agent-b2", focused: true, zoomed: false },
+    {
+      id: "pane-b1",
+      space: "space-b",
+      window: 1,
+      session: "agent-b1",
+      focused: false,
+      zoomed: false,
+    },
+    {
+      id: "pane-b2",
+      space: "space-b",
+      window: 1,
+      session: "agent-b2",
+      focused: true,
+      zoomed: false,
+    },
   ]);
 });
 
@@ -1212,7 +1254,13 @@ test("agent.list and agent.get report agents with their home and pane", () => {
   const list = applyWorkspaceCommand(adopted, command("agent.list"), context);
   expect(list.changed).toBe(false);
   expect(list.result).toEqual([
-    expect.objectContaining({ id: "agent-a", space: "space-a", window: 1, pane: "pane-a", exited: false }),
+    expect.objectContaining({
+      id: "agent-a",
+      space: "space-a",
+      window: 1,
+      pane: "pane-a",
+      exited: false,
+    }),
     expect.objectContaining({ id: "agent-b1", space: "space-b", window: 1, pane: "pane-b1" }),
     expect.objectContaining({ id: "agent-b2", space: "space-b", window: 1, pane: "pane-b2" }),
   ]);
@@ -1230,7 +1278,11 @@ test("agent.list and agent.get report agents with their home and pane", () => {
 
 test("pane.current --current resolves the calling pane, not the focused pane", () => {
   const adopted = run(workspaceFromSession(wideBase()));
-  const mutation = applyWorkspaceCommand(adopted, command("pane.current", { current: true }), wideContext);
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("pane.current", { current: true }),
+    wideContext,
+  );
   expect(mutation.result).toEqual({
     id: "pane-b1",
     space: "space-b",
@@ -1248,9 +1300,12 @@ test("pane.layout reports the pane's geometry and its window", () => {
     command("pane.layout", { pane: "pane-b2" }),
     context,
   );
-  const layout = mutation.result as
-    | { pane: string; size: { cols: number; rows: number }; window: { cols: number; rows: number }; panes: Array<{ id: string; x: number; y: number; cols: number; rows: number }> }
-    | null;
+  const layout = mutation.result as {
+    pane: string;
+    size: { cols: number; rows: number };
+    window: { cols: number; rows: number };
+    panes: Array<{ id: string; x: number; y: number; cols: number; rows: number }>;
+  } | null;
   expect(layout).not.toBeNull();
   expect(layout!.pane).toBe("pane-b2");
   expect(layout!.size).toEqual({ cols: 80, rows: 24 });
@@ -1272,11 +1327,7 @@ test("pane.send-keys --pane names the target even when it is not focused", () =>
   expect(mutation.actions).toEqual([{ _tag: "input", agent: "agent-b1", data: "x" }]);
   // Without a target the keys go to the workspace's focused pane (space-a's),
   // which is exactly why a caller in a managed pane must say --current/--pane.
-  const focused = applyWorkspaceCommand(
-    adopted,
-    command("pane.send-keys", { keys: "y" }),
-    context,
-  );
+  const focused = applyWorkspaceCommand(adopted, command("pane.send-keys", { keys: "y" }), context);
   expect(focused.actions).toEqual([{ _tag: "input", agent: "agent-a", data: "y" }]);
 });
 
@@ -1302,9 +1353,9 @@ test("pane.split --pane splits the named pane wherever it lives", () => {
   const panes =
     spaceA.windows[0]!.layout.root === null
       ? []
-      : (JSON.stringify(spaceA.windows[0]!.layout).match(/"id":"([^"]+)"/g)?.map(
-          (m) => m.match(/"id":"([^"]+)"/)![1]!,
-        ) ?? []);
+      : (JSON.stringify(spaceA.windows[0]!.layout)
+          .match(/"id":"([^"]+)"/g)
+          ?.map((m) => m.match(/"id":"([^"]+)"/)![1]!) ?? []);
   expect(panes).toContain("pane-a");
   expect(panes.some((id) => id.startsWith("space-a:p"))).toBe(true);
 });
@@ -1324,11 +1375,10 @@ test("pane.close --pane closes the named pane, keeping the human's focus", () =>
 
 test("--no-focus splits without moving the focused pane", () => {
   const adopted = run(workspaceFromSession(wideBase()));
-  const mutation = applyWorkspaceCommand(
-    adopted,
-    command("pane.split", { axis: "row" }),
-    { ...wideContext, noFocus: true },
-  );
+  const mutation = applyWorkspaceCommand(adopted, command("pane.split", { axis: "row" }), {
+    ...wideContext,
+    noFocus: true,
+  });
   expect(mutation.changed).toBe(true);
   const spaceB = mutation.snapshot.spaces.find((s) => s.id === "space-b")!;
   const window = spaceB.windows[0]!;
@@ -1340,11 +1390,10 @@ test("--no-focus splits without moving the focused pane", () => {
 
 test("--no-focus space.new creates the space without activating it", () => {
   const adopted = run(workspaceFromSession(wideBase()));
-  const mutation = applyWorkspaceCommand(
-    adopted,
-    command("space.new", { name: "extra" }),
-    { ...context, noFocus: true },
-  );
+  const mutation = applyWorkspaceCommand(adopted, command("space.new", { name: "extra" }), {
+    ...context,
+    noFocus: true,
+  });
   expect(mutation.changed).toBe(true);
   expect(mutation.snapshot.spaces).toHaveLength(3);
   expect(mutation.snapshot.state.activeSpace).toBe("space-a");

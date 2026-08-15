@@ -38,10 +38,7 @@ export class WorkspaceTransactionError extends S.TaggedError<WorkspaceTransactio
 ) {}
 
 interface SessionOps {
-  readonly prepare: (
-    session: PersistedSession,
-    paneId?: string,
-  ) => Effect.Effect<PreparedSession>;
+  readonly prepare: (session: PersistedSession, paneId?: string) => Effect.Effect<PreparedSession>;
   readonly kill: (id: string) => Effect.Effect<void>;
   readonly write: (id: string, data: string) => Effect.Effect<void>;
   readonly prompt: (id: string, text: string) => Effect.Effect<void>;
@@ -199,9 +196,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                   for (const a of mutation.actions) {
                     if (a._tag !== "spawn") continue;
                     if (a.agent.kind === "component") continue;
-                    prepared.push(
-                      yield* sessionOps.prepare(a.agent, a.pane),
-                    );
+                    prepared.push(yield* sessionOps.prepare(a.agent, a.pane));
                   }
                   for (const a of mutation.actions) {
                     if (a._tag === "kill") yield* sessionOps.kill(a.agent);
