@@ -12,6 +12,7 @@ import {
   appendPane,
   layoutPanes,
   layoutRefs,
+  layoutSessions,
   makeLayout,
   nextPreset,
   paneSession,
@@ -290,9 +291,10 @@ export interface WorkspaceMutation {
  * Adopt persisted state at the daemon boundary.
  *
  * Layouts from disk are untrusted: malformed trees fall back to a fresh tiled
- * arrangement over live agents, and recorded panes naming absent agents are
- * pruned. Internal command transforms do not pass through this validation and
- * may legitimately produce an empty layout.
+ * arrangement over live agents, recorded panes naming absent agents are pruned,
+ * and live agents the layout does not reference are pruned too. Internal
+ * command transforms do not pass through this validation and may legitimately
+ * produce an empty layout.
  */
 export function workspaceFromSession(
   session: SessionState,
@@ -339,6 +341,13 @@ export function workspaceFromSession(
                 layout = presetLayout(panes, "tiled", panes[0]?.id);
               }
               layout ??= makeLayout({ root: null });
+              // A live agent the layout does not reference would restore as a
+              // roster entry no pane shows — supervised but invisible, a snapshot
+              // parseWorkspace then refuses. The model has no detached backend
+              // state, so the agent is pruned rather than given a viewport. An
+              // exited agent stays: it is the restart target its panes left.
+              const placed = new Set(layoutSessions(layout));
+              const roster = window.agents.filter((agent) => agent.exited || placed.has(agent.id));
               if (!layout.focus)
                 layout = makeLayout({
                   ...layout,
@@ -349,7 +358,7 @@ export function workspaceFromSession(
               windows.push({
                 number: window.number,
                 name: window.name,
-                agents: structuredClone(window.agents),
+                agents: structuredClone(roster),
                 layout,
                 state,
               });
@@ -491,8 +500,41 @@ export function parseWorkspace(
         }
       }
     }
+    const referenceError = checkWorkspaceReferences(raw);
+    if (referenceError) return yield* referenceError;
     return raw;
   });
+}
+
+/** Validate the pane->agent edge, the model's only non-tree relationship.
+ *
+ * A window owns two sibling collections — agents and a layout of panes — joined
+ * by the pane's session id. Schema decodes structure, not references, so this
+ * pass asserts every pane names a live agent its own window owns, and every
+ * live agent is visible in at least one pane. The one legal unreferenced agent
+ * is an exited one: it keeps its record as a restart target after its viewport
+ * is pruned. */
+function checkWorkspaceReferences(workspace: WorkspaceSnapshot): WorkspaceParseError | null {
+  for (const { window } of workspaceWindows(workspace)) {
+    const referenced = new Set<string>();
+    for (const pane of layoutRefs(window.layout)) {
+      const session = paneSession(pane.content);
+      if (session === undefined) continue;
+      referenced.add(session);
+      const agent = window.agents.find((item) => item.id === session);
+      if (!agent || agent.exited)
+        return new WorkspaceParseError({
+          message: `workspace pane '${pane.id}' names an agent this window does not have live`,
+        });
+    }
+    for (const agent of window.agents) {
+      if (!agent.exited && !referenced.has(agent.id))
+        return new WorkspaceParseError({
+          message: `workspace agent '${agent.id}' has no pane`,
+        });
+    }
+  }
+  return null;
 }
 
 export function parseWorkspaceCommandContext(
@@ -997,7 +1039,11 @@ export function applyWorkspaceCommand(
       target.agent.exited = false;
       target.agent.exitCode = null;
       target.agent.kind ??= "pty";
-      if (!layoutRefs(target.window.layout).some((pane) => paneSession(pane.content) === target.agent.id)) {
+      if (
+        !layoutRefs(target.window.layout).some(
+          (pane) => paneSession(pane.content) === target.agent.id,
+        )
+      ) {
         const pane = { id: newPaneId(), content: paneContentFor(target.agent) };
         target.window.layout = target.window.layout.root
           ? splitLayout(target.window.layout, 0, "row", pane)
@@ -1020,26 +1066,11 @@ export function applyWorkspaceCommand(
         target.space.windows.map((window) => window.number),
         target.window.number,
       );
-      let pane = layoutRefs(target.window.layout).find(
+      // A live agent always holds a pane, so revealing it is a focus move.
+      const pane = layoutRefs(target.window.layout).find(
         (candidate) => paneSession(candidate.content) === target.agent.id,
       );
-      if (!pane) {
-        const ref = { id: newPaneId(), content: paneContentFor(target.agent) };
-        const slots = layoutPanes(target.window.layout.root);
-        target.window.layout = slots.length
-          ? splitLayout(
-              target.window.layout,
-              Math.max(
-                0,
-                slots.findIndex((candidate) => candidate.id === target.window.state.focus),
-              ),
-              "row",
-              ref,
-            )
-          : appendPane(target.window.layout, ref);
-        pane = layoutRefs(target.window.layout).find((candidate) => candidate.id === ref.id);
-      }
-      setFocus(target.window, pane?.id);
+      if (pane) setFocus(target.window, pane.id);
       break;
     }
     case "session.next-blocked": {
@@ -1168,23 +1199,10 @@ export function markSessionExited(
   found.agent.exitCode = code;
   found.window.layout = prune(found.window.layout, (agent) => agent !== id);
   found.window.state.focus = found.window.layout.focus ?? null;
+  // Every non-exited agent still holds a pane, so an empty layout means every
+  // agent has exited and the window has nothing left to show.
   if (layoutRefs(found.window.layout).length === 0) {
-    const live = found.window.agents.find((agent) => !agent.exited);
-    if (live) {
-      const used = new Set(
-        next.spaces.flatMap((space) =>
-          space.windows.flatMap((window) => layoutRefs(window.layout).map((pane) => pane.id)),
-        ),
-      );
-      const pane = allocateId("pane", used);
-      found.window.layout = makeLayout({
-        root: { type: "pane", id: pane, content: paneContentFor(live), weight: 1 },
-        focus: pane,
-      });
-      found.window.state.focus = pane;
-    } else {
-      removeWindow(next, found.space, found.window, []);
-    }
+    removeWindow(next, found.space, found.window, []);
   }
   normalizeWindowState(found.window);
   return { ...next, revision: current.revision + 1 };
@@ -1230,9 +1248,7 @@ function findSession(workspace: WorkspaceSnapshot, id?: string): AgentEntry | nu
       (item) => item.id === target?.window.state.focus,
     );
     const session = pane ? paneSession(pane.content) : undefined;
-    const agent = session
-      ? target?.window.agents.find((item) => item.id === session)
-      : undefined;
+    const agent = session ? target?.window.agents.find((item) => item.id === session) : undefined;
     return target && agent ? { ...target, agent } : null;
   }
   for (const entry of workspaceSessions(workspace)) if (entry.agent.id === id) return entry;
