@@ -788,7 +788,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         }),
       ),
 
-    ResumeAgent: ({ session: sessionId, provider, argv, env }) =>
+    ResumeAgent: ({ session: sessionId, provider, argv, env, stripEnv }) =>
       guard(
         enqueue(
           Effect.gen(function* () {
@@ -823,6 +823,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               id: found.agent.id,
               cmd: argv,
               env,
+              stripEnv,
               cwd: found.agent.cwd,
               rpcPath: paths.socket,
               daemonSession: id,

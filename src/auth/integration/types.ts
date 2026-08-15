@@ -72,6 +72,16 @@ export type Integration = {
   readonly id: string;
   readonly label: string;
   readonly methods: readonly Method[];
+  /**
+   * The environment variable names this provider reads for a credential.
+   *
+   * The worker never reads these — it resolves credentials from the store —
+   * but a provider key exported into the daemon's environment must not reach
+   * the worker's `environ` (it would be readable there via /proc). The harness
+   * unions its registered integrations' names and tells the daemon which
+   * variables to strip from a worker's inherited environment.
+   */
+  readonly env: readonly string[];
   readonly refresh?: (
     credential: Credential.OAuth,
   ) => import("effect").Effect.Effect<Credential.OAuth, unknown>;

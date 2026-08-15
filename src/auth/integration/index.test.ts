@@ -32,7 +32,7 @@ test("every integration offers a way to connect", () => {
 });
 
 test("an OpenAI-compatible provider sends its key as a bearer token", () => {
-  const provider = openAiCompatible({ id: "example", label: "Example" });
+  const provider = openAiCompatible({ id: "example", label: "Example", env: "EXAMPLE_API_KEY" });
   const request = provider.authorize(
     { type: "key", key: Redacted.make("secret") },
     HttpClientRequest.get("https://example.test/v1/chat/completions"),
@@ -41,7 +41,7 @@ test("an OpenAI-compatible provider sends its key as a bearer token", () => {
 });
 
 test("an OAuth credential authorizes with its access token, not its refresh one", () => {
-  const provider = openAiCompatible({ id: "example", label: "Example" });
+  const provider = openAiCompatible({ id: "example", label: "Example", env: "EXAMPLE_API_KEY" });
   const request = provider.authorize(
     {
       type: "oauth",

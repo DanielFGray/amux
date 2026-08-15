@@ -6,6 +6,7 @@ import * as ModelCatalog from "./model-catalog.ts";
 import { integrations, type Connection, type Integration } from "./auth/integration/index.ts";
 
 export type { Connection, Integration } from "./auth/integration/index.ts";
+export { integrations } from "./auth/integration/index.ts";
 
 export type Info = {
   readonly id: string;

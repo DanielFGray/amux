@@ -27,10 +27,13 @@ export const openAiCompatible = (spec: {
   /** Defaults to a plain API key, which is what an OpenAI-compatible provider
    *  offers unless it has an OAuth flow of its own. */
   readonly methods?: readonly Method[];
+  /** The environment variable this provider's CLI reads for a credential. */
+  readonly env: string;
 }): Integration => ({
   id: spec.id,
   label: spec.label,
   methods: spec.methods ?? [{ type: "key", label: "API key" }],
+  env: [spec.env],
   model: ({ model, transformClient, apiUrl, npm }) => {
     const client = { transformClient, ...(apiUrl ? { apiUrl } : {}) };
     if (npm === RESPONSES)

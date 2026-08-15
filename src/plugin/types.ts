@@ -11,6 +11,13 @@ import type { CommandSpec } from "../bindings.ts";
 export interface SpawnProvider {
   readonly argv: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Environment variable names to strip from the inherited environment before
+   * spawning. A provider key exported into the daemon's environment must not
+   * reach a worker's `environ`. The harness declares these, because it is the
+   * thing that knows which variables are credentials.
+   */
+  readonly stripEnv?: readonly string[];
 }
 
 export interface PluginDefinition {

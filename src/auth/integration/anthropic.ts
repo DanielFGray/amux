@@ -12,6 +12,7 @@ export const anthropic: Integration = {
   id: "anthropic",
   label: "Anthropic",
   methods: [{ type: "key", label: "API key" }],
+  env: ["ANTHROPIC_API_KEY"],
   model: ({ model, transformClient }) =>
     AnthropicLanguageModel.layer({ model }).pipe(
       Layer.provide(AnthropicClient.layer({ transformClient })),
