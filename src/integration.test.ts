@@ -2,14 +2,14 @@ import { expect } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Layer, Redacted, TestClock } from "effect";
-import { FileSystem } from "@effect/platform";
+import { ConfigProvider, Effect, Layer, Redacted } from "effect";
+import { LanguageModel } from "@effect/ai";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Credential } from "./credential.ts";
 import { ModelCatalog } from "./model-catalog.ts";
 import { EventBus } from "./effect/EventBus.ts";
 import { makeLayer, Service, type Integration } from "./integration.ts";
-import type { ModelRequest } from "./auth/integration/index.ts";
+import { openAiCompatible, type ModelRequest } from "./auth/integration/index.ts";
 import { testEffect } from "./test-effect.ts";
 
 const env = (root: string): NodeJS.ProcessEnv => ({
@@ -91,6 +91,7 @@ testEffect("an integration is told the API host the catalog names for it", () =>
       id,
       label: id,
       methods: [{ type: "key", label: "API key" }],
+      env: [],
       model: (request) => {
         asked.push(request);
         return Layer.empty as never;
@@ -135,6 +136,7 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
       id: "fake",
       label: "Fake",
       methods: [{ type: "oauth", id: "fake-oauth", label: "Fake OAuth" }],
+      env: [],
       refresh: (credential) =>
         Effect.sync(() => {
           refreshed++;
@@ -190,3 +192,160 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
     expect(refreshed).toBe(1);
   }),
 );
+
+// =============================================================================
+// The installed-adapter path: a model built through the registry stamps a fresh
+// Authorization header per request, and a token that expires mid-session is
+// refreshed on the next request without a worker restart.
+// =============================================================================
+
+/** A real gateway that records the Authorization header of every request. */
+const gateway = () => {
+  const authorization: Array<string | undefined> = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      authorization.push(request.headers.get("authorization") ?? undefined);
+      const body =
+        'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n' +
+        "data: [DONE]\n\n";
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  return {
+    port: server.port,
+    authorization,
+    stop: () => server.stop(),
+  };
+};
+
+const adapter = (refresh?: Integration["refresh"]): Integration => ({
+  ...openAiCompatible({ id: "fake", label: "Fake", env: "FAKE_API_KEY" }),
+  refresh,
+});
+
+const catalogLayer = (apiUrl: string) =>
+  ModelCatalog.testLayer(
+    Effect.succeed(
+      JSON.stringify({
+        fake: { id: "fake", name: "Fake", env: [], api: apiUrl, models: {} },
+      }),
+    ),
+  ).pipe(Layer.provide(EventBus.Default));
+
+/** The registry for the fake integration, over one catalog. */
+const registry = (apiUrl: string, refresh?: Integration["refresh"]) =>
+  makeLayer([adapter(refresh)], catalogLayer(apiUrl));
+
+/** Build the fake integration's LanguageModel layer through the registry. */
+const buildModelLayer = (apiUrl: string, refresh?: Integration["refresh"]) =>
+  Service.pipe(
+    Effect.flatMap((integration) => integration.model("fake", "m")),
+    Effect.flatMap((layer) =>
+      layer ? Effect.succeed(layer) : Effect.fail(new Error("no model layer")),
+    ),
+    Effect.provide(registry(apiUrl, refresh)),
+  );
+
+/** One turn against the fake integration's model. */
+const generate = (modelLayer: Layer.Layer<LanguageModel.LanguageModel>) =>
+  Effect.gen(function* () {
+    const model = yield* LanguageModel.LanguageModel;
+    return yield* model.generateText({ prompt: "hello" });
+  }).pipe(Effect.provide(modelLayer));
+
+/** Provide the store, filesystem and config an effect reads the credential from. */
+const adapterLayers =
+  (variables: NodeJS.ProcessEnv) =>
+  <A>(effect: Effect.Effect<A, any, any>): Effect.Effect<A, any, never> =>
+    effect.pipe(
+      Effect.provide(Credential.Default),
+      Effect.provide(BunFileSystem.layer),
+      Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
+    ) as Effect.Effect<A, any, never>;
+
+testEffect("a model built from the registry stamps its credential on every request", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => rm(root, { recursive: true, force: true })),
+    );
+    const variables = env(root);
+    const layers = adapterLayers(variables);
+    const gw = gateway();
+    yield* Effect.addFinalizer(() => Effect.sync(gw.stop));
+    yield* layers(
+      Credential.Service.pipe(
+        Effect.flatMap((store) =>
+          store.create({ integrationID: "fake", value: key("stored-key"), label: "stored" }),
+        ),
+      ),
+    );
+    const modelLayer = yield* buildModelLayer(`http://127.0.0.1:${gw.port}/v1`).pipe(layers);
+    yield* generate(modelLayer).pipe(layers);
+    // The request actually reached a gateway, and it carried the stored key.
+    expect(gw.authorization).toEqual(["Bearer stored-key"]);
+  }),
+);
+
+testEffect("a token expiring mid-session is refreshed on the next request", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => rm(root, { recursive: true, force: true })),
+    );
+    const variables = env(root);
+    const layers = adapterLayers(variables);
+    const gw = gateway();
+    yield* Effect.addFinalizer(() => Effect.sync(gw.stop));
+    const created = yield* layers(
+      Credential.Service.pipe(
+        Effect.flatMap((store) =>
+          store.create({
+            integrationID: "fake",
+            value: {
+              type: "oauth",
+              methodID: "fake-oauth",
+              access: Redacted.make("old-access"),
+              refresh: Redacted.make("refresh"),
+              expires: Date.now() + 10 * 60_000,
+            },
+            label: "fake",
+          }),
+        ),
+      ),
+    );
+    // One model instance, two requests. Between them the stored token's expiry
+    // passes, exactly as it would mid-session: the second request must carry a
+    // fresh token resolved from the store, with no worker restart involved.
+    const modelLayer = yield* buildModelLayer(
+      `http://127.0.0.1:${gw.port}/v1`,
+      credentialRefresh,
+    ).pipe(layers);
+    yield* generate(modelLayer).pipe(layers);
+    yield* layers(
+      Credential.Service.pipe(
+        Effect.flatMap((store) =>
+          store.update(created.id, {
+            value: {
+              type: "oauth",
+              methodID: "fake-oauth",
+              access: Redacted.make("old-access"),
+              refresh: Redacted.make("refresh"),
+              expires: Date.now() - 1,
+            },
+          }),
+        ),
+      ),
+    );
+    yield* generate(modelLayer).pipe(layers);
+    expect(gw.authorization).toEqual(["Bearer old-access", "Bearer new-access"]);
+  }),
+);
+
+const credentialRefresh: Integration["refresh"] = (credential) =>
+  Effect.sync(() => ({
+    ...credential,
+    access: Redacted.make("new-access"),
+    expires: Date.now() + 10 * 60_000,
+  }));

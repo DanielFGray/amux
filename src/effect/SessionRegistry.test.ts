@@ -232,6 +232,53 @@ test("native workers receive stable amux identity environment", async () => {
   expect(result).toContain("env-agent:env-agent");
 });
 
+/**
+ * The worker resolves its own credential from the store, so a provider key in
+ * the daemon's environment must not reach the worker's environ — where it
+ * would be readable by any process via /proc/<pid>/environ. The daemon cannot
+ * know which variables are credentials (that is the harness's knowledge), so
+ * the spawn spec names them, and this test proves the names are honoured.
+ */
+test("a component worker does not inherit the provider keys its spec names", async () => {
+  const previous: Array<[string, string | undefined]> = [];
+  const set = (name: string, value: string) => {
+    previous.push([name, process.env[name]]);
+    process.env[name] = value;
+  };
+  set("OPENAI_API_KEY", "sk-openai");
+  set("ANTHROPIC_API_KEY", "sk-anthropic");
+  set("OPENCODE_API_KEY", "sk-opencode");
+  const script = `
+    const env = Object.entries(process.env).map(([k, v]) => k + "=" + v).join("\\n");
+    process.stdout.write(JSON.stringify({_tag:"output",session:process.env.AMUX_SESSION,data:Buffer.from(env).toString("base64")})+"\\n");
+  `;
+  const chunks = await Effect.runPromise(
+    Effect.gen(function* () {
+      const registry = yield* SessionRegistry;
+      const agent = yield* registry.spawn({
+        kind: "component",
+        id: "env-strip",
+        cmd: [process.execPath, "-e", script],
+        stripEnv: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENCODE_API_KEY"],
+        cols: 80,
+        rows: 24,
+      });
+      const output = yield* Stream.runCollect(agent.output);
+      yield* agent.exit;
+      return [...output].map((chunk) => Buffer.from(chunk).toString("utf8"));
+    }).pipe(Effect.provide(SessionRegistry.Default), Effect.scoped),
+  );
+  for (const [name, value] of previous)
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  const environ = chunks
+    .map((chunk) => Buffer.from(chunk.trim(), "base64").toString("utf8"))
+    .join("\n");
+  expect(environ).not.toContain("OPENAI_API_KEY");
+  expect(environ).not.toContain("ANTHROPIC_API_KEY");
+  expect(environ).not.toContain("OPENCODE_API_KEY");
+});
+
 test("native sessions spawned with rpcPath receive it as AMUX_CONTROL_SOCKET", async () => {
   const result = await Effect.runPromise(
     Effect.gen(function* () {
