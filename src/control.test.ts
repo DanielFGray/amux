@@ -366,10 +366,9 @@ test("a script inside a pane reports and gets a response using only the injected
     const s = net.createConnection(path);
     s.on("connect", () =>
       s.write(JSON.stringify({ id: "roundtrip", method: "agent.state", params: { agent: pane, state: "blocked" } }) + "\\n"));
-    s.on("data", (d) => { process.stdout.write("reply:" + d.toString().trim() + "\\n"); s.end(); });
+    s.on("data", (d) => { process.stdout.write("reply:" + d.toString().trim() + "\\n"); s.destroy(); process.exit(0); });
     s.on("error", (e) => { process.stdout.write("error:" + e.message + "\\n"); process.exit(1); });
     s.setTimeout(3000, () => { process.stdout.write("timeout\\n"); process.exit(1); });
-    s.on("end", () => process.exit(0));
   `;
   await Effect.runPromise(
     daemon.spawnSession({
