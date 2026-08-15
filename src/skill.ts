@@ -48,7 +48,7 @@ Create a pane with \`pane.split\`, which reports the \`session\` and \`pane\` it
 
 Send the command with \`pane.send-keys\` against the session id, and read the result with \`pane.capture\`. Capture returns terminal text, so wait on the output you expect rather than on elapsed time.
 
-Starting and prompting another AGENT is not available to you: every \`agent.*\` command is currently exposed to humans only, so an agent has no verb to spawn or drive another agent. Run work in a pane instead, or ask the user to start the agent.
+Starting and prompting another agent is available: \`agent.new\`, \`agent.prompt\`, and \`agent.watch\` are exposed to agents, so you can spawn, prompt, and observe a coding-agent session. \`agent.permission\` and \`agent.interrupt\` remain human-gated: the approval loop and the interrupt escape hatch stay with the user.
 
 ## Safety
 
