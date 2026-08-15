@@ -66,6 +66,20 @@ test("skill output teaches managed discovery and safety", () => {
   expect(stdout).toContain("Do not close spaces, windows, panes, or sessions");
 });
 
+test("skill output documents the delegate loop against the real contract", () => {
+  const result = Bun.spawnSync([process.execPath, "src/cli.ts", "--skill"]);
+  const stdout = Buffer.from(result.stdout).toString();
+  expect(result.exitCode).toBe(0);
+  expect(stdout).toContain("## Delegate work to another agent");
+  expect(stdout).toContain("agent.new");
+  expect(stdout).toContain("agent.prompt <target> <text>");
+  expect(stdout).toContain("agent.watch <target>");
+  expect(stdout).toContain("agent_prompt_stalled");
+  expect(stdout).toContain("permission.request");
+  expect(stdout).toContain("agent.permission");
+  expect(stdout).toContain("agent.interrupt");
+});
+
 test("a bare command group prints its derived syntax", () => {
   const result = Bun.spawnSync([process.execPath, "src/cli.ts", "agents"]);
   const stdout = Buffer.from(result.stdout).toString();
@@ -73,4 +87,12 @@ test("a bare command group prints its derived syntax", () => {
   expect(stdout).toContain("usage: amux agents <command>");
   expect(stdout).toContain("agent.new");
   expect(stdout).toContain("agent.prompt");
+});
+
+test("--help prints the derived help, not a stale static copy", async () => {
+  const { generateHelp } = await import("./command-cli.ts");
+  const result = Bun.spawnSync([process.execPath, "src/cli.ts", "--help"]);
+  const stdout = Buffer.from(result.stdout).toString();
+  expect(result.exitCode).toBe(0);
+  expect(stdout).toBe(generateHelp() + "\n");
 });

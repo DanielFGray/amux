@@ -13,8 +13,6 @@
  * so this file has none. Every subcommand lazy-loads only what it needs, keeping
  * `--help`, `agent-state`, and `agent-hook` sub-millisecond.
  */
-import { HELP_TEXT } from "./command-help.ts";
-
 export function splitCommandArgs(argv: readonly string[]): string[][] {
   const groups: string[][] = [[]];
   for (const arg of argv) {
@@ -47,7 +45,8 @@ async function main(): Promise<number> {
   const sub = argv[0];
 
   if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
-    process.stdout.write(HELP_TEXT + "\n");
+    const { generateHelp } = await import("./command-cli.ts");
+    process.stdout.write(generateHelp() + "\n");
     return 0;
   }
 
