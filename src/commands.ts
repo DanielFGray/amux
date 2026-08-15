@@ -26,7 +26,9 @@ import { creationResultSchema } from "./creation-result.ts";
 export const COMMAND_TARGETS = ["workspace", "session", "buffers", "server", "view"] as const;
 export type CommandTarget = (typeof COMMAND_TARGETS)[number];
 
-/** Who the command is exposed TO — a human or an agent. */
+/** Who the command is exposed TO — a human or an agent. Exposure is the tool
+ *  surface, not the policy: what an agent may do under a permission policy is
+ *  decided above the command registry, never by this field alone (ts-e7dcbf). */
 export type CommandExposure = "human" | "agent";
 
 /** Derived from target: commands whose state is daemon-owned are remotely
@@ -473,7 +475,7 @@ const AgentPrompt = define(
     desc: "send a prompt to an agent",
     group: "agents",
     target: "session",
-    exposure: "human",
+    exposure: "agent",
   },
 );
 const AgentWatch = define(
@@ -483,7 +485,7 @@ const AgentWatch = define(
     desc: "stream durable agent events from a replay cursor",
     group: "agents",
     target: "session",
-    exposure: "human",
+    exposure: "agent",
   },
 );
 const AgentPermission = define(
@@ -533,7 +535,7 @@ const AgentNew = define(
     desc: "start a coding agent",
     group: "agents",
     target: "workspace",
-    exposure: "human",
+    exposure: "agent",
   },
   creationResultSchema("agent.new"),
 );
