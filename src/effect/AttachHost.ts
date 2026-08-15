@@ -18,6 +18,7 @@
 
 import { Context, Effect, ExecutionStrategy, Layer, Runtime, Scope } from "effect";
 import { createServer, type Server } from "node:net";
+import { chmod } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame, PermissionAnswer } from "./AttachProtocol.ts";
 import { AgentLog, AgentLogDefault, type AgentLogService } from "./AgentLog.ts";
@@ -174,7 +175,14 @@ const make = (
                 });
               });
               value.once("error", reject);
-              value.listen(agentStatePath, () => resolve(value));
+              // A pane runs arbitrary commands, so the socket it dials must be
+              // owner-only even when the daemon inherited a permissive umask —
+              // nothing a pane process runs may fabricate another pane's report.
+              // Resolve only once the mode is pinned, so a daemon that is up is
+              // one whose agent-state socket is already private.
+              value.listen(agentStatePath, () => {
+                chmod(agentStatePath, 0o600).then(() => resolve(value), reject);
+              });
             }),
         ),
         (value) =>

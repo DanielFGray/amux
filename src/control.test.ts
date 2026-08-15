@@ -14,6 +14,7 @@ import { ConfigProvider, Deferred, Effect, Fiber, Option, Scope, Stream } from "
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
+import { AttachClient } from "./attach.ts";
 import { controlCall, connectControl, type ControlClient } from "./control-client.ts";
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
@@ -349,6 +350,61 @@ test("agent.prompt --wait fails fast with the named stall error", async () => {
   expect(Date.now() - startedAt).toBeLessThan(10_000);
 }, 10_000);
 
+/* The DoD round trip: a process inside a real daemon-spawned pane, given only
+ * the injected environment, learns which pane it is and where the agent-state
+ * socket lives, connects to it, and gets a response back. Earlier tests prove
+ * the two halves separately — SessionRegistry injects the variables, the
+ * socket answers — but a pane whose hook cannot actually dial the mux is the
+ * exact failure this task reopened on, so the halves are joined here. */
+test("a script inside a pane reports and gets a response using only the injected env", async () => {
+  const { daemon, env } = await started("pane-roundtrip");
+  const script = `
+    const net = require("node:net");
+    const path = process.env.AMUX_AGENT_STATE_SOCKET;
+    const pane = process.env.AMUX_PANE_ID;
+    process.stdout.write("pane=" + pane + " socket=" + path + "\\n");
+    const s = net.createConnection(path);
+    s.on("connect", () =>
+      s.write(JSON.stringify({ id: "roundtrip", method: "agent.state", params: { agent: pane, state: "blocked" } }) + "\\n"));
+    s.on("data", (d) => { process.stdout.write("reply:" + d.toString().trim() + "\\n"); s.destroy(); process.exit(0); });
+    s.on("error", (e) => { process.stdout.write("error:" + e.message + "\\n"); process.exit(1); });
+    s.setTimeout(3000, () => { process.stdout.write("timeout\\n"); process.exit(1); });
+  `;
+  await Effect.runPromise(
+    daemon.spawnSession({
+      id: "roundtrip-pane",
+      cmd: [process.execPath, "-e", script],
+      cols: 80,
+      rows: 24,
+    }),
+  );
+  // The supervisor already consumes the session's output stream, so the pane's
+  // bytes are observed where a real client sees them — over the attach plane.
+  const attached = await AttachClient.connect({
+    path: daemon.paths.attach,
+    client: "roundtrip-watcher",
+  });
+  const frames = await run(
+    Effect.scoped(
+      attached.stream("roundtrip-pane").pipe(
+        Stream.takeUntil((frame) => frame._tag === "exit"),
+        Stream.runCollect,
+      ),
+    ),
+    env,
+  );
+  attached.close();
+  const text = [...frames]
+    .map((frame) => (frame._tag === "output" ? new TextDecoder().decode(frame.data) : ""))
+    .join("");
+  expect(text).toContain("pane=roundtrip-pane");
+  expect(text).toContain("reply:");
+  expect(JSON.parse(text.split("reply:")[1]!.split("\n")[0]!)).toEqual({
+    id: "roundtrip",
+    ok: true,
+  });
+});
+
 test("the agent state socket accepts ping and agent state reports", async () => {
   const { daemon, env } = await started("pane-control");
   const paths = await run(sessionPaths(daemon.id), env);
@@ -377,6 +433,49 @@ test("the agent state socket accepts ping and agent state reports", async () => 
   socket.end();
   expect(lines.join("\n")).toContain('"id":"one"');
   expect(lines.join("\n")).toContain('"id":"two"');
+});
+
+/* The DoD's two hardening clauses. A process inside a pane is something a user
+ * runs, not something amux vouches for, so the socket it dials must be private
+ * to the owner, and a hook that dies mid-write must not take the daemon down
+ * with it — the agent keeps running either way. */
+test("the agent state socket is private to the session owner", async () => {
+  const { daemon, env } = await started("agent-state-private");
+  const paths = await run(sessionPaths(daemon.id), env);
+  const { stat } = await import("node:fs/promises");
+  const socket = await stat(paths.agentState);
+  // Owner-only: a pane runs arbitrary user commands, and none of them may
+  // fabricate another pane's reports. The daemon pins this after listen so it
+  // holds under any umask.
+  expect(socket.mode & 0o777).toBe(0o600);
+  // The socket lives under the session's 0700 root, so only the owner can even
+  // reach it — a second wall that no umask can open.
+  expect((await stat(paths.root)).mode & 0o077).toBe(0);
+});
+
+test("a hook that dies mid-write leaves the daemon unaffected", async () => {
+  const { daemon, env } = await started("agent-state-abort");
+  const paths = await run(sessionPaths(daemon.id), env);
+  const socket = await Bun.connect({
+    unix: paths.agentState,
+    socket: { data: () => {} },
+  });
+  // Start a line, then vanish without the newline and without a clean close.
+  socket.write('{"id":"abandoned","method":"agent.state","params":{"agent":"pane-a","state":');
+  socket.end();
+  // And confirm the listener is still alive and answering.
+  const lines: string[] = [];
+  const probe = await Bun.connect({
+    unix: paths.agentState,
+    socket: {
+      data: (_socket, data) => void lines.push(data.toString()),
+    },
+  });
+  probe.write(JSON.stringify({ id: "probe", method: "ping" }) + "\n");
+  await waitFor(() => lines.join("").includes('"id":"probe"'), "a ping after the aborted write");
+  probe.end();
+  expect(lines.join("")).toContain('"id":"probe"');
+  expect(lines.join("")).toContain('"ok":true');
 });
 
 /* A reply of `ok:true` only proves the socket parsed the line. What callers
