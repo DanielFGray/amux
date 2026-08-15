@@ -7,7 +7,7 @@ import { command, CommandError } from "../commands.ts";
 import { testPanelContext } from "./test-panel.ts";
 
 function snapshotAt(revision: number): WorkspaceSnapshot {
-  return { revision, spaces: [], state: { activeSpace: null } };
+  return { revision, spaces: [], state: { activeSpace: null, nextSpace: 1 } };
 }
 
 test("snapshot accessor reads the current signal value", () => {

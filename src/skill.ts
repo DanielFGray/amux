@@ -32,21 +32,45 @@ ${groups}
 
 Run \`amux --help\` for the full surface. Do not probe a nested command with missing arguments: a command whose arguments are optional can execute. Command results are plain text or JSON; read IDs from results and live state instead of predicting them.
 
-## Choose the correct primitive
+## IDs and addressing
 
-- Spaces group work, windows group layouts, and panes are views of daemon-owned sessions.
-- Pane commands change layout, focus, terminal input, and terminal capture. Use them for shells, tests, servers, and raw terminal control.
-- Agent commands start and coordinate coding-agent sessions. Use them when amux must track a turn, durable events, interruption, or a permission request.
-- Session commands act on the backend that a pane displays. A session can survive layout changes and can be shown in a different pane.
-- The current workspace target is implicit for layout commands. Commands that act on a session need an explicit session or the managed-pane context.
+IDs are opaque, stable handles, never reused after close. Spaces are \`s1\`, \`s2\`, and a pane id carries the space that owns it: \`s1:p3\`. Agent (session) ids are opaque strings like \`agent-…\`. \`AMUX_PANE_ID\` identifies the caller's pane; \`AMUX_AGENT_ID\` identifies the session the caller runs in. Use IDs returned by commands and reads; do not derive IDs from layout order, names, or examples.
 
-IDs are opaque. \`AMUX_PANE_ID\` identifies the caller pane; it is not a session ID. Use IDs returned by commands and captures. Do not derive IDs from layout order, names, or examples.
+Every pane command takes an optional target, resolved by the daemon:
+- \`--pane <id>\` — act on that named pane wherever it lives.
+- \`--current\` — act on the caller's own pane (resolved server-side, never substituted by the CLI).
+- neither — act on the focused pane, which belongs to whoever is driving the UI and moves. A delegating agent must name a target rather than rely on it.
+
+Add \`--no-focus\` to a command batch to do background work: the command's structure applies, but the human's view — active space, active window, focused pane — is left exactly as it was.
+
+## Read the workspace
+
+The narrow read verbs answer questions without the whole snapshot, and no read marks anything seen or moves focus:
+
+\`\`\`bash
+amux space.list              # spaces, active window, window count
+amux window.list             # windows, their panes and focus
+amux pane.list               # panes, their home, session and focus flags
+amux pane.current --current  # the caller's own pane (or --pane <id>)
+amux pane.layout --current   # a pane's geometry, for choosing a split direction
+amux agent.list              # agents with their home and state
+amux agent.get <session-id>  # one agent, by its session id
+\`\`\`
+
+\`pane.layout\` reports the pane's position and size in cells plus every pane's rect, so an agent can follow "split a wide pane to the right, a narrow or tall one down" from its own geometry.
 
 ## Run work in another pane
 
-Create a pane with \`pane.split\`, which reports the \`session\` and \`pane\` it created. Address later commands by those ids rather than by focus: focus belongs to whoever is driving the UI, and it moves.
+Create a pane with \`pane.split --no-focus\`, which reports the \`session\` and \`pane\` it created. Address later commands by those ids rather than by focus: focus belongs to whoever is driving the UI, and it moves.
 
-Send the command with \`pane.send-keys\` against the session id, and read the result with \`pane.capture\`. Capture returns terminal text, so wait on the output you expect rather than on elapsed time.
+\`\`\`bash
+amux pane.split --axis row --no-focus
+amux pane.send-keys --pane s1:p3 --keys "bun test"
+amux pane.capture --pane s1:p3
+amux pane.close --pane s1:p3
+\`\`\`
+
+\`pane.capture\` returns terminal text, so wait on the output you expect rather than on elapsed time. A pane moved to another space gets a new space-qualified id; the move reports both the new id and \`previous_pane_id\`, so re-anchor from the result rather than the stale handle. A closed id is never reissued, so a stale handle no-ops instead of reaching the wrong pane.
 
 ## Delegate work to another agent
 
@@ -68,7 +92,7 @@ Read the session id from the \`agent.new\` result and from \`agent.watch\` event
 ## Safety
 
 - Keep work in the caller's daemon session. Do not supply another daemon session unless the user explicitly requests it.
-- Use explicit IDs when a command can affect another pane or session. Do not rely on UI focus controlled by another client.
+- Name a pane (\`--pane\`/\`--current\`) for work that must not depend on another client's focus; use \`--no-focus\` for background work unless the user asked to switch context.
 - Do not close spaces, windows, panes, or sessions that you did not create unless the user explicitly asks.
 - Closing a pane can stop its backend when no other pane shows it. Closing a window or space can stop all agents inside it.
 - Do not use synchronized panes for background work: input is sent to every pane in the window.

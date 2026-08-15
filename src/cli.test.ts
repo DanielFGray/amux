@@ -89,6 +89,16 @@ test("a bare command group prints its derived syntax", () => {
   expect(stdout).toContain("agent.prompt");
 });
 
+test("a typo'd flag is a syntax error (exit 2), not a refusal of a session it named", () => {
+  const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
+  const result = Bun.spawnSync({
+    cmd: [process.execPath, "src/cli.ts", "pane.close", "--bogus"],
+    env,
+  });
+  expect(result.exitCode).toBe(2);
+  expect(Buffer.from(result.stderr).toString()).toContain("unknown flag: --bogus");
+});
+
 test("--help prints the derived help, not a stale static copy", async () => {
   const { generateHelp } = await import("./command-cli.ts");
   const result = Bun.spawnSync([process.execPath, "src/cli.ts", "--help"]);

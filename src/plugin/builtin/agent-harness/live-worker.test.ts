@@ -70,7 +70,7 @@ test("a native agent worker streams a real turn with no provider key in its envi
       ),
       AMUX_SESSION: "live-worker",
       AMUX_AGENT_ID: "live-worker",
-      AMUX_PANE_ID: "live-worker",
+      AMUX_PANE_ID: "s1:p1",
       AMUX_AGENT_CWD: root,
       AMUX_AGENT_SIZE: JSON.stringify({ cols: 100, rows: 30 }),
       HOME: root,

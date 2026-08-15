@@ -63,6 +63,9 @@ export interface SessionSpec {
   readonly rpcPath?: string;
   /** Where a hook inside a foreign agent reports that agent's state. */
   readonly agentStatePath?: string;
+  /** The pane that shows this session, so the child can be handed its own
+   *  pane id (AMUX_PANE_ID). Resolved by the mutation that spawned it. */
+  readonly paneId?: string;
   /** The pane's owning daemon session, distinct from the agent id. */
   readonly daemonSession?: string;
   readonly cols: number;
@@ -139,7 +142,8 @@ function ptyBackend(spec: SessionSpec): Backend {
     // native worker, provider keys are left in place — this is the user's own
     // shell, and a foreign agent authenticates with the user's own environment.
     env: {
-      AMUX_PANE_ID: spec.id,
+      ...(spec.paneId ? { AMUX_PANE_ID: spec.paneId } : {}),
+      AMUX_AGENT_ID: spec.id,
       ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
       ...(spec.agentStatePath ? { AMUX_AGENT_STATE_SOCKET: spec.agentStatePath } : {}),
       ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
@@ -219,7 +223,7 @@ function componentBackend(spec: SessionSpec): Backend {
       AMUX_AGENT_ID: spec.id,
       ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
       ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
-      AMUX_PANE_ID: spec.id,
+      ...(spec.paneId ? { AMUX_PANE_ID: spec.paneId } : {}),
       ...(spec.cwd ? { AMUX_AGENT_CWD: spec.cwd } : {}),
       AMUX_AGENT_SIZE: JSON.stringify({ cols: spec.cols, rows: spec.rows }),
       ...(spec.env ?? {}),

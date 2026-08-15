@@ -1195,6 +1195,9 @@ function buildApp(
         openCapture();
         return "";
       }),
+    "pane.list": runCommand,
+    "pane.current": runCommand,
+    "pane.layout": runCommand,
     "pane.copy-mode": () =>
       Effect.sync(() => {
         enterCopyMode();
@@ -1255,12 +1258,15 @@ function buildApp(
     "window.next-layout": runCommand,
     "window.select-layout": runCommand,
     "window.synchronize-panes": runCommand,
+    "window.list": runCommand,
 
     "agent.new": runCommand,
     "agent.prompt": runCommand,
     "agent.watch": runCommand,
     "agent.interrupt": runCommand,
     "agent.permission": runCommand,
+    "agent.list": runCommand,
+    "agent.get": runCommand,
     notify: runCommand,
     "session.kill": runCommand,
     "session.restart": runCommand,
@@ -1273,6 +1279,7 @@ function buildApp(
     "space.close": runCommand,
     "space.next": runCommand,
     "space.previous": runCommand,
+    "space.list": runCommand,
 
     // The name arrives as a string from every surface, so it is checked here
     // rather than trusted: the table is what says whether it exists and what it

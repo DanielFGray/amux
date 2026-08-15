@@ -11,7 +11,7 @@
  *
  * Static imports are deliberately absent: Bun evaluates them before main() runs,
  * so this file has none. Every subcommand lazy-loads only what it needs, keeping
- * `--help`, `agent-state`, and `agent-hook` sub-millisecond.
+ * `agent-state`, and `agent-hook` sub-millisecond.
  */
 export function splitCommandArgs(argv: readonly string[]): string[][] {
   const groups: string[][] = [[]];
@@ -80,7 +80,9 @@ async function main(): Promise<number> {
         argv.find((v) => v.startsWith("--state="))?.slice(8) ??
         (argv.includes("--state") ? argv[argv.indexOf("--state") + 1] : undefined);
       const socketPath = process.env.AMUX_AGENT_STATE_SOCKET;
-      const agent = process.env.AMUX_PANE_ID;
+      // The session id, not the pane id: the report keys a session, and the
+      // pane id can change when the pane moves.
+      const agent = process.env.AMUX_AGENT_ID;
       if (!socketPath || !agent) {
         console.error("error: 'agent-state' requires a managed pane");
         return 2;
@@ -164,8 +166,11 @@ async function main(): Promise<number> {
     const direct = parseArgs(tag, argv.slice(1));
     if (direct.parsed) return { tag, parsed: direct.parsed };
 
+    // The legacy `amux <command> <session-id> <args>` form. A token that looks
+    // like a flag is never a session id, or a typo'd flag would turn a syntax
+    // error into a refusal (exit 1) of a session the flag named.
     const positionalSession = argv[1];
-    if (positionalSession && isSessionId(positionalSession)) {
+    if (positionalSession && !positionalSession.startsWith("--") && isSessionId(positionalSession)) {
       const legacy = parseArgs(tag, argv.slice(2));
       if (legacy.parsed) return { tag, parsed: legacy.parsed, positionalSession };
     }
@@ -176,8 +181,18 @@ async function main(): Promise<number> {
     const groups = splitCommandArgs(argv);
     const cmds: (typeof Command.Type)[] = [];
     let id: string | undefined;
+    // --no-focus is a batch-level context flag, not a command field: it says
+    // "this whole invocation is background work, do not move the human's focus".
+    let noFocus = false;
     for (const group of groups) {
-      const parsed = parseCommandGroup(group);
+      const cleaned = group.filter((arg) => {
+        if (arg === "--no-focus") {
+          noFocus = true;
+          return false;
+        }
+        return true;
+      });
+      const parsed = parseCommandGroup(cleaned);
       if ("errors" in parsed) {
         console.error(`error: ${parsed.errors.join("\n  ")}`);
         return 2;
@@ -225,6 +240,12 @@ async function main(): Promise<number> {
           size: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
           shell: [process.env.SHELL ?? "sh"],
           cwd: process.cwd(),
+          // The calling pane and its session, when this CLI runs inside one.
+          // The daemon resolves --current from these; it never trusts the CLI
+          // to have picked a pane.
+          ...(process.env.AMUX_AGENT_ID ? { agent: process.env.AMUX_AGENT_ID } : {}),
+          ...(process.env.AMUX_PANE_ID ? { pane: process.env.AMUX_PANE_ID } : {}),
+          ...(noFocus ? { noFocus } : {}),
         };
         if (!prompt || (prompt.wait !== true && prompt.until === undefined))
           return control.Batch({ values: [...cmds], context });

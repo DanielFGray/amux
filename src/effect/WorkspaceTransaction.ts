@@ -38,7 +38,7 @@ export class WorkspaceTransactionError extends S.TaggedError<WorkspaceTransactio
 ) {}
 
 interface SessionOps {
-  readonly prepare: (session: PersistedSession) => Effect.Effect<PreparedSession>;
+  readonly prepare: (session: PersistedSession, paneId?: string) => Effect.Effect<PreparedSession>;
   readonly kill: (id: string) => Effect.Effect<void>;
   readonly write: (id: string, data: string) => Effect.Effect<void>;
   readonly prompt: (id: string, text: string) => Effect.Effect<void>;
@@ -196,7 +196,7 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                   for (const a of mutation.actions) {
                     if (a._tag !== "spawn") continue;
                     if (a.agent.kind === "component") continue;
-                    prepared.push(yield* sessionOps.prepare(a.agent));
+                    prepared.push(yield* sessionOps.prepare(a.agent, a.pane));
                   }
                   for (const a of mutation.actions) {
                     if (a._tag === "kill") yield* sessionOps.kill(a.agent);
@@ -320,12 +320,14 @@ export const makeSessionOps = (
   killFn: (id: string) => Effect.Effect<void, unknown>,
 ): Layer.Layer<WorkspaceTransactionSessionOps> =>
   Layer.succeed(WorkspaceTransactionSessionOps, {
-    prepare: (agent) =>
+    prepare: (agent, paneId) =>
       getHost.pipe(
         // The transaction only prepares non-component agents, which always
         // carry a command; PersistedSession only leaves `cmd` optional because
         // component sessions do not need one.
-        Effect.flatMap((host) => host.prepare(agent as SessionSpec)),
+        Effect.flatMap((host) =>
+          host.prepare({ ...(agent as SessionSpec), ...(paneId ? { paneId } : {}) }),
+        ),
         Effect.orDie,
       ),
     kill: (id) => killFn(id).pipe(Effect.orDie),

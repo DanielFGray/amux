@@ -314,7 +314,7 @@ test("parseWorkspace accepts an exited agent no pane references", () => {
   ]);
 });
 
-test("new identities are UUID-based, unique, and disjoint from adopted ids", () => {
+test("new identities are hierarchical, unique, and disjoint from adopted ids", () => {
   const adopted = run(
     workspaceFromSession(
       base(
@@ -333,10 +333,19 @@ test("new identities are UUID-based, unique, and disjoint from adopted ids", () 
     context,
   ).snapshot;
   const agents = second.spaces[0]!.windows[0]!.agents.map((agent) => agent.id);
-  const panes = JSON.stringify(second).match(/pane-[0-9a-f-]{36}/g) ?? [];
+  const panes = second.spaces[0]!.windows[0]!.layout.root
+    ? (JSON.stringify(second.spaces[0]!.windows[0]!.layout).match(/"id":"([^"]+)"/g) ?? [])
+    : [];
+  const paneIds = panes
+    .map((match) => match.match(/"id":"([^"]+)"/)?.[1])
+    .filter((id): id is string => id !== undefined);
+  const minted = paneIds.filter((id) => !id.startsWith("pane-"));
   expect(new Set(agents).size).toBe(agents.length);
   expect(agents.slice(1).every((id) => /^agent-[0-9a-f-]{36}$/.test(id))).toBe(true);
-  expect(new Set(panes).size).toBeGreaterThanOrEqual(2);
+  expect(new Set(paneIds).size).toBeGreaterThanOrEqual(2);
+  expect(minted.length).toBeGreaterThanOrEqual(2);
+  expect(minted.every((id) => /^[a-z0-9._-]+:p\d+$/.test(id))).toBe(true);
+  expect(minted.every((id) => id.startsWith(second.spaces[0]!.id))).toBe(true);
   expect(agents).not.toContain("pane-adopted");
 });
 
@@ -977,6 +986,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
         exited: false,
         exitCode: null,
       }),
+      pane: "space-a:p1",
     },
   ]);
   expect(layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root)).toEqual(
@@ -1104,6 +1114,329 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
 
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
   expect(agent.kind).toBe("component");
-  expect(mutation.actions).toContainEqual({ _tag: "spawn", agent });
+  expect(mutation.actions).toContainEqual(
+    expect.objectContaining({ _tag: "spawn", agent, pane: expect.any(String) }),
+  );
   expect(mutation.actions.some((action) => action._tag === "prompt")).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// The machine-facing read surface and pane targeting (ts-33067b).
+// ---------------------------------------------------------------------------
+
+/** Two spaces, one window each, the second with two panes. */
+const wideBase = (): SessionState => ({
+  version: 1,
+  id: "model",
+  createdAt: 1,
+  updatedAt: 1,
+  attached: false,
+  activeSpace: "space-a",
+  nextSpace: 1,
+  spaces: [
+    {
+      id: "space-a",
+      name: "one",
+      dir: "/tmp/one",
+      activeWindow: 1,
+      windows: [
+        {
+          number: 1,
+          name: null,
+          agents: [
+            {
+              id: "agent-a",
+              name: "cat",
+              cmd: ["cat"],
+              cols: 80,
+              rows: 24,
+              exited: false,
+              exitCode: null,
+            },
+          ],
+          layout:
+            '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
+        },
+      ],
+    },
+    {
+      id: "space-b",
+      name: "two",
+      dir: "/tmp/two",
+      activeWindow: 1,
+      windows: [
+        {
+          number: 1,
+          name: null,
+          agents: [
+            {
+              id: "agent-b1",
+              name: "cat",
+              cmd: ["cat"],
+              cols: 80,
+              rows: 24,
+              exited: false,
+              exitCode: null,
+            },
+            {
+              id: "agent-b2",
+              name: "cat",
+              cmd: ["cat"],
+              cols: 80,
+              rows: 24,
+              exited: false,
+              exitCode: null,
+            },
+          ],
+          layout:
+            '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-b1","content":{"kind":"pty","session":"agent-b1"},"weight":1},{"type":"pane","id":"pane-b2","content":{"kind":"pty","session":"agent-b2"},"weight":1}]},"focus":"pane-b2"}',
+        },
+      ],
+    },
+  ],
+});
+
+const wideContext = {
+  ...context,
+  // The calling agent lives in space-b's window; the workspace focus is b2.
+  agent: "agent-b1",
+  pane: "pane-b1",
+};
+
+test("space.list reports every space with its active window and count", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(adopted, command("space.list"), context);
+  expect(mutation.changed).toBe(false);
+  expect(mutation.actions).toEqual([]);
+  expect(mutation.result).toEqual([
+    { id: "space-a", name: "one", dir: "/tmp/one", activeWindow: 1, windows: 1 },
+    { id: "space-b", name: "two", dir: "/tmp/two", activeWindow: 1, windows: 1 },
+  ]);
+});
+
+test("window.list reports every window with its space, pane count and focus", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(adopted, command("window.list"), context);
+  expect(mutation.changed).toBe(false);
+  expect(mutation.result).toEqual([
+    { space: "space-a", number: 1, name: null, panes: 1, active: true, focused: "pane-a" },
+    { space: "space-b", number: 1, name: null, panes: 2, active: true, focused: "pane-b2" },
+  ]);
+});
+
+test("pane.list reports every pane with its home, session and focus flags", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(adopted, command("pane.list"), context);
+  expect(mutation.changed).toBe(false);
+  expect(mutation.result).toEqual([
+    { id: "pane-a", space: "space-a", window: 1, session: "agent-a", focused: true, zoomed: false },
+    {
+      id: "pane-b1",
+      space: "space-b",
+      window: 1,
+      session: "agent-b1",
+      focused: false,
+      zoomed: false,
+    },
+    {
+      id: "pane-b2",
+      space: "space-b",
+      window: 1,
+      session: "agent-b2",
+      focused: true,
+      zoomed: false,
+    },
+  ]);
+});
+
+test("agent.list and agent.get report agents with their home and pane", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const list = applyWorkspaceCommand(adopted, command("agent.list"), context);
+  expect(list.changed).toBe(false);
+  expect(list.result).toEqual([
+    expect.objectContaining({
+      id: "agent-a",
+      space: "space-a",
+      window: 1,
+      pane: "pane-a",
+      exited: false,
+    }),
+    expect.objectContaining({ id: "agent-b1", space: "space-b", window: 1, pane: "pane-b1" }),
+    expect.objectContaining({ id: "agent-b2", space: "space-b", window: 1, pane: "pane-b2" }),
+  ]);
+  const get = applyWorkspaceCommand(adopted, command("agent.get", { target: "agent-b2" }), context);
+  expect(get.result).toEqual(
+    expect.objectContaining({ id: "agent-b2", space: "space-b", window: 1, pane: "pane-b2" }),
+  );
+  const missing = applyWorkspaceCommand(
+    adopted,
+    command("agent.get", { target: "agent-gone" }),
+    context,
+  );
+  expect(missing.result).toBeNull();
+});
+
+test("pane.current --current resolves the calling pane, not the focused pane", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("pane.current", { current: true }),
+    wideContext,
+  );
+  expect(mutation.result).toEqual({
+    id: "pane-b1",
+    space: "space-b",
+    window: 1,
+    session: "agent-b1",
+    focused: false,
+    zoomed: false,
+  });
+});
+
+test("pane.layout reports the pane's geometry and its window", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("pane.layout", { pane: "pane-b2" }),
+    context,
+  );
+  const layout = mutation.result as {
+    pane: string;
+    size: { cols: number; rows: number };
+    window: { cols: number; rows: number };
+    panes: Array<{ id: string; x: number; y: number; cols: number; rows: number }>;
+  } | null;
+  expect(layout).not.toBeNull();
+  expect(layout!.pane).toBe("pane-b2");
+  expect(layout!.size).toEqual({ cols: 80, rows: 24 });
+  expect(layout!.window).toEqual({ cols: 80, rows: 24 });
+  // A row split divides the width; the two panes share the height.
+  expect(layout!.panes).toHaveLength(2);
+  expect(layout!.panes[0]!.cols).toBeLessThan(80);
+  expect(layout!.panes[1]!.cols).toBeLessThan(80);
+  expect(layout!.panes[0]!.rows).toBe(24);
+});
+
+test("pane.send-keys --pane names the target even when it is not focused", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("pane.send-keys", { keys: "x", pane: "pane-b1" }),
+    context,
+  );
+  expect(mutation.actions).toEqual([{ _tag: "input", agent: "agent-b1", data: "x" }]);
+  // Without a target the keys go to the workspace's focused pane (space-a's),
+  // which is exactly why a caller in a managed pane must say --current/--pane.
+  const focused = applyWorkspaceCommand(adopted, command("pane.send-keys", { keys: "y" }), context);
+  expect(focused.actions).toEqual([{ _tag: "input", agent: "agent-a", data: "y" }]);
+});
+
+test("pane.send-keys --current targets the caller's own pane", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("pane.send-keys", { keys: "x", current: true }),
+    wideContext,
+  );
+  expect(mutation.actions).toEqual([{ _tag: "input", agent: "agent-b1", data: "x" }]);
+});
+
+test("pane.split --pane splits the named pane wherever it lives", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("pane.split", { axis: "row", pane: "pane-a" }),
+    context,
+  );
+  expect(mutation.changed).toBe(true);
+  const spaceA = mutation.snapshot.spaces.find((s) => s.id === "space-a")!;
+  const panes =
+    spaceA.windows[0]!.layout.root === null
+      ? []
+      : (JSON.stringify(spaceA.windows[0]!.layout)
+          .match(/"id":"([^"]+)"/g)
+          ?.map((m) => m.match(/"id":"([^"]+)"/)![1]!) ?? []);
+  expect(panes).toContain("pane-a");
+  expect(panes.some((id) => id.startsWith("space-a:p"))).toBe(true);
+});
+
+test("pane.close --pane closes the named pane, keeping the human's focus", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("pane.close", { pane: "pane-b1" }),
+    context,
+  );
+  expect(mutation.changed).toBe(true);
+  const spaceB = mutation.snapshot.spaces.find((s) => s.id === "space-b")!;
+  const ids = JSON.stringify(spaceB.windows[0]!.layout).match(/"id":"([^"]+)"/g) ?? [];
+  expect(ids.join()).not.toContain("pane-b1");
+});
+
+test("--no-focus splits without moving the focused pane", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(adopted, command("pane.split", { axis: "row" }), {
+    ...wideContext,
+    noFocus: true,
+  });
+  expect(mutation.changed).toBe(true);
+  const spaceB = mutation.snapshot.spaces.find((s) => s.id === "space-b")!;
+  const window = spaceB.windows[0]!;
+  // The new pane exists, but focus stays where the caller left it.
+  expect(layoutPanes(window.layout.root).length).toBe(3);
+  expect(window.state.focus).toBe("pane-b2");
+  expect(window.layout.focus).toBe("pane-b2");
+});
+
+test("--no-focus space.new creates the space without activating it", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(adopted, command("space.new", { name: "extra" }), {
+    ...context,
+    noFocus: true,
+  });
+  expect(mutation.changed).toBe(true);
+  expect(mutation.snapshot.spaces).toHaveLength(3);
+  expect(mutation.snapshot.state.activeSpace).toBe("space-a");
+});
+
+test("pane.move crosses spaces, re-ids the pane, and reports the old id", () => {
+  const adopted = run(workspaceFromSession(wideBase()));
+  const mutation = applyWorkspaceCommand(
+    adopted,
+    command("pane.move", { space: "space-a", pane: "pane-b1" }),
+    context,
+  );
+  expect(mutation.changed).toBe(true);
+  const result = mutation.result as { pane: string; previous_pane_id: string } | undefined;
+  expect(result).toBeDefined();
+  expect(result!.previous_pane_id).toBe("pane-b1");
+  expect(result!.pane.startsWith("space-a:p")).toBe(true);
+  // The old id is gone everywhere; the moved session now lives in space-a.
+  expect(JSON.stringify(mutation.snapshot)).not.toContain("pane-b1");
+  const spaceA = mutation.snapshot.spaces.find((s) => s.id === "space-a")!;
+  const spaceB = mutation.snapshot.spaces.find((s) => s.id === "space-b")!;
+  expect(spaceA.windows[0]!.agents.map((a) => a.id)).toContain("agent-b1");
+  expect(spaceB.windows[0]!.agents.map((a) => a.id)).not.toContain("agent-b1");
+});
+
+test("a closed pane id is never reissued to the next pane", () => {
+  let adopted = run(workspaceFromSession(wideBase()));
+  const split = applyWorkspaceCommand(adopted, command("pane.split", { axis: "row" }), context);
+  const created = split.result as { pane: string };
+  adopted = split.snapshot;
+  const closed = applyWorkspaceCommand(
+    adopted,
+    command("pane.close", { pane: created.pane }),
+    context,
+  );
+  const reopened = applyWorkspaceCommand(
+    closed.snapshot,
+    command("pane.split", { axis: "row" }),
+    context,
+  );
+  const again = reopened.result as { pane: string };
+  expect(again.pane).not.toBe(created.pane);
+  // The counter only advances: the fresh id is strictly newer.
+  const counterOf = (id: string) => Number(id.match(/:p(\d+)$/)![1]);
+  expect(counterOf(again.pane)).toBeGreaterThan(counterOf(created.pane));
 });

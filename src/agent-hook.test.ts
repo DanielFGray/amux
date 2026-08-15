@@ -119,7 +119,7 @@ testEffect("reports opencode lifecycle transitions to the agent-state socket", (
       const { received } = yield* agentStateSocket(path);
       const plugin = yield* pluginWith({
         AMUX_AGENT_STATE_SOCKET: path,
-        AMUX_PANE_ID: "w1:p1",
+        AMUX_AGENT_ID: "agent-a",
       });
 
       yield* Effect.promise(() => plugin.event!(statusEvent("streaming")));
@@ -130,17 +130,17 @@ testEffect("reports opencode lifecycle transitions to the agent-state socket", (
         {
           id: expect.any(String),
           method: "agent.state",
-          params: { agent: "w1:p1", state: "working" },
+          params: { agent: "agent-a", state: "working" },
         },
         {
           id: expect.any(String),
           method: "agent.state",
-          params: { agent: "w1:p1", state: "blocked" },
+          params: { agent: "agent-a", state: "blocked" },
         },
         {
           id: expect.any(String),
           method: "agent.state",
-          params: { agent: "w1:p1", state: "idle" },
+          params: { agent: "agent-a", state: "idle" },
         },
       ]);
     }),
@@ -155,7 +155,7 @@ testEffect("collapses repeated states so streaming does not flood the socket", (
       const { received } = yield* agentStateSocket(path);
       const plugin = yield* pluginWith({
         AMUX_AGENT_STATE_SOCKET: path,
-        AMUX_PANE_ID: "w1:p1",
+        AMUX_AGENT_ID: "agent-a",
       });
 
       for (const status of ["running", "streaming", "streaming", "busy", "active"])
@@ -171,7 +171,7 @@ testEffect("contributes nothing outside an amux pane", () =>
   Effect.gen(function* () {
     const plugin = yield* pluginWith({
       AMUX_AGENT_STATE_SOCKET: undefined,
-      AMUX_PANE_ID: undefined,
+      AMUX_AGENT_ID: undefined,
     });
     expect(plugin.event).toBeUndefined();
   }),
@@ -182,7 +182,7 @@ testEffect("contributes nothing outside an amux pane", () =>
 test("a report to a socket nobody is listening on settles quickly", async () => {
   const previous = { ...process.env };
   process.env.AMUX_AGENT_STATE_SOCKET = join(process.cwd(), "does-not-exist.sock");
-  process.env.AMUX_PANE_ID = "w1:p1";
+  process.env.AMUX_AGENT_ID = "agent-a";
   try {
     const plugin = await AmuxAgentStatePlugin();
     const started = Date.now();

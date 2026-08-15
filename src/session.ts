@@ -128,6 +128,11 @@ export interface PersistedSpace {
   activeWindow: number | null;
   windows: PersistedWindow[];
   worktree?: { branch: string; repo: string; path: string };
+  /** Id counters, ahead of every number ever issued, so closed window and
+   *  pane ids are never reused after a restart. Absent on pre-counter data,
+   *  where adoption falls back to the live maximum. */
+  nextWindow?: number;
+  nextPane?: number;
 }
 
 export interface SessionState {
@@ -140,6 +145,9 @@ export interface SessionState {
   /** Space that was on screen, by id. Absent means "none recorded", and a
    *  restore falls back to the first space. */
   activeSpace?: string | null;
+  /** Space id counter, ahead of every space id ever issued. Absent on
+   *  pre-counter data, where adoption falls back to the live maximum. */
+  nextSpace?: number;
 }
 
 export interface SessionLease {
@@ -202,6 +210,8 @@ const PersistedSpaceSchema = S.Struct({
   activeWindow: S.NullOr(PositiveInt),
   windows: S.Array(PersistedWindowSchema),
   worktree: S.optional(S.Struct({ branch: S.String, repo: S.String, path: S.String })),
+  nextWindow: S.optional(PositiveInt),
+  nextPane: S.optional(PositiveInt),
 });
 
 export const SessionStateSchema = S.Struct({
@@ -216,6 +226,7 @@ export const SessionStateSchema = S.Struct({
     }),
   ),
   activeSpace: S.optional(S.NullOr(S.String)),
+  nextSpace: S.optional(PositiveInt),
 });
 
 export const SessionLeaseSchema = S.Struct({
