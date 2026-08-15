@@ -118,7 +118,11 @@ test("commands transform a private generation and leave their input untouched", 
   expect(renamed.snapshot.revision).toBe(adopted.revision + 1);
 });
 
-test("a natural exit reveals a surviving detached agent", () => {
+// A persisted roster can name a live agent the layout never shows. The model
+// has no detached backend state, so adoption prunes it rather than restoring
+// an invisible, supervised session; the exit then has nothing to reveal and
+// removes the window.
+test("adoption prunes a live agent no pane references, and its exit removes the window", () => {
   const saved = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
@@ -131,10 +135,10 @@ test("a natural exit reveals a surviving detached agent", () => {
     exited: false,
     exitCode: null,
   });
-  const exited = markSessionExited(run(workspaceFromSession(saved)), "agent-a", 0);
-  const window = exited.spaces[0]!.windows[0]!;
-  expect(window.layout.root).toMatchObject({ type: "pane", content: { kind: "pty", session: "agent-b" } });
-  expect(window.state.focus).toBe(window.layout.focus ?? null);
+  const adopted = run(workspaceFromSession(saved));
+  expect(adopted.spaces[0]!.windows[0]!.agents.map((agent) => agent.id)).toEqual(["agent-a"]);
+  const exited = markSessionExited(adopted, "agent-a", 0);
+  expect(exited.spaces).toEqual([]);
 });
 
 test("workspace and command context parsers reject malformed nested state and relationships", () => {
@@ -182,6 +186,132 @@ test("workspace and command context parsers reject malformed nested state and re
       parseWorkspaceCommandContext({ ...context, blockedAgents: ["missing-agent"] }, valid),
     ),
   ).toContain("does not exist");
+});
+
+// The pane->agent edge is the model's one non-tree relationship: a window owns
+// a roster and a pane tree joined by the pane's session id. Schema decodes
+// structure, so parseWorkspace must check the references itself — every pane
+// names a live agent in its own window, and every live agent is shown.
+test("parseWorkspace rejects a float naming a session the window does not own", () => {
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
+      ),
+    ),
+  );
+  const window = adopted.spaces[0]!.windows[0]!;
+  window.layout = {
+    version: 1,
+    root: null,
+    floats: [
+      {
+        id: "float-a",
+        content: { kind: "pty", session: "missing-agent" },
+        x: 0.1,
+        y: 0.1,
+        width: 0.5,
+        height: 0.5,
+      },
+    ],
+    focus: "float-a",
+  };
+  window.state.focus = "float-a";
+  expect(runFailMessage(parseWorkspace(adopted))).toContain("does not have live");
+});
+
+test("parseWorkspace rejects a pane naming an agent another window owns", () => {
+  const s = base(
+    '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
+  );
+  s.spaces[0]!.windows.push({
+    number: 2,
+    name: null,
+    agents: [
+      {
+        id: "agent-b",
+        name: "sh",
+        cmd: ["sh"],
+        cols: 80,
+        rows: 24,
+        exited: false,
+        exitCode: null,
+      },
+    ],
+    layout:
+      '{"version":1,"root":{"type":"pane","id":"pane-b","content":{"kind":"pty","session":"agent-b"},"weight":1},"focus":"pane-b"}',
+  });
+  const adopted = run(workspaceFromSession(s));
+  const foreign = adopted.spaces[0]!.windows[1]!;
+  foreign.layout = {
+    version: 1,
+    root: null,
+    floats: [
+      {
+        id: "float-x",
+        content: { kind: "pty", session: "agent-a" },
+        x: 0.1,
+        y: 0.1,
+        width: 0.5,
+        height: 0.5,
+      },
+    ],
+    focus: "float-x",
+  };
+  foreign.state.focus = "float-x";
+  expect(runFailMessage(parseWorkspace(adopted))).toContain("does not have live");
+});
+
+test("parseWorkspace rejects a live agent that no pane references", () => {
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
+      ),
+    ),
+  );
+  adopted.spaces[0]!.windows[0]!.agents.push({
+    id: "agent-b",
+    name: "sleep",
+    cmd: ["sleep", "30"],
+    cols: 80,
+    rows: 24,
+    exited: false,
+    exitCode: null,
+  });
+  expect(runFailMessage(parseWorkspace(adopted))).toContain("has no pane");
+});
+
+// Two panes showing one agent is the feature the non-tree edge exists for, and
+// an exited agent keeps its record as a restart target after its pane is
+// pruned — both remain legal.
+test("parseWorkspace accepts duplicate panes on one agent", () => {
+  const adopted = run(workspaceFromSession(dupAgentSession()));
+  expect(run(parseWorkspace(adopted))).toEqual(adopted);
+});
+
+test("parseWorkspace accepts an exited agent no pane references", () => {
+  const adopted = run(
+    workspaceFromSession(
+      base(
+        '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
+      ),
+    ),
+  );
+  adopted.spaces[0]!.windows[0]!.agents.push({
+    id: "agent-b",
+    name: "sleep",
+    cmd: ["sleep", "30"],
+    cols: 80,
+    rows: 24,
+    exited: true,
+    exitCode: 1,
+  });
+  const received = run(parseWorkspace(adopted));
+  expect(received.spaces[0]!.windows[0]!.agents.map((agent) => agent.id)).toEqual([
+    "agent-a",
+    "agent-b",
+  ]);
 });
 
 test("new identities are UUID-based, unique, and disjoint from adopted ids", () => {
@@ -269,7 +399,7 @@ test("pane.close transfers focus to a survivor when the focused pane is closed",
   expect(window.layout.focus).toBe("pane-c");
 });
 
-test("pane.close does not reveal an unreferenced backend", () => {
+test("closing the last pane kills the backend without revealing a hidden one", () => {
   const saved = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
@@ -283,11 +413,9 @@ test("pane.close does not reveal an unreferenced backend", () => {
     exitCode: null,
   });
   const adopted = run(workspaceFromSession(saved));
+  expect(adopted.spaces[0]!.windows[0]!.agents.map((agent) => agent.id)).toEqual(["agent-a"]);
   const closed = applyWorkspaceCommand(adopted, command("pane.close"), context);
-  expect(closed.actions).toEqual([
-    { _tag: "kill", agent: "agent-a" },
-    { _tag: "kill", agent: "agent-b" },
-  ]);
+  expect(closed.actions).toEqual([{ _tag: "kill", agent: "agent-a" }]);
   expect(closed.snapshot.spaces).toEqual([]);
 });
 
@@ -457,7 +585,9 @@ test("pane.join without a source uses the previously active window", () => {
 
   expect(result.changed).toBe(true);
   expect(
-    layoutPanes(result.snapshot.spaces[0]!.windows[1]!.layout.root).map((pane) => pane.content.session),
+    layoutPanes(result.snapshot.spaces[0]!.windows[1]!.layout.root).map(
+      (pane) => pane.content.session,
+    ),
   ).toContain("agent-a");
 });
 
@@ -480,12 +610,14 @@ test("pane.move transfers the focused pane to another space without killing it",
   expect(result.actions.filter((action) => action._tag === "kill")).toHaveLength(0);
   expect(result.snapshot.state.activeSpace).toBe(other.id);
   expect(
-    layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root).map((pane) => pane.content.session),
+    layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root).map(
+      (pane) => pane.content.session,
+    ),
   ).toEqual(["agent-b"]);
   const movedSpace = result.snapshot.spaces.find((space) => space.id === other.id)!;
-  expect(layoutPanes(movedSpace.windows[0]!.layout.root).map((pane) => pane.content.session)).toContain(
-    "agent-a",
-  );
+  expect(
+    layoutPanes(movedSpace.windows[0]!.layout.root).map((pane) => pane.content.session),
+  ).toContain("agent-a");
 });
 
 // ── pane.zoom ──
@@ -570,11 +702,15 @@ test("a sessionless plugin pane survives the wire and the save round trip", () =
   ).snapshot;
   const target = withEditor.spaces[0]!.windows[0]!;
   const pane = layoutPanes(target.layout.root)[1]!;
+  // The split created a backend for the new pane; a sessionless plugin pane has
+  // no backend, so its session leaves the roster with the pane's content.
+  const orphan = pane.content.session;
   pane.content = {
     kind: "plugin",
     type: "amux.editor",
     descriptor: { file: "/work/note.txt" },
   };
+  target.agents = target.agents.filter((agent) => agent.id !== orphan);
   const expected = target.layout;
 
   const received = run(parseWorkspaceJson(JSON.stringify(withEditor)));
@@ -719,7 +855,7 @@ test("space.previous cycles to the previous space", () => {
 
 // ── agent.reveal ──
 
-test("agent.reveal creates a pane for an unrevealed agent", () => {
+test("agent.reveal does nothing for an agent adoption pruned", () => {
   const s = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
@@ -738,11 +874,7 @@ test("agent.reveal creates a pane for an unrevealed agent", () => {
     command("session.reveal", { session: "agent-b" }),
     context,
   );
-  expect(result.changed).toBe(true);
-
-  const window = result.snapshot.spaces[0]!.windows[0]!;
-  const panes = JSON.stringify(window.layout.root);
-  expect(panes).toContain("agent-b");
+  expect(result.changed).toBe(false);
 });
 
 test("agent.reveal on an already revealed agent just focuses it", () => {
@@ -784,9 +916,9 @@ test("agent.next-blocked jumps to the next blocked agent", () => {
   expect(result.snapshot.spaces[0]!.windows[0]!.state.focus).toBe("pane-b");
 });
 
-// ── agent.kill with surviving agent ──
+// ── session.kill with surviving agent ──
 
-test("session.kill removes unreferenced backends", () => {
+test("session.kill removes the last backend once adoption pruned the detached one", () => {
   const s = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
@@ -806,10 +938,7 @@ test("session.kill removes unreferenced backends", () => {
     context,
   );
   expect(result.changed).toBe(true);
-  expect(result.actions).toEqual([
-    { _tag: "kill", agent: "agent-a" },
-    { _tag: "kill", agent: "agent-b" },
-  ]);
+  expect(result.actions).toEqual([{ _tag: "kill", agent: "agent-a" }]);
   expect(result.snapshot.spaces).toEqual([]);
 });
 
@@ -852,8 +981,12 @@ test("agent.restart revives an exited agent without changing its identity or pan
   ]);
   expect(layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root)).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ content: expect.objectContaining({ kind: "pty", session: "agent-a" }) }),
-      expect.objectContaining({ content: expect.objectContaining({ kind: "plugin", session: "agent-b" }) }),
+      expect.objectContaining({
+        content: expect.objectContaining({ kind: "pty", session: "agent-a" }),
+      }),
+      expect.objectContaining({
+        content: expect.objectContaining({ kind: "plugin", session: "agent-b" }),
+      }),
     ]),
   );
 });
