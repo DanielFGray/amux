@@ -25,6 +25,7 @@ import {
 import { COMMAND_META, type AnyCommandResult, type Command } from "../commands.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
+import type { PtyError, SessionSpec } from "./SessionRegistry.ts";
 import type { PermissionAnswer } from "./AttachProtocol.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { errorMessage } from "../error-message.ts";
@@ -306,48 +307,47 @@ export function gitWorktreesFor(
 }
 
 export const makeSessionOps = (
-  hostRef: {
-    current: {
-      prepare: any;
-      write: any;
-      prompt: any;
-      interrupt: any;
-      decide: any;
-    } | null;
-  },
+  getHost: Effect.Effect<
+    {
+      readonly prepare: (spec: SessionSpec) => Effect.Effect<PreparedSession, PtyError>;
+      readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
+      readonly prompt: (id: string, text: string) => Effect.Effect<void, PtyError>;
+      readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
+      readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
+    },
+    unknown
+  >,
   killFn: (id: string) => Effect.Effect<void, unknown>,
 ): Layer.Layer<WorkspaceTransactionSessionOps> =>
   Layer.succeed(WorkspaceTransactionSessionOps, {
     prepare: (agent) =>
-      Effect.suspend(() =>
-        hostRef.current
-          ? hostRef.current.prepare(agent).pipe(Effect.orDie)
-          : Effect.die(new Error("host not started")),
+      getHost.pipe(
+        // The transaction only prepares non-component agents, which always
+        // carry a command; PersistedSession only leaves `cmd` optional because
+        // component sessions do not need one.
+        Effect.flatMap((host) => host.prepare(agent as SessionSpec)),
+        Effect.orDie,
       ),
     kill: (id) => killFn(id).pipe(Effect.orDie),
     write: (id, data) =>
-      Effect.suspend(() =>
-        hostRef.current
-          ? hostRef.current.write(id, data).pipe(Effect.orDie)
-          : Effect.die(new Error("host not started")),
+      getHost.pipe(
+        Effect.flatMap((host) => host.write(id, data)),
+        Effect.orDie,
       ),
     prompt: (id, text) =>
-      Effect.suspend(() =>
-        hostRef.current
-          ? hostRef.current.prompt(id, text).pipe(Effect.orDie)
-          : Effect.die(new Error("host not started")),
+      getHost.pipe(
+        Effect.flatMap((host) => host.prompt(id, text)),
+        Effect.orDie,
       ),
     interrupt: (id, reason) =>
-      Effect.suspend(() =>
-        hostRef.current
-          ? hostRef.current.interrupt(id, reason).pipe(Effect.orDie)
-          : Effect.die(new Error("host not started")),
+      getHost.pipe(
+        Effect.flatMap((host) => host.interrupt(id, reason)),
+        Effect.orDie,
       ),
     decide: (id, answer) =>
-      Effect.suspend(() =>
-        hostRef.current
-          ? hostRef.current.decide(id, answer).pipe(Effect.orDie)
-          : Effect.die(new Error("host not started")),
+      getHost.pipe(
+        Effect.flatMap((host) => host.decide(id, answer)),
+        Effect.orDie,
       ),
   } satisfies SessionOps);
 
