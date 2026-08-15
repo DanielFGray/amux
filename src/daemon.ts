@@ -858,10 +858,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     actor.send(new DaemonKill({ id: sessionId }));
   let stopWhenEmpty: Effect.Effect<void> = Effect.void;
 
-  const start = Effect.gen(function* () {
-    yield* actor.send(new DaemonStart());
-    yield* actor.send(new DaemonFinishStartup());
-  });
+  // Two requests, strictly ordered: the host must be committed in `starting`
+  // before the transaction-driven restore half can run under it.
+  const start = Effect.all([
+    actor.send(new DaemonStart()),
+    actor.send(new DaemonFinishStartup()),
+  ]).pipe(Effect.asVoid);
 
   /**
    * Shuts the daemon down, in one of two modes that differ only in what
