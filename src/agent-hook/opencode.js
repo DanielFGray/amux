@@ -86,7 +86,9 @@ function report(socketPath, agent, state) {
 
 export const AmuxAgentStatePlugin = async () => {
   const socketPath = process.env.AMUX_AGENT_STATE_SOCKET;
-  const agent = process.env.AMUX_PANE_ID;
+  // The agent identity is the session, not the pane: a pane id can change when
+  // the pane moves, but the session id is stable for the life of the process.
+  const agent = process.env.AMUX_AGENT_ID;
   // Not running in an amux pane: contribute nothing rather than guess a path.
   if (!socketPath || !agent) return {};
 

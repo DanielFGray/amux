@@ -3,6 +3,15 @@ import { LAYOUT_PRESETS } from "./layout.ts";
 import { PermissionDecisionSchema } from "./permission.ts";
 import { ReportedAgentStateSchema } from "./agent-state.ts";
 import { creationResultSchema } from "./creation-result.ts";
+import {
+  AgentGetResultSchema,
+  AgentListResultSchema,
+  PaneCurrentResultSchema,
+  PaneLayoutResultSchema,
+  PaneListResultSchema,
+  SpaceListResultSchema,
+  WindowListResultSchema,
+} from "./read-model.ts";
 
 /**
  * The commands, as values.
@@ -301,6 +310,42 @@ const PaneCapture = define(
   },
   S.String,
 );
+// The machine-facing read surface (ts-33067b). These are pure projections of
+// the daemon's model: they mutate nothing, publish no frame, and mark nothing
+// seen, so an observing agent cannot hide a blocked agent from the human.
+const PaneList = define(
+  "pane.list",
+  {},
+  {
+    desc: "list panes and where they live",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
+  PaneListResultSchema,
+);
+const PaneCurrent = define(
+  "pane.current",
+  { ...PaneTarget },
+  {
+    desc: "the caller's pane, or a named one",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
+  PaneCurrentResultSchema,
+);
+const PaneLayout = define(
+  "pane.layout",
+  { ...PaneTarget },
+  {
+    desc: "a pane's geometry, for choosing a split direction",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
+  PaneLayoutResultSchema,
+);
 const PaneCopyMode = define(
   "pane.copy-mode",
   {},
@@ -478,6 +523,17 @@ const WindowSynchronize = define(
     exposure: "agent",
   },
 );
+const WindowList = define(
+  "window.list",
+  {},
+  {
+    desc: "list windows and the panes they hold",
+    group: "windows",
+    target: "workspace",
+    exposure: "agent",
+  },
+  WindowListResultSchema,
+);
 
 // Agents.
 const SessionKill = define("session.kill", SessionTarget, {
@@ -526,6 +582,28 @@ const AgentPermission = define(
     target: "workspace",
     exposure: "human",
   },
+);
+const AgentList = define(
+  "agent.list",
+  {},
+  {
+    desc: "list agents and where they live",
+    group: "agents",
+    target: "workspace",
+    exposure: "agent",
+  },
+  AgentListResultSchema,
+);
+const AgentGet = define(
+  "agent.get",
+  { session: S.String },
+  {
+    desc: "one agent, by its session id",
+    group: "agents",
+    target: "workspace",
+    exposure: "agent",
+  },
+  AgentGetResultSchema,
 );
 const AgentInterrupt = define(
   "agent.interrupt",
@@ -652,6 +730,17 @@ const SpacePrevious = define(
     target: "workspace",
     exposure: "agent",
   },
+);
+const SpaceList = define(
+  "space.list",
+  {},
+  {
+    desc: "list spaces",
+    group: "spaces",
+    target: "workspace",
+    exposure: "agent",
+  },
+  SpaceListResultSchema,
 );
 
 /**
@@ -812,6 +901,9 @@ export const COMMAND_DEFS = [
   PaneMove,
   PaneSendKeys,
   PaneCapture,
+  PaneList,
+  PaneCurrent,
+  PaneLayout,
   PaneCopyMode,
   BufferSet,
   BufferPaste,
@@ -829,11 +921,14 @@ export const COMMAND_DEFS = [
   WindowNextLayout,
   WindowSelectLayout,
   WindowSynchronize,
+  WindowList,
   AgentNew,
   AgentPrompt,
   AgentWatch,
   AgentInterrupt,
   AgentPermission,
+  AgentList,
+  AgentGet,
   Notify,
   SessionKill,
   SessionRestart,
@@ -845,6 +940,7 @@ export const COMMAND_DEFS = [
   SpaceClose,
   SpaceNext,
   SpacePrevious,
+  SpaceList,
   ConfigSet,
   ConfigToggle,
   ConfigAdjust,
@@ -1031,6 +1127,9 @@ export const Commands = {
   PaneMove,
   PaneSendKeys,
   PaneCapture,
+  PaneList,
+  PaneCurrent,
+  PaneLayout,
   PaneCopyMode,
   BufferSet,
   BufferPaste,
@@ -1048,6 +1147,7 @@ export const Commands = {
   WindowNextLayout,
   WindowSelectLayout,
   WindowSynchronize,
+  WindowList,
   Notify,
   SessionKill,
   SessionRestart,
@@ -1059,6 +1159,7 @@ export const Commands = {
   SpaceClose,
   SpaceNext,
   SpacePrevious,
+  SpaceList,
   ConfigSet,
   ConfigToggle,
   ConfigAdjust,

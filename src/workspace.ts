@@ -2,10 +2,23 @@ import type { AnyCommandResult, Command } from "./commands.ts";
 import type { CreationResult } from "./creation-result.ts";
 import type { PaneMoveResult } from "./commands.ts";
 import type { PermissionAnswer } from "./effect/AttachProtocol.ts";
+import type {
+  AgentEntry as ReadAgentEntry,
+  PaneEntry as ReadPaneEntry,
+  PaneLayout as ReadPaneLayout,
+  SpaceEntry as ReadSpaceEntry,
+  WindowEntry as ReadWindowEntry,
+} from "./read-model.ts";
 import { randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 import { worktreeDirname } from "./git.ts";
-import { paneInDirection, resizeDivider, resizePane, type LayoutSize } from "./geometry.ts";
+import {
+  computeRects,
+  paneInDirection,
+  resizeDivider,
+  resizePane,
+  type LayoutSize,
+} from "./geometry.ts";
 import {
   closeLayout,
   decodeLayout,
@@ -155,7 +168,10 @@ const TerminalSize = S.Struct({
     message: () => "terminal size is too large",
   }),
 );
-const PersistedAgentShape = S.Struct({
+/** The persisted agent record, exported so the machine-facing read surface can
+ *  derive its agent entries from the model's own shape rather than restating
+ *  it (ts-33067b). */
+export const PersistedAgentShape = S.Struct({
   id: NonEmptyString,
   name: S.String,
   kind: S.optional(S.Literal("pty", "component")),
@@ -220,14 +236,17 @@ const WindowStateShape = S.Struct({
     ),
   ),
 });
-const WorkspaceWindowShape = S.Struct({
+export const WorkspaceWindowShape = S.Struct({
   number: PositiveInt,
   name: S.NullOr(S.String),
   agents: S.Array(PersistedAgentShape).pipe(S.maxItems(MAX_SESSIONS)),
   layout: LayoutShape,
   state: WindowStateShape,
 });
-const WorkspaceSpaceShape = S.Struct({
+/** The space and window shapes, exported for the read surface's derived
+ *  entries: a read entry names a model field by reference, so the documented
+ *  shape cannot drift from the emitted shape. */
+export const WorkspaceSpaceShape = S.Struct({
   id: NonEmptyString,
   name: S.String,
   dir: S.String,
@@ -290,7 +309,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
 });
 
 export type WorkspaceAction =
-  | { readonly _tag: "spawn"; readonly agent: PersistedSession }
+  | { readonly _tag: "spawn"; readonly agent: PersistedSession; pane?: string }
   | { readonly _tag: "prompt"; readonly agent: string; readonly text: string }
   | {
       readonly _tag: "interrupt";
@@ -704,6 +723,27 @@ export function applyWorkspaceCommand(
       (item) => item.id === target.window.state.focus,
     );
     return pane ? { window: target, pane } : null;
+  };
+  /** Where a read whose name is "current" acts: the caller's own pane, else the
+   *  focused pane. Reads are the way an agent resolves itself, so "current"
+   *  means the caller rather than whoever has the human's focus. */
+  const readTarget = (): { window: WindowEntry; pane: PaneRef } | null => {
+    const named = "pane" in command && typeof command.pane === "string" && command.pane !== "";
+    if (named) {
+      for (const entry of workspaceWindows(next)) {
+        const pane = layoutRefs(entry.window.layout).find((item) => item.id === command.pane);
+        if (pane) return { window: entry, pane };
+      }
+      return null;
+    }
+    return callingPane() ?? (() => {
+      const target = activeWindow();
+      if (!target) return null;
+      const pane = layoutRefs(target.window.layout).find(
+        (item) => item.id === target.window.state.focus,
+      );
+      return pane ? { window: target, pane } : null;
+    })();
   };
   const setFocus = (target: WorkspaceWindow, id: string | undefined) => {
     if (!id || target.state.focus === id) return;
@@ -1296,6 +1336,47 @@ export function applyWorkspaceCommand(
       );
       break;
     }
+    // The read surface: pure projections, no actions, no frame, nothing seen.
+    case "space.list": {
+      result = spaceEntries(next);
+      break;
+    }
+    case "window.list": {
+      result = windowEntries(next);
+      break;
+    }
+    case "pane.list": {
+      result = paneEntries(next);
+      break;
+    }
+    case "pane.current": {
+      const target = readTarget();
+      result = target ? paneEntry(target.window.space, target.window.window, target.pane) : null;
+      break;
+    }
+    case "pane.layout": {
+      const target = readTarget();
+      result = target ? paneLayout(next, target.pane.id, context.size) : null;
+      break;
+    }
+    case "agent.list": {
+      result = agentEntries(next);
+      break;
+    }
+    case "agent.get": {
+      const found = findSession(next, command.session);
+      result = found ? agentEntry(found.space, found.window, found.agent) : null;
+      break;
+    }
+  }
+
+  // A spawn names the pane it will show, so the daemon can hand the child its
+  // own pane id as the AMUX_PANE_ID env var. Resolved here, after the command
+  // placed the pane, because the pane id is a fact about the resulting layout.
+  for (const a of actions) {
+    if (a._tag !== "spawn" || a.pane !== undefined) continue;
+    const pane = findPaneBySession(next, a.agent.id);
+    if (pane) a.pane = pane.id;
   }
 
   // A background caller asked for no focus to move. The command's structure
@@ -1412,6 +1493,30 @@ function findSession(workspace: WorkspaceSnapshot, id?: string): AgentEntry | nu
     return target && agent ? { ...target, agent } : null;
   }
   for (const entry of workspaceSessions(workspace)) if (entry.agent.id === id) return entry;
+  return null;
+}
+
+/** The pane a session shows, if the model places it. A session normally has
+ *  exactly one pane; when it has several, the first in walk order wins. */
+export function findPaneBySession(workspace: WorkspaceSnapshot, id: string): PaneRef | null {
+  for (const { window } of workspaceWindows(workspace)) {
+    const pane = layoutRefs(window.layout).find(
+      (item) => paneSession(item.content) === id,
+    );
+    if (pane) return pane;
+  }
+  return null;
+}
+
+/** A pane placed anywhere in the workspace, with the window that owns it. */
+export function workspacePaneOf(
+  workspace: WorkspaceSnapshot,
+  paneId: string,
+): { space: WorkspaceSpace; window: WorkspaceWindow; pane: PaneRef } | null {
+  for (const { space, window } of workspaceWindows(workspace)) {
+    const pane = layoutRefs(window.layout).find((item) => item.id === paneId);
+    if (pane) return { space, window, pane };
+  }
   return null;
 }
 
@@ -1542,3 +1647,136 @@ function paneContentFor(agent: PersistedSession): PaneContent {
 }
 
 const commandName = (command: readonly string[]) => basename(command[0] ?? "") || "shell";
+
+// ---------------------------------------------------------------------------
+// The machine-facing read surface. These are pure projections of a snapshot:
+// they build no actions, change nothing, publish no frame, and therefore mark
+// nothing seen. They share types with read-model.ts, whose schemas derive from
+// this model's own entity shapes, so the emitted shape cannot drift from the
+// documented one.
+// ---------------------------------------------------------------------------
+
+export function spaceEntries(workspace: WorkspaceSnapshot): ReadSpaceEntry[] {
+  return workspace.spaces.map((space) => ({
+    id: space.id,
+    name: space.name,
+    dir: space.dir,
+    activeWindow: space.state.activeWindow,
+    windows: space.windows.length,
+    ...(space.worktree === undefined ? {} : { worktree: space.worktree }),
+  }));
+}
+
+export function windowEntries(workspace: WorkspaceSnapshot): ReadWindowEntry[] {
+  const entries: ReadWindowEntry[] = [];
+  for (const space of workspace.spaces) {
+    for (const window of space.windows) {
+      entries.push({
+        space: space.id,
+        number: window.number,
+        name: window.name,
+        panes: layoutRefs(window.layout).length,
+        active: window.number === space.state.activeWindow,
+        focused: window.state.focus,
+      });
+    }
+  }
+  return entries;
+}
+
+export function paneEntries(workspace: WorkspaceSnapshot): ReadPaneEntry[] {
+  const entries: ReadPaneEntry[] = [];
+  for (const { space, window } of workspaceWindows(workspace)) {
+    for (const pane of layoutRefs(window.layout)) {
+      entries.push(paneEntry(space, window, pane));
+    }
+  }
+  return entries;
+}
+
+function paneEntry(
+  space: WorkspaceSpace,
+  window: WorkspaceWindow,
+  pane: PaneRef,
+): ReadPaneEntry {
+  const session = paneSession(pane.content);
+  return {
+    id: pane.id,
+    space: space.id,
+    window: window.number,
+    ...(session === undefined ? {} : { session }),
+    focused: pane.id === window.state.focus,
+    zoomed: window.state.zoom?.pane === pane.id,
+  };
+}
+
+export function agentEntries(workspace: WorkspaceSnapshot): ReadAgentEntry[] {
+  const entries: ReadAgentEntry[] = [];
+  for (const { space, window, agent } of workspaceSessions(workspace)) {
+    entries.push(agentEntry(space, window, agent));
+  }
+  return entries;
+}
+
+function agentEntry(
+  space: WorkspaceSpace,
+  window: WorkspaceWindow,
+  agent: PersistedSession,
+): ReadAgentEntry {
+  const pane = layoutRefs(window.layout).find(
+    (item) => paneSession(item.content) === agent.id,
+  );
+  return {
+    id: agent.id,
+    name: agent.name,
+    ...(agent.kind === undefined ? {} : { kind: agent.kind }),
+    ...(agent.agent === undefined ? {} : { agent: agent.agent }),
+    ...(agent.cmd === undefined ? {} : { cmd: agent.cmd }),
+    ...(agent.provider === undefined ? {} : { provider: agent.provider }),
+    ...(agent.cwd === undefined ? {} : { cwd: agent.cwd }),
+    cols: agent.cols,
+    rows: agent.rows,
+    exited: agent.exited,
+    exitCode: agent.exitCode,
+    space: space.id,
+    window: window.number,
+    ...(pane === undefined ? {} : { pane: pane.id }),
+  };
+}
+
+/** The geometry of one pane inside its window, computed at `size` — the size
+ *  every layout calculation in this model uses. Null when the pane is not
+ *  placed. */
+export function paneLayout(
+  workspace: WorkspaceSnapshot,
+  paneId: string,
+  size: LayoutSize,
+): ReadPaneLayout | null {
+  for (const { window } of workspaceWindows(workspace)) {
+    const placed = layoutRefs(window.layout).some((pane) => pane.id === paneId);
+    if (!placed) continue;
+    const rects = computeRects(window.layout, size);
+    const rect = rects.get(paneId);
+    if (!rect) return null;
+    return {
+      pane: paneId,
+      x: rect.x,
+      y: rect.y,
+      cols: rect.width,
+      rows: rect.height,
+      size: { cols: size.cols, rows: size.rows },
+      window: {
+        cols: Math.max(0, Math.floor(size.cols)),
+        rows: Math.max(0, Math.floor(size.rows)),
+      },
+      panes: [...rects.entries()].map(([id, item]) => ({
+        id,
+        x: item.x,
+        y: item.y,
+        cols: item.width,
+        rows: item.height,
+      })),
+    };
+  }
+  return null;
+}

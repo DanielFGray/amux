@@ -336,7 +336,9 @@ test("new identities are hierarchical, unique, and disjoint from adopted ids", (
   const panes = second.spaces[0]!.windows[0]!.layout.root
     ? JSON.stringify(second.spaces[0]!.windows[0]!.layout).match(/"id":"([^"]+)"/g) ?? []
     : [];
-  const paneIds = panes.map((match) => match.match(/"id":"([^"]+)"/)![1]);
+  const paneIds = panes
+    .map((match) => match.match(/"id":"([^"]+)"/)?.[1])
+    .filter((id): id is string => id !== undefined);
   const minted = paneIds.filter((id) => !id.startsWith("pane-"));
   expect(new Set(agents).size).toBe(agents.length);
   expect(agents.slice(1).every((id) => /^agent-[0-9a-f-]{36}$/.test(id))).toBe(true);
@@ -984,6 +986,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
         exited: false,
         exitCode: null,
       }),
+      pane: "space-a:p1",
     },
   ]);
   expect(layoutPanes(result.snapshot.spaces[0]!.windows[0]!.layout.root)).toEqual(
@@ -1111,6 +1114,8 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
 
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
   expect(agent.kind).toBe("component");
-  expect(mutation.actions).toContainEqual({ _tag: "spawn", agent });
+  expect(mutation.actions).toContainEqual(
+    expect.objectContaining({ _tag: "spawn", agent, pane: expect.any(String) }),
+  );
   expect(mutation.actions.some((action) => action._tag === "prompt")).toBe(false);
 });

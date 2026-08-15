@@ -281,8 +281,8 @@ test("agent.prompt --wait returns the anchored turn completion", async () => {
         if (!line) continue;
         const frame = JSON.parse(line);
         if (frame._tag !== "agent.prompt") continue;
-        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.start",session:process.env.AMUX_PANE_ID,turn:"turn-e2e",prompt:frame.text}})+"\\n");
-        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.end",session:process.env.AMUX_PANE_ID,turn:"turn-e2e",outcome:"completed",text:"finished"}})+"\\n");
+        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.start",session:process.env.AMUX_AGENT_ID,turn:"turn-e2e",prompt:frame.text}})+"\\n");
+        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.end",session:process.env.AMUX_AGENT_ID,turn:"turn-e2e",outcome:"completed",text:"finished"}})+"\\n");
       }
     }
   `;
@@ -385,7 +385,8 @@ test("the agent state socket accepts ping and agent state reports", async () => 
  * idle forever while the socket kept answering ok. Assert the publication.
  *
  * The report names a LIVE session, as a real hook does: it runs inside a pane
- * and reports the AMUX_PANE_ID it was handed. A report is committed to that
+ * and reports the session it was handed (AMUX_AGENT_ID; the pane id it carries
+ * in AMUX_PANE_ID is a view, not an identity). A report is committed to that
  * session's log before it is published, so an id belonging to no session has
  * nowhere to land and is dropped. */
 test("an agent self-report reaches the event bus, not just the socket", async () => {

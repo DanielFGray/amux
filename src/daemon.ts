@@ -57,16 +57,19 @@ import {
 } from "./session.ts";
 import { command, COMMAND_META, type Command } from "./commands.ts";
 import {
+  findPaneBySession,
   markSessionExited,
   markSessionUnavailable,
   parseWorkspaceCommandContext,
   workspaceFromSession,
+  workspacePaneOf,
   workspaceSession,
   workspaceSessions,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
 import { gitWorktreeExists } from "./git.ts";
+import { paneSession } from "./layout.ts";
 import { errorMessage } from "./error-message.ts";
 
 const describe = errorMessage;
@@ -559,6 +562,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               for (const w of space.windows) {
                 for (const a of w.agents) {
                   if (a.exited || a.kind === "component") continue;
+                  const pane = findPaneBySession(next, a.id);
                   yield* rawSpawn(
                     {
                       kind: a.kind,
@@ -568,6 +572,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                       cwd: a.cwd,
                       rpcPath: paths.socket,
                       daemonSession: id,
+                      ...(pane ? { paneId: pane.id } : {}),
                       cols: a.cols,
                       rows: a.rows,
                     },
@@ -934,6 +939,46 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
 
+  /**
+   * Which session `pane.capture` reads: the one named directly, or the one a
+   * named pane shows, or — for `--current` — the one the calling pane shows.
+   * Resolved here, on the daemon, never substituted by the CLI. The context is
+   * consulted only when the target is the caller, so a capture named by
+   * session id needs no workspace command context at all.
+   */
+  const resolveCaptureSession = (
+    value: Extract<Command, { _tag: "pane.capture" }>,
+    context: unknown,
+    workspace: WorkspaceSnapshot,
+  ): Effect.Effect<string, ControlError> =>
+    Effect.gen(function* () {
+      if (value.session) return value.session;
+      if (value.pane) {
+        const found = workspacePaneOf(workspace, value.pane);
+        const session = found ? paneSession(found.pane.content) : null;
+        if (!session)
+          return yield* new ControlError({ message: `pane '${value.pane}' has no session` });
+        return session;
+      }
+      if (value.current) {
+        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, workspace).pipe(
+          Effect.mapError((e) => new ControlError({ message: e.message })),
+        );
+        if (ctx.agent) return ctx.agent;
+        if (ctx.pane) {
+          const found = workspacePaneOf(workspace, ctx.pane);
+          const session = found ? paneSession(found.pane.content) : null;
+          if (session) return session;
+        }
+        return yield* new ControlError({
+          message: "pane.capture --current needs a managed pane",
+        });
+      }
+      return yield* new ControlError({
+        message: "pane.capture requires a session id or a pane",
+      });
+    });
+
   const runRemote = (value: Command, expectedRevision?: number, context?: unknown) =>
     Effect.gen(function* () {
       const meta = COMMAND_META[value._tag]!;
@@ -985,8 +1030,10 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           return {};
         }
         if (value._tag === "pane.capture") {
-          const session = value.session;
-          if (!session) return yield* controlFail("pane.capture requires a session id");
+          // The capture target is a session: named directly, or a named or
+          // calling pane resolved server-side to the session it shows.
+          const cur = yield* model.get;
+          const session = yield* resolveCaptureSession(value, context, cur.workspace);
           return { result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))) };
         }
         if (value._tag === "notify") {
@@ -1089,6 +1136,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               );
               return;
             }
+            const pane = findPaneBySession(cur.workspace, sessionId);
             yield* spawnSession({
               kind: found.agent.kind,
               agent: found.agent.agent,
@@ -1099,6 +1147,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               cwd: found.agent.cwd,
               rpcPath: paths.socket,
               daemonSession: id,
+              ...(pane ? { paneId: pane.id } : {}),
               cols: found.agent.cols,
               rows: found.agent.rows,
             }).pipe(
