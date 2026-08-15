@@ -54,7 +54,7 @@ amux pane.list               # panes, their home, session and focus flags
 amux pane.current --current  # the caller's own pane (or --pane <id>)
 amux pane.layout --current   # a pane's geometry, for choosing a split direction
 amux agent.list              # agents with their home and state
-amux agent.get <session-id>  # one agent, or its --pane <id> sibling
+amux agent.get <session-id>  # one agent, by its session id
 \`\`\`
 
 \`pane.layout\` reports the pane's position and size in cells plus every pane's rect, so an agent can follow "split a wide pane to the right, a narrow or tall one down" from its own geometry.

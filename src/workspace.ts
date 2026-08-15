@@ -53,6 +53,7 @@ import {
 } from "./session.ts";
 import {
   activateSpaceState,
+  claimPaneNumber,
   claimWindowNumber,
   closeWindowState,
   removeSpaceState,
@@ -668,9 +669,9 @@ export function applyWorkspaceCommand(
     return id;
   };
   const newPaneId = (space: WorkspaceSpace) => {
-    const id = `${space.id}:p${space.state.nextPane}`;
-    space.state = { ...space.state, nextPane: space.state.nextPane + 1 };
-    return id;
+    const [state, counter] = claimPaneNumber(space.state);
+    space.state = state;
+    return `${space.id}:p${counter}`;
   };
   const actions: WorkspaceAction[] = [];
   let result: AnyCommandResult | undefined;
