@@ -48,7 +48,22 @@ Create a pane with \`pane.split\`, which reports the \`session\` and \`pane\` it
 
 Send the command with \`pane.send-keys\` against the session id, and read the result with \`pane.capture\`. Capture returns terminal text, so wait on the output you expect rather than on elapsed time.
 
-Starting and prompting another agent is available: \`agent.new\`, \`agent.prompt\`, and \`agent.watch\` are exposed to agents, so you can spawn, prompt, and observe a coding-agent session. \`agent.permission\` and \`agent.interrupt\` remain human-gated: the approval loop and the interrupt escape hatch stay with the user.
+## Delegate work to another agent
+
+Start a sibling coding agent with \`agent.new\`, which reports the \`session\` and \`pane\` it created. Address the child by that session id: focus belongs to whoever drives the UI, and it moves.
+
+Send work with \`agent.prompt <target> <text>\`:
+
+- Without \`--wait\` or \`--until\`, the call returns as soon as the prompt is accepted.
+- With \`--wait\`, the call blocks until the anchored turn completes (\`turn.end\`) and prints the completion event. With \`--until=<idle|working|blocked|failed|done>\`, it blocks until the agent reports that state.
+- \`--timeout=<ms>\` bounds the whole wait (default 30000).
+- A prompt sent while the agent is not working must produce an observed lifecycle change within five seconds, or the call fails with \`agent_prompt_stalled\`. The agent never took the work; do not keep waiting, report the failure.
+
+Observe the child with \`agent.watch <target>\`, which streams durable events as JSON lines from a replay cursor. \`--after=<sequence>\` resumes from an earlier cursor, so a reconnect loses nothing. Events include \`turn.start\`, \`turn.end\` (with \`outcome\`), \`tool.start\`, \`tool.result\`, \`agent.status\`, and \`permission.request\`.
+
+\`agent.permission\` and \`agent.interrupt\` stay human-gated: the approval loop above the agents answers permission requests, and interrupt is the user's escape hatch. If the child emits \`permission.request\` or reaches \`blocked\`, it is waiting on the user; do not answer it yourself.
+
+Read the session id from the \`agent.new\` result and from \`agent.watch\` events. Do not derive it from layout order, names, or examples.
 
 ## Safety
 
