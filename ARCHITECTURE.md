@@ -110,6 +110,20 @@ possible. `workspace.ts` owns renderer-free transforms and the daemon owns
 persistence; client-side `Window` and `SpaceSet` objects are render projections,
 not a second writable workspace authority.
 
+The daemon's own lifecycle — `stopped -> starting -> running -> closed` — is one
+Effect Machine actor (`src/daemon.ts`). The attach runtime, host service,
+control server scope and heartbeat fiber live together in the machine's state,
+never as independently-nullable fields, and the seven host verbs (spawn, kill,
+live, buffers) are mailbox procedures that read their resources off the
+committed state and reject with "daemon not started" outside the live states.
+Startup is split in two on purpose: the host commits in `starting` before
+restore and the default space run, because those run the workspace transaction,
+which reads the host off the machine state and the mailbox cannot serve its own
+transition. Shutdown runs on the actor fiber; closing the daemon scope happens
+on a detached fiber so the teardown survives the scope it dismantles. The actor
+lives in a scope nothing closes, because after shutdown the service must still
+answer (a `liveSessions()` reads `[]` off the closed state).
+
 Every `SessionState` write, including attachment metadata, runs through the
 daemon's model queue. A workspace command prepares reversible sessions and
 gates destructive exits, completes its required process/input actions, writes
