@@ -166,8 +166,11 @@ async function main(): Promise<number> {
     const direct = parseArgs(tag, argv.slice(1));
     if (direct.parsed) return { tag, parsed: direct.parsed };
 
+    // The legacy `amux <command> <session-id> <args>` form. A token that looks
+    // like a flag is never a session id, or a typo'd flag would turn a syntax
+    // error into a refusal (exit 1) of a session the flag named.
     const positionalSession = argv[1];
-    if (positionalSession && isSessionId(positionalSession)) {
+    if (positionalSession && !positionalSession.startsWith("--") && isSessionId(positionalSession)) {
       const legacy = parseArgs(tag, argv.slice(2));
       if (legacy.parsed) return { tag, parsed: legacy.parsed, positionalSession };
     }
