@@ -55,6 +55,10 @@ export interface SessionSpec {
   readonly id: string;
   readonly cmd: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  /** Environment variable names a worker must not inherit. The spawn provider
+   *  declares these (the harness knows which variables are credentials), so
+   *  core never has to. */
+  readonly stripEnv?: readonly string[];
   readonly cwd?: string;
   readonly rpcPath?: string;
   /** Where a hook inside a foreign agent reports that agent's state. */
@@ -206,10 +210,10 @@ function componentBackend(spec: SessionSpec): Backend {
   const child = Bun.spawn([...spec.cmd], {
     cwd: spec.cwd,
     env: {
+      // The spawn provider named the variables that are credentials; anything
+      // it did not name is the user's own environment and passes through.
       ...Object.fromEntries(
-        Object.entries(process.env).filter(
-          ([name]) => name !== "OPENAI_API_KEY" && name !== "ANTHROPIC_API_KEY",
-        ),
+        Object.entries(process.env).filter(([name]) => !(spec.stripEnv ?? []).includes(name)),
       ),
       AMUX_SESSION: spec.id,
       AMUX_AGENT_ID: spec.id,

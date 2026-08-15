@@ -13,6 +13,14 @@ import { openAiCompatible } from "./openai-compatible.ts";
  * the one an `agent.model` reference has to use; renaming it here to read
  * better would make every model in it unresolvable.
  */
-export const opencodeZen = openAiCompatible({ id: "opencode", label: "OpenCode Zen" });
+export const opencodeZen = openAiCompatible({
+  id: "opencode",
+  label: "OpenCode Zen",
+  env: "OPENCODE_API_KEY",
+});
 
-export const opencodeGo = openAiCompatible({ id: "opencode-go", label: "OpenCode Go" });
+export const opencodeGo = openAiCompatible({
+  id: "opencode-go",
+  label: "OpenCode Go",
+  env: "OPENCODE_API_KEY",
+});

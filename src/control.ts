@@ -82,6 +82,7 @@ export class ControlRpcs extends RpcGroup.make(
       provider: S.String,
       argv: S.optional(S.Array(S.String).pipe(S.minItems(1))),
       env: S.optional(S.Record({ key: S.String, value: S.String })),
+      stripEnv: S.optional(S.Array(S.String)),
     },
     success: S.Void,
     error: ControlError,

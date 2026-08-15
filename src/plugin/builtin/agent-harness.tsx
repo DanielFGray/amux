@@ -4,7 +4,7 @@ import { For, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem } from "@effect/platform-bun";
 import { command } from "../../commands.ts";
-import { Default as IntegrationDefault } from "../../integration.ts";
+import { Default as IntegrationDefault, integrations } from "../../integration.ts";
 import { Default as ModelCatalogDefault } from "../../model-catalog.ts";
 import type { PluginDefinition } from "../types.ts";
 import { Chat } from "./agent-harness/Chat.tsx";
@@ -94,6 +94,10 @@ export const agentHarnessPlugin: PluginDefinition = {
           process.execPath,
           new URL("./agent-harness/native-worker.ts", import.meta.url).pathname,
         ],
+        // A provider key exported into the daemon's environment must not reach
+        // the worker's environ, where any process could read it via /proc. The
+        // harness knows which variables its integrations treat as credentials.
+        stripEnv: [...new Set(integrations.flatMap((integration) => integration.env))],
       }));
 
       ctx.registerBinding({

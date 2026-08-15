@@ -228,7 +228,8 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
               ...(provider
                 ? {
                     argv: provider.argv,
-                    ...(provider.env ? { env: provider.env } : {}),
+                    env: provider.env,
+                    stripEnv: provider.stripEnv,
                   }
                 : {}),
             })

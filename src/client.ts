@@ -58,6 +58,7 @@ export interface SessionClientShape extends DaemonSession {
     provider: string;
     argv?: readonly string[];
     env?: Readonly<Record<string, string>>;
+    stripEnv?: readonly string[];
   }) => Effect.Effect<void, ControlError>;
   readonly backend: () => SessionBackendFactory;
   readonly close: () => void;
@@ -243,6 +244,7 @@ const make = (
             ...input,
             ...(input.argv ? { argv: [...input.argv] } : {}),
             env: input.env,
+            stripEnv: input.stripEnv,
           })
           .pipe(Effect.mapError(toControlError)),
       backend: () => daemonBackend(service, service.live),
