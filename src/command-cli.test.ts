@@ -81,6 +81,36 @@ test("parseArgs accepts separated notify flags", () => {
   });
 });
 
+test("parseArgs accepts separated values for every flag kind", () => {
+  expect(parseArgs("window.select", ["--number", "3"]).parsed).toEqual({ number: 3 });
+  expect(
+    parseArgs("agent.prompt", ["s1", "do x", "--until", "working", "--timeout", "5000"]).parsed,
+  ).toEqual({ target: "s1", text: "do x", until: "working", timeout: 5000 });
+  expect(
+    parseArgs("pane.resize-divider", ["--path", "[1,0]", "--index", "0", "--delta", "-1"]).parsed,
+  ).toEqual({ path: [1, 0], index: 0, delta: -1 });
+});
+
+test("parseArgs accepts a separated boolean value only when it is a boolean", () => {
+  expect(parseArgs("agent.prompt", ["s1", "do x", "--wait", "false"]).parsed).toEqual({
+    target: "s1",
+    text: "do x",
+    wait: false,
+  });
+  expect(parseArgs("agent.prompt", ["s1", "do x", "--wait", "true"]).parsed).toEqual({
+    target: "s1",
+    text: "do x",
+    wait: true,
+  });
+  // A non-boolean token after a boolean flag stays a positional, so a bare
+  // flag never swallows the argument that follows it.
+  expect(parseArgs("pane.close", ["--current", "--pane", "s1:p3"]).parsed).toEqual({
+    current: true,
+    pane: "s1:p3",
+  });
+  expect(parseArgs("pane.close", ["--current", "true"]).parsed).toEqual({ current: true });
+});
+
 test("fieldNames returns all fields for a command", () => {
   const fields = fieldNames("window.rename");
   expect(fields.map((f) => f.name)).toContain("space");
