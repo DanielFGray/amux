@@ -43,7 +43,7 @@ export function resolveCommandSession(
 }
 
 /**
- * Pull a CLI-level `--session` out of a command group, in all three spellings.
+ * Pull a CLI-level `--session` out of a command group, attached or separated.
  * It never reaches `parseArgs`, whose schemas only know their own fields.
  */
 function stripSessionFlag(
