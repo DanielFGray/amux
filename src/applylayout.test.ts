@@ -424,7 +424,6 @@ test("a preset rearranges the same panes, in the same order", async () => {
 
 test("even-horizontal actually gives the panes equal widths", async () => {
   const { window, layout } = await setup();
-  const first = window.panes[0]!;
   run(window.splitSpawn("row"));
   run(window.splitSpawn("column"));
   await layout();

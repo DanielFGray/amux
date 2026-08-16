@@ -147,7 +147,7 @@ function ptyBackend(spec: SessionSpec): Backend {
       ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
       ...(spec.agentStatePath ? { AMUX_AGENT_STATE_SOCKET: spec.agentStatePath } : {}),
       ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
-      ...(spec.env ?? {}),
+      ...spec.env,
     },
   });
   return {
@@ -226,7 +226,7 @@ function componentBackend(spec: SessionSpec): Backend {
       ...(spec.paneId ? { AMUX_PANE_ID: spec.paneId } : {}),
       ...(spec.cwd ? { AMUX_AGENT_CWD: spec.cwd } : {}),
       AMUX_AGENT_SIZE: JSON.stringify({ cols: spec.cols, rows: spec.rows }),
-      ...(spec.env ?? {}),
+      ...spec.env,
     },
     stdin: "pipe",
     stdout: "pipe",

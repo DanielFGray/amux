@@ -194,11 +194,10 @@ class AttachClientConnection {
   }
 
   stream(session: string): Stream.Stream<AttachFrame> {
-    const self = this;
     return Stream.unwrap(
-      Effect.gen(function* () {
-        if (self._queued.get(session)?.terminal) self._queued.delete(session);
-        const entry = self._entryFor(session);
+      Effect.gen(this, function* () {
+        if (this._queued.get(session)?.terminal) this._queued.delete(session);
+        const entry = this._entryFor(session);
         const queue = yield* Queue.bounded<AttachFrame>(QUEUE_LIMIT);
         // Only the first subscriber finds anything here, and it is that
         // subscriber's history — later ones join live and call sync() instead.
@@ -212,11 +211,11 @@ class AttachClientConnection {
         }).pipe(
           Stream.ensuring(
             Effect.suspend(() => {
-              const current = self._queued.get(session);
+              const current = this._queued.get(session);
               const index = current?.queues.indexOf(queue) ?? -1;
               if (current && index !== -1) current.queues.splice(index, 1);
               if (current && current.terminal && current.queues.length === 0)
-                self._queued.delete(session);
+                this._queued.delete(session);
               return Queue.shutdown(queue);
             }),
           ),
@@ -288,9 +287,8 @@ class AttachClientConnection {
   }
 
   _heartbeatEffect(seconds: number): Effect.Effect<void> {
-    const self = this;
-    const beat = Effect.gen(function* () {
-      self._send({ _tag: "ping", nonce: `beat-${yield* Clock.currentTimeMillis}` });
+    const beat = Effect.gen(this, function* () {
+      this._send({ _tag: "ping", nonce: `beat-${yield* Clock.currentTimeMillis}` });
     });
     return beat.pipe(
       Effect.repeat(Schedule.spaced(`${seconds} seconds`)),

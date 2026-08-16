@@ -174,7 +174,7 @@ test("the prefix and bound amux controls are consumed and never broadcast", asyn
 
 test("a detached agent receives no broadcast until a view is opened on it", async () => {
   const { window } = await setup();
-  const visible = run(window.splitSpawn("row"))!;
+  run(window.splitSpawn("row"));
   const hidden = run(window.spawn("hidden", ["sleep", "30"]));
   window.toggleSync();
   const writes = captureAgentWrites();

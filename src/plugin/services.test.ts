@@ -1,6 +1,5 @@
 import { afterEach, expect } from "bun:test";
 import { Chunk, Context, Effect, Fiber, Option, Queue, Scope, Stream } from "effect";
-import { createRegions, type Regions } from "../ui/regions.tsx";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
 import { definePlugin, type PluginDefinition, type PluginErrorEvent } from "./types.ts";

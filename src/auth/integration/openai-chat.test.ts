@@ -1,6 +1,6 @@
 import { expect } from "bun:test";
 import { LanguageModel, Prompt, Tool, Toolkit } from "@effect/ai";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "@effect/platform";
+import { HttpClient, HttpClientResponse } from "@effect/platform";
 import { Chunk, Effect, Layer, Schema as S, Stream } from "effect";
 import * as OpenAiChat from "./openai-chat.ts";
 import { testEffect } from "../../test-effect.ts";
@@ -30,7 +30,7 @@ const gateway = (recorded: Recorded) => {
   const sent: unknown[] = [];
   let attempt = 0;
   const client = HttpClient.make((request) =>
-    Effect.gen(function* () {
+    Effect.sync(() => {
       sent.push(JSON.parse(new TextDecoder().decode((request.body as any).body)));
       const bytes = new TextEncoder().encode(recorded.body);
       const size = Math.ceil(bytes.length / (recorded.chunks ?? 1));

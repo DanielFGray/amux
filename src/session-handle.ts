@@ -231,14 +231,13 @@ export class SessionHandle {
    * free second, instead of racing it.
    */
   #pump(): Fiber.RuntimeFiber<void> {
-    const self = this;
     return Effect.runFork(
-      Stream.runForEach(self.#backend.stream, (chunk) =>
-        Effect.gen(function* () {
-          self.term.write(chunk);
-          self.#lastOutputAt = yield* Clock.currentTimeMillis;
-          if (self.#viewers === 0) self.#unseen = true;
-          self.onOutput?.(self);
+      Stream.runForEach(this.#backend.stream, (chunk) =>
+        Effect.gen(this, function* () {
+          this.term.write(chunk);
+          this.#lastOutputAt = yield* Clock.currentTimeMillis;
+          if (this.#viewers === 0) this.#unseen = true;
+          this.onOutput?.(this);
         }),
       ).pipe(
         // onExit belongs to the stream ending, not to the fiber ending: an

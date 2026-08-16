@@ -5,22 +5,14 @@ import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { testRender, useRenderer } from "@opentui/solid";
 import { createSignal, onMount } from "solid-js";
 import { SpaceSet, type Space } from "../../space.ts";
-import { sidebarPlugin, SIDEBAR_PLUGIN_ID } from "./sidebar.tsx";
-import {
-  createPanelContext,
-  type PanelContext,
-  type SidebarDisplay,
-  type SidebarDisplayRow,
-} from "../../ui/panel.ts";
+import { sidebarPlugin } from "./sidebar.tsx";
+import { type PanelContext, type SidebarDisplay, type SidebarDisplayRow } from "../../ui/panel.ts";
 import { createRegions } from "../../ui/regions.tsx";
 import { createPluginContributions } from "../contributions.ts";
-import { resolveOptions } from "../../options.ts";
 import { workspaceEnv } from "../../env.ts";
-import type { WorkspaceSnapshot } from "../../workspace.ts";
 import { createPluginHost, type PluginHost } from "../../plugin/host.ts";
 import { testPluginEnvironment } from "../test-environment.ts";
 import { testPanelContext } from "../../ui/test-panel.ts";
-import { testEffect } from "../../test-effect.ts";
 
 const WIDTH = 60;
 const HEIGHT = 20;

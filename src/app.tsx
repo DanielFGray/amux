@@ -54,7 +54,6 @@ import {
   clearOption,
   coerceOption,
   optionSpec,
-  optionsIn,
   resolveOptions,
   writeOption,
   type OptionName,
@@ -791,12 +790,12 @@ function buildApp(
     // mode must step down rather than keep a handle on a destroyed view. Guarded
     // on the mode being active, since this runs on every output chunk.
     //
-    // This is the safety net, not the first line of defence: the pane-destroying
-    // commands step the mode down BEFORE they tear anything down (see
-    // exitCopyModeFor), because here the pane may already be destroyed and its
-    // terminal may already be freed. Reaching this with a freed terminal is the
-    // one case left, and it does not happen: every path that frees a terminal
-    // goes through a command that exits first, and agent exits never free theirs.
+    // This is the only place the mode steps down for a closed pane: the client
+    // never tears a pane down itself — the daemon owns the model, and the pane
+    // disappears here, when this client projects the new revision. Exiting is
+    // safe at this point because a closed pane's terminal survives (only its
+    // renderable is destroyed), so clearing the selection cannot hit freed
+    // memory.
     const copyPane = copyMode.active ? copyMode.pane : null;
     if (copyPane && !paneStillMounted(copyPane)) copyMode.exit();
   };
@@ -806,23 +805,6 @@ function buildApp(
    *  survives — but refresh() on a destroyed renderable does not. */
   function paneStillMounted(pane: TerminalPane): boolean {
     return spaces.spaces.some((s) => s.windows.some((w) => w.panes.includes(pane)));
-  }
-
-  /**
-   * End copy mode before a structural change destroys its pane.
-   *
-   * Copy mode is pane-scoped and survives focus moves, so only the pane it sits
-   * on matters — closing an unrelated pane or window leaves the review in place.
-   * This must run BEFORE the teardown, never after: the mode's own exit clears
-   * the selection through the pane's terminal, and that call is only safe while
-   * the terminal is alive. A freed terminal cannot be caught — the FFI call
-   * segfaults before the try/catch inside CopyMode.exit can see it.
-   */
-  function exitCopyModeFor(panes: TerminalPane | readonly TerminalPane[] | null) {
-    const pane = copyMode.pane;
-    if (!pane || !panes) return;
-    const affected = Array.isArray(panes) ? panes.includes(pane) : panes === pane;
-    if (affected) copyMode.exit();
   }
 
   /** The option the settings window's selection is sitting on, if any. */

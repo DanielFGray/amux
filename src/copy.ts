@@ -1,5 +1,4 @@
 import { dlopen, FFIType as T, ptr } from "bun:ffi";
-import type { KeyEvent } from "@opentui/core";
 import type { TerminalPane } from "./pane.ts";
 import { captureRows } from "./capture.ts";
 import { LIB_DIR } from "./ghostty-library.ts";
@@ -144,12 +143,8 @@ export function rowCells(text: string): RowMap {
   // so this covers every ordinary row; anything exotic falls through below.
   if (/^[\x20-\x7e]*$/.test(text)) {
     const n = text.length;
-    const at = new Array<number>(n + 1);
-    const col = new Array<number>(n + 1);
-    for (let i = 0; i <= n; i++) {
-      at[i] = i;
-      col[i] = i;
-    }
+    const at = Array.from({ length: n + 1 }, (_, i) => i);
+    const col = Array.from({ length: n + 1 }, (_, i) => i);
     return { at, col };
   }
   const cps = new Uint32Array([...text].map((ch) => ch.codePointAt(0)!));

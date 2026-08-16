@@ -153,7 +153,7 @@ test("a 3-by-2 grid draws a ┼ at every seam crossing", async () => {
   // the horizontal seam crosses both vertical seams, so two cells want a ┼.
   run(window.splitSpawn("row"));
   run(window.splitSpawn("row"));
-  for (const p of [...window.panes]) {
+  for (const p of window.panes.slice()) {
     window.focus(p);
     run(window.splitSpawn("column"));
   }

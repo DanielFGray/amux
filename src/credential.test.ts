@@ -3,7 +3,6 @@ import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { Credential } from "./credential.ts";
