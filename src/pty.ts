@@ -1,4 +1,5 @@
 import { Schema as S } from "effect";
+import type { ReadableStreamReadResult } from "node:stream/web";
 import { closeFd, ptyForegroundPgid, resizePty, spawnNativePty, waitPid } from "./shim.ts";
 
 /** A trapped TERM must not make daemon shutdown unbounded. */
@@ -261,46 +262,120 @@ export function spawnPty(
   return result;
 }
 
+/** How much output one yielded chunk may hold. Matches the read buffer of the
+ *  sleep-poll this replaces, so a burst stays a handful of terminal writes. */
+const READ_BATCH = 65536;
+/** How long output may sit in a partial batch before it is flushed. One
+ *  millisecond is far shorter than any human-perceptible latency yet long
+ *  enough that a continuous stream keeps filling the batch instead. */
+const READ_GAP_MS = 1;
+
 /**
  * Async iterator over raw PTY output bytes.
  *
- * Each yielded view is borrowed until the consumer resumes this iterator.
- * Stream.fromAsyncIterable pulls the next value only after the current
- * Stream.runForEach effect completes; the direct consumer calls Terminal.write
- * synchronously, and ghostty_terminal_vt_write does not retain the pointer.
- * Consumers that retain a chunk must copy it at their ownership boundary.
+ * Drains through Bun's event-loop fd watcher (`Bun.file(fd).stream()`) rather
+ * than a sleep-poll. The old loop ran `fs.readSync` once per 4ms per session —
+ * a blocking syscall plus a timer wakeup at 250Hz even for an idle session,
+ * N sessions deep on the same loop the renderer shares. A watched fd only
+ * wakes the loop when bytes actually arrive.
+ *
+ * Stream chunks land small and the moment bytes do, so the generator batches
+ * them into READ_BATCH and yields a chunk either when it fills or when the
+ * stream goes quiet for READ_GAP_MS. Between reads it yields to the event
+ * loop, so a flooding child cannot monopolize the loop's turn; the idle path
+ * has no reads, no timers and no syscalls at all.
+ *
+ * Each yielded chunk is owned: a fresh view over a batch buffer that is never
+ * written again. Consumers may keep it past the next pull, and need no copy
+ * at their ownership boundary.
  */
 export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
-  const fs = require("node:fs");
-  const buf = Buffer.alloc(65536);
-  while (!pty.closed) {
-    let n: number;
-    try {
-      n = fs.readSync(pty.master, buf, 0, buf.length, null);
-    } catch (e: any) {
-      // EAGAIN = nothing to read yet; EBADF/EIO = closed or child exited.
-      if (pty.closed) return;
-      // Nothing to read right now. The session terminator keeps the master
-      // open while residual members may still produce output.
-      if (e.code === "EAGAIN") {
-        await Bun.sleep(4);
-        continue;
-      }
-      // The master can report EIO just ahead of the waitpid poll. Keep the
-      // output stream alive until exitCode has been recorded.
-      if (e.code === "EIO" && !pty.exited) {
-        await Bun.sleep(4);
-        continue;
-      }
-      return;
+  const reader = Bun.file(pty.master).stream().getReader();
+  let batch = new Uint8Array(READ_BATCH);
+  let len = 0;
+  // A read abandoned to a gap timer. Its result is bytes the stream already
+  // handed to this generator, so it must be consumed on the next pull, never
+  // dropped. It never rejects, so an abandoned read cannot surface as an
+  // unhandled rejection while the consumer holds the generator at a yield.
+  let carried: Promise<Outcome> | null = null;
+
+  const gap = () => new Promise<"gap">((resolve) => setTimeout(() => resolve("gap"), READ_GAP_MS));
+  const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  /** Wrap a read so its failure is a value. The pump both races reads against
+   *  the gap timer and carries the loser across yields; a rejecting read
+   *  abandoned to a timer is an unhandled rejection. */
+  const outcome = (read: Promise<ReadableStreamReadResult<Uint8Array>>): Promise<Outcome> =>
+    read.then(
+      (next) => ({ tag: "read" as const, next }),
+      (error) => ({ tag: "error" as const, error }),
+    );
+  const append = (chunk: Uint8Array) => {
+    if (len + chunk.length > batch.length) {
+      const grown = new Uint8Array(len + chunk.length);
+      grown.set(batch.subarray(0, len));
+      batch = grown;
     }
-    // A zero-length master read is not a reliable process-exit signal. The
-    // waitpid watcher owns that state; EIO above owns terminal EOF.
-    if (n === 0) {
-      await Bun.sleep(4);
-      continue;
+    batch.set(chunk, len);
+    len += chunk.length;
+  };
+  const take = () => {
+    const out = batch.subarray(0, len);
+    batch = new Uint8Array(READ_BATCH);
+    len = 0;
+    return out;
+  };
+  /** EIO is terminal EOF and EBADF a master closed under us; neither can
+   *  produce more bytes. The one gate is the exit code: the pump must not end
+   *  before the waitpid watcher records it, because the consumer reads it the
+   *  moment the stream ends. */
+  const waitTerminal = async (error: { code?: string }) => {
+    if (pty.closed) return;
+    if (error.code === "EIO" && !pty.exited) await pty.processExited;
+  };
+
+  try {
+    while (!pty.closed) {
+      const pending = carried ?? outcome(reader.read());
+      carried = null;
+      const first = await pending;
+      if (first.tag === "error") {
+        await waitTerminal(first.error);
+        if (len > 0) yield take();
+        return;
+      }
+      if (first.next.done) {
+        if (len > 0) yield take();
+        return;
+      }
+      if (first.next.value.length > 0) append(first.next.value);
+      // Fill the batch while the stream keeps delivering, giving the loop a
+      // turn between reads so a flood cannot starve the renderer's timer.
+      while (len < READ_BATCH && !pty.closed) {
+        const read = outcome(reader.read());
+        const result = await Promise.race([read, gap()]);
+        if (result === "gap") {
+          carried = read;
+          break;
+        }
+        if (result.tag === "error") {
+          await waitTerminal(result.error);
+          if (len > 0) yield take();
+          return;
+        }
+        if (result.next.done) {
+          if (len > 0) yield take();
+          return;
+        }
+        if (result.next.value.length > 0) append(result.next.value);
+        await turn();
+      }
+      if (len > 0) yield take();
     }
-    if (n < 0) return;
-    yield buf.subarray(0, n);
+  } finally {
+    await reader.cancel().catch(() => {});
   }
 }
+
+type Outcome =
+  | { readonly tag: "read"; readonly next: ReadableStreamReadResult<Uint8Array> }
+  | { readonly tag: "error"; readonly error: { code?: string } };
