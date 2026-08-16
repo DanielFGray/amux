@@ -14,9 +14,9 @@
  * first), and its left and right edges are the ┌ and ┐ of that row. Moving
  * shifts both by one cell; growing right shifts only the ┐.
  *
- * Plain arrows are the move gesture only while a float is focused — the same
- * key is focus for a tiled pane, so moving has to be checked against the float
- * leaving its cells at all.
+ * Plain arrows move a float, but for a tiled pane the same key is focus — so
+ * the move check has to read the float's own cells and see them travel, not
+ * trust that the key "just did something".
  */
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";

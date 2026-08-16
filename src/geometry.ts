@@ -86,7 +86,8 @@ export function paneInDirection(
   return best;
 }
 
-/** Move the divider bordering a pane in a screen direction. */
+/** Resize a pane in a screen direction: a tiled pane moves the divider on
+ *  that side, a float grows or shrinks its own rectangle. */
 export function resizePane(
   layout: Layout,
   size: LayoutSize,
