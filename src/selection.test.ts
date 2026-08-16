@@ -73,7 +73,13 @@ test("drag selection copies through the pane and survives pane borders", async (
   const t = await createTestRenderer({ width: 30, height: 8 });
   const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
   t.renderer.root.add(host);
-  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
+  // A bash prompt arriving mid-test lands in the copied range, making the
+  // selection "drag\nbash" on a cold filesystem. Run a process that emits
+  // nothing so the terminal holds exactly the bytes the test wrote.
+  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(
+    workspaceEnv(t.renderer, { shell: ["sh", "-c", "sleep 60"] }),
+    host,
+  );
   const copied: string[] = [];
   spaces.onCopy = (text) => {
     copied.push(text);
