@@ -325,7 +325,9 @@ test("moveFloat slides a float one cell per press in the direction of the arrow"
 test("a float cannot be pushed off the window, either edge", () => {
   let current = floatLayout(0.25, 0.1, 0.5, 0.75);
   for (let i = 0; i < 100; i++) current = moveFloat(current, size, "f", "right");
-  expect(computeRects(current, size).get("f")!.width).toBe(20); // size unchanged
+  // Flush against the right edge (x + width lands on the last column) and
+  // still its original size: movement never resizes.
+  expect(computeRects(current, size).get("f")).toEqual({ x: 20, y: 2, width: 20, height: 15 });
   const stuck = moveFloat(current, size, "f", "right");
   expect(stuck).toBe(current);
 
