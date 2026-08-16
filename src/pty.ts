@@ -282,8 +282,8 @@ const READ_GAP_MS = 1;
  * Stream chunks land small and the moment bytes do, so the generator batches
  * them into READ_BATCH and yields a chunk either when it fills or when the
  * stream goes quiet for READ_GAP_MS. Between reads it yields to the event
- * loop, so a flooding child cannot monopolize the loop's turn; the idle path
- * has no reads, no timers and no syscalls at all.
+ * loop, so a flooding child cannot monopolize the loop's turn; after the
+ * initial probe the idle path has no reads, no timers and no syscalls at all.
  *
  * The one synchronous read is the first pull: anything already in the master's
  * buffer is drained before the stream is created, because a stream read is an
@@ -395,10 +395,8 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
         if (result.tag === "error") {
           // The bytes already read are yielded before the terminal-EOF wait:
           // the exit code may not be recorded for another waitpid poll, and a
-          // batch of final output must reach the consumer now, not four
-          // milliseconds from now — the replay terminal's screen is captured
-          // on that schedule, and a late message lands where the replay left
-          // the cursor instead of where it belongs.
+          // final batch of output must reach the consumer now, not four
+          // milliseconds from now.
           if (len > 0) yield take();
           await waitTerminal(result.error);
           return;
