@@ -89,9 +89,9 @@ export function parseArgs(
         continue;
       }
       // A boolean flag consumes a separated value only when that value parses
-      // as a boolean; otherwise a bare `--current` would swallow the next
-      // flag. Value-taking flags consume the next token unless it looks like
-      // a flag.
+      // as a boolean; otherwise a bare `--current` would swallow the positional
+      // that follows it. Value-taking flags consume the next token unless it
+      // looks like a flag.
       const next = argv[i + 1];
       const takesSeparatedValue =
         flagMatch[2] === undefined &&
