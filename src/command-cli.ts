@@ -180,7 +180,7 @@ export function generateGroupHelp(group: string): string | undefined {
   if (definitions.length === 0) return undefined;
 
   return [
-    `usage: amux ${group} <command>`,
+    `usage: amux ${group} <command> [args] [--session=<id>]`,
     "",
     `${group}:`,
     ...definitions.flatMap(commandHelp),

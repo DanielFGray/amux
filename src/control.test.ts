@@ -216,6 +216,86 @@ test("the CLI runs escaped-semicolon command groups in order", async () => {
   expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("second");
 });
 
+test("--session selects the daemon for a command whose schema has no session field", async () => {
+  const id = "flag-daemon";
+  const { daemon, env } = await started(id);
+  const before = Effect.runSync(daemon.getWorkspace);
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+
+  const child = Bun.spawn({
+    cmd: [process.execPath, entry, "space.rename", "flagged", `--session=${id}`],
+    env: { ...clean, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(stderr).toBe("");
+  expect(exitCode).toBe(0);
+  expect(Effect.runSync(daemon.getWorkspace).revision).toBe(before.revision + 1);
+  expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("flagged");
+});
+
+test("--session also fills a command's session field, targeting the session it selects", async () => {
+  const id = "capture-flag";
+  const { daemon, env } = await started(id);
+  await Effect.runPromise(
+    daemon.spawnSession({
+      kind: "pty",
+      id,
+      cmd: ["sh", "-c", "printf 'flag-captured\\n'; sleep 30"],
+      cols: 80,
+      rows: 24,
+    }),
+  );
+  const capture = () =>
+    ctl(daemon.id, env, (c) => c.Batch({ values: [command("pane.capture", { session: id })] }));
+  let outputs = (await capture()).outputs;
+  await waitFor(async () => {
+    outputs = (await capture()).outputs;
+    return String(outputs[0]!.result).includes("flag-captured");
+  }, "the pane to print before it is captured");
+  expect(outputs[0]!.result).toContain("flag-captured");
+
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+  const child = Bun.spawn({
+    cmd: [process.execPath, entry, "pane.capture", `--session=${id}`],
+    env: { ...clean, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  expect(stdout).toContain("flag-captured");
+  await Effect.runPromise(daemon.killSession(id));
+});
+
+test("--session satisfies a command's required session field", async () => {
+  const id = "reveal-flag";
+  const { daemon, env } = await started(id);
+  await Effect.runPromise(
+    daemon.spawnSession({ kind: "pty", id, cmd: ["sleep", "30"], cols: 80, rows: 24 }),
+  );
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+
+  const child = Bun.spawn({
+    cmd: [process.execPath, entry, "session.reveal", `--session=${id}`],
+    env: { ...clean, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  // Without the feed the required field errors as 'missing required argument:
+  // session'; reaching the daemon at all proves --session supplied it.
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+});
+
 test("a native agent can capture a live session through the command surface", async () => {
   const { daemon, env } = await started("agent-tools");
   const id = "capture-agent";
