@@ -1,5 +1,5 @@
 import { Schema as S } from "effect";
-import type { ReadableStreamReadResult } from "node:stream/web";
+import type { ReadableStreamDefaultReader, ReadableStreamReadResult } from "node:stream/web";
 import { closeFd, ptyForegroundPgid, resizePty, spawnNativePty, waitPid } from "./shim.ts";
 
 /** A trapped TERM must not make daemon shutdown unbounded. */
@@ -285,12 +285,20 @@ const READ_GAP_MS = 1;
  * loop, so a flooding child cannot monopolize the loop's turn; the idle path
  * has no reads, no timers and no syscalls at all.
  *
+ * The one synchronous read is the first pull: anything already in the master's
+ * buffer is drained before the stream is created, because a stream read is an
+ * `await` — and an `await` can lose a race the caller's next step depends on.
+ * The daemon captures its replay screen right after spawn, so a first burst
+ * that missed it would land at the cursor position the replay left behind.
+ *
  * Each yielded chunk is owned: a fresh view over a batch buffer that is never
  * written again. Consumers may keep it past the next pull, and need no copy
  * at their ownership boundary.
  */
 export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
-  const reader = Bun.file(pty.master).stream().getReader();
+  const fs = require("node:fs");
+  const prime = Buffer.alloc(READ_BATCH);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let batch = new Uint8Array(READ_BATCH);
   let len = 0;
   // A read abandoned to a gap timer. Its result is bytes the stream already
@@ -335,12 +343,39 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
 
   try {
     while (!pty.closed) {
+      // First pulls: drain whatever is already in the master's buffer
+      // synchronously, before the event-driven stream exists. This is what a
+      // consumer that reads the terminal right after spawn sees — a stream
+      // read is an `await`, and the caller's next step can run before it
+      // resolves. The stream takes over at the first EAGAIN.
+      if (!reader) {
+        let n: number;
+        try {
+          n = fs.readSync(pty.master, prime, 0, prime.length, null);
+        } catch (error: any) {
+          if (pty.closed) return;
+          if (error.code === "EAGAIN") {
+            reader = Bun.file(pty.master).stream().getReader();
+            continue;
+          }
+          await waitTerminal(error);
+          return;
+        }
+        if (n === 0) {
+          reader = Bun.file(pty.master).stream().getReader();
+          continue;
+        }
+        if (n < 0) return;
+        append(prime.subarray(0, n));
+        yield take();
+        continue;
+      }
       const pending = carried ?? outcome(reader.read());
       carried = null;
       const first = await pending;
       if (first.tag === "error") {
-        await waitTerminal(first.error);
         if (len > 0) yield take();
+        await waitTerminal(first.error);
         return;
       }
       if (first.next.done) {
@@ -358,8 +393,14 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
           break;
         }
         if (result.tag === "error") {
-          await waitTerminal(result.error);
+          // The bytes already read are yielded before the terminal-EOF wait:
+          // the exit code may not be recorded for another waitpid poll, and a
+          // batch of final output must reach the consumer now, not four
+          // milliseconds from now — the replay terminal's screen is captured
+          // on that schedule, and a late message lands where the replay left
+          // the cursor instead of where it belongs.
           if (len > 0) yield take();
+          await waitTerminal(result.error);
           return;
         }
         if (result.next.done) {
@@ -372,7 +413,7 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
       if (len > 0) yield take();
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    await reader?.cancel().catch(() => {});
   }
 }
 
