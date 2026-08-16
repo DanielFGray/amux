@@ -396,9 +396,9 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           yield* Ref.update(terminations, (current) => new Map(current).set(spec.id, termination));
           // The replay must show the pre-activation burst, so it waits for the
           // pump's first delivery — bounded, because an idle session never
-          // delivers one. The burst is read synchronously in the pump's first
-          // turn, so a few milliseconds cover it; the bound is what keeps an
-          // idle session's activation from waiting forever.
+          // delivers one. The bound is generous: it only has to outlast the
+          // pump's scheduling latency under load, and the idle path bears it
+          // whole, so accuracy wins over the few milliseconds saved.
           yield* Deferred.await(firstOutput).pipe(
             Effect.timeout(INITIAL_OUTPUT_GRACE_MS),
             Effect.orElseSucceed(() => undefined),
