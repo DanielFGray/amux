@@ -270,6 +270,44 @@ const READ_BATCH = 65536;
  *  enough that a continuous stream keeps filling the batch instead. */
 const READ_GAP_MS = 1;
 
+/** Every /dev/ptmx fd this process holds, in /proc order. */
+function ptmxFds(): number[] {
+  const fds: number[] = [];
+  let entries: string[];
+  try {
+    entries = require("node:fs").readdirSync("/proc/self/fd");
+  } catch {
+    return fds;
+  }
+  for (const entry of entries) {
+    const fd = Number(entry);
+    if (!Number.isInteger(fd)) continue;
+    try {
+      const target = require("node:fs").readlinkSync(`/proc/self/fd/${fd}`);
+      if (target.includes("ptmx")) fds.push(fd);
+    } catch {
+      // raced with close; ignore
+    }
+  }
+  return fds;
+}
+
+/** Bun's fd-backed file stream dups the master and leaks the dup: the stream
+ *  always ends in EIO on a pty, and `reader.cancel()` only releases its fd
+ *  when the stream has not errored. The dup is the one ptmx fd that appears
+ *  while the stream is created, so it is found here and closed by the
+ *  generator the moment the stream ends, restoring the old single-fd
+ *  ownership. */
+function openStream(master: number): {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  dup: number | null;
+} {
+  const before = new Set(ptmxFds());
+  const reader = Bun.file(master).stream().getReader();
+  const dup = ptmxFds().find((fd) => !before.has(fd)) ?? null;
+  return { reader, dup };
+}
+
 /**
  * Async iterator over raw PTY output bytes.
  *
@@ -299,6 +337,11 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
   const fs = require("node:fs");
   const prime = Buffer.alloc(READ_BATCH);
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  // Bun's dup of the master, found when the stream is created and closed the
+  // moment the stream ends: a pty stream always ends in EIO, and reader.cancel()
+  // then never releases it. Closed synchronously at that point, so the number
+  // cannot have been reused in between.
+  let streamDup: number | null = null;
   let batch = new Uint8Array(READ_BATCH);
   let len = 0;
   // A read abandoned to a gap timer. Its result is bytes the stream already
@@ -340,6 +383,14 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
     if (pty.closed) return;
     if (error.code === "EIO" && !pty.exited) await pty.processExited;
   };
+  /** The stream has ended (error or done); Bun will not release its dup, so
+   *  it is closed here, synchronously, before the number can be reused. */
+  const closeStreamDup = () => {
+    if (streamDup !== null) {
+      closeFd(streamDup);
+      streamDup = null;
+    }
+  };
 
   try {
     while (!pty.closed) {
@@ -355,14 +406,14 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
         } catch (error: any) {
           if (pty.closed) return;
           if (error.code === "EAGAIN") {
-            reader = Bun.file(pty.master).stream().getReader();
+            ({ reader, dup: streamDup } = openStream(pty.master));
             continue;
           }
           await waitTerminal(error);
           return;
         }
         if (n === 0) {
-          reader = Bun.file(pty.master).stream().getReader();
+          ({ reader, dup: streamDup } = openStream(pty.master));
           continue;
         }
         if (n < 0) return;
@@ -375,11 +426,13 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
       const first = await pending;
       if (first.tag === "error") {
         if (len > 0) yield take();
+        closeStreamDup();
         await waitTerminal(first.error);
         return;
       }
       if (first.next.done) {
         if (len > 0) yield take();
+        closeStreamDup();
         return;
       }
       if (first.next.value.length > 0) append(first.next.value);
@@ -398,11 +451,13 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
           // final batch of output must reach the consumer now, not four
           // milliseconds from now.
           if (len > 0) yield take();
+          closeStreamDup();
           await waitTerminal(result.error);
           return;
         }
         if (result.next.done) {
           if (len > 0) yield take();
+          closeStreamDup();
           return;
         }
         if (result.next.value.length > 0) append(result.next.value);
