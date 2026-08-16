@@ -134,8 +134,6 @@ export class Window {
    */
   #state: WindowState = windowState();
   #shell: string[];
-  /** Handed on to the panes and dividers this window builds. */
-  #env: Context.Context<WorkspaceEnv>;
   /** Directory agents spawn in — the owning space's attached directory. */
   #cwd: string | undefined;
   onChange?: () => void;
@@ -179,7 +177,6 @@ export class Window {
   #authoritativeProjection = false;
 
   constructor(env: Context.Context<WorkspaceEnv>, cwd: string | undefined, number: number) {
-    this.#env = env;
     this.#ctx = Context.get(env, RenderCtx);
     this.#shell = Context.get(env, Shell);
     this.#backend = Context.get(env, BackendContext);
@@ -260,7 +257,7 @@ export class Window {
       // give the space back to the surviving panes, the way tmux does.
       // The agent itself stays: it keeps its terminal, so it remains in the
       // sidebar as "done" and revealing it again still shows its final output.
-      for (const pane of [...this.#panes]) if (pane.session === agent) this.close(pane);
+      for (const pane of this.#panes.slice()) if (pane.session === agent) this.close(pane);
       this.onChange?.();
       this.onSessionExit?.(agent);
       this.#ctx.requestRender();
@@ -287,7 +284,7 @@ export class Window {
   /** Drop a client projection after the daemon has removed its owner. */
   removeProjectedSession(agent: SessionHandle): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const pane of [...this.#panes]) if (pane.session === agent) this.close(pane);
+      for (const pane of this.#panes.slice()) if (pane.session === agent) this.close(pane);
       const at = this.#sessions.indexOf(agent);
       if (at !== -1) this.#sessions.splice(at, 1);
       yield* this.#releaseAgent(agent);
@@ -384,7 +381,7 @@ export class Window {
     // after the detach, not before: closing a sibling re-projects the layout,
     // and a detach that then failed would leave those views destroyed behind a
     // null return that tells the caller nothing happened.
-    for (const sibling of [...this.#panes]) {
+    for (const sibling of this.#panes.slice()) {
       if (sibling !== pane && sibling.session === agent) this.close(sibling);
     }
     this.#sessions.splice(this.#sessions.indexOf(agent), 1);
@@ -409,7 +406,7 @@ export class Window {
    */
   killSession(agent: SessionHandle): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const p of [...this.#panes]) if (p.session === agent) this.close(p);
+      for (const p of this.#panes.slice()) if (p.session === agent) this.close(p);
       const i = this.#sessions.indexOf(agent);
       if (i !== -1) this.#sessions.splice(i, 1);
       yield* this.#releaseAgent(agent);
@@ -1319,7 +1316,7 @@ export class Window {
     const walk = (box: BoxRenderable) => {
       // Children are copied before removal — removing while iterating the live
       // child list skips every other one.
-      for (const child of [...box.getChildren()]) {
+      for (const child of box.getChildren().slice()) {
         box.remove(child);
         if (child instanceof Divider) child.destroy();
         else if (child instanceof BoxRenderable) {
@@ -1367,8 +1364,8 @@ export class Window {
    *  exception. */
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const pane of [...this.#panes]) this.close(pane);
-      for (const agent of [...this.#sessions]) yield* this.#releaseAgent(agent);
+      for (const pane of this.#panes.slice()) this.close(pane);
+      for (const agent of this.#sessions.slice()) yield* this.#releaseAgent(agent);
       this.#sessions.length = 0;
     });
   }

@@ -793,7 +793,7 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
       run: Effect.sync(() => focusLeft++),
     },
   ];
-  const bindings = createBindings(t.renderer, commands, {
+  createBindings(t.renderer, commands, {
     onUnhandled: (event) => {
       if (mode.active && mode.pane === pane) return mode.onKey(event);
       return true;
@@ -848,7 +848,7 @@ async function makeWindow(count: number) {
     id: "pane-host",
     flexGrow: 1,
   });
-  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
+  const { spaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
   const space = run(spaces.create("proj", process.cwd()));
   const win = run(space.newWindow());
   const agents = Array.from({ length: count }, () =>
@@ -932,7 +932,7 @@ test("closing a window ends copy mode before its terminal is freed", async () =>
 });
 
 test("replacing the layout ends copy mode before leftover panes are destroyed", async () => {
-  const { t, spaces, space, win, panes, agents } = await makeWindow(3);
+  const { t, spaces, win, panes, agents } = await makeWindow(3);
   cleanup.push(() => {
     t.renderer.destroy();
   });

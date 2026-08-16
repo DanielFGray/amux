@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"];
 

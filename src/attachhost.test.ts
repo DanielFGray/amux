@@ -7,7 +7,7 @@
  * and a client that dies without saying goodbye must still be noticed.
  */
 
-import { ConfigProvider, Effect, Scope } from "effect";
+import { ConfigProvider, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { afterEach, expect, test } from "bun:test";
@@ -92,7 +92,7 @@ const text = (frames: AttachFrame[]) =>
 
 test("a session outlives the client that was watching it", async () => {
   const daemon = await started("survives");
-  const pty = await Effect.runPromise(
+  await Effect.runPromise(
     daemon.spawnSession({
       id: "agent-1",
       cmd: ["sh", "-c", "sleep 0.4; echo still-here"],

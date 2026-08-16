@@ -1,4 +1,4 @@
-import { run, runAsync, scopedSpaceSet } from "./harness.ts";
+import { run, scopedSpaceSet } from "./harness.ts";
 import { test, expect } from "bun:test";
 import { afterEach } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
@@ -6,7 +6,6 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { RenderState, Terminal } from "./ghostty.ts";
 import { captureRange } from "./shim.ts";
 import { clearSelection, setSelection } from "./shim.ts";
-import { SpaceSet } from "./space.ts";
 import { workspaceEnv } from "./env.ts";
 
 const bytes = (value: string) => new TextEncoder().encode(value);

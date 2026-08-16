@@ -1048,9 +1048,7 @@ export type CommandHandlers = {
 export interface Commands {
   /** Run a command. Local dispatch, not a round trip: the keymap needs the
    *  effect's synchronous prefix to run in the keypress it was dispatched from. */
-  readonly run: <T extends CommandTag = CommandTag>(
-    command: Command,
-  ) => Effect.Effect<AnyCommandResult, CommandError>;
+  readonly run: (command: Command) => Effect.Effect<AnyCommandResult, CommandError>;
   /** Every verb and what it is, for whichever surface is listing them. */
   readonly list: (filter?: { target?: CommandTarget; exposure?: CommandExposure }) => CommandMeta[];
   /** Whether a command tag targets the workspace. */

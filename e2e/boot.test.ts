@@ -18,6 +18,8 @@ const MARKER = "MARKER-ONE";
 /** Anything the runtime prints when it gives up. Escape codes are stripped
  *  first: a crash report is plain text, and the screen around it is not. */
 function crashed(out: string): string | null {
+  // Stripping ANSI sequences means matching the ESC control character on purpose.
+  // eslint-disable-next-line eslint/no-control-regex
   const plain = out.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
   const hit = plain.match(
     /(FiberFailure|Unhandled|TypeError|ReferenceError|panic:|is not a function)[^\n]*/,

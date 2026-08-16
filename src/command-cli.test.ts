@@ -6,7 +6,6 @@ import {
   generateGroupHelp,
   generateHelp,
 } from "./command-cli.ts";
-import type { CommandTag } from "./commands.ts";
 
 test("parseArgs handles commands with no arguments", () => {
   expect(parseArgs("pane.zoom", [])).toEqual({ parsed: {}, errors: [] });

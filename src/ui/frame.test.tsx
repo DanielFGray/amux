@@ -6,7 +6,7 @@ import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { createSignal } from "solid-js";
-import { SpaceSet, type Space } from "../space.ts";
+import type { Space } from "../space.ts";
 import { frame } from "../window.ts";
 import { resolveOptions } from "../options.ts";
 import { createAppState } from "./state.ts";
@@ -47,7 +47,7 @@ async function screen(
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
-  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
+  const { spaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
   const app = createAppState(spaces);
   cleanup.push(() => {
     t.renderer.destroy();

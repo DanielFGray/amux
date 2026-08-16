@@ -19,6 +19,8 @@ export type AgentWorker = {
 /** Keep provider diagnostics useful without allowing credentials or raw transport data into the UI. */
 export function sanitizeAgentError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  // Stripping ANSI sequences means matching the ESC control character on purpose.
+  // eslint-disable-next-line eslint/no-control-regex
   const normalized = message.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").toLowerCase();
   if (
     /credential|api key|api_key|unauthori[sz]ed|forbidden|authentication|401|403/.test(normalized)

@@ -348,7 +348,6 @@ export class TerminalPane extends Pane {
   #haveCache = false;
   #rebuildCount = 0;
   #selectionAnchor: CellPoint | null = null;
-  #selectionEnd: CellPoint | null = null;
   #selecting = false;
 
   /** Called by the workspace when the agent produces output. */
@@ -415,7 +414,6 @@ export class TerminalPane extends Pane {
       this.onCopyModeInterrupt?.();
       this.#selecting = true;
       this.#selectionAnchor = point;
-      this.#selectionEnd = point;
       setSelection(this.session.term.handle, point.x, point.y, point.x, point.y);
       (
         this._ctx as unknown as { setCapturedRenderable?: (r: unknown) => void }
@@ -426,7 +424,6 @@ export class TerminalPane extends Pane {
     }
 
     if (this.#selecting && (event.type === "drag" || event.type === "move")) {
-      this.#selectionEnd = point;
       const anchor = this.#selectionAnchor!;
       setSelection(this.session.term.handle, anchor.x, anchor.y, point.x, point.y);
       this.invalidate();
@@ -435,14 +432,12 @@ export class TerminalPane extends Pane {
     }
 
     if (this.#selecting && (event.type === "drag-end" || event.type === "up")) {
-      this.#selectionEnd = point;
       const anchor = this.#selectionAnchor!;
       setSelection(this.session.term.handle, anchor.x, anchor.y, point.x, point.y);
       if (anchor.x !== point.x || anchor.y !== point.y) this.#copySelection(anchor, point);
       else clearSelection(this.session.term.handle);
       this.#selecting = false;
       this.#selectionAnchor = null;
-      this.#selectionEnd = null;
       this.invalidate();
       event.stopPropagation();
       return;

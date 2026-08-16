@@ -11,12 +11,7 @@ import type { PluginDefinition } from "./types.ts";
 import type { Config, PluginSpec } from "../config.ts";
 import { decodeConfig } from "../config.ts";
 import { testEffect } from "../test-effect.ts";
-import { createPanelContext, type PanelContext } from "../ui/panel.ts";
 import type { Regions } from "../ui/regions.tsx";
-import { createSignal } from "solid-js";
-import type { WorkspaceSnapshot } from "../workspace.ts";
-import type { SidebarDisplay } from "../ui/panel.ts";
-import { resolveOptions } from "../options.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
@@ -43,10 +38,6 @@ async function writePluginFile(dir: string, name: string, content: string): Prom
   const fp = join(dir, name);
   await writeFile(fp, content);
   return fp;
-}
-
-function emptySnapshot(revision = 0): WorkspaceSnapshot {
-  return { revision, spaces: [], state: { activeSpace: null, nextSpace: 1 } };
 }
 
 async function mockRegions(): Promise<{

@@ -271,7 +271,6 @@ test("resizeFocus with nothing on that side does nothing", async () => {
 
 test("resizeFocus while zoomed does nothing and leaves the parked layout intact", async () => {
   const { window, layout } = await setup();
-  const first = window.panes[0]!;
   const second = run(window.splitSpawn("row"))!;
   await layout();
   const before = window.panes.map((p) => `${p.x},${p.y},${p.width},${p.height}`);

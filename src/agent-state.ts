@@ -78,7 +78,8 @@ export function reportAgentState(
       if (settled) return;
       settled = true;
       socket.destroy();
-      error ? reject(error) : resolve();
+      if (error) reject(error);
+      else resolve();
     };
     socket.setTimeout(500, () => finish(new Error("agent state request timed out")));
     socket.once("error", finish);

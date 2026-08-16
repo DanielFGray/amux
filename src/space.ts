@@ -291,7 +291,7 @@ export class Space {
 
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const w of [...this.#windows]) yield* this.#releaseWindow(w);
+      for (const w of this.#windows.slice()) yield* this.#releaseWindow(w);
       this.#windows.length = 0;
       this.#state = spaceState();
     });
@@ -534,7 +534,7 @@ export class SpaceSet {
       // scopes are about to close.
       this.#state = spaceSetState();
       this.#project();
-      for (const s of [...this.#spaces]) yield* this.#releaseSpace(s);
+      for (const s of this.#spaces.slice()) yield* this.#releaseSpace(s);
       this.#spaces.length = 0;
     });
   }
@@ -578,7 +578,7 @@ export const projectWorkspace = Effect.fnUntraced(function* (
       }
     }
   }
-  for (const space of [...target.spaces]) {
+  for (const space of target.spaces.slice()) {
     const savedSpace = source.spaces.find((candidate) => candidate.id === space.id);
     if (!savedSpace) yield* target.remove(space);
     else yield* projectSpace(space, savedSpace, backend);
@@ -591,7 +591,7 @@ const projectSpace = Effect.fnUntraced(function* (
   source: WorkspaceSpace,
   backend: SessionBackendFactory,
 ) {
-  for (const window of [...space.windows]) {
+  for (const window of space.windows.slice()) {
     if (!source.windows.some((candidate) => candidate.number === window.number))
       yield* space.closeWindow(window);
   }
@@ -609,7 +609,7 @@ const projectWindow = Effect.fnUntraced(function* (
   source: WorkspaceWindow,
   backend: SessionBackendFactory,
 ) {
-  for (const agent of [...window.sessions]) {
+  for (const agent of window.sessions.slice()) {
     if (!source.agents.some((candidate) => candidate.id === agent.id))
       yield* window.removeProjectedSession(agent);
   }
