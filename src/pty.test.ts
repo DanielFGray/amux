@@ -329,3 +329,30 @@ test("a flooding child cannot starve the event loop's frame clock", async () => 
   ]);
   expect(flooded).toBeGreaterThanOrEqual(Math.floor(idle * 0.5));
 });
+
+test("draining a session leaves no fd behind", async () => {
+  // Bun's fd-backed drain stream dups the master and, once the stream has
+  // ended (which on a pty is always EIO), never releases that dup on its own.
+  // If readPty stops closing it, every session leaks one /dev/ptmx and the
+  // long-lived daemon eventually exhausts fds.
+  const ptmxFds = () =>
+    fs
+      .readdirSync("/proc/self/fd")
+      .map(Number)
+      .filter((fd) => {
+        try {
+          return fs.readlinkSync(`/proc/self/fd/${fd}`).includes("ptmx");
+        } catch {
+          return false;
+        }
+      }).length;
+  const before = ptmxFds();
+  for (let i = 0; i < 3; i++) {
+    const p = spawnPty(["sh", "-c", "printf x"], { cols: 80, rows: 24 });
+    const out = collect(p);
+    await p.kill();
+    await out.done;
+  }
+  await Bun.sleep(100);
+  expect(ptmxFds()).toBe(before);
+});
