@@ -6,11 +6,7 @@ import { testRender, useRenderer } from "@opentui/solid";
 import { createSignal, onMount } from "solid-js";
 import { SpaceSet, type Space } from "../../space.ts";
 import { sidebarPlugin } from "./sidebar.tsx";
-import {
-  type PanelContext,
-  type SidebarDisplay,
-  type SidebarDisplayRow,
-} from "../../ui/panel.ts";
+import { type PanelContext, type SidebarDisplay, type SidebarDisplayRow } from "../../ui/panel.ts";
 import { createRegions } from "../../ui/regions.tsx";
 import { createPluginContributions } from "../contributions.ts";
 import { workspaceEnv } from "../../env.ts";
