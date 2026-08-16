@@ -35,11 +35,6 @@ const cornerRows = (screen: string) =>
     .map((line, row) => (line.includes("┌") ? row : -1))
     .filter((row) => row !== -1);
 
-const floatRow = (screen: string) => {
-  const rows = cornerRows(screen);
-  expect(rows).toHaveLength(2);
-  return rows[1]!;
-};
 /** The float's left and right edges, or null while it is mid-reprojection: a
  *  layout change unmounts and remounts the float's frame, so for a poll it can
  *  be absent without meaning the float is gone. A wait polls through that. */

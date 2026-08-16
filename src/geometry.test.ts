@@ -1,11 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  computeRects,
-  moveFloat,
-  paneInDirection,
-  resizeDivider,
-  resizePane,
-} from "./geometry.ts";
+import { computeRects, moveFloat, paneInDirection, resizeDivider, resizePane } from "./geometry.ts";
 import { createHarness, run } from "./harness.ts";
 import { LAYOUT_VERSION, makeLayout, type Layout, type LayoutNode } from "./layout.ts";
 
@@ -75,11 +69,21 @@ test("pure rectangles are a fixed point of OpenTUI flex layout", async () => {
   window.applyLayout(
     makeLayout({
       root: split("row", [
-        { type: "pane", id: left.id, content: { kind: "pty", session: left.session!.id }, weight: 3 },
+        {
+          type: "pane",
+          id: left.id,
+          content: { kind: "pty", session: left.session!.id },
+          weight: 3,
+        },
         split(
           "column",
           [
-            { type: "pane", id: top.id, content: { kind: "pty", session: top.session!.id }, weight: 2 },
+            {
+              type: "pane",
+              id: top.id,
+              content: { kind: "pty", session: top.session!.id },
+              weight: 2,
+            },
             {
               type: "pane",
               id: bottom.id,
@@ -123,7 +127,12 @@ test("a rendered float is the exact rectangle computeRects gives it", async () =
 
   window.applyLayout(
     makeLayout({
-      root: { type: "pane", id: tiled.id, content: { kind: "pty", session: tiled.session!.id }, weight: 1 },
+      root: {
+        type: "pane",
+        id: tiled.id,
+        content: { kind: "pty", session: tiled.session!.id },
+        weight: 1,
+      },
       floats: [
         {
           id: floated.id,
@@ -174,9 +183,21 @@ test("a pane that was floating is sized by the split again once tiled", async ()
 
   window.applyLayout(
     makeLayout({
-      root: { type: "pane", id: first.id, content: { kind: "pty", session: first.session!.id }, weight: 1 },
+      root: {
+        type: "pane",
+        id: first.id,
+        content: { kind: "pty", session: first.session!.id },
+        weight: 1,
+      },
       floats: [
-        { id: second.id, content: { kind: "pty", session: second.session!.id }, x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+        {
+          id: second.id,
+          content: { kind: "pty", session: second.session!.id },
+          x: 0.25,
+          y: 0.25,
+          width: 0.5,
+          height: 0.5,
+        },
       ],
     }),
   );
@@ -320,7 +341,14 @@ test("moving and resizing a float leaves a tiled pane and a sibling float alone"
     version: LAYOUT_VERSION,
     root: split("row", [pane("a"), pane("b")]),
     floats: [
-      { id: "f", content: { kind: "pty", session: "f" }, x: 0.25, y: 0.1, width: 0.5, height: 0.75 },
+      {
+        id: "f",
+        content: { kind: "pty", session: "f" },
+        x: 0.25,
+        y: 0.1,
+        width: 0.5,
+        height: 0.75,
+      },
       { id: "g", content: { kind: "pty", session: "g" }, x: 0.6, y: 0.6, width: 0.3, height: 0.3 },
     ],
     focus: "f",

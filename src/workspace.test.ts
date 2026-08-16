@@ -774,7 +774,11 @@ test("pane.focus moves a focused float one cell in the arrow's direction", () =>
 
 test("pane.focus from a tiled pane still focuses directionally", () => {
   const adopted = run(workspaceFromSession(twoPaneSession()));
-  const result = applyWorkspaceCommand(adopted, command("pane.focus", { direction: "right" }), context);
+  const result = applyWorkspaceCommand(
+    adopted,
+    command("pane.focus", { direction: "right" }),
+    context,
+  );
   expect(result.changed).toBe(true);
   expect(result.snapshot.spaces[0]!.windows[0]!.state.focus).toBe("pane-b");
 });
