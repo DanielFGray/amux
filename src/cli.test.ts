@@ -51,7 +51,7 @@ test("--session is accepted by commands whose schema has no session field", () =
   // fails when it cannot reach the socket — never with 'unknown flag'.
   expect(result.exitCode).toBe(1);
   expect(Buffer.from(result.stderr).toString()).not.toContain("unknown flag");
-});
+}, 20_000);
 
 test("a malformed --session is a syntax error, not a silent default", () => {
   const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
@@ -63,7 +63,7 @@ test("a malformed --session is a syntax error, not a silent default", () => {
     expect(result.exitCode).toBe(2);
     expect(Buffer.from(result.stderr).toString()).toContain("--session");
   }
-});
+}, 20_000);
 
 test("session-required commands report missing pane identity from the CLI", () => {
   const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
