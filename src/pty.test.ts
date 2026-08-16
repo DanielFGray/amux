@@ -339,7 +339,7 @@ test("draining a session leaves no fd behind", async () => {
     fs
       .readdirSync("/proc/self/fd")
       .map(Number)
-      .filter((fd) => {
+      .filter((fd: number) => {
         try {
           return fs.readlinkSync(`/proc/self/fd/${fd}`).includes("ptmx");
         } catch {
