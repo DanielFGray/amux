@@ -36,11 +36,11 @@ const FOREGROUND_POLL_MS = 500;
 
 /** How long activation waits for the pump's first output before capturing the
  *  replay screen. A session that starts with output must have it in the replay,
- *  and the pump reads the buffered burst synchronously in its first turn, so a
- *  the child's exec-fail output must beat it even under load, so a generous
- *  bound is the point. An idle session never produces a chunk, so this bound is
- *  also what lets its activation proceed. */
-const INITIAL_OUTPUT_GRACE_MS = 50;
+ *  and the pump's first turn is a synchronous read, so this only has to outlast
+ *  the pump's scheduling latency under load (measured up to ~30ms). An idle
+ *  session never produces a chunk, so this bound is also what lets its
+ *  activation proceed. */
+const INITIAL_OUTPUT_GRACE_MS = 100;
 
 export interface SessionExitObserverService {
   readonly beforePublish: (id: string, code: number | null) => Effect.Effect<void, unknown>;
