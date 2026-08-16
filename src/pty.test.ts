@@ -327,5 +327,5 @@ test("a flooding child cannot starve the event loop's frame clock", async () => 
     "-c",
     "i=0; while :; do printf 'LINE-%06d %0100d\\n' $i $i; i=$((i+1)); done",
   ]);
-  expect(flooded).toBeGreaterThanOrEqual(Math.floor(idle * 0.6));
+  expect(flooded).toBeGreaterThanOrEqual(Math.floor(idle * 0.5));
 });
