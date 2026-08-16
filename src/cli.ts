@@ -25,19 +25,54 @@ export function splitCommandArgs(argv: readonly string[]): string[][] {
 /**
  * Resolve the daemon session id for a command invocation.
  *
- * Accepts the target string directly (not a CommandTag) so this
- * file avoids importing the full commands module.
+ * `--session` is a CLI-level flag: it selects the daemon, never a command
+ * argument. The legacy `amux <command> <session-id> <args>` form is the
+ * positional fallback. Accepts the target string directly (not a CommandTag)
+ * so this file avoids importing the full commands module.
  */
 export function resolveCommandSession(
   target: string,
+  sessionFlag: string | undefined,
   positionalSession: string | undefined,
-  parsed: Record<string, unknown>,
 ): string | null {
-  if (typeof parsed.session === "string") return parsed.session;
+  if (sessionFlag) return sessionFlag;
   if (positionalSession) return positionalSession;
   const fromPane = process.env.AMUX_DAEMON_SESSION;
   if (fromPane) return fromPane;
   return target === "session" ? null : "default";
+}
+
+/**
+ * Pull a CLI-level `--session` out of a command group, in all three spellings.
+ * It never reaches `parseArgs`, whose schemas only know their own fields.
+ */
+function stripSessionFlag(
+  argv: readonly string[],
+): { rest: string[]; session?: string } | { error: string } {
+  const rest: string[] = [];
+  let session: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg !== "--session" && !arg.startsWith("--session=")) {
+      rest.push(arg);
+      continue;
+    }
+    let value: string;
+    if (arg === "--session") {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith("--"))
+        return { error: "flag requires a value: --session" };
+      value = next;
+      i++;
+    } else {
+      const attached = arg.slice("--session=".length);
+      if (attached === "") return { error: 'invalid value for --session: ""' };
+      value = attached;
+    }
+    if (session !== undefined) return { error: "duplicate flag: --session" };
+    session = value;
+  }
+  return { rest, session };
 }
 
 async function main(): Promise<number> {
@@ -138,7 +173,7 @@ async function main(): Promise<number> {
     { SessionStore, isSessionId },
     { controlCall, agentWatch, AgentWaitError },
     commandsMod,
-    { parseArgs },
+    { parseArgs, fieldNames },
   ] = await Promise.all([
     import("effect"),
     import("./session.ts"),
@@ -154,25 +189,62 @@ async function main(): Promise<number> {
     return s in COMMAND_META;
   }
 
-  function parseCommandGroup(
-    argv: string[],
-  ):
-    | { tag: CommandTag; parsed: Record<string, unknown>; positionalSession?: string }
+  /**
+   * A command whose schema carries a `session` field acts on the session the
+   * invocation drives, unless the args already named one. The field is the
+   * workspace-side target; `--session` picks the daemon, and the two default to
+   * the same session because driving one is almost always acting on it.
+   */
+  function fillCommandSession(
+    tag: CommandTag,
+    session: string | undefined,
+    parsed: Record<string, unknown>,
+  ) {
+    if (session === undefined || "session" in parsed) return parsed;
+    if (!fieldNames(tag).some((field) => field.name === "session")) return parsed;
+    return { ...parsed, session };
+  }
+
+  function parseCommandGroup(argv: string[]):
+    | {
+        tag: CommandTag;
+        parsed: Record<string, unknown>;
+        positionalSession?: string;
+        sessionFlag?: string;
+      }
     | { errors: string[] } {
     const tag = argv[0];
     if (!tag || !isCommandTag(tag))
       return { errors: [`unknown command: ${JSON.stringify(tag ?? "")}`] };
 
-    const direct = parseArgs(tag, argv.slice(1));
-    if (direct.parsed) return { tag, parsed: direct.parsed };
+    const stripped = stripSessionFlag(argv.slice(1));
+    if ("error" in stripped) return { errors: [stripped.error] };
+
+    const direct = parseArgs(tag, stripped.rest);
+    if (direct.parsed)
+      return {
+        tag,
+        parsed: fillCommandSession(tag, stripped.session, direct.parsed),
+        sessionFlag: stripped.session,
+      };
 
     // The legacy `amux <command> <session-id> <args>` form. A token that looks
     // like a flag is never a session id, or a typo'd flag would turn a syntax
     // error into a refusal (exit 1) of a session the flag named.
     const positionalSession = argv[1];
-    if (positionalSession && !positionalSession.startsWith("--") && isSessionId(positionalSession)) {
-      const legacy = parseArgs(tag, argv.slice(2));
-      if (legacy.parsed) return { tag, parsed: legacy.parsed, positionalSession };
+    if (
+      positionalSession &&
+      !positionalSession.startsWith("--") &&
+      isSessionId(positionalSession)
+    ) {
+      const legacy = parseArgs(tag, stripped.rest.slice(1));
+      if (legacy.parsed)
+        return {
+          tag,
+          parsed: fillCommandSession(tag, stripped.session, legacy.parsed),
+          positionalSession,
+          sessionFlag: stripped.session,
+        };
     }
     return { errors: direct.errors };
   }
@@ -199,8 +271,8 @@ async function main(): Promise<number> {
       }
       const targetId: string | null = resolveCommandSession(
         commandDefinition(parsed.tag).target,
+        parsed.sessionFlag,
         parsed.positionalSession,
-        parsed.parsed,
       );
       if (!targetId) {
         console.error(`error: '${parsed.tag}' requires a session id or a managed pane`);

@@ -11,21 +11,13 @@ test("escaped shell semicolons divide command argument groups", () => {
   ]);
 });
 
-test("commands use the pane session unless an explicit session is supplied", () => {
+test("commands use the pane session unless --session supplies a daemon", () => {
   const previous = process.env.AMUX_DAEMON_SESSION;
   process.env.AMUX_DAEMON_SESSION = "pane-session";
   try {
-    expect(resolveCommandSession("session", undefined, { title: "t", body: "b" })).toBe(
-      "pane-session",
-    );
-    expect(
-      resolveCommandSession("session", undefined, {
-        title: "t",
-        body: "b",
-        session: "override",
-      }),
-    ).toBe("override");
-    expect(resolveCommandSession("workspace", undefined, {})).toBe("pane-session");
+    expect(resolveCommandSession("session", undefined, undefined)).toBe("pane-session");
+    expect(resolveCommandSession("session", "override", undefined)).toBe("override");
+    expect(resolveCommandSession("workspace", undefined, undefined)).toBe("pane-session");
   } finally {
     if (previous === undefined) delete process.env.AMUX_DAEMON_SESSION;
     else process.env.AMUX_DAEMON_SESSION = previous;
@@ -36,11 +28,40 @@ test("ordinary commands retain the default session outside a managed pane", () =
   const previous = process.env.AMUX_DAEMON_SESSION;
   delete process.env.AMUX_DAEMON_SESSION;
   try {
-    expect(resolveCommandSession("workspace", undefined, {})).toBe("default");
-    expect(resolveCommandSession("session", undefined, { title: "t", body: "b" })).toBeNull();
+    expect(resolveCommandSession("workspace", undefined, undefined)).toBe("default");
+    expect(resolveCommandSession("session", undefined, undefined)).toBeNull();
   } finally {
     if (previous === undefined) delete process.env.AMUX_DAEMON_SESSION;
     else process.env.AMUX_DAEMON_SESSION = previous;
+  }
+});
+
+test("an explicit --session wins over the legacy positional session", () => {
+  expect(resolveCommandSession("session", "flagged", "positional")).toBe("flagged");
+  expect(resolveCommandSession("workspace", undefined, "positional")).toBe("positional");
+});
+
+test("--session is accepted by commands whose schema has no session field", () => {
+  const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
+  const result = Bun.spawnSync({
+    cmd: [process.execPath, "src/cli.ts", "pane.send-keys", "hello", "--session=no-such-daemon"],
+    env,
+  });
+  // The flag selects the daemon, so the parser accepts it and the CLI only
+  // fails when it cannot reach the socket — never with 'unknown flag'.
+  expect(result.exitCode).toBe(1);
+  expect(Buffer.from(result.stderr).toString()).not.toContain("unknown flag");
+});
+
+test("a malformed --session is a syntax error, not a silent default", () => {
+  const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
+  for (const extra of ["--session", "--session=", "--session=a --session=b"]) {
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, "src/cli.ts", "pane.zoom", ...extra.split(" ")],
+      env,
+    });
+    expect(result.exitCode).toBe(2);
+    expect(Buffer.from(result.stderr).toString()).toContain("--session");
   }
 });
 
