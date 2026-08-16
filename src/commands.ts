@@ -168,7 +168,7 @@ const PaneFocus = define(
   "pane.focus",
   { direction: Direction },
   {
-    desc: "focus the pane in a direction",
+    desc: "focus the pane in a direction, or move the focused float",
     group: "panes",
     target: "workspace",
     exposure: "agent",

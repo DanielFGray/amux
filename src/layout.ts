@@ -425,9 +425,11 @@ export function placementOf(layout: Layout, paneId: string): Placement | null {
 /**
  * A new float's rectangle: centred, two thirds of the window each way.
  *
- * One constant rather than an argument because nothing yet has an opinion —
- * moving and resizing a float is its own gesture, and until that exists every
- * float would be handed the same numbers by every caller.
+ * The default a pane is first floated with, when nothing has said where it
+ * should sit. It is one constant rather than an argument because every caller
+ * means the same thing by "just float it" — and it is not a rule, because the
+ * transforms that move and resize a float (geometry.ts) and a decoded layout
+ * each carry their own rect.
  */
 const NEW_FLOAT = { x: 1 / 6, y: 1 / 6, width: 2 / 3, height: 2 / 3 };
 

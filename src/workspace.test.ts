@@ -730,7 +730,9 @@ test("a sessionless plugin pane survives the wire and the save round trip", () =
 });
 
 // Cycling is the only way in and out of a float, since directional focus stays
-// inside the tiled plane.
+// inside the tiled plane. What the arrows DO mean while a float is focused is
+// movement: the pane covers the tiled plane, so there is nothing to focus
+// across a shared edge, and the dead focus key becomes a move key instead.
 test("pane.next reaches a float and comes back out of it", () => {
   const adopted = run(workspaceFromSession(twoPaneSession()));
   const floated = applyWorkspaceCommand(adopted, command("pane.float"), context).snapshot;
@@ -739,6 +741,94 @@ test("pane.next reaches a float and comes back out of it", () => {
       .focus;
   // Order is tiled first, then floating: from the float it wraps to pane-b.
   expect(focusAfterNext(floated)).toBe("pane-b");
+});
+
+test("pane.focus moves a focused float one cell in the arrow's direction", () => {
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  const floated = applyWorkspaceCommand(adopted, command("pane.float"), context).snapshot;
+  const window = () => floated.spaces[0]!.windows[0]!;
+  const x = () => window().layout.floats[0]!.x;
+  const start = x();
+
+  const moved = applyWorkspaceCommand(
+    floated,
+    command("pane.focus", { direction: "left" }),
+    context,
+  ).snapshot;
+  expect(moved.spaces[0]!.windows[0]!.layout.floats[0]!.x).toBeCloseTo(start - 1 / 80);
+  expect(moved.spaces[0]!.windows[0]!.state.focus).toBe("pane-a");
+  // A float cannot be moved off the window: enough presses pile up against the
+  // left edge and stop, without ever leaving focus or changing the rect's size.
+  let current = floated;
+  for (let i = 0; i < 200; i++) {
+    current = applyWorkspaceCommand(
+      current,
+      command("pane.focus", { direction: "left" }),
+      context,
+    ).snapshot;
+  }
+  const squeezed = current.spaces[0]!.windows[0]!;
+  expect(squeezed.layout.floats[0]!.x).toBe(0);
+  expect(squeezed.layout.floats[0]!.width).toBeCloseTo(2 / 3);
+});
+
+test("pane.focus from a tiled pane still focuses directionally", () => {
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  const result = applyWorkspaceCommand(
+    adopted,
+    command("pane.focus", { direction: "right" }),
+    context,
+  );
+  expect(result.changed).toBe(true);
+  expect(result.snapshot.spaces[0]!.windows[0]!.state.focus).toBe("pane-b");
+});
+
+test("pane.resize resizes a focused float and leaves the preset intact", () => {
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  const floated = applyWorkspaceCommand(adopted, command("pane.float"), context).snapshot;
+  const withPreset = applyWorkspaceCommand(
+    floated,
+    command("window.select-layout", { preset: "even-horizontal" }),
+    context,
+  ).snapshot;
+  const window = () => withPreset.spaces[0]!.windows[0]!;
+  expect(window().layout.floats[0]!.id).toBe("pane-a");
+  expect(window().state.preset).toBe("even-horizontal");
+  const before = window().layout.floats[0]!;
+
+  const resized = applyWorkspaceCommand(
+    withPreset,
+    command("pane.resize", { direction: "right" }),
+    context,
+  ).snapshot;
+  const after = resized.spaces[0]!.windows[0]!;
+  expect(after.layout.floats[0]!.width).toBeCloseTo(before.width + 1 / 80);
+  expect(after.layout.floats[0]!.x).toBe(before.x);
+  // A float is placed by its own rectangle, not the tree, so resizing it does
+  // not break the preset's account of the tiled arrangement.
+  expect(after.state.preset).toBe("even-horizontal");
+});
+
+test("pane.resize on a tiled pane still clears the preset", () => {
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  const selected = applyWorkspaceCommand(
+    adopted,
+    command("window.select-layout", { preset: "even-horizontal" }),
+    context,
+  ).snapshot;
+  const focusPaneB = applyWorkspaceCommand(
+    selected,
+    command("pane.select", { pane: "pane-b" }),
+    context,
+  ).snapshot;
+  expect(focusPaneB.spaces[0]!.windows[0]!.state.preset).toBe("even-horizontal");
+
+  const resized = applyWorkspaceCommand(
+    focusPaneB,
+    command("pane.resize", { direction: "left" }),
+    context,
+  ).snapshot;
+  expect(resized.spaces[0]!.windows[0]!.state.preset).toBeNull();
 });
 
 // ── pane.swap ──
