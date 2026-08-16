@@ -65,10 +65,9 @@ function stripSessionFlag(
       value = next;
       i++;
     } else {
-      const attached = arg.slice("--session=".length);
-      if (attached === "") return { error: 'invalid value for --session: ""' };
-      value = attached;
+      value = arg.slice("--session=".length);
     }
+    if (value === "") return { error: 'invalid value for --session: ""' };
     if (session !== undefined) return { error: "duplicate flag: --session" };
     session = value;
   }
@@ -227,6 +226,17 @@ async function main(): Promise<number> {
         parsed: fillCommandSession(tag, stripped.session, direct.parsed),
         sessionFlag: stripped.session,
       };
+
+    // A command whose schema *requires* a session can only satisfy it from the
+    // driving flag: the direct parse proved the args alone cannot. Re-parse
+    // with the flag as a field so parseArgs applies its own rules unchanged.
+    if (
+      stripped.session !== undefined &&
+      fieldNames(tag).some((field) => field.name === "session")
+    ) {
+      const refilled = parseArgs(tag, [...stripped.rest, `--session=${stripped.session}`]);
+      if (refilled.parsed) return { tag, parsed: refilled.parsed, sessionFlag: stripped.session };
+    }
 
     // The legacy `amux <command> <session-id> <args>` form. A token that looks
     // like a flag is never a session id, or a typo'd flag would turn a syntax

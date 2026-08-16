@@ -275,6 +275,27 @@ test("--session also fills a command's session field, targeting the session it s
   await Effect.runPromise(daemon.killSession(id));
 });
 
+test("--session satisfies a command's required session field", async () => {
+  const id = "reveal-flag";
+  const { daemon, env } = await started(id);
+  await Effect.runPromise(
+    daemon.spawnSession({ kind: "pty", id, cmd: ["sleep", "30"], cols: 80, rows: 24 }),
+  );
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+
+  const child = Bun.spawn({
+    cmd: [process.execPath, entry, "session.reveal", `--session=${id}`],
+    env: { ...clean, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  // Without the feed the required field errors as 'missing required argument:
+  // session'; reaching the daemon at all proves --session supplied it.
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+});
+
 test("a native agent can capture a live session through the command surface", async () => {
   const { daemon, env } = await started("agent-tools");
   const id = "capture-agent";
