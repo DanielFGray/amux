@@ -88,11 +88,17 @@ export function parseArgs(
         errors.push(`unknown flag: --${name}`);
         continue;
       }
-      const separateValue =
-        flagMatch[2] === undefined && field.kind !== "boolean" && !argv[i + 1]?.startsWith("--")
-          ? argv[++i]
-          : undefined;
-      const value = flagMatch[2] ?? separateValue;
+      // A boolean flag consumes a separated value only when that value parses
+      // as a boolean; otherwise a bare `--current` would swallow the positional
+      // that follows it. Value-taking flags consume the next token unless it
+      // looks like a flag.
+      const next = argv[i + 1];
+      const takesSeparatedValue =
+        flagMatch[2] === undefined &&
+        next !== undefined &&
+        !next.startsWith("--") &&
+        (field.kind !== "boolean" || coerce(next, field) !== undefined);
+      const value = flagMatch[2] ?? (takesSeparatedValue ? argv[++i] : undefined);
       if (consumed.has(name)) {
         errors.push(`duplicate flag: --${name}`);
         continue;
