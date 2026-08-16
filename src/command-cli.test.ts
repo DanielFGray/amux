@@ -106,6 +106,12 @@ test("group help derives command syntax from schemas", () => {
   expect(generateGroupHelp("missing")).toBeUndefined();
 });
 
+test("group help documents --session as a global flag", () => {
+  expect(generateGroupHelp("panes")).toContain(
+    "usage: amux panes <command> [args] [--session=<id>]",
+  );
+});
+
 test("pane targets are schema fields the CLI parses", () => {
   expect(parseArgs("pane.send-keys", ["--keys", "ls", "--pane", "s1:p3"]).parsed).toEqual({
     keys: "ls",
