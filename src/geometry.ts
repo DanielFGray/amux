@@ -3,6 +3,7 @@ import {
   layoutPanes,
   makeLayout,
   type Layout,
+  type LayoutFloat,
   type LayoutNode,
   type LayoutSplit,
 } from "./layout.ts";
@@ -93,6 +94,9 @@ export function resizePane(
   direction: Direction,
   cells = 1,
 ): Layout {
+  const float = layout.floats.find((float) => float.id === paneId);
+  if (float) return resizeFloat(layout, float, size, direction, cells);
+
   const axis: SplitDirection = direction === "left" || direction === "right" ? "row" : "column";
   const side: -1 | 1 = direction === "left" || direction === "up" ? -1 : 1;
   const path = panePath(layout.root, paneId);
@@ -142,6 +146,84 @@ export function resizeDivider(
     })),
   };
   return makeLayout({ ...layout, root: replaceAt(layout.root, path, replacement) });
+}
+
+/**
+ * Move a float's origin `cells` in a screen direction.
+ *
+ * The gesture the plain arrows mean while a float is focused. A float covers
+ * the tiled plane, so directional focus has nowhere to go from it; movement is
+ * what those keys can mean instead. A tiled pane cannot move — its position is
+ * derived from the tree — so this is a float's own transform, a direct edit of
+ * x/y rather than a weight rewrite.
+ *
+ * The float never leaves the window. Movement snaps to the boundary rather
+ * than stopping short of it, so the stored fractions stay flush with the edge:
+ * a float parked there is still flush after a window resize, which a gap of a
+ * fraction of a cell would not be.
+ */
+export function moveFloat(
+  layout: Layout,
+  size: LayoutSize,
+  paneId: string,
+  direction: Direction,
+  cells = 1,
+): Layout {
+  const float = layout.floats.find((float) => float.id === paneId);
+  if (!float) return layout;
+  const horizontal = direction === "left" || direction === "right";
+  const axis = horizontal ? size.cols : size.rows;
+  if (axis <= 0) return layout;
+  const step = cells / axis;
+  const side: -1 | 1 = direction === "left" || direction === "up" ? -1 : 1;
+  const origin = horizontal ? float.x : float.y;
+  const span = horizontal ? float.width : float.height;
+  const moved = origin + side * step;
+  const clamped = moved < 0 ? 0 : moved + span > 1 ? 1 - span : moved;
+  if (clamped === origin) return layout;
+  const rect: LayoutFloat = horizontal ? { ...float, x: clamped } : { ...float, y: clamped };
+  return replaceFloat(layout, rect);
+}
+
+/** Grow or shrink a float's rectangle by `cells` in a screen direction. */
+function resizeFloat(
+  layout: Layout,
+  float: LayoutFloat,
+  size: LayoutSize,
+  direction: Direction,
+  cells: number,
+): Layout {
+  const horizontal = direction === "left" || direction === "right";
+  const axis = horizontal ? size.cols : size.rows;
+  if (axis <= 0) return layout;
+  const step = cells / axis;
+  // Right and down extend the far edge; left and up shrink from the origin's
+  // side, moving it over so the far edge stays put — what tmux's resize-pane
+  // does to a float.
+  const backwards = direction === "left" || direction === "up";
+  const origin = horizontal ? float.x : float.y;
+  const sizeNow = horizontal ? float.width : float.height;
+  const newOrigin = backwards ? origin + step : origin;
+  const newSize = sizeNow + (backwards ? -step : step);
+  // The geometry rounds a rect's edges, not its size, so the minimum is the
+  // cell width the float would actually render at: round the edges, the way
+  // computeRects does.
+  const near = Math.round(newOrigin * axis);
+  const far = Math.round((newOrigin + newSize) * axis);
+  if (far - near < MIN_CELLS) return layout;
+  if (newOrigin + newSize > 1) return layout;
+  const rect: LayoutFloat = horizontal
+    ? { ...float, x: newOrigin, width: newSize }
+    : { ...float, y: newOrigin, height: newSize };
+  return replaceFloat(layout, rect);
+}
+
+/** Put `rect` back in the floating plane, keeping its stack position. */
+function replaceFloat(layout: Layout, rect: LayoutFloat): Layout {
+  return makeLayout({
+    ...layout,
+    floats: layout.floats.map((float) => (float.id === rect.id ? rect : float)),
+  });
 }
 
 export function paneHasNeighbour(

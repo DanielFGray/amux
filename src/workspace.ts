@@ -14,6 +14,7 @@ import { basename, join, resolve } from "node:path";
 import { worktreeDirname } from "./git.ts";
 import {
   computeRects,
+  moveFloat,
   paneInDirection,
   resizeDivider,
   resizePane,
@@ -886,15 +887,21 @@ export function applyWorkspaceCommand(
     }
     case "pane.focus": {
       const target = activeWindow();
-      if (!target || !target.window.state.focus) break;
+      if (!target) break;
+      const { window } = target;
+      const focus = window.state.focus;
+      if (!focus) break;
+      // A float covers the tiled plane, so there is no pane to focus across a
+      // shared edge from one — the arrows move it instead, which is why the
+      // gesture is called a move mode. Directional focus stays tiled.
+      if (placementOf(window.layout, focus) === "floating") {
+        const moved = moveFloat(window.layout, context.size, focus, command.direction);
+        if (moved !== window.layout) window.layout = moved;
+        break;
+      }
       setFocus(
-        target.window,
-        paneInDirection(
-          target.window.layout,
-          context.size,
-          target.window.state.focus,
-          command.direction,
-        ) ?? undefined,
+        window,
+        paneInDirection(window.layout, context.size, focus, command.direction) ?? undefined,
       );
       break;
     }
@@ -908,15 +915,16 @@ export function applyWorkspaceCommand(
     case "pane.resize": {
       const target = paneTarget();
       if (!target || target.window.window.state.zoom) break;
-      const resized = resizePane(
-        target.window.window.layout,
-        context.size,
-        target.pane.id,
-        command.direction,
-      );
-      if (resized !== target.window.window.layout) {
+      const layout = target.window.window.layout;
+      const resized = resizePane(layout, context.size, target.pane.id, command.direction);
+      if (resized !== layout) {
         target.window.window.layout = resized;
-        target.window.window.state.preset = null;
+        // A float is placed by its own rectangle, not by the tree, so resizing
+        // one leaves the tiled arrangement — and the preset describing it —
+        // intact.
+        if (placementOf(layout, target.pane.id) !== "floating") {
+          target.window.window.state.preset = null;
+        }
       }
       break;
     }
