@@ -65,7 +65,11 @@ if [[ ! -f vendor/libghostty-vt/zig-out/lib/libghostty-vt.so.0.1.0 ]]; then
 fi
 
 if [[ ! -d node_modules ]]; then
-  bun install
-elif [[ ! -f vendor/libamux-shim.so ]]; then
+  bun install --ignore-scripts
+fi
+
+if [[ ! -f vendor/libamux-shim.so ]]; then
   bun run build:shim
 fi
+
+./node_modules/.bin/effect-tsgo patch --typescript
