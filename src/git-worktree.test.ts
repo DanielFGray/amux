@@ -156,6 +156,64 @@ test("gitWorktreeAdd with a base branches from that commit, and the branch diver
   expect(await git(["status", "--porcelain"], dir)).toBe("");
 });
 
+test("recreating a removed worktree advances its empty branch to the requested base", async () => {
+  const repo = await initRepo();
+  const root = join(repo, "..", "wt-root");
+  await mkdir(root);
+  dirs.push(root);
+  const dir = join(root, `abc-${worktreeDirname("feat/redo")}`);
+
+  // First creation leaves branch 'feat/redo' at main's tip; removing the
+  // worktree keeps the branch around, empty, at that stale tip.
+  await gitWorktreeAdd(repo, { branch: "feat/redo" }, dir);
+  await gitWorktreeRemove(repo, dir);
+  expect(await gitWorktreeExists(dir)).toBe(false);
+
+  // Trunk advances while the branch sits at the stale tip.
+  await writeFile(join(repo, "extra.txt"), "trunk-moved\n");
+  await git(["add", "extra.txt"], repo);
+  await git(["commit", "-m", "trunk advances"], repo);
+
+  // Re-creating the worktree for the same branch must land at the requested
+  // base, not the obsolete tip, because the branch has no divergent work.
+  await gitWorktreeAdd(repo, { branch: "feat/redo", base: "main" }, dir);
+  expect(await gitWorktreeExists(dir)).toBe(true);
+  expect(await Bun.file(join(dir, "extra.txt")).exists()).toBe(true);
+  expect(await git(["rev-parse", "feat/redo"], repo)).toBe(await git(["rev-parse", "main"], repo));
+
+  await gitWorktreeRemove(repo, dir);
+});
+
+test("gitWorktreeAdd checks out a divergent existing branch as-is, preserving its work", async () => {
+  const repo = await initRepo();
+  await git(["checkout", "-b", "feat/divergent"], repo);
+  await writeFile(join(repo, "work.txt"), "task work\n");
+  await git(["add", "work.txt"], repo);
+  await git(["commit", "-m", "task work"], repo);
+  await git(["checkout", "main"], repo);
+
+  // Trunk advances independently, so the branch now holds divergent work.
+  await writeFile(join(repo, "trunk.txt"), "trunk\n");
+  await git(["add", "trunk.txt"], repo);
+  await git(["commit", "-m", "trunk advances"], repo);
+
+  const root = join(repo, "..", "wt-root");
+  await mkdir(root);
+  dirs.push(root);
+  const dir = join(root, `abc-${worktreeDirname("feat/divergent")}`);
+
+  await gitWorktreeAdd(repo, { branch: "feat/divergent", base: "main" }, dir);
+  expect(await gitWorktreeExists(dir)).toBe(true);
+  // The divergent commit survives and is checked out; base was not forced over it.
+  expect(await Bun.file(join(dir, "work.txt")).exists()).toBe(true);
+  expect(await Bun.file(join(dir, "trunk.txt")).exists()).toBe(false);
+  expect(await git(["rev-parse", "HEAD"], dir)).toBe(
+    await git(["rev-parse", "feat/divergent"], repo),
+  );
+
+  await gitWorktreeRemove(repo, dir);
+});
+
 test("gitWorktreeRemove refuses a dirty worktree unless forced", async () => {
   const repo = await initRepo();
   const root = join(repo, "..", "wt-root");
@@ -288,19 +346,23 @@ test("a failed space.new leaves no worktree behind", async () => {
   };
 
   const revision = ws(daemon).revision;
-  // Branch already exists in the repo: git worktree add -b must fail, which
-  // aborts the transaction before the space is committed.
-  await git(["branch", "taken"], repo);
+  // An unresolvable base fails `git worktree add`, which aborts the transaction
+  // before the space is committed.
   await expect(
-    runCommand(daemon, command("space.new", { branch: "taken", dir: repo }), revision, context),
+    runCommand(
+      daemon,
+      command("space.new", { branch: "feat/new", dir: repo, base: "no-such-base" }),
+      revision,
+      context,
+    ),
   ).rejects.toThrow();
 
-  const orphan = join(worktreesRoot, `${"anything"}-${worktreeDirname("taken")}`);
+  const orphan = join(worktreesRoot, `${"anything"}-${worktreeDirname("feat/new")}`);
   expect(await gitWorktreeExists(orphan)).toBe(false);
   const spaces = await readFile(
     join(e.XDG_STATE_HOME!, "amux", "sessions", "wt-failed-new", "session.json"),
     "utf8",
   );
-  expect(spaces).not.toContain("feat/taken");
+  expect(spaces).not.toContain("feat/new");
   await close(daemon);
 });

@@ -77,70 +77,124 @@ class GitError extends Data.TaggedError("GitError")<{
   readonly message: string;
 }> {}
 
-export async function git(
+interface GitResult {
+  readonly code: number;
+  readonly out: string;
+  readonly err: string;
+}
+
+const runGit = (args: string[], cwd: string, timeoutMs: number) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const process = yield* Command.start(
+        pipe(
+          Command.make("git", ...args),
+          Command.workingDirectory(cwd),
+          // amux observes a repository it does not own. `git status` would
+          // otherwise take .git/index.lock to refresh the index, so a poll
+          // landing between the user's own `git add` and `git commit` makes
+          // their command fail — and a poll killed mid-refresh leaves the
+          // lock behind. This disables only the locks git takes for its own
+          // convenience; the ones an operation requires are unaffected.
+          Command.env({ GIT_OPTIONAL_LOCKS: "0" }),
+          Command.stdout("pipe"),
+          Command.stderr("pipe"),
+        ),
+      );
+      const stdout = yield* Effect.fork(
+        Stream.decodeText()(process.stdout).pipe(Stream.runCollect),
+      );
+      const stderr = yield* Effect.fork(
+        Stream.decodeText()(process.stderr).pipe(Stream.runCollect),
+      );
+      const code = yield* process.exitCode.pipe(
+        Effect.timeoutFail({
+          duration: `${timeoutMs} millis`,
+          onTimeout: () =>
+            new GitError({ message: `git ${args[0]} timed out after ${timeoutMs}ms` }),
+        }),
+      );
+      const out = yield* Fiber.join(stdout);
+      const err = yield* Fiber.join(stderr);
+      return {
+        code,
+        out: Chunk.toReadonlyArray(out).join("").trim(),
+        err: Chunk.toReadonlyArray(err).join("").trim(),
+      };
+    }),
+  ).pipe(Effect.provide(BunContext.layer));
+
+async function runGitResult(
   args: string[],
   cwd: string,
   timeoutMs = GIT_TIMEOUT_MS,
-): Promise<string> {
-  const result = await Effect.runPromiseExit(
-    pipe(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const process = yield* Command.start(
-            pipe(
-              Command.make("git", ...args),
-              Command.workingDirectory(cwd),
-              // amux observes a repository it does not own. `git status` would
-              // otherwise take .git/index.lock to refresh the index, so a poll
-              // landing between the user's own `git add` and `git commit` makes
-              // their command fail — and a poll killed mid-refresh leaves the
-              // lock behind. This disables only the locks git takes for its own
-              // convenience; the ones an operation requires are unaffected.
-              Command.env({ GIT_OPTIONAL_LOCKS: "0" }),
-              Command.stdout("pipe"),
-              Command.stderr("pipe"),
-            ),
-          );
-          const stdout = yield* Effect.fork(
-            Stream.decodeText()(process.stdout).pipe(Stream.runCollect),
-          );
-          const stderr = yield* Effect.fork(
-            Stream.decodeText()(process.stderr).pipe(Stream.runCollect),
-          );
-          const code = yield* process.exitCode.pipe(
-            Effect.timeoutFail({
-              duration: `${timeoutMs} millis`,
-              onTimeout: () =>
-                new GitError({ message: `git ${args[0]} timed out after ${timeoutMs}ms` }),
-            }),
-          );
-          const out = yield* Fiber.join(stdout);
-          const err = yield* Fiber.join(stderr);
-          if (code !== 0) {
-            return yield* new GitError({
-              message: Chunk.toReadonlyArray(err).join("").trim() || `git ${args[0]} failed`,
-            });
-          }
-          return Chunk.toReadonlyArray(out).join("").trim();
-        }),
-      ),
-      Effect.provide(BunContext.layer),
-    ),
-  );
+): Promise<GitResult> {
+  const result = await Effect.runPromiseExit(runGit(args, cwd, timeoutMs));
   return Exit.match(result, {
     onFailure: (cause) => Promise.reject(Cause.squash(cause)),
     onSuccess: (value) => value,
   });
 }
 
-/** Create a new branch and a worktree checked out to it. Branch creation is the
- *  point of a space worktree: `git worktree add <path> <branch>` would only
- *  attach an existing branch, which is not how a fresh space starts. */
+export async function git(
+  args: string[],
+  cwd: string,
+  timeoutMs = GIT_TIMEOUT_MS,
+): Promise<string> {
+  const { code, out, err } = await runGitResult(args, cwd, timeoutMs);
+  if (code !== 0) throw new GitError({ message: err || `git ${args[0]} failed` });
+  return out;
+}
+
+/** Exit code 0 (yes) or 1 (no) only; any other code is a repository error and
+ *  must not be read as a quiet "no". */
+async function gitExitCode(
+  args: string[],
+  cwd: string,
+  timeoutMs = GIT_TIMEOUT_MS,
+): Promise<number> {
+  const { code, err } = await runGitResult(args, cwd, timeoutMs);
+  if (code !== 0 && code !== 1) {
+    throw new GitError({ message: err || `git ${args[0]} failed` });
+  }
+  return code;
+}
+
+async function branchExists(repo: string, branch: string): Promise<boolean> {
+  return (
+    (await gitExitCode(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)) === 0
+  );
+}
+
+async function isAncestor(repo: string, ancestor: string, descendant: string): Promise<boolean> {
+  return (await gitExitCode(["merge-base", "--is-ancestor", ancestor, descendant], repo)) === 0;
+}
+
+/** Create a new branch and a worktree checked out to it, or re-attach an
+ *  existing branch. Branch creation is the point of a space worktree:
+ *  `git worktree add <path> <branch>` would only attach an existing branch,
+ *  which is not how a fresh space starts.
+ *
+ *  An existing branch is advanced to `base` before the worktree is created when
+ *  that is safe — the branch is a plain ancestor of `base`, so no commits are
+ *  lost — which re-creates a stale empty branch at the requested base instead of
+ *  handing back the obsolete tip it was left at. A branch that has diverged from
+ *  `base` holds work, so it is left where it is and checked out as-is. An
+ *  explicit base is never dropped: it is either applied, or refused by git
+ *  (advancing a checked-out branch, an unresolvable base) and surfaced as an
+ *  error. */
 export async function gitWorktreeAdd(
   repo: string,
   spec: WorktreeSpec,
   path: string,
 ): Promise<void> {
+  if (await branchExists(repo, spec.branch)) {
+    if (spec.base && (await isAncestor(repo, spec.branch, spec.base))) {
+      await git(["branch", "-f", spec.branch, spec.base], repo);
+    }
+    await git(["worktree", "add", path, spec.branch], repo);
+    return;
+  }
   const args = ["worktree", "add", "-b", spec.branch, path];
   if (spec.base) args.push(spec.base);
   await git(args, repo);
