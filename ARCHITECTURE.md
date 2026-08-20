@@ -62,6 +62,19 @@ requires a worker process nor gives one an easier path.
 framed-protocol child_, not _our loop_: a third-party harness is the same kind.
 The pane host is not pluggable — panes are the product.
 
+Core features ship as **default plugins**, not as core. A default plugin is an
+ordinary plugin that happens to be registered in the default list: it has no
+core special case, so disabling it or replacing it with a userspace plugin is
+the same operation for anything. Layout presets, ui chrome like the tab bar,
+agent-awareness (the detection and notification surfaces tmux lacks), and the
+harness are all candidates or already plugins. The dividing rule is policy
+versus algebra: algebra (the layout tree and its transforms, pane lifecycle, the
+frame protocol, regions) stays in core because a plugin needs it to exist;
+policy (which arrangements exist, what the chrome shows, which executables count
+as agents) becomes a default plugin because someone will want a different
+answer. A feature that lands as core algebra and then gains an opinion moves out
+to a default plugin; a default plugin must never require a core edit to replace.
+
 The harness is a plugin now: `plugin/builtin/agent-harness.tsx` registers the
 `agent.new` binding, contributes the `native` pane view, owns the model picker,
 and builds its own credential and model-catalog layers, so core hands it
