@@ -5,6 +5,8 @@ import { createPluginHost, type PluginHost } from "./host.ts";
 import { definePlugin, type PluginDefinition, type PluginErrorEvent } from "./types.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
+import { RegionsTag } from "./services.ts";
+import type { Panel } from "../ui/regions.tsx";
 
 /**
  * What a plugin trades: an object whose liveness a check can see.
@@ -88,6 +90,32 @@ testEffect("a plugin whose injected service has no provider does not start", () 
 
     expect(log).toEqual([]);
     expect(host.status()).toEqual([{ id: "consumer", waitingFor: ["test/Pool"] }]);
+  }),
+);
+
+testEffect("registry services attribute writes to the running plugin", () =>
+  Effect.gen(function* () {
+    const host = yield* makeHost();
+    const panel: Panel = {
+      id: "service-panel",
+      region: "left",
+      anchor: "app",
+      size: () => 1,
+      component: () => null as never,
+    };
+    yield* host.add(
+      definePlugin({
+        id: "registry-consumer",
+        apiVersion: "1",
+        inject: [RegionsTag],
+        effect: () =>
+          Effect.gen(function* () {
+            const regions = yield* RegionsTag;
+            yield* regions.register(panel);
+          }),
+      }),
+    );
+    expect(host.status()).toEqual([{ id: "registry-consumer", waitingFor: [] }]);
   }),
 );
 

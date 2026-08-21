@@ -11,10 +11,12 @@ import {
   Stream,
 } from "effect";
 import type { PanelContext } from "../ui/panel.ts";
-import type { Panel, Regions } from "../ui/regions.tsx";
-import type { AttachFrame } from "../effect/AttachProtocol.ts";
+import type { Panel } from "../ui/regions.tsx";
+import type { Regions } from "../ui/regions.tsx";
 import type { SessionViews } from "./session-views.tsx";
+import type { PaneView } from "../component-pane.tsx";
 import type { CommandSpec } from "../bindings.ts";
+import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import { createPluginKV } from "./kv.ts";
 import { createPluginServices } from "./services.ts";
 import type { PluginContributions, PluginInstance } from "./contributions.ts";
@@ -27,6 +29,23 @@ import type {
   PluginSettingsSection,
   SpawnProvider,
 } from "./types.ts";
+import {
+  CurrentPlugin,
+  type PluginRegistries,
+  RegionsTag,
+  SessionViewsTag,
+  BindingsTag,
+  SettingsTag,
+  SpawnProvidersTag,
+} from "./services.ts";
+
+const registryService = <A>(register: (owner: PluginInstance, value: A) => () => void) => ({
+  register: (value: A) =>
+    Effect.gen(function* () {
+      const owner = yield* CurrentPlugin;
+      return register(owner, value);
+    }),
+});
 
 export type {
   PluginDefinition,
@@ -74,13 +93,12 @@ export interface PluginEnvironment {
   /** The tables every registry writes into, and the host's say over which
    *  instance of a plugin id the app is looking at. */
   readonly contributions: PluginContributions;
+  readonly registries: PluginRegistries;
+  /** Legacy host wiring; kept as derived adapters while bundled plugins migrate. */
   readonly regions: Regions;
   readonly sessionViews: SessionViews;
   readonly registerBinding: (owner: PluginInstance, binding: CommandSpec) => () => void;
-  readonly registerSettingsSection: (
-    owner: PluginInstance,
-    section: PluginSettingsSection,
-  ) => () => void;
+  readonly registerSettingsSection: (owner: PluginInstance, section: PluginSettingsSection) => () => void;
   readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
   readonly sync: (session: string) => void;
 }
@@ -93,10 +111,16 @@ export function createPluginHost(
     const errorQueue = yield* Queue.unbounded<PluginErrorEvent>();
     const activePlugins = new Map<string, PluginState>();
     const kvStores = new Map<string, PluginKV>();
-    const spawnProviders = env.contributions.table<() => SpawnProvider>();
     /** How many times each id has been started; the next run gets the next number. */
     const generations = new Map<string, number>();
     const services = createPluginServices();
+    const registryOwner: PluginInstance = { id: "amux.registries", generation: 0 };
+    services.provide(registryOwner, RegionsTag, registryService<Panel>((owner, panel) => env.registries.regions.register(owner, panel)));
+    services.provide(registryOwner, SessionViewsTag, registryService<readonly [string, PaneView]>((owner, [type, view]) => env.registries.sessionViews.register(owner, type, view)));
+    services.provide(registryOwner, BindingsTag, registryService<CommandSpec>((owner, binding) => env.registerBinding(owner, binding)));
+    services.provide(registryOwner, SettingsTag, registryService<PluginSettingsSection>((owner, section) => env.registerSettingsSection(owner, section)));
+    services.provide(registryOwner, SpawnProvidersTag, registryService<readonly [string, () => SpawnProvider]>((owner, [id, provider]) => env.registries.spawnProviders(owner, id, provider)));
+    services.commit(registryOwner);
     const hostScope = yield* Scope.make();
     let disposed = false;
 
@@ -128,16 +152,16 @@ export function createPluginHost(
         id: pluginId,
         panel: env.panel,
         kv: kvFor(pluginId),
-        registerPanel: (panel: Panel) => scoped(env.regions.register(owner, panel)),
-        registerPaneType: (type, view) => scoped(env.sessionViews.register(owner, type, view)),
-        registerBinding: (binding) => scoped(env.registerBinding(owner, binding)),
-        registerSettingsSection: (section) => scoped(env.registerSettingsSection(owner, section)),
+        registerPanel: (panel: Panel) => scoped(env.registries.regions.register(owner, panel)),
+        registerPaneType: (type: string, view: PaneView) => scoped(env.registries.sessionViews.register(owner, type, view)),
+        registerBinding: (binding: CommandSpec) => scoped(env.registerBinding(owner, binding)),
+        registerSettingsSection: (section: PluginSettingsSection) => scoped(env.registerSettingsSection(owner, section)),
+        registerSpawnProvider: (id: string, provider: () => SpawnProvider) => scoped(env.registries.spawnProviders(owner, id, provider)),
         provide: (tag, service) => {
           services.provide(owner, tag, service);
           return scoped(() => services.withdraw(owner, tag));
         },
         get: (tag) => services.get(tag),
-        registerSpawnProvider: (id, provider) => scoped(spawnProviders.add(owner, id, provider)),
         frames: env.frames,
         sync: env.sync,
       };
@@ -197,8 +221,8 @@ export function createPluginHost(
       // Waiting on the injected tags is the whole of "pending": the fiber
       // suspends on their Deferreds and resumes in the order they are provided,
       // so a provider configured last still activates its dependents.
-      const pluginEffect = services.awaitAll<never>(injected).pipe(
-        Effect.flatMap((provided) => Effect.provide(plugin.effect(context), provided)),
+       const pluginEffect = services.awaitAll<never>(injected).pipe(
+         Effect.flatMap((provided) => Effect.provide(plugin.effect(context), provided)),
         Effect.catchAllDefect((defect) =>
           Effect.gen(function* () {
             const error = defect instanceof Error ? defect : new Error(String(defect));
@@ -215,8 +239,14 @@ export function createPluginHost(
           }),
         ),
         Effect.tap(() => Deferred.succeed(started, "started")),
-        Effect.provideService(Scope.Scope, pluginScope),
-      );
+         Effect.provideService(Scope.Scope, pluginScope),
+         Effect.provideService(CurrentPlugin, instance),
+         Effect.provideService(RegionsTag, registryService<Panel>((owner, panel) => env.registries.regions.register(owner, panel))),
+         Effect.provideService(SessionViewsTag, registryService<readonly [string, PaneView]>((owner, [type, view]) => env.registries.sessionViews.register(owner, type, view))),
+         Effect.provideService(BindingsTag, registryService<CommandSpec>((owner, binding) => env.registries.bindings(owner, binding))),
+         Effect.provideService(SettingsTag, registryService<PluginSettingsSection>((owner, section) => env.registries.settings(owner, section))),
+         Effect.provideService(SpawnProvidersTag, registryService<readonly [string, () => SpawnProvider]>((owner, [id, provider]) => env.registries.spawnProviders(owner, id, provider))),
+       );
 
       const fiber = yield* Effect.forkIn(pluginEffect, hostScope);
       if (!previous) {
@@ -338,7 +368,7 @@ export function createPluginHost(
           waitingFor: services.waitingOn(state.instance),
         }));
       },
-      spawnProvider: (id) => spawnProviders.get(id)?.(),
+      spawnProvider: env.registries.spawnProvider,
       dispose: Effect.suspend(disposeAll),
     };
   });

@@ -5,6 +5,8 @@ import { createSessionViews } from "./session-views.tsx";
 import { createPluginContributions } from "./contributions.ts";
 import { createRegions } from "../ui/regions.tsx";
 import { testPanelContext } from "../ui/test-panel.ts";
+import type { PluginInstance } from "./contributions.ts";
+import type { SpawnProvider } from "./types.ts";
 
 /**
  * A plugin environment for a check that cares about one field of it.
@@ -25,15 +27,30 @@ export function testPluginEnvironment(
   parts: Partial<PluginEnvironment> = {},
 ): PluginEnvironment {
   const contributions = parts.contributions ?? createPluginContributions();
+  const regions = parts.regions ?? createRegions(renderer, contributions);
+  const sessionViews = parts.sessionViews ?? createSessionViews(contributions);
+  const bindings = contributions.table<unknown>();
+  const settings = contributions.table<unknown>();
+  const spawnProviders = contributions.table<() => SpawnProvider>();
+  const defaultRegisterBinding = (owner: PluginInstance, binding: Parameters<PluginEnvironment["registerBinding"]>[1]) => bindings.add(owner, binding.name, binding);
+  const defaultRegisterSettings = (owner: PluginInstance, section: Parameters<PluginEnvironment["registerSettingsSection"]>[1]) => settings.add(owner, section.id, section);
   return {
     panel: testPanelContext(),
-    registerBinding: () => () => {},
-    registerSettingsSection: () => () => {},
+    registerBinding: parts.registerBinding ?? defaultRegisterBinding,
+    registerSettingsSection: parts.registerSettingsSection ?? defaultRegisterSettings,
     frames: () => Stream.empty,
     sync: () => {},
+    registries: parts.registries ?? {
+      regions,
+      sessionViews,
+      bindings: (owner, binding) => bindings.add(owner, binding.name, binding),
+      settings: (owner, section) => settings.add(owner, section.id, section),
+      spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
+      spawnProvider: (id) => spawnProviders.get(id)?.(),
+    },
     ...parts,
     contributions,
-    regions: parts.regions ?? createRegions(renderer, contributions),
-    sessionViews: parts.sessionViews ?? createSessionViews(contributions),
+    regions,
+    sessionViews,
   };
 }

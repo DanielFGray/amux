@@ -95,7 +95,7 @@ import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
-import type { PluginSettingsSection } from "./plugin/types.ts";
+import type { PluginSettingsSection, SpawnProvider } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
 import { errorMessage } from "./error-message.ts";
 
@@ -206,6 +206,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       options.paneHost,
     );
     const regions = createRegions(options.renderer, contributions);
+    const spawnProviders = contributions.table<() => SpawnProvider>();
     const pluginRuntime: PluginRuntime = {};
     const app = yield* Effect.acquireRelease(
       Effect.sync(() =>
@@ -220,6 +221,14 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       sessionViews,
       registerBinding: app.registerBinding,
       registerSettingsSection: app.registerSettingsSection,
+      registries: {
+        regions,
+        sessionViews,
+        bindings: app.registerBinding,
+        settings: app.registerSettingsSection,
+        spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
+        spawnProvider: (id) => spawnProviders.get(id)?.(),
+      },
       frames: (id) => options.session.attach.stream(id),
       sync: (id) => options.session.attach.sync(id),
     });
