@@ -15,6 +15,7 @@ import {
   Dirty,
   type CursorInfo,
 } from "./ghostty.ts";
+import { NativeImage } from "@opentui/core";
 import { Effect, Exit, Scope } from "effect";
 import type { SessionHandle } from "./session-handle.ts";
 import { runtime } from "./options.ts";
@@ -349,6 +350,10 @@ export class TerminalPane extends Pane {
   #rebuildCount = 0;
   #selectionAnchor: CellPoint | null = null;
   #selecting = false;
+  #kittyImages = new Map<
+    number,
+    { image: NativeImage; width: number; height: number; pixels: Uint8Array }
+  >();
 
   /** Called by the workspace when the agent produces output. */
   override invalidate() {
@@ -502,6 +507,52 @@ export class TerminalPane extends Pane {
 
     for (const r of this.#runs) buffer.drawText(r.text, ox + r.x, oy + r.y, r.fg, r.bg);
 
+    const visible = new Set<number>();
+    for (const placement of this.session.term.kittyGraphics()) {
+      visible.add(placement.imageId);
+      const rgba =
+        placement.format === "rgba"
+          ? placement.pixels
+          : rgbToRgba(placement.pixels, placement.width, placement.height);
+      const cached = this.#kittyImages.get(placement.imageId);
+      const image =
+        cached &&
+        cached.width === placement.width &&
+        cached.height === placement.height &&
+        sameBytes(cached.pixels, rgba)
+          ? cached.image
+          : NativeImage.fromRgba(rgba, placement.width, placement.height);
+      if (cached && image !== cached.image) cached.image.dispose();
+      if (!cached || image !== cached.image) {
+        this.#kittyImages.set(placement.imageId, {
+          image,
+          width: placement.width,
+          height: placement.height,
+          pixels: rgba,
+        });
+      }
+      buffer.drawImage(
+        image,
+        ox + placement.column,
+        oy + placement.row,
+        placement.columns,
+        placement.rows,
+        placement.pixelWidth,
+        placement.pixelHeight,
+        placement.sourceX,
+        placement.sourceY,
+        placement.sourceWidth,
+        placement.sourceHeight,
+        "kitty",
+      );
+    }
+    for (const [imageId, cached] of this.#kittyImages) {
+      if (!visible.has(imageId)) {
+        cached.image.dispose();
+        this.#kittyImages.delete(imageId);
+      }
+    }
+
     const cur = this.#cachedCursor;
     if (cur && cur.x < this.width - this.padX && cur.y < this.height - this.padY) {
       this.#drawCursor(buffer, ox + cur.x, oy + cur.y, cur.style, this.#cursorText);
@@ -585,7 +636,26 @@ export class TerminalPane extends Pane {
   }
 
   protected override destroySelf(): void {
+    for (const { image } of this.#kittyImages.values()) image.dispose();
+    this.#kittyImages.clear();
     Effect.runFork(Scope.close(this.#scope, Exit.void));
     super.destroySelf();
   }
+}
+
+function rgbToRgba(rgb: Uint8Array, width: number, height: number): Uint8Array {
+  const rgba = new Uint8Array(width * height * 4);
+  for (let source = 0, target = 0; source < rgb.length; source += 3, target += 4) {
+    rgba[target] = rgb[source]!;
+    rgba[target + 1] = rgb[source + 1]!;
+    rgba[target + 2] = rgb[source + 2]!;
+    rgba[target + 3] = 255;
+  }
+  return rgba;
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
 }
