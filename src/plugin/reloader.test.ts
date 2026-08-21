@@ -89,9 +89,11 @@ testEffect("a failed candidate never becomes visible", () =>
     const world = yield* start(
       "crash",
       `import { Effect } from "effect";
+       import { RegionsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
        export default { id: "crash", apiVersion: "1",
-         effect: (ctx) => Effect.sync(() => {
-           ctx.registerPanel({ id: "crash.panel", region: "left", anchor: "app",
+         inject: [RegionsTag], effect: () => Effect.gen(function* () {
+           const regions = yield* RegionsTag;
+           yield* regions.register({ id: "crash.panel", region: "left", anchor: "app",
               size: () => 1, component: () => null as never });
            (globalThis.AMUX_RELOAD_TEST ??= []).push("1");
          }) };`,
@@ -102,10 +104,12 @@ testEffect("a failed candidate never becomes visible", () =>
       writeFile(
         world.entry,
         `import { Effect } from "effect";
+         import { RegionsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
          export default { id: "crash", apiVersion: "1",
-            effect: (ctx) => Effect.gen(function* () {
-              ctx.registerPanel({ id: "crash.panel", region: "left", anchor: "app",
-                size: () => 2, component: () => null as never });
+             inject: [RegionsTag], effect: () => Effect.gen(function* () {
+               const regions = yield* RegionsTag;
+               yield* regions.register({ id: "crash.panel", region: "left", anchor: "app",
+                 size: () => 2, component: () => null as never });
               (globalThis.AMUX_RELOAD_TEST ??= []).push("candidate registered");
               yield* Effect.promise(() => globalThis.AMUX_RELOAD_GATE!);
               throw new Error("bad edit");
@@ -191,7 +195,7 @@ const start = (
       directory,
       reloader: createReloader(host, [{ id, source: pathToFileURL(entry), definition }]),
       activations: () => globalThis.AMUX_RELOAD_TEST ?? [],
-      panelVisible: () => environment.regions.declared("left", "app"),
-      panelThickness: () => environment.regions.thickness("left", "app"),
+      panelVisible: () => environment.registries.regions.declared("left", "app"),
+      panelThickness: () => environment.registries.regions.thickness("left", "app"),
     };
   });

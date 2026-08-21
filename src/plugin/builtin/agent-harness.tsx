@@ -6,7 +6,14 @@ import { BunFileSystem } from "@effect/platform-bun";
 import { command } from "../../commands.ts";
 import { Default as IntegrationDefault, integrations } from "../../integration.ts";
 import { Default as ModelCatalogDefault } from "../../model-catalog.ts";
-import type { PluginDefinition } from "../types.ts";
+import { definePlugin, type PluginDefinition } from "../types.ts";
+import {
+  BindingsTag,
+  RegionsTag,
+  SessionViewsTag,
+  SettingsTag,
+  SpawnProvidersTag,
+} from "../services.ts";
 import { Chat } from "./agent-harness/Chat.tsx";
 import { registerModelPicker } from "./agent-harness/ModelPicker.tsx";
 import { agentPreflight } from "./agent-harness/preflight.ts";
@@ -29,12 +36,17 @@ export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
  * harness's own choice about crash isolation and not a contract. Its provider
  * registration supplies launch details only when a pending session resumes.
  */
-export const agentHarnessPlugin: PluginDefinition = {
+export const agentHarnessPlugin: PluginDefinition = definePlugin({
   id: AGENT_HARNESS_PLUGIN_ID,
   apiVersion: "1",
+  inject: [BindingsTag, RegionsTag, SessionViewsTag, SettingsTag, SpawnProvidersTag],
   effect: (ctx) =>
-    Effect.sync(() => {
-      const openModelPicker = registerModelPicker(ctx).pipe(Effect.provide(llmServices));
+    Effect.gen(function* () {
+      const bindings = yield* BindingsTag;
+      const sessionViews = yield* SessionViewsTag;
+      const settings = yield* SettingsTag;
+      const spawnProviders = yield* SpawnProvidersTag;
+      const openModelPicker = (yield* registerModelPicker(ctx)).pipe(Effect.provide(llmServices));
       const [providers, setProviders] = createSignal<readonly IntegrationInfo[]>([]);
       const [selected, setSelected] = createSignal(0);
       const refreshProviders = Effect.gen(function* () {
@@ -42,7 +54,7 @@ export const agentHarnessPlugin: PluginDefinition = {
         setProviders(yield* integrations.list());
       }).pipe(Effect.provide(llmServices));
       Effect.runFork(refreshProviders);
-      ctx.registerSettingsSection({
+      yield* settings.register({
         id: "auth",
         label: "auth",
         rows: () => providers().length,
@@ -89,18 +101,21 @@ export const agentHarnessPlugin: PluginDefinition = {
         Effect.provide(llmServices),
       );
 
-      ctx.registerSpawnProvider("native", () => ({
-        argv: [
-          process.execPath,
-          new URL("./agent-harness/native-worker.ts", import.meta.url).pathname,
-        ],
-        // A provider key exported into the daemon's environment must not reach
-        // the worker's environ, where any process could read it via /proc. The
-        // harness knows which variables its integrations treat as credentials.
-        stripEnv: [...new Set(integrations.flatMap((integration) => integration.env))],
-      }));
+      yield* spawnProviders.register([
+        "native",
+        () => ({
+          argv: [
+            process.execPath,
+            new URL("./agent-harness/native-worker.ts", import.meta.url).pathname,
+          ],
+          // A provider key exported into the daemon's environment must not reach
+          // the worker's environ, where any process could read it via /proc. The
+          // harness knows which variables its integrations treat as credentials.
+          stripEnv: [...new Set(integrations.flatMap((integration) => integration.env))],
+        }),
+      ]);
 
-      ctx.registerBinding({
+      yield* bindings.register({
         name: "agent.new",
         key: "<leader>shift+n",
         desc: "open a chat pane with a new native agent",
@@ -112,7 +127,7 @@ export const agentHarnessPlugin: PluginDefinition = {
       // search cannot be edited with ←/→, so the settings window hands the row
       // to the command of the same name — the harness's own, since core has no
       // idea what models a provider has.
-      ctx.registerBinding({
+      yield* bindings.register({
         name: "agent.model",
         desc: "choose the model the native agent uses",
         group: "agents",
@@ -128,40 +143,43 @@ export const agentHarnessPlugin: PluginDefinition = {
             ),
         );
 
-      ctx.registerPaneType("native", (props) => (
-        <Chat
-          {...props}
-          model={ctx.panel.options()["agent.model"] as string}
-          showThinking={ctx.panel.options()["agent.showThinking"] as boolean}
-          onSlashCommand={(command) => {
-            if (command !== "/model") return false;
-            Effect.runFork(openModelPicker);
-            return true;
-          }}
-          slashCommands={[{ name: "model", description: "choose the agent model" }]}
-          frames={ctx.frames}
-          sync={ctx.sync}
-          onSubmit={(message) =>
-            run(
-              command("agent.prompt", {
-                target: props.sessionId,
-                text: message,
-              }),
-            )
-          }
-          onPermission={(request, decision, feedback) =>
-            run(
-              command("agent.permission", {
-                session: props.sessionId,
-                request,
-                decision,
-                ...(feedback ? { feedback } : {}),
-              }),
-            )
-          }
-          onInterrupt={() => run(command("agent.interrupt", { session: props.sessionId }))}
-        />
-      ));
+      yield* sessionViews.register([
+        "native",
+        (props) => (
+          <Chat
+            {...props}
+            model={ctx.panel.options()["agent.model"] as string}
+            showThinking={ctx.panel.options()["agent.showThinking"] as boolean}
+            onSlashCommand={(command) => {
+              if (command !== "/model") return false;
+              Effect.runFork(openModelPicker);
+              return true;
+            }}
+            slashCommands={[{ name: "model", description: "choose the agent model" }]}
+            frames={ctx.frames}
+            sync={ctx.sync}
+            onSubmit={(message) =>
+              run(
+                command("agent.prompt", {
+                  target: props.sessionId,
+                  text: message,
+                }),
+              )
+            }
+            onPermission={(request, decision, feedback) =>
+              run(
+                command("agent.permission", {
+                  session: props.sessionId,
+                  request,
+                  decision,
+                  ...(feedback ? { feedback } : {}),
+                }),
+              )
+            }
+            onInterrupt={() => run(command("agent.interrupt", { session: props.sessionId }))}
+          />
+        ),
+      ]);
 
       function yieldCredential() {
         return Credential.Service;
@@ -189,7 +207,7 @@ export const agentHarnessPlugin: PluginDefinition = {
         );
       };
     }),
-};
+});
 
 /** Loaded from its own source like any other plugin, and so exported like one. */
 export default agentHarnessPlugin;

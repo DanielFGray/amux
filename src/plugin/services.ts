@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, FiberId, Option } from "effect";
+import { Context, Deferred, Effect, FiberId, Option, Scope } from "effect";
 import type { PluginInstance } from "./contributions.ts";
 import type { Panel, Regions } from "../ui/regions.tsx";
 import type { SessionViews } from "./session-views.tsx";
@@ -25,7 +25,7 @@ export interface PluginRegistries {
 }
 
 export interface RegistryService<A = unknown> {
-  readonly register: (value: A) => Effect.Effect<() => void, never, CurrentPlugin>;
+  readonly register: (value: A) => Effect.Effect<void, never, CurrentPlugin | Scope.Scope>;
 }
 
 export class RegionsTag extends Context.Tag("amux/Regions")<RegionsTag, RegistryService<Panel>>() {}

@@ -5,7 +5,7 @@ import { createPluginHost, type PluginHost } from "./host.ts";
 import { definePlugin, type PluginDefinition, type PluginErrorEvent } from "./types.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
-import { RegionsTag } from "./services.ts";
+import { RegionsTag, SpawnProvidersTag } from "./services.ts";
 import type { Panel } from "../ui/regions.tsx";
 
 /**
@@ -223,18 +223,23 @@ testEffect("get reads the current provider and stops reading once it leaves", ()
     const watcher = definePlugin({
       id: "watcher",
       apiVersion: "1",
+      inject: [SpawnProvidersTag],
       effect: (ctx) =>
-        Effect.sync(() => {
-          ctx.registerSpawnProvider("watch", () => ({
-            argv: [
-              String(
-                Option.match(ctx.get(PoolTag), {
-                  onNone: () => -1,
-                  onSome: (pool) => pool.version,
-                }),
-              ),
-            ],
-          }));
+        Effect.gen(function* () {
+          const providers = yield* SpawnProvidersTag;
+          yield* providers.register([
+            "watch",
+            () => ({
+              argv: [
+                String(
+                  Option.match(ctx.get(PoolTag), {
+                    onNone: () => -1,
+                    onSome: (pool) => pool.version,
+                  }),
+                ),
+              ],
+            }),
+          ]);
         }),
     });
 

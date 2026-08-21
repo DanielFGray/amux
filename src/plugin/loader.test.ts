@@ -53,7 +53,7 @@ function makeHost(): Effect.Effect<{ host: PluginHost; regions: Regions }, never
   return Effect.gen(function* () {
     const { environment, dispose } = yield* Effect.promise(() => mockRegions());
     cleanupFns.push(dispose);
-    return { host: yield* createPluginHost(environment), regions: environment.regions };
+    return { host: yield* createPluginHost(environment), regions: environment.registries.regions };
   });
 }
 

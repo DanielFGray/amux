@@ -217,10 +217,6 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     const pluginHost = yield* createPluginHost({
       panel: app.panel,
       contributions,
-      regions,
-      sessionViews,
-      registerBinding: app.registerBinding,
-      registerSettingsSection: app.registerSettingsSection,
       registries: {
         regions,
         sessionViews,

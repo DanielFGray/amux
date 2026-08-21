@@ -11,10 +11,9 @@ import { testPanelContext } from "../ui/test-panel.ts";
 import { command } from "../commands.ts";
 import { runCommandByTarget } from "../app.tsx";
 import type { PanelContext } from "../ui/panel.ts";
+import { BindingsTag, RegionsTag, SessionViewsTag, SpawnProvidersTag } from "./services.ts";
 
-type EnvironmentOverrides = Partial<
-  Omit<PluginEnvironment, "regions" | "contributions" | "sessionViews">
->;
+type EnvironmentOverrides = NonNullable<Parameters<typeof testPluginEnvironment>[1]>;
 
 async function mockEnvironment(
   overrides: EnvironmentOverrides = {},
@@ -52,8 +51,8 @@ function makeHost(
     cleanupFns.push(dispose);
     return {
       host: yield* createPluginHost(env),
-      regions: env.regions,
-      sessionViews: env.sessionViews,
+      regions: env.registries.regions,
+      sessionViews: env.registries.sessionViews,
     };
   });
 }
@@ -141,13 +140,15 @@ testEffect("add replaces a running plugin, taking its registrations with it", ()
     const version = (name: string) =>
       mkPlugin({
         id: "swap",
-        effect: (ctx) =>
-          Effect.sync(() => {
+        inject: [SessionViewsTag],
+        effect: () =>
+          Effect.gen(function* () {
+            const views = yield* SessionViewsTag;
             ran.push(name);
             // Both versions claim the same pane type. Two generations of one id
             // may hold a name at once, so what this proves is that the pane
             // type still resolves afterwards and resolves to the newer one.
-            ctx.registerPaneType("chat", () => null);
+            yield* views.register(["chat", () => null]);
           }),
       });
 
@@ -195,9 +196,11 @@ testEffect("registered panels are disposed when the plugin is removed", () =>
 
     const plugin = mkPlugin({
       id: "panel-plugin",
-      effect: (ctx) =>
+      inject: [RegionsTag],
+      effect: () =>
         Effect.gen(function* () {
-          ctx.registerPanel({
+          const regions = yield* RegionsTag;
+          yield* regions.register({
             id: "panel-plugin.test",
             region: "left",
             anchor: "app",
@@ -222,9 +225,11 @@ testEffect("registered session views are disposed when the plugin is removed", (
     const { host, sessionViews: views } = yield* makeHost();
     const plugin = mkPlugin({
       id: "view-plugin",
-      effect: (ctx) =>
-        Effect.sync(() => {
-          ctx.registerPaneType("test", () => null as never);
+      inject: [SessionViewsTag],
+      effect: () =>
+        Effect.gen(function* () {
+          const views = yield* SessionViewsTag;
+          yield* views.register(["test", () => null as never]);
         }),
     });
 
@@ -239,16 +244,20 @@ testEffect("registered bindings are disposed when the plugin is removed", () =>
   Effect.gen(function* () {
     const active = new Set<string>();
     const { host } = yield* makeHost({
-      registerBinding: (_owner, binding) => {
-        active.add(binding.name);
-        return () => active.delete(binding.name);
+      registries: {
+        bindings: (_owner, binding) => {
+          active.add(binding.name);
+          return () => active.delete(binding.name);
+        },
       },
     });
     const plugin = mkPlugin({
       id: "binding-plugin",
-      effect: (ctx) =>
-        Effect.sync(() => {
-          ctx.registerBinding({
+      inject: [BindingsTag],
+      effect: () =>
+        Effect.gen(function* () {
+          const bindings = yield* BindingsTag;
+          yield* bindings.register({
             name: "binding-plugin.open",
             key: "<leader>n",
             desc: "open",
@@ -271,16 +280,24 @@ testEffect("spawn providers are collision-safe and scoped", () =>
     yield* host.add(
       mkPlugin({
         id: "provider-one",
-        effect: (ctx) =>
-          Effect.sync(() => ctx.registerSpawnProvider("test", () => ({ argv: ["one"] }))),
+        inject: [SpawnProvidersTag],
+        effect: () =>
+          SpawnProvidersTag.pipe(
+            Effect.flatMap((providers) => providers.register(["test", () => ({ argv: ["one"] })])),
+            Effect.asVoid,
+          ),
       }),
     );
     expect(host.spawnProvider("test")?.argv).toEqual(["one"]);
     yield* host.add(
       mkPlugin({
         id: "provider-two",
-        effect: (ctx) =>
-          Effect.sync(() => ctx.registerSpawnProvider("test", () => ({ argv: ["two"] }))),
+        inject: [SpawnProvidersTag],
+        effect: () =>
+          SpawnProvidersTag.pipe(
+            Effect.flatMap((providers) => providers.register(["test", () => ({ argv: ["two"] })])),
+            Effect.asVoid,
+          ),
       }),
     );
     expect(host.spawnProvider("test")?.argv).toEqual(["one"]);
@@ -306,9 +323,11 @@ testEffect("a plugin effect that throws a defect reports the error without crash
     yield* host.add(
       mkPlugin({
         id: "crasher",
-        effect: (ctx) =>
+        inject: [RegionsTag],
+        effect: () =>
           Effect.gen(function* () {
-            ctx.registerPanel({
+            const regions = yield* RegionsTag;
+            yield* regions.register({
               id: "crasher.test",
               region: "left",
               anchor: "app",
@@ -435,9 +454,11 @@ testEffect("removing and adding a plugin releases and reacquires its scope", () 
     };
     const plugin = mkPlugin({
       id: "runtime",
-      effect: (ctx) =>
-        Effect.sync(() => {
-          ctx.registerPanel(panel);
+      inject: [RegionsTag],
+      effect: () =>
+        Effect.gen(function* () {
+          const regions = yield* RegionsTag;
+          yield* regions.register(panel);
         }),
     });
 
@@ -480,9 +501,11 @@ testEffect("defect closes the plugin scope and runs registered finalizers", () =
     yield* host.add(
       mkPlugin({
         id: "finalize",
-        effect: (ctx) =>
+        inject: [RegionsTag],
+        effect: () =>
           Effect.gen(function* () {
-            ctx.registerPanel({
+            const regions = yield* RegionsTag;
+            yield* regions.register({
               id: "finalize.test",
               region: "left",
               anchor: "app",
