@@ -96,7 +96,7 @@ directory is an explicit, stable ownership boundary and is also easy to explain
 to plugin authors. We therefore keep the directory-rooted boundary.
 
 This classification decision is independent of reload transactionality. The
-reload lifecycle still uses the two-scope, commit-or-rollback design: start the
+reload lifecycle must use the two-scope, commit-or-rollback design: start the
 new generation beside the old one, publish it only after activation succeeds,
 then unload the old generation. A failed activation closes the new scope and
 leaves the old generation visible.
