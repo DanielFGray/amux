@@ -1150,6 +1150,11 @@ function buildApp(
     "pane.resize-divider": runCommand,
     "pane.zoom": runCommand,
     "pane.float": runCommand,
+    "pane.dock-left": runCommand,
+    "pane.dock-right": runCommand,
+    "pane.dock-top": runCommand,
+    "pane.dock-bottom": runCommand,
+    "pane.undock": runCommand,
     "pane.swap": runCommand,
     "pane.close": runCommand,
     "pane.break": runCommand,
@@ -1480,6 +1485,11 @@ function buildApp(
     bind("pane.float", "<leader>f", command("pane.float"), {
       desc: "float the focused pane over the others, or put it back",
     }),
+    bind("pane.dock-left", undefined, command("pane.dock-left")),
+    bind("pane.dock-right", undefined, command("pane.dock-right")),
+    bind("pane.dock-top", undefined, command("pane.dock-top")),
+    bind("pane.dock-bottom", undefined, command("pane.dock-bottom")),
+    bind("pane.undock", undefined, command("pane.undock")),
     bind("pane.swap-previous", "<leader>{", command("pane.swap", { to: "previous" }), {
       desc: "swap pane with the previous one",
     }),

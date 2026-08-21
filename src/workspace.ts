@@ -35,6 +35,8 @@ import {
   presetLayout,
   prune,
   setPlacement,
+  setDock,
+  undockPane,
   splitLayout,
   swapLayout,
   windowState,
@@ -212,6 +214,7 @@ const LayoutFloatShape = S.Struct({
   width: S.Number.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1)),
   height: S.Number.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1)),
 });
+const DockPaneShape = S.Struct({ id: NonEmptyString, content: PaneContentSchema });
 const LayoutShape = S.Struct({
   version: S.Literal(1),
   root: S.NullOr(LayoutNodeShape),
@@ -221,6 +224,22 @@ const LayoutShape = S.Struct({
   // snapshot crossing the wire, which is how a float reached the daemon and
   // never reached the client.
   floats: S.optional(S.Array(LayoutFloatShape)),
+  docks: S.optional(
+    S.Struct({
+      left: S.optional(S.Array(DockPaneShape)),
+      right: S.optional(S.Array(DockPaneShape)),
+      top: S.optional(S.Array(DockPaneShape)),
+      bottom: S.optional(S.Array(DockPaneShape)),
+    }),
+  ),
+  dockSizes: S.optional(
+    S.Struct({
+      left: S.optional(PositiveInt),
+      right: S.optional(PositiveInt),
+      top: S.optional(PositiveInt),
+      bottom: S.optional(PositiveInt),
+    }),
+  ),
   focus: S.optional(NonEmptyString),
 });
 const WindowStateShape = S.Struct({
@@ -969,6 +988,26 @@ export function applyWorkspaceCommand(
       // capture of an arrangement that no longer holds.
       window.state.zoom = null;
       window.state.preset = null;
+      break;
+    }
+    case "pane.dock-left":
+    case "pane.dock-right":
+    case "pane.dock-top":
+    case "pane.dock-bottom": {
+      const target = paneTarget();
+      if (!target) break;
+      const side = command._tag.slice("pane.dock-".length) as "left" | "right" | "top" | "bottom";
+      target.window.window.layout = setDock(target.window.window.layout, target.pane.id, side);
+      target.window.window.state.zoom = null;
+      target.window.window.state.preset = null;
+      break;
+    }
+    case "pane.undock": {
+      const target = paneTarget();
+      if (!target) break;
+      target.window.window.layout = undockPane(target.window.window.layout, target.pane.id);
+      target.window.window.state.zoom = null;
+      target.window.window.state.preset = null;
       break;
     }
     case "pane.swap": {

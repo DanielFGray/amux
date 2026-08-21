@@ -224,6 +224,31 @@ const PaneFloat = define(
     exposure: "agent",
   },
 );
+const PaneDock = <
+  const Tag extends "pane.dock-left" | "pane.dock-right" | "pane.dock-top" | "pane.dock-bottom",
+>(
+  tag: Tag,
+  side: string,
+) =>
+  define(
+    tag,
+    { ...PaneTarget },
+    {
+      desc: `dock the focused pane on the ${side}`,
+      group: "panes",
+      target: "workspace",
+      exposure: "human",
+    },
+  );
+const PaneDockLeft = PaneDock("pane.dock-left", "left");
+const PaneDockRight = PaneDock("pane.dock-right", "right");
+const PaneDockTop = PaneDock("pane.dock-top", "top");
+const PaneDockBottom = PaneDock("pane.dock-bottom", "bottom");
+const PaneUndock = define(
+  "pane.undock",
+  { ...PaneTarget },
+  { desc: "undock the focused pane", group: "panes", target: "workspace", exposure: "human" },
+);
 const PaneSwap = define(
   "pane.swap",
   { to: S.Literal("previous", "next"), ...PaneTarget },
@@ -894,6 +919,11 @@ export const COMMAND_DEFS = [
   PaneResizeDivider,
   PaneZoom,
   PaneFloat,
+  PaneDockLeft,
+  PaneDockRight,
+  PaneDockTop,
+  PaneDockBottom,
+  PaneUndock,
   PaneSwap,
   PaneClose,
   PaneBreak,

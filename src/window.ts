@@ -30,6 +30,10 @@ import {
   windowState,
   paneSession,
   withSession,
+  emptyDockStrips,
+  dockDefaultSize,
+  DOCK_SIDES,
+  type DockSide,
   type Layout,
   type LayoutFloat,
   type LayoutNode,
@@ -896,7 +900,11 @@ export class Window {
     if (layout === this.#layout) return;
     this.#layout = layout;
     this.#state.preset = null;
-    this.#projectWeights();
+    if (this.#layout.docks && DOCK_SIDES.some((side) => this.#layout.docks?.[side].length)) {
+      for (const evicted of this.#mount(this.#layout, null)) evicted.destroyRecursively();
+    } else {
+      this.#projectWeights();
+    }
     this.onChange?.();
     this.#ctx.requestRender();
   }
@@ -1205,9 +1213,19 @@ export class Window {
       panesById.set(pane.id, pane);
       return { ...float, id: pane.id, content: withSession(float.content, pane.session?.id) };
     };
+    const materializeDock = (slot: PaneRef): PaneRef => {
+      const pane = filled.get(slot.id)!;
+      panesById.set(pane.id, pane);
+      return { ...slot, id: pane.id, content: withSession(slot.content, pane.session?.id) };
+    };
+    const dockStrips = wanted.docks ?? emptyDockStrips();
     this.#layout = makeLayout({
       root: wanted.root ? materialize(wanted.root) : null,
       floats: wanted.floats.map(materializeFloat),
+      docks: Object.fromEntries(
+        DOCK_SIDES.map((side) => [side, dockStrips[side].map(materializeDock)]),
+      ) as unknown as typeof dockStrips,
+      dockSizes: wanted.dockSizes,
       focus: next?.id,
     });
 
@@ -1242,6 +1260,52 @@ export class Window {
     // axis itself (see split), and an extra level here would be a shape
     // exportLayout immediately collapses away.
     const zoom = this.#state.zoom;
+    const hasDocks = DOCK_SIDES.some((side) => dockStrips[side].length > 0);
+    const buildDocks = (center: BoxRenderable) => {
+      const size = (side: DockSide) =>
+        dockStrips[side].length === 0
+          ? 0
+          : (this.#layout.dockSizes?.[side] ?? dockDefaultSize(side));
+      const add = (box: BoxRenderable, side: DockSide) => {
+        setDirection(box, side === "left" || side === "right" ? "column" : "row");
+        dockStrips[side].forEach((slot) => {
+          const pane = panesById.get(slot.id);
+          if (pane) {
+            tile(pane, 1);
+            box.add(pane);
+          }
+        });
+      };
+      const top = new BoxRenderable(this.#ctx, { id: `dock-top-${nextId++}`, height: size("top") });
+      const bottom = new BoxRenderable(this.#ctx, {
+        id: `dock-bottom-${nextId++}`,
+        height: size("bottom"),
+      });
+      const body = new BoxRenderable(this.#ctx, {
+        id: `dock-body-${nextId++}`,
+        flexGrow: 1,
+        flexDirection: "row",
+      });
+      const left = new BoxRenderable(this.#ctx, {
+        id: `dock-left-${nextId++}`,
+        width: size("left"),
+      });
+      const right = new BoxRenderable(this.#ctx, {
+        id: `dock-right-${nextId++}`,
+        width: size("right"),
+      });
+      add(top, "top");
+      add(bottom, "bottom");
+      add(left, "left");
+      add(right, "right");
+      body.add(left);
+      body.add(center);
+      body.add(right);
+      this.root.add(top);
+      this.root.add(body);
+      this.root.add(bottom);
+    };
+    const center = new BoxRenderable(this.#ctx, { id: `dock-center-${nextId++}`, flexGrow: 1 });
     if (zoom) {
       // One pane, no dividers, and every other pane left unmounted. Nothing
       // else has to be remembered for the way back: `zoom.from` is the whole
@@ -1249,17 +1313,21 @@ export class Window {
       const pane = panesById.get(zoom.pane);
       if (pane) {
         tile(pane, 1);
-        this.root.add(pane);
+        (hasDocks ? center : this.root).add(pane);
       }
     } else if (this.#layout.root === null) {
       // Nothing to build: closing the last pane empties the window, which is a
       // state it really has until the app decides to close it. A window that is
       // only floats lands here too, and the loop below puts them up.
     } else if (this.#layout.root.type === "split") {
-      setDirection(this.root, this.#layout.root.direction);
-      fill(this.root, this.#layout.root, []);
+      setDirection(hasDocks ? center : this.root, this.#layout.root.direction);
+      fill(hasDocks ? center : this.root, this.#layout.root, []);
     } else {
-      this.root.add(build(this.#layout.root, []));
+      (hasDocks ? center : this.root).add(build(this.#layout.root, []));
+    }
+    if (hasDocks) {
+      setDirection(this.root, "column");
+      buildDocks(center);
     }
 
     // Floats last, so they are over the tiled tree in paint order, and by

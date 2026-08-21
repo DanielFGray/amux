@@ -367,3 +367,42 @@ test("moving and resizing a float leaves a tiled pane and a sibling float alone"
   expect(moveFloat(stacked, size, "a", "left")).toBe(stacked);
   expect(moveFloat(stacked, size, "ghost", "left")).toBe(stacked);
 });
+
+test("dock geometry reserves corners in the documented order", () => {
+  const ref = (id: string) => ({ id, content: { kind: "pty" as const, session: id } });
+  const current = makeLayout({
+    root: pane("centre"),
+    docks: {
+      left: [ref("left")],
+      right: [ref("right")],
+      top: [ref("top")],
+      bottom: [ref("bottom")],
+    },
+  });
+  const rects = computeRects(current, { cols: 100, rows: 50 });
+  expect(rects.get("left")).toEqual({ x: 0, y: 12, width: 40, height: 26 });
+  expect(rects.get("right")).toEqual({ x: 60, y: 12, width: 40, height: 26 });
+  expect(rects.get("top")).toEqual({ x: 40, y: 0, width: 20, height: 12 });
+  expect(rects.get("bottom")).toEqual({ x: 0, y: 38, width: 100, height: 12 });
+  expect(rects.get("centre")).toEqual({ x: 40, y: 12, width: 20, height: 26 });
+});
+
+test("dock resize changes its fixed strip without touching the tiled tree", () => {
+  const current = makeLayout({
+    root: pane("centre"),
+    docks: {
+      left: [{ id: "left", content: { kind: "pty", session: "left" } }],
+      right: [],
+      top: [],
+      bottom: [],
+    },
+  });
+  const resized = resizePane(current, { cols: 100, rows: 50 }, "left", "left");
+  expect(resized.dockSizes?.left).toBe(41);
+  expect(computeRects(resized, { cols: 100, rows: 50 }).get("centre")).toEqual({
+    x: 41,
+    y: 0,
+    width: 59,
+    height: 50,
+  });
+});

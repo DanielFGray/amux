@@ -2,6 +2,9 @@ import type { Direction, SplitDirection } from "./window.ts";
 import {
   layoutPanes,
   makeLayout,
+  dockDefaultSize,
+  emptyDockStrips,
+  type DockSide,
   type Layout,
   type LayoutFloat,
   type LayoutNode,
@@ -97,6 +100,11 @@ export function resizePane(
 ): Layout {
   const float = layout.floats.find((float) => float.id === paneId);
   if (float) return resizeFloat(layout, float, size, direction, cells);
+  const dockStrips = layout.docks ?? emptyDockStrips();
+  const dock = (Object.keys(dockStrips) as DockSide[]).find((side) =>
+    dockStrips[side].some((pane) => pane.id === paneId),
+  );
+  if (dock) return resizeDock(layout, size, dock, direction, cells);
 
   const axis: SplitDirection = direction === "left" || direction === "right" ? "row" : "column";
   const side: -1 | 1 = direction === "left" || direction === "up" ? -1 : 1;
@@ -287,6 +295,42 @@ function geometry(
       }),
     );
   }
+  const dockStrips = layout.docks ?? emptyDockStrips();
+  const thickness = (side: DockSide) => {
+    const requested = layout.dockSizes?.[side] ?? dockDefaultSize(side);
+    return Math.max(
+      0,
+      Math.min(
+        requested,
+        side === "left" || side === "right" ? Math.floor(cols / 2) : Math.floor(rows / 2),
+      ),
+    );
+  };
+  const left = dockStrips.left.length ? thickness("left") : 0;
+  const right = dockStrips.right.length ? thickness("right") : 0;
+  const top = dockStrips.top.length ? thickness("top") : 0;
+  const bottom = dockStrips.bottom.length ? thickness("bottom") : 0;
+  const centerWidth = Math.max(0, cols - left - right);
+  const centerHeight = Math.max(0, rows - top - bottom);
+  const dock = (side: DockSide, rect: Rect) => {
+    const refs = dockStrips[side];
+    const axis = side === "left" || side === "right" ? rect.height : rect.width;
+    const available = Math.max(0, axis - Math.max(0, refs.length - 1));
+    refs.forEach((ref, index) => {
+      const start = Math.round((available * index) / refs.length) + index;
+      const end = Math.round((available * (index + 1)) / refs.length) + index;
+      panes.set(
+        ref.id,
+        side === "left" || side === "right"
+          ? { x: rect.x, y: rect.y + start, width: rect.width, height: end - start }
+          : { x: rect.x + start, y: rect.y, width: end - start, height: rect.height },
+      );
+    });
+  };
+  dock("bottom", { x: 0, y: top + centerHeight, width: cols, height: bottom });
+  dock("left", { x: 0, y: top, width: left, height: centerHeight });
+  dock("right", { x: cols - right, y: top, width: right, height: centerHeight });
+  dock("top", { x: left, y: 0, width: centerWidth, height: top });
   if (!layout.root) return { panes, nodes };
 
   const walk = (node: LayoutNode, exact: ExactRect) => {
@@ -314,8 +358,30 @@ function geometry(
     }
   };
 
-  walk(layout.root, { x: 0, y: 0, width: cols, height: rows });
+  walk(layout.root, { x: left, y: top, width: centerWidth, height: centerHeight });
   return { panes, nodes };
+}
+
+function resizeDock(
+  layout: Layout,
+  size: LayoutSize,
+  side: DockSide,
+  direction: Direction,
+  cells: number,
+): Layout {
+  const grows =
+    side === "left"
+      ? direction === "left"
+      : side === "right"
+        ? direction === "right"
+        : side === "top"
+          ? direction === "up"
+          : direction === "down";
+  const axis = side === "left" || side === "right" ? size.cols : size.rows;
+  const current = layout.dockSizes?.[side] ?? dockDefaultSize(side);
+  const next = current + (grows ? cells : -cells);
+  if (next < MIN_CELLS || next > Math.floor(axis / 2)) return layout;
+  return makeLayout({ ...layout, dockSizes: { ...layout.dockSizes, [side]: next } });
 }
 
 function rounded(rect: ExactRect): Rect {
