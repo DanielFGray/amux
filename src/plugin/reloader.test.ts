@@ -97,8 +97,8 @@ testEffect("a version that will not start gives way to the one that did", () =>
     const failure = yield* Effect.either(world.reloader.reload("crash"));
 
     expect(failure._tag === "Left" && failure.left).toContain("kept the version that was running");
-    // Back on the version that worked, which had to run its effect again to say so.
-    expect(world.activations()).toEqual(["1", "1"]);
+    // The version that worked stayed running while the candidate was closed.
+    expect(world.activations()).toEqual(["1"]);
     expect(world.host.status().map((status) => status.id)).toEqual(["crash"]);
   }),
 );
@@ -132,7 +132,7 @@ const start = (
   id: string,
   source: string,
   extra: Record<string, string> = {},
-): Effect.Effect<World, never, Scope.Scope> =>
+): Effect.Effect<World, string, Scope.Scope> =>
   Effect.gen(function* () {
     globalThis.AMUX_RELOAD_TEST = [];
     const directory = yield* Effect.promise(() => mkdtemp(join(testDir, ".test-reload-")));
