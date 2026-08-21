@@ -894,15 +894,14 @@ function trackInvalidateAfterDestroy(pane: Pane) {
   return { get: () => afterDestroy };
 }
 
-test("closing a window ends copy mode before its terminal is freed", async () => {
+test("closing a window ends copy mode after its pane view is destroyed", async () => {
   const { t, spaces, space, win, panes } = await makeWindow(2);
   cleanup.push(() => {
     t.renderer.destroy();
   });
   const paneA = panes[0]!;
-  // The copy-mode pane is the unfocused one: closing the window used to free
-  // its terminal before the orphan guard ever ran, so CopyMode.exit's
-  // clearSelection hit a freed handle — a segfault no try/catch can see.
+  // The copy-mode pane is unfocused, so closing the window destroys its view.
+  // Its terminal remains daemon-owned while the orphan guard clears selection.
   expect(win.focused).not.toBe(paneA);
 
   const mode = new CopyMode();
