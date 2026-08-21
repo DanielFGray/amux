@@ -19,6 +19,7 @@ const { symbols: g } = dlopen(LIB, {
   ghostty_terminal_resize: { args: [P, U16, U16, U32, U32], returns: I },
   ghostty_terminal_get: { args: [P, I, P], returns: I },
   ghostty_terminal_mode_get: { args: [P, U16, P], returns: I },
+  ghostty_terminal_set: { args: [P, I, P], returns: I },
 
   ghostty_render_state_new: { args: [P, P], returns: I },
   ghostty_render_state_free: { args: [P], returns: V },
@@ -37,6 +38,15 @@ const { symbols: g } = dlopen(LIB, {
   ghostty_render_state_row_cells_get: { args: [P, I, P], returns: I },
   ghostty_cell_get: { args: [U64, I, P], returns: I },
   ghostty_render_state_row_cells_get_multi: { args: [P, U64, P, P, P], returns: I },
+
+  ghostty_kitty_graphics_get: { args: [P, I, P], returns: I },
+  ghostty_kitty_graphics_image: { args: [P, U32], returns: P },
+  ghostty_kitty_graphics_image_get: { args: [P, I, P], returns: I },
+  ghostty_kitty_graphics_placement_iterator_new: { args: [P, P], returns: I },
+  ghostty_kitty_graphics_placement_iterator_free: { args: [P], returns: V },
+  ghostty_kitty_graphics_placement_next: { args: [P], returns: B },
+  ghostty_kitty_graphics_placement_get: { args: [P, I, P], returns: I },
+  ghostty_kitty_graphics_placement_render_info: { args: [P, P, P, P], returns: I },
 
   ghostty_mouse_encoder_new: { args: [P, P], returns: I },
   ghostty_mouse_encoder_free: { args: [P], returns: V },
@@ -70,6 +80,18 @@ const WIDE_WIDE = 1;
 const TERMINAL_DATA_SCROLLBAR = 9;
 const TERMINAL_DATA_TITLE = 12;
 const TERMINAL_DATA_PWD = 13;
+const TERMINAL_DATA_KITTY_GRAPHICS = 30;
+const TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT = 15;
+const KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR = 1;
+const KITTY_PLACEMENT_DATA_IMAGE_ID = 1;
+const KITTY_PLACEMENT_DATA_Z = 12;
+const KITTY_IMAGE_DATA_WIDTH = 3;
+const KITTY_IMAGE_DATA_HEIGHT = 4;
+const KITTY_IMAGE_DATA_FORMAT = 5;
+const KITTY_IMAGE_DATA_PTR = 7;
+const KITTY_IMAGE_DATA_LEN = 8;
+const KITTY_IMAGE_FORMAT_RGB = 0;
+const KITTY_IMAGE_FORMAT_RGBA = 1;
 
 /** The 1049 mode: alternate screen + save cursor + clear on enter. */
 export const MODE_ALT_SCREEN = 1049;
@@ -113,6 +135,15 @@ export class Terminal {
     this.#h = Number(out[0]);
     this.#cols = cols;
     this.#rows = rows;
+    const storageLimit = new BigUint64Array([64n * 1024n * 1024n]);
+    check(
+      "terminal_set kitty image storage limit",
+      g.ghostty_terminal_set(
+        asPtr(this.#h),
+        TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+        ptr(storageLimit),
+      ),
+    );
   }
 
   get handle() {
@@ -212,6 +243,107 @@ export class Terminal {
   get atBottom(): boolean {
     const s = this.scrollbar;
     return s.total === 0 || s.offset + s.len >= s.total;
+  }
+
+  /**
+   * Return the visible Kitty image placements as owned pixel buffers.
+   *
+   * Ghostty's graphics handles and pixel pointers are borrowed until the next
+   * terminal mutation. Copying here keeps callers from retaining invalid FFI
+   * memory while the PTY continues to produce output.
+   */
+  kittyGraphics(): KittyPlacement[] {
+    if (this.#freed) return [];
+    const graphics = handle();
+    if (g.ghostty_terminal_get(asPtr(this.#h), TERMINAL_DATA_KITTY_GRAPHICS, ptr(graphics)) !== OK)
+      return [];
+    const iterator = handle();
+    if (g.ghostty_kitty_graphics_placement_iterator_new(null, ptr(iterator)) !== OK) return [];
+    if (
+      g.ghostty_kitty_graphics_get(
+        asPtr(Number(graphics[0])),
+        KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+        ptr(iterator),
+      ) !== OK
+    ) {
+      g.ghostty_kitty_graphics_placement_iterator_free(asPtr(Number(iterator[0])));
+      return [];
+    }
+
+    const placements: KittyPlacement[] = [];
+    try {
+      const imageId = new Uint32Array(1);
+      while (g.ghostty_kitty_graphics_placement_next(asPtr(Number(iterator[0])))) {
+        if (
+          g.ghostty_kitty_graphics_placement_get(
+            asPtr(Number(iterator[0])),
+            KITTY_PLACEMENT_DATA_IMAGE_ID,
+            ptr(imageId),
+          ) !== OK
+        )
+          continue;
+        const zIndex = new Int32Array(1);
+        if (
+          g.ghostty_kitty_graphics_placement_get(
+            asPtr(Number(iterator[0])),
+            KITTY_PLACEMENT_DATA_Z,
+            ptr(zIndex),
+          ) !== OK
+        )
+          continue;
+        const image = g.ghostty_kitty_graphics_image(asPtr(Number(graphics[0])), imageId[0]!);
+        if (!image) continue;
+        const width = new Uint32Array(1);
+        const height = new Uint32Array(1);
+        const format = new Uint32Array(1);
+        const dataPtr = new BigUint64Array(1);
+        const dataLen = new BigUint64Array(1);
+        if (
+          g.ghostty_kitty_graphics_image_get(image, KITTY_IMAGE_DATA_WIDTH, ptr(width)) !== OK ||
+          g.ghostty_kitty_graphics_image_get(image, KITTY_IMAGE_DATA_HEIGHT, ptr(height)) !== OK ||
+          g.ghostty_kitty_graphics_image_get(image, KITTY_IMAGE_DATA_FORMAT, ptr(format)) !== OK ||
+          g.ghostty_kitty_graphics_image_get(image, KITTY_IMAGE_DATA_PTR, ptr(dataPtr)) !== OK ||
+          g.ghostty_kitty_graphics_image_get(image, KITTY_IMAGE_DATA_LEN, ptr(dataLen)) !== OK ||
+          !dataPtr[0]
+        )
+          continue;
+        if (format[0] !== KITTY_IMAGE_FORMAT_RGB && format[0] !== KITTY_IMAGE_FORMAT_RGBA) continue;
+
+        const renderInfo = new Uint8Array(64);
+        new DataView(renderInfo.buffer).setBigUint64(0, 64n, true);
+        if (
+          g.ghostty_kitty_graphics_placement_render_info(
+            asPtr(Number(iterator[0])),
+            image,
+            asPtr(this.#h),
+            ptr(renderInfo),
+          ) !== OK
+        )
+          continue;
+        const view = new DataView(renderInfo.buffer);
+        placements.push({
+          imageId: imageId[0]!,
+          zIndex: zIndex[0]!,
+          width: width[0]!,
+          height: height[0]!,
+          pixels: new Uint8Array(toArrayBuffer(asPtr(Number(dataPtr[0])), 0, Number(dataLen[0]))),
+          format: format[0] === KITTY_IMAGE_FORMAT_RGB ? "rgb" : "rgba",
+          pixelWidth: view.getUint32(8, true),
+          pixelHeight: view.getUint32(12, true),
+          columns: view.getUint32(16, true),
+          rows: view.getUint32(20, true),
+          column: view.getInt32(24, true),
+          row: view.getInt32(28, true),
+          sourceX: view.getUint32(40, true),
+          sourceY: view.getUint32(44, true),
+          sourceWidth: view.getUint32(48, true),
+          sourceHeight: view.getUint32(52, true),
+        });
+      }
+    } finally {
+      g.ghostty_kitty_graphics_placement_iterator_free(asPtr(Number(iterator[0])));
+    }
+    return placements;
   }
 
   free() {
@@ -336,6 +468,25 @@ export interface CellVisitor {
 export const Dirty = { none: 0, partial: 1, full: 2 } as const;
 
 export const CursorStyle = { bar: 0, block: 1, underline: 2, blockHollow: 3 } as const;
+
+export interface KittyPlacement {
+  imageId: number;
+  zIndex: number;
+  width: number;
+  height: number;
+  pixels: Uint8Array;
+  format: "rgb" | "rgba";
+  pixelWidth: number;
+  pixelHeight: number;
+  columns: number;
+  rows: number;
+  column: number;
+  row: number;
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+}
 
 export interface CursorInfo {
   x: number;
