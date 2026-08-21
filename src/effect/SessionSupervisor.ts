@@ -34,6 +34,14 @@ const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
  */
 const FOREGROUND_POLL_MS = 500;
 
+/** How long activation waits for the pump's first output before capturing the
+ *  replay screen. A session that starts with output must have it in the replay,
+ *  and the pump's first turn is a synchronous read, so this only has to outlast
+ *  the pump's scheduling latency under load (measured up to ~30ms). An idle
+ *  session never produces a chunk, so this bound is also what lets its
+ *  activation proceed. */
+const INITIAL_OUTPUT_GRACE_MS = 100;
+
 export interface SessionExitObserverService {
   readonly beforePublish: (id: string, code: number | null) => Effect.Effect<void, unknown>;
 }
@@ -224,6 +232,13 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       const completion = yield* Deferred.make<void>();
       const termination = yield* Deferred.make<number | null>();
       const disposition = yield* Deferred.make<"active" | "aborted">();
+      // The pump delivers the first batch of output asynchronously, and the
+      // activation replay must include it: a client that adopts this session
+      // sees the replay's cursor position, and a burst that missed it lands
+      // wherever the empty replay left the cursor. Activation waits for this
+      // before capturing the screen. An idle session produces no chunk, so the
+      // wait is bounded — it exists to let the pump run, not to slow activation.
+      const firstOutput = yield* Deferred.make<void>();
       let phase: "prepared" | "activating" | "active" | "aborted" = "prepared";
       const pending = yield* Queue.unbounded<Uint8Array>();
       const pendingEvents = yield* Queue.unbounded<AgentFrame>();
@@ -284,6 +299,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
                 // The replay terminal is the private output buffer. Only bytes
                 // arriving while activation drains that replay need a side queue.
                 screen.write(chunk);
+                yield* Deferred.succeed(firstOutput, void 0);
                 if (phase === "active") {
                   yield* hub.publish({
                     _tag: "output",
@@ -298,6 +314,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               Effect.logDebug(`session output ended: ${error.operation}: ${error.message}`),
             ),
           );
+          yield* Deferred.succeed(firstOutput, void 0);
           const code = yield* session.exit.pipe(Effect.orElseSucceed(() => null));
           yield* Deferred.succeed(termination, code);
           if ((yield* Deferred.await(disposition)) === "active") {
@@ -377,6 +394,15 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           yield* Ref.update(sessions, (current) => new Map(current).set(spec.id, session));
           yield* Ref.update(completions, (current) => new Map(current).set(spec.id, completion));
           yield* Ref.update(terminations, (current) => new Map(current).set(spec.id, termination));
+          // The replay must show the pre-activation burst, so it waits for the
+          // pump's first delivery — bounded, because an idle session never
+          // delivers one. The bound is generous: it only has to outlast the
+          // pump's scheduling latency under load, and the idle path bears it
+          // whole, so accuracy wins over the few milliseconds saved.
+          yield* Deferred.await(firstOutput).pipe(
+            Effect.timeout(INITIAL_OUTPUT_GRACE_MS),
+            Effect.orElseSucceed(() => undefined),
+          );
           const replay = yield* Effect.sync(() => formatScreen(screen.handle));
           if (replay.length > 0) {
             yield* hub.publish({

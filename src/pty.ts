@@ -261,46 +261,164 @@ export function spawnPty(
   return result;
 }
 
+/** How much output one yielded chunk may hold. Matches the read buffer of the
+ *  sleep-poll this replaces, so a burst stays a handful of terminal writes. */
+const READ_BATCH = 65536;
+/** How long output may sit in a partial batch before it is flushed. One
+ *  millisecond is far shorter than any human-perceptible latency yet long
+ *  enough that a continuous stream keeps filling the batch instead. */
+const READ_GAP_MS = 1;
+
 /**
  * Async iterator over raw PTY output bytes.
  *
- * Each yielded view is borrowed until the consumer resumes this iterator.
- * Stream.fromAsyncIterable pulls the next value only after the current
- * Stream.runForEach effect completes; the direct consumer calls Terminal.write
- * synchronously, and ghostty_terminal_vt_write does not retain the pointer.
- * Consumers that retain a chunk must copy it at their ownership boundary.
+ * Drains through a dedicated worker rather than a sleep-poll on the render
+ * loop. The old loop ran `fs.readSync` once per 4ms per session — a blocking
+ * syscall plus a timer wakeup at 250Hz even for an idle session. The worker's
+ * nonblocking read and retry timer cannot delay rendering.
+ *
+ * Worker chunks arrive as soon as bytes do, so the generator batches
+ * them into READ_BATCH and yields a chunk either when it fills or when the
+ * worker goes quiet for READ_GAP_MS. Between reads it yields to the event
+ * loop, so a flooding child cannot monopolize the loop's turn. After the
+ * initial probe, idle reads and retry timers stay off the renderer's loop.
+ *
+ * The one synchronous read is the first pull: anything already in the master's
+ * buffer is drained before the worker is created, because a worker read is an
+ * `await` — and an `await` can lose a race the caller's next step depends on.
+ * The daemon captures its replay screen right after spawn, so a first burst
+ * that missed it would land at the cursor position the replay left behind.
+ *
+ * Each yielded chunk is owned: a fresh view over a batch buffer that is never
+ * written again. Consumers may keep it past the next pull, and need no copy
+ * at their ownership boundary.
  */
 export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
   const fs = require("node:fs");
-  const buf = Buffer.alloc(65536);
-  while (!pty.closed) {
-    let n: number;
-    try {
-      n = fs.readSync(pty.master, buf, 0, buf.length, null);
-    } catch (e: any) {
-      // EAGAIN = nothing to read yet; EBADF/EIO = closed or child exited.
-      if (pty.closed) return;
-      // Nothing to read right now. The session terminator keeps the master
-      // open while residual members may still produce output.
-      if (e.code === "EAGAIN") {
-        await Bun.sleep(4);
+  const prime = Buffer.alloc(READ_BATCH);
+  let worker: Worker | null = null;
+  const messages: WorkerMessage[] = [];
+  let resolveMessage: ((message: WorkerMessage) => void) | null = null;
+  const nextMessage = () =>
+    new Promise<WorkerMessage>((resolve) => {
+      const message = messages.shift();
+      if (message) resolve(message);
+      else resolveMessage = resolve;
+    });
+  const startWorker = () => {
+    worker = new Worker(new URL("./pty-reader.worker.ts", import.meta.url).href);
+    worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+      const resolve = resolveMessage;
+      resolveMessage = null;
+      if (resolve) resolve(event.data);
+      else messages.push(event.data);
+    };
+    worker.postMessage({ type: "start", fd: pty.master });
+  };
+  let batch = new Uint8Array(READ_BATCH);
+  let len = 0;
+  // A read abandoned to a gap timer. Its result is bytes the worker already
+  // handed to this generator, so it must be consumed on the next pull, never
+  // dropped. It never rejects, so an abandoned read cannot surface as an
+  // unhandled rejection while the consumer holds the generator at a yield.
+  let carried: Promise<WorkerMessage> | null = null;
+
+  const gap = () => new Promise<"gap">((resolve) => setTimeout(() => resolve("gap"), READ_GAP_MS));
+  const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const append = (chunk: Uint8Array) => {
+    if (len + chunk.length > batch.length) {
+      const grown = new Uint8Array(len + chunk.length);
+      grown.set(batch.subarray(0, len));
+      batch = grown;
+    }
+    batch.set(chunk, len);
+    len += chunk.length;
+  };
+  const take = () => {
+    const out = batch.subarray(0, len);
+    batch = new Uint8Array(READ_BATCH);
+    len = 0;
+    return out;
+  };
+  /** EIO is terminal EOF and EBADF a master closed under us; neither can
+   *  produce more bytes. The one gate is the exit code: the pump must not end
+   *  before the waitpid watcher records it, because the consumer reads it the
+   *  moment the worker reports terminal output. */
+  const waitTerminal = async (error: { code?: string }) => {
+    if (pty.closed) return;
+    if (error.code === "EIO" && !pty.exited) await pty.processExited;
+  };
+
+  try {
+    while (!pty.closed) {
+      // First pulls: drain whatever is already in the master's buffer
+      // synchronously, before the event-driven worker exists. This is what a
+      // consumer that reads the terminal right after spawn sees — a worker
+      // read is an `await`, and the caller's next step can run before it
+      // resolves. The worker takes over at the first EAGAIN.
+      if (!worker) {
+        let n: number;
+        try {
+          n = fs.readSync(pty.master, prime, 0, prime.length, null);
+        } catch (error: any) {
+          if (pty.closed) return;
+          if (error.code === "EAGAIN") {
+            startWorker();
+            continue;
+          }
+          await waitTerminal(error);
+          return;
+        }
+        if (n === 0) {
+          startWorker();
+          continue;
+        }
+        if (n < 0) return;
+        append(prime.subarray(0, n));
+        yield take();
         continue;
       }
-      // The master can report EIO just ahead of the waitpid poll. Keep the
-      // output stream alive until exitCode has been recorded.
-      if (e.code === "EIO" && !pty.exited) {
-        await Bun.sleep(4);
-        continue;
+      const pending = carried ?? nextMessage();
+      carried = null;
+      const first = await pending;
+      if (first.type === "error") {
+        if (len > 0) yield take();
+        await waitTerminal(first);
+        return;
       }
-      return;
+      if (first.data.length > 0) append(first.data);
+      // Fill the batch while the worker keeps delivering, giving the loop a
+      // turn between reads so a flood cannot starve the renderer's timer.
+      while (len < READ_BATCH && !pty.closed) {
+        const read = nextMessage();
+        const result = await Promise.race([read, gap()]);
+        if (result === "gap") {
+          carried = read;
+          break;
+        }
+        if (result.type === "error") {
+          // The bytes already read are yielded before the terminal-EOF wait:
+          // the exit code may not be recorded for another waitpid poll, and a
+          // final batch of output must reach the consumer now, not four
+          // milliseconds from now.
+          if (len > 0) yield take();
+          await waitTerminal(result);
+          return;
+        }
+        if (result.data.length > 0) append(result.data);
+        await turn();
+      }
+      if (len > 0) yield take();
     }
-    // A zero-length master read is not a reliable process-exit signal. The
-    // waitpid watcher owns that state; EIO above owns terminal EOF.
-    if (n === 0) {
-      await Bun.sleep(4);
-      continue;
+  } finally {
+    const activeWorker = worker as Worker | null;
+    if (activeWorker) {
+      activeWorker.postMessage({ type: "stop" });
+      await activeWorker.terminate();
     }
-    if (n < 0) return;
-    yield buf.subarray(0, n);
   }
 }
+
+type WorkerMessage =
+  | { readonly type: "data"; readonly data: Uint8Array }
+  | { readonly type: "error"; readonly code?: string };

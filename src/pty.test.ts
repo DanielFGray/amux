@@ -271,3 +271,87 @@ test("writes copy input and retain FIFO ordering", async () => {
   await p.kill();
   await out.done;
 });
+
+test("draining an idle session performs no blocking reads", async () => {
+  // The drain must not sleep-poll the master with blocking reads: an idle
+  // session should not wake the loop at all. A spy on readSync is the direct
+  // check — a read-poll would run it ~250 times a second per session. The one
+  // tolerated call is the single non-blocking probe that hands a buffered
+  // first burst to the consumer synchronously before the event-driven stream
+  // takes over; everything after that is wait-only.
+  const realReadSync = fs.readSync;
+  let readCalls = 0;
+  fs.readSync = (...args: unknown[]) => {
+    readCalls++;
+    return realReadSync(...(args as [number, unknown, unknown, unknown, unknown]));
+  };
+  try {
+    const p = spawnPty(["bash", "-c", "sleep 30"], { cols: 80, rows: 24 });
+    const out = collect(p);
+    await Bun.sleep(250);
+    await p.kill();
+    await out.done;
+    expect(readCalls).toBeLessThanOrEqual(2);
+  } finally {
+    fs.readSync = realReadSync;
+  }
+});
+
+/** How many times a 5ms frame clock fires while a pty drains for `ms`. */
+function frameFires(cmd: string[], ms = 400): Promise<number> {
+  const p = spawnPty(cmd, { cols: 80, rows: 24 });
+  const done = (async () => {
+    for await (const _ of readPty(p)) {
+    }
+  })();
+  let fires = 0;
+  const timer = setInterval(() => fires++, 5);
+  return new Promise((resolve) => {
+    setTimeout(async () => {
+      clearInterval(timer);
+      await p.kill();
+      await Promise.race([done, Bun.sleep(2_000)]);
+      resolve(fires);
+    }, ms);
+  });
+}
+
+test("a flooding child cannot starve the event loop's frame clock", async () => {
+  // Frame time must stay decoupled from output volume: a child dumping a burst
+  // must not monopolize the loop the renderer shares. Comparing the idle and
+  // flooded runs in the same process cancels machine load — a drain that
+  // blocked the loop would collapse the ratio far below this bound.
+  const idle = await frameFires(["bash", "-c", "sleep 30"]);
+  const flooded = await frameFires([
+    "bash",
+    "-c",
+    "i=0; while :; do printf 'LINE-%06d %0100d\\n' $i $i; i=$((i+1)); done",
+  ]);
+  expect(flooded).toBeGreaterThanOrEqual(Math.floor(idle * 0.5));
+});
+
+test("draining a session leaves no fd behind", async () => {
+  // The reader must not retain a duplicate master descriptor after it ends:
+  // one leaked /dev/ptmx per session eventually exhausts the long-lived
+  // daemon's file-descriptor limit.
+  const ptmxFds = () =>
+    fs
+      .readdirSync("/proc/self/fd")
+      .map(Number)
+      .filter((fd: number) => {
+        try {
+          return fs.readlinkSync(`/proc/self/fd/${fd}`).includes("ptmx");
+        } catch {
+          return false;
+        }
+      }).length;
+  const before = ptmxFds();
+  for (let i = 0; i < 3; i++) {
+    const p = spawnPty(["sh", "-c", "printf x"], { cols: 80, rows: 24 });
+    const out = collect(p);
+    await p.kill();
+    await out.done;
+  }
+  await Bun.sleep(100);
+  expect(ptmxFds()).toBe(before);
+});
