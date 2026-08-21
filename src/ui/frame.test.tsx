@@ -9,6 +9,7 @@ import { createSignal } from "solid-js";
 import type { Space } from "../space.ts";
 import { frame } from "../window.ts";
 import { resolveOptions } from "../options.ts";
+import { formatText } from "../format.ts";
 import { createAppState } from "./state.ts";
 import { App } from "./App.tsx";
 import type { Panel } from "./regions.tsx";
@@ -44,6 +45,7 @@ async function screen(
     overlay: boolean;
     reopen: boolean;
     format: string;
+    status: string;
   }> = {},
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
@@ -91,6 +93,7 @@ async function screen(
           windows={app.active()?.windows ?? []}
           active={app.activeWindow()}
           format={extra.format}
+          status={extra.status}
           pending={["^a"]}
           copying={false}
           onSelect={() => {}}
@@ -185,6 +188,19 @@ test("window tabs render the configured format", async () => {
   );
 
   expect(rows[0]).toContain("tab-1-bash");
+});
+
+test("window tabs render the configured status format", async () => {
+  const statusFormat = resolveOptions({ "status.format": "status-#{space_name}" })["status.format"];
+  const rows = await screen(
+    false,
+    (space) => {
+      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
+    },
+    { status: formatText(statusFormat, { space_name: "proj" }) },
+  );
+
+  expect(rows[0]).toContain("status-proj");
 });
 
 test("a horizontal split tees into the sidebar seam instead of stopping short", async () => {
