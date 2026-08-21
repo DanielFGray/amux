@@ -89,8 +89,21 @@ test("an unknown name has no declaration to act on", () => {
 });
 
 test("sections are the name prefixes, so declaring an option places its row", () => {
-  expect(optionSections).toEqual(["sidebar", "appearance", "behaviour", "agent", "notifications"]);
-  expect(optionsIn("sidebar")).toEqual(["sidebar.open", "sidebar.width", "sidebar.agentsOnly"]);
+  expect(optionSections).toEqual([
+    "sidebar",
+    "window",
+    "status",
+    "appearance",
+    "behaviour",
+    "agent",
+    "notifications",
+  ]);
+  expect(optionsIn("sidebar")).toEqual([
+    "sidebar.open",
+    "sidebar.width",
+    "sidebar.agentsOnly",
+    "sidebar.format",
+  ]);
   expect(optionsIn("nonesuch")).toEqual([]);
 });
 
