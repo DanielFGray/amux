@@ -84,14 +84,28 @@ testEffect("a source that will not import leaves the running version alone", () 
 
 testEffect("a version that will not start gives way to the one that did", () =>
   Effect.gen(function* () {
-    const world = yield* start("crash", version("crash", 1));
+    const world = yield* start(
+      "crash",
+      `import { Effect } from "effect";
+       export default { id: "crash", apiVersion: "1",
+         effect: (ctx) => Effect.sync(() => {
+           ctx.registerPanel({ id: "crash.panel", region: "left", anchor: "app",
+             size: () => 1, component: () => null as never });
+           (globalThis.AMUX_RELOAD_TEST ??= []).push("1");
+         }) };`,
+    );
+    expect(world.panelVisible()).toBe(true);
 
     yield* Effect.promise(() =>
       writeFile(
         world.entry,
         `import { Effect } from "effect";
          export default { id: "crash", apiVersion: "1",
-           effect: () => Effect.sync(() => { throw new Error("bad edit"); }) };`,
+           effect: (ctx) => Effect.sync(() => {
+             ctx.registerPanel({ id: "crash.panel", region: "left", anchor: "app",
+               size: () => 1, component: () => null as never });
+             throw new Error("bad edit");
+           }) };`,
       ),
     );
     const failure = yield* Effect.either(world.reloader.reload("crash"));
@@ -99,6 +113,7 @@ testEffect("a version that will not start gives way to the one that did", () =>
     expect(failure._tag === "Left" && failure.left).toContain("kept the version that was running");
     // The version that worked stayed running while the candidate was closed.
     expect(world.activations()).toEqual(["1"]);
+    expect(world.panelVisible()).toBe(true);
     expect(world.host.status().map((status) => status.id)).toEqual(["crash"]);
   }),
 );
@@ -125,6 +140,7 @@ interface World {
   readonly entry: string;
   readonly directory: string;
   readonly activations: () => readonly string[];
+  readonly panelVisible: () => boolean;
 }
 
 /** A host running one plugin from a scratch directory. */
@@ -145,7 +161,8 @@ const start = (
 
     const renderer = yield* Effect.promise(() => createTestRenderer({ width: 80, height: 24 }));
     cleanupFns.push(() => renderer.renderer.destroy());
-    const host = yield* createPluginHost(testPluginEnvironment(renderer.renderer));
+    const environment = testPluginEnvironment(renderer.renderer);
+    const host = yield* createPluginHost(environment);
 
     const definition = yield* hotImport(pathToFileURL(entry)).pipe(Effect.orDie);
     yield* host.add(definition);
@@ -156,5 +173,6 @@ const start = (
       directory,
       reloader: createReloader(host, [{ id, source: pathToFileURL(entry), definition }]),
       activations: () => globalThis.AMUX_RELOAD_TEST ?? [],
+      panelVisible: () => environment.regions.declared("left", "app"),
     };
   });
