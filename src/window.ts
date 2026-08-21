@@ -1305,6 +1305,11 @@ export class Window {
         flexGrow: 1,
         flexDirection: "row",
       });
+      const centerColumn = new BoxRenderable(this.#ctx, {
+        id: `dock-center-column-${nextId++}`,
+        flexGrow: 1,
+        flexDirection: "column",
+      });
       const left = new BoxRenderable(this.#ctx, {
         id: `dock-left-${nextId++}`,
         width: size("left"),
@@ -1320,9 +1325,10 @@ export class Window {
       add(left, "left");
       add(right, "right");
       body.add(left);
-      body.add(center);
+      centerColumn.add(top);
+      centerColumn.add(center);
+      body.add(centerColumn);
       body.add(right);
-      this.root.add(top);
       this.root.add(body);
       this.root.add(bottom);
     };

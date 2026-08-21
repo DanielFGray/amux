@@ -457,3 +457,26 @@ test("window projection clamps a dock to half a narrow viewport", async () => {
     height: pane.height,
   });
 });
+
+test("window projection places a top dock between side docks", async () => {
+  const harness = await createHarness({ width: 100, height: 50 });
+  cleanup.push(harness.dispose);
+  const { window } = harness;
+  const left = window.panes[0]!;
+  const top = run(window.splitSpawn("row"))!;
+  window.applyLayout(
+    makeLayout({
+      root: null,
+      docks: {
+        left: [{ id: left.id, content: { kind: "pty", session: left.session!.id } }],
+        right: [],
+        top: [{ id: top.id, content: { kind: "pty", session: top.session!.id } }],
+        bottom: [],
+      },
+    }),
+  );
+  await harness.layout();
+
+  const expected = computeRects(window.exportLayout(), { cols: 100, rows: 50 });
+  expect(expected.get(top.id)).toEqual({ x: top.x, y: top.y, width: top.width, height: top.height });
+});
