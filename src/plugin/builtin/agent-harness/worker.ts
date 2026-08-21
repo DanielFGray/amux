@@ -349,7 +349,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
                 promptOptions.id,
               )
               .pipe(Effect.orDie)
-          : Effect.void;
+          : Effect.void.pipe(Effect.as<PromptInboxEntry | undefined>(undefined));
         return admission.pipe(
           Effect.flatMap((admitted) =>
             Ref.updateAndGet(turns, (n) => n + 1).pipe(
