@@ -406,3 +406,28 @@ test("dock resize changes its fixed strip without touching the tiled tree", () =
     height: 50,
   });
 });
+
+test("window projection keeps the geometry gap between same-side dock panes", async () => {
+  const harness = await createHarness({ width: 40, height: 20 });
+  cleanup.push(harness.dispose);
+  const { window } = harness;
+  const first = window.panes[0]!;
+  const second = run(window.splitSpawn("row"))!;
+  window.applyLayout(
+    makeLayout({
+      root: null,
+      docks: {
+        left: [
+          { id: first.id, content: { kind: "pty", session: first.session!.id } },
+          { id: second.id, content: { kind: "pty", session: second.session!.id } },
+        ],
+        right: [],
+        top: [],
+        bottom: [],
+      },
+    }),
+  );
+  await harness.layout();
+  expect(second.y - first.y).toBeGreaterThan(first.height);
+  expect(second.y).toBe(first.y + first.height + 1);
+});

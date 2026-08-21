@@ -1109,7 +1109,7 @@ export class Window {
     // Placed nothing, in either plane. A window whose tiled tree is empty but
     // which still has a float is not a layout that pruned away to nothing — it
     // is a window showing a float over bare ground, which is a real state.
-    if (!wanted.root && wanted.floats.length === 0) return false;
+    if (layoutRefs(wanted).length === 0) return false;
     // Whatever the layout had no slot for is a closed view, not a killed agent.
     for (const evicted of this.#project(wanted, preset)) evicted.destroyRecursively();
     return true;
@@ -1268,7 +1268,15 @@ export class Window {
           : (this.#layout.dockSizes?.[side] ?? dockDefaultSize(side));
       const add = (box: BoxRenderable, side: DockSide) => {
         setDirection(box, side === "left" || side === "right" ? "column" : "row");
-        dockStrips[side].forEach((slot) => {
+        dockStrips[side].forEach((slot, index) => {
+          if (index > 0) {
+            box.add(
+              new Divider(this.#ctx, {
+                id: `dock-divider-${side}-${nextId++}`,
+                axis: side === "left" || side === "right" ? "column" : "row",
+              }),
+            );
+          }
           const pane = panesById.get(slot.id);
           if (pane) {
             tile(pane, 1);
