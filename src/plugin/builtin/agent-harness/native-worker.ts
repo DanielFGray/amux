@@ -71,13 +71,13 @@ else {
       // Chat owns the conversation: history, tool-call/result pairing and the
       // provider message shape are all its job, not ours.
       const savedConversation = yield* store.conversation(session);
-       const chat =
+      const chat =
         savedConversation === undefined
-           ? yield* Chat.empty
-           : yield* Chat.fromJson(savedConversation);
-       // A daemon or client death can leave a persisted tool call without a
-       // result. Repair it before the first provider request, never by replay.
-       yield* closeOpenToolCalls(chat);
+          ? yield* Chat.empty
+          : yield* Chat.fromJson(savedConversation);
+      // A daemon or client death can leave a persisted tool call without a
+      // result. Repair it before the first provider request, never by replay.
+      yield* closeOpenToolCalls(chat);
       const worker = yield* makeAgentWorker({
         session,
         chat,
