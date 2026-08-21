@@ -697,6 +697,22 @@ test("a window with a float survives the save-and-reload round trip", () => {
   expect(reloaded.spaces[0]!.windows[0]!.layout).toEqual(floated.spaces[0]!.windows[0]!.layout);
 });
 
+test("pane dock commands move a focused pane into a daemon-owned strip", () => {
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  const docked = applyWorkspaceCommand(adopted, command("pane.dock-left"), context).snapshot;
+  const window = docked.spaces[0]!.windows[0]!;
+  expect(window.layout.docks?.left.map((pane) => pane.id)).toEqual(["pane-a"]);
+  expect(layoutPanes(window.layout.root).map((pane) => pane.id)).toEqual(["pane-b"]);
+  expect(window.state.focus).toBe("pane-a");
+
+  const undocked = applyWorkspaceCommand(docked, command("pane.undock"), context).snapshot;
+  expect(undocked.spaces[0]!.windows[0]!.layout.docks?.left).toEqual([]);
+  expect(layoutPanes(undocked.spaces[0]!.windows[0]!.layout.root).map((pane) => pane.id)).toEqual([
+    "pane-b",
+    "pane-a",
+  ]);
+});
+
 // A sessionless plugin pane (the editor) is a real model state: it names a
 // registered pane type and a descriptor, and no session. Both the wire and the
 // save must carry the pane's type and descriptor verbatim — a schema that

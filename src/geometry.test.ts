@@ -367,3 +367,116 @@ test("moving and resizing a float leaves a tiled pane and a sibling float alone"
   expect(moveFloat(stacked, size, "a", "left")).toBe(stacked);
   expect(moveFloat(stacked, size, "ghost", "left")).toBe(stacked);
 });
+
+test("dock geometry reserves corners in the documented order", () => {
+  const ref = (id: string) => ({ id, content: { kind: "pty" as const, session: id } });
+  const current = makeLayout({
+    root: pane("centre"),
+    docks: {
+      left: [ref("left")],
+      right: [ref("right")],
+      top: [ref("top")],
+      bottom: [ref("bottom")],
+    },
+  });
+  const rects = computeRects(current, { cols: 100, rows: 50 });
+  expect(rects.get("left")).toEqual({ x: 0, y: 12, width: 40, height: 26 });
+  expect(rects.get("right")).toEqual({ x: 60, y: 12, width: 40, height: 26 });
+  expect(rects.get("top")).toEqual({ x: 40, y: 0, width: 20, height: 12 });
+  expect(rects.get("bottom")).toEqual({ x: 0, y: 38, width: 100, height: 12 });
+  expect(rects.get("centre")).toEqual({ x: 40, y: 12, width: 20, height: 26 });
+});
+
+test("dock resize changes its fixed strip without touching the tiled tree", () => {
+  const current = makeLayout({
+    root: pane("centre"),
+    docks: {
+      left: [{ id: "left", content: { kind: "pty", session: "left" } }],
+      right: [],
+      top: [],
+      bottom: [],
+    },
+  });
+  const resized = resizePane(current, { cols: 100, rows: 50 }, "left", "left");
+  expect(resized.dockSizes?.left).toBe(41);
+  expect(computeRects(resized, { cols: 100, rows: 50 }).get("centre")).toEqual({
+    x: 41,
+    y: 0,
+    width: 59,
+    height: 50,
+  });
+});
+
+test("window projection keeps the geometry gap between same-side dock panes", async () => {
+  const harness = await createHarness({ width: 40, height: 20 });
+  cleanup.push(harness.dispose);
+  const { window } = harness;
+  const first = window.panes[0]!;
+  const second = run(window.splitSpawn("row"))!;
+  window.applyLayout(
+    makeLayout({
+      root: null,
+      docks: {
+        left: [
+          { id: first.id, content: { kind: "pty", session: first.session!.id } },
+          { id: second.id, content: { kind: "pty", session: second.session!.id } },
+        ],
+        right: [],
+        top: [],
+        bottom: [],
+      },
+    }),
+  );
+  await harness.layout();
+  expect(second.y - first.y).toBeGreaterThan(first.height);
+  expect(second.y).toBe(first.y + first.height + 1);
+});
+
+test("window projection clamps a dock to half a narrow viewport", async () => {
+  const harness = await createHarness({ width: 40, height: 20 });
+  cleanup.push(harness.dispose);
+  const { window } = harness;
+  const pane = window.panes[0]!;
+  window.applyLayout(
+    makeLayout({
+      root: null,
+      docks: {
+        left: [{ id: pane.id, content: { kind: "pty", session: pane.session!.id } }],
+        right: [],
+        top: [],
+        bottom: [],
+      },
+    }),
+  );
+  await harness.layout();
+
+  expect(computeRects(window.exportLayout(), { cols: 40, rows: 20 }).get(pane.id)).toEqual({
+    x: 0,
+    y: 0,
+    width: pane.width,
+    height: pane.height,
+  });
+});
+
+test("window projection places a top dock between side docks", async () => {
+  const harness = await createHarness({ width: 100, height: 50 });
+  cleanup.push(harness.dispose);
+  const { window } = harness;
+  const left = window.panes[0]!;
+  const top = run(window.splitSpawn("row"))!;
+  window.applyLayout(
+    makeLayout({
+      root: null,
+      docks: {
+        left: [{ id: left.id, content: { kind: "pty", session: left.session!.id } }],
+        right: [],
+        top: [{ id: top.id, content: { kind: "pty", session: top.session!.id } }],
+        bottom: [],
+      },
+    }),
+  );
+  await harness.layout();
+
+  const expected = computeRects(window.exportLayout(), { cols: 100, rows: 50 });
+  expect(expected.get(top.id)).toEqual({ x: top.x, y: top.y, width: top.width, height: top.height });
+});

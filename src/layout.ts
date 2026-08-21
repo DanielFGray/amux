@@ -130,8 +130,15 @@ export interface LayoutFloat extends PaneRef {
   height: number;
 }
 
+export type DockSide = "left" | "right" | "top" | "bottom";
+export const DOCK_SIDES = ["left", "right", "top", "bottom"] as const;
+export type DockStrips = { readonly [side in DockSide]: readonly PaneRef[] };
+export const emptyDockStrips = (): DockStrips => ({ left: [], right: [], top: [], bottom: [] });
+export const dockDefaultSize = (side: DockSide): number =>
+  side === "left" || side === "right" ? 40 : 12;
+
 /** Where a pane sits. The other axis of a pane, orthogonal to what fills it. */
-export type Placement = "tiled" | "floating";
+export type Placement = "tiled" | "floating" | DockSide;
 
 export interface Layout {
   version: typeof LAYOUT_VERSION;
@@ -140,6 +147,10 @@ export interface Layout {
   root: LayoutNode | null;
   /** The floating plane, bottom to top. Usually empty. */
   floats: readonly LayoutFloat[];
+  /** Ordered panes in the four fixed-cell edge strips. */
+  docks?: DockStrips;
+  /** User-adjusted strip thicknesses, in cells. */
+  dockSizes?: Partial<Record<DockSide, number>>;
   /** PaneRef.id of the pane that had focus, if the layout still places it. */
   focus?: string;
 }
@@ -183,7 +194,11 @@ export function layoutPanes(node: LayoutNode | null): LayoutPane[] {
  * placement in general, and a float is placed.
  */
 export function layoutRefs(layout: Layout): PaneRef[] {
-  return [...layoutPanes(layout.root), ...layout.floats];
+  return [
+    ...layoutPanes(layout.root),
+    ...DOCK_SIDES.flatMap((side) => (layout.docks ?? emptyDockStrips())[side]),
+    ...layout.floats,
+  ];
 }
 
 /** Session ids the layout expects to exist, in pane order, dropping panes whose
@@ -214,17 +229,45 @@ export function layoutSessions(layout: Layout): string[] {
 export function makeLayout({
   root,
   floats = [],
+  docks,
+  dockSizes,
   focus,
 }: {
   root: LayoutNode | null;
   floats?: readonly LayoutFloat[];
+  docks?: DockStrips;
+  dockSizes?: Partial<Record<DockSide, number>>;
   focus?: string;
 }): Layout {
-  const placed = [...layoutPanes(root), ...floats];
+  const sourceDocks = docks ?? emptyDockStrips();
+  const normalizedDocks = {
+    left: [...sourceDocks.left],
+    right: [...sourceDocks.right],
+    top: [...sourceDocks.top],
+    bottom: [...sourceDocks.bottom],
+  } as DockStrips;
+  const placed = [
+    ...layoutPanes(root),
+    ...DOCK_SIDES.flatMap((side) => normalizedDocks[side]),
+    ...floats,
+  ];
   const present = focus !== undefined && placed.some((pane) => pane.id === focus);
   return present
-    ? { version: LAYOUT_VERSION, root, floats, focus }
-    : { version: LAYOUT_VERSION, root, floats };
+    ? {
+        version: LAYOUT_VERSION,
+        root,
+        floats,
+        ...(docks ? { docks: normalizedDocks } : {}),
+        ...(dockSizes ? { dockSizes: { ...dockSizes } } : {}),
+        focus,
+      }
+    : {
+        version: LAYOUT_VERSION,
+        root,
+        floats,
+        ...(docks ? { docks: normalizedDocks } : {}),
+        ...(dockSizes ? { dockSizes: { ...dockSizes } } : {}),
+      };
 }
 
 /**
@@ -401,9 +444,14 @@ export function swapLayout(layout: Layout, from: number, to: number): Layout {
  * error: a window with nothing in it is what the app closes.
  */
 export function closeLayout(layout: Layout, paneId: string): Layout {
+  const dockStrips = layout.docks ?? emptyDockStrips();
   const index = layoutPanes(layout.root).findIndex((pane) => pane.id === paneId);
   const floats = layout.floats.filter((float) => float.id !== paneId);
-  if (index === -1 && floats.length === layout.floats.length) return layout;
+  const docks = Object.fromEntries(
+    DOCK_SIDES.map((side) => [side, dockStrips[side].filter((pane) => pane.id !== paneId)]),
+  ) as unknown as DockStrips;
+  const dockChanged = DOCK_SIDES.some((side) => docks[side].length !== dockStrips[side].length);
+  if (index === -1 && floats.length === layout.floats.length && !dockChanged) return layout;
 
   const root =
     index === -1
@@ -411,15 +459,56 @@ export function closeLayout(layout: Layout, paneId: string): Layout {
       : collapse(rewritePanes(layout.root, (pane) => (pane.id === paneId ? null : pane)));
   const survivors = layoutPanes(root);
   const heir = index === -1 ? undefined : survivors[Math.min(index, survivors.length - 1)];
-  const remaining = [...survivors, ...floats];
+  const remaining = [...survivors, ...DOCK_SIDES.flatMap((side) => docks[side]), ...floats];
   const focus = layout.focus === paneId ? (heir ?? remaining.at(-1))?.id : layout.focus;
-  return makeLayout({ ...layout, root, floats, focus });
+  return makeLayout({ ...layout, root, floats, docks, focus });
 }
 
 /** Which plane a layout places a pane in, or null if it does not place it. */
 export function placementOf(layout: Layout, paneId: string): Placement | null {
+  const dockStrips = layout.docks ?? emptyDockStrips();
   if (layout.floats.some((float) => float.id === paneId)) return "floating";
+  for (const side of DOCK_SIDES)
+    if (dockStrips[side].some((pane) => pane.id === paneId)) return side;
   return layoutPanes(layout.root).some((pane) => pane.id === paneId) ? "tiled" : null;
+}
+
+export function setDock(layout: Layout, paneId: string, side: DockSide): Layout {
+  const dockStrips = layout.docks ?? emptyDockStrips();
+  const current = placementOf(layout, paneId);
+  if (current === null || current === side) return layout;
+  const target = layoutRefs(layout).find((pane) => pane.id === paneId)!;
+  const docks = Object.fromEntries(
+    DOCK_SIDES.map((candidate) => [
+      candidate,
+      dockStrips[candidate].filter((pane) => pane.id !== paneId),
+    ]),
+  ) as unknown as DockStrips;
+  const root =
+    current === "tiled"
+      ? collapse(rewritePanes(layout.root, (pane) => (pane.id === paneId ? null : pane)))
+      : layout.root;
+  const floats =
+    current === "floating" ? layout.floats.filter((float) => float.id !== paneId) : layout.floats;
+  const nextDocks = {
+    ...docks,
+    [side]: [...docks[side], { id: target.id, content: target.content }],
+  } as DockStrips;
+  return makeLayout({ ...layout, root, floats, docks: nextDocks, focus: paneId });
+}
+
+export function undockPane(layout: Layout, paneId: string): Layout {
+  const dockStrips = layout.docks ?? emptyDockStrips();
+  const side = DOCK_SIDES.find((candidate) =>
+    dockStrips[candidate].some((pane) => pane.id === paneId),
+  );
+  if (!side) return layout;
+  const target = dockStrips[side].find((pane) => pane.id === paneId)!;
+  const docks = {
+    ...dockStrips,
+    [side]: dockStrips[side].filter((pane) => pane.id !== paneId),
+  } as DockStrips;
+  return appendPane(makeLayout({ ...layout, docks }), target);
 }
 
 /**
@@ -476,6 +565,7 @@ export function setPlacement(layout: Layout, paneId: string, placement: Placemen
  * survivors, which is much closer to what the user had than starting over.
  */
 export function prune(layout: Layout, alive: (session: string) => boolean): Layout {
+  const dockStrips = layout.docks ?? emptyDockStrips();
   const filter = (node: LayoutNode): LayoutNode | null => {
     if (node.type === "pane") {
       const session = paneSession(node.content);
@@ -497,6 +587,15 @@ export function prune(layout: Layout, alive: (session: string) => boolean): Layo
       const session = paneSession(float.content);
       return session === undefined || alive(session);
     }),
+    docks: Object.fromEntries(
+      DOCK_SIDES.map((side) => [
+        side,
+        dockStrips[side].filter((pane) => {
+          const session = paneSession(pane.content);
+          return session === undefined || alive(session);
+        }),
+      ]),
+    ) as unknown as DockStrips,
   });
 }
 
@@ -755,6 +854,50 @@ const LayoutSchema = S.Struct({
       }),
     ),
   ),
+  docks: S.optional(
+    S.Struct({
+      left: S.optional(
+        S.Array(
+          S.Struct({
+            id: S.propertySignature(paneId),
+            content: S.propertySignature(PaneContentSchema),
+          }),
+        ),
+      ),
+      right: S.optional(
+        S.Array(
+          S.Struct({
+            id: S.propertySignature(paneId),
+            content: S.propertySignature(PaneContentSchema),
+          }),
+        ),
+      ),
+      top: S.optional(
+        S.Array(
+          S.Struct({
+            id: S.propertySignature(paneId),
+            content: S.propertySignature(PaneContentSchema),
+          }),
+        ),
+      ),
+      bottom: S.optional(
+        S.Array(
+          S.Struct({
+            id: S.propertySignature(paneId),
+            content: S.propertySignature(PaneContentSchema),
+          }),
+        ),
+      ),
+    }),
+  ),
+  dockSizes: S.optional(
+    S.Struct({
+      left: S.optional(S.Int.pipe(S.greaterThan(1))),
+      right: S.optional(S.Int.pipe(S.greaterThan(1))),
+      top: S.optional(S.Int.pipe(S.greaterThan(1))),
+      bottom: S.optional(S.Int.pipe(S.greaterThan(1))),
+    }),
+  ),
   focus: S.optional(paneId),
 });
 
@@ -762,10 +905,19 @@ const LayoutSchema = S.Struct({
  *  layouts encode to equal strings and a diff of session.json stays readable. */
 export function encodeLayout(layout: Layout): string {
   const normalized = makeLayout({ ...layout, root: collapse(layout.root) });
+  const docks = normalized.docks ?? emptyDockStrips();
+  const encodedDocks = Object.fromEntries(
+    DOCK_SIDES.map((side) => [
+      side,
+      docks[side].map((pane) => ({ id: pane.id, content: pane.content })),
+    ]),
+  );
   return JSON.stringify({
     ...normalized,
     root: order(normalized.root),
     floats: normalized.floats.map(orderFloat),
+    ...(DOCK_SIDES.some((side) => docks[side].length > 0) ? { docks: encodedDocks } : {}),
+    ...(normalized.dockSizes ? { dockSizes: normalized.dockSizes } : {}),
   });
 }
 
@@ -873,6 +1025,17 @@ function validateDecodedLayout(
         });
       reservePaneId(float.id);
     }
-    return makeLayout({ root: collapse(root), floats, focus: decoded.focus });
+    const rawDocks = decoded.docks ?? {};
+    const docks = Object.fromEntries(
+      DOCK_SIDES.map((side) => [side, rawDocks[side] ?? []]),
+    ) as DockStrips;
+    for (const side of DOCK_SIDES) for (const pane of docks[side]) reservePaneId(pane.id);
+    return makeLayout({
+      root: collapse(root),
+      floats,
+      ...(decoded.docks !== undefined ? { docks } : {}),
+      ...(decoded.dockSizes !== undefined ? { dockSizes: decoded.dockSizes } : {}),
+      focus: decoded.focus,
+    });
   });
 }
