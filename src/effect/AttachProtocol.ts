@@ -95,6 +95,16 @@ const turnStartFields = {
 const TurnStartPayload = S.TaggedStruct("turn.start", turnStartFields);
 const TurnStart = S.TaggedStruct("turn.start", { ...turnStartFields, sequence: S.NonNegativeInt });
 
+/** A durably admitted prompt that has not yet been promoted to provider input. */
+const turnQueuedFields = {
+  session: S.String,
+  turn: S.String,
+  prompt: S.String,
+  delivery: S.Literal("steer", "queue"),
+};
+const TurnQueuedPayload = S.TaggedStruct("turn.queued", turnQueuedFields);
+const TurnQueued = S.TaggedStruct("turn.queued", { ...turnQueuedFields, sequence: S.NonNegativeInt });
+
 const TextDelta = S.TaggedStruct("text.delta", {
   session: S.String,
   turn: S.String,
@@ -264,6 +274,7 @@ const TurnEndPayload = S.TaggedStruct("turn.end", turnEndFields);
 const TurnEnd = S.TaggedStruct("turn.end", { ...turnEndFields, sequence: S.NonNegativeInt });
 
 export const AgentEventPayloadSchema = S.Union(
+  TurnQueuedPayload,
   TurnStartPayload,
   ReasoningDeltaPayload,
   ToolStartPayload,
@@ -322,6 +333,7 @@ const Pong = S.TaggedStruct("pong", {
 });
 
 export const AgentEvent = S.Union(
+  TurnQueued,
   TurnStart,
   ReasoningDelta,
   ToolStart,
@@ -353,6 +365,7 @@ export const AttachFrame = S.Union(
   Foreground,
   Workspace,
   AgentEventInputFrame,
+  TurnQueued,
   TurnStart,
   TextDelta,
   ReasoningDelta,

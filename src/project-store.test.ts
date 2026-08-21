@@ -70,7 +70,7 @@ test("a fresh database migrates, records its own root, and starts with no rules"
   );
   expect(
     database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
-  ).toBe(3);
+  ).toBe(4);
   database.close();
 });
 

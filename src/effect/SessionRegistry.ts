@@ -79,7 +79,7 @@ export interface ManagedSession {
   readonly events?: Stream.Stream<AgentEventPayload | AgentDelta, PtyError>;
   readonly exit: Effect.Effect<number | null, PtyError>;
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-  readonly prompt: (text: string) => Effect.Effect<void, PtyError>;
+  readonly prompt: (text: string, options?: PromptOptions) => Effect.Effect<void, PtyError>;
   /** Answer a permission request this session is blocked on. */
   readonly decide: (answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly interrupt: (reason?: string) => Effect.Effect<void, PtyError>;
@@ -90,6 +90,12 @@ export interface ManagedSession {
    *  the master, which lives here. See the `foreground` attach frame. */
   readonly foreground: () => SessionForeground;
 }
+
+export type PromptOptions = {
+  readonly id?: string;
+  readonly delivery?: "steer" | "queue";
+  readonly resume?: boolean;
+};
 
 /** The foreground of a session's tty, as the owner sees it. A session with no
  *  process behind it (an agent stub) reports -1 for both. */
@@ -123,7 +129,7 @@ interface Backend {
   /** Resolves once the backend has fully terminated, with its exit code. */
   readonly wait: Promise<number | null>;
   write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>;
-  prompt(text: string): Promise<void>;
+  prompt(text: string, options?: PromptOptions): Promise<void>;
   decide(answer: PermissionAnswer): Promise<void>;
   interrupt(reason?: string): Promise<void>;
   resize(cols: number, rows: number): void;
@@ -285,7 +291,7 @@ function componentBackend(spec: SessionSpec): Backend {
         session: spec.id,
         data: typeof data === "string" ? new TextEncoder().encode(data) : data,
       }),
-    prompt: (text) => send({ _tag: "agent.prompt", session: spec.id, text }),
+    prompt: (text, options) => send({ _tag: "agent.prompt", session: spec.id, text, ...options }),
     decide: (answer) => send({ _tag: "agent.permission", session: spec.id, ...answer }),
     interrupt: (reason) =>
       send({
@@ -451,9 +457,9 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
                   : Effect.fail(asPtyError("write", error)),
               ),
             ),
-          prompt: (text) =>
+          prompt: (text, options) =>
             Effect.tryPromise({
-              try: () => backend.prompt(text),
+              try: () => backend.prompt(text, options),
               catch: (error) => asPtyError("prompt", error),
             }),
           decide: (answer) =>

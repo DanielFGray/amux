@@ -15,7 +15,7 @@ import { makePermissionGate } from "./permission.ts";
 import { DEFAULT_RULES } from "../../../permission.ts";
 import { projectRoot } from "../../../git.ts";
 import { layer as projectStoreLayer, Service as ProjectStore } from "../../../project-store.ts";
-import { makeAgentWorker, sanitizeAgentError } from "./worker.ts";
+import { closeOpenToolCalls, makeAgentWorker, sanitizeAgentError } from "./worker.ts";
 
 // --- Process entry point ---
 
@@ -26,8 +26,6 @@ if (!import.meta.main) {
 } else if (!session) throw new Error("AMUX_SESSION is required");
 else {
   // The turn a permission request belongs to is the one currently executing.
-  // `turn.start` is emitted when a prompt is queued, which can happen while an
-  // earlier turn is still running, so it cannot stand in for that.
   let turn = "";
   const emit = (frame: AgentEventPayload | AgentDelta) =>
     Effect.sync(() =>
@@ -73,10 +71,13 @@ else {
       // Chat owns the conversation: history, tool-call/result pairing and the
       // provider message shape are all its job, not ours.
       const savedConversation = yield* store.conversation(session);
-      const chat =
+       const chat =
         savedConversation === undefined
-          ? yield* Chat.empty
-          : yield* Chat.fromJson(savedConversation);
+           ? yield* Chat.empty
+           : yield* Chat.fromJson(savedConversation);
+       // A daemon or client death can leave a persisted tool call without a
+       // result. Repair it before the first provider request, never by replay.
+       yield* closeOpenToolCalls(chat);
       const worker = yield* makeAgentWorker({
         session,
         chat,
@@ -99,7 +100,7 @@ else {
         Effect.flatMap((pending) =>
           Effect.forEach(
             pending.filter((entry) => entry.resume),
-            (entry) => worker.prompt(entry.prompt, { id: entry.id, delivery: entry.delivery }),
+            (entry) => worker.resume(entry),
             { discard: true, concurrency: 1 },
           ),
         ),

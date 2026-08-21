@@ -20,6 +20,8 @@ export type AgentWorker = {
       readonly resume?: boolean;
     },
   ) => Effect.Effect<void>;
+  /** Schedule an existing durable admission after a worker restart. */
+  readonly resume: (entry: PromptInboxEntry) => Effect.Effect<void>;
   readonly interrupt: (reason?: string) => Effect.Effect<void>;
   readonly close: Effect.Effect<void>;
 };
@@ -44,6 +46,32 @@ export function sanitizeAgentError(error: unknown): string {
     return "Provider is unavailable. Check your network and try again.";
   return "The agent worker failed while processing the request.";
 }
+
+/** Repair calls a prior process could not finish before any provider sees the restored history. */
+export const closeOpenToolCalls = (chat: Chat.Service) =>
+  Ref.update(chat.history, (prompt) => {
+    const answered = new Set<string>();
+    const open = new Map<string, string>();
+    for (const message of prompt.content) {
+      if (message.role !== "assistant" && message.role !== "tool") continue;
+      for (const part of message.content) {
+        if (part.type === "tool-call") open.set(part.id, part.name);
+        if (part.type === "tool-result") answered.add(part.id);
+      }
+    }
+    for (const id of answered) open.delete(id);
+    if (open.size === 0) return prompt;
+    const results = [...open].map(([id, name]) =>
+      Prompt.makePart("tool-result", {
+        id,
+        name,
+        isFailure: true,
+        result: "Tool execution interrupted",
+        providerExecuted: false,
+      }),
+    );
+    return Prompt.make([...prompt.content, Prompt.makeMessage("tool", { content: results })]);
+  });
 
 /**
  * What the worker hands to `emit`: any agent frame except the `session` field,
@@ -165,29 +193,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
      * the caller nor the provider, so the worker answers on the tool's behalf
      * and the transcript stays a valid prompt for the next turn.
      */
-    const closeOpenToolCalls = Ref.update(options.chat.history, (prompt) => {
-      const answered = new Set<string>();
-      const open = new Map<string, string>();
-      for (const message of prompt.content) {
-        if (message.role !== "assistant" && message.role !== "tool") continue;
-        for (const part of message.content) {
-          if (part.type === "tool-call") open.set(part.id, part.name);
-          if (part.type === "tool-result") answered.add(part.id);
-        }
-      }
-      for (const id of answered) open.delete(id);
-      if (open.size === 0) return prompt;
-      const results = [...open].map(([id, name]) =>
-        Prompt.makePart("tool-result", {
-          id,
-          name,
-          isFailure: true,
-          result: "The tool call was cancelled because the turn was interrupted.",
-          providerExecuted: false,
-        }),
-      );
-      return Prompt.make([...prompt.content, Prompt.makeMessage("tool", { content: results })]);
-    });
+    const repairOpenToolCalls = closeOpenToolCalls(options.chat);
 
     /**
      * Terminal frames for every exit, so no path leaves the pane mid-turn.
@@ -205,7 +211,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
       // A turn cut short between a tool call and its result leaves the call
       // unpaired, and a provider rejects that history outright — so the session
       // would be dead from the next prompt on, not just this turn.
-      const repair = outcome === "completed" ? Effect.void : closeOpenToolCalls;
+      const repair = outcome === "completed" ? Effect.void : repairOpenToolCalls;
       const error =
         Exit.isFailure(exit) && outcome === "failed"
           ? sanitizeAgentError(Cause.pretty(exit.cause))
@@ -232,6 +238,12 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
     // Total by construction: the catchAll below absorbs every typed failure
     // after settle has reported it, which is what lets a turn fail without
     // ending the session and what FiberHandle<void, never> requires.
+    const takeSteer = Ref.modify(inbox, (pending) => {
+      const index = pending.findIndex((item) => item.delivery === "steer");
+      if (index < 0) return [undefined, pending] as const;
+      return [pending[index], [...pending.slice(0, index), ...pending.slice(index + 1)]] as const;
+    });
+
     const runTurn = (
       queued: QueuedTurn,
     ): Effect.Effect<
@@ -268,12 +280,24 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
             // Chat commits its response when stream consumption releases.
             // Checkpoint afterwards, or recovery misses the just-finished step.
             Effect.andThen(options.persist ?? Effect.void),
-            Effect.flatMap(() => (needsContinuation ? runStep(Prompt.empty) : Effect.void)),
+            // A steer is an instruction for the next provider boundary, not a
+            // FIFO turn. Check before tool continuation so it can redirect the
+            // agent before the provider sees the tool result again.
+            Effect.flatMap(() =>
+              needsContinuation
+                ? takeSteer.pipe(
+                    Effect.flatMap((steer) =>
+                      steer ? runTurn(steer).pipe(Effect.andThen(runStep(Prompt.empty))) : runStep(Prompt.empty),
+                    ),
+                  )
+                : Effect.void,
+            ),
           );
       };
       return (
         queued.id && options.inbox ? options.inbox.promotePrompt(queued.id) : Effect.void
       ).pipe(
+        Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
         Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
         Effect.andThen(emit({ _tag: "agent.status", state: AgentState.Working })),
         Effect.andThen(runStep(prompt)),
@@ -314,10 +338,6 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
     const drainFiber = yield* Effect.forkScoped(drain);
 
     return {
-      // `turn.start` is emitted here, at enqueue time, so the transcript shows
-      // the user's message the moment it is submitted — even while an earlier
-      // turn is still running. The queued turn keeps its turn id, so the later
-      // Working/end frames attach to the prompt the user already saw.
       prompt: (text, promptOptions = {}) => {
         const admission: Effect.Effect<PromptInboxEntry | undefined> = options.inbox
           ? options.inbox
@@ -329,19 +349,24 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
                 promptOptions.id,
               )
               .pipe(Effect.orDie)
-          : Effect.succeed(undefined);
+          : Effect.void;
         return admission.pipe(
           Effect.flatMap((admitted) =>
             Ref.updateAndGet(turns, (n) => n + 1).pipe(
               Effect.flatMap((n) => {
-                const turn = `turn-${n}`;
+                const turn = admitted?.turn ?? `turn-${n}`;
                 const queued = {
                   turn,
                   prompt: text,
                   delivery: promptOptions.delivery ?? "queue",
                   ...(admitted ? { id: admitted.id } : {}),
                 } satisfies QueuedTurn;
-                return emit({ _tag: "turn.start", turn, prompt: text }).pipe(
+                return emit({
+                  _tag: "turn.queued",
+                  turn,
+                  prompt: text,
+                  delivery: promptOptions.delivery ?? "queue",
+                }).pipe(
                   Effect.andThen(
                     promptOptions.resume === false
                       ? Effect.void
@@ -357,6 +382,11 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
           ),
         );
       },
+      resume: (entry) =>
+        Ref.update(inbox, (pending) => [
+          ...pending,
+          { turn: entry.turn, prompt: entry.prompt, id: entry.id, delivery: entry.delivery },
+        ]).pipe(Effect.andThen(Queue.offer(wake, undefined)), Effect.asVoid),
       // Interruption is Effect's, so the provider request, the stream and every
       // finalizer unwind together; there is no abort flag to keep in sync.
       interrupt: () => FiberHandle.clear(running),

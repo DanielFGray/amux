@@ -1034,7 +1034,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       }
       if (meta.target === "session") {
         if (value._tag === "agent.prompt") {
-          yield* requireHost.pipe(Effect.flatMap((h) => h.prompt(value.target, value.text)));
+          yield* requireHost.pipe(
+            Effect.flatMap((h) =>
+              h.prompt(value.target, value.text, {
+                ...(value.id === undefined ? {} : { id: value.id }),
+                ...(value.delivery === undefined ? {} : { delivery: value.delivery }),
+                ...(value.resume === undefined ? {} : { resume: value.resume }),
+              }),
+            ),
+          );
           return {};
         }
         if (value._tag === "pane.capture") {

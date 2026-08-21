@@ -34,6 +34,7 @@ export type PromptOptions = {
 };
 export type PromptInboxEntry = {
   readonly id: string;
+  readonly turn: string;
   readonly session: string;
   readonly prompt: string;
   readonly delivery: PromptDelivery;
@@ -131,6 +132,8 @@ const MIGRATIONS: readonly string[] = [
       promoted INTEGER
     );
    CREATE INDEX prompt_inbox_pending ON prompt_inbox (session, promoted, admitted);`,
+  `ALTER TABLE prompt_inbox ADD COLUMN turn TEXT;
+   UPDATE prompt_inbox SET turn = 'turn-' || id WHERE turn IS NULL;`,
 ];
 
 const open = (
@@ -202,13 +205,13 @@ function queries(database: Database, root: string): Interface {
     resume: row.resume !== 0,
   });
   const selectPrompt = database.query<StoredPrompt, [string]>(
-    "SELECT id, session, prompt, delivery, admitted, resume FROM prompt_inbox WHERE id = ?",
+    "SELECT id, turn, session, prompt, delivery, admitted, resume FROM prompt_inbox WHERE id = ?",
   );
   const insertPrompt = database.query(
-    "INSERT INTO prompt_inbox (id, session, prompt, delivery, admitted, resume) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO prompt_inbox (id, turn, session, prompt, delivery, admitted, resume) VALUES (?, ?, ?, ?, ?, ?, ?)",
   );
   const selectPending = database.query<StoredPrompt, [string]>(
-    "SELECT id, session, prompt, delivery, admitted, resume FROM prompt_inbox WHERE session = ? AND promoted IS NULL ORDER BY admitted, id",
+    "SELECT id, turn, session, prompt, delivery, admitted, resume FROM prompt_inbox WHERE session = ? AND promoted IS NULL ORDER BY admitted, id",
   );
   const markPrompt = database.query(
     "UPDATE prompt_inbox SET promoted = ? WHERE id = ? AND promoted IS NULL",
@@ -244,8 +247,9 @@ function queries(database: Database, root: string): Interface {
             return promptEntry(existing);
           }
           const admitted = Date.now();
-          insertPrompt.run(requestedId, session, prompt, delivery, admitted, resume ? 1 : 0);
-          return { id: requestedId, session, prompt, delivery, admitted, resume };
+          const turn = `turn-${requestedId}`;
+          insertPrompt.run(requestedId, turn, session, prompt, delivery, admitted, resume ? 1 : 0);
+          return { id: requestedId, turn, session, prompt, delivery, admitted, resume };
         })(),
       ),
     pendingPrompts: (session) =>

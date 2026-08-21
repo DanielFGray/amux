@@ -46,7 +46,10 @@ const runWorker = <A>(
   model: Effect.Effect<LanguageModel.Service>,
   body: (
     worker: {
-      readonly prompt: (text: string) => Effect.Effect<void>;
+      readonly prompt: (
+        text: string,
+        options?: { readonly id?: string; readonly delivery?: "steer" | "queue"; readonly resume?: boolean },
+      ) => Effect.Effect<void>;
       readonly interrupt: (reason?: string) => Effect.Effect<void>;
       readonly close: Effect.Effect<void>;
     },
@@ -88,6 +91,7 @@ test("drains a prompt and emits semantic frames", async () => {
   );
 
   expect(frames.map((frame) => frame._tag)).toEqual([
+    "turn.queued",
     "turn.start",
     "agent.status",
     "text.delta",
@@ -401,6 +405,7 @@ test("streamed tool parameters emit params frames before the call", async () => 
   );
 
   expect(frames.map((f) => f._tag)).toEqual([
+    "turn.queued",
     "turn.start",
     "agent.status",
     "tool.params-start",
@@ -483,7 +488,7 @@ test("a prompt queued behind a running turn announces its prompt immediately", a
         yield* worker.prompt("first");
         yield* awaitFrame(frames, "text.delta");
         yield* worker.prompt("second");
-        const announced = frames.some((f) => f._tag === "turn.start" && f.prompt === "second");
+        const announced = frames.some((f) => f._tag === "turn.queued" && f.prompt === "second");
         yield* worker.interrupt("enough");
         yield* awaitFrame(frames, "turn.end");
         return announced;
@@ -493,4 +498,24 @@ test("a prompt queued behind a running turn announces its prompt immediately", a
 
   // The queued prompt is visible before the running turn has ended.
   expect(announced).toBe(true);
+});
+
+test("admit without scheduling is visible as queued but does not reach the provider", async () => {
+  const frames: WorkerFrame[] = [];
+  const seen: Prompt.Prompt[] = [];
+  await runWorker(
+    scriptedModel(() => [], { seen }),
+    (worker) => worker.prompt("later", { resume: false }),
+    { emit: (frame) => Effect.sync(() => void frames.push(frame)) },
+  );
+
+  expect(seen).toEqual([]);
+  expect(frames).toContainEqual({
+    _tag: "turn.queued",
+    session: "agent-test",
+    turn: expect.any(String),
+    prompt: "later",
+    delivery: "queue",
+  });
+  expect(frames.some((frame) => frame._tag === "turn.start")).toBe(false);
 });

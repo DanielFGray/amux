@@ -3,7 +3,7 @@ import type { PermissionDecision, PermissionRule } from "../../../permission.ts"
 
 export type TranscriptBlock =
   | { readonly kind: "reasoning"; readonly turn: string; readonly text: string }
-  | { readonly kind: "user"; readonly turn: string; readonly text: string }
+  | { readonly kind: "user"; readonly turn: string; readonly text: string; readonly queued?: boolean }
   | { readonly kind: "assistant"; readonly turn: string; readonly text: string }
   | {
       readonly kind: "tool";
@@ -111,8 +111,18 @@ export function appendTranscriptFrame(
   frame: AgentFrame,
 ): readonly TranscriptBlock[] {
   switch (frame._tag) {
-    case "turn.start":
-      return [...blocks, { kind: "user", turn: frame.turn, text: frame.prompt }];
+    case "turn.queued":
+      return [...blocks, { kind: "user", turn: frame.turn, text: frame.prompt, queued: true }];
+    case "turn.start": {
+      const queued = blocks.some((block) => block.kind === "user" && block.turn === frame.turn);
+      return queued
+        ? blocks.map((block) =>
+            block.kind === "user" && block.turn === frame.turn
+              ? { ...block, queued: undefined }
+              : block,
+          )
+        : [...blocks, { kind: "user", turn: frame.turn, text: frame.prompt }];
+    }
     case "text.delta": {
       const index = blocks.findLastIndex(
         (block) => block.kind === "assistant" && block.turn === frame.turn,

@@ -275,6 +275,7 @@ function ChatCard(props: {
 
   const isUser = props.block.kind === "user";
   const isAssistant = props.block.kind === "assistant";
+  const queued = props.block.kind === "user" && props.block.queued === true;
   const content = isUser || isAssistant ? (props.block as { text: string }).text : undefined;
   const lines =
     content === undefined
@@ -303,7 +304,9 @@ function ChatCard(props: {
         )}
       </For>
       <Show when={isUser}>
-        <text style={{ height: 1, fg: theme.overlay1 }}>{"user".padStart(props.width())}</text>
+        <text style={{ height: 1, fg: theme.overlay1 }}>
+          {(queued ? "queued" : "user").padStart(props.width())}
+        </text>
       </Show>
       <Show when={isAssistant && props.model}>
         <text style={{ height: 1, fg: theme.overlay1 }}>{props.model}</text>
