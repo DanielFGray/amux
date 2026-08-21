@@ -1266,6 +1266,12 @@ export class Window {
         dockStrips[side].length === 0
           ? 0
           : (this.#layout.dockSizes?.[side] ?? dockDefaultSize(side));
+      // Geometry caps every strip at half its viewport axis. Keep the same cap
+      // in Yoga, where percentages also keep it true after a terminal resize.
+      const limit = (side: DockSide) =>
+        side === "left" || side === "right"
+          ? { maxWidth: "50%" as const }
+          : { maxHeight: "50%" as const };
       const add = (box: BoxRenderable, side: DockSide) => {
         setDirection(box, side === "left" || side === "right" ? "column" : "row");
         dockStrips[side].forEach((slot, index) => {
@@ -1284,10 +1290,15 @@ export class Window {
           }
         });
       };
-      const top = new BoxRenderable(this.#ctx, { id: `dock-top-${nextId++}`, height: size("top") });
+      const top = new BoxRenderable(this.#ctx, {
+        id: `dock-top-${nextId++}`,
+        height: size("top"),
+        ...limit("top"),
+      });
       const bottom = new BoxRenderable(this.#ctx, {
         id: `dock-bottom-${nextId++}`,
         height: size("bottom"),
+        ...limit("bottom"),
       });
       const body = new BoxRenderable(this.#ctx, {
         id: `dock-body-${nextId++}`,
@@ -1297,10 +1308,12 @@ export class Window {
       const left = new BoxRenderable(this.#ctx, {
         id: `dock-left-${nextId++}`,
         width: size("left"),
+        ...limit("left"),
       });
       const right = new BoxRenderable(this.#ctx, {
         id: `dock-right-${nextId++}`,
         width: size("right"),
+        ...limit("right"),
       });
       add(top, "top");
       add(bottom, "bottom");

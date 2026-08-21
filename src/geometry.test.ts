@@ -431,3 +431,29 @@ test("window projection keeps the geometry gap between same-side dock panes", as
   expect(second.y - first.y).toBeGreaterThan(first.height);
   expect(second.y).toBe(first.y + first.height + 1);
 });
+
+test("window projection clamps a dock to half a narrow viewport", async () => {
+  const harness = await createHarness({ width: 40, height: 20 });
+  cleanup.push(harness.dispose);
+  const { window } = harness;
+  const pane = window.panes[0]!;
+  window.applyLayout(
+    makeLayout({
+      root: null,
+      docks: {
+        left: [{ id: pane.id, content: { kind: "pty", session: pane.session!.id } }],
+        right: [],
+        top: [],
+        bottom: [],
+      },
+    }),
+  );
+  await harness.layout();
+
+  expect(computeRects(window.exportLayout(), { cols: 40, rows: 20 }).get(pane.id)).toEqual({
+    x: 0,
+    y: 0,
+    width: pane.width,
+    height: pane.height,
+  });
+});
