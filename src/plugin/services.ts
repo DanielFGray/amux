@@ -6,14 +6,21 @@ import type { PaneView } from "../component-pane.tsx";
 import type { CommandSpec } from "../bindings.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
 
-export class CurrentPlugin extends Context.Tag("amux/CurrentPlugin")<CurrentPlugin, PluginInstance>() {}
+export class CurrentPlugin extends Context.Tag("amux/CurrentPlugin")<
+  CurrentPlugin,
+  PluginInstance
+>() {}
 
 export interface PluginRegistries {
   readonly regions: Regions;
   readonly sessionViews: SessionViews;
   readonly bindings: (owner: PluginInstance, binding: CommandSpec) => () => void;
   readonly settings: (owner: PluginInstance, section: PluginSettingsSection) => () => void;
-  readonly spawnProviders: (owner: PluginInstance, id: string, provider: () => SpawnProvider) => () => void;
+  readonly spawnProviders: (
+    owner: PluginInstance,
+    id: string,
+    provider: () => SpawnProvider,
+  ) => () => void;
   readonly spawnProvider: (id: string) => SpawnProvider | undefined;
 }
 
@@ -22,10 +29,22 @@ export interface RegistryService<A = unknown> {
 }
 
 export class RegionsTag extends Context.Tag("amux/Regions")<RegionsTag, RegistryService<Panel>>() {}
-export class SessionViewsTag extends Context.Tag("amux/SessionViews")<SessionViewsTag, RegistryService<readonly [string, PaneView]>>() {}
-export class BindingsTag extends Context.Tag("amux/Bindings")<BindingsTag, RegistryService<CommandSpec>>() {}
-export class SettingsTag extends Context.Tag("amux/Settings")<SettingsTag, RegistryService<PluginSettingsSection>>() {}
-export class SpawnProvidersTag extends Context.Tag("amux/SpawnProviders")<SpawnProvidersTag, RegistryService<readonly [string, () => SpawnProvider]>>() {}
+export class SessionViewsTag extends Context.Tag("amux/SessionViews")<
+  SessionViewsTag,
+  RegistryService<readonly [string, PaneView]>
+>() {}
+export class BindingsTag extends Context.Tag("amux/Bindings")<
+  BindingsTag,
+  RegistryService<CommandSpec>
+>() {}
+export class SettingsTag extends Context.Tag("amux/Settings")<
+  SettingsTag,
+  RegistryService<PluginSettingsSection>
+>() {}
+export class SpawnProvidersTag extends Context.Tag("amux/SpawnProviders")<
+  SpawnProvidersTag,
+  RegistryService<readonly [string, () => SpawnProvider]>
+>() {}
 
 export type PluginService = Context.Tag<any, any>;
 

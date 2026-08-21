@@ -33,7 +33,9 @@ export interface PluginDefinition {
   readonly inject?: readonly PluginService[];
   /** The injected services are already provided by the time the host runs this,
    *  so the only requirement left is the plugin's own scope. */
-  readonly effect: (context: PluginHostContext) => Effect.Effect<void, never, Scope.Scope | Context.Tag.Identifier<CurrentPlugin>>;
+  readonly effect: (
+    context: PluginHostContext,
+  ) => Effect.Effect<void, never, Scope.Scope | Context.Tag.Identifier<CurrentPlugin>>;
 }
 
 /**
@@ -50,7 +52,11 @@ export const definePlugin = <const Tags extends readonly PluginService[] = []>(d
   readonly inject?: Tags;
   readonly effect: (
     context: PluginHostContext,
-  ) => Effect.Effect<void, never, Context.Tag.Identifier<Tags[number]> | Context.Tag.Identifier<CurrentPlugin> | Scope.Scope>;
+  ) => Effect.Effect<
+    void,
+    never,
+    Context.Tag.Identifier<Tags[number]> | Context.Tag.Identifier<CurrentPlugin> | Scope.Scope
+  >;
 }): PluginDefinition => definition as PluginDefinition;
 
 export interface PluginHostContext {

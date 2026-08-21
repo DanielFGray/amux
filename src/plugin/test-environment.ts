@@ -32,8 +32,14 @@ export function testPluginEnvironment(
   const bindings = contributions.table<unknown>();
   const settings = contributions.table<unknown>();
   const spawnProviders = contributions.table<() => SpawnProvider>();
-  const defaultRegisterBinding = (owner: PluginInstance, binding: Parameters<PluginEnvironment["registerBinding"]>[1]) => bindings.add(owner, binding.name, binding);
-  const defaultRegisterSettings = (owner: PluginInstance, section: Parameters<PluginEnvironment["registerSettingsSection"]>[1]) => settings.add(owner, section.id, section);
+  const defaultRegisterBinding = (
+    owner: PluginInstance,
+    binding: Parameters<PluginEnvironment["registerBinding"]>[1],
+  ) => bindings.add(owner, binding.name, binding);
+  const defaultRegisterSettings = (
+    owner: PluginInstance,
+    section: Parameters<PluginEnvironment["registerSettingsSection"]>[1],
+  ) => settings.add(owner, section.id, section);
   return {
     panel: testPanelContext(),
     registerBinding: parts.registerBinding ?? defaultRegisterBinding,

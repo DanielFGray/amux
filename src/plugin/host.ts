@@ -98,7 +98,10 @@ export interface PluginEnvironment {
   readonly regions: Regions;
   readonly sessionViews: SessionViews;
   readonly registerBinding: (owner: PluginInstance, binding: CommandSpec) => () => void;
-  readonly registerSettingsSection: (owner: PluginInstance, section: PluginSettingsSection) => () => void;
+  readonly registerSettingsSection: (
+    owner: PluginInstance,
+    section: PluginSettingsSection,
+  ) => () => void;
   readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
   readonly sync: (session: string) => void;
 }
@@ -115,11 +118,37 @@ export function createPluginHost(
     const generations = new Map<string, number>();
     const services = createPluginServices();
     const registryOwner: PluginInstance = { id: "amux.registries", generation: 0 };
-    services.provide(registryOwner, RegionsTag, registryService<Panel>((owner, panel) => env.registries.regions.register(owner, panel)));
-    services.provide(registryOwner, SessionViewsTag, registryService<readonly [string, PaneView]>((owner, [type, view]) => env.registries.sessionViews.register(owner, type, view)));
-    services.provide(registryOwner, BindingsTag, registryService<CommandSpec>((owner, binding) => env.registerBinding(owner, binding)));
-    services.provide(registryOwner, SettingsTag, registryService<PluginSettingsSection>((owner, section) => env.registerSettingsSection(owner, section)));
-    services.provide(registryOwner, SpawnProvidersTag, registryService<readonly [string, () => SpawnProvider]>((owner, [id, provider]) => env.registries.spawnProviders(owner, id, provider)));
+    services.provide(
+      registryOwner,
+      RegionsTag,
+      registryService<Panel>((owner, panel) => env.registries.regions.register(owner, panel)),
+    );
+    services.provide(
+      registryOwner,
+      SessionViewsTag,
+      registryService<readonly [string, PaneView]>((owner, [type, view]) =>
+        env.registries.sessionViews.register(owner, type, view),
+      ),
+    );
+    services.provide(
+      registryOwner,
+      BindingsTag,
+      registryService<CommandSpec>((owner, binding) => env.registerBinding(owner, binding)),
+    );
+    services.provide(
+      registryOwner,
+      SettingsTag,
+      registryService<PluginSettingsSection>((owner, section) =>
+        env.registerSettingsSection(owner, section),
+      ),
+    );
+    services.provide(
+      registryOwner,
+      SpawnProvidersTag,
+      registryService<readonly [string, () => SpawnProvider]>((owner, [id, provider]) =>
+        env.registries.spawnProviders(owner, id, provider),
+      ),
+    );
     services.commit(registryOwner);
     const hostScope = yield* Scope.make();
     let disposed = false;
@@ -153,10 +182,13 @@ export function createPluginHost(
         panel: env.panel,
         kv: kvFor(pluginId),
         registerPanel: (panel: Panel) => scoped(env.registries.regions.register(owner, panel)),
-        registerPaneType: (type: string, view: PaneView) => scoped(env.registries.sessionViews.register(owner, type, view)),
+        registerPaneType: (type: string, view: PaneView) =>
+          scoped(env.registries.sessionViews.register(owner, type, view)),
         registerBinding: (binding: CommandSpec) => scoped(env.registerBinding(owner, binding)),
-        registerSettingsSection: (section: PluginSettingsSection) => scoped(env.registerSettingsSection(owner, section)),
-        registerSpawnProvider: (id: string, provider: () => SpawnProvider) => scoped(env.registries.spawnProviders(owner, id, provider)),
+        registerSettingsSection: (section: PluginSettingsSection) =>
+          scoped(env.registerSettingsSection(owner, section)),
+        registerSpawnProvider: (id: string, provider: () => SpawnProvider) =>
+          scoped(env.registries.spawnProviders(owner, id, provider)),
         provide: (tag, service) => {
           services.provide(owner, tag, service);
           return scoped(() => services.withdraw(owner, tag));
@@ -221,8 +253,8 @@ export function createPluginHost(
       // Waiting on the injected tags is the whole of "pending": the fiber
       // suspends on their Deferreds and resumes in the order they are provided,
       // so a provider configured last still activates its dependents.
-       const pluginEffect = services.awaitAll<never>(injected).pipe(
-         Effect.flatMap((provided) => Effect.provide(plugin.effect(context), provided)),
+      const pluginEffect = services.awaitAll<never>(injected).pipe(
+        Effect.flatMap((provided) => Effect.provide(plugin.effect(context), provided)),
         Effect.catchAllDefect((defect) =>
           Effect.gen(function* () {
             const error = defect instanceof Error ? defect : new Error(String(defect));
@@ -239,14 +271,35 @@ export function createPluginHost(
           }),
         ),
         Effect.tap(() => Deferred.succeed(started, "started")),
-         Effect.provideService(Scope.Scope, pluginScope),
-         Effect.provideService(CurrentPlugin, instance),
-         Effect.provideService(RegionsTag, registryService<Panel>((owner, panel) => env.registries.regions.register(owner, panel))),
-         Effect.provideService(SessionViewsTag, registryService<readonly [string, PaneView]>((owner, [type, view]) => env.registries.sessionViews.register(owner, type, view))),
-         Effect.provideService(BindingsTag, registryService<CommandSpec>((owner, binding) => env.registries.bindings(owner, binding))),
-         Effect.provideService(SettingsTag, registryService<PluginSettingsSection>((owner, section) => env.registries.settings(owner, section))),
-         Effect.provideService(SpawnProvidersTag, registryService<readonly [string, () => SpawnProvider]>((owner, [id, provider]) => env.registries.spawnProviders(owner, id, provider))),
-       );
+        Effect.provideService(Scope.Scope, pluginScope),
+        Effect.provideService(CurrentPlugin, instance),
+        Effect.provideService(
+          RegionsTag,
+          registryService<Panel>((owner, panel) => env.registries.regions.register(owner, panel)),
+        ),
+        Effect.provideService(
+          SessionViewsTag,
+          registryService<readonly [string, PaneView]>((owner, [type, view]) =>
+            env.registries.sessionViews.register(owner, type, view),
+          ),
+        ),
+        Effect.provideService(
+          BindingsTag,
+          registryService<CommandSpec>((owner, binding) => env.registries.bindings(owner, binding)),
+        ),
+        Effect.provideService(
+          SettingsTag,
+          registryService<PluginSettingsSection>((owner, section) =>
+            env.registries.settings(owner, section),
+          ),
+        ),
+        Effect.provideService(
+          SpawnProvidersTag,
+          registryService<readonly [string, () => SpawnProvider]>((owner, [id, provider]) =>
+            env.registries.spawnProviders(owner, id, provider),
+          ),
+        ),
+      );
 
       const fiber = yield* Effect.forkIn(pluginEffect, hostScope);
       if (!previous) {
