@@ -97,15 +97,14 @@ function killTrackedDaemons() {
 
 /**
  * An interrupted run skips bun's afterAll hooks, so the daemons it spawned
- * would outlive it. Throwing from the handler makes the runner finish the run
- * and run its hooks — which also stop their daemons — while the synchronous
- * kill above guarantees they die even if no hook runs.
+ * would outlive it. Force the runner down after the synchronous cleanup. Bun
+ * does not reliably terminate a test process when a signal handler throws.
  */
 function onInterrupt() {
   if (interruptHandled) return;
   interruptHandled = true;
   killTrackedDaemons();
-  throw new Error("interrupted");
+  process.kill(process.pid, "SIGKILL");
 }
 
 process.on("SIGINT", onInterrupt);
