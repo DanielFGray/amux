@@ -496,7 +496,11 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             Effect.gen(function* () {
               const session = (yield* Ref.get(sessions)).get(command.session);
               if (!session) return;
-              yield* session.prompt(command.text);
+              yield* session.prompt(command.text, {
+                ...(command.id === undefined ? {} : { id: command.id }),
+                ...(command.delivery === undefined ? {} : { delivery: command.delivery }),
+                ...(command.resume === undefined ? {} : { resume: command.resume }),
+              });
             }),
           ),
           Match.tag("agent.permission", (command) =>

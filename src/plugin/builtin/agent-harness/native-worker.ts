@@ -15,7 +15,7 @@ import { makePermissionGate } from "./permission.ts";
 import { DEFAULT_RULES } from "../../../permission.ts";
 import { projectRoot } from "../../../git.ts";
 import { layer as projectStoreLayer, Service as ProjectStore } from "../../../project-store.ts";
-import { makeAgentWorker, sanitizeAgentError } from "./worker.ts";
+import { closeOpenToolCalls, makeAgentWorker, sanitizeAgentError } from "./worker.ts";
 
 // --- Process entry point ---
 
@@ -26,8 +26,6 @@ if (!import.meta.main) {
 } else if (!session) throw new Error("AMUX_SESSION is required");
 else {
   // The turn a permission request belongs to is the one currently executing.
-  // `turn.start` is emitted when a prompt is queued, which can happen while an
-  // earlier turn is still running, so it cannot stand in for that.
   let turn = "";
   const emit = (frame: AgentEventPayload | AgentDelta) =>
     Effect.sync(() =>
@@ -77,11 +75,15 @@ else {
         savedConversation === undefined
           ? yield* Chat.empty
           : yield* Chat.fromJson(savedConversation);
+      // A daemon or client death can leave a persisted tool call without a
+      // result. Repair it before the first provider request, never by replay.
+      yield* closeOpenToolCalls(chat);
       const worker = yield* makeAgentWorker({
         session,
         chat,
         emit,
         toolkit,
+        inbox: store,
         persist: chat.exportJson.pipe(
           Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
           Effect.orDie,
@@ -91,6 +93,18 @@ else {
             turn = turnId;
           }),
       });
+      // Re-admit work that was recorded before the worker or client went away.
+      // The store makes this retry idempotent; rows admitted with resume=false
+      // stay available until an explicit prompt asks to schedule them.
+      yield* store.pendingPrompts(session).pipe(
+        Effect.flatMap((pending) =>
+          Effect.forEach(
+            pending.filter((entry) => entry.resume),
+            (entry) => worker.resume(entry),
+            { discard: true, concurrency: 1 },
+          ),
+        ),
+      );
       yield* Stream.fromAsyncIterable(Bun.stdin.stream(), (error) => error).pipe(
         Stream.decodeText(),
         Stream.splitLines,
@@ -98,7 +112,11 @@ else {
         Stream.map((line) => JSON.parse(line) as AttachFrame),
         Stream.runForEach((frame) =>
           frame._tag === "agent.prompt"
-            ? worker.prompt(frame.text)
+            ? worker.prompt(frame.text, {
+                ...(frame.id === undefined ? {} : { id: frame.id }),
+                delivery: frame.delivery ?? "queue",
+                resume: frame.resume,
+              })
             : frame._tag === "agent.interrupt"
               ? worker.interrupt(frame.reason)
               : frame._tag === "agent.permission"

@@ -86,6 +86,16 @@ test("parseArgs accepts separated values for every flag kind", () => {
     parseArgs("agent.prompt", ["s1", "do x", "--until", "working", "--timeout", "5000"]).parsed,
   ).toEqual({ target: "s1", text: "do x", until: "working", timeout: 5000 });
   expect(
+    parseArgs("agent.prompt", ["s1", "do x", "--id", "request-1", "--delivery", "steer", "--resume", "false"])
+      .parsed,
+  ).toEqual({
+    target: "s1",
+    text: "do x",
+    id: "request-1",
+    delivery: "steer",
+    resume: false,
+  });
+  expect(
     parseArgs("pane.resize-divider", ["--path", "[1,0]", "--index", "0", "--delta", "-1"]).parsed,
   ).toEqual({ path: [1, 0], index: 0, delta: -1 });
 });
@@ -129,7 +139,7 @@ test("generateHelp is non-empty", () => {
 test("group help derives command syntax from schemas", () => {
   expect(commandGroups()).toContain("agents");
   expect(generateGroupHelp("agents")).toContain(
-    "agent.prompt <target> <text> [--wait=<wait>] [--until=<idle|working|blocked|failed|done>] [--timeout=<timeout>]",
+    "agent.prompt <target> <text> [--id=<id>] [--delivery=<steer|queue>] [--resume=<resume>] [--wait=<wait>] [--until=<idle|working|blocked|failed|done>] [--timeout=<timeout>]",
   );
   expect(generateGroupHelp("panes")).toContain("pane.split <row|column> [--cwd=<cwd>]");
   expect(generateGroupHelp("missing")).toBeUndefined();

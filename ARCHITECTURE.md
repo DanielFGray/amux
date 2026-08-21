@@ -137,6 +137,16 @@ on a detached fiber so the teardown survives the scope it dismantles. The actor
 lives in a scope nothing closes, because after shutdown the service must still
 answer (a `liveSessions()` reads `[]` off the closed state).
 
+Native prompt admission is separate from execution. The project store records
+one inbox row before the harness worker schedules it. Caller-supplied ids make
+retries idempotent and reject a different prompt or delivery mode; `resume:
+false` records work without waking execution. `steer` is selected before the
+queued FIFO, while `queue` waits for the next idle boundary. The store contains
+only session, prompt, delivery and admission facts. It does not know a
+provider, model, credential or turn loop. The worker is the executor and may
+be interrupted without deleting inbox rows. A worker restart rehydrates rows
+that were admitted with resume enabled.
+
 Every `SessionState` write, including attachment metadata, runs through the
 daemon's model queue. A workspace command prepares reversible sessions and
 gates destructive exits, completes its required process/input actions, writes

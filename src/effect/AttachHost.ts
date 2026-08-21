@@ -30,7 +30,7 @@ import {
   SessionSupervisor,
   type PreparedSession,
 } from "./SessionSupervisor.ts";
-import type { ManagedSession, PtyError, SessionSpec } from "./SessionRegistry.ts";
+import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./SessionRegistry.ts";
 import { isReportedAgentState, type ReportedAgentState } from "../agent-state.ts";
 
 export interface AttachHostOptions {
@@ -90,7 +90,7 @@ export interface AttachHostService {
   readonly paste: (id: string, data: Uint8Array) => Effect.Effect<void, PtyError>;
   /** Raw child input used by daemon-side pane.send-keys. */
   readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-  readonly prompt: (id: string, text: string) => Effect.Effect<void, PtyError>;
+  readonly prompt: (id: string, text: string, options?: PromptOptions) => Effect.Effect<void, PtyError>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
   /** Answer a permission request a native agent session is blocked on. */
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
@@ -250,7 +250,8 @@ const make = (
           session: id,
           data: typeof data === "string" ? new TextEncoder().encode(data) : data,
         }),
-      prompt: (id, text) => supervisor.handle({ _tag: "agent.prompt", session: id, text }),
+      prompt: (id, text, options) =>
+        supervisor.handle({ _tag: "agent.prompt", session: id, text, ...options }),
       interrupt: (id, reason) =>
         supervisor.handle({ _tag: "agent.interrupt", session: id, ...(reason ? { reason } : {}) }),
       decide: (id, answer) =>
