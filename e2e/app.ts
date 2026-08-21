@@ -39,11 +39,11 @@ function e2eStateRoot(session: string): string {
 }
 
 /** Lease paths of daemons this process launched, with the pid once known. */
-const trackedDaemons = new Map<string, number | null>();
+const trackedDaemons = new Map<string, { pid: number | null; pidFile: string }>();
 let interruptHandled = false;
 
-function trackDaemon(leasePath: string, pid: number | null) {
-  trackedDaemons.set(leasePath, pid);
+function trackDaemon(leasePath: string, pidFile: string, pid: number | null) {
+  trackedDaemons.set(leasePath, { pid, pidFile });
 }
 
 function untrackDaemon(leasePath: string) {
@@ -59,6 +59,15 @@ function readLeasePidSync(leasePath: string): number | null {
   }
 }
 
+function readPidFileSync(pidFile: string): number | null {
+  try {
+    const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Kill every daemon this process has launched.
  *
@@ -67,8 +76,8 @@ function readLeasePidSync(leasePath: string): number | null {
  */
 function killTrackedDaemons() {
   const pids: number[] = [];
-  for (const [leasePath, pid] of trackedDaemons) {
-    const target = pid ?? readLeasePidSync(leasePath);
+  for (const [leasePath, daemon] of trackedDaemons) {
+    const target = daemon.pid ?? readPidFileSync(daemon.pidFile) ?? readLeasePidSync(leasePath);
     if (target) {
       pids.push(target);
       try {
@@ -196,6 +205,7 @@ export async function launch(
   const root = e2eStateRoot(session);
   const state = join(root, "state");
   const leasePath = join(state, "amux", "sessions", session, "lease.json");
+  const pidFile = join(root, "daemon.pid");
   await stopDaemon(leasePath);
   await rm(root, { recursive: true, force: true });
   await mkdir(state, { recursive: true });
@@ -215,6 +225,7 @@ export async function launch(
     SHELL: "/bin/sh",
     XDG_STATE_HOME: state,
     XDG_CONFIG_HOME: join(home, "config"),
+    AMUX_DAEMON_PID_FILE: pidFile,
     AMUX_SESSION: session,
     TERM: "xterm-256color",
   };
@@ -307,7 +318,7 @@ export async function launch(
 
   // Track the lease before the boot waits: an interrupt during boot must still
   // find the daemon and kill it.
-  trackDaemon(leasePath, null);
+  trackDaemon(leasePath, pidFile, null);
   try {
     await until(async () => /\s[1-9]\d*ag$/.test(await shape()), "the workspace to have an agent");
     await until(() => captureVisible(term).includes(" · "), "the sidebar to draw its footer");
@@ -315,7 +326,7 @@ export async function launch(
     // now. Cache the pid: teardown must not depend on a single lease read at
     // stop time, which has been observed to fail under load (ts-549538).
     trackedPid = await readLeasePid(leasePath);
-    if (trackedPid) trackDaemon(leasePath, trackedPid);
+    if (trackedPid) trackDaemon(leasePath, pidFile, trackedPid);
   } catch (e) {
     await cleanup().catch(() => {});
     throw e;

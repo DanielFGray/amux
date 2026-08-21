@@ -27,7 +27,7 @@ async function processIsAlive(pid: number): Promise<boolean> {
 }
 
 test("SIGTERM exits the runner and kills its daemon", async () => {
-  const readyPath = join(tmpdir(), `amux-e2e-ready-${crypto.randomUUID()}`);
+  const barrierPath = join(tmpdir(), `amux-e2e-barrier-${crypto.randomUUID()}`);
   await rm(root, { recursive: true, force: true });
   const child = Bun.spawn(
     [
@@ -35,20 +35,24 @@ test("SIGTERM exits the runner and kills its daemon", async () => {
       "-e",
       `import { launch } from ${JSON.stringify(new URL("./app.ts", import.meta.url).href)};
 const app = await launch(${JSON.stringify(SESSION)});
-await Bun.write(process.env.READY_PATH, "ready");
 await new Promise(() => {});`,
     ],
     {
       cwd: REPO,
-      env: { ...process.env, READY_PATH: readyPath },
+      env: {
+        ...process.env,
+        AMUX_DAEMON_START_BARRIER: barrierPath,
+      },
       stdout: "ignore",
       stderr: "pipe",
     },
   );
 
   try {
-    await waitForFile(readyPath);
-    const lease = JSON.parse(await readFile(leasePath, "utf8")) as { pid: number };
+    const pidFile = join(root, "daemon.pid");
+    await waitForFile(pidFile);
+    expect(await Bun.file(leasePath).exists()).toBe(false);
+    const daemonPid = Number.parseInt(await readFile(pidFile, "utf8"), 10);
     process.kill(child.pid, "SIGTERM");
 
     const exit = await Promise.race([
@@ -60,13 +64,13 @@ await new Promise(() => {});`,
     expect(exit).not.toBe(0);
 
     const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline && (await processIsAlive(lease.pid))) {
+    while (Date.now() < deadline && (await processIsAlive(daemonPid))) {
       await Bun.sleep(100);
     }
-    expect(await processIsAlive(lease.pid)).toBe(false);
+    expect(await processIsAlive(daemonPid)).toBe(false);
   } finally {
     child.kill("SIGKILL");
-    await rm(readyPath, { force: true });
+    await rm(barrierPath, { force: true });
     await rm(root, { recursive: true, force: true });
     await new Response(child.stderr).text();
   }
