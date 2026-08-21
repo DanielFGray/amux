@@ -5,13 +5,7 @@ import { AgentState } from "../agent-state.ts";
 import type { Window } from "../window.ts";
 import type { AppState } from "./state.ts";
 import { theme } from "./theme.ts";
-
-const stateColor = (state: AgentState) =>
-  state === AgentState.Blocked
-    ? theme.red
-    : state === AgentState.Working
-      ? theme.green
-      : theme.overlay1;
+import { formatText } from "../format.ts";
 
 /**
  * The window list, herdr-style: a single row at the top of the pane area rather
@@ -30,19 +24,53 @@ export function WindowTabs(props: {
   /** True while the focused window's pane is in keyboard copy mode. */
   copying: boolean;
   onSelect: (window: Window) => void;
+  format?: string;
+  status?: string;
+  spaceIndex?: number;
+  spaceName?: string;
+  branch?: string;
+  gitAhead?: number;
+  gitBehind?: number;
 }) {
-  const glyph = (window: Window) => {
-    props.app.tick();
-    const state = window.state;
-    if (state !== AgentState.Working) return STATE_GLYPH[state];
-    return SPINNER_FRAMES[props.app.frame() % SPINNER_FRAMES.length]!;
-  };
-
   /** Read through the tick: an unnamed window is titled by what it is running,
    *  which arrives from the agent's OSC title after the tab first renders. */
   const label = (window: Window) => {
     props.app.tick();
-    return window.label;
+    const session = window.focused?.session;
+    const state = window.state;
+    return formatText(
+      props.format ??
+        "#{agent_state_glyph} #{window_number}:#{window_name}#{?zoomed, Z,}#{?synchronized, Y,}",
+      {
+        active: window === props.active,
+        space_index: props.spaceIndex,
+        space_name: props.spaceName,
+        window_number: window.number,
+        window_name: window.title,
+        zoomed: window.zoomed,
+        synchronized: window.sync,
+        sync: window.sync,
+        pane_index: session ? window.sessions.indexOf(session) : undefined,
+        pane_title: session?.title,
+        pane_current_command: session?.foregroundCommand,
+        agent_state: state,
+        agent_state_label: state,
+        agent_state_glyph:
+          state === AgentState.Working
+            ? SPINNER_FRAMES[props.app.frame() % SPINNER_FRAMES.length]
+            : state
+              ? STATE_GLYPH[state]
+              : "",
+        scrolled: session?.scrolled,
+        exited: session?.exited,
+        viewers: session?.viewers,
+        unseen: session?.unseen,
+        branch: props.branch,
+        git_branch: props.branch,
+        git_ahead: props.gitAhead,
+        git_behind: props.gitBehind,
+      },
+    );
   };
 
   return (
@@ -67,9 +95,6 @@ export function WindowTabs(props: {
               }}
               onMouseDown={() => props.onSelect(window)}
             >
-              <text style={{ fg: stateColor(window.state), bg: "transparent" }}>
-                {` ${glyph(window)} `}
-              </text>
               <text
                 style={{
                   fg: active() ? theme.text : theme.overlay1,
@@ -85,6 +110,12 @@ export function WindowTabs(props: {
 
       {/* Fills the rest of the row so the tabs stay left-aligned. */}
       <box style={{ flexGrow: 1, height: 1, backgroundColor: theme.mantle }} />
+
+      <Show when={props.status}>
+        <text style={{ fg: theme.subtext0, bg: theme.mantle, flexShrink: 0 }}>
+          {` ${props.status} `}
+        </text>
+      </Show>
 
       <Show when={props.copying}>
         <text style={{ bg: theme.green, fg: theme.base, flexShrink: 0 }}> copy </text>

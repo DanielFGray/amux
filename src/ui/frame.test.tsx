@@ -9,6 +9,7 @@ import { createSignal } from "solid-js";
 import type { Space } from "../space.ts";
 import { frame } from "../window.ts";
 import { resolveOptions } from "../options.ts";
+import { formatText } from "../format.ts";
 import { createAppState } from "./state.ts";
 import { App } from "./App.tsx";
 import type { Panel } from "./regions.tsx";
@@ -43,6 +44,9 @@ async function screen(
     hintsVisible: boolean;
     overlay: boolean;
     reopen: boolean;
+    format: string;
+    status: string;
+    spaceIndex: number;
   }> = {},
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
@@ -89,6 +93,9 @@ async function screen(
           app={app}
           windows={app.active()?.windows ?? []}
           active={app.activeWindow()}
+          format={extra.format}
+          status={extra.status}
+          spaceIndex={extra.spaceIndex}
           pending={["^a"]}
           copying={false}
           onSelect={() => {}}
@@ -171,6 +178,44 @@ test("the sidebar seam is a single line that is also the pane frame's left borde
   expect(middle[SIDEBAR]).toBe("│");
   expect(middle[SIDEBAR + 1]).not.toBe("│");
   expect(bottom[SIDEBAR]).toBe("└");
+});
+
+test("window tabs render the configured format", async () => {
+  const rows = await screen(
+    false,
+    (space) => {
+      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
+    },
+    { format: "tab-#{window_number}-#{window_name}", spaceIndex: 0 },
+  );
+
+  expect(rows[0]).toContain("tab-1-bash");
+  expect(rows[0]).not.toContain("○");
+});
+
+test("window tabs render the state glyph and space index when requested", async () => {
+  const rows = await screen(
+    false,
+    (space) => {
+      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
+    },
+    { format: "#{agent_state_glyph} space-#{space_index}", spaceIndex: 0 },
+  );
+
+  expect(rows[0]).toContain("○ space-0");
+});
+
+test("window tabs render the configured status format", async () => {
+  const statusFormat = resolveOptions({ "status.format": "status-#{space_name}" })["status.format"];
+  const rows = await screen(
+    false,
+    (space) => {
+      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
+    },
+    { status: formatText(statusFormat, { space_name: "proj" }) },
+  );
+
+  expect(rows[0]).toContain("status-proj");
 });
 
 test("a horizontal split tees into the sidebar seam instead of stopping short", async () => {

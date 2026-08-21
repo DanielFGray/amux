@@ -12,6 +12,7 @@ import { theme } from "./ui/theme.ts";
 import { basename, dirname, join } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { AgentState } from "./agent-state.ts";
+import { SPINNER_FRAMES, STATE_GLYPH } from "./detect.ts";
 
 import { projectWorkspace, SpaceSet } from "./space.ts";
 import { frame } from "./window.ts";
@@ -76,6 +77,7 @@ import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import { createReloader } from "./plugin/reloader.ts";
 import type { PluginReloader } from "./plugin/reloader.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
+import { formatText } from "./format.ts";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "./ui/Prompt.tsx";
 import { Hints, hintVisibility } from "./ui/Hints.tsx";
@@ -596,13 +598,14 @@ function buildApp(
     const activeWin = spaces.activeWindow;
     const focusedAgent = activeWin?.focused?.session ?? null;
 
-    for (const space of spaces.spaces) {
+    for (const [spaceIndex, space] of spaces.spaces.entries()) {
       const isActiveSpace = space === active;
       rows.push({
         kind: "space",
         index: index++,
         spaceId: space.id,
         spaceName: space.name,
+        spaceIndex,
         active: isActiveSpace,
       });
 
@@ -612,6 +615,7 @@ function buildApp(
           index,
           spaceId: space.id,
           spaceName: space.name,
+          spaceIndex,
           active: isActiveSpace,
           branch: space.branch,
           ahead: space.ahead,
@@ -626,20 +630,23 @@ function buildApp(
           index: index++,
           spaceId: space.id,
           spaceName: space.name,
+          spaceIndex,
           active: isActiveWindow,
           windowNumber: window.number,
           windowLabel: window.label,
         });
 
-        for (const agent of window.sessions) {
+        for (const [paneIndex, agent] of window.sessions.entries()) {
           const isFocusedAgent = isActiveWindow && agent === focusedAgent;
           rows.push({
             kind: "agent",
             index: index++,
             spaceId: space.id,
             spaceName: space.name,
+            spaceIndex,
             active: isFocusedAgent,
             windowNumber: window.number,
+            paneIndex,
             windowLabel: window.label,
             agentId: agent.id,
             agentState: agent.state,
@@ -1992,6 +1999,49 @@ function buildApp(
             app={app}
             windows={app.active()?.windows ?? []}
             active={app.activeWindow()}
+            spaceIndex={app.active() ? spaces.spaces.indexOf(app.active()!) : undefined}
+            spaceName={app.active()?.name}
+            branch={app.active()?.branch}
+            gitAhead={app.active()?.ahead}
+            gitBehind={app.active()?.behind}
+            format={options()["window.format"]}
+            status={(() => {
+              app.tick();
+              const space = app.active();
+              const window = app.activeWindow();
+              const pane = window?.focused?.session ?? null;
+              const state = pane?.state;
+              const spaceIndex = space ? spaces.spaces.indexOf(space) : undefined;
+              return formatText(options()["status.format"], {
+                active: true,
+                space_name: space?.name,
+                space_index: spaceIndex,
+                branch: space?.branch,
+                git_branch: space?.branch,
+                git_ahead: space?.ahead,
+                git_behind: space?.behind,
+                window_name: window?.title,
+                window_number: window?.number,
+                pane_index: pane ? window?.sessions.indexOf(pane) : undefined,
+                pane_title: pane?.title,
+                pane_current_command: pane?.foregroundCommand,
+                agent_state: state,
+                agent_state_label: state,
+                agent_state_glyph:
+                  state === AgentState.Working
+                    ? SPINNER_FRAMES[app.frame() % SPINNER_FRAMES.length]
+                    : state
+                      ? STATE_GLYPH[state]
+                      : "",
+                zoomed: window?.zoomed,
+                synchronized: window?.sync,
+                sync: window?.sync,
+                scrolled: pane?.scrolled,
+                exited: pane?.exited,
+                viewers: pane?.viewers,
+                unseen: pane?.unseen,
+              });
+            })()}
             pending={pending()}
             copying={copying()}
             onSelect={(w) => {

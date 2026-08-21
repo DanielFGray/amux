@@ -6,20 +6,27 @@ import { testRender, useRenderer } from "@opentui/solid";
 import { createSignal, onMount } from "solid-js";
 import { SpaceSet, type Space } from "../../space.ts";
 import { sidebarPlugin } from "./sidebar.tsx";
-import { type PanelContext, type SidebarDisplay, type SidebarDisplayRow } from "../../ui/panel.ts";
+import { type SidebarDisplay, type SidebarDisplayRow } from "../../ui/panel.ts";
 import { createRegions } from "../../ui/regions.tsx";
 import { createPluginContributions } from "../contributions.ts";
 import { workspaceEnv } from "../../env.ts";
 import { createPluginHost, type PluginHost } from "../../plugin/host.ts";
 import { testPluginEnvironment } from "../test-environment.ts";
 import { testPanelContext } from "../../ui/test-panel.ts";
+import { formatText } from "../../format.ts";
+import { resolveOptions } from "../../options.ts";
+
+test("format strings can choose the command or OSC title in a sidebar row", () => {
+  expect(
+    formatText("#{pane_current_command} · #{pane_title}", {
+      pane_current_command: "bun",
+      pane_title: "tests",
+    }),
+  ).toBe("bun · tests");
+});
 
 const WIDTH = 60;
 const HEIGHT = 20;
-
-function makePanelContext(display: () => SidebarDisplay): PanelContext {
-  return testPanelContext({ display });
-}
 
 function computeDisplay(spaces: SpaceSet): SidebarDisplay {
   const rows: SidebarDisplayRow[] = [];
@@ -104,7 +111,7 @@ afterEach(async () => {
   for (const fn of cleanupFns.splice(0)) await fn();
 });
 
-async function setup(options?: { width?: number; height?: number }) {
+async function setup(options?: { width?: number; height?: number; format?: string }) {
   const w = options?.width ?? WIDTH;
   const h = options?.height ?? HEIGHT;
   const shell = ["bash", "--norc", "--noprofile"];
@@ -134,7 +141,11 @@ async function setup(options?: { width?: number; height?: number }) {
         Effect.runSync(win!.init("shell"));
         const [displaySignal, setDisplaySignal] = createSignal(computeDisplay(spaces));
         spaces.onChange = () => setDisplaySignal(computeDisplay(spaces));
-        const panelCtx = makePanelContext(displaySignal);
+        const panelCtx = testPanelContext({
+          display: displaySignal,
+          options: () =>
+            resolveOptions(options?.format ? { "sidebar.format": options.format } : {}),
+        });
         const environment = testPluginEnvironment(renderer, {
           panel: panelCtx,
           contributions,
@@ -211,15 +222,23 @@ interface SpaceRowDef {
 function displayRows(spaces: SpaceRowDef[]): SidebarDisplayRow[] {
   const rows: SidebarDisplayRow[] = [];
   let index = 0;
-  for (const space of spaces) {
+  for (const [spaceIndex, space] of spaces.entries()) {
     const active = space.active ?? false;
-    rows.push({ kind: "space", index: index++, spaceId: space.s, spaceName: space.s, active });
+    rows.push({
+      kind: "space",
+      index: index++,
+      spaceId: space.s,
+      spaceName: space.s,
+      spaceIndex,
+      active,
+    });
     if (space.branch)
       rows.push({
         kind: "branch",
         index,
         spaceId: space.s,
         spaceName: space.s,
+        spaceIndex,
         active,
         branch: space.branch,
         ahead: space.ahead,
@@ -232,19 +251,22 @@ function displayRows(spaces: SpaceRowDef[]): SidebarDisplayRow[] {
         index: index++,
         spaceId: space.s,
         spaceName: space.s,
+        spaceIndex,
         active,
         windowNumber: winNum,
         windowLabel: `${winNum}:${window.a[0]?.name ?? "window"}`,
       });
-      for (const agent of window.a) {
+      for (const [paneIndex, agent] of window.a.entries()) {
         const agentId = agent.name + "-id";
         rows.push({
           kind: "agent",
           index: index++,
           spaceId: space.s,
           spaceName: space.s,
+          spaceIndex,
           active: agent.focused ?? false,
           agentId,
+          paneIndex,
           agentState: agent.state ?? (agent.exited ? "done" : "idle"),
           agentCliKind: agent.agentKind ?? null,
           agentSessionKind: "pty",
@@ -267,6 +289,29 @@ test("display rows include space, window, and agent entries", () => {
   expect(rows[0]!.spaceName).toBe("proj");
   expect(rows[1]!.windowNumber).toBe(1);
   expect(rows[2]!.agentSessionKind).toBe("pty");
+});
+
+test("display rows expose space and pane indices", () => {
+  const rows = displayRows([
+    {
+      s: "one",
+      w: [
+        {
+          a: [
+            { name: "first", cmd: ["sh"] },
+            { name: "second", cmd: ["sh"] },
+          ],
+        },
+      ],
+    },
+    { s: "two", w: [{ a: [{ name: "third", cmd: ["sh"] }] }] },
+  ]);
+  expect(rows[0]!.spaceIndex).toBe(0);
+  expect(rows.find((row) => row.kind === "agent")!.paneIndex).toBe(0);
+  expect(
+    rows.find((row) => row.kind === "agent" && row.spaceName === "one" && row.paneIndex === 1),
+  ).toBeDefined();
+  expect(rows.find((row) => row.kind === "agent" && row.spaceName === "two")!.spaceIndex).toBe(1);
 });
 
 test("branch row appears when space has a branch", () => {
@@ -312,6 +357,12 @@ test("renders the space/agent tree with a state glyph per row", async () => {
   expect(frame).toContain("proj");
   expect(frame).toContain("1 space · 1 agent");
   expect(frame).toMatch(/[○●!✓⊘⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+});
+
+test("renders the configured sidebar format", async () => {
+  const s = await setup({ format: "#{space_name}/#{window_number}/#{pane_index}" });
+  const frame = s.t.captureCharFrame();
+  expect(frame).toContain("proj/1/");
 });
 
 test("the footer counts what the tree shows", async () => {
