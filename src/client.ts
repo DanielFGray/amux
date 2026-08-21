@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { Deferred, Effect, Option, Queue, Schedule, Scope, Stream, Schema as S } from "effect";
 import { FileSystem } from "@effect/platform";
 import { AttachClient } from "./attach.ts";
@@ -298,6 +299,8 @@ export function ensureDaemon(
       catch: (error) => new SessionClientError({ message: errorMessage(error) }),
     });
     child.unref();
+    const pidFile = process.env.AMUX_DAEMON_PID_FILE;
+    if (pidFile) writeFileSync(pidFile, `${child.pid}\n`);
     const daemonReady = daemonAlive(id).pipe(
       Effect.filterOrFail(
         Boolean,

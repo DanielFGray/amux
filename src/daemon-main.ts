@@ -37,4 +37,15 @@ export function runDaemonMain(id?: string): void {
   );
 }
 
-if (import.meta.main) runDaemonMain();
+if (import.meta.main) {
+  // The e2e lifecycle test uses this barrier to signal after spawn but before
+  // the daemon creates its lease. Normal daemon launches never set it.
+  const barrier = process.env.AMUX_DAEMON_START_BARRIER;
+  if (barrier) {
+    const waitForBarrier = async () => {
+      while (!(await Bun.file(barrier).exists())) await Bun.sleep(10);
+    };
+    await waitForBarrier();
+  }
+  runDaemonMain();
+}

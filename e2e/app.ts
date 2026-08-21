@@ -15,12 +15,109 @@
 import { spawnPty, readPty, type Pty } from "../src/pty.ts";
 import { Terminal } from "../src/ghostty.ts";
 import { captureVisible } from "../src/capture.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
 const REPO = dirname(import.meta.dir);
 const KEY_GAP_MS = 50;
+
+/**
+ * The state root for an e2e session's daemon.
+ *
+ * A per-launch mkdtemp home hides a leaked daemon's lease forever: the lease
+ * names its pid, but the directory holding it is gone with the run that died.
+ * The root is instead fixed per worktree and session name, so a daemon a
+ * previous run left behind is discoverable through its lease and reaped before
+ * this run starts. The worktree hash keeps concurrent runs in two worktrees
+ * from reaping each other's live daemons.
+ */
+function e2eStateRoot(session: string): string {
+  const worktree = Bun.hash(REPO).toString(36);
+  return join(tmpdir(), `amux-e2e-${worktree}-${session}`);
+}
+
+/** Lease paths of daemons this process launched, with the pid once known. */
+const trackedDaemons = new Map<string, { pid: number | null; pidFile: string }>();
+let interruptHandled = false;
+
+function trackDaemon(leasePath: string, pidFile: string, pid: number | null) {
+  trackedDaemons.set(leasePath, { pid, pidFile });
+}
+
+function untrackDaemon(leasePath: string) {
+  trackedDaemons.delete(leasePath);
+}
+
+function readLeasePidSync(leasePath: string): number | null {
+  try {
+    const lease = JSON.parse(readFileSync(leasePath, "utf8")) as { pid?: unknown };
+    return Number.isInteger(lease.pid) && (lease.pid as number) > 0 ? (lease.pid as number) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPidFileSync(pidFile: string): number | null {
+  try {
+    const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Kill every daemon this process has launched.
+ *
+ * Runs from a signal handler, so it must be synchronous: send SIGTERM to all
+ * of them, give a wedged close a moment, then SIGKILL the stragglers.
+ */
+function killTrackedDaemons() {
+  const pids: number[] = [];
+  for (const [leasePath, daemon] of trackedDaemons) {
+    const target = daemon.pid ?? readPidFileSync(daemon.pidFile) ?? readLeasePidSync(leasePath);
+    if (target) {
+      pids.push(target);
+      try {
+        process.kill(target, "SIGTERM");
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  trackedDaemons.clear();
+  if (!pids.length) return;
+  const slot = new Int32Array(new SharedArrayBuffer(4));
+  try {
+    Atomics.wait(slot, 0, 0, 2000);
+  } catch {
+    /* Atomics.wait unavailable in this context */
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* exited after SIGTERM */
+    }
+  }
+}
+
+/**
+ * An interrupted run skips bun's afterAll hooks, so the daemons it spawned
+ * would outlive it. Force the runner down after the synchronous cleanup. Bun
+ * does not reliably terminate a test process when a signal handler throws.
+ */
+function onInterrupt() {
+  if (interruptHandled) return;
+  interruptHandled = true;
+  killTrackedDaemons();
+  process.kill(process.pid, "SIGKILL");
+}
+
+process.on("SIGINT", onInterrupt);
+process.on("SIGTERM", onInterrupt);
 
 /** ctrl+a, the default prefix. */
 export const LEADER = "\x01";
@@ -102,8 +199,18 @@ export async function launch(
     config?: unknown;
   } = {},
 ): Promise<App> {
+  // Reap a daemon a previous run of this session left behind before this run
+  // starts: an interrupted run skips its hooks, and a mkdtemp home would make
+  // its lease unfindable. The fixed root keeps the lease readable here.
+  const root = e2eStateRoot(session);
+  const state = join(root, "state");
+  const leasePath = join(state, "amux", "sessions", session, "lease.json");
+  const pidFile = join(root, "daemon.pid");
+  await stopDaemon(leasePath);
+  await rm(root, { recursive: true, force: true });
+  await mkdir(state, { recursive: true });
+
   const home = await mkdtemp(join(tmpdir(), `amux-${session}-`));
-  const state = join(home, "state");
   const configPath = join(home, "config", "amux", "config.json");
   if (opts.config !== undefined)
     await Bun.write(configPath, JSON.stringify(opts.config, null, 2) + "\n");
@@ -118,6 +225,7 @@ export async function launch(
     SHELL: "/bin/sh",
     XDG_STATE_HOME: state,
     XDG_CONFIG_HOME: join(home, "config"),
+    AMUX_DAEMON_PID_FILE: pidFile,
     AMUX_SESSION: session,
     TERM: "xterm-256color",
   };
@@ -184,21 +292,43 @@ export async function launch(
   // Boot wait must clean up on failure: a timeout throws out of launch() past
   // the App object and its stop(), leaving a live PTY, detached daemon and
   // /tmp/amux-* dir. Extract stop()'s body so both paths share it.
+  let trackedPid: number | null = null;
   const cleanup = async () => {
-    await pty.kill();
-    await reader.catch(() => {});
+    // Every step runs even if an earlier one fails: the daemon kill is the
+    // point of the exercise, and a failure before it must not skip it.
+    const failures: unknown[] = [];
+    const attempt = async (label: string, fn: () => Promise<void>) => {
+      try {
+        await fn();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    await attempt("pty.kill", () => pty.kill());
+    await attempt("reader", () => reader.catch(() => {}));
     // After the reader, never before: the pump can be holding a chunk, and a
     // write into a freed terminal corrupts ghostty's heap rather than faulting.
-    term.free();
-    await stopDaemon(join(state, "amux", "sessions", session, "lease.json"));
-    await rm(home, { recursive: true, force: true });
+    await attempt("term.free", async () => term.free());
+    await attempt("stopDaemon", () => stopDaemon(leasePath, trackedPid));
+    await attempt("rm home", () => rm(home, { recursive: true, force: true }));
+    await attempt("rm state root", () => rm(root, { recursive: true, force: true }));
+    untrackDaemon(leasePath);
+    if (failures.length > 0) throw new AggregateError(failures, "e2e cleanup failed");
   };
 
+  // Track the lease before the boot waits: an interrupt during boot must still
+  // find the daemon and kill it.
+  trackDaemon(leasePath, pidFile, null);
   try {
     await until(async () => /\s[1-9]\d*ag$/.test(await shape()), "the workspace to have an agent");
     await until(() => captureVisible(term).includes(" · "), "the sidebar to draw its footer");
+    // The daemon wrote its lease before the host came up, so it is readable
+    // now. Cache the pid: teardown must not depend on a single lease read at
+    // stop time, which has been observed to fail under load (ts-549538).
+    trackedPid = await readLeasePid(leasePath);
+    if (trackedPid) trackDaemon(leasePath, pidFile, trackedPid);
   } catch (e) {
-    await cleanup();
+    await cleanup().catch(() => {});
     throw e;
   }
 
@@ -227,13 +357,28 @@ export async function launch(
   };
 }
 
-/** Stop the detached daemon and wait for its scoped finalizers to release its PTYs. */
-async function stopDaemon(leasePath: string): Promise<void> {
+/** The daemon's pid from its lease, or null when no lease is readable yet. */
+async function readLeasePid(leasePath: string): Promise<number | null> {
   const lease = await Bun.file(leasePath)
     .json()
     .catch(() => null);
   const pid = lease?.pid;
-  if (!Number.isInteger(pid) || pid <= 0) return;
+  return Number.isInteger(pid) && pid > 0 ? (pid as number) : null;
+}
+
+/** Stop the detached daemon and wait for its scoped finalizers to release its PTYs. */
+async function stopDaemon(leasePath: string, knownPid?: number | null): Promise<void> {
+  // Teardown must not depend on a single lease read at stop time: the lease is
+  // written at daemon start before the host is up, so an early read can miss it
+  // under load and orphan the daemon (ts-549538). Prefer the pid cached at
+  // launch; otherwise retry the read briefly before giving up.
+  let pid = knownPid ?? null;
+  const deadline = Date.now() + 3_000;
+  while (!pid && Date.now() < deadline) {
+    pid = await readLeasePid(leasePath);
+    if (!pid) await Bun.sleep(20);
+  }
+  if (!pid) return;
 
   try {
     process.kill(pid, "SIGTERM");
@@ -241,8 +386,8 @@ async function stopDaemon(leasePath: string): Promise<void> {
     return;
   }
 
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
+  const waitDeadline = Date.now() + 3_000;
+  while (Date.now() < waitDeadline) {
     try {
       process.kill(pid, 0);
       await Bun.sleep(10);
