@@ -834,10 +834,9 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
  * Teardown safety.
  *
  * main.tsx is an app entry that boots a client, so it cannot be imported
- * here. These tests reproduce its copy-mode teardown wiring — the orphan
- * guard on onChange plus the exit-before-teardown every pane-destroying
- * command applies — and drive the REAL Window/Space close and replacement
- * ordering, which hook-only tests cannot reach.
+ * here. These tests reproduce its copy-mode orphan guard on onChange and drive
+ * the REAL Window/Space close and replacement ordering, which hook-only tests
+ * cannot reach.
  * ------------------------------------------------------------------ */
 
 /** A real window with `count` tombstone agents on real ghostty terminals.
@@ -871,9 +870,7 @@ async function makeWindow(count: number) {
   return { t, spaces, space, win, agents, panes };
 }
 
-/** The same teardown discipline main.tsx wires: the orphan guard reacts to a
- *  pane leaving the tree, and `stepDown` is the exit-before-teardown the
- *  destructive commands call first. */
+/** The same orphan guard main.tsx wires: it reacts to a pane leaving the tree. */
 function wireCopyModeTeardown(spaces: SpaceSet, mode: CopyMode) {
   const stillMounted = (pane: Pane): boolean =>
     spaces.spaces.some((s) => s.windows.some((w) => w.panes.includes(pane)));
@@ -883,13 +880,6 @@ function wireCopyModeTeardown(spaces: SpaceSet, mode: CopyMode) {
     const pane = mode.active ? mode.pane : null;
     if (pane && !stillMounted(pane)) mode.exit();
   };
-  const stepDown = (panes: Pane | readonly Pane[]) => {
-    const pane = mode.pane;
-    if (!pane) return;
-    const affected = Array.isArray(panes) ? panes.includes(pane) : panes === pane;
-    if (affected) mode.exit();
-  };
-  return { stepDown };
 }
 
 /** Flag any call to the pane's invalidate that happens after the pane was
@@ -916,14 +906,12 @@ test("closing a window ends copy mode before its terminal is freed", async () =>
   expect(win.focused).not.toBe(paneA);
 
   const mode = new CopyMode();
-  const { stepDown } = wireCopyModeTeardown(spaces, mode);
+  wireCopyModeTeardown(spaces, mode);
   mode.enter(paneA);
   expect(mode.active).toBe(true);
 
   const invalidateAfterDestroy = trackInvalidateAfterDestroy(paneA);
 
-  // The same exit-before-teardown main.tsx's window.close / killSelection apply.
-  stepDown(win.panes);
   await runAsync(space.closeWindow(win));
 
   expect(paneA.isDestroyed).toBe(true);
@@ -941,16 +929,14 @@ test("replacing the layout ends copy mode before leftover panes are destroyed", 
   const agentC = agents[2]!;
 
   const mode = new CopyMode();
-  const { stepDown } = wireCopyModeTeardown(spaces, mode);
+  wireCopyModeTeardown(spaces, mode);
   mode.enter(paneA);
   expect(mode.active).toBe(true);
 
   const invalidateAfterDestroy = trackInvalidateAfterDestroy(paneA);
 
   // A layout with no slot for agent A: applying it destroys pane A as a
-  // leftover. main.tsx's layout commands step the mode down first, so the
-  // destroyed pane is never invalidated.
-  stepDown(win.panes);
+  // leftover, then the onChange guard ends copy mode.
   win.applyLayout(
     makeLayout({
       root: {
