@@ -9,11 +9,13 @@ import { createReloader, type PluginReloader } from "./reloader.ts";
 import { testPluginEnvironment } from "./test-environment.ts";
 import { hotImport } from "./hot.ts";
 import { testEffect } from "../test-effect.ts";
+import { waitFor } from "../test-wait.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
 
 declare global {
   var AMUX_RELOAD_TEST: string[] | undefined;
+  var AMUX_RELOAD_GATE: Promise<void> | undefined;
 }
 
 const temporary: string[] = [];
@@ -82,7 +84,7 @@ testEffect("a source that will not import leaves the running version alone", () 
   }),
 );
 
-testEffect("a version that will not start gives way to the one that did", () =>
+testEffect("a failed candidate never becomes visible", () =>
   Effect.gen(function* () {
     const world = yield* start(
       "crash",
@@ -90,7 +92,7 @@ testEffect("a version that will not start gives way to the one that did", () =>
        export default { id: "crash", apiVersion: "1",
          effect: (ctx) => Effect.sync(() => {
            ctx.registerPanel({ id: "crash.panel", region: "left", anchor: "app",
-             size: () => 1, component: () => null as never });
+              size: () => 1, component: () => null as never });
            (globalThis.AMUX_RELOAD_TEST ??= []).push("1");
          }) };`,
     );
@@ -101,18 +103,33 @@ testEffect("a version that will not start gives way to the one that did", () =>
         world.entry,
         `import { Effect } from "effect";
          export default { id: "crash", apiVersion: "1",
-           effect: (ctx) => Effect.sync(() => {
-             ctx.registerPanel({ id: "crash.panel", region: "left", anchor: "app",
-               size: () => 1, component: () => null as never });
-             throw new Error("bad edit");
-           }) };`,
+            effect: (ctx) => Effect.gen(function* () {
+              ctx.registerPanel({ id: "crash.panel", region: "left", anchor: "app",
+                size: () => 2, component: () => null as never });
+              (globalThis.AMUX_RELOAD_TEST ??= []).push("candidate registered");
+              yield* Effect.promise(() => globalThis.AMUX_RELOAD_GATE!);
+              throw new Error("bad edit");
+            }) };`,
       ),
     );
-    const failure = yield* Effect.either(world.reloader.reload("crash"));
+    let release!: () => void;
+    globalThis.AMUX_RELOAD_GATE = new Promise((resolve) => {
+      release = resolve;
+    });
+    const reloading = yield* Effect.forkDaemon(world.reloader.reload("crash"));
+    yield* Effect.promise(() =>
+      waitFor(() => world.activations().includes("candidate registered"), "candidate registration"),
+    );
+
+    // The candidate registered a larger panel but has not reached started, so
+    // the committed generation remains the panel the layout can read.
+    expect(world.panelThickness()).toBe(1);
+    release();
+    const failure = yield* Effect.either(Fiber.join(reloading));
 
     expect(failure._tag === "Left" && failure.left).toContain("kept the version that was running");
     // The version that worked stayed running while the candidate was closed.
-    expect(world.activations()).toEqual(["1"]);
+    expect(world.activations()).toEqual(["1", "candidate registered"]);
     expect(world.panelVisible()).toBe(true);
     expect(world.host.status().map((status) => status.id)).toEqual(["crash"]);
   }),
@@ -141,6 +158,7 @@ interface World {
   readonly directory: string;
   readonly activations: () => readonly string[];
   readonly panelVisible: () => boolean;
+  readonly panelThickness: () => number;
 }
 
 /** A host running one plugin from a scratch directory. */
@@ -174,5 +192,6 @@ const start = (
       reloader: createReloader(host, [{ id, source: pathToFileURL(entry), definition }]),
       activations: () => globalThis.AMUX_RELOAD_TEST ?? [],
       panelVisible: () => environment.regions.declared("left", "app"),
+      panelThickness: () => environment.regions.thickness("left", "app"),
     };
   });

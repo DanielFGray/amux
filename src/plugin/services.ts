@@ -1,82 +1,88 @@
 import { Context, Deferred, Effect, FiberId, Option } from "effect";
+import type { PluginInstance } from "./contributions.ts";
 
-/**
- * What plugins trade in: a service under an Effect tag, published by one plugin
- * and injected by others.
- *
- * A tag is the key because it already carries the service's type. Nothing here
- * resolves a dependency graph by hand — a plugin that injects a tag suspends on
- * that tag's Deferred, and the plugin that provides it resolves the Deferred.
- * Activation order therefore falls out of who provides what, not out of the
- * order plugins were configured in.
- */
 export type PluginService = Context.Tag<any, any>;
 
 export interface PluginServices {
-  /**
-   * Publish `service` under `tag`. Throws if the tag already has a provider:
-   * two implementations of one tag would make "the provider of X" ambiguous,
-   * and the injector could not be told which one it got.
-   */
-  readonly provide: <Id, S>(owner: string, tag: Context.Tag<Id, S>, service: S) => void;
-  readonly withdraw: (owner: string, tag: PluginService) => void;
-  /** Withdraw everything `owner` published, for a provider that is going away. */
-  readonly withdrawAll: (owner: string) => void;
-  /** A soft read of whoever provides `tag` right now. Do not hold the result:
-   *  a provider can leave, and only a declared inject makes the host wait. */
+  readonly provide: <Id, S>(owner: PluginInstance, tag: Context.Tag<Id, S>, service: S) => void;
+  readonly withdraw: (owner: PluginInstance, tag: PluginService) => void;
+  readonly withdrawAll: (owner: PluginInstance) => void;
   readonly get: <Id, S>(tag: Context.Tag<Id, S>) => Option.Option<S>;
-  /** Record what `pluginId` cannot run without, so a withdrawal knows whom it affects. */
-  readonly declare: (pluginId: string, tags: readonly PluginService[]) => void;
-  readonly forget: (pluginId: string) => void;
-  /** Suspends until every declared tag has a provider, then hands back their context. */
+  /** Make an instance's staged services available to injectors. */
+  readonly commit: (owner: PluginInstance) => void;
+  readonly retire: (owner: PluginInstance) => void;
+  readonly declare: (owner: PluginInstance, tags: readonly PluginService[]) => void;
+  readonly forget: (owner: PluginInstance) => void;
   readonly awaitAll: <R>(tags: readonly PluginService[]) => Effect.Effect<Context.Context<R>>;
-  /** The tags `pluginId` declared that nobody provides yet — why it has not started. */
-  readonly waitingOn: (pluginId: string) => readonly string[];
-  /** Plugins that injected a tag `owner` currently provides. */
-  readonly dependentsOf: (owner: string) => readonly string[];
+  readonly waitingOn: (owner: PluginInstance) => readonly string[];
+  readonly dependentsOf: (owner: PluginInstance) => readonly string[];
 }
 
+/**
+ * Service instances stage beside the committed provider, just like UI
+ * contributions. A replacement becomes readable only when its host generation
+ * commits; until then injectors keep the service they already acquired.
+ */
 export function createPluginServices(): PluginServices {
   const slots = new Map<string, Slot>();
-  const injects = new Map<string, readonly PluginService[]>();
+  const injects = new Map<
+    string,
+    { readonly owner: PluginInstance; readonly tags: readonly PluginService[] }
+  >();
+  const committed = new Map<string, number>();
 
-  /** The waiting room for a tag, whether or not anyone provides it yet. */
   function slotFor(key: string): Slot {
     let slot = slots.get(key);
     if (!slot) {
-      slot = { deferred: Deferred.unsafeMake(FiberId.none), provider: null };
+      slot = { deferred: Deferred.unsafeMake(FiberId.none), provider: undefined, providers: [] };
       slots.set(key, slot);
     }
     return slot;
   }
 
-  /**
-   * A fresh Deferred re-arms the waiting room: a plugin that injects this tag
-   * after the withdrawal suspends again instead of reading the value the last
-   * provider left resolved there.
-   */
-  function release(owner: string, slot: Slot): void {
-    if (slot.provider?.owner !== owner) return;
-    slot.provider = null;
+  function visible(slot: Slot): Provider | undefined {
+    return slot.providers.find(
+      (provider) => committed.get(provider.owner.id) === provider.owner.generation,
+    );
+  }
+
+  function update(slot: Slot): void {
+    const provider = visible(slot);
+    if (slot.provider === provider) return;
+    const previous = slot.provider;
+    slot.provider = provider;
+    if (!previous && provider) {
+      Deferred.unsafeDone(slot.deferred, Effect.succeed(provider.service));
+      return;
+    }
     slot.deferred = Deferred.unsafeMake(FiberId.none);
+    if (provider) Deferred.unsafeDone(slot.deferred, Effect.succeed(provider.service));
   }
 
   return {
     provide(owner, tag, service) {
       const slot = slotFor(tag.key);
-      if (slot.provider)
-        throw new Error(`service '${tag.key}' is already provided by '${slot.provider.owner}'`);
-      slot.provider = { owner, service };
-      Deferred.unsafeDone(slot.deferred, Effect.succeed(service));
+      const conflict = slot.providers.find((provider) => provider.owner.id !== owner.id);
+      if (conflict)
+        throw new Error(`service '${tag.key}' is already provided by '${conflict.owner.id}'`);
+      if (slot.providers.some((provider) => sameInstance(provider.owner, owner)))
+        throw new Error(`plugin '${owner.id}' provided '${tag.key}' twice`);
+      slot.providers.push({ owner, service });
+      update(slot);
     },
 
     withdraw(owner, tag) {
       const slot = slots.get(tag.key);
-      if (slot) release(owner, slot);
+      if (!slot) return;
+      slot.providers = slot.providers.filter((provider) => !sameInstance(provider.owner, owner));
+      update(slot);
     },
 
     withdrawAll(owner) {
-      for (const slot of slots.values()) release(owner, slot);
+      for (const slot of slots.values()) {
+        slot.providers = slot.providers.filter((provider) => !sameInstance(provider.owner, owner));
+        update(slot);
+      }
     },
 
     get: <Id, S>(tag: Context.Tag<Id, S>) =>
@@ -84,12 +90,23 @@ export function createPluginServices(): PluginServices {
         Option.map((provider) => provider.service as S),
       ),
 
-    declare(pluginId, tags) {
-      injects.set(pluginId, tags);
+    commit(owner) {
+      committed.set(owner.id, owner.generation);
+      for (const slot of slots.values()) update(slot);
     },
 
-    forget(pluginId) {
-      injects.delete(pluginId);
+    retire(owner) {
+      if (committed.get(owner.id) !== owner.generation) return;
+      committed.delete(owner.id);
+      for (const slot of slots.values()) update(slot);
+    },
+
+    declare(owner, tags) {
+      injects.set(instanceKey(owner), { owner, tags });
+    },
+
+    forget(owner) {
+      injects.delete(instanceKey(owner));
     },
 
     awaitAll: <R>(tags: readonly PluginService[]) =>
@@ -99,30 +116,41 @@ export function createPluginServices(): PluginServices {
           const service = yield* Deferred.await(slotFor(tag.key).deferred);
           context = Context.add(context, tag, service);
         }
-        // The host provides this context to the effect the tags were declared
-        // for, so the identifiers it carries are exactly that effect's.
         return context as Context.Context<R>;
       }),
 
-    waitingOn: (pluginId) =>
-      (injects.get(pluginId) ?? [])
+    waitingOn: (owner) =>
+      (injects.get(instanceKey(owner))?.tags ?? [])
         .filter((tag) => !slots.get(tag.key)?.provider)
         .map((tag) => tag.key),
 
     dependentsOf(owner) {
       const provided = new Set(
-        [...slots].filter(([, slot]) => slot.provider?.owner === owner).map(([key]) => key),
+        [...slots]
+          .filter(([, slot]) =>
+            slot.providers.some((provider) => sameInstance(provider.owner, owner)),
+          )
+          .map(([key]) => key),
       );
       if (provided.size === 0) return [];
-      return [...injects]
-        .filter(([, tags]) => tags.some((tag) => provided.has(tag.key)))
-        .map(([pluginId]) => pluginId);
+      return [...injects.values()]
+        .filter(({ tags }) => tags.some((tag) => provided.has(tag.key)))
+        .map(({ owner }) => owner.id);
     },
   };
 }
 
 interface Slot {
-  /** Resolved while the tag has a provider; replaced when that provider leaves. */
   deferred: Deferred.Deferred<unknown>;
-  provider: { readonly owner: string; readonly service: unknown } | null;
+  provider: Provider | undefined;
+  providers: Provider[];
 }
+
+interface Provider {
+  readonly owner: PluginInstance;
+  readonly service: unknown;
+}
+
+const instanceKey = (owner: PluginInstance) => `${owner.id}#${owner.generation}`;
+const sameInstance = (a: PluginInstance, b: PluginInstance) =>
+  a.id === b.id && a.generation === b.generation;

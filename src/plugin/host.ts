@@ -133,8 +133,8 @@ export function createPluginHost(
         registerBinding: (binding) => scoped(env.registerBinding(owner, binding)),
         registerSettingsSection: (section) => scoped(env.registerSettingsSection(owner, section)),
         provide: (tag, service) => {
-          services.provide(pluginId, tag, service);
-          return scoped(() => services.withdraw(pluginId, tag));
+          services.provide(owner, tag, service);
+          return scoped(() => services.withdraw(owner, tag));
         },
         get: (tag) => services.get(tag),
         registerSpawnProvider: (id, provider) => scoped(spawnProviders.add(owner, id, provider)),
@@ -186,7 +186,8 @@ export function createPluginHost(
           });
           return;
         }
-        services.declare(plugin.id, plugin.inject ?? []);
+        services.declare(instance, plugin.inject ?? []);
+        services.commit(instance);
       }
       const pluginScope = yield* Scope.fork(hostScope, ExecutionStrategy.sequential);
       const context = makeContext(instance, pluginScope);
@@ -232,7 +233,9 @@ export function createPluginHost(
       yield* Fiber.await(fiber);
       if (result === "failed") {
         yield* Scope.close(pluginScope, Exit.void);
-        return yield* Effect.fail(`plugin '${plugin.id}' failed to start; kept the version that was running`);
+        return yield* Effect.fail(
+          `plugin '${plugin.id}' failed to start; kept the version that was running`,
+        );
       }
 
       const conflicts = env.contributions.commit(instance);
@@ -247,20 +250,22 @@ export function createPluginHost(
           ),
           timestamp: Date.now(),
         });
-        return yield* Effect.fail(`plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`);
+        return yield* Effect.fail(
+          `plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
+        );
       }
 
-      services.declare(plugin.id, injected);
+      services.declare(instance, injected);
+      services.commit(instance);
+      // The old provider is still active until after the new generation has
+      // committed. Removing it now re-gates its dependents onto the new service.
+      yield* removePlugin(plugin.id);
       activePlugins.set(plugin.id, {
         instance,
         scope: pluginScope,
         fiber,
         reactivate: Effect.suspend(() => addPlugin(plugin)),
       });
-      if (previous) {
-        env.contributions.retire(previous.instance);
-        yield* Scope.close(previous.scope, Exit.void);
-      }
     });
 
     /**
@@ -283,15 +288,16 @@ export function createPluginHost(
       // is usually a provider being replaced, and a dependent that did not come
       // back would be a plugin silently lost to a reload.
       const regated: Effect.Effect<void>[] = [];
-      for (const dependent of services.dependentsOf(id)) {
+      for (const dependent of services.dependentsOf(state.instance)) {
         const dependentState = activePlugins.get(dependent);
         if (!dependentState) continue;
         regated.push(dependentState.reactivate.pipe(Effect.catchAll(() => Effect.void)));
         yield* removePlugin(dependent);
       }
 
-      services.withdrawAll(id);
-      services.forget(id);
+      services.withdrawAll(state.instance);
+      services.forget(state.instance);
+      services.retire(state.instance);
       // Retired before the scope closes, so the registrations coming off are
       // already invisible and the layout repaints once rather than per panel.
       env.contributions.retire(state.instance);
@@ -327,7 +333,10 @@ export function createPluginHost(
       onError: Stream.fromQueue(errorQueue),
       status() {
         if (disposed) return [];
-        return [...activePlugins.keys()].map((id) => ({ id, waitingFor: services.waitingOn(id) }));
+        return [...activePlugins.entries()].map(([id, state]) => ({
+          id,
+          waitingFor: services.waitingOn(state.instance),
+        }));
       },
       spawnProvider: (id) => spawnProviders.get(id)?.(),
       dispose: Effect.suspend(disposeAll),
