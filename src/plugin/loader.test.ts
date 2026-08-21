@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Scope } from "effect";
 import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
@@ -9,7 +9,7 @@ import { loadPluginsFromConfig } from "./loader.ts";
 import { testPluginEnvironment } from "./test-environment.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { Config, PluginSpec } from "../config.ts";
-import { decodeConfig } from "../config.ts";
+import { decodeConfig, loadConfig } from "../config.ts";
 import { testEffect } from "../test-effect.ts";
 import type { Regions } from "../ui/regions.tsx";
 import { createTestRenderer } from "@opentui/core/testing";
@@ -71,6 +71,22 @@ function spec(path: string, enabled = true): PluginSpec {
   return { path, enabled };
 }
 
+async function writeExampleConfig(dir: string, example: string): Promise<string> {
+  const path = join(dir, "config.json");
+  await writeFile(
+    path,
+    JSON.stringify({
+      plugins: [
+        { path: "builtin:amux.sidebar", enabled: false },
+        { path: "builtin:amux.agent-harness", enabled: false },
+        { path: "builtin:amux.notifications", enabled: false },
+        { path: join(testDir, "../../examples", example), enabled: true },
+      ],
+    }),
+  );
+  return path;
+}
+
 function mkPluginSrc(id: string, variant?: string): string {
   const preamble = `import { Effect } from "effect";`;
   switch (variant) {
@@ -124,28 +140,28 @@ testEffect("loads the worked external status bar example", () =>
   }),
 );
 
-testEffect("loads the agent dashboard example", () =>
+testEffect("loads the agent dashboard example through the config loader", () =>
   Effect.gen(function* () {
     const { host, regions } = yield* makeHost();
-    const config = baseConfig({
-      plugins: [spec(join(testDir, "../../examples/agent-dashboard.tsx"))],
-    });
+    const dir = yield* Effect.promise(() => tempDir());
+    const configPath = yield* Effect.promise(() => writeExampleConfig(dir, "agent-dashboard.tsx"));
+    const config = yield* Effect.promise(() => loadConfig(configPath));
 
-    yield* loadPluginsFromConfig(config, host, testDir);
+    yield* loadPluginsFromConfig(config, host, dirname(configPath));
 
     expect(host.status().map((status) => status.id)).toEqual(["example.agent-dashboard"]);
     expect(regions.declared("bottom", "app")).toBe(true);
   }),
 );
 
-testEffect("loads the agent triage example", () =>
+testEffect("loads the agent triage example through the config loader", () =>
   Effect.gen(function* () {
     const { host, regions } = yield* makeHost();
-    const config = baseConfig({
-      plugins: [spec(join(testDir, "../../examples/agent-triage.tsx"))],
-    });
+    const dir = yield* Effect.promise(() => tempDir());
+    const configPath = yield* Effect.promise(() => writeExampleConfig(dir, "agent-triage.tsx"));
+    const config = yield* Effect.promise(() => loadConfig(configPath));
 
-    yield* loadPluginsFromConfig(config, host, testDir);
+    yield* loadPluginsFromConfig(config, host, dirname(configPath));
 
     expect(host.status().map((status) => status.id)).toEqual(["example.agent-triage"]);
     expect(regions.declared("right", "app")).toBe(true);
