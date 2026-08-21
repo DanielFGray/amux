@@ -59,7 +59,8 @@ export const OPTIONS = {
   },
   "window.format": {
     kind: "string",
-    default: "#{window_number}:#{window_name}#{?zoomed, Z,}#{?synchronized, Y,}",
+    default:
+      "#{agent_state_glyph} #{window_number}:#{window_name}#{?zoomed, Z,}#{?synchronized, Y,}",
     desc: "format for window tabs",
     editable: true,
   },

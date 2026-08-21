@@ -46,6 +46,7 @@ async function screen(
     reopen: boolean;
     format: string;
     status: string;
+    spaceIndex: number;
   }> = {},
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
@@ -94,6 +95,7 @@ async function screen(
           active={app.activeWindow()}
           format={extra.format}
           status={extra.status}
+          spaceIndex={extra.spaceIndex}
           pending={["^a"]}
           copying={false}
           onSelect={() => {}}
@@ -184,10 +186,23 @@ test("window tabs render the configured format", async () => {
     (space) => {
       Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
     },
-    { format: "tab-#{window_number}-#{window_name}" },
+    { format: "tab-#{window_number}-#{window_name}", spaceIndex: 0 },
   );
 
   expect(rows[0]).toContain("tab-1-bash");
+  expect(rows[0]).not.toContain("○");
+});
+
+test("window tabs render the state glyph and space index when requested", async () => {
+  const rows = await screen(
+    false,
+    (space) => {
+      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
+    },
+    { format: "#{agent_state_glyph} space-#{space_index}", spaceIndex: 0 },
+  );
+
+  expect(rows[0]).toContain("○ space-0");
 });
 
 test("window tabs render the configured status format", async () => {

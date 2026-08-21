@@ -1984,6 +1984,7 @@ function buildApp(
             app={app}
             windows={app.active()?.windows ?? []}
             active={app.activeWindow()}
+            spaceIndex={app.active() ? spaces.spaces.indexOf(app.active()!) : undefined}
             spaceName={app.active()?.name}
             branch={app.active()?.branch}
             gitAhead={app.active()?.ahead}
