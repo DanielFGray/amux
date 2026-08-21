@@ -911,7 +911,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const stop = terminate("stop");
   const close = terminate("close");
-  stopWhenEmpty = Effect.forkDaemon(stop).pipe(Effect.asVoid);
+  stopWhenEmpty = Effect.forkDaemon(
+    Effect.gen(function* () {
+      // The empty snapshot is published before this runs. Keep the session
+      // directory until every projection has received it and detached; stop
+      // removes that directory as part of its intentional session teardown.
+      while ((yield* model.attachedClients).length > 0) yield* Effect.sleep("10 millis");
+      yield* stop;
+    }),
+  ).pipe(Effect.asVoid);
 
   const runWorkspaceCommand = (
     value: Command,
