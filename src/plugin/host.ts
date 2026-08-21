@@ -1,5 +1,6 @@
 import {
   Effect,
+  Deferred,
   Equal,
   ExecutionStrategy,
   Exit,
@@ -36,7 +37,7 @@ export type {
 
 export interface PluginHost {
   /** Start a plugin, replacing any plugin already running under its id. */
-  readonly add: (plugin: PluginDefinition) => Effect.Effect<void>;
+  readonly add: (plugin: PluginDefinition) => Effect.Effect<void, string>;
   readonly remove: (id: string) => Effect.Effect<void>;
   readonly onError: Stream.Stream<PluginErrorEvent>;
   readonly status: () => readonly PluginStatus[];
@@ -48,7 +49,7 @@ const SUPPORTED_API_VERSION = "1";
 
 /** Add, remove and re-gate call one another around the dependency graph, so
  *  each of them has to say its own type rather than infer it from the others. */
-type Add = (plugin: PluginDefinition) => Effect.Effect<void>;
+type Add = (plugin: PluginDefinition) => Effect.Effect<void, string>;
 type ById = (id: string) => Effect.Effect<void>;
 
 interface PluginState {
@@ -57,7 +58,7 @@ interface PluginState {
   readonly scope: Scope.CloseableScope;
   readonly fiber: Fiber.RuntimeFiber<void, never>;
   /** Start this same definition again, for a plugin re-gated by a provider leaving. */
-  readonly reactivate: Effect.Effect<void>;
+  readonly reactivate: Effect.Effect<void, string>;
 }
 
 /**
@@ -132,8 +133,8 @@ export function createPluginHost(
         registerBinding: (binding) => scoped(env.registerBinding(owner, binding)),
         registerSettingsSection: (section) => scoped(env.registerSettingsSection(owner, section)),
         provide: (tag, service) => {
-          services.provide(pluginId, tag, service);
-          return scoped(() => services.withdraw(pluginId, tag));
+          services.provide(owner, tag, service);
+          return scoped(() => services.withdraw(owner, tag));
         },
         get: (tag) => services.get(tag),
         registerSpawnProvider: (id, provider) => scoped(spawnProviders.add(owner, id, provider)),
@@ -167,20 +168,79 @@ export function createPluginHost(
         return;
       }
 
-      // Adding an id that is already running replaces it. There is no separate
-      // reload: a plugin is its id, and the newest definition of it is the one
-      // that runs. The old scope closes first, so a registration the new
-      // instance makes under the same name finds the name free.
-      yield* removePlugin(plugin.id);
-
       const generation = (generations.get(plugin.id) ?? -1) + 1;
       generations.set(plugin.id, generation);
       const instance: PluginInstance = { id: plugin.id, generation };
-      // Committed before the effect runs, so registrations are visible as they
-      // are made. The instance is what the registries file them under either
-      // way, which is what a reload will need to defer this line.
+      const previous = activePlugins.get(plugin.id);
+      if (!previous) {
+        const conflicts = env.contributions.commit(instance);
+        if (conflicts.length > 0) {
+          emitError({
+            pluginId: plugin.id,
+            phase: "activate",
+            source: "host",
+            error: new Error(
+              `Plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
+            ),
+            timestamp: Date.now(),
+          });
+          return;
+        }
+        services.declare(instance, plugin.inject ?? []);
+        services.commit(instance);
+      }
+      const pluginScope = yield* Scope.fork(hostScope, ExecutionStrategy.sequential);
+      const context = makeContext(instance, pluginScope);
+      const injected = plugin.inject ?? [];
+      const started = yield* Deferred.make<"started" | "failed", never>();
+
+      // Waiting on the injected tags is the whole of "pending": the fiber
+      // suspends on their Deferreds and resumes in the order they are provided,
+      // so a provider configured last still activates its dependents.
+      const pluginEffect = services.awaitAll<never>(injected).pipe(
+        Effect.flatMap((provided) => Effect.provide(plugin.effect(context), provided)),
+        Effect.catchAllDefect((defect) =>
+          Effect.gen(function* () {
+            const error = defect instanceof Error ? defect : new Error(String(defect));
+            emitError({
+              pluginId: plugin.id,
+              phase: "activate",
+              source: "plugin",
+              error,
+              timestamp: Date.now(),
+            });
+            yield* Deferred.succeed(started, "failed");
+            if (previous) yield* Scope.close(pluginScope, Exit.void);
+            else yield* removePlugin(plugin.id);
+          }),
+        ),
+        Effect.tap(() => Deferred.succeed(started, "started")),
+        Effect.provideService(Scope.Scope, pluginScope),
+      );
+
+      const fiber = yield* Effect.forkIn(pluginEffect, hostScope);
+      if (!previous) {
+        activePlugins.set(plugin.id, {
+          instance,
+          scope: pluginScope,
+          fiber,
+          reactivate: Effect.suspend(() => addPlugin(plugin)),
+        });
+        yield* Effect.yieldNow();
+        return;
+      }
+      const result = yield* Deferred.await(started);
+      yield* Fiber.await(fiber);
+      if (result === "failed") {
+        yield* Scope.close(pluginScope, Exit.void);
+        return yield* Effect.fail(
+          `plugin '${plugin.id}' failed to start; kept the version that was running`,
+        );
+      }
+
       const conflicts = env.contributions.commit(instance);
       if (conflicts.length > 0) {
+        yield* Scope.close(pluginScope, Exit.void);
         emitError({
           pluginId: plugin.id,
           phase: "activate",
@@ -190,43 +250,22 @@ export function createPluginHost(
           ),
           timestamp: Date.now(),
         });
-        return;
+        return yield* Effect.fail(
+          `plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
+        );
       }
 
-      const pluginScope = yield* Scope.fork(hostScope, ExecutionStrategy.sequential);
-      const context = makeContext(instance, pluginScope);
-      const injected = plugin.inject ?? [];
-      services.declare(plugin.id, injected);
-
-      // Waiting on the injected tags is the whole of "pending": the fiber
-      // suspends on their Deferreds and resumes in the order they are provided,
-      // so a provider configured last still activates its dependents.
-      const pluginEffect = services.awaitAll<never>(injected).pipe(
-        Effect.flatMap((provided) => Effect.provide(plugin.effect(context), provided)),
-        Effect.catchAllDefect((defect) => {
-          const error = defect instanceof Error ? defect : new Error(String(defect));
-          emitError({
-            pluginId: plugin.id,
-            phase: "activate",
-            source: "plugin",
-            error,
-            timestamp: Date.now(),
-          });
-          // A crash is a provider leaving, so it goes out the same door as a
-          // deliberate removal: dependents unwind, then this plugin's scope closes.
-          return removePlugin(plugin.id);
-        }),
-        Effect.provideService(Scope.Scope, pluginScope),
-      );
-
-      const fiber = yield* Effect.forkIn(pluginEffect, hostScope);
+      services.declare(instance, injected);
+      services.commit(instance);
+      // The old provider is still active until after the new generation has
+      // committed. Removing it now re-gates its dependents onto the new service.
+      yield* removePlugin(plugin.id);
       activePlugins.set(plugin.id, {
         instance,
         scope: pluginScope,
         fiber,
         reactivate: Effect.suspend(() => addPlugin(plugin)),
       });
-      yield* Effect.yieldNow();
     });
 
     /**
@@ -249,15 +288,16 @@ export function createPluginHost(
       // is usually a provider being replaced, and a dependent that did not come
       // back would be a plugin silently lost to a reload.
       const regated: Effect.Effect<void>[] = [];
-      for (const dependent of services.dependentsOf(id)) {
+      for (const dependent of services.dependentsOf(state.instance)) {
         const dependentState = activePlugins.get(dependent);
         if (!dependentState) continue;
-        regated.push(dependentState.reactivate);
+        regated.push(dependentState.reactivate.pipe(Effect.catchAll(() => Effect.void)));
         yield* removePlugin(dependent);
       }
 
-      services.withdrawAll(id);
-      services.forget(id);
+      services.withdrawAll(state.instance);
+      services.forget(state.instance);
+      services.retire(state.instance);
       // Retired before the scope closes, so the registrations coming off are
       // already invisible and the layout repaints once rather than per panel.
       env.contributions.retire(state.instance);
@@ -293,7 +333,10 @@ export function createPluginHost(
       onError: Stream.fromQueue(errorQueue),
       status() {
         if (disposed) return [];
-        return [...activePlugins.keys()].map((id) => ({ id, waitingFor: services.waitingOn(id) }));
+        return [...activePlugins.entries()].map(([id, state]) => ({
+          id,
+          waitingFor: services.waitingOn(state.instance),
+        }));
       },
       spawnProvider: (id) => spawnProviders.get(id)?.(),
       dispose: Effect.suspend(disposeAll),

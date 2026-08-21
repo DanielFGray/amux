@@ -361,9 +361,10 @@ testEffect("replacing a provider re-acquires its dependents on the new service",
     yield* Effect.yieldNow();
 
     expect(log).toEqual([
+      // The candidate starts privately before it replaces the old provider.
+      "pool provided v2",
       "consumer released, pool open=true",
       "pool closed pool",
-      "pool provided v2",
       "consumer started on v2",
     ]);
     expect(first.pool.open).toBe(false);

@@ -20,10 +20,8 @@ export interface PluginReloader {
  *
  * The last version that worked is the floor. A source that will not import or
  * will not decode is rejected before anything is torn down, so a half-typed
- * file leaves the pane alone; a source that imports but dies while activating
- * loses the swap and gets the previous definition put back, because the
- * registries hold one owner per name and a new instance cannot be stood up
- * beside the old one to be tried first.
+ * file leaves the pane alone. Activation uses the host's generation flip, so a
+ * version that dies while starting is closed without touching the running one.
  */
 export const createReloader = (host: PluginHost, plugins: readonly HotPlugin[]): PluginReloader => {
   const running = new Map<string, { source: URL; definition: PluginDefinition }>(
@@ -57,17 +55,7 @@ export const createReloader = (host: PluginHost, plugins: readonly HotPlugin[]):
         Effect.mapError((error) => `plugin '${id}' was not reloaded: ${error}`),
       );
       yield* host.add(next);
-      if (isActive(id)) {
-        running.set(id, { source: current.source, definition: next });
-        return;
-      }
-
-      yield* host.add(current.definition);
-      return yield* Effect.fail(
-        isActive(id)
-          ? `plugin '${id}' failed to start; kept the version that was running`
-          : `plugin '${id}' failed to start, and so did the version it replaced`,
-      );
+      running.set(id, { source: current.source, definition: next });
     });
 
   return { reload, reloadable: () => [...running.keys()], enable, disable };
