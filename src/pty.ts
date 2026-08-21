@@ -1,5 +1,4 @@
 import { Schema as S } from "effect";
-import type { ReadableStreamDefaultReader, ReadableStreamReadResult } from "node:stream/web";
 import { closeFd, ptyForegroundPgid, resizePty, spawnNativePty, waitPid } from "./shim.ts";
 
 /** A trapped TERM must not make daemon shutdown unbounded. */
@@ -270,61 +269,22 @@ const READ_BATCH = 65536;
  *  enough that a continuous stream keeps filling the batch instead. */
 const READ_GAP_MS = 1;
 
-/** Every /dev/ptmx fd this process holds, in /proc order. */
-function ptmxFds(): number[] {
-  const fds: number[] = [];
-  let entries: string[];
-  try {
-    entries = require("node:fs").readdirSync("/proc/self/fd");
-  } catch {
-    return fds;
-  }
-  for (const entry of entries) {
-    const fd = Number(entry);
-    if (!Number.isInteger(fd)) continue;
-    try {
-      const target = require("node:fs").readlinkSync(`/proc/self/fd/${fd}`);
-      if (target.includes("ptmx")) fds.push(fd);
-    } catch {
-      // raced with close; ignore
-    }
-  }
-  return fds;
-}
-
-/** Bun's fd-backed file stream dups the master and leaks the dup: the stream
- *  always ends in EIO on a pty, and `reader.cancel()` only releases its fd
- *  when the stream has not errored. The dup is the one ptmx fd that appears
- *  while the stream is created, so it is found here and closed by the
- *  generator the moment the stream ends, restoring the old single-fd
- *  ownership. */
-function openStream(master: number): {
-  reader: ReadableStreamDefaultReader<Uint8Array>;
-  dup: number | null;
-} {
-  const before = new Set(ptmxFds());
-  const reader = Bun.file(master).stream().getReader();
-  const dup = ptmxFds().find((fd) => !before.has(fd)) ?? null;
-  return { reader, dup };
-}
-
 /**
  * Async iterator over raw PTY output bytes.
  *
- * Drains through Bun's event-loop fd watcher (`Bun.file(fd).stream()`) rather
- * than a sleep-poll. The old loop ran `fs.readSync` once per 4ms per session —
- * a blocking syscall plus a timer wakeup at 250Hz even for an idle session,
- * N sessions deep on the same loop the renderer shares. A watched fd only
- * wakes the loop when bytes actually arrive.
+ * Drains through a dedicated worker rather than a sleep-poll on the render
+ * loop. The old loop ran `fs.readSync` once per 4ms per session — a blocking
+ * syscall plus a timer wakeup at 250Hz even for an idle session. The worker's
+ * nonblocking read and retry timer cannot delay rendering.
  *
- * Stream chunks land small and the moment bytes do, so the generator batches
+ * Worker chunks arrive as soon as bytes do, so the generator batches
  * them into READ_BATCH and yields a chunk either when it fills or when the
- * stream goes quiet for READ_GAP_MS. Between reads it yields to the event
- * loop, so a flooding child cannot monopolize the loop's turn; after the
- * initial probe the idle path has no reads, no timers and no syscalls at all.
+ * worker goes quiet for READ_GAP_MS. Between reads it yields to the event
+ * loop, so a flooding child cannot monopolize the loop's turn. After the
+ * initial probe, idle reads and retry timers stay off the renderer's loop.
  *
  * The one synchronous read is the first pull: anything already in the master's
- * buffer is drained before the stream is created, because a stream read is an
+ * buffer is drained before the worker is created, because a worker read is an
  * `await` — and an `await` can lose a race the caller's next step depends on.
  * The daemon captures its replay screen right after spawn, so a first burst
  * that missed it would land at the cursor position the replay left behind.
@@ -336,30 +296,35 @@ function openStream(master: number): {
 export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
   const fs = require("node:fs");
   const prime = Buffer.alloc(READ_BATCH);
-  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  // Bun's dup of the master, found when the stream is created and closed the
-  // moment the stream ends: a pty stream always ends in EIO, and reader.cancel()
-  // then never releases it. Closed synchronously at that point, so the number
-  // cannot have been reused in between.
-  let streamDup: number | null = null;
+  let worker: Worker | null = null;
+  const messages: WorkerMessage[] = [];
+  let resolveMessage: ((message: WorkerMessage) => void) | null = null;
+  const nextMessage = () =>
+    new Promise<WorkerMessage>((resolve) => {
+      const message = messages.shift();
+      if (message) resolve(message);
+      else resolveMessage = resolve;
+    });
+  const startWorker = () => {
+    worker = new Worker(new URL("./pty-reader.worker.ts", import.meta.url).href);
+    worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+      const resolve = resolveMessage;
+      resolveMessage = null;
+      if (resolve) resolve(event.data);
+      else messages.push(event.data);
+    };
+    worker.postMessage({ type: "start", fd: pty.master });
+  };
   let batch = new Uint8Array(READ_BATCH);
   let len = 0;
-  // A read abandoned to a gap timer. Its result is bytes the stream already
+  // A read abandoned to a gap timer. Its result is bytes the worker already
   // handed to this generator, so it must be consumed on the next pull, never
   // dropped. It never rejects, so an abandoned read cannot surface as an
   // unhandled rejection while the consumer holds the generator at a yield.
-  let carried: Promise<Outcome> | null = null;
+  let carried: Promise<WorkerMessage> | null = null;
 
   const gap = () => new Promise<"gap">((resolve) => setTimeout(() => resolve("gap"), READ_GAP_MS));
   const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-  /** Wrap a read so its failure is a value. The pump both races reads against
-   *  the gap timer and carries the loser across yields; a rejecting read
-   *  abandoned to a timer is an unhandled rejection. */
-  const outcome = (read: Promise<ReadableStreamReadResult<Uint8Array>>): Promise<Outcome> =>
-    read.then(
-      (next) => ({ tag: "read" as const, next }),
-      (error) => ({ tag: "error" as const, error }),
-    );
   const append = (chunk: Uint8Array) => {
     if (len + chunk.length > batch.length) {
       const grown = new Uint8Array(len + chunk.length);
@@ -378,42 +343,34 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
   /** EIO is terminal EOF and EBADF a master closed under us; neither can
    *  produce more bytes. The one gate is the exit code: the pump must not end
    *  before the waitpid watcher records it, because the consumer reads it the
-   *  moment the stream ends. */
+   *  moment the worker reports terminal output. */
   const waitTerminal = async (error: { code?: string }) => {
     if (pty.closed) return;
     if (error.code === "EIO" && !pty.exited) await pty.processExited;
-  };
-  /** The stream has ended (error or done); Bun will not release its dup, so
-   *  it is closed here, synchronously, before the number can be reused. */
-  const closeStreamDup = () => {
-    if (streamDup !== null) {
-      closeFd(streamDup);
-      streamDup = null;
-    }
   };
 
   try {
     while (!pty.closed) {
       // First pulls: drain whatever is already in the master's buffer
-      // synchronously, before the event-driven stream exists. This is what a
-      // consumer that reads the terminal right after spawn sees — a stream
+      // synchronously, before the event-driven worker exists. This is what a
+      // consumer that reads the terminal right after spawn sees — a worker
       // read is an `await`, and the caller's next step can run before it
-      // resolves. The stream takes over at the first EAGAIN.
-      if (!reader) {
+      // resolves. The worker takes over at the first EAGAIN.
+      if (!worker) {
         let n: number;
         try {
           n = fs.readSync(pty.master, prime, 0, prime.length, null);
         } catch (error: any) {
           if (pty.closed) return;
           if (error.code === "EAGAIN") {
-            ({ reader, dup: streamDup } = openStream(pty.master));
+            startWorker();
             continue;
           }
           await waitTerminal(error);
           return;
         }
         if (n === 0) {
-          ({ reader, dup: streamDup } = openStream(pty.master));
+          startWorker();
           continue;
         }
         if (n < 0) return;
@@ -421,55 +378,47 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
         yield take();
         continue;
       }
-      const pending = carried ?? outcome(reader.read());
+      const pending = carried ?? nextMessage();
       carried = null;
       const first = await pending;
-      if (first.tag === "error") {
+      if (first.type === "error") {
         if (len > 0) yield take();
-        closeStreamDup();
-        await waitTerminal(first.error);
+        await waitTerminal(first);
         return;
       }
-      if (first.next.done) {
-        if (len > 0) yield take();
-        closeStreamDup();
-        return;
-      }
-      if (first.next.value.length > 0) append(first.next.value);
-      // Fill the batch while the stream keeps delivering, giving the loop a
+      if (first.data.length > 0) append(first.data);
+      // Fill the batch while the worker keeps delivering, giving the loop a
       // turn between reads so a flood cannot starve the renderer's timer.
       while (len < READ_BATCH && !pty.closed) {
-        const read = outcome(reader.read());
+        const read = nextMessage();
         const result = await Promise.race([read, gap()]);
         if (result === "gap") {
           carried = read;
           break;
         }
-        if (result.tag === "error") {
+        if (result.type === "error") {
           // The bytes already read are yielded before the terminal-EOF wait:
           // the exit code may not be recorded for another waitpid poll, and a
           // final batch of output must reach the consumer now, not four
           // milliseconds from now.
           if (len > 0) yield take();
-          closeStreamDup();
-          await waitTerminal(result.error);
+          await waitTerminal(result);
           return;
         }
-        if (result.next.done) {
-          if (len > 0) yield take();
-          closeStreamDup();
-          return;
-        }
-        if (result.next.value.length > 0) append(result.next.value);
+        if (result.data.length > 0) append(result.data);
         await turn();
       }
       if (len > 0) yield take();
     }
   } finally {
-    await reader?.cancel().catch(() => {});
+    const activeWorker = worker as Worker | null;
+    if (activeWorker) {
+      activeWorker.postMessage({ type: "stop" });
+      await activeWorker.terminate();
+    }
   }
 }
 
-type Outcome =
-  | { readonly tag: "read"; readonly next: ReadableStreamReadResult<Uint8Array> }
-  | { readonly tag: "error"; readonly error: { code?: string } };
+type WorkerMessage =
+  | { readonly type: "data"; readonly data: Uint8Array }
+  | { readonly type: "error"; readonly code?: string };
