@@ -331,10 +331,9 @@ test("a flooding child cannot starve the event loop's frame clock", async () => 
 });
 
 test("draining a session leaves no fd behind", async () => {
-  // Bun's fd-backed drain stream dups the master and, once the stream has
-  // ended (which on a pty is always EIO), never releases that dup on its own.
-  // If readPty stops closing it, every session leaks one /dev/ptmx and the
-  // long-lived daemon eventually exhausts fds.
+  // The reader must not retain a duplicate master descriptor after it ends:
+  // one leaked /dev/ptmx per session eventually exhausts the long-lived
+  // daemon's file-descriptor limit.
   const ptmxFds = () =>
     fs
       .readdirSync("/proc/self/fd")
