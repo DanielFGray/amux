@@ -14,6 +14,7 @@ import {
   CursorStyle,
   Dirty,
   type CursorInfo,
+  type KittyPlacement,
 } from "./ghostty.ts";
 import { NativeImage } from "@opentui/core";
 import { Effect, Exit, Scope } from "effect";
@@ -505,11 +506,10 @@ export class TerminalPane extends Pane {
       this.#haveCache = true;
     }
 
-    for (const r of this.#runs) buffer.drawText(r.text, ox + r.x, oy + r.y, r.fg, r.bg);
-
-    const visible = new Set<number>();
-    for (const placement of this.session.term.kittyGraphics()) {
-      visible.add(placement.imageId);
+    const placements = this.session.term.kittyGraphics();
+    const layers = kittyPlacementLayers(placements);
+    const visible = new Set<number>(placements.map((placement) => placement.imageId));
+    const drawPlacement = (placement: (typeof placements)[number]) => {
       const rgba =
         placement.format === "rgba"
           ? placement.pixels
@@ -545,7 +545,12 @@ export class TerminalPane extends Pane {
         placement.sourceHeight,
         "kitty",
       );
-    }
+    };
+
+    for (const index of layers.beforeText) drawPlacement(placements[index]!);
+    for (const r of this.#runs) buffer.drawText(r.text, ox + r.x, oy + r.y, r.fg, r.bg);
+    for (const index of layers.afterText) drawPlacement(placements[index]!);
+
     for (const [imageId, cached] of this.#kittyImages) {
       if (!visible.has(imageId)) {
         cached.image.dispose();
@@ -641,6 +646,18 @@ export class TerminalPane extends Pane {
     Effect.runFork(Scope.close(this.#scope, Exit.void));
     super.destroySelf();
   }
+}
+
+export function kittyPlacementLayers(placements: readonly Pick<KittyPlacement, "zIndex">[]): {
+  beforeText: number[];
+  afterText: number[];
+} {
+  const order = placements.map((placement, index) => ({ index, zIndex: placement.zIndex }));
+  order.sort((left, right) => left.zIndex - right.zIndex);
+  const split = order.findIndex(({ zIndex }) => zIndex >= 0);
+  const beforeText = (split < 0 ? order : order.slice(0, split)).map(({ index }) => index);
+  const afterText = (split < 0 ? [] : order.slice(split)).map(({ index }) => index);
+  return { beforeText, afterText };
 }
 
 function rgbToRgba(rgb: Uint8Array, width: number, height: number): Uint8Array {

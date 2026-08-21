@@ -84,6 +84,7 @@ const TERMINAL_DATA_KITTY_GRAPHICS = 30;
 const TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT = 15;
 const KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR = 1;
 const KITTY_PLACEMENT_DATA_IMAGE_ID = 1;
+const KITTY_PLACEMENT_DATA_Z = 12;
 const KITTY_IMAGE_DATA_WIDTH = 3;
 const KITTY_IMAGE_DATA_HEIGHT = 4;
 const KITTY_IMAGE_DATA_FORMAT = 5;
@@ -281,6 +282,15 @@ export class Terminal {
           ) !== OK
         )
           continue;
+        const zIndex = new Int32Array(1);
+        if (
+          g.ghostty_kitty_graphics_placement_get(
+            asPtr(Number(iterator[0])),
+            KITTY_PLACEMENT_DATA_Z,
+            ptr(zIndex),
+          ) !== OK
+        )
+          continue;
         const image = g.ghostty_kitty_graphics_image(asPtr(Number(graphics[0])), imageId[0]!);
         if (!image) continue;
         const width = new Uint32Array(1);
@@ -313,6 +323,7 @@ export class Terminal {
         const view = new DataView(renderInfo.buffer);
         placements.push({
           imageId: imageId[0]!,
+          zIndex: zIndex[0]!,
           width: width[0]!,
           height: height[0]!,
           pixels: new Uint8Array(toArrayBuffer(asPtr(Number(dataPtr[0])), 0, Number(dataLen[0]))),
@@ -460,6 +471,7 @@ export const CursorStyle = { bar: 0, block: 1, underline: 2, blockHollow: 3 } as
 
 export interface KittyPlacement {
   imageId: number;
+  zIndex: number;
   width: number;
   height: number;
   pixels: Uint8Array;
