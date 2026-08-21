@@ -79,6 +79,28 @@ A plugin waits until every injected service has a provider, so load order follow
 
 `amux plugin.reload [plugin]` loads a plugin's source again and runs the new version in place of the old one — from the command palette, from a shell, or from an agent that has just edited it. With no argument every plugin reloads. The request goes through the daemon, so every attached client reloads, not only the one you typed it into.
 
+#### Reload boundary
+
+The reload boundary is the plugin's directory, rooted at its entry file. The HMR
+loader carries a generation token through imports inside that directory. Imports
+outside it keep the host's module instance, including the Effect and OpenTUI
+instances shared with the rest of the client.
+
+The alternative is import-graph classification: repeatedly accept a changed
+module when an import accepts it, decline it when all imports decline it, and
+decline cycles by default. That can reload a smaller set of files, but it adds a
+graph cache, invalidation and stale-entry rules, and difficult ownership cases
+for dynamic imports and shared state. It does not improve amux's required
+guarantee: plugin code may be replaced without duplicating host state. A
+directory is an explicit, stable ownership boundary and is also easy to explain
+to plugin authors. We therefore keep the directory-rooted boundary.
+
+This classification decision is independent of reload transactionality. The
+reload lifecycle still uses the two-scope, commit-or-rollback design: start the
+new generation beside the old one, publish it only after activation succeeds,
+then unload the old generation. A failed activation closes the new scope and
+leaves the old generation visible.
+
 A plugin's reloadable unit is its entry file plus the directory named after it: `agent-harness.tsx` reloads together with everything in `agent-harness/`. Modules outside that directory — amux itself, `effect`, `solid-js` — stay the single instance the whole client shares, so a plugin never ends up talking to its own private copy of a registry.
 
 Nothing a plugin held in module scope survives; that is what makes it a reload. `ctx.kv` does survive, and so does anything the daemon owns, which is why a chat pane comes back mid-conversation with its transcript intact. The last version that worked is the floor: a source that will not import is refused before the running one is touched, and a version that fails to start gives way to the one it replaced.
