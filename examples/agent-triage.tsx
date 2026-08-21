@@ -1,7 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 import { For, createMemo } from "solid-js";
 import { Effect } from "effect";
-import type { PluginDefinition } from "../src/plugin/types.ts";
+import { definePlugin, type PluginDefinition } from "../src/plugin/types.ts";
+import { RegionsTag } from "../src/plugin/services.ts";
 
 type TriageAgent = {
   id: string;
@@ -13,11 +14,13 @@ type TriageAgent = {
 };
 
 /** A read-only attention rail assembled from the public value projections. */
-const agentTriage: PluginDefinition = {
+const agentTriage: PluginDefinition = definePlugin({
   id: "example.agent-triage",
   apiVersion: "1",
+  inject: [RegionsTag],
   effect: (ctx) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      const regions = yield* RegionsTag;
       const agents = createMemo<readonly TriageAgent[]>(() => {
         ctx.panel.tick();
         return ctx.panel
@@ -66,9 +69,9 @@ const agentTriage: PluginDefinition = {
         ),
       };
 
-      ctx.registerPanel(panel);
+      yield* regions.register(panel);
     }),
-};
+});
 
 export default agentTriage;
 

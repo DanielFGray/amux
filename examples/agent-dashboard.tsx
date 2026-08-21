@@ -1,14 +1,17 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo } from "solid-js";
 import { Effect } from "effect";
-import type { PluginDefinition } from "../src/plugin/types.ts";
+import { definePlugin, type PluginDefinition } from "../src/plugin/types.ts";
+import { RegionsTag } from "../src/plugin/services.ts";
 
 /** A read-only agent roster built entirely on the public panel projection. */
-const agentDashboard: PluginDefinition = {
+const agentDashboard: PluginDefinition = definePlugin({
   id: "example.agent-dashboard",
   apiVersion: "1",
+  inject: [RegionsTag],
   effect: (ctx) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      const regions = yield* RegionsTag;
       const panel = {
         id: "example.agent-dashboard.panel",
         region: "bottom" as const,
@@ -42,8 +45,8 @@ const agentDashboard: PluginDefinition = {
           );
         },
       };
-      ctx.registerPanel(panel);
+      yield* regions.register(panel);
     }),
-};
+});
 
 export default agentDashboard;

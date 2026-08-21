@@ -5,6 +5,16 @@ import { createSessionViews } from "./session-views.tsx";
 import { createPluginContributions } from "./contributions.ts";
 import { createRegions } from "../ui/regions.tsx";
 import { testPanelContext } from "../ui/test-panel.ts";
+import type { SpawnProvider } from "./types.ts";
+import type { Regions } from "../ui/regions.tsx";
+import type { SessionViews } from "./session-views.tsx";
+import type { PluginRegistries } from "./services.ts";
+
+type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "registries"> & {
+  readonly regions?: Regions;
+  readonly sessionViews?: SessionViews;
+  readonly registries?: Partial<PluginRegistries>;
+};
 
 /**
  * A plugin environment for a check that cares about one field of it.
@@ -22,18 +32,34 @@ import { testPanelContext } from "../ui/test-panel.ts";
  */
 export function testPluginEnvironment(
   renderer: CliRenderer,
-  parts: Partial<PluginEnvironment> = {},
+  parts: TestEnvironmentParts = {},
 ): PluginEnvironment {
   const contributions = parts.contributions ?? createPluginContributions();
+  const regions = parts.regions ?? createRegions(renderer, contributions);
+  const sessionViews = parts.sessionViews ?? createSessionViews(contributions);
+  const {
+    regions: _regions,
+    sessionViews: _sessionViews,
+    registries: registryOverrides,
+    ...environment
+  } = parts;
+  const bindings = contributions.table<unknown>();
+  const settings = contributions.table<unknown>();
+  const spawnProviders = contributions.table<() => SpawnProvider>();
   return {
     panel: testPanelContext(),
-    registerBinding: () => () => {},
-    registerSettingsSection: () => () => {},
     frames: () => Stream.empty,
     sync: () => {},
-    ...parts,
+    registries: {
+      regions,
+      sessionViews,
+      bindings: (owner, binding) => bindings.add(owner, binding.name, binding),
+      settings: (owner, section) => settings.add(owner, section.id, section),
+      spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
+      spawnProvider: (id) => spawnProviders.get(id)?.(),
+      ...registryOverrides,
+    },
+    ...environment,
     contributions,
-    regions: parts.regions ?? createRegions(renderer, contributions),
-    sessionViews: parts.sessionViews ?? createSessionViews(contributions),
   };
 }

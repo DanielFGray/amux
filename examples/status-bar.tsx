@@ -1,15 +1,18 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo } from "solid-js";
 import { Effect } from "effect";
-import type { PluginDefinition } from "../src/plugin/types.ts";
+import { definePlugin, type PluginDefinition } from "../src/plugin/types.ts";
+import { RegionsTag } from "../src/plugin/services.ts";
 
 /** A minimal user plugin driven only by the public panel context. */
-const statusBar: PluginDefinition = {
+const statusBar: PluginDefinition = definePlugin({
   id: "example.status-bar",
   apiVersion: "1",
+  inject: [RegionsTag],
   effect: (ctx) =>
-    Effect.sync(() => {
-      ctx.registerPanel({
+    Effect.gen(function* () {
+      const regions = yield* RegionsTag;
+      yield* regions.register({
         id: "example.status-bar.panel",
         region: "bottom",
         anchor: "app",
@@ -27,6 +30,6 @@ const statusBar: PluginDefinition = {
         },
       });
     }),
-};
+});
 
 export default statusBar;

@@ -1,12 +1,9 @@
 import type { Context, Effect, Option, Scope, Stream } from "effect";
-import type { PluginService } from "./services.ts";
+import { CurrentPlugin, type PluginService } from "./services.ts";
 import type { JSX } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import type { PanelContext } from "../ui/panel.ts";
-import type { Panel } from "../ui/regions.tsx";
-import type { PaneView } from "../component-pane.tsx";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
-import type { CommandSpec } from "../bindings.ts";
 
 export interface SpawnProvider {
   readonly argv: readonly string[];
@@ -33,7 +30,7 @@ export interface PluginDefinition {
   readonly inject?: readonly PluginService[];
   /** The injected services are already provided by the time the host runs this,
    *  so the only requirement left is the plugin's own scope. */
-  readonly effect: (context: PluginHostContext) => Effect.Effect<void, never, Scope.Scope>;
+  readonly effect: (context: PluginHostContext) => Effect.Effect<void, never, any>;
 }
 
 /**
@@ -50,7 +47,11 @@ export const definePlugin = <const Tags extends readonly PluginService[] = []>(d
   readonly inject?: Tags;
   readonly effect: (
     context: PluginHostContext,
-  ) => Effect.Effect<void, never, Context.Tag.Identifier<Tags[number]> | Scope.Scope>;
+  ) => Effect.Effect<
+    void,
+    never,
+    Context.Tag.Identifier<Tags[number]> | Context.Tag.Identifier<CurrentPlugin> | Scope.Scope
+  >;
 }): PluginDefinition => definition as PluginDefinition;
 
 export interface PluginHostContext {
@@ -61,11 +62,6 @@ export interface PluginHostContext {
   readonly provide: <Id, S>(tag: Context.Tag<Id, S>, service: S) => () => void;
   /** Read a service without depending on it. `inject` is what makes the host wait. */
   readonly get: <Id, S>(tag: Context.Tag<Id, S>) => Option.Option<S>;
-  readonly registerPanel: (panel: Panel) => () => void;
-  readonly registerPaneType: (type: string, view: PaneView) => () => void;
-  readonly registerBinding: (binding: CommandSpec) => () => void;
-  readonly registerSettingsSection: (section: PluginSettingsSection) => () => void;
-  readonly registerSpawnProvider: (id: string, provider: () => SpawnProvider) => () => void;
   readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
   readonly sync: (session: string) => void;
 }

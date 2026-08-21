@@ -11,10 +11,7 @@ import {
   Stream,
 } from "effect";
 import type { PanelContext } from "../ui/panel.ts";
-import type { Panel, Regions } from "../ui/regions.tsx";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
-import type { SessionViews } from "./session-views.tsx";
-import type { CommandSpec } from "../bindings.ts";
 import { createPluginKV } from "./kv.ts";
 import { createPluginServices } from "./services.ts";
 import type { PluginContributions, PluginInstance } from "./contributions.ts";
@@ -24,9 +21,27 @@ import type {
   PluginHostContext,
   PluginKV,
   PluginStatus,
-  PluginSettingsSection,
   SpawnProvider,
 } from "./types.ts";
+import {
+  CurrentPlugin,
+  type PluginRegistries,
+  RegionsTag,
+  SessionViewsTag,
+  BindingsTag,
+  SettingsTag,
+  SpawnProvidersTag,
+} from "./services.ts";
+
+const registryService = <A>(register: (owner: PluginInstance, value: A) => () => void) => ({
+  register: (value: A) =>
+    Effect.gen(function* () {
+      const owner = yield* CurrentPlugin;
+      const scope = yield* Scope.Scope;
+      const dispose = register(owner, value);
+      yield* Scope.addFinalizer(scope, Effect.sync(dispose));
+    }),
+});
 
 export type {
   PluginDefinition,
@@ -74,13 +89,7 @@ export interface PluginEnvironment {
   /** The tables every registry writes into, and the host's say over which
    *  instance of a plugin id the app is looking at. */
   readonly contributions: PluginContributions;
-  readonly regions: Regions;
-  readonly sessionViews: SessionViews;
-  readonly registerBinding: (owner: PluginInstance, binding: CommandSpec) => () => void;
-  readonly registerSettingsSection: (
-    owner: PluginInstance,
-    section: PluginSettingsSection,
-  ) => () => void;
+  readonly registries: PluginRegistries;
   readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
   readonly sync: (session: string) => void;
 }
@@ -93,10 +102,40 @@ export function createPluginHost(
     const errorQueue = yield* Queue.unbounded<PluginErrorEvent>();
     const activePlugins = new Map<string, PluginState>();
     const kvStores = new Map<string, PluginKV>();
-    const spawnProviders = env.contributions.table<() => SpawnProvider>();
     /** How many times each id has been started; the next run gets the next number. */
     const generations = new Map<string, number>();
     const services = createPluginServices();
+    const registryOwner: PluginInstance = { id: "amux.registries", generation: 0 };
+    services.provide(
+      registryOwner,
+      RegionsTag,
+      registryService((owner, panel) => env.registries.regions.register(owner, panel)),
+    );
+    services.provide(
+      registryOwner,
+      SessionViewsTag,
+      registryService((owner, [type, view]) =>
+        env.registries.sessionViews.register(owner, type, view),
+      ),
+    );
+    services.provide(
+      registryOwner,
+      BindingsTag,
+      registryService((owner, binding) => env.registries.bindings(owner, binding)),
+    );
+    services.provide(
+      registryOwner,
+      SettingsTag,
+      registryService((owner, section) => env.registries.settings(owner, section)),
+    );
+    services.provide(
+      registryOwner,
+      SpawnProvidersTag,
+      registryService((owner, [id, provider]) =>
+        env.registries.spawnProviders(owner, id, provider),
+      ),
+    );
+    services.commit(registryOwner);
     const hostScope = yield* Scope.make();
     let disposed = false;
 
@@ -117,8 +156,6 @@ export function createPluginHost(
     }
 
     function makeContext(owner: PluginInstance, scope: Scope.CloseableScope): PluginHostContext {
-      /** Every registration is undone when the plugin's scope closes, so a
-       *  removed or crashed plugin leaves nothing of itself behind. */
       const scoped = (dispose: () => void): (() => void) => {
         Runtime.runSync(rt)(Scope.addFinalizer(scope, Effect.sync(dispose)));
         return dispose;
@@ -128,16 +165,11 @@ export function createPluginHost(
         id: pluginId,
         panel: env.panel,
         kv: kvFor(pluginId),
-        registerPanel: (panel: Panel) => scoped(env.regions.register(owner, panel)),
-        registerPaneType: (type, view) => scoped(env.sessionViews.register(owner, type, view)),
-        registerBinding: (binding) => scoped(env.registerBinding(owner, binding)),
-        registerSettingsSection: (section) => scoped(env.registerSettingsSection(owner, section)),
         provide: (tag, service) => {
           services.provide(owner, tag, service);
           return scoped(() => services.withdraw(owner, tag));
         },
         get: (tag) => services.get(tag),
-        registerSpawnProvider: (id, provider) => scoped(spawnProviders.add(owner, id, provider)),
         frames: env.frames,
         sync: env.sync,
       };
@@ -198,7 +230,9 @@ export function createPluginHost(
       // suspends on their Deferreds and resumes in the order they are provided,
       // so a provider configured last still activates its dependents.
       const pluginEffect = services.awaitAll<never>(injected).pipe(
-        Effect.flatMap((provided) => Effect.provide(plugin.effect(context), provided)),
+        Effect.flatMap(
+          (provided) => Effect.provide(plugin.effect(context), provided) as Effect.Effect<void>,
+        ),
         Effect.catchAllDefect((defect) =>
           Effect.gen(function* () {
             const error = defect instanceof Error ? defect : new Error(String(defect));
@@ -216,6 +250,7 @@ export function createPluginHost(
         ),
         Effect.tap(() => Deferred.succeed(started, "started")),
         Effect.provideService(Scope.Scope, pluginScope),
+        Effect.provideService(CurrentPlugin, instance),
       );
 
       const fiber = yield* Effect.forkIn(pluginEffect, hostScope);
@@ -338,7 +373,7 @@ export function createPluginHost(
           waitingFor: services.waitingOn(state.instance),
         }));
       },
-      spawnProvider: (id) => spawnProviders.get(id)?.(),
+      spawnProvider: env.registries.spawnProvider,
       dispose: Effect.suspend(disposeAll),
     };
   });

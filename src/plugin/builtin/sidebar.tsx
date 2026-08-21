@@ -3,7 +3,8 @@ import { For, Show, createEffect, createMemo } from "solid-js";
 import { Effect } from "effect";
 import { theme } from "../../ui/theme.ts";
 import type { DockPanel } from "../../ui/regions.tsx";
-import type { PluginDefinition } from "../types.ts";
+import { definePlugin, type PluginDefinition } from "../types.ts";
+import { RegionsTag } from "../services.ts";
 import type { SidebarDisplayRow } from "../../ui/panel.ts";
 import { SPINNER_FRAMES, STATE_GLYPH } from "../../detect.ts";
 import { AgentState } from "../../agent-state.ts";
@@ -11,11 +12,13 @@ import { command } from "../../commands.ts";
 
 export const SIDEBAR_PLUGIN_ID = "amux.sidebar";
 
-export const sidebarPlugin: PluginDefinition = {
+export const sidebarPlugin: PluginDefinition = definePlugin({
   id: SIDEBAR_PLUGIN_ID,
   apiVersion: "1",
+  inject: [RegionsTag],
   effect: (ctx) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      const regions = yield* RegionsTag;
       let selected = 0;
       let hovered: number | null = null;
 
@@ -70,9 +73,9 @@ export const sidebarPlugin: PluginDefinition = {
           />
         ),
       };
-      ctx.registerPanel(panel);
+      yield* regions.register(panel);
     }),
-};
+});
 
 /** Loaded from its own source like any other plugin, and so exported like one. */
 export default sidebarPlugin;
