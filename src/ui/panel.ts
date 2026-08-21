@@ -21,7 +21,9 @@ export interface SidebarDisplayRow {
   readonly branch?: string;
   readonly ahead?: number;
   readonly behind?: number;
+  readonly spaceIndex?: number;
   readonly windowNumber?: number;
+  readonly paneIndex?: number;
   readonly windowLabel?: string;
   readonly agentId?: string;
   readonly agentState?: string;

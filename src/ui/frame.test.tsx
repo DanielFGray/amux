@@ -43,6 +43,7 @@ async function screen(
     hintsVisible: boolean;
     overlay: boolean;
     reopen: boolean;
+    format: string;
   }> = {},
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
@@ -89,6 +90,7 @@ async function screen(
           app={app}
           windows={app.active()?.windows ?? []}
           active={app.activeWindow()}
+          format={extra.format}
           pending={["^a"]}
           copying={false}
           onSelect={() => {}}
@@ -171,6 +173,18 @@ test("the sidebar seam is a single line that is also the pane frame's left borde
   expect(middle[SIDEBAR]).toBe("│");
   expect(middle[SIDEBAR + 1]).not.toBe("│");
   expect(bottom[SIDEBAR]).toBe("└");
+});
+
+test("window tabs render the configured format", async () => {
+  const rows = await screen(
+    false,
+    (space) => {
+      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
+    },
+    { format: "tab-#{window_number}-#{window_name}" },
+  );
+
+  expect(rows[0]).toContain("tab-1-bash");
 });
 
 test("a horizontal split tees into the sidebar seam instead of stopping short", async () => {

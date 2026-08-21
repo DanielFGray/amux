@@ -33,6 +33,10 @@ export function WindowTabs(props: {
   onSelect: (window: Window) => void;
   format?: string;
   status?: string;
+  spaceName?: string;
+  branch?: string;
+  gitAhead?: number;
+  gitBehind?: number;
 }) {
   const glyph = (window: Window) => {
     props.app.tick();
@@ -45,13 +49,34 @@ export function WindowTabs(props: {
    *  which arrives from the agent's OSC title after the tab first renders. */
   const label = (window: Window) => {
     props.app.tick();
+    const session = window.focused?.session;
     return formatText(props.format ?? "#{window_number}:#{window_name}", {
       active: window === props.active,
+      space_name: props.spaceName,
       window_number: window.number,
       window_name: window.title,
       zoomed: window.zoomed,
       synchronized: window.sync,
       sync: window.sync,
+      pane_index: session ? window.sessions.indexOf(session) : undefined,
+      pane_title: session?.title,
+      pane_current_command: session?.foregroundCommand,
+      agent_state: session?.state,
+      agent_state_label: session?.state,
+      agent_state_glyph:
+        session?.state === AgentState.Working
+          ? SPINNER_FRAMES[props.app.frame() % SPINNER_FRAMES.length]
+          : session?.state
+            ? STATE_GLYPH[session.state]
+            : "",
+      scrolled: session?.scrolled,
+      exited: session?.exited,
+      viewers: session?.viewers,
+      unseen: session?.unseen,
+      branch: props.branch,
+      git_branch: props.branch,
+      git_ahead: props.gitAhead,
+      git_behind: props.gitBehind,
     });
   };
 
