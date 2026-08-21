@@ -13,6 +13,16 @@ import { workspaceEnv } from "../../env.ts";
 import { createPluginHost, type PluginHost } from "../../plugin/host.ts";
 import { testPluginEnvironment } from "../test-environment.ts";
 import { testPanelContext } from "../../ui/test-panel.ts";
+import { formatText } from "../../format.ts";
+
+test("format strings can choose the command or OSC title in a sidebar row", () => {
+  expect(
+    formatText("#{pane_current_command} · #{pane_title}", {
+      pane_current_command: "bun",
+      pane_title: "tests",
+    }),
+  ).toBe("bun · tests");
+});
 
 const WIDTH = 60;
 const HEIGHT = 20;

@@ -5,6 +5,7 @@ import { AgentState } from "../agent-state.ts";
 import type { Window } from "../window.ts";
 import type { AppState } from "./state.ts";
 import { theme } from "./theme.ts";
+import { formatText } from "../format.ts";
 
 const stateColor = (state: AgentState) =>
   state === AgentState.Blocked
@@ -30,6 +31,8 @@ export function WindowTabs(props: {
   /** True while the focused window's pane is in keyboard copy mode. */
   copying: boolean;
   onSelect: (window: Window) => void;
+  format?: string;
+  status?: string;
 }) {
   const glyph = (window: Window) => {
     props.app.tick();
@@ -42,7 +45,14 @@ export function WindowTabs(props: {
    *  which arrives from the agent's OSC title after the tab first renders. */
   const label = (window: Window) => {
     props.app.tick();
-    return window.label;
+    return formatText(props.format ?? "#{window_number}:#{window_name}", {
+      active: window === props.active,
+      window_number: window.number,
+      window_name: window.title,
+      zoomed: window.zoomed,
+      synchronized: window.sync,
+      sync: window.sync,
+    });
   };
 
   return (
@@ -85,6 +95,12 @@ export function WindowTabs(props: {
 
       {/* Fills the rest of the row so the tabs stay left-aligned. */}
       <box style={{ flexGrow: 1, height: 1, backgroundColor: theme.mantle }} />
+
+      <Show when={props.status}>
+        <text style={{ fg: theme.subtext0, bg: theme.mantle, flexShrink: 0 }}>
+          {` ${props.status} `}
+        </text>
+      </Show>
 
       <Show when={props.copying}>
         <text style={{ bg: theme.green, fg: theme.base, flexShrink: 0 }}> copy </text>

@@ -50,6 +50,25 @@ export const OPTIONS = {
     default: false,
     desc: "list only panes running a recognised agent CLI",
   },
+  "sidebar.format": {
+    kind: "string",
+    default:
+      "#{?active,▸, }#{?row_kind_branch,   #{branch}#{?git_ahead, ↑#{git_ahead},}#{?git_behind, ↓#{git_behind},},#{?row_kind_space,#{space_name},#{?row_kind_window,· #{window_name},#{agent_state_glyph} #{?pane_current_command,#{pane_current_command},#{pane_title}}#{indicators}}}}",
+    desc: "format for sidebar rows",
+    editable: true,
+  },
+  "window.format": {
+    kind: "string",
+    default: "#{window_number}:#{window_name}#{?zoomed, Z,}#{?synchronized, Y,}",
+    desc: "format for window tabs",
+    editable: true,
+  },
+  "status.format": {
+    kind: "string",
+    default: "#{space_name} · #{window_name}",
+    desc: "format for status text",
+    editable: true,
+  },
 
   "appearance.gap": {
     kind: "boolean",

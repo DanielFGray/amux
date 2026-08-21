@@ -76,6 +76,7 @@ import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import { createReloader } from "./plugin/reloader.ts";
 import type { PluginReloader } from "./plugin/reloader.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
+import { formatText } from "./format.ts";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "./ui/Prompt.tsx";
 import { Hints, hintVisibility } from "./ui/Hints.tsx";
@@ -1977,6 +1978,13 @@ function buildApp(
             app={app}
             windows={app.active()?.windows ?? []}
             active={app.activeWindow()}
+            format={options()["window.format"]}
+            status={formatText(options()["status.format"], {
+              space_name: app.active()?.name,
+              window_name: app.activeWindow()?.title,
+              window_number: app.activeWindow()?.number,
+              active: true,
+            })}
             pending={pending()}
             copying={copying()}
             onSelect={(w) => {

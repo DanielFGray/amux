@@ -8,6 +8,7 @@ import type { SidebarDisplayRow } from "../../ui/panel.ts";
 import { SPINNER_FRAMES, STATE_GLYPH } from "../../detect.ts";
 import { AgentState } from "../../agent-state.ts";
 import { command } from "../../commands.ts";
+import { formatText } from "../../format.ts";
 
 export const SIDEBAR_PLUGIN_ID = "amux.sidebar";
 
@@ -66,6 +67,7 @@ export const sidebarPlugin: PluginDefinition = {
             hovered={() => hovered}
             setHovered={(v) => (hovered = v)}
             agentsOnly={() => !!ctx.panel.options()["sidebar.agentsOnly"]}
+            format={() => ctx.panel.options()["sidebar.format"]}
             onActivate={activate}
           />
         ),
@@ -135,6 +137,7 @@ function SidebarView(props: {
   hovered: () => number | null;
   setHovered: (v: number | null) => void;
   agentsOnly: () => boolean;
+  format: () => string;
   onActivate: (row: SidebarDisplayRow) => void;
 }) {
   const filtered = createMemo(() => {
@@ -170,10 +173,15 @@ function SidebarView(props: {
               when={row.kind !== "branch"}
               fallback={
                 <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
-                  {"   " +
-                    (row.branch ?? "") +
-                    (row.ahead ? ` ↑${row.ahead}` : "") +
-                    (row.behind ? ` ↓${row.behind}` : "")}
+                  {formatText(props.format(), {
+                    active: row.active,
+                    row_kind_branch: true,
+                    space_name: row.spaceName,
+                    branch: row.branch,
+                    git_branch: row.branch,
+                    git_ahead: row.ahead,
+                    git_behind: row.behind,
+                  })}
                 </text>
               }
             >
@@ -184,6 +192,7 @@ function SidebarView(props: {
                 onHover={props.setHovered}
                 onActivate={props.onActivate}
                 frame={props.tick()}
+                format={props.format()}
               />
             </Show>
           )}
@@ -196,14 +205,6 @@ function SidebarView(props: {
   );
 }
 
-function stateColor(state: string) {
-  return state === AgentState.Blocked || state === AgentState.Failed
-    ? theme.red
-    : state === AgentState.Working
-      ? theme.green
-      : theme.overlay1;
-}
-
 function SidebarRow(props: {
   row: SidebarDisplayRow;
   selected: number;
@@ -211,25 +212,40 @@ function SidebarRow(props: {
   onHover: (index: number | null) => void;
   onActivate: (row: SidebarDisplayRow) => void;
   frame: number;
+  format: string;
 }) {
   const row = props.row;
 
-  const label = (): string => {
-    if (row.kind === "space") return row.spaceName;
-    if (row.kind === "window") return row.windowLabel ?? `window ${row.windowNumber}`;
-    const cmd = row.foregroundCommand;
-    const title = row.title ?? "";
-    return cmd && !title.startsWith(cmd) ? `${cmd} · ${title}` : title;
-  };
-
-  const marker = (): string => (row.active ? "▸" : " ");
-
-  const glyph = (): string => {
-    if (row.kind !== "agent" || !row.agentState) return "·";
-    const s = row.agentState;
-    if (s !== AgentState.Working) return STATE_GLYPH[s as keyof typeof STATE_GLYPH] ?? "·";
-    return SPINNER_FRAMES[props.frame % SPINNER_FRAMES.length]!;
-  };
+  const label = (): string =>
+    formatText(props.format, {
+      active: row.active,
+      row_kind_space: row.kind === "space",
+      row_kind_window: row.kind === "window",
+      space_name: row.spaceName,
+      window_number: row.windowNumber,
+      window_name: row.windowLabel,
+      pane_title: row.title,
+      pane_current_command: row.foregroundCommand,
+      agent_state: row.agentState,
+      agent_state_label: row.agentState,
+      agent_state_glyph:
+        row.kind === "agent" && row.agentState
+          ? row.agentState === AgentState.Working
+            ? SPINNER_FRAMES[props.frame % SPINNER_FRAMES.length]
+            : STATE_GLYPH[row.agentState as keyof typeof STATE_GLYPH]
+          : "·",
+      branch: row.branch,
+      git_branch: row.branch,
+      git_ahead: row.ahead,
+      git_behind: row.behind,
+      viewers: row.viewers,
+      unseen: row.unseen,
+      scrolled: row.scrolled,
+      exited: row.exited,
+      indicators: indicators(),
+      session_kind: row.agentSessionKind,
+      agent_cli: row.agentCliKind,
+    });
 
   const indicators = (): string => {
     if (row.kind !== "agent") return "";
@@ -270,10 +286,7 @@ function SidebarRow(props: {
       onMouseMove={() => props.onHover(row.index)}
       onMouseOut={() => props.onHover(null)}
     >
-      <text style={{ fg: theme.blue }}>{marker()}</text>
-      <text style={{ fg: stateColor(row.agentState ?? "") }}>{glyph()}</text>
-      <text style={{ fg: labelColor(), flexGrow: 1 }}>{` ${label()}`}</text>
-      <text style={{ fg: labelColor() }}>{indicators()}</text>
+      <text style={{ fg: labelColor(), flexGrow: 1 }}>{label()}</text>
     </box>
   );
 }
