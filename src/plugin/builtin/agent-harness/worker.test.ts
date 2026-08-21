@@ -222,6 +222,59 @@ test("continues through successive tool calls before ending the turn", async () 
   });
 });
 
+test("a steer at a tool continuation boundary replaces the empty continuation", async () => {
+  const frames: WorkerFrame[] = [];
+  const seen: Prompt.Prompt[] = [];
+  let releaseTool: (() => void) | undefined;
+  const toolFinished = new Promise<void>((resolve) => {
+    releaseTool = resolve;
+  });
+  const lookup = Tool.make("lookup", {
+    description: "look up a value",
+    parameters: {},
+    success: S.String,
+  });
+  const toolkit = Toolkit.make(lookup);
+  const handlers = toolkit.of({
+    lookup: () => Effect.promise(() => toolFinished).pipe(Effect.as("found")),
+  } as never);
+
+  await runWorker(
+    scriptedModel(
+      (call) =>
+        call === 0
+          ? [{ type: "tool-call", id: "call-1", name: "lookup", params: {}, providerExecuted: false }]
+          : [{ type: "text-delta", id: "t1", delta: "steered" }],
+      { seen },
+    ),
+    (worker) =>
+      Effect.gen(function* () {
+        yield* worker.prompt("first");
+        yield* awaitFrame(frames, "tool.start");
+        yield* worker.prompt("change direction", { delivery: "steer" });
+        yield* Effect.sync(() => releaseTool?.());
+        yield* awaitFrame(frames, "turn.end", 2);
+      }),
+    {
+      emit: (frame) => Effect.sync(() => void frames.push(frame)),
+      toolkit: toolkit.pipe(Effect.provide(toolkit.toLayer(handlers))) as never,
+    },
+  );
+
+  expect(seen.map(roles)).toEqual([
+    ["user"],
+    ["user", "assistant", "tool", "user"],
+  ]);
+  expect(frames.filter((frame) => frame._tag === "turn.start").map((frame) => frame.turn)).toEqual([
+    "turn-1",
+    "turn-2",
+  ]);
+  expect(frames.filter((frame) => frame._tag === "turn.end").map((frame) => frame.turn)).toEqual([
+    "turn-2",
+    "turn-1",
+  ]);
+});
+
 test("a second prompt carries prior turns as structured messages, not concatenated text", async () => {
   const seen: Prompt.Prompt[] = [];
   await runWorker(

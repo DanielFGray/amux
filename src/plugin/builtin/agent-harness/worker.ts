@@ -287,7 +287,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
               needsContinuation
                 ? takeSteer.pipe(
                     Effect.flatMap((steer) =>
-                      steer ? runTurn(steer).pipe(Effect.andThen(runStep(Prompt.empty))) : runStep(Prompt.empty),
+                      steer ? runTurn(steer) : runStep(Prompt.empty),
                     ),
                   )
                 : Effect.void,
@@ -295,8 +295,12 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
           );
       };
       return (
-        queued.id && options.inbox ? options.inbox.promotePrompt(queued.id) : Effect.void
+        // A steer can start inside an active turn rather than from drain's
+        // normal dequeue. Remove it here too, so its original wake cannot run
+        // the same durable entry after the nested turn settles.
+        Ref.update(inbox, (pending) => pending.filter((entry) => entry.turn !== queued.turn))
       ).pipe(
+        Effect.andThen(queued.id && options.inbox ? options.inbox.promotePrompt(queued.id) : Effect.void),
         Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
         Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
         Effect.andThen(emit({ _tag: "agent.status", state: AgentState.Working })),
