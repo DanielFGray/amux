@@ -5,6 +5,7 @@ import type { SessionViews } from "./session-views.tsx";
 import type { PaneView } from "../component-pane.tsx";
 import type { CommandSpec } from "../bindings.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
+import type { OptionSpec } from "../options.ts";
 
 export class CurrentPlugin extends Context.Tag("amux/CurrentPlugin")<
   CurrentPlugin,
@@ -16,6 +17,10 @@ export interface PluginRegistries {
   readonly sessionViews: SessionViews;
   readonly bindings: (owner: PluginInstance, binding: CommandSpec) => () => void;
   readonly settings: (owner: PluginInstance, section: PluginSettingsSection) => () => void;
+  /** Claim a dotted option name in the settings table: typed, validated,
+   *  bounds-checked, and rendered by the generic settings row the way a core
+   *  option is. */
+  readonly options: (owner: PluginInstance, name: string, spec: OptionSpec) => () => void;
   readonly spawnProviders: (
     owner: PluginInstance,
     id: string,
@@ -40,6 +45,10 @@ export class BindingsTag extends Context.Tag("amux/Bindings")<
 export class SettingsTag extends Context.Tag("amux/Settings")<
   SettingsTag,
   RegistryService<PluginSettingsSection>
+>() {}
+export class OptionsTag extends Context.Tag("amux/Options")<
+  OptionsTag,
+  RegistryService<readonly [string, OptionSpec]>
 >() {}
 export class SpawnProvidersTag extends Context.Tag("amux/SpawnProviders")<
   SpawnProvidersTag,

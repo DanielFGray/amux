@@ -9,6 +9,7 @@ import type { SpawnProvider } from "./types.ts";
 import type { Regions } from "../ui/regions.tsx";
 import type { SessionViews } from "./session-views.tsx";
 import type { PluginRegistries } from "./services.ts";
+import type { OptionSpec } from "../options.ts";
 
 type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "registries"> & {
   readonly regions?: Regions;
@@ -45,6 +46,7 @@ export function testPluginEnvironment(
   } = parts;
   const bindings = contributions.table<unknown>();
   const settings = contributions.table<unknown>();
+  const options = contributions.table<OptionSpec>();
   const spawnProviders = contributions.table<() => SpawnProvider>();
   return {
     panel: testPanelContext(),
@@ -55,6 +57,7 @@ export function testPluginEnvironment(
       sessionViews,
       bindings: (owner, binding) => bindings.add(owner, binding.name, binding),
       settings: (owner, section) => settings.add(owner, section.id, section),
+      options: (owner, name, spec) => options.add(owner, name, spec),
       spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
       spawnProvider: (id) => spawnProviders.get(id)?.(),
       ...registryOverrides,

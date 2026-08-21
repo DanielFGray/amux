@@ -2,7 +2,8 @@
 import { test, expect, afterEach } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
-import { optionsIn, resolveOptions } from "../options.ts";
+import { optionsIn, resolveOptions, type OptionSpec } from "../options.ts";
+import type { Contribution } from "../plugin/contributions.ts";
 import type { HelpGroup } from "../bindings.ts";
 import {
   Settings,
@@ -10,6 +11,7 @@ import {
   keybindLine,
   keybindTargets,
   settingsFields,
+  settingsSections,
 } from "./Settings.tsx";
 
 const cleanup: (() => void)[] = [];
@@ -109,6 +111,65 @@ test("the shell setting is displayed as intentionally read-only", () => {
   expect(shell.value).toBe("/bin/fish");
   expect(shell.hint).toContain("read-only");
   expect(shell.hint).toContain("new agents");
+});
+
+/** A plugin option contribution, the shape `optionContributions.all()` hands
+ *  the settings window in the running app. */
+function pluginOption(name: string, spec: OptionSpec): Contribution<OptionSpec> {
+  return { owner: { id: "test.plugin", generation: 0 }, name, value: spec };
+}
+
+// A plugin-registered option is not in the closed OPTIONS table, so it has no
+// section of its own until one is derived from its dotted name — the same
+// rule a core option's section comes from.
+test("a plugin-registered option gets its own settings tab", () => {
+  const entry = pluginOption("harness.temperature", {
+    kind: "number",
+    default: 1,
+    min: 0,
+    max: 2,
+    desc: "sampling temperature",
+  });
+  expect(settingsSections([], [entry])).toContain("harness");
+});
+
+test("a plugin-registered option renders alongside the core options in its section", () => {
+  const entry = pluginOption("appearance.reverseVideo", {
+    kind: "boolean",
+    default: false,
+    desc: "invert the palette",
+  });
+  const fields = settingsFields(resolveOptions({}), "appearance", [entry]);
+
+  expect(fields.map((field) => field.name)).toEqual([
+    ...optionsIn("appearance"),
+    "appearance.reverseVideo",
+  ]);
+  const plugin = fields.at(-1)!;
+  expect(plugin.label).toBe("reverseVideo");
+  expect(plugin.hint).toContain("invert the palette");
+  expect(plugin.value).toBe("no");
+});
+
+test("a plugin option's stored value renders the same way a core option's does", () => {
+  const entry = pluginOption("harness.temperature", {
+    kind: "number",
+    default: 1,
+    min: 0,
+    max: 2,
+    desc: "sampling temperature",
+  });
+  const options = { ...resolveOptions({}), "harness.temperature": 1.5 };
+  const fields = settingsFields(options, "harness", [entry]);
+
+  expect(fields).toEqual([
+    {
+      name: "harness.temperature",
+      label: "temperature",
+      value: "1.5",
+      hint: "sampling temperature · ←/→ adjusts",
+    },
+  ]);
 });
 
 async function draw(over: Partial<Parameters<typeof Settings>[0]> = {}) {

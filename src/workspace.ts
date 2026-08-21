@@ -150,7 +150,7 @@ export interface WorkspaceCommandContext {
    *  applies its structure but leaves the workspace's focus and activation
    *  state exactly as it found it. */
   noFocus?: boolean;
-  /** Client-observed attention state, used only by agent.next-blocked. */
+  /** Client-observed attention state, used only by session.next-blocked. */
   blockedAgents?: readonly string[];
   /** Compiled bytes for pane.send-keys; the command remains the vocabulary. */
   input?: string;

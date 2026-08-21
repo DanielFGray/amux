@@ -11,7 +11,13 @@ import { testPanelContext } from "../ui/test-panel.ts";
 import { command } from "../commands.ts";
 import { runCommandByTarget } from "../app.tsx";
 import type { PanelContext } from "../ui/panel.ts";
-import { BindingsTag, RegionsTag, SessionViewsTag, SpawnProvidersTag } from "./services.ts";
+import {
+  BindingsTag,
+  OptionsTag,
+  RegionsTag,
+  SessionViewsTag,
+  SpawnProvidersTag,
+} from "./services.ts";
 
 type EnvironmentOverrides = NonNullable<Parameters<typeof testPluginEnvironment>[1]>;
 
@@ -271,6 +277,37 @@ testEffect("registered bindings are disposed when the plugin is removed", () =>
     expect(active.has("binding-plugin.open")).toBe(true);
     yield* host.remove(plugin.id);
     expect(active.has("binding-plugin.open")).toBe(false);
+  }),
+);
+
+testEffect("registered options are disposed when the plugin is removed", () =>
+  Effect.gen(function* () {
+    const active = new Map<string, unknown>();
+    const { host } = yield* makeHost({
+      registries: {
+        options: (_owner, name, spec) => {
+          active.set(name, spec);
+          return () => active.delete(name);
+        },
+      },
+    });
+    const plugin = mkPlugin({
+      id: "option-plugin",
+      inject: [OptionsTag],
+      effect: () =>
+        Effect.gen(function* () {
+          const options = yield* OptionsTag;
+          yield* options.register([
+            "option-plugin.enabled",
+            { kind: "boolean", default: true, desc: "test option" },
+          ]);
+        }),
+    });
+
+    yield* host.add(plugin);
+    expect(active.has("option-plugin.enabled")).toBe(true);
+    yield* host.remove(plugin.id);
+    expect(active.has("option-plugin.enabled")).toBe(false);
   }),
 );
 

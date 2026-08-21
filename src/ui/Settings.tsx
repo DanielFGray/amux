@@ -9,25 +9,33 @@ import {
   leafOf,
   optionSections,
   optionsIn,
-  type OptionName,
+  sectionOf,
   type Options,
+  type OptionSpec,
+  type OptionValue,
 } from "../options.ts";
 import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts";
 import type { PluginSettingsSection } from "../plugin/types.ts";
+import type { Contribution } from "../plugin/contributions.ts";
 
 /** The option sections, plus the keybinds tab — which is not a section of the
  *  options table because a binding is not an option. */
 export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "keybinds"];
 export type SettingsSection = string;
 
-export function settingsSections(plugins: readonly PluginSettingsSection[]): readonly string[] {
-  return [...optionSections, ...plugins.map((plugin) => plugin.id), "keybinds"];
+export function settingsSections(
+  plugins: readonly PluginSettingsSection[],
+  registeredOptions: readonly Contribution<OptionSpec>[] = [],
+): readonly string[] {
+  const sections = new Set(optionSections);
+  for (const entry of registeredOptions) sections.add(sectionOf(entry.name));
+  return [...sections, ...plugins.map((plugin) => plugin.id), "keybinds"];
 }
 
 /** One row of the settings window. */
 interface Field {
   /** What `config.set` takes, so acting on a row needs nothing but the row. */
-  name: OptionName;
+  name: string;
   /** The name without its section, which the tab above already says. */
   label: string;
   value: string;
@@ -35,13 +43,18 @@ interface Field {
 }
 
 /**
- * The rows of a section, projected from the options table.
+ * The rows of a section, projected from the options table — core options plus
+ * whatever a plugin has claimed through `registerOption`.
  *
  * Read from the live values rather than a snapshot taken when the window
  * opened, so a change made from anywhere — a key, the socket — shows here.
  */
-export function settingsFields(options: Options, section: SettingsSection): Field[] {
-  return optionsIn(section).map((name) => {
+export function settingsFields(
+  options: Options & Record<string, OptionValue>,
+  section: SettingsSection,
+  registeredOptions: readonly Contribution<OptionSpec>[] = [],
+): Field[] {
+  const core = optionsIn(section).map((name) => {
     const spec = OPTIONS[name];
     return {
       name,
@@ -50,6 +63,15 @@ export function settingsFields(options: Options, section: SettingsSection): Fiel
       hint: `${spec.desc} · ${editHint(spec)}`,
     };
   });
+  const plugin = registeredOptions
+    .filter((entry) => sectionOf(entry.name) === section)
+    .map((entry) => ({
+      name: entry.name,
+      label: leafOf(entry.name),
+      value: formatOption(entry.value, options[entry.name] ?? entry.value.default),
+      hint: `${entry.value.desc} · ${editHint(entry.value)}`,
+    }));
+  return [...core, ...plugin];
 }
 
 /**
@@ -148,7 +170,7 @@ export function keybindLine(groups: HelpGroup[], index: number): number {
  * editor are necessarily the same screen.
  */
 export function Settings(props: {
-  options: Options;
+  options: Options & Record<string, OptionValue>;
   section: SettingsSection;
   selected: number;
   groups: HelpGroup[];
@@ -166,10 +188,14 @@ export function Settings(props: {
    *  the keyboard — the list is longer than the window by some margin. */
   onKeybindList?: (box: ScrollBoxRenderable) => void;
   pluginSections?: readonly PluginSettingsSection[];
+  registeredOptions?: readonly Contribution<OptionSpec>[];
 }) {
   const plugin = () => props.pluginSections?.find((entry) => entry.id === props.section);
-  const sections = () => settingsSections(props.pluginSections ?? []);
-  const fields = createMemo(() => settingsFields(props.options, props.section));
+  const sections = () =>
+    settingsSections(props.pluginSections ?? [], props.registeredOptions ?? []);
+  const fields = createMemo(() =>
+    settingsFields(props.options, props.section, props.registeredOptions ?? []),
+  );
   const rows = createMemo(() => keybindGroups(props.groups, props.leader));
 
   return (

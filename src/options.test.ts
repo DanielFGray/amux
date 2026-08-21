@@ -42,17 +42,24 @@ test("resolve is total: every declared option comes back", () => {
 // them at whatever they were the first time the user pressed save, and a later
 // release changing a default then reaches nobody.
 test("a value equal to the default is not stored at all", () => {
-  const changed = writeOption({}, "sidebar.width", 42);
+  const changed = writeOption({}, "sidebar.width", OPTIONS["sidebar.width"], 42);
   expect(changed).toEqual({ "sidebar.width": 42 });
 
-  const back = writeOption(changed, "sidebar.width", OPTIONS["sidebar.width"].default);
+  const back = writeOption(
+    changed,
+    "sidebar.width",
+    OPTIONS["sidebar.width"],
+    OPTIONS["sidebar.width"].default,
+  );
   expect(back).toEqual({});
   expect(resolveOptions(back)["sidebar.width"]).toBe(OPTIONS["sidebar.width"].default);
 });
 
 test("entries belonging to names this build does not declare are left alone", () => {
   const stored = { "clock.format": "%H:%M", "sidebar.width": 42 };
-  expect(writeOption(stored, "sidebar.width", 20)["clock.format"]).toBe("%H:%M");
+  expect(writeOption(stored, "sidebar.width", OPTIONS["sidebar.width"], 20)["clock.format"]).toBe(
+    "%H:%M",
+  );
   expect(clearOption(stored, "sidebar.width")).toEqual({
     "clock.format": "%H:%M",
   });
@@ -96,7 +103,6 @@ test("sections are the name prefixes, so declaring an option places its row", ()
     "appearance",
     "behaviour",
     "agent",
-    "notifications",
   ]);
   expect(optionsIn("sidebar")).toEqual([
     "sidebar.open",

@@ -2,7 +2,7 @@ import type { Accessor } from "solid-js";
 import type { WorkspaceSnapshot } from "../workspace.ts";
 import type { Command, CommandError } from "../commands.ts";
 import { Effect } from "effect";
-import type { Options, OptionName, OptionValue } from "../options.ts";
+import type { Options, OptionValue } from "../options.ts";
 
 /**
  * A single row of display data for the sidebar tree.
@@ -66,11 +66,13 @@ export interface PanelContext {
     command: Command,
     input?: string,
   ) => Effect.Effect<WorkspaceSnapshot, CommandError>;
-  /** Current resolved option values. */
-  readonly options: Accessor<Options>;
-  /** Set an option value. Clamping and delta storage are the option table's job;
-   *  this just routes the change into the app's config state. */
-  readonly setOption: (name: OptionName, value: OptionValue) => void;
+  /** Current resolved option values — core options plus whatever plugins have
+   *  registered through `registerOption`, keyed by the same dotted name. */
+  readonly options: Accessor<Options & Record<string, OptionValue>>;
+  /** Set an option value, core or plugin-registered. Clamping and delta storage
+   *  are the option table's job; this just routes the change into the app's
+   *  config state. */
+  readonly setOption: (name: string, value: OptionValue) => void;
   /** Write the option store to the config file. Separate from `setOption`
    *  because a drag changes an option many times a second and a settings window
    *  has a save key; a panel that commits a choice calls both. Failure is

@@ -49,7 +49,6 @@ import {
 } from "./commands.ts";
 import { CONFIG_PATH, saveConfig, type Config } from "./config.ts";
 import {
-  OPTIONS,
   adjustedValue,
   applyOptions,
   clearOption,
@@ -57,10 +56,11 @@ import {
   optionSpec,
   resolveOptions,
   writeOption,
-  type OptionName,
+  type Options,
   type OptionSpec,
   type OptionValue,
 } from "./options.ts";
+import type { Contribution } from "./plugin/contributions.ts";
 import type { SessionClientShape } from "./client.ts";
 import { workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
 import { createAppState, POLL_MS } from "./ui/state.ts";
@@ -95,6 +95,7 @@ import { BufferChoose, type BufferChooseView } from "./ui/BufferChoose.tsx";
 import { KeybindPicker, sortKeybindEntries, type KeybindPickerView } from "./ui/KeybindPicker.tsx";
 import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
+import { scheduledPoll } from "./effect/timer.ts";
 import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./plugin/types.ts";
@@ -154,6 +155,7 @@ interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
     owner: PluginInstance,
     section: PluginSettingsSection,
   ) => () => void;
+  readonly registerOption: (owner: PluginInstance, name: string, spec: OptionSpec) => () => void;
 }
 
 /**
@@ -224,6 +226,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         sessionViews,
         bindings: app.registerBinding,
         settings: app.registerSettingsSection,
+        options: app.registerOption,
         spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
         spawnProvider: (id) => spawnProviders.get(id)?.(),
       },
@@ -300,19 +303,6 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
             ),
       ),
     );
-    runFiber(
-      "agent-notifications",
-      Stream.runForEach(options.session.events, (event) =>
-        Effect.sync(() => {
-          if (
-            resolveOptions(options.config.options)["notifications.blocked"] &&
-            event._tag === "agent.state" &&
-            event.state === AgentState.Blocked
-          )
-            process.stdout.write("\x07");
-        }),
-      ),
-    );
     return { ...app, pluginHost };
   });
 }
@@ -334,28 +324,6 @@ export function scheduleHintVisibility(
       ),
     ),
   );
-}
-
-/**
- * A periodic callback whose timer is owned by the fiber that runs this effect:
- * interrupting the fiber, or closing the scope that holds it, clears the timer.
- *
- * Deliberately a platform timer rather than `Effect.repeat(_, Schedule)` or a
- * sleep loop. The UI's poll is the one loop that must cost nothing while the
- * user is not doing anything, and on Bun a scheduled *fiber* wakeup in an
- * otherwise idle process is 20-50x dearer than a timer callback — measured on
- * an empty process at 2Hz: 0.34% CPU for setInterval against 1.0-1.8% for
- * Effect.forever/Schedule.spaced/Schedule.fixed. Worse, the fiber's cost per
- * wakeup GROWS with the gap between wakeups (each long gap buys JSC a full GC
- * cycle a tighter cadence keeps amortised), so slowing the poll down to save
- * work spends more of it, not less.
- */
-export function scheduledPoll(intervalMs: number, run: () => void): Effect.Effect<void> {
-  return Effect.async<never>(() => {
-    const timer = setInterval(run, intervalMs);
-    timer.unref?.();
-    return Effect.sync(() => clearInterval(timer));
-  });
 }
 
 /** Consume daemon models in stream order under the app's supervised fiber. */
@@ -522,30 +490,52 @@ function buildApp(
     );
 
   const [configState, setConfigState] = createSignal<Config>(config);
-  /** Every option resolved against its declared default — what the app reads.
-   *  The config itself holds only what the user changed. */
+  /** Every core option resolved against its declared default — what the app
+   *  reads for its own chrome. The config itself holds only what the user
+   *  changed. Plugin-registered options are not in here: they have no fixed
+   *  key set to iterate, so they are resolved on demand by name instead. */
   const options = createMemo(() => resolveOptions(configState().options));
 
+  /** Names a plugin has claimed through `registerOption`, section-sorted and
+   *  rendered by the settings window the same way a core option is. */
+  const optionContributions = contributions.table<OptionSpec>();
+
+  /** A core or plugin-registered option's declaration, by name. */
+  function specFor(name: string): OptionSpec | undefined {
+    return optionSpec(name) ?? optionContributions.get(name);
+  }
+
+  /** A core or plugin-registered option's current value, resolved the same
+   *  way the core `options` memo resolves one — default unless the config has
+   *  a delta for it. */
+  function optionValue(name: string, spec: OptionSpec): OptionValue {
+    return coerceOption(spec, configState().options[name]) ?? spec.default;
+  }
+
   /**
-   * Put a new value into an option.
+   * Put a new value into an option, core or plugin-registered.
    *
    * The one path for any change: a key, the settings window, a drag, the socket.
    * The clamping and the default-is-not-stored rule live in the table, so this
    * only decides what the change means for the screen — unsaved, and the last
    * save's error no longer describes what is on it.
    */
-  function changeOption(name: OptionName, value: OptionValue) {
+  function changeOption(name: string, value: OptionValue) {
+    const spec = specFor(name);
+    if (!spec) return;
     setConfigState((c) => ({
       ...c,
-      options: writeOption(c.options, name, value),
+      options: writeOption(c.options, name, spec, value),
     }));
     setSettingsError("");
     setSettingsDirty(true);
   }
 
   /** Move an option relative to where it is: ←/→ in settings, and the drag. */
-  function adjustOption(name: OptionName, by: number) {
-    changeOption(name, adjustedValue(OPTIONS[name], options()[name], by));
+  function adjustOption(name: string, by: number) {
+    const spec = specFor(name);
+    if (!spec) return;
+    changeOption(name, adjustedValue(spec, optionValue(name, spec), by));
   }
 
   /** Where every panel on screen is registered. See registerPanels below. */
@@ -820,8 +810,10 @@ function buildApp(
   }
 
   /** The option the settings window's selection is sitting on, if any. */
-  function selectedOption(): OptionName | undefined {
-    return settingsFields(options(), settingsSection())[settingsSelected()]?.name;
+  function selectedOption(): string | undefined {
+    return settingsFields(allOptions(), settingsSection(), optionContributions.all())[
+      settingsSelected()
+    ]?.name;
   }
 
   /**
@@ -1132,13 +1124,14 @@ function buildApp(
     });
   });
 
-  /** The declaration behind an option name, or a refusal naming it. */
+  /** The declaration behind an option name, core or plugin-registered, or a
+   *  refusal naming it. */
   function knownOption(
     name: string,
-  ): Effect.Effect<{ spec: OptionSpec; option: OptionName }, CommandError> {
-    const spec = optionSpec(name);
+  ): Effect.Effect<{ spec: OptionSpec; option: string }, CommandError> {
+    const spec = specFor(name);
     if (!spec) return Effect.fail(new CommandError({ message: `no option '${name}'` }));
-    return Effect.succeed({ spec, option: name as OptionName });
+    return Effect.succeed({ spec, option: name });
   }
 
   /**
@@ -1302,7 +1295,7 @@ function buildApp(
             message: `${name} is not a yes/no option`,
           });
         }
-        changeOption(option, !options()[option]);
+        changeOption(option, !optionValue(option, spec));
       }),
     "config.adjust": ({ name, by }) =>
       Effect.gen(function* () {
@@ -1590,9 +1583,6 @@ function buildApp(
     bind("session.restart", "<leader>shift+r", command("session.restart"), {
       desc: "restart the focused agent",
     }),
-    bind("session.next-blocked", "<leader>a", command("session.next-blocked"), {
-      desc: "jump to the next blocked agent",
-    }),
 
     // Spaces.
     bindPrompt("space.new", "<leader>s", promptNewSpace),
@@ -1726,7 +1716,7 @@ function buildApp(
   }
 
   function settingsKey(event: KeyEvent) {
-    const fields = settingsFields(options(), settingsSection());
+    const fields = settingsFields(allOptions(), settingsSection(), optionContributions.all());
     const pluginSection = pluginSettings().find((section) => section.id === settingsSection());
     if (pluginSection) {
       pluginSection.keys?.(event, settingsSelected());
@@ -1855,6 +1845,10 @@ function buildApp(
   };
   const registerSettingsSection = (owner: PluginInstance, section: PluginSettingsSection) =>
     settingsSectionTable.add(owner, section.id, section);
+  const registerOption = (owner: PluginInstance, name: string, spec: OptionSpec) => {
+    if (optionSpec(name)) throw new Error(`option '${name}' is a built-in option`);
+    return optionContributions.add(owner, name, spec);
+  };
 
   function updateHintVisibility(sequence: readonly { display: string }[]) {
     runFiber("hint-delay", Effect.void);
@@ -2071,7 +2065,7 @@ function buildApp(
         },
         component: (props) => (
           <Settings
-            options={options()}
+            options={allOptions()}
             section={settingsSection()}
             selected={settingsSelected()}
             groups={groups()}
@@ -2086,6 +2080,7 @@ function buildApp(
               keybindList = box;
             }}
             pluginSections={pluginSettings()}
+            registeredOptions={optionContributions.all()}
           />
         ),
       }),
@@ -2409,11 +2404,20 @@ function buildApp(
     renderer.removeListener("resize", onResize);
   });
 
+  /** Core options plus every plugin-registered one, resolved by the same rule —
+   *  what a plugin reads through `ctx.panel.options()`. */
+  const allOptions = () => {
+    const merged: Record<string, OptionValue> = { ...options() };
+    for (const entry of optionContributions.all())
+      merged[entry.name] = optionValue(entry.name, entry.value);
+    return merged as Options & Record<string, OptionValue>;
+  };
+
   const panel = createPanelContext({
     snapshot,
     tick: app.tick,
     run: (command, input) => runCommand(command, input).pipe(Effect.as(session.workspace())),
-    options,
+    options: allOptions,
     setOption: changeOption,
     saveOptions,
     display,
@@ -2421,5 +2425,5 @@ function buildApp(
     selectedAgentId,
     setSelectedAgentId,
   });
-  return { View, panel, release, registerBinding, registerSettingsSection };
+  return { View, panel, release, registerBinding, registerSettingsSection, registerOption };
 }

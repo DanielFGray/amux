@@ -123,6 +123,14 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         run: start,
       });
 
+      yield* bindings.register({
+        name: "session.next-blocked",
+        key: "<leader>a",
+        desc: "jump to the next blocked agent",
+        group: "sessions",
+        run: ctx.panel.run(command("session.next-blocked")).pipe(Effect.asVoid),
+      });
+
       // Named after the option it edits. An option whose value is a list to
       // search cannot be edited with ←/→, so the settings window hands the row
       // to the command of the same name — the harness's own, since core has no

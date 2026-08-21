@@ -122,11 +122,6 @@ export const OPTIONS = {
     default: false,
     desc: "show agent thinking traces",
   },
-  "notifications.blocked": {
-    kind: "boolean",
-    default: true,
-    desc: "ring the terminal when an agent becomes blocked",
-  },
 } as const satisfies Record<string, OptionSpec>;
 
 export type OptionName = keyof typeof OPTIONS;
@@ -174,7 +169,10 @@ export function leafOf(name: string): string {
   return name.slice(name.indexOf(".") + 1);
 }
 
-function sectionOf(name: string): string {
+/** The dotted prefix that groups an option into a settings tab. Exported so a
+ *  plugin-registered option (not in the closed OPTIONS table) sorts into the
+ *  same tab by the same rule. */
+export function sectionOf(name: string): string {
   return name.slice(0, name.indexOf("."));
 }
 
@@ -213,19 +211,23 @@ export function coerceOption(spec: OptionSpec, raw: unknown): OptionValue | unde
  * The delta rule is an invariant of the store rather than a filter applied on
  * the way to disk, which is what makes "has the user set this?" answerable at
  * any moment — `name in deltas` — instead of only while saving.
+ *
+ * Takes `spec` rather than looking it up in the closed OPTIONS table, so a
+ * plugin-registered option goes through the same delta rule a core one does.
  */
 export function writeOption(
   stored: OptionDeltas,
-  name: OptionName,
+  name: string,
+  spec: OptionSpec,
   value: OptionValue,
 ): OptionDeltas {
   const next = { ...stored };
-  if (value === OPTIONS[name].default) delete next[name];
+  if (value === spec.default) delete next[name];
   else next[name] = value;
   return next;
 }
 
-export function clearOption(stored: OptionDeltas, name: OptionName): OptionDeltas {
+export function clearOption(stored: OptionDeltas, name: string): OptionDeltas {
   const next = { ...stored };
   delete next[name];
   return next;

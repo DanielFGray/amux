@@ -40,6 +40,7 @@ export const DEFAULT_CONFIG: Config = {
   plugins: [
     { path: "builtin:amux.sidebar", enabled: true },
     { path: "builtin:amux.agent-harness", enabled: true },
+    { path: "builtin:amux.notifications", enabled: true },
   ],
   permissions: [],
 };

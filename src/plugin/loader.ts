@@ -25,6 +25,10 @@ const BUILTIN_PLUGINS: Readonly<Record<string, BuiltinEntry>> = {
     load: () => import("./builtin/agent-harness.tsx"),
     source: new URL("./builtin/agent-harness.tsx", import.meta.url),
   },
+  "builtin:amux.notifications": {
+    load: () => import("./builtin/notifications.ts"),
+    source: new URL("./builtin/notifications.ts", import.meta.url),
+  },
 };
 
 interface BuiltinEntry {

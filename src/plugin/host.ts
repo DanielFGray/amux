@@ -30,6 +30,7 @@ import {
   SessionViewsTag,
   BindingsTag,
   SettingsTag,
+  OptionsTag,
   SpawnProvidersTag,
 } from "./services.ts";
 
@@ -127,6 +128,11 @@ export function createPluginHost(
       registryOwner,
       SettingsTag,
       registryService((owner, section) => env.registries.settings(owner, section)),
+    );
+    services.provide(
+      registryOwner,
+      OptionsTag,
+      registryService((owner, [name, spec]) => env.registries.options(owner, name, spec)),
     );
     services.provide(
       registryOwner,
