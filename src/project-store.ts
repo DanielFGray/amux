@@ -26,6 +26,21 @@ export class ProjectStoreError extends S.TaggedError<ProjectStoreError>()("Proje
   message: S.String,
 }) {}
 
+export type PromptDelivery = "steer" | "queue";
+export type PromptOptions = {
+  readonly id?: string;
+  readonly delivery?: PromptDelivery;
+  readonly resume?: boolean;
+};
+export type PromptInboxEntry = {
+  readonly id: string;
+  readonly session: string;
+  readonly prompt: string;
+  readonly delivery: PromptDelivery;
+  readonly admitted: number;
+  readonly resume: boolean;
+};
+
 export interface Interface {
   /** The project this store belongs to — an absolute repository root. */
   readonly root: string;
@@ -40,6 +55,19 @@ export interface Interface {
     session: string,
     conversation: string,
   ) => Effect.Effect<void, ProjectStoreError>;
+  /** Admit a prompt durably. Reusing an id is safe only for the same request. */
+  readonly admitPrompt: (
+    session: string,
+    prompt: string,
+    delivery: PromptDelivery,
+    resume?: boolean,
+    id?: string,
+  ) => Effect.Effect<PromptInboxEntry, ProjectStoreError>;
+  /** Pending prompts in admission order. Promoted rows remain durable history. */
+  readonly pendingPrompts: (
+    session: string,
+  ) => Effect.Effect<readonly PromptInboxEntry[], ProjectStoreError>;
+  readonly promotePrompt: (id: string) => Effect.Effect<void, ProjectStoreError>;
 }
 
 export class Service extends Context.Tag("amux/ProjectStore")<Service, Interface>() {}
@@ -92,7 +120,17 @@ const MIGRATIONS: readonly string[] = [
       session      TEXT PRIMARY KEY,
       conversation TEXT NOT NULL,
       updated      INTEGER NOT NULL
-    );`,
+     );`,
+  `CREATE TABLE prompt_inbox (
+      id       TEXT PRIMARY KEY,
+      session  TEXT NOT NULL,
+      prompt   TEXT NOT NULL,
+      delivery TEXT NOT NULL CHECK (delivery IN ('steer', 'queue')),
+      admitted INTEGER NOT NULL,
+      resume   INTEGER NOT NULL DEFAULT 1,
+      promoted INTEGER
+    );
+   CREATE INDEX prompt_inbox_pending ON prompt_inbox (session, promoted, admitted);`,
 ];
 
 const open = (
@@ -158,6 +196,23 @@ function queries(database: Database, root: string): Interface {
     `INSERT INTO conversation (session, conversation, updated) VALUES (?, ?, ?)
      ON CONFLICT (session) DO UPDATE SET conversation = excluded.conversation, updated = excluded.updated`,
   );
+  type StoredPrompt = Omit<PromptInboxEntry, "resume"> & { readonly resume: number };
+  const promptEntry = (row: StoredPrompt): PromptInboxEntry => ({
+    ...row,
+    resume: row.resume !== 0,
+  });
+  const selectPrompt = database.query<StoredPrompt, [string]>(
+    "SELECT id, session, prompt, delivery, admitted, resume FROM prompt_inbox WHERE id = ?",
+  );
+  const insertPrompt = database.query(
+    "INSERT INTO prompt_inbox (id, session, prompt, delivery, admitted, resume) VALUES (?, ?, ?, ?, ?, ?)",
+  );
+  const selectPending = database.query<StoredPrompt, [string]>(
+    "SELECT id, session, prompt, delivery, admitted, resume FROM prompt_inbox WHERE session = ? AND promoted IS NULL ORDER BY admitted, id",
+  );
+  const markPrompt = database.query(
+    "UPDATE prompt_inbox SET promoted = ? WHERE id = ? AND promoted IS NULL",
+  );
   return {
     root,
     rules: attempt("rules", () => select.all()),
@@ -173,6 +228,29 @@ function queries(database: Database, root: string): Interface {
       attempt("conversation", () => selectConversation.get(session)?.conversation),
     saveConversation: (session, conversation) =>
       attempt("saveConversation", () => saveConversation.run(session, conversation, Date.now())),
+    admitPrompt: (session, prompt, delivery, resume = true, requestedId = randomUUID()) =>
+      attempt("admitPrompt", () =>
+        database.transaction(() => {
+          const existing = selectPrompt.get(requestedId);
+          if (existing) {
+            if (
+              existing.session !== session ||
+              existing.prompt !== prompt ||
+              existing.delivery !== delivery
+            )
+              throw new Error(
+                `prompt id '${requestedId}' was already admitted with different contents`,
+              );
+            return promptEntry(existing);
+          }
+          const admitted = Date.now();
+          insertPrompt.run(requestedId, session, prompt, delivery, admitted, resume ? 1 : 0);
+          return { id: requestedId, session, prompt, delivery, admitted, resume };
+        })(),
+      ),
+    pendingPrompts: (session) =>
+      attempt("pendingPrompts", () => selectPending.all(session).map(promptEntry)),
+    promotePrompt: (id) => attempt("promotePrompt", () => markPrompt.run(Date.now(), id)),
   };
 }
 

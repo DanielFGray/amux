@@ -70,7 +70,7 @@ test("a fresh database migrates, records its own root, and starts with no rules"
   );
   expect(
     database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
-  ).toBe(2);
+  ).toBe(3);
   database.close();
 });
 
@@ -136,4 +136,42 @@ test("a conversation survives reopening and is isolated by daemon session", asyn
     '{"messages":[]}',
   );
   expect(await run("/tmp/project-chat", (store) => store.conversation("agent-b"))).toBeUndefined();
+});
+
+test("prompt admission survives reopening and caller ids are idempotent", async () => {
+  await isolate();
+  const first = await run("/tmp/project-inbox", (store) =>
+    store.admitPrompt("agent-a", "inspect", "queue", true, "request-1"),
+  );
+  expect(
+    await run("/tmp/project-inbox", (store) =>
+      store.admitPrompt("agent-a", "inspect", "queue", true, "request-1"),
+    ),
+  ).toEqual(first);
+  expect(await run("/tmp/project-inbox", (store) => store.pendingPrompts("agent-a"))).toEqual([
+    first,
+  ]);
+  await expect(
+    run("/tmp/project-inbox", (store) =>
+      store.admitPrompt("agent-a", "different", "queue", true, "request-1"),
+    ),
+  ).rejects.toThrow("already admitted with different contents");
+  await expect(
+    run("/tmp/project-inbox", (store) =>
+      store.admitPrompt("agent-a", "inspect", "steer", true, "request-1"),
+    ),
+  ).rejects.toThrow("already admitted with different contents");
+  await run("/tmp/project-inbox", (store) => store.promotePrompt(first.id));
+  expect(await run("/tmp/project-inbox", (store) => store.pendingPrompts("agent-a"))).toEqual([]);
+});
+
+test("admit without scheduling remains pending without resume", async () => {
+  await isolate();
+  const prompt = await run("/tmp/project-no-resume", (store) =>
+    store.admitPrompt("agent-a", "later", "queue", false, "request-2"),
+  );
+  expect(prompt.resume).toBe(false);
+  expect(await run("/tmp/project-no-resume", (store) => store.pendingPrompts("agent-a"))).toEqual([
+    prompt,
+  ]);
 });

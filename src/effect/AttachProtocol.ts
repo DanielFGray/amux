@@ -279,6 +279,9 @@ const AgentEventInputFrame = S.TaggedStruct("agent.event", { event: AgentEventPa
 const AgentPrompt = S.TaggedStruct("agent.prompt", {
   session: S.String,
   text: S.String,
+  id: S.optional(S.String),
+  delivery: S.optional(S.Literal("steer", "queue")),
+  resume: S.optional(S.Boolean),
   wait: S.optional(S.Boolean),
   until: S.optional(ReportedAgentStateSchema),
   timeout: S.optional(S.NonNegativeInt),

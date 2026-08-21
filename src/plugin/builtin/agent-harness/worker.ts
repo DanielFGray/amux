@@ -9,9 +9,17 @@ import {
 import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 import { AgentState } from "../../../agent-state.ts";
+import type { PromptDelivery, PromptInboxEntry } from "../../../project-store.ts";
 
 export type AgentWorker = {
-  readonly prompt: (text: string) => Effect.Effect<void>;
+  readonly prompt: (
+    text: string,
+    options?: {
+      readonly id?: string;
+      readonly delivery?: PromptDelivery;
+      readonly resume?: boolean;
+    },
+  ) => Effect.Effect<void>;
   readonly interrupt: (reason?: string) => Effect.Effect<void>;
   readonly close: Effect.Effect<void>;
 };
@@ -49,6 +57,8 @@ type WithoutSession<Frame> = Frame extends unknown ? Omit<Frame, "session"> : ne
 type QueuedTurn = {
   readonly turn: string;
   readonly prompt: string;
+  readonly id?: string;
+  readonly delivery: PromptDelivery;
 };
 
 /**
@@ -119,13 +129,28 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
   readonly persist?: Effect.Effect<void>;
   /** Fire when a turn actually begins executing, not when it is queued. */
   readonly onTurnStart?: (turn: string) => Effect.Effect<void>;
+  /** Durable admission store. The worker remains the executor, never the authority. */
+  readonly inbox?: {
+    readonly admitPrompt: (
+      session: string,
+      prompt: string,
+      delivery: PromptDelivery,
+      resume?: boolean,
+      id?: string,
+    ) => Effect.Effect<PromptInboxEntry, unknown>;
+    readonly pendingPrompts: (
+      session: string,
+    ) => Effect.Effect<readonly PromptInboxEntry[], unknown>;
+    readonly promotePrompt: (id: string) => Effect.Effect<void, unknown>;
+  };
 }): Effect.Effect<
   AgentWorker,
   never,
   Scope.Scope | LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
 > {
   return Effect.gen(function* () {
-    const inbox = yield* Queue.unbounded<QueuedTurn>();
+    const inbox = yield* Ref.make<readonly QueuedTurn[]>([]);
+    const wake = yield* Queue.unbounded<void>();
     const turns = yield* Ref.make(0);
     const running = yield* FiberHandle.make<void, never>();
 
@@ -246,7 +271,10 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
             Effect.flatMap(() => (needsContinuation ? runStep(Prompt.empty) : Effect.void)),
           );
       };
-      return (options.onTurnStart?.(turn) ?? Effect.void).pipe(
+      return (
+        queued.id && options.inbox ? options.inbox.promotePrompt(queued.id) : Effect.void
+      ).pipe(
+        Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
         Effect.andThen(emit({ _tag: "agent.status", state: AgentState.Working })),
         Effect.andThen(runStep(prompt)),
         Effect.onExit((exit) => settle(turn, exit, responseText)),
@@ -261,13 +289,25 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
     // One turn at a time: a prompt that lands mid-turn queues the next prompt
     // rather than racing the running one. An interrupted turn must not end the
     // session, so the join failure is absorbed here.
+    const next = Ref.modify(inbox, (pending) => {
+      const index = pending.findIndex((item) => item.delivery === "steer");
+      const selected = index < 0 ? pending[0] : pending[index];
+      if (!selected) return [undefined, pending] as const;
+      return [
+        selected,
+        [...pending.slice(0, index < 0 ? 1 : index), ...pending.slice(index + 1)],
+      ] as const;
+    });
     const drain = Effect.forever(
-      Queue.take(inbox).pipe(
+      Queue.take(wake).pipe(
+        Effect.andThen(next),
         Effect.flatMap((queued) =>
-          FiberHandle.run(running, runTurn(queued)).pipe(
-            Effect.flatMap(Fiber.join),
-            Effect.catchAllCause(() => Effect.void),
-          ),
+          queued
+            ? FiberHandle.run(running, runTurn(queued)).pipe(
+                Effect.flatMap(Fiber.join),
+                Effect.catchAllCause(() => Effect.void),
+              )
+            : Effect.void,
         ),
       ),
     );
@@ -278,16 +318,45 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
       // the user's message the moment it is submitted — even while an earlier
       // turn is still running. The queued turn keeps its turn id, so the later
       // Working/end frames attach to the prompt the user already saw.
-      prompt: (text) =>
-        Ref.updateAndGet(turns, (n) => n + 1).pipe(
-          Effect.flatMap((n) => {
-            const turn = `turn-${n}`;
-            return emit({ _tag: "turn.start", turn, prompt: text }).pipe(
-              Effect.andThen(Queue.offer(inbox, { turn, prompt: text })),
-              Effect.asVoid,
-            );
-          }),
-        ),
+      prompt: (text, promptOptions = {}) => {
+        const admission: Effect.Effect<PromptInboxEntry | undefined> = options.inbox
+          ? options.inbox
+              .admitPrompt(
+                options.session,
+                text,
+                promptOptions.delivery ?? "queue",
+                promptOptions.resume,
+                promptOptions.id,
+              )
+              .pipe(Effect.orDie)
+          : Effect.succeed(undefined);
+        return admission.pipe(
+          Effect.flatMap((admitted) =>
+            Ref.updateAndGet(turns, (n) => n + 1).pipe(
+              Effect.flatMap((n) => {
+                const turn = `turn-${n}`;
+                const queued = {
+                  turn,
+                  prompt: text,
+                  delivery: promptOptions.delivery ?? "queue",
+                  ...(admitted ? { id: admitted.id } : {}),
+                } satisfies QueuedTurn;
+                return emit({ _tag: "turn.start", turn, prompt: text }).pipe(
+                  Effect.andThen(
+                    promptOptions.resume === false
+                      ? Effect.void
+                      : Ref.update(inbox, (pending) => [...pending, queued]),
+                  ),
+                  Effect.andThen(
+                    promptOptions.resume === false ? Effect.void : Queue.offer(wake, undefined),
+                  ),
+                  Effect.asVoid,
+                );
+              }),
+            ),
+          ),
+        );
+      },
       // Interruption is Effect's, so the provider request, the stream and every
       // finalizer unwind together; there is no abort flag to keep in sync.
       interrupt: () => FiberHandle.clear(running),

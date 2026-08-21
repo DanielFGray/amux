@@ -82,6 +82,7 @@ else {
         chat,
         emit,
         toolkit,
+        inbox: store,
         persist: chat.exportJson.pipe(
           Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
           Effect.orDie,
@@ -91,6 +92,18 @@ else {
             turn = turnId;
           }),
       });
+      // Re-admit work that was recorded before the worker or client went away.
+      // The store makes this retry idempotent; rows admitted with resume=false
+      // stay available until an explicit prompt asks to schedule them.
+      yield* store.pendingPrompts(session).pipe(
+        Effect.flatMap((pending) =>
+          Effect.forEach(
+            pending.filter((entry) => entry.resume),
+            (entry) => worker.prompt(entry.prompt, { id: entry.id, delivery: entry.delivery }),
+            { discard: true, concurrency: 1 },
+          ),
+        ),
+      );
       yield* Stream.fromAsyncIterable(Bun.stdin.stream(), (error) => error).pipe(
         Stream.decodeText(),
         Stream.splitLines,
@@ -98,7 +111,11 @@ else {
         Stream.map((line) => JSON.parse(line) as AttachFrame),
         Stream.runForEach((frame) =>
           frame._tag === "agent.prompt"
-            ? worker.prompt(frame.text)
+            ? worker.prompt(frame.text, {
+                ...(frame.id === undefined ? {} : { id: frame.id }),
+                delivery: frame.delivery ?? "queue",
+                resume: frame.resume,
+              })
             : frame._tag === "agent.interrupt"
               ? worker.interrupt(frame.reason)
               : frame._tag === "agent.permission"
