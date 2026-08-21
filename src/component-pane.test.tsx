@@ -106,7 +106,9 @@ test("a workspace that registered no view draws the frame and nothing in it", as
 
 test("a sessionless plugin pane mounts the registered view from its descriptor", async () => {
   const { t, win } = await workspace((props) => (
-    <text>session:{props.sessionId}|file:{JSON.stringify(props.descriptor)}</text>
+    <text>
+      session:{props.sessionId}|file:{JSON.stringify(props.descriptor)}
+    </text>
   ));
   const editor: PaneContent = {
     kind: "plugin",
@@ -115,7 +117,9 @@ test("a sessionless plugin pane mounts the registered view from its descriptor",
   };
   const id = newPaneId();
   expect(
-    win.applyLayout(makeLayout({ root: { type: "pane", id, content: editor, weight: 1 }, focus: id })),
+    win.applyLayout(
+      makeLayout({ root: { type: "pane", id, content: editor, weight: 1 }, focus: id }),
+    ),
   ).toBe(true);
 
   const pane = win.panes.find((candidate) => candidate.id === id)!;

@@ -86,8 +86,16 @@ test("parseArgs accepts separated values for every flag kind", () => {
     parseArgs("agent.prompt", ["s1", "do x", "--until", "working", "--timeout", "5000"]).parsed,
   ).toEqual({ target: "s1", text: "do x", until: "working", timeout: 5000 });
   expect(
-    parseArgs("agent.prompt", ["s1", "do x", "--id", "request-1", "--delivery", "steer", "--resume", "false"])
-      .parsed,
+    parseArgs("agent.prompt", [
+      "s1",
+      "do x",
+      "--id",
+      "request-1",
+      "--delivery",
+      "steer",
+      "--resume",
+      "false",
+    ]).parsed,
   ).toEqual({
     target: "s1",
     text: "do x",

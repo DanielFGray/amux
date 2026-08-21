@@ -1,12 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
-import {
-  charFromKey,
-  initialEditor,
-  reduceEditor,
-  type EditorState,
-} from "./vim-core.ts";
+import { charFromKey, initialEditor, reduceEditor, type EditorState } from "./vim-core.ts";
 
 function key(name: string, extra: Partial<KeyEvent> = {}): KeyEvent {
   return {
@@ -185,7 +180,20 @@ test(": enters command mode and escape cancels it", () => {
 });
 
 test(":e path asks the shell to open a file", () => {
-  const state = typeKeys(initialEditor(), [":", "e", " ", "s", "r", "c", "/", "a", ".", "t", "s", "return"]);
+  const state = typeKeys(initialEditor(), [
+    ":",
+    "e",
+    " ",
+    "s",
+    "r",
+    "c",
+    "/",
+    "a",
+    ".",
+    "t",
+    "s",
+    "return",
+  ]);
   expect(state.mode).toBe("normal");
   expect(state.request).toEqual({ type: "open", path: "src/a.ts" });
 });
@@ -208,7 +216,11 @@ test(":q closes when clean and refuses when dirty", () => {
   const clean = typeKeys(initialEditor(), [":", "q", "return"]);
   expect(clean.request).toEqual({ type: "close" });
 
-  const loaded = reduceEditor(initialEditor(), { type: "loaded", file: "/tmp/a.ts", lines: ["one"] });
+  const loaded = reduceEditor(initialEditor(), {
+    type: "loaded",
+    file: "/tmp/a.ts",
+    lines: ["one"],
+  });
   const dirty = typeKeys(loaded, ["i", "x", "escape"]);
   const refused = typeKeys(dirty, [":", "q", "return"]);
   expect(refused.request).toBeNull();
@@ -219,7 +231,11 @@ test(":q closes when clean and refuses when dirty", () => {
 });
 
 test(":wq writes and closes", () => {
-  const loaded = reduceEditor(initialEditor(), { type: "loaded", file: "/tmp/a.ts", lines: ["one"] });
+  const loaded = reduceEditor(initialEditor(), {
+    type: "loaded",
+    file: "/tmp/a.ts",
+    lines: ["one"],
+  });
   const saved = typeKeys(loaded, [":", "w", "q", "return"]);
   expect(saved.request).toEqual({ type: "write-close" });
 });
@@ -244,7 +260,11 @@ test("loading a file resets the buffer and reports the line count", () => {
 });
 
 test("a successful write clears dirty", () => {
-  const loaded = reduceEditor(initialEditor(), { type: "loaded", file: "/tmp/a.ts", lines: ["one"] });
+  const loaded = reduceEditor(initialEditor(), {
+    type: "loaded",
+    file: "/tmp/a.ts",
+    lines: ["one"],
+  });
   const dirty = typeKeys(loaded, ["i", "x", "escape"]);
   const written = reduceEditor(dirty, { type: "written" });
   expect(written.dirty).toBe(false);
@@ -253,7 +273,11 @@ test("a successful write clears dirty", () => {
 });
 
 test("a failed write leaves the buffer dirty with the error on the status line", () => {
-  const loaded = reduceEditor(initialEditor(), { type: "loaded", file: "/tmp/a.ts", lines: ["one"] });
+  const loaded = reduceEditor(initialEditor(), {
+    type: "loaded",
+    file: "/tmp/a.ts",
+    lines: ["one"],
+  });
   const failed = reduceEditor(loaded, { type: "write-error", message: "permission denied" });
   expect(failed.dirty).toBe(true);
   expect(failed.message).toBe("permission denied");

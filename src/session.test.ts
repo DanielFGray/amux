@@ -249,7 +249,12 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
             ],
             layout: JSON.stringify({
               version: 1,
-              root: { type: "pane", id: "pane-a", content: { kind: "pty", session: "agent-a" }, weight: 1 },
+              root: {
+                type: "pane",
+                id: "pane-a",
+                content: { kind: "pty", session: "agent-a" },
+                weight: 1,
+              },
               focus: "pane-a",
             }),
           },

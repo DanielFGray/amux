@@ -580,8 +580,8 @@ export class Window {
             descriptor: content.descriptor,
             view: this.#paneContent ?? undefined,
           })
-        // pty content always names a session — the wire schema says so.
-        : new TerminalPane(this.#ctx, { id, session: session! });
+        : // pty content always names a session — the wire schema says so.
+          new TerminalPane(this.#ctx, { id, session: session! });
     setWeight(pane, 1);
     pane.onFocusRequest = (p) =>
       this.#authoritativeProjection ? this.onModelFocus?.(p.id) : this.focus(p);
@@ -1438,10 +1438,7 @@ export class Window {
     // descriptor out of thin air for the panes that have none.
     const refs = layoutRefs(this.#layout);
     if (refs.length === 0) return false;
-    return this.applyLayout(
-      presetLayout(refs, preset, this.#state.focus ?? undefined),
-      preset,
-    );
+    return this.applyLayout(presetLayout(refs, preset, this.#state.focus ?? undefined), preset);
   }
 
   /** The preset this window was last arranged by, or null once a split, close

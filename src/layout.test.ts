@@ -233,7 +233,12 @@ test("parsing reserves the pane ids it read, so fresh ones cannot collide", () =
   run(
     parseLayout({
       version: LAYOUT_VERSION,
-      root: { type: "pane", id: `pane-${minted + 500}`, content: { kind: "pty", session: "a" }, weight: 1 },
+      root: {
+        type: "pane",
+        id: `pane-${minted + 500}`,
+        content: { kind: "pty", session: "a" },
+        weight: 1,
+      },
     }),
   );
   expect(Number(/\d+/.exec(newPaneId())![0])).toBeGreaterThan(minted + 500);
@@ -650,7 +655,15 @@ test("a float outside the window is refused rather than rebuilt unreachable", ()
         version: LAYOUT_VERSION,
         root: pane("a"),
         floats: [
-          { id: "f", content: { kind: "pty", session: "c" }, x: 0.1, y: 0.1, width: 0.5, height: 0.5, ...rect },
+          {
+            id: "f",
+            content: { kind: "pty", session: "c" },
+            x: 0.1,
+            y: 0.1,
+            width: 0.5,
+            height: 0.5,
+            ...rect,
+          },
         ],
       }),
     );

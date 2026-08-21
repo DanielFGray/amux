@@ -149,7 +149,10 @@ function normalKey(state: EditorState, key: KeyEvent): EditorState {
     case "0":
       return { ...state, cursor: { row: state.cursor.row, col: 0 } };
     case "$":
-      return { ...state, cursor: { row: state.cursor.row, col: state.lines[state.cursor.row]!.length } };
+      return {
+        ...state,
+        cursor: { row: state.cursor.row, col: state.lines[state.cursor.row]!.length },
+      };
     case "i":
       return enterInsert(state, "here");
     case "a":
@@ -182,13 +185,16 @@ function normalKey(state: EditorState, key: KeyEvent): EditorState {
   }
 }
 
-function enterInsert(
-  state: EditorState,
-  where: "here" | "after" | "start" | "end",
-): EditorState {
+function enterInsert(state: EditorState, where: "here" | "after" | "start" | "end"): EditorState {
   const line = state.lines[state.cursor.row]!;
   const col =
-    where === "start" ? 0 : where === "end" ? line.length : where === "after" ? state.cursor.col + 1 : state.cursor.col;
+    where === "start"
+      ? 0
+      : where === "end"
+        ? line.length
+        : where === "after"
+          ? state.cursor.col + 1
+          : state.cursor.col;
   return {
     ...state,
     mode: "insert",
@@ -316,20 +322,19 @@ function executeCommand(state: EditorState): EditorState {
   const next = { ...state, mode: "normal" as EditorMode, command: "" };
 
   if (command === "w") {
-    if (state.file === null)
-      return { ...next, message: "no file name (open one with :e path)" };
+    if (state.file === null) return { ...next, message: "no file name (open one with :e path)" };
     return { ...next, request: { type: "write" } };
   }
   if (command === "q") {
-    if (state.dirty) return { ...next, message: "no write since last change (:wq to save and quit)" };
+    if (state.dirty)
+      return { ...next, message: "no write since last change (:wq to save and quit)" };
     return { ...next, request: { type: "close" } };
   }
   if (command === "q!") {
     return { ...next, request: { type: "close" } };
   }
   if (command === "wq" || command === "x") {
-    if (state.file === null)
-      return { ...next, message: "no file name (open one with :e path)" };
+    if (state.file === null) return { ...next, message: "no file name (open one with :e path)" };
     return { ...next, request: { type: "write-close" } };
   }
   const open = command.match(/^e(?:\s+(.+))?$/);

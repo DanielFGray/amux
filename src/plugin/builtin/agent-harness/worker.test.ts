@@ -48,7 +48,11 @@ const runWorker = <A>(
     worker: {
       readonly prompt: (
         text: string,
-        options?: { readonly id?: string; readonly delivery?: "steer" | "queue"; readonly resume?: boolean },
+        options?: {
+          readonly id?: string;
+          readonly delivery?: "steer" | "queue";
+          readonly resume?: boolean;
+        },
       ) => Effect.Effect<void>;
       readonly interrupt: (reason?: string) => Effect.Effect<void>;
       readonly close: Effect.Effect<void>;
@@ -243,7 +247,15 @@ test("a steer at a tool continuation boundary replaces the empty continuation", 
     scriptedModel(
       (call) =>
         call === 0
-          ? [{ type: "tool-call", id: "call-1", name: "lookup", params: {}, providerExecuted: false }]
+          ? [
+              {
+                type: "tool-call",
+                id: "call-1",
+                name: "lookup",
+                params: {},
+                providerExecuted: false,
+              },
+            ]
           : [{ type: "text-delta", id: "t1", delta: "steered" }],
       { seen },
     ),
@@ -261,10 +273,7 @@ test("a steer at a tool continuation boundary replaces the empty continuation", 
     },
   );
 
-  expect(seen.map(roles)).toEqual([
-    ["user"],
-    ["user", "assistant", "tool", "user"],
-  ]);
+  expect(seen.map(roles)).toEqual([["user"], ["user", "assistant", "tool", "user"]]);
   expect(frames.filter((frame) => frame._tag === "turn.start").map((frame) => frame.turn)).toEqual([
     "turn-1",
     "turn-2",

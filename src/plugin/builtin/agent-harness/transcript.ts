@@ -3,7 +3,12 @@ import type { PermissionDecision, PermissionRule } from "../../../permission.ts"
 
 export type TranscriptBlock =
   | { readonly kind: "reasoning"; readonly turn: string; readonly text: string }
-  | { readonly kind: "user"; readonly turn: string; readonly text: string; readonly queued?: boolean }
+  | {
+      readonly kind: "user";
+      readonly turn: string;
+      readonly text: string;
+      readonly queued?: boolean;
+    }
   | { readonly kind: "assistant"; readonly turn: string; readonly text: string }
   | {
       readonly kind: "tool";

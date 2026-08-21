@@ -478,5 +478,10 @@ test("window projection places a top dock between side docks", async () => {
   await harness.layout();
 
   const expected = computeRects(window.exportLayout(), { cols: 100, rows: 50 });
-  expect(expected.get(top.id)).toEqual({ x: top.x, y: top.y, width: top.width, height: top.height });
+  expect(expected.get(top.id)).toEqual({
+    x: top.x,
+    y: top.y,
+    width: top.width,
+    height: top.height,
+  });
 });

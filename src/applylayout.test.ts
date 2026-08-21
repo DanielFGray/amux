@@ -2,7 +2,13 @@ import { test, expect, afterEach } from "bun:test";
 import { Divider } from "./divider.ts";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";
-import { encodeLayout, decodeLayout, layoutSessions, makeLayout, type LayoutNode } from "./layout.ts";
+import {
+  encodeLayout,
+  decodeLayout,
+  layoutSessions,
+  makeLayout,
+  type LayoutNode,
+} from "./layout.ts";
 import type { SessionHandle } from "./session-handle.ts";
 import { waitFor } from "./test-wait.ts";
 import { Effect } from "effect";
@@ -95,10 +101,7 @@ test("panes are reused, keeping their terminal and its output", async () => {
         type: "split",
         direction: "column",
         weight: 1,
-        children: [
-          pty(second.id, agent.id),
-          pty(first.id, first.session!.id),
-        ],
+        children: [pty(second.id, agent.id), pty(first.id, first.session!.id)],
       },
     }),
   );
@@ -140,8 +143,18 @@ test("weights in the layout become real geometry", async () => {
         direction: "row",
         weight: 1,
         children: [
-          { type: "pane", id: first.id, content: { kind: "pty", session: first.session!.id }, weight: 3 },
-          { type: "pane", id: second.id, content: { kind: "pty", session: second.session!.id }, weight: 1 },
+          {
+            type: "pane",
+            id: first.id,
+            content: { kind: "pty", session: first.session!.id },
+            weight: 3,
+          },
+          {
+            type: "pane",
+            id: second.id,
+            content: { kind: "pty", session: second.session!.id },
+            weight: 1,
+          },
         ],
       },
     }),
@@ -394,10 +407,7 @@ test("a slot naming a pane outright beats an earlier slot matching on the agent"
         type: "split",
         direction: "row",
         weight: 1,
-        children: [
-          pty("pane-from-elsewhere", shared.id),
-          pty(a.id, shared.id),
-        ],
+        children: [pty("pane-from-elsewhere", shared.id), pty(a.id, shared.id)],
       },
     }),
   );
@@ -547,7 +557,12 @@ test("resized weights survive the export", async () => {
         direction: "row",
         weight: 1,
         children: [
-          { type: "pane", id: first.id, content: { kind: "pty", session: first.session!.id }, weight: 7 },
+          {
+            type: "pane",
+            id: first.id,
+            content: { kind: "pty", session: first.session!.id },
+            weight: 7,
+          },
           {
             type: "pane",
             id: window.panes[1]!.id,

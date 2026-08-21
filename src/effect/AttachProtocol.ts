@@ -103,7 +103,10 @@ const turnQueuedFields = {
   delivery: S.Literal("steer", "queue"),
 };
 const TurnQueuedPayload = S.TaggedStruct("turn.queued", turnQueuedFields);
-const TurnQueued = S.TaggedStruct("turn.queued", { ...turnQueuedFields, sequence: S.NonNegativeInt });
+const TurnQueued = S.TaggedStruct("turn.queued", {
+  ...turnQueuedFields,
+  sequence: S.NonNegativeInt,
+});
 
 const TextDelta = S.TaggedStruct("text.delta", {
   session: S.String,

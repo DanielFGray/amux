@@ -90,7 +90,11 @@ export interface AttachHostService {
   readonly paste: (id: string, data: Uint8Array) => Effect.Effect<void, PtyError>;
   /** Raw child input used by daemon-side pane.send-keys. */
   readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-  readonly prompt: (id: string, text: string, options?: PromptOptions) => Effect.Effect<void, PtyError>;
+  readonly prompt: (
+    id: string,
+    text: string,
+    options?: PromptOptions,
+  ) => Effect.Effect<void, PtyError>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
   /** Answer a permission request a native agent session is blocked on. */
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;

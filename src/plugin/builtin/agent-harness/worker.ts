@@ -286,9 +286,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
             Effect.flatMap(() =>
               needsContinuation
                 ? takeSteer.pipe(
-                    Effect.flatMap((steer) =>
-                      steer ? runTurn(steer) : runStep(Prompt.empty),
-                    ),
+                    Effect.flatMap((steer) => (steer ? runTurn(steer) : runStep(Prompt.empty))),
                   )
                 : Effect.void,
             ),
@@ -298,19 +296,21 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
         // A steer can start inside an active turn rather than from drain's
         // normal dequeue. Remove it here too, so its original wake cannot run
         // the same durable entry after the nested turn settles.
-        Ref.update(inbox, (pending) => pending.filter((entry) => entry.turn !== queued.turn))
-      ).pipe(
-        Effect.andThen(queued.id && options.inbox ? options.inbox.promotePrompt(queued.id) : Effect.void),
-        Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
-        Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
-        Effect.andThen(emit({ _tag: "agent.status", state: AgentState.Working })),
-        Effect.andThen(runStep(prompt)),
-        Effect.onExit((exit) => settle(turn, exit, responseText)),
-        // settle has already reported the failure as turn.end{failed}, so the
-        // transcript is this turn's error channel and there is nothing left to
-        // raise. A provider 500 ends a turn, never the session. catchAll takes
-        // only typed failures: interruption still unwinds, defects still crash.
-        Effect.catchAll(() => Effect.void),
+        Ref.update(inbox, (pending) => pending.filter((entry) => entry.turn !== queued.turn)).pipe(
+          Effect.andThen(
+            queued.id && options.inbox ? options.inbox.promotePrompt(queued.id) : Effect.void,
+          ),
+          Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
+          Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
+          Effect.andThen(emit({ _tag: "agent.status", state: AgentState.Working })),
+          Effect.andThen(runStep(prompt)),
+          Effect.onExit((exit) => settle(turn, exit, responseText)),
+          // settle has already reported the failure as turn.end{failed}, so the
+          // transcript is this turn's error channel and there is nothing left to
+          // raise. A provider 500 ends a turn, never the session. catchAll takes
+          // only typed failures: interruption still unwinds, defects still crash.
+          Effect.catchAll(() => Effect.void),
+        )
       );
     };
 

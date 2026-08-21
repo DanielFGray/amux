@@ -90,8 +90,18 @@ test("zoom survives a resize and an uneven split's weights", async () => {
         direction: "row",
         weight: 1,
         children: [
-          { type: "pane", id: first.id, content: { kind: "pty", session: first.session!.id }, weight: 5 },
-          { type: "pane", id: second.id, content: { kind: "pty", session: second.session!.id }, weight: 1 },
+          {
+            type: "pane",
+            id: first.id,
+            content: { kind: "pty", session: first.session!.id },
+            weight: 5,
+          },
+          {
+            type: "pane",
+            id: second.id,
+            content: { kind: "pty", session: second.session!.id },
+            weight: 1,
+          },
         ],
       },
     }),
