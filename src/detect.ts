@@ -127,36 +127,6 @@ export function splitActivity(title: string): { spinning: boolean; text: string 
   return { spinning: true, text: rest.trim() };
 }
 
-/**
- * Screen patterns that mean the agent has stopped and is waiting on a human.
- *
- * This is a starting set covering the confirmation prompts of the agent CLIs
- * in daily use, not a complete manifest — herdr carries a much larger one with
- * per-tool priority arbitration. Anything unmatched simply falls through to the
- * process-based heuristic, so a missing pattern costs a wrong dot, not a hang.
- */
-const BLOCKED_PATTERNS: RegExp[] = [
-  /Do you want to (proceed|continue|make this edit)/i,
-  /❯\s*1\.\s*Yes/,
-  /\bAllow\b.*\?\s*$/im,
-  /\[y\/n\]/i,
-  /\(y\/N\)/,
-  /Press\s+(enter|return)\s+to\s+continue/i,
-  /Waiting for (your )?(input|response|approval)/i,
-];
-
-/** True when the tail of the screen looks like a prompt awaiting an answer. */
-export function looksBlocked(lines: string[]): boolean {
-  // Trailing blank rows are the norm; join only what has content so a pattern
-  // anchored at end-of-line still matches the real last line.
-  const text = lines
-    .map((l) => l.replace(/\s+$/, ""))
-    .filter((l) => l.length > 0)
-    .join("\n");
-  if (!text) return false;
-  return BLOCKED_PATTERNS.some((re) => re.test(text));
-}
-
 /** Braille frames for our own rendering of the "working" state. */
 export const SPINNER_FRAMES = [..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"];
 
