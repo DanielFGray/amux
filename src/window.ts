@@ -173,7 +173,7 @@ export class Window {
    * scopes cannot be re-parented. A session forked from its old window's scope
    * would be killed when that window closed, despite now living somewhere else.
    * Independent scopes held in a map make the transfer a map entry moving
-   * between two windows (see relinquishAgent/adopt), and make killAgent the
+   * between two windows (see relinquishSession/adopt), and make killSession the
    * closing of exactly one of them.
    */
   #scopes = new Map<SessionHandle, Scope.CloseableScope>();
