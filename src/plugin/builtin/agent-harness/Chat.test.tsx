@@ -229,10 +229,11 @@ test("working status is shown as a spinner below the editor", async () => {
     true,
     () =>
       Stream.make({
-        _tag: "agent.status",
+        _tag: "topic",
         session: "native",
         sequence: 1,
-        state: "working",
+        topic: "session.state",
+        payload: "working",
       }) as any,
   );
   await waitFrame(t, (frame) => frame.includes("working"), "the status to render");
@@ -304,10 +305,11 @@ test("a submitted message is answered by the agent in the transcript", async () 
   expect(sent).toEqual(["fix the bug"]);
 
   push({
-    _tag: "agent.status",
+    _tag: "topic",
     session: "native",
     sequence: 1,
-    state: "working",
+    topic: "session.state",
+    payload: "working",
   });
   push({
     _tag: "turn.start",
@@ -376,10 +378,11 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
   await t.renderOnce();
 
   push({
-    _tag: "agent.status",
+    _tag: "topic",
     session: "native",
     sequence: 1,
-    state: "working",
+    topic: "session.state",
+    payload: "working",
   });
   push({ _tag: "turn.start", session: "native", sequence: 2, turn: "t1", prompt: "run it" });
   push({

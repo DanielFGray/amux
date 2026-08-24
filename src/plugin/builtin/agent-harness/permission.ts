@@ -11,6 +11,7 @@ import { Deferred, Effect, Ref } from "effect";
 import { relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgentState } from "../../../agent-state.ts";
+import { agentStateTopic } from "./state-topic.ts";
 import { evaluateAll, type PermissionDecision, type PermissionRule } from "../../../permission.ts";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 import type { Interface as ProjectStore } from "../../../project-store.ts";
@@ -84,9 +85,8 @@ export function makePermissionGate(options: {
         yield* Ref.update(pending, (map) => new Map(map).set(request, deferred));
         yield* emitRequest(request, assertion, save);
         yield* options.emit({
-          _tag: "agent.status",
+          ...agentStateTopic(AgentState.Blocked),
           session: options.session,
-          state: AgentState.Blocked,
         });
         // An interrupt unwinds the await like any other Effect, and the record
         // is written on the way out: a transcript must not keep a question that
@@ -108,9 +108,8 @@ export function makePermissionGate(options: {
       record(request, decided, save).pipe(
         Effect.andThen(
           options.emit({
-            _tag: "agent.status",
+            ...agentStateTopic(AgentState.Working),
             session: options.session,
-            state: AgentState.Working,
           }),
         ),
         Effect.andThen(

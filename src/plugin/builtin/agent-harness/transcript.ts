@@ -1,5 +1,7 @@
 import type { AgentFrame } from "../../../effect/AttachProtocol.ts";
 import type { PermissionDecision, PermissionRule } from "../../../permission.ts";
+import type { ReportedAgentState } from "../../../agent-state.ts";
+import { agentStateFromTopic } from "./state-topic.ts";
 
 export type TranscriptBlock =
   | { readonly kind: "reasoning"; readonly turn: string; readonly text: string }
@@ -38,7 +40,7 @@ export type TranscriptBlock =
     }
   | {
       readonly kind: "status";
-      readonly state: Extract<AgentFrame, { _tag: "agent.status" }>["state"];
+      readonly state: ReportedAgentState;
     }
   /** Why a turn failed. The status block says that it did; this says what. */
   | { readonly kind: "error"; readonly turn?: string; readonly text: string };
@@ -255,8 +257,10 @@ export function appendTranscriptFrame(
       if (permission.kind !== "permission") return blocks;
       return [...blocks.slice(0, index), decided(permission, frame), ...blocks.slice(index + 1)];
     }
-    case "agent.status":
-      return [...blocks, { kind: "status", state: frame.state }];
+    case "topic": {
+      const state = agentStateFromTopic(frame);
+      return state === undefined ? blocks : [...blocks, { kind: "status", state }];
+    }
     case "turn.end":
       return [
         ...blocks,

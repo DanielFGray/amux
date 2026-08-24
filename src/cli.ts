@@ -339,7 +339,9 @@ async function main(): Promise<number> {
           const deadline = Date.now() + timeout;
           const first = yield* agentWatch(control, prompt.target, after).pipe(
             Stream.filter(
-              (event): event is any => event._tag === "turn.start" || event._tag === "agent.status",
+              (event): event is any =>
+                event._tag === "turn.start" ||
+                (event._tag === "topic" && event.topic === "session.state"),
             ),
             Stream.runHead,
             Effect.timeoutFail({
@@ -359,8 +361,9 @@ async function main(): Promise<number> {
             }
             if (
               prompt.until !== undefined &&
-              event._tag === "agent.status" &&
-              event.state === prompt.until
+              event._tag === "topic" &&
+              event.topic === "session.state" &&
+              event.payload === prompt.until
             ) {
               result = event;
               return true;

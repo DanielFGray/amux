@@ -1,13 +1,13 @@
 /**
  * The one vocabulary for what an agent is doing.
  *
- * The wire (EventBus's session.state, the attach protocol's agent.status and
+ * The wire (EventBus's session.state, the attach protocol's named topic and
  * agent.prompt `until`, the process self-report socket) carries this only as
  * an opaque string: those transports must not need editing whenever this
  * vocabulary grows a state, so none of them import this module. Instead every
  * plane that means something by the value — the sidebar glyph, the socket a
- * foreign agent's hook writes, the agent plugin relabeling a generic
- * agent.status frame — validates and interprets it at its own boundary via
+ * foreign agent's hook writes, the agent plugin relabeling a generic topic
+ * frame — validates and interprets it at its own boundary via
  * `isReportedAgentState`, and every union and `Record<AgentState, _>` derives
  * from the names and schemas defined once here.
  *

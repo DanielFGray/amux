@@ -308,7 +308,10 @@ test("a failed turn.end renders the cause above the failed status", () => {
       error: "HttpResponseError: 400 invalid schema for function 'pane_next'",
     }),
   );
-  blocks = appendTranscriptFrame(blocks, frame({ _tag: "agent.status", state: "failed" }));
+  blocks = appendTranscriptFrame(
+    blocks,
+    frame({ _tag: "topic", topic: "session.state", payload: "failed" }),
+  );
 
   expect(serializeTranscript(blocks, 80)).toEqual([
     "user> hello",
@@ -351,7 +354,7 @@ test("a retained transcript keeps the cause of a failed turn", () => {
   transcript.append(
     frame({ _tag: "turn.end", turn: "t1", outcome: "failed", error: "400 bad schema" }),
   );
-  transcript.append(frame({ _tag: "agent.status", state: "failed" }));
+  transcript.append(frame({ _tag: "topic", topic: "session.state", payload: "failed" }));
   expect(serializeTranscript(transcript.snapshot(), 80)).toEqual([
     "user> go",
     "error> 400 bad schema",

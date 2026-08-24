@@ -147,7 +147,13 @@ test("native agent lifecycle frames round-trip as semantic events", () => {
       turn: "turn-1",
       outcome: "completed",
     },
-    { _tag: "agent.status", session: "agent-1", sequence: 8, state: "idle" },
+    {
+      _tag: "topic",
+      session: "agent-1",
+      sequence: 8,
+      topic: "session.state",
+      payload: "idle",
+    },
   ];
 
   const decoded = decodeAttachFrames(frames.map(encodeAttachFrame).join(""));
@@ -170,6 +176,23 @@ test("native agent control frames round-trip without provider or transport detai
   ];
 
   expect(decodeAttachFrames(frames.map(encodeAttachFrame).join("")).frames).toEqual(frames);
+});
+
+test("plugin state crosses the attach protocol as an opaque named topic", () => {
+  const frame = {
+    _tag: "topic",
+    session: "agent-1",
+    sequence: 8,
+    topic: "session.state",
+    payload: "idle",
+  } as const;
+
+  expect(decodeAttachFrames(`${JSON.stringify(frame)}\n`).frames).toEqual([frame]);
+  expect(() =>
+    decodeAttachFrames(
+      `${JSON.stringify({ _tag: "agent.status", session: "agent-1", sequence: 8, state: "idle" })}\n`,
+    ),
+  ).toThrow();
 });
 
 test("tool.params-start round-trips as a self-contained semantic event", () => {

@@ -193,7 +193,7 @@ testEffect("an agent worker registers, emits semantic events, and is killed", ()
       cmd: [
         process.execPath,
         "-e",
-        `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"worker-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+        `process.stdout.write(JSON.stringify({_tag:"topic",session:"worker-agent",sequence:1,topic:"session.state",payload:"working"})+"\\n"); setTimeout(()=>{},30000)`,
       ],
       cols: 80,
       rows: 24,

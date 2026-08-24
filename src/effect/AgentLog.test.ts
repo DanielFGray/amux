@@ -3,9 +3,10 @@ import { Effect, Fiber, Stream } from "effect";
 import { AgentLog, AgentLogDefault } from "./AgentLog.ts";
 
 const event = (state: "idle" | "working" | "blocked" | "failed" | "done") => ({
-  _tag: "agent.status" as const,
+  _tag: "topic" as const,
   session: "watch",
-  state,
+  topic: "session.state",
+  payload: state,
 });
 
 test("watch replays and tails without duplicating the replay seam", async () => {

@@ -83,7 +83,7 @@ Send work with \`agent.prompt <target> <text>\`:
 - \`--timeout=<ms>\` bounds the whole wait (default 30000).
 - A prompt sent while the agent is not working must produce an observed lifecycle change within five seconds, or the call fails with \`agent_prompt_stalled\`. The agent never took the work; do not keep waiting, report the failure.
 
-Observe the child with \`agent.watch <target>\`, which streams durable events as JSON lines from a replay cursor. \`--after=<sequence>\` resumes from an earlier cursor, so a reconnect loses nothing. Events include \`turn.start\`, \`turn.end\` (with \`outcome\`), \`tool.start\`, \`tool.result\`, \`agent.status\`, and \`permission.request\`.
+Observe the child with \`agent.watch <target>\`, which streams durable events as JSON lines from a replay cursor. \`--after=<sequence>\` resumes from an earlier cursor, so a reconnect loses nothing. Events include \`turn.start\`, \`turn.end\` (with \`outcome\`), \`tool.start\`, \`tool.result\`, the \`session.state\` topic, and \`permission.request\`.
 
 \`agent.permission\` and \`agent.interrupt\` stay human-gated: the approval loop above the agents answers permission requests, and interrupt is the user's escape hatch. If the child emits \`permission.request\` or reaches \`blocked\`, it is waiting on the user; do not answer it yourself.
 

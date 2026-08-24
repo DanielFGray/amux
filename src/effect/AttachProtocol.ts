@@ -241,21 +241,18 @@ const PermissionResponse = S.TaggedStruct("permission.response", {
   sequence: S.NonNegativeInt,
 });
 
-/**
- * `state` is an opaque wire value, not the closed set from agent-state.ts:
- * the wire schema must not need editing whenever the agent plugin's own
- * vocabulary grows a state. The plugin validates and relabels it at its own
- * boundary (see agent-state.ts's isReportedAgentState).
- */
-const agentStatusFields = {
+/** A durable value whose meaning belongs to the named subscriber, not core. */
+const topicFields = {
   session: S.String,
-  state: S.String,
+  topic: S.String,
+  payload: S.Unknown,
 };
-const AgentStatusPayload = S.TaggedStruct("agent.status", agentStatusFields);
-const AgentStatus = S.TaggedStruct("agent.status", {
-  ...agentStatusFields,
+const TopicPayload = S.TaggedStruct("topic", topicFields);
+export const Topic = S.TaggedStruct("topic", {
+  ...topicFields,
   sequence: S.NonNegativeInt,
 });
+export type Topic = S.Schema.Type<typeof Topic>;
 
 const AgentErrorFields = {
   session: S.String,
@@ -289,7 +286,7 @@ export const AgentEventPayloadSchema = S.Union(
   ToolResultPayload,
   PermissionRequestPayload,
   PermissionResponsePayload,
-  AgentStatusPayload,
+  TopicPayload,
   AgentErrorPayload,
   TurnEndPayload,
 );
@@ -348,7 +345,7 @@ export const AgentEvent = S.Union(
   ToolResult,
   PermissionRequest,
   PermissionResponse,
-  AgentStatus,
+  Topic,
   AgentError,
   TurnEnd,
 );
@@ -384,7 +381,7 @@ export const AttachFrame = S.Union(
   ToolResult,
   PermissionRequest,
   PermissionResponse,
-  AgentStatus,
+  Topic,
   AgentError,
   TurnEnd,
   AgentPrompt,

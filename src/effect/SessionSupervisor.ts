@@ -1,4 +1,15 @@
-import { Context, Deferred, Effect, FiberMap, Layer, Match, Queue, Ref, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  FiberMap,
+  Layer,
+  Match,
+  Queue,
+  Ref,
+  Schema as S,
+  Stream,
+} from "effect";
 import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
@@ -7,6 +18,7 @@ import {
   type AgentEventPayload,
   type AgentFrame,
   type AttachFrame,
+  type Topic,
 } from "./AttachProtocol.ts";
 import { AgentLog } from "./AgentLog.ts";
 import {
@@ -241,7 +253,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       let phase: "prepared" | "activating" | "active" | "aborted" = "prepared";
       const pending = yield* Queue.unbounded<Uint8Array>();
       const pendingEvents = yield* Queue.unbounded<AgentFrame>();
-      let lastAgentState: string | null = null;
+      let lastSessionState: string | null = null;
       let exitPublished = false;
 
       const publishExit = (code: number | null) =>
@@ -317,17 +329,14 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           const code = yield* session.exit.pipe(Effect.orElseSucceed(() => null));
           yield* Deferred.succeed(termination, code);
           if ((yield* Deferred.await(disposition)) === "active") {
-            // An agent's process ending is an agent lifecycle event; a
-            // component's is not, and the two are only the same thing while
-            // every component happens to be an agent. "failed" is a bare
-            // wire value here, not the agent plugin's closed vocabulary: the
-            // supervisor only knows the process ended without a clean
-            // handoff, not what that means to whatever reads agent.status.
+            // A declared process integration gets a final state fact. Core
+            // does not decide how a subscriber presents that fact.
             if (spec.agent && code !== null) {
               const failed = yield* agentLog.append({
-                _tag: "agent.status",
+                _tag: "topic",
                 session: spec.id,
-                state: "failed",
+                topic: "session.state",
+                payload: "failed",
               });
               yield* stateObserver.onState(spec.id, "failed");
               yield* hub.publish(failed);
@@ -362,21 +371,24 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       const ingest = (event: AgentFrame | AgentEventPayload) =>
         Effect.gen(function* () {
           const committed = isAgentEventPayload(event) ? yield* agentLog.append(event) : event;
-          if (committed._tag === "agent.status" && committed.state !== lastAgentState) {
-            lastAgentState = committed.state;
-            yield* stateObserver.onState(spec.id, committed.state);
+          if (isSessionStateTopic(committed) && committed.payload !== lastSessionState) {
+            lastSessionState = committed.payload;
+            yield* stateObserver.onState(spec.id, committed.payload);
           }
           if (phase === "active") yield* hub.publish(committed);
           else yield* Queue.offer(pendingEvents, committed);
         });
 
-      // A foreign agent reporting over the control socket is the same fact as
-      // our own harness emitting `agent.status`, so it takes the same door and
-      // lands in the same log. Without this a self-reported state would be live
-      // only, and a watcher resuming from a cursor would never see it.
+      // Process reports take the same generic topic door as component events,
+      // so replay and live subscribers observe one ordered fact stream.
       yield* Ref.update(reporters, (current) =>
         new Map(current).set(spec.id, (state: string) =>
-          ingest({ _tag: "agent.status", session: spec.id, state }),
+          ingest({
+            _tag: "topic",
+            session: spec.id,
+            topic: "session.state",
+            payload: state,
+          }),
         ),
       );
 
@@ -617,3 +629,6 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
 }) {
   static Live = SessionSupervisor.Default.pipe(Layer.provide(SessionRegistry.Default));
 }
+
+const isSessionStateTopic = (frame: AgentFrame): frame is Topic & { readonly payload: string } =>
+  frame._tag === "topic" && frame.topic === "session.state" && S.is(S.String)(frame.payload);

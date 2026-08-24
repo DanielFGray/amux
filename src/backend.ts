@@ -187,12 +187,9 @@ export function daemonBackend(
                   foregroundPgid = frame.pgid;
                   foregroundSid = frame.sid;
                 })
-              : frame._tag === "agent.status"
+              : frame._tag === "topic" && frame.topic === "session.state"
                 ? Effect.sync(() => {
-                    // The wire value is opaque; only the agent plugin's own
-                    // vocabulary is meaningful here, so an unrecognized state
-                    // leaves the last known one in place.
-                    if (isReportedAgentState(frame.state)) agentState = frame.state;
+                    if (isReportedAgentState(frame.payload)) agentState = frame.payload;
                   })
                 : Effect.void,
       ).pipe(

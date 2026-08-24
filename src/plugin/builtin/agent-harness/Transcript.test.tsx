@@ -128,7 +128,13 @@ test("raw transcript renders protocol events that chat presents elsewhere", asyn
       save: [],
       input: { command: "ls" },
     },
-    { _tag: "agent.status" as const, session: "native", sequence: 3, state: "blocked" as const },
+    {
+      _tag: "topic" as const,
+      session: "native",
+      sequence: 3,
+      topic: "session.state",
+      payload: "blocked" as const,
+    },
   ]);
   await render(
     () => (
