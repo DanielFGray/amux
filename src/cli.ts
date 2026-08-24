@@ -173,12 +173,14 @@ async function main(): Promise<number> {
     { controlCall, agentWatch, AgentWaitError },
     commandsMod,
     { parseArgs, fieldNames },
+    { SESSION_STATE_TOPIC },
   ] = await Promise.all([
     import("effect"),
     import("./session.ts"),
     import("./control-client.ts"),
     import("./commands.ts"),
     import("./command-cli.ts"),
+    import("./effect/AttachProtocol.ts"),
   ]);
   const { Effect, Option, Schema, Stream } = effectMod;
   const { COMMAND_META, Command, commandDefinition } = commandsMod;
@@ -341,7 +343,7 @@ async function main(): Promise<number> {
             Stream.filter(
               (event): event is any =>
                 event._tag === "turn.start" ||
-                (event._tag === "topic" && event.topic === "session.state"),
+                (event._tag === "topic" && event.topic === SESSION_STATE_TOPIC),
             ),
             Stream.runHead,
             Effect.timeoutFail({
@@ -362,7 +364,7 @@ async function main(): Promise<number> {
             if (
               prompt.until !== undefined &&
               event._tag === "topic" &&
-              event.topic === "session.state" &&
+              event.topic === SESSION_STATE_TOPIC &&
               event.payload === prompt.until
             ) {
               result = event;

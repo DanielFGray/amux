@@ -1,6 +1,8 @@
 import { Schema as S, SchemaAST as AST } from "effect";
 import { PermissionDecisionSchema, PermissionRuleSchema } from "../permission.ts";
 
+export const SESSION_STATE_TOPIC = "session.state";
+
 /**
  * The framed wire protocol between a client and the attach daemon.
  *

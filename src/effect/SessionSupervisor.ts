@@ -15,6 +15,7 @@ import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
 import {
   isAgentEventPayload,
+  SESSION_STATE_TOPIC,
   type AgentEventPayload,
   type AgentFrame,
   type AttachFrame,
@@ -335,7 +336,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               const failed = yield* agentLog.append({
                 _tag: "topic",
                 session: spec.id,
-                topic: "session.state",
+                topic: SESSION_STATE_TOPIC,
                 payload: "failed",
               });
               yield* stateObserver.onState(spec.id, "failed");
@@ -386,7 +387,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           ingest({
             _tag: "topic",
             session: spec.id,
-            topic: "session.state",
+            topic: SESSION_STATE_TOPIC,
             payload: state,
           }),
         ),
@@ -631,4 +632,4 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
 }
 
 const isSessionStateTopic = (frame: AgentFrame): frame is Topic & { readonly payload: string } =>
-  frame._tag === "topic" && frame.topic === "session.state" && S.is(S.String)(frame.payload);
+  frame._tag === "topic" && frame.topic === SESSION_STATE_TOPIC && S.is(S.String)(frame.payload);
