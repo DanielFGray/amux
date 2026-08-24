@@ -1,4 +1,4 @@
-import { Clock, Effect, Exit, Fiber, Scope, Stream } from "effect";
+import { Clock, Effect, Exit, Fiber, Option, Scope, Stream } from "effect";
 import { Terminal, RenderState } from "./ghostty.ts";
 import {
   localPty,
@@ -7,20 +7,20 @@ import {
   type SessionBackendFactory,
 } from "./backend.ts";
 import { scrollViewport, ScrollTo } from "./shim.ts";
-import { splitActivity, looksBlocked, identifyAgent, commandName } from "./detect.ts";
+import { splitActivity, identifyAgent, commandName } from "./detect.ts";
 import { AgentState } from "./agent-state.ts";
 import { AgentStateArbiter, AgentStateAuthority } from "./agent-state-arbiter.ts";
-import { extractScreenRegion, type ScreenRegion } from "./screen-regions.ts";
+import {
+  DetectorEvaluator,
+  type DetectorEvaluatorService,
+  type DetectorResult,
+} from "./detector-evaluator.ts";
+import { extractScreenRegion, type ScreenRegion, type ScreenSnapshot } from "./screen-regions.ts";
 
 /** How often the screen is re-scanned for a "waiting on you" prompt. Blocked
  *  state changes are human-paced, so a few times a second is ample and keeps
  *  the scan off the render path for busy agents. */
 const BLOCKED_POLL_MS = 250;
-
-/** How many of the last written rows are searched for a prompt. A confirmation
- *  UI is the most recent thing on screen by definition, so a short tail is
- *  enough and scanning the whole grid would cost several times more. */
-const BLOCKED_SCAN_ROWS = 20;
 
 /** How often the foreground process is re-checked for an agent CLI. Reading
  *  /proc on every sidebar row on every tick would be gratuitous, and starting an
@@ -53,6 +53,9 @@ export interface SessionHandleOptions {
   id?: string;
   /** Where the process comes from. Defaults to a PTY in this process. */
   backend?: SessionBackendFactory;
+  /** Defaults to the bundled data evaluator. Effect callers can replace it with
+   *  `DetectorEvaluator` before constructing a session. */
+  evaluator?: DetectorEvaluatorService;
   /**
    * Restore an agent whose process is already over.
    *
@@ -109,9 +112,10 @@ export class SessionHandle {
   #unseen = false;
   /** Lazily created: only agents actually asked for their state pay for it. */
   #detect: RenderState | null = null;
-  #blockedCache = false;
-  #blockedAt = 0;
-  #blockedSeenOutput = -1;
+  #detectorResult: DetectorResult = { state: "unknown", skipStateUpdate: false };
+  #detectorAt = 0;
+  #detectorSeenOutput = -1;
+  readonly #evaluator: DetectorEvaluatorService;
   #state = new AgentStateArbiter();
   #stateReaders = new Set<{ readonly read: (state: AgentState) => void }>();
   #detectionRegistrations = 0;
@@ -153,6 +157,7 @@ export class SessionHandle {
     this.cmd = opts.cmd;
     this.cwd = opts.cwd;
     this.#declaredAgent = opts.agent ?? null;
+    this.#evaluator = opts.evaluator ?? DetectorEvaluator.core;
     this.provider = opts.provider;
     this.#spawnedAs = identifyAgent(opts.cmd.join(" "));
     const cols = opts.cols ?? 80;
@@ -216,9 +221,18 @@ export class SessionHandle {
    * needs dispose(); this is what the call sites become as they convert.
    */
   static make(opts: SessionHandleOptions): Effect.Effect<SessionHandle, never, Scope.Scope> {
-    return Effect.acquireRelease(
-      Effect.sync(() => new SessionHandle(opts)),
-      (agent) => agent.release(),
+    return Effect.flatMap(Effect.serviceOption(DetectorEvaluator), (providedEvaluator) =>
+      Effect.acquireRelease(
+        Effect.sync(
+          () =>
+            new SessionHandle({
+              ...opts,
+              evaluator:
+                opts.evaluator ?? Option.getOrElse(providedEvaluator, () => DetectorEvaluator.core),
+            }),
+        ),
+        (agent) => agent.release(),
+      ),
     );
   }
 
@@ -388,16 +402,21 @@ export class SessionHandle {
 
   /** Read a named structural region of the live terminal grid. */
   screenRegion(region: ScreenRegion): string {
-    if (this.#disposed) return "";
+    return extractScreenRegion(this.#screenSnapshot(), region);
+  }
+
+  #screenSnapshot(): ScreenSnapshot {
+    if (this.#disposed) return { lines: [], oscTitle: "", oscProgress: "" };
     this.#detect ??= this.#own(
       () => new RenderState(),
       (state) => state.free(),
     );
     this.#detect.update(this.term);
-    return extractScreenRegion(
-      { lines: this.#detect.tailText(this.term.rows), oscTitle: this.term.title, oscProgress: "" },
-      region,
-    );
+    return {
+      lines: this.#detect.tailText(this.term.rows),
+      oscTitle: this.term.title,
+      oscProgress: "",
+    };
   }
 
   registerStateSource(source: {
@@ -453,11 +472,10 @@ export class SessionHandle {
     for (const reader of this.#stateReaders) reader.read(state);
   }
 
-  #detectedState(): AgentState {
+  #detectedState(): AgentState | "unknown" {
     if (!this.agentKind) return AgentState.Idle;
-    if (splitActivity(this.term.title).spinning) return AgentState.Working;
-    if (this.#blocked()) return AgentState.Blocked;
-    return AgentState.Idle;
+    const result = this.#detectState();
+    return result.skipStateUpdate || result.state === "unknown" ? "unknown" : result.state;
   }
 
   /** @deprecated use `state`. */
@@ -465,25 +483,23 @@ export class SessionHandle {
     return this.state;
   }
 
-  /** Cached screen scan. Recomputed at most every BLOCKED_POLL_MS, and only
-   *  when output has actually arrived since the last scan. */
-  #blocked(): boolean {
+  /** Cached adapter evaluation. Recomputed at most every BLOCKED_POLL_MS, and
+   * only when output has actually arrived since the last scan. */
+  #detectState(): DetectorResult {
     const now = Date.now();
-    if (now - this.#blockedAt < BLOCKED_POLL_MS) return this.#blockedCache;
-    if (this.#blockedAt > 0 && this.#lastOutputAt <= this.#blockedSeenOutput) {
-      this.#blockedAt = now;
-      return this.#blockedCache;
+    if (now - this.#detectorAt < BLOCKED_POLL_MS) return this.#detectorResult;
+    if (this.#detectorAt > 0 && this.#lastOutputAt <= this.#detectorSeenOutput) {
+      this.#detectorAt = now;
+      return this.#detectorResult;
     }
-    this.#blockedAt = now;
-    this.#blockedSeenOutput = this.#lastOutputAt;
+    this.#detectorAt = now;
+    this.#detectorSeenOutput = this.#lastOutputAt;
     // A disposed agent's handles are freed; scanning one would read released
     // memory. The last answer it gave is still the true one — nothing has
     // arrived since to change it.
-    if (this.#disposed) return this.#blockedCache;
-    this.#blockedCache = looksBlocked(
-      this.screenRegion(`bottom_lines(${BLOCKED_SCAN_ROWS})`).split("\n"),
-    );
-    return this.#blockedCache;
+    if (this.#disposed) return this.#detectorResult;
+    this.#detectorResult = this.#evaluator.evaluate(this.agentKind!, this.#screenSnapshot());
+    return this.#detectorResult;
   }
 
   /** Command name of the foreground process, e.g. "vim" — "" when at a prompt.

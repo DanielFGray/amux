@@ -3,7 +3,7 @@ import { which } from "bun";
 import { mkdtemp, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { splitActivity, looksBlocked, identifyAgent } from "./detect.ts";
+import { splitActivity, identifyAgent } from "./detect.ts";
 import { SessionHandle } from "./session-handle.ts";
 import { AgentStateAuthority } from "./agent-state-arbiter.ts";
 import { waitFor } from "./test-wait.ts";
@@ -47,20 +47,6 @@ test("a symbol that is part of the title is left alone", () => {
 test("empty and whitespace titles are not spinners", () => {
   expect(splitActivity("")).toEqual({ spinning: false, text: "" });
   expect(splitActivity("   ")).toEqual({ spinning: false, text: "" });
-});
-
-test("confirmation prompts read as blocked", () => {
-  expect(looksBlocked(["", "Do you want to proceed?", "❯ 1. Yes", "  2. No", ""])).toBe(true);
-  expect(looksBlocked(["Overwrite existing file? [y/N]"])).toBe(true);
-  expect(looksBlocked(["Press enter to continue"])).toBe(true);
-  expect(looksBlocked(["Waiting for your approval"])).toBe(true);
-});
-
-test("ordinary output does not read as blocked", () => {
-  expect(looksBlocked([])).toBe(false);
-  expect(looksBlocked(["", "   ", ""])).toBe(false);
-  expect(looksBlocked(["$ ls", "README.md  src", "$ "])).toBe(false);
-  expect(looksBlocked(["running 42 tests", "all passed"])).toBe(false);
 });
 
 test("agent CLIs are recognised by executable name, and nothing else is", () => {
