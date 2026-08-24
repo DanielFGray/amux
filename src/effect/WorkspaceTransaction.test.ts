@@ -54,7 +54,7 @@ function singlePaneState(): {
           {
             number: winNum,
             name: null,
-            agents: [
+            sessions: [
               {
                 id: agentId,
                 name: "sh",

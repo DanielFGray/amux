@@ -677,7 +677,7 @@ test("the CLI read surface resolves the calling pane from inside one", async () 
   const workspace = Effect.runSync(daemon.getWorkspace);
   const space = workspace.spaces[0]!;
   const pane = workspacePaneId(workspace);
-  const session = space.windows[0]!.agents[0]!.id;
+  const session = space.windows[0]!.sessions[0]!.id;
   const entry = new URL("./cli.ts", import.meta.url).pathname;
   const cli = (args: string[]) =>
     Bun.spawn([process.execPath, entry, ...args], {
@@ -755,7 +755,7 @@ test("the CLI splits, sends keys to, captures and closes a named pane without mo
   const { daemon, env } = await started("cli-pane-tools");
   const workspace = Effect.runSync(daemon.getWorkspace);
   const pane = workspacePaneId(workspace);
-  const session = workspace.spaces[0]!.windows[0]!.agents[0]!.id;
+  const session = workspace.spaces[0]!.windows[0]!.sessions[0]!.id;
   const entry = new URL("./cli.ts", import.meta.url).pathname;
   const cli = (args: string[]) =>
     Bun.spawn([process.execPath, entry, ...args], {

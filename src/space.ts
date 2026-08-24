@@ -610,16 +610,16 @@ const projectWindow = Effect.fnUntraced(function* (
   backend: SessionBackendFactory,
 ) {
   for (const session of window.sessions.slice()) {
-    if (!source.agents.some((candidate) => candidate.id === session.id))
+    if (!source.sessions.some((candidate) => candidate.id === session.id))
       yield* window.removeProjectedSession(session);
   }
-  for (const saved of source.agents) {
+  for (const saved of source.sessions) {
     if (window.sessions.some((candidate) => candidate.id === saved.id)) continue;
     yield* window.startSession({
       id: saved.id,
       name: saved.name,
       kind: saved.kind,
-      agent: saved.agent,
+      agent: saved.declaredAgent,
       cmd: saved.cmd ?? [],
       ...(saved.provider ? { provider: saved.provider } : {}),
       cwd: saved.cwd,

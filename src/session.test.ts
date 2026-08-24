@@ -236,7 +236,7 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
           {
             number: 1,
             name: null,
-            agents: [
+            sessions: [
               {
                 id: "agent-a",
                 name: "a",
@@ -273,12 +273,52 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
   });
   expect(() => Effect.runSync(parseSessionState(missing))).toThrow("absent or exited session");
   const malformed = structuredClone(value);
-  malformed.spaces[0].windows[0].agents[0].rows = -1;
-  expect(() => Effect.runSync(parseSessionState(malformed))).toThrow("invalid persisted agent");
+  malformed.spaces[0].windows[0].sessions[0].rows = -1;
+  expect(() => Effect.runSync(parseSessionState(malformed))).toThrow("invalid persisted session");
   const huge = structuredClone(value);
-  huge.spaces[0].windows[0].agents[0].cols = 1_000_000;
-  huge.spaces[0].windows[0].agents[0].rows = 1_000_000;
-  expect(() => Effect.runSync(parseSessionState(huge))).toThrow("invalid persisted agent");
+  huge.spaces[0].windows[0].sessions[0].cols = 1_000_000;
+  huge.spaces[0].windows[0].sessions[0].rows = 1_000_000;
+  expect(() => Effect.runSync(parseSessionState(huge))).toThrow("invalid persisted session");
+});
+
+test("persisted state uses session vocabulary and migrates legacy agent keys", () => {
+  const current: any = {
+    ...state("session-vocabulary"),
+    spaces: [
+      {
+        id: "space-a",
+        name: "a",
+        dir: "/tmp",
+        activeWindow: 1,
+        windows: [
+          {
+            number: 1,
+            name: null,
+            sessions: [
+              {
+                id: "session-a",
+                name: "a",
+                declaredAgent: "native",
+                cmd: ["sh"],
+                cols: 80,
+                rows: 24,
+                exited: false,
+                exitCode: null,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const legacy = structuredClone(current);
+  legacy.spaces[0].windows[0].agents = legacy.spaces[0].windows[0].sessions;
+  delete legacy.spaces[0].windows[0].sessions;
+  legacy.spaces[0].windows[0].agents[0].agent = legacy.spaces[0].windows[0].agents[0].declaredAgent;
+  delete legacy.spaces[0].windows[0].agents[0].declaredAgent;
+
+  expect(Effect.runSync(parseSessionState(current))).toEqual(current);
+  expect(Effect.runSync(parseSessionState(legacy))).toEqual(current);
 });
 
 test("persisted layouts validate focus through the layout decoder", () => {
@@ -294,7 +334,7 @@ test("persisted layouts validate focus through the layout decoder", () => {
           {
             number: 1,
             name: null,
-            agents: [],
+            sessions: [],
             layout: JSON.stringify({ version: 1, root: null, focus: "missing" }),
           },
         ],

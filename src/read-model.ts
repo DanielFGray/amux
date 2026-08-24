@@ -12,7 +12,7 @@
  * runtime cycle.
  */
 import { Schema as S } from "effect";
-import { PersistedAgentShape, WorkspaceSpaceShape, WorkspaceWindowShape } from "./workspace.ts";
+import { PersistedSessionShape, WorkspaceSpaceShape, WorkspaceWindowShape } from "./workspace.ts";
 
 const RectSchema = S.Struct({
   x: S.Int,
@@ -60,7 +60,7 @@ export type PaneEntry = S.Schema.Type<typeof PaneEntrySchema>;
 /** One agent: the model's record (already the model's shape, so this names
  *  those fields by reference) plus where it lives. */
 export const AgentEntrySchema = S.Struct({
-  ...PersistedAgentShape.fields,
+  ...PersistedSessionShape.fields,
   space: S.String,
   window: WorkspaceWindowShape.fields.number,
   pane: S.optional(S.String),

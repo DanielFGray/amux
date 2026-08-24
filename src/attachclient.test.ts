@@ -133,7 +133,7 @@ function modeledAgent(client: SessionClientShape): {
 } {
   const session = client
     .workspace()
-    .spaces[0]?.windows[0]?.agents.find((candidate) => !candidate.exited);
+    .spaces[0]?.windows[0]?.sessions.find((candidate) => !candidate.exited);
   if (!session) throw new Error("no modeled live agent");
   return { ...session, cmd: session.cmd ?? [] };
 }
@@ -1345,7 +1345,7 @@ test("a natural terminal exit is published only after its workspace generation i
     client
       .workspace()
       .spaces.flatMap((space) =>
-        space.windows.flatMap((window) => window.agents.map((session) => session.id)),
+        space.windows.flatMap((window) => window.sessions.map((session) => session.id)),
       ),
   );
   const created = await run(
@@ -1358,7 +1358,7 @@ test("a natural terminal exit is published only after its workspace generation i
   );
   const id = created.snapshot.spaces
     .flatMap((space) => space.windows)
-    .flatMap((window) => window.agents)
+    .flatMap((window) => window.sessions)
     .find((session) => !before.has(session.id))!.id;
 
   await Effect.runPromise(
@@ -1371,7 +1371,7 @@ test("a natural terminal exit is published only after its workspace generation i
         Effect.map((saved) => {
           const session = saved?.spaces
             .flatMap((space) => space.windows)
-            .flatMap((window) => window.agents)
+            .flatMap((window) => window.sessions)
             .find((candidate) => candidate.id === id);
           expect(session?.exited).toBe(true);
           expect(session?.exitCode).toBe(7);
@@ -1390,7 +1390,7 @@ test("a transient natural-exit write failure does not consume the terminal exit 
     client
       .workspace()
       .spaces.flatMap((space) =>
-        space.windows.flatMap((window) => window.agents.map((session) => session.id)),
+        space.windows.flatMap((window) => window.sessions.map((session) => session.id)),
       ),
   );
   const created = await run(
@@ -1403,7 +1403,7 @@ test("a transient natural-exit write failure does not consume the terminal exit 
   );
   const id = created.snapshot.spaces
     .flatMap((space) => space.windows)
-    .flatMap((window) => window.agents)
+    .flatMap((window) => window.sessions)
     .find((session) => !before.has(session.id))!.id;
   const p = await run(sessionPaths("exit-retry-order"), env);
   await rm(p.backup, { recursive: true, force: true });
@@ -1421,7 +1421,7 @@ test("a transient natural-exit write failure does not consume the terminal exit 
         Effect.map((saved) => {
           const session = saved?.spaces
             .flatMap((space) => space.windows)
-            .flatMap((window) => window.agents)
+            .flatMap((window) => window.sessions)
             .find((candidate) => candidate.id === id);
           expect(session?.exited).toBe(true);
           expect(session?.exitCode).toBe(9);
