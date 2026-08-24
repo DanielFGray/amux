@@ -455,8 +455,8 @@ function buildApp(
     ],
     cwd: spaces.active?.dir ?? process.cwd(),
     blockedAgents: spaces.allSessions
-      .filter((agent) => agent.state === AgentState.Blocked)
-      .map((agent) => agent.id),
+      .filter((session) => session.state === AgentState.Blocked)
+      .map((session) => session.id),
   });
 
   const runPanelCommand = <T extends CommandTag>(
@@ -586,7 +586,7 @@ function buildApp(
     let index = 0;
     const active = spaces.active;
     const activeWin = spaces.activeWindow;
-    const focusedAgent = activeWin?.focused?.session ?? null;
+    const focusedSession = activeWin?.focused?.session ?? null;
 
     for (const [spaceIndex, space] of spaces.spaces.entries()) {
       const isActiveSpace = space === active;
@@ -626,8 +626,8 @@ function buildApp(
           windowLabel: window.label,
         });
 
-        for (const [paneIndex, agent] of window.sessions.entries()) {
-          const isFocusedAgent = isActiveWindow && agent === focusedAgent;
+        for (const [paneIndex, session] of window.sessions.entries()) {
+          const isFocusedAgent = isActiveWindow && session === focusedSession;
           rows.push({
             kind: "agent",
             index: index++,
@@ -638,28 +638,28 @@ function buildApp(
             windowNumber: window.number,
             paneIndex,
             windowLabel: window.label,
-            agentId: agent.id,
-            agentState: agent.state,
-            agentCliKind: agent.agentKind,
-            agentSessionKind: agent.kind,
-            title: agent.title,
-            foregroundCommand: agent.foregroundCommand,
-            viewers: agent.viewers,
-            unseen: agent.unseen,
-            scrolled: agent.scrolled,
-            exited: agent.exited,
+            agentId: session.id,
+            agentState: session.state,
+            agentCliKind: session.agentKind,
+            agentSessionKind: session.kind,
+            title: session.title,
+            foregroundCommand: session.foregroundCommand,
+            viewers: session.viewers,
+            unseen: session.unseen,
+            scrolled: session.scrolled,
+            exited: session.exited,
           });
         }
       }
     }
 
-    const allAgents = spaces.allSessions.filter((a) => !a.exited);
-    const blocked = allAgents.filter((a) => a.state === AgentState.Blocked).length;
+    const allSessions = spaces.allSessions.filter((session) => !session.exited);
+    const blocked = allSessions.filter((session) => session.state === AgentState.Blocked).length;
 
     return {
       rows,
       spaceCount: spaces.spaces.length,
-      agentCount: allAgents.length,
+      agentCount: allSessions.length,
       blockedCount: blocked,
     };
   });

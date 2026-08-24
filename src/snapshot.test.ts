@@ -34,10 +34,10 @@ const session = (spaces: PersistedSpace[], activeSpace?: string | null): Session
   spaces,
 });
 
-function screenTail(agent: SessionHandle): string {
+function screenTail(session: SessionHandle): string {
   const state = new RenderState();
   try {
-    state.update(agent.term);
+    state.update(session.term);
     return state.tailText(24).join("\n");
   } finally {
     state.free();
@@ -67,12 +67,12 @@ test("a window snapshot records its agents and the arrangement of them", async (
 test("a snapshot records an agent's command, directory and terminal size", async () => {
   const { window, layout } = await setup();
   await layout();
-  const [agent] = snapshotWindow(window).agents;
-  expect(agent!.cmd).toEqual(["bash"]);
-  expect(agent!.cwd).toBe(process.cwd());
-  expect(agent!.cols).toBe(window.panes[0]!.session!.term.cols);
-  expect(agent!.rows).toBe(window.panes[0]!.session!.term.rows);
-  expect(agent!.exited).toBe(false);
+  const [session] = snapshotWindow(window).agents;
+  expect(session!.cmd).toEqual(["bash"]);
+  expect(session!.cwd).toBe(process.cwd());
+  expect(session!.cols).toBe(window.panes[0]!.session!.term.cols);
+  expect(session!.rows).toBe(window.panes[0]!.session!.term.rows);
+  expect(session!.exited).toBe(false);
 });
 
 test("a space snapshot records which window was selected", async () => {
@@ -294,14 +294,14 @@ test("an agent that had exited comes back as a tombstone, not a second run", asy
   await Bun.sleep(200);
 
   const window = target.spaces[0]!.windows[0]!;
-  const [agent] = window.sessions;
-  expect(agent!.exited).toBe(true);
-  expect(agent!.exitCode).toBe(3);
-  expect(agent!.state).toBe("done");
-  expect(screenTail(agent!)).not.toContain("tombstone-should-not-run");
+  const [session] = window.sessions;
+  expect(session!.exited).toBe(true);
+  expect(session!.exitCode).toBe(3);
+  expect(session!.state).toBe("done");
+  expect(screenTail(session!)).not.toContain("tombstone-should-not-run");
   // No view, which is exactly where an exit leaves an agent in the live app.
   expect(window.panes).toHaveLength(0);
-  expect(window.detached).toEqual([agent!]);
+  expect(window.detached).toEqual([session!]);
 });
 
 test("a window restores its live agents even when one of them is a tombstone", async () => {
@@ -447,10 +447,10 @@ test("an agent created after a restore cannot collide with a restored id", async
 
 test("a restored agent runs its command again and does NOT get its screen back", async () => {
   const source = await setup({ shell: ["bash", "--norc", "-i"] });
-  const agent = source.window.panes[0]!.session!;
-  agent.write("echo snapshot-marker-42\n");
+  const session = source.window.panes[0]!.session!;
+  session.write("echo snapshot-marker-42\n");
   await Bun.sleep(400);
-  expect(screenTail(agent)).toContain("snapshot-marker-42");
+  expect(screenTail(session)).toContain("snapshot-marker-42");
   await source.layout();
   const saved = snapshotSpace(source.space);
   // Nothing in the file even claims to hold the screen.

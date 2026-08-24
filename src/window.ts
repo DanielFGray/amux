@@ -105,11 +105,11 @@ function tile(pane: Pane, weight: number) {
 }
 
 /**
- * A window: one split tree of panes, and the agents behind them.
+ * A window: one split tree of panes, and the sessions behind them.
  *
  * The middle level of the tmux hierarchy — a space holds windows, a window
  * holds panes. Agents belong to the window they were started in, so closing a
- * window is what ends its agents rather than merely hiding them.
+ * window is what ends its sessions rather than merely hiding them.
  *
  * Layout itself is delegated to opentui: every split is a flex Box, so yoga
  * computes the geometry and — because hit-testing is a byproduct of rendering —
@@ -138,7 +138,7 @@ export class Window {
    */
   #state: WindowState = windowState();
   #shell: string[];
-  /** Directory agents spawn in — the owning space's attached directory. */
+  /** Directory sessions spawn in — the owning space's attached directory. */
   #cwd: string | undefined;
   onChange?: () => void;
   /** Fired after a session's process exits and its views have been closed. The
@@ -151,11 +151,11 @@ export class Window {
   onModelResizeDivider?: (path: LayoutPath, index: number, delta: number) => void;
 
   /**
-   * Where agents started here get their processes.
+   * Where sessions started here get their processes.
    *
    * Read from context alongside #shell because it answers the same kind of
    * question — not "what does this window contain" but "what does starting
-   * something in it mean" — and every path that creates an agent goes through
+   * something in it mean" — and every path that creates a session goes through
    * here. It is always a real backend now: "run it locally" is the Backend
    * reference's default rather than the absence of an answer.
    */
@@ -166,14 +166,14 @@ export class Window {
   #paneContent: PaneView | null;
 
   /**
-   * One scope per agent, rather than one scope for the window.
+   * One scope per session, rather than one scope for the window.
    *
-   * The obvious arrangement — fork every agent's scope from the window's — is
-   * wrong here, because break-pane MOVES an agent to another window and Effect
-   * scopes cannot be re-parented. An agent forked from its old window's scope
+   * The obvious arrangement — fork every session's scope from the window's — is
+   * wrong here, because break-pane MOVES a session to another window and Effect
+   * scopes cannot be re-parented. A session forked from its old window's scope
    * would be killed when that window closed, despite now living somewhere else.
    * Independent scopes held in a map make the transfer a map entry moving
-   * between two windows (see relinquishAgent/adopt), and make killAgent the
+   * between two windows (see relinquishSession/adopt), and make killSession the
    * closing of exactly one of them.
    */
   #scopes = new Map<SessionHandle, Scope.CloseableScope>();
@@ -202,8 +202,8 @@ export class Window {
    *  the same "what is this actually running" cue tmux gives a window. */
   get title(): string {
     if (this.customName) return this.customName;
-    const agent = this.focused?.session ?? this.#sessions[0];
-    return agent?.title ?? "window";
+    const session = this.focused?.session ?? this.#sessions[0];
+    return session?.title ?? "window";
   }
 
   /** How the window reads in the tab bar and the sidebar. Both show the same
@@ -222,13 +222,13 @@ export class Window {
     return this.#state.sync;
   }
 
-  /** Every agent, including ones no pane is currently showing. This is what
+  /** Every session, including ones no pane is currently showing. This is what
    *  the sidebar lists. */
   get sessions(): readonly SessionHandle[] {
     return this.#sessions;
   }
 
-  /** Most urgent state among this window's agents, for its sidebar row. */
+  /** Most urgent state among this window's sessions, for its sidebar row. */
   get state() {
     return rollUp(this.#sessions);
   }
@@ -239,19 +239,19 @@ export class Window {
   }
 
   /**
-   * Wire an agent's lifecycle callbacks to this window.
+   * Wire a session's lifecycle callbacks to this window.
    *
-   * Shared by spawn and by break-pane, which hands a live agent and its hooks
+   * Shared by spawn and by break-pane, which hands a live session and its hooks
    * to a new window rather than restarting it. The callbacks close panes and
    * fire onSessionExit against THIS window, so a session that changes windows
    * must be re-bound or an exit would act on stale ownership.
    */
-  #bind(agent: SessionHandle) {
-    agent.onOutput = () => {
-      for (const p of this.#panes) if (p.session === agent) p.invalidate();
+  #bind(session: SessionHandle) {
+    session.onOutput = () => {
+      for (const p of this.#panes) if (p.session === session) p.invalidate();
       this.onChange?.();
     };
-    agent.onExit = () => {
+    session.onExit = () => {
       if (this.#authoritativeProjection) {
         this.onChange?.();
         this.#ctx.requestRender();
@@ -259,14 +259,14 @@ export class Window {
       }
       // The process is gone, so its viewports are dead weight — close them and
       // give the space back to the surviving panes, the way tmux does.
-      // The agent itself stays: it keeps its terminal, so it remains in the
+      // The session itself stays: it keeps its terminal, so it remains in the
       // sidebar as "done" and revealing it again still shows its final output.
-      for (const pane of this.#panes.slice()) if (pane.session === agent) this.close(pane);
+      for (const pane of this.#panes.slice()) if (pane.session === session) this.close(pane);
       this.onChange?.();
-      this.onSessionExit?.(agent);
+      this.onSessionExit?.(session);
       this.#ctx.requestRender();
     };
-    agent.onScroll = () => {
+    session.onScroll = () => {
       // Scrollback state (scrollBy/scrollToBottom) is user-driven, so it has
       // no output to invalidate panes — but the sidebar's ▲ must repaint.
       this.onChange?.();
@@ -286,17 +286,17 @@ export class Window {
   }
 
   /** Drop a client projection after the daemon has removed its owner. */
-  removeProjectedSession(agent: SessionHandle): Effect.Effect<void> {
+  removeProjectedSession(session: SessionHandle): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const pane of this.#panes.slice()) if (pane.session === agent) this.close(pane);
-      const at = this.#sessions.indexOf(agent);
+      for (const pane of this.#panes.slice()) if (pane.session === session) this.close(pane);
+      const at = this.#sessions.indexOf(session);
       if (at !== -1) this.#sessions.splice(at, 1);
-      yield* this.#releaseAgent(agent);
+      yield* this.#releaseSession(session);
     });
   }
 
   /**
-   * A window whose agents are released when the surrounding scope closes.
+   * A window whose sessions are released when the surrounding scope closes.
    *
    * The lifetime-correct way to make one: nothing has to remember to call
    * disposeAll, because closing the scope that made the window is what ends the
@@ -313,14 +313,14 @@ export class Window {
     );
   }
 
-  /** Start an agent without opening a view onto it. The name defaults to the
+  /** Start a session without opening a view onto it. The name defaults to the
    *  command being run — "zsh", not a generic "shell". */
   spawn(name?: string, cmd = this.#shell, cwd = this.#cwd): Effect.Effect<SessionHandle> {
     return this.startSession({ name, cmd, cwd });
   }
 
   /**
-   * Bring up an agent from full options and take ownership of it.
+   * Bring up a session from full options and take ownership of it.
    *
    * What spawn is in terms of: restore needs the options spawn's three
    * positional arguments cannot carry — a persisted id, a size, and the fact
@@ -330,52 +330,52 @@ export class Window {
     return Effect.gen(this, function* () {
       const scope = yield* Scope.make();
       // The window's backend is a default, not an override: restore passes its
-      // own per-agent choice, and a tombstone must keep having no backend at all.
+      // own per-session choice, and a tombstone must keep having no backend at all.
       // Spread order is what encodes that — opts wins where it says anything.
-      const agent = yield* SessionHandle.make({ backend: this.#backend, ...opts }).pipe(
+      const session = yield* SessionHandle.make({ backend: this.#backend, ...opts }).pipe(
         Scope.extend(scope),
       );
-      this.#scopes.set(agent, scope);
-      this.#bind(agent);
-      this.#sessions.push(agent);
+      this.#scopes.set(session, scope);
+      this.#bind(session);
+      this.#sessions.push(session);
       this.onChange?.();
-      return agent;
+      return session;
     });
   }
 
   /**
-   * Stop owning an agent without stopping it — the moving half of a break.
+   * Stop owning a session without stopping it — the moving half of a break.
    *
    * Its hooks are re-pointed at its new window by that window's #bind, so a
-   * lone agent answers to exactly one window at a time. The agent's scope
+   * lone session answers to exactly one window at a time. The session's scope
    * leaves with it and is handed to `adopt`; keeping it here would kill a
-   * running agent the moment this window closed.
+   * running session the moment this window closed.
    *
-   * Returns the scope to transfer, or null when the agent is not ours.
+   * Returns the scope to transfer, or null when the session is not ours.
    */
-  relinquishSession(agent: SessionHandle): Scope.CloseableScope | null {
-    const i = this.#sessions.indexOf(agent);
+  relinquishSession(session: SessionHandle): Scope.CloseableScope | null {
+    const i = this.#sessions.indexOf(session);
     if (i === -1) return null;
     this.#sessions.splice(i, 1);
-    const scope = this.#scopes.get(agent) ?? null;
-    this.#scopes.delete(agent);
+    const scope = this.#scopes.get(session) ?? null;
+    this.#scopes.delete(session);
     this.onChange?.();
     return scope;
   }
 
   /**
-   * Detach a pane and transfer its live agent ownership as one handoff.
+   * Detach a pane and transfer its live session ownership as one handoff.
    *
    * All preconditions are checked before the layout or ownership maps change,
    * so callers cannot leave a pane detached when its lifetime is unavailable.
    */
-  releasePane(pane: Pane): { agent: SessionHandle; scope: Scope.CloseableScope } | null {
-    const agent = pane.session;
+  releasePane(pane: Pane): { session: SessionHandle; scope: Scope.CloseableScope } | null {
+    const session = pane.session;
     // A sessionless pane (client-rendered plugin) owns no session, so there is
     // nothing to hand over.
-    if (!agent) return null;
-    if (!this.#panes.includes(pane) || !this.#sessions.includes(agent)) return null;
-    const scope = this.#scopes.get(agent);
+    if (!session) return null;
+    if (!this.#panes.includes(pane) || !this.#sessions.includes(session)) return null;
+    const scope = this.#scopes.get(session);
     if (!scope) return null;
     if (this.#slotOf(this.exportLayout(), pane) === -1) return null;
     if (!this.detachPane(pane)) return null;
@@ -386,55 +386,55 @@ export class Window {
     // and a detach that then failed would leave those views destroyed behind a
     // null return that tells the caller nothing happened.
     for (const sibling of this.#panes.slice()) {
-      if (sibling !== pane && sibling.session === agent) this.close(sibling);
+      if (sibling !== pane && sibling.session === session) this.close(sibling);
     }
-    this.#sessions.splice(this.#sessions.indexOf(agent), 1);
-    this.#scopes.delete(agent);
+    this.#sessions.splice(this.#sessions.indexOf(session), 1);
+    this.#scopes.delete(session);
     this.onChange?.();
-    return { agent, scope };
+    return { session, scope };
   }
 
   /**
-   * Permanently stop an agent and close any views of it.
+   * Permanently stop a session and close any views of it.
    *
-   * Reports the agent as gone, exactly as a process ending does. A kill and an
-   * exit differ only in who started it: either way the agent is finished, its
+   * Reports the session as gone, exactly as a process ending does. A kill and an
+   * exit differ only in who started it: either way the session is finished, its
    * panes are shut, and the window may now be empty — so both have to reach the
    * same cascade, or the app closes a window when the shell exits and keeps an
    * identical empty one when you kill it (ts-8d06b3, where ^a K left a tab you
    * could still cycle to that showed nothing).
    *
-   * Fired last, so the handler reads a tree with the agent already out of it —
+   * Fired last, so the handler reads a tree with the session already out of it —
    * the "is anything still running here" question it asks has to see the answer
    * after this kill, not before.
    */
-  killSession(agent: SessionHandle): Effect.Effect<void> {
+  killSession(session: SessionHandle): Effect.Effect<void> {
     return Effect.gen(this, function* () {
-      for (const p of this.#panes.slice()) if (p.session === agent) this.close(p);
-      const i = this.#sessions.indexOf(agent);
+      for (const p of this.#panes.slice()) if (p.session === session) this.close(p);
+      const i = this.#sessions.indexOf(session);
       if (i !== -1) this.#sessions.splice(i, 1);
-      yield* this.#releaseAgent(agent);
+      yield* this.#releaseSession(session);
       this.onChange?.();
       this.#ctx.requestRender();
-      this.onSessionExit?.(agent);
+      this.onSessionExit?.(session);
     });
   }
 
   /**
-   * Close an agent's scope, which is what frees its PTY and terminal.
+   * Close a session's scope, which is what frees its PTY and terminal.
    *
-   * Every agent this window owns has one — `startAgent` makes it and `adopt`
-   * requires it — so a miss here means the agent was never really ours. It is
+   * Every session this window owns has one — `startSession` makes it and `adopt`
+   * requires it — so a miss here means the session was never really ours. It is
    * released anyway rather than left running, but the two cases stay distinct:
    * a fallback that quietly does the same work would make a lost scope
    * invisible, and a leaked scope is exactly the bug worth seeing.
    */
-  #releaseAgent(agent: SessionHandle): Effect.Effect<void> {
-    const scope = this.#scopes.get(agent);
-    this.#scopes.delete(agent);
+  #releaseSession(session: SessionHandle): Effect.Effect<void> {
+    const scope = this.#scopes.get(session);
+    this.#scopes.delete(session);
     if (scope) return Scope.close(scope, Exit.void);
-    return Effect.andThen(Effect.logWarning(`agent ${agent.id} released without a scope`), () =>
-      agent.release(),
+    return Effect.andThen(Effect.logWarning(`session ${session.id} released without a scope`), () =>
+      session.release(),
     );
   }
 
@@ -486,9 +486,9 @@ export class Window {
    * it follows the layout without bookkeeping: a new split joins the fan-out, a
    * closed pane leaves it, and a parked pane stays in it while the window is
    * zoomed, because zoom hides panes rather than detaching them. A *detached*
-   * agent has no pane, so it receives nothing until a view is opened on it.
+   * session has no pane, so it receives nothing until a view is opened on it.
    *
-   * Deduplicated by agent: a pane is a viewport, and two panes viewing one agent
+   * Deduplicated by session: a pane is a viewport, and two panes viewing one session
    * are one process — writing twice would double the input into it. Different
    * sizes need no handling: every child owns a terminal of its own geometry, so
    * the same bytes are simply delivered to each.
@@ -590,18 +590,21 @@ export class Window {
     return pane;
   }
 
-  /** Seed the workspace with a single agent and a view onto it. */
+  /** Seed the workspace with a single session and a view onto it. */
   init(name?: string): Effect.Effect<Pane> {
-    return this.spawn(name).pipe(Effect.map((agent) => this.mount(agent)));
+    return this.spawn(name).pipe(Effect.map((session) => this.mount(session)));
   }
 
-  /** Put a pane for an existing agent at the root of an empty window. The
+  /** Put a pane for an existing session at the root of an empty window. The
    *  synchronous half of init, and what split falls back to when there is no
    *  pane to split. */
-  mount(agent: SessionHandle): Pane {
+  mount(session: SessionHandle): Pane {
     const id = newPaneId();
     this.#mount(
-      makeLayout({ root: { type: "pane", id, content: contentFor(agent), weight: 1 }, focus: id }),
+      makeLayout({
+        root: { type: "pane", id, content: contentFor(session), weight: 1 },
+        focus: id,
+      }),
       null,
     );
     return this.#pane(id)!;
@@ -952,9 +955,9 @@ export class Window {
    * inserted as a sibling; otherwise the pane is swapped for a nested Box so
    * the tree stays a proper h/v alternation instead of a flat list.
    */
-  split(direction: SplitDirection, agent: SessionHandle): Pane | null {
+  split(direction: SplitDirection, session: SessionHandle): Pane | null {
     const target = this.focused;
-    if (!target) return this.mount(agent);
+    if (!target) return this.mount(session);
 
     // A focused pane the arrangement does not contain has no slot to split.
     // The layout is what answers that — not whether the pane is mounted, which
@@ -964,17 +967,17 @@ export class Window {
     if (at === -1) return null;
 
     // The newcomer is named before it exists, so the layout can say which pane
-    // to focus even when it shows an agent this window is already showing. The
+    // to focus even when it shows a session this window is already showing. The
     // apply builds it under that id and focuses it, which is why nothing here
     // has to find the new pane by position afterwards.
     const id = newPaneId();
-    const next = splitLayout(layout, at, direction, { id, content: contentFor(agent) });
+    const next = splitLayout(layout, at, direction, { id, content: contentFor(session) });
     if (!this.applyLayout(next)) return null;
     return this.#panes.find((pane) => pane.id === id) ?? null;
   }
 
   /**
-   * Split, starting a new agent to fill the new pane.
+   * Split, starting a new session to fill the new pane.
    *
    * The acquiring half of split, kept separate from it deliberately. `split`
    * itself is a synchronous Layout transform and projection, covered by
@@ -989,18 +992,18 @@ export class Window {
     if (focused && this.#slotOf(this.exportLayout(), focused) === -1) {
       return Effect.succeed(null);
     }
-    return this.spawn(name).pipe(Effect.map((agent) => this.split(direction, agent)));
+    return this.spawn(name).pipe(Effect.map((session) => this.split(direction, session)));
   }
 
-  /** Open an existing agent in a new split — the way a detached agent gets a
+  /** Open an existing session in a new split — the way a detached session gets a
    *  viewport back. */
-  reveal(agent: SessionHandle): Pane | null {
-    const existing = this.#panes.find((p) => p.session === agent);
+  reveal(session: SessionHandle): Pane | null {
+    const existing = this.#panes.find((p) => p.session === session);
     if (existing) {
       this.focus(existing);
       return existing;
     }
-    return this.split("row", agent);
+    return this.split("row", session);
   }
 
   /**
@@ -1027,28 +1030,28 @@ export class Window {
     return evicted ?? null;
   }
 
-  /** Adopt a pane and its agent, detached from another window — break-pane's
+  /** Adopt a pane and its session, detached from another window — break-pane's
    *  destination half. The process and its terminal state are untouched; only
-   *  ownership moves, so the agent's hooks are re-pointed here and an exit
+   *  ownership moves, so the session's hooks are re-pointed here and an exit
    *  closes the pane in the window it now lives in. The caller detaches first,
    *  so the pane arrives unmounted and with no other owner. */
-  adopt(agent: SessionHandle, pane: Pane, scope: Scope.CloseableScope) {
+  adopt(session: SessionHandle, pane: Pane, scope: Scope.CloseableScope) {
     // The newcomer is hung straight off the root rather than projected, so the
     // zoom has to come down first: a zoomed window has its other panes
     // unmounted, and adding a second pane beside the zoomed one would leave
     // them stranded there with no arrangement on screen to rejoin.
     this.#unzoom();
-    this.#sessions.push(agent);
+    this.#sessions.push(session);
     // The scope comes from the window that relinquished it — see the note on
     // #scopes for why it travels rather than being re-forked here. Required,
-    // not optional: an agent in a window without a scope is one nothing will
+    // not optional: a session in a window without a scope is one nothing will
     // ever release, and making that unrepresentable is cheaper than detecting it.
-    this.#scopes.set(agent, scope);
-    this.#bind(agent);
+    this.#scopes.set(session, scope);
+    this.#bind(session);
     this.#panes.push(pane);
     pane.onFocusRequest = (p) =>
       this.#authoritativeProjection ? this.onModelFocus?.(p.id) : this.focus(p);
-    this.#mount(appendPane(this.#layout, { id: pane.id, content: contentFor(agent) }), null);
+    this.#mount(appendPane(this.#layout, { id: pane.id, content: contentFor(session) }), null);
   }
 
   /** Close a pane and destroy its view. The daemon owns stopping a backend when
@@ -1081,19 +1084,19 @@ export class Window {
    * them: a pane the layout names is put in the slot that names it, keeping its
    * terminal, scrollback and scroll position across the move. Only slots the
    * current panes cannot fill get new ones, and panes the layout has no slot
-   * for are closed — their agents survive as detached, exactly as pane.close
+   * for are closed — their sessions survive as detached, exactly as pane.close
    * leaves them.
    *
    * A slot naming a pane this window does not have is a layout from somewhere
    * else — a string pasted from another window, or a session restored into a
-   * fresh process. Those slots fall back to matching on the agent, and the pane
+   * fresh process. Those slots fall back to matching on the session, and the pane
    * that fills one keeps its OWN id rather than taking the layout's: a pane id
    * names a live viewport that other things may already be holding, so it is
    * not something an incoming layout gets to reassign. tmux draws the same
    * line — a layout string it did not write is an arrangement, not a set of
    * pane identities.
    *
-   * Panes naming an agent this window does not own are pruned first, because a
+   * Panes naming a session this window does not own are pruned first, because a
    * layout routinely outlives its processes (a session restored a day later,
    * a layout string pasted from another window). Pruning to nothing is a
    * refusal rather than a way to empty the window: it returns false with the
@@ -1105,12 +1108,12 @@ export class Window {
    * (a split, a close) has nothing to validate and may legitimately be empty.
    */
   applyLayout(layout: Layout, preset: LayoutPreset | null = null): boolean {
-    const wanted = prune(layout, (id) => this.#sessions.some((agent) => agent.id === id));
+    const wanted = prune(layout, (id) => this.#sessions.some((session) => session.id === id));
     // Placed nothing, in either plane. A window whose tiled tree is empty but
     // which still has a float is not a layout that pruned away to nothing — it
     // is a window showing a float over bare ground, which is a real state.
     if (layoutRefs(wanted).length === 0) return false;
-    // Whatever the layout had no slot for is a closed view, not a killed agent.
+    // Whatever the layout had no slot for is a closed view, not a killed session.
     for (const evicted of this.#project(wanted, preset)) evicted.destroyRecursively();
     return true;
   }
@@ -1144,7 +1147,7 @@ export class Window {
    * window, still in `#panes`, still fed by the sync fan-out — just not shown.
    */
   #mount(wanted: Layout, preset: LayoutPreset | null): Pane[] {
-    const byId = new Map(this.#sessions.map((agent) => [agent.id, agent]));
+    const byId = new Map(this.#sessions.map((session) => [session.id, session]));
     // An arbitrary layout matches no preset, so that is the default. A caller
     // that knows better says so: select-layout builds its arrangement FROM a
     // preset, and swapping two panes inside one leaves it that preset.
@@ -1152,7 +1155,7 @@ export class Window {
 
     // Who fills which slot is decided before anything is built, in two passes.
     // A slot naming a pane that exists must get that pane, so those are claimed
-    // first — one interleaved pass would let an earlier slot take, on agent
+    // first — one interleaved pass would let an earlier slot take, on session
     // alone, the very pane a later slot named outright.
     const spare = new Set(this.#dismantle());
     this.#panes.length = 0;
@@ -1447,17 +1450,17 @@ export class Window {
     return this.#state.preset;
   }
 
-  /** Release every agent and free its terminal. The finalizer `Window.make`
+  /** Release every session and free its terminal. The finalizer `Window.make`
    *  installs, so nothing calls it by hand; idempotent, safe on an exit path.
    *
-   *  Panes come down FIRST. A pane renders straight out of its agent's
+   *  Panes come down FIRST. A pane renders straight out of its session's
    *  terminal, so freeing the terminal under a still-mounted pane is a
    *  use-after-free into ghostty — a segfault on the next frame, not an
    *  exception. */
   get release(): Effect.Effect<void> {
     return Effect.gen(this, function* () {
       for (const pane of this.#panes.slice()) this.close(pane);
-      for (const agent of this.#sessions.slice()) yield* this.#releaseAgent(agent);
+      for (const session of this.#sessions.slice()) yield* this.#releaseSession(session);
       this.#sessions.length = 0;
     });
   }

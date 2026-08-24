@@ -96,50 +96,50 @@ async function fakeAgent(name: string): Promise<string> {
 test("a plain shell is idle whatever it is running", async () => {
   // The old behaviour reported any foreground process as "working", so opening
   // nvim in a pane put a spinner next to it. Only agents get a state now.
-  using agent = new SessionHandle({
+  using session = new SessionHandle({
     name: "t",
     cmd: ["bash", "--norc", "--noprofile"],
   });
-  await waitFor(() => agent.foregroundCommand === "", "the shell prompt");
-  expect(agent.state).toBe("idle");
-  agent.write("sleep 3\n");
-  await waitFor(() => agent.foregroundCommand === "sleep", "the foreground command");
-  expect(agent.state).toBe("idle");
+  await waitFor(() => session.foregroundCommand === "", "the shell prompt");
+  expect(session.state).toBe("idle");
+  session.write("sleep 3\n");
+  await waitFor(() => session.foregroundCommand === "sleep", "the foreground command");
+  expect(session.state).toBe("idle");
   // Still visible as a running process — it is only the state that changed.
-  expect(agent.foregroundCommand).toBe("sleep");
-  expect(agent.agentKind).toBe(null);
+  expect(session.foregroundCommand).toBe("sleep");
+  expect(session.agentKind).toBe(null);
 });
 
 test("a blocked prompt on an agent's screen reads as blocked", async () => {
-  using agent = new SessionHandle({
+  using session = new SessionHandle({
     name: "t",
     cmd: [await fakeAgent("claude"), "--norc", "--noprofile"],
   });
-  await waitFor(() => agent.agentKind === "claude", "the agent process");
-  expect(agent.agentKind).toBe("claude");
-  agent.write("printf 'Do you want to proceed?\\n'\n");
-  await waitFor(() => agent.state === "blocked", "the blocked prompt");
-  expect(agent.state).toBe("blocked");
+  await waitFor(() => session.agentKind === "claude", "the agent process");
+  expect(session.agentKind).toBe("claude");
+  session.write("printf 'Do you want to proceed?\\n'\n");
+  await waitFor(() => session.state === "blocked", "the blocked prompt");
+  expect(session.state).toBe("blocked");
 });
 
 test("an agent started from a shell is picked up from the foreground process", async () => {
   const claude = await fakeAgent("claude");
-  using agent = new SessionHandle({
+  using session = new SessionHandle({
     name: "t",
     cmd: ["bash", "--norc", "--noprofile"],
   });
-  await waitFor(() => agent.foregroundCommand === "", "the shell prompt");
-  expect(agent.agentKind).toBe(null);
-  agent.write(`${claude} --norc --noprofile\n`);
-  await waitFor(() => agent.agentKind === "claude", "the foreground agent");
-  expect(agent.agentKind).toBe("claude");
+  await waitFor(() => session.foregroundCommand === "", "the shell prompt");
+  expect(session.agentKind).toBe(null);
+  session.write(`${claude} --norc --noprofile\n`);
+  await waitFor(() => session.agentKind === "claude", "the foreground agent");
+  expect(session.agentKind).toBe("claude");
 });
 
 test("an exited agent is done regardless of what is left on screen", async () => {
-  using agent = new SessionHandle({
+  using session = new SessionHandle({
     name: "t",
     cmd: ["sh", "-c", "printf 'Press enter to continue\\n'"],
   });
-  await waitFor(() => agent.exited, "the process to exit");
-  expect(agent.state).toBe("done");
+  await waitFor(() => session.exited, "the process to exit");
+  expect(session.state).toBe("done");
 });

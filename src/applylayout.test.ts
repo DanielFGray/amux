@@ -40,10 +40,10 @@ const shape = (node: LayoutNode | null): unknown => {
 
 /** The agent's on-screen text, so "the pane was reused" is checked against the
  *  terminal itself rather than against object identity alone. */
-function screenTail(agent: SessionHandle): string {
+function screenTail(session: SessionHandle): string {
   const state = new RenderState();
   try {
-    state.update(agent.term);
+    state.update(session.term);
     return state.tailText(8).join("\n");
   } finally {
     state.free();
@@ -87,13 +87,13 @@ test("panes are reused, keeping their terminal and its output", async () => {
   const { window, layout } = await setup();
   const first = window.panes[0]!;
   const second = run(window.splitSpawn("row"))!;
-  const agent = second.session!;
-  agent.write("echo applylayout-marker-7\n");
+  const session = second.session!;
+  session.write("echo applylayout-marker-7\n");
   await waitFor(
-    () => screenTail(agent).includes("applylayout-marker-7"),
+    () => screenTail(session).includes("applylayout-marker-7"),
     "the pane to echo its marker",
   );
-  expect(screenTail(agent)).toContain("applylayout-marker-7");
+  expect(screenTail(session)).toContain("applylayout-marker-7");
 
   window.applyLayout(
     makeLayout({
@@ -101,7 +101,7 @@ test("panes are reused, keeping their terminal and its output", async () => {
         type: "split",
         direction: "column",
         weight: 1,
-        children: [pty(second.id, agent.id), pty(first.id, first.session!.id)],
+        children: [pty(second.id, session.id), pty(first.id, first.session!.id)],
       },
     }),
   );
@@ -109,9 +109,9 @@ test("panes are reused, keeping their terminal and its output", async () => {
 
   // Same pane objects, same agents, same screen — only the arrangement moved.
   expect(window.panes).toEqual([second, first]);
-  expect(second.session).toBe(agent);
-  expect(agent.exited).toBe(false);
-  expect(screenTail(agent)).toContain("applylayout-marker-7");
+  expect(second.session).toBe(session);
+  expect(session.exited).toBe(false);
+  expect(screenTail(session)).toContain("applylayout-marker-7");
 });
 
 test("the rebuilt tree gets the dividers it needs, and no more", async () => {

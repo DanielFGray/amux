@@ -25,9 +25,9 @@ async function setup() {
 
 /** The agent's on-screen text, so a move's effect on terminal state is read
  *  from the terminal itself rather than from our bookkeeping. */
-function screenTail(agent: SessionHandle): string {
+function screenTail(session: SessionHandle): string {
   const state = new RenderState();
-  state.update(agent.term);
+  state.update(session.term);
   const text = state.tailText(8).join("\n");
   state.free();
   return text;
@@ -37,24 +37,24 @@ test("break moves the pane and its running agent into a new window, unchanged", 
   const s = await setup();
   try {
     const right = run(s.win.splitSpawn("row"))!;
-    const agent = right.session!;
-    agent.write("echo breakpane-marker-42\n");
-    await waitFor(() => screenTail(agent).includes("breakpane-marker-42"), "pane output");
-    expect(screenTail(agent)).toContain("breakpane-marker-42");
+    const session = right.session!;
+    session.write("echo breakpane-marker-42\n");
+    await waitFor(() => screenTail(session).includes("breakpane-marker-42"), "pane output");
+    expect(screenTail(session)).toContain("breakpane-marker-42");
 
     const win2 = (await runAsync(s.space.breakPane(right)))!;
 
     // The same Agent — same process, same PTY, same terminal — not a relaunch.
     expect(win2.panes).toEqual([right]);
-    expect(right.session).toBe(agent);
-    expect(agent.exited).toBe(false);
-    expect(screenTail(agent)).toContain("breakpane-marker-42");
+    expect(right.session).toBe(session);
+    expect(session.exited).toBe(false);
+    expect(screenTail(session)).toContain("breakpane-marker-42");
 
     // Ownership moved: the source window no longer lists it, the new window
     // does, and the window took a fresh number.
     expect(s.win.panes).not.toContain(right);
-    expect(s.win.sessions).not.toContain(agent);
-    expect(win2.sessions).toEqual([agent]);
+    expect(s.win.sessions).not.toContain(session);
+    expect(win2.sessions).toEqual([session]);
     expect(win2.number).toBeGreaterThan(s.win.number);
 
     // Focus followed the pane, tmux's session_select after a break.
@@ -76,9 +76,9 @@ test("break moves the pane and its running agent into a new window, unchanged", 
 test("breaking one of two views transfers sole ownership and output still invalidates", async () => {
   const s = await setup();
   try {
-    const agent = s.win.panes[0]!.session!;
-    const moved = s.win.split("row", agent)!;
-    const oldView = s.win.panes.find((pane) => pane !== moved && pane.session === agent)!;
+    const session = s.win.panes[0]!.session!;
+    const moved = s.win.split("row", session)!;
+    const oldView = s.win.panes.find((pane) => pane !== moved && pane.session === session)!;
     let invalidations = 0;
     const invalidate = moved.invalidate.bind(moved);
     moved.invalidate = () => {
@@ -88,14 +88,14 @@ test("breaking one of two views transfers sole ownership and output still invali
 
     const destination = (await runAsync(s.space.breakPane(moved)))!;
     expect(s.win.panes).not.toContain(oldView);
-    expect(s.win.sessions).not.toContain(agent);
+    expect(s.win.sessions).not.toContain(session);
     expect(destination.panes).toEqual([moved]);
-    expect(destination.sessions).toEqual([agent]);
+    expect(destination.sessions).toEqual([session]);
 
     invalidations = 0;
-    agent.write("echo ownership-transfer-output\n");
+    session.write("echo ownership-transfer-output\n");
     await waitFor(() => invalidations > 0, "moved pane output invalidation");
-    expect(screenTail(agent)).toContain("ownership-transfer-output");
+    expect(screenTail(session)).toContain("ownership-transfer-output");
   } finally {
     await s.dispose();
   }
@@ -172,9 +172,9 @@ test("a detached agent left in the source window survives the break", async () =
 test("a moved agent's exit closes its pane in the NEW window and reports it", async () => {
   const s = await setup();
   try {
-    const exits: { agent: SessionHandle; window: Window }[] = [];
-    s.space.onSessionExit = (agent, window) => {
-      exits.push({ agent, window });
+    const exits: { session: SessionHandle; window: Window }[] = [];
+    s.space.onSessionExit = (session, window) => {
+      exits.push({ session, window });
     };
 
     run(s.win.splitSpawn("row")); // stays behind in the source window
@@ -186,8 +186,8 @@ test("a moved agent's exit closes its pane in the NEW window and reports it", as
       run(s.win.spawn("shortlived", ["sh", "-c", "read _; echo bye"])),
     )!;
     const win2 = (await runAsync(s.space.breakPane(pane)))!;
-    const agent = pane.session!;
-    agent.write("\n");
+    const session = pane.session!;
+    session.write("\n");
 
     await waitFor(() => exits.length === 1, "the moved agent to exit");
     expect(exits).toHaveLength(1);
@@ -196,8 +196,8 @@ test("a moved agent's exit closes its pane in the NEW window and reports it", as
     expect(win2.panes).toHaveLength(0);
     expect(s.win.panes).toHaveLength(2);
     // The agent stays listed where it now lives, exited, output readable.
-    expect(win2.sessions).toContain(agent);
-    expect(agent.state).toBe("done");
+    expect(win2.sessions).toContain(session);
+    expect(session.state).toBe("done");
   } finally {
     await s.dispose();
   }
@@ -291,15 +291,15 @@ test("break updates what the sidebar and the tab list would show", async () => {
   const s = await setup();
   try {
     const right = run(s.win.splitSpawn("row"))!;
-    const agent = right.session!;
+    const session = right.session!;
 
     const win2 = (await runAsync(s.space.breakPane(right)))!;
 
-    const agentWindow = s.space.windows.find((window) => window.sessions.includes(agent));
+    const agentWindow = s.space.windows.find((window) => window.sessions.includes(session));
     expect(agentWindow).toBe(win2);
     // The agent now hangs under the new window, not the source one.
-    expect(agentWindow!.sessions).toContain(agent);
-    expect(s.win.sessions).not.toContain(agent);
+    expect(agentWindow!.sessions).toContain(session);
+    expect(s.win.sessions).not.toContain(session);
 
     // Tabs render from window.label; the new window carries a fresh number and
     // is the one on screen.
