@@ -113,6 +113,9 @@ export class SessionHandle {
   #blockedAt = 0;
   #blockedSeenOutput = -1;
   #state = new AgentStateArbiter();
+  #stateReaders = new Set<{ readonly read: (state: AgentState) => void }>();
+  #detectionRegistrations = 0;
+  #detectionTimer: ReturnType<typeof setInterval> | null = null;
   /** Declared by whoever started this session as an agent. Fixed for its life. */
   readonly #declaredAgent: string | null;
   readonly provider: string | undefined;
@@ -231,6 +234,7 @@ export class SessionHandle {
     return Effect.suspend(() => {
       if (this.#disposed) return Effect.void;
       this.#disposed = true;
+      this.#stopDetection();
       this.#backend.close();
       return (this.#pumpFiber ? Fiber.interrupt(this.#pumpFiber) : Effect.void).pipe(
         Effect.andThen(Scope.close(this.#scope, Exit.void)),
@@ -400,7 +404,53 @@ export class SessionHandle {
     authority: number;
     state: () => AgentState | "unknown";
   }): () => void {
-    return this.#state.register(source);
+    const unregister = this.#state.register(source);
+    this.#retainDetection();
+    let withdrawn = false;
+    return () => {
+      if (withdrawn) return;
+      withdrawn = true;
+      unregister();
+      this.#releaseDetection();
+    };
+  }
+
+  /** Register an interested state projection. The detector only polls while a
+   *  source or reader exists, so a client without agent plugins has no idle work. */
+  registerStateReader(reader: (state: AgentState) => void): () => void {
+    const registration = { read: reader };
+    this.#stateReaders.add(registration);
+    this.#retainDetection();
+    let withdrawn = false;
+    return () => {
+      if (withdrawn) return;
+      withdrawn = true;
+      this.#stateReaders.delete(registration);
+      this.#releaseDetection();
+    };
+  }
+
+  #retainDetection() {
+    this.#detectionRegistrations++;
+    if (this.#detectionRegistrations !== 1 || this.#disposed) return;
+    this.#detectionTimer = setInterval(() => this.#detectState(), BLOCKED_POLL_MS);
+    this.#detectionTimer.unref?.();
+  }
+
+  #releaseDetection() {
+    this.#detectionRegistrations--;
+    if (this.#detectionRegistrations === 0) this.#stopDetection();
+  }
+
+  #stopDetection() {
+    if (!this.#detectionTimer) return;
+    clearInterval(this.#detectionTimer);
+    this.#detectionTimer = null;
+  }
+
+  #detectState() {
+    const state = this.#state.state;
+    for (const reader of this.#stateReaders) reader.read(state);
   }
 
   #detectedState(): AgentState {
