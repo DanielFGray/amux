@@ -17,7 +17,6 @@ import {
   type SessionSpec,
 } from "./SessionRegistry.ts";
 import { isTerminalSize } from "../limits.ts";
-import { AgentState, isReportedAgentState, type ReportedAgentState } from "../agent-state.ts";
 
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
 const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
@@ -47,7 +46,7 @@ export interface SessionExitObserverService {
 }
 
 export interface SessionStateObserverService {
-  readonly onState: (id: string, state: ReportedAgentState) => Effect.Effect<void, unknown>;
+  readonly onState: (id: string, state: string) => Effect.Effect<void, unknown>;
 }
 
 export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
@@ -122,7 +121,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
      *  log's: ingest can fail either way and the caller cannot tell them apart
      *  until both are typed. */
     const reporters = yield* Ref.make<
-      ReadonlyMap<string, (state: ReportedAgentState) => Effect.Effect<void, unknown>>
+      ReadonlyMap<string, (state: string) => Effect.Effect<void, unknown>>
     >(new Map());
     yield* Effect.addFinalizer(() =>
       Ref.get(replays).pipe(
@@ -242,7 +241,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       let phase: "prepared" | "activating" | "active" | "aborted" = "prepared";
       const pending = yield* Queue.unbounded<Uint8Array>();
       const pendingEvents = yield* Queue.unbounded<AgentFrame>();
-      let lastAgentState: ReportedAgentState | null = null;
+      let lastAgentState: string | null = null;
       let exitPublished = false;
 
       const publishExit = (code: number | null) =>
@@ -320,14 +319,17 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           if ((yield* Deferred.await(disposition)) === "active") {
             // An agent's process ending is an agent lifecycle event; a
             // component's is not, and the two are only the same thing while
-            // every component happens to be an agent.
+            // every component happens to be an agent. "failed" is a bare
+            // wire value here, not the agent plugin's closed vocabulary: the
+            // supervisor only knows the process ended without a clean
+            // handoff, not what that means to whatever reads agent.status.
             if (spec.agent && code !== null) {
               const failed = yield* agentLog.append({
                 _tag: "agent.status",
                 session: spec.id,
-                state: AgentState.Failed,
+                state: "failed",
               });
-              yield* stateObserver.onState(spec.id, AgentState.Failed);
+              yield* stateObserver.onState(spec.id, "failed");
               yield* hub.publish(failed);
             }
             yield* publishExit(code);
@@ -373,7 +375,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       // lands in the same log. Without this a self-reported state would be live
       // only, and a watcher resuming from a cursor would never see it.
       yield* Ref.update(reporters, (current) =>
-        new Map(current).set(spec.id, (state: ReportedAgentState) =>
+        new Map(current).set(spec.id, (state: string) =>
           ingest({ _tag: "agent.status", session: spec.id, state }),
         ),
       );
@@ -451,16 +453,18 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       /**
        * A process's report about itself, from the control socket.
        *
-       * Unknown sessions are ignored rather than failed: the reporter is a hook
-       * inside somebody else's agent, and a pane that closed while its hook was
-       * mid-write is ordinary, not an error anyone can act on.
+       * The reported state is an opaque string here: this door is generic
+       * process self-reporting, not agent-specific, so validating it against
+       * the agent plugin's closed vocabulary is the plugin's job, not the
+       * supervisor's. Unknown sessions are ignored rather than failed: the
+       * reporter is a hook inside somebody else's agent, and a pane that
+       * closed while its hook was mid-write is ordinary, not an error anyone
+       * can act on.
        */
       report: (id: string, state: string) =>
-        isReportedAgentState(state)
-          ? Ref.get(reporters).pipe(
-              Effect.flatMap((current) => current.get(id)?.(state) ?? Effect.void),
-            )
-          : Effect.void,
+        Ref.get(reporters).pipe(
+          Effect.flatMap((current) => current.get(id)?.(state) ?? Effect.void),
+        ),
 
       handle: Effect.fnUntraced(function* (frame: AttachFrame) {
         yield* Match.value(frame).pipe(

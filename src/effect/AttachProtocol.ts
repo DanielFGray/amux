@@ -1,5 +1,4 @@
 import { Schema as S, SchemaAST as AST } from "effect";
-import { ReportedAgentStateSchema } from "../agent-state.ts";
 import { PermissionDecisionSchema, PermissionRuleSchema } from "../permission.ts";
 
 /**
@@ -242,9 +241,15 @@ const PermissionResponse = S.TaggedStruct("permission.response", {
   sequence: S.NonNegativeInt,
 });
 
+/**
+ * `state` is an opaque wire value, not the closed set from agent-state.ts:
+ * the wire schema must not need editing whenever the agent plugin's own
+ * vocabulary grows a state. The plugin validates and relabels it at its own
+ * boundary (see agent-state.ts's isReportedAgentState).
+ */
 const agentStatusFields = {
   session: S.String,
-  state: ReportedAgentStateSchema,
+  state: S.String,
 };
 const AgentStatusPayload = S.TaggedStruct("agent.status", agentStatusFields);
 const AgentStatus = S.TaggedStruct("agent.status", {
@@ -297,7 +302,7 @@ const AgentPrompt = S.TaggedStruct("agent.prompt", {
   delivery: S.optional(S.Literal("steer", "queue")),
   resume: S.optional(S.Boolean),
   wait: S.optional(S.Boolean),
-  until: S.optional(ReportedAgentStateSchema),
+  until: S.optional(S.String),
   timeout: S.optional(S.NonNegativeInt),
 });
 

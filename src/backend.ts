@@ -16,7 +16,7 @@
 import { spawnPty, readPty } from "./pty.ts";
 import { Effect, Fiber, Mailbox, Stream } from "effect";
 import type { AttachClientShape } from "./attach.ts";
-import type { AgentState } from "./agent-state.ts";
+import { isReportedAgentState, type AgentState } from "./agent-state.ts";
 
 export interface SessionBackend {
   /** True once the stream is over: the process exited, or the attachment was
@@ -189,7 +189,10 @@ export function daemonBackend(
                 })
               : frame._tag === "agent.status"
                 ? Effect.sync(() => {
-                    agentState = frame.state;
+                    // The wire value is opaque; only the agent plugin's own
+                    // vocabulary is meaningful here, so an unrecognized state
+                    // leaves the last known one in place.
+                    if (isReportedAgentState(frame.state)) agentState = frame.state;
                   })
                 : Effect.void,
       ).pipe(
