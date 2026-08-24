@@ -440,12 +440,12 @@ test("a script inside a pane reports and gets a response using only the injected
   const { daemon, env } = await started("pane-roundtrip");
   const script = `
     const net = require("node:net");
-    const path = process.env.AMUX_AGENT_STATE_SOCKET;
+    const path = process.env.AMUX_PROCESS_STATE_SOCKET;
     const pane = process.env.AMUX_PANE_ID;
     process.stdout.write("pane=" + pane + " socket=" + path + "\\n");
     const s = net.createConnection(path);
     s.on("connect", () =>
-      s.write(JSON.stringify({ id: "roundtrip", method: "agent.state", params: { agent: pane, state: "blocked" } }) + "\\n"));
+      s.write(JSON.stringify({ id: "roundtrip", method: "process.state", params: { session: pane, state: "blocked" } }) + "\\n"));
     s.on("data", (d) => { process.stdout.write("reply:" + d.toString().trim() + "\\n"); s.destroy(); process.exit(0); });
     s.on("error", (e) => { process.stdout.write("error:" + e.message + "\\n"); process.exit(1); });
     s.setTimeout(3000, () => { process.stdout.write("timeout\\n"); process.exit(1); });
@@ -485,12 +485,12 @@ test("a script inside a pane reports and gets a response using only the injected
   });
 });
 
-test("the agent state socket accepts ping and agent state reports", async () => {
+test("the process state socket accepts ping and process state reports", async () => {
   const { daemon, env } = await started("pane-control");
   const paths = await run(sessionPaths(daemon.id), env);
   const lines: string[] = [];
   const socket = await Bun.connect({
-    unix: paths.agentState,
+    unix: paths.processState,
     socket: {
       data: (_socket, data) => {
         lines.push(data.toString());
@@ -502,8 +502,8 @@ test("the agent state socket accepts ping and agent state reports", async () => 
   socket.write(
     JSON.stringify({
       id: "two",
-      method: "agent.state",
-      params: { agent: "pane-a", state: "blocked" },
+      method: "process.state",
+      params: { session: "pane-a", state: "blocked" },
     }) + "\n",
   );
   await waitFor(
@@ -519,11 +519,11 @@ test("the agent state socket accepts ping and agent state reports", async () => 
  * runs, not something amux vouches for, so the socket it dials must be private
  * to the owner, and a hook that dies mid-write must not take the daemon down
  * with it — the agent keeps running either way. */
-test("the agent state socket is private to the session owner", async () => {
+test("the process state socket is private to the session owner", async () => {
   const { daemon, env } = await started("agent-state-private");
   const paths = await run(sessionPaths(daemon.id), env);
   const { stat } = await import("node:fs/promises");
-  const socket = await stat(paths.agentState);
+  const socket = await stat(paths.processState);
   // Owner-only: a pane runs arbitrary user commands, and none of them may
   // fabricate another pane's reports. The daemon pins this after listen so it
   // holds under any umask.
@@ -537,16 +537,16 @@ test("a hook that dies mid-write leaves the daemon unaffected", async () => {
   const { daemon, env } = await started("agent-state-abort");
   const paths = await run(sessionPaths(daemon.id), env);
   const socket = await Bun.connect({
-    unix: paths.agentState,
+    unix: paths.processState,
     socket: { data: () => {} },
   });
   // Start a line, then vanish without the newline and without a clean close.
-  socket.write('{"id":"abandoned","method":"agent.state","params":{"agent":"pane-a","state":');
+  socket.write('{"id":"abandoned","method":"process.state","params":{"session":"pane-a","state":');
   socket.end();
   // And confirm the listener is still alive and answering.
   const lines: string[] = [];
   const probe = await Bun.connect({
-    unix: paths.agentState,
+    unix: paths.processState,
     socket: {
       data: (_socket, data) => void lines.push(data.toString()),
     },
@@ -568,7 +568,7 @@ test("a hook that dies mid-write leaves the daemon unaffected", async () => {
  * in AMUX_PANE_ID is a view, not an identity). A report is committed to that
  * session's log before it is published, so an id belonging to no session has
  * nowhere to land and is dropped. */
-test("an agent self-report reaches the event bus, not just the socket", async () => {
+test("an agent self-report reaches the session-state topic, not just the socket", async () => {
   const { daemon, env } = await started("agent-state-publish");
   const paths = await run(sessionPaths(daemon.id), env);
   await Effect.runPromise(
@@ -577,14 +577,14 @@ test("an agent self-report reaches the event bus, not just the socket", async ()
 
   const report = Effect.promise(async () => {
     const socket = await Bun.connect({
-      unix: paths.agentState,
+      unix: paths.processState,
       socket: { data: () => {} },
     });
     socket.write(
       JSON.stringify({
         id: "report",
-        method: "agent.state",
-        params: { agent: "pane-a", state: "working" },
+        method: "process.state",
+        params: { session: "pane-a", state: "working" },
       }) + "\n",
     );
     await Bun.sleep(50);
@@ -603,7 +603,7 @@ test("an agent self-report reaches the event bus, not just the socket", async ()
                 ? Deferred.succeed(ready, undefined)
                 : Effect.void,
             ),
-            Stream.filter((frame) => frame.event._tag === "agent.state"),
+            Stream.filter((frame) => frame.event._tag === "session.state"),
           ),
         ),
       );
@@ -617,7 +617,7 @@ test("an agent self-report reaches the event bus, not just the socket", async ()
   );
 
   expect(Option.getOrNull(published)?.event).toEqual({
-    _tag: "agent.state",
+    _tag: "session.state",
     session: "pane-a",
     state: "working",
   });

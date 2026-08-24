@@ -333,7 +333,7 @@ test("native sessions spawned without rpcPath do not set AMUX_CONTROL_SOCKET", a
 /** A foreign agent CLI in a shell pane can only call back into the mux if the
  *  pane tells it which pane it is and where the sockets live. AMUX_PANE_ID is
  *  the pane, AMUX_AGENT_ID the session it runs; a foreign agent's hook reads
- *  AMUX_AGENT_STATE_SOCKET, so an unset one is a silently permanently-idle
+ *  AMUX_PROCESS_STATE_SOCKET, so an unset one is a silently permanently-idle
  *  pane. */
 testEffect("pty sessions carry pane identity and both sockets", () =>
   Effect.gen(function* () {
@@ -344,10 +344,10 @@ testEffect("pty sessions carry pane identity and both sockets", () =>
       cmd: [
         "sh",
         "-c",
-        'printf "pane=%s agent=%s socket=%s state=%s\\n" "$AMUX_PANE_ID" "$AMUX_AGENT_ID" "$AMUX_CONTROL_SOCKET" "$AMUX_AGENT_STATE_SOCKET"',
+        'printf "pane=%s agent=%s socket=%s state=%s\\n" "$AMUX_PANE_ID" "$AMUX_AGENT_ID" "$AMUX_CONTROL_SOCKET" "$AMUX_PROCESS_STATE_SOCKET"',
       ],
       rpcPath: "/tmp/test-pane-rpc.sock",
-      agentStatePath: "/tmp/test-pane-agent-state.sock",
+      processStatePath: "/tmp/test-pane-process-state.sock",
       cols: 80,
       rows: 24,
     });
@@ -359,7 +359,7 @@ testEffect("pty sessions carry pane identity and both sockets", () =>
     expect(text).toContain("pane=s1:p1");
     expect(text).toContain("agent=addressable-pty");
     expect(text).toContain("socket=/tmp/test-pane-rpc.sock");
-    expect(text).toContain("state=/tmp/test-pane-agent-state.sock");
+    expect(text).toContain("state=/tmp/test-pane-process-state.sock");
   }).pipe(Effect.provide(SessionRegistry.Default)),
 );
 

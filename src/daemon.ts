@@ -514,15 +514,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           const rt = ManagedRuntime.make(
             layerAttachHost({
               path: paths.attach,
-              agentStatePath: paths.agentState,
+              processStatePath: paths.processState,
               rpcPath: paths.socket,
               daemonSession: id,
               onAttach: attachEffect,
               onDetach: detachEffect,
               onActivity: touchEffect,
               onSessionExit: (sid, code) => sessionExitEffect(sid, code),
-              onAgentState: (sid, s) =>
-                eventBus.publish({ _tag: "agent.state", session: sid, state: s }),
+              onSessionState: (sid, s) =>
+                eventBus.publish({ _tag: "session.state", session: sid, state: s }),
               agentLog,
             }),
           );

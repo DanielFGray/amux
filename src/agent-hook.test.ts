@@ -118,7 +118,7 @@ testEffect("reports opencode lifecycle transitions to the agent-state socket", (
       const path = join(home, "agent-state.sock");
       const { received } = yield* agentStateSocket(path);
       const plugin = yield* pluginWith({
-        AMUX_AGENT_STATE_SOCKET: path,
+        AMUX_PROCESS_STATE_SOCKET: path,
         AMUX_AGENT_ID: "agent-a",
       });
 
@@ -129,18 +129,18 @@ testEffect("reports opencode lifecycle transitions to the agent-state socket", (
       expect(received).toEqual([
         {
           id: expect.any(String),
-          method: "agent.state",
-          params: { agent: "agent-a", state: "working" },
+          method: "process.state",
+          params: { session: "agent-a", state: "working" },
         },
         {
           id: expect.any(String),
-          method: "agent.state",
-          params: { agent: "agent-a", state: "blocked" },
+          method: "process.state",
+          params: { session: "agent-a", state: "blocked" },
         },
         {
           id: expect.any(String),
-          method: "agent.state",
-          params: { agent: "agent-a", state: "idle" },
+          method: "process.state",
+          params: { session: "agent-a", state: "idle" },
         },
       ]);
     }),
@@ -154,7 +154,7 @@ testEffect("collapses repeated states so streaming does not flood the socket", (
       const path = join(home, "agent-state.sock");
       const { received } = yield* agentStateSocket(path);
       const plugin = yield* pluginWith({
-        AMUX_AGENT_STATE_SOCKET: path,
+        AMUX_PROCESS_STATE_SOCKET: path,
         AMUX_AGENT_ID: "agent-a",
       });
 
@@ -170,7 +170,7 @@ testEffect("collapses repeated states so streaming does not flood the socket", (
 testEffect("contributes nothing outside an amux pane", () =>
   Effect.gen(function* () {
     const plugin = yield* pluginWith({
-      AMUX_AGENT_STATE_SOCKET: undefined,
+      AMUX_PROCESS_STATE_SOCKET: undefined,
       AMUX_AGENT_ID: undefined,
     });
     expect(plugin.event).toBeUndefined();
@@ -181,7 +181,7 @@ testEffect("contributes nothing outside an amux pane", () =>
 // the agent a bounded pause, never a hang and never a thrown event handler.
 test("a report to a socket nobody is listening on settles quickly", async () => {
   const previous = { ...process.env };
-  process.env.AMUX_AGENT_STATE_SOCKET = join(process.cwd(), "does-not-exist.sock");
+  process.env.AMUX_PROCESS_STATE_SOCKET = join(process.cwd(), "does-not-exist.sock");
   process.env.AMUX_AGENT_ID = "agent-a";
   try {
     const plugin = await AmuxAgentStatePlugin();

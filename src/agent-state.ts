@@ -70,8 +70,8 @@ export function reportAgentState(
     const socket = net.createConnection(socketPath);
     const request = JSON.stringify({
       id: `amux:agent-state:${Date.now()}`,
-      method: "agent.state",
-      params: { agent, state },
+      method: "process.state",
+      params: { session: agent, state },
     });
     let settled = false;
     const finish = (error?: Error) => {

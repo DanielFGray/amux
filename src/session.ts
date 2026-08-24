@@ -276,7 +276,7 @@ export interface SessionPaths {
    * harmless. Two sockets, because "the command surface" and "the one message
    * third-party code is allowed to send" are different trust boundaries.
    */
-  agentState: string;
+  processState: string;
 }
 
 export function sessionRoot(): Effect.Effect<string> {
@@ -556,7 +556,7 @@ function sessionPathsFromRoot(id: string, root: string): SessionPaths {
     lock: path.join(rootPath, "daemon.lock"),
     socket: path.join(rootPath, "daemon.sock"),
     attach: path.join(rootPath, "attach.sock"),
-    agentState: path.join(rootPath, "agent-state.sock"),
+    processState: path.join(rootPath, "process-state.sock"),
   };
 }
 

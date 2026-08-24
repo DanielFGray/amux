@@ -9,7 +9,7 @@ testEffect("EventBus broadcasts events and releases subscriptions with scope", (
     const one = yield* bus.subscribe();
     const two = yield* bus.subscribe();
     yield* bus.publish({
-      _tag: "agent.state",
+      _tag: "session.state",
       session: "agent-1",
       state: "blocked",
     });
@@ -21,13 +21,13 @@ testEffect("EventBus broadcasts events and releases subscriptions with scope", (
     expect([...events.one]).toEqual([
       {
         sequence: 1,
-        event: { _tag: "agent.state", session: "agent-1", state: "blocked" },
+        event: { _tag: "session.state", session: "agent-1", state: "blocked" },
       },
     ]);
     expect([...events.two]).toEqual([
       {
         sequence: 1,
-        event: { _tag: "agent.state", session: "agent-1", state: "blocked" },
+        event: { _tag: "session.state", session: "agent-1", state: "blocked" },
       },
     ]);
   }).pipe(Effect.provide(EventBus.Default)),
@@ -39,7 +39,7 @@ testEffect("EventBus uses sliding delivery rather than blocking publishers", () 
     const stream = yield* bus.subscribe();
     for (let i = 0; i < 300; i++)
       yield* bus.publish({
-        _tag: "agent.state",
+        _tag: "session.state",
         session: String(i),
         state: "working",
       });
@@ -48,7 +48,7 @@ testEffect("EventBus uses sliding delivery rather than blocking publishers", () 
     expect(values.length).toBe(256);
     expect(values[0]).toEqual({
       sequence: 45,
-      event: { _tag: "agent.state", session: "44", state: "working" },
+      event: { _tag: "session.state", session: "44", state: "working" },
     });
   }).pipe(Effect.provide(EventBus.Default)),
 );

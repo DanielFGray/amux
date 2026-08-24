@@ -113,7 +113,7 @@ async function main(): Promise<number> {
       const state =
         argv.find((v) => v.startsWith("--state="))?.slice(8) ??
         (argv.includes("--state") ? argv[argv.indexOf("--state") + 1] : undefined);
-      const socketPath = process.env.AMUX_AGENT_STATE_SOCKET;
+      const socketPath = process.env.AMUX_PROCESS_STATE_SOCKET;
       // The session id, not the pane id: the report keys a session, and the
       // pane id can change when the pane moves.
       const agent = process.env.AMUX_AGENT_ID;

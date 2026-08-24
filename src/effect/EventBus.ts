@@ -1,9 +1,10 @@
 import { Effect, PubSub, Schema as S, Scope, Stream } from "effect";
-import { AgentStateSchema } from "../agent-state.ts";
 
-const AgentStateChanged = S.TaggedStruct("agent.state", {
+/** A daemon-owned session's process state. The state vocabulary is supplied by
+ * the process integration, not by the core event transport. */
+const SessionStateChanged = S.TaggedStruct("session.state", {
   session: S.String,
-  state: AgentStateSchema,
+  state: S.String,
 });
 const Notification = S.TaggedStruct("notification", {
   session: S.String,
@@ -27,7 +28,7 @@ const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
  * configuration that changes underneath a client that never asked for it.
  */
 const EventPayload = S.Union(
-  AgentStateChanged,
+  SessionStateChanged,
   Notification,
   EventsReady,
   CredentialChanged,

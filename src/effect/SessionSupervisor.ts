@@ -17,7 +17,7 @@ import {
   type SessionSpec,
 } from "./SessionRegistry.ts";
 import { isTerminalSize } from "../limits.ts";
-import { AgentState, type ReportedAgentState } from "../agent-state.ts";
+import { AgentState, isReportedAgentState, type ReportedAgentState } from "../agent-state.ts";
 
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
 const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
@@ -455,10 +455,12 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
        * inside somebody else's agent, and a pane that closed while its hook was
        * mid-write is ordinary, not an error anyone can act on.
        */
-      report: (id: string, state: ReportedAgentState) =>
-        Ref.get(reporters).pipe(
-          Effect.flatMap((current) => current.get(id)?.(state) ?? Effect.void),
-        ),
+      report: (id: string, state: string) =>
+        isReportedAgentState(state)
+          ? Ref.get(reporters).pipe(
+              Effect.flatMap((current) => current.get(id)?.(state) ?? Effect.void),
+            )
+          : Effect.void,
 
       handle: Effect.fnUntraced(function* (frame: AttachFrame) {
         yield* Match.value(frame).pipe(
