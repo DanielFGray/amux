@@ -133,6 +133,34 @@ test("a harness state source overrides a screen heuristic on its pane", async ()
   expect(session.state).toBe("working");
 });
 
+test("detection runs while state sources or readers are registered", async () => {
+  using session = new SessionHandle({ name: "t", cmd: ["bash", "--norc", "--noprofile"] });
+  let sourceReads = 0;
+  let readerReads = 0;
+  const removeSource = session.registerStateSource({
+    authority: AgentStateAuthority.Harness,
+    state: () => {
+      sourceReads++;
+      return "unknown";
+    },
+  });
+
+  await waitFor(() => sourceReads > 0, "the source detection loop");
+  const removeReader = session.registerStateReader(() => {
+    readerReads++;
+  });
+  await waitFor(() => readerReads > 0, "the state reader");
+
+  removeSource();
+  const readsBeforeLastWithdrawal = readerReads;
+  await waitFor(() => readerReads > readsBeforeLastWithdrawal, "the remaining reader");
+
+  removeReader();
+  const readsAfterLastWithdrawal = readerReads;
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(readerReads).toBe(readsAfterLastWithdrawal);
+});
+
 test("an agent started from a shell is picked up from the foreground process", async () => {
   const claude = await fakeAgent("claude");
   using session = new SessionHandle({
