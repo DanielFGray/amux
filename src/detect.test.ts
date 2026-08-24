@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitActivity, looksBlocked, identifyAgent } from "./detect.ts";
 import { SessionHandle } from "./session-handle.ts";
+import { AgentStateAuthority } from "./agent-state-arbiter.ts";
 import { waitFor } from "./test-wait.ts";
 
 test("a leading braille spinner marks the agent working and is stripped from the title", () => {
@@ -120,6 +121,16 @@ test("a blocked prompt on an agent's screen reads as blocked", async () => {
   session.write("printf 'Do you want to proceed?\\n'\n");
   await waitFor(() => session.state === "blocked", "the blocked prompt");
   expect(session.state).toBe("blocked");
+  expect(session.screenRegion("bottom_lines(20)")).toContain("Do you want to proceed?");
+});
+
+test("a harness state source overrides a screen heuristic on its pane", async () => {
+  const claude = await fakeAgent("claude");
+  using session = new SessionHandle({ name: "t", cmd: [claude, "--norc", "--noprofile"] });
+  session.write("printf 'Do you want to proceed?\\n'\n");
+  await waitFor(() => session.state === "blocked", "the blocked prompt");
+  session.registerStateSource({ authority: AgentStateAuthority.Harness, state: () => "working" });
+  expect(session.state).toBe("working");
 });
 
 test("an agent started from a shell is picked up from the foreground process", async () => {
