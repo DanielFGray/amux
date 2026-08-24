@@ -61,19 +61,19 @@ import {
  *  when the one recorded no longer parses. */
 const FALLBACK_PRESET = "tiled";
 
-export function snapshotSessionEntry(agent: SessionHandle): PersistedSession {
+export function snapshotSessionEntry(session: SessionHandle): PersistedSession {
   return {
-    id: agent.id,
-    name: agent.name,
-    ...(agent.kind === "component" ? { kind: "component" as const } : {}),
-    ...(agent.declaredAgent ? { agent: agent.declaredAgent } : {}),
-    ...(agent.cmd.length > 0 ? { cmd: [...agent.cmd] } : {}),
-    ...(agent.provider ? { provider: agent.provider } : {}),
-    ...(agent.cwd ? { cwd: agent.cwd } : {}),
-    cols: agent.term.cols,
-    rows: agent.term.rows,
-    exited: agent.exited,
-    exitCode: agent.exitCode,
+    id: session.id,
+    name: session.name,
+    ...(session.kind === "component" ? { kind: "component" as const } : {}),
+    ...(session.declaredAgent ? { agent: session.declaredAgent } : {}),
+    ...(session.cmd.length > 0 ? { cmd: [...session.cmd] } : {}),
+    ...(session.provider ? { provider: session.provider } : {}),
+    ...(session.cwd ? { cwd: session.cwd } : {}),
+    cols: session.term.cols,
+    rows: session.term.rows,
+    exited: session.exited,
+    exitCode: session.exitCode,
   };
 }
 
@@ -176,20 +176,20 @@ export const restoreWindow = Effect.fnUntraced(function* (
   options: RestoreOptions = {},
 ) {
   const window = yield* space.newWindow(saved.name ?? undefined, saved.number);
-  for (const agent of saved.agents) {
+  for (const session of saved.agents) {
     yield* window.startSession({
-      id: agent.id,
-      name: agent.name,
-      kind: agent.kind,
-      agent: agent.agent,
-      cmd: agent.cmd ?? [],
-      ...(agent.provider ? { provider: agent.provider } : {}),
-      cwd: agent.cwd,
-      cols: agent.cols,
-      rows: agent.rows,
+      id: session.id,
+      name: session.name,
+      kind: session.kind,
+      agent: session.agent,
+      cmd: session.cmd ?? [],
+      ...(session.provider ? { provider: session.provider } : {}),
+      cwd: session.cwd,
+      cols: session.cols,
+      rows: session.rows,
       // A dead agent is restored as a tombstone rather than re-run. Its own
       // backend is fixed by that, so the option deliberately does not reach it.
-      ...(agent.exited ? { exited: { code: agent.exitCode } } : { backend: options.backend }),
+      ...(session.exited ? { exited: { code: session.exitCode } } : { backend: options.backend }),
     });
   }
 

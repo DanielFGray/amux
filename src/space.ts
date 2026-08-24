@@ -35,7 +35,7 @@ function reserveSpaceId(id: string) {
  * The top of the tmux hierarchy: a space holds windows, a window holds panes.
  * Its state names windows by number and does not depend on the render tree.
  * SpaceSet projects the active window into its host; every other window keeps
- * its layout and running agents while contributing nothing to yoga or hit tests.
+ * its layout and running sessions while contributing nothing to yoga or hit tests.
  */
 export class Space {
   readonly id: string;
@@ -52,7 +52,7 @@ export class Space {
    *  renderer — a space is a container, not a thing that starts processes. */
   #env: Context.Context<WorkspaceEnv>;
   #windows: Window[] = [];
-  /** One scope per window, for the same reason Window keeps one per agent:
+  /** One scope per window, for the same reason Window keeps one per session:
    *  closeWindow must end exactly one window, and a window will eventually be
    *  movable between spaces (ts-e10c3a), which a forked child scope forbids. */
   #scopes = new Map<Window, Scope.CloseableScope>();
@@ -93,16 +93,16 @@ export class Space {
     this.onChange?.();
   }
 
-  /** Every agent across every window in this space. */
+  /** Every session across every window in this space. */
   get sessions(): SessionHandle[] {
     return this.#windows.flatMap((w) => [...w.sessions]);
   }
 
   /**
-   * The space's state icon is the most urgent state among its agents: an agent
+   * The space's state icon is the most urgent state among its sessions: a session
    * waiting on you matters more than one that is merely busy, which matters
-   * more than an idle prompt. "done" is last, so a space with one live idle agent and one
-   * finished agent reads as idle, not finished.
+   * more than an idle prompt. "done" is last, so a space with one live idle session and one
+   * finished session reads as idle, not finished.
    */
   get state(): AgentState {
     return rollUp(this.sessions);
@@ -125,7 +125,7 @@ export class Space {
       this.#scopes.set(window, scope);
       if (name) window.customName = name;
       window.onChange = () => this.onChange?.();
-      window.onSessionExit = (agent) => this.onSessionExit?.(agent, window, this);
+      window.onSessionExit = (session) => this.onSessionExit?.(session, window, this);
       window.onCopy = this.onCopy;
       window.onCopyError = this.onCopyError;
       this.#windows.push(window);
@@ -179,9 +179,9 @@ export class Space {
   /**
    * Break a pane out of its window into a new one — tmux's break-pane.
    *
-   * The pane and its agent are MOVED, not restarted: the process keeps its
+   * The pane and its session are MOVED, not restarted: the process keeps its
    * PTY, its terminal, its scrollback and its title. Only ownership changes,
-   * which is why the agent's lifecycle hooks are re-pointed at the destination
+   * which is why the session's lifecycle hooks are re-pointed at the destination
    * window — an exit must close the pane in the window it now lives in and
    * fire that window's onSessionExit, or the app-level cascade would act on
    * stale ownership.
@@ -189,7 +189,7 @@ export class Space {
    * The source window collapses to its remaining panes (the same tree surgery
    * close() does, minus the destruction). A window left with no panes is
    * closed, the way tmux closes a window it just emptied — unless it still
-   * holds running agents, which are never discarded silently (the rule
+   * holds running sessions, which are never discarded silently (the rule
    * afterAgentExit uses).
    *
    * The destination window takes the next number and becomes active, which is
@@ -200,7 +200,7 @@ export class Space {
     return Effect.gen(this, function* () {
       const source = this.#windows.find((w) => w.panes.includes(pane));
       if (!source) return null;
-      // Ownership is checked BEFORE anything is mutated. The agent's scope has
+      // Ownership is checked BEFORE anything is mutated. The session's scope has
       // to travel with it — the source window may be closed below, and closing
       // it must not end a process that now lives elsewhere — so a break that
       // could not hand the scope over has to be refused while it is still a
@@ -209,7 +209,7 @@ export class Space {
       if (!handoff) return null;
 
       const window = yield* this.newWindow();
-      window.adopt(handoff.agent, pane, handoff.scope);
+      window.adopt(handoff.session, pane, handoff.scope);
 
       if (source.panes.length === 0 && !source.sessions.some((a) => a.state !== AgentState.Done)) {
         yield* this.closeWindow(source);
@@ -218,7 +218,7 @@ export class Space {
     });
   }
 
-  /** Move a pane into the active window, preserving its agent and lifetime. */
+  /** Move a pane into the active window, preserving its session and lifetime. */
   joinPane(pane: Pane, sourceNumber?: number): Effect.Effect<Window | null> {
     return Effect.gen(this, function* () {
       const destination = this.active;
@@ -231,10 +231,10 @@ export class Space {
       if (!destination || !source) return null;
       const handoff = source.releasePane(pane);
       if (!handoff) return null;
-      destination.adopt(handoff.agent, pane, handoff.scope);
+      destination.adopt(handoff.session, pane, handoff.scope);
       if (
         source.panes.length === 0 &&
-        !source.sessions.some((agent) => agent.state !== AgentState.Done)
+        !source.sessions.some((session) => session.state !== AgentState.Done)
       ) {
         yield* this.closeWindow(source);
       }
@@ -299,7 +299,7 @@ export class Space {
 }
 
 /** Ranked by how much it wants your attention. Shared by spaces and windows. */
-export function rollUp(agents: readonly SessionHandle[]): AgentState {
+export function rollUp(sessions: readonly SessionHandle[]): AgentState {
   const RANK: Record<AgentState, number> = {
     [AgentState.Blocked]: 4,
     [AgentState.Working]: 3,
@@ -309,7 +309,7 @@ export function rollUp(agents: readonly SessionHandle[]): AgentState {
     [AgentState.Done]: 0,
   };
   let best: AgentState = AgentState.Done;
-  for (const a of agents) {
+  for (const a of sessions) {
     const s = a.state;
     if (s === AgentState.Blocked) return AgentState.Blocked;
     if (RANK[s] > RANK[best]) best = s;
@@ -318,15 +318,15 @@ export function rollUp(agents: readonly SessionHandle[]): AgentState {
 }
 
 /**
- * The next blocked agent after `from` in a stable order, or the first one when
+ * The next blocked session after `from` in a stable order, or the first one when
  * nothing is focused — scanning forward and wrapping around.
  *
  * Starting *after* `from` is what makes repeated presses walk the set: the
- * agent you are looking at is already on screen, so it is not the one the next
- * press is looking for. The full wrap keeps a lone blocked agent reachable,
+ * session you are looking at is already on screen, so it is not the one the next
+ * press is looking for. The full wrap keeps a lone blocked session reachable,
  * where landing on it again is a no-op rather than a jump.
  *
- * Returns null when no agent is blocked.
+ * Returns null when no session is blocked.
  */
 export function nextBlockedAfter(
   order: readonly SessionHandle[],
@@ -336,8 +336,8 @@ export function nextBlockedAfter(
   if (!n) return null;
   const start = from ? order.indexOf(from) + 1 : 0;
   for (let step = 0; step < n; step++) {
-    const agent = order[(start + step) % n]!;
-    if (agent.state === AgentState.Blocked) return agent;
+    const session = order[(start + step) % n]!;
+    if (session.state === AgentState.Blocked) return session;
   }
   return null;
 }
@@ -346,7 +346,7 @@ export function nextBlockedAfter(
  * The set of spaces and which one is on screen.
  *
  * Only the active space's container is mounted, so an inactive space keeps its
- * windows, their layouts and their agents entirely off the layout tree.
+ * windows, their layouts and their sessions entirely off the layout tree.
  */
 export class SpaceSet {
   #env: Context.Context<WorkspaceEnv>;
@@ -393,7 +393,7 @@ export class SpaceSet {
     return this.active?.active ?? null;
   }
 
-  /** Every agent across every space — what a global "N agents" count means. */
+  /** Every session across every space — what a global "N sessions" count means. */
   get allSessions(): SessionHandle[] {
     return this.#spaces.flatMap((s) => s.sessions);
   }
@@ -407,7 +407,7 @@ export class SpaceSet {
         if (space === this.active) this.#project();
         this.onChange?.();
       };
-      space.onSessionExit = (agent, window) => this.onSessionExit?.(agent, window, space);
+      space.onSessionExit = (session, window) => this.onSessionExit?.(session, window, space);
       space.onCopy = this.onCopy;
       space.onCopyError = this.onCopyError;
       this.#spaces.push(space);
@@ -452,15 +452,15 @@ export class SpaceSet {
   }
 
   /**
-   * Jump to the next blocked agent and bring it on screen — the herding loop.
+   * Jump to the next blocked session and bring it on screen — the herding loop.
    *
-   * The agent worth your attention is the one waiting on a human, so a single
+   * The session worth your attention is the one waiting on a human, so a single
    * press walks the blocked set across every space instead of tabbing through
    * panes. Order is stable: spaces in creation order, then windows, then spawn
    * order within a window, so repeated presses advance rather than bouncing
    * between two. Navigation is the same as clicking the sidebar row — the
-   * agent's space is activated, its window selected, and it is revealed (or
-   * focused) even when no pane shows it. Returns the agent, or null when
+   * session's space is activated, its window selected, and it is revealed (or
+   * focused) even when no pane shows it. Returns the session, or null when
    * nothing is blocked.
    */
   nextBlocked(
@@ -511,7 +511,7 @@ export class SpaceSet {
   }
 
   /**
-   * A workspace whose spaces — and so every window, agent and PTY under them —
+   * A workspace whose spaces — and so every window, session and PTY under them —
    * are released when the surrounding scope closes.
    *
    * This is the root of the lifetime chain. One scope releases every local
@@ -574,7 +574,7 @@ export const projectWorkspace = Effect.fnUntraced(function* (
         if (!current || !pane || current === destination) continue;
         const owner = target.spaces.find((candidate) => candidate.windows.includes(current));
         const handoff = owner && current.releasePane(pane);
-        if (handoff) destination.adopt(handoff.agent, pane, handoff.scope);
+        if (handoff) destination.adopt(handoff.session, pane, handoff.scope);
       }
     }
   }
@@ -609,9 +609,9 @@ const projectWindow = Effect.fnUntraced(function* (
   source: WorkspaceWindow,
   backend: SessionBackendFactory,
 ) {
-  for (const agent of window.sessions.slice()) {
-    if (!source.agents.some((candidate) => candidate.id === agent.id))
-      yield* window.removeProjectedSession(agent);
+  for (const session of window.sessions.slice()) {
+    if (!source.agents.some((candidate) => candidate.id === session.id))
+      yield* window.removeProjectedSession(session);
   }
   for (const saved of source.agents) {
     if (window.sessions.some((candidate) => candidate.id === saved.id)) continue;

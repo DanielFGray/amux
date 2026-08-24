@@ -48,11 +48,11 @@ async function fakeAgent(name: string): Promise<string> {
 
 /** Spawn a detached fake agent and put a confirmation prompt on its screen. */
 async function blockedAgent(window: Window, name: string): Promise<SessionHandle> {
-  const agent = run(window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]));
-  await waitFor(() => agent.agentKind === "claude", `${name} to start`);
-  agent.write("printf 'Do you want to proceed?\\n'\n");
-  await waitFor(() => agent.state === "blocked", `${name} to become blocked`);
-  return agent;
+  const session = run(window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]));
+  await waitFor(() => session.agentKind === "claude", `${name} to start`);
+  session.write("printf 'Do you want to proceed?\\n'\n");
+  await waitFor(() => session.state === "blocked", `${name} to become blocked`);
+  return session;
 }
 
 test("nextBlockedAfter walks the blocked set in a stable order, wrapping", () => {
@@ -194,16 +194,16 @@ test("killing an agent reports it the way an exit does", async () => {
   const s = await setup();
   try {
     const killme = run(s.win.spawn("killme", ["sleep", "30"]));
-    const seen: { agent: SessionHandle; remaining: number }[] = [];
-    s.space.onSessionExit = (agent, window) =>
+    const seen: { session: SessionHandle; remaining: number }[] = [];
+    s.space.onSessionExit = (session, window) =>
       // Captured from inside the handler: the cascade decides what to do by
       // asking what is left, so the removal must already have happened.
-      seen.push({ agent, remaining: window.sessions.length });
+      seen.push({ session, remaining: window.sessions.length });
 
     const before = s.win.sessions.length;
     await runAsync(s.win.killSession(killme));
 
-    expect(seen.map((s) => s.agent)).toEqual([killme]);
+    expect(seen.map((s) => s.session)).toEqual([killme]);
     expect(seen[0]!.remaining).toBe(before - 1);
   } finally {
     await s.dispose();
@@ -268,15 +268,15 @@ test("joining a pane preserves its live agent and transfers ownership", async ()
   try {
     const source = s.win;
     const pane = source.panes[0]!;
-    const agent = pane.session!;
+    const session = pane.session!;
     const destination = run(s.space.newWindow());
     run(destination.init("destination"));
 
     expect(await runAsync(s.space.joinPane(pane, source.number))).toBe(destination);
     expect(source.panes).toHaveLength(0);
     expect(destination.panes).toContain(pane);
-    expect(destination.sessions).toContain(agent);
-    expect(agent.exited).toBe(false);
+    expect(destination.sessions).toContain(session);
+    expect(session.exited).toBe(false);
     expect(s.space.windows).toEqual([destination]);
 
     await runAsync(s.space.closeWindow(destination));
@@ -294,10 +294,10 @@ test("a space of plain shells is idle, and an exited one still reads as idle", a
     await Bun.sleep(300);
     expect(s.space.state).toBe("idle");
 
-    const agent = s.win.sessions[0]!;
-    agent.write("sleep 5\n");
+    const session = s.win.sessions[0]!;
+    session.write("sleep 5\n");
     await Bun.sleep(400);
-    expect(agent.state).toBe("idle");
+    expect(session.state).toBe("idle");
     expect(s.space.state).toBe("idle");
   } finally {
     await s.dispose();
@@ -329,10 +329,10 @@ test("a pane closes when its agent's process exits, and the agent stays as done"
     // The view is gone so the layout reclaims the space...
     expect(s.win.panes.length).toBe(1);
     // ...but the agent is still listed, exited, with its output still readable.
-    const agent = s.win.sessions.find((a) => a.name === "shortlived");
-    expect(agent).toBeDefined();
-    expect(agent!.state).toBe("done");
-    expect(s.win.detached).toContain(agent!);
+    const session = s.win.sessions.find((a) => a.name === "shortlived");
+    expect(session).toBeDefined();
+    expect(session!.state).toBe("done");
+    expect(s.win.detached).toContain(session!);
   } finally {
     await s.dispose();
   }

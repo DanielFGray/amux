@@ -20,14 +20,14 @@ async function setup(opts?: { init?: boolean }) {
   return harness;
 }
 
-/** Intercept every child-input write and record which agent got which bytes. */
+/** Intercept every child-input write and record which session got which bytes. */
 function captureAgentWrites() {
   const spy = spyOn(SessionHandle.prototype, "write");
   spy.mockImplementation(() => {});
   spies.push(spy);
   return {
     spy,
-    agents: () => spy.mock.contexts as SessionHandle[],
+    sessions: () => spy.mock.contexts as SessionHandle[],
     data: () =>
       spy.mock.calls.map(([d]) => (typeof d === "string" ? d : new TextDecoder().decode(d))),
     clear: () => spy.mockClear(),
@@ -35,10 +35,10 @@ function captureAgentWrites() {
 }
 
 /** The last few written lines of an agent's screen, for reading cat's echo. */
-function screenText(agent: SessionHandle): string {
+function screenText(session: SessionHandle): string {
   const state = new RenderState();
   try {
-    state.update(agent.term);
+    state.update(session.term);
     return state.tailText(3).join("\n");
   } finally {
     state.free();
@@ -77,12 +77,12 @@ test("input goes to the focused pane alone, then to every pane once sync is on",
   try {
     // Off: only the focused pane.
     window.write("a");
-    expect(writes.agents()).toEqual([second.session!]);
+    expect(writes.sessions()).toEqual([second.session!]);
 
     // On: every pane in the window, identical bytes.
     window.toggleSync();
     window.write("b");
-    expect(new Set(writes.agents())).toEqual(
+    expect(new Set(writes.sessions())).toEqual(
       new Set([first.session!, second.session!, third.session!]),
     );
     expect(writes.data().slice(-3)).toEqual(["b", "b", "b"]);
@@ -90,7 +90,7 @@ test("input goes to the focused pane alone, then to every pane once sync is on",
     // Moving focus does not change the set.
     window.focus(first);
     window.write("c");
-    expect(new Set(writes.agents().slice(-3))).toEqual(
+    expect(new Set(writes.sessions().slice(-3))).toEqual(
       new Set([first.session!, second.session!, third.session!]),
     );
     expect(writes.data().slice(-3)).toEqual(["c", "c", "c"]);
@@ -98,7 +98,7 @@ test("input goes to the focused pane alone, then to every pane once sync is on",
     // Off again: back to focused-only.
     window.toggleSync();
     window.write("d");
-    expect(writes.agents().slice(-1)).toEqual([first.session!]);
+    expect(writes.sessions().slice(-1)).toEqual([first.session!]);
   } finally {
     writes.spy.mockRestore();
   }
@@ -181,13 +181,13 @@ test("a detached agent receives no broadcast until a view is opened on it", asyn
   try {
     window.write("x");
     // The broadcast set is exactly the window's panes.
-    expect(new Set(writes.agents())).toEqual(new Set(window.panes.map((p) => p.session!)));
-    expect(writes.agents()).not.toContain(hidden);
+    expect(new Set(writes.sessions())).toEqual(new Set(window.panes.map((p) => p.session!)));
+    expect(writes.sessions()).not.toContain(hidden);
 
     // Opening a view makes it a pane, and it joins the fan-out.
     window.reveal(hidden);
     window.write("y");
-    const after = writes.agents().slice(-3);
+    const after = writes.sessions().slice(-3);
     expect(after).toContain(hidden);
     expect(new Set(after)).toEqual(new Set(window.panes.map((p) => p.session!)));
   } finally {
@@ -205,7 +205,7 @@ test("two panes viewing one agent are one process: broadcast writes it once", as
   const writes = captureAgentWrites();
   try {
     window.write("z");
-    expect(writes.agents().filter((a) => a === shared)).toHaveLength(1);
+    expect(writes.sessions().filter((a) => a === shared)).toHaveLength(1);
   } finally {
     writes.spy.mockRestore();
   }
@@ -219,13 +219,13 @@ test("the fan-out set follows the layout: a split joins, a close leaves, a new w
   const writes = captureAgentWrites();
   try {
     window.write("a");
-    expect(new Set(writes.agents())).toEqual(new Set([first.session!, second.session!]));
+    expect(new Set(writes.sessions())).toEqual(new Set([first.session!, second.session!]));
 
     // Closing a pane drops it from the set.
     writes.clear();
     window.close(second);
     window.write("b");
-    expect(writes.agents()).toEqual([first.session!]);
+    expect(writes.sessions()).toEqual([first.session!]);
 
     // A new window starts unsynced, whatever the old one was doing.
     const other = run(spaces.active!.newWindow());
@@ -233,7 +233,7 @@ test("the fan-out set follows the layout: a split joins, a close leaves, a new w
     expect(other.sync).toBe(false);
     writes.clear();
     other.write("c");
-    expect(writes.agents()).toEqual([other.panes[0]!.session!]);
+    expect(writes.sessions()).toEqual([other.panes[0]!.session!]);
   } finally {
     writes.spy.mockRestore();
   }
@@ -260,7 +260,7 @@ test("pane-local mouse stays pane-local even while synced", async () => {
       stopPropagation() {},
     });
     // The click reached exactly the pane under the pointer — no fan-out.
-    expect(writes.agents()).toEqual([right.session!]);
+    expect(writes.sessions()).toEqual([right.session!]);
   } finally {
     writes.spy.mockRestore();
   }

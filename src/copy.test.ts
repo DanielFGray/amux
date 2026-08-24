@@ -20,27 +20,27 @@ import { workspaceEnv } from "./env.ts";
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 
-/** A pane on a tombstone agent (no PTY) with a real ghostty terminal, sized
+/** A pane on a tombstone session (no PTY) with a real ghostty terminal, sized
  *  40x10. The pane is never mounted — CopyMode only reads the terminal and
  *  calls invalidate/copyText, neither of which needs layout. */
 async function makePane(vt: string) {
   const t = await createTestRenderer({ width: 80, height: 24 });
-  const agent = new SessionHandle({
+  const session = new SessionHandle({
     cmd: ["true"],
     exited: { code: 0 },
     cols: 40,
     rows: 10,
   });
-  const pane = new TerminalPane(t.renderer, { id: "pane", session: agent });
-  agent.term.resize(40, 10);
-  if (vt) agent.term.write(bytes(vt));
+  const pane = new TerminalPane(t.renderer, { id: "pane", session: session });
+  session.term.resize(40, 10);
+  if (vt) session.term.write(bytes(vt));
   return {
     t,
-    agent,
+    session,
     pane,
     dispose: () => {
       pane.destroyRecursively();
-      agent.dispose();
+      session.dispose();
       t.renderer.destroy();
     },
   };
@@ -132,21 +132,21 @@ test("foldQuery is smartcase", () => {
 test("entering copy mode scrolls up one line and pins the cursor top-left", async () => {
   // 15 lines on a 10-row screen: 5 rows of history, viewport at the bottom.
   const vt = Array.from({ length: 15 }, (_, i) => `line ${i}`).join("\r\n");
-  const { agent, mode, dispose } = await modeOn(vt);
+  const { session, mode, dispose } = await modeOn(vt);
   cleanup.push(dispose);
-  const s = agent.term.scrollbar;
+  const s = session.term.scrollbar;
   expect(s.total).toBe(15);
   // Entry parked the viewport one line up from the bottom.
   expect(s.offset).toBe(s.total - s.len - 1);
   // The cursor is the top-left of what is now visible.
   expect(mode.cursor).toEqual({ x: 0, y: s.offset });
   // And that cell carries the highlight, drawn as a one-cell selection.
-  expect(selected(agent.term)).toEqual([`0,${s.offset}`]);
+  expect(selected(session.term)).toEqual([`0,${s.offset}`]);
   expect(mode.active).toBe(true);
 });
 
 test("q leaves copy mode without copying and clears the highlight", async () => {
-  const { agent, pane, mode, dispose } = await modeOn("alpha\r\nbeta");
+  const { session, pane, mode, dispose } = await modeOn("alpha\r\nbeta");
   cleanup.push(dispose);
   pane.onCopy = () => {
     throw new Error("must not copy on q");
@@ -155,11 +155,11 @@ test("q leaves copy mode without copying and clears the highlight", async () => 
   mode.onKey({ name: "j" });
   mode.onKey({ name: "q" });
   expect(mode.active).toBe(false);
-  expect(selected(agent.term)).toEqual([]);
+  expect(selected(session.term)).toEqual([]);
 });
 
 test("y without a selection just leaves", async () => {
-  const { agent, pane, mode, dispose } = await modeOn("alpha\r\nbeta");
+  const { session, pane, mode, dispose } = await modeOn("alpha\r\nbeta");
   cleanup.push(dispose);
   const copied: string[] = [];
   pane.onCopy = (text) => {
@@ -169,7 +169,7 @@ test("y without a selection just leaves", async () => {
   mode.onKey({ name: "y" });
   expect(copied).toEqual([]);
   expect(mode.active).toBe(false);
-  expect(selected(agent.term)).toEqual([]);
+  expect(selected(session.term)).toEqual([]);
 });
 
 /** Dispatch a real mouse-down through the pane's event path, exactly as the
@@ -188,11 +188,11 @@ function mouseDown(pane: TerminalPane, x: number, y: number, opts: { shift?: boo
 }
 
 test("a real mouse-down starts the selection path and interrupts copy mode", async () => {
-  const { agent, pane, mode, dispose } = await modeOn("alpha\r\nbeta");
+  const { session, pane, mode, dispose } = await modeOn("alpha\r\nbeta");
   cleanup.push(dispose);
   const writes: string[] = [];
-  const origWrite = agent.write.bind(agent);
-  agent.write = (data) => {
+  const origWrite = session.write.bind(session);
+  session.write = (data) => {
     writes.push(typeof data === "string" ? data : new TextDecoder().decode(data));
     origWrite(data);
   };
@@ -204,7 +204,7 @@ test("a real mouse-down starts the selection path and interrupts copy mode", asy
   expect(mode.active).toBe(false);
   // The selection really started: the mode's exit cleared the cursor highlight,
   // and the pane's own drag-selection slot now holds the cell it was pressed on.
-  expect(selected(agent.term)).toEqual(["0,0"]);
+  expect(selected(session.term)).toEqual(["0,0"]);
   // The interrupt hook is cleared, so a second drag is a no-op.
   expect(pane.onCopyModeInterrupt).toBeNull();
 });
@@ -212,12 +212,12 @@ test("a real mouse-down starts the selection path and interrupts copy mode", asy
 test("a click routed to a mouse-reporting child interrupts copy mode first", async () => {
   // vim-style: the child enabled SGR mouse reporting, so the pane hands the
   // event to it instead of starting a local selection.
-  const { agent, pane, mode, dispose } = await modeOn("\x1b[?1000h\x1b[?1006h");
+  const { session, pane, mode, dispose } = await modeOn("\x1b[?1000h\x1b[?1006h");
   cleanup.push(dispose);
   const atChildWrite = { active: null as boolean | null };
   const writes: string[] = [];
-  const origWrite = agent.write.bind(agent);
-  agent.write = (data) => {
+  const origWrite = session.write.bind(session);
+  session.write = (data) => {
     atChildWrite.active = mode.active;
     writes.push(typeof data === "string" ? data : new TextDecoder().decode(data));
     origWrite(data);
@@ -252,13 +252,13 @@ test("re-entering copy mode on another pane starts fresh", async () => {
  * ------------------------------------------------------------------ */
 
 test("j/k/h/l move the cursor and clamp at the scrollback edges", async () => {
-  const { agent, mode, dispose } = await modeOn("alpha\r\nbeta\r\ngamma");
+  const { session, mode, dispose } = await modeOn("alpha\r\nbeta\r\ngamma");
   cleanup.push(dispose);
   // No history, so the screen is rows 0..9 and the cursor starts at 0,0.
   mode.onKey({ name: "j" });
   mode.onKey({ name: "j" });
   expect(mode.cursor).toEqual({ x: 0, y: 2 });
-  expect(selected(agent.term)).toEqual(["0,2"]);
+  expect(selected(session.term)).toEqual(["0,2"]);
   mode.onKey({ name: "l" });
   expect(mode.cursor).toEqual({ x: 1, y: 2 });
   mode.onKey({ name: "h" });
@@ -287,7 +287,7 @@ test("0 and $ move to the row ends; g and G to the scrollback ends", async () =>
 });
 
 test("word motions skip between words, across rows", async () => {
-  const { agent, mode, dispose } = await modeOn("one two\r\nthree four");
+  const { session, mode, dispose } = await modeOn("one two\r\nthree four");
   cleanup.push(dispose);
   mode.onKey({ name: "w" });
   expect(mode.cursor).toEqual({ x: 4, y: 0 });
@@ -306,7 +306,7 @@ test("word motions skip between words, across rows", async () => {
   mode.onKey({ name: "b" });
   expect(mode.cursor).toEqual({ x: 0, y: 0 });
   // A word motion highlights the cell it lands on.
-  expect(selected(agent.term)).toEqual(["0,0"]);
+  expect(selected(session.term)).toEqual(["0,0"]);
 });
 
 test("paragraph motions jump to the nearest blank line", async () => {
@@ -349,7 +349,7 @@ test("page and half-page motions move the cursor by a screen", async () => {
  * ------------------------------------------------------------------ */
 
 test("v starts a selection that yank copies and then leaves", async () => {
-  const { agent, pane, mode, dispose } = await modeOn("alpha beta\r\ngamma delta");
+  const { session, pane, mode, dispose } = await modeOn("alpha beta\r\ngamma delta");
   cleanup.push(dispose);
   const copied: string[] = [];
   pane.onCopy = (text) => {
@@ -361,11 +361,11 @@ test("v starts a selection that yank copies and then leaves", async () => {
   mode.onKey({ name: "e" });
   // The selection spans the anchored cell through the word's end, inclusive,
   // and renders as the highlight.
-  expect(selected(agent.term)).toEqual(["0,1", "1,1", "2,1", "3,1", "4,1"]);
+  expect(selected(session.term)).toEqual(["0,1", "1,1", "2,1", "3,1", "4,1"]);
   mode.onKey({ name: "y" });
   expect(copied).toEqual(["gamma"]);
   expect(mode.active).toBe(false);
-  expect(selected(agent.term)).toEqual([]);
+  expect(selected(session.term)).toEqual([]);
 });
 
 test("a selection spanning rows captures each whole row, trimmed", async () => {
@@ -385,7 +385,7 @@ test("a selection spanning rows captures each whole row, trimmed", async () => {
 });
 
 test("escape drops the selection first, then quits", async () => {
-  const { agent, pane, mode, dispose } = await modeOn("alpha\r\nbeta");
+  const { session, pane, mode, dispose } = await modeOn("alpha\r\nbeta");
   cleanup.push(dispose);
   pane.onCopy = () => {
     throw new Error("must not copy");
@@ -395,12 +395,12 @@ test("escape drops the selection first, then quits", async () => {
   mode.onKey({ name: "j" });
   expect(mode.cursor).toEqual({ x: 0, y: 2 });
   // A selection crossing rows highlights every intermediate row in full.
-  expect(selected(agent.term)).toEqual(["0,1", "1,1", "2,1", "3,1"]);
+  expect(selected(session.term)).toEqual(["0,1", "1,1", "2,1", "3,1"]);
   mode.onKey({ name: "escape" });
   expect(mode.active).toBe(true);
   // Selection dropped to a cursor-only highlight; the cursor did not move.
   expect(mode.cursor).toEqual({ x: 0, y: 2 });
-  expect(selected(agent.term)).toEqual([]);
+  expect(selected(session.term)).toEqual([]);
   mode.onKey({ name: "escape" });
   expect(mode.active).toBe(false);
 });
@@ -439,11 +439,11 @@ test("yank keeps leading indentation, like the mouse-drag path and tmux", async 
  * ------------------------------------------------------------------ */
 
 test("forward and backward search move to the match and wrap around", async () => {
-  const { agent, mode, dispose } = await modeOn("alpha beta\r\ngamma alpha");
+  const { session, mode, dispose } = await modeOn("alpha beta\r\ngamma alpha");
   cleanup.push(dispose);
   mode.search("alpha", "forward");
   expect(mode.cursor).toEqual({ x: 0, y: 0 });
-  expect(selected(agent.term)).toEqual(["0,0"]);
+  expect(selected(session.term)).toEqual(["0,0"]);
   mode.onKey({ name: "n" });
   expect(mode.cursor).toEqual({ x: 6, y: 1 });
   mode.onKey({ name: "n" });
@@ -476,13 +476,13 @@ test("search respects the cursor: forward is inclusive, repeat is not", async ()
  * ------------------------------------------------------------------ */
 
 test("forward search lands on the cells of a match after CJK characters", async () => {
-  const { agent, mode, dispose } = await modeOn("你好foo bar");
+  const { session, mode, dispose } = await modeOn("你好foo bar");
   cleanup.push(dispose);
   // 你 spans cells 0-1 and 好 spans 2-3, so "foo" begins at cell 4 — not at
   // its string index 2. The cursor and the highlight must sit on cell 4.
   mode.search("foo", "forward");
   expect(mode.cursor).toEqual({ x: 4, y: 0 });
-  expect(selected(agent.term)).toEqual(["4,0"]);
+  expect(selected(session.term)).toEqual(["4,0"]);
 });
 
 test("n and N repeat over CJK-prefixed matches by cell, not string index", async () => {
@@ -541,13 +541,13 @@ test("backward repeat (N) steps to the earlier match by cell on a wide row", asy
 });
 
 test("forward search lands on the cells of a match after an emoji", async () => {
-  const { agent, mode, dispose } = await modeOn("👨你 foo");
+  const { session, mode, dispose } = await modeOn("👨你 foo");
   cleanup.push(dispose);
   // 👨 (a surrogate pair) spans cells 0-1, 你 spans 2-3, so "foo" starts at
   // cell 5 even though its string index is 4.
   mode.search("foo", "forward");
   expect(mode.cursor).toEqual({ x: 5, y: 0 });
-  expect(selected(agent.term)).toEqual(["5,0"]);
+  expect(selected(session.term)).toEqual(["5,0"]);
 });
 
 test("search counts a ZWJ family as the single cell the terminal gives it", async () => {
@@ -597,13 +597,13 @@ test("yank after a wide-char search captures the text at the matched cells", asy
  * ------------------------------------------------------------------ */
 
 test("w skips a CJK word by cell and lands on the next word's cell", async () => {
-  const { agent, mode, dispose } = await modeOn("\u4F60\u597Dfoo bar");
+  const { session, mode, dispose } = await modeOn("\u4F60\u597Dfoo bar");
   cleanup.push(dispose);
   // 你 spans cells 0-1 and 好 spans 2-3, so "bar" starts at cell 8 — not at
   // its string index 6. The highlight must sit on that cell too.
   mode.onKey({ name: "w" });
   expect(mode.cursor).toEqual({ x: 8, y: 0 });
-  expect(selected(agent.term)).toEqual(["8,0"]);
+  expect(selected(session.term)).toEqual(["8,0"]);
 });
 
 test("e lands on the last cell of a CJK-prefixed word", async () => {
@@ -726,19 +726,19 @@ test("escape forgets the search before quitting the mode", async () => {
 
 test("output stays pinned when parked in history, and follows at the bottom", async () => {
   const vt = Array.from({ length: 15 }, (_, i) => `line ${i}`).join("\r\n");
-  const { agent, mode, dispose } = await modeOn(vt);
+  const { session, mode, dispose } = await modeOn(vt);
   cleanup.push(dispose);
   // Parked in history: enter scrolled up one, so the viewport is pinned.
-  const parked = agent.term.scrollbar.offset;
-  agent.term.write(bytes("\r\nline 15"));
-  expect(agent.term.scrollbar.offset).toBe(parked);
+  const parked = session.term.scrollbar.offset;
+  session.term.write(bytes("\r\nline 15"));
+  expect(session.term.scrollbar.offset).toBe(parked);
   // Cursor rides the live bottom.
   mode.onKey({ name: "G" });
   expect(mode.cursor).toEqual({ x: 0, y: 15 });
-  agent.term.write(bytes("\r\nline 16"));
-  expect(agent.term.scrollbar.offset).toBeGreaterThan(parked);
+  session.term.write(bytes("\r\nline 16"));
+  expect(session.term.scrollbar.offset).toBeGreaterThan(parked);
   // The viewport followed the output...
-  expect(agent.term.atBottom).toBe(true);
+  expect(session.term.atBottom).toBe(true);
   // ...and reconcile re-pins the cursor to the newest row.
   mode.reconcile();
   expect(mode.cursor).toEqual({ x: 0, y: 16 });
@@ -746,17 +746,17 @@ test("output stays pinned when parked in history, and follows at the bottom", as
 
 test("moving up off the live bottom pins the viewport against new output", async () => {
   const vt = Array.from({ length: 15 }, (_, i) => `line ${i}`).join("\r\n");
-  const { agent, mode, dispose } = await modeOn(vt);
+  const { session, mode, dispose } = await modeOn(vt);
   cleanup.push(dispose);
   mode.onKey({ name: "G" });
-  expect(agent.term.atBottom).toBe(true);
+  expect(session.term.atBottom).toBe(true);
   mode.onKey({ name: "k" });
   // Moving up off the newest row parks the viewport...
-  expect(agent.term.atBottom).toBe(false);
-  const parked = agent.term.scrollbar.offset;
-  agent.term.write(bytes("\r\nline 15"));
+  expect(session.term.atBottom).toBe(false);
+  const parked = session.term.scrollbar.offset;
+  session.term.write(bytes("\r\nline 15"));
   // ...and new output leaves it exactly where it was.
-  expect(agent.term.scrollbar.offset).toBe(parked);
+  expect(session.term.scrollbar.offset).toBe(parked);
   expect(mode.cursor).toEqual({ x: 0, y: 13 });
 });
 
@@ -766,15 +766,15 @@ test("moving up off the live bottom pins the viewport against new output", async
 
 test("the keymap enters copy mode and the leader keeps its meaning inside it", async () => {
   const t = await createTestRenderer({ width: 60, height: 12 });
-  const agent = new SessionHandle({
+  const session = new SessionHandle({
     cmd: ["true"],
     exited: { code: 0 },
     cols: 40,
     rows: 10,
   });
-  const pane = new TerminalPane(t.renderer, { id: "pane", session: agent });
-  agent.term.resize(40, 10);
-  agent.term.write(bytes("alpha beta\r\ngamma"));
+  const pane = new TerminalPane(t.renderer, { id: "pane", session: session });
+  session.term.resize(40, 10);
+  session.term.write(bytes("alpha beta\r\ngamma"));
   const mode = new CopyMode();
   let focusLeft = 0;
   const commands: CommandSpec[] = [
@@ -826,7 +826,7 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
   expect(mode.cursor).toEqual({ x: 0, y: 0 });
 
   pane.destroyRecursively();
-  agent.dispose();
+  session.dispose();
   t.renderer.destroy();
 });
 
@@ -850,7 +850,7 @@ async function makeWindow(count: number) {
   const { spaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
   const space = run(spaces.create("proj", process.cwd()));
   const win = run(space.newWindow());
-  const agents = Array.from({ length: count }, () =>
+  const sessions = Array.from({ length: count }, () =>
     run(
       win.startSession({
         cmd: ["true"],
@@ -862,12 +862,12 @@ async function makeWindow(count: number) {
   );
   // Narrowed rather than cast: copy mode walks a grid, so a test about it is
   // only meaningful on terminal panes, and these sessions are all ptys.
-  const panes = agents.map((agent, i) => {
-    const pane = win.split(i === 0 ? "row" : "column", agent)!;
+  const panes = sessions.map((session, i) => {
+    const pane = win.split(i === 0 ? "row" : "column", session)!;
     if (!(pane instanceof TerminalPane)) throw new Error("expected a terminal pane");
     return pane;
   });
-  return { t, spaces, space, win, agents, panes };
+  return { t, spaces, space, win, sessions, panes };
 }
 
 /** The same orphan guard main.tsx wires: it reacts to a pane leaving the tree. */
@@ -919,13 +919,13 @@ test("closing a window ends copy mode after its pane view is destroyed", async (
 });
 
 test("replacing the layout ends copy mode before leftover panes are destroyed", async () => {
-  const { t, spaces, win, panes, agents } = await makeWindow(3);
+  const { t, spaces, win, panes, sessions } = await makeWindow(3);
   cleanup.push(() => {
     t.renderer.destroy();
   });
   const paneA = panes[0]!;
-  const agentB = agents[1]!;
-  const agentC = agents[2]!;
+  const sessionB = sessions[1]!;
+  const sessionC = sessions[2]!;
 
   const mode = new CopyMode();
   wireCopyModeTeardown(spaces, mode);
@@ -946,13 +946,13 @@ test("replacing the layout ends copy mode before leftover panes are destroyed", 
           {
             type: "pane",
             id: panes[1]!.id,
-            content: { kind: "pty", session: agentB.id },
+            content: { kind: "pty", session: sessionB.id },
             weight: 1,
           },
           {
             type: "pane",
             id: panes[2]!.id,
-            content: { kind: "pty", session: agentC.id },
+            content: { kind: "pty", session: sessionC.id },
             weight: 1,
           },
         ],
