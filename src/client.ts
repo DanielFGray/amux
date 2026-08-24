@@ -158,7 +158,8 @@ const make = (
         workspace = next;
         const live = service.live as Set<string>;
         live.clear();
-        for (const { agent } of workspaceSessions(next)) if (!agent.exited) live.add(agent.id);
+        for (const { session } of workspaceSessions(next))
+          if (!session.exited) live.add(session.id);
       }
       return workspace;
     };

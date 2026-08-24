@@ -87,7 +87,7 @@ export interface PersistedSession {
   /** The agent this session was started as, for the sessions the mux starts as
    *  agents. Independent of `kind` — a shell pane the user launches an agent in
    *  is detected, not declared, and leaves this absent. */
-  agent?: string;
+  declaredAgent?: string;
   cmd?: string[];
   /** Identity of the plugin that supplies this component session's process. */
   provider?: string;
@@ -101,11 +101,11 @@ export interface PersistedSession {
 export interface PersistedWindow {
   number: number;
   name: string | null;
-  agents: PersistedSession[];
+  sessions: PersistedSession[];
   /**
    * The split arrangement, as an encoded layout string (see layout.ts).
    *
-   * A flat agent list cannot express arrangement, so without this a restored
+   * A flat session list cannot express arrangement, so without this a restored
    * window could only guess at one. Absent or null means "no arrangement was
    * recorded" — restore falls back to a preset rather than refusing.
    *
@@ -182,7 +182,7 @@ const PersistedSessionSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
   kind: S.optional(S.Literal("pty", "component")),
-  agent: S.optional(NonEmptyString),
+  declaredAgent: S.optional(NonEmptyString),
   cmd: S.optional(S.Array(NonEmptyString).pipe(S.minItems(1))),
   provider: S.optional(NonEmptyString),
   cwd: S.optional(S.String),
@@ -199,7 +199,7 @@ const PersistedSessionSchema = S.Struct({
 const PersistedWindowSchema = S.Struct({
   number: PositiveInt,
   name: S.NullOr(S.String),
-  agents: S.Array(PersistedSessionSchema),
+  sessions: S.Array(PersistedSessionSchema),
   layout: S.optional(S.NullOr(S.String)),
 });
 
@@ -248,6 +248,48 @@ export const SessionLeaseSchema = S.Struct({
     ).pipe(S.maxItems(64)),
   ),
 });
+
+/** Convert the agent-era persistence keys before the current schema validates them. */
+function migrateSessionState(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.spaces)) return value;
+  return {
+    ...value,
+    spaces: value.spaces.map((space) => {
+      if (!isRecord(space) || !Array.isArray(space.windows)) return space;
+      return {
+        ...space,
+        windows: space.windows.map(migratePersistedWindow),
+      };
+    }),
+  };
+}
+
+function migratePersistedWindow(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const { agents, ...window } = value;
+  const sessions = "sessions" in value ? value.sessions : agents;
+  return {
+    ...window,
+    ...(sessions === undefined
+      ? {}
+      : {
+          sessions: Array.isArray(sessions) ? sessions.map(migratePersistedSession) : sessions,
+        }),
+  };
+}
+
+function migratePersistedSession(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const { agent, ...session } = value;
+  return {
+    ...session,
+    ...(session.declaredAgent === undefined && agent !== undefined ? { declaredAgent: agent } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 export interface SessionPaths {
   root: string;
@@ -323,7 +365,7 @@ export function parseSessionState(
   expectedId?: string,
 ): Effect.Effect<SessionState, SessionStateError> {
   return Effect.gen(function* () {
-    const state = yield* S.decodeUnknown(SessionStateSchema)(value).pipe(
+    const state = yield* S.decodeUnknown(SessionStateSchema)(migrateSessionState(value)).pipe(
       Effect.mapError(schemaError),
     );
     if (expectedId !== undefined && state.id !== expectedId) return yield* invalidState;
@@ -332,7 +374,7 @@ export function parseSessionState(
     const spaceIds = new Set<string>();
     const paneIds = new Set<string>();
     let windowCount = 0;
-    let agentCount = 0;
+    let sessionCount = 0;
     for (const item of spaces) {
       if (spaceIds.has(item.id)) return yield* invalidSpace;
       spaceIds.add(item.id);
@@ -348,11 +390,11 @@ export function parseSessionState(
         )
           return yield* invalidWindow;
         numbers.add(candidate.number);
-        agentCount += candidate.agents.length;
-        if (agentCount > MAX_SESSIONS) return yield* tooManyAgents;
+        sessionCount += candidate.sessions.length;
+        if (sessionCount > MAX_SESSIONS) return yield* tooManySessions;
         const owned = new Map<string, boolean>();
-        for (const entry of candidate.agents) {
-          if (owned.has(entry.id)) return yield* invalidAgent;
+        for (const entry of candidate.sessions) {
+          if (owned.has(entry.id)) return yield* invalidSession;
           owned.set(entry.id, entry.exited);
         }
         if (candidate.layout) {
@@ -404,11 +446,11 @@ const tooManyWindows = new SessionStateError({
 const invalidWindow = new SessionStateError({
   message: "invalid persisted window",
 });
-const tooManyAgents = new SessionStateError({
-  message: "session has too many agents",
+const tooManySessions = new SessionStateError({
+  message: "session has too many sessions",
 });
-const invalidAgent = new SessionStateError({
-  message: "invalid persisted agent",
+const invalidSession = new SessionStateError({
+  message: "invalid persisted session",
 });
 const layoutFocus = new SessionStateError({
   message: "layout focus names no pane",
@@ -429,7 +471,7 @@ const absentSession = (id: string) =>
 function schemaError(error: unknown): SessionStateError {
   const message = String(error);
   if (message.includes("session has too many spaces")) return tooManySpaces;
-  if (message.includes('["agents"]')) return invalidAgent;
+  if (message.includes('["sessions"]')) return invalidSession;
   if (message.includes('["windows"]')) return invalidWindow;
   if (message.includes('["spaces"]')) return invalidSpace;
   return invalidState;

@@ -39,7 +39,7 @@ const base = (layout: string): SessionState => ({
         {
           number: 1,
           name: null,
-          agents: [
+          sessions: [
             {
               id: "agent-a",
               name: "cat",
@@ -126,7 +126,7 @@ test("adoption prunes a live agent no pane references, and its exit removes the 
   const saved = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
-  saved.spaces[0]!.windows[0]!.agents.push({
+  saved.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "sleep",
     cmd: ["sleep", "30"],
@@ -136,7 +136,7 @@ test("adoption prunes a live agent no pane references, and its exit removes the 
     exitCode: null,
   });
   const adopted = run(workspaceFromSession(saved));
-  expect(adopted.spaces[0]!.windows[0]!.agents.map((agent) => agent.id)).toEqual(["agent-a"]);
+  expect(adopted.spaces[0]!.windows[0]!.sessions.map((agent) => agent.id)).toEqual(["agent-a"]);
   const exited = markSessionExited(adopted, "agent-a", 0);
   expect(exited.spaces).toEqual([]);
 });
@@ -152,7 +152,7 @@ test("workspace and command context parsers reject malformed nested state and re
   expect(run(parseWorkspace(valid))).toEqual(valid);
 
   const badAgent = structuredClone(valid) as any;
-  badAgent.spaces[0].windows[0].agents[0].cols = "wide";
+  badAgent.spaces[0].windows[0].sessions[0].cols = "wide";
   expect(runFailMessage(parseWorkspace(badAgent))).toContain("workspace does not match schema");
   const badFocus = structuredClone(valid);
   badFocus.spaces[0]!.windows[0]!.state.focus = "missing-pane";
@@ -227,7 +227,7 @@ test("parseWorkspace rejects a pane naming an agent another window owns", () => 
   s.spaces[0]!.windows.push({
     number: 2,
     name: null,
-    agents: [
+    sessions: [
       {
         id: "agent-b",
         name: "sh",
@@ -270,7 +270,7 @@ test("parseWorkspace rejects a live agent that no pane references", () => {
       ),
     ),
   );
-  adopted.spaces[0]!.windows[0]!.agents.push({
+  adopted.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "sleep",
     cmd: ["sleep", "30"],
@@ -298,7 +298,7 @@ test("parseWorkspace accepts an exited agent no pane references", () => {
       ),
     ),
   );
-  adopted.spaces[0]!.windows[0]!.agents.push({
+  adopted.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "sleep",
     cmd: ["sleep", "30"],
@@ -308,7 +308,7 @@ test("parseWorkspace accepts an exited agent no pane references", () => {
     exitCode: 1,
   });
   const received = run(parseWorkspace(adopted));
-  expect(received.spaces[0]!.windows[0]!.agents.map((agent) => agent.id)).toEqual([
+  expect(received.spaces[0]!.windows[0]!.sessions.map((agent) => agent.id)).toEqual([
     "agent-a",
     "agent-b",
   ]);
@@ -332,7 +332,7 @@ test("new identities are hierarchical, unique, and disjoint from adopted ids", (
     command("pane.split", { axis: "column" }),
     context,
   ).snapshot;
-  const agents = second.spaces[0]!.windows[0]!.agents.map((agent) => agent.id);
+  const agents = second.spaces[0]!.windows[0]!.sessions.map((agent) => agent.id);
   const panes = second.spaces[0]!.windows[0]!.layout.root
     ? (JSON.stringify(second.spaces[0]!.windows[0]!.layout).match(/"id":"([^"]+)"/g) ?? [])
     : [];
@@ -364,14 +364,14 @@ test("pane.split inherits the caller's cwd and accepts an override", () => {
     command("pane.split", { axis: "row" }),
     worktree,
   ).snapshot;
-  expect(inherited.spaces[0]!.windows[0]!.agents.at(-1)!.cwd).toBe("/srv/worktrees/feature");
+  expect(inherited.spaces[0]!.windows[0]!.sessions.at(-1)!.cwd).toBe("/srv/worktrees/feature");
 
   const overridden = applyWorkspaceCommand(
     adopted,
     command("pane.split", { axis: "row", cwd: "packages/app" }),
     worktree,
   ).snapshot;
-  expect(overridden.spaces[0]!.windows[0]!.agents.at(-1)!.cwd).toBe(
+  expect(overridden.spaces[0]!.windows[0]!.sessions.at(-1)!.cwd).toBe(
     "/srv/worktrees/feature/packages/app",
   );
 });
@@ -380,7 +380,7 @@ test("pane.close transfers focus to a survivor when the focused pane is closed",
   const saved = base(
     '{"version":1,"root":{"type":"split","direction":"column","children":[{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},{"type":"pane","id":"pane-b","content":{"kind":"pty","session":"agent-b"},"weight":1},{"type":"pane","id":"pane-c","content":{"kind":"pty","session":"agent-c"},"weight":1}]},"focus":"pane-b"}',
   );
-  saved.spaces[0]!.windows[0]!.agents.push(
+  saved.spaces[0]!.windows[0]!.sessions.push(
     {
       id: "agent-b",
       name: "sh",
@@ -412,7 +412,7 @@ test("closing the last pane kills the backend without revealing a hidden one", (
   const saved = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
-  saved.spaces[0]!.windows[0]!.agents.push({
+  saved.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "sleep",
     cmd: ["sleep", "30"],
@@ -422,7 +422,7 @@ test("closing the last pane kills the backend without revealing a hidden one", (
     exitCode: null,
   });
   const adopted = run(workspaceFromSession(saved));
-  expect(adopted.spaces[0]!.windows[0]!.agents.map((agent) => agent.id)).toEqual(["agent-a"]);
+  expect(adopted.spaces[0]!.windows[0]!.sessions.map((agent) => agent.id)).toEqual(["agent-a"]);
   const closed = applyWorkspaceCommand(adopted, command("pane.close"), context);
   expect(closed.actions).toEqual([{ _tag: "kill", agent: "agent-a" }]);
   expect(closed.snapshot.spaces).toEqual([]);
@@ -453,7 +453,7 @@ const twoPaneLayout =
 
 function twoPaneSession(): SessionState {
   const s = base(twoPaneLayout);
-  s.spaces[0]!.windows[0]!.agents.push({
+  s.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "sh",
     cmd: ["sh"],
@@ -477,7 +477,7 @@ const threePaneLayout =
 
 function threePaneSession(): SessionState {
   const s = base(threePaneLayout);
-  s.spaces[0]!.windows[0]!.agents.push(
+  s.spaces[0]!.windows[0]!.sessions.push(
     {
       id: "agent-b",
       name: "sh",
@@ -522,8 +522,8 @@ test("pane.break moves the focused pane into a new window", () => {
     content: { kind: "pty", session: "agent-a" },
   });
   expect(created.state.focus).toBe("pane-a");
-  expect(created.agents).toHaveLength(1);
-  expect(created.agents[0]!.id).toBe("agent-a");
+  expect(created.sessions).toHaveLength(1);
+  expect(created.sessions[0]!.id).toBe("agent-a");
 
   expect(result.snapshot.revision).toBe(adopted.revision + 1);
 });
@@ -544,7 +544,7 @@ test("pane.break moves a shared session once and closes its other source views",
   expect(broken.state.focus).toBe("pane-a");
 
   expect(layoutPanes(broken.layout.root).map((pane) => pane.id)).toEqual(["pane-a"]);
-  expect(broken.agents.map((agent) => agent.id)).toEqual(["agent-a"]);
+  expect(broken.sessions.map((agent) => agent.id)).toEqual(["agent-a"]);
 
   expect(result.snapshot.revision).toBe(adopted.revision + 1);
 });
@@ -563,7 +563,7 @@ test("pane.join moves a shared session once and closes its other source views", 
   const destination = space.windows[0]!;
   expect(layoutPanes(destination.layout.root).map((pane) => pane.id)).toContain("pane-a");
   expect(layoutPanes(destination.layout.root).map((pane) => pane.id)).not.toContain("pane-b");
-  expect(destination.agents.filter((agent) => agent.id === "agent-a")).toHaveLength(1);
+  expect(destination.sessions.filter((agent) => agent.id === "agent-a")).toHaveLength(1);
 });
 
 test("pane.join moves a focused pane from the named window into the active window", () => {
@@ -583,7 +583,7 @@ test("pane.join moves a focused pane from the named window into the active windo
     expect.any(String),
     "agent-a",
   ]);
-  expect(destination.agents.map((agent) => agent.id)).toContain("agent-a");
+  expect(destination.sessions.map((agent) => agent.id)).toContain("agent-a");
   expect(destination.state.focus).toBe("pane-a");
 });
 
@@ -735,7 +735,7 @@ test("a sessionless plugin pane survives the wire and the save round trip", () =
     type: "amux.editor",
     descriptor: { file: "/work/note.txt" },
   };
-  target.agents = target.agents.filter((agent) => agent.id !== orphan);
+  target.sessions = target.sessions.filter((agent) => agent.id !== orphan);
   const expected = target.layout;
 
   const received = run(parseWorkspaceJson(JSON.stringify(withEditor)));
@@ -974,7 +974,7 @@ test("agent.reveal does nothing for an agent adoption pruned", () => {
   const s = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
-  s.spaces[0]!.windows[0]!.agents.push({
+  s.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "sleep",
     cmd: ["sleep", "30"],
@@ -1012,7 +1012,7 @@ test("agent.next-blocked jumps to the next blocked agent", () => {
   const s = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
-  s.spaces[0]!.windows[0]!.agents.push({
+  s.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "sleep",
     cmd: ["sleep", "30"],
@@ -1037,7 +1037,7 @@ test("session.kill removes the last backend once adoption pruned the detached on
   const s = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
-  s.spaces[0]!.windows[0]!.agents.push({
+  s.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "sleep",
     cmd: ["sleep", "30"],
@@ -1061,7 +1061,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
   const s = base(
     '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}',
   );
-  s.spaces[0]!.windows[0]!.agents.push({
+  s.spaces[0]!.windows[0]!.sessions.push({
     id: "agent-b",
     name: "worker",
     kind: "component",
@@ -1073,7 +1073,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
   });
 
   const adopted = run(workspaceFromSession(s));
-  const agent = adopted.spaces[0]!.windows[0]!.agents[1]!;
+  const agent = adopted.spaces[0]!.windows[0]!.sessions[1]!;
   agent.exited = true;
   agent.exitCode = 17;
   const result = applyWorkspaceCommand(
@@ -1188,12 +1188,12 @@ test("agent.new creates an agent session and queues its initial prompt", () => {
       size: { cols: 80, rows: 24 },
     },
   );
-  const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
+  const agent = mutation.snapshot.spaces[0]!.windows[0]!.sessions.at(-1)!;
   const pane = mutation.snapshot.spaces[0]!.windows[0]!.layout.focus!;
   expect(mutation.result).toEqual({ session: agent.id, pane });
   expect(agent.kind).toBe("component");
   expect(agent.cmd).toBeUndefined();
-  expect(agent.agent).toBe("test");
+  expect(agent.declaredAgent).toBe("test");
   expect(mutation.actions).toContainEqual({
     _tag: "prompt",
     agent: agent.id,
@@ -1218,7 +1218,7 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
     },
   );
 
-  const agent = mutation.snapshot.spaces[0]!.windows[0]!.agents.at(-1)!;
+  const agent = mutation.snapshot.spaces[0]!.windows[0]!.sessions.at(-1)!;
   expect(agent.kind).toBe("component");
   expect(mutation.actions).toContainEqual(
     expect.objectContaining({ _tag: "spawn", agent, pane: expect.any(String) }),
@@ -1249,7 +1249,7 @@ const wideBase = (): SessionState => ({
         {
           number: 1,
           name: null,
-          agents: [
+          sessions: [
             {
               id: "agent-a",
               name: "cat",
@@ -1274,7 +1274,7 @@ const wideBase = (): SessionState => ({
         {
           number: 1,
           name: null,
-          agents: [
+          sessions: [
             {
               id: "agent-b1",
               name: "cat",
@@ -1521,8 +1521,8 @@ test("pane.move crosses spaces, re-ids the pane, and reports the old id", () => 
   expect(JSON.stringify(mutation.snapshot)).not.toContain("pane-b1");
   const spaceA = mutation.snapshot.spaces.find((s) => s.id === "space-a")!;
   const spaceB = mutation.snapshot.spaces.find((s) => s.id === "space-b")!;
-  expect(spaceA.windows[0]!.agents.map((a) => a.id)).toContain("agent-b1");
-  expect(spaceB.windows[0]!.agents.map((a) => a.id)).not.toContain("agent-b1");
+  expect(spaceA.windows[0]!.sessions.map((a) => a.id)).toContain("agent-b1");
+  expect(spaceB.windows[0]!.sessions.map((a) => a.id)).not.toContain("agent-b1");
 });
 
 test("a closed pane id is never reissued to the next pane", () => {

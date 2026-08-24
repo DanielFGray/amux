@@ -54,7 +54,7 @@ test("a window snapshot records its agents and the arrangement of them", async (
 
   const saved = snapshotWindow(window);
   expect(saved.number).toBe(window.number);
-  expect(saved.agents.map((a) => a.id)).toEqual([first.session!.id, second.session!.id]);
+  expect(saved.sessions.map((a) => a.id)).toEqual([first.session!.id, second.session!.id]);
   // The flat list cannot say how they were placed, nor which of them was
   // focused; the layout string says both, and is the only record of either.
   expect(layoutSessions(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([
@@ -67,7 +67,7 @@ test("a window snapshot records its agents and the arrangement of them", async (
 test("a snapshot records an agent's command, directory and terminal size", async () => {
   const { window, layout } = await setup();
   await layout();
-  const [session] = snapshotWindow(window).agents;
+  const [session] = snapshotWindow(window).sessions;
   expect(session!.cmd).toEqual(["bash"]);
   expect(session!.cwd).toBe(process.cwd());
   expect(session!.cols).toBe(window.panes[0]!.session!.term.cols);
@@ -99,7 +99,7 @@ test("agents with no pane open are recorded, and are absent from the layout", as
   await layout();
 
   const saved = snapshotWindow(window);
-  expect(saved.agents.map((a) => a.id)).toContain(hidden.id);
+  expect(saved.sessions.map((a) => a.id)).toContain(hidden.id);
   expect(layoutSessions(Effect.runSync(decodeLayout(saved.layout!)))).toEqual([kept.session!.id]);
 });
 
@@ -273,7 +273,7 @@ test("an agent that had exited comes back as a tombstone, not a second run", asy
             number: 1,
             name: null,
             layout: null,
-            agents: [
+            sessions: [
               {
                 id: "agent-dead",
                 name: "build",
@@ -309,7 +309,7 @@ test("a window restores its live agents even when one of them is a tombstone", a
   const alive = source.window.panes[0]!.session!;
   await source.layout();
   const saved = snapshotSpace(source.space);
-  saved.windows[0]!.agents.push({
+  saved.windows[0]!.sessions.push({
     id: "agent-dead",
     name: "gone",
     cmd: ["true"],
@@ -338,7 +338,7 @@ test("a tombstone named by the saved layout still gets no pane", async () => {
   const saved = snapshotSpace(source.space);
   // The layout still mentions both, but one is recorded as already finished.
   expect(layoutSessions(Effect.runSync(decodeLayout(saved.windows[0]!.layout!)))).toHaveLength(2);
-  const dead = saved.windows[0]!.agents.find((a) => a.id === doomed.id)!;
+  const dead = saved.windows[0]!.sessions.find((a) => a.id === doomed.id)!;
   dead.exited = true;
   dead.exitCode = 1;
 
@@ -359,7 +359,7 @@ test("a session file with no layout recorded still restores every agent", async 
   run(source.window.splitSpawn("row"));
   await source.layout();
   const saved = snapshotSpace(source.space);
-  const ids = saved.windows[0]!.agents.map((a) => a.id);
+  const ids = saved.windows[0]!.sessions.map((a) => a.id);
   delete saved.windows[0]!.layout;
 
   const target = source.takeOver();
@@ -374,7 +374,7 @@ test("a layout string that no longer parses falls back rather than losing the wi
   run(source.window.splitSpawn("row"));
   await source.layout();
   const saved = snapshotSpace(source.space);
-  const ids = saved.windows[0]!.agents.map((a) => a.id);
+  const ids = saved.windows[0]!.sessions.map((a) => a.id);
   saved.windows[0]!.layout = "{ this was hand-edited";
 
   const target = source.takeOver();
@@ -389,10 +389,10 @@ test("a layout naming an agent that did not come back restores the ones that did
   run(source.window.splitSpawn("row"));
   await source.layout();
   const saved = snapshotSpace(source.space);
-  const kept = saved.windows[0]!.agents[0]!.id;
+  const kept = saved.windows[0]!.sessions[0]!.id;
   // Drop the second agent from the list but leave it in the layout, the shape a
   // half-written or hand-edited file has.
-  saved.windows[0]!.agents.length = 1;
+  saved.windows[0]!.sessions.length = 1;
 
   const target = source.takeOver();
   const [space] = run(restoreSpaces(target, [saved]));
@@ -418,7 +418,7 @@ test("an agent created after a restore cannot collide with a restored id", async
             number: 1,
             name: null,
             layout: null,
-            agents: [
+            sessions: [
               {
                 id: "agent-9000",
                 name: "sh",

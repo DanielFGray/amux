@@ -550,7 +550,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 const exists = yield* Effect.promise(() => gitWorktreeExists(space.worktree!.path));
                 if (!exists) {
                   for (const w of space.windows)
-                    for (const a of w.agents) {
+                    for (const a of w.sessions) {
                       if (!a.exited) {
                         next = markSessionExited(next, a.id, null);
                         changed = true;
@@ -560,13 +560,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 }
               }
               for (const w of space.windows) {
-                for (const a of w.agents) {
+                for (const a of w.sessions) {
                   if (a.exited || a.kind === "component") continue;
                   const pane = findPaneBySession(next, a.id);
                   yield* rawSpawn(
                     {
                       kind: a.kind,
-                      ...(a.agent ? { agent: a.agent } : {}),
+                      ...(a.declaredAgent ? { agent: a.declaredAgent } : {}),
                       id: a.id,
                       cmd: a.cmd ?? [],
                       cwd: a.cwd,
@@ -1125,11 +1125,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           Effect.gen(function* () {
             const cur = yield* model.get;
             const found = [...workspaceSessions(cur.workspace)].find(
-              ({ agent }) => agent.id === sessionId,
+              ({ session }) => session.id === sessionId,
             );
             if (!found) return yield* controlFail(`session '${sessionId}' does not exist`);
-            if (found.agent.exited) return yield* controlFail(`session '${sessionId}' has exited`);
-            if (found.agent.provider !== provider)
+            if (found.session.exited)
+              return yield* controlFail(`session '${sessionId}' has exited`);
+            if (found.session.provider !== provider)
               return yield* controlFail(`session '${sessionId}' provider does not match`);
             if ((yield* liveSessions()).includes(sessionId)) return;
             if (!argv) {
@@ -1154,18 +1155,18 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             }
             const pane = findPaneBySession(cur.workspace, sessionId);
             yield* spawnSession({
-              kind: found.agent.kind,
-              agent: found.agent.agent,
-              id: found.agent.id,
+              kind: found.session.kind,
+              agent: found.session.declaredAgent,
+              id: found.session.id,
               cmd: argv,
               env,
               stripEnv,
-              cwd: found.agent.cwd,
+              cwd: found.session.cwd,
               rpcPath: paths.socket,
               daemonSession: id,
               ...(pane ? { paneId: pane.id } : {}),
-              cols: found.agent.cols,
-              rows: found.agent.rows,
+              cols: found.session.cols,
+              rows: found.session.rows,
             }).pipe(
               Effect.catchAll((error) =>
                 Effect.gen(function* () {

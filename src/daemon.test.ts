@@ -81,11 +81,11 @@ const componentState = (id: string, provider: string) => ({
             },
             focus: "pane-component",
           }),
-          agents: [
+          sessions: [
             {
               id: "component-session",
               name: "component",
-              agent: provider,
+              declaredAgent: provider,
               provider,
               kind: "component" as const,
               cols: 80,
@@ -318,8 +318,8 @@ test("a new session starts with a default 80x24 space", async () => {
   const space = ws(d).spaces[0]!;
   const window = space.windows[0]!;
   expect(window.layout.root).toBeDefined();
-  expect(window.agents[0]?.cols).toBe(80);
-  expect(window.agents[0]?.rows).toBe(24);
+  expect(window.sessions[0]?.cols).toBe(80);
+  expect(window.sessions[0]?.rows).toBe(24);
   await C(d);
 });
 
@@ -335,7 +335,7 @@ test("last pane removal closes the daemon so the next attach starts fresh", asyn
   const next = await open("empty", e);
   const nextWorkspace = await Effect.runPromise(next.getWorkspace);
   expect(nextWorkspace.spaces).toHaveLength(1);
-  expect(nextWorkspace.spaces[0]!.windows[0]!.agents[0]!.exited).toBe(false);
+  expect(nextWorkspace.spaces[0]!.windows[0]!.sessions[0]!.exited).toBe(false);
   await C(next);
 });
 
@@ -457,7 +457,7 @@ test("a fast prepared exit cannot deadlock failed-write compensation", async () 
   const daemon = await open("fast-compensation", e, {
     saveState: saveEffect(async (state: any) => {
       const agents = state.spaces.flatMap((space: any) =>
-        space.windows.flatMap((window: any) => window.agents),
+        space.windows.flatMap((window: any) => window.sessions),
       );
       if (rejectCandidate && agents.length > 1) {
         const deadline = Date.now() + 1_000;
@@ -502,7 +502,7 @@ test("a prepared session is absent from status and subscribers until its model i
   const daemon = await open("private-prepare", e, {
     saveState: saveEffect(async (state: any) => {
       const agents = state.spaces.flatMap((space: any) =>
-        space.windows.flatMap((window: any) => window.agents),
+        space.windows.flatMap((window: any) => window.sessions),
       );
       if (agents.length > 1) {
         preparedId = agents.at(-1).id;
@@ -554,7 +554,7 @@ test("a one-shot reversible write failure does not poison the next command", asy
   const daemon = await open("candidate-recovery", e, {
     saveState: saveEffect(async (state: any) => {
       const agents = state.spaces.flatMap((space: any) =>
-        space.windows.flatMap((window: any) => window.agents),
+        space.windows.flatMap((window: any) => window.sessions),
       );
       if (fail && agents.length > 1) {
         fail = false;
@@ -570,7 +570,7 @@ test("a one-shot reversible write failure does not poison the next command", asy
   ).rejects.toThrow("one-shot candidate failure");
   expect(await healthy(daemon, e)).toBe(true);
   const recovered = await rwc(daemon)(command("pane.split", { axis: "row" }), revision, context);
-  expect(recovered.snapshot.spaces[0]!.windows[0]!.agents).toHaveLength(2);
+  expect(recovered.snapshot.spaces[0]!.windows[0]!.sessions).toHaveLength(2);
   await S(daemon);
 });
 
@@ -580,7 +580,7 @@ test("a rejected candidate never reaches current or backup state", async () => {
   const daemon = await open("no-rollback", e, {
     saveState: saveEffect(async (state: any) => {
       const agents = state.spaces.flatMap((space: any) =>
-        space.windows.flatMap((window: any) => window.agents),
+        space.windows.flatMap((window: any) => window.sessions),
       );
       if (rejectCandidate && agents.length > 1) throw new Error("injected candidate failure");
       await run(SessionStore.save(state), e);
@@ -595,7 +595,7 @@ test("a rejected candidate never reaches current or backup state", async () => {
 
   const reopened = await open("no-rollback", e);
   const agents = st(reopened).spaces.flatMap((space) =>
-    space.windows.flatMap((window) => window.agents),
+    space.windows.flatMap((window) => window.sessions),
   );
   expect(agents).toHaveLength(1);
   await S(reopened);
@@ -687,7 +687,7 @@ test("a destructive commit retries its single durable write after process comple
   });
   // started by startDaemon;
   armed = true;
-  const agent = ws(daemon).spaces[0]!.windows[0]!.agents[0]!.id;
+  const agent = ws(daemon).spaces[0]!.windows[0]!.sessions[0]!.id;
   await rwc(daemon)(command("session.kill", { session: agent }), ws(daemon).revision, context);
   expect(failed).toBe(true);
   expect(ws(daemon).spaces).toHaveLength(0);
@@ -730,7 +730,7 @@ test("stop interrupts and joins a never-settling destructive persistence operati
   );
   const heldPid = await waitForPid(marker);
   armed = true;
-  const agent = ws(daemon).spaces[0]!.windows[0]!.agents[0]!.id;
+  const agent = ws(daemon).spaces[0]!.windows[0]!.sessions[0]!.id;
   const mutation = rwc(daemon)(
     command("session.kill", { session: agent }),
     ws(daemon).revision,
@@ -890,7 +890,7 @@ test("a transient natural-exit write failure retries before making the exit visi
     saveState: saveEffect(async (state: any) => {
       const exited = state.spaces
         .flatMap((space: any) => space.windows)
-        .flatMap((window: any) => window.agents)
+        .flatMap((window: any) => window.sessions)
         .some((agent: any) => agent.exited);
       if (exited && !failed) {
         failed = true;
@@ -905,13 +905,15 @@ test("a transient natural-exit write failure retries before making the exit visi
     shell: ["sh", "-c", "exit 7"],
   });
   await waitFor(
-    () => ws(daemon).spaces[0]!.windows[0]!.agents.some((agent) => agent.exited),
+    () => ws(daemon).spaces[0]!.windows[0]!.sessions.some((agent) => agent.exited),
     "the spawned shell to exit",
     2_000,
   );
   expect(failed).toBe(true);
   expect(
-    ws(daemon).spaces[0]!.windows[0]!.agents.some((agent) => agent.exited && agent.exitCode === 7),
+    ws(daemon).spaces[0]!.windows[0]!.sessions.some(
+      (agent) => agent.exited && agent.exitCode === 7,
+    ),
   ).toBe(true);
   expect(await healthy(daemon, e)).toBe(true);
   await S(daemon);
@@ -924,7 +926,7 @@ test("permanent natural-exit persistence failure surfaces unhealthy status until
     saveState: saveEffect(async (state: any) => {
       const exited = state.spaces
         .flatMap((space: any) => space.windows)
-        .flatMap((window: any) => window.agents)
+        .flatMap((window: any) => window.sessions)
         .some((agent: any) => agent.exited);
       if (exited && unavailable) throw new Error("disk offline");
       await run(SessionStore.save(state), e);
@@ -977,7 +979,7 @@ test("close interrupts and joins a never-settling natural-exit persistence opera
     saveState: (state) => {
       const exited = state.spaces
         .flatMap((space) => space.windows)
-        .flatMap((window) => window.agents)
+        .flatMap((window) => window.sessions)
         .some((agent) => agent.exited);
       if (armed && exited) {
         saving();
@@ -1027,7 +1029,7 @@ test("a failed destructive action leaves durable state untouched", async () => {
   const daemon = await open("kill-transaction", e);
   // started by startDaemon;
   const before = ws(daemon);
-  const agent = before.spaces[0]!.windows[0]!.agents[0]!.id;
+  const agent = before.spaces[0]!.windows[0]!.sessions[0]!.id;
   const kill = daemon.killSession.bind(daemon);
   daemon.killSession = () => Effect.fail(new DaemonError({ message: "injected kill failure" }));
   await expect(
@@ -1035,7 +1037,7 @@ test("a failed destructive action leaves durable state untouched", async () => {
   ).rejects.toThrow("injected kill failure");
   expect(ws(daemon)).toEqual(before);
   expect(
-    (await run(SessionStore.load("kill-transaction"), e))?.spaces[0]?.windows[0]?.agents[0]?.id,
+    (await run(SessionStore.load("kill-transaction"), e))?.spaces[0]?.windows[0]?.sessions[0]?.id,
   ).toBe(agent);
   daemon.killSession = kill;
   await S(daemon);
@@ -1077,11 +1079,11 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
               number: 1,
               name: null,
               layout,
-              agents: [
+              sessions: [
                 {
                   id: "agent-restore",
                   name: "bad",
-                  agent: "missing-harness",
+                  declaredAgent: "missing-harness",
                   kind: "component",
                   cmd: ["bad"],
                   cols: 80,
@@ -1098,18 +1100,18 @@ test("restore spawn failures are persisted before the daemon accepts clients", a
     e,
   );
   expect(
-    (await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]?.agents[0],
+    (await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]?.sessions[0],
   ).toMatchObject({
     id: "agent-restore",
-    agent: "missing-harness",
+    declaredAgent: "missing-harness",
   });
   const daemon = await open("restore-failure", e);
   const restored = (await run(SessionStore.load("restore-failure"), e))?.spaces[0]?.windows[0]
-    ?.agents[0];
+    ?.sessions[0];
   expect(restored).toMatchObject({
     id: "agent-restore",
     name: "bad",
-    agent: "missing-harness",
+    declaredAgent: "missing-harness",
     kind: "component",
     cmd: ["bad"],
     exited: false,
@@ -1124,9 +1126,9 @@ test("a component provider identity survives session persistence and restore", a
 
   const first = await open("identity", e);
   const saved = await run(SessionStore.load("identity"), e);
-  const restored = saved!.spaces[0]!.windows[0]!.agents[0]!;
+  const restored = saved!.spaces[0]!.windows[0]!.sessions[0]!;
   expect(restored).toMatchObject({
-    agent: "native",
+    declaredAgent: "native",
     provider: "native",
     kind: "component",
   });
@@ -1135,7 +1137,7 @@ test("a component provider identity survives session persistence and restore", a
 
   const second = await open("identity", e);
   const afterRestart = (await run(SessionStore.load("identity"), e))!.spaces[0]!.windows[0]!
-    .agents[0]!;
+    .sessions[0]!;
   expect(afterRestart.provider).toBe("native");
   expect(afterRestart.cmd).toBeUndefined();
   await S(second);
@@ -1170,7 +1172,7 @@ test("component restore is attach-gated and ResumeAgent does not create a second
   await Bun.sleep(50);
   expect((await readFile(marker, "utf8")).trim().split("\n")).toHaveLength(1);
   const restored = (await run(SessionStore.load("attach-gated"), e))!.spaces[0]!.windows[0]!
-    .agents[0]!;
+    .sessions[0]!;
   expect(restored).toMatchObject({
     name: "component",
     exited: false,
@@ -1197,7 +1199,7 @@ test("an unavailable component provider becomes a tombstone without spawning", a
   );
 
   const restored = (await run(SessionStore.load("unavailable"), e))!.spaces[0]!.windows[0]!
-    .agents[0]!;
+    .sessions[0]!;
   expect(spawned).toBe(0);
   expect(restored.exited).toBe(true);
   expect(restored.name).toContain("unavailable: provider 'missing' is unavailable");
@@ -1236,7 +1238,7 @@ test("a sessionless plugin pane restores without a backend and without a tombsto
               }),
               // No session backs the pane, so the daemon has nothing to spawn,
               // resume, or tombstone.
-              agents: [],
+              sessions: [],
             },
           ],
         },
@@ -1254,7 +1256,7 @@ test("a sessionless plugin pane restores without a backend and without a tombsto
 
   expect(spawned).toBe(0);
   const restored = (await run(SessionStore.load("sessionless"), e))!.spaces[0]!.windows[0]!;
-  expect(restored.agents).toHaveLength(0);
+  expect(restored.sessions).toHaveLength(0);
   expect(JSON.parse(restored.layout!).root.content).toEqual(editor);
   await S(daemon);
 });

@@ -66,7 +66,7 @@ export function snapshotSessionEntry(session: SessionHandle): PersistedSession {
     id: session.id,
     name: session.name,
     ...(session.kind === "component" ? { kind: "component" as const } : {}),
-    ...(session.declaredAgent ? { agent: session.declaredAgent } : {}),
+    ...(session.declaredAgent ? { declaredAgent: session.declaredAgent } : {}),
     ...(session.cmd.length > 0 ? { cmd: [...session.cmd] } : {}),
     ...(session.provider ? { provider: session.provider } : {}),
     ...(session.cwd ? { cwd: session.cwd } : {}),
@@ -90,7 +90,7 @@ export function snapshotWindow(window: Window): PersistedWindow {
   return {
     number: window.number,
     name: window.customName,
-    agents: window.sessions.map(snapshotSessionEntry),
+    sessions: window.sessions.map(snapshotSessionEntry),
     layout: encodeLayout(window.exportLayout()),
   };
 }
@@ -176,12 +176,12 @@ export const restoreWindow = Effect.fnUntraced(function* (
   options: RestoreOptions = {},
 ) {
   const window = yield* space.newWindow(saved.name ?? undefined, saved.number);
-  for (const session of saved.agents) {
+  for (const session of saved.sessions) {
     yield* window.startSession({
       id: session.id,
       name: session.name,
       kind: session.kind,
-      agent: session.agent,
+      agent: session.declaredAgent,
       cmd: session.cmd ?? [],
       ...(session.provider ? { provider: session.provider } : {}),
       cwd: session.cwd,

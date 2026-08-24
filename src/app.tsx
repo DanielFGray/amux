@@ -242,19 +242,19 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     pluginRuntime.resumePending = (workspace) =>
       Effect.forEach(
         [...workspaceSessions(workspace)].filter(
-          ({ agent }) =>
-            agent.kind === "component" &&
-            !agent.exited &&
-            agent.provider &&
-            !resumedPending.has(agent.id),
+          ({ session }) =>
+            session.kind === "component" &&
+            !session.exited &&
+            session.provider &&
+            !resumedPending.has(session.id),
         ),
-        ({ agent }) => {
-          resumedPending.add(agent.id);
-          const provider = pluginHost.spawnProvider(agent.provider!);
+        ({ session }) => {
+          resumedPending.add(session.id);
+          const provider = pluginHost.spawnProvider(session.provider!);
           return options.session
             .resumeAgent({
-              session: agent.id,
-              provider: agent.provider!,
+              session: session.id,
+              provider: session.provider!,
               ...(provider
                 ? {
                     argv: provider.argv,

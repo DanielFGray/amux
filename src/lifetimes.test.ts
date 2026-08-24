@@ -267,7 +267,7 @@ function lifecycleWorkspace(agent: string): WorkspaceSnapshot {
             name: null,
             state: { ...windowState(), focus: pane },
             layout,
-            agents: [
+            sessions: [
               {
                 id: agent,
                 name: agent,
@@ -294,7 +294,7 @@ function lifecycleSession(
     session: null,
     live: new Set(
       workspace.spaces.flatMap((space) =>
-        space.windows.flatMap((window) => window.agents.map((agent) => agent.id)),
+        space.windows.flatMap((window) => window.sessions.map((agent) => agent.id)),
       ),
     ),
     workspace: () => structuredClone(workspace),
