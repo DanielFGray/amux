@@ -9,6 +9,8 @@ import {
 import { scrollViewport, ScrollTo } from "./shim.ts";
 import { splitActivity, looksBlocked, identifyAgent, commandName } from "./detect.ts";
 import { AgentState } from "./agent-state.ts";
+import { AgentStateArbiter, AgentStateAuthority } from "./agent-state-arbiter.ts";
+import { extractScreenRegion, type ScreenRegion } from "./screen-regions.ts";
 
 /** How often the screen is re-scanned for a "waiting on you" prompt. Blocked
  *  state changes are human-paced, so a few times a second is ample and keeps
@@ -110,6 +112,7 @@ export class SessionHandle {
   #blockedCache = false;
   #blockedAt = 0;
   #blockedSeenOutput = -1;
+  #state = new AgentStateArbiter();
   /** Declared by whoever started this session as an agent. Fixed for its life. */
   readonly #declaredAgent: string | null;
   readonly provider: string | undefined;
@@ -155,6 +158,11 @@ export class SessionHandle {
       () => new Terminal(cols, rows),
       (t) => t.free(),
     );
+    this.#state.register({
+      authority: AgentStateAuthority.Terminal,
+      state: () =>
+        this.#exited ? AgentState.Done : this.#detached ? AgentState.Detached : "unknown",
+    });
     if (opts.exited) {
       // A tombstone: everything it can still answer, nothing running behind it.
       this.#backend = exitedBackend(opts.exited.code);
@@ -171,6 +179,14 @@ export class SessionHandle {
       rows,
     });
     this.#pumpFiber = this.#pump();
+    this.#state.register({
+      authority: AgentStateAuthority.SelfReport,
+      state: () => this.#backend.agentState?.() ?? "unknown",
+    });
+    this.#state.register({
+      authority: AgentStateAuthority.Detector,
+      state: () => this.#detectedState(),
+    });
   }
 
   /**
@@ -363,10 +379,31 @@ export class SessionHandle {
    *    BLOCKED_POLL_MS.
    */
   get state(): AgentState {
-    if (this.#exited) return AgentState.Done;
-    if (this.#detached) return AgentState.Detached;
-    const authoritative = this.#backend.agentState?.();
-    if (authoritative) return authoritative;
+    return this.#state.state;
+  }
+
+  /** Read a named structural region of the live terminal grid. */
+  screenRegion(region: ScreenRegion): string {
+    if (this.#disposed) return "";
+    this.#detect ??= this.#own(
+      () => new RenderState(),
+      (state) => state.free(),
+    );
+    this.#detect.update(this.term);
+    return extractScreenRegion(
+      { lines: this.#detect.tailText(this.term.rows), oscTitle: this.term.title, oscProgress: "" },
+      region,
+    );
+  }
+
+  registerStateSource(source: {
+    authority: number;
+    state: () => AgentState | "unknown";
+  }): () => void {
+    return this.#state.register(source);
+  }
+
+  #detectedState(): AgentState {
     if (!this.agentKind) return AgentState.Idle;
     if (splitActivity(this.term.title).spinning) return AgentState.Working;
     if (this.#blocked()) return AgentState.Blocked;
@@ -393,12 +430,9 @@ export class SessionHandle {
     // memory. The last answer it gave is still the true one — nothing has
     // arrived since to change it.
     if (this.#disposed) return this.#blockedCache;
-    this.#detect ??= this.#own(
-      () => new RenderState(),
-      (state) => state.free(),
+    this.#blockedCache = looksBlocked(
+      this.screenRegion(`bottom_lines(${BLOCKED_SCAN_ROWS})`).split("\n"),
     );
-    this.#detect.update(this.term);
-    this.#blockedCache = looksBlocked(this.#detect.tailText(BLOCKED_SCAN_ROWS));
     return this.#blockedCache;
   }
 
