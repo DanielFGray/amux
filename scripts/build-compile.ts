@@ -29,20 +29,20 @@ const compile = Effect.gen(function* () {
 
   yield* fs.makeDirectory(build, { recursive: true });
   yield* fs.copy(`${root}/vendor/libamux-shim.so`, `${build}/libamux-shim.so`, { overwrite: true });
+  yield* fs.copy(`${root}/vendor/libghostty-vt/zig-out/lib`, `${build}/libghostty-vt/zig-out/lib`, {
+    overwrite: true,
+  });
 
   yield* run(
     Command.make(
       "bun",
       "build",
       "--compile",
+      "--no-compile-autoload-bunfig",
       `${root}/src/cli.ts`,
       "--outfile",
       `${build}/amux`,
-    ).pipe(
-      Command.workingDirectory(root),
-      Command.stdout("inherit"),
-      Command.stderr("inherit"),
-    ),
+    ).pipe(Command.workingDirectory(root), Command.stdout("inherit"), Command.stderr("inherit")),
   );
 
   yield* Effect.log("Run with: cd build && ./amux");

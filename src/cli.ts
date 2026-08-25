@@ -306,6 +306,22 @@ async function main(): Promise<number> {
     }
 
     const { BunFileSystem } = await import("@effect/platform-bun");
+    if (cmds.some((command) => command._tag === "agent.new")) {
+      const { ensureDaemon } = await import("./client.ts");
+      const started = await Effect.runPromise(
+        ensureDaemon(id!).pipe(
+          Effect.provide(SessionStore.Default),
+          Effect.provide(BunFileSystem.layer),
+        ),
+      ).then(
+        () => true,
+        (error) => {
+          console.error(`error: ${String(error)}`);
+          return false;
+        },
+      );
+      if (!started) return 1;
+    }
     const prompt = cmds.length === 1 && cmds[0]?._tag === "agent.prompt" ? cmds[0] : undefined;
     const watch = cmds.length === 1 && cmds[0]?._tag === "agent.watch" ? cmds[0] : undefined;
     if (watch) {

@@ -7,8 +7,9 @@ import { dirname } from "node:path";
 function resolveShimPath(): string {
   const sourcePath = new URL("../vendor/libamux-shim.so", import.meta.url).pathname;
   if (existsSync(sourcePath)) return sourcePath;
-  // Compiled binary: look next to the executable
-  const binaryDir = dirname(process.argv[0] ?? "");
+  // A compiled executable runs its entry from Bun's virtual filesystem, so
+  // argv[0] is /$bunfs/... rather than the installed binary's path.
+  const binaryDir = dirname(process.execPath);
   const adjacentPath = `${binaryDir}/libamux-shim.so`;
   if (existsSync(adjacentPath)) return adjacentPath;
   return sourcePath;
