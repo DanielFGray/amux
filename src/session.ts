@@ -2,8 +2,10 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { FileSystem } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
-import { Clock, Config, Context, Effect, Exit, Option, Schema as S } from "effect";
+import { Clock, Config, Context, Effect, Either, Exit, Option, Schema as S } from "effect";
+import type { ParseError } from "effect/ParseResult";
 import { layoutPanes, parseLayout } from "./layout.ts";
+import { JsonValueSchema } from "./effect/AttachProtocol.ts";
 import {
   MAX_SESSIONS,
   MAX_LAYOUT_BYTES,
@@ -35,6 +37,10 @@ export class SessionStateError extends S.TaggedError<SessionStateError>()("Sessi
 
 export class SessionSizeError extends S.TaggedError<SessionSizeError>()("SessionSizeError", {
   message: S.String,
+}) {}
+
+class ProcessSignalError extends S.TaggedError<ProcessSignalError>()("ProcessSignalError", {
+  cause: S.String,
 }) {}
 
 export interface SessionService {
@@ -249,13 +255,55 @@ export const SessionLeaseSchema = S.Struct({
   ),
 });
 
-/** Convert the agent-era persistence keys before the current schema validates them. */
-function migrateSessionState(value: unknown): unknown {
-  if (!isRecord(value) || !Array.isArray(value.spaces)) return value;
+const PersistedSessionInputSchema = S.Struct({
+  id: NonEmptyString,
+  name: S.String,
+  kind: S.optional(S.Literal("pty", "component")),
+  declaredAgent: S.optional(NonEmptyString),
+  agent: S.optional(NonEmptyString),
+  cmd: S.optional(S.Array(NonEmptyString).pipe(S.minItems(1))),
+  provider: S.optional(NonEmptyString),
+  cwd: S.optional(S.String),
+  cols: TerminalDimension,
+  rows: TerminalDimension,
+  exited: S.Boolean,
+  exitCode: S.NullOr(S.Int),
+});
+const PersistedWindowInputSchema = S.Struct({
+  number: PositiveInt,
+  name: S.NullOr(S.String),
+  sessions: S.optional(S.Array(PersistedSessionInputSchema)),
+  agents: S.optional(S.Array(PersistedSessionInputSchema)),
+  layout: S.optional(S.NullOr(S.String)),
+});
+const PersistedSpaceInputSchema = S.Struct({
+  id: NonEmptyString,
+  name: S.String,
+  dir: S.String,
+  activeWindow: S.NullOr(PositiveInt),
+  windows: S.Array(PersistedWindowInputSchema),
+  worktree: S.optional(S.Struct({ branch: S.String, repo: S.String, path: S.String })),
+  nextWindow: S.optional(PositiveInt),
+  nextPane: S.optional(PositiveInt),
+});
+const SessionStateInputSchema = S.Struct({
+  version: S.Literal(SESSION_VERSION),
+  id: SessionIdSchema,
+  createdAt: NonNegativeNumber,
+  updatedAt: NonNegativeNumber,
+  attached: S.Boolean,
+  spaces: S.Array(PersistedSpaceInputSchema),
+  activeSpace: S.optional(S.NullOr(S.String)),
+  nextSpace: S.optional(PositiveInt),
+});
+type SessionStateInput = S.Schema.Type<typeof SessionStateInputSchema>;
+type PersistedSessionInput = S.Schema.Type<typeof PersistedSessionInputSchema>;
+
+/** Convert the shipped agent-era persistence keys before the current schema validates them. */
+function migrateSessionState(value: SessionStateInput): SessionStateInput {
   return {
     ...value,
     spaces: value.spaces.map((space) => {
-      if (!isRecord(space) || !Array.isArray(space.windows)) return space;
       return {
         ...space,
         windows: space.windows.map(migratePersistedWindow),
@@ -264,31 +312,15 @@ function migrateSessionState(value: unknown): unknown {
   };
 }
 
-function migratePersistedWindow(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  const { agents, ...window } = value;
-  const sessions = "sessions" in value ? value.sessions : agents;
-  return {
-    ...window,
-    ...(sessions === undefined
-      ? {}
-      : {
-          sessions: Array.isArray(sessions) ? sessions.map(migratePersistedSession) : sessions,
-        }),
-  };
+function migratePersistedWindow(value: SessionStateInput["spaces"][number]["windows"][number]) {
+  const { agents, sessions, ...window } = value;
+  const entries = sessions ?? agents;
+  return { ...window, sessions: entries?.map(migratePersistedSession) };
 }
 
-function migratePersistedSession(value: unknown): unknown {
-  if (!isRecord(value)) return value;
+function migratePersistedSession(value: PersistedSessionInput) {
   const { agent, ...session } = value;
-  return {
-    ...session,
-    ...(session.declaredAgent === undefined && agent !== undefined ? { declaredAgent: agent } : {}),
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return { ...session, declaredAgent: session.declaredAgent ?? agent };
 }
 
 export interface SessionPaths {
@@ -361,11 +393,14 @@ export const stateRoot = Effect.fnUntraced(function* () {
 });
 
 export function parseSessionState(
-  value: unknown,
+  value: SessionStateInput | SessionState | import("./effect/AttachProtocol.ts").JsonValue,
   expectedId?: string,
 ): Effect.Effect<SessionState, SessionStateError> {
   return Effect.gen(function* () {
-    const state = yield* S.decodeUnknown(SessionStateSchema)(migrateSessionState(value)).pipe(
+    const input = yield* S.decodeUnknown(SessionStateInputSchema)(value).pipe(
+      Effect.mapError(schemaError),
+    );
+    const state = yield* S.decodeUnknown(SessionStateSchema)(migrateSessionState(input)).pipe(
       Effect.mapError(schemaError),
     );
     if (expectedId !== undefined && state.id !== expectedId) return yield* invalidState;
@@ -398,14 +433,15 @@ export function parseSessionState(
           owned.set(entry.id, entry.exited);
         }
         if (candidate.layout) {
-          const parsed = yield* S.decodeUnknown(S.parseJson(S.Unknown))(candidate.layout).pipe(
+          const parsed = yield* S.decodeUnknown(S.parseJson(JsonValueSchema))(candidate.layout).pipe(
             Effect.mapError(schemaError),
           );
           const layout = yield* parseLayout(parsed).pipe(
             Effect.mapError((error) => new SessionStateError({ message: error.message })),
           );
-          const raw = parsed as { focus?: unknown };
-          if (raw.focus !== undefined && layout.focus !== raw.focus) return yield* layoutFocus;
+          const focus = S.decodeUnknownOption(S.Struct({ focus: S.optional(S.String) }))(parsed);
+          if (Option.isSome(focus) && focus.value.focus !== undefined && layout.focus !== focus.value.focus)
+            return yield* layoutFocus;
           for (const pane of layoutPanes(layout.root)) {
             if (paneIds.has(pane.id)) return yield* duplicatePane(pane.id);
             paneIds.add(pane.id);
@@ -427,7 +463,7 @@ export function parseSessionState(
     ) {
       return yield* missingSpace;
     }
-    return structuredClone(state) as unknown as SessionState;
+    return structuredClone(state) as SessionState;
   });
 }
 
@@ -468,7 +504,7 @@ const absentSession = (id: string) =>
     message: `pane '${id}' names an absent or exited session`,
   });
 
-function schemaError(error: unknown): SessionStateError {
+function schemaError(error: ParseError): SessionStateError {
   const message = String(error);
   if (message.includes("session has too many spaces")) return tooManySpaces;
   if (message.includes('["sessions"]')) return invalidSession;
@@ -477,7 +513,7 @@ function schemaError(error: unknown): SessionStateError {
   return invalidState;
 }
 
-function validState(value: unknown, expectedId?: string): value is SessionState {
+function validState(value: S.Schema.Type<typeof SessionStateInputSchema>, expectedId?: string): value is SessionState {
   return Exit.isSuccess(Effect.runSync(Effect.exit(parseSessionState(value, expectedId))));
 }
 
@@ -513,9 +549,9 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
 
     const load = Effect.fnUntraced(function* (id: string) {
       const sessionPaths = yield* pathFor(id);
-      const current = yield* jsonFile(sessionPaths.state, SessionStateSchema);
+      const current = yield* jsonFile(sessionPaths.state, SessionStateInputSchema);
       if (Option.isSome(current) && validState(current.value, id)) return current.value;
-      const backup = yield* jsonFile(sessionPaths.backup, SessionStateSchema);
+      const backup = yield* jsonFile(sessionPaths.backup, SessionStateInputSchema);
       return Option.isSome(backup) && validState(backup.value, id) ? backup.value : null;
     });
 
@@ -604,10 +640,13 @@ function sessionPathsFromRoot(id: string, root: string): SessionPaths {
 
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: any) {
-    return error.code === "EPERM";
-  }
+  const result = Effect.runSync(
+    Effect.either(
+      Effect.try({
+        try: () => process.kill(pid, 0),
+        catch: (error) => new ProcessSignalError({ cause: String(error) }),
+      }),
+    ),
+  );
+  return Either.isRight(result) || result.left.cause.includes("EPERM");
 }

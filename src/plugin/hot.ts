@@ -1,4 +1,4 @@
-import { Context, Effect, Schema as S } from "effect";
+import { Context, Effect, Predicate, Schema as S } from "effect";
 import { plugin } from "bun";
 import { fileURLToPath } from "node:url";
 import type { PluginDefinition } from "./types.ts";
@@ -71,7 +71,10 @@ export const hotImport = (source: URL): Effect.Effect<PluginDefinition, string> 
 /** The one place a module becomes a plugin, however it was imported. */
 export const decodePlugin = (module: unknown): Effect.Effect<PluginDefinition, string> =>
   S.decodeUnknown(PluginModule)(module).pipe(
-    Effect.map((decoded) => decoded.default),
+    Effect.map((decoded) => ({
+      ...decoded.default,
+      activate: decoded.default.activate as PluginDefinition["activate"],
+    })),
     Effect.mapError((error) => error.message),
   );
 
@@ -87,9 +90,6 @@ const PluginModule = S.Struct({
     id: S.NonEmptyString,
     apiVersion: S.String,
     inject: S.optional(S.Array(S.declare(Context.isTag, { identifier: "PluginService" }))),
-    effect: S.declare(
-      (input: unknown): input is PluginDefinition["effect"] => typeof input === "function",
-      { identifier: "PluginEffect" },
-    ),
+    activate: S.declare(Predicate.isFunction, { identifier: "PluginActivate" }),
   }),
 });

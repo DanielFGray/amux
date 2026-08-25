@@ -22,6 +22,18 @@ interface Pool {
 
 class PoolTag extends Context.Tag("test/Pool")<PoolTag, Pool>() {}
 class IndexTag extends Context.Tag("test/Index")<IndexTag, { readonly of: string }>() {}
+class NumberTag extends Context.Tag("test/Number")<NumberTag, number>() {}
+
+type AssertFalse<T extends false> = T;
+type UndeclaredRequirement =
+  Effect.Effect<void, never, NumberTag> extends Effect.Effect<
+    void,
+    never,
+    import("./types.ts").PluginRequirements<[]>
+  >
+    ? true
+    : false;
+export type UndeclaredRequirementIsRejected = AssertFalse<UndeclaredRequirement>;
 
 const cleanupFns: (() => void)[] = [];
 afterEach(() => {
@@ -116,6 +128,34 @@ testEffect("registry services attribute writes to the running plugin", () =>
       }),
     );
     expect(host.status()).toEqual([{ id: "registry-consumer", waitingFor: [] }]);
+  }),
+);
+
+testEffect("provider contexts preserve primitive service values", () =>
+  Effect.gen(function* () {
+    const host = yield* makeHost();
+    const seen: number[] = [];
+
+    yield* host.add(
+      definePlugin({
+        id: "number-provider",
+        apiVersion: "1",
+        effect: (ctx) => Effect.sync(() => void ctx.provide(NumberTag, 42)),
+      }),
+    );
+    yield* host.add(
+      definePlugin({
+        id: "number-consumer",
+        apiVersion: "1",
+        inject: [NumberTag],
+        effect: () =>
+          Effect.gen(function* () {
+            seen.push(yield* NumberTag);
+          }),
+      }),
+    );
+
+    expect(seen).toEqual([42]);
   }),
 );
 

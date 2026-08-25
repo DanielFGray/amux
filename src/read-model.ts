@@ -12,7 +12,7 @@
  * runtime cycle.
  */
 import { Schema as S } from "effect";
-import { PersistedSessionShape, WorkspaceSpaceShape, WorkspaceWindowShape } from "./workspace.ts";
+import { PersistedSessionSchema, WorkspaceSpaceSchema, WorkspaceWindowSchema } from "./workspace.ts";
 
 const RectSchema = S.Struct({
   x: S.Int,
@@ -24,12 +24,12 @@ const RectSchema = S.Struct({
 /** One space, as an agent reads it: identity, the window on screen, and how
  *  many windows it holds. */
 export const SpaceEntrySchema = S.Struct({
-  id: WorkspaceSpaceShape.fields.id,
-  name: WorkspaceSpaceShape.fields.name,
-  dir: WorkspaceSpaceShape.fields.dir,
-  activeWindow: WorkspaceSpaceShape.fields.state.fields.activeWindow,
+  id: WorkspaceSpaceSchema.fields.id,
+  name: WorkspaceSpaceSchema.fields.name,
+  dir: WorkspaceSpaceSchema.fields.dir,
+  activeWindow: WorkspaceSpaceSchema.fields.state.fields.activeWindow,
   windows: S.Int,
-  worktree: WorkspaceSpaceShape.fields.worktree,
+  worktree: WorkspaceSpaceSchema.fields.worktree,
 });
 export type SpaceEntry = S.Schema.Type<typeof SpaceEntrySchema>;
 
@@ -37,8 +37,8 @@ export type SpaceEntry = S.Schema.Type<typeof SpaceEntrySchema>;
  *  ownership is the tree's, not the node's — so the read names it. */
 export const WindowEntrySchema = S.Struct({
   space: S.String,
-  number: WorkspaceWindowShape.fields.number,
-  name: WorkspaceWindowShape.fields.name,
+  number: WorkspaceWindowSchema.fields.number,
+  name: WorkspaceWindowSchema.fields.name,
   panes: S.Int,
   active: S.Boolean,
   focused: S.Union(S.String, S.Null),
@@ -50,7 +50,7 @@ export type WindowEntry = S.Schema.Type<typeof WindowEntrySchema>;
 export const PaneEntrySchema = S.Struct({
   id: S.String,
   space: S.String,
-  window: WorkspaceWindowShape.fields.number,
+  window: WorkspaceWindowSchema.fields.number,
   session: S.optional(S.String),
   focused: S.Boolean,
   zoomed: S.Boolean,
@@ -60,9 +60,9 @@ export type PaneEntry = S.Schema.Type<typeof PaneEntrySchema>;
 /** One agent: the model's record (already the model's shape, so this names
  *  those fields by reference) plus where it lives. */
 export const AgentEntrySchema = S.Struct({
-  ...PersistedSessionShape.fields,
+  ...PersistedSessionSchema.fields,
   space: S.String,
-  window: WorkspaceWindowShape.fields.number,
+  window: WorkspaceWindowSchema.fields.number,
   pane: S.optional(S.String),
 });
 export type AgentEntry = S.Schema.Type<typeof AgentEntrySchema>;

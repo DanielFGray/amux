@@ -23,8 +23,9 @@ test("importing again picks up an edit inside the plugin's own directory", async
   await writeFile(
     join(dir, "colours.ts"),
     `import { Effect } from "effect";
+     import { definePlugin } from "../types.ts";
      import { accent } from "./colours/palette.ts";
-     export default { id: accent, apiVersion: "1", effect: () => Effect.void };`,
+     export default definePlugin({ id: accent, apiVersion: "1", effect: () => Effect.void });`,
   );
   const source = pathToFileURL(join(dir, "colours.ts"));
 
@@ -50,8 +51,9 @@ test("a module outside the plugin's directory is the same instance after a reloa
   await writeFile(
     join(dir, "reader.ts"),
     `import { Effect } from "effect";
+     import { definePlugin } from "../types.ts";
      import { once } from "./shared.ts";
-     export default { id: once, apiVersion: "1", effect: () => Effect.void };`,
+     export default definePlugin({ id: once, apiVersion: "1", effect: () => Effect.void });`,
   );
   const source = pathToFileURL(join(dir, "reader.ts"));
 
@@ -74,9 +76,10 @@ test("a declared dependency survives the trip through the decoder", async () => 
   await writeFile(
     join(dir, "needs.ts"),
     `import { Context, Effect } from "effect";
+     import { definePlugin } from "../types.ts";
      class Pool extends Context.Tag("test/Pool")<Pool, number>() {}
-     export default { id: "needs", apiVersion: "1", inject: [Pool],
-       effect: () => Effect.void };`,
+     export default definePlugin({ id: "needs", apiVersion: "1", inject: [Pool],
+       effect: () => Effect.void });`,
   );
 
   const definition = await Effect.runPromise(hotImport(pathToFileURL(join(dir, "needs.ts"))));

@@ -11,7 +11,9 @@ type ParameterOwner =
   | ESTree.TSFunctionType
   | ESTree.TSMethodSignature;
 
-function parameterAnnotation(parameter: Parameter): ESTree.TSTypeAnnotation | null | undefined {
+function parameterAnnotation(
+  parameter: Parameter,
+): ESTree.TSTypeAnnotation | null | undefined {
   if (parameter.type === "TSParameterProperty") {
     return parameterAnnotation(parameter.parameter);
   }
@@ -39,6 +41,84 @@ function parameterName(parameter: Parameter, sourceText: string): string {
     : sourceText.replace(/\s*:\s*unknown\s*$/u, "");
 }
 
+function isTypePositionParameter(parameter: Parameter): boolean {
+  let current: ESTree.Node | null = parameter.parent;
+  while (current !== null) {
+    if (
+      current.type === "TSAsExpression" ||
+      current.type === "TSTypeAssertion" ||
+      current.type === "TSSatisfiesExpression" ||
+      current.type === "TSTypeLiteral"
+    )
+      return true;
+    if (
+      current.type === "FunctionDeclaration" ||
+      current.type === "FunctionExpression" ||
+      current.type === "ArrowFunctionExpression" ||
+      current.type === "Program"
+    )
+      return false;
+    current = current.parent;
+  }
+  return false;
+}
+
+function isSchemaDecodeCall(node: ESTree.CallExpression): boolean {
+  let current: ESTree.Expression = node.callee;
+  while (current.type === "CallExpression") current = current.callee;
+  return (
+    current.type === "MemberExpression" &&
+    !current.computed &&
+    current.object.type === "Identifier" &&
+    (current.object.name === "Schema" || current.object.name === "S") &&
+    current.property.type === "Identifier" &&
+    /^decodeUnknown(?:Sync|Effect)?$/u.test(current.property.name)
+  );
+}
+
+function hasSchemaDecodeBoundary(
+  node: ESTree.Node | null | undefined,
+  parameterName: string,
+): boolean {
+  if (node === null || node === undefined) return false;
+  if (
+    node.type === "CallExpression" &&
+    isSchemaDecodeCall(node) &&
+    node.arguments.some(
+      (argument) =>
+        argument.type === "Identifier" && argument.name === parameterName,
+    )
+  )
+    return true;
+  for (const [key, value] of Object.entries(node)) {
+    if (
+      key === "parent" ||
+      key === "loc" ||
+      key === "range" ||
+      key === "tokens"
+    )
+      continue;
+    if (Array.isArray(value)) {
+      if (
+        value.some(
+          (item) =>
+            item !== null &&
+            typeof item === "object" &&
+            hasSchemaDecodeBoundary(item as ESTree.Node, parameterName),
+        )
+      )
+        return true;
+    } else if (
+      value !== null &&
+      typeof value === "object" &&
+      hasSchemaDecodeBoundary(value as ESTree.Node, parameterName)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Disallow unknown inputs except explicitly named error-cause enrichment. */
 export const noUnknownParametersRule = defineRule({
   meta: {
@@ -57,8 +137,17 @@ export const noUnknownParametersRule = defineRule({
       for (const parameter of node.params) {
         const annotation = parameterAnnotation(parameter);
         if (annotation?.typeAnnotation.type !== "TSUnknownKeyword") continue;
-        const name = parameterName(parameter, context.sourceCode.getText(parameter));
+        const name = parameterName(
+          parameter,
+          context.sourceCode.getText(parameter),
+        );
         if (name === "cause") continue;
+        if (isTypePositionParameter(parameter)) continue;
+        if (
+          "body" in node &&
+          hasSchemaDecodeBoundary(node.body as ESTree.Node | null, name)
+        )
+          continue;
         context.report({
           node: annotation.typeAnnotation,
           messageId: "unknownParameter",

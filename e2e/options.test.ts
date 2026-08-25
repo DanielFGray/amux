@@ -17,15 +17,22 @@
  * ever two values again, only one of these assertions would fail.
  */
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
+import {
+  launch,
+  LEADER,
+  E2E_TIMEOUT,
+  hasSidebarFooter,
+  type App,
+  type E2eConfig,
+} from "./app.ts";
 
 let app: App;
 /** The file after toggling the sidebar off through the settings window. */
-let saved: Record<string, any> | null = null;
+let saved: E2eConfig | null = null;
 
 beforeAll(async () => {
   app = await launch("e2e-options");
-  await app.until(() => app.screen().includes(" · "), "the sidebar to draw its footer");
+  await app.until(() => hasSidebarFooter(app.screen()), "the sidebar to draw its footer");
 
   // Settings opens on the sidebar section, whose first row is sidebar.open.
   await app.press(`${LEADER}S`);
@@ -58,7 +65,7 @@ test(
   async () => {
     await app.press(`${LEADER}S`); // leave the settings window
     await app.until(
-      () => !app.screen().includes(" settings ") && !app.screen().includes(" · "),
+      () => !app.screen().includes(" settings ") && !hasSidebarFooter(app.screen()),
       "the settings window to close with the sidebar hidden",
     );
   },
@@ -69,7 +76,7 @@ test(
   "^a b puts it back, and the file empties rather than pinning the default",
   async () => {
     await app.press(`${LEADER}b`);
-    await app.until(() => app.screen().includes(" · "), "the sidebar to come back");
+    await app.until(() => hasSidebarFooter(app.screen()), "the sidebar to come back");
 
     await app.press(`${LEADER}S`);
     await app.until(() => app.screen().includes(" settings "), "the settings window to open");

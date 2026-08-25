@@ -20,10 +20,7 @@ import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
-function singlePaneState(): {
-  state: SessionState;
-  workspace: WorkspaceSnapshot;
-} {
+function singlePaneState() {
   const spaceId = "space-1";
   const winNum = 1;
   const agentId = "agent-1";
@@ -75,10 +72,7 @@ function singlePaneState(): {
   return { state, workspace: Effect.runSync(workspaceFromSession(state)) };
 }
 
-function worktreeSpace(): {
-  state: SessionState;
-  workspace: WorkspaceSnapshot;
-} {
+function worktreeSpace() {
   const spaceId = "wt-space";
   const state: SessionState = {
     version: 1,
@@ -248,18 +242,18 @@ function trackingPersistence(stateRef: Ref.Ref<FakePersistenceState>) {
 }
 
 interface FakeEventsState {
-  workspaceEvents: { before: unknown; after: unknown }[];
-  workspaceFrames: unknown[];
+  workspaceEvents: { before: WorkspaceSnapshot; after: WorkspaceSnapshot }[];
+  workspaceFrames: WorkspaceSnapshot[];
 }
 
 function trackingEvents(stateRef: Ref.Ref<FakeEventsState>) {
   return {
-    publishWorkspaceEvents: (before: unknown, after: unknown) =>
+    publishWorkspaceEvents: (before: WorkspaceSnapshot, after: WorkspaceSnapshot) =>
       Ref.update(stateRef, (s) => ({
         ...s,
         workspaceEvents: [...s.workspaceEvents, { before, after }],
       })),
-    publishWorkspaceFrame: (snapshot: unknown) =>
+    publishWorkspaceFrame: (snapshot: WorkspaceSnapshot) =>
       Ref.update(stateRef, (s) => ({
         ...s,
         workspaceFrames: [...s.workspaceFrames, snapshot],

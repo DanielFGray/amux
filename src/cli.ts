@@ -123,19 +123,19 @@ async function main(): Promise<number> {
       }
       const { isReportedAgentState, reportAgentState, ReportedAgentStateSchema } =
         await import("./agent-state.ts");
-      if (!isReportedAgentState(state)) {
+      if (state === undefined || !isReportedAgentState(state)) {
         console.error(
           `error: --state must be one of ${ReportedAgentStateSchema.literals.join(", ")}`,
         );
         return 2;
       }
-      try {
-        await reportAgentState(socketPath, agent, state);
-        return 0;
-      } catch (error) {
-        console.error(`error: ${String(error)}`);
-        return 1;
-      }
+      return await reportAgentState(socketPath, agent, state).then(
+        () => 0,
+        (error) => {
+          console.error(`error: ${String(error)}`);
+          return 1;
+        },
+      );
     })();
   }
 
@@ -151,18 +151,19 @@ async function main(): Promise<number> {
         console.error("error: editing opencode config requires explicit consent; add --yes");
         return 2;
       }
-      try {
-        if (action === "install") {
-          console.log(`installed opencode hook at ${await installOpencodeHook()}`);
-        } else {
-          const removed = await uninstallOpencodeHook();
-          console.log(removed ? "removed opencode hook" : "no opencode hook installed");
-        }
-        return 0;
-      } catch (error) {
-        console.error(`error: ${String(error)}`);
-        return 1;
-      }
+      return await Promise.resolve(
+        action === "install" ? installOpencodeHook() : uninstallOpencodeHook(),
+      ).then(
+        (result) => {
+          if (action === "install") console.log(`installed opencode hook at ${result}`);
+          else console.log(result ? "removed opencode hook" : "no opencode hook installed");
+          return 0;
+        },
+        (error) => {
+          console.error(`error: ${String(error)}`);
+          return 1;
+        },
+      );
     })();
   }
 
@@ -185,6 +186,14 @@ async function main(): Promise<number> {
   const { Effect, Option, Schema, Stream } = effectMod;
   const { COMMAND_META, Command, commandDefinition } = commandsMod;
   type CommandTag = (typeof Command.Type)["_tag"];
+  type CommandContext = {
+    size: { cols: number; rows: number };
+    shell: readonly string[];
+    cwd: string;
+    agent?: string;
+    pane?: string;
+    noFocus?: boolean;
+  };
 
   function isCommandTag(s: string): s is CommandTag {
     return s in COMMAND_META;
@@ -199,7 +208,7 @@ async function main(): Promise<number> {
   function fillCommandSession(
     tag: CommandTag,
     session: string | undefined,
-    parsed: Record<string, unknown>,
+    parsed: Record<string, import("./effect/AttachProtocol.ts").JsonValue>,
   ) {
     if (session === undefined || "session" in parsed) return parsed;
     if (!fieldNames(tag).some((field) => field.name === "session")) return parsed;
@@ -209,7 +218,7 @@ async function main(): Promise<number> {
   function parseCommandGroup(argv: string[]):
     | {
         tag: CommandTag;
-        parsed: Record<string, unknown>;
+        parsed: Record<string, import("./effect/AttachProtocol.ts").JsonValue>;
         positionalSession?: string;
         sessionFlag?: string;
       }
@@ -302,35 +311,35 @@ async function main(): Promise<number> {
     const prompt = cmds.length === 1 && cmds[0]?._tag === "agent.prompt" ? cmds[0] : undefined;
     const watch = cmds.length === 1 && cmds[0]?._tag === "agent.watch" ? cmds[0] : undefined;
     if (watch) {
-      try {
-        await Effect.runPromise(
-          controlCall(id!, (control) =>
-            agentWatch(control, watch.target, watch.after).pipe(
-              Stream.runForEach((event) =>
-                Effect.sync(() => process.stdout.write(JSON.stringify(event) + "\n")),
-              ),
+      return await Effect.runPromise(
+        controlCall(id!, (control) =>
+          agentWatch(control, watch.target, watch.after).pipe(
+            Stream.runForEach((event) =>
+              Effect.sync(() => process.stdout.write(JSON.stringify(event) + "\n")),
             ),
-          ).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
-        );
-        return 0;
-      } catch (error) {
-        console.error(`error: ${String(error)}`);
-        return 1;
-      }
+          ),
+        ).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+      ).then(
+        () => 0,
+        (error) => {
+          console.error(`error: ${String(error)}`);
+          return 1;
+        },
+      );
     }
     const runResult = Effect.runPromise(
       controlCall(id!, (control) => {
-        const context = {
+        const context: CommandContext = {
           size: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
           shell: [process.env.SHELL ?? "sh"],
           cwd: process.cwd(),
           // The calling pane and its session, when this CLI runs inside one.
           // The daemon resolves --current from these; it never trusts the CLI
           // to have picked a pane.
-          ...(process.env.AMUX_AGENT_ID ? { agent: process.env.AMUX_AGENT_ID } : {}),
-          ...(process.env.AMUX_PANE_ID ? { pane: process.env.AMUX_PANE_ID } : {}),
-          ...(noFocus ? { noFocus } : {}),
         };
+        if (process.env.AMUX_AGENT_ID) context.agent = process.env.AMUX_AGENT_ID;
+        if (process.env.AMUX_PANE_ID) context.pane = process.env.AMUX_PANE_ID;
+        if (noFocus) context.noFocus = true;
         if (!prompt || (prompt.wait !== true && prompt.until === undefined))
           return control.Batch({ values: [...cmds], context });
 
@@ -341,7 +350,7 @@ async function main(): Promise<number> {
           const deadline = Date.now() + timeout;
           const first = yield* agentWatch(control, prompt.target, after).pipe(
             Stream.filter(
-              (event): event is any =>
+              (event) =>
                 event._tag === "turn.start" ||
                 (event._tag === "topic" && event.topic === SESSION_STATE_TOPIC),
             ),
@@ -354,8 +363,8 @@ async function main(): Promise<number> {
           if (Option.isNone(first))
             return { outputs: [...outputs, { result: { error: "agent_prompt_stalled" } }] };
           let turn: string | undefined;
-          let result: unknown;
-          const fold = (event: any) => {
+          let result: (typeof first.value) | undefined;
+          const fold = (event: typeof first.value) => {
             if (event._tag === "turn.start" && turn === undefined) turn = event.turn;
             if (event._tag === "turn.end" && event.turn === turn) {
               result = event;
@@ -388,20 +397,23 @@ async function main(): Promise<number> {
       }).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
     );
 
-    try {
-      const { outputs } = await runResult;
-      for (const { result } of outputs) {
-        if (result !== undefined) {
-          if (typeof result === "object")
-            process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-          else process.stdout.write(String(result) + "\n");
+    return await runResult.then(
+      ({ outputs }) => {
+        for (const { result } of outputs) {
+          if (result !== undefined) {
+            const text = Option.getOrElse(Schema.decodeUnknownOption(Schema.String)(result), () =>
+              JSON.stringify(result, null, 2),
+            );
+            process.stdout.write(text + "\n");
+          }
         }
-      }
-      return 0;
-    } catch (error) {
-      console.error(`error: ${String(error)}`);
-      return 1;
-    }
+        return 0;
+      },
+      (error) => {
+        console.error(`error: ${String(error)}`);
+        return 1;
+      },
+    );
   }
 
   // Session attach

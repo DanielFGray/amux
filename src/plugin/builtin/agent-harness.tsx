@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Redacted, Runtime } from "effect";
 import { For, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -46,6 +46,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       const sessionViews = yield* SessionViewsTag;
       const settings = yield* SettingsTag;
       const spawnProviders = yield* SpawnProvidersTag;
+      const runtime = yield* Effect.runtime();
       const openModelPicker = (yield* registerModelPicker(ctx)).pipe(Effect.provide(llmServices));
       const [providers, setProviders] = createSignal<readonly IntegrationInfo[]>([]);
       const [selected, setSelected] = createSignal(0);
@@ -53,7 +54,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         const integrations = yield* Integration;
         setProviders(yield* integrations.list());
       }).pipe(Effect.provide(llmServices));
-      Effect.runFork(refreshProviders);
+      yield* Effect.forkScoped(refreshProviders);
       yield* settings.register({
         id: "auth",
         label: "auth",
@@ -66,7 +67,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
           if (event.name === "d") {
             const connection = providers()[selected()]?.connections[0];
             if (connection)
-              Effect.runFork(
+              Runtime.runFork(runtime)(
                 yieldCredential().pipe(
                   Effect.flatMap((credentials) => credentials.remove(connection.id)),
                   Effect.provide(Credential.Default),
@@ -143,7 +144,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       });
 
       const run = (value: Parameters<typeof ctx.panel.run>[0]) =>
-        Effect.runFork(
+        Runtime.runFork(runtime)(
           ctx.panel
             .run(value)
             .pipe(
@@ -160,7 +161,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             showThinking={ctx.panel.options()["agent.showThinking"] as boolean}
             onSlashCommand={(command) => {
               if (command !== "/model") return false;
-              Effect.runFork(openModelPicker);
+              Runtime.runFork(runtime)(openModelPicker);
               return true;
             }}
             slashCommands={[{ name: "model", description: "choose the agent model" }]}
@@ -176,12 +177,12 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             }
             onPermission={(request, decision, feedback) =>
               run(
-                command("agent.permission", {
-                  session: props.sessionId,
-                  request,
-                  decision,
-                  ...(feedback ? { feedback } : {}),
-                }),
+                command(
+                  "agent.permission",
+                  feedback
+                    ? { session: props.sessionId, request, decision, feedback }
+                    : { session: props.sessionId, request, decision },
+                ),
               )
             }
             onInterrupt={() => run(command("agent.interrupt", { session: props.sessionId }))}
@@ -194,7 +195,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       }
       const connect = (provider: IntegrationInfo | undefined, key: string) => {
         if (!provider || !key) return;
-        Effect.runFork(
+        Runtime.runFork(runtime)(
           yieldCredential().pipe(
             Effect.flatMap((credentials) =>
               provider.connections[0]

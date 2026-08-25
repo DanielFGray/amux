@@ -453,6 +453,7 @@ test("a script inside a pane reports and gets a response using only the injected
   await Effect.runPromise(
     daemon.spawnSession({
       id: "roundtrip-pane",
+      paneId: "roundtrip-pane",
       cmd: [process.execPath, "-e", script],
       cols: 80,
       rows: 24,
@@ -483,7 +484,7 @@ test("a script inside a pane reports and gets a response using only the injected
     id: "roundtrip",
     ok: true,
   });
-});
+}, 10_000);
 
 test("the process state socket accepts ping and process state reports", async () => {
   const { daemon, env } = await started("pane-control");

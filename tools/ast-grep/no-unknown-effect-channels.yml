@@ -1,15 +1,30 @@
 id: no-unknown-effect-channels
 language: TypeScript
 severity: error
-message: Effect error and requirements channels must not be unknown; use never, a concrete type, or a generic parameter
+message: Effect channels must not use any or unknown; use never, a concrete type, or a generic parameter
 rule:
   any:
     - all:
         - kind: generic_type
-        - regex: '^Effect\.Effect<[^>]*,\s*unknown\s*(,|>)'
+        - regex: '^(?:Effect\.)?Effect<[^>]*,\s*(?:any|unknown)\s*(,|>)'
     - all:
         - kind: generic_type
-        - regex: '^Effect\.Effect<[^>]*,\s*[^>]*,\s*unknown\s*>'
+        - regex: '^(?:Effect\.)?Effect<[^>]*,\s*[^>]*,\s*(?:any|unknown)\s*>'
     - all:
         - kind: generic_type
-        - regex: '^Stream\.Stream<[^>]*,\s*unknown\s*>'
+        - regex: '^(?:Stream\.)?Stream<[^>]*,\s*(?:any|unknown)\s*(,|>)'
+    - all:
+        - kind: generic_type
+        - regex: '^(?:Stream\.)?Stream<[^>]*,\s*[^>]*,\s*(?:any|unknown)\s*>'
+    - all:
+        - kind: generic_type
+        - regex: '^(?:Fiber\.)?Fiber<[^>]*,\s*(?:any|unknown)\s*>'
+    - all:
+        - kind: generic_type
+        - regex: '^(?:Deferred\.)?Deferred<[^>]*,\s*(?:any|unknown)\s*>'
+    - all:
+        - kind: generic_type
+        - regex: '^(?:FiberMap\.)?FiberMap<[^>]*,\s*[^>]*,\s*(?:any|unknown)\s*>'
+    - all:
+        - kind: generic_type
+        - regex: '^(?:Cause\.)?Cause<\s*(?:any|unknown)\s*>'

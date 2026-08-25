@@ -75,7 +75,7 @@ export class ComponentPane extends Pane {
       paneType?: string;
       descriptor?: JsonValue;
       view?: PaneView;
-    } & Record<string, any>,
+    },
   ) {
     super(ctx, options);
     this.#content = new BoxRenderable(ctx, {

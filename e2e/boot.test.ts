@@ -34,13 +34,13 @@ async function boot(session: string, type?: string) {
     await app.until(() => app.output().includes(MARKER), "the shell marker to appear");
   }
   const out = app.output();
-  const shape = await app.shape();
+  const workspaceSummary = await app.workspaceSummary();
   await app.stop();
-  return { out, shape };
+  return { out, workspaceSummary };
 }
 
-let first: { out: string; shape: string };
-let second: { out: string; shape: string };
+let first: { out: string; workspaceSummary: string };
+let second: { out: string; workspaceSummary: string };
 
 beforeAll(async () => {
   // A shell prompt and a command that echoes something only we would write, so
@@ -54,7 +54,7 @@ test("the first launch draws a screen", () => {
 });
 
 test("it persists one space with one agent", () => {
-  expect(first.shape).toBe("1sp 1win 1ag");
+  expect(first.workspaceSummary).toBe("1sp 1win 1ag");
 });
 
 test("the pane runs a real shell", () => {
@@ -66,7 +66,7 @@ test("nothing crashed on the way up", () => {
 });
 
 test("a second launch boots the same way", () => {
-  expect(second.shape).toBe("1sp 1win 1ag");
+  expect(second.workspaceSummary).toBe("1sp 1win 1ag");
 });
 
 test("and nothing crashed there either", () => {

@@ -20,7 +20,7 @@ import { SessionHandle, type SessionHandleOptions } from "./session-handle.ts";
 type SessionOptions = SessionHandleOptions;
 import { snapshotSessionEntry } from "./snapshot.ts";
 import { AttachClient } from "./attach.ts";
-import { SessionClient, type SessionClientShape } from "./client.ts";
+import { SessionClient, type SessionClientContract } from "./client.ts";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { captureVisible } from "./capture.ts";
 import { MODE_ALT_SCREEN } from "./ghostty.ts";
@@ -40,7 +40,7 @@ const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
 const attachedClient = (d: SessionDaemonService) => Effect.runPromise(d.getAttachedClient);
 const attachedClients = (d: SessionDaemonService) => Effect.runPromise(d.getAttachedClients);
-const clients: SessionClientShape[] = [];
+const clients: SessionClientContract[] = [];
 /** A client's control and attach sockets live in its scope, so tests own one. */
 const scopes: Scope.CloseableScope[] = [];
 const connect = (
@@ -97,7 +97,7 @@ async function attach(id: string, env: NodeJS.ProcessEnv, client = "ui") {
 /** Test-only low-level fixture: the daemon owns creation; the client only projects it. */
 async function projectAgent(
   daemon: SessionDaemonService,
-  client: SessionClientShape,
+  client: SessionClientContract,
   options: Omit<SessionOptions, "backend">,
 ) {
   const id = options.id ?? `transport-${nextProjection++}`;
@@ -124,13 +124,15 @@ async function projectAgent(
   return projected;
 }
 
-function modeledAgent(client: SessionClientShape): {
+type ModeledAgent = {
   id: string;
   cmd: string[];
   cwd?: string;
   cols: number;
   rows: number;
-} {
+};
+
+function modeledAgent(client: SessionClientContract): ModeledAgent {
   const session = client
     .workspace()
     .spaces[0]?.windows[0]?.sessions.find((candidate) => !candidate.exited);
@@ -832,7 +834,7 @@ test("a delayed handshake closes its socket and rejects on timeout", async () =>
   let closed = 0;
   let latePongs = 0;
   let settlements = 0;
-  let resurrected: import("./attach.ts").AttachClientShape | null = null;
+  let resurrected: import("./attach.ts").AttachClientContract | null = null;
   let buffer = "";
   const listener = Bun.listen<undefined>({
     unix: path,
@@ -912,7 +914,7 @@ test("the connection scope emits heartbeats and stops them when released", async
   let beats = 0;
   let closes = 0;
   let finalized = 0;
-  let client: import("./attach.ts").AttachClientShape | null = null;
+  let client: import("./attach.ts").AttachClientContract | null = null;
   const listener = Bun.listen<undefined>({
     unix: path,
     data: undefined,

@@ -114,15 +114,17 @@ const body = Effect.fnUntraced(function* (model: string, options: LanguageModel.
       parameters: Tool.getJsonSchemaFromSchemaAst(tool.parametersSchema.ast),
     },
   }));
-  return {
+  const result: RequestBody = {
     model,
     messages: yield* messages(options.prompt),
-    ...(tools.length > 0 ? { tools } : {}),
-    ...(choice.value === undefined || tools.length === 0 ? {} : { tool_choice: choice.value }),
-    ...(options.responseFormat.type === "json" ? { response_format: { type: "json_object" } } : {}),
     stream: true,
     stream_options: { include_usage: true },
   };
+  if (tools.length > 0) result.tools = tools;
+  if (choice.value !== undefined && tools.length > 0) result.tool_choice = choice.value;
+  if (options.responseFormat.type === "json")
+    result.response_format = { type: "json_object" as const };
+  return result;
 });
 
 type ToolChoice = {
@@ -130,7 +132,20 @@ type ToolChoice = {
   readonly oneOf?: ReadonlySet<string>;
 };
 
-const toolChoice = (choice: LanguageModel.ToolChoice<any>): ToolChoice => {
+type RequestBody = {
+  model: string;
+  messages: ChatMessage[];
+  stream: true;
+  stream_options: { include_usage: true };
+  tools?: ReadonlyArray<{
+    type: "function";
+    function: { name: string; description: string; parameters: object };
+  }>;
+  tool_choice?: ToolChoice["value"];
+  response_format?: { type: "json_object" };
+};
+
+const toolChoice = (choice: LanguageModel.ToolChoice<string>): ToolChoice => {
   if (typeof choice === "string") return { value: choice };
   if ("tool" in choice) return { value: { type: "function", function: { name: choice.tool } } };
   return { value: choice.mode === "required" ? "required" : "auto", oneOf: new Set(choice.oneOf) };
@@ -204,20 +219,18 @@ const assistantMessage = (parts: ReadonlyArray<Prompt.AssistantMessagePart>): Ch
   const text = parts.filter((part) => part.type === "text").map((part) => part.text);
   const reasoning = parts.filter((part) => part.type === "reasoning").map((part) => part.text);
   const calls = parts.filter((part) => part.type === "tool-call");
-  return {
+  const result: ChatMessage = {
     role: "assistant",
     content: text.length === 0 ? null : text.join(""),
-    ...(calls.length === 0
-      ? {}
-      : {
-          tool_calls: calls.map((part) => ({
-            id: part.id,
-            type: "function" as const,
-            function: { name: part.name, arguments: JSON.stringify(part.params ?? {}) },
-          })),
-        }),
-    ...(reasoning.length === 0 ? {} : { reasoning_content: reasoning.join("") }),
   };
+  if (calls.length > 0)
+    result.tool_calls = calls.map((part) => ({
+      id: part.id,
+      type: "function" as const,
+      function: { name: part.name, arguments: JSON.stringify(part.params ?? {}) },
+    }));
+  if (reasoning.length > 0) result.reasoning_content = reasoning.join("");
+  return result;
 };
 
 const toolResult = (part: Prompt.ToolResultPart): ChatMessage => ({
@@ -482,21 +495,30 @@ const finishReason = (reason: string): Response.FinishReason =>
  * OpenAI reports inclusive totals with subsets broken out of them, which is the
  * same contract `@effect/ai`'s `Usage` states, so the numbers pass through.
  */
-const usage = (reported: ChatEvent["usage"]) => ({
-  inputTokens: reported?.prompt_tokens,
-  outputTokens: reported?.completion_tokens,
-  totalTokens:
-    reported?.total_tokens ??
-    (reported?.prompt_tokens === undefined && reported?.completion_tokens === undefined
-      ? undefined
-      : (reported?.prompt_tokens ?? 0) + (reported?.completion_tokens ?? 0)),
-  ...(reported?.completion_tokens_details?.reasoning_tokens === undefined
-    ? {}
-    : { reasoningTokens: reported.completion_tokens_details.reasoning_tokens }),
-  ...(reported?.prompt_tokens_details?.cached_tokens === undefined
-    ? {}
-    : { cachedInputTokens: reported.prompt_tokens_details.cached_tokens }),
-});
+const usage = (reported: ChatEvent["usage"]) => {
+  const result: Usage = {
+    inputTokens: reported?.prompt_tokens,
+    outputTokens: reported?.completion_tokens,
+    totalTokens:
+      reported?.total_tokens ??
+      (reported?.prompt_tokens === undefined && reported?.completion_tokens === undefined
+        ? undefined
+        : (reported?.prompt_tokens ?? 0) + (reported?.completion_tokens ?? 0)),
+  };
+  if (reported?.completion_tokens_details?.reasoning_tokens !== undefined)
+    result.reasoningTokens = reported.completion_tokens_details.reasoning_tokens;
+  if (reported?.prompt_tokens_details?.cached_tokens !== undefined)
+    result.cachedInputTokens = reported.prompt_tokens_details.cached_tokens;
+  return result;
+};
+
+type Usage = {
+  inputTokens: number | undefined;
+  outputTokens: number | undefined;
+  totalTokens: number | undefined;
+  reasoningTokens?: number;
+  cachedInputTokens?: number;
+};
 
 // =============================================================================
 // Non-streaming result

@@ -17,6 +17,7 @@
  */
 import net from "node:net";
 import { Schema as S } from "effect";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
 
 /**
  * The name for every state, so no call site spells one out.
@@ -54,8 +55,8 @@ export const AgentStateSchema = S.Literal(
 );
 export type AgentState = typeof AgentStateSchema.Type;
 
-export const isReportedAgentState = (value: unknown): value is ReportedAgentState =>
-  ReportedAgentStateSchema.literals.includes(value as ReportedAgentState);
+export const isReportedAgentState = (value: JsonValue): value is ReportedAgentState =>
+  S.is(ReportedAgentStateSchema)(value);
 
 /**
  * Write one self-report to a session's agent-state socket.

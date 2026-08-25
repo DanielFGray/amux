@@ -108,12 +108,7 @@ export function makeAgentLog(
               error.reason === "NotFound" ? Effect.succeed("[]") : Effect.fail(error),
             ),
           );
-        const value = yield* Effect.try({
-          try: () => JSON.parse(text),
-          catch: (error) =>
-            new AgentLogError({ message: error instanceof Error ? error.message : String(error) }),
-        });
-        const decoded = yield* S.decodeUnknown(Entries)(value).pipe(
+        const decoded = yield* S.decodeUnknown(S.parseJson(Entries))(text).pipe(
           Effect.mapError((error) => new AgentLogError({ message: String(error) })),
         );
         const mutable = [...decoded];
@@ -154,14 +149,14 @@ export function makeAgentLog(
     const append = (frame: AgentEventPayload) =>
       Effect.gen(function* () {
         const current = yield* load(frame.session);
-        const sequence = current.at(-1)?.sequence === undefined ? 0 : current.at(-1)!.sequence + 1;
-        const entry = { sequence, event: { ...frame, sequence } } as Entry;
+        const sequence = (current.at(-1)?.sequence ?? -1) + 1;
+        const entry: Entry = { sequence, event: { ...frame, sequence } };
         current.push(entry);
         yield* write(frame.session, current);
         yield* feed(frame.session).pipe(
-          Effect.flatMap((bus) => PubSub.publish(bus, entry.event as AgentEvent)),
+          Effect.flatMap((bus) => PubSub.publish(bus, entry.event)),
         );
-        return entry.event as AgentEvent;
+        return entry.event;
       }).pipe(
         Effect.mapError((error) =>
           error instanceof AgentLogError ? error : new AgentLogError({ message: String(error) }),
@@ -173,7 +168,7 @@ export function makeAgentLog(
         Effect.map((current) =>
           current
             .filter((entry) => entry.sequence > after)
-            .map((entry) => entry.event as AgentEvent),
+            .map((entry) => entry.event),
         ),
       );
 

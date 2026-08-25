@@ -114,7 +114,7 @@ const STATE_CURSOR_VIEWPORT_WIDE_TAIL = 17;
 const handle = () => new BigUint64Array(1);
 /** Opaque Ghostty handles are plain numbers here; cast to bun:ffi's branded
  *  Pointer when passing them to pointer-typed FFI arguments. */
-const asPtr = (n: number): Pointer => n as unknown as Pointer;
+const asPtr = (n: number): Pointer => n as Pointer;
 function check(what: string, r: number) {
   if (r !== OK) throw new Error(`libghostty-vt: ${what} failed (${r})`);
 }
@@ -226,7 +226,7 @@ export class Terminal {
    * disagrees with reality forever. There is deliberately no change
    * notification; poll it per frame, as Ghostty's own renderer does.
    */
-  get scrollbar(): { total: number; offset: number; len: number } {
+  get scrollbar() {
     if (this.#freed) return { total: 0, offset: 0, len: 0 };
     if (g.ghostty_terminal_get(asPtr(this.#h), TERMINAL_DATA_SCROLLBAR, ptr(this.#scroll)) !== OK) {
       return { total: 0, offset: 0, len: 0 };
@@ -626,7 +626,7 @@ export class RenderState {
         let x = 0;
         while (g.ghostty_render_state_row_cells_next(asPtr(cells))) {
           const gv = new DataView(this.#gbuf.buffer);
-          gv.setBigUint64(0, BigInt(ptr(this.#cps) as unknown as number), true);
+          gv.setBigUint64(0, BigInt(ptr(this.#cps)), true);
           gv.setBigUint64(8, BigInt(this.#cps.length), true);
           if (
             g.ghostty_render_state_row_cells_get(
@@ -715,7 +715,7 @@ export class RenderState {
       let line = "";
       while (g.ghostty_render_state_row_cells_next(asPtr(cells))) {
         const gv = new DataView(this.#gbuf.buffer);
-        gv.setBigUint64(0, BigInt(ptr(this.#cps) as unknown as number), true);
+        gv.setBigUint64(0, BigInt(ptr(this.#cps)), true);
         gv.setBigUint64(8, BigInt(this.#cps.length), true);
         if (
           g.ghostty_render_state_row_cells_get(

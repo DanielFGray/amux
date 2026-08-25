@@ -6,7 +6,7 @@ import {
   type Tool,
   type Toolkit,
 } from "@effect/ai";
-import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } from "effect";
+import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Schema as S, Stream } from "effect";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 import { AgentState } from "../../../agent-state.ts";
 import type { PromptDelivery, PromptInboxEntry } from "../../../project-store.ts";
@@ -27,8 +27,13 @@ export type AgentWorker = {
   readonly close: Effect.Effect<void>;
 };
 
+export class AgentWorkerError extends S.TaggedError<AgentWorkerError>()(
+  "AgentWorkerError",
+  { message: S.String },
+) {}
+
 /** Keep provider diagnostics useful without allowing credentials or raw transport data into the UI. */
-export function sanitizeAgentError(error: unknown): string {
+export function sanitizeAgentError(error: Error | string): string {
   const message = error instanceof Error ? error.message : String(error);
   // Stripping ANSI sequences means matching the ESC control character on purpose.
   // eslint-disable-next-line eslint/no-control-regex
@@ -149,7 +154,7 @@ export function frameForPart(
  * ours is the scheduler above it: a mailbox, one turn at a time, and
  * interruption that leaves the transcript intact.
  */
-export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options: {
+export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = never>(options: {
   readonly session: string;
   readonly chat: Chat.Service;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
@@ -166,11 +171,11 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
       delivery: PromptDelivery,
       resume?: boolean,
       id?: string,
-    ) => Effect.Effect<PromptInboxEntry, unknown>;
+    ) => Effect.Effect<PromptInboxEntry, E>;
     readonly pendingPrompts: (
       session: string,
-    ) => Effect.Effect<readonly PromptInboxEntry[], unknown>;
-    readonly promotePrompt: (id: string) => Effect.Effect<void, unknown>;
+       ) => Effect.Effect<readonly PromptInboxEntry[], E>;
+    readonly promotePrompt: (id: string) => Effect.Effect<void, E>;
   };
 }): Effect.Effect<
   AgentWorker,
@@ -217,15 +222,12 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
         Exit.isFailure(exit) && outcome === "failed"
           ? sanitizeAgentError(Cause.pretty(exit.cause))
           : undefined;
-      return repair.pipe(
-        Effect.andThen(
-          emit({
-            _tag: "turn.end",
-            turn,
-            outcome,
-            ...(text ? { text } : {}),
-            ...(error ? { error } : {}),
-          }),
+       const turnEnd = { _tag: "turn.end" as const, turn, outcome };
+       if (text) Object.assign(turnEnd, { text });
+       if (error) Object.assign(turnEnd, { error });
+       return repair.pipe(
+         Effect.andThen(
+           emit(turnEnd),
         ),
         Effect.andThen(
           emit(agentStateTopic(outcome === "failed" ? AgentState.Failed : AgentState.Idle)),
@@ -245,8 +247,8 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
     const runTurn = (
       queued: QueuedTurn,
     ): Effect.Effect<
-      void,
-      never,
+     void,
+       never,
       LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
     > => {
       const { turn, prompt } = queued;
@@ -254,8 +256,8 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
       const runStep = (
         stepPrompt: string | Prompt.Prompt,
       ): Effect.Effect<
-        void,
-        unknown,
+      void,
+       AgentWorkerError,
         LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
       > => {
         let needsContinuation = false;
@@ -281,13 +283,14 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
             // A steer is an instruction for the next provider boundary, not a
             // FIFO turn. Check before tool continuation so it can redirect the
             // agent before the provider sees the tool result again.
-            Effect.flatMap(() =>
+             Effect.flatMap(() =>
               needsContinuation
                 ? takeSteer.pipe(
                     Effect.flatMap((steer) => (steer ? runTurn(steer) : runStep(Prompt.empty))),
                   )
-                : Effect.void,
-            ),
+                 : Effect.void,
+             ),
+            Effect.mapError(() => new AgentWorkerError({ message: "agent provider failed" })),
           );
       };
       return (
@@ -296,7 +299,11 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
         // the same durable entry after the nested turn settles.
         Ref.update(inbox, (pending) => pending.filter((entry) => entry.turn !== queued.turn)).pipe(
           Effect.andThen(
-            queued.id && options.inbox ? options.inbox.promotePrompt(queued.id) : Effect.void,
+          queued.id && options.inbox
+            ? options.inbox
+                .promotePrompt(queued.id)
+                .pipe(Effect.mapError(() => new AgentWorkerError({ message: "prompt promotion failed" })))
+            : Effect.void,
           ),
           Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
           Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
@@ -350,19 +357,22 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
                 promptOptions.resume,
                 promptOptions.id,
               )
-              .pipe(Effect.orDie)
+              .pipe(
+                Effect.mapError(() => new AgentWorkerError({ message: "prompt admission failed" })),
+                Effect.orElseSucceed(() => undefined),
+              )
           : Effect.void.pipe(Effect.as<PromptInboxEntry | undefined>(undefined));
         return admission.pipe(
           Effect.flatMap((admitted) =>
             Ref.updateAndGet(turns, (n) => n + 1).pipe(
               Effect.flatMap((n) => {
                 const turn = admitted?.turn ?? `turn-${n}`;
-                const queued = {
-                  turn,
-                  prompt: text,
-                  delivery: promptOptions.delivery ?? "queue",
-                  ...(admitted ? { id: admitted.id } : {}),
-                } satisfies QueuedTurn;
+                 const queued = {
+                   turn,
+                   prompt: text,
+                   delivery: promptOptions.delivery ?? "queue",
+                 } satisfies QueuedTurn;
+                 if (admitted) Object.assign(queued, { id: admitted.id });
                 return emit({
                   _tag: "turn.queued",
                   turn,

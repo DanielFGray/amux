@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
-import type { SpaceSet } from "../space.ts";
 import { runModelProjections, scheduleHintVisibility } from "../app.tsx";
+import { createHarness } from "../harness.ts";
 import { scheduledPoll } from "../effect/timer.ts";
 import { createAppState, POLL_MS } from "./state.ts";
 import { waitFor } from "../test-wait.ts";
@@ -58,20 +58,19 @@ test("closing the app fiber scope stops the UI poll", async () => {
   expect(polls).toBe(stopped);
 });
 
-test("output does not advance the polled tick, so a busy pane cannot storm the tree", () => {
+test("output does not advance the polled tick, so a busy pane cannot storm the tree", async () => {
   // Structural changes bump the revision; the tick belongs to the poll alone.
   // Advancing it here would repaint every view that displays polled state once
   // per output chunk rather than once per cadence.
-  const spaces = {
-    spaces: [],
-    allAgents: [],
-    active: null,
-    activeWindow: null,
-  } as unknown as SpaceSet;
-  const app = createAppState(spaces);
-  const before = app.tick();
-  for (let i = 0; i < 100; i++) spaces.onChange?.();
-  expect(app.tick()).toBe(before);
+  const harness = await createHarness({ init: false });
+  try {
+    const app = createAppState(harness.spaces);
+    const before = app.tick();
+    for (let i = 0; i < 100; i++) harness.spaces.onChange?.();
+    expect(app.tick()).toBe(before);
+  } finally {
+    await harness.dispose();
+  }
 });
 
 test("git refresh is keyed, so a slow scan is replaced rather than queued", async () => {

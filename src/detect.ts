@@ -24,7 +24,7 @@ import { AgentState } from "./agent-state.ts";
  * carries the same table (src/detect/mod.rs, `lookup_agent`); this is the subset
  * whose binaries anyone here is likely to have, and it is cheap to extend.
  */
-const AGENT_EXECUTABLES: Record<string, string> = {
+const AGENT_EXECUTABLES = {
   claude: "claude",
   "claude-code": "claude",
   codex: "codex",
@@ -43,7 +43,7 @@ const AGENT_EXECUTABLES: Record<string, string> = {
   goose: "goose",
   pi: "pi",
   cline: "cline",
-};
+} satisfies Record<string, string>;
 
 /** Runtimes an agent is commonly launched through, where the name worth reading
  *  is the script in argv[1] rather than the binary in argv[0]. */
@@ -59,6 +59,10 @@ const INTERPRETERS = new Set([
   "zsh",
   process.env.SHELL?.split("/").pop()?.toLowerCase() ?? "",
 ]);
+
+function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
+  return Object.hasOwn(record, key);
+}
 
 const executableName = (token: string): string =>
   token
@@ -80,10 +84,11 @@ export function identifyAgent(command: string): string | null {
   const first = tokens[0];
   if (!first) return null;
   const base = executableName(first);
-  const direct = AGENT_EXECUTABLES[base];
+  const direct = hasOwn(AGENT_EXECUTABLES, base) ? AGENT_EXECUTABLES[base] : undefined;
   if (direct) return direct;
   if (!INTERPRETERS.has(base) || !tokens[1]) return null;
-  return AGENT_EXECUTABLES[executableName(tokens[1])] ?? null;
+  const script = executableName(tokens[1]);
+  return hasOwn(AGENT_EXECUTABLES, script) ? AGENT_EXECUTABLES[script] : null;
 }
 
 /**
@@ -117,7 +122,7 @@ const isActivityGlyph = (ch: string): boolean => {
  * string counts, so a title that legitimately starts with a symbol ("★ prod")
  * is left alone and a spinner is not mistaken for content.
  */
-export function splitActivity(title: string): { spinning: boolean; text: string } {
+export function splitActivity(title: string) {
   const trimmed = title.trim();
   if (!trimmed) return { spinning: false, text: "" };
   const first = String.fromCodePoint(trimmed.codePointAt(0)!);
@@ -130,11 +135,11 @@ export function splitActivity(title: string): { spinning: boolean; text: string 
 /** Braille frames for our own rendering of the "working" state. */
 export const SPINNER_FRAMES = [..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"];
 
-export const STATE_GLYPH: Record<AgentState, string> = {
+export const STATE_GLYPH = {
   [AgentState.Blocked]: "●",
   [AgentState.Working]: "⠹", // replaced with the live spinner frame when rendering
   [AgentState.Idle]: "○",
   [AgentState.Failed]: "!",
   [AgentState.Detached]: "⊘",
   [AgentState.Done]: "✓",
-};
+} satisfies Record<AgentState, string>;

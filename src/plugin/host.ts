@@ -91,7 +91,7 @@ export interface PluginEnvironment {
    *  instance of a plugin id the app is looking at. */
   readonly contributions: PluginContributions;
   readonly registries: PluginRegistries;
-  readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
+  readonly frames: (session: string) => Stream.Stream<AttachFrame, never>;
   readonly sync: (session: string) => void;
 }
 
@@ -235,10 +235,8 @@ export function createPluginHost(
       // Waiting on the injected tags is the whole of "pending": the fiber
       // suspends on their Deferreds and resumes in the order they are provided,
       // so a provider configured last still activates its dependents.
-      const pluginEffect = services.awaitAll<never>(injected).pipe(
-        Effect.flatMap(
-          (provided) => Effect.provide(plugin.effect(context), provided) as Effect.Effect<void>,
-        ),
+      const pluginEffect = services.awaitAll(injected).pipe(
+        Effect.flatMap((provided) => plugin.activate(context, provided)),
         Effect.catchAllDefect((defect) =>
           Effect.gen(function* () {
             const error = defect instanceof Error ? defect : new Error(String(defect));

@@ -25,7 +25,7 @@ function sessionPids(session: number): number[] {
 }
 
 /** Iterate a pty's pump in the background and collect everything it yields. */
-function collect(p: Pty): { text: () => string; done: Promise<void> } {
+function collect(p: Pty) {
   const chunks: Uint8Array[] = [];
   const done = (async () => {
     for await (const c of readPty(p)) chunks.push(new Uint8Array(c));

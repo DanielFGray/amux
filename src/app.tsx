@@ -60,8 +60,7 @@ import {
   type OptionSpec,
   type OptionValue,
 } from "./options.ts";
-import type { Contribution } from "./plugin/contributions.ts";
-import type { SessionClientShape } from "./client.ts";
+import type { SessionClientContract } from "./client.ts";
 import { workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
 import { createAppState, POLL_MS } from "./ui/state.ts";
 import { createPanelContext, type PanelContext } from "./ui/panel.ts";
@@ -110,7 +109,7 @@ export interface AppOptions {
   readonly config: Config;
   /** Directory containing the loaded config, used to resolve local plugins. */
   readonly configDir?: string;
-  readonly session: SessionClientShape;
+  readonly session: SessionClientContract;
   /** Ask the program to exit. The app does not own the process, the renderer or
    *  the session, so leaving is a request rather than a teardown. */
   readonly quit: () => void;
@@ -255,13 +254,9 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
             .resumeAgent({
               session: session.id,
               provider: session.provider!,
-              ...(provider
-                ? {
-                    argv: provider.argv,
-                    env: provider.env,
-                    stripEnv: provider.stripEnv,
-                  }
-                : {}),
+                 argv: provider?.argv,
+                 env: provider?.env,
+                 stripEnv: provider?.stripEnv,
             })
             .pipe(
               Effect.catchAll((error) =>
@@ -466,7 +461,7 @@ function buildApp(
     session
       .runWorkspace(value, {
         ...workspaceContext(),
-        ...(input === undefined ? {} : { input }),
+        input,
       })
       .pipe(
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
@@ -1013,7 +1008,7 @@ function buildApp(
             .then(() =>
               setCaptureView((view) => (view ? { ...view, saved: true, error: undefined } : view)),
             )
-            .catch((error: unknown) => {
+            .catch((error) => {
               setCaptureView((view) =>
                 view
                   ? {
@@ -1407,7 +1402,7 @@ function buildApp(
     const meta = COMMAND_META[cmd._tag]!;
     return {
       name,
-      ...(key === undefined ? {} : { key }),
+       key,
       desc: opts.desc ?? meta.desc,
       group: opts.group ?? meta.group,
       hidden: opts.hidden,
@@ -1431,7 +1426,7 @@ function buildApp(
     const meta = COMMAND_META[tag]!;
     return {
       name: tag,
-      ...(key === undefined ? {} : { key }),
+       key,
       desc: desc ?? meta.desc,
       group: meta.group,
       run: open,
@@ -2407,7 +2402,7 @@ function buildApp(
   /** Core options plus every plugin-registered one, resolved by the same rule —
    *  what a plugin reads through `ctx.panel.options()`. */
   const allOptions = () => {
-    const merged: Record<string, OptionValue> = { ...options() };
+    const merged = { ...options() } as Options & Record<string, OptionValue>;
     for (const entry of optionContributions.all())
       merged[entry.name] = optionValue(entry.name, entry.value);
     return merged as Options & Record<string, OptionValue>;

@@ -1,4 +1,4 @@
-import type { AgentFrame } from "../../../effect/AttachProtocol.ts";
+import type { AgentFrame, JsonValue } from "../../../effect/AttachProtocol.ts";
 import type { PermissionDecision, PermissionRule } from "../../../permission.ts";
 import type { ReportedAgentState } from "../../../agent-state.ts";
 import { agentStateFromTopic } from "./state-topic.ts";
@@ -17,11 +17,11 @@ export type TranscriptBlock =
       readonly turn: string;
       readonly call: string;
       readonly name: string;
-      readonly input: unknown;
+       readonly input: JsonValue;
       /** Params are still arriving as partial JSON fragments. A resolved input
        *  can legitimately be a bare string, so type alone cannot say pending. */
       readonly streaming?: boolean;
-      readonly output?: unknown;
+       readonly output?: JsonValue;
       readonly isError?: boolean;
     }
   | {
@@ -33,7 +33,7 @@ export type TranscriptBlock =
       readonly resources: readonly string[];
       /** What "always" would record, so the human approves a rule they can read. */
       readonly save: readonly PermissionRule[];
-      readonly input: unknown;
+       readonly input: JsonValue;
       /** Absent while the request is still pending — the pane's cue to ask. */
       readonly decision?: PermissionDecision;
       readonly feedback?: string;
@@ -80,11 +80,10 @@ const permissionBlock = (
 const decided = (
   block: PermissionBlock,
   frame: Extract<AgentFrame, { _tag: "permission.response" }>,
-): PermissionBlock => ({
-  ...block,
-  decision: frame.decision,
-  ...(frame.feedback === undefined ? {} : { feedback: frame.feedback }),
-});
+): PermissionBlock =>
+  frame.feedback === undefined
+    ? { ...block, decision: frame.decision }
+    : { ...block, decision: frame.decision, feedback: frame.feedback };
 
 /**
  * The request the pane must answer before the agent can continue, if any.
@@ -297,22 +296,19 @@ export function toolOutput(block: Extract<TranscriptBlock, { kind: "tool" }>): s
  */
 type ToolFace = {
   readonly pending: string;
-  readonly reveal: (input: Record<string, unknown>) => string;
+  readonly reveal: (input: { readonly [key: string]: JsonValue }) => string;
 };
 
-const toolFaces: Readonly<Record<string, ToolFace>> = {
-  bash: { pending: "Writing command...", reveal: (input) => `$ ${stringField(input, "command")}` },
-  write: {
-    pending: "Preparing write...",
-    reveal: (input) => `\u2190 ${stringField(input, "path")}`,
-  },
-  read: { pending: "Reading file...", reveal: (input) => stringField(input, "path") },
-  glob: { pending: "Finding files...", reveal: (input) => stringField(input, "pattern") },
-  grep: { pending: "Searching content...", reveal: (input) => stringField(input, "pattern") },
-};
+const toolFaces = new Map<string, ToolFace>([
+  ["bash", { pending: "Writing command...", reveal: (input) => `$ ${stringField(input, "command")}` }],
+  ["write", { pending: "Preparing write...", reveal: (input) => `\u2190 ${stringField(input, "path")}` }],
+  ["read", { pending: "Reading file...", reveal: (input) => stringField(input, "path") }],
+  ["glob", { pending: "Finding files...", reveal: (input) => stringField(input, "pattern") }],
+  ["grep", { pending: "Searching content...", reveal: (input) => stringField(input, "pattern") }],
+]);
 
 export function toolSummary(block: Extract<TranscriptBlock, { kind: "tool" }>): string {
-  if (block.streaming) return `~ ${toolFaces[block.name]?.pending ?? "Running..."}`;
+  if (block.streaming) return `~ ${toolFaces.get(block.name)?.pending ?? "Running..."}`;
   const detail = describeCall(block.name, block.input);
   return block.output === undefined ? detail : `${detail} -> ${json(block.output)}`;
 }
@@ -326,15 +322,19 @@ export function permissionSummary(block: PermissionBlock): string {
   return `${block.tool}: ${describeCall(block.tool, block.input)}`;
 }
 
-function describeCall(tool: string, input: unknown): string {
-  const face = toolFaces[tool];
-  return typeof input === "object" && input !== null && face
-    ? face.reveal(input as Record<string, unknown>) || json(input)
+function describeCall(tool: string, input: JsonValue): string {
+  const face = toolFaces.get(tool);
+  return isJsonObject(input) && face
+    ? face.reveal(input) || json(input)
     : json(input);
 }
 
-function stringField(input: Record<string, unknown>, key: string): string {
-  return typeof input[key] === "string" ? (input[key] as string) : "";
+function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(input: { readonly [key: string]: JsonValue }, key: string): string {
+  return typeof input[key] === "string" ? input[key] : "";
 }
 
 function transcriptLine(block: TranscriptBlock): string {
@@ -380,7 +380,7 @@ function wrapLine(line: string, width: number): string[] {
   return lines;
 }
 
-function json(value: unknown): string {
+function json(value: JsonValue): string {
   if (typeof value === "string") return value;
   try {
     return JSON.stringify(value);
@@ -389,7 +389,7 @@ function json(value: unknown): string {
   }
 }
 
-function sameJson(left: unknown, right: unknown): boolean {
+function sameJson(left: JsonValue, right: JsonValue): boolean {
   try {
     return JSON.stringify(left) === JSON.stringify(right);
   } catch {

@@ -21,11 +21,12 @@ import {
   type AttachFrame,
   type Topic,
 } from "./AttachProtocol.ts";
-import { AgentLog } from "./AgentLog.ts";
+import { AgentLog, type AgentLogError } from "./AgentLog.ts";
 import {
   PtyError,
   SessionRegistry,
   type ManagedSession,
+  type PromptOptions,
   type SessionForeground,
   type SessionSpec,
 } from "./SessionRegistry.ts";
@@ -55,12 +56,17 @@ const FOREGROUND_POLL_MS = 500;
 const INITIAL_OUTPUT_GRACE_MS = 100;
 
 export interface SessionExitObserverService {
-  readonly beforePublish: (id: string, code: number | null) => Effect.Effect<void, unknown>;
+  readonly beforePublish: (id: string, code: number | null) => Effect.Effect<void, SessionObserverError>;
 }
 
 export interface SessionStateObserverService {
-  readonly onState: (id: string, state: string) => Effect.Effect<void, unknown>;
+  readonly onState: (id: string, state: string) => Effect.Effect<void, SessionObserverError>;
 }
+
+export class SessionObserverError extends S.TaggedError<SessionObserverError>()("SessionObserverError", {
+  message: S.String,
+  operation: S.Literal("exit", "state"),
+}) {}
 
 export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
   "SessionStateObserver",
@@ -130,11 +136,10 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     // without history.
     const replays = yield* Ref.make<ReadonlyMap<string, Terminal>>(new Map());
     /** Per-session entry point for state a process reports about itself. The
-     *  error channel is the observer's own `unknown` (see ts-f58aa1), not the
-     *  log's: ingest can fail either way and the caller cannot tell them apart
-     *  until both are typed. */
+     *  error channel includes both durable log failures and observer failures:
+     *  ingest can fail either way before the event reaches the hub. */
     const reporters = yield* Ref.make<
-      ReadonlyMap<string, (state: string) => Effect.Effect<void, unknown>>
+      ReadonlyMap<string, (state: string) => Effect.Effect<void, AgentLogError | SessionObserverError>>
     >(new Map());
     yield* Effect.addFinalizer(() =>
       Ref.get(replays).pipe(
@@ -515,22 +520,23 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             Effect.gen(function* () {
               const session = (yield* Ref.get(sessions)).get(command.session);
               if (!session) return;
-              yield* session.prompt(command.text, {
-                ...(command.id === undefined ? {} : { id: command.id }),
-                ...(command.delivery === undefined ? {} : { delivery: command.delivery }),
-                ...(command.resume === undefined ? {} : { resume: command.resume }),
-              });
+              let options: PromptOptions = {};
+              if (command.id !== undefined) options = { ...options, id: command.id };
+              if (command.delivery !== undefined) options = { ...options, delivery: command.delivery };
+              if (command.resume !== undefined) options = { ...options, resume: command.resume };
+              yield* session.prompt(command.text, options);
             }),
           ),
           Match.tag("agent.permission", (command) =>
             Effect.gen(function* () {
               const session = (yield* Ref.get(sessions)).get(command.session);
               if (!session) return;
-              yield* session.decide({
-                request: command.request,
-                decision: command.decision,
-                ...(command.feedback === undefined ? {} : { feedback: command.feedback }),
-              });
+               let answer: Parameters<ManagedSession["decide"]>[0] = {
+                 request: command.request,
+                 decision: command.decision,
+               };
+               if (command.feedback !== undefined) answer = { ...answer, feedback: command.feedback };
+               yield* session.decide(answer);
             }),
           ),
           Match.tag("agent.interrupt", (command) =>

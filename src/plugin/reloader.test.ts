@@ -57,8 +57,9 @@ testEffect("a change inside the plugin's directory is part of the reload", () =>
       "inner",
       `import { Effect } from "effect";
        import { mark } from "./inner/mark.ts";
-       export default { id: "inner", apiVersion: "1",
-         effect: () => Effect.sync(() => { (globalThis.AMUX_RELOAD_TEST ??= []).push(mark); }) };`,
+       import { definePlugin } from "../types.ts";
+       export default definePlugin({ id: "inner", apiVersion: "1",
+          effect: () => Effect.sync(() => { (globalThis.AMUX_RELOAD_TEST ??= []).push(mark); }) });`,
       { "inner/mark.ts": `export const mark = "1";` },
     );
 
@@ -90,13 +91,14 @@ testEffect("a failed candidate never becomes visible", () =>
       "crash",
       `import { Effect } from "effect";
        import { RegionsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
-       export default { id: "crash", apiVersion: "1",
-         inject: [RegionsTag], effect: () => Effect.gen(function* () {
+       import { definePlugin } from "../types.ts";
+       export default definePlugin({ id: "crash", apiVersion: "1",
+          inject: [RegionsTag], effect: () => Effect.gen(function* () {
            const regions = yield* RegionsTag;
            yield* regions.register({ id: "crash.panel", region: "left", anchor: "app",
               size: () => 1, component: () => null as never });
            (globalThis.AMUX_RELOAD_TEST ??= []).push("1");
-         }) };`,
+          }) });`,
     );
     expect(world.panelVisible()).toBe(true);
 
@@ -105,7 +107,8 @@ testEffect("a failed candidate never becomes visible", () =>
         world.entry,
         `import { Effect } from "effect";
          import { RegionsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
-         export default { id: "crash", apiVersion: "1",
+         import { definePlugin } from "../types.ts";
+         export default definePlugin({ id: "crash", apiVersion: "1",
              inject: [RegionsTag], effect: () => Effect.gen(function* () {
                const regions = yield* RegionsTag;
                yield* regions.register({ id: "crash.panel", region: "left", anchor: "app",
@@ -113,7 +116,7 @@ testEffect("a failed candidate never becomes visible", () =>
               (globalThis.AMUX_RELOAD_TEST ??= []).push("candidate registered");
               yield* Effect.promise(() => globalThis.AMUX_RELOAD_GATE!);
               throw new Error("bad edit");
-            }) };`,
+             }) });`,
       ),
     );
     let release!: () => void;
@@ -152,8 +155,9 @@ testEffect("a plugin amux cannot see is not reloadable", () =>
 /** A plugin that says, every time it starts, which generation of itself it is. */
 const version = (id: string, generation: number) =>
   `import { Effect } from "effect";
-   export default { id: "${id}", apiVersion: "1",
-     effect: () => Effect.sync(() => { (globalThis.AMUX_RELOAD_TEST ??= []).push("${generation}"); }) };`;
+   import { definePlugin } from "../types.ts";
+   export default definePlugin({ id: "${id}", apiVersion: "1",
+     effect: () => Effect.sync(() => { (globalThis.AMUX_RELOAD_TEST ??= []).push("${generation}"); }) });`;
 
 interface World {
   readonly host: PluginHost;

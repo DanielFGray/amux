@@ -101,12 +101,12 @@ export class AttachError extends S.TaggedError<AttachError>()("AttachError", {
   message: S.String,
 }) {}
 
-export interface AttachClientShape {
+export interface AttachClientContract {
   readonly client: string;
   readonly closed: boolean;
-  stream(session: string): Stream.Stream<AttachFrame>;
+  stream(session: string): Stream.Stream<AttachFrame, never, never>;
   /** Ordered daemon model generations, independent of terminal streams. */
-  workspace(): Stream.Stream<WorkspaceSnapshot>;
+  workspace(): Stream.Stream<WorkspaceSnapshot, never, never>;
   input(session: string, data: string | Uint8Array): void;
   resize(session: string, cols: number, rows: number): void;
   sync(session: string, after?: number): void;
@@ -122,7 +122,7 @@ export interface AttachClientShape {
  * Owns the socket writer, receive buffer, handshake nonce, heartbeat pong
  * map, per-session output queues, and the workspace-event sliding queue.
  * Mutable state is private to the class; the public surface is
- * {@link AttachClientShape} plus the internal `_`-prefixed methods that the
+ * {@link AttachClientContract} plus the internal `_`-prefixed methods that the
  * Effect scope machinery calls during setup and teardown.
  *
  * `Effect.Service` cannot itself be the runtime instance because
@@ -193,7 +193,7 @@ class AttachClientConnection {
     return this._closed;
   }
 
-  stream(session: string): Stream.Stream<AttachFrame> {
+  stream(session: string): Stream.Stream<AttachFrame, never, never> {
     return Stream.unwrap(
       Effect.gen(this, function* () {
         if (this._queued.get(session)?.terminal) this._queued.delete(session);
@@ -232,7 +232,7 @@ class AttachClientConnection {
     return entry;
   }
 
-  workspace(): Stream.Stream<WorkspaceSnapshot> {
+  workspace(): Stream.Stream<WorkspaceSnapshot, never, never> {
     return Stream.fromQueue(this._workspaceQ);
   }
 
@@ -249,7 +249,9 @@ class AttachClientConnection {
   }
 
   sync(session: string, after?: number): void {
-    this._send({ _tag: "sync", session, ...(after === undefined ? {} : { after }) });
+    const frame: Extract<AttachFrame, { readonly _tag: "sync" }> =
+      after === undefined ? { _tag: "sync", session } : { _tag: "sync", session, after };
+    this._send(frame);
   }
 
   ping(timeoutMs = 5_000): Promise<boolean> {
@@ -537,7 +539,7 @@ export class AttachClient extends Effect.Service<AttachClient>()("AttachClient",
 
   /** Promise adapter used by the SessionClient constructor. New callers should
    *  provide `AttachClient.layer` over the whole use span. */
-  static connect(options: AttachClientOptions): Promise<AttachClientShape> {
+  static connect(options: AttachClientOptions): Promise<AttachClientContract> {
     return Effect.runPromise(
       Effect.gen(function* () {
         const scope = yield* Scope.make();

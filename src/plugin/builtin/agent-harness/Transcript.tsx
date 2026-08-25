@@ -19,7 +19,7 @@ import { theme } from "../../../ui/theme.ts";
 
 export interface TranscriptProps {
   sessionId: string;
-  frames: (session: string) => StreamType.Stream<AttachFrame, unknown>;
+  frames: (session: string) => StreamType.Stream<AttachFrame, never>;
   sync: (session: string) => void;
   /** Columns to wrap at. Reactive: the pane it lives in is resizable. */
   width: number | Accessor<number>;
@@ -319,7 +319,9 @@ function ChatCard(props: {
   );
 }
 
-function collapseOutput(output: string, maxLines: number): { text: string; overflow: boolean } {
+type CollapsedOutput = { readonly text: string; readonly overflow: boolean };
+
+function collapseOutput(output: string, maxLines: number): CollapsedOutput {
   const lines = output.split("\n");
   if (lines.length <= maxLines) return { text: output, overflow: false };
   return { text: `${lines.slice(0, maxLines).join("\n")}\n...`, overflow: true };

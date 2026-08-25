@@ -139,6 +139,12 @@ interface Backend {
 }
 
 function ptyBackend(spec: SessionSpec): Backend {
+  const env = { ...spec.env, AMUX_AGENT_ID: spec.id } satisfies Record<string, string>;
+  if (spec.paneId !== undefined) Object.assign(env, { AMUX_PANE_ID: spec.paneId });
+  if (spec.rpcPath !== undefined) Object.assign(env, { AMUX_CONTROL_SOCKET: spec.rpcPath });
+  if (spec.processStatePath !== undefined)
+    Object.assign(env, { AMUX_PROCESS_STATE_SOCKET: spec.processStatePath });
+  if (spec.daemonSession !== undefined) Object.assign(env, { AMUX_DAEMON_SESSION: spec.daemonSession });
   const pty = spawnPty([...spec.cmd], {
     cols: spec.cols,
     rows: spec.rows,
@@ -147,14 +153,7 @@ function ptyBackend(spec: SessionSpec): Backend {
     // can learn which pane it occupies and where to reach the mux. Unlike the
     // native worker, provider keys are left in place — this is the user's own
     // shell, and a foreign agent authenticates with the user's own environment.
-    env: {
-      ...(spec.paneId ? { AMUX_PANE_ID: spec.paneId } : {}),
-      AMUX_AGENT_ID: spec.id,
-      ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
-      ...(spec.processStatePath ? { AMUX_PROCESS_STATE_SOCKET: spec.processStatePath } : {}),
-      ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
-      ...spec.env,
-    },
+    env,
   });
   return {
     output: readPty(pty),
@@ -217,23 +216,22 @@ const isAgentFrame = (frame: AttachFrame): frame is AgentFrame =>
  *  semantic frames on stdout instead of terminal bytes. */
 function componentBackend(spec: SessionSpec): Backend {
   if (!spec.cmd.length) throw new Error("component session requires a worker command");
+  const env = {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !(spec.stripEnv ?? []).includes(name)),
+    ),
+    AMUX_SESSION: spec.id,
+    AMUX_AGENT_ID: spec.id,
+    AMUX_AGENT_SIZE: JSON.stringify({ cols: spec.cols, rows: spec.rows }),
+    ...spec.env,
+  } satisfies Record<string, string>;
+  if (spec.rpcPath !== undefined) Object.assign(env, { AMUX_CONTROL_SOCKET: spec.rpcPath });
+  if (spec.daemonSession !== undefined) Object.assign(env, { AMUX_DAEMON_SESSION: spec.daemonSession });
+  if (spec.paneId !== undefined) Object.assign(env, { AMUX_PANE_ID: spec.paneId });
+  if (spec.cwd !== undefined) Object.assign(env, { AMUX_AGENT_CWD: spec.cwd });
   const child = Bun.spawn([...spec.cmd], {
     cwd: spec.cwd,
-    env: {
-      // The spawn provider named the variables that are credentials; anything
-      // it did not name is the user's own environment and passes through.
-      ...Object.fromEntries(
-        Object.entries(process.env).filter(([name]) => !(spec.stripEnv ?? []).includes(name)),
-      ),
-      AMUX_SESSION: spec.id,
-      AMUX_AGENT_ID: spec.id,
-      ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
-      ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
-      ...(spec.paneId ? { AMUX_PANE_ID: spec.paneId } : {}),
-      ...(spec.cwd ? { AMUX_AGENT_CWD: spec.cwd } : {}),
-      AMUX_AGENT_SIZE: JSON.stringify({ cols: spec.cols, rows: spec.rows }),
-      ...spec.env,
-    },
+    env,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -294,11 +292,9 @@ function componentBackend(spec: SessionSpec): Backend {
     prompt: (text, options) => send({ _tag: "agent.prompt", session: spec.id, text, ...options }),
     decide: (answer) => send({ _tag: "agent.permission", session: spec.id, ...answer }),
     interrupt: (reason) =>
-      send({
-        _tag: "agent.interrupt",
-        session: spec.id,
-        ...(reason ? { reason } : {}),
-      }),
+      reason === undefined
+        ? send({ _tag: "agent.interrupt", session: spec.id })
+        : send({ _tag: "agent.interrupt", session: spec.id, reason }),
     resize: (cols, rows) => void send({ _tag: "resize", session: spec.id, cols, rows }),
     kill: async () => {
       if (!closed) {
@@ -316,10 +312,10 @@ function componentBackend(spec: SessionSpec): Backend {
 
 type Reservation = { readonly token: symbol; readonly backend?: Backend };
 
-const asPtyError = (operation: string, error: unknown): PtyError =>
+const asPtyError = (operation: string, error: string): PtyError =>
   new PtyError({
     operation,
-    message: error instanceof Error ? error.message : String(error),
+    message: error,
   });
 
 /**
@@ -373,7 +369,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
         const backend = yield* Effect.acquireRelease(
           Effect.try({
             try: () => (kind === "component" ? componentBackend(spec) : ptyBackend(spec)),
-            catch: (error) => asPtyError("spawn", error),
+            catch: (error) => asPtyError("spawn", String(error)),
           }).pipe(Effect.tapError(() => release)),
           (owned) =>
             Effect.uninterruptible(
@@ -400,7 +396,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
             kill: () => Effect.tryPromise(() => backend.kill()),
           });
           return operation.pipe(
-            Effect.mapError((error) => asPtyError(command._tag, error)),
+            Effect.mapError((error) => asPtyError(command._tag, String(error))),
             Effect.exit,
             Effect.flatMap((exit) => Deferred.done(command.done, exit)),
             Effect.zipRight(command._tag === "kill" ? commands.end : Effect.void),
@@ -437,40 +433,40 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
         return {
           id: spec.id,
           kind,
-          output: Stream.fromAsyncIterable(backend.output, (error) => asPtyError("read", error)),
+          output: Stream.fromAsyncIterable(backend.output, (error) => asPtyError("read", String(error))),
           events: backend.events
-            ? Stream.fromAsyncIterable(backend.events, (error) => asPtyError("event", error))
+            ? Stream.fromAsyncIterable(backend.events, (error) => asPtyError("event", String(error)))
             : undefined,
           exit: Effect.tryPromise({
             try: () => backend.wait,
-            catch: (error) => asPtyError("exit", error),
+            catch: (error) => asPtyError("exit", String(error)),
           }).pipe(Effect.ensuring(release)),
           write: (data) =>
             Effect.tryPromise({
               try: (signal) => backend.write(data, signal),
               catch: (error) =>
-                S.is(PtyWriteInterrupted)(error) ? error : asPtyError("write", error),
+                S.is(PtyWriteInterrupted)(error) ? error : asPtyError("write", String(error)),
             }).pipe(
               Effect.catchAll((error) =>
                 S.is(PtyWriteInterrupted)(error) && error.reason === "shutdown"
                   ? Effect.void
-                  : Effect.fail(asPtyError("write", error)),
+                  : Effect.fail(asPtyError("write", String(error))),
               ),
             ),
           prompt: (text, options) =>
             Effect.tryPromise({
               try: () => backend.prompt(text, options),
-              catch: (error) => asPtyError("prompt", error),
+              catch: (error) => asPtyError("prompt", String(error)),
             }),
           decide: (answer) =>
             Effect.tryPromise({
               try: () => backend.decide(answer),
-              catch: (error) => asPtyError("decide", error),
+              catch: (error) => asPtyError("decide", String(error)),
             }),
           interrupt: (reason) =>
             Effect.tryPromise({
               try: () => backend.interrupt(reason),
-              catch: (error) => asPtyError("interrupt", error),
+              catch: (error) => asPtyError("interrupt", String(error)),
             }),
           resize: (cols, rows) =>
             isTerminalSize(cols, rows)
@@ -488,7 +484,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
                 ),
           // Kill must not wait behind a write whose child stopped reading.
           kill: Effect.tryPromise(() => backend.kill()).pipe(
-            Effect.mapError((error) => asPtyError("kill", error)),
+            Effect.mapError((error) => asPtyError("kill", String(error))),
           ),
           foreground: () => backend.foreground(),
         } satisfies ManagedSession;

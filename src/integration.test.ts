@@ -2,7 +2,7 @@ import { expect } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Layer, Redacted } from "effect";
+import { ConfigProvider, Effect, Layer, Redacted, Schema as S } from "effect";
 import { LanguageModel } from "@effect/ai";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Credential } from "./credential.ts";
@@ -12,18 +12,20 @@ import { makeLayer, Service, type Integration } from "./integration.ts";
 import { openAiCompatible, type ModelRequest } from "./auth/integration/index.ts";
 import { testEffect } from "./test-effect.ts";
 
+class NoModelLayer extends S.TaggedError<NoModelLayer>()("NoModelLayer", {}) {}
+
 const env = (root: string): NodeJS.ProcessEnv => ({
   HOME: root,
   XDG_STATE_HOME: join(root, "state"),
 });
 
-const run = <A>(effect: Effect.Effect<A, any, any>, variables: NodeJS.ProcessEnv) =>
+const run = <A, E, R>(effect: Effect.Effect<A, E, R>, variables: NodeJS.ProcessEnv) =>
   effect.pipe(
     Effect.provide(makeLayer()),
     Effect.provide(Credential.Default),
     Effect.provide(BunFileSystem.layer),
     Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
-  ) as Effect.Effect<A, any, never>;
+  );
 
 const key = (value: string) => ({
   type: "key" as const,
@@ -111,7 +113,7 @@ testEffect("an integration is told the API host the catalog names for it", () =>
         Effect.provide(Credential.Default),
         Effect.provide(BunFileSystem.layer),
         Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
-      ) as Effect.Effect<unknown, any, never>;
+      );
 
     yield* build("opencode-go", "glm-5");
     yield* build("anthropic", "claude-opus-4-5");
@@ -170,13 +172,13 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
       variables,
     );
     const registry = makeLayer([definition]);
-    const runRegistry = <A>(effect: Effect.Effect<A, any, any>) =>
+    const runRegistry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
         Effect.provide(registry),
         Effect.provide(Credential.Default),
         Effect.provide(BunFileSystem.layer),
         Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
-      ) as Effect.Effect<A, any, never>;
+      );
     const connection = {
       type: "credential" as const,
       id: created.id,
@@ -241,9 +243,7 @@ const registry = (apiUrl: string, refresh?: Integration["refresh"]) =>
 const buildModelLayer = (apiUrl: string, refresh?: Integration["refresh"]) =>
   Service.pipe(
     Effect.flatMap((integration) => integration.model("fake", "m")),
-    Effect.flatMap((layer) =>
-      layer ? Effect.succeed(layer) : Effect.fail(new Error("no model layer")),
-    ),
+    Effect.flatMap((layer) => (layer ? Effect.succeed(layer) : Effect.fail(new NoModelLayer()))),
     Effect.provide(registry(apiUrl, refresh)),
   );
 
@@ -257,12 +257,12 @@ const generate = (modelLayer: Layer.Layer<LanguageModel.LanguageModel>) =>
 /** Provide the store, filesystem and config an effect reads the credential from. */
 const adapterLayers =
   (variables: NodeJS.ProcessEnv) =>
-  <A>(effect: Effect.Effect<A, any, any>): Effect.Effect<A, any, never> =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.provide(Credential.Default),
       Effect.provide(BunFileSystem.layer),
       Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
-    ) as Effect.Effect<A, any, never>;
+    );
 
 testEffect("a model built from the registry stamps its credential on every request", () =>
   Effect.gen(function* () {
@@ -273,7 +273,7 @@ testEffect("a model built from the registry stamps its credential on every reque
     const variables = env(root);
     const layers = adapterLayers(variables);
     const gw = gateway();
-    yield* Effect.addFinalizer(() => Effect.sync(gw.stop));
+    yield* Effect.addFinalizer(() => Effect.promise(() => gw.stop()));
     yield* layers(
       Credential.Service.pipe(
         Effect.flatMap((store) =>
@@ -297,7 +297,7 @@ testEffect("a token expiring mid-session is refreshed on the next request", () =
     const variables = env(root);
     const layers = adapterLayers(variables);
     const gw = gateway();
-    yield* Effect.addFinalizer(() => Effect.sync(gw.stop));
+    yield* Effect.addFinalizer(() => Effect.promise(() => gw.stop()));
     const created = yield* layers(
       Credential.Service.pipe(
         Effect.flatMap((store) =>

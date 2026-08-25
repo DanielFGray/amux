@@ -16,7 +16,7 @@ import { decodePlugin, hotImport } from "./hot.ts";
  * reloadable; a compiled binary falls back to `load`, because there is no source
  * there to reload and nothing to watch.
  */
-const BUILTIN_PLUGINS: Readonly<Record<string, BuiltinEntry>> = {
+const BUILTIN_PLUGINS = {
   "builtin:amux.sidebar": {
     load: () => import("./builtin/sidebar.tsx"),
     source: new URL("./builtin/sidebar.tsx", import.meta.url),
@@ -29,11 +29,21 @@ const BUILTIN_PLUGINS: Readonly<Record<string, BuiltinEntry>> = {
     load: () => import("./builtin/notifications.ts"),
     source: new URL("./builtin/notifications.ts", import.meta.url),
   },
-};
+} satisfies Readonly<Record<string, BuiltinEntry>>;
 
 interface BuiltinEntry {
   readonly load: () => Promise<unknown>;
   readonly source: URL;
+}
+
+function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
+  return Object.hasOwn(record, key);
+}
+
+function builtinAt(path: string): BuiltinEntry | undefined {
+  if (!hasOwn(BUILTIN_PLUGINS, path)) return undefined;
+  const entry = BUILTIN_PLUGINS[path];
+  return { load: () => entry.load(), source: entry.source };
 }
 
 /** A plugin whose source amux can see, and can therefore load again. */
@@ -80,12 +90,15 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
 
     // A builtin that cannot be read from disk is a compiled binary, not a
     // broken install: the module is in the bundle, and only reloading is lost.
-    const builtin = BUILTIN_PLUGINS[spec.path];
+    const builtin = builtinAt(spec.path);
     const loaded = yield* hotImport(source).pipe(
       Effect.map((definition) => ({ definition, reloadable: true })),
       Effect.catchAll((error) =>
         builtin
-          ? Effect.tryPromise({ try: builtin.load, catch: String }).pipe(
+          ? Effect.tryPromise({
+              try: () => builtin.load(),
+              catch: () => "builtin plugin load failed",
+            }).pipe(
               Effect.flatMap(decodePlugin),
               Effect.map((definition) => ({ definition, reloadable: false })),
             )
@@ -119,7 +132,7 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
  * merely joins.
  */
 function sourceOf(specPath: string, configDir: string): URL | null {
-  const builtin = BUILTIN_PLUGINS[specPath];
+  const builtin = builtinAt(specPath);
   if (builtin) return builtin.source;
   if (specPath.startsWith("file://")) {
     try {

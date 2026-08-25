@@ -62,19 +62,20 @@ import {
 const FALLBACK_PRESET = "tiled";
 
 export function snapshotSessionEntry(session: SessionHandle): PersistedSession {
-  return {
+  const entry: PersistedSession = {
     id: session.id,
     name: session.name,
-    ...(session.kind === "component" ? { kind: "component" as const } : {}),
-    ...(session.declaredAgent ? { declaredAgent: session.declaredAgent } : {}),
-    ...(session.cmd.length > 0 ? { cmd: [...session.cmd] } : {}),
-    ...(session.provider ? { provider: session.provider } : {}),
-    ...(session.cwd ? { cwd: session.cwd } : {}),
     cols: session.term.cols,
     rows: session.term.rows,
     exited: session.exited,
     exitCode: session.exitCode,
   };
+  if (session.kind === "component") Object.assign(entry, { kind: "component" as const });
+  if (session.declaredAgent) Object.assign(entry, { declaredAgent: session.declaredAgent });
+  if (session.cmd.length > 0) Object.assign(entry, { cmd: [...session.cmd] });
+  if (session.provider) Object.assign(entry, { provider: session.provider });
+  if (session.cwd) Object.assign(entry, { cwd: session.cwd });
+  return entry;
 }
 
 /**
@@ -177,20 +178,24 @@ export const restoreWindow = Effect.fnUntraced(function* (
 ) {
   const window = yield* space.newWindow(saved.name ?? undefined, saved.number);
   for (const session of saved.sessions) {
-    yield* window.startSession({
+    const sessionSpec = {
       id: session.id,
       name: session.name,
       kind: session.kind,
       agent: session.declaredAgent,
       cmd: session.cmd ?? [],
-      ...(session.provider ? { provider: session.provider } : {}),
       cwd: session.cwd,
       cols: session.cols,
       rows: session.rows,
-      // A dead agent is restored as a tombstone rather than re-run. Its own
-      // backend is fixed by that, so the option deliberately does not reach it.
-      ...(session.exited ? { exited: { code: session.exitCode } } : { backend: options.backend }),
-    });
+    };
+    if (session.provider) Object.assign(sessionSpec, { provider: session.provider });
+    // A dead agent is restored as a tombstone rather than re-run. Its own
+    // backend is fixed by that, so the option deliberately does not reach it.
+    Object.assign(
+      sessionSpec,
+      session.exited ? { exited: { code: session.exitCode } } : { backend: options.backend },
+    );
+    yield* window.startSession(sessionSpec);
   }
 
   // Only the live agents get panes: an exited one has no view in the running

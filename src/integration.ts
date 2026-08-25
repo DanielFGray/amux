@@ -155,13 +155,14 @@ export const makeLayer = (
             const entry = yield* catalog.model(integrationID, model);
             const apiUrl = entry?.provider?.api ?? provider?.api;
             const npm = entry?.provider?.npm ?? provider?.npm;
-            return integration.model({
-              model,
-              transformClient: (client) =>
-                HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
-              ...(apiUrl ? { apiUrl } : {}),
-              ...(npm ? { npm } : {}),
-            });
+             const request = {
+               model,
+               transformClient: (client: HttpClient.HttpClient) =>
+                 HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
+               apiUrl,
+               npm,
+             };
+             return integration.model(request);
           }),
       } satisfies Interface;
     }),

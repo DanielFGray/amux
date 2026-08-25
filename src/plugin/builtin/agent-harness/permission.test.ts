@@ -328,7 +328,7 @@ const assertion = (action: string, resources: readonly string[]): Assertion => (
   action,
   resources,
   tool: action,
-  input: { resources },
+  input: { resources: [...resources] },
 });
 
 /** A gate wired to a recorded emit stream and a store that only remembers. */

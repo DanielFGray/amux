@@ -15,7 +15,7 @@
 
 import { spawnPty, readPty } from "./pty.ts";
 import { Effect, Fiber, Mailbox, Stream } from "effect";
-import type { AttachClientShape } from "./attach.ts";
+import type { AttachClientContract } from "./attach.ts";
 import { isReportedAgentState, type AgentState } from "./agent-state.ts";
 import { SESSION_STATE_TOPIC } from "./effect/AttachProtocol.ts";
 
@@ -120,7 +120,7 @@ export const localPty: SessionBackendFactory = (opts) => {
  * are workspace transactions and are intentionally absent from this surface.
  */
 export interface DaemonSession {
-  readonly attach: AttachClientShape;
+  readonly attach: AttachClientContract;
 }
 
 /**

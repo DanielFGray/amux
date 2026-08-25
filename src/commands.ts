@@ -1078,6 +1078,10 @@ export type CommandHandlers = {
   readonly [T in CommandTag]: (args: CommandOf<T>) => Effect.Effect<CommandResult<T>, CommandError>;
 };
 
+export type CommandHandlerTable = Readonly<
+  Record<string, (args: Command) => Effect.Effect<AnyCommandResult, CommandError>>
+>;
+
 export interface Commands {
   /** Run a command. Local dispatch, not a round trip: the keymap needs the
    *  effect's synchronous prefix to run in the keypress it was dispatched from. */
@@ -1090,7 +1094,7 @@ export interface Commands {
   readonly isRemoteCommand: (tag: CommandTag) => boolean;
 }
 
-export const makeCommands = (handlers: CommandHandlers): Commands => ({
+export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): Commands => ({
   // Suspended, because a caller builds the effect once — a binding's `run` is
   // built when the table is built — and the handler has to read the workspace
   // at the moment it runs, not at the moment it was named.
@@ -1101,13 +1105,16 @@ export const makeCommands = (handlers: CommandHandlers): Commands => ({
       ),
     ),
   list: (filter) => {
-    let defs = COMMAND_DEFS as unknown as readonly {
-      tag: CommandTag;
-      target: CommandTarget;
-      exposure: CommandExposure;
-    }[];
-    if (filter?.target) defs = defs.filter((d) => d.target === filter.target);
-    if (filter?.exposure) defs = defs.filter((d) => d.exposure === filter.exposure);
+    const defs = filter?.target
+      ? COMMAND_DEFS.filter((d) => d.target === filter.target)
+      : filter?.exposure
+        ? COMMAND_DEFS.filter((d) => d.exposure === filter.exposure)
+        : COMMAND_DEFS;
+    if (filter?.target && filter?.exposure) {
+      return COMMAND_DEFS
+        .filter((d) => d.target === filter.target && d.exposure === filter.exposure)
+        .map((def) => COMMAND_META[def.tag]!);
+    }
     return defs.map((def) => COMMAND_META[def.tag]!);
   },
   isWorkspaceCommand: (tag) => isWorkspaceCommandByTarget(COMMAND_META[tag]!.target),

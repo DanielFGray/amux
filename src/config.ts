@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DEFAULT_LEADER, type Keys } from "./bindings.ts";
 import { type OptionDeltas } from "./options.ts";
+import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import { Option, Schema as S } from "effect";
 import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
 
@@ -49,28 +50,26 @@ const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", 
 export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json");
 
 const KeysSchema = S.Struct({
-  leader: S.optionalWith(S.Unknown, { default: () => DEFAULT_LEADER }),
-  bindings: S.optionalWith(S.Record({ key: S.String, value: S.Unknown }), { default: () => ({}) }),
+  leader: S.optionalWith(JsonValueSchema, { default: () => DEFAULT_LEADER }),
+  bindings: S.optionalWith(S.Record({ key: S.String, value: JsonValueSchema }), { default: () => ({}) }),
 });
 
 const PluginSpecSchema = S.Struct({
   path: S.String.pipe(S.minLength(1)),
   enabled: S.optionalWith(S.Boolean, { default: () => true }),
 });
+const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = DEFAULT_CONFIG.plugins.map(
+  (plugin): JsonValue => ({ path: plugin.path, enabled: plugin.enabled }),
+);
 
-const PluginEntrySchema = S.Union(S.String.pipe(S.minLength(1)), PluginSpecSchema);
 const ConfigSchema = S.Struct({
-  options: S.optionalWith(S.Record({ key: S.String, value: S.Unknown }), { default: () => ({}) }),
+  options: S.optionalWith(S.Record({ key: S.String, value: JsonValueSchema }), { default: () => ({}) }),
   keys: S.optionalWith(KeysSchema, {
     default: () => ({ leader: DEFAULT_LEADER, bindings: {} }),
   }),
-  plugins: S.optionalWith(S.Array(S.Unknown), { default: () => DEFAULT_CONFIG.plugins }),
-  permissions: S.optionalWith(S.Array(S.Unknown), { default: () => [] }),
+  plugins: S.optionalWith(S.Array(JsonValueSchema), { default: () => DEFAULT_PLUGINS_JSON }),
+  permissions: S.optionalWith(S.Array(JsonValueSchema), { default: () => [] }),
 });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 /**
  * Read a loaded file into a Config.
@@ -80,8 +79,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * belonging to a name this build does not know survive a save instead of being
  * dropped by the decoder that failed to recognise it.
  */
-export function decodeConfig(loaded: unknown): Config {
-  const decoded = S.decodeUnknownSync(ConfigSchema)(isRecord(loaded) ? loaded : {});
+export function decodeConfig(loaded: JsonValue): Config {
+  const decoded = Option.getOrElse(S.decodeUnknownOption(ConfigSchema)(loaded), () =>
+    S.decodeUnknownSync(ConfigSchema)({}),
+  );
   const keys = decoded.keys;
   const leader = Option.getOrElse(
     S.decodeUnknownOption(S.String.pipe(S.filter((value) => value.trim().length > 0)))(keys.leader),
@@ -89,7 +90,7 @@ export function decodeConfig(loaded: unknown): Config {
   );
   const bindings = Object.fromEntries(
     Object.entries(keys.bindings).flatMap(([name, value]) => {
-      const entries = S.decodeUnknownOption(S.Array(S.Unknown))(value);
+      const entries = S.decodeUnknownOption(S.Array(JsonValueSchema))(value);
       if (Option.isNone(entries)) return [];
       return [
         [
@@ -103,11 +104,9 @@ export function decodeConfig(loaded: unknown): Config {
     }),
   );
   const plugins = decoded.plugins.flatMap((entry) => {
-    const plugin = S.decodeUnknownOption(PluginEntrySchema)(entry);
+    const plugin = decodePluginEntry(entry);
     if (Option.isNone(plugin)) return [];
-    return [
-      typeof plugin.value === "string" ? { path: plugin.value, enabled: true } : plugin.value,
-    ];
+    return [plugin.value];
   });
   const permissions = decoded.permissions.flatMap((entry) => {
     const rule = decodePermissionRule(entry);
@@ -122,6 +121,15 @@ export function decodeConfig(loaded: unknown): Config {
 }
 
 const decodePermissionRule = S.decodeUnknownOption(PermissionRuleSchema);
+
+const decodePluginEntry = (entry: JsonValue): Option.Option<PluginSpec> => {
+  const spec = S.decodeUnknownOption(PluginSpecSchema)(entry);
+  if (Option.isSome(spec)) return spec;
+  return Option.map(S.decodeUnknownOption(S.String.pipe(S.minLength(1)))(entry), (path) => ({
+    path,
+    enabled: true,
+  }));
+};
 
 /** New bundled plugins are enabled for existing configs unless the user has an
  * explicit entry for that path. An explicit disabled entry remains authoritative. */

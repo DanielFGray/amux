@@ -165,13 +165,13 @@ export interface App {
    * nothing is invisible in a terminal diff but obvious here, and the file is
    * the app's own account of its state rather than a rendering of it.
    */
-  shape(): Promise<string>;
+  workspaceSummary(): Promise<string>;
   /**
    * The same session file, unparsed beyond JSON — for checks that need more
-   * than the shape string's counts: which window is active, or which pane a
+   * than the workspace summary's counts: which window is active, or which pane a
    * window's layout says is focused.
    */
-  session(): Promise<Record<string, any> | null>;
+  session(): Promise<E2eSession | null>;
   /**
    * Poll until something is true, or fail saying what never happened.
    *
@@ -185,9 +185,36 @@ export interface App {
     timeoutMs?: number,
   ): Promise<void>;
   /** The config as the app last wrote it, or null if it never has. */
-  config(): Promise<Record<string, any> | null>;
+  config(): Promise<E2eConfig | null>;
   stop(): Promise<void>;
 }
+
+export interface E2eSession {
+  readonly spaces?: readonly E2eSpace[];
+}
+
+export interface E2eSpace {
+  readonly activeWindow: number | null;
+  readonly windows: readonly E2eWindow[];
+}
+
+export interface E2eWindow {
+  readonly number: number;
+  readonly layout: string;
+  readonly sessions: readonly E2eSessionEntry[];
+}
+
+export interface E2eSessionEntry {
+  readonly id: string;
+}
+
+export interface E2eConfig {
+  readonly options?: Readonly<Record<string, string | number | boolean>>;
+  readonly keys?: { readonly bindings?: Readonly<Record<string, readonly string[]>> };
+}
+
+export const hasSidebarFooter = (screen: string): boolean =>
+  /\d+ spaces? · \d+ agents?/.test(screen);
 
 export async function launch(
   session: string,
@@ -251,18 +278,18 @@ export async function launch(
   // launch as "0sp 0win 0ag" perhaps one run in two. Name the file.
   const sessionFile = join(state, "amux", "sessions", session, "session.json");
 
-  async function readSession(): Promise<Record<string, any> | null> {
+  async function readSession(): Promise<E2eSession | null> {
     return await Bun.file(sessionFile)
       .json()
       .catch(() => null);
   }
 
-  async function shape(): Promise<string> {
+  async function workspaceSummary(): Promise<string> {
     const saved = await readSession();
     if (!saved?.spaces) return "(no session file)";
-    const windows = saved.spaces.flatMap((s: { windows: unknown[] }) => s.windows);
-    const agents = windows.flatMap((w: { agents: unknown[] }) => w.agents);
-    return `${saved.spaces.length}sp ${windows.length}win ${agents.length}ag`;
+    const windows = saved.spaces.flatMap((space) => space.windows);
+    const sessions = windows.flatMap((window) => window.sessions);
+    return `${saved.spaces.length}sp ${windows.length}win ${sessions.length}ag`;
   }
 
   async function until(
@@ -283,9 +310,9 @@ export async function launch(
   // session file did not exist yet, which surfaced as a crashed harness rather
   // than as a slow boot. Wait for the thing itself.
   //
-  // "Has an agent", specifically. Not "a file exists" and not "the shape isn't
+  // "Has an agent", specifically. Not "a file exists" and not "the summary isn't
   // 0sp": the app saves an empty workspace first and fills it in a moment
-  // later, and before either of those `shape()` says "(no session file)" —
+  // later, and before either of those `workspaceSummary()` says "(no session file)" —
   // which satisfies any predicate phrased as a negation, so the wait returned
   // on its first poll and the check then read the empty write.
   //
@@ -320,8 +347,11 @@ export async function launch(
   // find the daemon and kill it.
   trackDaemon(leasePath, pidFile, null);
   try {
-    await until(async () => /\s[1-9]\d*ag$/.test(await shape()), "the workspace to have an agent");
-    await until(() => captureVisible(term).includes(" · "), "the sidebar to draw its footer");
+    await until(
+      async () => /\s[1-9]\d*ag$/.test(await workspaceSummary()),
+      "the workspace to have an agent",
+    );
+    await until(() => hasSidebarFooter(captureVisible(term)), "the sidebar to draw its footer");
     // The daemon wrote its lease before the host came up, so it is readable
     // now. Cache the pid: teardown must not depend on a single lease read at
     // stop time, which has been observed to fail under load (ts-549538).
@@ -347,7 +377,7 @@ export async function launch(
     send(bytes) {
       return pty.write(bytes);
     },
-    shape,
+    workspaceSummary,
     session: readSession,
     config: () =>
       Bun.file(configPath)

@@ -117,7 +117,7 @@ export function parseKeyStrokes(keymap: AppKeymap, token: string): KeyStroke[] |
   if (parts.length === 0) return null;
   const strokes: KeyStroke[] = [];
   for (const part of parts) {
-    const stroke = (part as unknown as { stroke?: Partial<KeyStroke> }).stroke;
+    const stroke = part.stroke;
     if (!stroke?.name) return null;
     strokes.push({
       name: stroke.name,

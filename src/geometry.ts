@@ -269,13 +269,12 @@ export function dividerTouchesPane(
 
 interface ExactRect extends Rect {}
 
-function geometry(
-  layout: Layout,
-  size: LayoutSize,
-): {
+interface Geometry {
   panes: Map<string, Rect>;
   nodes: Map<LayoutNode, Rect>;
-} {
+}
+
+function geometry(layout: Layout, size: LayoutSize): Geometry {
   const panes = new Map<string, Rect>();
   const nodes = new Map<LayoutNode, Rect>();
   const cols = Math.max(0, Math.floor(size.cols));

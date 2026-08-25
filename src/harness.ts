@@ -65,7 +65,7 @@ export const runAsync = <A>(effect: Effect.Effect<A>): Promise<A> => Effect.runP
 export function scopedSpaceSet(
   env: Context.Context<WorkspaceEnv>,
   host: BoxRenderable,
-): { spaces: SpaceSet; dispose: () => Promise<void> } {
+) {
   const scope = Effect.runSync(Scope.make());
   const spaces = Effect.runSync(Scope.extend(SpaceSet.make(env, host), scope));
   return { spaces, dispose: () => runAsync(Scope.close(scope, Exit.void)) };
@@ -125,7 +125,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const host = new BoxRenderable(t.renderer, {
     id: "pane-host",
     flexGrow: 1,
-    ...(options.hostDirection ? { flexDirection: options.hostDirection } : {}),
+    flexDirection: options.hostDirection,
   });
   t.renderer.root.add(host);
 
@@ -162,7 +162,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
       mounted = new BoxRenderable(t.renderer, {
         id: `pane-host-${++hosts}`,
         flexGrow: 1,
-        ...(options.hostDirection ? { flexDirection: options.hostDirection } : {}),
+        flexDirection: options.hostDirection,
       });
       t.renderer.root.add(mounted);
       return build();

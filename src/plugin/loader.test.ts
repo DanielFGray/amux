@@ -7,7 +7,7 @@ import { Effect, Scope } from "effect";
 import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
 import { loadPluginsFromConfig } from "./loader.ts";
 import { testPluginEnvironment } from "./test-environment.ts";
-import type { PluginDefinition } from "./types.ts";
+import { definePlugin } from "./types.ts";
 import type { Config, PluginSpec } from "../config.ts";
 import { decodeConfig, loadConfig } from "../config.ts";
 import { testEffect } from "../test-effect.ts";
@@ -88,24 +88,26 @@ async function writeExampleConfig(dir: string, example: string): Promise<string>
 }
 
 function mkPluginSrc(id: string, variant?: string): string {
-  const preamble = `import { Effect } from "effect";`;
+  const typesPath = fileURLToPath(new URL("./types.ts", import.meta.url));
+  const preamble = `import { Effect } from "effect";
+import { definePlugin } from ${JSON.stringify(typesPath)};`;
   switch (variant) {
     case "no-default":
       return `export const x = 1;`;
     case "null-default":
       return `export default null;`;
     case "no-id":
-      return `${preamble}\nexport default { apiVersion: "1", effect: () => Effect.void };`;
+      return `${preamble}\nexport default { apiVersion: "1", activate: () => Effect.void };`;
     case "empty-id":
-      return `${preamble}\nexport default { id: "", apiVersion: "1", effect: () => Effect.void };`;
+      return `${preamble}\nexport default { id: "", apiVersion: "1", activate: () => Effect.void };`;
     case "no-apiVersion":
-      return `${preamble}\nexport default { id: "${id}", effect: () => Effect.void };`;
-    case "no-effect":
+      return `${preamble}\nexport default { id: "${id}", activate: () => Effect.void };`;
+    case "no-activate":
       return `export default { id: "${id}", apiVersion: "1" };`;
     case "throw":
       return `throw new Error("syntax error");`;
     default:
-      return `${preamble}\nexport default { id: "${id}", apiVersion: "1", effect: () => Effect.void };`;
+      return `${preamble}\nexport default definePlugin({ id: "${id}", apiVersion: "1", effect: () => Effect.void });`;
   }
 }
 
@@ -386,13 +388,13 @@ testEffect("reports a plugin with no apiVersion", () =>
   }),
 );
 
-// --- Validation: missing effect function ---
+// --- Validation: missing activation function ---
 
-testEffect("reports a plugin with no effect function", () =>
+testEffect("reports a plugin with no activation function", () =>
   Effect.gen(function* () {
     const dir = yield* Effect.promise(() => tempDir());
     yield* Effect.promise(() =>
-      writePluginFile(dir, "noeff.ts", mkPluginSrc("noeff", "no-effect")),
+      writePluginFile(dir, "noeff.ts", mkPluginSrc("noeff", "no-activate")),
     );
 
     const config = baseConfig({ plugins: [spec(join(dir, "noeff.ts"))] });
@@ -477,11 +479,13 @@ testEffect("host continues working after loader finishes", () =>
     const { host } = yield* makeHost();
 
     yield* loadPluginsFromConfig(config, host, dir);
-    yield* host.add({
-      id: "post",
-      apiVersion: "1",
-      effect: () => Effect.void,
-    } as PluginDefinition);
+    yield* host.add(
+      definePlugin({
+        id: "post",
+        apiVersion: "1",
+        effect: () => Effect.void,
+      }),
+    );
 
     expect(
       host

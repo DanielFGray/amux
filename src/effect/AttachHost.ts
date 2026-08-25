@@ -21,16 +21,18 @@ import { createServer, type Server } from "node:net";
 import { chmod } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";
 import type { AttachFrame, PermissionAnswer } from "./AttachProtocol.ts";
-import { AgentLog, AgentLogDefault, type AgentLogService } from "./AgentLog.ts";
+import { AgentLog, AgentLogDefault, type AgentLogError, type AgentLogService } from "./AgentLog.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
 import {
+  SessionObserverError,
   SessionExitObserver,
   SessionStateObserver,
   SessionSupervisor,
   type PreparedSession,
 } from "./SessionSupervisor.ts";
 import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./SessionRegistry.ts";
+import { errorMessage } from "../error-message.ts";
 
 const ProcessStateReport = S.Struct({
   id: S.optional(S.String),
@@ -38,7 +40,14 @@ const ProcessStateReport = S.Struct({
   params: S.optional(S.Struct({ session: S.optional(S.String), state: S.optional(S.String) })),
 });
 
-export interface AttachHostOptions {
+export interface AttachHostOptions<
+  AttachError = never,
+  DetachError = never,
+  ActivityError = never,
+  SyncError = never,
+  SessionExitError = never,
+  SessionStateError = never,
+> {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
   readonly path: string;
   /** Plain-JSON endpoint for process self-reports (SessionPaths.processState). */
@@ -47,22 +56,25 @@ export interface AttachHostOptions {
   readonly daemonSession?: string;
   readonly idleTimeoutSeconds?: number;
   /** Record or reject an attachment; failing rejects the client's hello. */
-  readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
+  readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, AttachError>;
   /** An accepted client went away — EOF, error, or idle timeout. */
-  readonly onDetach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
+  readonly onDetach?: (client: string, connection: string) => Effect.Effect<void, DetachError>;
   /** Any inbound frame from an accepted client, pings included — the stream's
    *  proof that an attachment is still live. */
-  readonly onActivity?: (client: string, connection: string) => Effect.Effect<void, unknown>;
+  readonly onActivity?: (client: string, connection: string) => Effect.Effect<void, ActivityError>;
   /** A client adopted a session and wants its screen replayed to it alone. */
   readonly onSync?: (
     client: string,
     connection: string,
     session: string,
     after?: number,
-  ) => Effect.Effect<void, unknown>;
+  ) => Effect.Effect<void, SyncError | AgentLogError>;
   /** A supervised backend actually terminated (not merely an observer detaching). */
-  readonly onSessionExit?: (session: string, code: number | null) => Effect.Effect<void, unknown>;
-  readonly onSessionState?: (session: string, state: string) => Effect.Effect<void, unknown>;
+  readonly onSessionExit?: (
+    session: string,
+    code: number | null,
+  ) => Effect.Effect<void, SessionExitError>;
+  readonly onSessionState?: (session: string, state: string) => Effect.Effect<void, SessionStateError>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -111,8 +123,22 @@ export interface AttachHostService {
 
 export class AttachHost extends Context.Tag("AttachHost")<AttachHost, AttachHostService>() {}
 
-const make = (
-  options: AttachHostOptions,
+const make = <
+  AttachError,
+  DetachError,
+  ActivityError,
+  SyncError,
+  SessionExitError,
+  SessionStateError,
+>(
+  options: AttachHostOptions<
+    AttachError,
+    DetachError,
+    ActivityError,
+    SyncError,
+    SessionExitError,
+    SessionStateError
+  >,
 ): Effect.Effect<
   AttachHostService,
   AttachServerError,
@@ -147,7 +173,7 @@ const make = (
                   for (const line of lines) {
                     if (!line) continue;
                     try {
-                      const request = S.decodeUnknownSync(ProcessStateReport)(JSON.parse(line));
+                      const request = S.decodeUnknownSync(S.parseJson(ProcessStateReport))(line);
                       const session = request.params?.session;
                       const state = request.params?.state;
                       // Built, not run: an Effect is a description, so this costs
@@ -161,13 +187,13 @@ const make = (
                           : undefined;
                       const ok = request.method === "ping" || report !== undefined;
                       if (report) Runtime.runFork(runtime)(report);
-                      socket.write(
-                        JSON.stringify({
-                          id: request.id,
-                          ok,
-                          ...(ok ? {} : { error: "unknown request" }),
-                        }) + "\n",
-                      );
+                       socket.write(
+                         JSON.stringify(
+                           ok
+                             ? { id: request.id, ok }
+                             : { id: request.id, ok, error: "unknown request" },
+                         ) + "\n",
+                       );
                     } catch {
                       socket.write('{"ok":false,"error":"invalid request"}\n');
                     }
@@ -216,25 +242,22 @@ const make = (
             ),
           ),
     });
-    return {
+     const sessionSpec = (spec: SessionSpec): SessionSpec => {
+       const next = { ...spec };
+       if (options.rpcPath !== undefined) next.rpcPath = options.rpcPath;
+       if (options.processStatePath !== undefined) next.processStatePath = options.processStatePath;
+       if (options.daemonSession !== undefined) next.daemonSession = options.daemonSession;
+       return next;
+     };
+     return {
       prepare: (spec) =>
         Scope.extend(
-          supervisor.prepare({
-            ...spec,
-            ...(options.rpcPath ? { rpcPath: options.rpcPath } : {}),
-            ...(options.processStatePath ? { processStatePath: options.processStatePath } : {}),
-            ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
-          }),
+          supervisor.prepare(sessionSpec(spec)),
           sessions,
         ),
       spawn: (spec) =>
         Scope.extend(
-          supervisor.prepare({
-            ...spec,
-            ...(options.rpcPath ? { rpcPath: options.rpcPath } : {}),
-            ...(options.processStatePath ? { processStatePath: options.processStatePath } : {}),
-            ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
-          }),
+          supervisor.prepare(sessionSpec(spec)),
           sessions,
         ).pipe(
           Effect.tap((prepared) => prepared.activate),
@@ -253,7 +276,9 @@ const make = (
       prompt: (id, text, options) =>
         supervisor.handle({ _tag: "agent.prompt", session: id, text, ...options }),
       interrupt: (id, reason) =>
-        supervisor.handle({ _tag: "agent.interrupt", session: id, ...(reason ? { reason } : {}) }),
+        reason === undefined
+          ? supervisor.handle({ _tag: "agent.interrupt", session: id })
+          : supervisor.handle({ _tag: "agent.interrupt", session: id, reason }),
       decide: (id, answer) =>
         supervisor.handle({ _tag: "agent.permission", session: id, ...answer }),
       capture: supervisor.capture,
@@ -270,8 +295,22 @@ const make = (
  * same hub — layer memoization is doing load-bearing work here, not just
  * saving an allocation.
  */
-export const layerAttachHost = (
-  options: AttachHostOptions,
+export const layerAttachHost = <
+  AttachError,
+  DetachError,
+  ActivityError,
+  SyncError,
+  SessionExitError,
+  SessionStateError,
+>(
+  options: AttachHostOptions<
+    AttachError,
+    DetachError,
+    ActivityError,
+    SyncError,
+    SessionExitError,
+    SessionStateError
+  >,
 ): Layer.Layer<AttachHost, AttachServerError> =>
   Layer.scoped(AttachHost, make(options)).pipe(
     Layer.provide(
@@ -281,12 +320,22 @@ export const layerAttachHost = (
         ),
         Layer.provide(
           Layer.succeed(SessionExitObserver, {
-            beforePublish: options.onSessionExit ?? (() => Effect.void),
+            beforePublish: (session, code) =>
+              (options.onSessionExit?.(session, code) ?? Effect.void).pipe(
+                Effect.mapError((error) =>
+                  new SessionObserverError({ message: errorMessage(error), operation: "exit" }),
+                ),
+              ),
           }),
         ),
         Layer.provide(
           Layer.succeed(SessionStateObserver, {
-            onState: options.onSessionState ?? (() => Effect.void),
+            onState: (session, state) =>
+              (options.onSessionState?.(session, state) ?? Effect.void).pipe(
+                Effect.mapError((error) =>
+                  new SessionObserverError({ message: errorMessage(error), operation: "state" }),
+                ),
+              ),
           }),
         ),
       ),

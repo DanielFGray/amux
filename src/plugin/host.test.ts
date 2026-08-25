@@ -1,9 +1,17 @@
 import { afterEach, expect } from "bun:test";
-import { Chunk, Effect, Fiber, Queue, Scope, Stream } from "effect";
+import { Chunk, Effect, Fiber, Queue, Scope, Schema as S, Stream } from "effect";
 import type { Regions } from "../ui/regions.tsx";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
-import type { PluginDefinition, PluginErrorEvent } from "./types.ts";
+import {
+  definePlugin,
+  type PluginDefinition,
+  type PluginErrorEvent,
+  type PluginHostContext,
+  type PluginRequirements,
+} from "./types.ts";
+import type { PluginService } from "./services.ts";
+import { key } from "./kv.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import type { SessionViews } from "./session-views.tsx";
 import { testPluginEnvironment } from "./test-environment.ts";
@@ -31,13 +39,22 @@ async function mockEnvironment(
   };
 }
 
-function mkPlugin(overrides: Partial<PluginDefinition> = {}): PluginDefinition {
-  return {
+function mkPlugin<const Tags extends readonly PluginService[] = []>(
+  overrides: {
+    readonly id?: string;
+    readonly apiVersion?: string;
+    readonly inject?: Tags;
+    readonly effect?: (
+      context: PluginHostContext,
+    ) => Effect.Effect<void, never, PluginRequirements<Tags>>;
+  } = {},
+): PluginDefinition {
+  return definePlugin({
     id: "test.plugin",
     apiVersion: "1",
     effect: () => Effect.void,
     ...overrides,
-  };
+  });
 }
 
 const cleanupFns: (() => void)[] = [];
@@ -211,7 +228,7 @@ testEffect("registered panels are disposed when the plugin is removed", () =>
             region: "left",
             anchor: "app",
             size: () => 20,
-            component: () => null as unknown as never,
+               component: () => null as never,
           });
           yield* Effect.addFinalizer(() => Effect.sync(() => void 0));
         }),
@@ -369,7 +386,7 @@ testEffect("a plugin effect that throws a defect reports the error without crash
               region: "left",
               anchor: "app",
               size: () => 20,
-              component: () => null as unknown as never,
+               component: () => null as never,
             });
             registered = true;
             return yield* Effect.sync(() => {
@@ -458,7 +475,7 @@ testEffect("KV values survive a remove/add cycle", () =>
         id: "kv-test",
         effect: (ctx) =>
           Effect.sync(() => {
-            ctx.kv.set("answer", 42);
+            ctx.kv.set(key("answer", S.Number), 42);
           }),
       }),
     );
@@ -470,7 +487,7 @@ testEffect("KV values survive a remove/add cycle", () =>
         id: "kv-test",
         effect: (ctx) =>
           Effect.sync(() => {
-            stored = ctx.kv.get("answer");
+            stored = ctx.kv.get(key("answer", S.Number));
           }),
       }),
     );
@@ -547,7 +564,7 @@ testEffect("defect closes the plugin scope and runs registered finalizers", () =
               region: "left",
               anchor: "app",
               size: () => 20,
-              component: () => null as unknown as never,
+               component: () => null as never,
             });
             yield* Effect.addFinalizer(() => Effect.void);
             throw new Error("defect after registration");
@@ -572,7 +589,7 @@ testEffect("KV is isolated per plugin so plugins cannot see each other's keys", 
         id: "a",
         effect: (ctx) =>
           Effect.sync(() => {
-            ctx.kv.set("key", "a-value");
+            ctx.kv.set(key("key", S.String), "a-value");
           }),
       }),
     );
@@ -583,7 +600,7 @@ testEffect("KV is isolated per plugin so plugins cannot see each other's keys", 
         id: "b",
         effect: (ctx) =>
           Effect.sync(() => {
-            ctx.kv.set("key", "b-value");
+            ctx.kv.set(key("key", S.String), "b-value");
           }),
       }),
     );
@@ -594,7 +611,7 @@ testEffect("KV is isolated per plugin so plugins cannot see each other's keys", 
         id: "a",
         effect: (ctx) =>
           Effect.sync(() => {
-            valueA = ctx.kv.get("key");
+            valueA = ctx.kv.get(key("key", S.String));
           }),
       }),
     );
@@ -607,7 +624,7 @@ testEffect("KV is isolated per plugin so plugins cannot see each other's keys", 
         id: "b",
         effect: (ctx) =>
           Effect.sync(() => {
-            valueB = ctx.kv.get("key");
+            valueB = ctx.kv.get(key("key", S.String));
           }),
       }),
     );

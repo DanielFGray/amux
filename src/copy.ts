@@ -112,7 +112,7 @@ const graphemeWidth = (() => {
     },
   });
   const width = new Uint8Array(1);
-  return (cps: Uint32Array): { consumed: number; width: number } => {
+  return (cps: Uint32Array) => {
     if (cps.length === 0) return { consumed: 0, width: 0 };
     width[0] = 0;
     const consumed = Number(
@@ -229,7 +229,7 @@ export class CopyMode {
   }
 
   /** The cursor, in scrollback coordinates. Read-only, for chrome and tests. */
-  get cursor(): { x: number; y: number } {
+  get cursor() {
     return { ...this.#cursor };
   }
 

@@ -1225,9 +1225,12 @@ export class Window {
     this.#layout = makeLayout({
       root: wanted.root ? materialize(wanted.root) : null,
       floats: wanted.floats.map(materializeFloat),
-      docks: Object.fromEntries(
-        DOCK_SIDES.map((side) => [side, dockStrips[side].map(materializeDock)]),
-      ) as unknown as typeof dockStrips,
+      docks: {
+        left: dockStrips.left.map(materializeDock),
+        right: dockStrips.right.map(materializeDock),
+        top: dockStrips.top.map(materializeDock),
+        bottom: dockStrips.bottom.map(materializeDock),
+      },
       dockSizes: wanted.dockSizes,
       focus: next?.id,
     });

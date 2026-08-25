@@ -452,7 +452,10 @@ export class SessionHandle {
   #retainDetection() {
     this.#detectionRegistrations++;
     if (this.#detectionRegistrations !== 1 || this.#disposed) return;
-    this.#detectionTimer = setInterval(() => this.#detectState(), BLOCKED_POLL_MS);
+    this.#detectionTimer = setInterval(() => {
+      this.#detectedState();
+      this.#notifyStateReaders();
+    }, BLOCKED_POLL_MS);
     this.#detectionTimer.unref?.();
   }
 
@@ -467,7 +470,7 @@ export class SessionHandle {
     this.#detectionTimer = null;
   }
 
-  #detectState() {
+  #notifyStateReaders() {
     const state = this.#state.state;
     for (const reader of this.#stateReaders) reader.read(state);
   }

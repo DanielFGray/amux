@@ -32,11 +32,13 @@ async function setup() {
   return harness;
 }
 
-const shape = (node: LayoutNode | null): unknown => {
+const fixture = (node: LayoutNode | null): Fixture => {
   if (!node) return null;
   if (node.type === "pane") return "pane";
-  return { [node.direction]: node.children.map(shape) };
+  return { [node.direction]: node.children.map(fixture) };
 };
+
+type Fixture = string | null | { row?: Fixture[]; column?: Fixture[] };
 
 /** The agent's on-screen text, so "the pane was reused" is checked against the
  *  terminal itself rather than against object identity alone. */
@@ -72,7 +74,7 @@ test("a layout survives the wire format and rebuilds the same tree", async () =>
   // Reshape it into something else entirely, then restore.
   window.selectLayout("even-vertical");
   await layout();
-  expect(shape(window.exportLayout().root)).toEqual({
+  expect(fixture(window.exportLayout().root)).toEqual({
     column: ["pane", "pane", "pane"],
   });
 
@@ -523,7 +525,7 @@ test("the exported tree matches the nesting the splits actually built", async ()
   run(window.splitSpawn("row"));
   run(window.splitSpawn("column"));
   await layout();
-  expect(shape(window.exportLayout().root)).toEqual({
+  expect(fixture(window.exportLayout().root)).toEqual({
     row: ["pane", { column: ["pane", "pane"] }],
   });
 });
@@ -640,5 +642,5 @@ test("closing a pane leaves no husk in the exported tree", async () => {
   await layout();
   window.close(third);
   await layout();
-  expect(shape(window.exportLayout().root)).toEqual({ row: ["pane", "pane"] });
+  expect(fixture(window.exportLayout().root)).toEqual({ row: ["pane", "pane"] });
 });

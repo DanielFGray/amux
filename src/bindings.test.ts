@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { Effect } from "effect";
 import { createTestRenderer } from "@opentui/core/testing";
+import type { KeyEvent } from "@opentui/core";
 import {
   createBindings,
   formatKey,
@@ -496,7 +497,7 @@ test("capture takes the next keystroke, bound or not, and skips modifiers", asyn
 });
 
 test("a keystroke reads back as the string that binds it", () => {
-  const key = (over: Record<string, unknown>) =>
+  const key = (over: Partial<KeyEvent>) =>
     keyToBinding({
       name: "x",
       ctrl: false,
@@ -508,7 +509,7 @@ test("a keystroke reads back as the string that binds it", () => {
       number: false,
       eventType: "press",
       ...over,
-    } as never);
+    } as KeyEvent);
 
   expect(key({})).toBe("x");
   expect(key({ ctrl: true })).toBe("ctrl+x");

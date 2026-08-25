@@ -24,7 +24,7 @@ export interface DaemonState {
   cancelPersistence: boolean;
 }
 
-type Mutation = { effect: Effect.Effect<any, any, never>; done: Deferred.Deferred<any, any> };
+type Mutation = Effect.Effect<void, never>;
 
 export interface DaemonModelService {
   readonly enqueue: <A, E>(effect: Effect.Effect<A, E, never>) => Effect.Effect<A, E>;
@@ -37,13 +37,13 @@ export interface DaemonModelService {
   readonly attach: (
     client: string,
     connection: string,
-    onPersist: (state: SessionState) => Effect.Effect<void, unknown>,
+    onPersist: (state: SessionState) => Effect.Effect<void, DaemonModelError>,
   ) => Effect.Effect<void, DaemonModelError>;
 
   readonly detach: (
     client: string,
     connection: string,
-    onPersist: (state: SessionState) => Effect.Effect<void, unknown>,
+    onPersist: (state: SessionState) => Effect.Effect<void, DaemonModelError>,
   ) => Effect.Effect<void, DaemonModelError>;
 
   readonly touch: (client: string, connection: string) => Effect.Effect<void>;
@@ -91,9 +91,7 @@ export const layerDaemonModel = (initial: {
       yield* Effect.forkScoped(
         Effect.forever(
           Queue.take(mutationQueue).pipe(
-            Effect.flatMap((m) =>
-              Effect.exit(m.effect).pipe(Effect.flatMap((e) => Deferred.done(m.done, e))),
-            ),
+            Effect.flatMap((mutation) => mutation),
           ),
         ),
       );
@@ -101,10 +99,7 @@ export const layerDaemonModel = (initial: {
       const enqueue = <A, E>(effect: Effect.Effect<A, E, never>): Effect.Effect<A, E> =>
         Effect.gen(function* () {
           const done = yield* Deferred.make<A, E>();
-          yield* Queue.offer(mutationQueue, {
-            effect: effect as Effect.Effect<any, any, never>,
-            done: done as Deferred.Deferred<any, any>,
-          });
+          yield* Queue.offer(mutationQueue, Effect.intoDeferred(effect, done).pipe(Effect.asVoid));
           return yield* Deferred.await(done);
         });
 
@@ -118,7 +113,7 @@ export const layerDaemonModel = (initial: {
       const attach = (
         client: string,
         connection: string,
-        onPersist: (s: SessionState) => Effect.Effect<void, unknown>,
+        onPersist: (s: SessionState) => Effect.Effect<void, DaemonModelError>,
       ): Effect.Effect<void, DaemonModelError> =>
         enqueue(
           Effect.gen(function* () {
@@ -142,7 +137,7 @@ export const layerDaemonModel = (initial: {
       const detach = (
         client: string,
         connection: string,
-        onPersist: (s: SessionState) => Effect.Effect<void, unknown>,
+        onPersist: (s: SessionState) => Effect.Effect<void, DaemonModelError>,
       ): Effect.Effect<void, DaemonModelError> =>
         enqueue(
           Effect.gen(function* () {

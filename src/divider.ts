@@ -12,15 +12,17 @@ const FOCUS = RGBA.fromInts(137, 180, 250, 255); // blue
 const HOVER = RGBA.fromInts(203, 166, 247, 255); // mauve
 const BG = RGBA.fromInts(30, 30, 46, 255); // base
 
-export function setDirection(r: object, direction: "row" | "column"): void {
-  (r as { flexDirection: string }).flexDirection = direction;
+type FlexRenderable = Renderable;
+
+export function setDirection(r: FlexRenderable, direction: "row" | "column"): void {
+  r.flexDirection = direction;
 }
 
 /** Project a model weight into OpenTUI's write-only flex properties. */
-export function setWeight(r: object, weight: number): void {
+export function setWeight(r: FlexRenderable, weight: number): void {
   const w = Math.max(0.0001, weight);
-  (r as { flexGrow: number; flexBasis: number }).flexGrow = w;
-  (r as { flexGrow: number; flexBasis: number }).flexBasis = 0;
+  r.flexGrow = w;
+  r.flexBasis = 0;
 }
 
 /**
@@ -45,7 +47,7 @@ const LEFT = 4;
 const RIGHT = 8;
 
 /** Junction glyphs by which arms reach the cell: up, down, left, right. */
-const JUNCTION: Record<number, string> = {
+const JUNCTION = {
   [UP | DOWN]: "│",
   [LEFT | RIGHT]: "─",
   [DOWN | LEFT | RIGHT]: "┬",
@@ -57,7 +59,7 @@ const JUNCTION: Record<number, string> = {
   [UP | LEFT]: "┘",
   [DOWN | RIGHT]: "┌",
   [DOWN | LEFT]: "┐",
-};
+} satisfies Record<number, string>;
 
 /**
  * The glyph a cell wants, given the arms that reach it.
@@ -202,9 +204,7 @@ export class Divider extends Renderable {
         // rest of the gesture. Capturing on the press makes the drag work at
         // any speed. Routing to a captured renderable happens before OpenTUI's
         // own capture bookkeeping, so this survives the rest of the dispatch.
-        (
-          this._ctx as unknown as { setCapturedRenderable?: (r: unknown) => void }
-        ).setCapturedRenderable?.(this);
+        (this._ctx as { setCapturedRenderable?: (r: Renderable) => void }).setCapturedRenderable?.(this);
         event.stopPropagation();
         return;
       case "up":

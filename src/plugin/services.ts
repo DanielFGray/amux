@@ -29,7 +29,7 @@ export interface PluginRegistries {
   readonly spawnProvider: (id: string) => SpawnProvider | undefined;
 }
 
-export interface RegistryService<A = unknown> {
+export interface RegistryService<A> {
   readonly register: (value: A) => Effect.Effect<void, never, CurrentPlugin | Scope.Scope>;
 }
 
@@ -55,7 +55,10 @@ export class SpawnProvidersTag extends Context.Tag("amux/SpawnProviders")<
   RegistryService<readonly [string, () => SpawnProvider]>
 >() {}
 
-export type PluginService = Context.Tag<any, any>;
+export interface PluginService {
+  readonly key: string;
+  readonly _op: "Tag";
+}
 
 export interface PluginServices {
   readonly provide: <Id, S>(owner: PluginInstance, tag: Context.Tag<Id, S>, service: S) => void;
@@ -67,7 +70,7 @@ export interface PluginServices {
   readonly retire: (owner: PluginInstance) => void;
   readonly declare: (owner: PluginInstance, tags: readonly PluginService[]) => void;
   readonly forget: (owner: PluginInstance) => void;
-  readonly awaitAll: <R>(tags: readonly PluginService[]) => Effect.Effect<Context.Context<R>>;
+  readonly awaitAll: (tags: readonly PluginService[]) => Effect.Effect<Context.Context<never>>;
   readonly waitingOn: (owner: PluginInstance) => readonly string[];
   readonly dependentsOf: (owner: PluginInstance) => readonly string[];
 }
@@ -106,11 +109,11 @@ export function createPluginServices(): PluginServices {
     const previous = slot.provider;
     slot.provider = provider;
     if (!previous && provider) {
-      Deferred.unsafeDone(slot.deferred, Effect.succeed(provider.service));
+      Deferred.unsafeDone(slot.deferred, Effect.succeed(provider.context));
       return;
     }
     slot.deferred = Deferred.unsafeMake(FiberId.none);
-    if (provider) Deferred.unsafeDone(slot.deferred, Effect.succeed(provider.service));
+    if (provider) Deferred.unsafeDone(slot.deferred, Effect.succeed(provider.context));
   }
 
   return {
@@ -121,7 +124,7 @@ export function createPluginServices(): PluginServices {
         throw new Error(`service '${tag.key}' is already provided by '${conflict.owner.id}'`);
       if (slot.providers.some((provider) => sameInstance(provider.owner, owner)))
         throw new Error(`plugin '${owner.id}' provided '${tag.key}' twice`);
-      slot.providers.push({ owner, service });
+      slot.providers.push({ owner, context: Context.make(tag, service) });
       update(slot);
     },
 
@@ -141,7 +144,7 @@ export function createPluginServices(): PluginServices {
 
     get: <Id, S>(tag: Context.Tag<Id, S>) =>
       Option.fromNullable(slots.get(tag.key)?.provider).pipe(
-        Option.map((provider) => provider.service as S),
+        Option.flatMap((provider) => Context.getOption(provider.context, tag)),
       ),
 
     commit(owner) {
@@ -163,14 +166,13 @@ export function createPluginServices(): PluginServices {
       injects.delete(instanceKey(owner));
     },
 
-    awaitAll: <R>(tags: readonly PluginService[]) =>
+    awaitAll: (tags: readonly PluginService[]) =>
       Effect.gen(function* () {
         let context = Context.empty();
         for (const tag of tags) {
-          const service = yield* Deferred.await(slotFor(tag.key).deferred);
-          context = Context.add(context, tag, service);
+          context = Context.mergeAll(context, yield* Deferred.await(slotFor(tag.key).deferred));
         }
-        return context as Context.Context<R>;
+        return context;
       }),
 
     waitingOn: (owner) =>
@@ -195,14 +197,14 @@ export function createPluginServices(): PluginServices {
 }
 
 interface Slot {
-  deferred: Deferred.Deferred<unknown>;
+  deferred: Deferred.Deferred<Context.Context<never>>;
   provider: Provider | undefined;
   providers: Provider[];
 }
 
 interface Provider {
   readonly owner: PluginInstance;
-  readonly service: unknown;
+  readonly context: Context.Context<never>;
 }
 
 const instanceKey = (owner: PluginInstance) => `${owner.id}#${owner.generation}`;

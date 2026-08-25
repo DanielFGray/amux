@@ -306,11 +306,13 @@ test("the error names where in the tree the problem is", () => {
 // Presets.
 
 /** The tree's shape, ignoring weights — what a preset is actually choosing. */
-const shape = (node: LayoutNode | null): unknown => {
+const fixture = (node: LayoutNode | null): Fixture => {
   if (!node) return null;
-  if (node.type === "pane") return node.content.session;
-  return { [node.direction]: node.children.map(shape) };
+  if (node.type === "pane") return node.content.session ?? "";
+  return { [node.direction]: node.children.map(fixture) };
 };
+
+type Fixture = string | null | { row?: Fixture[]; column?: Fixture[] };
 
 const ids = (n: number) => Array.from({ length: n }, (_, i) => String.fromCharCode(97 + i));
 const refs = (n: number) =>
@@ -322,40 +324,40 @@ const ref = (session: string, id = session): PaneRef => ({
 });
 
 test("even-horizontal is one row, even-vertical one column", () => {
-  expect(shape(presetLayout(refs(3), "even-horizontal").root)).toEqual({
+  expect(fixture(presetLayout(refs(3), "even-horizontal").root)).toEqual({
     row: ["a", "b", "c"],
   });
-  expect(shape(presetLayout(refs(3), "even-vertical").root)).toEqual({
+  expect(fixture(presetLayout(refs(3), "even-vertical").root)).toEqual({
     column: ["a", "b", "c"],
   });
 });
 
 test("a main layout puts the first agent opposite the rest", () => {
-  expect(shape(presetLayout(refs(4), "main-vertical").root)).toEqual({
+  expect(fixture(presetLayout(refs(4), "main-vertical").root)).toEqual({
     row: ["a", { column: ["b", "c", "d"] }],
   });
-  expect(shape(presetLayout(refs(4), "main-horizontal").root)).toEqual({
+  expect(fixture(presetLayout(refs(4), "main-horizontal").root)).toEqual({
     column: ["a", { row: ["b", "c", "d"] }],
   });
 });
 
 test("a main layout with a single other pane collapses to a plain split", () => {
   // Otherwise the rebuild would nest a one-child box the live tree never builds.
-  expect(shape(presetLayout(refs(2), "main-vertical").root)).toEqual({
+  expect(fixture(presetLayout(refs(2), "main-vertical").root)).toEqual({
     row: ["a", "b"],
   });
 });
 
 test("tiled grows as square as the count allows, filling row by row", () => {
-  expect(shape(presetLayout(refs(1), "tiled").root)).toEqual("a");
-  expect(shape(presetLayout(refs(2), "tiled").root)).toEqual({
+  expect(fixture(presetLayout(refs(1), "tiled").root)).toEqual("a");
+  expect(fixture(presetLayout(refs(2), "tiled").root)).toEqual({
     row: ["a", "b"],
   });
-  expect(shape(presetLayout(refs(4), "tiled").root)).toEqual({
+  expect(fixture(presetLayout(refs(4), "tiled").root)).toEqual({
     column: [{ row: ["a", "b"] }, { row: ["c", "d"] }],
   });
   // A short final row simply spreads across the width, as tmux's does.
-  expect(shape(presetLayout(refs(5), "tiled").root)).toEqual({
+  expect(fixture(presetLayout(refs(5), "tiled").root)).toEqual({
     column: [{ row: ["a", "b", "c"] }, { row: ["d", "e"] }],
   });
 });

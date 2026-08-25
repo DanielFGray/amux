@@ -14,7 +14,7 @@ export interface ChatProps extends PaneViewProps {
   model: string;
   onSlashCommand?: (command: string) => boolean;
   slashCommands?: readonly SlashCommand[];
-  frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
+  frames: (session: string) => Stream.Stream<AttachFrame, never>;
   sync: (session: string) => void;
   /** Send what the user typed to the agent. The command layer's business: a
    *  view does not know whether the session is local or on a daemon. */

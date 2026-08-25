@@ -115,23 +115,22 @@ function installFrameProbe(renderer: import("@opentui/core").CliRenderer): void 
   const path = `/tmp/amux-frame-probe-${process.pid}.json`;
   const counts: Record<string, number> = {};
   let dirty = true;
-  const native = renderer as unknown as {
-    renderNative: () => string | undefined;
-  };
-  const renderNative = native.renderNative.bind(renderer);
+  const renderNative = (Reflect.get(renderer, "renderNative") as () => string | undefined).bind(
+    renderer,
+  );
   const write = () => {
     if (!dirty) return;
     writeFileSync(path, JSON.stringify({ pid: process.pid, counts }, null, 2) + "\n");
     dirty = false;
   };
 
-  native.renderNative = () => {
+  Reflect.set(renderer, "renderNative", () => {
     const status = renderNative() ?? "rendered";
     counts[status] = (counts[status] ?? 0) + 1;
     dirty = true;
     if (status !== "rendered") write();
     return status;
-  };
+  });
   process.on("exit", write);
   process.stdout.write(`AMUX frame probe: ${path}\n`);
 }

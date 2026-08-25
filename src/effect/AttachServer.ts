@@ -27,11 +27,17 @@ export class AttachServerError extends S.TaggedError<AttachServerError>()("Attac
   message: S.String,
 }) {}
 
-export interface AttachServerOptions {
+export interface AttachServerOptions<
+  FrameError = never,
+  SyncError = never,
+  ActivityError = never,
+  AttachError = never,
+  DetachError = never,
+> {
   readonly path: string;
   /** Seconds without inbound traffic before the attach is considered dead. */
   readonly idleTimeoutSeconds?: number;
-  readonly onFrame?: (client: string, frame: AttachFrame) => Effect.Effect<void, unknown>;
+  readonly onFrame?: (client: string, frame: AttachFrame) => Effect.Effect<void, FrameError>;
   /**
    * A client adopted a session and asked for its screen to be replayed to it
    * alone. The owner serializes the session's current screen and answers with
@@ -42,7 +48,7 @@ export interface AttachServerOptions {
     connection: string,
     session: string,
     after?: number,
-  ) => Effect.Effect<void, unknown>;
+  ) => Effect.Effect<void, SyncError>;
   /**
    * Called once per inbound frame from an accepted client — pings included,
    * which is exactly what onFrame does not see. This is the transport's proof
@@ -51,7 +57,7 @@ export interface AttachServerOptions {
    * keep a last-seen timestamp rather than having to reimplement frame
    * accounting at the daemon boundary.
    */
-  readonly onActivity?: (client: string, connection: string) => Effect.Effect<void, unknown>;
+  readonly onActivity?: (client: string, connection: string) => Effect.Effect<void, ActivityError>;
   /**
    * Called when a client's hello has been accepted by the hub, before any
    * output is forwarded. Failing it rejects the attachment: the client is sent
@@ -60,7 +66,7 @@ export interface AttachServerOptions {
    * This is the hook that lets an owner outside the data plane record or reject
    * an attachment, without the transport needing to know that policy.
    */
-  readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
+  readonly onAttach?: (client: string, connection: string) => Effect.Effect<void, AttachError>;
   /**
    * Called when an accepted client goes away, for any reason: clean EOF, socket
    * error, or idle timeout. Together with onAttach this makes the *stream* the
@@ -68,7 +74,7 @@ export interface AttachServerOptions {
    * indistinguishable from one that never attached, which is exactly the
    * property request/response RPC could not provide.
    */
-  readonly onDetach?: (client: string, connection: string) => Effect.Effect<void, unknown>;
+  readonly onDetach?: (client: string, connection: string) => Effect.Effect<void, DetachError>;
 }
 
 interface ClientState {
@@ -84,18 +90,18 @@ interface ClientState {
     closeAfterFlush(onFlushed: () => void): void;
   } | null;
   run: ClientRun | null;
-  owner: Fiber.RuntimeFiber<void, unknown> | null;
-  lanes: Map<string, Fiber.RuntimeFiber<void, unknown>>;
+  owner: Fiber.RuntimeFiber<void, never> | null;
+  lanes: Map<string, Fiber.RuntimeFiber<void, never>>;
   pending: Buffer[];
   nextFiber: number;
   closed: boolean;
 }
 
-type ClientRun = (
+type ClientRun = <E>(
   key: string,
-  effect: Effect.Effect<void, unknown>,
+  effect: Effect.Effect<void, E>,
   options?: { readonly onlyIfMissing?: boolean },
-) => Fiber.RuntimeFiber<void, unknown>;
+) => Fiber.RuntimeFiber<void, E>;
 
 export const createAttachWriter = (
   socket: Pick<Bun.Socket, "write">,
@@ -118,7 +124,7 @@ export const createAttachWriter = (
   };
 };
 
-const reason = (cause: Cause.Cause<unknown>): string => {
+const reason = <E>(cause: Cause.Cause<E>): string => {
   const error = Cause.squash(cause);
   return error instanceof Error ? error.message : String(error);
 };
@@ -130,12 +136,24 @@ const reason = (cause: Cause.Cause<unknown>): string => {
  * process callbacks, output, and its idle deadline. Owner shutdown joins those
  * fibers before releasing the client's hub subscription and socket.
  */
-export const startAttachServer = (
-  options: AttachServerOptions,
+export const startAttachServer = <
+  FrameError,
+  SyncError,
+  ActivityError,
+  AttachError,
+  DetachError,
+>(
+  options: AttachServerOptions<
+    FrameError,
+    SyncError,
+    ActivityError,
+    AttachError,
+    DetachError
+  >,
 ): Effect.Effect<Bun.UnixSocketListener<ClientState>, AttachServerError, Scope.Scope | AttachHub> =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
-    const connections = yield* FiberMap.make<string, void, unknown>();
+    const connections = yield* FiberMap.make<string, void, never>();
     const runConnection = yield* FiberMap.runtime(connections)<never>();
 
     const requestClose = (socket: Bun.Socket<ClientState>) => {
@@ -218,7 +236,7 @@ export const startAttachServer = (
     const handleFrame = (
       socket: Bun.Socket<ClientState>,
       frame: AttachFrame,
-    ): Effect.Effect<void, unknown> =>
+    ) =>
       Effect.gen(function* () {
         if (socket.data.client) {
           yield* options.onActivity?.(socket.data.client, socket.data.connection) ?? Effect.void;
@@ -382,7 +400,7 @@ export const startAttachServer = (
         Effect.gen(function* () {
           const state = socket.data;
           const fibers = yield* FiberMap.make<string>();
-          state.run = (yield* FiberMap.runtime(fibers)<never>()) as ClientRun;
+          state.run = yield* FiberMap.runtime(fibers)<never>();
           // Registered after FiberMap.make, so this runs first when the owner
           // scope closes. Concurrent host finalizers may publish session exits;
           // mark the connection closed before output fibers can forward them.

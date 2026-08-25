@@ -1,9 +1,11 @@
-import type { Context, Effect, Option, Scope, Stream } from "effect";
+import { Effect, type Context, type Option, type Scope, type Stream } from "effect";
+import type { Schema } from "effect";
 import { CurrentPlugin, type PluginService } from "./services.ts";
 import type { JSX } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
+import type { JsonValue } from "../layout.ts";
 
 export interface SpawnProvider {
   readonly argv: readonly string[];
@@ -28,10 +30,17 @@ export interface PluginDefinition {
    * with different requirements in one map.
    */
   readonly inject?: readonly PluginService[];
-  /** The injected services are already provided by the time the host runs this,
-   *  so the only requirement left is the plugin's own scope. */
-  readonly effect: (context: PluginHostContext) => Effect.Effect<void, never, any>;
+  readonly activate: (
+    context: PluginHostContext,
+    provided: Context.Context<never>,
+  ) => Effect.Effect<void, never, Scope.Scope | CurrentPlugin>;
 }
+
+export type TagIdentifier<T> = T extends Context.Tag<infer Id, infer _Service> ? Id : never;
+export type PluginRequirements<Tags extends readonly PluginService[]> =
+  | TagIdentifier<Tags[number]>
+  | Context.Tag.Identifier<CurrentPlugin>
+  | Scope.Scope;
 
 /**
  * A plugin, with its injected tags checked against what its effect requires.
@@ -47,12 +56,17 @@ export const definePlugin = <const Tags extends readonly PluginService[] = []>(d
   readonly inject?: Tags;
   readonly effect: (
     context: PluginHostContext,
-  ) => Effect.Effect<
-    void,
-    never,
-    Context.Tag.Identifier<Tags[number]> | Context.Tag.Identifier<CurrentPlugin> | Scope.Scope
-  >;
-}): PluginDefinition => definition as PluginDefinition;
+  ) => Effect.Effect<void, never, PluginRequirements<Tags>>;
+}): PluginDefinition => ({
+  id: definition.id,
+  apiVersion: definition.apiVersion,
+  inject: definition.inject,
+  activate: (context, provided) =>
+    Effect.provide(
+      definition.effect(context),
+      provided as Context.Context<TagIdentifier<Tags[number]>>,
+    ),
+});
 
 export interface PluginHostContext {
   readonly id: string;
@@ -62,7 +76,7 @@ export interface PluginHostContext {
   readonly provide: <Id, S>(tag: Context.Tag<Id, S>, service: S) => () => void;
   /** Read a service without depending on it. `inject` is what makes the host wait. */
   readonly get: <Id, S>(tag: Context.Tag<Id, S>) => Option.Option<S>;
-  readonly frames: (session: string) => Stream.Stream<AttachFrame, unknown>;
+  readonly frames: (session: string) => Stream.Stream<AttachFrame, never>;
   readonly sync: (session: string) => void;
 }
 
@@ -74,9 +88,14 @@ export interface PluginSettingsSection {
   readonly component: (props: { width: number; height: number; selected: number }) => JSX.Element;
 }
 
+export interface PluginKVKey<T extends JsonValue> {
+  readonly key: string;
+  readonly schema: Schema.Schema<T>;
+}
+
 export interface PluginKV {
-  readonly get: <T>(key: string, defaultValue?: T) => T | undefined;
-  readonly set: (key: string, value: unknown) => void;
+  readonly get: <T extends JsonValue>(key: PluginKVKey<T>, defaultValue?: T) => T | undefined;
+  readonly set: <T extends JsonValue>(key: PluginKVKey<T>, value: T) => void;
   readonly ready: boolean;
 }
 

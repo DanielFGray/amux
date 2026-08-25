@@ -12,19 +12,19 @@ export const MAX_SPACES = 256;
 export const MAX_WINDOWS = 2_048;
 export const MAX_SESSIONS = 4_096;
 
-export function isTerminalSize(cols: unknown, rows: unknown): cols is number {
+export function isTerminalSize(cols: number, rows: number): boolean {
   return (
     Number.isSafeInteger(cols) &&
     Number.isSafeInteger(rows) &&
-    (cols as number) > 0 &&
-    (rows as number) > 0 &&
-    (cols as number) <= MAX_TERMINAL_DIMENSION &&
-    (rows as number) <= MAX_TERMINAL_DIMENSION &&
-    (cols as number) * (rows as number) <= MAX_TERMINAL_CELLS
+    cols > 0 &&
+    rows > 0 &&
+    cols <= MAX_TERMINAL_DIMENSION &&
+    rows <= MAX_TERMINAL_DIMENSION &&
+    cols * rows <= MAX_TERMINAL_CELLS
   );
 }
 
-export function assertTerminalSize(cols: unknown, rows: unknown): asserts cols is number {
+export function assertTerminalSize(cols: number, rows: number): void {
   if (!isTerminalSize(cols, rows)) {
     throw new Error(
       `terminal size must be positive and at most ${MAX_TERMINAL_DIMENSION}x${MAX_TERMINAL_DIMENSION} / ${MAX_TERMINAL_CELLS} cells`,

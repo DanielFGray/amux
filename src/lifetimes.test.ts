@@ -23,7 +23,7 @@ import { createApp } from "./app.tsx";
 import { DEFAULT_CONFIG } from "./config.ts";
 import { makeLayout, windowState } from "./layout.ts";
 import { spaceSetState, spaceState } from "./space-model.ts";
-import type { SessionClientShape } from "./client.ts";
+import type { SessionClientContract } from "./client.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
 
 /**
@@ -34,10 +34,12 @@ import type { WorkspaceSnapshot } from "./workspace.ts";
  * `killSession` release every session in the window still leaves the count at one
  * once the target has already been spliced out of the list.
  */
-function spyBackend(): {
+type SpyBackend = {
   backend: SessionBackendFactory;
   killed: () => string[];
-} {
+};
+
+function spyBackend(): SpyBackend {
   const killed: string[] = [];
   const backend: SessionBackendFactory = (opts) => {
     // Per instance, not shared: `closed` describes THIS backend, while the
@@ -288,7 +290,7 @@ function lifecycleWorkspace(agent: string): WorkspaceSnapshot {
 function lifecycleSession(
   workspace: WorkspaceSnapshot,
   spawn: SessionBackendFactory,
-): SessionClientShape {
+): SessionClientContract {
   return {
     id: "lifecycle",
     session: null,
@@ -311,6 +313,6 @@ function lifecycleSession(
     listBuffers: () => Effect.succeed([]),
     deleteBuffer: () => Effect.void,
     showBuffer: () => Effect.succeed(""),
-    attach: {} as SessionClientShape["attach"],
+    attach: {} as SessionClientContract["attach"],
   };
 }

@@ -33,8 +33,8 @@ async function environment() {
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
-function provide<A>(
-  effect: Effect.Effect<A, any, any>,
+function provide<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
   env: NodeJS.ProcessEnv,
   fetch: Effect.Effect<string, never>,
 ) {
@@ -43,7 +43,7 @@ function provide<A>(
     Effect.provide(EventBus.Default),
     Effect.provide(BunFileSystem.layer),
     Effect.withConfigProvider(ConfigProvider.fromJson(env)),
-  ) as Effect.Effect<A, any, never>;
+  );
 }
 
 const cleanup = (env: NodeJS.ProcessEnv) =>

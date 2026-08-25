@@ -8,7 +8,7 @@
  * TypeScript, so neither the typecheck nor the suite said a word.
  *
  * Each step is checked against the persisted workspace, and the steps build on
- * each other so a command that half-worked shows up as the wrong shape at the
+   * each other so a command that half-worked shows up as the wrong summary at the
  * next one — which is why they share an app and run in order. The file is the
  * app's own account of its state rather than a rendering of it, which is what
  * makes a silent no-op visible.
@@ -25,7 +25,7 @@ let app: App;
 
 beforeAll(async () => {
   app = await launch("e2e-workspace");
-  expect(await app.shape()).toBe("1sp 1win 1ag");
+  expect(await app.workspaceSummary()).toBe("1sp 1win 1ag");
 }, E2E_TIMEOUT);
 
 afterAll(async () => {
@@ -33,21 +33,22 @@ afterAll(async () => {
 });
 
 /** "1sp 2win 2ag" as the sidebar footer would write it. */
-function footerFor(shape: string): string {
-  const [spaces, , agents] = shape.split(" ").map((part) => Number.parseInt(part, 10));
+function footerFor(fixture: string): string {
+  const [spaces, , agents] = fixture.split(" ").map((part) => Number.parseInt(part, 10));
   return `${spaces} space${spaces === 1 ? "" : "s"} · ${agents} agent${agents === 1 ? "" : "s"}`;
 }
 
-/** Press, then hold BOTH accounts of the workspace to the same shape. */
+/** Press, then hold BOTH accounts of the workspace to the same summary. */
 async function step(keys: string, want: string) {
   await app.press(keys);
   await app.until(
-    async () => (await app.shape()) === want && app.screen().includes(footerFor(want)),
+    async () =>
+      (await app.workspaceSummary()) === want && app.screen().includes(footerFor(want)),
     `the workspace and sidebar to reach ${want}`,
   );
-  const shape = await app.shape();
-  expect(shape).toBe(want);
-  expect(app.screen()).toContain(footerFor(shape));
+  const summary = await app.workspaceSummary();
+  expect(summary).toBe(want);
+  expect(app.screen()).toContain(footerFor(summary));
 }
 
 test(
@@ -78,19 +79,21 @@ test(
   "daemon pane.break publishes a projection that keeps the moved PTY",
   async () => {
     const before = await app.session();
-    const source = before!.spaces[0].windows.find(
-      (window: any) => window.number === before!.spaces[0].activeWindow,
-    );
+    if (!before?.spaces?.[0]) throw new Error("workspace has no space before pane.break");
+    const spaceBefore = before.spaces[0];
+    const source = spaceBefore.windows.find((window) => window.number === spaceBefore.activeWindow);
+    if (!source) throw new Error("workspace has no active window before pane.break");
     const focused = JSON.parse(source.layout).focus;
     const movedAgent = JSON.parse(source.layout).root.children.find(
-      (pane: any) => pane.id === focused,
+      (pane: { id: string; content: { session?: string } }) => pane.id === focused,
     ).content.session;
     await step(`${LEADER}!`, "1sp 2win 2ag");
     const after = await app.session();
-    const projected = after!.spaces[0].windows.find(
-      (window: any) => window.number === after!.spaces[0].activeWindow,
-    );
-    expect(projected.agents.map((agent: any) => agent.id)).toEqual([movedAgent]);
+    if (!after?.spaces?.[0]) throw new Error("workspace has no space after pane.break");
+    const spaceAfter = after.spaces[0];
+    const projected = spaceAfter.windows.find((window) => window.number === spaceAfter.activeWindow);
+    if (!projected) throw new Error("workspace has no active window after pane.break");
+    expect(projected.sessions.map((session) => session.id)).toEqual([movedAgent]);
     expect(JSON.parse(projected.layout).root.content.session).toBe(movedAgent);
     app.send("printf 'break-still-live\\n'\n");
     await app.until(
@@ -123,10 +126,10 @@ test(
   async () => {
     await app.press(`${LEADER}K`);
     await app.until(
-      async () => (await app.shape()) === "0sp 0win 0ag",
+      async () => (await app.workspaceSummary()) === "0sp 0win 0ag",
       "the empty workspace to persist",
     );
-    expect(await app.shape()).toBe("0sp 0win 0ag");
+    expect(await app.workspaceSummary()).toBe("0sp 0win 0ag");
   },
   E2E_TIMEOUT,
 );

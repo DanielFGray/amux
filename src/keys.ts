@@ -37,10 +37,14 @@ export interface KeyStroke {
   super?: boolean;
 }
 
+function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
+  return Object.hasOwn(record, key);
+}
+
 /** The child's declared TERM is xterm-256color, so the unmodified named keys
  *  encode as xterm's terminfo sequences — the forms readline and every shell
  *  map natively. */
-const NAMED_SEQUENCES: Record<string, string> = {
+const NAMED_SEQUENCES = {
   return: "\r",
   enter: "\r",
   linefeed: "\n",
@@ -70,12 +74,12 @@ const NAMED_SEQUENCES: Record<string, string> = {
   f10: "\x1b[21~",
   f11: "\x1b[23~",
   f12: "\x1b[24~",
-};
+} satisfies Record<string, string>;
 
 /** The xterm modified-key forms, parameter and final byte — `\x1b[1;5A` for
  *  ctrl+up. The modifier number is the same 1+shift+2*alt+4*ctrl+8*super
  *  ordering xterm and kitty both use. */
-const MODIFIED_CSI: Record<string, [param: string, final: string]> = {
+const MODIFIED_CSI = {
   up: ["1", "A"],
   down: ["1", "B"],
   right: ["1", "C"],
@@ -98,23 +102,23 @@ const MODIFIED_CSI: Record<string, [param: string, final: string]> = {
   f10: ["21", "~"],
   f11: ["23", "~"],
   f12: ["24", "~"],
-};
+} satisfies Record<string, [param: string, final: string]>;
 
 /** Modified keys with no classic xterm form at all (shift+enter, ctrl+escape)
  *  use the CSI-u codes. The ghostty emulator understands these natively, and
  *  there is no legacy sequence to fall back on. */
-const CSI_U: Record<string, number> = {
+const CSI_U = {
   backspace: 8,
   tab: 9,
   return: 13,
   enter: 13,
   escape: 27,
   space: 32,
-};
+} satisfies Record<string, number>;
 
 /** The named punctuation keys — how a "," or "+" is spelled when whitespace or
  *  the modifier "+" would otherwise split the token that carries it. */
-const NAMED_PRINTABLE: Record<string, string> = {
+const NAMED_PRINTABLE = {
   lt: "<",
   gt: ">",
   plus: "+",
@@ -129,7 +133,7 @@ const NAMED_PRINTABLE: Record<string, string> = {
   backquote: "`",
   leftbracket: "[",
   rightbracket: "]",
-};
+} satisfies Record<string, string>;
 
 function csiModifier(stroke: KeyStroke): number {
   return (
@@ -182,22 +186,22 @@ export function encodeStroke(stroke: KeyStroke): string {
   // ctrl+space is NUL — the one modified named key with a single-byte form.
   if (name === "space" && ctrl && !shift && !meta) return "\x00";
 
-  const named = NAMED_SEQUENCES[name];
+  const named = hasOwn(NAMED_SEQUENCES, name) ? NAMED_SEQUENCES[name] : undefined;
   if (named !== undefined) {
     if (meta) return `\x1b${named}`;
     if (!ctrl && !shift) return named;
     // shift+tab is the one modified key xterm's terminfo spells out directly.
     if (name === "tab" && shift && !ctrl) return "\x1b[Z";
-    const csi = MODIFIED_CSI[name];
+    const csi = hasOwn(MODIFIED_CSI, name) ? MODIFIED_CSI[name] : undefined;
     if (csi) return `\x1b[${csi[0]};${csiModifier(stroke)}${csi[1]}`;
-    const code = CSI_U[name];
+    const code = hasOwn(CSI_U, name) ? CSI_U[name] : undefined;
     if (code !== undefined) return `\x1b[${code};${csiModifier(stroke)}u`;
     return named;
   }
 
   // Named printable keys and bare single characters. A multi-codepoint name
   // from the parser's table (kp1, media keys) has no sequence at all.
-  const char = NAMED_PRINTABLE[name] ?? name;
+  const char = (hasOwn(NAMED_PRINTABLE, name) ? NAMED_PRINTABLE[name] : undefined) ?? name;
   if ([...char].length !== 1) return "";
   return encodeChar(char, stroke);
 }

@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createEffect, createMemo } from "solid-js";
-import { Effect } from "effect";
+import { Effect, Runtime } from "effect";
 import { theme } from "../../ui/theme.ts";
 import type { DockPanel } from "../../ui/regions.tsx";
 import { definePlugin, type PluginDefinition } from "../types.ts";
@@ -20,6 +20,7 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
   effect: (ctx) =>
     Effect.gen(function* () {
       const regions = yield* RegionsTag;
+      const runtime = yield* Effect.runtime();
       let selected = 0;
       let hovered: number | null = null;
 
@@ -40,7 +41,7 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
                 )
               : ctx.panel.run(command("session.reveal", { session: row.agentId! }));
 
-        Effect.runFork(
+        Runtime.runFork(runtime)(
           effect.pipe(
             Effect.catchAll((error) => Effect.sync(() => ctx.panel.reportError(error.message))),
           ),
@@ -117,10 +118,12 @@ function filterRows(
   return out.map((row) => (row.kind === "branch" ? { ...row, index } : { ...row, index: index++ }));
 }
 
+type SelectionClamp = { readonly selected: number; readonly clamp: boolean };
+
 function clampSelection(
   selected: number,
   rows: readonly SidebarDisplayRow[],
-): { selected: number; clamp: boolean } {
+): SelectionClamp {
   const validRows = rows.filter((r) => r.kind !== "branch");
   if (validRows.length === 0) return { selected: 0, clamp: selected !== 0 };
   const clamped = Math.min(Math.max(0, selected), validRows.length - 1);

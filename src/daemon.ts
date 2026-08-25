@@ -24,11 +24,13 @@ import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer
 import * as RpcServer from "@effect/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
+import type { AttachFrame } from "./effect/AttachProtocol.ts";
 import { makeAgentLog } from "./effect/AgentLog.ts";
 import { EventBus } from "./effect/EventBus.ts";
 import { DaemonModel, DaemonModelError, layerDaemonModel } from "./effect/DaemonModel.ts";
 import {
   WorkspaceTransaction,
+  WorkspaceTransactionError,
   WorkspaceTransactionLifecycle,
   WorkspaceTransactionPersistence,
   makeSessionOps,
@@ -40,7 +42,7 @@ import {
 import type { PlatformError } from "@effect/platform/Error";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
-import type { ManagedSession, PtyError, SessionSpec } from "./effect/SessionRegistry.ts";
+import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./effect/SessionRegistry.ts";
 import {
   isSessionId,
   processAlive,
@@ -111,9 +113,13 @@ type DaemonPhase =
       readonly host: AttachHostService;
       readonly hostRuntime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>;
       readonly controlScope: Scope.CloseableScope;
-      readonly heartbeatFiber: Fiber.RuntimeFiber<unknown, never>;
+      readonly heartbeatFiber: Fiber.RuntimeFiber<void, never>;
     }
   | { readonly _tag: "closed" };
+
+type WorkspaceCommandRequestContext = Omit<WorkspaceCommandContext, "shell"> & {
+  readonly shell: readonly string[];
+};
 
 /** The host is live (and its attach socket is up) in both `starting` and
  *  `running`; the control plane and heartbeat are what distinguish them. */
@@ -388,7 +394,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const model = Context.get(modelContext, DaemonModel);
 
   const activeSaveRef = {
-    current: null as Fiber.RuntimeFiber<void, unknown> | null,
+    current: null as Fiber.RuntimeFiber<void, WorkspaceTransactionError> | null,
   };
   let terminationShared: Promise<void> | null = null;
 
@@ -420,23 +426,26 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   > =>
     Effect.gen(function* () {
       const { attachedSince, attachLastSeen } = yield* attachInfo();
-      return {
-        ...(attachedSince !== undefined ? { attachedSince } : {}),
-        ...(attachLastSeen !== undefined ? { attachLastSeen } : {}),
-      };
+      if (attachedSince === undefined)
+        return attachLastSeen === undefined ? {} : { attachLastSeen };
+      return attachLastSeen === undefined
+        ? { attachedSince }
+        : { attachedSince, attachLastSeen };
     });
 
   const enqueue = model.enqueue;
 
   const attachEffect = (client: string, connection: string) =>
     model
-      .attach(client, connection, persist)
+      .attach(
+        client,
+        connection,
+        (newState) =>
+          persist(newState).pipe(Effect.mapError((error) => new DaemonModelError({ message: describe(error) }))),
+      )
       .pipe(
-        Effect.mapError((e) =>
-          e instanceof DaemonModelError
-            ? new DaemonError({ message: e.message })
-            : new DaemonError({ message: describe(e) }),
-        ),
+        Effect.mapError((e) => new DaemonError({ message: e.message })),
+        Effect.ignore,
       );
 
   /**
@@ -461,7 +470,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       catch: (e) => new DaemonError({ message: describe(e) }),
     });
 
-  const toDaemonError = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, DaemonError> =>
+  const toDaemonError = <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, DaemonError, R> =>
     effect.pipe(
       Effect.mapError((e) =>
         e instanceof DaemonError ? e : new DaemonError({ message: describe(e) }),
@@ -520,7 +531,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               onAttach: attachEffect,
               onDetach: detachEffect,
               onActivity: touchEffect,
-              onSessionExit: (sid, code) => sessionExitEffect(sid, code),
+              onSessionExit: (sid, code) => sessionExitEffect(sid, code).pipe(Effect.ignore),
               onSessionState: (sid, s) =>
                 eventBus.publish({ _tag: "session.state", session: sid, state: s }),
               agentLog,
@@ -563,21 +574,20 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 for (const a of w.sessions) {
                   if (a.exited || a.kind === "component") continue;
                   const pane = findPaneBySession(next, a.id);
-                  yield* rawSpawn(
-                    {
-                      kind: a.kind,
-                      ...(a.declaredAgent ? { agent: a.declaredAgent } : {}),
-                      id: a.id,
-                      cmd: a.cmd ?? [],
-                      cwd: a.cwd,
-                      rpcPath: paths.socket,
-                      daemonSession: id,
-                      ...(pane ? { paneId: pane.id } : {}),
-                      cols: a.cols,
-                      rows: a.rows,
-                    },
-                    host,
-                  ).pipe(
+                  const spec: SessionSpec = {
+                    kind: a.kind,
+                    id: a.id,
+                    cmd: a.cmd ?? [],
+                    cwd: a.cwd,
+                    rpcPath: paths.socket,
+                    daemonSession: id,
+                    cols: a.cols,
+                    rows: a.rows,
+                  };
+                  const withAgent =
+                    a.declaredAgent === undefined ? spec : { ...spec, agent: a.declaredAgent };
+                  const finalSpec = pane === null ? withAgent : { ...withAgent, paneId: pane.id };
+                  yield* rawSpawn(finalSpec, host).pipe(
                     Effect.catchAll((error) => {
                       next = markSessionUnavailable(next, a.id, describe(error));
                       changed = true;
@@ -659,7 +669,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       Machine.procedures.add<DaemonShutdown>()("daemonShutdown", ({ state, request }) =>
         Effect.gen(function* () {
           if (state._tag === "closed") return [void 0, state] as const;
-          let finalFailure: unknown = undefined;
+          let finalFailure: string | null = null;
           if (state._tag === "running") {
             yield* Fiber.interrupt(state.heartbeatFiber);
             yield* Scope.close(state.controlScope, Exit.void);
@@ -698,7 +708,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 const result = yield* Effect.exit(
                   persist(newState).pipe(Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`)),
                 );
-                if (Exit.isFailure(result)) finalFailure = Cause.squash(result.cause);
+                if (Exit.isFailure(result)) finalFailure = describe(Cause.squash(result.cause));
                 yield* model.updateState(newState);
                 yield* model.setAttachments(new Map());
                 yield* model.commitWorkspace(cur.workspace, newState);
@@ -709,8 +719,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           yield* fs.remove(paths.socket).pipe(Effect.ignore);
           yield* fs.remove(paths.lease).pipe(Effect.ignore);
           yield* Scope.close(lockScope, Exit.void);
-          if (finalFailure !== undefined)
-            return yield* new DaemonError({ message: describe(finalFailure) });
+          if (finalFailure !== null) return yield* new DaemonError({ message: finalFailure });
           return [void 0, { _tag: "closed" }] as const;
         }).pipe(toDaemonError),
       ),
@@ -817,7 +826,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const detachEffect = (client: string, connection: string) =>
     model.detach(client, connection, (newState) =>
-      persistence.persistUntilSuccess(newState, "attachment detach"),
+      persistence
+        .persistUntilSuccess(newState, "attachment detach")
+        .pipe(Effect.mapError((error) => new DaemonModelError({ message: error.message }))),
+    ).pipe(
+      Effect.mapError((error) => new DaemonModelError({ message: error.message })),
+      Effect.ignore,
     );
 
   const touchEffect = (client: string, connection: string) => model.touch(client, connection);
@@ -841,7 +855,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 _tag: "workspace" as const,
                 revision: snapshot.revision,
                 state: JSON.stringify(snapshot),
-              } as any),
+                  } satisfies AttachFrame),
             ),
             Effect.ignore,
           ),
@@ -939,10 +953,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
    * (notably `requireHost` before `start`) into the typed ControlError, so a
    * bad request answers the caller instead of tearing the connection down.
    */
-  const guard = <A>(effect: Effect.Effect<A, unknown>): Effect.Effect<A, ControlError> =>
+  const guard = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, ControlError> =>
     effect.pipe(
-      Effect.catchAllDefect((defect) => Effect.fail(defect)),
-      Effect.mapError((error) => new ControlError({ message: describe(error) })),
+      Effect.catchAllCause((cause: Cause.Cause<E>) =>
+        Effect.fail(new ControlError({ message: describe(Cause.squash(cause)) })),
+      ),
     );
 
   const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
@@ -956,7 +971,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
    */
   const resolveCaptureSession = (
     value: Extract<Command, { _tag: "pane.capture" }>,
-    context: unknown,
+    context: WorkspaceCommandRequestContext | undefined,
     workspace: WorkspaceSnapshot,
   ): Effect.Effect<string, ControlError> =>
     Effect.gen(function* () {
@@ -987,7 +1002,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       });
     });
 
-  const runRemote = (value: Command, expectedRevision?: number, context?: unknown) =>
+  const runRemote = (
+    value: Command,
+    expectedRevision?: number,
+    context?: WorkspaceCommandRequestContext,
+  ) =>
     Effect.gen(function* () {
       const meta = COMMAND_META[value._tag]!;
       if (meta.target === "view")
@@ -1002,10 +1021,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           expectedRevision ?? cur.workspace.revision,
           ctx,
         );
-        return {
-          workspace: JSON.stringify(output.snapshot),
-          ...(output.result === undefined ? {} : { result: output.result }),
-        };
+         if (output.result === undefined) return { workspace: JSON.stringify(output.snapshot) };
+         return { workspace: JSON.stringify(output.snapshot), result: output.result };
       }
       if (meta.target === "buffers") {
         switch (value._tag) {
@@ -1024,25 +1041,20 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       if (meta.target === "server") {
         // The daemon runs no plugins; it only tells the clients that do.
         if (value._tag === "plugin.reload") {
-          yield* eventBus.publish({
-            _tag: "plugins.reload",
-            ...(value.plugin === undefined ? {} : { plugin: value.plugin }),
-          });
+           if (value.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
+           else yield* eventBus.publish({ _tag: "plugins.reload", plugin: value.plugin });
           return {};
         }
         return yield* controlFail(`server command '${value._tag}' is not implemented for batch`);
       }
       if (meta.target === "session") {
         if (value._tag === "agent.prompt") {
-          yield* requireHost.pipe(
-            Effect.flatMap((h) =>
-              h.prompt(value.target, value.text, {
-                ...(value.id === undefined ? {} : { id: value.id }),
-                ...(value.delivery === undefined ? {} : { delivery: value.delivery }),
-                ...(value.resume === undefined ? {} : { resume: value.resume }),
-              }),
-            ),
-          );
+           let promptOptions: PromptOptions = {};
+           if (value.id !== undefined) promptOptions = { ...promptOptions, id: value.id };
+           if (value.delivery !== undefined)
+             promptOptions = { ...promptOptions, delivery: value.delivery };
+           if (value.resume !== undefined) promptOptions = { ...promptOptions, resume: value.resume };
+           yield* requireHost.pipe(Effect.flatMap((h) => h.prompt(value.target, value.text, promptOptions)));
           return {};
         }
         if (value._tag === "pane.capture") {
@@ -1082,14 +1094,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           const obligation = cur.durableObligations.values().next().value as string | undefined;
           const degraded = obligation ?? cur.heartbeatError ?? undefined;
           const live = yield* liveSessions();
-          return {
-            attached: cur.state.attached,
-            ...(yield* attachTimes()),
-            session: structuredClone(cur.state),
-            workspace: JSON.stringify(cur.workspace),
-            agents: [...live],
-            ...(degraded ? { degraded } : {}),
-          };
+           const baseStatus = {
+             attached: cur.state.attached,
+             ...(yield* attachTimes()),
+             session: structuredClone(cur.state),
+             workspace: JSON.stringify(cur.workspace),
+             agents: [...live],
+           };
+           return degraded === undefined ? baseStatus : { ...baseStatus, degraded };
         }),
       ),
 
@@ -1148,13 +1160,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                     _tag: "workspace",
                     revision: next.revision,
                     state: JSON.stringify(next),
-                  } as never),
+                  } satisfies AttachFrame),
                 ),
               );
               return;
             }
             const pane = findPaneBySession(cur.workspace, sessionId);
-            yield* spawnSession({
+            const spec: SessionSpec = {
               kind: found.session.kind,
               agent: found.session.declaredAgent,
               id: found.session.id,
@@ -1164,10 +1176,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               cwd: found.session.cwd,
               rpcPath: paths.socket,
               daemonSession: id,
-              ...(pane ? { paneId: pane.id } : {}),
               cols: found.session.cols,
               rows: found.session.rows,
-            }).pipe(
+            };
+            const finalSpec = pane === null ? spec : { ...spec, paneId: pane.id };
+            yield* spawnSession(finalSpec).pipe(
               Effect.catchAll((error) =>
                 Effect.gen(function* () {
                   const next = markSessionUnavailable(cur.workspace, sessionId, describe(error));
@@ -1180,7 +1193,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                         _tag: "workspace",
                         revision: next.revision,
                         state: JSON.stringify(next),
-                      } as never),
+                      } satisfies AttachFrame),
                     ),
                   );
                   return yield* controlFail(describe(error));
@@ -1216,7 +1229,10 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
     AgentWatch: ({ session, after }) =>
       Stream.unwrapScoped(
-        agentLog.watch(session, after).pipe(Effect.map(Stream.orDie), Effect.orDie),
+        agentLog.watch(session, after).pipe(
+          Effect.map((eventStream) => Stream.catchAll(eventStream, () => Stream.empty)),
+          Effect.orElseSucceed(() => Stream.empty),
+        ),
       ),
   });
 

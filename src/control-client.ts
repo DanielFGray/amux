@@ -100,7 +100,9 @@ export const agentWatch = (
   session: string,
   after?: number,
 ): Stream.Stream<AgentEvent, RpcClientError> =>
-  control.AgentWatch({ session, ...(after === undefined || after < 0 ? {} : { after }) });
+  control.AgentWatch(
+    after === undefined || after < 0 ? { session } : { session, after },
+  );
 
 /**
  * Why a wait on an agent ended without the turn it was waiting for.
@@ -132,7 +134,7 @@ export const eventGap = (previous: DaemonEvent, current: DaemonEvent): number =>
   Math.max(0, current.sequence - previous.sequence - 1);
 
 /** Collapse transport and protocol failures onto the control plane's one error. */
-export const toControlError = (error: unknown): ControlError =>
+export const toControlError = (error: ControlError | RpcClientError | Error): ControlError =>
   error instanceof ControlError
     ? error
     : new ControlError({

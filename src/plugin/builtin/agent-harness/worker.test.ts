@@ -68,11 +68,13 @@ const runWorker = <A>(
     Effect.scoped(
       Effect.gen(function* () {
         const chat = yield* Chat.empty;
+        const workerOptions =
+          options?.toolkit === undefined ? {} : { toolkit: options.toolkit };
         const worker = yield* makeAgentWorker({
           session: "agent-test",
           chat,
           emit: options?.emit ?? (() => Effect.void),
-          ...(options?.toolkit ? { toolkit: options.toolkit } : {}),
+          ...workerOptions,
         });
         return yield* body(worker, chat);
       }).pipe(Effect.provideServiceEffect(LanguageModel.LanguageModel, model)),

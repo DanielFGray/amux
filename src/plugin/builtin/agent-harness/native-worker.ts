@@ -15,7 +15,7 @@ import { makePermissionGate } from "./permission.ts";
 import { DEFAULT_RULES } from "../../../permission.ts";
 import { projectRoot } from "../../../git.ts";
 import { layer as projectStoreLayer, Service as ProjectStore } from "../../../project-store.ts";
-import { closeOpenToolCalls, makeAgentWorker, sanitizeAgentError } from "./worker.ts";
+import { AgentWorkerError, closeOpenToolCalls, makeAgentWorker, sanitizeAgentError } from "./worker.ts";
 
 // --- Process entry point ---
 
@@ -83,10 +83,10 @@ else {
         chat,
         emit,
         toolkit,
-        inbox: store,
+         inbox: store,
         persist: chat.exportJson.pipe(
           Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
-          Effect.orDie,
+          Effect.catchAll(() => Effect.void),
         ),
         onTurnStart: (turnId) =>
           Effect.sync(() => {
@@ -109,21 +109,29 @@ else {
         Stream.decodeText(),
         Stream.splitLines,
         Stream.filter((line) => line.length > 0),
-        Stream.map((line) => JSON.parse(line) as AttachFrame),
+        Stream.mapEffect((line) =>
+          Effect.try({
+            try: () => JSON.parse(line) as AttachFrame,
+            catch: (error) => new AgentWorkerError({ message: sanitizeAgentError(String(error)) }),
+          }),
+        ),
         Stream.runForEach((frame) =>
           frame._tag === "agent.prompt"
-            ? worker.prompt(frame.text, {
-                ...(frame.id === undefined ? {} : { id: frame.id }),
-                delivery: frame.delivery ?? "queue",
-                resume: frame.resume,
-              })
+              ? worker.prompt(
+                  frame.text,
+                  frame.id === undefined
+                    ? { delivery: frame.delivery ?? "queue", resume: frame.resume }
+                    : { id: frame.id, delivery: frame.delivery ?? "queue", resume: frame.resume },
+                )
             : frame._tag === "agent.interrupt"
               ? worker.interrupt(frame.reason)
               : frame._tag === "agent.permission"
                 ? gate.resolve(frame.request, frame.decision, frame.feedback)
                 : Effect.void,
         ),
-        Effect.orDie,
+         Effect.catchAll((error) =>
+            emit({ _tag: "agent.error", message: sanitizeAgentError(String(error)), session }),
+         ),
       );
       yield* worker.close;
     }).pipe(Effect.provide(modelLayer), Effect.provide(projectStoreLayer(root)));
@@ -132,10 +140,10 @@ else {
   Effect.runPromise(
     Effect.scoped(
       program.pipe(Effect.provide(IntegrationDefault), Effect.provide(BunFileSystem.layer)),
-    ) as Effect.Effect<void, unknown, never>,
+    ),
   ).catch(async (error) => {
     await Effect.runPromise(
-      emit({ _tag: "agent.error", message: sanitizeAgentError(error), session }),
+      emit({ _tag: "agent.error", message: sanitizeAgentError(String(error)), session }),
     );
     process.exitCode = 1;
   });

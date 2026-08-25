@@ -13,12 +13,12 @@ async function environment() {
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
-function provide<A>(effect: Effect.Effect<A, any, any>, env: NodeJS.ProcessEnv) {
+function provide<A, E, R>(effect: Effect.Effect<A, E, R>, env: NodeJS.ProcessEnv) {
   return effect.pipe(
     Effect.provide(Credential.Default),
     Effect.provide(BunFileSystem.layer),
     Effect.withConfigProvider(ConfigProvider.fromJson(env)),
-  ) as Effect.Effect<A, any, never>;
+  );
 }
 
 const key = (value: string) => ({

@@ -1,12 +1,13 @@
-import { JSONSchema } from "effect";
+import { JSONSchema, Option, Schema as S } from "effect";
 import { COMMAND_DEFS, COMMAND_META, type CommandTag } from "./commands.ts";
+import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 
 /**
  * Field metadata derived from each command's schema fields.
  * Keyed by command tag, mapping field name → kind.
  */
 type FieldKind = "string" | "int" | "boolean" | "literal" | "array";
-type FieldShape = {
+type FieldSpec = {
   name: string;
   kind: FieldKind;
   required: boolean;
@@ -34,12 +35,12 @@ function resolveSchema(schema: JsonSchemaObject, root: JsonSchemaObject): JsonSc
   return key && root.$defs?.[key] ? root.$defs[key]! : schema;
 }
 
-function fieldShape(
+function fieldSpec(
   name: string,
   schema: JsonSchemaObject,
   root: JsonSchemaObject,
   required: boolean,
-): FieldShape {
+): FieldSpec {
   const resolved = resolveSchema(schema, root);
   if (resolved.enum) return { name, kind: "literal", required, literals: resolved.enum };
   if (resolved.type === "integer") return { name, kind: "int", required };
@@ -48,21 +49,20 @@ function fieldShape(
   return { name, kind: "string", required };
 }
 
-export function fieldNames(tag: CommandTag): FieldShape[] {
+export function fieldNames(tag: CommandTag): FieldSpec[] {
   const schema = commandSchema(tag);
   const required = new Set(schema.required ?? []);
   return Object.entries(schema.properties ?? {}).map(([name, field]) =>
-    fieldShape(name, field, schema, required.has(name)),
+    fieldSpec(name, field, schema, required.has(name)),
   );
 }
 
-export function parseArgs(
-  tag: CommandTag,
-  argv: string[],
-): {
-  parsed: Record<string, unknown> | null;
+export interface ParseArgsResult {
+  parsed: Record<string, JsonValue> | null;
   errors: string[];
-} {
+}
+
+export function parseArgs(tag: CommandTag, argv: string[]): ParseArgsResult {
   const fields = fieldNames(tag);
   if (fields.length === 0) {
     for (const arg of argv) {
@@ -72,7 +72,7 @@ export function parseArgs(
     return { parsed: {}, errors: [] };
   }
 
-  const parsed: Record<string, unknown> = {};
+  const parsed: Record<string, JsonValue> = {};
   const errors: string[] = [];
   const consumed = new Set<string>();
   const requiredFields = fields.filter((f) => f.required);
@@ -137,7 +137,7 @@ export function parseArgs(
   return { parsed, errors: [] };
 }
 
-function coerce(value: string | undefined, field: FieldShape): unknown {
+function coerce(value: string | undefined, field: FieldSpec): JsonValue | undefined {
   if (value === undefined) {
     if (field.kind === "boolean") return true;
     return undefined;
@@ -152,12 +152,8 @@ function coerce(value: string | undefined, field: FieldShape): unknown {
       return n;
     }
     case "array": {
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : undefined;
-      } catch {
-        return undefined;
-      }
+      const parsed = S.decodeUnknownOption(S.parseJson(S.Array(JsonValueSchema)))(value);
+      return Option.getOrUndefined(parsed);
     }
     case "boolean": {
       if (value === "true" || value === "1") return true;

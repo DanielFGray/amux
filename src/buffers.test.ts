@@ -205,7 +205,8 @@ test("buffer failures are answers, not crashes", async () => {
 
   // A missing `data` field is a schema violation, not a refusal: the payload
   // fails to encode and the request never reaches the daemon at all.
-  await expect(rpc(daemon.id, (c) => c.SetBuffer({} as { data: string }), env)).rejects.toThrow(
+  type SetBufferInput = Parameters<ControlClient["SetBuffer"]>[0];
+  await expect(rpc(daemon.id, (c) => c.SetBuffer({} as SetBufferInput), env)).rejects.toThrow(
     "is missing",
   );
 });

@@ -3,6 +3,26 @@ import { PermissionDecisionSchema, PermissionRuleSchema } from "../permission.ts
 
 export const SESSION_STATE_TOPIC = "session.state";
 
+/** JSON values are the only opaque values that may cross a persisted or wire boundary. */
+export const JsonValueSchema: S.Schema<JsonValue, JsonValue, never> = S.suspend(() =>
+  S.Union(
+    S.Null,
+    S.String,
+    S.Boolean,
+    S.Number.pipe(S.finite()),
+    S.Array(JsonValueSchema),
+    S.Record({ key: S.String, value: JsonValueSchema }),
+  ),
+) as S.Schema<JsonValue, JsonValue, never>;
+
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
 /**
  * The framed wire protocol between a client and the attach daemon.
  *
@@ -134,7 +154,7 @@ const toolStartFields = {
   turn: S.String,
   call: S.String,
   tool: S.String,
-  input: S.Unknown,
+  input: JsonValueSchema,
 };
 const ToolStartPayload = S.TaggedStruct("tool.start", toolStartFields);
 const ToolStart = S.TaggedStruct("tool.start", { ...toolStartFields, sequence: S.NonNegativeInt });
@@ -180,7 +200,7 @@ const toolResultFields = {
   session: S.String,
   turn: S.String,
   call: S.String,
-  output: S.Unknown,
+  output: JsonValueSchema,
   isError: S.Boolean,
 };
 const ToolResultPayload = S.TaggedStruct("tool.result", toolResultFields);
@@ -210,7 +230,7 @@ const permissionRequestFields = {
   action: S.String,
   resources: S.Array(S.String),
   save: S.Array(PermissionRuleSchema),
-  input: S.Unknown,
+  input: JsonValueSchema,
 };
 const PermissionRequestPayload = S.TaggedStruct("permission.request", permissionRequestFields);
 const PermissionRequest = S.TaggedStruct("permission.request", {
@@ -247,7 +267,7 @@ const PermissionResponse = S.TaggedStruct("permission.response", {
 const topicFields = {
   session: S.String,
   topic: S.String,
-  payload: S.Unknown,
+  payload: JsonValueSchema,
 };
 const TopicPayload = S.TaggedStruct("topic", topicFields);
 export const Topic = S.TaggedStruct("topic", {
@@ -457,7 +477,7 @@ export function encodeAttachFrameBytes(frame: AttachFrame): Uint8Array {
  * Decode as many complete newline-delimited frames as are available.
  * Incomplete trailing data is returned for the next socket read.
  */
-export function decodeAttachFrames(input: string): { frames: AttachFrame[]; rest: string } {
+export function decodeAttachFrames(input: string) {
   const lines = input.split("\n");
   const rest = lines.pop() ?? "";
   const frames: AttachFrame[] = [];
@@ -465,7 +485,7 @@ export function decodeAttachFrames(input: string): { frames: AttachFrame[]; rest
   for (const line of lines) {
     if (!line) continue;
     try {
-      frames.push(S.decodeUnknownSync(AttachFrame)(JSON.parse(line)));
+      frames.push(S.decodeUnknownSync(S.parseJson(AttachFrame))(line));
     } catch (error) {
       throw new AttachProtocolError({
         message: error instanceof Error ? error.message : String(error),

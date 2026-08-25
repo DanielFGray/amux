@@ -3,6 +3,7 @@ import { Effect, Schema as S } from "effect";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { bashResources, pathResource, type PermissionGate } from "./permission.ts";
+import type { JsonValue } from "../../../layout.ts";
 
 const DEFAULT_LIMIT = 2_000;
 const DEFAULT_TIMEOUT = 120_000;
@@ -81,7 +82,7 @@ export function agentToolkit(workspace: string, gate: PermissionGate) {
     tool: string,
     action: string,
     resources: readonly string[],
-    input: unknown,
+    input: JsonValue,
     body: () => Promise<string>,
   ) => gate.assert({ tool, action, resources, input }).pipe(Effect.andThen(tryTool(body)));
   const paths = (...values: string[]) =>

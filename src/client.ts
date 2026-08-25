@@ -37,13 +37,13 @@ export class SessionClientError extends S.TaggedError<SessionClientError>()("Ses
   message: S.String,
 }) {}
 
-export interface SessionClientShape extends DaemonSession {
+export interface SessionClientContract extends DaemonSession {
   readonly id: string;
   readonly session: SessionState | null;
   readonly live: ReadonlySet<string>;
   readonly workspace: () => WorkspaceSnapshot;
-  readonly models: Stream.Stream<WorkspaceSnapshot>;
-  readonly events: Stream.Stream<DaemonEventPayload, ControlError>;
+  readonly models: Stream.Stream<WorkspaceSnapshot, never, never>;
+  readonly events: Stream.Stream<DaemonEventPayload, ControlError, never>;
   readonly runWorkspace: (
     command: Command,
     context: WorkspaceCommandContext,
@@ -87,7 +87,7 @@ export const SessionClient = {
     id: string,
     options: SessionClientOptions = {},
   ): Effect.Effect<
-    SessionClientShape,
+    SessionClientContract,
     ControlError | SessionClientError | SessionIdError,
     Scope.Scope | SessionStore | FileSystem.FileSystem
   > {
@@ -99,7 +99,7 @@ const make = (
   id: string,
   options: SessionClientOptions,
 ): Effect.Effect<
-  SessionClientShape,
+  SessionClientContract,
   ControlError | SessionClientError | SessionIdError,
   Scope.Scope | SessionStore | FileSystem.FileSystem
 > =>
@@ -133,7 +133,7 @@ const make = (
           }),
       ),
     );
-    let service!: SessionClientShape;
+    let service!: SessionClientContract;
     const initialWorkspace = yield* parseWorkspaceJson(status.workspace).pipe(
       Effect.mapError(
         (error) =>
@@ -181,12 +181,10 @@ const make = (
         }
         const parsed = yield* parseWorkspaceJson(next);
         accept(parsed);
-        return {
-          snapshot: structuredClone(workspace),
-          ...(outputs[0]?.result === undefined
-            ? {}
-            : { result: outputs[0].result as AnyCommandResult }),
-        };
+        const result = outputs[0]?.result;
+        return result === undefined
+          ? { snapshot: structuredClone(workspace) }
+          : { snapshot: structuredClone(workspace), result: result as AnyCommandResult };
       }).pipe(Effect.mapError((error) => new SessionClientError({ message: errorMessage(error) })));
     yield* Effect.forkScoped(
       Effect.forever(
@@ -241,14 +239,14 @@ const make = (
           Effect.mapError(toControlError),
         ),
       resumeAgent: (input) =>
-        control
-          .ResumeAgent({
-            ...input,
-            ...(input.argv ? { argv: [...input.argv] } : {}),
-            env: input.env,
-            stripEnv: input.stripEnv,
-          })
-          .pipe(Effect.mapError(toControlError)),
+        Effect.sync(() => {
+          const resumeInput = { ...input, env: input.env, stripEnv: input.stripEnv };
+          if (input.argv) resumeInput.argv = [...input.argv];
+          return resumeInput;
+        }).pipe(
+          Effect.flatMap((resumeInput) => control.ResumeAgent(resumeInput)),
+          Effect.mapError(toControlError),
+        ),
       backend: () => daemonBackend(service, service.live),
       setBuffer: (name, data) =>
         control.SetBuffer({ name, data }).pipe(Effect.mapError(toControlError)),
@@ -286,16 +284,15 @@ export function ensureDaemon(
     const home = yield* optionalEnvVar("HOME");
     const stateHome = yield* optionalEnvVar("XDG_STATE_HOME");
     const entry = new URL("./daemon-main.ts", import.meta.url).pathname;
+    const env = { ...process.env };
+    if (Option.isSome(home)) env.HOME = home.value;
+    if (Option.isSome(stateHome)) env.XDG_STATE_HOME = stateHome.value;
     const child = yield* Effect.try({
       try: () =>
         spawn(process.execPath, [entry, id], {
           detached: true,
           stdio: "ignore",
-          env: {
-            ...process.env,
-            ...(Option.isSome(home) ? { HOME: home.value } : {}),
-            ...(Option.isSome(stateHome) ? { XDG_STATE_HOME: stateHome.value } : {}),
-          },
+          env,
         }),
       catch: (error) => new SessionClientError({ message: errorMessage(error) }),
     });

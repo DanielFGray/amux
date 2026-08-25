@@ -11,7 +11,7 @@
  * back to — so these run in order and share one app.
  */
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
+import { launch, LEADER, E2E_TIMEOUT, type App, type E2eWindow } from "./app.ts";
 
 let app: App;
 
@@ -24,13 +24,13 @@ afterAll(async () => {
 });
 
 const activeWindow = async (): Promise<number | undefined> =>
-  (await app.session())?.spaces?.[0]?.activeWindow;
+  (await app.session())?.spaces?.[0]?.activeWindow ?? undefined;
 
 /** Which pane a window's persisted layout says is focused. */
 const focusedPane = async (number: number): Promise<string | null> => {
   const session = await app.session();
-  const window = session?.spaces?.[0]?.windows?.find(
-    (w: { number: number }) => w.number === number,
+  const window: E2eWindow | undefined = session?.spaces?.[0]?.windows.find(
+    (candidate) => candidate.number === number,
   );
   if (typeof window?.layout !== "string") return null;
   try {

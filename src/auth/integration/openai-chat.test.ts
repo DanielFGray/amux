@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { LanguageModel, Prompt, Tool, Toolkit } from "@effect/ai";
+import { LanguageModel, Prompt, Response as AiResponse, Tool, Toolkit } from "@effect/ai";
 import { HttpClient, HttpClientResponse } from "@effect/platform";
 import { Chunk, Effect, Layer, Schema as S, Stream } from "effect";
 import * as OpenAiChat from "./openai-chat.ts";
@@ -25,13 +25,19 @@ type Recorded = {
   readonly chunks?: number;
 };
 
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonRecord;
+type JsonRecord = { [key: string]: JsonValue };
+
 /** The requests a run made, and the client that answers them. */
 const gateway = (recorded: Recorded) => {
-  const sent: unknown[] = [];
+  const sent: JsonRecord[] = [];
   let attempt = 0;
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
-      sent.push(JSON.parse(new TextDecoder().decode((request.body as any).body)));
+      if (request.body._tag !== "Uint8Array") throw new Error("expected a JSON request body");
+      sent.push(
+        JSON.parse(new TextDecoder().decode(request.body.body)) as JsonRecord,
+      );
       const bytes = new TextEncoder().encode(recorded.body);
       const size = Math.ceil(bytes.length / (recorded.chunks ?? 1));
       // Delivered in pieces, because a real socket does: a decoder that splits
@@ -44,9 +50,9 @@ const gateway = (recorded: Recorded) => {
           controller.close();
         },
       });
-      return HttpClientResponse.fromWeb(
-        request,
-        new Response(stream, {
+       return HttpClientResponse.fromWeb(
+         request,
+         new globalThis.Response(stream, {
           status: Array.isArray(recorded.status)
             ? (recorded.status[Math.min(attempt++, recorded.status.length - 1)] ?? 200)
             : (recorded.status ?? 200),
@@ -83,16 +89,21 @@ const API = "https://opencode.ai/zen/v1";
  * protocol emits, so the parts arrive as classes carrying a provider-metadata
  * bag; the assertions here are about the protocol, not about that wrapper.
  */
-const parts = (model: LanguageModel.Service, options?: Record<string, unknown>) =>
+const parts = <Tools extends Record<string, Tool.Any> = {}>(
+  model: LanguageModel.Service,
+  options?: Partial<LanguageModel.GenerateTextOptions<Tools>>,
+) =>
   Stream.runCollect(
-    model.streamText({ prompt: "hello", ...options } as never) as Stream.Stream<any, any, never>,
+    model.streamText({ prompt: "hello", ...options }),
   ).pipe(
     Effect.map(Chunk.toReadonlyArray),
-    Effect.map((all) => all.map(shape)),
+    Effect.map((all) => all.map(fixture)),
   );
 
-const shape = (part: unknown) => {
-  const { metadata: _metadata, ...rest } = JSON.parse(JSON.stringify(part));
+const fixture = <Tools extends Record<string, Tool.Any>>(
+  part: AiResponse.StreamPart<Tools>,
+): JsonRecord => {
+  const { metadata: _metadata, ...rest } = JSON.parse(JSON.stringify(part)) as JsonRecord;
   delete rest["~effect/ai/Content/Part"];
   return rest;
 };
@@ -112,18 +123,30 @@ const list = Tool.make("list", { parameters: { dir: S.String }, success: S.Strin
  * a call's arguments against the schema of the tool it names, so a call to a
  * tool the caller never offered is not a part it can produce.
  */
-const toolkit = {
+type TestTools = { read: typeof read; list: typeof list };
+
+const toolkit: Toolkit.WithHandler<TestTools> = {
   tools: { read, list },
   // `streamText` runs the tools it is given. These tests are about the
   // protocol, so the handler is a stub and its result is not asserted on.
-  handle: () => Effect.succeed({ isFailure: false, result: "ok", encodedResult: "ok" }),
-} as unknown as Toolkit.WithHandler<{ read: typeof read; list: typeof list }>;
+  handle: () =>
+    Effect.succeed({ isFailure: false, result: "ok", encodedResult: "ok" } as const) as Effect.Effect<
+      Tool.HandlerResult<TestTools[keyof TestTools]>,
+      never,
+      never
+    >,
+};
 
-const without = (type: string) => (all: ReadonlyArray<any>) =>
+const without = (type: string) => (all: ReadonlyArray<JsonRecord>) =>
   all.filter((part) => part.type !== type);
 
-const only = (name: "read" | "list") =>
-  ({ ...toolkit, tools: { [name]: toolkit.tools[name] } }) as unknown as typeof toolkit;
+function only(name: "read"): Toolkit.WithHandler<{ read: typeof read }>;
+function only(name: "list"): Toolkit.WithHandler<{ list: typeof list }>;
+function only(name: "read" | "list") {
+  return name === "read"
+    ? { tools: { read }, handle: toolkit.handle }
+    : { tools: { list }, handle: toolkit.handle };
+}
 
 // =============================================================================
 // Streaming
@@ -181,7 +204,7 @@ testEffect("reasoning is closed before the text that follows it", () =>
       (model) => parts(model),
     );
 
-    expect(result.map((part: any) => part.type)).toEqual([
+    expect(result.map((part) => part.type)).toEqual([
       "reasoning-start",
       "reasoning-delta",
       "reasoning-delta",
@@ -260,7 +283,7 @@ testEffect("two tools called in one turn are kept apart by their index", () =>
       },
       (model) => parts(model, { toolkit }),
     );
-    expect(result.filter((part: any) => part.type === "tool-call")).toEqual([
+    expect(result.filter((part) => part.type === "tool-call")).toEqual([
       {
         type: "tool-call",
         id: "call_a",
@@ -294,7 +317,7 @@ testEffect("a tool call whose arguments never parse fails the turn", () =>
       },
       (model) => parts(model),
     ).pipe(Effect.flip);
-    expect((failure as any)._tag).toBe("MalformedOutput");
+    expect(failure).toMatchObject({ _tag: "MalformedOutput" });
   }),
 );
 
@@ -308,7 +331,7 @@ testEffect("a tool call delta that never states its identity fails the turn", ()
       },
       (model) => parts(model),
     ).pipe(Effect.flip);
-    expect((failure as any)._tag).toBe("MalformedOutput");
+    expect(failure).toMatchObject({ _tag: "MalformedOutput" });
   }),
 );
 
@@ -318,7 +341,7 @@ testEffect("an error frame is an error, not an empty turn", () =>
       { body: sse(`{"error":{"message":"insufficient credits","type":"quota_exceeded"}}`) },
       (model) => parts(model),
     ).pipe(Effect.flip);
-    expect((failure as any).description).toContain("insufficient credits");
+    expect(failure).toMatchObject({ description: expect.stringContaining("insufficient credits") });
   }),
 );
 
@@ -327,8 +350,7 @@ testEffect("a rejected request is an error, not an empty turn", () =>
     const failure = yield* run({ status: 401, body: `{"error":{"message":"bad key"}}` }, (model) =>
       parts(model),
     ).pipe(Effect.flip);
-    expect((failure as any)._tag).toBe("HttpResponseError");
-    expect((failure as any).request).toBeDefined();
+    expect(failure).toMatchObject({ _tag: "HttpResponseError", request: expect.anything() });
   }),
 );
 
@@ -352,7 +374,7 @@ testEffect("a frame that is not JSON fails rather than being silently skipped", 
     const failure = yield* run({ body: "data: not json at all\n\ndata: [DONE]\n\n" }, (model) =>
       parts(model),
     ).pipe(Effect.flip);
-    expect((failure as any)._tag).toBe("MalformedOutput");
+    expect(failure).toMatchObject({ _tag: "MalformedOutput" });
   }),
 );
 
@@ -371,7 +393,7 @@ testEffect("generateText is the stream, joined back up", () =>
           `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}}`,
         ),
       },
-      (model) => model.generateText({ prompt: "hi" }) as Effect.Effect<any, any, never>,
+      (model) => model.generateText({ prompt: "hi" }),
     );
 
     expect(result.text).toBe("Hello, world");
@@ -430,7 +452,7 @@ testEffect("a conversation is lowered onto the roles the wire format has", () =>
       (model) => parts(model, { prompt }),
     );
 
-    expect((sent[0] as any).messages).toEqual([
+    expect(sent[0]?.messages).toEqual([
       { role: "system", content: "Be brief." },
       { role: "user", content: "Read /etc/hosts" },
       {
@@ -461,7 +483,7 @@ testEffect("a toolkit becomes function tools, and a forced choice names one", ()
         }),
     );
 
-    expect((sent[0] as any).tools).toEqual([
+    expect(sent[0]?.tools).toEqual([
       {
         type: "function",
         function: {
@@ -476,7 +498,7 @@ testEffect("a toolkit becomes function tools, and a forced choice names one", ()
         },
       },
     ]);
-    expect((sent[0] as any).tool_choice).toEqual({ type: "function", function: { name: "read" } });
+    expect(sent[0]?.tool_choice).toEqual({ type: "function", function: { name: "read" } });
   }),
 );
 
@@ -486,7 +508,9 @@ testEffect("a `oneOf` choice is applied by withholding the other tools", () =>
       { body: sse(`{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`) },
       (model) => parts(model, { toolkit, toolChoice: { mode: "required", oneOf: ["list"] } }),
     );
-    expect((sent[0] as any).tools.map((tool: any) => tool.function.name)).toEqual(["list"]);
-    expect((sent[0] as any).tool_choice).toBe("required");
+    expect(sent[0]?.tools).toEqual([
+      expect.objectContaining({ function: expect.objectContaining({ name: "list" }) }),
+    ]);
+    expect(sent[0]?.tool_choice).toBe("required");
   }),
 );

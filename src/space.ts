@@ -1,7 +1,7 @@
 import { BoxRenderable, type RenderContext } from "@opentui/core";
 import { Context, Effect, Exit, Scope } from "effect";
 import { Window } from "./window.ts";
-import type { SessionHandle } from "./session-handle.ts";
+import type { SessionHandle, SessionHandleOptions } from "./session-handle.ts";
 import { AgentState } from "./agent-state.ts";
 import type { Pane } from "./pane.ts";
 import { RenderCtx, type WorkspaceEnv } from "./env.ts";
@@ -300,14 +300,14 @@ export class Space {
 
 /** Ranked by how much it wants your attention. Shared by spaces and windows. */
 export function rollUp(sessions: readonly SessionHandle[]): AgentState {
-  const RANK: Record<AgentState, number> = {
+  const RANK = {
     [AgentState.Blocked]: 4,
     [AgentState.Working]: 3,
     [AgentState.Failed]: 3,
     [AgentState.Detached]: 2,
     [AgentState.Idle]: 1,
     [AgentState.Done]: 0,
-  };
+  } satisfies Record<AgentState, number>;
   let best: AgentState = AgentState.Done;
   for (const a of sessions) {
     const s = a.state;
@@ -615,18 +615,23 @@ const projectWindow = Effect.fnUntraced(function* (
   }
   for (const saved of source.sessions) {
     if (window.sessions.some((candidate) => candidate.id === saved.id)) continue;
-    yield* window.startSession({
+    const sessionSpec: Omit<SessionHandleOptions, "backend" | "exited"> = {
       id: saved.id,
       name: saved.name,
       kind: saved.kind,
       agent: saved.declaredAgent,
       cmd: saved.cmd ?? [],
-      ...(saved.provider ? { provider: saved.provider } : {}),
       cwd: saved.cwd,
       cols: saved.cols,
       rows: saved.rows,
-      ...(saved.exited ? { exited: { code: saved.exitCode } } : { backend }),
-    });
+    };
+    const sessionWithProvider =
+      saved.provider === undefined ? sessionSpec : { ...sessionSpec, provider: saved.provider };
+    yield* window.startSession(
+      saved.exited
+        ? { ...sessionWithProvider, exited: { code: saved.exitCode } }
+        : { ...sessionWithProvider, backend },
+    );
   }
   window.project(source.layout, source.state);
 });

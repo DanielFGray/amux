@@ -12,7 +12,7 @@ function key(name: string, extra: Partial<KeyEvent> = {}): KeyEvent {
     shift: false,
     sequence: name,
     ...extra,
-  } as unknown as KeyEvent;
+  } as KeyEvent;
 }
 
 /** Drive a sequence of keys through the machine. A string is shorthand for a

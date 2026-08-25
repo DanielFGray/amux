@@ -9,7 +9,7 @@ import { applyOptions, resolveOptions } from "./options.ts";
 import { rollUp, nextBlockedAfter } from "./space.ts";
 import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
-import type { SessionHandle } from "./session-handle.ts";
+import { SessionHandle } from "./session-handle.ts";
 import type { AgentState } from "./agent-state.ts";
 import { waitFor } from "./test-wait.ts";
 import { captureScrollback } from "./capture.ts";
@@ -56,7 +56,10 @@ async function blockedAgent(window: Window, name: string): Promise<SessionHandle
 }
 
 test("nextBlockedAfter walks the blocked set in a stable order, wrapping", () => {
-  const stub = (state: AgentState) => ({ state }) as unknown as SessionHandle;
+  const stub = (state: AgentState) =>
+    Object.create(SessionHandle.prototype, {
+      state: { value: state, writable: true, configurable: true },
+    }) as SessionHandle;
   const idle = stub("idle");
   const blocked1 = stub("blocked");
   const blocked2 = stub("blocked");
@@ -305,7 +308,10 @@ test("a space of plain shells is idle, and an exited one still reads as idle", a
 });
 
 test("a roll-up reports the most urgent state present, and 'done' never wins", () => {
-  const stub = (state: AgentState) => ({ state }) as unknown as SessionHandle;
+  const stub = (state: AgentState) =>
+    Object.create(SessionHandle.prototype, {
+      state: { value: state, writable: true, configurable: true },
+    }) as SessionHandle;
   expect(rollUp([])).toBe("done");
   expect(rollUp([stub("idle"), stub("working"), stub("done")])).toBe("working");
   expect(rollUp([stub("working"), stub("blocked")])).toBe("blocked");

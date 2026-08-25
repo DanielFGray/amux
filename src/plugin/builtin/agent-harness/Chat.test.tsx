@@ -17,11 +17,11 @@ import { waitFor } from "../../../test-wait.ts";
  * that keeps its text after sending would send it twice.
  */
 
-const session = { id: "native", kind: "component", name: "chat" } as any;
+const session = { id: "native", kind: "component", name: "chat" };
 
 async function chat(
   active = true,
-  frames: () => Stream.Stream<any, unknown> = () => Stream.never,
+  frames: () => Stream.Stream<AttachFrame, never> = () => Stream.empty,
   onSlashCommand?: (command: string) => boolean,
 ) {
   const t = await createTestRenderer({ width: 40, height: 8 });
@@ -43,9 +43,11 @@ async function chat(
         frames={frames}
         sync={() => {}}
         onSubmit={(message) => sent.push(message)}
-        onPermission={(request, decision, feedback) =>
-          answered.push({ request, decision, ...(feedback ? { feedback } : {}) })
-        }
+         onPermission={(request, decision, feedback) =>
+           answered.push(
+             feedback ? { request, decision, feedback } : { request, decision },
+           )
+         }
         onInterrupt={() => interrupted.push(session.id)}
         onSlashCommand={onSlashCommand}
         slashCommands={[{ name: "model", description: "choose the agent model" }]}
@@ -211,7 +213,7 @@ test("the transcript rewraps when the pane it lives in is resized", async () => 
   const line = "the quick brown fox jumps over the lazy dog and keeps going";
   const { t, setWidth } = await chat(
     true,
-    () => Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: line }) as any,
+    () => Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: line } as const),
   );
   await waitFrame(t, (frame) => frame.includes("the quick brown fox"), "the delta to render");
 
@@ -234,7 +236,7 @@ test("working status is shown as a spinner below the editor", async () => {
         sequence: 1,
         topic: "session.state",
         payload: "working",
-      }) as any,
+      } as const),
   );
   await waitFrame(t, (frame) => frame.includes("working"), "the status to render");
 
@@ -339,7 +341,7 @@ test("the latest agent response stays visible in a short chat pane", async () =>
   const response = Array.from({ length: 12 }, (_, index) => `answer ${index}`).join("\n");
   const { t } = await chat(
     true,
-    () => Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: response }) as any,
+    () => Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: response } as const),
   );
 
   await waitFrame(t, (frame) => frame.includes("answer 11"), "the latest response line");

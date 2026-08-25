@@ -4,6 +4,8 @@ import { FileSystem } from "@effect/platform";
 import { Context, Duration, Effect, Layer, Option, Redacted, Schema as S } from "effect";
 import { stateRoot } from "./session.ts";
 import { flock, flockUnlock } from "./shim.ts";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
+import { JsonValueSchema } from "./effect/AttachProtocol.ts";
 
 export * as Credential from "./credential.ts";
 
@@ -17,14 +19,19 @@ export interface OAuth {
   readonly refresh: Secret;
   readonly access: Secret;
   readonly expires: number;
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: Readonly<Record<string, JsonValue>>;
 }
 export interface Key {
   readonly type: "key";
   readonly key: Secret;
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: Readonly<Record<string, JsonValue>>;
 }
 export type Value = OAuth | Key;
+
+export class OAuthRefreshError extends S.TaggedError<OAuthRefreshError>()(
+  "OAuthRefreshError",
+  { message: S.String },
+) {}
 
 export interface Info {
   readonly id: ID;
@@ -47,7 +54,7 @@ export interface Interface {
   readonly refreshOAuth: (
     id: ID,
     now: number,
-    refresh: (value: OAuth) => Effect.Effect<OAuth, unknown>,
+    refresh: (value: OAuth) => Effect.Effect<OAuth, OAuthRefreshError>,
   ) => Effect.Effect<Value | undefined>;
   readonly remove: (id: ID) => Effect.Effect<void>;
 }
@@ -58,7 +65,7 @@ const PersistedValue = S.Union(
   S.Struct({
     type: S.Literal("key"),
     key: S.String,
-    metadata: S.optional(S.Record({ key: S.String, value: S.Unknown })),
+    metadata: S.optional(S.Record({ key: S.String, value: JsonValueSchema })),
   }),
   S.Struct({
     type: S.Literal("oauth"),
@@ -66,7 +73,7 @@ const PersistedValue = S.Union(
     refresh: S.String,
     access: S.String,
     expires: S.NonNegativeInt,
-    metadata: S.optional(S.Record({ key: S.String, value: S.Unknown })),
+    metadata: S.optional(S.Record({ key: S.String, value: JsonValueSchema })),
   }),
 );
 const PersistedInfo = S.Struct({
@@ -89,20 +96,12 @@ const unredact = (value: Value): Persisted["value"] =>
 
 const present = (row: Persisted): Info => ({ ...row, id: row.id as ID, value: redact(row.value) });
 
-const decodeText = (
-  text: string,
-): {
-  readonly valid: boolean;
-  readonly rows: readonly Persisted[];
-} => {
+const decodeText = (text: string) => {
   const parsed = S.decodeUnknownOption(S.parseJson(S.Array(S.Unknown)))(text);
   if (Option.isNone(parsed)) return { valid: false, rows: [] };
   return {
     valid: true,
-    rows: parsed.value.flatMap((row) => {
-      const decoded = S.decodeUnknownOption(PersistedInfo)(row);
-      return Option.isSome(decoded) ? [decoded.value] : [];
-    }),
+    rows: parsed.value.filter((row): row is Persisted => S.is(PersistedInfo)(row)),
   };
 };
 
@@ -141,7 +140,7 @@ const implementation = Effect.gen(function* () {
     return decodeText(text);
   });
 
-  const withLock = <A>(shared: boolean, body: Effect.Effect<A, any, any>) =>
+  const withLock = <A, E, R>(shared: boolean, body: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {
       yield* fs.makeDirectory(target.directory, { recursive: true, mode: 0o700 });
       yield* fs.chmod(target.directory, 0o700);
@@ -232,15 +231,13 @@ const implementation = Effect.gen(function* () {
       }),
     update: (id: ID, updates: Partial<Pick<Info, "label" | "value">>) =>
       mutate((rows) => ({
-        rows: rows.map((row) =>
-          row.id === id
-            ? {
-                ...row,
-                ...(updates.label === undefined ? {} : { label: updates.label }),
-                ...(updates.value === undefined ? {} : { value: unredact(updates.value) }),
-              }
-            : row,
-        ),
+        rows: rows.map((row) => {
+          if (row.id !== id) return row;
+          const next = { ...row };
+          if (updates.label !== undefined) next.label = updates.label;
+          if (updates.value !== undefined) next.value = unredact(updates.value);
+          return next;
+        }),
         result: undefined,
       })),
     remove: (id: ID) =>

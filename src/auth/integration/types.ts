@@ -3,6 +3,7 @@ import type { HttpClient } from "@effect/platform";
 import type { HttpClientRequest } from "@effect/platform/HttpClientRequest";
 import type { Layer } from "effect";
 import type { Credential } from "../../credential.ts";
+import type { OAuthRefreshError } from "../../credential.ts";
 
 export type When = { readonly key: string; readonly op: "eq" | "neq"; readonly value: string };
 export type Prompt =
@@ -84,7 +85,7 @@ export type Integration = {
   readonly env: readonly string[];
   readonly refresh?: (
     credential: Credential.OAuth,
-  ) => import("effect").Effect.Effect<Credential.OAuth, unknown>;
+  ) => import("effect").Effect.Effect<Credential.OAuth, OAuthRefreshError>;
   readonly model: (request: ModelRequest) => Layer.Layer<LanguageModel.LanguageModel, never, never>;
   readonly authorize: (
     credential: Credential.Value,

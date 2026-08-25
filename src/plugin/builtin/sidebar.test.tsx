@@ -443,11 +443,15 @@ test("exited agents are marked and excluded from agent count", () => {
 
 // -- Scrollbar tests --
 
-function findScrollBox(root: unknown): ScrollBoxRenderable | null {
+type RenderTreeNode = {
+  readonly constructor?: { readonly name?: string };
+  readonly getChildren?: () => readonly RenderTreeNode[];
+};
+
+function findScrollBox(root: RenderTreeNode): ScrollBoxRenderable | null {
   if (!root) return null;
-  const r = root as { constructor?: { name?: string }; getChildren?: () => unknown[] };
-  if (r.constructor?.name === "ScrollBoxRenderable") return root as ScrollBoxRenderable;
-  for (const child of r.getChildren?.() ?? []) {
+  if (root.constructor?.name === "ScrollBoxRenderable") return root as ScrollBoxRenderable;
+  for (const child of root.getChildren?.() ?? []) {
     const found = findScrollBox(child);
     if (found) return found;
   }

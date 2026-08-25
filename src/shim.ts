@@ -132,7 +132,7 @@ function nulBlock(values: readonly string[]): Uint8Array {
 }
 
 function address(value: Uint8Array): bigint {
-  return BigInt(ptr(value) as unknown as number);
+  return BigInt(ptr(value));
 }
 
 export const ScrollTo = { top: 0, bottom: 1, delta: 2, row: 3 } as const;

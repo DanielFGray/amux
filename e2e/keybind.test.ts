@@ -14,7 +14,7 @@
  * config it can edit.
  */
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
+import { launch, LEADER, E2E_TIMEOUT, type App, type E2eConfig } from "./app.ts";
 
 // ^a g is bound to nothing by default, so a split appearing under it can only
 // have come from the config.
@@ -24,19 +24,19 @@ let configured: App;
 let edited: App;
 let beforeSplit = "";
 let afterSplit = "";
-let captured: Record<string, any> | null = null;
-let reset: Record<string, any> | null = null;
-let added: Record<string, any> | null = null;
+let captured: E2eConfig | null = null;
+let reset: E2eConfig | null = null;
+let added: E2eConfig | null = null;
 
 beforeAll(async () => {
   configured = await launch("e2e-keybind-config", { config: REBOUND });
-  beforeSplit = await configured.shape();
+  beforeSplit = await configured.workspaceSummary();
   await configured.press(`${LEADER}g`);
   await configured.until(
-    async () => (await configured.shape()) === "1sp 1win 2ag",
+    async () => (await configured.workspaceSummary()) === "1sp 1win 2ag",
     "the rebound split to persist",
   );
-  afterSplit = await configured.shape();
+  afterSplit = await configured.workspaceSummary();
 
   // The settings window's keybind tab: row 0 is the prefix, so j lands on the
   // first real command (panes/pane.split-row). Enter captures the next
@@ -86,7 +86,8 @@ beforeAll(async () => {
   await edited.press("g");
   await edited.press("s");
   await edited.until(
-    async () => (await edited.config())?.keys?.bindings?.["pane.split-row"]?.includes("<leader>g"),
+    async () =>
+      (await edited.config())?.keys?.bindings?.["pane.split-row"]?.includes("<leader>g") ?? false,
     "the added binding to be saved",
   );
   added = await edited.config();

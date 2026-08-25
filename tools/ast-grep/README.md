@@ -117,14 +117,15 @@ Vitest test.
 
 ## Effect Channel Checks
 
-`no-unknown-effect-channels.yml` reports `unknown` in either the error or
-requirements channel of a qualified `Effect.Effect` type. It intentionally has
-no automatic fix: the appropriate replacement is usually `never`, a domain
-error, or a generic parameter, depending on the declaration.
+`no-unknown-effect-channels.yml` reports `any` or `unknown` in the error or
+requirements channels of qualified Effect data types. It covers `Effect`,
+`Stream`, `Fiber`, `Deferred`, `FiberMap`, and `Cause`. It intentionally has no
+automatic fix: the appropriate replacement is usually `never`, a domain error,
+or a generic parameter, depending on the declaration.
 
-It also reports `unknown` as a qualified `Stream.Stream` error channel. Generic
-helpers should expose an `E` parameter instead of prescribing `unknown`; public
-APIs should use a schema-typed tagged error or a concrete error union.
+Generic helpers should expose an `E` parameter instead of prescribing `any` or
+`unknown`; public APIs should use a schema-typed tagged error or a concrete
+error union.
 
 Run it against the source tree with:
 
@@ -134,6 +135,16 @@ ast-grep scan \
   src \
   --globs '**/*.ts' \
   --globs '**/*.tsx' \
+  --report-style medium
+```
+
+The channel fixture contains concrete, generic, `never`, `any`, and `unknown`
+examples. Scan it directly when changing the rule:
+
+```bash
+ast-grep scan \
+  --rule tools/ast-grep/no-unknown-effect-channels.yml \
+  tools/ast-grep/tests/no-unknown-effect-channels.ts \
   --report-style medium
 ```
 

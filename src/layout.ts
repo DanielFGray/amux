@@ -257,16 +257,16 @@ export function makeLayout({
         version: LAYOUT_VERSION,
         root,
         floats,
-        ...(docks ? { docks: normalizedDocks } : {}),
-        ...(dockSizes ? { dockSizes: { ...dockSizes } } : {}),
+        docks: docks ? normalizedDocks : undefined,
+        dockSizes: dockSizes ? { ...dockSizes } : undefined,
         focus,
       }
     : {
         version: LAYOUT_VERSION,
         root,
         floats,
-        ...(docks ? { docks: normalizedDocks } : {}),
-        ...(dockSizes ? { dockSizes: { ...dockSizes } } : {}),
+        docks: docks ? normalizedDocks : undefined,
+        dockSizes: dockSizes ? { ...dockSizes } : undefined,
       };
 }
 
@@ -447,9 +447,12 @@ export function closeLayout(layout: Layout, paneId: string): Layout {
   const dockStrips = layout.docks ?? emptyDockStrips();
   const index = layoutPanes(layout.root).findIndex((pane) => pane.id === paneId);
   const floats = layout.floats.filter((float) => float.id !== paneId);
-  const docks = Object.fromEntries(
-    DOCK_SIDES.map((side) => [side, dockStrips[side].filter((pane) => pane.id !== paneId)]),
-  ) as unknown as DockStrips;
+  const docks: DockStrips = {
+    left: dockStrips.left.filter((pane) => pane.id !== paneId),
+    right: dockStrips.right.filter((pane) => pane.id !== paneId),
+    top: dockStrips.top.filter((pane) => pane.id !== paneId),
+    bottom: dockStrips.bottom.filter((pane) => pane.id !== paneId),
+  };
   const dockChanged = DOCK_SIDES.some((side) => docks[side].length !== dockStrips[side].length);
   if (index === -1 && floats.length === layout.floats.length && !dockChanged) return layout;
 
@@ -478,12 +481,12 @@ export function setDock(layout: Layout, paneId: string, side: DockSide): Layout 
   const current = placementOf(layout, paneId);
   if (current === null || current === side) return layout;
   const target = layoutRefs(layout).find((pane) => pane.id === paneId)!;
-  const docks = Object.fromEntries(
-    DOCK_SIDES.map((candidate) => [
-      candidate,
-      dockStrips[candidate].filter((pane) => pane.id !== paneId),
-    ]),
-  ) as unknown as DockStrips;
+  const docks: DockStrips = {
+    left: dockStrips.left.filter((pane) => pane.id !== paneId),
+    right: dockStrips.right.filter((pane) => pane.id !== paneId),
+    top: dockStrips.top.filter((pane) => pane.id !== paneId),
+    bottom: dockStrips.bottom.filter((pane) => pane.id !== paneId),
+  };
   const root =
     current === "tiled"
       ? collapse(rewritePanes(layout.root, (pane) => (pane.id === paneId ? null : pane)))
@@ -587,15 +590,24 @@ export function prune(layout: Layout, alive: (session: string) => boolean): Layo
       const session = paneSession(float.content);
       return session === undefined || alive(session);
     }),
-    docks: Object.fromEntries(
-      DOCK_SIDES.map((side) => [
-        side,
-        dockStrips[side].filter((pane) => {
-          const session = paneSession(pane.content);
-          return session === undefined || alive(session);
-        }),
-      ]),
-    ) as unknown as DockStrips,
+    docks: {
+      left: dockStrips.left.filter((pane) => {
+        const session = paneSession(pane.content);
+        return session === undefined || alive(session);
+      }),
+      right: dockStrips.right.filter((pane) => {
+        const session = paneSession(pane.content);
+        return session === undefined || alive(session);
+      }),
+      top: dockStrips.top.filter((pane) => {
+        const session = paneSession(pane.content);
+        return session === undefined || alive(session);
+      }),
+      bottom: dockStrips.bottom.filter((pane) => {
+        const session = paneSession(pane.content);
+        return session === undefined || alive(session);
+      }),
+    },
   });
 }
 
@@ -616,8 +628,9 @@ export const LAYOUT_PRESETS = [
 
 export type LayoutPreset = (typeof LAYOUT_PRESETS)[number];
 
-export function isLayoutPreset(value: unknown): value is LayoutPreset {
-  return typeof value === "string" && (LAYOUT_PRESETS as readonly string[]).includes(value);
+const LayoutPresetSchema = S.Literal(...LAYOUT_PRESETS);
+export function isLayoutPreset(value: string | null): value is LayoutPreset {
+  return S.is(LayoutPresetSchema)(value);
 }
 
 /**
@@ -912,13 +925,15 @@ export function encodeLayout(layout: Layout): string {
       docks[side].map((pane) => ({ id: pane.id, content: pane.content })),
     ]),
   );
-  return JSON.stringify({
+  const encoded = {
     ...normalized,
     root: order(normalized.root),
     floats: normalized.floats.map(orderFloat),
-    ...(DOCK_SIDES.some((side) => docks[side].length > 0) ? { docks: encodedDocks } : {}),
-    ...(normalized.dockSizes ? { dockSizes: normalized.dockSizes } : {}),
-  });
+  };
+  if (DOCK_SIDES.some((side) => docks[side].length > 0)) {
+    Object.assign(encoded, { docks: encodedDocks });
+  }
+  return JSON.stringify(encoded);
 }
 
 function orderFloat(float: LayoutFloat): LayoutFloat {
@@ -1033,8 +1048,8 @@ function validateDecodedLayout(
     return makeLayout({
       root: collapse(root),
       floats,
-      ...(decoded.docks !== undefined ? { docks } : {}),
-      ...(decoded.dockSizes !== undefined ? { dockSizes: decoded.dockSizes } : {}),
+       docks: decoded.docks !== undefined ? docks : undefined,
+       dockSizes: decoded.dockSizes,
       focus: decoded.focus,
     });
   });

@@ -15,6 +15,7 @@ import { agentStateTopic } from "./state-topic.ts";
 import { evaluateAll, type PermissionDecision, type PermissionRule } from "../../../permission.ts";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 import type { Interface as ProjectStore } from "../../../project-store.ts";
+import type { JsonValue } from "../../../layout.ts";
 
 type PermissionStore = Pick<ProjectStore, "addRules">;
 
@@ -23,7 +24,7 @@ export interface Assertion {
   readonly action: string;
   readonly resources: readonly string[];
   readonly tool: string;
-  readonly input: unknown;
+  readonly input: JsonValue;
 }
 
 export interface PermissionGate {
@@ -130,13 +131,22 @@ export function makePermissionGate(options: {
           yield* Ref.update(rules, (current) => [...current, ...save]);
           yield* options.store.addRules(save).pipe(Effect.ignore);
         }
-        yield* options.emit({
-          _tag: "permission.response",
-          session: options.session,
-          request,
-          decision: decided.decision,
-          ...(decided.feedback === undefined ? {} : { feedback: decided.feedback }),
-        });
+        yield* options.emit(
+          decided.feedback === undefined
+            ? {
+                _tag: "permission.response",
+                session: options.session,
+                request,
+                decision: decided.decision,
+              }
+            : {
+                _tag: "permission.response",
+                session: options.session,
+                request,
+                decision: decided.decision,
+                feedback: decided.feedback,
+              },
+        );
       });
 
     return {

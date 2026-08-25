@@ -5,6 +5,7 @@ import {
   type MouseEvent,
   type OptimizedBuffer,
   type RenderContext,
+  type RenderableOptions,
 } from "@opentui/core";
 import {
   RenderState,
@@ -72,11 +73,15 @@ interface CellPoint {
 const color = (c: number | null, fallback: RGBA) =>
   c === null ? fallback : RGBA.fromInts((c >> 16) & 255, (c >> 8) & 255, c & 255, 255);
 
-const OPENTUI_TO_GHOSTTY_BUTTON: Record<number, number> = {
+const OPENTUI_TO_GHOSTTY_BUTTON = {
   0: MouseButton.left,
   1: MouseButton.middle,
   2: MouseButton.right,
-};
+} satisfies Record<number, number>;
+
+function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
+  return Object.hasOwn(record, key);
+}
 
 /**
  * A viewport onto a session: one leaf of a window's split tree.
@@ -108,7 +113,7 @@ export abstract class Pane extends Renderable {
 
   constructor(
     ctx: RenderContext,
-    options: { id: string; session: SessionHandle | null } & Record<string, any>,
+    options: RenderableOptions & { id: string; session: SessionHandle | null },
   ) {
     super(ctx, options);
     this.session = options.session;
@@ -180,7 +185,7 @@ export abstract class Pane extends Renderable {
 
   /** Where a pane's content starts and how big it is: its own rect less the
    *  sides it draws. The one statement of "the frame eats a cell". */
-  protected get content(): { x: number; y: number; width: number; height: number } {
+  protected get content() {
     return {
       x: this.x + (this.#edges.left ? 1 : 0),
       y: this.y + (this.#edges.top ? 1 : 0),
@@ -408,7 +413,9 @@ export class TerminalPane extends Pane {
     if (event.type === "scroll") {
       button = event.scroll?.direction === "up" ? MouseButton.wheelUp : MouseButton.wheelDown;
     } else if (event.type === "down" || event.type === "up" || event.type === "drag") {
-      button = OPENTUI_TO_GHOSTTY_BUTTON[event.button] ?? MouseButton.left;
+      button = hasOwn(OPENTUI_TO_GHOSTTY_BUTTON, event.button)
+        ? OPENTUI_TO_GHOSTTY_BUTTON[event.button]
+        : MouseButton.left;
     }
 
     const seq = this.#mouse.encode(this.session.term, x, y, action, button, event.modifiers);
@@ -421,9 +428,7 @@ export class TerminalPane extends Pane {
       this.#selecting = true;
       this.#selectionAnchor = point;
       setSelection(this.session.term.handle, point.x, point.y, point.x, point.y);
-      (
-        this._ctx as unknown as { setCapturedRenderable?: (r: unknown) => void }
-      ).setCapturedRenderable?.(this);
+        (this._ctx as { setCapturedRenderable?: (r: Renderable) => void }).setCapturedRenderable?.(this);
       this.invalidate();
       event.stopPropagation();
       return;
@@ -648,10 +653,7 @@ export class TerminalPane extends Pane {
   }
 }
 
-export function kittyPlacementLayers(placements: readonly Pick<KittyPlacement, "zIndex">[]): {
-  beforeText: number[];
-  afterText: number[];
-} {
+export function kittyPlacementLayers(placements: readonly Pick<KittyPlacement, "zIndex">[]) {
   const order = placements.map((placement, index) => ({ index, zIndex: placement.zIndex }));
   order.sort((left, right) => left.zIndex - right.zIndex);
   const split = order.findIndex(({ zIndex }) => zIndex >= 0);

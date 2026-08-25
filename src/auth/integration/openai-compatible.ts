@@ -35,7 +35,7 @@ export const openAiCompatible = (spec: {
   methods: spec.methods ?? [{ type: "key", label: "API key" }],
   env: [spec.env],
   model: ({ model, transformClient, apiUrl, npm }) => {
-    const client = { transformClient, ...(apiUrl ? { apiUrl } : {}) };
+    const client = { transformClient, apiUrl };
     if (npm === RESPONSES)
       return OpenAiLanguageModel.layer({ model }).pipe(
         Layer.provide(OpenAiClient.layer(client)),

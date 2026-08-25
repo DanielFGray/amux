@@ -10,20 +10,20 @@ import {
   decodeCommand,
   makeCommands,
   runDetached,
-  type CommandHandlers,
+  type CommandHandlerTable,
   type CommandTag,
 } from "./commands.ts";
 
 /** Handlers that record what they were called with, so a test can watch a
  *  command arrive at exactly one of them with its arguments intact. */
-function recording(): { seen: Command[]; handlers: CommandHandlers } {
+function recording() {
   const seen: Command[] = [];
   const handlers = Object.fromEntries(
     COMMAND_DEFS.map((def) => [
       def.tag,
       (args: Command) => Effect.sync(() => void seen.push(args)),
     ]),
-  ) as unknown as CommandHandlers;
+  ) satisfies CommandHandlerTable;
   return { seen, handlers };
 }
 
@@ -88,7 +88,7 @@ test("the wire decodes into a command, and rejects one it cannot type", () => {
     command("pane.resize", { direction: "left" }),
   );
 
-  const rejects = (input: unknown) =>
+  const rejects = (input: { readonly _tag: string; readonly [key: string]: string | number }) =>
     Either.isLeft(Effect.runSync(Effect.either(decodeCommand(input))));
   expect(rejects({ _tag: "window.select", number: "two" })).toBe(true);
   expect(rejects({ _tag: "pane.split", axis: "diagonal" })).toBe(true);
@@ -99,7 +99,7 @@ test("the wire decodes into a command, and rejects one it cannot type", () => {
 });
 
 test("the buffer verbs carry their stack arguments over the wire", () => {
-  const rejects = (input: unknown) =>
+  const rejects = (input: { readonly _tag: string; readonly [key: string]: string }) =>
     Either.isLeft(Effect.runSync(Effect.either(decodeCommand(input))));
   expect(Effect.runSync(decodeCommand({ _tag: "buffer.set", data: "x" }))).toEqual(
     command("buffer.set", { data: "x" }),
@@ -289,12 +289,16 @@ test("a detached command reports its failure", () => {
  * Commands with results return typed values, not just void.
  */
 test("commands with declared results carry them through the handler", () => {
-  const handlers: CommandHandlers = {
-    ...Object.fromEntries(COMMAND_DEFS.map((def) => [def.tag, () => Effect.void])),
-    "buffer.set": ({ name, data }: any) => Effect.succeed(name ?? `buffer-${data.length}`),
-    "buffer.show": ({ name }: any) => Effect.succeed(`content of ${name ?? "top"}`),
+  const handlers: CommandHandlerTable = {
+    ...recording().handlers,
+    "buffer.set": (args) =>
+      args._tag === "buffer.set"
+        ? Effect.succeed(args.name ?? `buffer-${args.data.length}`)
+        : Effect.void,
+    "buffer.show": (args) =>
+      args._tag === "buffer.show" ? Effect.succeed(`content of ${args.name ?? "top"}`) : Effect.void,
     "pane.capture": () => Effect.succeed("captured text"),
-  } as unknown as CommandHandlers;
+  };
 
   const commands = makeCommands(handlers);
 

@@ -175,7 +175,7 @@ const TerminalSize = S.Struct({
 /** The persisted agent record, exported so the machine-facing read surface can
  *  derive its agent entries from the model's own shape rather than restating
  *  it (ts-33067b). */
-export const PersistedSessionShape = S.Struct({
+export const PersistedSessionSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
   kind: S.optional(S.Literal("pty", "component")),
@@ -188,7 +188,7 @@ export const PersistedSessionShape = S.Struct({
   exited: S.Boolean,
   exitCode: S.NullOr(S.Int),
 });
-const LayoutNodeShape: S.Schema<any> = S.suspend(() =>
+const LayoutNodeSchema: S.Schema<any> = S.suspend(() =>
   S.Union(
     S.Struct({
       type: S.Literal("pane"),
@@ -200,13 +200,13 @@ const LayoutNodeShape: S.Schema<any> = S.suspend(() =>
       type: S.Literal("split"),
       direction: S.Union(S.Literal("row"), S.Literal("column")),
       weight: S.Number.pipe(S.greaterThan(0)),
-      children: S.Array(LayoutNodeShape).pipe(S.minItems(2)),
+      children: S.Array(LayoutNodeSchema).pipe(S.minItems(2)),
     }),
   ),
 );
 /** Fractions of the window. Bounds are parseLayout's, restated here because a
  *  schema that merely said "number" would strip nothing and admit anything. */
-const LayoutFloatShape = S.Struct({
+const LayoutFloatSchema = S.Struct({
   id: NonEmptyString,
   content: PaneContentSchema,
   x: S.Number.pipe(S.greaterThanOrEqualTo(0), S.lessThan(1)),
@@ -214,22 +214,22 @@ const LayoutFloatShape = S.Struct({
   width: S.Number.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1)),
   height: S.Number.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1)),
 });
-const DockPaneShape = S.Struct({ id: NonEmptyString, content: PaneContentSchema });
-const LayoutShape = S.Struct({
+const DockPaneSchema = S.Struct({ id: NonEmptyString, content: PaneContentSchema });
+const LayoutSchema = S.Struct({
   version: S.Literal(1),
-  root: S.NullOr(LayoutNodeShape),
+  root: S.NullOr(LayoutNodeSchema),
   // Optional, because a snapshot written before floats existed has no such key
   // and meant that nothing floats. Not optional in the Layout it decodes to:
   // a schema field this one omits is a field silently DROPPED from every
   // snapshot crossing the wire, which is how a float reached the daemon and
   // never reached the client.
-  floats: S.optional(S.Array(LayoutFloatShape)),
+  floats: S.optional(S.Array(LayoutFloatSchema)),
   docks: S.optional(
     S.Struct({
-      left: S.optional(S.Array(DockPaneShape)),
-      right: S.optional(S.Array(DockPaneShape)),
-      top: S.optional(S.Array(DockPaneShape)),
-      bottom: S.optional(S.Array(DockPaneShape)),
+      left: S.optional(S.Array(DockPaneSchema)),
+      right: S.optional(S.Array(DockPaneSchema)),
+      top: S.optional(S.Array(DockPaneSchema)),
+      bottom: S.optional(S.Array(DockPaneSchema)),
     }),
   ),
   dockSizes: S.optional(
@@ -242,10 +242,10 @@ const LayoutShape = S.Struct({
   ),
   focus: S.optional(NonEmptyString),
 });
-const WindowStateShape = S.Struct({
+const WindowStateSchema = S.Struct({
   focus: S.NullOr(NonEmptyString),
   last: S.NullOr(NonEmptyString),
-  zoom: S.NullOr(S.Struct({ pane: NonEmptyString, from: LayoutShape })),
+  zoom: S.NullOr(S.Struct({ pane: NonEmptyString, from: LayoutSchema })),
   sync: S.Boolean,
   preset: S.NullOr(
     S.Union(
@@ -257,21 +257,21 @@ const WindowStateShape = S.Struct({
     ),
   ),
 });
-export const WorkspaceWindowShape = S.Struct({
+export const WorkspaceWindowSchema = S.Struct({
   number: PositiveInt,
   name: S.NullOr(S.String),
-  sessions: S.Array(PersistedSessionShape).pipe(S.maxItems(MAX_SESSIONS)),
-  layout: LayoutShape,
-  state: WindowStateShape,
+  sessions: S.Array(PersistedSessionSchema).pipe(S.maxItems(MAX_SESSIONS)),
+  layout: LayoutSchema,
+  state: WindowStateSchema,
 });
 /** The space and window shapes, exported for the read surface's derived
  *  entries: a read entry names a model field by reference, so the documented
  *  shape cannot drift from the emitted shape. */
-export const WorkspaceSpaceShape = S.Struct({
+export const WorkspaceSpaceSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
   dir: S.String,
-  windows: S.Array(WorkspaceWindowShape).pipe(S.maxItems(MAX_WINDOWS)),
+  windows: S.Array(WorkspaceWindowSchema).pipe(S.maxItems(MAX_WINDOWS)),
   state: S.Struct({
     activeWindow: S.NullOr(PositiveInt),
     lastWindow: S.NullOr(PositiveInt),
@@ -280,15 +280,15 @@ export const WorkspaceSpaceShape = S.Struct({
   }),
   worktree: S.optional(S.Struct({ branch: S.String, repo: S.String, path: S.String })),
 });
-const WorkspaceSnapshotShape = S.Struct({
+const WorkspaceSnapshotSchema = S.Struct({
   revision: S.Int.pipe(S.greaterThanOrEqualTo(0)),
-  spaces: S.Array(WorkspaceSpaceShape).pipe(S.maxItems(MAX_SPACES)),
+  spaces: S.Array(WorkspaceSpaceSchema).pipe(S.maxItems(MAX_SPACES)),
   state: S.Struct({
     activeSpace: S.NullOr(NonEmptyString),
     nextSpace: PositiveInt,
   }),
 });
-export const WorkspaceSnapshotJson = S.parseJson(WorkspaceSnapshotShape);
+export const WorkspaceSnapshotJson = S.parseJson(WorkspaceSnapshotSchema);
 
 /** The persisted counter bearing the space's id: `s3` -> 3, anything else -> null. */
 function spaceCounter(id: string): number | null {
@@ -506,7 +506,7 @@ export function parseWorkspace(
   value: unknown,
 ): Effect.Effect<WorkspaceSnapshot, WorkspaceParseError | SessionStateError> {
   return Effect.gen(function* () {
-    const decoded = yield* S.decodeUnknown(WorkspaceSnapshotShape)(value).pipe(
+    const decoded = yield* S.decodeUnknown(WorkspaceSnapshotSchema)(value).pipe(
       Effect.mapError(
         (error) =>
           new WorkspaceParseError({
@@ -781,26 +781,26 @@ export function applyWorkspaceCommand(
   const addSession = (target: WorkspaceWindow, dir: string): PersistedSession => {
     const component = command._tag === "agent.new";
     if (component && !command.provider) throw new Error("agent.new requires a spawn provider");
-    const agent: PersistedSession = {
+    const agent = {
       id: newAgentId(),
       name: component ? `${command.provider!}-agent` : commandName(context.shell),
-      ...(component ? {} : { cmd: [...context.shell] }),
       cwd: dir,
       // Both axes: the worker's content is frames a component draws, and it is
       // an agent. A shell pane is neither, even when the user starts an agent
       // in it — that one is detected from its foreground process instead.
-      ...(component
-        ? {
-            kind: "component" as const,
-            declaredAgent: command.provider,
-            provider: command.provider,
-          }
-        : {}),
       cols: Math.max(1, context.size.cols),
       rows: Math.max(1, context.size.rows),
       exited: false,
       exitCode: null,
     };
+    if (!component) Object.assign(agent, { cmd: [...context.shell] });
+    if (component) {
+      Object.assign(agent, {
+        kind: "component" as const,
+        declaredAgent: command.provider,
+        provider: command.provider,
+      });
+    }
     target.sessions.push(agent);
     actions.push({ _tag: "spawn", agent });
     if (component && command.prompt)
@@ -835,25 +835,29 @@ export function applyWorkspaceCommand(
 
   switch (command._tag) {
     case "agent.permission": {
-      if (command.session)
+      if (command.session) {
+        const answer = {
+          request: command.request,
+          decision: command.decision,
+        };
+        if (command.feedback !== undefined) Object.assign(answer, { feedback: command.feedback });
         actions.push({
           _tag: "decide",
           agent: command.session,
-          answer: {
-            request: command.request,
-            decision: command.decision,
-            ...(command.feedback === undefined ? {} : { feedback: command.feedback }),
-          },
+          answer,
         });
+      }
       break;
     }
     case "agent.interrupt": {
-      if (command.session)
-        actions.push({
-          _tag: "interrupt",
+      if (command.session) {
+        const action = {
+          _tag: "interrupt" as const,
           agent: command.session,
-          ...(command.reason ? { reason: command.reason } : {}),
-        });
+        };
+        if (command.reason) Object.assign(action, { reason: command.reason });
+        actions.push(action);
+      }
       break;
     }
     case "agent.new": {
@@ -1478,12 +1482,12 @@ export function applyWorkspaceCommand(
   for (const { window } of workspaceWindows(next)) normalizeWindowState(window);
 
   const changed = before !== JSON.stringify(next);
-  return {
+  const mutation = {
     snapshot: changed ? { ...next, revision: current.revision + 1 } : current,
     actions,
     changed,
-    ...(result === undefined ? {} : { result }),
   };
+  return result === undefined ? mutation : { ...mutation, result };
 }
 
 /** Natural PTY exit is a daemon-side model mutation too. */
@@ -1715,14 +1719,17 @@ const commandName = (command: readonly string[]) => basename(command[0] ?? "") |
 // ---------------------------------------------------------------------------
 
 export function spaceEntries(workspace: WorkspaceSnapshot): ReadSpaceEntry[] {
-  return workspace.spaces.map((space) => ({
-    id: space.id,
-    name: space.name,
-    dir: space.dir,
-    activeWindow: space.state.activeWindow,
-    windows: space.windows.length,
-    ...(space.worktree === undefined ? {} : { worktree: space.worktree }),
-  }));
+  return workspace.spaces.map((space) => {
+    const entry = {
+      id: space.id,
+      name: space.name,
+      dir: space.dir,
+      activeWindow: space.state.activeWindow,
+      windows: space.windows.length,
+    };
+    if (space.worktree !== undefined) Object.assign(entry, { worktree: space.worktree });
+    return entry;
+  });
 }
 
 export function windowEntries(workspace: WorkspaceSnapshot): ReadWindowEntry[] {
@@ -1754,14 +1761,15 @@ export function paneEntries(workspace: WorkspaceSnapshot): ReadPaneEntry[] {
 
 function paneEntry(space: WorkspaceSpace, window: WorkspaceWindow, pane: PaneRef): ReadPaneEntry {
   const session = paneSession(pane.content);
-  return {
+  const entry = {
     id: pane.id,
     space: space.id,
     window: window.number,
-    ...(session === undefined ? {} : { session }),
     focused: pane.id === window.state.focus,
     zoomed: window.state.zoom?.pane === pane.id,
   };
+  if (session !== undefined) Object.assign(entry, { session });
+  return entry;
 }
 
 export function agentEntries(workspace: WorkspaceSnapshot): ReadAgentEntry[] {
@@ -1778,22 +1786,23 @@ function agentEntry(
   agent: PersistedSession,
 ): ReadAgentEntry {
   const pane = layoutRefs(window.layout).find((item) => paneSession(item.content) === agent.id);
-  return {
+  const entry = {
     id: agent.id,
     name: agent.name,
-    ...(agent.kind === undefined ? {} : { kind: agent.kind }),
-    ...(agent.declaredAgent === undefined ? {} : { declaredAgent: agent.declaredAgent }),
-    ...(agent.cmd === undefined ? {} : { cmd: agent.cmd }),
-    ...(agent.provider === undefined ? {} : { provider: agent.provider }),
-    ...(agent.cwd === undefined ? {} : { cwd: agent.cwd }),
     cols: agent.cols,
     rows: agent.rows,
     exited: agent.exited,
     exitCode: agent.exitCode,
     space: space.id,
     window: window.number,
-    ...(pane === undefined ? {} : { pane: pane.id }),
   };
+  if (agent.kind !== undefined) Object.assign(entry, { kind: agent.kind });
+  if (agent.declaredAgent !== undefined) Object.assign(entry, { declaredAgent: agent.declaredAgent });
+  if (agent.cmd !== undefined) Object.assign(entry, { cmd: agent.cmd });
+  if (agent.provider !== undefined) Object.assign(entry, { provider: agent.provider });
+  if (agent.cwd !== undefined) Object.assign(entry, { cwd: agent.cwd });
+  if (pane !== undefined) Object.assign(entry, { pane: pane.id });
+  return entry;
 }
 
 /** The geometry of one pane inside its window, computed at `size` — the size

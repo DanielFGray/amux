@@ -37,24 +37,37 @@ export class WorkspaceTransactionError extends S.TaggedError<WorkspaceTransactio
   { message: S.String },
 ) {}
 
+const transactionError = <E>(error: E): WorkspaceTransactionError =>
+  error instanceof WorkspaceTransactionError
+    ? error
+    : new WorkspaceTransactionError({ message: describe(error) });
+
 interface SessionOps {
-  readonly prepare: (session: PersistedSession, paneId?: string) => Effect.Effect<PreparedSession>;
-  readonly kill: (id: string) => Effect.Effect<void>;
-  readonly write: (id: string, data: string) => Effect.Effect<void>;
-  readonly prompt: (id: string, text: string) => Effect.Effect<void>;
-  readonly interrupt: (id: string, reason?: string) => Effect.Effect<void>;
-  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void>;
+  readonly prepare: (session: PersistedSession, paneId?: string) => Effect.Effect<PreparedSession, WorkspaceTransactionError>;
+  readonly kill: (id: string) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly write: (id: string, data: string) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly prompt: (id: string, text: string) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, WorkspaceTransactionError>;
+}
+
+interface SessionHost {
+  readonly prepare: (spec: SessionSpec) => Effect.Effect<PreparedSession, PtyError>;
+  readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
+  readonly prompt: (id: string, text: string) => Effect.Effect<void, PtyError>;
+  readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
+  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
 }
 
 interface WorktreeOps {
-  readonly add: (repo: string, spec: WorktreeSpec, path: string) => Effect.Effect<void>;
-  readonly remove: (repo: string, path: string, force?: boolean) => Effect.Effect<void>;
-  readonly isDirty: (path: string) => Effect.Effect<boolean>;
+  readonly add: (repo: string, spec: WorktreeSpec, path: string) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly remove: (repo: string, path: string, force?: boolean) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly isDirty: (path: string) => Effect.Effect<boolean, WorkspaceTransactionError>;
 }
 
 interface Persistence {
-  readonly persist: (state: SessionState) => Effect.Effect<void>;
-  readonly persistUntilSuccess: (state: SessionState, reason: string) => Effect.Effect<void>;
+  readonly persist: (state: SessionState) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly persistUntilSuccess: (state: SessionState, reason: string) => Effect.Effect<void, WorkspaceTransactionError>;
 }
 
 interface Events {
@@ -189,8 +202,8 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                   if (worktrees.created) {
                     const spec: WorktreeSpec = {
                       branch: worktrees.created.branch,
-                      ...(worktrees.base ? { base: worktrees.base } : {}),
                     };
+                    if (worktrees.base) spec.base = worktrees.base;
                     yield* worktreeOps.add(worktrees.created.repo, spec, worktrees.created.path);
                   }
                   for (const a of mutation.actions) {
@@ -233,10 +246,11 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                     if (a._tag === "decide") yield* sessionOps.decide(a.agent, a.answer);
                   }
                   const final = yield* model.get;
-                  return {
+                  const committed = {
                     snapshot: structuredClone(final.workspace),
-                    ...(mutation.result === undefined ? {} : { result: mutation.result }),
                   };
+                  if (mutation.result !== undefined) return { ...committed, result: mutation.result };
+                  return committed;
                 }),
               );
 
@@ -272,15 +286,17 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
   },
 ) {}
 
+interface GitWorktreePlan {
+  created: WorkspaceSpace["worktree"] | null;
+  base: string | undefined;
+  removed: WorkspaceSpace["worktree"][];
+}
+
 export function gitWorktreesFor(
   value: Command,
   next: WorkspaceSnapshot,
   current: WorkspaceSnapshot,
-): {
-  created: WorkspaceSpace["worktree"] | null;
-  base: string | undefined;
-  removed: WorkspaceSpace["worktree"][];
-} {
+): GitWorktreePlan {
   const none = {
     created: null as WorkspaceSpace["worktree"] | null,
     base: undefined as string | undefined,
@@ -306,18 +322,9 @@ export function gitWorktreesFor(
   return none;
 }
 
-export const makeSessionOps = (
-  getHost: Effect.Effect<
-    {
-      readonly prepare: (spec: SessionSpec) => Effect.Effect<PreparedSession, PtyError>;
-      readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-      readonly prompt: (id: string, text: string) => Effect.Effect<void, PtyError>;
-      readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
-      readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
-    },
-    unknown
-  >,
-  killFn: (id: string) => Effect.Effect<void, unknown>,
+export const makeSessionOps = <HostError, KillError>(
+  getHost: Effect.Effect<SessionHost, HostError>,
+  killFn: (id: string) => Effect.Effect<void, KillError>,
 ): Layer.Layer<WorkspaceTransactionSessionOps> =>
   Layer.succeed(WorkspaceTransactionSessionOps, {
     prepare: (agent, paneId) =>
@@ -325,31 +332,33 @@ export const makeSessionOps = (
         // The transaction only prepares non-component agents, which always
         // carry a command; PersistedSession only leaves `cmd` optional because
         // component sessions do not need one.
-        Effect.flatMap((host) =>
-          host.prepare({ ...(agent as SessionSpec), ...(paneId ? { paneId } : {}) }),
-        ),
-        Effect.orDie,
+        Effect.flatMap((host) => {
+          const spec = { ...(agent as SessionSpec) };
+          if (paneId) spec.paneId = paneId;
+          return host.prepare(spec);
+        }),
+        Effect.mapError(transactionError),
       ),
-    kill: (id) => killFn(id).pipe(Effect.orDie),
+    kill: (id) => killFn(id).pipe(Effect.mapError(transactionError)),
     write: (id, data) =>
       getHost.pipe(
         Effect.flatMap((host) => host.write(id, data)),
-        Effect.orDie,
+        Effect.mapError(transactionError),
       ),
     prompt: (id, text) =>
       getHost.pipe(
         Effect.flatMap((host) => host.prompt(id, text)),
-        Effect.orDie,
+        Effect.mapError(transactionError),
       ),
     interrupt: (id, reason) =>
       getHost.pipe(
         Effect.flatMap((host) => host.interrupt(id, reason)),
-        Effect.orDie,
+        Effect.mapError(transactionError),
       ),
     decide: (id, answer) =>
       getHost.pipe(
         Effect.flatMap((host) => host.decide(id, answer)),
-        Effect.orDie,
+        Effect.mapError(transactionError),
       ),
   } satisfies SessionOps);
 
@@ -358,20 +367,20 @@ export const makeWorktreeOps = (): Layer.Layer<WorkspaceTransactionWorktreeOps> 
     add: (repo, spec, path) =>
       Effect.tryPromise(() =>
         import("../git.ts").then((m) => m.gitWorktreeAdd(repo, spec, path)),
-      ).pipe(Effect.orDie),
+      ).pipe(Effect.mapError(transactionError)),
     remove: (repo, path, force = false) =>
       Effect.tryPromise(() =>
         import("../git.ts").then((m) => m.gitWorktreeRemove(repo, path, force)),
-      ).pipe(Effect.orDie),
+      ).pipe(Effect.mapError(transactionError)),
     isDirty: (path) =>
       Effect.tryPromise(() => import("../git.ts").then((m) => m.gitWorktreeDirty(path))).pipe(
-        Effect.orDie,
+        Effect.mapError(transactionError),
       ),
   } satisfies WorktreeOps);
 
-export const makePersistence = (
-  persistFn: (state: SessionState) => Effect.Effect<void, unknown>,
-  activeSaveRef: { current: Fiber.RuntimeFiber<void, unknown> | null },
+export const makePersistence = <PersistenceError>(
+  persistFn: (state: SessionState) => Effect.Effect<void, PersistenceError>,
+  activeSaveRef: { current: Fiber.RuntimeFiber<void, WorkspaceTransactionError> | null },
   scope: Scope.CloseableScope,
 ): Layer.Layer<WorkspaceTransactionPersistence, never, DaemonModel> =>
   Layer.effect(
@@ -403,13 +412,11 @@ export const makePersistence = (
               return yield* new WorkspaceTransactionError({
                 message: `daemon shut down with outstanding durable obligation: ${reason}`,
               });
-            return yield* persistFn(state).pipe(
-              Effect.mapError((e) => new WorkspaceTransactionError({ message: describe(e) })),
-            );
+            return yield* persistFn(state).pipe(Effect.mapError(transactionError));
           });
           const fiber = yield* Effect.forkIn(save.pipe(Effect.retry(retrySchedule)), scope);
           activeSaveRef.current = fiber;
-          yield* Fiber.join(fiber).pipe(Effect.orDie, Effect.asVoid);
+          yield* Fiber.join(fiber).pipe(Effect.asVoid);
         } finally {
           activeSaveRef.current = null;
           yield* model.clearObligation(obligation);
@@ -417,7 +424,7 @@ export const makePersistence = (
       });
 
       return {
-        persist: (state) => persistFn(state).pipe(Effect.orDie),
+        persist: (state) => persistFn(state).pipe(Effect.mapError(transactionError)),
         persistUntilSuccess,
       } satisfies Persistence;
     }),

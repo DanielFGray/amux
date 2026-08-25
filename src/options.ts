@@ -1,3 +1,6 @@
+import { Option, Schema as S } from "effect";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
+
 /**
  * The options, as values.
  *
@@ -149,7 +152,7 @@ export type Options = { readonly [K in OptionName]: ValueOf<(typeof OPTIONS)[K]>
  * unrecognised name owns survive: they are kept verbatim and written back, so
  * turning a plugin off does not flatten its settings out of the file.
  */
-export type OptionDeltas = Readonly<Record<string, unknown>>;
+export type OptionDeltas = Readonly<Record<string, JsonValue>>;
 
 export function optionSpec(name: string): OptionSpec | undefined {
   return Object.hasOwn(OPTIONS, name) ? OPTIONS[name as OptionName] : undefined;
@@ -193,16 +196,18 @@ export function resolveOptions(stored: OptionDeltas): Options {
 }
 
 /** The value this option would take from `raw`, or undefined if it refuses it. */
-export function coerceOption(spec: OptionSpec, raw: unknown): OptionValue | undefined {
+export function coerceOption(spec: OptionSpec, raw: JsonValue | undefined): OptionValue | undefined {
   switch (spec.kind) {
     case "number":
-      if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
-      return clamp(spec, Math.floor(raw));
+      return Option.match(S.decodeUnknownOption(S.Number.pipe(S.finite()))(raw), {
+        onNone: () => undefined,
+        onSome: (value) => clamp(spec, Math.floor(value)),
+      });
     case "boolean":
-      return typeof raw === "boolean" ? raw : undefined;
+      return Option.getOrUndefined(S.decodeUnknownOption(S.Boolean)(raw));
     case "string":
-      return typeof raw === "string" ? raw : undefined;
-  }
+      return Option.getOrUndefined(S.decodeUnknownOption(S.String)(raw));
+  };
 }
 
 /**

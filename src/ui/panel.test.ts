@@ -23,7 +23,7 @@ test("snapshot and options accessors do not expose mutable host values", () => {
   const ctx = testPanelContext({ snapshot: () => snapshotAt(1) });
 
   ctx.snapshot().revision = 99;
-  (ctx.options() as Record<string, unknown>)["sidebar.width"] = 99;
+  Object.defineProperty(ctx.options(), "sidebar.width", { value: 99, writable: true });
   expect(ctx.snapshot().revision).toBe(1);
   expect(ctx.options()["sidebar.width"]).toBe(30);
 });
