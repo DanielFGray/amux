@@ -1,12 +1,12 @@
 import { Clock, Context, Duration, Effect, Layer } from "effect";
 import { FileSystem, HttpClient, HttpClientRequest } from "@effect/platform";
 import { Credential } from "./credential.ts";
-import { EventBus } from "./effect/EventBus.ts";
+import { EventBus } from "../../../effect/EventBus.ts";
 import * as ModelCatalog from "./model-catalog.ts";
-import { integrations, type Connection, type Integration } from "./auth/integration/index.ts";
+import { integrations, type Connection, type Integration } from "./integration/index.ts";
 
-export type { Connection, Integration } from "./auth/integration/index.ts";
-export { integrations } from "./auth/integration/index.ts";
+export type { Connection, Integration } from "./integration/index.ts";
+export { integrations } from "./integration/index.ts";
 
 export type Info = {
   readonly id: string;
@@ -155,14 +155,14 @@ export const makeLayer = (
             const entry = yield* catalog.model(integrationID, model);
             const apiUrl = entry?.provider?.api ?? provider?.api;
             const npm = entry?.provider?.npm ?? provider?.npm;
-             const request = {
-               model,
-               transformClient: (client: HttpClient.HttpClient) =>
-                 HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
-               apiUrl,
-               npm,
-             };
-             return integration.model(request);
+            const request = {
+              model,
+              transformClient: (client: HttpClient.HttpClient) =>
+                HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
+              apiUrl,
+              npm,
+            };
+            return integration.model(request);
           }),
       } satisfies Interface;
     }),

@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { ConfigProvider, Effect, Stream } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { ModelCatalog } from "./model-catalog.ts";
-import { testEffect } from "./test-effect.ts";
-import { EventBus } from "./effect/EventBus.ts";
+import { testEffect } from "../../../test-effect.ts";
+import { EventBus } from "../../../effect/EventBus.ts";
 
 const catalog = {
   openai: {

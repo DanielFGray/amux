@@ -1,7 +1,7 @@
 import { Chat } from "@effect/ai";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Effect, Stream } from "effect";
-import { Default as IntegrationDefault, Service as Integration } from "../../../integration.ts";
+import { Default as IntegrationDefault, Service as Integration } from "./integration.ts";
 import { loadConfig } from "../../../config.ts";
 import { coerceOption } from "../../../options.ts";
 import { AGENT_HARNESS_OPTIONS, parseModelReference } from "./options.ts";

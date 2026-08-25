@@ -1,8 +1,8 @@
 import { Effect } from "effect";
 import { CommandError } from "../../../commands.ts";
 import { parseModelReference } from "./options.ts";
-import { Service as Integration } from "../../../integration.ts";
-import { Service as ModelCatalog } from "../../../model-catalog.ts";
+import { Service as Integration } from "./integration.ts";
+import { Service as ModelCatalog } from "./model-catalog.ts";
 
 /**
  * Refuse to open a chat pane this harness cannot serve, and say why.

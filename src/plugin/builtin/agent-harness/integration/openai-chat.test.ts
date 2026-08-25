@@ -3,7 +3,7 @@ import { LanguageModel, Prompt, Response as AiResponse, Tool, Toolkit } from "@e
 import { HttpClient, HttpClientResponse } from "@effect/platform";
 import { Chunk, Effect, Layer, Schema as S, Stream } from "effect";
 import * as OpenAiChat from "./openai-chat.ts";
-import { testEffect } from "../../test-effect.ts";
+import { testEffect } from "../../../../test-effect.ts";
 
 /**
  * The Chat Completions protocol.
@@ -35,9 +35,7 @@ const gateway = (recorded: Recorded) => {
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
       if (request.body._tag !== "Uint8Array") throw new Error("expected a JSON request body");
-      sent.push(
-        JSON.parse(new TextDecoder().decode(request.body.body)) as JsonRecord,
-      );
+      sent.push(JSON.parse(new TextDecoder().decode(request.body.body)) as JsonRecord);
       const bytes = new TextEncoder().encode(recorded.body);
       const size = Math.ceil(bytes.length / (recorded.chunks ?? 1));
       // Delivered in pieces, because a real socket does: a decoder that splits
@@ -50,9 +48,9 @@ const gateway = (recorded: Recorded) => {
           controller.close();
         },
       });
-       return HttpClientResponse.fromWeb(
-         request,
-         new globalThis.Response(stream, {
+      return HttpClientResponse.fromWeb(
+        request,
+        new globalThis.Response(stream, {
           status: Array.isArray(recorded.status)
             ? (recorded.status[Math.min(attempt++, recorded.status.length - 1)] ?? 200)
             : (recorded.status ?? 200),
@@ -93,9 +91,7 @@ const parts = <Tools extends Record<string, Tool.Any> = {}>(
   model: LanguageModel.Service,
   options?: Partial<LanguageModel.GenerateTextOptions<Tools>>,
 ) =>
-  Stream.runCollect(
-    model.streamText({ prompt: "hello", ...options }),
-  ).pipe(
+  Stream.runCollect(model.streamText({ prompt: "hello", ...options })).pipe(
     Effect.map(Chunk.toReadonlyArray),
     Effect.map((all) => all.map(fixture)),
   );
@@ -130,11 +126,11 @@ const toolkit: Toolkit.WithHandler<TestTools> = {
   // `streamText` runs the tools it is given. These tests are about the
   // protocol, so the handler is a stub and its result is not asserted on.
   handle: () =>
-    Effect.succeed({ isFailure: false, result: "ok", encodedResult: "ok" } as const) as Effect.Effect<
-      Tool.HandlerResult<TestTools[keyof TestTools]>,
-      never,
-      never
-    >,
+    Effect.succeed({
+      isFailure: false,
+      result: "ok",
+      encodedResult: "ok",
+    } as const) as Effect.Effect<Tool.HandlerResult<TestTools[keyof TestTools]>, never, never>,
 };
 
 const without = (type: string) => (all: ReadonlyArray<JsonRecord>) =>

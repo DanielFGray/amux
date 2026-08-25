@@ -2,10 +2,10 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { FileSystem } from "@effect/platform";
 import { Context, Duration, Effect, Layer, Option, Redacted, Schema as S } from "effect";
-import { stateRoot } from "./session.ts";
-import { flock, flockUnlock } from "./shim.ts";
-import type { JsonValue } from "./effect/AttachProtocol.ts";
-import { JsonValueSchema } from "./effect/AttachProtocol.ts";
+import { stateRoot } from "../../../session.ts";
+import { flock, flockUnlock } from "../../../shim.ts";
+import type { JsonValue } from "../../../effect/AttachProtocol.ts";
+import { JsonValueSchema } from "../../../effect/AttachProtocol.ts";
 
 export * as Credential from "./credential.ts";
 
@@ -28,10 +28,9 @@ export interface Key {
 }
 export type Value = OAuth | Key;
 
-export class OAuthRefreshError extends S.TaggedError<OAuthRefreshError>()(
-  "OAuthRefreshError",
-  { message: S.String },
-) {}
+export class OAuthRefreshError extends S.TaggedError<OAuthRefreshError>()("OAuthRefreshError", {
+  message: S.String,
+}) {}
 
 export interface Info {
   readonly id: ID;

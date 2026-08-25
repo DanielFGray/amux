@@ -2,7 +2,7 @@ import { FetchHttpClient } from "@effect/platform";
 import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic";
 import { Layer, Redacted } from "effect";
 import { HttpClientRequest } from "@effect/platform";
-import type { Credential } from "../../credential.ts";
+import type { Credential } from "../credential.ts";
 import type { Integration } from "./types.ts";
 
 const key = (credential: Credential.Value) =>

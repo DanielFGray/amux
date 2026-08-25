@@ -3,7 +3,7 @@ import { LanguageModel } from "@effect/ai";
 import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic";
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
 import { Effect, Layer, Redacted } from "effect";
-import type { Credential } from "../../credential.ts";
+import type { Credential } from "../credential.ts";
 import * as OpenAiChat from "./openai-chat.ts";
 import type { Integration, Method } from "./types.ts";
 

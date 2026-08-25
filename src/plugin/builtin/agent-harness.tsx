@@ -4,8 +4,8 @@ import { For, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem } from "@effect/platform-bun";
 import { command } from "../../commands.ts";
-import { Default as IntegrationDefault, integrations } from "../../integration.ts";
-import { Default as ModelCatalogDefault } from "../../model-catalog.ts";
+import { Default as IntegrationDefault, integrations } from "./agent-harness/integration.ts";
+import { Default as ModelCatalogDefault } from "./agent-harness/model-catalog.ts";
 import { definePlugin, type PluginDefinition } from "../types.ts";
 import {
   BindingsTag,
@@ -20,8 +20,11 @@ import { registerModelPicker } from "./agent-harness/ModelPicker.tsx";
 import { agentPreflight } from "./agent-harness/preflight.ts";
 import { AGENT_HARNESS_OPTIONS } from "./agent-harness/options.ts";
 import { theme } from "../../ui/theme.ts";
-import { Service as Integration, type Info as IntegrationInfo } from "../../integration.ts";
-import { Credential } from "../../credential.ts";
+import {
+  Service as Integration,
+  type Info as IntegrationInfo,
+} from "./agent-harness/integration.ts";
+import { Credential } from "./agent-harness/credential.ts";
 
 export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
 

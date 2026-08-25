@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BunFileSystem } from "@effect/platform-bun";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { Credential } from "./credential.ts";
-import { testEffect } from "./test-effect.ts";
+import { testEffect } from "../../../test-effect.ts";
 
 async function environment() {
   const home = await mkdtemp(join(tmpdir(), "amux-credential-"));

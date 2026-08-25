@@ -1,8 +1,8 @@
 import path from "node:path";
 import { FetchHttpClient, FileSystem, HttpClient, HttpClientRequest } from "@effect/platform";
 import { Context, Duration, Effect, Layer, Option, Schedule, Schema as S } from "effect";
-import { stateRoot } from "./session.ts";
-import { EventBus } from "./effect/EventBus.ts";
+import { stateRoot } from "../../../session.ts";
+import { EventBus } from "../../../effect/EventBus.ts";
 
 export * as ModelCatalog from "./model-catalog.ts";
 

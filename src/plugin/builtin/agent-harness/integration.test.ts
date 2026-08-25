@@ -7,10 +7,10 @@ import { LanguageModel } from "@effect/ai";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Credential } from "./credential.ts";
 import { ModelCatalog } from "./model-catalog.ts";
-import { EventBus } from "./effect/EventBus.ts";
+import { EventBus } from "../../../effect/EventBus.ts";
 import { makeLayer, Service, type Integration } from "./integration.ts";
-import { openAiCompatible, type ModelRequest } from "./auth/integration/index.ts";
-import { testEffect } from "./test-effect.ts";
+import { openAiCompatible, type ModelRequest } from "./integration/index.ts";
+import { testEffect } from "../../../test-effect.ts";
 
 class NoModelLayer extends S.TaggedError<NoModelLayer>()("NoModelLayer", {}) {}
 
