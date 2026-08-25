@@ -15,9 +15,10 @@ import {
 import {
   AGENT_AWARENESS_IDENTITY_TOPIC,
   AmuxAgentStatePlugin,
+  coreProcessState,
   STATE_BY_EVENT,
 } from "./agent-hook/opencode.js";
-import { isReportedAgentState } from "./agent-state.ts";
+import { isProcessState } from "./process-state.ts";
 import { AGENT_AWARENESS_IDENTITY_TOPIC as PLUGIN_AGENT_AWARENESS_IDENTITY_TOPIC } from "./plugin/builtin/agent-awareness/identity-state.ts";
 import { testEffect } from "./test-effect.ts";
 
@@ -30,7 +31,7 @@ const temporaryHome = Effect.gen(function* () {
   return yield* fs.makeTempDirectoryScoped({ prefix: "amux-agent-hook-" });
 });
 
-/** A stand-in for AttachHost's agent-state listener that records what arrives. */
+/** A stand-in for AttachHost's process-state listener that records what arrives. */
 const agentStateSocket = (path: string) =>
   Effect.acquireRelease(
     Effect.async<{ server: Server; received: unknown[] }>((resume) => {
@@ -73,10 +74,14 @@ const statusEvent = (status: string) => ({
 });
 
 /* The hook is the one piece of this that cannot import the vocabulary — it
- * runs inside opencode. A state it invents would be refused by the socket and
- * lost in silence, so the crossing is checked here instead. */
-test("every state the opencode hook can send is one amux accepts", () => {
-  const unknown = [...STATE_BY_EVENT.values()].filter((state) => !isReportedAgentState(state));
+ * runs inside opencode. A `process.state` core cannot parse would be refused
+ * by the socket and lost in silence, so the crossing is checked here instead:
+ * every awareness state, once mapped through `coreProcessState`, must be one
+ * amux's core `ProcessState` accepts. */
+test("every process.state report the opencode hook can send is one amux's core accepts", () => {
+  const unknown = [...STATE_BY_EVENT.values()]
+    .map(coreProcessState)
+    .filter((state) => !isProcessState(state));
   expect(unknown).toEqual([]);
 });
 
@@ -148,7 +153,7 @@ testEffect("reports opencode lifecycle transitions to the agent-state socket", (
         );
 
       expect(byMethod("process.state").map((m) => m.params)).toEqual([
-        { session: "agent-a", state: "working" },
+        { session: "agent-a", state: "running" },
         { session: "agent-a", state: "blocked" },
         { session: "agent-a", state: "idle" },
       ]);
@@ -194,10 +199,37 @@ testEffect("collapses repeated states so streaming does not flood the socket", (
       const topicPublish = received.find(
         (message) => (message as { method: string }).method === "topic.publish",
       ) as { params: { payload: { state: string } } };
-      expect(processState.params.state).toBe("working");
+      expect(processState.params.state).toBe("running");
       expect(topicPublish.params.payload.state).toBe("working");
     }),
   ),
+);
+
+testEffect(
+  "maps a failed turn to idle on process.state but preserves it on the identity topic",
+  () =>
+    scoped(
+      Effect.gen(function* () {
+        const home = yield* temporaryHome;
+        const path = join(home, "agent-state.sock");
+        const { received } = yield* agentStateSocket(path);
+        const plugin = yield* pluginWith({
+          AMUX_PROCESS_STATE_SOCKET: path,
+          AMUX_AGENT_ID: "agent-a",
+        });
+
+        yield* Effect.promise(() => plugin.event!({ event: { type: "session.error" } }));
+
+        const processState = received.find(
+          (message) => (message as { method: string }).method === "process.state",
+        ) as { params: { state: string } };
+        const topicPublish = received.find(
+          (message) => (message as { method: string }).method === "topic.publish",
+        ) as { params: { payload: { state: string } } };
+        expect(processState.params.state).toBe("idle");
+        expect(topicPublish.params.payload.state).toBe("failed");
+      }),
+    ),
 );
 
 testEffect("contributes nothing outside an amux pane", () =>

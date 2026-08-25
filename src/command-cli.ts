@@ -187,7 +187,7 @@ export function generateHelp(): string {
   const lines: string[] = [
     "usage: amux <command> [args] [--flag=value] [--session=<id>]",
     "       amux <command> [args] \\; <command> [args] ...",
-    "       amux agent-state --state <idle|working|blocked|failed|done>",
+    "       amux process-state --state <idle|running|blocked|done>",
     "       amux agent-hook opencode <install|uninstall> --yes",
     "",
     "Commands:",

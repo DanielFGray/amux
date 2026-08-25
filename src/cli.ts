@@ -11,7 +11,7 @@
  *
  * Static imports are deliberately absent: Bun evaluates them before main() runs,
  * so this file has none. Every subcommand lazy-loads only what it needs, keeping
- * `agent-state`, and `agent-hook` sub-millisecond.
+ * `process-state`, and `agent-hook` sub-millisecond.
  */
 export function splitCommandArgs(argv: readonly string[]): string[][] {
   const groups: string[][] = [[]];
@@ -108,7 +108,7 @@ async function main(): Promise<number> {
     return await runSessionCli([sub, argv[1] ?? "default"]);
   }
 
-  if (sub === "agent-state") {
+  if (sub === "process-state") {
     return await (async () => {
       const state =
         argv.find((v) => v.startsWith("--state="))?.slice(8) ??
@@ -118,18 +118,16 @@ async function main(): Promise<number> {
       // pane id can change when the pane moves.
       const agent = process.env.AMUX_AGENT_ID;
       if (!socketPath || !agent) {
-        console.error("error: 'agent-state' requires a managed pane");
+        console.error("error: 'process-state' requires a managed pane");
         return 2;
       }
-      const { isReportedAgentState, reportAgentState, ReportedAgentStateSchema } =
-        await import("./agent-state.ts");
-      if (state === undefined || !isReportedAgentState(state)) {
-        console.error(
-          `error: --state must be one of ${ReportedAgentStateSchema.literals.join(", ")}`,
-        );
+      const { isProcessState, reportProcessState, ProcessStateSchema } =
+        await import("./process-state.ts");
+      if (state === undefined || !isProcessState(state)) {
+        console.error(`error: --state must be one of ${ProcessStateSchema.literals.join(", ")}`);
         return 2;
       }
-      return await reportAgentState(socketPath, agent, state).then(
+      return await reportProcessState(socketPath, agent, state).then(
         () => 0,
         (error) => {
           console.error(`error: ${String(error)}`);
@@ -363,7 +361,7 @@ async function main(): Promise<number> {
           if (Option.isNone(first))
             return { outputs: [...outputs, { result: { error: "agent_prompt_stalled" } }] };
           let turn: string | undefined;
-          let result: (typeof first.value) | undefined;
+          let result: typeof first.value | undefined;
           const fold = (event: typeof first.value) => {
             if (event._tag === "turn.start" && turn === undefined) turn = event.turn;
             if (event._tag === "turn.end" && event.turn === turn) {

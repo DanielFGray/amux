@@ -16,7 +16,7 @@
 import { spawnPty, readPty } from "./pty.ts";
 import { Effect, Fiber, Mailbox, Stream } from "effect";
 import type { AttachClientContract } from "./attach.ts";
-import { isReportedAgentState, type AgentState } from "./agent-state.ts";
+import { isProcessState, type ProcessState } from "./process-state.ts";
 import { SESSION_STATE_TOPIC } from "./effect/AttachProtocol.ts";
 
 export interface SessionBackend {
@@ -45,7 +45,7 @@ export interface SessionBackend {
    */
   foregroundPgid(): number;
   sessionId(): number;
-  readonly agentState?: () => AgentState | null;
+  readonly processState?: () => ProcessState | null;
 }
 
 export interface BackendOptions {
@@ -144,7 +144,7 @@ export function daemonBackend(
     let closed = false;
     let detached = false;
     let exitCode: number | null = null;
-    let agentState: AgentState | null = null;
+    let processState: ProcessState | null = null;
 
     /**
      * Foreground process group and session id, as reported by the daemon.
@@ -190,7 +190,7 @@ export function daemonBackend(
                 })
               : frame._tag === "topic" && frame.topic === SESSION_STATE_TOPIC
                 ? Effect.sync(() => {
-                    if (isReportedAgentState(frame.payload)) agentState = frame.payload;
+                    if (isProcessState(frame.payload)) processState = frame.payload;
                   })
                 : Effect.void,
       ).pipe(
@@ -262,7 +262,7 @@ export function daemonBackend(
       // pgid alone is enough — the cmdline never needs to cross the wire.
       foregroundPgid: () => foregroundPgid,
       sessionId: () => foregroundSid,
-      agentState: () => agentState,
+      processState: () => processState,
     };
   };
 }

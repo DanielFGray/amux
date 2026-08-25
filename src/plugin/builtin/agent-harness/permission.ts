@@ -10,7 +10,7 @@
 import { Deferred, Effect, Ref } from "effect";
 import { relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
-import { AgentState } from "../../../agent-state.ts";
+import { ProcessState } from "../../../process-state.ts";
 import { agentStateTopic } from "./state-topic.ts";
 import { evaluateAll, type PermissionDecision, type PermissionRule } from "../../../permission.ts";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
@@ -86,7 +86,7 @@ export function makePermissionGate(options: {
         yield* Ref.update(pending, (map) => new Map(map).set(request, deferred));
         yield* emitRequest(request, assertion, save);
         yield* options.emit({
-          ...agentStateTopic(AgentState.Blocked),
+          ...agentStateTopic(ProcessState.Blocked),
           session: options.session,
         });
         // An interrupt unwinds the await like any other Effect, and the record
@@ -109,7 +109,7 @@ export function makePermissionGate(options: {
       record(request, decided, save).pipe(
         Effect.andThen(
           options.emit({
-            ...agentStateTopic(AgentState.Working),
+            ...agentStateTopic(ProcessState.Running),
             session: options.session,
           }),
         ),

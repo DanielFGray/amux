@@ -28,6 +28,7 @@ import {
   type PluginRegistries,
   RegionsTag,
   SessionViewsTag,
+  ProcessDisplayTag,
   BindingsTag,
   SettingsTag,
   OptionsTag,
@@ -118,6 +119,11 @@ export function createPluginHost(
       registryService((owner, [type, view]) =>
         env.registries.sessionViews.register(owner, type, view),
       ),
+    );
+    services.provide(
+      registryOwner,
+      ProcessDisplayTag,
+      registryService((owner, provider) => env.registries.processDisplay.register(owner, provider)),
     );
     services.provide(
       registryOwner,

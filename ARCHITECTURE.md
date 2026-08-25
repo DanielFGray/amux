@@ -37,7 +37,7 @@ pane is not blank until the program next redraws.
 
 The process-state socket (one per daemon, mode `0600` under the session root)
 accepts two requests from processes running as the daemon's Unix user:
-`process.state`, the generic idle/working/blocked self-report, and
+`process.state`, the generic idle/running/blocked/done self-report, and
 `topic.publish`, the same door opened up to an arbitrary namespaced JSON
 topic a plugin owns the meaning of — the agent-awareness plugin's
 identity/state report is one such topic, published by the opencode hook

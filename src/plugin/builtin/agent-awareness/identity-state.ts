@@ -15,7 +15,7 @@ export const AGENT_AWARENESS_IDENTITY_TOPIC = "amux.agent-awareness/identity-sta
 /**
  * Awareness's own lifecycle vocabulary for a reported agent. This mirrors
  * core's `process.state` states but is declared independently: awareness
- * must not import core's agent-state vocabulary, so a hook's report is
+ * must not import core's process-state vocabulary, so a hook's report is
  * validated here against a copy this plugin owns and can evolve on its own.
  */
 export const AwarenessReportedState = S.Literal("idle", "working", "blocked", "failed", "done");

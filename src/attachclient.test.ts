@@ -175,7 +175,7 @@ test("native agent status frames become authoritative projected state", async ()
   const cmd = [
     process.execPath,
     "-e",
-    `process.stdout.write(JSON.stringify({_tag:"topic",session:"native-status-agent",sequence:1,topic:"session.state",payload:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+    `process.stdout.write(JSON.stringify({_tag:"topic",session:"native-status-agent",sequence:1,topic:"session.state",payload:"running"})+"\\n"); setTimeout(()=>{},30000)`,
   ];
   await Effect.runPromise(
     daemon.spawnSession({
@@ -195,8 +195,8 @@ test("native agent status frames become authoritative projected state", async ()
   });
   sessions.push(session);
 
-  await until(() => session.state === "working", "native working status");
-  expect(session.state).toBe("working");
+  await until(() => session.state === "running", "native running status");
+  expect(session.state).toBe("running");
   await Effect.runPromise(daemon.killSession(session.id));
 });
 
@@ -233,7 +233,7 @@ test("reattaching replays the completed transcript but not live-only deltas", as
   const emitted = [
     {
       _tag: "agent.event",
-      event: { _tag: "topic", session: id, topic: "session.state", payload: "working" },
+      event: { _tag: "topic", session: id, topic: "session.state", payload: "running" },
     },
     {
       _tag: "agent.event",
@@ -404,8 +404,9 @@ test("an agent outlives the client, and the next client adopts it", async () => 
   expect(session.exited).toBe(false);
   expect(exited).toBe(false);
   expect(session.exitCode).toBeNull();
+  // `detached` is a neutral fact read separately from `state`: a detached,
+  // still-running agent has no exit to report and stays whatever it last was.
   expect(session.detached).toBe(true);
-  expect(session.state).toBe("detached");
 
   const second = await attach("outlives", env);
   expect(second.live).toContain(session.id);
@@ -1065,7 +1066,7 @@ test("a client whose daemon stops sees a detach, not a process exit", async () =
   await until(() => session.detached, "the client to notice the daemon went away");
   expect(session.exited).toBe(false);
   expect(session.exitCode).toBeNull();
-  expect(session.state).toBe("detached");
+  expect(session.detached).toBe(true);
   expect(snapshotSessionEntry(session).exited).toBe(false);
 });
 

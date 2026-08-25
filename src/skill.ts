@@ -79,7 +79,7 @@ Start a sibling coding agent with \`agent.new\`, which reports the \`session\` a
 Send work with \`agent.prompt <target> <text>\`:
 
 - Without \`--wait\` or \`--until\`, the call returns as soon as the prompt is accepted.
-- With \`--wait\`, the call blocks until the anchored turn completes (\`turn.end\`) and prints the completion event. With \`--until=<idle|working|blocked|failed|done>\`, it blocks until the agent reports that state.
+- With \`--wait\`, the call blocks until the anchored turn completes (\`turn.end\`) and prints the completion event — this is also how to observe a failed turn, via its \`outcome\`/\`error\` fields. With \`--until=<idle|running|blocked|done>\`, it blocks until the agent reports that state.
 - \`--timeout=<ms>\` bounds the whole wait (default 30000).
 - A prompt sent while the agent is not working must produce an observed lifecycle change within five seconds, or the call fails with \`agent_prompt_stalled\`. The agent never took the work; do not keep waiting, report the failure.
 

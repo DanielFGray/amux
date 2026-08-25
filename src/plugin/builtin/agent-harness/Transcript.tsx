@@ -13,7 +13,7 @@ import {
   type TranscriptBlock,
 } from "./transcript.ts";
 import { AgentFrame, type AttachFrame } from "../../../effect/AttachProtocol.ts";
-import type { ReportedAgentState } from "../../../agent-state.ts";
+import type { ProcessState } from "../../../process-state.ts";
 import { agentStateFromTopic } from "./state-topic.ts";
 import { theme } from "../../../ui/theme.ts";
 
@@ -24,7 +24,7 @@ export interface TranscriptProps {
   /** Columns to wrap at. Reactive: the pane it lives in is resizable. */
   width: number | Accessor<number>;
   model?: string;
-  onStatus?: (state: ReportedAgentState) => void;
+  onStatus?: (state: ProcessState) => void;
   /** The question the agent is blocked on, or undefined once it is answered. */
   onPending?: (request: PermissionBlock | undefined) => void;
   /** Chat is a compact presentation. Raw retains every semantic event. */

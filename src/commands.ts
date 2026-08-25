@@ -1,7 +1,7 @@
 import { Cause, Effect, Exit, JSONSchema, Schema as S } from "effect";
 import { LAYOUT_PRESETS } from "./layout.ts";
 import { PermissionDecisionSchema } from "./permission.ts";
-import { ReportedAgentStateSchema } from "./agent-state.ts";
+import { ProcessStateSchema } from "./process-state.ts";
 import { creationResultSchema } from "./creation-result.ts";
 import {
   AgentGetResultSchema,
@@ -576,7 +576,7 @@ const AgentPrompt = define(
     delivery: S.optional(S.Literal("steer", "queue")),
     resume: S.optional(S.Boolean),
     wait: S.optional(S.Boolean),
-    until: S.optional(ReportedAgentStateSchema),
+    until: S.optional(ProcessStateSchema),
     timeout: S.optional(S.NonNegativeInt),
   },
   {
@@ -1111,9 +1111,9 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
         ? COMMAND_DEFS.filter((d) => d.exposure === filter.exposure)
         : COMMAND_DEFS;
     if (filter?.target && filter?.exposure) {
-      return COMMAND_DEFS
-        .filter((d) => d.target === filter.target && d.exposure === filter.exposure)
-        .map((def) => COMMAND_META[def.tag]!);
+      return COMMAND_DEFS.filter(
+        (d) => d.target === filter.target && d.exposure === filter.exposure,
+      ).map((def) => COMMAND_META[def.tag]!);
     }
     return defs.map((def) => COMMAND_META[def.tag]!);
   },

@@ -1,8 +1,8 @@
 import { Context, Effect, Layer } from "effect";
-import { AgentState } from "./agent-state.ts";
+import { ProcessState } from "./process-state.ts";
 import { extractScreenRegion, type ScreenRegion, type ScreenSnapshot } from "./screen-regions.ts";
 
-type DetectorState = AgentState | "unknown";
+type DetectorState = ProcessState | "unknown";
 interface RegexPattern {
   readonly pattern: string;
   readonly flags?: string;
@@ -85,7 +85,7 @@ export function evaluateAdapter(adapter: Adapter, snapshot: ScreenSnapshot): Det
 const COMMON_RULES: readonly AdapterRule[] = [
   {
     id: "osc_title_working",
-    state: AgentState.Working,
+    state: ProcessState.Running,
     priority: 1_100,
     region: "osc_title",
     visible_working: true,
@@ -93,7 +93,7 @@ const COMMON_RULES: readonly AdapterRule[] = [
   },
   {
     id: "confirmation_prompt",
-    state: AgentState.Blocked,
+    state: ProcessState.Blocked,
     priority: 500,
     region: "bottom_lines(20)",
     any: [
@@ -186,8 +186,8 @@ function evaluateCompiledAdapter(
     state: rule.state,
     rule: rule.id,
     skipStateUpdate: rule.skip_state_update ?? false,
-    visibleWorking: rule.visible_working && rule.state === AgentState.Working,
-    visibleIdle: rule.visible_idle && rule.state === AgentState.Idle,
-    visibleBlocker: rule.visible_blocker && rule.state === AgentState.Blocked,
+    visibleWorking: rule.visible_working && rule.state === ProcessState.Running,
+    visibleIdle: rule.visible_idle && rule.state === ProcessState.Idle,
+    visibleBlocker: rule.visible_blocker && rule.state === ProcessState.Blocked,
   };
 }

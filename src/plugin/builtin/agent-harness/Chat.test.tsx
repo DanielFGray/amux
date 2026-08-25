@@ -43,11 +43,9 @@ async function chat(
         frames={frames}
         sync={() => {}}
         onSubmit={(message) => sent.push(message)}
-         onPermission={(request, decision, feedback) =>
-           answered.push(
-             feedback ? { request, decision, feedback } : { request, decision },
-           )
-         }
+        onPermission={(request, decision, feedback) =>
+          answered.push(feedback ? { request, decision, feedback } : { request, decision })
+        }
         onInterrupt={() => interrupted.push(session.id)}
         onSlashCommand={onSlashCommand}
         slashCommands={[{ name: "model", description: "choose the agent model" }]}
@@ -211,9 +209,8 @@ test("whitespace alone is not a message", async () => {
 
 test("the transcript rewraps when the pane it lives in is resized", async () => {
   const line = "the quick brown fox jumps over the lazy dog and keeps going";
-  const { t, setWidth } = await chat(
-    true,
-    () => Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: line } as const),
+  const { t, setWidth } = await chat(true, () =>
+    Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: line } as const),
   );
   await waitFrame(t, (frame) => frame.includes("the quick brown fox"), "the delta to render");
 
@@ -227,16 +224,14 @@ test("the transcript rewraps when the pane it lives in is resized", async () => 
 });
 
 test("working status is shown as a spinner below the editor", async () => {
-  const { t } = await chat(
-    true,
-    () =>
-      Stream.make({
-        _tag: "topic",
-        session: "native",
-        sequence: 1,
-        topic: "session.state",
-        payload: "working",
-      } as const),
+  const { t } = await chat(true, () =>
+    Stream.make({
+      _tag: "topic",
+      session: "native",
+      sequence: 1,
+      topic: "session.state",
+      payload: "running",
+    } as const),
   );
   await waitFrame(t, (frame) => frame.includes("working"), "the status to render");
 
@@ -311,7 +306,7 @@ test("a submitted message is answered by the agent in the transcript", async () 
     session: "native",
     sequence: 1,
     topic: "session.state",
-    payload: "working",
+    payload: "running",
   });
   push({
     _tag: "turn.start",
@@ -339,9 +334,8 @@ test("a submitted message is answered by the agent in the transcript", async () 
 
 test("the latest agent response stays visible in a short chat pane", async () => {
   const response = Array.from({ length: 12 }, (_, index) => `answer ${index}`).join("\n");
-  const { t } = await chat(
-    true,
-    () => Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: response } as const),
+  const { t } = await chat(true, () =>
+    Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: response } as const),
   );
 
   await waitFrame(t, (frame) => frame.includes("answer 11"), "the latest response line");
@@ -384,7 +378,7 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
     session: "native",
     sequence: 1,
     topic: "session.state",
-    payload: "working",
+    payload: "running",
   });
   push({ _tag: "turn.start", session: "native", sequence: 2, turn: "t1", prompt: "run it" });
   push({

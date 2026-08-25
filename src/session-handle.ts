@@ -8,8 +8,8 @@ import {
 } from "./backend.ts";
 import { scrollViewport, ScrollTo } from "./shim.ts";
 import { splitActivity, identifyAgent, commandName } from "./detect.ts";
-import { AgentState } from "./agent-state.ts";
-import { AgentStateArbiter, AgentStateAuthority } from "./agent-state-arbiter.ts";
+import { ProcessState } from "./process-state.ts";
+import { ProcessStateArbiter, ProcessStateAuthority } from "./process-state-arbiter.ts";
 import {
   DetectorEvaluator,
   type DetectorEvaluatorService,
@@ -116,8 +116,8 @@ export class SessionHandle {
   #detectorAt = 0;
   #detectorSeenOutput = -1;
   readonly #evaluator: DetectorEvaluatorService;
-  #state = new AgentStateArbiter();
-  #stateReaders = new Set<{ readonly read: (state: AgentState) => void }>();
+  #state = new ProcessStateArbiter();
+  #stateReaders = new Set<{ readonly read: (state: ProcessState) => void }>();
   #detectionRegistrations = 0;
   #detectionTimer: ReturnType<typeof setInterval> | null = null;
   /** Declared by whoever started this session as an agent. Fixed for its life. */
@@ -167,9 +167,8 @@ export class SessionHandle {
       (t) => t.free(),
     );
     this.#state.register({
-      authority: AgentStateAuthority.Terminal,
-      state: () =>
-        this.#exited ? AgentState.Done : this.#detached ? AgentState.Detached : "unknown",
+      authority: ProcessStateAuthority.Terminal,
+      state: () => (this.#exited ? ProcessState.Done : "unknown"),
     });
     if (opts.exited) {
       // A tombstone: everything it can still answer, nothing running behind it.
@@ -188,11 +187,11 @@ export class SessionHandle {
     });
     this.#pumpFiber = this.#pump();
     this.#state.register({
-      authority: AgentStateAuthority.SelfReport,
-      state: () => this.#backend.agentState?.() ?? "unknown",
+      authority: ProcessStateAuthority.SelfReport,
+      state: () => this.#backend.processState?.() ?? "unknown",
     });
     this.#state.register({
-      authority: AgentStateAuthority.Detector,
+      authority: ProcessStateAuthority.Detector,
       state: () => this.#detectedState(),
     });
   }
@@ -396,7 +395,7 @@ export class SessionHandle {
    *    is waiting on a human. Polled, not computed per read: see the note on
    *    BLOCKED_POLL_MS.
    */
-  get state(): AgentState {
+  get state(): ProcessState {
     return this.#state.state;
   }
 
@@ -421,7 +420,7 @@ export class SessionHandle {
 
   registerStateSource(source: {
     authority: number;
-    state: () => AgentState | "unknown";
+    state: () => ProcessState | "unknown";
   }): () => void {
     const unregister = this.#state.register(source);
     this.#retainDetection();
@@ -436,7 +435,7 @@ export class SessionHandle {
 
   /** Register an interested state projection. The detector only polls while a
    *  source or reader exists, so a client without agent plugins has no idle work. */
-  registerStateReader(reader: (state: AgentState) => void): () => void {
+  registerStateReader(reader: (state: ProcessState) => void): () => void {
     const registration = { read: reader };
     this.#stateReaders.add(registration);
     this.#retainDetection();
@@ -475,14 +474,14 @@ export class SessionHandle {
     for (const reader of this.#stateReaders) reader.read(state);
   }
 
-  #detectedState(): AgentState | "unknown" {
-    if (!this.agentKind) return AgentState.Idle;
+  #detectedState(): ProcessState | "unknown" {
+    if (!this.agentKind) return ProcessState.Idle;
     const result = this.#detectState();
     return result.skipStateUpdate || result.state === "unknown" ? "unknown" : result.state;
   }
 
   /** @deprecated use `state`. */
-  get status(): AgentState {
+  get status(): ProcessState {
     return this.state;
   }
 

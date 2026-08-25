@@ -10,7 +10,7 @@ import { rollUp, nextBlockedAfter } from "./space.ts";
 import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
 import { SessionHandle } from "./session-handle.ts";
-import type { AgentState } from "./agent-state.ts";
+import type { ProcessState } from "./process-state.ts";
 import { waitFor } from "./test-wait.ts";
 import { captureScrollback } from "./capture.ts";
 
@@ -56,7 +56,7 @@ async function blockedAgent(window: Window, name: string): Promise<SessionHandle
 }
 
 test("nextBlockedAfter walks the blocked set in a stable order, wrapping", () => {
-  const stub = (state: AgentState) =>
+  const stub = (state: ProcessState) =>
     Object.create(SessionHandle.prototype, {
       state: { value: state, writable: true, configurable: true },
     }) as SessionHandle;
@@ -66,7 +66,7 @@ test("nextBlockedAfter walks the blocked set in a stable order, wrapping", () =>
   const order = [idle, blocked1, idle, blocked2];
 
   expect(nextBlockedAfter([], null)).toBeNull();
-  expect(nextBlockedAfter([stub("idle"), stub("working")], null)).toBeNull();
+  expect(nextBlockedAfter([stub("idle"), stub("running")], null)).toBeNull();
 
   // Nothing focused: the first blocked agent in order wins.
   expect(nextBlockedAfter(order, null)).toBe(blocked1);
@@ -308,14 +308,13 @@ test("a space of plain shells is idle, and an exited one still reads as idle", a
 });
 
 test("a roll-up reports the most urgent state present, and 'done' never wins", () => {
-  const stub = (state: AgentState) =>
+  const stub = (state: ProcessState) =>
     Object.create(SessionHandle.prototype, {
       state: { value: state, writable: true, configurable: true },
     }) as SessionHandle;
   expect(rollUp([])).toBe("done");
-  expect(rollUp([stub("idle"), stub("working"), stub("done")])).toBe("working");
-  expect(rollUp([stub("working"), stub("blocked")])).toBe("blocked");
-  expect(rollUp([stub("idle"), stub("detached")])).toBe("detached");
+  expect(rollUp([stub("idle"), stub("running"), stub("done")])).toBe("running");
+  expect(rollUp([stub("running"), stub("blocked")])).toBe("blocked");
   // One finished agent must not make a space with live agents look finished.
   expect(rollUp([stub("done"), stub("idle")])).toBe("idle");
   expect(rollUp([stub("done"), stub("done")])).toBe("done");

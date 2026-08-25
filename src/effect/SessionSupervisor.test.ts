@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { AttachHub } from "./AttachHub.ts";
 import { SESSION_STATE_TOPIC, type AttachFrame } from "./AttachProtocol.ts";
 import { AgentLog, AgentLogDefault, makeAgentLog } from "./AgentLog.ts";
-import { AgentState } from "../agent-state.ts";
+import { ProcessState } from "../process-state.ts";
 import { SessionSupervisor } from "./SessionSupervisor.ts";
 import { BunFileSystem } from "@effect/platform-bun";
 
@@ -83,17 +83,17 @@ testEffect("a self-reported state is committed to the session log, not only publ
       cols: 80,
       rows: 24,
     });
-    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, AgentState.Working);
-    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, AgentState.Blocked);
+    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, ProcessState.Running);
+    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, ProcessState.Blocked);
     // A report for a session nobody is running has nowhere to land. It must not
     // fail the reporter: the hook lives inside somebody else's agent.
-    yield* supervisor.report("no-such-pane", SESSION_STATE_TOPIC, AgentState.Working);
+    yield* supervisor.report("no-such-pane", SESSION_STATE_TOPIC, ProcessState.Running);
     yield* supervisor.kill("foreign-agent");
 
     const events = yield* log.read("foreign-agent");
     expect(events.map((event) => event._tag === "topic" && event.payload)).toEqual([
-      AgentState.Working,
-      AgentState.Blocked,
+      ProcessState.Running,
+      ProcessState.Blocked,
     ]);
     // Sequenced like any other event, which is what a replay cursor reads.
     expect(events.map((event) => event.sequence)).toEqual([0, 1]);

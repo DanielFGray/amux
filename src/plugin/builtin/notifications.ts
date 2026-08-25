@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { AgentState } from "../../agent-state.ts";
+import { ProcessState } from "../../process-state.ts";
 import { POLL_MS } from "../../ui/state.ts";
 import { scheduledPoll } from "../../effect/timer.ts";
 import { definePlugin, type PluginDefinition } from "../types.ts";
@@ -34,7 +34,7 @@ export const notificationsPlugin: PluginDefinition = definePlugin({
           const next = new Set(
             ctx.panel
               .display()
-              .rows.filter((row) => row.agentState === AgentState.Blocked)
+              .rows.filter((row) => row.agentState === ProcessState.Blocked)
               .map((row) => row.agentId!),
           );
           if (ctx.panel.options()["notifications.blocked"]) {

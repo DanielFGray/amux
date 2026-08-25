@@ -26,7 +26,13 @@ export interface SidebarDisplayRow {
   readonly paneIndex?: number;
   readonly windowLabel?: string;
   readonly agentId?: string;
+  /** The neutral core `ProcessState`, as a plain string — panels that want
+   *  the richer agent-facing vocabulary (failed/detached) derive it from
+   *  this plus `exitCode`/`detached`, e.g. via
+   *  `agent-awareness/display-state.ts`'s `deriveProcessDisplay`. */
   readonly agentState?: string;
+  readonly exitCode?: number | null;
+  readonly detached?: boolean;
   readonly agentCliKind?: string | null;
   readonly agentSessionKind?: string;
   readonly title?: string;

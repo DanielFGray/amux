@@ -3,7 +3,7 @@
  *
  * Three planes speak it — the config file the user writes by hand, the project
  * database an approval records itself in, and the frames the harness and the
- * pane exchange — so, as with agent-state, the words and their schemas are
+ * pane exchange — so, as with process-state, the words and their schemas are
  * defined once here and every union, guard and table constraint is derived from
  * them. A rule effect that exists in one module's spelling and not another's is
  * an action that is allowed on one plane and asked about on the next.

@@ -2,18 +2,21 @@ import { Stream } from "effect";
 import type { CliRenderer } from "@opentui/core";
 import type { PluginEnvironment } from "./host.ts";
 import { createSessionViews } from "./session-views.tsx";
+import { createProcessDisplay } from "./process-display.ts";
 import { createPluginContributions } from "./contributions.ts";
 import { createRegions } from "../ui/regions.tsx";
 import { testPanelContext } from "../ui/test-panel.ts";
 import type { SpawnProvider } from "./types.ts";
 import type { Regions } from "../ui/regions.tsx";
 import type { SessionViews } from "./session-views.tsx";
+import type { ProcessDisplay } from "./process-display.ts";
 import type { PluginRegistries } from "./services.ts";
 import type { OptionSpec } from "../options.ts";
 
 type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "registries"> & {
   readonly regions?: Regions;
   readonly sessionViews?: SessionViews;
+  readonly processDisplay?: ProcessDisplay;
   readonly registries?: Partial<PluginRegistries>;
 };
 
@@ -38,9 +41,11 @@ export function testPluginEnvironment(
   const contributions = parts.contributions ?? createPluginContributions();
   const regions = parts.regions ?? createRegions(renderer, contributions);
   const sessionViews = parts.sessionViews ?? createSessionViews(contributions);
+  const processDisplay = parts.processDisplay ?? createProcessDisplay(contributions);
   const {
     regions: _regions,
     sessionViews: _sessionViews,
+    processDisplay: _processDisplay,
     registries: registryOverrides,
     ...environment
   } = parts;
@@ -55,6 +60,7 @@ export function testPluginEnvironment(
     registries: {
       regions,
       sessionViews,
+      processDisplay,
       bindings: (owner, binding) => bindings.add(owner, binding.name, binding),
       settings: (owner, section) => settings.add(owner, section.id, section),
       options: (owner, name, spec) => options.add(owner, name, spec),

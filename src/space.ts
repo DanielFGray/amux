@@ -2,7 +2,7 @@ import { BoxRenderable, type RenderContext } from "@opentui/core";
 import { Context, Effect, Exit, Scope } from "effect";
 import { Window } from "./window.ts";
 import type { SessionHandle, SessionHandleOptions } from "./session-handle.ts";
-import { AgentState } from "./agent-state.ts";
+import { ProcessState } from "./process-state.ts";
 import type { Pane } from "./pane.ts";
 import { RenderCtx, type WorkspaceEnv } from "./env.ts";
 import {
@@ -104,7 +104,7 @@ export class Space {
    * more than an idle prompt. "done" is last, so a space with one live idle session and one
    * finished session reads as idle, not finished.
    */
-  get state(): AgentState {
+  get state(): ProcessState {
     return rollUp(this.sessions);
   }
 
@@ -211,7 +211,10 @@ export class Space {
       const window = yield* this.newWindow();
       window.adopt(handoff.session, pane, handoff.scope);
 
-      if (source.panes.length === 0 && !source.sessions.some((a) => a.state !== AgentState.Done)) {
+      if (
+        source.panes.length === 0 &&
+        !source.sessions.some((a) => a.state !== ProcessState.Done)
+      ) {
         yield* this.closeWindow(source);
       }
       return window;
@@ -234,7 +237,7 @@ export class Space {
       destination.adopt(handoff.session, pane, handoff.scope);
       if (
         source.panes.length === 0 &&
-        !source.sessions.some((session) => session.state !== AgentState.Done)
+        !source.sessions.some((session) => session.state !== ProcessState.Done)
       ) {
         yield* this.closeWindow(source);
       }
@@ -299,19 +302,17 @@ export class Space {
 }
 
 /** Ranked by how much it wants your attention. Shared by spaces and windows. */
-export function rollUp(sessions: readonly SessionHandle[]): AgentState {
+export function rollUp(sessions: readonly SessionHandle[]): ProcessState {
   const RANK = {
-    [AgentState.Blocked]: 4,
-    [AgentState.Working]: 3,
-    [AgentState.Failed]: 3,
-    [AgentState.Detached]: 2,
-    [AgentState.Idle]: 1,
-    [AgentState.Done]: 0,
-  } satisfies Record<AgentState, number>;
-  let best: AgentState = AgentState.Done;
+    [ProcessState.Blocked]: 3,
+    [ProcessState.Running]: 2,
+    [ProcessState.Idle]: 1,
+    [ProcessState.Done]: 0,
+  } satisfies Record<ProcessState, number>;
+  let best: ProcessState = ProcessState.Done;
   for (const a of sessions) {
     const s = a.state;
-    if (s === AgentState.Blocked) return AgentState.Blocked;
+    if (s === ProcessState.Blocked) return ProcessState.Blocked;
     if (RANK[s] > RANK[best]) best = s;
   }
   return best;
@@ -337,7 +338,7 @@ export function nextBlockedAfter(
   const start = from ? order.indexOf(from) + 1 : 0;
   for (let step = 0; step < n; step++) {
     const session = order[(start + step) % n]!;
-    if (session.state === AgentState.Blocked) return session;
+    if (session.state === ProcessState.Blocked) return session;
   }
   return null;
 }

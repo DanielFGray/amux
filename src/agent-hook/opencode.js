@@ -14,6 +14,12 @@ const TIMEOUT_MS = 500;
 // Exported so amux's own tests can check these values against the one schema
 // that defines them. This file cannot import that schema: it is loaded by
 // opencode, not by amux, and may not reach into a codebase that is not there.
+//
+// This is awareness's own vocabulary (matches AwarenessReportedState in
+// identity-state.ts, independent of core's ProcessState) — it is what goes to
+// `topic.publish` on the identity topic. `process.state` speaks a narrower,
+// core-owned vocabulary and is derived from this one below, in `send`'s
+// caller: core has no `failed`, so that report maps to `idle`.
 export const STATE_BY_EVENT = new Map([
   // OpenCode is actively making progress during these events.
   ["session.status:active", "working"],
@@ -31,6 +37,18 @@ export const STATE_BY_EVENT = new Map([
   ["session.error", "failed"],
   ["session.idle", "idle"],
 ]);
+
+/**
+ * Core's `process.state` only ever accepts idle/running/blocked/done — no
+ * `failed`, which is awareness presentation, not process lifecycle. `working`
+ * (awareness's word) maps to `running` (core's word); every other awareness
+ * state core already spells the same way.
+ */
+export function coreProcessState(state) {
+  if (state === "working") return "running";
+  if (state === "failed") return "idle";
+  return state;
+}
 
 /**
  * The topic amux's agent-awareness plugin owns for identity/state reports.
@@ -117,7 +135,7 @@ export const AmuxAgentStatePlugin = async () => {
       last = state;
       queue = queue.then(() =>
         Promise.all([
-          send(socketPath, "process.state", { session: agent, state }),
+          send(socketPath, "process.state", { session: agent, state: coreProcessState(state) }),
           send(socketPath, "topic.publish", {
             session: agent,
             topic: AGENT_AWARENESS_IDENTITY_TOPIC,
