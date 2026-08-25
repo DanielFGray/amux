@@ -84,7 +84,11 @@ export interface PluginSettingsSection {
   readonly id: string;
   readonly label: string;
   readonly rows: () => number;
-  readonly keys?: (event: KeyEvent, selected: number) => void;
+  /** Return `false` to let the key fall through to a focused control instead
+   *  of being consumed — the settings window otherwise preventDefaults every
+   *  key while open, which starves a focused input of the characters typed
+   *  into it. Anything else (including no return) counts as handled. */
+  readonly keys?: (event: KeyEvent, selected: number) => boolean | void;
   readonly component: (props: { width: number; height: number; selected: number }) => JSX.Element;
 }
 

@@ -317,7 +317,11 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
                   )
                 : Effect.void,
             ),
-            Effect.mapError(() => new AgentWorkerError({ message: "agent provider failed" })),
+            // Keep the provider's own message: settle() runs it through
+            // sanitizeAgentError, which needs the real text (401, rate limit,
+            // unknown model, …) to pick the right category instead of the
+            // generic fallback.
+            Effect.mapError((error) => new AgentWorkerError({ message: String(error) })),
           );
       };
       return (

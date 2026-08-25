@@ -58,7 +58,10 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       );
       const openModelPicker = (yield* registerModelPicker(ctx)).pipe(Effect.provide(llmServices));
       const [providers, setProviders] = createSignal<readonly IntegrationInfo[]>([]);
-      const [selected, setSelected] = createSignal(0);
+      // The API-key input only takes keyboard focus in this mode, and while it
+      // does this section's `keys` returns `false` so the settings window
+      // stops preventDefaulting and the keystroke actually reaches the input.
+      const [editing, setEditing] = createSignal(false);
       const refreshProviders = Effect.gen(function* () {
         const integrations = yield* Integration;
         setProviders(yield* integrations.list());
@@ -68,13 +71,24 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         id: "auth",
         label: "auth",
         rows: () => providers().length,
-        keys: (event: KeyEvent) => {
-          if (event.name === "j" || event.name === "down")
-            setSelected((value) => Math.min(providers().length - 1, value + 1));
-          if (event.name === "k" || event.name === "up")
-            setSelected((value) => Math.max(0, value - 1));
+        keys: (event: KeyEvent, selected: number) => {
+          if (editing()) {
+            // Escape backs out of editing rather than closing the whole
+            // settings window, so it doesn't need to double as "cancel" and
+            // "quit" — every other key, "q" included, is a plain character
+            // for the input to receive.
+            if (event.name === "escape") {
+              setEditing(false);
+              return true;
+            }
+            return false;
+          }
+          if (event.name === "return" || event.name === "enter") {
+            setEditing(true);
+            return true;
+          }
           if (event.name === "d") {
-            const connection = providers()[selected()]?.connections[0];
+            const connection = providers()[selected]?.connections[0];
             if (connection)
               Runtime.runFork(runtime)(
                 yieldCredential().pipe(
@@ -90,7 +104,11 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
           <AuthSettings
             providers={providers()}
             selected={props.selected}
-            onSubmit={(key) => connect(providers()[props.selected], key)}
+            editing={editing()}
+            onSubmit={(key) => {
+              connect(providers()[props.selected], key);
+              setEditing(false);
+            }}
           />
         ),
       });
@@ -237,9 +255,10 @@ const llmServices = Layer.mergeAll(IntegrationDefault, ModelCatalogDefault).pipe
   Layer.provide(BunFileSystem.layer),
 );
 
-function AuthSettings(props: {
+export function AuthSettings(props: {
   readonly providers: readonly IntegrationInfo[];
   readonly selected: number;
+  readonly editing: boolean;
   readonly onSubmit: (key: string) => void;
 }) {
   const [key, setKey] = createSignal("");
@@ -268,10 +287,14 @@ function AuthSettings(props: {
         )}
       </For>
       <input
-        placeholder="API key, then enter"
+        placeholder={props.editing ? "API key, then enter" : "j/k select · d remove · enter to set key"}
         value={key()}
+        focused={props.editing}
         onInput={(value: string) => setKey(value)}
-        onSubmit={() => props.onSubmit(key())}
+        onSubmit={() => {
+          props.onSubmit(key());
+          setKey("");
+        }}
       />
     </box>
   );

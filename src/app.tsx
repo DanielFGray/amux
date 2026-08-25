@@ -1675,7 +1675,7 @@ function buildApp(
   }
 
   function cycleSettingsSection(step: 1 | -1) {
-    const sections = settingsSections(pluginSettings());
+    const sections = settingsSections(pluginSettings(), optionContributions.all());
     const i = sections.indexOf(settingsSection());
     setSettingsSection(sections[(i + step + sections.length) % sections.length]!);
     setSettingsSelected(0);
@@ -1725,15 +1725,41 @@ function buildApp(
     }
   }
 
-  function settingsKey(event: KeyEvent) {
+  /**
+   * Whether the key was consumed here. `false` means a focused control (a
+   * plugin section's own input) should receive it instead — the caller must
+   * not preventDefault, or that control never sees a character.
+   *
+   * Escape/`q` close the window, but only as a default: a plugin section that
+   * explicitly claims a key (returning `true`, as the auth tab does to cancel
+   * out of editing rather than close) settles it right there. Checking for
+   * that claim ahead of the close shortcut — instead of unconditionally after
+   * — is what keeps "cancel editing" from also closing the whole window on
+   * the very same keystroke.
+   */
+  function settingsKey(event: KeyEvent): boolean {
     const fields = settingsFields(allOptions(), settingsSection(), optionContributions.all());
     const pluginSection = pluginSettings().find((section) => section.id === settingsSection());
     if (pluginSection) {
-      pluginSection.keys?.(event, settingsSelected());
+      const handled = pluginSection.keys?.(event, settingsSelected());
+      if (handled === false) return false;
+      if (handled === true) return true;
+      if (event.name === "escape" || event.name === "q") {
+        setOverlay("none");
+        return true;
+      }
+      if (event.name === "tab") {
+        cycleSettingsSection(event.shift ? -1 : 1);
+        return true;
+      }
       if (event.name === "j" || event.name === "down")
         setSettingsSelected((s) => Math.min(Math.max(0, pluginSection.rows() - 1), s + 1));
       if (event.name === "k" || event.name === "up") setSettingsSelected((s) => Math.max(0, s - 1));
-      return;
+      return true;
+    }
+    if (event.name === "escape" || event.name === "q") {
+      setOverlay("none");
+      return true;
     }
     if (event.name === "return" || event.name === "enter") {
       // An option whose value is chosen from a list cannot be edited with ←/→,
@@ -1743,30 +1769,37 @@ function buildApp(
       const option = selectedOption();
       if (option && registeredBindings().some((binding) => binding.name === option)) {
         bindings.dispatch(option);
-        return;
+        return true;
       }
     }
     // The keybind tab edits sequences rather than values, so it has its own keys.
-    if (settingsSection() === "keybinds") return keybindsKey(event);
+    if (settingsSection() === "keybinds") {
+      keybindsKey(event);
+      return true;
+    }
     switch (event.name) {
       case "tab":
-        return cycleSettingsSection(event.shift ? -1 : 1);
+        cycleSettingsSection(event.shift ? -1 : 1);
+        return true;
       case "j":
       case "down":
-        return setSettingsSelected((s) => Math.min(Math.max(0, fields.length - 1), s + 1));
+        setSettingsSelected((s) => Math.min(Math.max(0, fields.length - 1), s + 1));
+        return true;
       case "k":
       case "up":
-        return setSettingsSelected((s) => Math.max(0, s - 1));
+        setSettingsSelected((s) => Math.max(0, s - 1));
+        return true;
       case "left":
       case "right": {
         const option = selectedOption();
         if (option) adjustOption(option, event.name === "right" ? 1 : -1);
-        return;
+        return true;
       }
       case "s":
         void saveSettings();
-        return;
+        return true;
     }
+    return true;
   }
 
   function keybindPickerKey(event: KeyEvent) {
@@ -2075,11 +2108,7 @@ function buildApp(
         order: 10,
         title: "settings",
         visible: () => overlay() === "settings",
-        keys: (event) => {
-          if (event.name === "escape" || event.name === "q") setOverlay("none");
-          else settingsKey(event);
-          return true;
-        },
+        keys: (event) => settingsKey(event),
         component: (props) => (
           <Settings
             options={allOptions()}
