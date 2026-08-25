@@ -1,28 +1,15 @@
-import { Command, FileSystem } from "@effect/platform";
+import { FileSystem } from "@effect/platform";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
 import * as Effect from "effect/Effect";
 import * as S from "effect/Schema";
+import solidPlugin from "@opentui/solid/bun-plugin";
 
 const root = process.cwd();
 const build = `${root}/build`;
 
-class BuildCommandError extends S.TaggedError<BuildCommandError>()("BuildCommandError", {
-  command: S.String,
-  exitCode: S.Number,
+class BuildBundleError extends S.TaggedError<BuildBundleError>()("BuildBundleError", {
+  logs: S.Array(S.Unknown),
 }) {}
-
-const run = (command: Command.Command) =>
-  Effect.gen(function* () {
-    const exitCode = yield* Command.exitCode(command);
-    if (exitCode !== 0) {
-      return yield* new BuildCommandError({
-        command: Command.flatten(command)
-          .map(({ command: executable }) => executable)
-          .join(" | "),
-        exitCode,
-      });
-    }
-  });
 
 const compile = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -33,17 +20,28 @@ const compile = Effect.gen(function* () {
     overwrite: true,
   });
 
-  yield* run(
-    Command.make(
-      "bun",
-      "build",
-      "--compile",
-      "--no-compile-autoload-bunfig",
-      `${root}/src/cli.ts`,
-      "--outfile",
-      `${build}/amux`,
-    ).pipe(Command.workingDirectory(root), Command.stdout("inherit"), Command.stderr("inherit")),
-  );
+  // @opentui/solid ships dist/server.js under solid-js's "node" export
+  // condition; its bun-plugin rewrites those loads to the client build.
+  // bunfig.toml's preload registers that plugin for `bun run`/`bun test`,
+  // but Bun.build() (and the `bun build` CLI) never consult bunfig
+  // preloads, so the plugin must be passed explicitly here.
+  const result = yield* Effect.tryPromise({
+    try: () =>
+      Bun.build({
+        entrypoints: [`${root}/src/cli.ts`],
+        target: "bun",
+        plugins: [solidPlugin],
+        // The standalone executable has no bunfig.toml embedded in it, so
+        // letting it autoload one at startup means it tries (and fails) to
+        // resolve bunfig's `preload` entries from outside the bundle.
+        compile: { outfile: `${build}/amux`, autoloadBunfig: false },
+      }),
+    catch: (cause) => new BuildBundleError({ logs: [cause] }),
+  });
+
+  if (!result.success) {
+    return yield* new BuildBundleError({ logs: result.logs });
+  }
 
   yield* Effect.log("Run with: cd build && ./amux");
 });
