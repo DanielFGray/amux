@@ -15,7 +15,7 @@ import { FileSystem } from "@effect/platform";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { AttachClient } from "./attach.ts";
-import { controlCall, connectControl, type ControlClient } from "./control-client.ts";
+import { agentWatch, controlCall, connectControl, type ControlClient } from "./control-client.ts";
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { SessionStore, sessionPaths } from "./session.ts";
@@ -517,20 +517,23 @@ test("the process state socket accepts ping and process state reports", async ()
 });
 
 /* The DoD's two hardening clauses. A process inside a pane is something a user
- * runs, not something amux vouches for, so the socket it dials must be private
- * to the owner, and a hook that dies mid-write must not take the daemon down
- * with it — the agent keeps running either way. */
-test("the process state socket is private to the session owner", async () => {
+ * runs, not something amux vouches for, so the socket it dials must be closed
+ * to other Unix users, and a hook that dies mid-write must not take the daemon
+ * down with it — the agent keeps running either way.
+ *
+ * This mode does not stop one of this daemon's own panes from naming another:
+ * every pane a daemon supervises runs as the same user and is mutually
+ * trusted with the others, the same way tmux panes are. See ARCHITECTURE.md's
+ * "Trust model for process self-reports". */
+test("the process state socket is closed to other Unix users", async () => {
   const { daemon, env } = await started("agent-state-private");
   const paths = await run(sessionPaths(daemon.id), env);
   const { stat } = await import("node:fs/promises");
   const socket = await stat(paths.processState);
-  // Owner-only: a pane runs arbitrary user commands, and none of them may
-  // fabricate another pane's reports. The daemon pins this after listen so it
-  // holds under any umask.
+  // Owner-only: the daemon pins this after listen so it holds under any umask.
   expect(socket.mode & 0o777).toBe(0o600);
-  // The socket lives under the session's 0700 root, so only the owner can even
-  // reach it — a second wall that no umask can open.
+  // The socket lives under the session's 0700 root, so a different user cannot
+  // even reach it — a second wall that no umask can open.
   expect((await stat(paths.root)).mode & 0o077).toBe(0);
 });
 
@@ -622,6 +625,167 @@ test("an agent self-report reaches the session-state topic, not just the socket"
     session: "pane-a",
     state: "working",
   });
+});
+
+/*
+ * `topic.publish` is the same private socket generalized: a plugin names its
+ * own topic and hands core an opaque JSON payload instead of the fixed
+ * idle/working/blocked string `process.state` carries. Core neither knows nor
+ * cares that this one happens to be an agent-awareness identity report — it
+ * stores and replays it exactly like `session.state`, through the one durable
+ * topic door.
+ */
+/* AgentWatch is a subscribing RPC like Events(): the daemon keeps its serving
+ * fiber alive for as long as a client holds the stream open, so this test
+ * stops its own daemon before returning rather than leaving that for the
+ * shared afterEach, exactly as the events-stream test above does. */
+test("an opaque plugin topic reaches the daemon's durable log over the same private socket", async () => {
+  const { daemon, env } = await started("topic-publish");
+  const paths = await run(sessionPaths(daemon.id), env);
+  await Effect.runPromise(
+    daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
+  );
+
+  await raw(
+    paths.processState,
+    JSON.stringify({
+      id: "report",
+      method: "topic.publish",
+      params: {
+        session: "pane-a",
+        topic: "amux.agent-awareness/identity-state",
+        payload: { agent: "opencode", state: "working" },
+      },
+    }) + "\n",
+  );
+
+  const first = await run(
+    Effect.gen(function* () {
+      const control = yield* connectControl(daemon.id);
+      return yield* Stream.runHead(agentWatch(control, "pane-a"));
+    }),
+    env,
+  );
+  await Effect.runPromise(daemon.stop).catch(() => {});
+  daemons.splice(daemons.indexOf(daemon), 1);
+
+  expect(Option.getOrNull(first)).toEqual({
+    _tag: "topic",
+    session: "pane-a",
+    sequence: 0,
+    topic: "amux.agent-awareness/identity-state",
+    payload: { agent: "opencode", state: "working" },
+  });
+});
+
+test("a malformed envelope on the private socket is rejected without a second event path", async () => {
+  const { daemon, env } = await started("topic-malformed");
+  const paths = await run(sessionPaths(daemon.id), env);
+  await Effect.runPromise(
+    daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
+  );
+
+  // Not JSON at all.
+  expect((await raw(paths.processState, "not json at all\n")).received).toContain('"ok":false');
+
+  // Valid JSON, but a method neither `process.state` nor `topic.publish`.
+  expect(
+    (
+      await raw(
+        paths.processState,
+        JSON.stringify({ method: "topic.delete", params: { session: "pane-a" } }) + "\n",
+      )
+    ).received,
+  ).toContain('"ok":false');
+
+  // `topic.publish` missing the topic name.
+  expect(
+    (
+      await raw(
+        paths.processState,
+        JSON.stringify({
+          method: "topic.publish",
+          params: { session: "pane-a", payload: "x" },
+        }) + "\n",
+      )
+    ).received,
+  ).toContain('"ok":false');
+
+  // None of the rejected envelopes reached the durable log.
+  const cursor = await ctl(daemon.id, env, (c) => c.AgentCursor({ session: "pane-a" }));
+  expect(cursor).toBe(-1);
+  expect((await ctl(daemon.id, env, (c) => c.Ping())).attached).toBe(false);
+});
+
+/* The socket is shared by every pane this daemon supervises, and those panes
+ * are mutually trusted with each other — the same-user boundary tmux has, not
+ * a per-pane one (see ARCHITECTURE.md's "Trust model for process
+ * self-reports"). What the daemon does enforce past that: a report must name
+ * a backend id *this daemon* actually spawned, or it is dropped. This test
+ * names a session that exists nowhere at all, as the simplest case of that
+ * check. */
+test("a report naming a session this daemon never spawned commits nothing", async () => {
+  const { daemon, env } = await started("topic-cross-session");
+  const paths = await run(sessionPaths(daemon.id), env);
+  await Effect.runPromise(
+    daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
+  );
+
+  await raw(
+    paths.processState,
+    JSON.stringify({
+      method: "topic.publish",
+      params: {
+        session: "someone-elses-pane",
+        topic: "amux.agent-awareness/identity-state",
+        payload: { agent: "opencode", state: "working" },
+      },
+    }) + "\n",
+  );
+
+  const cursor = await ctl(daemon.id, env, (c) => c.AgentCursor({ session: "someone-elses-pane" }));
+  expect(cursor).toBe(-1);
+  expect((await ctl(daemon.id, env, (c) => c.Ping())).attached).toBe(false);
+});
+
+/* The stronger case: a session id that is not a stranger's fiction but a real,
+ * live backend — just owned by a different daemon. Two daemons, each with
+ * their own root and socket, both happen to have a session named "pane-a" (a
+ * hook only ever gets told a bare session id, so nothing stops two daemons
+ * from using the same one). Publishing "pane-a" over daemon A's socket must
+ * land in A's log only if A itself spawned that id; here it did not, so this
+ * proves both that A rejects it and that nothing about B's identically-named,
+ * genuinely-live session lets the report leak into either log. */
+test("a live backend id in one daemon grants no standing to name it in another", async () => {
+  const a = await started("cross-daemon-a");
+  const b = await started("cross-daemon-b");
+  const pathsA = await run(sessionPaths(a.daemon.id), a.env);
+
+  // "pane-a" is live only in daemon B.
+  await Effect.runPromise(
+    b.daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
+  );
+
+  // The injection happens on daemon A's socket, which never spawned "pane-a".
+  await raw(
+    pathsA.processState,
+    JSON.stringify({
+      method: "topic.publish",
+      params: {
+        session: "pane-a",
+        topic: "amux.agent-awareness/identity-state",
+        payload: { agent: "opencode", state: "working" },
+      },
+    }) + "\n",
+  );
+
+  const cursorA = await ctl(a.daemon.id, a.env, (c) => c.AgentCursor({ session: "pane-a" }));
+  const cursorB = await ctl(b.daemon.id, b.env, (c) => c.AgentCursor({ session: "pane-a" }));
+  // A never accepted it: it did not own that backend id.
+  expect(cursorA).toBe(-1);
+  // B's genuinely-live "pane-a" saw nothing either: the injected event never
+  // crossed from A's socket into B's log, which is the claim under test.
+  expect(cursorB).toBe(-1);
 });
 
 test("malformed and oversized frames are refused without taking the daemon down", async () => {

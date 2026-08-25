@@ -32,6 +32,15 @@ export const STATE_BY_EVENT = new Map([
   ["session.idle", "idle"],
 ]);
 
+/**
+ * The topic amux's agent-awareness plugin owns for identity/state reports.
+ * Exported so amux's own tests can check this literal against the one schema
+ * that defines it; this file cannot import that schema (see note above).
+ */
+export const AGENT_AWARENESS_IDENTITY_TOPIC = "amux.agent-awareness/identity-state";
+
+const AGENT_KIND = "opencode";
+
 function stateFor(event) {
   if (event.type === "session.status") {
     const status =
@@ -46,10 +55,10 @@ function stateFor(event) {
 }
 
 /**
- * One line of JSON to amux's agent-state socket, resolving once the daemon has
- * answered or the timeout expires — whichever is first. Never rejects.
+ * One line of JSON to amux's process-state socket, resolving once the daemon
+ * has answered or the timeout expires — whichever is first. Never rejects.
  */
-function report(socketPath, agent, state) {
+function send(socketPath, method, params) {
   return new Promise((resolve) => {
     let socket;
     let settled = false;
@@ -72,9 +81,9 @@ function report(socketPath, agent, state) {
       try {
         socket.write(
           `${JSON.stringify({
-            id: `opencode:agent-state:${Date.now()}`,
-            method: "process.state",
-            params: { session: agent, state },
+            id: `opencode:${method}:${Date.now()}`,
+            method,
+            params,
           })}\n`,
         );
       } catch {
@@ -92,9 +101,12 @@ export const AmuxAgentStatePlugin = async () => {
   // Not running in an amux pane: contribute nothing rather than guess a path.
   if (!socketPath || !agent) return {};
 
-  // Reports are strictly ordered and never concurrent. Two connections racing
-  // could deliver working-then-idle out of order and leave a finished agent
-  // showing a spinner, so each report waits for the previous one to settle.
+  // Transitions are strictly ordered and never concurrent with each other:
+  // two transitions racing could deliver working-then-idle out of order and
+  // leave a finished agent showing a spinner, so each transition waits for
+  // the previous one to settle before starting. Within one transition, the
+  // two channels it reports on go out concurrently — sequential sends would
+  // double the wait past this hook's one-timeout handler-delay contract.
   let queue = Promise.resolve();
   let last;
   return {
@@ -103,7 +115,16 @@ export const AmuxAgentStatePlugin = async () => {
       // Streaming fires continuously; only transitions are worth a syscall.
       if (!state || state === last) return;
       last = state;
-      queue = queue.then(() => report(socketPath, agent, state));
+      queue = queue.then(() =>
+        Promise.all([
+          send(socketPath, "process.state", { session: agent, state }),
+          send(socketPath, "topic.publish", {
+            session: agent,
+            topic: AGENT_AWARENESS_IDENTITY_TOPIC,
+            payload: { agent: AGENT_KIND, state },
+          }),
+        ]),
+      );
       await queue;
     },
   };

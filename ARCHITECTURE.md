@@ -33,6 +33,45 @@ the daemon answers with the session's current screen serialized as VT (modes
 included, alternate screen and all) before the live bytes, so a reattaching
 pane is not blank until the program next redraws.
 
+## Trust model for process self-reports
+
+The process-state socket (one per daemon, mode `0600` under the session root)
+accepts two requests from processes running as the daemon's Unix user:
+`process.state`, the generic idle/working/blocked self-report, and
+`topic.publish`, the same door opened up to an arbitrary namespaced JSON
+topic a plugin owns the meaning of — the agent-awareness plugin's
+identity/state report is one such topic, published by the opencode hook
+asset. Core validates only the generic envelope shape (session id, topic
+name, JSON payload) and routes both through one durable topic log; it never
+inspects or interprets a plugin's payload.
+
+These reports are advisory, not authority. A hook runs inside somebody
+else's process — the agent it is reporting on — so any pane's hook can claim
+anything about that pane's session, and nothing on this socket distinguishes
+a truthful report from a fabricated one. The trust boundary here is the same
+one tmux and every other same-user multiplexer already has: every pane a
+daemon supervises runs as the daemon's own user, so those panes are mutually
+trusted with each other and with the daemon, the same way two panes in one
+tmux server are. The socket's `0600` mode and its session-root permissions
+keep a _different_ Unix user from connecting at all; they do nothing to stop
+one of this daemon's own panes from naming another of its own sessions, and
+nothing here tries to. The one boundary the daemon does enforce past "same
+user": a report must name a backend id this daemon actually spawned, or it
+is silently dropped. A session id is a place to file a fact, not a
+credential; a sibling pane in the same daemon can still name it.
+
+A topic name is a namespace for meaning, not a grant of anything. Owning a
+topic (per this plugin/session boundary) lets a plugin decide how to
+interpret its own payload; it grants no authority over any other plugin,
+resource, or capability. Concretely: a hook's claim — "I am opencode",
+"I am idle", or any other `topic.publish` payload — must never by itself
+authorize a credential to be used, a permission to be granted, a command to
+be run, or any other privileged or automated action. Anything that gates a
+consequential action must verify it through a channel that is not just
+"a pane said so" — the harness's own provider/credential layer, an explicit
+user action, or a check that does not take a same-user pane's self-report as
+proof of anything beyond "this pane would like this to be true."
+
 ## Plugins, and where an agent harness lives
 
 amux is an agent-aware multiplexer, not an agent. Core recognises that a process

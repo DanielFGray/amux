@@ -16,11 +16,25 @@
  * the wrong thing impossible to write rather than merely discouraged.
  */
 
-import { Context, Effect, ExecutionStrategy, Layer, Runtime, Schema as S, Scope } from "effect";
+import {
+  Context,
+  Effect,
+  Either,
+  ExecutionStrategy,
+  Layer,
+  Runtime,
+  Schema as S,
+  Scope,
+} from "effect";
 import { createServer, type Server } from "node:net";
 import { chmod } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";
-import type { AttachFrame, PermissionAnswer } from "./AttachProtocol.ts";
+import {
+  JsonValueSchema,
+  SESSION_STATE_TOPIC,
+  type AttachFrame,
+  type PermissionAnswer,
+} from "./AttachProtocol.ts";
 import { AgentLog, AgentLogDefault, type AgentLogError, type AgentLogService } from "./AgentLog.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
@@ -34,11 +48,31 @@ import {
 import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./SessionRegistry.ts";
 import { errorMessage } from "../error-message.ts";
 
-const ProcessStateReport = S.Struct({
+/**
+ * Requests a process may send over its daemon-private self-report socket.
+ *
+ * `process.state` is the generic idle/working/blocked self-report every
+ * process integration already speaks. `topic.publish` is the same durable
+ * door opened up: a namespaced topic name and an opaque JSON payload, so a
+ * plugin can own a report's meaning without core naming it. Both resolve to
+ * one call into the supervisor's topic-generic `report` — there is no second
+ * ingestion path, only a second way to name the topic.
+ */
+const ProcessStateEnvelope = S.Struct({
   id: S.optional(S.String),
-  method: S.String,
-  params: S.optional(S.Struct({ session: S.optional(S.String), state: S.optional(S.String) })),
+  method: S.Literal("process.state"),
+  params: S.Struct({ session: S.String, state: S.String }),
 });
+const TopicPublishEnvelope = S.Struct({
+  id: S.optional(S.String),
+  method: S.Literal("topic.publish"),
+  params: S.Struct({ session: S.String, topic: S.String, payload: JsonValueSchema }),
+});
+const PingEnvelope = S.Struct({
+  id: S.optional(S.String),
+  method: S.Literal("ping"),
+});
+const ProcessSocketRequest = S.Union(ProcessStateEnvelope, TopicPublishEnvelope, PingEnvelope);
 
 export interface AttachHostOptions<
   AttachError = never,
@@ -172,31 +206,35 @@ const make = <
                   buffer = lines.pop() ?? "";
                   for (const line of lines) {
                     if (!line) continue;
-                    try {
-                      const request = S.decodeUnknownSync(S.parseJson(ProcessStateReport))(line);
-                      const session = request.params?.session;
-                      const state = request.params?.state;
-                      // Built, not run: an Effect is a description, so this costs
-                      // nothing when the report turns out to be malformed.
-                      // Through the supervisor, not straight to the observer:
-                      // the receiving integration owns validation and durable
-                      // state handling before observers see this process fact.
-                      const report =
-                        request.method === "process.state" && session && state
-                          ? supervisor.report(session, state)
-                          : undefined;
-                      const ok = request.method === "ping" || report !== undefined;
-                      if (report) Runtime.runFork(runtime)(report);
-                       socket.write(
-                         JSON.stringify(
-                           ok
-                             ? { id: request.id, ok }
-                             : { id: request.id, ok, error: "unknown request" },
-                         ) + "\n",
-                       );
-                    } catch {
+                    const decoded = S.decodeUnknownEither(S.parseJson(ProcessSocketRequest))(line);
+                    if (Either.isLeft(decoded)) {
                       socket.write('{"ok":false,"error":"invalid request"}\n');
+                      continue;
                     }
+                    const request = decoded.right;
+                    if (request.method === "ping") {
+                      socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
+                      continue;
+                    }
+                    // Built, not run: an Effect is a description, so this costs
+                    // nothing when the report turns out to be malformed.
+                    // Through the supervisor, not straight to the observer:
+                    // the receiving integration owns validation and durable
+                    // state handling before observers see this process fact.
+                    const report =
+                      request.method === "process.state"
+                        ? supervisor.report(
+                            request.params.session,
+                            SESSION_STATE_TOPIC,
+                            request.params.state,
+                          )
+                        : supervisor.report(
+                            request.params.session,
+                            request.params.topic,
+                            request.params.payload,
+                          );
+                    Runtime.runFork(runtime)(report);
+                    socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
                   }
                 });
               });

@@ -19,6 +19,7 @@ import {
   type AgentEventPayload,
   type AgentFrame,
   type AttachFrame,
+  type JsonValue,
   type Topic,
 } from "./AttachProtocol.ts";
 import { AgentLog, type AgentLogError } from "./AgentLog.ts";
@@ -135,11 +136,20 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     // active screen is ever needed, and an emulator per session is cost enough
     // without history.
     const replays = yield* Ref.make<ReadonlyMap<string, Terminal>>(new Map());
-    /** Per-session entry point for state a process reports about itself. The
-     *  error channel includes both durable log failures and observer failures:
+    /** Per-session entry point for a fact a process reports about itself, under
+     *  a topic name the reporter names — `SESSION_STATE_TOPIC` for the generic
+     *  idle/working/blocked self-report, anything else for a plugin-owned
+     *  topic the reporter and its subscriber agree on privately. The error
+     *  channel includes both durable log failures and observer failures:
      *  ingest can fail either way before the event reaches the hub. */
     const reporters = yield* Ref.make<
-      ReadonlyMap<string, (state: string) => Effect.Effect<void, AgentLogError | SessionObserverError>>
+      ReadonlyMap<
+        string,
+        (
+          topic: string,
+          payload: JsonValue,
+        ) => Effect.Effect<void, AgentLogError | SessionObserverError>
+      >
     >(new Map());
     yield* Effect.addFinalizer(() =>
       Ref.get(replays).pipe(
@@ -388,12 +398,12 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       // Process reports take the same generic topic door as component events,
       // so replay and live subscribers observe one ordered fact stream.
       yield* Ref.update(reporters, (current) =>
-        new Map(current).set(spec.id, (state: string) =>
+        new Map(current).set(spec.id, (topic: string, payload: JsonValue) =>
           ingest({
             _tag: "topic",
             session: spec.id,
-            topic: SESSION_STATE_TOPIC,
-            payload: state,
+            topic,
+            payload,
           }),
         ),
       );
@@ -469,19 +479,21 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       prepare,
       spawn,
       /**
-       * A process's report about itself, from the control socket.
+       * A process's report about itself, from the process-state socket.
        *
-       * The reported state is an opaque string here: this door is generic
-       * process self-reporting, not agent-specific, so validating it against
-       * the agent plugin's closed vocabulary is the plugin's job, not the
-       * supervisor's. Unknown sessions are ignored rather than failed: the
+       * The topic and payload are opaque here: this door is generic process
+       * self-reporting, not agent-specific, so validating a topic's payload
+       * against whatever vocabulary its subscriber expects is that
+       * subscriber's job, not the supervisor's — `process.state` is nothing
+       * but this same door called with `SESSION_STATE_TOPIC` already
+       * substituted. Unknown sessions are ignored rather than failed: the
        * reporter is a hook inside somebody else's agent, and a pane that
        * closed while its hook was mid-write is ordinary, not an error anyone
        * can act on.
        */
-      report: (id: string, state: string) =>
+      report: (id: string, topic: string, payload: JsonValue) =>
         Ref.get(reporters).pipe(
-          Effect.flatMap((current) => current.get(id)?.(state) ?? Effect.void),
+          Effect.flatMap((current) => current.get(id)?.(topic, payload) ?? Effect.void),
         ),
 
       handle: Effect.fnUntraced(function* (frame: AttachFrame) {

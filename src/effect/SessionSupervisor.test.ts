@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AttachHub } from "./AttachHub.ts";
-import { type AttachFrame } from "./AttachProtocol.ts";
+import { SESSION_STATE_TOPIC, type AttachFrame } from "./AttachProtocol.ts";
 import { AgentLog, AgentLogDefault, makeAgentLog } from "./AgentLog.ts";
 import { AgentState } from "../agent-state.ts";
 import { SessionSupervisor } from "./SessionSupervisor.ts";
@@ -83,11 +83,11 @@ testEffect("a self-reported state is committed to the session log, not only publ
       cols: 80,
       rows: 24,
     });
-    yield* supervisor.report("foreign-agent", AgentState.Working);
-    yield* supervisor.report("foreign-agent", AgentState.Blocked);
+    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, AgentState.Working);
+    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, AgentState.Blocked);
     // A report for a session nobody is running has nowhere to land. It must not
     // fail the reporter: the hook lives inside somebody else's agent.
-    yield* supervisor.report("no-such-pane", AgentState.Working);
+    yield* supervisor.report("no-such-pane", SESSION_STATE_TOPIC, AgentState.Working);
     yield* supervisor.kill("foreign-agent");
 
     const events = yield* log.read("foreign-agent");
@@ -98,6 +98,44 @@ testEffect("a self-reported state is committed to the session log, not only publ
     // Sequenced like any other event, which is what a replay cursor reads.
     expect(events.map((event) => event.sequence)).toEqual([0, 1]);
     expect(yield* log.read("no-such-pane")).toHaveLength(0);
+  }).pipe(
+    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(AgentLogDefault),
+    Effect.provide(AttachHub.Default),
+  ),
+);
+
+/**
+ * `report` is the one door both `process.state` and an arbitrary plugin topic
+ * publish through. The supervisor never inspects a payload's meaning — a
+ * structured object commits and replays exactly like the string
+ * `SESSION_STATE_TOPIC` uses, under whatever topic name the caller chose.
+ */
+testEffect("a report under a plugin-owned topic commits and replays as an opaque payload", () =>
+  Effect.gen(function* () {
+    const supervisor = yield* SessionSupervisor;
+    const log = yield* AgentLog;
+    yield* supervisor.spawn({
+      id: "foreign-agent",
+      cmd: ["sh", "-c", "sleep 30"],
+      cols: 80,
+      rows: 24,
+    });
+    yield* supervisor.report("foreign-agent", "amux.agent-awareness/identity-state", {
+      agent: "opencode",
+      state: "working",
+    });
+    yield* supervisor.kill("foreign-agent");
+
+    const events = yield* log.read("foreign-agent");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      _tag: "topic",
+      session: "foreign-agent",
+      sequence: 0,
+      topic: "amux.agent-awareness/identity-state",
+      payload: { agent: "opencode", state: "working" },
+    });
   }).pipe(
     Effect.provide(SessionSupervisor.Live),
     Effect.provide(AgentLogDefault),

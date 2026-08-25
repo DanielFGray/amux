@@ -12,8 +12,13 @@ import {
 } from "./agent-hook.ts";
 // The installed asset itself, so these assertions cover the bytes that land in
 // the user's opencode rather than a TypeScript restatement of them.
-import { AmuxAgentStatePlugin, STATE_BY_EVENT } from "./agent-hook/opencode.js";
+import {
+  AGENT_AWARENESS_IDENTITY_TOPIC,
+  AmuxAgentStatePlugin,
+  STATE_BY_EVENT,
+} from "./agent-hook/opencode.js";
 import { isReportedAgentState } from "./agent-state.ts";
+import { AGENT_AWARENESS_IDENTITY_TOPIC as PLUGIN_AGENT_AWARENESS_IDENTITY_TOPIC } from "./plugin/builtin/agent-awareness/identity-state.ts";
 import { testEffect } from "./test-effect.ts";
 
 const scoped = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Scope.Scope>) =>
@@ -75,6 +80,13 @@ test("every state the opencode hook can send is one amux accepts", () => {
   expect(unknown).toEqual([]);
 });
 
+/* Same crossing as above, for the topic name: the hook hardcodes this literal
+ * because it cannot import the awareness plugin's schema module, so this
+ * checks the two copies have not drifted apart. */
+test("the hook's identity-state topic literal matches the awareness plugin's schema", () => {
+  expect(AGENT_AWARENESS_IDENTITY_TOPIC).toBe(PLUGIN_AGENT_AWARENESS_IDENTITY_TOPIC);
+});
+
 testEffect("installs and uninstalls only the amux opencode plugin", () =>
   scoped(
     Effect.gen(function* () {
@@ -126,21 +138,35 @@ testEffect("reports opencode lifecycle transitions to the agent-state socket", (
       yield* Effect.promise(() => plugin.event!({ event: { type: "permission.asked" } }));
       yield* Effect.promise(() => plugin.event!({ event: { type: "session.idle" } }));
 
-      expect(received).toEqual([
+      // The two channels report each transition concurrently (Promise.all), so
+      // only order within a channel is guaranteed, not interleaving between
+      // them: assert each channel's own sequence independently.
+      const byMethod = <M extends string>(method: M) =>
+        received.filter(
+          (message): message is { id: string; method: M; params: unknown } =>
+            (message as { method: string }).method === method,
+        );
+
+      expect(byMethod("process.state").map((m) => m.params)).toEqual([
+        { session: "agent-a", state: "working" },
+        { session: "agent-a", state: "blocked" },
+        { session: "agent-a", state: "idle" },
+      ]);
+      expect(byMethod("topic.publish").map((m) => m.params)).toEqual([
         {
-          id: expect.any(String),
-          method: "process.state",
-          params: { session: "agent-a", state: "working" },
+          session: "agent-a",
+          topic: AGENT_AWARENESS_IDENTITY_TOPIC,
+          payload: { agent: "opencode", state: "working" },
         },
         {
-          id: expect.any(String),
-          method: "process.state",
-          params: { session: "agent-a", state: "blocked" },
+          session: "agent-a",
+          topic: AGENT_AWARENESS_IDENTITY_TOPIC,
+          payload: { agent: "opencode", state: "blocked" },
         },
         {
-          id: expect.any(String),
-          method: "process.state",
-          params: { session: "agent-a", state: "idle" },
+          session: "agent-a",
+          topic: AGENT_AWARENESS_IDENTITY_TOPIC,
+          payload: { agent: "opencode", state: "idle" },
         },
       ]);
     }),
@@ -161,8 +187,15 @@ testEffect("collapses repeated states so streaming does not flood the socket", (
       for (const status of ["running", "streaming", "streaming", "busy", "active"])
         yield* Effect.promise(() => plugin.event!(statusEvent(status)));
 
-      expect(received).toHaveLength(1);
-      expect((received[0] as { params: { state: string } }).params.state).toBe("working");
+      expect(received).toHaveLength(2);
+      const processState = received.find(
+        (message) => (message as { method: string }).method === "process.state",
+      ) as { params: { state: string } };
+      const topicPublish = received.find(
+        (message) => (message as { method: string }).method === "topic.publish",
+      ) as { params: { payload: { state: string } } };
+      expect(processState.params.state).toBe("working");
+      expect(topicPublish.params.payload.state).toBe("working");
     }),
   ),
 );

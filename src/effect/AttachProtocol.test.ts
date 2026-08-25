@@ -195,6 +195,18 @@ test("plugin state crosses the attach protocol as an opaque named topic", () => 
   ).toThrow();
 });
 
+test("an arbitrary plugin-namespaced topic round-trips with an object payload", () => {
+  const frame = {
+    _tag: "topic",
+    session: "agent-1",
+    sequence: 8,
+    topic: "amux.agent-awareness/identity-state",
+    payload: { agent: "opencode", state: "working" },
+  } as const;
+
+  expect(decodeAttachFrames(`${JSON.stringify(frame)}\n`).frames).toEqual([frame]);
+});
+
 test("tool.params-start round-trips as a self-contained semantic event", () => {
   const frame: AttachFrame = {
     _tag: "tool.params-start",
