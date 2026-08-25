@@ -522,6 +522,19 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               ),
             );
 
+          // node:net's Server.listen(path) does not unlink a stale socket
+          // file the way a listener whose owner exited cleanly would; a
+          // daemon that died without running its finalizers (a crash, a
+          // kill -9) leaves this file behind, and every future start then
+          // fails bind with EADDRINUSE forever until it is removed.
+          yield* fs
+            .remove(paths.processState)
+            .pipe(
+              Effect.catchTag("SystemError", (e) =>
+                e.reason === "NotFound" ? Effect.void : Effect.die(e),
+              ),
+            );
+
           const rt = ManagedRuntime.make(
             layerAttachHost({
               path: paths.attach,
