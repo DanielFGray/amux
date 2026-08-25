@@ -56,7 +56,7 @@ test("Claude's model picker suppresses a lower-priority blocked rule", () => {
 
 test("bundled adapters cover Claude and OpenCode", () => {
   expect(DetectorEvaluator.core.evaluate("claude", snapshot([], "⠋ thinking"))).toMatchObject({
-    state: "working",
+    state: "running",
     rule: "osc_title_working",
   });
   expect(
@@ -66,7 +66,7 @@ test("bundled adapters cover Claude and OpenCode", () => {
 
 test("a supplied evaluator replaces the core evaluator", () => {
   const replacement: DetectorResult = {
-    state: "working",
+    state: "running",
     rule: "replacement",
     skipStateUpdate: false,
   };

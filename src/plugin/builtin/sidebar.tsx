@@ -4,10 +4,11 @@ import { Effect, Runtime } from "effect";
 import { theme } from "../../ui/theme.ts";
 import type { DockPanel } from "../../ui/regions.tsx";
 import { definePlugin, type PluginDefinition } from "../types.ts";
-import { OptionsTag, RegionsTag } from "../services.ts";
+import { OptionsTag, ProcessDisplayTag, RegionsTag } from "../services.ts";
 import type { SidebarDisplayRow } from "../../ui/panel.ts";
-import { SPINNER_FRAMES, STATE_GLYPH } from "../../detect.ts";
-import { AgentState } from "../../agent-state.ts";
+import { SPINNER_FRAMES } from "../../detect.ts";
+import { ProcessState } from "../../process-state.ts";
+import { deriveProcessDisplay } from "./agent-awareness/display-state.ts";
 import { command } from "../../commands.ts";
 import { formatText } from "../../format.ts";
 import type { OptionSpec } from "../../options.ts";
@@ -35,14 +36,18 @@ export const SIDEBAR_OPTIONS = {
 export const sidebarPlugin: PluginDefinition = definePlugin({
   id: SIDEBAR_PLUGIN_ID,
   apiVersion: "1",
-  inject: [RegionsTag, OptionsTag],
+  inject: [RegionsTag, OptionsTag, ProcessDisplayTag],
   effect: (ctx) =>
     Effect.gen(function* () {
       const regions = yield* RegionsTag;
       const options = yield* OptionsTag;
+      const processDisplay = yield* ProcessDisplayTag;
       yield* Effect.all(
         Object.entries(SIDEBAR_OPTIONS).map(([name, spec]) => options.register([name, spec])),
       );
+      // The one registration that lets core's WindowTabs show failed/detached
+      // without importing plugin code — see plugin/process-display.ts.
+      yield* processDisplay.register(deriveProcessDisplay);
       const runtime = yield* Effect.runtime();
       let selected = 0;
       let hovered: number | null = null;
@@ -143,10 +148,7 @@ function filterRows(
 
 type SelectionClamp = { readonly selected: number; readonly clamp: boolean };
 
-function clampSelection(
-  selected: number,
-  rows: readonly SidebarDisplayRow[],
-): SelectionClamp {
+function clampSelection(selected: number, rows: readonly SidebarDisplayRow[]): SelectionClamp {
   const validRows = rows.filter((r) => r.kind !== "branch");
   if (validRows.length === 0) return { selected: 0, clamp: selected !== 0 };
   const clamped = Math.min(Math.max(0, selected), validRows.length - 1);
@@ -247,6 +249,15 @@ function SidebarRow(props: {
 }) {
   const row = props.row;
 
+  const display = () =>
+    row.kind === "agent" && row.agentState
+      ? deriveProcessDisplay({
+          state: row.agentState as ProcessState,
+          exitCode: row.exitCode ?? null,
+          detached: row.detached ?? false,
+        })
+      : undefined;
+
   const label = (): string =>
     formatText(props.format, {
       active: row.active,
@@ -260,14 +271,13 @@ function SidebarRow(props: {
       window_name: row.windowLabel,
       pane_title: row.title,
       pane_current_command: row.foregroundCommand,
-      agent_state: row.agentState,
-      agent_state_label: row.agentState,
-      agent_state_glyph:
-        row.kind === "agent" && row.agentState
-          ? row.agentState === AgentState.Working
-            ? SPINNER_FRAMES[props.frame % SPINNER_FRAMES.length]
-            : STATE_GLYPH[row.agentState as keyof typeof STATE_GLYPH]
-          : "·",
+      agent_state: display()?.label,
+      agent_state_label: display()?.label,
+      agent_state_glyph: display()
+        ? row.agentState === ProcessState.Running
+          ? SPINNER_FRAMES[props.frame % SPINNER_FRAMES.length]
+          : display()!.glyph
+        : "·",
       branch: row.branch,
       git_branch: row.branch,
       git_ahead: row.ahead,
@@ -289,10 +299,11 @@ function SidebarRow(props: {
   const labelColor = () => {
     if (row.kind === "space") return theme.mauve;
     if (row.kind === "window") return theme.blue;
-    if (!row.agentState) return theme.text;
-    return row.agentState === AgentState.Done
+    const state = display();
+    if (!state) return theme.text;
+    return state.label === "done"
       ? theme.overlay1
-      : row.agentState === AgentState.Failed
+      : state.label === "failed"
         ? theme.red
         : row.unseen
           ? theme.peach

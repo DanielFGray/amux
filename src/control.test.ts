@@ -431,7 +431,7 @@ test("agent.prompt --wait fails fast with the named stall error", async () => {
 }, 10_000);
 
 /* The DoD round trip: a process inside a real daemon-spawned pane, given only
- * the injected environment, learns which pane it is and where the agent-state
+ * the injected environment, learns which pane it is and where the process-state
  * socket lives, connects to it, and gets a response back. Earlier tests prove
  * the two halves separately — SessionRegistry injects the variables, the
  * socket answers — but a pane whose hook cannot actually dial the mux is the
@@ -588,7 +588,7 @@ test("an agent self-report reaches the session-state topic, not just the socket"
       JSON.stringify({
         id: "report",
         method: "process.state",
-        params: { session: "pane-a", state: "working" },
+        params: { session: "pane-a", state: "running" },
       }) + "\n",
     );
     await Bun.sleep(50);
@@ -623,14 +623,14 @@ test("an agent self-report reaches the session-state topic, not just the socket"
   expect(Option.getOrNull(published)?.event).toEqual({
     _tag: "session.state",
     session: "pane-a",
-    state: "working",
+    state: "running",
   });
 });
 
 /*
  * `topic.publish` is the same private socket generalized: a plugin names its
  * own topic and hands core an opaque JSON payload instead of the fixed
- * idle/working/blocked string `process.state` carries. Core neither knows nor
+ * idle/running/blocked/done string `process.state` carries. Core neither knows nor
  * cares that this one happens to be an agent-awareness identity report — it
  * stores and replays it exactly like `session.state`, through the one durable
  * topic door.

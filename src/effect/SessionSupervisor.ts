@@ -32,6 +32,7 @@ import {
   type SessionSpec,
 } from "./SessionRegistry.ts";
 import { isTerminalSize } from "../limits.ts";
+import { ProcessState } from "../process-state.ts";
 
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
 const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
@@ -57,17 +58,23 @@ const FOREGROUND_POLL_MS = 500;
 const INITIAL_OUTPUT_GRACE_MS = 100;
 
 export interface SessionExitObserverService {
-  readonly beforePublish: (id: string, code: number | null) => Effect.Effect<void, SessionObserverError>;
+  readonly beforePublish: (
+    id: string,
+    code: number | null,
+  ) => Effect.Effect<void, SessionObserverError>;
 }
 
 export interface SessionStateObserverService {
   readonly onState: (id: string, state: string) => Effect.Effect<void, SessionObserverError>;
 }
 
-export class SessionObserverError extends S.TaggedError<SessionObserverError>()("SessionObserverError", {
-  message: S.String,
-  operation: S.Literal("exit", "state"),
-}) {}
+export class SessionObserverError extends S.TaggedError<SessionObserverError>()(
+  "SessionObserverError",
+  {
+    message: S.String,
+    operation: S.Literal("exit", "state"),
+  },
+) {}
 
 export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
   "SessionStateObserver",
@@ -138,7 +145,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     const replays = yield* Ref.make<ReadonlyMap<string, Terminal>>(new Map());
     /** Per-session entry point for a fact a process reports about itself, under
      *  a topic name the reporter names — `SESSION_STATE_TOPIC` for the generic
-     *  idle/working/blocked self-report, anything else for a plugin-owned
+     *  idle/running/blocked/done self-report, anything else for a plugin-owned
      *  topic the reporter and its subscriber agree on privately. The error
      *  channel includes both durable log failures and observer failures:
      *  ingest can fail either way before the event reaches the hub. */
@@ -345,17 +352,20 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           const code = yield* session.exit.pipe(Effect.orElseSucceed(() => null));
           yield* Deferred.succeed(termination, code);
           if ((yield* Deferred.await(disposition)) === "active") {
-            // A declared process integration gets a final state fact. Core
-            // does not decide how a subscriber presents that fact.
+            // A declared process integration gets a final state fact before
+            // its exit frame. Core only ever writes a neutral ProcessState
+            // here — whether the exit was clean is the `exit` frame's `code`,
+            // which is the fact an agent-aware subscriber derives "failed"
+            // from, not something this topic says.
             if (spec.agent && code !== null) {
-              const failed = yield* agentLog.append({
+              const done = yield* agentLog.append({
                 _tag: "topic",
                 session: spec.id,
                 topic: SESSION_STATE_TOPIC,
-                payload: "failed",
+                payload: ProcessState.Done,
               });
-              yield* stateObserver.onState(spec.id, "failed");
-              yield* hub.publish(failed);
+              yield* stateObserver.onState(spec.id, ProcessState.Done);
+              yield* hub.publish(done);
             }
             yield* publishExit(code);
           }
@@ -534,7 +544,8 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               if (!session) return;
               let options: PromptOptions = {};
               if (command.id !== undefined) options = { ...options, id: command.id };
-              if (command.delivery !== undefined) options = { ...options, delivery: command.delivery };
+              if (command.delivery !== undefined)
+                options = { ...options, delivery: command.delivery };
               if (command.resume !== undefined) options = { ...options, resume: command.resume };
               yield* session.prompt(command.text, options);
             }),
@@ -543,12 +554,13 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             Effect.gen(function* () {
               const session = (yield* Ref.get(sessions)).get(command.session);
               if (!session) return;
-               let answer: Parameters<ManagedSession["decide"]>[0] = {
-                 request: command.request,
-                 decision: command.decision,
-               };
-               if (command.feedback !== undefined) answer = { ...answer, feedback: command.feedback };
-               yield* session.decide(answer);
+              let answer: Parameters<ManagedSession["decide"]>[0] = {
+                request: command.request,
+                decision: command.decision,
+              };
+              if (command.feedback !== undefined)
+                answer = { ...answer, feedback: command.feedback };
+              yield* session.decide(answer);
             }),
           ),
           Match.tag("agent.interrupt", (command) =>

@@ -51,7 +51,7 @@ import { errorMessage } from "../error-message.ts";
 /**
  * Requests a process may send over its daemon-private self-report socket.
  *
- * `process.state` is the generic idle/working/blocked self-report every
+ * `process.state` is the generic idle/running/blocked/done self-report every
  * process integration already speaks. `topic.publish` is the same durable
  * door opened up: a namespaced topic name and an opaque JSON payload, so a
  * plugin can own a report's meaning without core naming it. Both resolve to
@@ -108,7 +108,10 @@ export interface AttachHostOptions<
     session: string,
     code: number | null,
   ) => Effect.Effect<void, SessionExitError>;
-  readonly onSessionState?: (session: string, state: string) => Effect.Effect<void, SessionStateError>;
+  readonly onSessionState?: (
+    session: string,
+    state: string,
+  ) => Effect.Effect<void, SessionStateError>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -280,24 +283,17 @@ const make = <
             ),
           ),
     });
-     const sessionSpec = (spec: SessionSpec): SessionSpec => {
-       const next = { ...spec };
-       if (options.rpcPath !== undefined) next.rpcPath = options.rpcPath;
-       if (options.processStatePath !== undefined) next.processStatePath = options.processStatePath;
-       if (options.daemonSession !== undefined) next.daemonSession = options.daemonSession;
-       return next;
-     };
-     return {
-      prepare: (spec) =>
-        Scope.extend(
-          supervisor.prepare(sessionSpec(spec)),
-          sessions,
-        ),
+    const sessionSpec = (spec: SessionSpec): SessionSpec => {
+      const next = { ...spec };
+      if (options.rpcPath !== undefined) next.rpcPath = options.rpcPath;
+      if (options.processStatePath !== undefined) next.processStatePath = options.processStatePath;
+      if (options.daemonSession !== undefined) next.daemonSession = options.daemonSession;
+      return next;
+    };
+    return {
+      prepare: (spec) => Scope.extend(supervisor.prepare(sessionSpec(spec)), sessions),
       spawn: (spec) =>
-        Scope.extend(
-          supervisor.prepare(sessionSpec(spec)),
-          sessions,
-        ).pipe(
+        Scope.extend(supervisor.prepare(sessionSpec(spec)), sessions).pipe(
           Effect.tap((prepared) => prepared.activate),
           Effect.map((prepared) => prepared.session),
         ),
@@ -360,8 +356,9 @@ export const layerAttachHost = <
           Layer.succeed(SessionExitObserver, {
             beforePublish: (session, code) =>
               (options.onSessionExit?.(session, code) ?? Effect.void).pipe(
-                Effect.mapError((error) =>
-                  new SessionObserverError({ message: errorMessage(error), operation: "exit" }),
+                Effect.mapError(
+                  (error) =>
+                    new SessionObserverError({ message: errorMessage(error), operation: "exit" }),
                 ),
               ),
           }),
@@ -370,8 +367,9 @@ export const layerAttachHost = <
           Layer.succeed(SessionStateObserver, {
             onState: (session, state) =>
               (options.onSessionState?.(session, state) ?? Effect.void).pipe(
-                Effect.mapError((error) =>
-                  new SessionObserverError({ message: errorMessage(error), operation: "state" }),
+                Effect.mapError(
+                  (error) =>
+                    new SessionObserverError({ message: errorMessage(error), operation: "state" }),
                 ),
               ),
           }),

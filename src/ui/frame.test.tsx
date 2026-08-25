@@ -15,6 +15,8 @@ import { App } from "./App.tsx";
 import type { Panel } from "./regions.tsx";
 import { testRegions } from "./test-regions.ts";
 import { WindowTabs } from "./WindowTabs.tsx";
+import { createProcessDisplay } from "../plugin/process-display.ts";
+import { createPluginContributions } from "../plugin/contributions.ts";
 import { Settings } from "./Settings.tsx";
 import { Hints } from "./Hints.tsx";
 import type { HintGroup } from "../bindings.ts";
@@ -97,6 +99,7 @@ async function screen(
       component: () => (
         <WindowTabs
           app={app}
+          processDisplay={createProcessDisplay(createPluginContributions())}
           windows={app.active()?.windows ?? []}
           active={app.activeWindow()}
           format={extra.format}

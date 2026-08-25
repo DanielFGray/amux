@@ -7,7 +7,7 @@ import type { PaneViewProps } from "../../../component-pane.tsx";
 import { Transcript, type PermissionBlock } from "./Transcript.tsx";
 import { permissionSummary } from "./transcript.ts";
 import { theme } from "../../../ui/theme.ts";
-import { AgentState, type ReportedAgentState } from "../../../agent-state.ts";
+import { ProcessState } from "../../../process-state.ts";
 import type { PermissionDecision } from "../../../permission.ts";
 
 export interface ChatProps extends PaneViewProps {
@@ -44,7 +44,7 @@ export interface SlashCommand {
 export function Chat(props: ChatProps) {
   const [draft, setDraft] = createSignal("");
   const [editorLines, setEditorLines] = createSignal(1);
-  const [status, setStatus] = createSignal<ReportedAgentState | undefined>();
+  const [status, setStatus] = createSignal<ProcessState | undefined>();
   const [selectedCommand, setSelectedCommand] = createSignal(0);
   const [pending, setPending] = createSignal<PermissionBlock | undefined>();
   // The request whose refusal the user is typing a reason for. While it is set,
@@ -204,7 +204,7 @@ export function Chat(props: ChatProps) {
           focusedTextColor: theme.text,
         }}
       />
-      <StatusBar model={props.model} working={status() === AgentState.Working} view={view()} />
+      <StatusBar model={props.model} working={status() === ProcessState.Running} view={view()} />
     </box>
   );
 }

@@ -1,11 +1,28 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show } from "solid-js";
-import { SPINNER_FRAMES, STATE_GLYPH } from "../detect.ts";
-import { AgentState } from "../agent-state.ts";
+import { SPINNER_FRAMES } from "../detect.ts";
+import { ProcessState } from "../process-state.ts";
 import type { Window } from "../window.ts";
+import type { ProcessDisplay, ProcessDisplayResult } from "../plugin/process-display.ts";
 import type { AppState } from "./state.ts";
 import { theme } from "./theme.ts";
 import { formatText } from "../format.ts";
+
+/** Most urgent display among a window's sessions — the tab-row equivalent of
+ *  `space.ts`'s core `rollUp`, but over whatever richer vocabulary
+ *  `processDisplay` derives (e.g. failed/detached), never a value core names. */
+function windowDisplay(window: Window, processDisplay: ProcessDisplay): ProcessDisplayResult {
+  let best: ProcessDisplayResult | undefined;
+  for (const session of window.sessions) {
+    const result = processDisplay.display({
+      state: session.state,
+      exitCode: session.exitCode,
+      detached: session.detached,
+    });
+    if (!best || result.rank > best.rank) best = result;
+  }
+  return best ?? processDisplay.display({ state: window.state, exitCode: null, detached: false });
+}
 
 /**
  * The window list, herdr-style: a single row at the top of the pane area rather
@@ -17,6 +34,7 @@ import { formatText } from "../format.ts";
  */
 export function WindowTabs(props: {
   app: AppState;
+  processDisplay: ProcessDisplay;
   windows: readonly Window[];
   active: Window | null;
   /** Key sequence in progress, e.g. ["^a"]. */
@@ -37,7 +55,7 @@ export function WindowTabs(props: {
   const label = (window: Window) => {
     props.app.tick();
     const session = window.focused?.session;
-    const state = window.state;
+    const display = windowDisplay(window, props.processDisplay);
     return formatText(
       props.format ??
         "#{agent_state_glyph} #{window_number}:#{window_name}#{?zoomed, Z,}#{?synchronized, Y,}",
@@ -53,14 +71,12 @@ export function WindowTabs(props: {
         pane_index: session ? window.sessions.indexOf(session) : undefined,
         pane_title: session?.title,
         pane_current_command: session?.foregroundCommand,
-        agent_state: state,
-        agent_state_label: state,
+        agent_state: display.label,
+        agent_state_label: display.label,
         agent_state_glyph:
-          state === AgentState.Working
+          window.state === ProcessState.Running
             ? SPINNER_FRAMES[props.app.frame() % SPINNER_FRAMES.length]
-            : state
-              ? STATE_GLYPH[state]
-              : "",
+            : display.glyph,
         scrolled: session?.scrolled,
         exited: session?.exited,
         viewers: session?.viewers,

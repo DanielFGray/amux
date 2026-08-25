@@ -290,10 +290,11 @@ test("tool lookups match on both turn and call to prevent cross-turn collisions"
  * The reason a turn failed reaches the pane.
  *
  * `turn.end` used to be a no-op here, so a failure rendered as a bare
- * `status> failed` with nothing to act on. The error block sits before that
- * status because settle emits the turn's end first.
+ * `status> failed` with nothing to act on. `session.state` settles back to
+ * the neutral "idle" once the turn ends — the failure is carried by the
+ * `error` block instead, not by the status topic.
  */
-test("a failed turn.end renders the cause above the failed status", () => {
+test("a failed turn.end renders the cause, and status settles to idle", () => {
   let blocks: readonly TranscriptBlock[] = [];
   blocks = appendTranscriptFrame(
     blocks,
@@ -310,13 +311,13 @@ test("a failed turn.end renders the cause above the failed status", () => {
   );
   blocks = appendTranscriptFrame(
     blocks,
-    frame({ _tag: "topic", topic: "session.state", payload: "failed" }),
+    frame({ _tag: "topic", topic: "session.state", payload: "idle" }),
   );
 
   expect(serializeTranscript(blocks, 80)).toEqual([
     "user> hello",
     "error> HttpResponseError: 400 invalid schema for function 'pane_next'",
-    "status> failed",
+    "status> idle",
   ]);
 });
 
@@ -354,11 +355,11 @@ test("a retained transcript keeps the cause of a failed turn", () => {
   transcript.append(
     frame({ _tag: "turn.end", turn: "t1", outcome: "failed", error: "400 bad schema" }),
   );
-  transcript.append(frame({ _tag: "topic", topic: "session.state", payload: "failed" }));
+  transcript.append(frame({ _tag: "topic", topic: "session.state", payload: "idle" }));
   expect(serializeTranscript(transcript.snapshot(), 80)).toEqual([
     "user> go",
     "error> 400 bad schema",
-    "status> failed",
+    "status> idle",
   ]);
 });
 

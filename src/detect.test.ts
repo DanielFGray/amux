@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { splitActivity, identifyAgent } from "./detect.ts";
 import { SessionHandle } from "./session-handle.ts";
-import { AgentStateAuthority } from "./agent-state-arbiter.ts";
+import { ProcessStateAuthority } from "./process-state-arbiter.ts";
 import { waitFor } from "./test-wait.ts";
 
 test("a leading braille spinner marks the agent working and is stripped from the title", () => {
@@ -115,8 +115,8 @@ test("a harness state source overrides a screen heuristic on its pane", async ()
   using session = new SessionHandle({ name: "t", cmd: [claude, "--norc", "--noprofile"] });
   session.write("printf 'Do you want to proceed?\\n'\n");
   await waitFor(() => session.state === "blocked", "the blocked prompt");
-  session.registerStateSource({ authority: AgentStateAuthority.Harness, state: () => "working" });
-  expect(session.state).toBe("working");
+  session.registerStateSource({ authority: ProcessStateAuthority.Harness, state: () => "running" });
+  expect(session.state).toBe("running");
 });
 
 test("detection runs while state sources or readers are registered", async () => {
@@ -124,7 +124,7 @@ test("detection runs while state sources or readers are registered", async () =>
   let sourceReads = 0;
   let readerReads = 0;
   const removeSource = session.registerStateSource({
-    authority: AgentStateAuthority.Harness,
+    authority: ProcessStateAuthority.Harness,
     state: () => {
       sourceReads++;
       return "unknown";

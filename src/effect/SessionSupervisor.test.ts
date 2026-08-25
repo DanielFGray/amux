@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { AttachHub } from "./AttachHub.ts";
 import { SESSION_STATE_TOPIC, type AttachFrame } from "./AttachProtocol.ts";
 import { AgentLog, AgentLogDefault, makeAgentLog } from "./AgentLog.ts";
-import { AgentState } from "../agent-state.ts";
+import { ProcessState } from "../process-state.ts";
 import { SessionSupervisor } from "./SessionSupervisor.ts";
 import { BunFileSystem } from "@effect/platform-bun";
 
@@ -83,17 +83,17 @@ testEffect("a self-reported state is committed to the session log, not only publ
       cols: 80,
       rows: 24,
     });
-    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, AgentState.Working);
-    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, AgentState.Blocked);
+    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, ProcessState.Running);
+    yield* supervisor.report("foreign-agent", SESSION_STATE_TOPIC, ProcessState.Blocked);
     // A report for a session nobody is running has nowhere to land. It must not
     // fail the reporter: the hook lives inside somebody else's agent.
-    yield* supervisor.report("no-such-pane", SESSION_STATE_TOPIC, AgentState.Working);
+    yield* supervisor.report("no-such-pane", SESSION_STATE_TOPIC, ProcessState.Running);
     yield* supervisor.kill("foreign-agent");
 
     const events = yield* log.read("foreign-agent");
     expect(events.map((event) => event._tag === "topic" && event.payload)).toEqual([
-      AgentState.Working,
-      AgentState.Blocked,
+      ProcessState.Running,
+      ProcessState.Blocked,
     ]);
     // Sequenced like any other event, which is what a replay cursor reads.
     expect(events.map((event) => event.sequence)).toEqual([0, 1]);
@@ -528,14 +528,16 @@ testEffect("a native agent worker is listed and killed through the supervisor", 
   ),
 );
 
-testEffect("a crashed native agent reports failure and can be restarted", () =>
+testEffect("a crashed native agent exits with a neutral state and a nonzero code", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("client");
     const supervisor = yield* SessionSupervisor;
     // Both axes, because this asserts on both: the substrate decides there is
-    // no screen to replay, and `agent` is what makes the exit a failed agent
-    // rather than a component that merely stopped.
+    // no screen to replay, and `agent` is what makes the exit an agent's exit
+    // rather than a component that merely stopped. Core only ever writes a
+    // neutral ProcessState here — whether the exit was a failure is the exit
+    // frame's `code`, which an agent-aware subscriber derives "failed" from.
     const spec = {
       kind: "component" as const,
       agent: "native",
@@ -552,7 +554,7 @@ testEffect("a crashed native agent reports failure and can be restarted", () =>
       session: "crashed-worker",
       sequence: 0,
       topic: "session.state",
-      payload: "failed",
+      payload: "done",
     });
     expect(frames.at(-1)).toEqual({
       _tag: "exit",

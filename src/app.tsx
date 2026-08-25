@@ -11,8 +11,8 @@ import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
 import { basename, dirname, join } from "node:path";
 import { writeFile } from "node:fs/promises";
-import { AgentState } from "./agent-state.ts";
-import { SPINNER_FRAMES, STATE_GLYPH } from "./detect.ts";
+import { ProcessState } from "./process-state.ts";
+import { SPINNER_FRAMES } from "./detect.ts";
 
 import { projectWorkspace, SpaceSet } from "./space.ts";
 import { frame } from "./window.ts";
@@ -99,6 +99,7 @@ import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
+import { createProcessDisplay, type ProcessDisplay } from "./plugin/process-display.ts";
 import { errorMessage } from "./error-message.ts";
 
 export interface AppOptions {
@@ -200,6 +201,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     // than at construction.
     const contributions = createPluginContributions();
     const sessionViews = createSessionViews(contributions);
+    const processDisplay = createProcessDisplay(contributions);
     const spaces = yield* SpaceSet.make(
       workspaceEnv(options.renderer, {
         shell: initialShell,
@@ -213,7 +215,16 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     const pluginRuntime: PluginRuntime = {};
     const app = yield* Effect.acquireRelease(
       Effect.sync(() =>
-        buildApp(options, spaces, fiberScope, runFiber, regions, contributions, pluginRuntime),
+        buildApp(
+          options,
+          spaces,
+          fiberScope,
+          runFiber,
+          regions,
+          contributions,
+          pluginRuntime,
+          processDisplay,
+        ),
       ),
       (app) => app.release,
     );
@@ -223,6 +234,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       registries: {
         regions,
         sessionViews,
+        processDisplay,
         bindings: app.registerBinding,
         settings: app.registerSettingsSection,
         options: app.registerOption,
@@ -254,9 +266,9 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
             .resumeAgent({
               session: session.id,
               provider: session.provider!,
-                 argv: provider?.argv,
-                 env: provider?.env,
-                 stripEnv: provider?.stripEnv,
+              argv: provider?.argv,
+              env: provider?.env,
+              stripEnv: provider?.stripEnv,
             })
             .pipe(
               Effect.catchAll((error) =>
@@ -337,6 +349,7 @@ function buildApp(
   regions: ReturnType<typeof createRegions>,
   contributions: PluginContributions,
   pluginRuntime: PluginRuntime,
+  processDisplay: ProcessDisplay,
 ): ManagedAppHandle {
   const initialFrameExternalLeft = frame.externalLeft;
   contributions.commit(CORE_CONTRIBUTOR);
@@ -450,7 +463,7 @@ function buildApp(
     ],
     cwd: spaces.active?.dir ?? process.cwd(),
     blockedAgents: spaces.allSessions
-      .filter((session) => session.state === AgentState.Blocked)
+      .filter((session) => session.state === ProcessState.Blocked)
       .map((session) => session.id),
   });
 
@@ -635,6 +648,8 @@ function buildApp(
             windowLabel: window.label,
             agentId: session.id,
             agentState: session.state,
+            exitCode: session.exitCode,
+            detached: session.detached,
             agentCliKind: session.agentKind,
             agentSessionKind: session.kind,
             title: session.title,
@@ -649,7 +664,7 @@ function buildApp(
     }
 
     const allSessions = spaces.allSessions.filter((session) => !session.exited);
-    const blocked = allSessions.filter((session) => session.state === AgentState.Blocked).length;
+    const blocked = allSessions.filter((session) => session.state === ProcessState.Blocked).length;
 
     return {
       rows,
@@ -1402,7 +1417,7 @@ function buildApp(
     const meta = COMMAND_META[cmd._tag]!;
     return {
       name,
-       key,
+      key,
       desc: opts.desc ?? meta.desc,
       group: opts.group ?? meta.group,
       hidden: opts.hidden,
@@ -1426,7 +1441,7 @@ function buildApp(
     const meta = COMMAND_META[tag]!;
     return {
       name: tag,
-       key,
+      key,
       desc: desc ?? meta.desc,
       group: meta.group,
       run: open,
@@ -1986,6 +2001,7 @@ function buildApp(
         component: () => (
           <WindowTabs
             app={app}
+            processDisplay={processDisplay}
             windows={app.active()?.windows ?? []}
             active={app.activeWindow()}
             spaceIndex={app.active() ? spaces.spaces.indexOf(app.active()!) : undefined}
@@ -2000,6 +2016,13 @@ function buildApp(
               const window = app.activeWindow();
               const pane = window?.focused?.session ?? null;
               const state = pane?.state;
+              const display = pane
+                ? processDisplay.display({
+                    state: pane.state,
+                    exitCode: pane.exitCode,
+                    detached: pane.detached,
+                  })
+                : undefined;
               const spaceIndex = space ? spaces.spaces.indexOf(space) : undefined;
               return formatText(options()["status.format"], {
                 active: true,
@@ -2014,14 +2037,13 @@ function buildApp(
                 pane_index: pane ? window?.sessions.indexOf(pane) : undefined,
                 pane_title: pane?.title,
                 pane_current_command: pane?.foregroundCommand,
-                agent_state: state,
-                agent_state_label: state,
-                agent_state_glyph:
-                  state === AgentState.Working
+                agent_state: display?.label,
+                agent_state_label: display?.label,
+                agent_state_glyph: display
+                  ? state === ProcessState.Running
                     ? SPINNER_FRAMES[app.frame() % SPINNER_FRAMES.length]
-                    : state
-                      ? STATE_GLYPH[state]
-                      : "",
+                    : display.glyph
+                  : "",
                 zoomed: window?.zoomed,
                 synchronized: window?.sync,
                 sync: window?.sync,

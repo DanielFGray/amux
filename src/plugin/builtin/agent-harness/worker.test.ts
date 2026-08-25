@@ -68,8 +68,7 @@ const runWorker = <A>(
     Effect.scoped(
       Effect.gen(function* () {
         const chat = yield* Chat.empty;
-        const workerOptions =
-          options?.toolkit === undefined ? {} : { toolkit: options.toolkit };
+        const workerOptions = options?.toolkit === undefined ? {} : { toolkit: options.toolkit };
         const worker = yield* makeAgentWorker({
           session: "agent-test",
           chat,
@@ -102,6 +101,7 @@ test("drains a prompt and emits semantic frames", async () => {
     "topic",
     "text.delta",
     "turn.end",
+    "topic",
     "topic",
   ]);
   expect(frames.find((frame) => frame._tag === "turn.start")).toMatchObject({
@@ -392,10 +392,13 @@ test("interrupt ends the turn as interrupted and keeps the partial text", async 
   expect(frames.find((f) => f._tag === "turn.end")).toMatchObject({
     outcome: "interrupted",
   });
+  expect(
+    frames.some((f) => f._tag === "topic" && f.topic === "session.state" && f.payload === "idle"),
+  ).toBe(true);
   expect(frames.at(-1)).toMatchObject({
     _tag: "topic",
-    topic: "session.state",
-    payload: "idle",
+    topic: "amux.agent-awareness/identity-state",
+    payload: { agent: "native", state: "idle" },
   });
 });
 
@@ -441,10 +444,16 @@ test("a turn that fails reports the cause and leaves the session usable", async 
   expect((failed as { error?: string }).error).toBe(
     "The agent worker failed while processing the request.",
   );
+  // `session.state` stays the neutral "idle" even on failure — the failure
+  // itself is only visible on the awareness identity topic.
   expect(
     frames.some(
       (frame) =>
-        frame._tag === "topic" && frame.topic === "session.state" && frame.payload === "failed",
+        frame._tag === "topic" &&
+        frame.topic === "amux.agent-awareness/identity-state" &&
+        typeof frame.payload === "object" &&
+        frame.payload !== null &&
+        (frame.payload as { state?: unknown }).state === "failed",
     ),
   ).toBe(true);
   // The next turn still runs: a failure ends the turn, never the worker.
@@ -486,6 +495,7 @@ test("streamed tool parameters emit params frames before the call", async () => 
     "tool.params-delta",
     "tool.params-end",
     "turn.end",
+    "topic",
     "topic",
   ]);
 });

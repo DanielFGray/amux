@@ -147,7 +147,7 @@ test("generateHelp is non-empty", () => {
 test("group help derives command syntax from schemas", () => {
   expect(commandGroups()).toContain("agents");
   expect(generateGroupHelp("agents")).toContain(
-    "agent.prompt <target> <text> [--id=<id>] [--delivery=<steer|queue>] [--resume=<resume>] [--wait=<wait>] [--until=<idle|working|blocked|failed|done>] [--timeout=<timeout>]",
+    "agent.prompt <target> <text> [--id=<id>] [--delivery=<steer|queue>] [--resume=<resume>] [--wait=<wait>] [--until=<idle|running|blocked|done>] [--timeout=<timeout>]",
   );
   expect(generateGroupHelp("panes")).toContain("pane.split <row|column> [--cwd=<cwd>]");
   expect(generateGroupHelp("missing")).toBeUndefined();

@@ -47,7 +47,7 @@ export interface SessionSpec {
    *
    * Declared for sessions the mux starts as an agent; a foreign agent launched
    * inside a shell pane is detected rather than declared (see identifyAgent and
-   * the agent-state hook), so this being absent does not mean "not an agent".
+   * the process-state hook), so this being absent does not mean "not an agent".
    * What it does mean is that the session's *exit* is an agent's exit, and so
    * worth reporting as agent lifecycle.
    */
@@ -144,7 +144,8 @@ function ptyBackend(spec: SessionSpec): Backend {
   if (spec.rpcPath !== undefined) Object.assign(env, { AMUX_CONTROL_SOCKET: spec.rpcPath });
   if (spec.processStatePath !== undefined)
     Object.assign(env, { AMUX_PROCESS_STATE_SOCKET: spec.processStatePath });
-  if (spec.daemonSession !== undefined) Object.assign(env, { AMUX_DAEMON_SESSION: spec.daemonSession });
+  if (spec.daemonSession !== undefined)
+    Object.assign(env, { AMUX_DAEMON_SESSION: spec.daemonSession });
   const pty = spawnPty([...spec.cmd], {
     cols: spec.cols,
     rows: spec.rows,
@@ -226,7 +227,8 @@ function componentBackend(spec: SessionSpec): Backend {
     ...spec.env,
   } satisfies Record<string, string>;
   if (spec.rpcPath !== undefined) Object.assign(env, { AMUX_CONTROL_SOCKET: spec.rpcPath });
-  if (spec.daemonSession !== undefined) Object.assign(env, { AMUX_DAEMON_SESSION: spec.daemonSession });
+  if (spec.daemonSession !== undefined)
+    Object.assign(env, { AMUX_DAEMON_SESSION: spec.daemonSession });
   if (spec.paneId !== undefined) Object.assign(env, { AMUX_PANE_ID: spec.paneId });
   if (spec.cwd !== undefined) Object.assign(env, { AMUX_AGENT_CWD: spec.cwd });
   const child = Bun.spawn([...spec.cmd], {
@@ -433,9 +435,13 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
         return {
           id: spec.id,
           kind,
-          output: Stream.fromAsyncIterable(backend.output, (error) => asPtyError("read", String(error))),
+          output: Stream.fromAsyncIterable(backend.output, (error) =>
+            asPtyError("read", String(error)),
+          ),
           events: backend.events
-            ? Stream.fromAsyncIterable(backend.events, (error) => asPtyError("event", String(error)))
+            ? Stream.fromAsyncIterable(backend.events, (error) =>
+                asPtyError("event", String(error)),
+              )
             : undefined,
           exit: Effect.tryPromise({
             try: () => backend.wait,

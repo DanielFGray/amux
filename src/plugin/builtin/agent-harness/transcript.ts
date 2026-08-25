@@ -1,6 +1,6 @@
 import type { AgentFrame, JsonValue } from "../../../effect/AttachProtocol.ts";
 import type { PermissionDecision, PermissionRule } from "../../../permission.ts";
-import type { ReportedAgentState } from "../../../agent-state.ts";
+import type { ProcessState } from "../../../process-state.ts";
 import { agentStateFromTopic } from "./state-topic.ts";
 
 export type TranscriptBlock =
@@ -17,11 +17,11 @@ export type TranscriptBlock =
       readonly turn: string;
       readonly call: string;
       readonly name: string;
-       readonly input: JsonValue;
+      readonly input: JsonValue;
       /** Params are still arriving as partial JSON fragments. A resolved input
        *  can legitimately be a bare string, so type alone cannot say pending. */
       readonly streaming?: boolean;
-       readonly output?: JsonValue;
+      readonly output?: JsonValue;
       readonly isError?: boolean;
     }
   | {
@@ -33,14 +33,14 @@ export type TranscriptBlock =
       readonly resources: readonly string[];
       /** What "always" would record, so the human approves a rule they can read. */
       readonly save: readonly PermissionRule[];
-       readonly input: JsonValue;
+      readonly input: JsonValue;
       /** Absent while the request is still pending — the pane's cue to ask. */
       readonly decision?: PermissionDecision;
       readonly feedback?: string;
     }
   | {
       readonly kind: "status";
-      readonly state: ReportedAgentState;
+      readonly state: ProcessState;
     }
   /** Why a turn failed. The status block says that it did; this says what. */
   | { readonly kind: "error"; readonly turn?: string; readonly text: string };
@@ -300,8 +300,14 @@ type ToolFace = {
 };
 
 const toolFaces = new Map<string, ToolFace>([
-  ["bash", { pending: "Writing command...", reveal: (input) => `$ ${stringField(input, "command")}` }],
-  ["write", { pending: "Preparing write...", reveal: (input) => `\u2190 ${stringField(input, "path")}` }],
+  [
+    "bash",
+    { pending: "Writing command...", reveal: (input) => `$ ${stringField(input, "command")}` },
+  ],
+  [
+    "write",
+    { pending: "Preparing write...", reveal: (input) => `\u2190 ${stringField(input, "path")}` },
+  ],
   ["read", { pending: "Reading file...", reveal: (input) => stringField(input, "path") }],
   ["glob", { pending: "Finding files...", reveal: (input) => stringField(input, "pattern") }],
   ["grep", { pending: "Searching content...", reveal: (input) => stringField(input, "pattern") }],
@@ -324,9 +330,7 @@ export function permissionSummary(block: PermissionBlock): string {
 
 function describeCall(tool: string, input: JsonValue): string {
   const face = toolFaces.get(tool);
-  return isJsonObject(input) && face
-    ? face.reveal(input) || json(input)
-    : json(input);
+  return isJsonObject(input) && face ? face.reveal(input) || json(input) : json(input);
 }
 
 function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {

@@ -1,24 +1,24 @@
-import { AgentState } from "./agent-state.ts";
+import { ProcessState } from "./process-state.ts";
 
-export const AgentStateAuthority = {
+export const ProcessStateAuthority = {
   Terminal: 3,
   Harness: 2,
   SelfReport: 1,
   Detector: 0,
 } as const;
 
-export type AgentStateAnswer = AgentState | "unknown";
+export type ProcessStateAnswer = ProcessState | "unknown";
 
-export interface AgentStateSource {
+export interface ProcessStateSource {
   readonly authority: number;
-  readonly state: () => AgentStateAnswer;
+  readonly state: () => ProcessStateAnswer;
 }
 
 /** Resolves independent state reports without exposing their provenance to readers. */
-export class AgentStateArbiter {
-  #sources: AgentStateSource[] = [];
+export class ProcessStateArbiter {
+  #sources: ProcessStateSource[] = [];
 
-  register(source: AgentStateSource): () => void {
+  register(source: ProcessStateSource): () => void {
     this.#sources.push(source);
     this.#sources.sort((left, right) => right.authority - left.authority);
     return () => {
@@ -27,11 +27,11 @@ export class AgentStateArbiter {
     };
   }
 
-  get state(): AgentState {
+  get state(): ProcessState {
     for (const source of this.#sources) {
       const state = source.state();
       if (state !== "unknown") return state;
     }
-    return AgentState.Idle;
+    return ProcessState.Idle;
   }
 }

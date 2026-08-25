@@ -13,7 +13,7 @@
  * we project here — a supervised PTY has no hooks to lean on.
  */
 
-import { AgentState } from "./agent-state.ts";
+import { ProcessState } from "./process-state.ts";
 
 /**
  * Executable names that mean "this is an agent CLI", mapped to a short label.
@@ -136,10 +136,8 @@ export function splitActivity(title: string) {
 export const SPINNER_FRAMES = [..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"];
 
 export const STATE_GLYPH = {
-  [AgentState.Blocked]: "●",
-  [AgentState.Working]: "⠹", // replaced with the live spinner frame when rendering
-  [AgentState.Idle]: "○",
-  [AgentState.Failed]: "!",
-  [AgentState.Detached]: "⊘",
-  [AgentState.Done]: "✓",
-} satisfies Record<AgentState, string>;
+  [ProcessState.Blocked]: "●",
+  [ProcessState.Running]: "⠹", // replaced with the live spinner frame when rendering
+  [ProcessState.Idle]: "○",
+  [ProcessState.Done]: "✓",
+} satisfies Record<ProcessState, string>;

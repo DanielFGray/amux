@@ -6,6 +6,7 @@ import type { PaneView } from "../component-pane.tsx";
 import type { CommandSpec } from "../bindings.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
 import type { OptionSpec } from "../options.ts";
+import type { ProcessDisplay, ProcessDisplayProvider } from "./process-display.ts";
 
 export class CurrentPlugin extends Context.Tag("amux/CurrentPlugin")<
   CurrentPlugin,
@@ -15,6 +16,7 @@ export class CurrentPlugin extends Context.Tag("amux/CurrentPlugin")<
 export interface PluginRegistries {
   readonly regions: Regions;
   readonly sessionViews: SessionViews;
+  readonly processDisplay: ProcessDisplay;
   readonly bindings: (owner: PluginInstance, binding: CommandSpec) => () => void;
   readonly settings: (owner: PluginInstance, section: PluginSettingsSection) => () => void;
   /** Claim a dotted option name in the settings table: typed, validated,
@@ -37,6 +39,10 @@ export class RegionsTag extends Context.Tag("amux/Regions")<RegionsTag, Registry
 export class SessionViewsTag extends Context.Tag("amux/SessionViews")<
   SessionViewsTag,
   RegistryService<readonly [string, PaneView]>
+>() {}
+export class ProcessDisplayTag extends Context.Tag("amux/ProcessDisplay")<
+  ProcessDisplayTag,
+  RegistryService<ProcessDisplayProvider>
 >() {}
 export class BindingsTag extends Context.Tag("amux/Bindings")<
   BindingsTag,

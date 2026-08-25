@@ -6,11 +6,28 @@ import {
   type Tool,
   type Toolkit,
 } from "@effect/ai";
-import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Schema as S, Stream } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  Fiber,
+  FiberHandle,
+  Queue,
+  Ref,
+  Scope,
+  Schema as S,
+  Stream,
+} from "effect";
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
-import { AgentState } from "../../../agent-state.ts";
+import { ProcessState } from "../../../process-state.ts";
 import type { PromptDelivery, PromptInboxEntry } from "../../../project-store.ts";
 import { agentStateTopic } from "./state-topic.ts";
+import { AGENT_AWARENESS_IDENTITY_TOPIC } from "../agent-awareness/identity-state.ts";
+
+/** Matches the provider id `agent-harness.tsx` registers this worker under
+ *  (`spawnProviders.register(["native", ...])`) — the identity a turn's
+ *  awareness report names itself as. */
+const NATIVE_AGENT_IDENTITY = "native";
 
 export type AgentWorker = {
   readonly prompt: (
@@ -27,10 +44,9 @@ export type AgentWorker = {
   readonly close: Effect.Effect<void>;
 };
 
-export class AgentWorkerError extends S.TaggedError<AgentWorkerError>()(
-  "AgentWorkerError",
-  { message: S.String },
-) {}
+export class AgentWorkerError extends S.TaggedError<AgentWorkerError>()("AgentWorkerError", {
+  message: S.String,
+}) {}
 
 /** Keep provider diagnostics useful without allowing credentials or raw transport data into the UI. */
 export function sanitizeAgentError(error: Error | string): string {
@@ -172,9 +188,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
       resume?: boolean,
       id?: string,
     ) => Effect.Effect<PromptInboxEntry, E>;
-    readonly pendingPrompts: (
-      session: string,
-       ) => Effect.Effect<readonly PromptInboxEntry[], E>;
+    readonly pendingPrompts: (session: string) => Effect.Effect<readonly PromptInboxEntry[], E>;
     readonly promotePrompt: (id: string) => Effect.Effect<void, E>;
   };
 }): Effect.Effect<
@@ -222,15 +236,28 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
         Exit.isFailure(exit) && outcome === "failed"
           ? sanitizeAgentError(Cause.pretty(exit.cause))
           : undefined;
-       const turnEnd = { _tag: "turn.end" as const, turn, outcome };
-       if (text) Object.assign(turnEnd, { text });
-       if (error) Object.assign(turnEnd, { error });
-       return repair.pipe(
-         Effect.andThen(
-           emit(turnEnd),
-        ),
+      const turnEnd = { _tag: "turn.end" as const, turn, outcome };
+      if (text) Object.assign(turnEnd, { text });
+      if (error) Object.assign(turnEnd, { error });
+      return repair.pipe(
+        Effect.andThen(emit(turnEnd)),
+        // The process itself is idle either way — a failed turn does not exit
+        // it, so SESSION_STATE_TOPIC (core's neutral ProcessState) can only
+        // ever say `idle` here. `turnEnd` above already carries the failure
+        // (`outcome: "failed"` + `error`) as a durable plugin-owned fact; this
+        // second report rides the same awareness-owned topic the opencode
+        // hook uses, so a live (non-exited) failure still reaches the
+        // sidebar/tab glyph the way `turnEnd` alone cannot.
+        Effect.andThen(emit(agentStateTopic(ProcessState.Idle))),
         Effect.andThen(
-          emit(agentStateTopic(outcome === "failed" ? AgentState.Failed : AgentState.Idle)),
+          emit({
+            _tag: "topic",
+            topic: AGENT_AWARENESS_IDENTITY_TOPIC,
+            payload: {
+              agent: NATIVE_AGENT_IDENTITY,
+              state: outcome === "failed" ? "failed" : "idle",
+            },
+          }),
         ),
       );
     };
@@ -247,8 +274,8 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
     const runTurn = (
       queued: QueuedTurn,
     ): Effect.Effect<
-     void,
-       never,
+      void,
+      never,
       LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
     > => {
       const { turn, prompt } = queued;
@@ -256,8 +283,8 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
       const runStep = (
         stepPrompt: string | Prompt.Prompt,
       ): Effect.Effect<
-      void,
-       AgentWorkerError,
+        void,
+        AgentWorkerError,
         LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
       > => {
         let needsContinuation = false;
@@ -283,13 +310,13 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
             // A steer is an instruction for the next provider boundary, not a
             // FIFO turn. Check before tool continuation so it can redirect the
             // agent before the provider sees the tool result again.
-             Effect.flatMap(() =>
+            Effect.flatMap(() =>
               needsContinuation
                 ? takeSteer.pipe(
                     Effect.flatMap((steer) => (steer ? runTurn(steer) : runStep(Prompt.empty))),
                   )
-                 : Effect.void,
-             ),
+                : Effect.void,
+            ),
             Effect.mapError(() => new AgentWorkerError({ message: "agent provider failed" })),
           );
       };
@@ -299,15 +326,19 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
         // the same durable entry after the nested turn settles.
         Ref.update(inbox, (pending) => pending.filter((entry) => entry.turn !== queued.turn)).pipe(
           Effect.andThen(
-          queued.id && options.inbox
-            ? options.inbox
-                .promotePrompt(queued.id)
-                .pipe(Effect.mapError(() => new AgentWorkerError({ message: "prompt promotion failed" })))
-            : Effect.void,
+            queued.id && options.inbox
+              ? options.inbox
+                  .promotePrompt(queued.id)
+                  .pipe(
+                    Effect.mapError(
+                      () => new AgentWorkerError({ message: "prompt promotion failed" }),
+                    ),
+                  )
+              : Effect.void,
           ),
           Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
           Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
-          Effect.andThen(emit(agentStateTopic(AgentState.Working))),
+          Effect.andThen(emit(agentStateTopic(ProcessState.Running))),
           Effect.andThen(runStep(prompt)),
           Effect.onExit((exit) => settle(turn, exit, responseText)),
           // settle has already reported the failure as turn.end{failed}, so the
@@ -367,12 +398,12 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
             Ref.updateAndGet(turns, (n) => n + 1).pipe(
               Effect.flatMap((n) => {
                 const turn = admitted?.turn ?? `turn-${n}`;
-                 const queued = {
-                   turn,
-                   prompt: text,
-                   delivery: promptOptions.delivery ?? "queue",
-                 } satisfies QueuedTurn;
-                 if (admitted) Object.assign(queued, { id: admitted.id });
+                const queued = {
+                  turn,
+                  prompt: text,
+                  delivery: promptOptions.delivery ?? "queue",
+                } satisfies QueuedTurn;
+                if (admitted) Object.assign(queued, { id: admitted.id });
                 return emit({
                   _tag: "turn.queued",
                   turn,
