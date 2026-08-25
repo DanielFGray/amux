@@ -97,10 +97,10 @@ test("drains a prompt and emits semantic frames", async () => {
   expect(frames.map((frame) => frame._tag)).toEqual([
     "turn.queued",
     "turn.start",
-    "agent.status",
+    "topic",
     "text.delta",
     "turn.end",
-    "agent.status",
+    "topic",
   ]);
   expect(frames.find((frame) => frame._tag === "turn.start")).toMatchObject({
     prompt: "inspect the pane",
@@ -390,7 +390,11 @@ test("interrupt ends the turn as interrupted and keeps the partial text", async 
   expect(frames.find((f) => f._tag === "turn.end")).toMatchObject({
     outcome: "interrupted",
   });
-  expect(frames.at(-1)).toMatchObject({ _tag: "agent.status", state: "idle" });
+  expect(frames.at(-1)).toMatchObject({
+    _tag: "topic",
+    topic: "session.state",
+    payload: "idle",
+  });
 });
 
 /**
@@ -435,7 +439,12 @@ test("a turn that fails reports the cause and leaves the session usable", async 
   expect((failed as { error?: string }).error).toBe(
     "The agent worker failed while processing the request.",
   );
-  expect(frames.some((f) => f._tag === "agent.status" && f.state === "failed")).toBe(true);
+  expect(
+    frames.some(
+      (frame) =>
+        frame._tag === "topic" && frame.topic === "session.state" && frame.payload === "failed",
+    ),
+  ).toBe(true);
   // The next turn still runs: a failure ends the turn, never the worker.
   expect(recovered).toMatchObject({ outcome: "completed" });
   expect((recovered as { error?: string }).error).toBeUndefined();
@@ -469,13 +478,13 @@ test("streamed tool parameters emit params frames before the call", async () => 
   expect(frames.map((f) => f._tag)).toEqual([
     "turn.queued",
     "turn.start",
-    "agent.status",
+    "topic",
     "tool.params-start",
     "tool.params-delta",
     "tool.params-delta",
     "tool.params-end",
     "turn.end",
-    "agent.status",
+    "topic",
   ]);
 });
 

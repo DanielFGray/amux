@@ -7,11 +7,11 @@ describe("eventGap", () => {
       eventGap(
         {
           sequence: 3,
-          event: { _tag: "agent.state", session: "a", state: "working" },
+          event: { _tag: "session.state", session: "a", state: "working" },
         },
         {
           sequence: 8,
-          event: { _tag: "agent.state", session: "b", state: "blocked" },
+          event: { _tag: "session.state", session: "b", state: "blocked" },
         },
       ),
     ).toBe(4);
@@ -20,7 +20,7 @@ describe("eventGap", () => {
   it("does not report a gap for adjacent or reordered frames", () => {
     const current = {
       sequence: 4,
-      event: { _tag: "agent.state", session: "b", state: "blocked" },
+      event: { _tag: "session.state", session: "b", state: "blocked" },
     } as const;
     expect(eventGap({ sequence: 3, event: current.event }, current)).toBe(0);
     expect(eventGap({ sequence: 5, event: current.event }, current)).toBe(0);

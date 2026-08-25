@@ -61,8 +61,8 @@ export interface SessionSpec {
   readonly stripEnv?: readonly string[];
   readonly cwd?: string;
   readonly rpcPath?: string;
-  /** Where a hook inside a foreign agent reports that agent's state. */
-  readonly agentStatePath?: string;
+  /** Where a hook inside a foreign process reports its state. */
+  readonly processStatePath?: string;
   /** The pane that shows this session, so the child can be handed its own
    *  pane id (AMUX_PANE_ID). Resolved by the mutation that spawned it. */
   readonly paneId?: string;
@@ -151,7 +151,7 @@ function ptyBackend(spec: SessionSpec): Backend {
       ...(spec.paneId ? { AMUX_PANE_ID: spec.paneId } : {}),
       AMUX_AGENT_ID: spec.id,
       ...(spec.rpcPath ? { AMUX_CONTROL_SOCKET: spec.rpcPath } : {}),
-      ...(spec.agentStatePath ? { AMUX_AGENT_STATE_SOCKET: spec.agentStatePath } : {}),
+      ...(spec.processStatePath ? { AMUX_PROCESS_STATE_SOCKET: spec.processStatePath } : {}),
       ...(spec.daemonSession ? { AMUX_DAEMON_SESSION: spec.daemonSession } : {}),
       ...spec.env,
     },

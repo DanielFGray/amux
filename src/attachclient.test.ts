@@ -173,7 +173,7 @@ test("native agent status frames become authoritative projected state", async ()
   const cmd = [
     process.execPath,
     "-e",
-    `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"native-status-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+    `process.stdout.write(JSON.stringify({_tag:"topic",session:"native-status-agent",sequence:1,topic:"session.state",payload:"working"})+"\\n"); setTimeout(()=>{},30000)`,
   ];
   await Effect.runPromise(
     daemon.spawnSession({
@@ -231,7 +231,7 @@ test("reattaching replays the completed transcript but not live-only deltas", as
   const emitted = [
     {
       _tag: "agent.event",
-      event: { _tag: "agent.status", session: id, state: "working" },
+      event: { _tag: "topic", session: id, topic: "session.state", payload: "working" },
     },
     {
       _tag: "agent.event",
@@ -255,7 +255,7 @@ test("reattaching replays the completed transcript but not live-only deltas", as
     },
     {
       _tag: "agent.event",
-      event: { _tag: "agent.status", session: id, state: "idle" },
+      event: { _tag: "topic", session: id, topic: "session.state", payload: "idle" },
     },
   ];
   const cmd = [
@@ -285,7 +285,7 @@ test("reattaching replays the completed transcript but not live-only deltas", as
       .pipe(Stream.runForEach((frame) => Effect.sync(() => void replay.push(frame)))),
   );
   second.attach.sync(id);
-  await until(() => replay.some((frame) => frame._tag === "agent.status"), "durable history");
+  await until(() => replay.some((frame) => frame._tag === "topic"), "durable history");
   await Effect.runPromise(Fiber.interrupt(replayFiber));
 
   const transcript = new Transcript();

@@ -1,12 +1,25 @@
-import { Context, Deferred, Effect, FiberMap, Layer, Match, Queue, Ref, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  FiberMap,
+  Layer,
+  Match,
+  Queue,
+  Ref,
+  Schema as S,
+  Stream,
+} from "effect";
 import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
 import {
   isAgentEventPayload,
+  SESSION_STATE_TOPIC,
   type AgentEventPayload,
   type AgentFrame,
   type AttachFrame,
+  type Topic,
 } from "./AttachProtocol.ts";
 import { AgentLog } from "./AgentLog.ts";
 import {
@@ -17,7 +30,6 @@ import {
   type SessionSpec,
 } from "./SessionRegistry.ts";
 import { isTerminalSize } from "../limits.ts";
-import { AgentState, type ReportedAgentState } from "../agent-state.ts";
 
 const BRACKETED_PASTE_START = new TextEncoder().encode("\x1b[200~");
 const BRACKETED_PASTE_END = new TextEncoder().encode("\x1b[201~");
@@ -47,7 +59,7 @@ export interface SessionExitObserverService {
 }
 
 export interface SessionStateObserverService {
-  readonly onState: (id: string, state: ReportedAgentState) => Effect.Effect<void, unknown>;
+  readonly onState: (id: string, state: string) => Effect.Effect<void, unknown>;
 }
 
 export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
@@ -122,7 +134,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
      *  log's: ingest can fail either way and the caller cannot tell them apart
      *  until both are typed. */
     const reporters = yield* Ref.make<
-      ReadonlyMap<string, (state: ReportedAgentState) => Effect.Effect<void, unknown>>
+      ReadonlyMap<string, (state: string) => Effect.Effect<void, unknown>>
     >(new Map());
     yield* Effect.addFinalizer(() =>
       Ref.get(replays).pipe(
@@ -242,7 +254,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       let phase: "prepared" | "activating" | "active" | "aborted" = "prepared";
       const pending = yield* Queue.unbounded<Uint8Array>();
       const pendingEvents = yield* Queue.unbounded<AgentFrame>();
-      let lastAgentState: ReportedAgentState | null = null;
+      let lastSessionState: string | null = null;
       let exitPublished = false;
 
       const publishExit = (code: number | null) =>
@@ -318,16 +330,16 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           const code = yield* session.exit.pipe(Effect.orElseSucceed(() => null));
           yield* Deferred.succeed(termination, code);
           if ((yield* Deferred.await(disposition)) === "active") {
-            // An agent's process ending is an agent lifecycle event; a
-            // component's is not, and the two are only the same thing while
-            // every component happens to be an agent.
+            // A declared process integration gets a final state fact. Core
+            // does not decide how a subscriber presents that fact.
             if (spec.agent && code !== null) {
               const failed = yield* agentLog.append({
-                _tag: "agent.status",
+                _tag: "topic",
                 session: spec.id,
-                state: AgentState.Failed,
+                topic: SESSION_STATE_TOPIC,
+                payload: "failed",
               });
-              yield* stateObserver.onState(spec.id, AgentState.Failed);
+              yield* stateObserver.onState(spec.id, "failed");
               yield* hub.publish(failed);
             }
             yield* publishExit(code);
@@ -360,21 +372,24 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       const ingest = (event: AgentFrame | AgentEventPayload) =>
         Effect.gen(function* () {
           const committed = isAgentEventPayload(event) ? yield* agentLog.append(event) : event;
-          if (committed._tag === "agent.status" && committed.state !== lastAgentState) {
-            lastAgentState = committed.state;
-            yield* stateObserver.onState(spec.id, committed.state);
+          if (isSessionStateTopic(committed) && committed.payload !== lastSessionState) {
+            lastSessionState = committed.payload;
+            yield* stateObserver.onState(spec.id, committed.payload);
           }
           if (phase === "active") yield* hub.publish(committed);
           else yield* Queue.offer(pendingEvents, committed);
         });
 
-      // A foreign agent reporting over the control socket is the same fact as
-      // our own harness emitting `agent.status`, so it takes the same door and
-      // lands in the same log. Without this a self-reported state would be live
-      // only, and a watcher resuming from a cursor would never see it.
+      // Process reports take the same generic topic door as component events,
+      // so replay and live subscribers observe one ordered fact stream.
       yield* Ref.update(reporters, (current) =>
-        new Map(current).set(spec.id, (state: ReportedAgentState) =>
-          ingest({ _tag: "agent.status", session: spec.id, state }),
+        new Map(current).set(spec.id, (state: string) =>
+          ingest({
+            _tag: "topic",
+            session: spec.id,
+            topic: SESSION_STATE_TOPIC,
+            payload: state,
+          }),
         ),
       );
 
@@ -451,11 +466,15 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       /**
        * A process's report about itself, from the control socket.
        *
-       * Unknown sessions are ignored rather than failed: the reporter is a hook
-       * inside somebody else's agent, and a pane that closed while its hook was
-       * mid-write is ordinary, not an error anyone can act on.
+       * The reported state is an opaque string here: this door is generic
+       * process self-reporting, not agent-specific, so validating it against
+       * the agent plugin's closed vocabulary is the plugin's job, not the
+       * supervisor's. Unknown sessions are ignored rather than failed: the
+       * reporter is a hook inside somebody else's agent, and a pane that
+       * closed while its hook was mid-write is ordinary, not an error anyone
+       * can act on.
        */
-      report: (id: string, state: ReportedAgentState) =>
+      report: (id: string, state: string) =>
         Ref.get(reporters).pipe(
           Effect.flatMap((current) => current.get(id)?.(state) ?? Effect.void),
         ),
@@ -611,3 +630,6 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
 }) {
   static Live = SessionSupervisor.Default.pipe(Layer.provide(SessionRegistry.Default));
 }
+
+const isSessionStateTopic = (frame: AgentFrame): frame is Topic & { readonly payload: string } =>
+  frame._tag === "topic" && frame.topic === SESSION_STATE_TOPIC && S.is(S.String)(frame.payload);

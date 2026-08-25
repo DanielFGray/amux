@@ -10,6 +10,7 @@ import { Cause, Effect, Exit, Fiber, FiberHandle, Queue, Ref, Scope, Stream } fr
 import type { AgentEventPayload, AgentDelta } from "../../../effect/AttachProtocol.ts";
 import { AgentState } from "../../../agent-state.ts";
 import type { PromptDelivery, PromptInboxEntry } from "../../../project-store.ts";
+import { agentStateTopic } from "./state-topic.ts";
 
 export type AgentWorker = {
   readonly prompt: (
@@ -227,10 +228,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
           }),
         ),
         Effect.andThen(
-          emit({
-            _tag: "agent.status",
-            state: outcome === "failed" ? AgentState.Failed : AgentState.Idle,
-          }),
+          emit(agentStateTopic(outcome === "failed" ? AgentState.Failed : AgentState.Idle)),
         ),
       );
     };
@@ -302,7 +300,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>>(options:
           ),
           Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
           Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
-          Effect.andThen(emit({ _tag: "agent.status", state: AgentState.Working })),
+          Effect.andThen(emit(agentStateTopic(AgentState.Working))),
           Effect.andThen(runStep(prompt)),
           Effect.onExit((exit) => settle(turn, exit, responseText)),
           // settle has already reported the failure as turn.end{failed}, so the

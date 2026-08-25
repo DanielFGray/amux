@@ -113,7 +113,7 @@ async function main(): Promise<number> {
       const state =
         argv.find((v) => v.startsWith("--state="))?.slice(8) ??
         (argv.includes("--state") ? argv[argv.indexOf("--state") + 1] : undefined);
-      const socketPath = process.env.AMUX_AGENT_STATE_SOCKET;
+      const socketPath = process.env.AMUX_PROCESS_STATE_SOCKET;
       // The session id, not the pane id: the report keys a session, and the
       // pane id can change when the pane moves.
       const agent = process.env.AMUX_AGENT_ID;
@@ -173,12 +173,14 @@ async function main(): Promise<number> {
     { controlCall, agentWatch, AgentWaitError },
     commandsMod,
     { parseArgs, fieldNames },
+    { SESSION_STATE_TOPIC },
   ] = await Promise.all([
     import("effect"),
     import("./session.ts"),
     import("./control-client.ts"),
     import("./commands.ts"),
     import("./command-cli.ts"),
+    import("./effect/AttachProtocol.ts"),
   ]);
   const { Effect, Option, Schema, Stream } = effectMod;
   const { COMMAND_META, Command, commandDefinition } = commandsMod;
@@ -339,7 +341,9 @@ async function main(): Promise<number> {
           const deadline = Date.now() + timeout;
           const first = yield* agentWatch(control, prompt.target, after).pipe(
             Stream.filter(
-              (event): event is any => event._tag === "turn.start" || event._tag === "agent.status",
+              (event): event is any =>
+                event._tag === "turn.start" ||
+                (event._tag === "topic" && event.topic === SESSION_STATE_TOPIC),
             ),
             Stream.runHead,
             Effect.timeoutFail({
@@ -359,8 +363,9 @@ async function main(): Promise<number> {
             }
             if (
               prompt.until !== undefined &&
-              event._tag === "agent.status" &&
-              event.state === prompt.until
+              event._tag === "topic" &&
+              event.topic === SESSION_STATE_TOPIC &&
+              event.payload === prompt.until
             ) {
               result = event;
               return true;

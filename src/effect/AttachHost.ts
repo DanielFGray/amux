@@ -16,7 +16,7 @@
  * the wrong thing impossible to write rather than merely discouraged.
  */
 
-import { Context, Effect, ExecutionStrategy, Layer, Runtime, Scope } from "effect";
+import { Context, Effect, ExecutionStrategy, Layer, Runtime, Schema as S, Scope } from "effect";
 import { createServer, type Server } from "node:net";
 import { chmod } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";
@@ -31,13 +31,18 @@ import {
   type PreparedSession,
 } from "./SessionSupervisor.ts";
 import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./SessionRegistry.ts";
-import { isReportedAgentState, type ReportedAgentState } from "../agent-state.ts";
+
+const ProcessStateReport = S.Struct({
+  id: S.optional(S.String),
+  method: S.String,
+  params: S.optional(S.Struct({ session: S.optional(S.String), state: S.optional(S.String) })),
+});
 
 export interface AttachHostOptions {
   /** Unix socket path for the attach stream (SessionPaths.attach). */
   readonly path: string;
-  /** Plain-JSON endpoint for agent self-reports (SessionPaths.agentState). */
-  readonly agentStatePath?: string;
+  /** Plain-JSON endpoint for process self-reports (SessionPaths.processState). */
+  readonly processStatePath?: string;
   readonly rpcPath?: string;
   readonly daemonSession?: string;
   readonly idleTimeoutSeconds?: number;
@@ -57,10 +62,7 @@ export interface AttachHostOptions {
   ) => Effect.Effect<void, unknown>;
   /** A supervised backend actually terminated (not merely an observer detaching). */
   readonly onSessionExit?: (session: string, code: number | null) => Effect.Effect<void, unknown>;
-  readonly onAgentState?: (
-    session: string,
-    state: ReportedAgentState,
-  ) => Effect.Effect<void, unknown>;
+  readonly onSessionState?: (session: string, state: string) => Effect.Effect<void, unknown>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -125,11 +127,11 @@ const make = (
     // detach before session shutdown can publish process exit frames.
     const sessions = yield* Scope.fork(host, ExecutionStrategy.sequential);
 
-    if (options.agentStatePath) {
-      const agentStatePath = options.agentStatePath;
+    if (options.processStatePath) {
+      const processStatePath = options.processStatePath;
       // This listener is a raw node:net callback, so it cannot `yield*` the
       // way the attach server's callbacks do. Without a runtime to run it in,
-      // `onAgentState` would only ever be *constructed* here and discarded —
+      // `onSessionState` would only ever be *constructed* here and discarded —
       // an Effect that is never run reports nothing.
       const runtime = yield* Effect.runtime<never>();
       yield* Effect.acquireRelease(
@@ -145,23 +147,17 @@ const make = (
                   for (const line of lines) {
                     if (!line) continue;
                     try {
-                      const request = JSON.parse(line) as {
-                        id?: string;
-                        method?: string;
-                        params?: { agent?: string; state?: string };
-                      };
-                      const agent = request.params?.agent;
+                      const request = S.decodeUnknownSync(ProcessStateReport)(JSON.parse(line));
+                      const session = request.params?.session;
                       const state = request.params?.state;
                       // Built, not run: an Effect is a description, so this costs
                       // nothing when the report turns out to be malformed.
-                      // Through the supervisor, not straight to the observer: a
-                      // self-report is committed to the session's log like any
-                      // other agent event, and the observer fires from there. A
-                      // report that skipped the log would be visible live and
-                      // absent on replay.
+                      // Through the supervisor, not straight to the observer:
+                      // the receiving integration owns validation and durable
+                      // state handling before observers see this process fact.
                       const report =
-                        request.method === "agent.state" && agent && isReportedAgentState(state)
-                          ? supervisor.report(agent, state)
+                        request.method === "process.state" && session && state
+                          ? supervisor.report(session, state)
                           : undefined;
                       const ok = request.method === "ping" || report !== undefined;
                       if (report) Runtime.runFork(runtime)(report);
@@ -183,9 +179,9 @@ const make = (
               // owner-only even when the daemon inherited a permissive umask —
               // nothing a pane process runs may fabricate another pane's report.
               // Resolve only once the mode is pinned, so a daemon that is up is
-              // one whose agent-state socket is already private.
-              value.listen(agentStatePath, () => {
-                chmod(agentStatePath, 0o600).then(() => resolve(value), reject);
+              // one whose process-state socket is already private.
+              value.listen(processStatePath, () => {
+                chmod(processStatePath, 0o600).then(() => resolve(value), reject);
               });
             }),
         ),
@@ -226,7 +222,7 @@ const make = (
           supervisor.prepare({
             ...spec,
             ...(options.rpcPath ? { rpcPath: options.rpcPath } : {}),
-            ...(options.agentStatePath ? { agentStatePath: options.agentStatePath } : {}),
+            ...(options.processStatePath ? { processStatePath: options.processStatePath } : {}),
             ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
           }),
           sessions,
@@ -236,7 +232,7 @@ const make = (
           supervisor.prepare({
             ...spec,
             ...(options.rpcPath ? { rpcPath: options.rpcPath } : {}),
-            ...(options.agentStatePath ? { agentStatePath: options.agentStatePath } : {}),
+            ...(options.processStatePath ? { processStatePath: options.processStatePath } : {}),
             ...(options.daemonSession ? { daemonSession: options.daemonSession } : {}),
           }),
           sessions,
@@ -290,7 +286,7 @@ export const layerAttachHost = (
         ),
         Layer.provide(
           Layer.succeed(SessionStateObserver, {
-            onState: options.onAgentState ?? (() => Effect.void),
+            onState: options.onSessionState ?? (() => Effect.void),
           }),
         ),
       ),

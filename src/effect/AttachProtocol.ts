@@ -1,6 +1,7 @@
 import { Schema as S, SchemaAST as AST } from "effect";
-import { ReportedAgentStateSchema } from "../agent-state.ts";
 import { PermissionDecisionSchema, PermissionRuleSchema } from "../permission.ts";
+
+export const SESSION_STATE_TOPIC = "session.state";
 
 /**
  * The framed wire protocol between a client and the attach daemon.
@@ -242,15 +243,18 @@ const PermissionResponse = S.TaggedStruct("permission.response", {
   sequence: S.NonNegativeInt,
 });
 
-const agentStatusFields = {
+/** A durable value whose meaning belongs to the named subscriber, not core. */
+const topicFields = {
   session: S.String,
-  state: ReportedAgentStateSchema,
+  topic: S.String,
+  payload: S.Unknown,
 };
-const AgentStatusPayload = S.TaggedStruct("agent.status", agentStatusFields);
-const AgentStatus = S.TaggedStruct("agent.status", {
-  ...agentStatusFields,
+const TopicPayload = S.TaggedStruct("topic", topicFields);
+export const Topic = S.TaggedStruct("topic", {
+  ...topicFields,
   sequence: S.NonNegativeInt,
 });
+export type Topic = S.Schema.Type<typeof Topic>;
 
 const AgentErrorFields = {
   session: S.String,
@@ -284,7 +288,7 @@ export const AgentEventPayloadSchema = S.Union(
   ToolResultPayload,
   PermissionRequestPayload,
   PermissionResponsePayload,
-  AgentStatusPayload,
+  TopicPayload,
   AgentErrorPayload,
   TurnEndPayload,
 );
@@ -297,7 +301,7 @@ const AgentPrompt = S.TaggedStruct("agent.prompt", {
   delivery: S.optional(S.Literal("steer", "queue")),
   resume: S.optional(S.Boolean),
   wait: S.optional(S.Boolean),
-  until: S.optional(ReportedAgentStateSchema),
+  until: S.optional(S.String),
   timeout: S.optional(S.NonNegativeInt),
 });
 
@@ -343,7 +347,7 @@ export const AgentEvent = S.Union(
   ToolResult,
   PermissionRequest,
   PermissionResponse,
-  AgentStatus,
+  Topic,
   AgentError,
   TurnEnd,
 );
@@ -379,7 +383,7 @@ export const AttachFrame = S.Union(
   ToolResult,
   PermissionRequest,
   PermissionResponse,
-  AgentStatus,
+  Topic,
   AgentError,
   TurnEnd,
   AgentPrompt,

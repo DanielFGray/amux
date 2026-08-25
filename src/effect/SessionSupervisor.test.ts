@@ -91,7 +91,7 @@ testEffect("a self-reported state is committed to the session log, not only publ
     yield* supervisor.kill("foreign-agent");
 
     const events = yield* log.read("foreign-agent");
-    expect(events.map((event) => event._tag === "agent.status" && event.state)).toEqual([
+    expect(events.map((event) => event._tag === "topic" && event.payload)).toEqual([
       AgentState.Working,
       AgentState.Blocked,
     ]);
@@ -468,7 +468,7 @@ testEffect("a native agent worker is listed and killed through the supervisor", 
       cmd: [
         process.execPath,
         "-e",
-        `process.stdout.write(JSON.stringify({_tag:"agent.status",session:"worker-agent",sequence:1,state:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+        `process.stdout.write(JSON.stringify({_tag:"topic",session:"worker-agent",sequence:1,topic:"session.state",payload:"working"})+"\\n"); setTimeout(()=>{},30000)`,
       ],
       cols: 80,
       rows: 24,
@@ -510,10 +510,11 @@ testEffect("a crashed native agent reports failure and can be restarted", () =>
     yield* supervisor.spawn(spec);
     const frames = yield* untilExit(subscription.frames);
     expect(frames).toContainEqual({
-      _tag: "agent.status",
+      _tag: "topic",
       session: "crashed-worker",
       sequence: 0,
-      state: "failed",
+      topic: "session.state",
+      payload: "failed",
     });
     expect(frames.at(-1)).toEqual({
       _tag: "exit",

@@ -82,9 +82,9 @@ test("a write blocks until it is answered, then runs once", async () => {
   expect(decided).toBeUndefined();
   expect(world.emitted().map((frame) => frame._tag)).toEqual([
     "permission.request",
-    "agent.status",
+    "topic",
     "permission.response",
-    "agent.status",
+    "topic",
   ]);
   expect(world.emitted().find((frame) => frame._tag === "permission.response")).toMatchObject({
     decision: "once",
@@ -150,7 +150,7 @@ test("a standing deny is refused without ever asking", async () => {
   expect(world.emitted().map((frame) => frame._tag)).toEqual([
     "permission.request",
     "permission.response",
-    "agent.status",
+    "topic",
   ]);
 });
 

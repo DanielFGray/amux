@@ -14,6 +14,7 @@ import {
 } from "./transcript.ts";
 import { AgentFrame, type AttachFrame } from "../../../effect/AttachProtocol.ts";
 import type { ReportedAgentState } from "../../../agent-state.ts";
+import { agentStateFromTopic } from "./state-topic.ts";
 import { theme } from "../../../ui/theme.ts";
 
 export interface TranscriptProps {
@@ -68,7 +69,10 @@ export function Transcript(props: TranscriptProps) {
       Stream.runForEach((event) =>
         Effect.sync(() => {
           if (!S.is(AgentFrame)(event)) return;
-          if (event._tag === "agent.status") props.onStatus?.(event.state);
+          if (event._tag === "topic") {
+            const state = agentStateFromTopic(event);
+            if (state !== undefined) props.onStatus?.(state);
+          }
           transcript.append(event);
           setRevision((value) => value + 1);
         }),

@@ -16,7 +16,8 @@
 import { spawnPty, readPty } from "./pty.ts";
 import { Effect, Fiber, Mailbox, Stream } from "effect";
 import type { AttachClientShape } from "./attach.ts";
-import type { AgentState } from "./agent-state.ts";
+import { isReportedAgentState, type AgentState } from "./agent-state.ts";
+import { SESSION_STATE_TOPIC } from "./effect/AttachProtocol.ts";
 
 export interface SessionBackend {
   /** True once the stream is over: the process exited, or the attachment was
@@ -187,9 +188,9 @@ export function daemonBackend(
                   foregroundPgid = frame.pgid;
                   foregroundSid = frame.sid;
                 })
-              : frame._tag === "agent.status"
+              : frame._tag === "topic" && frame.topic === SESSION_STATE_TOPIC
                 ? Effect.sync(() => {
-                    agentState = frame.state;
+                    if (isReportedAgentState(frame.payload)) agentState = frame.payload;
                   })
                 : Effect.void,
       ).pipe(

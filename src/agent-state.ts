@@ -1,12 +1,15 @@
 /**
  * The one vocabulary for what an agent is doing.
  *
- * Every plane carries this word — the attach protocol, the event bus, the
- * supervisor, the sidebar glyph, the socket a foreign agent's hook writes — and
- * a state that exists in one module's union and not another's is a state that
- * silently disappears somewhere along the wire. So its names and schemas are
- * defined once, and every union and every `Record<AgentState, _>` is derived
- * from them.
+ * The wire (EventBus's session.state, the attach protocol's named topic and
+ * agent.prompt `until`, the process self-report socket) carries this only as
+ * an opaque string: those transports must not need editing whenever this
+ * vocabulary grows a state, so none of them import this module. Instead every
+ * plane that means something by the value — the sidebar glyph, the socket a
+ * foreign agent's hook writes, the agent plugin relabeling a generic topic
+ * frame — validates and interprets it at its own boundary via
+ * `isReportedAgentState`, and every union and `Record<AgentState, _>` derives
+ * from the names and schemas defined once here.
  *
  * This module deliberately depends on nothing but Node and Effect: the leaf
  * modules that need the vocabulary (detect, backend) must not inherit the
@@ -70,8 +73,8 @@ export function reportAgentState(
     const socket = net.createConnection(socketPath);
     const request = JSON.stringify({
       id: `amux:agent-state:${Date.now()}`,
-      method: "agent.state",
-      params: { agent, state },
+      method: "process.state",
+      params: { session: agent, state },
     });
     let settled = false;
     const finish = (error?: Error) => {
