@@ -10,8 +10,9 @@ import {
   Stream,
 } from "effect";
 import { PtyWriteInterrupted, readPty, spawnPty } from "../pty.ts";
-import { isTerminalSize } from "../limits.ts";
+import { isTerminalSize, MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import {
+  AttachFrameAccumulator,
   decodeAttachFrames,
   isAgentEvent,
   type AgentEventPayload,
@@ -185,6 +186,8 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
   #values: A[] = [];
   #waiters: ((result: IteratorResult<A>) => void)[] = [];
   #ended = false;
+  #failure: unknown;
+  #failed = false;
 
   offer(value: A): void {
     const waiter = this.#waiters.shift();
@@ -198,15 +201,29 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
     while (this.#waiters.length) this.#waiters.shift()!({ done: true, value: undefined });
   }
 
+  /** Ends the mailbox by raising `error` out of the iterator instead of a
+   *  clean completion, so a consuming Stream reports it as a typed failure
+   *  rather than looking like a graceful close. */
+  fail(error: unknown): void {
+    if (this.#ended) return;
+    this.#failure = error;
+    this.#failed = true;
+    this.end();
+  }
+
   async *[Symbol.asyncIterator](): AsyncIterator<A> {
     while (this.#values.length || !this.#ended) {
       if (this.#values.length) yield this.#values.shift()!;
       else {
         const next = await new Promise<IteratorResult<A>>((resolve) => this.#waiters.push(resolve));
-        if (next.done) return;
+        if (next.done) {
+          if (this.#failed) throw this.#failure;
+          return;
+        }
         yield next.value;
       }
     }
+    if (this.#failed) throw this.#failure;
   }
 }
 
@@ -245,32 +262,32 @@ function componentBackend(spec: SessionSpec): Backend {
 
   void new Response(child.stderr).text();
   void (async () => {
-    let pending = new Uint8Array();
-    const decoder = new TextDecoder();
+    const buffer = new AttachFrameAccumulator();
     try {
       for await (const chunk of child.stdout) {
-        const combined = new Uint8Array(pending.length + chunk.length);
-        combined.set(pending);
-        combined.set(chunk, pending.length);
-        let start = 0;
-        for (let index = 0; index < combined.length; index++) {
-          if (combined[index] !== 10) continue;
-          const line = decoder.decode(combined.subarray(start, index));
-          start = index + 1;
-          if (!line) continue;
-          for (const frame of decodeAttachFrames(`${line}\n`).frames) {
-            if (frame._tag === "output" && frame.session === spec.id)
-              output.offer(new Uint8Array(frame.data));
-            else if (frame._tag === "agent.event" && frame.event.session === spec.id)
-              events.offer(frame.event);
-            else if (isAgentFrame(frame) && frame.session === spec.id) events.offer(frame);
+        if (buffer.byteLength + chunk.byteLength > MAX_ATTACH_FRAME_BYTES) {
+          throw new Error("component worker frame exceeds MAX_ATTACH_FRAME_BYTES");
+        }
+        for (const complete of buffer.push(chunk)) {
+          for (const decoded of decodeAttachFrames(new TextDecoder().decode(complete)).frames) {
+            if (decoded._tag === "output" && decoded.session === spec.id)
+              output.offer(new Uint8Array(decoded.data));
+            else if (decoded._tag === "agent.event" && decoded.event.session === spec.id)
+              events.offer(decoded.event);
+            else if (isAgentFrame(decoded) && decoded.session === spec.id) events.offer(decoded);
           }
         }
-        pending = combined.slice(start);
       }
-    } finally {
       output.end();
       events.end();
+    } catch (error) {
+      // A malformed or oversized frame means the worker's protocol stream is
+      // no longer trustworthy — kill it and surface the failure through the
+      // output/events streams instead of ending them as if the worker had
+      // exited cleanly.
+      child.kill();
+      output.fail(error);
+      events.fail(error);
     }
   })();
 
