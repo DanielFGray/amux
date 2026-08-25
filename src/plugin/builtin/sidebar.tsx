@@ -4,22 +4,45 @@ import { Effect, Runtime } from "effect";
 import { theme } from "../../ui/theme.ts";
 import type { DockPanel } from "../../ui/regions.tsx";
 import { definePlugin, type PluginDefinition } from "../types.ts";
-import { RegionsTag } from "../services.ts";
+import { OptionsTag, RegionsTag } from "../services.ts";
 import type { SidebarDisplayRow } from "../../ui/panel.ts";
 import { SPINNER_FRAMES, STATE_GLYPH } from "../../detect.ts";
 import { AgentState } from "../../agent-state.ts";
 import { command } from "../../commands.ts";
 import { formatText } from "../../format.ts";
+import type { OptionSpec } from "../../options.ts";
 
 export const SIDEBAR_PLUGIN_ID = "amux.sidebar";
+
+/** The sidebar's own option declarations, registered through `OptionsTag`. */
+export const SIDEBAR_OPTIONS = {
+  "sidebar.open": { kind: "boolean", default: true, desc: "show the sidebar" },
+  "sidebar.width": { kind: "number", default: 30, min: 16, max: 60, desc: "columns" },
+  "sidebar.agentsOnly": {
+    kind: "boolean",
+    default: false,
+    desc: "list only panes running a recognised agent CLI",
+  },
+  "sidebar.format": {
+    kind: "string",
+    default:
+      "#{?active,▸, }#{?row_kind_branch,   #{branch}#{?git_ahead, ↑#{git_ahead},}#{?git_behind, ↓#{git_behind},},#{?row_kind_space,#{space_name},#{?row_kind_window,· #{window_name},#{agent_state_glyph} #{?pane_current_command,#{pane_current_command},#{pane_title}}#{indicators}}}}",
+    desc: "format for sidebar rows",
+    editable: true,
+  },
+} as const satisfies Record<string, OptionSpec>;
 
 export const sidebarPlugin: PluginDefinition = definePlugin({
   id: SIDEBAR_PLUGIN_ID,
   apiVersion: "1",
-  inject: [RegionsTag],
+  inject: [RegionsTag, OptionsTag],
   effect: (ctx) =>
     Effect.gen(function* () {
       const regions = yield* RegionsTag;
+      const options = yield* OptionsTag;
+      yield* Effect.all(
+        Object.entries(SIDEBAR_OPTIONS).map(([name, spec]) => options.register([name, spec])),
+      );
       const runtime = yield* Effect.runtime();
       let selected = 0;
       let hovered: number | null = null;
@@ -53,11 +76,11 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
         region: "left",
         anchor: "app",
         title: "spaces",
-        visible: () => ctx.panel.options()["sidebar.open"],
-        size: () => ctx.panel.options()["sidebar.width"],
+        visible: () => ctx.panel.options()["sidebar.open"] as boolean,
+        size: () => ctx.panel.options()["sidebar.width"] as number,
         resizable: true,
         onResize: (delta) => {
-          const width = ctx.panel.options()["sidebar.width"];
+          const width = ctx.panel.options()["sidebar.width"] as number;
           ctx.panel.setOption("sidebar.width", width + delta);
         },
         component: () => (
@@ -71,7 +94,7 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
             hovered={() => hovered}
             setHovered={(v) => (hovered = v)}
             agentsOnly={() => !!ctx.panel.options()["sidebar.agentsOnly"]}
-            format={() => ctx.panel.options()["sidebar.format"]}
+            format={() => ctx.panel.options()["sidebar.format"] as string}
             onActivate={activate}
           />
         ),

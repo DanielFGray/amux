@@ -46,21 +46,21 @@ test("options are stored as written and judged on the way out", () => {
   // bounds — and an entry it refused would be an entry a later build could not
   // read back.
   const config = decodeConfig({
-    options: { "sidebar.width": 999, "behaviour.shell": 42 },
+    options: { "behaviour.scrollRows": 999, "behaviour.shell": 42 },
   });
   expect(config.options).toEqual({
-    "sidebar.width": 999,
+    "behaviour.scrollRows": 999,
     "behaviour.shell": 42,
   });
 
   const options = resolveOptions(config.options);
-  expect(options["sidebar.width"]).toBe(60);
+  expect(options["behaviour.scrollRows"]).toBe(20);
   expect(options["behaviour.shell"]).toBe("");
 });
 
 test("an empty file is every default", () => {
   expect(decodeConfig({})).toEqual(DEFAULT_CONFIG);
-  expect(resolveOptions(decodeConfig({}).options)["sidebar.width"]).toBe(30);
+  expect(resolveOptions(decodeConfig({}).options)["behaviour.scrollRows"]).toBe(3);
 });
 
 test("the default sidebar is an ordinary enabled plugin spec", () => {
@@ -103,7 +103,7 @@ test("a changed config survives save and load", async () => {
     // The last is an option this build does not declare — a plugin's, or one
     // from a newer release. It has to come back out of the file unchanged.
     options: {
-      "sidebar.width": 42,
+      "behaviour.scrollRows": 10,
       "appearance.gap": true,
       "clock.format": "%H:%M",
     },

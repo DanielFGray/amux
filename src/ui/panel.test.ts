@@ -23,9 +23,9 @@ test("snapshot and options accessors do not expose mutable host values", () => {
   const ctx = testPanelContext({ snapshot: () => snapshotAt(1) });
 
   ctx.snapshot().revision = 99;
-  Object.defineProperty(ctx.options(), "sidebar.width", { value: 99, writable: true });
+  Object.defineProperty(ctx.options(), "behaviour.scrollRows", { value: 99, writable: true });
   expect(ctx.snapshot().revision).toBe(1);
-  expect(ctx.options()["sidebar.width"]).toBe(30);
+  expect(ctx.options()["behaviour.scrollRows"]).toBe(3);
 });
 
 test("tick accessor reads the current signal value", () => {
@@ -63,8 +63,8 @@ test("run propagates a CommandError", async () => {
 test("options accessor reads the current resolved values", () => {
   const ctx = testPanelContext();
 
-  expect(ctx.options()["sidebar.open"]).toBe(true);
-  expect(ctx.options()["sidebar.width"]).toBe(30);
+  expect(ctx.options()["appearance.outerBorder"]).toBe(true);
+  expect(ctx.options()["behaviour.scrollRows"]).toBe(3);
 });
 
 test("setOption delegates to the provided setter", () => {
@@ -78,9 +78,9 @@ test("setOption delegates to the provided setter", () => {
     },
   });
 
-  ctx.setOption("sidebar.open", false);
-  expect(calls).toEqual([{ name: "sidebar.open", value: false }]);
-  expect(ctx.options()["sidebar.open"]).toBe(false);
+  ctx.setOption("appearance.outerBorder", false);
+  expect(calls).toEqual([{ name: "appearance.outerBorder", value: false }]);
+  expect(ctx.options()["appearance.outerBorder"]).toBe(false);
 });
 
 test("run passes the optional input string to the invoker", async () => {

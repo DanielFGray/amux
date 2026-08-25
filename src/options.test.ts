@@ -8,25 +8,22 @@ import {
   optionSections,
   optionSpec,
   optionsIn,
-  parseModelReference,
   resolveOptions,
   writeOption,
 } from "./options.ts";
 
 test("a hand-edited file cannot put a value into the app the UI would refuse", () => {
   const options = resolveOptions({
-    "sidebar.width": 999,
-    "behaviour.scrollRows": 2.7,
-    "sidebar.open": "yes",
-    "appearance.whichKeyDelay": null,
+    "behaviour.scrollRows": 999,
+    "appearance.whichKeyDelay": 2.7,
+    "appearance.outerBorder": "yes",
     "behaviour.shell": 42,
   });
 
-  expect(options["sidebar.width"]).toBe(OPTIONS["sidebar.width"].max);
-  expect(options["behaviour.scrollRows"]).toBe(2);
+  expect(options["behaviour.scrollRows"]).toBe(OPTIONS["behaviour.scrollRows"].max);
+  expect(options["appearance.whichKeyDelay"]).toBe(2);
   // Wrong type is not clamped into range, it is not a value at all.
-  expect(options["sidebar.open"]).toBe(OPTIONS["sidebar.open"].default);
-  expect(options["appearance.whichKeyDelay"]).toBe(OPTIONS["appearance.whichKeyDelay"].default);
+  expect(options["appearance.outerBorder"]).toBe(OPTIONS["appearance.outerBorder"].default);
   expect(options["behaviour.shell"]).toBe(OPTIONS["behaviour.shell"].default);
 });
 
@@ -42,97 +39,78 @@ test("resolve is total: every declared option comes back", () => {
 // them at whatever they were the first time the user pressed save, and a later
 // release changing a default then reaches nobody.
 test("a value equal to the default is not stored at all", () => {
-  const changed = writeOption({}, "sidebar.width", OPTIONS["sidebar.width"], 42);
-  expect(changed).toEqual({ "sidebar.width": 42 });
+  const changed = writeOption({}, "behaviour.scrollRows", OPTIONS["behaviour.scrollRows"], 10);
+  expect(changed).toEqual({ "behaviour.scrollRows": 10 });
 
   const back = writeOption(
     changed,
-    "sidebar.width",
-    OPTIONS["sidebar.width"],
-    OPTIONS["sidebar.width"].default,
+    "behaviour.scrollRows",
+    OPTIONS["behaviour.scrollRows"],
+    OPTIONS["behaviour.scrollRows"].default,
   );
   expect(back).toEqual({});
-  expect(resolveOptions(back)["sidebar.width"]).toBe(OPTIONS["sidebar.width"].default);
+  expect(resolveOptions(back)["behaviour.scrollRows"]).toBe(
+    OPTIONS["behaviour.scrollRows"].default,
+  );
 });
 
 test("entries belonging to names this build does not declare are left alone", () => {
-  const stored = { "clock.format": "%H:%M", "sidebar.width": 42 };
-  expect(writeOption(stored, "sidebar.width", OPTIONS["sidebar.width"], 20)["clock.format"]).toBe(
-    "%H:%M",
-  );
-  expect(clearOption(stored, "sidebar.width")).toEqual({
+  const stored = { "clock.format": "%H:%M", "behaviour.scrollRows": 10 };
+  expect(
+    writeOption(stored, "behaviour.scrollRows", OPTIONS["behaviour.scrollRows"], 5)["clock.format"],
+  ).toBe("%H:%M");
+  expect(clearOption(stored, "behaviour.scrollRows")).toEqual({
     "clock.format": "%H:%M",
   });
 });
 
 test("reset drops the entry rather than storing the default", () => {
-  expect(clearOption({ "sidebar.width": 42 }, "sidebar.width")).toEqual({});
+  expect(clearOption({ "behaviour.scrollRows": 10 }, "behaviour.scrollRows")).toEqual({});
 });
 
 test("a relative edit clamps, and a boolean flips whichever way it is pushed", () => {
-  const width = OPTIONS["sidebar.width"];
-  expect(adjustedValue(width, 30, 1)).toBe(31);
-  expect(adjustedValue(width, width.max, 1)).toBe(width.max);
-  expect(adjustedValue(width, width.min, -1)).toBe(width.min);
+  const rows = OPTIONS["behaviour.scrollRows"];
+  expect(adjustedValue(rows, 3, 1)).toBe(4);
+  expect(adjustedValue(rows, rows.max, 1)).toBe(rows.max);
+  expect(adjustedValue(rows, rows.min, -1)).toBe(rows.min);
 
   // ←/→ has to mean something on every row, so the table answers for booleans
   // instead of the settings window branching on the kind.
-  expect(adjustedValue(OPTIONS["sidebar.open"], true, 1)).toBe(false);
-  expect(adjustedValue(OPTIONS["sidebar.open"], true, -1)).toBe(false);
+  expect(adjustedValue(OPTIONS["appearance.outerBorder"], true, 1)).toBe(false);
+  expect(adjustedValue(OPTIONS["appearance.outerBorder"], true, -1)).toBe(false);
   expect(adjustedValue(OPTIONS["behaviour.shell"], "zsh", 1)).toBe("zsh");
 });
 
 test("coerce refuses rather than inventing a value", () => {
-  expect(coerceOption(OPTIONS["sidebar.width"], "30")).toBeUndefined();
-  expect(coerceOption(OPTIONS["sidebar.open"], 1)).toBeUndefined();
+  expect(coerceOption(OPTIONS["behaviour.scrollRows"], "3")).toBeUndefined();
+  expect(coerceOption(OPTIONS["appearance.outerBorder"], 1)).toBeUndefined();
   expect(coerceOption(OPTIONS["behaviour.shell"], null)).toBeUndefined();
-  expect(coerceOption(OPTIONS["sidebar.width"], 999)).toBe(OPTIONS["sidebar.width"].max);
+  expect(coerceOption(OPTIONS["behaviour.scrollRows"], 999)).toBe(
+    OPTIONS["behaviour.scrollRows"].max,
+  );
 });
 
 test("an unknown name has no declaration to act on", () => {
-  expect(optionSpec("sidebar.width")).toBe(OPTIONS["sidebar.width"]);
-  expect(optionSpec("sidebar.nonesuch")).toBeUndefined();
+  expect(optionSpec("behaviour.scrollRows")).toBe(OPTIONS["behaviour.scrollRows"]);
+  expect(optionSpec("behaviour.nonesuch")).toBeUndefined();
   expect(optionSpec("toString")).toBeUndefined();
 });
 
 test("sections are the name prefixes, so declaring an option places its row", () => {
-  expect(optionSections).toEqual([
-    "sidebar",
-    "window",
-    "status",
-    "appearance",
-    "behaviour",
-    "agent",
-  ]);
-  expect(optionsIn("sidebar")).toEqual([
-    "sidebar.open",
-    "sidebar.width",
-    "sidebar.agentsOnly",
-    "sidebar.format",
+  expect(optionSections).toEqual(["window", "status", "appearance", "behaviour"]);
+  expect(optionsIn("appearance")).toEqual([
+    "appearance.gap",
+    "appearance.outerBorder",
+    "appearance.padding",
+    "appearance.whichKeyHints",
+    "appearance.whichKeyDelay",
   ]);
   expect(optionsIn("nonesuch")).toEqual([]);
 });
 
-test("the native agent model is a provider/model config value", () => {
-  expect(resolveOptions({})["agent.model"]).toBe("openai/gpt-4o-mini");
-  expect(resolveOptions({ "agent.model": "anthropic/claude-sonnet" })["agent.model"]).toBe(
-    "anthropic/claude-sonnet",
-  );
-  expect(resolveOptions({ "agent.model": 42 })["agent.model"]).toBe("openai/gpt-4o-mini");
-});
-
-test("model references split provider from model and reject incomplete values", () => {
-  expect(parseModelReference("openai/gpt-4o-mini")).toEqual({
-    providerID: "openai",
-    modelID: "gpt-4o-mini",
-  });
-  expect(parseModelReference("openai/")).toBeUndefined();
-  expect(parseModelReference("/gpt-4o-mini")).toBeUndefined();
-});
-
 test("values read as something a person can act on", () => {
-  expect(formatOption(OPTIONS["sidebar.open"], true)).toBe("yes");
-  expect(formatOption(OPTIONS["sidebar.width"], 30)).toBe("30");
+  expect(formatOption(OPTIONS["appearance.outerBorder"], true)).toBe("yes");
+  expect(formatOption(OPTIONS["behaviour.scrollRows"], 3)).toBe("3");
   expect(formatOption(OPTIONS["behaviour.shell"], "")).toBe("unset");
   expect(formatOption(OPTIONS["behaviour.shell"], "/bin/fish")).toBe("/bin/fish");
 });

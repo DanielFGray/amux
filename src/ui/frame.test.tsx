@@ -8,7 +8,7 @@ import { render } from "@opentui/solid";
 import { createSignal } from "solid-js";
 import type { Space } from "../space.ts";
 import { frame } from "../window.ts";
-import { resolveOptions } from "../options.ts";
+import { resolveOptions, type Options, type OptionValue } from "../options.ts";
 import { formatText } from "../format.ts";
 import { createAppState } from "./state.ts";
 import { App } from "./App.tsx";
@@ -25,9 +25,15 @@ const HEIGHT = 14;
 const SIDEBAR = 16;
 
 /** The options these tests vary: the sidebar's presence and the pane frame's
- *  column. The resize handle is independent of that frame. */
+ *  column. The resize handle is independent of that frame. `sidebar.*` is the
+ *  sidebar plugin's own option, not core, so it is added onto the resolved
+ *  core defaults rather than through `resolveOptions`. */
 const sidebar = (open: boolean) =>
-  resolveOptions({ "sidebar.open": open, "sidebar.width": SIDEBAR });
+  ({
+    ...resolveOptions({}),
+    "sidebar.open": open,
+    "sidebar.width": SIDEBAR,
+  }) as Options & Record<string, OptionValue>;
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -71,12 +77,12 @@ async function screen(
       id: "test.sidebar",
       region: "left",
       anchor: "app",
-      visible: () => options()["sidebar.open"],
-      size: () => options()["sidebar.width"],
+      visible: () => options()["sidebar.open"] as boolean,
+      size: () => options()["sidebar.width"] as number,
       resizable: true,
       onResize: () => {},
       component: () => (
-        <box style={{ width: options()["sidebar.width"], height: "100%" }}>
+        <box style={{ width: options()["sidebar.width"] as number, height: "100%" }}>
           <text>proj</text>
         </box>
       ),

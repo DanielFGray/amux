@@ -3,7 +3,8 @@ import { BunFileSystem } from "@effect/platform-bun";
 import { Effect, Stream } from "effect";
 import { Default as IntegrationDefault, Service as Integration } from "../../../integration.ts";
 import { loadConfig } from "../../../config.ts";
-import { parseModelReference, resolveOptions } from "../../../options.ts";
+import { coerceOption } from "../../../options.ts";
+import { AGENT_HARNESS_OPTIONS, parseModelReference } from "./options.ts";
 import {
   encodeAttachFrame,
   type AgentEventPayload,
@@ -42,7 +43,9 @@ else {
 
   const program = Effect.gen(function* () {
     const config = yield* Effect.promise(() => loadConfig());
-    const modelReference = resolveOptions(config.options)["agent.model"];
+    const modelSpec = AGENT_HARNESS_OPTIONS["agent.model"];
+    const modelReference = (coerceOption(modelSpec, config.options["agent.model"]) ??
+      modelSpec.default) as string;
     const model = parseModelReference(modelReference);
     if (!model)
       return yield* Effect.fail(`invalid agent.model '${modelReference}', expected provider/model`);

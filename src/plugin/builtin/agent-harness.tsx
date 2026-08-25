@@ -9,6 +9,7 @@ import { Default as ModelCatalogDefault } from "../../model-catalog.ts";
 import { definePlugin, type PluginDefinition } from "../types.ts";
 import {
   BindingsTag,
+  OptionsTag,
   RegionsTag,
   SessionViewsTag,
   SettingsTag,
@@ -17,6 +18,7 @@ import {
 import { Chat } from "./agent-harness/Chat.tsx";
 import { registerModelPicker } from "./agent-harness/ModelPicker.tsx";
 import { agentPreflight } from "./agent-harness/preflight.ts";
+import { AGENT_HARNESS_OPTIONS } from "./agent-harness/options.ts";
 import { theme } from "../../ui/theme.ts";
 import { Service as Integration, type Info as IntegrationInfo } from "../../integration.ts";
 import { Credential } from "../../credential.ts";
@@ -39,14 +41,18 @@ export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
 export const agentHarnessPlugin: PluginDefinition = definePlugin({
   id: AGENT_HARNESS_PLUGIN_ID,
   apiVersion: "1",
-  inject: [BindingsTag, RegionsTag, SessionViewsTag, SettingsTag, SpawnProvidersTag],
+  inject: [BindingsTag, OptionsTag, RegionsTag, SessionViewsTag, SettingsTag, SpawnProvidersTag],
   effect: (ctx) =>
     Effect.gen(function* () {
       const bindings = yield* BindingsTag;
+      const options = yield* OptionsTag;
       const sessionViews = yield* SessionViewsTag;
       const settings = yield* SettingsTag;
       const spawnProviders = yield* SpawnProvidersTag;
       const runtime = yield* Effect.runtime();
+      yield* Effect.all(
+        Object.entries(AGENT_HARNESS_OPTIONS).map(([name, spec]) => options.register([name, spec])),
+      );
       const openModelPicker = (yield* registerModelPicker(ctx)).pipe(Effect.provide(llmServices));
       const [providers, setProviders] = createSignal<readonly IntegrationInfo[]>([]);
       const [selected, setSelected] = createSignal(0);

@@ -5,7 +5,7 @@ import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { testRender, useRenderer } from "@opentui/solid";
 import { createSignal, onMount } from "solid-js";
 import { SpaceSet, type Space } from "../../space.ts";
-import { sidebarPlugin } from "./sidebar.tsx";
+import { sidebarPlugin, SIDEBAR_OPTIONS } from "./sidebar.tsx";
 import { type SidebarDisplay, type SidebarDisplayRow } from "../../ui/panel.ts";
 import { createRegions } from "../../ui/regions.tsx";
 import { createPluginContributions } from "../contributions.ts";
@@ -143,8 +143,16 @@ async function setup(options?: { width?: number; height?: number; format?: strin
         spaces.onChange = () => setDisplaySignal(computeDisplay(spaces));
         const panelCtx = testPanelContext({
           display: displaySignal,
-          options: () =>
-            resolveOptions(options?.format ? { "sidebar.format": options.format } : {}),
+          // sidebar.* is the sidebar plugin's own option, not core, so its
+          // defaults are added onto the resolved core table rather than
+          // coming out of `resolveOptions` itself.
+          options: () => ({
+            ...resolveOptions({}),
+            "sidebar.open": SIDEBAR_OPTIONS["sidebar.open"].default,
+            "sidebar.width": SIDEBAR_OPTIONS["sidebar.width"].default,
+            "sidebar.agentsOnly": SIDEBAR_OPTIONS["sidebar.agentsOnly"].default,
+            "sidebar.format": options?.format ?? SIDEBAR_OPTIONS["sidebar.format"].default,
+          }),
         });
         const environment = testPluginEnvironment(renderer, {
           panel: panelCtx,

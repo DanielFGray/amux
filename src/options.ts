@@ -46,20 +46,6 @@ export type OptionSpec = NumberSpec | BooleanSpec | StringSpec;
 export type OptionValue = number | boolean | string;
 
 export const OPTIONS = {
-  "sidebar.open": { kind: "boolean", default: true, desc: "show the sidebar" },
-  "sidebar.width": { kind: "number", default: 30, min: 16, max: 60, desc: "columns" },
-  "sidebar.agentsOnly": {
-    kind: "boolean",
-    default: false,
-    desc: "list only panes running a recognised agent CLI",
-  },
-  "sidebar.format": {
-    kind: "string",
-    default:
-      "#{?active,▸, }#{?row_kind_branch,   #{branch}#{?git_ahead, ↑#{git_ahead},}#{?git_behind, ↓#{git_behind},},#{?row_kind_space,#{space_name},#{?row_kind_window,· #{window_name},#{agent_state_glyph} #{?pane_current_command,#{pane_current_command},#{pane_title}}#{indicators}}}}",
-    desc: "format for sidebar rows",
-    editable: true,
-  },
   "window.format": {
     kind: "string",
     default:
@@ -114,28 +100,9 @@ export const OPTIONS = {
     default: "",
     desc: "shell for new agents · empty uses $SHELL",
   },
-  "agent.model": {
-    kind: "string",
-    default: "openai/gpt-4o-mini",
-    desc: "provider/model for native agents",
-    editable: true,
-  },
-  "agent.showThinking": {
-    kind: "boolean",
-    default: false,
-    desc: "show agent thinking traces",
-  },
 } as const satisfies Record<string, OptionSpec>;
 
 export type OptionName = keyof typeof OPTIONS;
-
-export function parseModelReference(
-  value: string,
-): { readonly providerID: string; readonly modelID: string } | undefined {
-  const separator = value.indexOf("/");
-  if (separator <= 0 || separator === value.length - 1) return undefined;
-  return { providerID: value.slice(0, separator), modelID: value.slice(separator + 1) };
-}
 
 type ValueOf<S> = S extends NumberSpec ? number : S extends BooleanSpec ? boolean : string;
 
