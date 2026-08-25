@@ -8,7 +8,7 @@
  * TypeScript, so neither the typecheck nor the suite said a word.
  *
  * Each step is checked against the persisted workspace, and the steps build on
-   * each other so a command that half-worked shows up as the wrong summary at the
+ * each other so a command that half-worked shows up as the wrong summary at the
  * next one — which is why they share an app and run in order. The file is the
  * app's own account of its state rather than a rendering of it, which is what
  * makes a silent no-op visible.
@@ -19,7 +19,7 @@
  * have been settled by reading `output()` — see App.screen().
  */
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { launch, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
+import { launch, teeColumn, LEADER, E2E_TIMEOUT, type App } from "./app.ts";
 
 let app: App;
 
@@ -38,18 +38,50 @@ function footerFor(fixture: string): string {
   return `${spaces} space${spaces === 1 ? "" : "s"} · ${agents} agent${agents === 1 ? "" : "s"}`;
 }
 
+type PersistedLayout = {
+  root: { type: string } | null;
+  floats: readonly unknown[];
+};
+
+async function activeLayout(): Promise<PersistedLayout | null> {
+  const session = await app.session();
+  const space = session?.spaces?.[0];
+  const window = space?.windows.find((candidate) => candidate.number === space.activeWindow);
+  if (typeof window?.layout !== "string") return null;
+  return JSON.parse(window.layout) as PersistedLayout;
+}
+
+const cornerRows = (screen: string) =>
+  screen
+    .split("\n")
+    .map((line, row) => (line.includes("┌") ? row : -1))
+    .filter((row) => row !== -1);
+
 /** Press, then hold BOTH accounts of the workspace to the same summary. */
 async function step(keys: string, want: string) {
   await app.press(keys);
   await app.until(
-    async () =>
-      (await app.workspaceSummary()) === want && app.screen().includes(footerFor(want)),
+    async () => (await app.workspaceSummary()) === want && app.screen().includes(footerFor(want)),
     `the workspace and sidebar to reach ${want}`,
   );
   const summary = await app.workspaceSummary();
   expect(summary).toBe(want);
   expect(app.screen()).toContain(footerFor(summary));
 }
+
+test(
+  "the real agent.new binding reaches its preflight without opening the old prompt",
+  async () => {
+    await app.press(`${LEADER}N`);
+    await app.until(
+      () => app.screen().includes("no credential stored for openai"),
+      "agent.new to reach its preflight",
+    );
+    expect(app.screen()).not.toContain("what should the agent do?");
+    expect(await app.workspaceSummary()).toBe("1sp 1win 1ag");
+  },
+  E2E_TIMEOUT,
+);
 
 test(
   "new window adds a window and an agent",
@@ -76,6 +108,27 @@ test(
 );
 
 test(
+  "pane.float crosses the daemon projection and renderer in both directions",
+  async () => {
+    await app.press(`${LEADER}f`);
+    await app.until(async () => {
+      const layout = await activeLayout();
+      return layout?.floats.length === 1 && teeColumn(app.screen()) === -1;
+    }, "the focused pane to float in persisted state and on screen");
+    expect(cornerRows(app.screen())).toHaveLength(2);
+
+    await app.press(`${LEADER}f`);
+    await app.until(async () => {
+      const layout = await activeLayout();
+      return layout?.floats.length === 0 && teeColumn(app.screen()) !== -1;
+    }, "the focused pane to return to the tiled layout");
+    expect(cornerRows(app.screen())).toHaveLength(1);
+    expect(await app.workspaceSummary()).toBe("1sp 1win 2ag");
+  },
+  E2E_TIMEOUT,
+);
+
+test(
   "daemon pane.break publishes a projection that keeps the moved PTY",
   async () => {
     const before = await app.session();
@@ -91,7 +144,9 @@ test(
     const after = await app.session();
     if (!after?.spaces?.[0]) throw new Error("workspace has no space after pane.break");
     const spaceAfter = after.spaces[0];
-    const projected = spaceAfter.windows.find((window) => window.number === spaceAfter.activeWindow);
+    const projected = spaceAfter.windows.find(
+      (window) => window.number === spaceAfter.activeWindow,
+    );
     if (!projected) throw new Error("workspace has no active window after pane.break");
     expect(projected.sessions.map((session) => session.id)).toEqual([movedAgent]);
     expect(JSON.parse(projected.layout).root.content.session).toBe(movedAgent);

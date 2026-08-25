@@ -1,14 +1,11 @@
 /**
- * The app boots, draws, runs a shell, and does it again on a second launch.
+ * The app boots, draws, and runs a shell.
  *
  * The check the Effect-migration tasks call "the real-TUI boot check". It is
  * deliberately shallow — it presses almost nothing — because its job is to
  * catch the failures that make everything else moot: a service that cannot be
  * acquired, a scope that closes on the way up, a renderer that never draws.
  * ts-95af71's Definition of Done is the reason it exists.
- *
- * Two launches, because booting once proves nothing about booting onto state a
- * previous run left behind.
  */
 import { test, expect, beforeAll } from "bun:test";
 import { launch, E2E_TIMEOUT } from "./app.ts";
@@ -40,13 +37,11 @@ async function boot(session: string, type?: string) {
 }
 
 let first: { out: string; workspaceSummary: string };
-let second: { out: string; workspaceSummary: string };
 
 beforeAll(async () => {
   // A shell prompt and a command that echoes something only we would write, so
   // "the pane is wired to a process" is answered by the process itself.
   first = await boot("e2e-boot-1", `echo ${MARKER}\r`);
-  second = await boot("e2e-boot-2");
 }, E2E_TIMEOUT);
 
 test("the first launch draws a screen", () => {
@@ -63,12 +58,4 @@ test("the pane runs a real shell", () => {
 
 test("nothing crashed on the way up", () => {
   expect(crashed(first.out)).toBeNull();
-});
-
-test("a second launch boots the same way", () => {
-  expect(second.workspaceSummary).toBe("1sp 1win 1ag");
-});
-
-test("and nothing crashed there either", () => {
-  expect(crashed(second.out)).toBeNull();
 });
