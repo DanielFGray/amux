@@ -30,11 +30,13 @@ import { createServer, type Server } from "node:net";
 import { chmod } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";
 import {
+  AttachFrameAccumulator,
   JsonValueSchema,
   SESSION_STATE_TOPIC,
   type AttachFrame,
   type PermissionAnswer,
 } from "./AttachProtocol.ts";
+import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import { AgentLog, AgentLogDefault, type AgentLogError, type AgentLogService } from "./AgentLog.ts";
 import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
@@ -202,12 +204,14 @@ const make = <
           () =>
             new Promise<Server>((resolve, reject) => {
               const value = createServer((socket) => {
-                let buffer = "";
-                socket.on("data", (chunk) => {
-                  buffer += chunk.toString("utf8");
-                  const lines = buffer.split("\n");
-                  buffer = lines.pop() ?? "";
-                  for (const line of lines) {
+                const buffer = new AttachFrameAccumulator();
+                socket.on("data", (chunk: Buffer) => {
+                  if (buffer.byteLength + chunk.byteLength > MAX_ATTACH_FRAME_BYTES) {
+                    socket.destroy();
+                    return;
+                  }
+                  for (const frame of buffer.push(chunk)) {
+                    const line = Buffer.from(frame).toString("utf8").trimEnd();
                     if (!line) continue;
                     const decoded = S.decodeUnknownEither(S.parseJson(ProcessSocketRequest))(line);
                     if (Either.isLeft(decoded)) {
