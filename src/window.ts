@@ -250,6 +250,7 @@ export class Window {
     session.onOutput = () => {
       for (const p of this.#panes) if (p.session === session) p.invalidate();
       this.onChange?.();
+      this.#ctx.requestRender();
     };
     session.onExit = () => {
       if (this.#authoritativeProjection) {
@@ -270,6 +271,7 @@ export class Window {
       // Scrollback state (scrollBy/scrollToBottom) is user-driven, so it has
       // no output to invalidate panes — but the sidebar's ▲ must repaint.
       this.onChange?.();
+      this.#ctx.requestRender();
     };
   }
 
