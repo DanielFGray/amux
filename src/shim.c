@@ -8,23 +8,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct {
-  uint16_t cols;
-  uint16_t rows;
-  size_t scrollback;
-} GhosttyTerminalOptions;
-
-_Static_assert(sizeof(GhosttyTerminalOptions) == 16,
-               "GhosttyTerminalOptions ABI changed");
-_Static_assert(offsetof(GhosttyTerminalOptions, scrollback) == 8,
-               "GhosttyTerminalOptions layout changed");
-
 extern int ghostty_terminal_new(const void *allocator, void **terminal,
-                                GhosttyTerminalOptions options);
+                                 uint16_t cols, uint16_t rows);
 
-int oh_terminal_new(void **terminal, const GhosttyTerminalOptions *options) {
-  if (options == 0) return -2;
-  return ghostty_terminal_new(0, terminal, *options);
+int oh_terminal_new(void **terminal, uint16_t cols, uint16_t rows) {
+  return ghostty_terminal_new(0, terminal, cols, rows);
 }
 
 #ifndef _WIN32

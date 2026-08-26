@@ -18,7 +18,6 @@ const { symbols: g } = dlopen(LIB, {
   ghostty_terminal_vt_write: { args: [P, P, U64], returns: V },
   ghostty_terminal_resize: { args: [P, U16, U16, U32, U32], returns: I },
   ghostty_terminal_get: { args: [P, I, P], returns: I },
-  ghostty_terminal_mode_get: { args: [P, U16, P], returns: I },
   ghostty_terminal_set: { args: [P, I, P], returns: I },
 
   ghostty_render_state_new: { args: [P, P], returns: I },
@@ -81,7 +80,9 @@ const TERMINAL_DATA_SCROLLBAR = 9;
 const TERMINAL_DATA_TITLE = 12;
 const TERMINAL_DATA_PWD = 13;
 const TERMINAL_DATA_KITTY_GRAPHICS = 30;
+const TERMINAL_DATA_MODE = 37;
 const TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT = 15;
+const TERMINAL_OPT_SCROLLBACK_MAX_LINES = 28;
 const KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR = 1;
 const KITTY_PLACEMENT_DATA_IMAGE_ID = 1;
 const KITTY_PLACEMENT_DATA_Z = 12;
@@ -127,14 +128,25 @@ export class Terminal {
   #str = new BigUint64Array(2);
   /** GhosttyTerminalScrollbar {u64 total, u64 offset, u64 len}, filled in place. */
   #scroll = new BigUint64Array(3);
+  /** GhosttyTerminalModeConfig {u16 mode, bool value}, filled in place. */
+  #mode = new Uint8Array(4);
 
   constructor(cols: number, rows: number, scrollback = 10_000) {
     assertTerminalSize(cols, rows);
     const out = handle();
-    check("terminal_new", terminalNew(out, cols, rows, scrollback));
+    check("terminal_new", terminalNew(out, cols, rows));
     this.#h = Number(out[0]);
     this.#cols = cols;
     this.#rows = rows;
+    const scrollbackLimit = new BigUint64Array([BigInt(scrollback)]);
+    check(
+      "terminal_set scrollback limit",
+      g.ghostty_terminal_set(
+        asPtr(this.#h),
+        TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+        ptr(scrollbackLimit),
+      ),
+    );
     const storageLimit = new BigUint64Array([64n * 1024n * 1024n]);
     check(
       "terminal_set kitty image storage limit",
@@ -206,9 +218,10 @@ export class Terminal {
    */
   mode(mode: number): boolean {
     if (this.#freed) return false;
-    const out = new Uint8Array(1);
-    if (g.ghostty_terminal_mode_get(asPtr(this.#h), mode, ptr(out)) !== OK) return false;
-    return out[0] !== 0;
+    new DataView(this.#mode.buffer).setUint16(0, mode, true);
+    if (g.ghostty_terminal_get(asPtr(this.#h), TERMINAL_DATA_MODE, ptr(this.#mode)) !== OK)
+      return false;
+    return this.#mode[2] !== 0;
   }
 
   /** Working directory reported via OSC 7, or "" if never set. */

@@ -1,7 +1,6 @@
+import { Effect, Schema as S, Console } from "effect";
 import { FileSystem } from "@effect/platform";
 import { BunContext, BunRuntime } from "@effect/platform-bun";
-import * as Effect from "effect/Effect";
-import * as S from "effect/Schema";
 import solidPlugin from "@opentui/solid/bun-plugin";
 
 const root = process.cwd();
@@ -35,6 +34,7 @@ const compile = Effect.gen(function* () {
         // letting it autoload one at startup means it tries (and fails) to
         // resolve bunfig's `preload` entries from outside the bundle.
         compile: { outfile: `${build}/amux`, autoloadBunfig: false },
+        metafile: process.argv.includes("--metafile"),
       }),
     catch: (cause) => new BuildBundleError({ logs: [cause] }),
   });
@@ -42,8 +42,9 @@ const compile = Effect.gen(function* () {
   if (!result.success) {
     return yield* new BuildBundleError({ logs: result.logs });
   }
-
-  yield* Effect.log("Run with: cd build && ./amux");
+  if (result.metafile) {
+    yield* Effect.sync(() => process.stdout.write(JSON.stringify(result.metafile) + "\n"));
+  }
 });
 
 compile.pipe(Effect.provide(BunContext.layer), BunRuntime.runMain);

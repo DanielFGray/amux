@@ -19,10 +19,10 @@
 
 set -euo pipefail
 
-ghostty_commit="c5a21edfcbc2d5b46540ad91b7980aca31f5f1f3"
-ghostty_sha256="84123887f93254387a333831cb544cbb23fb1f63eb9980db4ca94463f929c376"
+ghostty_commit="683d8db643b95cf229bfb5fe9fab9ae677920343"
+ghostty_sha256="4e0503f9c1c689507d4af0fdead3899b400319bddfc57d39feb253c3b2d4651f"
 ghostty_url="https://github.com/ghostty-org/ghostty/archive/${ghostty_commit}.tar.gz"
-zig_version="0.15.2"
+zig_version="0.16.0"
 
 git_common_dir="$(git rev-parse --git-common-dir)"
 parent="$(cd "$git_common_dir" && cd .. && pwd -P)"
@@ -33,19 +33,19 @@ zig_sha256=""
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
     platform="x86_64-linux"
-    zig_sha256="02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239"
+    zig_sha256="70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
     ;;
   Linux:aarch64)
     platform="aarch64-linux"
-    zig_sha256="958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f"
+    zig_sha256="ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17"
     ;;
   Darwin:x86_64)
     platform="x86_64-macos"
-    zig_sha256="375b6909fc1495d16fc2c7db9538f707456bfc3373b14ee83fdd3e22b3d43f7f"
+    zig_sha256="0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7"
     ;;
   Darwin:arm64)
     platform="aarch64-macos"
-    zig_sha256="3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b"
+    zig_sha256="b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
     ;;
   *)
     echo "unsupported platform for Zig ${zig_version}: $(uname -s) $(uname -m)" >&2

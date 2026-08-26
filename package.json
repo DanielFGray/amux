@@ -19,6 +19,7 @@
     "start": "bun src/main.tsx",
     "daemon": "bun src/daemon-main.ts",
     "session": "bun src/session-cli.ts",
+    "build": "run-s build:shim build:compile",
     "cli": "bun src/cli.ts",
     "typecheck": "bunx tsc --noEmit",
     "format": "bunx oxfmt --write src e2e",
@@ -51,8 +52,8 @@
   "devDependencies": {
     "@effect/tsgo": "0.34.0",
     "@effect/vitest": "^0.30.0",
-    "@types/bun": "latest",
     "@oxlint/plugins": "1.78.0",
+    "@types/bun": "latest",
     "oxfmt": "0.62.0",
     "oxlint": "1.78.0",
     "oxlint-tsgolint": "7.0.2001",

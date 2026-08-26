@@ -18,7 +18,7 @@ function resolveShimPath(): string {
 const shimPath = resolveShimPath();
 
 const { symbols } = dlopen(shimPath, {
-  oh_terminal_new: { args: [T.ptr, T.ptr], returns: T.i32 },
+  oh_terminal_new: { args: [T.ptr, T.u16, T.u16], returns: T.i32 },
   oh_scroll_viewport: { args: [T.u64, T.i32, T.i64], returns: T.void },
   oh_capture_range: {
     args: [T.u64, T.ptr, T.ptr, T.u64, T.ptr],
@@ -37,18 +37,8 @@ const { symbols } = dlopen(shimPath, {
   oh_error_message: { args: [T.i32], returns: T.ptr },
 });
 
-export function terminalNew(
-  out: BigUint64Array,
-  cols: number,
-  rows: number,
-  scrollback: number,
-): number {
-  const options = new Uint8Array(16);
-  const view = new DataView(options.buffer);
-  view.setUint16(0, cols, true);
-  view.setUint16(2, rows, true);
-  view.setBigUint64(8, BigInt(scrollback), true);
-  return symbols.oh_terminal_new(ptr(out), ptr(options));
+export function terminalNew(out: BigUint64Array, cols: number, rows: number): number {
+  return symbols.oh_terminal_new(ptr(out), cols, rows);
 }
 
 export interface SpawnedPty {
