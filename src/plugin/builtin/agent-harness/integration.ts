@@ -52,7 +52,12 @@ export const makeLayer = (
       const credentials = yield* Credential.Service;
       const events = yield* EventBus;
       const catalog = yield* ModelCatalog.Service;
-      const byID = new Map(definitions.map((integration) => [integration.id, integration]));
+      const byID = new Map(
+        definitions.flatMap((integration) => [
+          [integration.id, integration] as const,
+          ...(integration.aliases ?? []).map((alias) => [alias, integration] as const),
+        ]),
+      );
 
       const connections = (saved: readonly Credential.Info[]): readonly Connection[] =>
         saved.map((credential) => ({
@@ -62,6 +67,14 @@ export const makeLayer = (
         }));
 
       const find = (id: string) => byID.get(id);
+      /** Every id a credential for this integration could be stored under —
+       *  its primary id plus any aliases (see `Integration.aliases`) — so a
+       *  key entered under either OpenCode gateway resolves for both. */
+      const ids = (integration: Integration) => [integration.id, ...(integration.aliases ?? [])];
+      const credentialsFor = (integration: Integration) =>
+        Effect.map(credentials.all(), (saved) =>
+          saved.filter((credential) => ids(integration).includes(credential.integrationID)),
+        );
       const refresh = Effect.fnUntraced(function* (
         integration: Integration,
         credential: Credential.Info,
@@ -97,7 +110,7 @@ export const makeLayer = (
               id,
               label: integration.label,
               methods: integration.methods,
-              connections: connections(yield* credentials.list(id)),
+              connections: connections(yield* credentialsFor(integration)),
             };
           }),
         list: () =>
@@ -108,7 +121,7 @@ export const makeLayer = (
               label: integration.label,
               methods: integration.methods,
               connections: connections(
-                saved.filter((credential) => credential.integrationID === integration.id),
+                saved.filter((credential) => ids(integration).includes(credential.integrationID)),
               ),
             }));
           }),
@@ -116,7 +129,7 @@ export const makeLayer = (
           Effect.gen(function* () {
             const integration = find(id);
             if (!integration) return undefined;
-            return connections(yield* credentials.list(id))[0];
+            return connections(yield* credentialsFor(integration))[0];
           }),
         resolve: (connection) =>
           Effect.gen(function* () {
@@ -132,7 +145,7 @@ export const makeLayer = (
             const authorize = (request: HttpClientRequest.HttpClientRequest) =>
               Effect.gen(function* () {
                 const connection = yield* Effect.flatMap(
-                  credentials.list(integrationID),
+                  credentialsFor(integration),
                   (items) =>
                     items[0]
                       ? Effect.succeed({

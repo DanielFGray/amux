@@ -1,8 +1,7 @@
 import { FetchHttpClient, HttpClientRequest } from "@effect/platform";
-import { LanguageModel } from "@effect/ai";
 import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic";
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
-import { Effect, Layer, Redacted } from "effect";
+import { Layer, Redacted } from "effect";
 import type { Credential } from "../credential.ts";
 import * as OpenAiChat from "./openai-chat.ts";
 import type { Integration, Method } from "./types.ts";
@@ -29,11 +28,14 @@ export const openAiCompatible = (spec: {
   readonly methods?: readonly Method[];
   /** The environment variable this provider's CLI reads for a credential. */
   readonly env: string;
+  /** See `Integration.aliases`. */
+  readonly aliases?: readonly string[];
 }): Integration => ({
   id: spec.id,
   label: spec.label,
   methods: spec.methods ?? [{ type: "key", label: "API key" }],
   env: [spec.env],
+  aliases: spec.aliases,
   model: ({ model, transformClient, apiUrl, npm }) => {
     const client = { transformClient, apiUrl };
     if (npm === RESPONSES)
@@ -46,11 +48,12 @@ export const openAiCompatible = (spec: {
         Layer.provide(AnthropicClient.layer(client)),
         Layer.provide(FetchHttpClient.layer),
       );
-    if (npm === undefined || npm === CHAT) return OpenAiChat.layer({ model, ...client });
-    return Layer.effect(
-      LanguageModel.LanguageModel,
-      Effect.dieMessage(`unsupported model protocol '${npm}'`),
-    );
+    // Every other npm value — undefined, the generic `@ai-sdk/openai-compatible`,
+    // or a gateway's own SDK package name such as OpenRouter's
+    // `@openrouter/ai-sdk-provider` — still means Chat Completions on the wire.
+    // Responses and Messages are the only two protocols this factory speaks
+    // besides it, so they are the only ones worth telling apart.
+    return OpenAiChat.layer({ model, ...client });
   },
   authorize: (credential, request) =>
     HttpClientRequest.setHeader(
@@ -69,7 +72,6 @@ export const openAiCompatible = (spec: {
  */
 const RESPONSES = "@ai-sdk/openai";
 const MESSAGES = "@ai-sdk/anthropic";
-const CHAT = "@ai-sdk/openai-compatible";
 
 const key = (credential: Credential.Value) =>
   credential.type === "key" ? credential.key : credential.access;

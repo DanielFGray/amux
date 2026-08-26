@@ -18,7 +18,11 @@ test("every registered integration is named as the model catalog names it", () =
     "openai",
     "anthropic",
     // models.dev calls OpenCode Zen simply "opencode". Not "opencode-zen".
+    // OpenCode Go is folded in as an alias — same key, separate catalog id.
     "opencode",
+    "openrouter",
+  ]);
+  expect(integrations.find((integration) => integration.id === "opencode")?.aliases).toEqual([
     "opencode-go",
   ]);
 });

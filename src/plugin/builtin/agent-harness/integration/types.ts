@@ -83,6 +83,17 @@ export type Integration = {
    * variables to strip from a worker's inherited environment.
    */
   readonly env: readonly string[];
+  /**
+   * Other catalog ids this integration answers to, besides `id`.
+   *
+   * OpenCode Zen and OpenCode Go take the same key but the model catalog
+   * lists them as separate providers ("opencode" and "opencode-go") because
+   * their hosts and model lists differ — a model reference still has to name
+   * whichever one it means. `id` is where a *new* connection is stored;
+   * `aliases` are read alongside it so one credential answers for both and a
+   * key never has to be entered twice for the same account.
+   */
+  readonly aliases?: readonly string[];
   readonly refresh?: (
     credential: Credential.OAuth,
   ) => import("effect").Effect.Effect<Credential.OAuth, OAuthRefreshError>;
