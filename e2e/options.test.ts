@@ -30,7 +30,9 @@ beforeAll(async () => {
   // Settings opens on the sidebar section, whose first row is sidebar.open.
   await app.press(`${LEADER}S`);
   await app.until(() => app.screen().includes("open"), "the settings window to list the option");
-  app.send("\x1b[C"); // right arrow, in one write so the parser sees a key
+  await app.press("\r"); // enter edit mode on the sidebar.open row
+  app.send("\x1b[C"); // right arrow, in one write so the parser sees a key — flips it, autosaving
+  await app.press("\r"); // leave edit mode
   await app.press("s");
   await app.until(
     async () => (await app.config()) !== null,
