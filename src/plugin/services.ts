@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, FiberId, Option, Scope } from "effect";
+import { Context, Deferred, Effect, FiberId, Option, Scope, type Schema as S } from "effect";
 import type { PluginInstance } from "./contributions.ts";
 import type { Panel, Regions } from "../ui/regions.tsx";
 import type { SessionViews } from "./session-views.tsx";
@@ -7,6 +7,7 @@ import type { CommandSpec } from "../bindings.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
 import type { OptionSpec } from "../options.ts";
 import type { ProcessDisplay, ProcessDisplayProvider } from "./process-display.ts";
+import type { CommandError, Meta } from "../commands.ts";
 
 export class CurrentPlugin extends Context.Tag("amux/CurrentPlugin")<
   CurrentPlugin,
@@ -29,6 +30,20 @@ export interface PluginRegistries {
     provider: () => SpawnProvider,
   ) => () => void;
   readonly spawnProvider: (id: string) => SpawnProvider | undefined;
+  /** Claim `plugin.<id>.<verb>` in the command registry — the same table core
+   *  commands live in, so a plugin verb is bindable, paletted, and (when its
+   *  `target` is not `"view"`) reachable from the CLI, on equal footing. */
+  readonly commands: (owner: PluginInstance, registration: CommandRegistration) => () => void;
+}
+
+/** A plugin verb, erased to `any` at this boundary the same way the runtime
+ *  command table already is (see `PluginCommandEntry` in commands.ts) — the
+ *  type-safe surface is `registerCommand`, below, which a plugin actually calls. */
+export interface CommandRegistration {
+  readonly verb: string;
+  readonly fields: S.Struct.Fields;
+  readonly meta: Meta;
+  readonly handler: (args: any) => Effect.Effect<unknown, CommandError>;
 }
 
 export interface RegistryService<A> {
@@ -60,6 +75,26 @@ export class SpawnProvidersTag extends Context.Tag("amux/SpawnProviders")<
   SpawnProvidersTag,
   RegistryService<readonly [string, () => SpawnProvider]>
 >() {}
+export class CommandsTag extends Context.Tag("amux/Commands")<
+  CommandsTag,
+  RegistryService<CommandRegistration>
+>() {}
+
+/**
+ * The type-safe surface over `CommandsTag`: `CommandRegistration.fields` is
+ * erased to the base `S.Struct.Fields` the registry stores, so a plugin
+ * would otherwise lose argument inference the moment it registered. This
+ * recovers it the same way `commands.ts`'s own `registerCommand` does.
+ */
+export const registerCommand = <Fields extends S.Struct.Fields>(
+  verb: string,
+  fields: Fields,
+  meta: Meta,
+  handler: (args: S.Struct.Type<Fields>) => Effect.Effect<unknown, CommandError>,
+): Effect.Effect<void, never, CommandsTag | CurrentPlugin | Scope.Scope> =>
+  CommandsTag.pipe(
+    Effect.flatMap((commands) => commands.register({ verb, fields, meta, handler })),
+  );
 
 export interface PluginService {
   readonly key: string;

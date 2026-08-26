@@ -359,6 +359,26 @@ const Pong = S.TaggedStruct("pong", {
   nonce: S.String,
 });
 
+/**
+ * Ask an attached client to run a command against its own registry.
+ *
+ * The daemon runs no plugins (see ARCHITECTURE.md), so a plugin-registered
+ * command can only be executed where the plugin loaded: a connected client.
+ * `command` is opaque JSON here — the client decodes it against whatever
+ * schema the tag's owner (core or plugin) registered.
+ */
+const CommandRequest = S.TaggedStruct("command.request", {
+  id: S.String,
+  command: JsonValueSchema,
+});
+
+/** The client's answer to a `command.request`, correlated by `id`. */
+const CommandResponse = S.TaggedStruct("command.response", {
+  id: S.String,
+  result: S.optional(JsonValueSchema),
+  error: S.optional(S.String),
+});
+
 export const AgentEvent = S.Union(
   TurnQueued,
   TurnStart,
@@ -412,6 +432,8 @@ export const AttachFrame = S.Union(
   ErrorFrame,
   Ping,
   Pong,
+  CommandRequest,
+  CommandResponse,
 );
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
 export type AgentEventInputFrame = S.Schema.Type<typeof AgentEventInputFrame>;

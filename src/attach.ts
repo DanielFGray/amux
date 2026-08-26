@@ -17,6 +17,7 @@ import {
   decodeAttachFrames,
   encodeAttachFrameBytes,
   type AttachFrame,
+  type JsonValue,
 } from "./effect/AttachProtocol.ts";
 import { errorMessage } from "./error-message.ts";
 import {
@@ -107,6 +108,9 @@ export interface AttachClientContract {
   stream(session: string): Stream.Stream<AttachFrame, never, never>;
   /** Ordered daemon model generations, independent of terminal streams. */
   workspace(): Stream.Stream<WorkspaceSnapshot, never, never>;
+  /** Plugin verbs the daemon is asking this client to run — see `respondCommand`. */
+  commandRequests(): Stream.Stream<{ readonly id: string; readonly command: JsonValue }, never, never>;
+  respondCommand(id: string, result?: JsonValue, error?: string): void;
   input(session: string, data: string | Uint8Array): void;
   resize(session: string, cols: number, rows: number): void;
   sync(session: string, after?: number): void;
@@ -165,6 +169,7 @@ class AttachClientConnection {
     }
   >();
   private readonly _workspaceQ: Queue.Queue<WorkspaceSnapshot>;
+  private readonly _commandQ: Queue.Queue<{ readonly id: string; readonly command: JsonValue }>;
   private _onClose: ((error: Error | null) => void) | undefined;
   private _onError: ((message: string) => void) | undefined;
   private readonly _socket: Bun.Socket<undefined>;
@@ -183,6 +188,9 @@ class AttachClientConnection {
     this._handshake = handshake;
     this._closedSignal = Effect.runSync(Deferred.make<void>());
     this._workspaceQ = Effect.runSync(Queue.sliding<WorkspaceSnapshot>(1));
+    this._commandQ = Effect.runSync(
+      Queue.unbounded<{ readonly id: string; readonly command: JsonValue }>(),
+    );
     this._writer = createSocketWriter(socket, () => {
       this._finish(new AttachError({ message: "attach client is too slow" }));
       socket.end();
@@ -234,6 +242,17 @@ class AttachClientConnection {
 
   workspace(): Stream.Stream<WorkspaceSnapshot, never, never> {
     return Stream.fromQueue(this._workspaceQ);
+  }
+
+  /** Commands the daemon is asking this client to run — a plugin verb the
+   *  daemon cannot execute itself. Each one wants a matching {@link respondCommand}. */
+  commandRequests(): Stream.Stream<{ readonly id: string; readonly command: JsonValue }, never, never> {
+    return Stream.fromQueue(this._commandQ);
+  }
+
+  respondCommand(id: string, result?: JsonValue, error?: string): void {
+    const base = { _tag: "command.response" as const, id };
+    this._send(error !== undefined ? { ...base, error } : result !== undefined ? { ...base, result } : base);
   }
 
   input(session: string, data: string | Uint8Array): void {
@@ -360,6 +379,10 @@ class AttachClientConnection {
     }
     if (frame._tag === "error") {
       this._onError?.(frame.message);
+      return;
+    }
+    if (frame._tag === "command.request") {
+      this._commandQ.unsafeOffer({ id: frame.id, command: frame.command });
       return;
     }
     if (frame._tag === "workspace") {

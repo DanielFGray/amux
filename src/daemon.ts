@@ -24,7 +24,7 @@ import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer
 import * as RpcServer from "@effect/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
-import type { AttachFrame } from "./effect/AttachProtocol.ts";
+import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
 import { makeAgentLog } from "./effect/AgentLog.ts";
 import { EventBus } from "./effect/EventBus.ts";
 import { DaemonModel, DaemonModelError, layerDaemonModel } from "./effect/DaemonModel.ts";
@@ -62,7 +62,13 @@ import {
   type SessionState,
   type SessionPaths,
 } from "./session.ts";
-import { command, COMMAND_META, type Command } from "./commands.ts";
+import {
+  command,
+  COMMAND_META,
+  type Command,
+  type CommandMeta,
+  type RuntimeCommand,
+} from "./commands.ts";
 import {
   findPaneBySession,
   markSessionExited,
@@ -1020,21 +1026,34 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     });
 
   const runRemote = (
-    value: Command,
+    value: Command | RuntimeCommand,
     expectedRevision?: number,
     context?: WorkspaceCommandRequestContext,
   ) =>
     Effect.gen(function* () {
-      const meta = COMMAND_META[value._tag]!;
+      const meta = (COMMAND_META as Record<string, CommandMeta>)[value._tag];
+      if (!meta) {
+        // Not a core command: only a plugin verb reaches here (the control
+        // socket's wire schema admits nothing else), and the daemon runs no
+        // plugins — the tag can only mean something to a client that loaded
+        // it. Any attached one will do: see runOnClient's doc comment.
+        const connections = yield* model.attachedConnections;
+        const first = connections[0];
+        if (!first) return yield* controlFail(`no client attached, cannot run '${value._tag}'`);
+        const host = yield* requireHost;
+        const result = yield* host.runOnClient(first.client, first.connection, value as JsonValue);
+        return result === undefined ? {} : { result };
+      }
+      const command = value as Command;
       if (meta.target === "view")
         return yield* controlFail(
-          `command '${value._tag}' is a view command, not remotely invocable`,
+          `command '${command._tag}' is a view command, not remotely invocable`,
         );
       if (meta.target === "workspace") {
         const cur = yield* model.get;
         const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
         const output = yield* runWorkspaceCommand(
-          value,
+          command,
           expectedRevision ?? cur.workspace.revision,
           ctx,
         );
@@ -1042,58 +1061,58 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         return { workspace: JSON.stringify(output.snapshot), result: output.result };
       }
       if (meta.target === "buffers") {
-        switch (value._tag) {
+        switch (command._tag) {
           case "buffer.set":
-            return { result: yield* setBuffer(value.name, value.data) };
+            return { result: yield* setBuffer(command.name, command.data) };
           case "buffer.list":
             return { result: yield* listBuffers() };
           case "buffer.show":
-            return { result: yield* showBuffer(value.name) };
+            return { result: yield* showBuffer(command.name) };
           case "buffer.delete":
-            yield* deleteBuffer(value.name);
+            yield* deleteBuffer(command.name);
             return {};
         }
-        return yield* controlFail(`buffer command '${value._tag}' is not implemented for batch`);
+        return yield* controlFail(`buffer command '${command._tag}' is not implemented for batch`);
       }
       if (meta.target === "server") {
         // The daemon runs no plugins; it only tells the clients that do.
-        if (value._tag === "plugin.reload") {
-          if (value.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
-          else yield* eventBus.publish({ _tag: "plugins.reload", plugin: value.plugin });
+        if (command._tag === "plugin.reload") {
+          if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
+          else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
           return {};
         }
-        return yield* controlFail(`server command '${value._tag}' is not implemented for batch`);
+        return yield* controlFail(`server command '${command._tag}' is not implemented for batch`);
       }
       if (meta.target === "session") {
-        if (value._tag === "agent.prompt") {
+        if (command._tag === "agent.prompt") {
           let promptOptions: PromptOptions = {};
-          if (value.id !== undefined) promptOptions = { ...promptOptions, id: value.id };
-          if (value.delivery !== undefined)
-            promptOptions = { ...promptOptions, delivery: value.delivery };
-          if (value.resume !== undefined)
-            promptOptions = { ...promptOptions, resume: value.resume };
+          if (command.id !== undefined) promptOptions = { ...promptOptions, id: command.id };
+          if (command.delivery !== undefined)
+            promptOptions = { ...promptOptions, delivery: command.delivery };
+          if (command.resume !== undefined)
+            promptOptions = { ...promptOptions, resume: command.resume };
           yield* requireHost.pipe(
-            Effect.flatMap((h) => h.prompt(value.target, value.text, promptOptions)),
+            Effect.flatMap((h) => h.prompt(command.target, command.text, promptOptions)),
           );
           return {};
         }
-        if (value._tag === "pane.capture") {
+        if (command._tag === "pane.capture") {
           // The capture target is a session: named directly, or a named or
           // calling pane resolved server-side to the session it shows.
           const cur = yield* model.get;
-          const session = yield* resolveCaptureSession(value, context, cur.workspace);
+          const session = yield* resolveCaptureSession(command, context, cur.workspace);
           return { result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))) };
         }
-        if (value._tag === "notify") {
+        if (command._tag === "notify") {
           yield* eventBus.publish({
             _tag: "notification",
             session: id,
-            title: value.title,
-            body: value.body,
+            title: command.title,
+            body: command.body,
           });
           return {};
         }
-        return yield* controlFail(`session command '${value._tag}' is not implemented for batch`);
+        return yield* controlFail(`session command '${command._tag}' is not implemented for batch`);
       }
       return yield* controlFail("session commands are not yet implemented for batch");
     });

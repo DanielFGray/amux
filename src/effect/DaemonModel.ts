@@ -33,6 +33,10 @@ export interface DaemonModelService {
   readonly state: Effect.Effect<SessionState, never>;
   readonly workspace: Effect.Effect<WorkspaceSnapshot, never>;
   readonly attachedClients: Effect.Effect<string[], never>;
+  /** Attached clients paired with the connection that carries them — a
+   *  forwarded command needs the connection id to reach the right socket via
+   *  `AttachHub.publishTo`, which `attachedClients` alone cannot name. */
+  readonly attachedConnections: Effect.Effect<{ client: string; connection: string }[], never>;
 
   readonly attach: (
     client: string,
@@ -104,6 +108,11 @@ export const layerDaemonModel = (initial: {
       const workspace = Ref.get(daemonRef).pipe(Effect.map((s) => structuredClone(s.workspace)));
       const attachedClients = Ref.get(daemonRef).pipe(
         Effect.map((s) => [...s.attachments.values()].map((a) => a.client)),
+      );
+      const attachedConnections = Ref.get(daemonRef).pipe(
+        Effect.map((s) =>
+          [...s.attachments.entries()].map(([connection, a]) => ({ client: a.client, connection })),
+        ),
       );
 
       const attach = (
@@ -215,6 +224,7 @@ export const layerDaemonModel = (initial: {
         state,
         workspace,
         attachedClients,
+        attachedConnections,
         attach,
         detach,
         touch,

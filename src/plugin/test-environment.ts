@@ -10,7 +10,7 @@ import type { SpawnProvider } from "./types.ts";
 import type { Regions } from "../ui/regions.tsx";
 import type { SessionViews } from "./session-views.tsx";
 import type { ProcessDisplay } from "./process-display.ts";
-import type { PluginRegistries } from "./services.ts";
+import type { CommandRegistration, PluginRegistries } from "./services.ts";
 import type { OptionSpec } from "../options.ts";
 
 type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "registries"> & {
@@ -53,6 +53,7 @@ export function testPluginEnvironment(
   const settings = contributions.table<unknown>();
   const options = contributions.table<OptionSpec>();
   const spawnProviders = contributions.table<() => SpawnProvider>();
+  const commands = contributions.table<CommandRegistration>();
   return {
     panel: testPanelContext(),
     frames: () => Stream.empty,
@@ -66,6 +67,7 @@ export function testPluginEnvironment(
       options: (owner, name, spec) => options.add(owner, name, spec),
       spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
       spawnProvider: (id) => spawnProviders.get(id)?.(),
+      commands: (owner, registration) => commands.add(owner, registration.verb, registration),
       ...registryOverrides,
     },
     ...environment,

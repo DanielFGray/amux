@@ -18,6 +18,7 @@
 
 import {
   Context,
+  Deferred,
   Effect,
   Either,
   ExecutionStrategy,
@@ -27,6 +28,7 @@ import {
   Scope,
 } from "effect";
 import { createServer, type Server } from "node:net";
+import { randomUUID } from "node:crypto";
 import { chmod } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";
 import {
@@ -34,6 +36,7 @@ import {
   JsonValueSchema,
   SESSION_STATE_TOPIC,
   type AttachFrame,
+  type JsonValue,
   type PermissionAnswer,
 } from "./AttachProtocol.ts";
 import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
@@ -117,6 +120,11 @@ export interface AttachHostOptions<
   readonly agentLog?: AgentLogService;
 }
 
+export class AttachHostCommandError extends S.TaggedError<AttachHostCommandError>()(
+  "AttachHostCommandError",
+  { message: S.String },
+) {}
+
 export interface AttachHostService {
   /**
    * Start a session owned by the daemon, not by whoever asked for it.
@@ -153,6 +161,17 @@ export interface AttachHostService {
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly capture: (id: string) => Effect.Effect<string, PtyError>;
   /**
+   * Run a plugin-registered command on one attached client's own registry —
+   * the daemon runs no plugins, so this is the only way a plugin verb can
+   * execute at all. `client`/`connection` name a specific attachment (see
+   * `DaemonModel.attachedConnections`); the caller decides who to ask.
+   */
+  readonly runOnClient: (
+    client: string,
+    connection: string,
+    command: JsonValue,
+  ) => Effect.Effect<JsonValue | undefined, AttachHostCommandError>;
+  /**
    * The server's paste buffer stack. Owned here because it belongs to the
    * PTY plane: it dies with the daemon's attach scope, exactly as tmux's
    * buffers die with the server.
@@ -187,6 +206,9 @@ const make = <
     const hub = yield* AttachHub;
     const supervisor = yield* SessionSupervisor;
     const host = yield* Effect.scope;
+    // Keyed by request id rather than by client: nothing else needs to find a
+    // pending command by who it was asked of, only by which answer just came back.
+    const pendingCommands = new Map<string, Deferred.Deferred<JsonValue | undefined, string>>();
     // Register session teardown before the server resources below. Host scope
     // finalizers run in reverse order, so connections close and clients observe
     // detach before session shutdown can publish process exit frames.
@@ -278,15 +300,43 @@ const make = <
       // not a protocol violation. Logging it keeps the attachment alive;
       // failing here would tear down the socket and every other session with
       // it.
-      onFrame: (_client, frame) =>
-        supervisor
+      onFrame: (_client, frame) => {
+        if (frame._tag === "command.response") {
+          const pending = pendingCommands.get(frame.id);
+          if (!pending) return Effect.void;
+          pendingCommands.delete(frame.id);
+          return frame.error !== undefined
+            ? Deferred.fail(pending, frame.error)
+            : Deferred.succeed(pending, frame.result);
+        }
+        return supervisor
           .handle(frame)
           .pipe(
             Effect.catchTag("PtyError", (error) =>
               Effect.logDebug(`attach frame ignored: ${error.operation}: ${error.message}`),
             ),
-          ),
+          );
+      },
     });
+    const runOnClient = (
+      client: string,
+      connection: string,
+      command: JsonValue,
+    ): Effect.Effect<JsonValue | undefined, AttachHostCommandError> =>
+      Effect.gen(function* () {
+        const id = randomUUID();
+        const deferred = yield* Deferred.make<JsonValue | undefined, string>();
+        pendingCommands.set(id, deferred);
+        yield* hub.publishTo(client, connection, { _tag: "command.request", id, command });
+        return yield* Deferred.await(deferred).pipe(
+          Effect.timeoutFail({
+            duration: "10 seconds",
+            onTimeout: () => "the client did not answer in time",
+          }),
+          Effect.ensuring(Effect.sync(() => pendingCommands.delete(id))),
+          Effect.mapError((message) => new AttachHostCommandError({ message })),
+        );
+      });
     const sessionSpec = (spec: SessionSpec): SessionSpec => {
       const next = { ...spec };
       if (options.rpcPath !== undefined) next.rpcPath = options.rpcPath;
@@ -320,6 +370,7 @@ const make = <
       decide: (id, answer) =>
         supervisor.handle({ _tag: "agent.permission", session: id, ...answer }),
       capture: supervisor.capture,
+      runOnClient,
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),
     };

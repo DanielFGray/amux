@@ -7,6 +7,7 @@ import { daemonBackend, type DaemonSession, type SessionBackendFactory } from ".
 import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type { AnyCommandResult, Command } from "./commands.ts";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
 import {
   parseWorkspaceJson,
   workspaceSessions,
@@ -44,6 +45,14 @@ export interface SessionClientContract extends DaemonSession {
   readonly workspace: () => WorkspaceSnapshot;
   readonly models: Stream.Stream<WorkspaceSnapshot, never, never>;
   readonly events: Stream.Stream<DaemonEventPayload, ControlError, never>;
+  /** A plugin verb the daemon forwarded here because it has no plugin runtime
+   *  of its own; each one wants a matching {@link respondCommand}. */
+  readonly commandRequests: Stream.Stream<
+    { readonly id: string; readonly command: JsonValue },
+    never,
+    never
+  >;
+  readonly respondCommand: (id: string, result?: JsonValue, error?: string) => void;
   readonly runWorkspace: (
     command: Command,
     context: WorkspaceCommandContext,
@@ -220,6 +229,8 @@ const make = (
         Stream.map(({ event }) => event),
         Stream.mapError(toControlError),
       ),
+      commandRequests: attach.commandRequests(),
+      respondCommand: (id, result, error) => attach.respondCommand(id, result, error),
       runWorkspace: (command, context) =>
         Effect.gen(function* () {
           const done = yield* Deferred.make<

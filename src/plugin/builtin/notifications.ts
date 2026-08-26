@@ -1,9 +1,9 @@
-import { Effect } from "effect";
+import { Effect, Schema as S } from "effect";
 import { ProcessState } from "../../process-state.ts";
 import { POLL_MS } from "../../ui/state.ts";
 import { scheduledPoll } from "../../effect/timer.ts";
 import { definePlugin, type PluginDefinition } from "../types.ts";
-import { OptionsTag } from "../services.ts";
+import { CommandsTag, OptionsTag, registerCommand } from "../services.ts";
 
 export const NOTIFICATIONS_PLUGIN_ID = "amux.notifications";
 
@@ -16,7 +16,7 @@ export const NOTIFICATIONS_PLUGIN_ID = "amux.notifications";
 export const notificationsPlugin: PluginDefinition = definePlugin({
   id: NOTIFICATIONS_PLUGIN_ID,
   apiVersion: "1",
-  inject: [OptionsTag],
+  inject: [OptionsTag, CommandsTag],
   effect: (ctx) =>
     Effect.gen(function* () {
       const options = yield* OptionsTag;
@@ -24,6 +24,20 @@ export const notificationsPlugin: PluginDefinition = definePlugin({
         "notifications.blocked",
         { kind: "boolean", default: true, desc: "ring the terminal when an agent becomes blocked" },
       ]);
+
+      // `target: "server"` — no workspace state to mutate, so this is also the
+      // proof of concept for a plugin verb reaching a client from `amux`'s CLI:
+      // the daemon runs no plugins, so it forwards the tag to this client
+      // verbatim and relays back whatever this handler returns.
+      yield* registerCommand(
+        "ring",
+        { times: S.optional(S.Int) },
+        { desc: "ring the terminal bell", group: "notifications", target: "server", exposure: "human" },
+        (args) =>
+          Effect.sync(() => {
+            for (let i = 0; i < (args.times ?? 1); i++) process.stdout.write("\x07");
+          }),
+      );
 
       // Rows are the client's arbitrated view of agent state, the same one the
       // sidebar renders from — polled rather than pushed, since the plugin API

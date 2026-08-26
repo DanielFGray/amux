@@ -178,7 +178,7 @@ async function main(): Promise<number> {
     { SessionStore, isSessionId },
     { controlCall, agentWatch, AgentWaitError },
     commandsMod,
-    { parseArgs, fieldNames },
+    { parseArgs, fieldNames, parsePluginArgs },
     { SESSION_STATE_TOPIC },
   ] = await Promise.all([
     import("effect"),
@@ -202,6 +202,14 @@ async function main(): Promise<number> {
 
   function isCommandTag(s: string): s is CommandTag {
     return s in COMMAND_META;
+  }
+
+  // A plugin verb the compiler has never seen — see commands.ts's
+  // RuntimeCommandSchema. The CLI process has no plugin registry (plugins
+  // load in an attached client), so this is a syntactic check only; the
+  // daemon is what decides whether anyone can actually run it.
+  function isPluginTag(s: string): boolean {
+    return s.startsWith("plugin.");
   }
 
   /**
@@ -273,6 +281,49 @@ async function main(): Promise<number> {
         };
     }
     return { errors: direct.errors };
+  }
+
+  // A plugin verb: no compile-time schema to chain, session-fill, or route by
+  // target the way the core dispatch below does, so it gets its own minimal
+  // path — one command per invocation, `--key=value` args, `--session`
+  // required unless a pane's own env or a lone running session settles it.
+  if (isPluginTag(sub)) {
+    const stripped = stripSessionFlag(argv.slice(1));
+    if ("error" in stripped) {
+      console.error(`error: ${stripped.error}`);
+      return 2;
+    }
+    const parsedArgs = parsePluginArgs(stripped.rest);
+    if (!parsedArgs.parsed) {
+      console.error(`error: ${parsedArgs.errors.join("\n  ")}`);
+      return 2;
+    }
+    const targetId = resolveCommandSession("workspace", stripped.session, undefined);
+    if (!targetId) {
+      console.error(`error: '${sub}' requires a session id`);
+      return 2;
+    }
+    const { BunFileSystem } = await import("@effect/platform-bun");
+    return await Effect.runPromise(
+      controlCall(targetId, (control) =>
+        control.Batch({ values: [{ _tag: sub, ...parsedArgs.parsed }] }),
+      ).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+    ).then(
+      ({ outputs }) => {
+        const result = outputs[0]?.result;
+        if (result !== undefined) {
+          const text = Option.getOrElse(Schema.decodeUnknownOption(Schema.String)(result), () =>
+            JSON.stringify(result, null, 2),
+          );
+          process.stdout.write(text + "\n");
+        }
+        return 0;
+      },
+      (error) => {
+        console.error(`error: ${String(error)}`);
+        return 1;
+      },
+    );
   }
 
   if (isCommandTag(sub)) {

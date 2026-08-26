@@ -33,6 +33,7 @@ import {
   SettingsTag,
   OptionsTag,
   SpawnProvidersTag,
+  CommandsTag,
 } from "./services.ts";
 
 const registryService = <A>(register: (owner: PluginInstance, value: A) => () => void) => ({
@@ -146,6 +147,11 @@ export function createPluginHost(
       registryService((owner, [id, provider]) =>
         env.registries.spawnProviders(owner, id, provider),
       ),
+    );
+    services.provide(
+      registryOwner,
+      CommandsTag,
+      registryService((owner, registration) => env.registries.commands(owner, registration)),
     );
     services.commit(registryOwner);
     const hostScope = yield* Scope.make();

@@ -165,6 +165,32 @@ function coerce(value: string | undefined, field: FieldSpec): JsonValue | undefi
   }
 }
 
+/**
+ * Args for a plugin verb, e.g. `--key=value`.
+ *
+ * A core command's flags are checked against the schema it declared
+ * (`parseArgs`, above); a plugin's schema lives only in whichever client
+ * loaded it; the CLI process never sees it. Each value decodes as JSON when
+ * it parses that way (so `--count=3` and `--enabled=true` reach the plugin
+ * as a number and a boolean), falling back to the raw string otherwise.
+ */
+export function parsePluginArgs(argv: readonly string[]): ParseArgsResult {
+  const parsed: Record<string, JsonValue> = {};
+  const errors: string[] = [];
+  for (const arg of argv) {
+    const flagMatch = arg.match(/^--([a-zA-Z][a-zA-Z0-9_-]*)=(.*)$/);
+    if (!flagMatch) {
+      errors.push(`plugin commands take only --key=value flags: ${arg}`);
+      continue;
+    }
+    const [, name, raw] = flagMatch as [string, string, string];
+    const decoded = S.decodeUnknownOption(S.parseJson(JsonValueSchema))(raw);
+    parsed[name] = Option.getOrElse(decoded, () => raw);
+  }
+  if (errors.length > 0) return { parsed: null, errors };
+  return { parsed, errors: [] };
+}
+
 export function commandGroups(): readonly string[] {
   return [
     ...new Set(COMMAND_DEFS.filter((def) => def.target !== "view").map((def) => def.group)),

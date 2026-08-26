@@ -1,4 +1,5 @@
 import { Cause, Effect, Exit, JSONSchema, ParseResult, Schema as S } from "effect";
+import { JsonValueSchema } from "./effect/AttachProtocol.ts";
 import { LAYOUT_PRESETS } from "./layout.ts";
 import { PermissionDecisionSchema } from "./permission.ts";
 import { ProcessStateSchema } from "./process-state.ts";
@@ -62,7 +63,7 @@ export class CommandError extends S.TaggedError<CommandError>()("CommandError", 
   message: S.String,
 }) {}
 
-interface Meta {
+export interface Meta {
   readonly desc: string;
   readonly group: string;
   readonly target: CommandTarget;
@@ -1096,6 +1097,19 @@ export type CommandHandlerTable = Readonly<
 /** A command value arriving at runtime under a tag the compiler has never seen
  *  — a plugin verb, or one read off the wire before it is known to exist. */
 export type RuntimeCommand = { readonly _tag: string } & Record<string, unknown>;
+
+/**
+ * The wire shape of a plugin verb: `Command` is a closed compile-time union,
+ * so a control-socket payload needs a permissive fallback to admit
+ * `plugin.<id>.<verb>` tags the daemon has never seen and cannot validate
+ * beyond this shape. The `plugin.` prefix is what tells the daemon a tag it
+ * does not recognise is worth forwarding to an attached client rather than
+ * rejecting outright.
+ */
+export const RuntimeCommandSchema = S.Struct(
+  { _tag: S.String.pipe(S.pattern(/^plugin\./)) },
+  S.Record({ key: S.String, value: JsonValueSchema }),
+);
 
 /** A plugin verb, as registered: the same `desc`/`group`/`target`/`exposure`
  *  metadata a core command carries, plus the schema and handler a core

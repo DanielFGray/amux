@@ -43,9 +43,11 @@ import {
   makeCommands,
   runDetached,
   type Command,
+  type Commands,
   type CommandHandlers,
   type CommandTag,
   type CommandResult,
+  type RuntimeCommand,
 } from "./commands.ts";
 import { CONFIG_PATH, saveConfig, type Config } from "./config.ts";
 import {
@@ -101,6 +103,7 @@ import type { PluginSettingsSection, SpawnProvider } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
 import { createProcessDisplay, type ProcessDisplay } from "./plugin/process-display.ts";
 import { errorMessage } from "./error-message.ts";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
 
 export interface AppOptions {
   readonly renderer: CliRenderer;
@@ -150,6 +153,7 @@ export function runCommandByTarget<A, B>(
 
 interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly release: Effect.Effect<void>;
+  readonly commands: Commands;
   readonly registerBinding: (owner: PluginInstance, binding: CommandSpec) => () => void;
   readonly registerSettingsSection: (
     owner: PluginInstance,
@@ -240,6 +244,14 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         options: app.registerOption,
         spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
         spawnProvider: (id) => spawnProviders.get(id)?.(),
+        commands: (owner, registration) =>
+          app.commands.registerCommand(
+            owner.id,
+            registration.verb,
+            registration.fields,
+            registration.meta,
+            registration.handler,
+          ),
       },
       frames: (id) => options.session.attach.stream(id),
       sync: (id) => options.session.attach.sync(id),
@@ -309,6 +321,36 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
               { discard: true },
             ),
       ),
+    );
+    // A CLI invocation of a plugin command has no registry of its own to run
+    // it against — the daemon runs no plugins — so it lands here, on whichever
+    // client the daemon picked, and gets executed against this client's own
+    // `commands.run`, exactly as a keybinding would.
+    runFiber(
+      "command-requests",
+      Stream.runForEach(options.session.commandRequests, ({ id, command: raw }) => {
+        const tag = (raw as RuntimeCommand)._tag;
+        // The daemon cannot know a plugin verb's `target` — it holds no
+        // registry of its own — so a request reaching a client is where
+        // "view commands never run remotely" actually gets enforced, using
+        // the same check a core command's CLI invocation already goes through.
+        if (!app.commands.isRemoteCommand(tag))
+          return Effect.sync(() =>
+            options.session.respondCommand(
+              id,
+              undefined,
+              `command '${tag}' is a view command, not remotely invocable`,
+            ),
+          );
+        return app.commands.run(raw as RuntimeCommand).pipe(
+          Effect.map((result) =>
+            options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined),
+          ),
+          Effect.catchAll((error) =>
+            Effect.sync(() => options.session.respondCommand(id, undefined, errorMessage(error))),
+          ),
+        );
+      }),
     );
     return { ...app, pluginHost };
   });
@@ -2583,5 +2625,13 @@ function buildApp(
     selectedAgentId,
     setSelectedAgentId,
   });
-  return { View, panel, release, registerBinding, registerSettingsSection, registerOption };
+  return {
+    View,
+    panel,
+    release,
+    registerBinding,
+    registerSettingsSection,
+    registerOption,
+    commands,
+  };
 }
