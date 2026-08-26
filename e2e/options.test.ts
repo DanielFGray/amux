@@ -17,14 +17,7 @@
  * ever two values again, only one of these assertions would fail.
  */
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import {
-  launch,
-  LEADER,
-  E2E_TIMEOUT,
-  hasSidebarFooter,
-  type App,
-  type E2eConfig,
-} from "./app.ts";
+import { launch, LEADER, E2E_TIMEOUT, hasSidebarFooter, type App, type E2eConfig } from "./app.ts";
 
 let app: App;
 /** The file after toggling the sidebar off through the settings window. */

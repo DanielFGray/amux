@@ -113,7 +113,10 @@ const INNER_EDGE = {
   right: { top: 0, left: 0, bottom: 0 },
   top: { left: 0, right: 0, bottom: 0 },
   bottom: { left: 0, right: 0, top: 0 },
-    } as const satisfies Record<DockSide, { top?: number; right?: number; bottom?: number; left?: number }>;
+} as const satisfies Record<
+  DockSide,
+  { top?: number; right?: number; bottom?: number; left?: number }
+>;
 
 export interface Regions {
   /** Put a panel on screen. Returns its disposer, the shape a scope finalizer

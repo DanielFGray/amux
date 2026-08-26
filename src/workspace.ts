@@ -1797,7 +1797,8 @@ function agentEntry(
     window: window.number,
   };
   if (agent.kind !== undefined) Object.assign(entry, { kind: agent.kind });
-  if (agent.declaredAgent !== undefined) Object.assign(entry, { declaredAgent: agent.declaredAgent });
+  if (agent.declaredAgent !== undefined)
+    Object.assign(entry, { declaredAgent: agent.declaredAgent });
   if (agent.cmd !== undefined) Object.assign(entry, { cmd: agent.cmd });
   if (agent.provider !== undefined) Object.assign(entry, { provider: agent.provider });
   if (agent.cwd !== undefined) Object.assign(entry, { cwd: agent.cwd });

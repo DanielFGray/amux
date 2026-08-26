@@ -43,12 +43,21 @@ const transactionError = <E>(error: E): WorkspaceTransactionError =>
     : new WorkspaceTransactionError({ message: describe(error) });
 
 interface SessionOps {
-  readonly prepare: (session: PersistedSession, paneId?: string) => Effect.Effect<PreparedSession, WorkspaceTransactionError>;
+  readonly prepare: (
+    session: PersistedSession,
+    paneId?: string,
+  ) => Effect.Effect<PreparedSession, WorkspaceTransactionError>;
   readonly kill: (id: string) => Effect.Effect<void, WorkspaceTransactionError>;
   readonly write: (id: string, data: string) => Effect.Effect<void, WorkspaceTransactionError>;
   readonly prompt: (id: string, text: string) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly interrupt: (
+    id: string,
+    reason?: string,
+  ) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly decide: (
+    id: string,
+    answer: PermissionAnswer,
+  ) => Effect.Effect<void, WorkspaceTransactionError>;
 }
 
 interface SessionHost {
@@ -60,14 +69,25 @@ interface SessionHost {
 }
 
 interface WorktreeOps {
-  readonly add: (repo: string, spec: WorktreeSpec, path: string) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly remove: (repo: string, path: string, force?: boolean) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly add: (
+    repo: string,
+    spec: WorktreeSpec,
+    path: string,
+  ) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly remove: (
+    repo: string,
+    path: string,
+    force?: boolean,
+  ) => Effect.Effect<void, WorkspaceTransactionError>;
   readonly isDirty: (path: string) => Effect.Effect<boolean, WorkspaceTransactionError>;
 }
 
 interface Persistence {
   readonly persist: (state: SessionState) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly persistUntilSuccess: (state: SessionState, reason: string) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly persistUntilSuccess: (
+    state: SessionState,
+    reason: string,
+  ) => Effect.Effect<void, WorkspaceTransactionError>;
 }
 
 interface Events {
@@ -249,7 +269,8 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
                   const committed = {
                     snapshot: structuredClone(final.workspace),
                   };
-                  if (mutation.result !== undefined) return { ...committed, result: mutation.result };
+                  if (mutation.result !== undefined)
+                    return { ...committed, result: mutation.result };
                   return committed;
                 }),
               );

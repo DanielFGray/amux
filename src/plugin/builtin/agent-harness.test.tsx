@@ -8,7 +8,12 @@ import type { Info as IntegrationInfo } from "./agent-harness/integration.ts";
 
 const providers: readonly IntegrationInfo[] = [
   { id: "openai", label: "OpenAI", methods: [{ type: "key", label: "API key" }], connections: [] },
-  { id: "anthropic", label: "Anthropic", methods: [{ type: "key", label: "API key" }], connections: [] },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    methods: [{ type: "key", label: "API key" }],
+    connections: [],
+  },
 ];
 
 /**

@@ -163,7 +163,10 @@ export function resolveOptions(stored: OptionDeltas): Options {
 }
 
 /** The value this option would take from `raw`, or undefined if it refuses it. */
-export function coerceOption(spec: OptionSpec, raw: JsonValue | undefined): OptionValue | undefined {
+export function coerceOption(
+  spec: OptionSpec,
+  raw: JsonValue | undefined,
+): OptionValue | undefined {
   switch (spec.kind) {
     case "number":
       return Option.match(S.decodeUnknownOption(S.Number.pipe(S.finite()))(raw), {
@@ -174,7 +177,7 @@ export function coerceOption(spec: OptionSpec, raw: JsonValue | undefined): Opti
       return Option.getOrUndefined(S.decodeUnknownOption(S.Boolean)(raw));
     case "string":
       return Option.getOrUndefined(S.decodeUnknownOption(S.String)(raw));
-  };
+  }
 }
 
 /**

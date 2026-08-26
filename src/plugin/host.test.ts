@@ -228,7 +228,7 @@ testEffect("registered panels are disposed when the plugin is removed", () =>
             region: "left",
             anchor: "app",
             size: () => 20,
-               component: () => null as never,
+            component: () => null as never,
           });
           yield* Effect.addFinalizer(() => Effect.sync(() => void 0));
         }),
@@ -386,7 +386,7 @@ testEffect("a plugin effect that throws a defect reports the error without crash
               region: "left",
               anchor: "app",
               size: () => 20,
-               component: () => null as never,
+              component: () => null as never,
             });
             registered = true;
             return yield* Effect.sync(() => {
@@ -564,7 +564,7 @@ testEffect("defect closes the plugin scope and runs registered finalizers", () =
               region: "left",
               anchor: "app",
               size: () => 20,
-               component: () => null as never,
+              component: () => null as never,
             });
             yield* Effect.addFinalizer(() => Effect.void);
             throw new Error("defect after registration");

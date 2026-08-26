@@ -287,7 +287,9 @@ export function AuthSettings(props: {
         )}
       </For>
       <input
-        placeholder={props.editing ? "API key, then enter" : "j/k select · d remove · enter to set key"}
+        placeholder={
+          props.editing ? "API key, then enter" : "j/k select · d remove · enter to set key"
+        }
         value={key()}
         focused={props.editing}
         onInput={(value: string) => setKey(value)}

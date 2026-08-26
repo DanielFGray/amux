@@ -136,20 +136,8 @@ const reason = <E>(cause: Cause.Cause<E>): string => {
  * process callbacks, output, and its idle deadline. Owner shutdown joins those
  * fibers before releasing the client's hub subscription and socket.
  */
-export const startAttachServer = <
-  FrameError,
-  SyncError,
-  ActivityError,
-  AttachError,
-  DetachError,
->(
-  options: AttachServerOptions<
-    FrameError,
-    SyncError,
-    ActivityError,
-    AttachError,
-    DetachError
-  >,
+export const startAttachServer = <FrameError, SyncError, ActivityError, AttachError, DetachError>(
+  options: AttachServerOptions<FrameError, SyncError, ActivityError, AttachError, DetachError>,
 ): Effect.Effect<Bun.UnixSocketListener<ClientState>, AttachServerError, Scope.Scope | AttachHub> =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
@@ -233,10 +221,7 @@ export const startAttachServer = <
       );
     });
 
-    const handleFrame = (
-      socket: Bun.Socket<ClientState>,
-      frame: AttachFrame,
-    ) =>
+    const handleFrame = (socket: Bun.Socket<ClientState>, frame: AttachFrame) =>
       Effect.gen(function* () {
         if (socket.data.client) {
           yield* options.onActivity?.(socket.data.client, socket.data.connection) ?? Effect.void;

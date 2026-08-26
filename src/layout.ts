@@ -1048,8 +1048,8 @@ function validateDecodedLayout(
     return makeLayout({
       root: collapse(root),
       floats,
-       docks: decoded.docks !== undefined ? docks : undefined,
-       dockSizes: decoded.dockSizes,
+      docks: decoded.docks !== undefined ? docks : undefined,
+      dockSizes: decoded.dockSizes,
       focus: decoded.focus,
     });
   });

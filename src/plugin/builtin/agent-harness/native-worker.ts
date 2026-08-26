@@ -16,7 +16,12 @@ import { makePermissionGate } from "./permission.ts";
 import { DEFAULT_RULES } from "../../../permission.ts";
 import { projectRoot } from "../../../git.ts";
 import { layer as projectStoreLayer, Service as ProjectStore } from "../../../project-store.ts";
-import { AgentWorkerError, closeOpenToolCalls, makeAgentWorker, sanitizeAgentError } from "./worker.ts";
+import {
+  AgentWorkerError,
+  closeOpenToolCalls,
+  makeAgentWorker,
+  sanitizeAgentError,
+} from "./worker.ts";
 
 // --- Process entry point ---
 
@@ -86,7 +91,7 @@ else {
         chat,
         emit,
         toolkit,
-         inbox: store,
+        inbox: store,
         persist: chat.exportJson.pipe(
           Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
           Effect.catchAll(() => Effect.void),
@@ -120,21 +125,21 @@ else {
         ),
         Stream.runForEach((frame) =>
           frame._tag === "agent.prompt"
-              ? worker.prompt(
-                  frame.text,
-                  frame.id === undefined
-                    ? { delivery: frame.delivery ?? "queue", resume: frame.resume }
-                    : { id: frame.id, delivery: frame.delivery ?? "queue", resume: frame.resume },
-                )
+            ? worker.prompt(
+                frame.text,
+                frame.id === undefined
+                  ? { delivery: frame.delivery ?? "queue", resume: frame.resume }
+                  : { id: frame.id, delivery: frame.delivery ?? "queue", resume: frame.resume },
+              )
             : frame._tag === "agent.interrupt"
               ? worker.interrupt(frame.reason)
               : frame._tag === "agent.permission"
                 ? gate.resolve(frame.request, frame.decision, frame.feedback)
                 : Effect.void,
         ),
-         Effect.catchAll((error) =>
-            emit({ _tag: "agent.error", message: sanitizeAgentError(String(error)), session }),
-         ),
+        Effect.catchAll((error) =>
+          emit({ _tag: "agent.error", message: sanitizeAgentError(String(error)), session }),
+        ),
       );
       yield* worker.close;
     }).pipe(Effect.provide(modelLayer), Effect.provide(projectStoreLayer(root)));

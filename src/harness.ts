@@ -62,10 +62,7 @@ export const runAsync = <A>(effect: Effect.Effect<A>): Promise<A> => Effect.runP
  * cleanup hook. The scope is what remembers now; this keeps the two-line shape
  * those suites had.
  */
-export function scopedSpaceSet(
-  env: Context.Context<WorkspaceEnv>,
-  host: BoxRenderable,
-) {
+export function scopedSpaceSet(env: Context.Context<WorkspaceEnv>, host: BoxRenderable) {
   const scope = Effect.runSync(Scope.make());
   const spaces = Effect.runSync(Scope.extend(SpaceSet.make(env, host), scope));
   return { spaces, dispose: () => runAsync(Scope.close(scope, Exit.void)) };

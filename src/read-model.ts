@@ -12,7 +12,11 @@
  * runtime cycle.
  */
 import { Schema as S } from "effect";
-import { PersistedSessionSchema, WorkspaceSpaceSchema, WorkspaceWindowSchema } from "./workspace.ts";
+import {
+  PersistedSessionSchema,
+  WorkspaceSpaceSchema,
+  WorkspaceWindowSchema,
+} from "./workspace.ts";
 
 const RectSchema = S.Struct({
   x: S.Int,

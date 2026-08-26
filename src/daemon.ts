@@ -42,7 +42,12 @@ import {
 import type { PlatformError } from "@effect/platform/Error";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
-import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./effect/SessionRegistry.ts";
+import type {
+  ManagedSession,
+  PromptOptions,
+  PtyError,
+  SessionSpec,
+} from "./effect/SessionRegistry.ts";
 import {
   isSessionId,
   processAlive,
@@ -428,20 +433,17 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       const { attachedSince, attachLastSeen } = yield* attachInfo();
       if (attachedSince === undefined)
         return attachLastSeen === undefined ? {} : { attachLastSeen };
-      return attachLastSeen === undefined
-        ? { attachedSince }
-        : { attachedSince, attachLastSeen };
+      return attachLastSeen === undefined ? { attachedSince } : { attachedSince, attachLastSeen };
     });
 
   const enqueue = model.enqueue;
 
   const attachEffect = (client: string, connection: string) =>
     model
-      .attach(
-        client,
-        connection,
-        (newState) =>
-          persist(newState).pipe(Effect.mapError((error) => new DaemonModelError({ message: describe(error) }))),
+      .attach(client, connection, (newState) =>
+        persist(newState).pipe(
+          Effect.mapError((error) => new DaemonModelError({ message: describe(error) })),
+        ),
       )
       .pipe(
         Effect.mapError((e) => new DaemonError({ message: e.message })),
@@ -838,14 +840,16 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const persistence = Context.get(persistenceContext, WorkspaceTransactionPersistence);
 
   const detachEffect = (client: string, connection: string) =>
-    model.detach(client, connection, (newState) =>
-      persistence
-        .persistUntilSuccess(newState, "attachment detach")
-        .pipe(Effect.mapError((error) => new DaemonModelError({ message: error.message }))),
-    ).pipe(
-      Effect.mapError((error) => new DaemonModelError({ message: error.message })),
-      Effect.ignore,
-    );
+    model
+      .detach(client, connection, (newState) =>
+        persistence
+          .persistUntilSuccess(newState, "attachment detach")
+          .pipe(Effect.mapError((error) => new DaemonModelError({ message: error.message }))),
+      )
+      .pipe(
+        Effect.mapError((error) => new DaemonModelError({ message: error.message })),
+        Effect.ignore,
+      );
 
   const touchEffect = (client: string, connection: string) => model.touch(client, connection);
 
@@ -868,7 +872,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 _tag: "workspace" as const,
                 revision: snapshot.revision,
                 state: JSON.stringify(snapshot),
-                  } satisfies AttachFrame),
+              } satisfies AttachFrame),
             ),
             Effect.ignore,
           ),
@@ -1034,8 +1038,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           expectedRevision ?? cur.workspace.revision,
           ctx,
         );
-         if (output.result === undefined) return { workspace: JSON.stringify(output.snapshot) };
-         return { workspace: JSON.stringify(output.snapshot), result: output.result };
+        if (output.result === undefined) return { workspace: JSON.stringify(output.snapshot) };
+        return { workspace: JSON.stringify(output.snapshot), result: output.result };
       }
       if (meta.target === "buffers") {
         switch (value._tag) {
@@ -1054,20 +1058,23 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       if (meta.target === "server") {
         // The daemon runs no plugins; it only tells the clients that do.
         if (value._tag === "plugin.reload") {
-           if (value.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
-           else yield* eventBus.publish({ _tag: "plugins.reload", plugin: value.plugin });
+          if (value.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
+          else yield* eventBus.publish({ _tag: "plugins.reload", plugin: value.plugin });
           return {};
         }
         return yield* controlFail(`server command '${value._tag}' is not implemented for batch`);
       }
       if (meta.target === "session") {
         if (value._tag === "agent.prompt") {
-           let promptOptions: PromptOptions = {};
-           if (value.id !== undefined) promptOptions = { ...promptOptions, id: value.id };
-           if (value.delivery !== undefined)
-             promptOptions = { ...promptOptions, delivery: value.delivery };
-           if (value.resume !== undefined) promptOptions = { ...promptOptions, resume: value.resume };
-           yield* requireHost.pipe(Effect.flatMap((h) => h.prompt(value.target, value.text, promptOptions)));
+          let promptOptions: PromptOptions = {};
+          if (value.id !== undefined) promptOptions = { ...promptOptions, id: value.id };
+          if (value.delivery !== undefined)
+            promptOptions = { ...promptOptions, delivery: value.delivery };
+          if (value.resume !== undefined)
+            promptOptions = { ...promptOptions, resume: value.resume };
+          yield* requireHost.pipe(
+            Effect.flatMap((h) => h.prompt(value.target, value.text, promptOptions)),
+          );
           return {};
         }
         if (value._tag === "pane.capture") {
@@ -1107,14 +1114,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           const obligation = cur.durableObligations.values().next().value as string | undefined;
           const degraded = obligation ?? cur.heartbeatError ?? undefined;
           const live = yield* liveSessions();
-           const baseStatus = {
-             attached: cur.state.attached,
-             ...(yield* attachTimes()),
-             session: structuredClone(cur.state),
-             workspace: JSON.stringify(cur.workspace),
-             agents: [...live],
-           };
-           return degraded === undefined ? baseStatus : { ...baseStatus, degraded };
+          const baseStatus = {
+            attached: cur.state.attached,
+            ...(yield* attachTimes()),
+            session: structuredClone(cur.state),
+            workspace: JSON.stringify(cur.workspace),
+            agents: [...live],
+          };
+          return degraded === undefined ? baseStatus : { ...baseStatus, degraded };
         }),
       ),
 

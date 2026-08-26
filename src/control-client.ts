@@ -100,9 +100,7 @@ export const agentWatch = (
   session: string,
   after?: number,
 ): Stream.Stream<AgentEvent, RpcClientError> =>
-  control.AgentWatch(
-    after === undefined || after < 0 ? { session } : { session, after },
-  );
+  control.AgentWatch(after === undefined || after < 0 ? { session } : { session, after });
 
 /**
  * Why a wait on an agent ended without the turn it was waiting for.

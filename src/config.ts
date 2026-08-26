@@ -51,7 +51,9 @@ export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json");
 
 const KeysSchema = S.Struct({
   leader: S.optionalWith(JsonValueSchema, { default: () => DEFAULT_LEADER }),
-  bindings: S.optionalWith(S.Record({ key: S.String, value: JsonValueSchema }), { default: () => ({}) }),
+  bindings: S.optionalWith(S.Record({ key: S.String, value: JsonValueSchema }), {
+    default: () => ({}),
+  }),
 });
 
 const PluginSpecSchema = S.Struct({
@@ -63,7 +65,9 @@ const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = DEFAULT_CONFIG.plugins.map(
 );
 
 const ConfigSchema = S.Struct({
-  options: S.optionalWith(S.Record({ key: S.String, value: JsonValueSchema }), { default: () => ({}) }),
+  options: S.optionalWith(S.Record({ key: S.String, value: JsonValueSchema }), {
+    default: () => ({}),
+  }),
   keys: S.optionalWith(KeysSchema, {
     default: () => ({ leader: DEFAULT_LEADER, bindings: {} }),
   }),

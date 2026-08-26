@@ -428,7 +428,9 @@ export class TerminalPane extends Pane {
       this.#selecting = true;
       this.#selectionAnchor = point;
       setSelection(this.session.term.handle, point.x, point.y, point.x, point.y);
-        (this._ctx as { setCapturedRenderable?: (r: Renderable) => void }).setCapturedRenderable?.(this);
+      (this._ctx as { setCapturedRenderable?: (r: Renderable) => void }).setCapturedRenderable?.(
+        this,
+      );
       this.invalidate();
       event.stopPropagation();
       return;

@@ -89,11 +89,7 @@ export const layerDaemonModel = (initial: {
 
       const mutationQueue = yield* Queue.unbounded<Mutation>();
       yield* Effect.forkScoped(
-        Effect.forever(
-          Queue.take(mutationQueue).pipe(
-            Effect.flatMap((mutation) => mutation),
-          ),
-        ),
+        Effect.forever(Queue.take(mutationQueue).pipe(Effect.flatMap((mutation) => mutation))),
       );
 
       const enqueue = <A, E>(effect: Effect.Effect<A, E, never>): Effect.Effect<A, E> =>

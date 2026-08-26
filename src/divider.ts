@@ -204,7 +204,9 @@ export class Divider extends Renderable {
         // rest of the gesture. Capturing on the press makes the drag work at
         // any speed. Routing to a captured renderable happens before OpenTUI's
         // own capture bookkeeping, so this survives the rest of the dispatch.
-        (this._ctx as { setCapturedRenderable?: (r: Renderable) => void }).setCapturedRenderable?.(this);
+        (this._ctx as { setCapturedRenderable?: (r: Renderable) => void }).setCapturedRenderable?.(
+          this,
+        );
         event.stopPropagation();
         return;
       case "up":

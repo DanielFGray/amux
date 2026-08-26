@@ -153,9 +153,7 @@ export function makeAgentLog(
         const entry: Entry = { sequence, event: { ...frame, sequence } };
         current.push(entry);
         yield* write(frame.session, current);
-        yield* feed(frame.session).pipe(
-          Effect.flatMap((bus) => PubSub.publish(bus, entry.event)),
-        );
+        yield* feed(frame.session).pipe(Effect.flatMap((bus) => PubSub.publish(bus, entry.event)));
         return entry.event;
       }).pipe(
         Effect.mapError((error) =>
@@ -166,9 +164,7 @@ export function makeAgentLog(
     const read = (session: string, after = -1) =>
       load(session).pipe(
         Effect.map((current) =>
-          current
-            .filter((entry) => entry.sequence > after)
-            .map((entry) => entry.event),
+          current.filter((entry) => entry.sequence > after).map((entry) => entry.event),
         ),
       );
 
