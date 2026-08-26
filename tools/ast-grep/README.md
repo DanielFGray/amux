@@ -152,6 +152,35 @@ The rule is deliberately structural. An inference helper that genuinely needs
 an unconstrained channel should be reviewed at the call site rather than
 excluded by a broad helper-name exception.
 
+## Tagged-Union Branch Checks
+
+`prefer-match-for-tag-check.yml` warns on a direct block or single-statement
+`if` whose condition is `$value._tag === $tag`. It intentionally does not
+match compound conditions, ternaries, collection predicates, or user-defined
+type predicates: those often have a different control-flow shape and need
+manual review.
+
+Use `Match.value(value).pipe(Match.tag(tag, handler), Match.orElse(fallback))`
+when handling one or a few selected cases. Use `Match.valueTags(value, fields)`
+when the operation is naturally a direct tag-to-handler map. For a reusable
+matcher, start with `Match.type<Union>()` and use `Match.tags(fields)` plus
+`Match.exhaustive`; use `Match.tagsExhaustive(fields)` when the object map
+itself should be the exhaustive matcher. `Match.tagStartsWith` is useful for
+namespaced tags that share a prefix.
+
+Dry-run it against the source tree with:
+
+```bash
+ast-grep scan \
+  --rule tools/ast-grep/prefer-match-for-tag-check.yml \
+  src \
+  --globs '**/*.ts' \
+  --report-style medium
+```
+
+This is a warning rule rather than a rewrite because choosing `orElse`,
+`exhaustive`, or an explicit fallback depends on the surrounding control flow.
+
 ## Applying A Reviewed Rule
 
 Only after reviewing the dry-run output should a rule be applied:

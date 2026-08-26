@@ -1,0 +1,6 @@
+ruleDirs:
+- /home/dan/build/amux/tools/ast-grep/rules
+testConfigs:
+- testDir: /home/dan/build/amux/tools/ast-grep/tests
+utilDirs:
+- /home/dan/build/amux/tools/ast-grep/utils
