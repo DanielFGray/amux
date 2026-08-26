@@ -40,6 +40,7 @@
     "@effect/ai": "0.37.0",
     "@effect/ai-anthropic": "0.27.0",
     "@effect/ai-openai": "0.41.0",
+    "@effect/cli": "0.77.0",
     "@effect/experimental": "^0.61.0",
     "@effect/platform-bun": "0.91.2",
     "@opentui/core": "^0.5.1",

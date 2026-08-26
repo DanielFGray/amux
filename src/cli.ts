@@ -3,6 +3,8 @@
  * The single `amux` binary.
  *
  * Dispatches on the first argument:
+ * - `amux` (no args) — attach to the one running session, prompt if several,
+ *   or create and attach `default` if none is running
  * - `amux [session-id]` — attach to an existing session
  * - `amux new <session-id>` — create (or resume) a session and attach
  * - `amux daemon [id]` — run the daemon foreground
@@ -14,7 +16,9 @@
  * yet is refused rather than silently spun up, because a session id doubles
  * as a fallback for any unrecognized first argument — a mistyped command
  * would otherwise create and attach a throwaway session instead of erroring.
- * `amux new` is the one spelling that is allowed to create.
+ * `amux new` and the bare no-args form are the only spellings allowed to
+ * create. Anything else that isn't a real dispatch target — unknown command
+ * or nonexistent session — prints help and exits 0 rather than erroring.
  *
  * Static imports are deliberately absent: Bun evaluates them before main() runs,
  * so this file has none. Every subcommand lazy-loads only what it needs, keeping
@@ -27,6 +31,26 @@ export function splitCommandArgs(argv: readonly string[]): string[][] {
     else groups.at(-1)!.push(arg);
   }
   return groups;
+}
+
+/**
+ * Ask which of several already-running sessions bare `amux` should attach
+ * to. Returns `undefined` if the user cancels (Ctrl+C/Esc) rather than
+ * picking one.
+ */
+async function pickRunningSession(ids: readonly string[]): Promise<string | undefined> {
+  const [{ Prompt }, { BunTerminal }, { Effect }] = await Promise.all([
+    import("@effect/cli"),
+    import("@effect/platform-bun"),
+    import("effect"),
+  ]);
+  const prompt = Prompt.select({
+    message: "Multiple sessions are running — attach to which?",
+    choices: ids.map((id) => ({ title: id, value: id })),
+  });
+  return Effect.runPromise(
+    prompt.pipe(Effect.provide(BunTerminal.layer), Effect.orElseSucceed(() => undefined)),
+  );
 }
 
 /**
@@ -85,9 +109,23 @@ async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const sub = argv[0];
 
-  if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+  if (sub === "help" || sub === "--help" || sub === "-h") {
     const { generateHelp } = await import("./command-cli.ts");
     process.stdout.write(generateHelp() + "\n");
+    return 0;
+  }
+
+  // Bare `amux` — tmux-style default: attach to whatever's running. No
+  // session running yet creates (and attaches) `default`; exactly one
+  // running session attaches to it directly; more than one asks which.
+  if (!sub) {
+    const { runningSessionIds } = await import("./session-cli.ts");
+    const running = await runningSessionIds();
+    const id =
+      running.length <= 1 ? (running[0] ?? "default") : await pickRunningSession(running);
+    if (id === undefined) return 130; // picker cancelled (Ctrl+C/Esc)
+    process.env.AMUX_SESSION = id;
+    await import("./main.tsx");
     return 0;
   }
 
@@ -106,7 +144,7 @@ async function main(): Promise<number> {
 
   if (sub === "daemon") {
     const { runDaemonMain } = await import("./daemon-main.ts");
-    runDaemonMain(argv[1]);
+    runDaemonMain(argv[1] ?? "default");
     return 0;
   }
 
@@ -504,10 +542,13 @@ async function main(): Promise<number> {
 
   // Session attach — refuses to create. A mistyped command is also a valid
   // session id, so silently spinning up a daemon for it here would turn a
-  // typo into an orphaned session instead of an error.
+  // typo into an orphaned session instead of an error. Anything that isn't
+  // a real dispatch target — unknown command or nonexistent session —
+  // falls back to help rather than erroring, so a typo is a noop.
   if (!isSessionId(sub)) {
-    console.error(`unknown command or invalid session id: ${JSON.stringify(sub)}`);
-    return 2;
+    const { generateHelp } = await import("./command-cli.ts");
+    process.stdout.write(generateHelp() + "\n");
+    return 0;
   }
   const { BunFileSystem } = await import("@effect/platform-bun");
   const known = await Effect.runPromise(
@@ -517,8 +558,9 @@ async function main(): Promise<number> {
     ),
   );
   if (!known) {
-    console.error(`no session named ${JSON.stringify(sub)} — run \`amux new ${sub}\` to create it`);
-    return 2;
+    const { generateHelp } = await import("./command-cli.ts");
+    process.stdout.write(generateHelp() + "\n");
+    return 0;
   }
   process.env.AMUX_SESSION = sub;
   await import("./main.tsx");

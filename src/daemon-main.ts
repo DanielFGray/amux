@@ -47,5 +47,5 @@ if (import.meta.main) {
     };
     await waitForBarrier();
   }
-  runDaemonMain();
+  runDaemonMain(process.argv[2]);
 }

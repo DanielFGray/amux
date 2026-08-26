@@ -13,18 +13,29 @@ function formatUptime(ms: number): string {
   return `${hours}h${minutes % 60}m`;
 }
 
+/** Every known session id paired with whether its daemon is currently alive. */
+export const sessionAliveness = Effect.fnUntraced(function* () {
+  const ids = yield* SessionStore.list;
+  return yield* Effect.forEach(ids, (id) =>
+    SessionStore.readLease(id).pipe(
+      Effect.map((lease) => ({ id, lease, alive: lease !== null && processAlive(lease.pid) })),
+      Effect.orElseSucceed(() => ({ id, lease: null, alive: false })),
+    ),
+  );
+});
+
+/** Ids of every session whose daemon is currently alive. */
+export async function runningSessionIds(): Promise<string[]> {
+  const rows = await Effect.runPromise(
+    sessionAliveness().pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+  );
+  return rows.filter((row) => row.alive).map((row) => row.id);
+}
+
 /** `amux list`: every known session id, and whether its daemon is alive. */
 async function listSessions(): Promise<number> {
   const rows = await Effect.runPromise(
-    Effect.gen(function* () {
-      const ids = yield* SessionStore.list;
-      return yield* Effect.forEach(ids, (id) =>
-        SessionStore.readLease(id).pipe(
-          Effect.map((lease) => ({ id, lease, alive: lease !== null && processAlive(lease.pid) })),
-          Effect.orElseSucceed(() => ({ id, lease: null, alive: false })),
-        ),
-      );
-    }).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+    sessionAliveness().pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
   );
   if (rows.length === 0) {
     console.log("no sessions");

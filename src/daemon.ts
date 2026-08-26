@@ -1328,7 +1328,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 });
 
 export const startDaemon = Effect.fnUntraced(function* (
-  id = process.argv[2] || randomUUID(),
+  id = randomUUID(),
   options: SessionDaemonOptions = {},
 ) {
   const daemon = yield* makeDaemonService(id, options);

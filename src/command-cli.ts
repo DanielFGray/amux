@@ -241,6 +241,7 @@ export function generateHelp(): string {
   lines.push("");
   lines.push("  amux new <session-id>   create a session (or resume a stopped one) and attach");
   lines.push("  amux <session-id>       attach to an existing session");
+  lines.push("  amux                    attach to the 'default' session, creating it if needed");
   return lines.join("\n");
 }
 
