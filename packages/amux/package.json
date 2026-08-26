@@ -30,7 +30,7 @@
     "@danielfgray/amux-plugin-notifications": "workspace:*",
     "@danielfgray/amux-plugin-sidebar": "workspace:*",
     "@effect/cli": "catalog:",
-    "@effect/experimental": "catalog:",
+    "effect-machine": "catalog:",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node-shared": "catalog:",
     "@effect/rpc": "catalog:",

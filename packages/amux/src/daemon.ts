@@ -11,14 +11,13 @@ import {
   Layer,
   ManagedRuntime,
   Option,
-  Request,
   Runtime,
   Schedule,
   Schema as S,
   Scope,
   Stream,
 } from "effect";
-import { Machine } from "@effect/experimental";
+import { Event, Machine, State } from "effect-machine/v3";
 import { FileSystem, SocketServer } from "@effect/platform";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
 import * as RpcServer from "@effect/rpc/RpcServer";
@@ -112,21 +111,26 @@ export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
  * committed machine state. The mailbox cannot serve itself, so the host has to
  * be committed before the transaction can run.
  */
-type DaemonPhase =
-  | { readonly _tag: "stopped" }
-  | {
-      readonly _tag: "starting";
-      readonly host: AttachHostService;
-      readonly hostRuntime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>;
-    }
-  | {
-      readonly _tag: "running";
-      readonly host: AttachHostService;
-      readonly hostRuntime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>;
-      readonly controlScope: Scope.CloseableScope;
-      readonly heartbeatFiber: Fiber.RuntimeFiber<void, never>;
-    }
-  | { readonly _tag: "closed" };
+/** Pass-through typing for live resources a state variant carries: they are
+ *  never validated or serialized, only held. */
+const opaque = <T>(): S.Schema<T> => S.declare((_input): _input is T => true);
+
+const DaemonState = State({
+  stopped: {},
+  starting: {
+    host: opaque<AttachHostService>(),
+    hostRuntime: opaque<ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>>(),
+  },
+  running: {
+    host: opaque<AttachHostService>(),
+    hostRuntime: opaque<ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>>(),
+    controlScope: opaque<Scope.CloseableScope>(),
+    heartbeatFiber: opaque<Fiber.RuntimeFiber<void, never>>(),
+  },
+  closed: {},
+});
+
+type DaemonPhase = typeof DaemonState.Type;
 
 type WorkspaceCommandRequestContext = Omit<WorkspaceCommandContext, "shell"> & {
   readonly shell: readonly string[];
@@ -144,66 +148,55 @@ const hostOf = (
     ? { host: state.host, hostRuntime: state.hostRuntime }
     : null;
 
-// The mailbox requests that drive the lifecycle and every host-bound verb.
+/** Every reply is `Either.right(value)` on success or `Either.left(error)` on
+ *  failure — `effect-machine` transition handlers cannot fail (their error
+ *  channel is `never`), so `DaemonError` travels back through the reply. */
+const daemonReply = <A>() => opaque<Either.Either<A, DaemonError>>();
+
+// The mailbox events that drive the lifecycle and every host-bound verb.
 // The seven host operations are procedures, not guards: outside the live
 // states their handlers reject with "daemon not started" instead of a
 // scattered nullable-field check.
-class DaemonStart extends Request.TaggedClass("daemonStart")<void, DaemonError, {}> {}
-class DaemonFinishStartup extends Request.TaggedClass("daemonFinishStartup")<
-  void,
-  DaemonError,
-  {}
-> {}
-class DaemonShutdown extends Request.TaggedClass("daemonShutdown")<
-  void,
-  DaemonError,
-  { mode: "stop" | "close" }
-> {}
-class DaemonSpawn extends Request.TaggedClass("daemonSpawn")<
-  ManagedSession,
-  DaemonError,
-  { spec: SessionSpec }
-> {}
-class DaemonKill extends Request.TaggedClass("daemonKill")<void, DaemonError, { id: string }> {}
-class DaemonLive extends Request.TaggedClass("daemonLive")<readonly string[], never, {}> {}
-class DaemonSetBuffer extends Request.TaggedClass("daemonSetBuffer")<
-  string,
-  DaemonError,
-  { name: string | undefined; data: string }
-> {}
-class DaemonPasteBuffer extends Request.TaggedClass("daemonPasteBuffer")<
-  void,
-  DaemonError,
-  { name: string | undefined; target: string; deleteAfter: boolean }
-> {}
-class DaemonListBuffers extends Request.TaggedClass("daemonListBuffers")<
-  readonly BufferEntry[],
-  DaemonError,
-  {}
-> {}
-class DaemonDeleteBuffer extends Request.TaggedClass("daemonDeleteBuffer")<
-  void,
-  DaemonError,
-  { name: string | undefined }
-> {}
-class DaemonShowBuffer extends Request.TaggedClass("daemonShowBuffer")<
-  string,
-  DaemonError,
-  { name: string | undefined }
-> {}
+const DaemonEvent = Event({
+  start: Event.reply({}, daemonReply<void>()),
+  finishStartup: Event.reply({}, daemonReply<void>()),
+  shutdown: Event.reply({ mode: S.Literal("stop", "close") }, daemonReply<void>()),
+  spawn: Event.reply({ spec: opaque<SessionSpec>() }, daemonReply<ManagedSession>()),
+  kill: Event.reply({ id: S.String }, daemonReply<void>()),
+  live: Event.reply({}, opaque<readonly string[]>()),
+  setBuffer: Event.reply(
+    { name: opaque<string | undefined>(), data: S.String },
+    daemonReply<string>(),
+  ),
+  pasteBuffer: Event.reply(
+    { name: opaque<string | undefined>(), target: S.String, deleteAfter: S.Boolean },
+    daemonReply<void>(),
+  ),
+  listBuffers: Event.reply({}, daemonReply<readonly BufferEntry[]>()),
+  deleteBuffer: Event.reply({ name: opaque<string | undefined>() }, daemonReply<void>()),
+  showBuffer: Event.reply({ name: opaque<string | undefined>() }, daemonReply<string>()),
+});
 
-type DaemonRequest =
-  | DaemonStart
-  | DaemonFinishStartup
-  | DaemonShutdown
-  | DaemonSpawn
-  | DaemonKill
-  | DaemonLive
-  | DaemonSetBuffer
-  | DaemonPasteBuffer
-  | DaemonListBuffers
-  | DaemonDeleteBuffer
-  | DaemonShowBuffer;
+const allDaemonStates = [
+  DaemonState.stopped,
+  DaemonState.starting,
+  DaemonState.running,
+  DaemonState.closed,
+] as const;
+
+/** Every handler already guards on `state._tag` itself (a request may arrive
+ *  in any lifecycle phase), so every event is wired to every state. On
+ *  failure the reply carries the error and the state is left as it was
+ *  handed to the handler — matching the old Machine's behavior of never
+ *  committing a transition for a failed procedure. */
+const withReply = <A, R>(
+  state: DaemonPhase,
+  effect: Effect.Effect<readonly [A, DaemonPhase], DaemonError, R>,
+): Effect.Effect<Machine.ReplyResult<DaemonPhase, Either.Either<A, DaemonError>>, never, R> =>
+  Effect.match(effect, {
+    onFailure: (error) => Machine.reply(state, Either.left(error)),
+    onSuccess: ([value, newState]) => Machine.reply(newState, Either.right(value)),
+  });
 
 /**
  * Raised inside the lock acquisition loop when the lock file exists but is
@@ -389,13 +382,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   state.attached = false;
   const workspace = yield* workspaceFromSession(state);
 
-  // The lifecycle actor lives in its own scope, deliberately not the daemon
-  // scope: shutdown dismantles the daemon scope while its `Shutdown` request is
-  // still in flight, and after it returns the service must still answer — a
-  // `liveSessions()` after stop reads `[]` off the closed state, and sending to
-  // a dead actor would hang. Nothing closes this scope; the actor idles on its
-  // mailbox until the process ends.
-  const machineScope = yield* Scope.make();
+  // The lifecycle actor is spawned unscoped, deliberately not tied to the
+  // daemon scope: shutdown dismantles the daemon scope while its `shutdown`
+  // event is still in flight, and after it returns the service must still
+  // answer — a `liveSessions()` after stop reads `[]` off the closed state,
+  // and asking a dead actor would hang. Nothing ever stops this actor; it
+  // idles on its mailbox until the process ends.
   const daemonScope = yield* Scope.make();
   const eventBusContext = yield* Layer.build(EventBus.Default).pipe(Scope.extend(daemonScope));
   const eventBus = Context.get(eventBusContext, EventBus);
@@ -509,9 +501,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     heartbeatAt: Date.now(),
   };
 
-  const daemonMachine = Machine.make<DaemonPhase, DaemonRequest, never, never, never>(
-    Machine.procedures.make<DaemonPhase>({ _tag: "stopped" }, { identifier: "SessionDaemon" }).pipe(
-      Machine.procedures.add<DaemonStart>()("daemonStart", ({ state }) =>
+  const daemonMachine = Machine.make({
+    state: DaemonState,
+    event: DaemonEvent,
+    initial: DaemonState.stopped,
+  })
+    .on(allDaemonStates, DaemonEvent.start, ({ state }) =>
+      withReply(
+        state,
         Effect.gen(function* () {
           if (state._tag !== "stopped") return [void 0, state] as const;
 
@@ -564,11 +561,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           // `starting` state: the rest of startup runs the workspace
           // transaction, which reads the host off the machine state, and
           // the mailbox cannot serve itself.
-          return [void 0, { _tag: "starting", host, hostRuntime: rt }] as const;
+          return [void 0, DaemonState.starting({ host, hostRuntime: rt })] as const;
         }).pipe(toDaemonError),
       ),
+    )
 
-      Machine.procedures.add<DaemonFinishStartup>()("daemonFinishStartup", ({ state }) =>
+    .on(allDaemonStates, DaemonEvent.finishStartup, ({ state }) =>
+      withReply(
+        state,
         Effect.gen(function* () {
           if (state._tag !== "starting") return [void 0, state] as const;
           const { host, hostRuntime } = state;
@@ -682,12 +682,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
           return [
             void 0,
-            { _tag: "running", host, hostRuntime, controlScope, heartbeatFiber },
+            DaemonState.running({ host, hostRuntime, controlScope, heartbeatFiber }),
           ] as const;
         }).pipe(toDaemonError),
       ),
+    )
 
-      Machine.procedures.add<DaemonShutdown>()("daemonShutdown", ({ state, request }) =>
+    .on(allDaemonStates, DaemonEvent.shutdown, ({ state, event }) =>
+      withReply(
+        state,
         Effect.gen(function* () {
           if (state._tag === "closed") return [void 0, state] as const;
           let finalFailure: string | null = null;
@@ -715,7 +718,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             yield* fs.remove(paths.attach).pipe(Effect.ignore);
           }
 
-          if (request.mode === "stop") {
+          if (event.mode === "stop") {
             yield* session.remove(id);
           } else {
             yield* enqueue(
@@ -741,95 +744,122 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           yield* fs.remove(paths.lease).pipe(Effect.ignore);
           yield* Scope.close(lockScope, Exit.void);
           if (finalFailure !== null) return yield* new DaemonError({ message: finalFailure });
-          return [void 0, { _tag: "closed" }] as const;
+          return [void 0, DaemonState.closed] as const;
         }).pipe(toDaemonError),
       ),
+    )
 
-      Machine.procedures.add<DaemonSpawn>()("daemonSpawn", ({ state, request }) => {
-        const live = hostOf(state);
-        return live
-          ? rawSpawn(request.spec, live.host).pipe(
-              Effect.map((session) => [session, state] as const),
-            )
-          : Effect.fail(new DaemonError({ message: "daemon not started" }));
-      }),
+    .on(allDaemonStates, DaemonEvent.spawn, ({ state, event }) => {
+      const live = hostOf(state);
+      return withReply(
+        state,
+        live
+          ? rawSpawn(event.spec, live.host).pipe(Effect.map((session) => [session, state] as const))
+          : Effect.fail(new DaemonError({ message: "daemon not started" })),
+      );
+    })
 
-      Machine.procedures.add<DaemonKill>()("daemonKill", ({ state, request }) => {
-        const live = hostOf(state);
-        return live
-          ? live.host.kill(request.id).pipe(
+    .on(allDaemonStates, DaemonEvent.kill, ({ state, event }) => {
+      const live = hostOf(state);
+      return withReply(
+        state,
+        live
+          ? live.host.kill(event.id).pipe(
               toDaemonError,
               Effect.map((_) => [void 0, state] as const),
             )
-          : Effect.fail(new DaemonError({ message: "daemon not started" }));
-      }),
+          : Effect.fail(new DaemonError({ message: "daemon not started" })),
+      );
+    })
 
-      // A stopped daemon answers `live` with nothing running rather than an
-      // error: after stop, callers may still ask what is left to adopt.
-      Machine.procedures.add<DaemonLive>()("daemonLive", ({ state }) => {
-        const live = hostOf(state);
-        return live
-          ? live.host.live.pipe(Effect.map((sessions) => [sessions, state] as const))
-          : Effect.succeed([[] as readonly string[], state] as const);
-      }),
+    // A stopped daemon answers `live` with nothing running rather than an
+    // error: after stop, callers may still ask what is left to adopt.
+    .on(allDaemonStates, DaemonEvent.live, ({ state }) => {
+      const live = hostOf(state);
+      return live
+        ? live.host.live.pipe(Effect.map((sessions) => Machine.reply(state, sessions)))
+        : Effect.succeed(Machine.reply(state, [] as readonly string[]));
+    })
 
-      Machine.procedures.add<DaemonSetBuffer>()("daemonSetBuffer", ({ state, request }) => {
-        const live = hostOf(state);
-        return live
-          ? bufferOp(() => live.host.buffers.set(request.name, request.data)).pipe(
+    .on(allDaemonStates, DaemonEvent.setBuffer, ({ state, event }) => {
+      const live = hostOf(state);
+      return withReply(
+        state,
+        live
+          ? bufferOp(() => live.host.buffers.set(event.name, event.data)).pipe(
               Effect.map((name) => [name, state] as const),
             )
-          : Effect.fail(new DaemonError({ message: "daemon not started" }));
-      }),
+          : Effect.fail(new DaemonError({ message: "daemon not started" })),
+      );
+    })
 
-      Machine.procedures.add<DaemonPasteBuffer>()("daemonPasteBuffer", ({ state, request }) => {
-        const live = hostOf(state);
-        return live
+    .on(allDaemonStates, DaemonEvent.pasteBuffer, ({ state, event }) => {
+      const live = hostOf(state);
+      return withReply(
+        state,
+        live
           ? Effect.gen(function* () {
-              const bytes = yield* bufferOp(() => live.host.buffers.show(request.name));
-              yield* live.host.paste(request.target, bytes).pipe(toDaemonError);
-              if (request.deleteAfter)
-                yield* bufferOp(() => live.host.buffers.delete(request.name));
+              const bytes = yield* bufferOp(() => live.host.buffers.show(event.name));
+              yield* live.host.paste(event.target, bytes).pipe(toDaemonError);
+              if (event.deleteAfter) yield* bufferOp(() => live.host.buffers.delete(event.name));
               return [void 0, state] as const;
             }).pipe(toDaemonError)
-          : Effect.fail(new DaemonError({ message: "daemon not started" }));
-      }),
+          : Effect.fail(new DaemonError({ message: "daemon not started" })),
+      );
+    })
 
-      Machine.procedures.add<DaemonListBuffers>()("daemonListBuffers", ({ state }) => {
-        const live = hostOf(state);
-        return live
+    .on(allDaemonStates, DaemonEvent.listBuffers, ({ state }) => {
+      const live = hostOf(state);
+      return withReply(
+        state,
+        live
           ? bufferOp(() => live.host.buffers.list()).pipe(
               Effect.map((buffers) => [buffers, state] as const),
             )
-          : Effect.fail(new DaemonError({ message: "daemon not started" }));
-      }),
+          : Effect.fail(new DaemonError({ message: "daemon not started" })),
+      );
+    })
 
-      Machine.procedures.add<DaemonDeleteBuffer>()("daemonDeleteBuffer", ({ state, request }) => {
-        const live = hostOf(state);
-        return live
-          ? bufferOp(() => live.host.buffers.delete(request.name)).pipe(
+    .on(allDaemonStates, DaemonEvent.deleteBuffer, ({ state, event }) => {
+      const live = hostOf(state);
+      return withReply(
+        state,
+        live
+          ? bufferOp(() => live.host.buffers.delete(event.name)).pipe(
               Effect.map((_) => [void 0, state] as const),
             )
-          : Effect.fail(new DaemonError({ message: "daemon not started" }));
-      }),
+          : Effect.fail(new DaemonError({ message: "daemon not started" })),
+      );
+    })
 
-      Machine.procedures.add<DaemonShowBuffer>()("daemonShowBuffer", ({ state, request }) => {
-        const live = hostOf(state);
-        return live
-          ? bufferOp(() => new TextDecoder().decode(live.host.buffers.show(request.name))).pipe(
+    .on(allDaemonStates, DaemonEvent.showBuffer, ({ state, event }) => {
+      const live = hostOf(state);
+      return withReply(
+        state,
+        live
+          ? bufferOp(() => new TextDecoder().decode(live.host.buffers.show(event.name))).pipe(
               Effect.map((text) => [text, state] as const),
             )
-          : Effect.fail(new DaemonError({ message: "daemon not started" }));
-      }),
-    ),
-  );
+          : Effect.fail(new DaemonError({ message: "daemon not started" })),
+      );
+    });
 
-  const actor = yield* Machine.boot(daemonMachine).pipe(
-    Effect.provideService(Scope.Scope, machineScope),
-  );
+  const actor = yield* Machine.spawn(daemonMachine, { id: "SessionDaemon" });
+  yield* actor.start;
+
+  /** Unwrap an `ask` reply's `Either<A, DaemonError>` back into `DaemonError`
+   *  as the effect's own failure; `ask`'s own `NoReplyError`/`ActorStoppedError`
+   *  cannot happen against this always-running, always-replying actor. */
+  const unwrapAsk = <A>(
+    effect: Effect.Effect<Either.Either<A, DaemonError>, unknown>,
+  ): Effect.Effect<A, DaemonError> =>
+    effect.pipe(
+      Effect.mapError((e) => new DaemonError({ message: describe(e) })),
+      Effect.flatMap(Either.match({ onLeft: Effect.fail, onRight: Effect.succeed })),
+    );
 
   const requireHost: Effect.Effect<AttachHostService, DaemonError> = Effect.flatMap(
-    actor.get,
+    actor.snapshot,
     (state) => {
       const live = hostOf(state);
       return live
@@ -895,16 +925,16 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   });
 
   let spawnSession = (spec: SessionSpec): Effect.Effect<ManagedSession, DaemonError> =>
-    actor.send(new DaemonSpawn({ spec }));
+    unwrapAsk(actor.ask(DaemonEvent.spawn({ spec })));
   let killSession = (sessionId: string): Effect.Effect<void, DaemonError> =>
-    actor.send(new DaemonKill({ id: sessionId }));
+    unwrapAsk(actor.ask(DaemonEvent.kill({ id: sessionId })));
   let stopWhenEmpty: Effect.Effect<void> = Effect.void;
 
   // Two requests, strictly ordered: the host must be committed in `starting`
   // before the transaction-driven restore half can run under it.
   const start = Effect.all([
-    actor.send(new DaemonStart()),
-    actor.send(new DaemonFinishStartup()),
+    unwrapAsk(actor.ask(DaemonEvent.start)),
+    unwrapAsk(actor.ask(DaemonEvent.finishStartup)),
   ]).pipe(Effect.asVoid);
 
   /**
@@ -935,7 +965,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       // those fibers.
       terminationShared = Runtime.runPromise(runtime)(
         Effect.gen(function* () {
-          const exit = yield* Effect.exit(actor.send(new DaemonShutdown({ mode })));
+          const exit = yield* Effect.exit(unwrapAsk(actor.ask(DaemonEvent.shutdown({ mode }))));
           yield* Scope.close(daemonScope, Exit.void);
           yield* Deferred.succeed(closed, undefined);
           if (Exit.isFailure(exit)) return yield* Exit.failCause(exit.cause);
@@ -1277,26 +1307,27 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const spawnSessionService = spawnSession;
 
-  const liveSessions = (): Effect.Effect<readonly string[], never> => actor.send(new DaemonLive());
+  const liveSessions = (): Effect.Effect<readonly string[], never> =>
+    actor.ask(DaemonEvent.live).pipe(Effect.orDie);
 
   const setBuffer = (n: string | undefined, d: string): Effect.Effect<string, DaemonError> =>
-    actor.send(new DaemonSetBuffer({ name: n, data: d }));
+    unwrapAsk(actor.ask(DaemonEvent.setBuffer({ name: n, data: d })));
 
   const pasteBuffer = (
     n: string | undefined,
     t: string,
     d: boolean,
   ): Effect.Effect<void, DaemonError> =>
-    actor.send(new DaemonPasteBuffer({ name: n, target: t, deleteAfter: d }));
+    unwrapAsk(actor.ask(DaemonEvent.pasteBuffer({ name: n, target: t, deleteAfter: d })));
 
   const listBuffers = (): Effect.Effect<readonly BufferEntry[], DaemonError> =>
-    actor.send(new DaemonListBuffers());
+    unwrapAsk(actor.ask(DaemonEvent.listBuffers));
 
   const deleteBuffer = (n: string | undefined): Effect.Effect<void, DaemonError> =>
-    actor.send(new DaemonDeleteBuffer({ name: n }));
+    unwrapAsk(actor.ask(DaemonEvent.deleteBuffer({ name: n })));
 
   const showBuffer = (n: string | undefined): Effect.Effect<string, DaemonError> =>
-    actor.send(new DaemonShowBuffer({ name: n }));
+    unwrapAsk(actor.ask(DaemonEvent.showBuffer({ name: n })));
 
   const service: SessionDaemonService = {
     id,
