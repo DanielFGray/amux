@@ -433,14 +433,18 @@ export function parseSessionState(
           owned.set(entry.id, entry.exited);
         }
         if (candidate.layout) {
-          const parsed = yield* S.decodeUnknown(S.parseJson(JsonValueSchema))(candidate.layout).pipe(
-            Effect.mapError(schemaError),
-          );
+          const parsed = yield* S.decodeUnknown(S.parseJson(JsonValueSchema))(
+            candidate.layout,
+          ).pipe(Effect.mapError(schemaError));
           const layout = yield* parseLayout(parsed).pipe(
             Effect.mapError((error) => new SessionStateError({ message: error.message })),
           );
           const focus = S.decodeUnknownOption(S.Struct({ focus: S.optional(S.String) }))(parsed);
-          if (Option.isSome(focus) && focus.value.focus !== undefined && layout.focus !== focus.value.focus)
+          if (
+            Option.isSome(focus) &&
+            focus.value.focus !== undefined &&
+            layout.focus !== focus.value.focus
+          )
             return yield* layoutFocus;
           for (const pane of layoutPanes(layout.root)) {
             if (paneIds.has(pane.id)) return yield* duplicatePane(pane.id);
@@ -513,7 +517,10 @@ function schemaError(error: ParseError): SessionStateError {
   return invalidState;
 }
 
-function validState(value: S.Schema.Type<typeof SessionStateInputSchema>, expectedId?: string): value is SessionState {
+function validState(
+  value: S.Schema.Type<typeof SessionStateInputSchema>,
+  expectedId?: string,
+): value is SessionState {
   return Exit.isSuccess(Effect.runSync(Effect.exit(parseSessionState(value, expectedId))));
 }
 
@@ -613,6 +620,12 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
       );
     });
 
+    /** Every known session id, from the directories under the session root. */
+    const list = fs.readDirectory(root).pipe(
+      Effect.map((entries) => entries.filter(isSessionId).sort()),
+      Effect.orElseSucceed((): string[] => []),
+    );
+
     return {
       load,
       save,
@@ -620,6 +633,7 @@ export class SessionStore extends Effect.Service<SessionStore>()("Session", {
       writeLease,
       remove,
       exists,
+      list,
     };
   }),
 }) {}

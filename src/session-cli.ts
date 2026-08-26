@@ -1,16 +1,60 @@
 import { Effect } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { controlCall, type ControlClient } from "./control-client.ts";
-import { isSessionId, SessionStore } from "./session.ts";
+import { isSessionId, processAlive, SessionStore } from "./session.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
 
-/** `amux status <id>` / `amux stop <id>`: a one-shot RPC against a live daemon. */
+function formatUptime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${minutes % 60}m`;
+}
+
+/** `amux list`: every known session id, and whether its daemon is alive. */
+async function listSessions(): Promise<number> {
+  const rows = await Effect.runPromise(
+    Effect.gen(function* () {
+      const ids = yield* SessionStore.list;
+      return yield* Effect.forEach(ids, (id) =>
+        SessionStore.readLease(id).pipe(
+          Effect.map((lease) => ({ id, lease, alive: lease !== null && processAlive(lease.pid) })),
+          Effect.orElseSucceed(() => ({ id, lease: null, alive: false })),
+        ),
+      );
+    }).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+  );
+  if (rows.length === 0) {
+    console.log("no sessions");
+    return 0;
+  }
+  const now = Date.now();
+  const table = rows.map(({ id, lease, alive }) => ({
+    session: id,
+    status: alive ? "running" : "stopped",
+    pid: alive && lease ? String(lease.pid) : "-",
+    uptime: alive && lease ? formatUptime(now - lease.startedAt) : "-",
+    attached: alive && lease ? String(lease.attachments?.length ?? 0) : "-",
+  }));
+  const columns = ["session", "status", "pid", "uptime", "attached"] as const;
+  const widths = columns.map((col) => Math.max(col.length, ...table.map((row) => row[col].length)));
+  const printRow = (values: readonly string[]) =>
+    console.log(values.map((v, i) => v.padEnd(widths[i]!)).join("  "));
+  printRow(columns);
+  for (const row of table) printRow(columns.map((col) => row[col]));
+  return 0;
+}
+
+/** `amux status <id>` / `amux stop <id>` / `amux list`: one-shot lifecycle commands. */
 export async function runSessionCli(argv: string[]): Promise<number> {
   const [verb, id = "default"] = argv;
-  if (!verb || !["status", "stop"].includes(verb)) {
-    console.error("usage: amux <status|stop> [session-id]");
+  if (!verb || !["status", "stop", "list"].includes(verb)) {
+    console.error("usage: amux <status|stop|list> [session-id]");
     return 2;
   }
+  if (verb === "list") return listSessions();
   if (!isSessionId(id)) {
     console.error(`invalid session id ${JSON.stringify(id)}`);
     return 2;

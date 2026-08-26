@@ -211,9 +211,10 @@ export function generateHelp(): string {
   lines.push("  daemon [id]       start a session daemon");
   lines.push("  status [id]       print a session's status as JSON");
   lines.push("  stop [id]         stop a session");
+  lines.push("  list              list known sessions and whether each is running");
   lines.push("");
-  lines.push("  amux [session-id]   attach to a session (autostart daemon);");
-  lines.push("                        defaults to 'default'");
+  lines.push("  amux new <session-id>   create a session (or resume a stopped one) and attach");
+  lines.push("  amux <session-id>       attach to an existing session");
   return lines.join("\n");
 }
 

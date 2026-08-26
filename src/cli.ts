@@ -3,11 +3,18 @@
  * The single `amux` binary.
  *
  * Dispatches on the first argument:
- * - `amux [session-id]` — attach to a session (autostart daemon)
+ * - `amux [session-id]` — attach to an existing session
+ * - `amux new <session-id>` — create (or resume) a session and attach
  * - `amux daemon [id]` — run the daemon foreground
- * - `amux status|stop [id]` — one-shot RPC lifecycle commands
+ * - `amux status|stop|list [id]` — one-shot lifecycle commands
  * - `amux <command> [args]` — invoke a remote command via the daemon RPC
  * - `amux help` — show usage
+ *
+ * `amux <session-id>` never creates: a name that has no session directory
+ * yet is refused rather than silently spun up, because a session id doubles
+ * as a fallback for any unrecognized first argument — a mistyped command
+ * would otherwise create and attach a throwaway session instead of erroring.
+ * `amux new` is the one spelling that is allowed to create.
  *
  * Static imports are deliberately absent: Bun evaluates them before main() runs,
  * so this file has none. Every subcommand lazy-loads only what it needs, keeping
@@ -103,9 +110,9 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  if (sub === "status" || sub === "stop") {
+  if (sub === "status" || sub === "stop" || sub === "list") {
     const { runSessionCli } = await import("./session-cli.ts");
-    return await runSessionCli([sub, argv[1] ?? "default"]);
+    return await runSessionCli(sub === "list" ? ["list"] : [sub, argv[1] ?? "default"]);
   }
 
   if (sub === "process-state") {
@@ -430,9 +437,36 @@ async function main(): Promise<number> {
     );
   }
 
-  // Session attach
+  // `amux new <id>` is the only spelling allowed to create a session: it
+  // attaches exactly like the plain form below, but skips the existence
+  // check since creating is the point.
+  if (sub === "new") {
+    const id = argv[1];
+    if (!id || !isSessionId(id)) {
+      console.error("usage: amux new <session-id>");
+      return 2;
+    }
+    process.env.AMUX_SESSION = id;
+    await import("./main.tsx");
+    return 0;
+  }
+
+  // Session attach — refuses to create. A mistyped command is also a valid
+  // session id, so silently spinning up a daemon for it here would turn a
+  // typo into an orphaned session instead of an error.
   if (!isSessionId(sub)) {
     console.error(`unknown command or invalid session id: ${JSON.stringify(sub)}`);
+    return 2;
+  }
+  const { BunFileSystem } = await import("@effect/platform-bun");
+  const known = await Effect.runPromise(
+    SessionStore.exists(sub).pipe(
+      Effect.provide(SessionStore.Default),
+      Effect.provide(BunFileSystem.layer),
+    ),
+  );
+  if (!known) {
+    console.error(`no session named ${JSON.stringify(sub)} — run \`amux new ${sub}\` to create it`);
     return 2;
   }
   process.env.AMUX_SESSION = sub;
