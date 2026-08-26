@@ -1,0 +1,34 @@
+{
+  "name": "@danielfgray/amux-plugin-agent-harness",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/plugin-agent-harness"
+  },
+  "type": "module",
+  "module": "src/index.tsx",
+  "exports": {
+    ".": "./src/index.tsx",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@danielfgray/amux-agent-awareness": "workspace:*",
+    "@effect/ai": "catalog:",
+    "@effect/ai-anthropic": "catalog:",
+    "@effect/ai-openai": "catalog:",
+    "@effect/platform": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@opentui/core": "catalog:",
+    "@opentui/solid": "catalog:",
+    "effect": "catalog:",
+    "solid-js": "catalog:"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  }
+}

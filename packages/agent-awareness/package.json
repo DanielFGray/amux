@@ -1,0 +1,23 @@
+{
+  "name": "@danielfgray/amux-agent-awareness",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/agent-awareness"
+  },
+  "type": "module",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  }
+}

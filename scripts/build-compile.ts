@@ -4,6 +4,7 @@ import { BunContext, BunRuntime } from "@effect/platform-bun";
 import solidPlugin from "@opentui/solid/bun-plugin";
 
 const root = process.cwd();
+const app = `${root}/packages/amux`;
 const build = `${root}/build`;
 
 class BuildBundleError extends S.TaggedError<BuildBundleError>()("BuildBundleError", {
@@ -28,7 +29,7 @@ const compile = Effect.gen(function* () {
   const [duration, result] = yield* Effect.tryPromise({
     try: () =>
       Bun.build({
-        entrypoints: [`${root}/src/cli.ts`],
+        entrypoints: [`${app}/src/cli.ts`],
         target: "bun",
         plugins: [solidPlugin],
         // The standalone executable has no bunfig.toml embedded in it, so
@@ -57,7 +58,7 @@ const compile = Effect.gen(function* () {
   const workerResult = yield* Effect.tryPromise({
     try: () =>
       Bun.build({
-        entrypoints: [`${root}/src/pty-reader.worker.ts`],
+        entrypoints: [`${app}/src/pty-reader.worker.ts`],
         target: "bun",
         outdir: build,
         naming: "pty-reader.worker.js",

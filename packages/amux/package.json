@@ -1,0 +1,49 @@
+{
+  "name": "@danielfgray/amux",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux"
+  },
+  "bin": {
+    "amux": "./src/cli.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "type": "module",
+  "module": "src/main.tsx",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "start": "bun src/main.tsx",
+    "daemon": "bun src/daemon-main.ts",
+    "session": "bun src/session-cli.ts",
+    "cli": "bun src/cli.ts",
+    "build:help": "bun src/cli.ts --help"
+  },
+  "dependencies": {
+    "@danielfgray/amux-plugin-agent-harness": "workspace:*",
+    "@danielfgray/amux-plugin-notifications": "workspace:*",
+    "@danielfgray/amux-plugin-sidebar": "workspace:*",
+    "@effect/cli": "catalog:",
+    "@effect/experimental": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@effect/platform-node-shared": "catalog:",
+    "@effect/rpc": "catalog:",
+    "@opentui/core": "catalog:",
+    "@opentui/keymap": "catalog:",
+    "@opentui/solid": "catalog:",
+    "effect": "catalog:",
+    "solid-js": "catalog:"
+  },
+  "devDependencies": {
+    "@danielfgray/amux-agent-awareness": "workspace:*"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  }
+}

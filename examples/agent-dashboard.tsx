@@ -1,8 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo } from "solid-js";
 import { Effect } from "effect";
-import { definePlugin, type PluginDefinition } from "../src/plugin/types.ts";
-import { RegionsTag } from "../src/plugin/services.ts";
+import { definePlugin, type PluginDefinition } from "../packages/amux/src/plugin/types.ts";
+import { RegionsTag } from "../packages/amux/src/plugin/services.ts";
 
 /** A read-only agent roster built entirely on the public panel projection. */
 const agentDashboard: PluginDefinition = definePlugin({

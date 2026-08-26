@@ -1,0 +1,25 @@
+{
+  "name": "@danielfgray/amux-plugin-notifications",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/plugin-notifications"
+  },
+  "type": "module",
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  }
+}

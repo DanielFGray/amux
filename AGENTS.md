@@ -32,15 +32,21 @@ workspace: renderer-free transform model (the thing the daemon owns)
 Before performing multiple mechanical rewrites, read `tools/ast-grep/README.md`. Keep transformations narrow, dry-run them first, and add newly discovered ast-grep examples and gotchas to that document.
 
 ```bash
-bun test              # both suites — what a change must pass before it lands
-bun test src          # unit tests only, while iterating
+bun run test          # both suites — what a change must pass before it lands
+bun test packages     # unit tests only, while iterating
 bun test e2e          # e2e only: drives the real app, the command table and the
-                      #   keymap, which nothing under src/ exercises
+                      #   keymap, which nothing under packages/*/src exercises
 bunx tsc --noEmit     # typecheck
-bun run start         # client (same as `bun src/cli.ts <session>`)
-bun run daemon        # daemon (same as `bun src/cli.ts daemon <session>`)
+bun run start         # client (same as `bun packages/amux/src/cli.ts <session>`)
+bun run daemon        # daemon (same as `bun packages/amux/src/cli.ts daemon <session>`)
 bun run cli           # unified `amux` CLI entry
 ```
+
+`amux` is a Bun workspace: `packages/amux` is the app, `packages/plugin-*` and
+`packages/agent-awareness`/`packages/editor` are its builtin plugins and their
+support libraries, each a separate package. Shared dependency versions live in
+the root `package.json`'s `workspaces.catalog`; a package references one with
+`"catalog:"` rather than restating the version.
 
 TypeScript diagnostics include suggestions. Treat suggestions as actionable feedback: fix them when they are correct, **do not** suppress or ignore them such that they accumulate.
 

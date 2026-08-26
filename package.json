@@ -1,66 +1,79 @@
 {
-  "name": "@danielfgray/amux",
-  "version": "0.1.0",
+  "name": "amux-workspace",
+  "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/danielfgray/amux"
   },
-  "bin": {
-    "amux": "./src/cli.ts"
+  "workspaces": {
+    "packages": [
+      "packages/*"
+    ],
+    "catalog": {
+      "effect": "^3.22.1",
+      "@effect/ai": "0.37.0",
+      "@effect/ai-anthropic": "0.27.0",
+      "@effect/ai-openai": "0.41.0",
+      "@effect/cli": "0.77.0",
+      "@effect/experimental": "^0.61.0",
+      "@effect/platform": "0.97.1",
+      "@effect/platform-bun": "0.91.2",
+      "@effect/platform-node-shared": "0.61.1",
+      "@effect/rpc": "0.76.2",
+      "@opentui/core": "0.5.1",
+      "@opentui/keymap": "0.5.1",
+      "@opentui/solid": "0.5.1",
+      "solid-js": "1.9.14",
+      "npm-run-all": "^4.1.5",
+      "@effect/tsgo": "0.34.0",
+      "@effect/vitest": "^0.30.0",
+      "@oxlint/plugins": "1.78.0",
+      "@types/bun": "latest",
+      "oxfmt": "0.62.0",
+      "oxlint": "1.78.0",
+      "oxlint-tsgolint": "7.0.2001",
+      "typescript": "^7.0.2"
+    }
   },
-  "files": [
-    "src",
-    "README.md"
-  ],
-  "type": "module",
-  "module": "src/main.tsx",
   "scripts": {
-    "start": "bun src/main.tsx",
-    "daemon": "bun src/daemon-main.ts",
-    "session": "bun src/session-cli.ts",
+    "start": "bun packages/amux/src/main.tsx",
+    "daemon": "bun packages/amux/src/daemon-main.ts",
+    "session": "bun packages/amux/src/session-cli.ts",
+    "cli": "bun packages/amux/src/cli.ts",
     "build": "run-s build:shim build:compile",
-    "cli": "bun src/cli.ts",
-    "typecheck": "bunx tsc --noEmit",
-    "format": "bunx oxfmt --write src e2e",
-    "format:check": "bunx oxfmt --check src e2e",
-    "test": "run-s typecheck lint sg-scan test:unit",
-    "test:unit": "bun test src",
-    "sg-scan": "ast-grep scan src --globs '**/*.ts' --globs '**/*.tsx' --report-style medium",
-    "lint": "oxlint src e2e",
-    "lint:fix": "oxlint --fix src e2e",
-    "build:shim": "cc -shared -fPIC -o vendor/libamux-shim.so src/shim.c -Lvendor/libghostty-vt/zig-out/lib -lghostty-vt -lutil -Wl,-rpath,'$ORIGIN/libghostty-vt/zig-out/lib'",
-    "build:help": "bun src/cli.ts --help",
+    "build:shim": "cc -shared -fPIC -o vendor/libamux-shim.so packages/amux/src/shim.c -Lvendor/libghostty-vt/zig-out/lib -lghostty-vt -lutil -Wl,-rpath,'$ORIGIN/libghostty-vt/zig-out/lib'",
+    "build:help": "bun packages/amux/src/cli.ts --help",
     "build:compile": "bun ./scripts/build-compile.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "format": "bunx oxfmt --write packages e2e",
+    "format:check": "bunx oxfmt --check packages e2e",
+    "test": "run-s typecheck lint sg-scan test:unit",
+    "test:unit": "bun test packages",
+    "sg-scan": "ast-grep scan packages --globs '**/*.ts' --globs '**/*.tsx' --report-style medium",
+    "lint": "oxlint packages e2e",
+    "lint:fix": "oxlint --fix packages e2e",
     "e2e": "bun test e2e",
     "patch-tsgo": "effect-tsgo patch --typescript --oxlint",
     "prepare": "run-s build:shim patch-tsgo"
   },
-  "dependencies": {
-    "@effect/ai": "0.37.0",
-    "@effect/ai-anthropic": "0.27.0",
-    "@effect/ai-openai": "0.41.0",
-    "@effect/cli": "0.77.0",
-    "@effect/experimental": "^0.61.0",
-    "@effect/platform-bun": "0.91.2",
-    "@opentui/core": "^0.5.1",
-    "@opentui/keymap": "0.5.1",
-    "@opentui/solid": "0.5.1",
-    "effect": "^3.22.1",
-    "npm-run-all": "^4.1.5",
-    "solid-js": "^1.9.14"
-  },
   "devDependencies": {
-    "@effect/tsgo": "0.34.0",
-    "@effect/vitest": "^0.30.0",
-    "@oxlint/plugins": "1.78.0",
-    "@types/bun": "latest",
-    "oxfmt": "0.62.0",
-    "oxlint": "1.78.0",
-    "oxlint-tsgolint": "7.0.2001",
-    "typescript": "^7.0.2"
+    "@effect/platform": "catalog:",
+    "@effect/platform-bun": "catalog:",
+    "@effect/tsgo": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@opentui/solid": "catalog:",
+    "@oxlint/plugins": "catalog:",
+    "@types/bun": "catalog:",
+    "effect": "catalog:",
+    "npm-run-all": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
+    "solid-js": "catalog:",
+    "typescript": "catalog:"
   },
   "engines": {
-    "bun": ">=1.1.0"
+    "bun": ">=1.4.0"
   }
 }

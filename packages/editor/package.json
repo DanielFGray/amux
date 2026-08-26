@@ -1,0 +1,19 @@
+{
+  "name": "@danielfgray/amux-editor",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/editor"
+  },
+  "type": "module",
+  "module": "src/vim-core.ts",
+  "exports": {
+    ".": "./src/vim-core.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@opentui/core": "catalog:"
+  }
+}

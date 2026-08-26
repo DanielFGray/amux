@@ -114,7 +114,7 @@ as agents) becomes a default plugin because someone will want a different
 answer. A feature that lands as core algebra and then gains an opinion moves out
 to a default plugin; a default plugin must never require a core edit to replace.
 
-The harness is a plugin now: `plugin/builtin/agent-harness.tsx` registers the
+The harness is a plugin now: `@danielfgray/amux-plugin-agent-harness` registers the
 `agent.new` binding, contributes the `native` pane view, owns the model picker,
 and builds its own credential and model-catalog layers, so core hands it
 nothing. `agent.new` carries the command to spawn, which is what makes a

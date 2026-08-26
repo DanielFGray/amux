@@ -12,9 +12,9 @@
  * suite rather than the unit suite. `bun run e2e` is a thing you run before
  * landing something that changes app wiring.
  */
-import { spawnPty, readPty, type Pty } from "../src/pty.ts";
-import { Terminal } from "../src/ghostty.ts";
-import { captureVisible } from "../src/capture.ts";
+import { spawnPty, readPty, type Pty } from "../packages/amux/src/pty.ts";
+import { Terminal } from "../packages/amux/src/ghostty.ts";
+import { captureVisible } from "../packages/amux/src/capture.ts";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";

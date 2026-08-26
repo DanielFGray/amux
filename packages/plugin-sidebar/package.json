@@ -1,0 +1,29 @@
+{
+  "name": "@danielfgray/amux-plugin-sidebar",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/plugin-sidebar"
+  },
+  "type": "module",
+  "module": "src/index.tsx",
+  "exports": {
+    ".": "./src/index.tsx",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@danielfgray/amux-agent-awareness": "workspace:*",
+    "@opentui/core": "catalog:",
+    "@opentui/solid": "catalog:",
+    "effect": "catalog:",
+    "solid-js": "catalog:"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  }
+}
