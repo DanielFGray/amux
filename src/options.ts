@@ -238,7 +238,7 @@ export function formatOption(spec: OptionSpec, value: OptionValue): string {
 export function editHint(spec: OptionSpec): string {
   switch (spec.kind) {
     case "number":
-      return "←/→ adjusts";
+      return "enter edits";
     case "boolean":
       return "←/→ toggles";
     case "string":

@@ -563,6 +563,15 @@ function buildApp(
   const [chooseView, setChooseView] = createSignal<BufferChooseView | null>(null);
   const [settingsSection, setSettingsSection] = createSignal<SettingsSection>("sidebar");
   const [settingsSelected, setSettingsSelected] = createSignal(0);
+  /** Which of the settings window's two lists has the keyboard, or whether the
+   *  selected item is being edited. Left/Tab step back a level; Right/Enter
+   *  step forward; only Escape from "editing" undoes the value in progress. */
+  const [settingsFocus, setSettingsFocus] = createSignal<"sections" | "items" | "editing">("items");
+  /** The value an item held before editing began, so Escape can put it back. */
+  const [editOriginal, setEditOriginal] = createSignal<OptionValue | null>(null);
+  /** A number field's own typed buffer — see `Settings`'s `editText` prop for
+   *  why a number can't just show its coerced option value while typed. */
+  const [editText, setEditText] = createSignal<string | undefined>(undefined);
   const [settingsDirty, setSettingsDirty] = createSignal(false);
   const [settingsError, setSettingsError] = createSignal("");
   const settingsSectionTable = contributions.table<PluginSettingsSection>();
@@ -1330,6 +1339,7 @@ function buildApp(
         if (overlay() === "settings" && settingsSection() === "keybinds") return setOverlay("none");
         setSettingsSection("keybinds");
         setSettingsSelected(0);
+        setSettingsFocus("items");
         setOverlay("settings");
       }),
     "app.command-palette": () =>
@@ -1345,6 +1355,7 @@ function buildApp(
         // the tab last time.
         if (settingsSection() === "keybinds") setSettingsSection("sidebar");
         setSettingsSelected(0);
+        setSettingsFocus("items");
         setOverlay("settings");
       }),
     "app.send-prefix": () =>
@@ -1698,8 +1709,6 @@ function buildApp(
 
   function keybindsKey(event: KeyEvent) {
     switch (event.name) {
-      case "tab":
-        return cycleSettingsSection(event.shift ? -1 : 1);
       case "j":
       case "down":
         return moveKeybind(1);
@@ -1726,19 +1735,91 @@ function buildApp(
   }
 
   /**
-   * Whether the key was consumed here. `false` means a focused control (a
-   * plugin section's own input) should receive it instead — the caller must
-   * not preventDefault, or that control never sees a character.
+   * Keys while an item is being edited (focus === "editing").
    *
-   * Escape/`q` close the window, but only as a default: a plugin section that
-   * explicitly claims a key (returning `true`, as the auth tab does to cancel
-   * out of editing rather than close) settles it right there. Checking for
-   * that claim ahead of the close shortcut — instead of unconditionally after
-   * — is what keeps "cancel editing" from also closing the whole window on
-   * the very same keystroke.
+   * Escape is the only key this owns for a string or number: cursor movement,
+   * typing, backspace and Enter all belong to the row's own focused `<input>`,
+   * so everything else returns `false` and falls through to it. A boolean has
+   * no input to fall through to — there is nothing to type, only a value to
+   * flip — so this claims the four directions for it directly.
+   */
+  function settingsEditKey(event: KeyEvent): boolean {
+    const option = selectedOption();
+    const spec = option ? specFor(option) : undefined;
+    if (!option || !spec) {
+      setSettingsFocus("items");
+      return true;
+    }
+    if (event.name === "escape") {
+      const original = editOriginal();
+      // A boolean autosaves on every flip (below), so undoing one has to write
+      // the reversion back too — otherwise disk keeps the last flip while the
+      // screen shows the one from before editing.
+      if (original !== null) {
+        changeOption(option, original);
+        if (spec.kind === "boolean") saveOptions();
+      }
+      setEditOriginal(null);
+      setEditText(undefined);
+      setSettingsFocus("items");
+      return true;
+    }
+    if (spec.kind === "string" || spec.kind === "number") return false;
+    if (event.name === "return" || event.name === "enter") {
+      setEditOriginal(null);
+      setSettingsFocus("items");
+      return true;
+    }
+    // boolean: any of the four directions flips it — there is no "which way".
+    if (["left", "right", "up", "down"].includes(event.name ?? "")) {
+      adjustOption(option, 1);
+      saveOptions();
+    }
+    return true;
+  }
+
+  /**
+   * Whether the key was consumed here. `false` means a focused control (a
+   * plugin section's own input, or the edit row's `<input>`) should receive
+   * it instead — the caller must not preventDefault, or that control never
+   * sees a character.
+   *
+   * Escape/`q` close the window from either list, but only as a default: a
+   * plugin section that explicitly claims a key (returning `true`, as the
+   * auth tab does to cancel out of editing rather than close) settles it
+   * right there. Checking for that claim ahead of the close shortcut is what
+   * keeps "cancel editing" from also closing the whole window on the same
+   * keystroke. Escape from "editing" is different again — see
+   * `settingsEditKey` — it undoes the value in progress rather than closing.
    */
   function settingsKey(event: KeyEvent): boolean {
-    const fields = settingsFields(allOptions(), settingsSection(), optionContributions.all());
+    if (settingsFocus() === "editing") return settingsEditKey(event);
+
+    if (settingsFocus() === "sections") {
+      switch (event.name) {
+        case "escape":
+        case "q":
+          setOverlay("none");
+          return true;
+        case "j":
+        case "down":
+          cycleSettingsSection(1);
+          return true;
+        case "k":
+        case "up":
+          cycleSettingsSection(-1);
+          return true;
+        case "tab":
+        case "right":
+        case "return":
+        case "enter":
+          setSettingsFocus("items");
+          return true;
+      }
+      return true;
+    }
+
+    // settingsFocus() === "items"
     const pluginSection = pluginSettings().find((section) => section.id === settingsSection());
     if (pluginSection) {
       const handled = pluginSection.keys?.(event, settingsSelected());
@@ -1748,8 +1829,8 @@ function buildApp(
         setOverlay("none");
         return true;
       }
-      if (event.name === "tab") {
-        cycleSettingsSection(event.shift ? -1 : 1);
+      if (event.name === "tab" || event.name === "left") {
+        setSettingsFocus("sections");
         return true;
       }
       if (event.name === "j" || event.name === "down")
@@ -1761,26 +1842,17 @@ function buildApp(
       setOverlay("none");
       return true;
     }
-    if (event.name === "return" || event.name === "enter") {
-      // An option whose value is chosen from a list cannot be edited with ←/→,
-      // so the row belongs to the command of the same name and whoever owns the
-      // option registers it. `agent.model` is the harness's; core knows only
-      // that a command with the option's name exists.
-      const option = selectedOption();
-      if (option && registeredBindings().some((binding) => binding.name === option)) {
-        bindings.dispatch(option);
-        return true;
-      }
+    if (event.name === "tab" || event.name === "left") {
+      setSettingsFocus("sections");
+      return true;
     }
     // The keybind tab edits sequences rather than values, so it has its own keys.
     if (settingsSection() === "keybinds") {
       keybindsKey(event);
       return true;
     }
+    const fields = settingsFields(allOptions(), settingsSection(), optionContributions.all());
     switch (event.name) {
-      case "tab":
-        cycleSettingsSection(event.shift ? -1 : 1);
-        return true;
       case "j":
       case "down":
         setSettingsSelected((s) => Math.min(Math.max(0, fields.length - 1), s + 1));
@@ -1789,10 +1861,26 @@ function buildApp(
       case "up":
         setSettingsSelected((s) => Math.max(0, s - 1));
         return true;
-      case "left":
-      case "right": {
+      case "right":
+      case "return":
+      case "enter": {
         const option = selectedOption();
-        if (option) adjustOption(option, event.name === "right" ? 1 : -1);
+        if (!option) return true;
+        // An option whose value is chosen from a list cannot be edited in
+        // place, so the row belongs to the command of the same name and
+        // whoever owns the option registers it. `agent.model` is the
+        // harness's; core knows only that a command with the option's name
+        // exists.
+        if (registeredBindings().some((binding) => binding.name === option)) {
+          bindings.dispatch(option);
+          return true;
+        }
+        const spec = specFor(option);
+        if (!spec || (spec.kind === "string" && !spec.editable)) return true;
+        const value = optionValue(option, spec);
+        setEditOriginal(value);
+        setEditText(spec.kind === "number" ? String(value) : undefined);
+        setSettingsFocus("editing");
         return true;
       }
       case "s":
@@ -2127,6 +2215,30 @@ function buildApp(
             }}
             pluginSections={pluginSettings()}
             registeredOptions={optionContributions.all()}
+            focus={settingsFocus()}
+            editText={editText()}
+            onEditInput={(value) => {
+              const option = selectedOption();
+              const spec = option ? specFor(option) : undefined;
+              if (!option || !spec) return;
+              if (spec.kind === "number") {
+                setEditText(value);
+                const parsed = Number(value);
+                if (!Number.isFinite(parsed)) return;
+                const coerced = coerceOption(spec, parsed);
+                if (coerced === undefined) return;
+                changeOption(option, coerced);
+                saveOptions();
+                return;
+              }
+              changeOption(option, value);
+            }}
+            onEditSubmit={() => {
+              setEditOriginal(null);
+              setEditText(undefined);
+              setSettingsFocus("items");
+              saveOptions();
+            }}
           />
         ),
       }),

@@ -129,6 +129,9 @@ async function screen(
           width={props.width}
           height={props.height}
           dirty={false}
+          focus="items"
+          onEditInput={() => {}}
+          onEditSubmit={() => {}}
         />
       ),
     }),

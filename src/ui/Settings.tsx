@@ -23,6 +23,18 @@ import type { Contribution } from "../plugin/contributions.ts";
 export const SETTINGS_SECTIONS: readonly string[] = [...optionSections, "keybinds"];
 export type SettingsSection = string;
 
+/** Width of the vertical section rail, and of the dialog as a whole — the
+ *  latter is the rail plus a one-column gap plus the original 70-column
+ *  content area, so existing field rows keep exactly the room they had. */
+const NAV_WIDTH = 14;
+const DIALOG_WIDTH = NAV_WIDTH + 1 + 70;
+/** Width of a field row's label column, and what's left over for its value —
+ *  `<input>` and `<text>` leaves don't shrink below their content under
+ *  `flexGrow`, so the value column needs an explicit width rather than one
+ *  computed by the layout. */
+const LABEL_WIDTH = 18;
+const VALUE_WIDTH = DIALOG_WIDTH - 2 /* dialog padding */ - NAV_WIDTH - 1 /* gap */ - LABEL_WIDTH;
+
 export function settingsSections(
   plugins: readonly PluginSettingsSection[],
   registeredOptions: readonly Contribution<OptionSpec>[] = [],
@@ -39,6 +51,11 @@ interface Field {
   /** The name without its section, which the tab above already says. */
   label: string;
   value: string;
+  /** The unformatted value, for the `<input>` an editing string row shows in
+   *  place of `value` — `formatOption` turns an empty string into "unset",
+   *  which is not what you want sitting in a text box you are about to type into. */
+  raw: OptionValue;
+  kind: OptionSpec["kind"];
   hint: string;
 }
 
@@ -60,6 +77,8 @@ export function settingsFields(
       name,
       label: leafOf(name),
       value: formatOption(spec, options[name]),
+      raw: options[name],
+      kind: spec.kind,
       hint: `${spec.desc} · ${editHint(spec)}`,
     };
   });
@@ -69,6 +88,8 @@ export function settingsFields(
       name: entry.name,
       label: leafOf(entry.name),
       value: formatOption(entry.value, options[entry.name] ?? entry.value.default),
+      raw: options[entry.name] ?? entry.value.default,
+      kind: entry.value.kind,
       hint: `${entry.value.desc} · ${editHint(entry.value)}`,
     }));
   return [...core, ...plugin];
@@ -189,6 +210,15 @@ export function Settings(props: {
   onKeybindList?: (box: ScrollBoxRenderable) => void;
   pluginSections?: readonly PluginSettingsSection[];
   registeredOptions?: readonly Contribution<OptionSpec>[];
+  /** Which list has the keyboard, or whether the selected item is mid-edit. */
+  focus: "sections" | "items" | "editing";
+  /** Live text as a string or number item is typed into, while `focus` is
+   *  "editing" — a number needs its own buffer because a value mid-typing
+   *  ("-", "12.") is often not a number `formatOption`/`coerceOption` accept
+   *  yet, so the box can't just show the coerced option value. */
+  editText?: string;
+  onEditInput: (value: string) => void;
+  onEditSubmit: () => void;
 }) {
   const plugin = () => props.pluginSections?.find((entry) => entry.id === props.section);
   const sections = () =>
@@ -202,11 +232,11 @@ export function Settings(props: {
     <box
       style={{
         position: "absolute",
-        left: Math.max(0, Math.floor((props.width - 70) / 2)),
+        left: Math.max(0, Math.floor((props.width - DIALOG_WIDTH) / 2)),
         top: 1,
-        width: 70,
+        width: DIALOG_WIDTH,
         maxHeight: Math.max(10, props.height - 3),
-        flexDirection: "column",
+        flexDirection: "row",
         backgroundColor: theme.base,
         border: true,
         borderColor: theme.mauve,
@@ -216,115 +246,181 @@ export function Settings(props: {
       title=" settings "
       onMouseDown={(event) => event.stopPropagation()}
     >
-      <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+      {/* A vertical rail rather than a single packed row of tabs: with a
+          plugin registering a section per settings screen, a horizontal strip
+          runs out of columns long before it runs out of sections. */}
+      <box style={{ flexDirection: "column", width: NAV_WIDTH, flexShrink: 0 }}>
         <For each={sections()}>
-          {(section) => (
-            <text
-              style={{
-                fg: section === props.section ? theme.base : theme.subtext0,
-                bg: section === props.section ? theme.mauve : theme.base,
-              }}
-            >
-              {` ${section} `}
-            </text>
-          )}
-        </For>
-      </box>
-      <text style={{ height: 1, flexShrink: 0 }}> </text>
-
-      <Show when={plugin()}>
-        {(entry: () => PluginSettingsSection) =>
-          entry().component({ width: props.width, height: props.height, selected: props.selected })
-        }
-      </Show>
-      <Show when={props.section === "keybinds"}>
-        <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
-          <For each={rows()}>
-            {(group) => (
-              <box style={{ flexDirection: "column", flexShrink: 0 }}>
-                <text style={{ fg: theme.mauve, height: 1, flexShrink: 0 }}>{group.group}</text>
-                <For each={group.entries}>
-                  {(entry) => {
-                    const active = () => entry.index === props.selected;
-                    return (
-                      <box
-                        style={{
-                          flexDirection: "row",
-                          height: 1,
-                          flexShrink: 0,
-                          backgroundColor: active() ? theme.surface1 : theme.base,
-                        }}
-                      >
-                        <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
-                          {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
-                        </text>
-                        <text
-                          style={{
-                            fg: entry.index === null ? theme.overlay1 : theme.text,
-                            flexGrow: 1,
-                          }}
-                        >
-                          {entry.desc + (entry.custom ? " *" : "")}
-                        </text>
-                      </box>
-                    );
-                  }}
-                </For>
-                <text style={{ height: 1, flexShrink: 0 }}> </text>
-              </box>
-            )}
-          </For>
-        </scrollbox>
-      </Show>
-      <Show when={!plugin() && props.section !== "keybinds"}>
-        <box style={{ flexDirection: "column", flexGrow: 1 }}>
-          <For each={fields()}>
-            {(field, i) => (
-              <box
+          {(section) => {
+            const active = () => section === props.section;
+            // Mauve when the list itself has the keyboard; a dimmer highlight
+            // once focus has moved into the item list, so the current section
+            // stays visible without reading as "still navigable with ↑↓".
+            const focused = () => active() && props.focus === "sections";
+            return (
+              <text
                 style={{
-                  flexDirection: "row",
+                  fg: focused() ? theme.base : active() ? theme.text : theme.subtext0,
+                  bg: focused() ? theme.mauve : active() ? theme.surface0 : theme.base,
                   height: 1,
                   flexShrink: 0,
-                  backgroundColor: i() === props.selected ? theme.surface1 : theme.base,
                 }}
               >
-                <text style={{ fg: theme.subtext0, width: 18, flexShrink: 0 }}>
-                  {` ${field.label}`}
-                </text>
-                <text style={{ fg: theme.text, width: 14, flexShrink: 0 }}>{field.value}</text>
-                <text style={{ fg: theme.overlay1, flexGrow: 1 }}>{field.hint}</text>
-              </box>
-            )}
-          </For>
-        </box>
-      </Show>
+                {` ${section}`.padEnd(NAV_WIDTH)}
+              </text>
+            );
+          }}
+        </For>
+      </box>
+      <box style={{ flexDirection: "column", flexGrow: 1, marginLeft: 1 }}>
+        <Show when={plugin()}>
+          {(entry: () => PluginSettingsSection) =>
+            entry().component({
+              width: props.width,
+              height: props.height,
+              selected: props.selected,
+            })
+          }
+        </Show>
+        <Show when={props.section === "keybinds"}>
+          <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>
+            <For each={rows()}>
+              {(group) => (
+                <box style={{ flexDirection: "column", flexShrink: 0 }}>
+                  <text style={{ fg: theme.mauve, height: 1, flexShrink: 0 }}>{group.group}</text>
+                  <For each={group.entries}>
+                    {(entry) => {
+                      const active = () => entry.index === props.selected;
+                      return (
+                        <box
+                          style={{
+                            flexDirection: "row",
+                            height: 1,
+                            flexShrink: 0,
+                            backgroundColor: active() ? theme.surface1 : theme.base,
+                          }}
+                        >
+                          <text style={{ fg: theme.yellow, width: 18, flexShrink: 0 }}>
+                            {`  ${active() && props.capturing ? "press a key…" : entry.keys}`}
+                          </text>
+                          <text
+                            style={{
+                              fg: entry.index === null ? theme.overlay1 : theme.text,
+                              flexGrow: 1,
+                            }}
+                          >
+                            {entry.desc + (entry.custom ? " *" : "")}
+                          </text>
+                        </box>
+                      );
+                    }}
+                  </For>
+                  <text style={{ height: 1, flexShrink: 0 }}> </text>
+                </box>
+              )}
+            </For>
+          </scrollbox>
+        </Show>
+        <Show when={!plugin() && props.section !== "keybinds"}>
+          <box style={{ flexDirection: "column", flexGrow: 1 }}>
+            <For each={fields()}>
+              {(field, i) => {
+                const selected = () => i() === props.selected;
+                const editing = () => selected() && props.focus === "editing";
+                return (
+                  <box
+                    style={{
+                      flexDirection: "column",
+                      flexShrink: 0,
+                      backgroundColor: selected() ? theme.surface1 : theme.base,
+                    }}
+                  >
+                    <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                      <text style={{ fg: theme.subtext0, width: LABEL_WIDTH, flexShrink: 0 }}>
+                        {` ${field.label}`}
+                      </text>
+                      <Show
+                        when={editing() && (field.kind === "string" || field.kind === "number")}
+                        fallback={
+                          <text
+                            style={{
+                              fg: editing() ? theme.base : theme.text,
+                              bg: editing() ? theme.yellow : undefined,
+                              width: VALUE_WIDTH,
+                              flexShrink: 0,
+                            }}
+                          >
+                            {field.value}
+                          </text>
+                        }
+                      >
+                        <input
+                          value={
+                            field.kind === "number"
+                              ? (props.editText ?? String(field.raw))
+                              : String(field.raw)
+                          }
+                          focused={true}
+                          style={{
+                            width: VALUE_WIDTH,
+                            flexShrink: 0,
+                            backgroundColor: theme.surface0,
+                            textColor: theme.text,
+                            focusedTextColor: theme.text,
+                          }}
+                          onInput={props.onEditInput}
+                          onSubmit={props.onEditSubmit}
+                        />
+                      </Show>
+                    </box>
+                    {/* The hint doubles as "what does ↑↓/enter do to this row" —
+                        only worth showing once the item list actually has the
+                        keyboard, since it means nothing while browsing sections.
+                        It sits on its own line so long hints don't compete with
+                        the value column for width. */}
+                    <Show when={selected() && props.focus !== "sections"}>
+                      <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
+                        {`   ${field.hint}`}
+                      </text>
+                    </Show>
+                  </box>
+                );
+              }}
+            </For>
+          </box>
+        </Show>
 
-      {/* A collision is not fatal — one of the two commands is simply dead — so
+        {/* A collision is not fatal — one of the two commands is simply dead — so
           it is said here rather than being allowed to stop the app. */}
-      <Show when={props.section === "keybinds" && props.conflicts.length > 0}>
-        <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>
-          {props.conflicts
-            .map((c) => `${c.sequence} → ${c.commands.join(", ")}`)
-            .join(" · ")
-            .slice(0, 66)}
-        </text>
-      </Show>
-      <Show when={props.error}>
-        {(error: () => string) => (
-          <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{error()}</text>
-        )}
-      </Show>
+        <Show when={props.section === "keybinds" && props.conflicts.length > 0}>
+          <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>
+            {props.conflicts
+              .map((c) => `${c.sequence} → ${c.commands.join(", ")}`)
+              .join(" · ")
+              .slice(0, 66)}
+          </text>
+        </Show>
+        <Show when={props.error}>
+          {(error: () => string) => (
+            <text style={{ fg: theme.red, height: 1, flexShrink: 0 }}>{error()}</text>
+          )}
+        </Show>
 
-      <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
-        {(props.dirty ? "● unsaved · " : "") +
-          (plugin()
-            ? `${plugin()!.label} · ↑↓ row · esc closes`
-            : props.section !== "keybinds"
-              ? "⇥ section · ↑↓ field · ←→ change · s saves · esc closes"
-              : props.capturing
-                ? "press the key to bind · esc cancels"
-                : "↑↓ row · ⏎ rebind · a add key · u default · d unbind · s saves")}
-      </text>
+        <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
+          {(props.dirty ? "● unsaved · " : "") +
+            (props.focus === "sections"
+              ? "↑↓ section · ⇥/→/⏎ open · esc closes"
+              : props.focus === "editing"
+                ? "esc undoes · ⏎ done"
+                : plugin()
+                  ? `${plugin()!.label} · ↑↓ row · ⇥/← sections · esc closes`
+                  : props.section !== "keybinds"
+                    ? "↑↓ field · ⏎ edit · ⇥/← sections · s saves · esc closes"
+                    : props.capturing
+                      ? "press the key to bind · esc cancels"
+                      : "↑↓ row · ⏎ rebind · a add key · u default · d unbind · ⇥/← sections · s saves")}
+        </text>
+      </box>
     </box>
   );
 }

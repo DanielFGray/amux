@@ -167,7 +167,9 @@ test("a plugin option's stored value renders the same way a core option's does",
       name: "harness.temperature",
       label: "temperature",
       value: "1.5",
-      hint: "sampling temperature · ←/→ adjusts",
+      raw: 1.5,
+      kind: "number",
+      hint: "sampling temperature · enter edits",
     },
   ]);
 });
@@ -188,6 +190,9 @@ async function draw(over: Partial<Parameters<typeof Settings>[0]> = {}) {
         width={80}
         height={20}
         dirty={false}
+        focus="items"
+        onEditInput={() => {}}
+        onEditSubmit={() => {}}
         {...over}
       />
     ),
