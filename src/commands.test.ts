@@ -296,7 +296,9 @@ test("commands with declared results carry them through the handler", () => {
         ? Effect.succeed(args.name ?? `buffer-${args.data.length}`)
         : Effect.void,
     "buffer.show": (args) =>
-      args._tag === "buffer.show" ? Effect.succeed(`content of ${args.name ?? "top"}`) : Effect.void,
+      args._tag === "buffer.show"
+        ? Effect.succeed(`content of ${args.name ?? "top"}`)
+        : Effect.void,
     "pane.capture": () => Effect.succeed("captured text"),
   };
 
@@ -328,6 +330,63 @@ test("command result types match the declared schema", () => {
   expect(Schema.decodeUnknownSync(paneZoomDef.result)(undefined)).toBe(undefined);
   const agentNewDef = COMMAND_DEFS.find((d) => d.tag === "agent.new")!;
   expect(
-    Schema.decodeUnknownSync(agentNewDef.result)({ session: "agent-2", pane: "pane-2" }),
+    Schema.decodeUnknownSync(agentNewDef.result)({
+      session: "agent-2",
+      pane: "pane-2",
+    }),
   ).toEqual({ session: "agent-2", pane: "pane-2" });
+});
+
+test("a plugin registers a verb under its own namespace and it dispatches, lists, and validates", () => {
+  const { handlers } = recording();
+  const commands = makeCommands(handlers);
+
+  const seen: unknown[] = [];
+  const dispose = commands.registerCommand(
+    "agent-awareness",
+    "focus",
+    { target: Schema.String },
+    {
+      desc: "focus an agent pane",
+      group: "agents",
+      target: "workspace",
+      exposure: "agent",
+    },
+    (args) => Effect.sync(() => void seen.push(args)).pipe(Effect.as("focused")),
+  );
+
+  expect(commands.list().map((m) => m.name)).toContain("plugin.agent-awareness.focus");
+  expect(
+    Effect.runSync(commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })),
+  ).toBe("focused");
+  expect(seen).toEqual([{ _tag: "plugin.agent-awareness.focus", target: "pane-1" }]);
+
+  // Arguments are validated against the registered schema, not trusted as-is.
+  const badArgs = Effect.runSync(
+    Effect.either(commands.run({ _tag: "plugin.agent-awareness.focus", target: 42 })),
+  );
+  expect(Either.isLeft(badArgs)).toBe(true);
+
+  // A tag no one registered fails cleanly rather than throwing.
+  const missing = Effect.runSync(Effect.either(commands.run({ _tag: "plugin.nobody.nothing" })));
+  expect(Either.isLeft(missing)).toBe(true);
+
+  // A tag another plugin already claimed is refused, not silently shadowed.
+  expect(() =>
+    commands.registerCommand(
+      "agent-awareness",
+      "focus",
+      {},
+      { desc: "x", group: "x", target: "view", exposure: "human" },
+      () => Effect.void,
+    ),
+  ).toThrow();
+
+  // The disposer frees the tag: it disappears from the list and fails to run.
+  dispose();
+  expect(commands.list().map((m) => m.name)).not.toContain("plugin.agent-awareness.focus");
+  const afterDispose = Effect.runSync(
+    Effect.either(commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })),
+  );
+  expect(Either.isLeft(afterDispose)).toBe(true);
 });

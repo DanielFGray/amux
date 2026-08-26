@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, JSONSchema, Schema as S } from "effect";
+import { Cause, Effect, Exit, JSONSchema, ParseResult, Schema as S } from "effect";
 import { LAYOUT_PRESETS } from "./layout.ts";
 import { PermissionDecisionSchema } from "./permission.ts";
 import { ProcessStateSchema } from "./process-state.ts";
@@ -247,7 +247,12 @@ const PaneDockBottom = PaneDock("pane.dock-bottom", "bottom");
 const PaneUndock = define(
   "pane.undock",
   { ...PaneTarget },
-  { desc: "undock the focused pane", group: "panes", target: "workspace", exposure: "human" },
+  {
+    desc: "undock the focused pane",
+    group: "panes",
+    target: "workspace",
+    exposure: "human",
+  },
 );
 const PaneSwap = define(
   "pane.swap",
@@ -1043,9 +1048,15 @@ export const command = <T extends CommandTag>(
 /** Decode a command off the wire — the socket and the CLI in ts-14b665. */
 export const decodeCommand = S.decodeUnknown(Command);
 
-/** What a command is, for the palette, the help, and the agent tool surface. */
+/**
+ * What a command is, for the palette, the help, and the agent tool surface.
+ *
+ * `name` is a plain string rather than `CommandTag` because a plugin verb
+ * (`plugin.<pluginId>.<verb>`) is never a member of the core union — it is
+ * registered at runtime, not declared in COMMAND_DEFS.
+ */
 export interface CommandMeta {
-  readonly name: CommandTag;
+  readonly name: string;
   readonly desc: string;
   readonly group: string;
   readonly target: CommandTarget;
@@ -1082,44 +1093,137 @@ export type CommandHandlerTable = Readonly<
   Record<string, (args: Command) => Effect.Effect<AnyCommandResult, CommandError>>
 >;
 
-export interface Commands {
-  /** Run a command. Local dispatch, not a round trip: the keymap needs the
-   *  effect's synchronous prefix to run in the keypress it was dispatched from. */
-  readonly run: (command: Command) => Effect.Effect<AnyCommandResult, CommandError>;
-  /** Every verb and what it is, for whichever surface is listing them. */
-  readonly list: (filter?: { target?: CommandTarget; exposure?: CommandExposure }) => CommandMeta[];
-  /** Whether a command tag targets the workspace. */
-  readonly isWorkspaceCommand: (tag: CommandTag) => boolean;
-  /** Whether a command tag is remotely invocable. */
-  readonly isRemoteCommand: (tag: CommandTag) => boolean;
+/** A command value arriving at runtime under a tag the compiler has never seen
+ *  — a plugin verb, or one read off the wire before it is known to exist. */
+export type RuntimeCommand = { readonly _tag: string } & Record<string, unknown>;
+
+/** A plugin verb, as registered: the same `desc`/`group`/`target`/`exposure`
+ *  metadata a core command carries, plus the schema and handler a core
+ *  command gets from two separate places (COMMAND_DEFS and the handler
+ *  table) because a plugin has no compile-time union to be total over. */
+interface PluginCommandEntry {
+  readonly meta: CommandMeta;
+  readonly schema: S.Schema<any, any, unknown>;
+  readonly handler: (args: any) => Effect.Effect<unknown, CommandError>;
 }
 
-export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): Commands => ({
-  // Suspended, because a caller builds the effect once — a binding's `run` is
-  // built when the table is built — and the handler has to read the workspace
-  // at the moment it runs, not at the moment it was named.
-  run: (command) =>
-    Effect.suspend(() =>
-      (handlers[command._tag] as (args: Command) => Effect.Effect<AnyCommandResult, CommandError>)(
-        command,
-      ),
-    ),
-  list: (filter) => {
-    const defs = filter?.target
-      ? COMMAND_DEFS.filter((d) => d.target === filter.target)
-      : filter?.exposure
-        ? COMMAND_DEFS.filter((d) => d.exposure === filter.exposure)
-        : COMMAND_DEFS;
-    if (filter?.target && filter?.exposure) {
-      return COMMAND_DEFS.filter(
-        (d) => d.target === filter.target && d.exposure === filter.exposure,
-      ).map((def) => COMMAND_META[def.tag]!);
-    }
-    return defs.map((def) => COMMAND_META[def.tag]!);
-  },
-  isWorkspaceCommand: (tag) => isWorkspaceCommandByTarget(COMMAND_META[tag]!.target),
-  isRemoteCommand: (tag) => isRemoteCommand(COMMAND_META[tag]!.target),
-});
+export interface Commands {
+  /** Run a command. Local dispatch, not a round trip: the keymap needs the
+   *  effect's synchronous prefix to run in the keypress it was dispatched from.
+   *  A plugin tag is looked up in the runtime map and its arguments decoded
+   *  against the schema it registered with — the compile-time totality below
+   *  only covers the core union. */
+  readonly run: {
+    (command: Command): Effect.Effect<AnyCommandResult, CommandError>;
+    (command: RuntimeCommand): Effect.Effect<unknown, CommandError>;
+  };
+  /** Every verb and what it is — core plus whatever plugins have registered —
+   *  for whichever surface is listing them. */
+  readonly list: (filter?: { target?: CommandTarget; exposure?: CommandExposure }) => CommandMeta[];
+  /** Whether a command tag targets the workspace. False for a tag naming no
+   *  registered command — a disabled or missing plugin's verb acts on
+   *  nothing, so it is never mistaken for a workspace mutation. */
+  readonly isWorkspaceCommand: (tag: string) => boolean;
+  /** Whether a command tag is remotely invocable. Same absent-tag behavior. */
+  readonly isRemoteCommand: (tag: string) => boolean;
+  /**
+   * Claim `plugin.<pluginId>.<verb>` for the lifetime of the plugin instance.
+   *
+   * Args are validated on the way in here (the fields must form a real
+   * `Schema.TaggedStruct`) and again on every `run` — a plugin binding, the
+   * palette, or the socket surface bring no compile-time guarantee the way a
+   * core `Command` value does. Returns the disposer a scope finalizer wants;
+   * calling it frees the tag for reuse. A tag already claimed — by core or by
+   * another plugin — is refused rather than silently shadowed.
+   */
+  readonly registerCommand: <Fields extends S.Struct.Fields>(
+    pluginId: string,
+    verb: string,
+    fields: Fields,
+    meta: Meta,
+    handler: (args: S.Struct.Type<Fields>) => Effect.Effect<unknown, CommandError>,
+  ) => () => void;
+}
+
+export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): Commands => {
+  // The one map ts-996769 asks for: core registers into COMMAND_META eagerly
+  // at module load (below), plugins register into this one at load time.
+  // Two population paths, one place every other method reads from.
+  const pluginCommands = new Map<string, PluginCommandEntry>();
+
+  const metaFor = (tag: string): CommandMeta | undefined =>
+    (COMMAND_META as Record<string, CommandMeta>)[tag] ?? pluginCommands.get(tag)?.meta;
+
+  const registerCommand: Commands["registerCommand"] = (pluginId, verb, fields, meta, handler) => {
+    const tag = `plugin.${pluginId}.${verb}`;
+    if (metaFor(tag)) throw new Error(`command already registered: ${tag}`);
+    const schema = S.TaggedStruct(tag, fields).annotations({
+      identifier: tag,
+      description: meta.desc,
+    });
+    pluginCommands.set(tag, {
+      meta: {
+        name: tag,
+        desc: meta.desc,
+        group: meta.group,
+        target: meta.target,
+        exposure: meta.exposure,
+      },
+      schema,
+      handler,
+    });
+    return () => {
+      pluginCommands.delete(tag);
+    };
+  };
+
+  const run = ((command: RuntimeCommand) =>
+    // Suspended, because a caller builds the effect once — a binding's `run` is
+    // built when the table is built — and the handler has to read the workspace
+    // at the moment it runs, not at the moment it was named.
+    Effect.suspend(() => {
+      const coreHandler = (handlers as CommandHandlerTable)[command._tag];
+      if (coreHandler) return coreHandler(command as Command);
+      const plugin = pluginCommands.get(command._tag);
+      if (!plugin)
+        return Effect.fail(new CommandError({ message: `unknown command: ${command._tag}` }));
+      return S.decodeUnknown(plugin.schema)(command).pipe(
+        Effect.mapError(
+          (error) =>
+            new CommandError({
+              message: `${command._tag}: ${ParseResult.TreeFormatter.formatErrorSync(error)}`,
+            }),
+        ),
+        Effect.flatMap(plugin.handler),
+      );
+    })) as Commands["run"];
+
+  const list: Commands["list"] = (filter) => {
+    const all = [
+      ...COMMAND_DEFS.map((def) => COMMAND_META[def.tag]!),
+      ...[...pluginCommands.values()].map((entry) => entry.meta),
+    ];
+    return all.filter(
+      (m) =>
+        (!filter?.target || m.target === filter.target) &&
+        (!filter?.exposure || m.exposure === filter.exposure),
+    );
+  };
+
+  return {
+    run,
+    list,
+    isWorkspaceCommand: (tag) => {
+      const meta = metaFor(tag);
+      return meta ? isWorkspaceCommandByTarget(meta.target) : false;
+    },
+    isRemoteCommand: (tag) => {
+      const meta = metaFor(tag);
+      return meta ? isRemoteCommand(meta.target) : false;
+    },
+    registerCommand,
+  };
+};
 
 /**
  * Start a command and let it finish on its own.
