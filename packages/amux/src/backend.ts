@@ -14,7 +14,7 @@
  */
 
 import { spawnPty, readPty } from "./pty.ts";
-import { Effect, Fiber, Mailbox, Stream } from "effect";
+import { Cause, Effect, Fiber, Queue, Stream } from "effect";
 import type { AttachClientContract } from "./attach.ts";
 import { isProcessState, type ProcessState } from "./process-state.ts";
 import { SESSION_STATE_TOPIC } from "./effect/AttachProtocol.ts";
@@ -45,6 +45,8 @@ export interface SessionBackend {
    */
   foregroundPgid(): number;
   sessionId(): number;
+  /** Full argv for the foreground process. Empty at a prompt or when unavailable. */
+  readonly foregroundArgv?: () => readonly string[];
   readonly processState?: () => ProcessState | null;
 }
 
@@ -110,6 +112,7 @@ export const localPty: SessionBackendFactory = (opts) => {
     kill: () => pty.kill(),
     foregroundPgid: () => pty.foregroundPgid(),
     sessionId: () => pty.sessionId(),
+    foregroundArgv: () => foregroundArgv(pty.foregroundPgid(), pty.sessionId()),
   };
 };
 
@@ -122,6 +125,16 @@ export const localPty: SessionBackendFactory = (opts) => {
 export interface DaemonSession {
   readonly attach: AttachClientContract;
 }
+
+const foregroundArgv = (pid: number, sid: number): readonly string[] => {
+  if (pid <= 0 || pid === sid) return [];
+  try {
+    const raw = require("node:fs").readFileSync(`/proc/${pid}/cmdline`, "utf8") as string;
+    return raw.split("\0").filter(Boolean);
+  } catch {
+    return [];
+  }
+};
 
 /**
  * An agent whose process lives in the daemon.
@@ -158,35 +171,37 @@ export function daemonBackend(
      */
     let foregroundPgid = -1;
     let foregroundSid = -1;
+    let foregroundArgv: readonly string[] = [];
 
     /**
      * Output waiting to be drawn.
      *
-     * A Mailbox rather than a Queue because ending it still yields what it is
-     * holding: the bytes a program writes immediately before exiting are the
-     * ones that say why, and `Queue.shutdown` would discard them. Bounded, so a
-     * UI that stalls cannot grow this without limit — which the array it
-     * replaces could, and did.
+     * Ending it still yields what it is holding: the bytes a program writes
+     * immediately before exiting are the ones that say why, and
+     * `Queue.shutdown` would discard them. `Queue.end` signals completion
+     * without discarding the backlog. Bounded, so a UI that stalls cannot
+     * grow this without limit — which the array it replaces could, and did.
      */
-    const output = Effect.runSync(Mailbox.make<Uint8Array>(OUTPUT_LIMIT));
+    const output = Effect.runSync(Queue.make<Uint8Array, Cause.Done>({ capacity: OUTPUT_LIMIT }));
 
     const end = (code: number | null) => {
       if (closed) return;
       closed = true;
       exitCode = code;
-      Effect.runFork(output.end);
+      Effect.runFork(Queue.end(output));
     };
 
     const streamFiber = Effect.runFork(
       Stream.runForEach(session.attach.stream(opts.id), (frame) =>
         frame._tag === "output"
-          ? output.offer(frame.data)
+          ? Queue.offer(output, frame.data)
           : frame._tag === "exit"
             ? Effect.sync(() => end(frame.code))
             : frame._tag === "foreground"
               ? Effect.sync(() => {
                   foregroundPgid = frame.pgid;
                   foregroundSid = frame.sid;
+                  foregroundArgv = frame.argv;
                 })
               : frame._tag === "topic" && frame.topic === SESSION_STATE_TOPIC
                 ? Effect.sync(() => {
@@ -219,7 +234,8 @@ export function daemonBackend(
       // their provider after plugins load and starts them through the daemon.
     } else {
       Effect.runFork(
-        output.offer(
+        Queue.offer(
+          output,
           new TextEncoder().encode(`\r\n[daemon] modeled session '${opts.id}' is not live\r\n`),
         ),
       );
@@ -245,7 +261,7 @@ export function daemonBackend(
       },
       // The frame reader outlives nothing: when whoever is drawing this stops,
       // the fiber forwarding frames into the mailbox goes with it.
-      stream: Mailbox.toStream(output).pipe(Stream.ensuring(Fiber.interrupt(streamFiber))),
+      stream: Stream.fromQueue(output).pipe(Stream.ensuring(Fiber.interrupt(streamFiber))),
       write: (data) => {
         if (!closed) session.attach.input(opts.id, data);
       },
@@ -258,10 +274,11 @@ export function daemonBackend(
       kill: close,
       // The tty is in the daemon; these answer from its `foreground` frames
       // rather than from this process's view of the tty (which is -1). A
-      // caller that reads /proc/<pgid> is reading a global namespace, so the
-      // pgid alone is enough — the cmdline never needs to cross the wire.
+      // argv is carried in the same frame, so client-side policy never needs
+      // process-table access.
       foregroundPgid: () => foregroundPgid,
       sessionId: () => foregroundSid,
+      foregroundArgv: () => foregroundArgv,
       processState: () => processState,
     };
   };
@@ -288,5 +305,6 @@ export function exitedBackend(exitCode: number | null): SessionBackend {
     kill() {},
     foregroundPgid: () => -1,
     sessionId: () => -1,
+    foregroundArgv: () => [],
   };
 }

@@ -1,4 +1,5 @@
-import { FetchHttpClient, HttpClientRequest } from "@effect/platform";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic";
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
 import { Layer, Redacted } from "effect";

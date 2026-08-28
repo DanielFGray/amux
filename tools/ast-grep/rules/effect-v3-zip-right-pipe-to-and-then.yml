@@ -1,0 +1,5 @@
+id: effect-v3-zip-right-pipe-to-and-then
+language: TypeScript
+rule:
+  pattern: $EFFECT.pipe(Effect.zipRight($NEXT))
+fix: $EFFECT.pipe(Effect.andThen($NEXT))

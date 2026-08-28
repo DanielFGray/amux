@@ -1,0 +1,5 @@
+id: effect-v3-schema-lessThan-to-isLessThan
+language: TypeScript
+rule:
+  pattern: S.lessThan($$$ARGS)
+fix: S.check(S.isLessThan($$$ARGS))

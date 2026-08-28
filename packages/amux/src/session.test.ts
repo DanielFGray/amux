@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileSystem } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { ConfigProvider, Effect } from "effect";
 import {
@@ -42,18 +42,31 @@ const run = <A, E>(
 ) =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(SessionStore.Default),
+      Effect.provide(SessionStore.layer),
       Effect.provide(BunFileSystem.layer),
-      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
     ),
   );
 
 test("session writes are atomic and recover the previous generation", async () => {
   const e = await env();
-  await run(SessionStore.save(state("one")), e);
+  await run(
+    Effect.flatMap(SessionStore, (store) => store.save(state("one"))),
+    e,
+  );
   const next = { ...state("one"), attached: true };
-  await run(SessionStore.save(next), e);
-  expect((await run(SessionStore.load("one"), e))?.attached).toBe(true);
+  await run(
+    Effect.flatMap(SessionStore, (store) => store.save(next)),
+    e,
+  );
+  expect(
+    (
+      await run(
+        Effect.flatMap(SessionStore, (store) => store.load("one")),
+        e,
+      )
+    )?.attached,
+  ).toBe(true);
   expect(
     JSON.parse(await readFile((await run(sessionPaths("one"), e)).backup, "utf8")).attached,
   ).toBe(false);
@@ -61,29 +74,52 @@ test("session writes are atomic and recover the previous generation", async () =
 
 test("a truncated current file falls back to the previous generation", async () => {
   const e = await env();
-  await run(SessionStore.save(state("recover")), e);
-  await run(SessionStore.save({ ...state("recover"), attached: true }), e);
+  await run(
+    Effect.flatMap(SessionStore, (store) => store.save(state("recover"))),
+    e,
+  );
+  await run(
+    Effect.flatMap(SessionStore, (store) => store.save({ ...state("recover"), attached: true })),
+    e,
+  );
   await Bun.write((await run(sessionPaths("recover"), e)).state, '{"version":1');
-  expect((await run(SessionStore.load("recover"), e))?.attached).toBe(false);
+  expect(
+    (
+      await run(
+        Effect.flatMap(SessionStore, (store) => store.load("recover")),
+        e,
+      )
+    )?.attached,
+  ).toBe(false);
 });
 
 test("a dead lease leaves the session it owned intact", async () => {
   const e = await env();
-  await run(SessionStore.save(state("dead")), e);
   await run(
-    SessionStore.writeLease({
-      version: 1,
-      session: "dead",
-      pid: 999999,
-      socket: "/tmp/dead.sock",
-      startedAt: 1,
-      heartbeatAt: 1,
-    }),
+    Effect.flatMap(SessionStore, (store) => store.save(state("dead"))),
+    e,
+  );
+  await run(
+    Effect.flatMap(SessionStore, (store) =>
+      store.writeLease({
+        version: 1,
+        session: "dead",
+        pid: 999999,
+        socket: "/tmp/dead.sock",
+        startedAt: 1,
+        heartbeatAt: 1,
+      }),
+    ),
     e,
   );
   // A lease says who is running the session, never whether it should exist.
   // Its owner dying is how a session waits to be restored, not how one ends.
-  expect(await run(SessionStore.load("dead"), e)).not.toBeNull();
+  expect(
+    await run(
+      Effect.flatMap(SessionStore, (store) => store.load("dead")),
+      e,
+    ),
+  ).not.toBeNull();
 });
 
 test("lease files are schema-validated before ownership checks", async () => {
@@ -102,7 +138,12 @@ test("lease files are schema-validated before ownership checks", async () => {
       heartbeatAt: 1,
     }),
   );
-  expect(await run(SessionStore.readLease("lease-validation"), e)).toBeNull();
+  expect(
+    await run(
+      Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
+      e,
+    ),
+  ).toBeNull();
 
   await Bun.write(
     paths.lease,
@@ -115,23 +156,35 @@ test("lease files are schema-validated before ownership checks", async () => {
       heartbeatAt: 1,
     }),
   );
-  expect(await run(SessionStore.readLease("lease-validation"), e)).toBeNull();
+  expect(
+    await run(
+      Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
+      e,
+    ),
+  ).toBeNull();
 
   await run(
-    SessionStore.writeLease({
-      version: 1,
-      session: "lease-validation",
-      pid: process.pid,
-      socket: paths.socket,
-      startedAt: 1,
-      heartbeatAt: 2,
-      attachedSince: 3,
-      attachLastSeen: 4,
-      attachments: [{ client: "client-a", attachedSince: 3, attachLastSeen: 4 }],
-    }),
+    Effect.flatMap(SessionStore, (store) =>
+      store.writeLease({
+        version: 1,
+        session: "lease-validation",
+        pid: process.pid,
+        socket: paths.socket,
+        startedAt: 1,
+        heartbeatAt: 2,
+        attachedSince: 3,
+        attachLastSeen: 4,
+        attachments: [{ client: "client-a", attachedSince: 3, attachLastSeen: 4 }],
+      }),
+    ),
     e,
   );
-  expect(await run(SessionStore.readLease("lease-validation"), e)).toMatchObject({
+  expect(
+    await run(
+      Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
+      e,
+    ),
+  ).toMatchObject({
     session: "lease-validation",
     attachedSince: 3,
     attachments: [{ client: "client-a" }],
@@ -201,23 +254,61 @@ test("invalid session ids are rejected before any path is built", async () => {
 
 test("no session helper touches the filesystem for a traversal id", async () => {
   const e = await env();
-  await run(SessionStore.save(state("ok")), e);
+  await run(
+    Effect.flatMap(SessionStore, (store) => store.save(state("ok"))),
+    e,
+  );
   for (const id of ["..", "../escape", "a/../../victim"]) {
-    await expect(run(SessionStore.load(id), e)).rejects.toThrow();
-    await expect(run(SessionStore.remove(id), e)).rejects.toThrow();
-    await expect(run(SessionStore.exists(id), e)).resolves.toBe(false);
+    await expect(
+      run(
+        Effect.flatMap(SessionStore, (store) => store.load(id)),
+        e,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      run(
+        Effect.flatMap(SessionStore, (store) => store.remove(id)),
+        e,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      run(
+        Effect.flatMap(SessionStore, (store) => store.exists(id)),
+        e,
+      ),
+    ).resolves.toBe(false);
   }
   // The valid session is untouched.
-  expect(await run(SessionStore.load("ok"), e)).not.toBeNull();
+  expect(
+    await run(
+      Effect.flatMap(SessionStore, (store) => store.load("ok")),
+      e,
+    ),
+  ).not.toBeNull();
 });
 
 test("traversal ids cannot read or delete files outside the sessions root", async () => {
   const e = await env();
   const victim = join(e.HOME!, "victim.json");
   await Bun.write(victim, "secret");
-  await expect(run(SessionStore.save({ ...state("../..") }), e)).rejects.toThrow();
-  await expect(run(SessionStore.remove(".."), e)).rejects.toThrow();
-  await expect(run(SessionStore.remove("../.."), e)).rejects.toThrow();
+  await expect(
+    run(
+      Effect.flatMap(SessionStore, (store) => store.save({ ...state("../..") })),
+      e,
+    ),
+  ).rejects.toThrow();
+  await expect(
+    run(
+      Effect.flatMap(SessionStore, (store) => store.remove("..")),
+      e,
+    ),
+  ).rejects.toThrow();
+  await expect(
+    run(
+      Effect.flatMap(SessionStore, (store) => store.remove("../..")),
+      e,
+    ),
+  ).rejects.toThrow();
   expect(await Bun.file(victim).exists()).toBe(true);
   expect(await Bun.file(victim).text()).toBe("secret");
 });

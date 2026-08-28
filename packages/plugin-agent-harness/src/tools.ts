@@ -1,9 +1,9 @@
-import { Tool, Toolkit } from "@effect/ai";
+import { Tool, Toolkit } from "effect/unstable/ai";
 import { Effect, Schema as S } from "effect";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { bashResources, pathResource, type PermissionGate } from "./permission.ts";
-import type { JsonValue } from "@danielfgray/amux/layout.ts";
+import type { JsonValue } from "@danielfgray/amux"
 
 const DEFAULT_LIMIT = 2_000;
 const DEFAULT_TIMEOUT = 120_000;
@@ -11,11 +11,11 @@ const MAX_OUTPUT_BYTES = 1_000_000;
 
 const Read = Tool.make("read", {
   description: "Read a text file or list a directory. Relative paths resolve from the workspace.",
-  parameters: {
+  parameters: S.Struct({
     path: S.String,
     offset: S.optional(S.Number),
     limit: S.optional(S.Number),
-  },
+  }),
   success: S.String,
   failure: S.String,
   failureMode: "return",
@@ -23,7 +23,7 @@ const Read = Tool.make("read", {
 
 const Write = Tool.make("write", {
   description: "Write content to a file. Relative paths resolve from the workspace.",
-  parameters: { path: S.String, content: S.String },
+  parameters: S.Struct({ path: S.String, content: S.String }),
   success: S.String,
   failure: S.String,
   failureMode: "return",
@@ -31,11 +31,11 @@ const Write = Tool.make("write", {
 
 const Glob = Tool.make("glob", {
   description: "Find files by glob pattern. Relative paths resolve from the workspace.",
-  parameters: {
+  parameters: S.Struct({
     pattern: S.String,
     path: S.optional(S.String),
     limit: S.optional(S.Number),
-  },
+  }),
   success: S.String,
   failure: S.String,
   failureMode: "return",
@@ -44,12 +44,12 @@ const Glob = Tool.make("glob", {
 const Grep = Tool.make("grep", {
   description:
     "Search file contents with a regular expression and return file paths, line numbers, and matching lines.",
-  parameters: {
+  parameters: S.Struct({
     pattern: S.String,
     path: S.optional(S.String),
     include: S.optional(S.String),
     limit: S.optional(S.Number),
-  },
+  }),
   success: S.String,
   failure: S.String,
   failureMode: "return",
@@ -58,11 +58,11 @@ const Grep = Tool.make("grep", {
 const Bash = Tool.make("bash", {
   description:
     "Run a shell command in the workspace and return its combined output and exit status.",
-  parameters: {
+  parameters: S.Struct({
     command: S.String,
     workdir: S.optional(S.String),
     timeout: S.optional(S.Number),
-  },
+  }),
   success: S.String,
   failure: S.String,
   failureMode: "return",

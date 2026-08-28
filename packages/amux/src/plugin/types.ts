@@ -30,16 +30,27 @@ export interface PluginDefinition {
    * with different requirements in one map.
    */
   readonly inject?: readonly PluginService[];
+  /**
+   * Services this plugin may publish — an upper bound, not a promise that it
+   * will. `ctx.provide` at a key outside this list fails at the call site.
+   *
+   * Declaring it is what lets the host decide, before anything runs, whether an
+   * injected key has any possible provider at all. Reading provisions off a
+   * running plugin cannot answer that: the plugin has to start first, and a
+   * plugin whose dependency is unprovidable is one that should never have been
+   * admitted.
+   */
+  readonly provide?: readonly PluginService[];
   readonly activate: (
     context: PluginHostContext,
     provided: Context.Context<never>,
   ) => Effect.Effect<void, never, Scope.Scope | CurrentPlugin>;
 }
 
-export type TagIdentifier<T> = T extends Context.Tag<infer Id, infer _Service> ? Id : never;
+export type TagIdentifier<T> = T extends Context.Service<infer Id, infer _Service> ? Id : never;
 export type PluginRequirements<Tags extends readonly PluginService[]> =
   | TagIdentifier<Tags[number]>
-  | Context.Tag.Identifier<CurrentPlugin>
+  | CurrentPlugin
   | Scope.Scope;
 
 /**
@@ -54,6 +65,7 @@ export const definePlugin = <const Tags extends readonly PluginService[] = []>(d
   readonly id: string;
   readonly apiVersion: string;
   readonly inject?: Tags;
+  readonly provide?: readonly PluginService[];
   readonly effect: (
     context: PluginHostContext,
   ) => Effect.Effect<void, never, PluginRequirements<Tags>>;
@@ -61,6 +73,7 @@ export const definePlugin = <const Tags extends readonly PluginService[] = []>(d
   id: definition.id,
   apiVersion: definition.apiVersion,
   inject: definition.inject,
+  provide: definition.provide,
   activate: (context, provided) =>
     Effect.provide(
       definition.effect(context),
@@ -73,9 +86,9 @@ export interface PluginHostContext {
   readonly panel: PanelContext;
   readonly kv: PluginKV;
   /** Publish a service other plugins may inject. It is withdrawn when this plugin stops. */
-  readonly provide: <Id, S>(tag: Context.Tag<Id, S>, service: S) => () => void;
+  readonly provide: <Id, S>(tag: Context.Service<Id, S>, service: S) => () => void;
   /** Read a service without depending on it. `inject` is what makes the host wait. */
-  readonly get: <Id, S>(tag: Context.Tag<Id, S>) => Option.Option<S>;
+  readonly get: <Id, S>(tag: Context.Service<Id, S>) => Option.Option<S>;
   readonly frames: (session: string) => Stream.Stream<AttachFrame, never>;
   readonly sync: (session: string) => void;
 }
@@ -94,7 +107,7 @@ export interface PluginSettingsSection {
 
 export interface PluginKVKey<T extends JsonValue> {
   readonly key: string;
-  readonly schema: Schema.Schema<T>;
+  readonly schema: Schema.Codec<T>;
 }
 
 export interface PluginKV {

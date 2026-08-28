@@ -1,7 +1,7 @@
-import { FetchHttpClient } from "@effect/platform";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic";
 import { Layer, Redacted } from "effect";
-import { HttpClientRequest } from "@effect/platform";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type { Credential } from "../credential.ts";
 import type { Integration } from "./types.ts";
 

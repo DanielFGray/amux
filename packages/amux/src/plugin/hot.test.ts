@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Effect } from "effect";
 import { hotImport, pluginRoot } from "./hot.ts";
+import { testEffect } from "../test-effect.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
 
@@ -17,25 +18,27 @@ test("a plugin's reloadable half is the directory named after its entry", () => 
   expect(pluginRoot(new URL("file:///a/b/sidebar.ts"))).toBe("/a/b/sidebar/");
 });
 
-test("importing again picks up an edit inside the plugin's own directory", async () => {
-  const dir = await scratch();
-  await Bun.write(join(dir, "colours/palette.ts"), `export const accent = "red";`);
-  await writeFile(
-    join(dir, "colours.ts"),
-    `import { Effect } from "effect";
+testEffect("importing again picks up an edit inside the plugin's own directory", () =>
+  Effect.gen(function* () {
+    const dir = yield* scratch;
+    yield* write(join(dir, "colours/palette.ts"), `export const accent = "red";`);
+    yield* write(
+      join(dir, "colours.ts"),
+      `import { Effect } from "effect";
      import { definePlugin } from "../types.ts";
      import { accent } from "./colours/palette.ts";
      export default definePlugin({ id: accent, apiVersion: "1", effect: () => Effect.void });`,
-  );
-  const source = pathToFileURL(join(dir, "colours.ts"));
+    );
+    const source = pathToFileURL(join(dir, "colours.ts"));
 
-  const before = await Effect.runPromise(hotImport(source));
-  await Bun.write(join(dir, "colours/palette.ts"), `export const accent = "blue";`);
-  const after = await Effect.runPromise(hotImport(source));
+    const before = yield* hotImport(source);
+    yield* write(join(dir, "colours/palette.ts"), `export const accent = "blue";`);
+    const after = yield* hotImport(source);
 
-  expect(before.id).toBe("red");
-  expect(after.id).toBe("blue");
-});
+    expect(before.id).toBe("red");
+    expect(after.id).toBe("blue");
+  }),
+);
 
 /**
  * The guarantee that breaks silently if the resolver's boundary is wrong.
@@ -45,24 +48,26 @@ test("importing again picks up an edit inside the plugin's own directory", async
  * world nobody else can see. The fixture names itself after a value the shared
  * module computes once, so a duplicate would be visible as a different name.
  */
-test("a module outside the plugin's directory is the same instance after a reload", async () => {
-  const dir = await scratch();
-  await writeFile(join(dir, "shared.ts"), `export const once = "load-" + Math.random();`);
-  await writeFile(
-    join(dir, "reader.ts"),
-    `import { Effect } from "effect";
+testEffect("a module outside the plugin's directory is the same instance after a reload", () =>
+  Effect.gen(function* () {
+    const dir = yield* scratch;
+    yield* write(join(dir, "shared.ts"), `export const once = "load-" + Math.random();`);
+    yield* write(
+      join(dir, "reader.ts"),
+      `import { Effect } from "effect";
      import { definePlugin } from "../types.ts";
      import { once } from "./shared.ts";
      export default definePlugin({ id: once, apiVersion: "1", effect: () => Effect.void });`,
-  );
-  const source = pathToFileURL(join(dir, "reader.ts"));
+    );
+    const source = pathToFileURL(join(dir, "reader.ts"));
 
-  const first = await Effect.runPromise(hotImport(source));
-  const second = await Effect.runPromise(hotImport(source));
+    const first = yield* hotImport(source);
+    const second = yield* hotImport(source);
 
-  expect(first).not.toBe(second);
-  expect(first.id).toBe(second.id);
-});
+    expect(first).not.toBe(second);
+    expect(first.id).toBe(second.id);
+  }),
+);
 
 /**
  * The decode schema drops every property it does not name, so a plugin field
@@ -71,35 +76,43 @@ test("a module outside the plugin's directory is the same instance after a reloa
  * exist. Nothing else catches that: the plugin still loads and still works in
  * memory, where the definition never goes through the schema at all.
  */
-test("a declared dependency survives the trip through the decoder", async () => {
-  const dir = await scratch();
-  await writeFile(
-    join(dir, "needs.ts"),
-    `import { Context, Effect } from "effect";
+testEffect("a declared dependency survives the trip through the decoder", () =>
+  Effect.gen(function* () {
+    const dir = yield* scratch;
+    yield* write(
+      join(dir, "needs.ts"),
+      `import { Context, Effect } from "effect";
      import { definePlugin } from "../types.ts";
-     class Pool extends Context.Tag("test/Pool")<Pool, number>() {}
+     class Pool extends Context.Service<Pool, number>()("test/Pool") {}
      export default definePlugin({ id: "needs", apiVersion: "1", inject: [Pool],
        effect: () => Effect.void });`,
-  );
+    );
 
-  const definition = await Effect.runPromise(hotImport(pathToFileURL(join(dir, "needs.ts"))));
+    const definition = yield* hotImport(pathToFileURL(join(dir, "needs.ts")));
 
-  expect(definition.inject?.map((tag) => tag.key)).toEqual(["test/Pool"]);
-});
+    expect(definition.inject?.map((tag) => tag.key)).toEqual(["test/Pool"]);
+  }),
+);
 
-test("a module that is not a plugin is refused with the reason", async () => {
-  const dir = await scratch();
-  await writeFile(join(dir, "nope.ts"), `export default { id: "nope" };`);
+testEffect("a module that is not a plugin is refused with the reason", () =>
+  Effect.gen(function* () {
+    const dir = yield* scratch;
+    yield* write(join(dir, "nope.ts"), `export default { id: "nope" };`);
 
-  const failure = await Effect.runPromise(
-    Effect.either(hotImport(pathToFileURL(join(dir, "nope.ts")))),
-  );
-  expect(failure._tag).toBe("Left");
-  expect(failure._tag === "Left" && failure.left).toContain("apiVersion");
-});
+    const failure = yield* Effect.result(hotImport(pathToFileURL(join(dir, "nope.ts"))));
+    expect(failure._tag).toBe("Failure");
+    expect(failure._tag === "Failure" && failure.failure).toContain("apiVersion");
+  }),
+);
 
-async function scratch(): Promise<string> {
+/** A fixture directory under the plugin tree, removed after the test. It has to
+ *  live beside the real plugins: the resolver's boundary is a directory. */
+const scratch = Effect.promise(async () => {
   const dir = await mkdtemp(join(testDir, ".test-hot-"));
   temporary.push(dir);
   return dir;
-}
+});
+
+/** `Bun.write` creates missing parent directories; `writeFile` does not. The
+ *  fixtures rely on that for nested files, so both go through Bun's writer. */
+const write = (path: string, contents: string) => Effect.promise(() => Bun.write(path, contents));

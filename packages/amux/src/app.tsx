@@ -7,12 +7,11 @@ import {
 } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
-import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
+import { Context, Effect, Exit, FiberMap, Option, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
 import { basename, dirname, join } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { ProcessState } from "./process-state.ts";
-import { SPINNER_FRAMES } from "./detect.ts";
 
 import { projectWorkspace, SpaceSet } from "./space.ts";
 import { frame } from "./window.ts";
@@ -75,8 +74,31 @@ import {
 } from "./plugin/contributions.ts";
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
 import { loadPluginsFromConfig } from "./plugin/loader.ts";
+import {
+  BindingsTag,
+  CommandsTag,
+  OptionsTag,
+  ProcessDisplayTag,
+  RegionsTag,
+  SessionViewsTag,
+  SessionFactsTag,
+  SettingsTag,
+  SpawnProvidersTag,
+  scopedRegistry,
+  type BindingsService,
+  type CommandRegistration,
+  type CommandsService,
+  type OptionsService,
+  type ProcessDisplayService,
+  type RegionsService,
+  type SessionViewsService,
+  type SettingsService,
+  type SpawnProvidersService,
+} from "./plugin/services.ts";
+import { makeSessionFacts } from "./session-facts.ts";
 import { createReloader } from "./plugin/reloader.ts";
 import type { PluginReloader } from "./plugin/reloader.ts";
+import { definePlugin, type PluginDefinition } from "./plugin/types.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { formatText } from "./format.ts";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
@@ -101,7 +123,11 @@ import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
-import { createProcessDisplay, type ProcessDisplay } from "./plugin/process-display.ts";
+import {
+  createProcessDisplay,
+  type ProcessDisplayProvider,
+} from "./plugin/process-display.ts";
+import type { PaneView } from "./component-pane.tsx";
 import { errorMessage } from "./error-message.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 
@@ -153,23 +179,58 @@ export function runCommandByTarget<A, B>(
 
 interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly release: Effect.Effect<void>;
-  readonly commands: Commands;
-  readonly registerBinding: (owner: PluginInstance, binding: CommandSpec) => () => void;
-  readonly registerSettingsSection: (
-    owner: PluginInstance,
-    section: PluginSettingsSection,
-  ) => () => void;
-  readonly registerOption: (owner: PluginInstance, name: string, spec: OptionSpec) => () => void;
+  readonly commands: CommandsService;
+  readonly coreEntries: readonly PluginDefinition[];
+  readonly registryEntries: readonly PluginDefinition[];
+  readonly updateRegistry: (host: PluginHost, key: string) => void;
+}
+
+interface ProviderRef<A extends object> {
+  readonly value: A;
+  readonly set: (value: A) => void;
+}
+
+function providerRef<A extends object>(initial: A): ProviderRef<A> {
+  const [current, setCurrent] = createSignal(initial);
+  return {
+    value: new Proxy(initial, {
+      get: (_target, property) => Reflect.get(current(), property),
+    }),
+    set: setCurrent,
+  };
+}
+
+interface RegistryBinding {
+  readonly key: string;
+  readonly plugin: PluginDefinition;
+  readonly refresh: (host: PluginHost) => void;
 }
 
 /**
- * Who the app's own panels and bindings belong to.
+ * One registry, stated once: the entry that provides it by default and the
+ * handler that re-reads it when its provider changes both come from this row,
+ * so a registry cannot be published under one tag and read back under another.
  *
- * They go through the same tables as a plugin's, so that a plugin claiming a
- * name the app already uses is refused by the same rule that stops two plugins
- * colliding. There is only ever one generation of it: the app does not reload.
+ * `refresh` falls back to the shipped service when no provider is visible.
+ * A withdrawn provider must not leave the app reading a service that is gone.
  */
-const CORE_CONTRIBUTOR: PluginInstance = { id: "amux", generation: 0 };
+function registry<Id, S extends object>(
+  name: string,
+  tag: Context.Service<Id, S>,
+  ref: ProviderRef<S>,
+  fallback: S,
+): RegistryBinding {
+  return {
+    key: tag.key,
+    plugin: definePlugin({
+      id: `amux.registry.${name}`,
+      apiVersion: "1",
+      provide: [tag],
+      effect: (ctx) => Effect.sync(() => void ctx.provide(tag, fallback)),
+    }),
+    refresh: (host) => ref.set(Option.getOrElse(host.get(tag), () => fallback)),
+  };
+}
 
 /** A synchronous launcher captured from the app's scoped FiberMap. */
 export type AppFiberRunner = (key: string, effect: Effect.Effect<void>) => void;
@@ -195,7 +256,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
   return Effect.gen(function* () {
     const fiberScope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(fiberScope, Exit.void));
-    const fibers = yield* Scope.extend(FiberMap.make<string>(), fiberScope);
+    const fibers = yield* Scope.provide(FiberMap.make<string>(), fiberScope);
     const runFiber = yield* FiberMap.runtime(fibers)<never>();
     // A component pane's view sends what the user types through the app's
     // command pipeline, and the app is built from the workspace — so the
@@ -206,16 +267,44 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     const contributions = createPluginContributions();
     const sessionViews = createSessionViews(contributions);
     const processDisplay = createProcessDisplay(contributions);
+    const sessionViewsService = scopedRegistry(
+      { view: sessionViews.view, has: sessionViews.has },
+      (owner, [type, view]: readonly [string, PaneView]) =>
+        sessionViews.register(owner, type, view),
+    );
+    const processDisplayService = scopedRegistry(
+      { display: processDisplay.display },
+      (owner, provider: ProcessDisplayProvider) => processDisplay.register(owner, provider),
+    );
+    const sessionViewsProvider = providerRef<SessionViewsService>(sessionViewsService);
+    const processDisplayProvider = providerRef<ProcessDisplayService>(processDisplayService);
     const spaces = yield* SpaceSet.make(
       workspaceEnv(options.renderer, {
         shell: initialShell,
         backend: options.session.backend(),
-        paneContent: sessionViews.view,
+        paneContent: (props) => sessionViewsProvider.value.view(props),
       }),
       options.paneHost,
     );
     const regions = createRegions(options.renderer, contributions);
+    const regionsService = scopedRegistry(
+      {
+        Slot: regions.Slot,
+        declared: regions.declared,
+        thickness: regions.thickness,
+        divider: regions.divider,
+        topOverlay: regions.topOverlay,
+      },
+      regions.register,
+    );
+    const regionsProvider = providerRef<RegionsService>(regionsService);
     const spawnProviders = contributions.table<() => SpawnProvider>();
+    const spawnProvidersService = scopedRegistry(
+      { get: (id: string) => spawnProviders.get(id)?.() },
+      (owner, [id, provider]: readonly [string, () => SpawnProvider]) =>
+        spawnProviders.add(owner, id, provider),
+    );
+    const spawnProvidersProvider = providerRef<SpawnProvidersService>(spawnProvidersService);
     const pluginRuntime: PluginRuntime = {};
     const app = yield* Effect.acquireRelease(
       Effect.sync(() =>
@@ -224,10 +313,22 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
           spaces,
           fiberScope,
           runFiber,
-          regions,
+          regionsProvider.value,
           contributions,
           pluginRuntime,
-          processDisplay,
+          processDisplayProvider.value,
+          {
+            regions: regionsProvider,
+            sessionViews: sessionViewsProvider,
+            processDisplay: processDisplayProvider,
+            spawnProviders: spawnProvidersProvider,
+          },
+          {
+            regions: regionsService,
+            sessionViews: sessionViewsService,
+            processDisplay: processDisplayService,
+            spawnProviders: spawnProvidersService,
+          },
         ),
       ),
       (app) => app.release,
@@ -235,31 +336,20 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     const pluginHost = yield* createPluginHost({
       panel: app.panel,
       contributions,
-      registries: {
-        regions,
-        sessionViews,
-        processDisplay,
-        bindings: app.registerBinding,
-        settings: app.registerSettingsSection,
-        options: app.registerOption,
-        spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
-        spawnProvider: (id) => spawnProviders.get(id)?.(),
-        commands: (owner, registration) =>
-          app.commands.registerCommand(
-            owner.id,
-            registration.verb,
-            registration.fields,
-            registration.meta,
-            registration.handler,
-          ),
-      },
       frames: (id) => options.session.attach.stream(id),
       sync: (id) => options.session.attach.sync(id),
     });
+    runFiber(
+      "plugin-service-changes",
+      Stream.runForEach(pluginHost.onServiceChange, (key) =>
+        Effect.sync(() => app.updateRegistry(pluginHost, key)),
+      ),
+    );
     const hotPlugins = yield* loadPluginsFromConfig(
       options.config,
       pluginHost,
       options.configDir ?? dirname(CONFIG_PATH),
+      [...app.registryEntries, ...app.coreEntries],
     );
     const resumedPending = new Set<string>();
     pluginRuntime.resumePending = (workspace) =>
@@ -273,7 +363,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         ),
         ({ session }) => {
           resumedPending.add(session.id);
-          const provider = pluginHost.spawnProvider(session.provider!);
+          const provider = spawnProvidersProvider.value.get(session.provider!);
           return options.session
             .resumeAgent({
               session: session.id,
@@ -283,7 +373,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
               stripEnv: provider?.stripEnv,
             })
             .pipe(
-              Effect.catchAll((error) =>
+              Effect.catch((error) =>
                 Effect.sync(() => {
                   app.panel.reportError(errorMessage(error));
                 }),
@@ -316,7 +406,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
                 reloader
                   .reload(id)
                   .pipe(
-                    Effect.catchAll((message) => Effect.sync(() => app.panel.reportError(message))),
+                    Effect.catch((message) => Effect.sync(() => app.panel.reportError(message))),
                   ),
               { discard: true },
             ),
@@ -346,7 +436,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
           Effect.map((result) =>
             options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined),
           ),
-          Effect.catchAll((error) =>
+          Effect.catch((error) =>
             Effect.sync(() => options.session.respondCommand(id, undefined, errorMessage(error))),
           ),
         );
@@ -386,15 +476,26 @@ export function runModelProjections<A>(
 function buildApp(
   { renderer, paneHost, config, session, quit }: AppOptions,
   spaces: SpaceSet,
-  fiberScope: Scope.CloseableScope,
+  fiberScope: Scope.Closeable,
   runFiber: AppFiberRunner,
-  regions: ReturnType<typeof createRegions>,
+  regions: RegionsService,
   contributions: PluginContributions,
   pluginRuntime: PluginRuntime,
-  processDisplay: ProcessDisplay,
+  processDisplay: ProcessDisplayService,
+  externalProviders: {
+    readonly regions: ProviderRef<RegionsService>;
+    readonly sessionViews: ProviderRef<SessionViewsService>;
+    readonly processDisplay: ProviderRef<ProcessDisplayService>;
+    readonly spawnProviders: ProviderRef<SpawnProvidersService>;
+  },
+  externalDefaults: {
+    readonly regions: RegionsService;
+    readonly sessionViews: SessionViewsService;
+    readonly processDisplay: ProcessDisplayService;
+    readonly spawnProviders: SpawnProvidersService;
+  },
 ): ManagedAppHandle {
   const initialFrameExternalLeft = frame.externalLeft;
-  contributions.commit(CORE_CONTRIBUTOR);
 
   /**
    * Run one of the workspace's Effect-returning methods here and now.
@@ -549,10 +650,21 @@ function buildApp(
   /** Names a plugin has claimed through `registerOption`, section-sorted and
    *  rendered by the settings window the same way a core option is. */
   const optionContributions = contributions.table<OptionSpec>();
+  const optionsService = scopedRegistry(
+    {
+      get: (name: string) => optionContributions.get(name),
+      all: () => optionContributions.all(),
+    },
+    (owner, [name, spec]: readonly [string, OptionSpec]) => {
+      if (optionSpec(name)) throw new Error(`option '${name}' is a built-in option`);
+      return optionContributions.add(owner, name, spec);
+    },
+  );
+  const optionsProvider = providerRef<OptionsService>(optionsService);
 
   /** A core or plugin-registered option's declaration, by name. */
   function specFor(name: string): OptionSpec | undefined {
-    return optionSpec(name) ?? optionContributions.get(name);
+    return optionSpec(name) ?? optionsProvider.value.get(name);
   }
 
   /** A core or plugin-registered option's current value, resolved the same
@@ -588,7 +700,7 @@ function buildApp(
     changeOption(name, adjustedValue(spec, optionValue(name, spec), by));
   }
 
-  /** Where every panel on screen is registered. See registerPanels below. */
+  /** Where every panel on screen is registered. See panelGroups below. */
 
   const [overlay, setOverlay] = createSignal<Overlay>("none");
   // The raw compiled parts, not a formatted string: the which-key panel has to
@@ -617,7 +729,13 @@ function buildApp(
   const [settingsDirty, setSettingsDirty] = createSignal(false);
   const [settingsError, setSettingsError] = createSignal("");
   const settingsSectionTable = contributions.table<PluginSettingsSection>();
-  const pluginSettings = () => settingsSectionTable.all().map((entry) => entry.value);
+  const settingsService = scopedRegistry(
+    { all: () => settingsSectionTable.all().map((entry) => entry.value) },
+    (owner, section: PluginSettingsSection) =>
+      settingsSectionTable.add(owner, section.id, section),
+  );
+  const settingsProvider = providerRef<SettingsService>(settingsService);
+  const pluginSettings = () => settingsProvider.value.all();
   /** True while the keybind editor is waiting for the keystroke to record. */
   const [capturing, setCapturing] = createSignal(false);
   const [conflicts, setConflicts] = createSignal<Conflict[]>([]);
@@ -738,7 +856,7 @@ function buildApp(
    * asked for it; only the answer waits.
    */
   function ask(title: string, fields: PromptRequest["fields"]): Effect.Effect<string[] | null> {
-    return Effect.async<string[] | null>((resume) => {
+    return Effect.callback<string[] | null>((resume) => {
       setPromptError("");
       setPromptRequest({
         title,
@@ -872,7 +990,7 @@ function buildApp(
 
   /** The option the settings window's selection is sitting on, if any. */
   function selectedOption(): string | undefined {
-    return settingsFields(allOptions(), settingsSection(), optionContributions.all())[
+    return settingsFields(allOptions(), settingsSection(), optionsProvider.value.all())[
       settingsSelected()
     ]?.name;
   }
@@ -1113,7 +1231,7 @@ function buildApp(
       },
       onDelete: (name) => {
         void Effect.runPromise(
-          session.deleteBuffer(name).pipe(Effect.zipRight(session.listBuffers())),
+          session.deleteBuffer(name).pipe(Effect.andThen(session.listBuffers())),
         )
           .then((buffers) => {
             setChooseView((view) =>
@@ -1322,6 +1440,7 @@ function buildApp(
     "agent.get": runCommand,
     notify: runCommand,
     "session.kill": runCommand,
+    "session.message": runCommand,
     "session.restart": runCommand,
     "session.reveal": runCommand,
     "session.next-blocked": runCommand,
@@ -1445,7 +1564,25 @@ function buildApp(
     "app.quit": () => Effect.sync(shutdown),
   };
 
-  const commands = makeCommands(handlers);
+  const rawCommands = makeCommands(handlers);
+  const commandsService = scopedRegistry(
+    {
+      run: rawCommands.run,
+      list: rawCommands.list,
+      isWorkspaceCommand: rawCommands.isWorkspaceCommand,
+      isRemoteCommand: rawCommands.isRemoteCommand,
+    },
+    (owner, registration: CommandRegistration) =>
+      rawCommands.registerCommand(
+        owner.id,
+        registration.verb,
+        registration.fields,
+        registration.meta,
+        registration.handler,
+      ),
+  );
+  const commandsProvider = providerRef<CommandsService>(commandsService);
+  const commands = commandsProvider.value;
   runProjectedCommand = (value) => runDetached(value._tag, commands.run(value), showCommandError);
 
   /**
@@ -1728,7 +1865,7 @@ function buildApp(
   }
 
   function cycleSettingsSection(step: 1 | -1) {
-    const sections = settingsSections(pluginSettings(), optionContributions.all());
+    const sections = settingsSections(pluginSettings(), optionsProvider.value.all());
     const i = sections.indexOf(settingsSection());
     setSettingsSection(sections[(i + step + sections.length) % sections.length]!);
     setSettingsSelected(0);
@@ -1893,7 +2030,7 @@ function buildApp(
       keybindsKey(event);
       return true;
     }
-    const fields = settingsFields(allOptions(), settingsSection(), optionContributions.all());
+    const fields = settingsFields(allOptions(), settingsSection(), optionsProvider.value.all());
     switch (event.name) {
       case "j":
       case "down":
@@ -1993,35 +2130,31 @@ function buildApp(
     });
   }
 
-  const bindings = createBindings(renderer, COMMANDS, {
+  const rawBindings = createBindings(renderer, [], {
     keys: config.keys,
     onUnhandled,
     onError: showCommandError,
   });
-  setConflicts(bindings.conflicts());
+  setConflicts(rawBindings.conflicts());
   const bindingTable = contributions.table<CommandSpec>();
-  const [registeredBindings, setRegisteredBindings] =
-    createSignal<readonly CommandSpec[]>(COMMANDS);
+  const [registeredBindings, setRegisteredBindings] = createSignal<readonly CommandSpec[]>([]);
   // Bindings reach the keymap through an effect rather than a call in
   // `registerBinding`, because a plugin's bindings also appear and disappear
   // when the host commits or retires the instance that registered them, and
   // nobody calls `registerBinding` at that moment.
   createEffect(() => {
-    const next = [...COMMANDS, ...bindingTable.all().map((entry) => entry.value)];
+    const next = bindingTable.all().map((entry) => entry.value);
     setRegisteredBindings(next);
-    setConflicts(bindings.setCommands(next));
+    setConflicts(rawBindings.setCommands(next));
   });
-  const registerBinding = (owner: PluginInstance, binding: CommandSpec) => {
-    if (COMMANDS.some((entry) => entry.name === binding.name))
-      throw new Error(`binding '${binding.name}' is a built-in command`);
-    return bindingTable.add(owner, binding.name, binding);
-  };
-  const registerSettingsSection = (owner: PluginInstance, section: PluginSettingsSection) =>
-    settingsSectionTable.add(owner, section.id, section);
-  const registerOption = (owner: PluginInstance, name: string, spec: OptionSpec) => {
-    if (optionSpec(name)) throw new Error(`option '${name}' is a built-in option`);
-    return optionContributions.add(owner, name, spec);
-  };
+  // The built-in commands arrive through this same door, registered by the
+  // `amux.commands` entry. Core holds no reserved names: two plugins claiming
+  // one binding is a conflict `findConflicts` reports, not an error here.
+  const registerBinding = (owner: PluginInstance, binding: CommandSpec) =>
+    bindingTable.add(owner, binding.name, binding);
+  const bindingsService = scopedRegistry(rawBindings, registerBinding);
+  const bindingsProvider = providerRef<BindingsService>(bindingsService);
+  const bindings = bindingsProvider.value;
 
   function updateHintVisibility(sequence: readonly { display: string }[]) {
     runFiber("hint-delay", Effect.void);
@@ -2147,10 +2280,7 @@ function buildApp(
    * claim. The overlays' `order` is the modal stack, so the one drawn on top is
    * the one asked about a keystroke first.
    */
-  function registerPanels(): () => void {
-    const registerCorePanel = (panel: Panel) => regions.register(CORE_CONTRIBUTOR, panel);
-    const disposers = [
-      registerCorePanel({
+  const windowsPanel = (): Panel => ({
         id: "amux.windows",
         region: "top",
         // The pane area, not the app: amux has no app-wide bar, and a tab row
@@ -2203,8 +2333,8 @@ function buildApp(
                 agent_state: display?.label,
                 agent_state_label: display?.label,
                 agent_state_glyph: display
-                  ? state === ProcessState.Running
-                    ? SPINNER_FRAMES[app.frame() % SPINNER_FRAMES.length]
+                  ? display.frames
+                    ? display.frames[app.frame() % display.frames.length]
                     : display.glyph
                   : "",
                 zoomed: window?.zoomed,
@@ -2231,8 +2361,9 @@ function buildApp(
             }}
           />
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const settingsPanel = (): Panel => ({
         id: "amux.settings",
         region: "overlay",
         order: 10,
@@ -2256,7 +2387,7 @@ function buildApp(
               keybindList = box;
             }}
             pluginSections={pluginSettings()}
-            registeredOptions={optionContributions.all()}
+            registeredOptions={optionsProvider.value.all()}
             focus={settingsFocus()}
             editText={editText()}
             onEditInput={(value) => {
@@ -2283,8 +2414,9 @@ function buildApp(
             }}
           />
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const keybindPickerPanel = (): Panel => ({
         id: "amux.keybind-picker",
         region: "overlay",
         order: 15,
@@ -2320,8 +2452,9 @@ function buildApp(
             )}
           </Show>
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const palettePanel = (): Panel => ({
         id: "amux.palette",
         region: "overlay",
         // Same rung as settings: one signal holds both, so they cannot be up at
@@ -2349,8 +2482,9 @@ function buildApp(
             onSubmit={submitPalette}
           />
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const buffersPanel = (): Panel => ({
         id: "amux.buffers",
         region: "overlay",
         order: 20,
@@ -2403,8 +2537,9 @@ function buildApp(
             )}
           </Show>
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const capturePanel = (): Panel => ({
         id: "amux.capture",
         region: "overlay",
         order: 30,
@@ -2427,8 +2562,9 @@ function buildApp(
             )}
           </Show>
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const promptPanel = (): Panel => ({
         id: "amux.prompt",
         region: "overlay",
         // Top of the stack: a prompt is opened *by* the overlays below it, and
@@ -2463,8 +2599,9 @@ function buildApp(
             )}
           </Show>
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const hintsPanel = (): Panel => ({
         id: "amux.hints",
         region: "float",
         title: "which-key",
@@ -2481,8 +2618,9 @@ function buildApp(
             height={props.height}
           />
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const disconnectedPanel = (): Panel => ({
         id: "amux.disconnected",
         region: "overlay",
         order: 50,
@@ -2516,8 +2654,9 @@ function buildApp(
             </text>
           </box>
         ),
-      }),
-      registerCorePanel({
+  });
+
+  const errorPanel = (): Panel => ({
         id: "amux.error",
         region: "overlay",
         order: 55,
@@ -2548,14 +2687,14 @@ function buildApp(
             <text style={{ fg: theme.red, height: 1 }}>{commandError() ?? ""}</text>
           </box>
         ),
-      }),
-    ];
-    return () => {
-      for (const dispose of disposers) dispose();
-    };
-  }
+  });
 
-  const disposePanels = registerPanels();
+  const panelGroups = {
+    "amux.windows": () => [windowsPanel()],
+    "amux.settings": () => [settingsPanel(), keybindPickerPanel()],
+    "amux.commands": () => [palettePanel(), promptPanel(), hintsPanel(), errorPanel()],
+    "amux.sessions": () => [buffersPanel(), capturePanel(), disconnectedPanel()],
+  } as const;
 
   // Before the first window exists, so its panes are built with the right edges.
   syncPaneFrame();
@@ -2589,9 +2728,7 @@ function buildApp(
     // finish before releasing any UI object it can still refresh.
     yield* Effect.promise(() => projection).pipe(
       Effect.timeout("2 seconds"),
-      Effect.catchAll(() =>
-        Effect.logWarning("workspace projection did not finish during shutdown"),
-      ),
+      Effect.catch(() => Effect.logWarning("workspace projection did not finish during shutdown")),
     );
     // While the pane is still alive: the mode's exit clears the selection
     // through the pane's terminal, and a freed terminal cannot be caught.
@@ -2599,8 +2736,7 @@ function buildApp(
     frame.externalLeft = initialFrameExternalLeft;
     spaces.refreshChrome();
     disposePendingSequence();
-    disposePanels();
-    bindings.dispose();
+    rawBindings.dispose();
     renderer.removeListener("resize", onResize);
   });
 
@@ -2608,7 +2744,7 @@ function buildApp(
    *  what a plugin reads through `ctx.panel.options()`. */
   const allOptions = () => {
     const merged = { ...options() } as Options & Record<string, OptionValue>;
-    for (const entry of optionContributions.all())
+    for (const entry of optionsProvider.value.all())
       merged[entry.name] = optionValue(entry.name, entry.value);
     return merged as Options & Record<string, OptionValue>;
   };
@@ -2625,13 +2761,98 @@ function buildApp(
     selectedAgentId,
     setSelectedAgentId,
   });
+  const registries = [
+    registry("regions", RegionsTag, externalProviders.regions, externalDefaults.regions),
+    registry(
+      "session-views",
+      SessionViewsTag,
+      externalProviders.sessionViews,
+      externalDefaults.sessionViews,
+    ),
+    registry(
+      "process-display",
+      ProcessDisplayTag,
+      externalProviders.processDisplay,
+      externalDefaults.processDisplay,
+    ),
+    registry("bindings", BindingsTag, bindingsProvider, bindingsService),
+    registry("settings", SettingsTag, settingsProvider, settingsService),
+    registry("options", OptionsTag, optionsProvider, optionsService),
+    registry(
+      "spawn-providers",
+      SpawnProvidersTag,
+      externalProviders.spawnProviders,
+      externalDefaults.spawnProviders,
+    ),
+    registry("commands", CommandsTag, commandsProvider, commandsService),
+  ];
+  const registryEntries = registries.map((entry) => entry.plugin);
+  const sessionFacts = makeSessionFacts(() => spaces.allSessions);
+
+  const updateRegistry = (host: PluginHost, key: string): void => {
+    for (const entry of registries) if (entry.key === key) entry.refresh(host);
+  };
+
+  const coreEntries = [
+    definePlugin({
+      id: "amux.session-facts",
+      apiVersion: "1",
+      provide: [SessionFactsTag],
+      effect: (ctx) => Effect.sync(() => void ctx.provide(SessionFactsTag, sessionFacts)),
+    }),
+    definePlugin({
+      id: "amux.windows",
+      apiVersion: "1",
+      inject: [RegionsTag],
+      effect: () =>
+        RegionsTag.pipe(
+          Effect.flatMap((regions) =>
+            Effect.forEach(panelGroups["amux.windows"](), (panel) => regions.register(panel)),
+          ),
+        ),
+    }),
+    definePlugin({
+      id: "amux.settings",
+      apiVersion: "1",
+      inject: [RegionsTag],
+      effect: () =>
+        RegionsTag.pipe(
+          Effect.flatMap((regions) =>
+            Effect.forEach(panelGroups["amux.settings"](), (panel) => regions.register(panel)),
+          ),
+        ),
+    }),
+    definePlugin({
+      id: "amux.commands",
+      apiVersion: "1",
+      inject: [RegionsTag, BindingsTag],
+      effect: () =>
+        Effect.gen(function* () {
+          const regions = yield* RegionsTag;
+          const bindings = yield* BindingsTag;
+          yield* Effect.forEach(panelGroups["amux.commands"](), (panel) => regions.register(panel));
+          yield* Effect.forEach(COMMANDS, (binding) => bindings.register(binding));
+        }),
+    }),
+    definePlugin({
+      id: "amux.sessions",
+      apiVersion: "1",
+      inject: [RegionsTag],
+      effect: () =>
+        RegionsTag.pipe(
+          Effect.flatMap((regions) =>
+            Effect.forEach(panelGroups["amux.sessions"](), (panel) => regions.register(panel)),
+          ),
+        ),
+    }),
+  ] as const;
   return {
     View,
     panel,
     release,
-    registerBinding,
-    registerSettingsSection,
-    registerOption,
     commands,
+    registryEntries,
+    updateRegistry,
+    coreEntries,
   };
 }

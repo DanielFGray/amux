@@ -1,76 +1,169 @@
-import { Stream } from "effect";
+import { Effect, Stream } from "effect";
 import type { CliRenderer } from "@opentui/core";
 import type { PluginEnvironment } from "./host.ts";
-import { createSessionViews } from "./session-views.tsx";
-import { createProcessDisplay } from "./process-display.ts";
-import { createPluginContributions } from "./contributions.ts";
-import { createRegions } from "../ui/regions.tsx";
+import { createSessionViews, type SessionViews } from "./session-views.tsx";
+import {
+  createProcessDisplay,
+  type ProcessDisplay,
+  type ProcessDisplayProvider,
+} from "./process-display.ts";
+import { createPluginContributions, type PluginInstance } from "./contributions.ts";
+import { createRegions, type Regions } from "../ui/regions.tsx";
 import { testPanelContext } from "../ui/test-panel.ts";
-import type { SpawnProvider } from "./types.ts";
-import type { Regions } from "../ui/regions.tsx";
-import type { SessionViews } from "./session-views.tsx";
-import type { ProcessDisplay } from "./process-display.ts";
-import type { CommandRegistration, PluginRegistries } from "./services.ts";
+import type { PluginDefinition, PluginSettingsSection, SpawnProvider } from "./types.ts";
 import type { OptionSpec } from "../options.ts";
+import { createBindings, type CommandSpec } from "../bindings.ts";
+import { makeCommands } from "../commands.ts";
+import type { PaneView } from "../component-pane.tsx";
+import {
+  BindingsTag,
+  CommandsTag,
+  OptionsTag,
+  ProcessDisplayTag,
+  RegionsTag,
+  SessionViewsTag,
+  SettingsTag,
+  SpawnProvidersTag,
+  scopedRegistry,
+  type CommandRegistration,
+} from "./services.ts";
 
-type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "registries"> & {
+interface RawTestRegistries {
+  readonly regions: Regions;
+  readonly sessionViews: SessionViews;
+  readonly processDisplay: ProcessDisplay;
+  readonly bindings: (owner: PluginInstance, binding: CommandSpec) => () => void;
+  readonly settings: (owner: PluginInstance, section: PluginSettingsSection) => () => void;
+  readonly options: (owner: PluginInstance, name: string, spec: OptionSpec) => () => void;
+  readonly spawnProviders: (
+    owner: PluginInstance,
+    id: string,
+    provider: () => SpawnProvider,
+  ) => () => void;
+  readonly spawnProvider: (id: string) => SpawnProvider | undefined;
+  readonly commands: (owner: PluginInstance, registration: CommandRegistration) => () => void;
+}
+
+export type TestPluginEnvironment = PluginEnvironment & {
+  readonly registries: RawTestRegistries;
+  readonly registryEntries: readonly PluginDefinition[];
+};
+
+type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "contributions"> & {
   readonly regions?: Regions;
   readonly sessionViews?: SessionViews;
   readonly processDisplay?: ProcessDisplay;
-  readonly registries?: Partial<PluginRegistries>;
+  readonly registries?: Partial<RawTestRegistries>;
+  readonly contributions?: PluginEnvironment["contributions"];
 };
 
-/**
- * A plugin environment for a check that cares about one field of it.
- *
- * The host's own type has no optional fields on purpose — a missing
- * collaborator there would be a registration silently dropped. A check is the
- * one caller that legitimately wants "everything, but only this part is real",
- * so the defaults live here rather than in the host.
- *
- * The registries are built here by default because they have to share one set
- * of contribution tables — regions built from tables nobody else reads would
- * file panels where nothing finds them. A check that needs the regions earlier
- * than the environment may hand them in, but must build them from the
- * `contributions` it hands in alongside.
- */
 export function testPluginEnvironment(
   renderer: CliRenderer,
   parts: TestEnvironmentParts = {},
-): PluginEnvironment {
+): TestPluginEnvironment {
   const contributions = parts.contributions ?? createPluginContributions();
   const regions = parts.regions ?? createRegions(renderer, contributions);
   const sessionViews = parts.sessionViews ?? createSessionViews(contributions);
   const processDisplay = parts.processDisplay ?? createProcessDisplay(contributions);
+  const bindingTable = contributions.table<CommandSpec>();
+  const settingsTable = contributions.table<PluginSettingsSection>();
+  const optionsTable = contributions.table<OptionSpec>();
+  const spawnProviders = contributions.table<() => SpawnProvider>();
+  const commandTable = contributions.table<CommandRegistration>();
+  const rawBindings = createBindings(renderer, [], { onUnhandled: () => false });
+  const rawCommands = makeCommands({});
+  const registries: RawTestRegistries = {
+    regions,
+    sessionViews,
+    processDisplay,
+    bindings: (owner, binding) => bindingTable.add(owner, binding.name, binding),
+    settings: (owner, section) => settingsTable.add(owner, section.id, section),
+    options: (owner, name, spec) => optionsTable.add(owner, name, spec),
+    spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
+    spawnProvider: (id) => spawnProviders.get(id)?.(),
+    commands: (owner, registration) => commandTable.add(owner, registration.verb, registration),
+    ...parts.registries,
+  };
+  const services = {
+    regions: scopedRegistry(
+      {
+        Slot: regions.Slot,
+        declared: regions.declared,
+        thickness: regions.thickness,
+        divider: regions.divider,
+        topOverlay: regions.topOverlay,
+      },
+      registries.regions.register,
+    ),
+    sessionViews: scopedRegistry(
+      { view: sessionViews.view, has: sessionViews.has },
+      (owner, [type, view]: readonly [string, PaneView]) =>
+        registries.sessionViews.register(owner, type, view),
+    ),
+    processDisplay: scopedRegistry(
+      { display: processDisplay.display },
+      (owner, provider: ProcessDisplayProvider) =>
+        registries.processDisplay.register(owner, provider),
+    ),
+    bindings: scopedRegistry(rawBindings, registries.bindings),
+    settings: scopedRegistry(
+      { all: () => settingsTable.all().map((entry) => entry.value) },
+      registries.settings,
+    ),
+    options: scopedRegistry(
+      { get: optionsTable.get, all: optionsTable.all },
+      (owner, [name, spec]: readonly [string, OptionSpec]) =>
+        registries.options(owner, name, spec),
+    ),
+    spawnProviders: scopedRegistry(
+      { get: registries.spawnProvider },
+      (owner, [id, provider]: readonly [string, () => SpawnProvider]) =>
+        registries.spawnProviders(owner, id, provider),
+    ),
+    commands: scopedRegistry(
+      {
+        run: rawCommands.run,
+        list: rawCommands.list,
+        isWorkspaceCommand: rawCommands.isWorkspaceCommand,
+        isRemoteCommand: rawCommands.isRemoteCommand,
+      },
+      registries.commands,
+    ),
+  };
+  const provider = (
+    id: string,
+    tag: { readonly key: string },
+    publish: (ctx: Parameters<PluginDefinition["activate"]>[0]) => void,
+  ): PluginDefinition => ({
+    id,
+    apiVersion: "1",
+    provide: [tag],
+    activate: (ctx) => Effect.sync(() => publish(ctx)),
+  });
+  const registryEntries = [
+    provider("amux.registry.regions", RegionsTag, (ctx) => void ctx.provide(RegionsTag, services.regions)),
+    provider("amux.registry.session-views", SessionViewsTag, (ctx) => void ctx.provide(SessionViewsTag, services.sessionViews)),
+    provider("amux.registry.process-display", ProcessDisplayTag, (ctx) => void ctx.provide(ProcessDisplayTag, services.processDisplay)),
+    provider("amux.registry.bindings", BindingsTag, (ctx) => void ctx.provide(BindingsTag, services.bindings)),
+    provider("amux.registry.settings", SettingsTag, (ctx) => void ctx.provide(SettingsTag, services.settings)),
+    provider("amux.registry.options", OptionsTag, (ctx) => void ctx.provide(OptionsTag, services.options)),
+    provider("amux.registry.spawn-providers", SpawnProvidersTag, (ctx) => void ctx.provide(SpawnProvidersTag, services.spawnProviders)),
+    provider("amux.registry.commands", CommandsTag, (ctx) => void ctx.provide(CommandsTag, services.commands)),
+  ];
   const {
     regions: _regions,
     sessionViews: _sessionViews,
     processDisplay: _processDisplay,
-    registries: registryOverrides,
+    registries: _registries,
     ...environment
   } = parts;
-  const bindings = contributions.table<unknown>();
-  const settings = contributions.table<unknown>();
-  const options = contributions.table<OptionSpec>();
-  const spawnProviders = contributions.table<() => SpawnProvider>();
-  const commands = contributions.table<CommandRegistration>();
   return {
     panel: testPanelContext(),
     frames: () => Stream.empty,
     sync: () => {},
-    registries: {
-      regions,
-      sessionViews,
-      processDisplay,
-      bindings: (owner, binding) => bindings.add(owner, binding.name, binding),
-      settings: (owner, section) => settings.add(owner, section.id, section),
-      options: (owner, name, spec) => options.add(owner, name, spec),
-      spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
-      spawnProvider: (id) => spawnProviders.get(id)?.(),
-      commands: (owner, registration) => commands.add(owner, registration.verb, registration),
-      ...registryOverrides,
-    },
     ...environment,
     contributions,
+    registries,
+    registryEntries,
   };
 }

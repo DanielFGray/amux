@@ -1,9 +1,9 @@
 import { Effect, Schema as S } from "effect";
-import { ProcessState } from "@danielfgray/amux/process-state.ts";
-import { POLL_MS } from "@danielfgray/amux/ui/state.ts";
+import { ProcessState } from "@danielfgray/amux"
+import { POLL_MS } from "@danielfgray/amux"
 import { scheduledPoll } from "@danielfgray/amux/effect/timer.ts";
-import { definePlugin, type PluginDefinition } from "@danielfgray/amux/plugin/types.ts";
-import { CommandsTag, OptionsTag, registerCommand } from "@danielfgray/amux/plugin/services.ts";
+import { definePlugin, type PluginDefinition } from "@danielfgray/amux"
+import { CommandsTag, OptionsTag, registerCommand } from "@danielfgray/amux"
 
 export const NOTIFICATIONS_PLUGIN_ID = "amux.notifications";
 
@@ -32,7 +32,12 @@ export const notificationsPlugin: PluginDefinition = definePlugin({
       yield* registerCommand(
         "ring",
         { times: S.optional(S.Int) },
-        { desc: "ring the terminal bell", group: "notifications", target: "server", exposure: "human" },
+        {
+          desc: "ring the terminal bell",
+          group: "notifications",
+          target: "server",
+          exposure: "human",
+        },
         (args) =>
           Effect.sync(() => {
             for (let i = 0; i < (args.times ?? 1); i++) process.stdout.write("\x07");

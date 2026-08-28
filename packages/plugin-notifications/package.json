@@ -16,10 +16,10 @@
   "dependencies": {
     "effect": "catalog:"
   },
-  "peerDependencies": {
+  "devDependencies": {
     "@danielfgray/amux": "workspace:*"
   },
-  "devDependencies": {
+  "peerDependencies": {
     "@danielfgray/amux": "workspace:*"
   }
 }

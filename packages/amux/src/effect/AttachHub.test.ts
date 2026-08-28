@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect";
+import { Effect, Fiber, Stream } from "effect";
 import { expect } from "bun:test";
 import { AttachHub } from "./AttachHub.ts";
 import { testEffect } from "../test-effect.ts";
@@ -15,16 +15,16 @@ testEffect("AttachHub fans frames out and removes subscriptions with scope", () 
     ]);
     expect([...oneFrames]).toEqual([{ _tag: "hello", client: "daemon" }]);
     expect([...twoFrames]).toEqual([{ _tag: "hello", client: "daemon" }]);
-  }).pipe(Effect.provide(AttachHub.Default)),
+  }).pipe(Effect.provide(AttachHub.layer)),
 );
 
 testEffect("AttachHub rejects duplicate client ids", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     yield* hub.subscribe("same");
-    const result = yield* hub.subscribe("same").pipe(Effect.either);
-    expect(result._tag).toBe("Left");
-  }).pipe(Effect.provide(AttachHub.Default)),
+    const result = yield* hub.subscribe("same").pipe(Effect.result);
+    expect(result._tag).toBe("Failure");
+  }).pipe(Effect.provide(AttachHub.layer)),
 );
 
 testEffect("targeted replay requires the live connection token", () =>
@@ -35,7 +35,7 @@ testEffect("targeted replay requires the live connection token", () =>
     yield* hub.publishTo("same", "new", { _tag: "hello", client: "current" });
     const frames = yield* Stream.runCollect(subscription.frames.pipe(Stream.take(1)));
     expect([...frames]).toEqual([{ _tag: "hello", client: "current" }]);
-  }).pipe(Effect.provide(AttachHub.Default)),
+  }).pipe(Effect.provide(AttachHub.layer)),
 );
 
 testEffect("concurrent sync barriers keep every replay ahead of live output", () =>
@@ -43,8 +43,8 @@ testEffect("concurrent sync barriers keep every replay ahead of live output", ()
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("same", "connection");
     yield* hub.beginReplay("same", "connection");
-    const second = yield* Effect.fork(hub.beginReplay("same", "connection"));
-    yield* Effect.yieldNow();
+    const second = yield* Effect.forkChild(hub.beginReplay("same", "connection"));
+    yield* Effect.yieldNow;
     yield* hub.publish({
       _tag: "output",
       session: "s",
@@ -56,7 +56,7 @@ testEffect("concurrent sync barriers keep every replay ahead of live output", ()
       data: new Uint8Array([1]),
     });
     yield* hub.endReplay("same", "connection");
-    yield* second.await;
+    yield* Fiber.await(second);
     yield* hub.publishTo("same", "connection", {
       _tag: "output",
       session: "s",
@@ -69,7 +69,7 @@ testEffect("concurrent sync barriers keep every replay ahead of live output", ()
       { _tag: "output", session: "s", data: new Uint8Array([2]) },
       { _tag: "output", session: "s", data: new Uint8Array([0]) },
     ]);
-  }).pipe(Effect.provide(AttachHub.Default)),
+  }).pipe(Effect.provide(AttachHub.layer)),
 );
 
 testEffect("a replay that cannot fit the bounded queue evicts the client", () =>
@@ -98,5 +98,5 @@ testEffect("a replay that cannot fit the bounded queue evicts the client", () =>
     });
     expect(result).toBeUndefined();
     expect(overflow).toBe(1);
-  }).pipe(Effect.provide(AttachHub.Default)),
+  }).pipe(Effect.provide(AttachHub.layer)),
 );

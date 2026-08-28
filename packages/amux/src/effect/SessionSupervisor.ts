@@ -27,7 +27,6 @@ import {
   PtyError,
   SessionRegistry,
   type ManagedSession,
-  type PromptOptions,
   type SessionForeground,
   type SessionSpec,
 } from "./SessionRegistry.ts";
@@ -57,6 +56,16 @@ const FOREGROUND_POLL_MS = 500;
  *  activation proceed. */
 const INITIAL_OUTPUT_GRACE_MS = 100;
 
+const foregroundArgv = (foreground: SessionForeground): readonly string[] => {
+  if (foreground.pgid <= 0 || foreground.pgid === foreground.sid) return [];
+  try {
+    const raw = require("node:fs").readFileSync(`/proc/${foreground.pgid}/cmdline`, "utf8") as string;
+    return raw.split("\0").filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+
 export interface SessionExitObserverService {
   readonly beforePublish: (
     id: string,
@@ -72,26 +81,26 @@ export class SessionObserverError extends S.TaggedError<SessionObserverError>()(
   "SessionObserverError",
   {
     message: S.String,
-    operation: S.Literal("exit", "state"),
+    operation: S.Literals(["exit", "state"]),
   },
 ) {}
 
-export class SessionStateObserver extends Context.Reference<SessionStateObserver>()(
+export const SessionStateObserver = Context.Reference<SessionStateObserverService>(
   "SessionStateObserver",
   {
     defaultValue: (): SessionStateObserverService => ({
       onState: () => Effect.void,
     }),
   },
-) {}
+);
 
 /** Durability barrier between backend termination and the observable exit frame. */
-export class SessionExitObserver extends Context.Reference<SessionExitObserver>()(
+export const SessionExitObserver = Context.Reference<SessionExitObserverService>(
   "SessionExitObserver",
   {
     defaultValue: (): SessionExitObserverService => ({ beforePublish: () => Effect.void }),
   },
-) {}
+);
 
 export interface PreparedSession {
   readonly session: ManagedSession;
@@ -121,10 +130,10 @@ const bracketPaste = (data: Uint8Array): Uint8Array => {
  * branches on kind: a pty and a native agent session are adopted, killed and
  * replayed through the identical path.
  */
-export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("SessionSupervisor", {
+export class SessionSupervisor extends Context.Service<SessionSupervisor>()("SessionSupervisor", {
   // scoped for the same reason as SessionRegistry: the per-session output pumps are
   // a FiberMap, and they belong to the supervisor rather than to any caller.
-  scoped: Effect.gen(function* () {
+  make: Effect.gen(function* () {
     const registry = yield* SessionRegistry;
     const hub = yield* AttachHub;
     const exitObserver = yield* SessionExitObserver;
@@ -284,7 +293,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
           exitPublished
             ? Effect.void
             : exitObserver.beforePublish(spec.id, code).pipe(
-                Effect.zipRight(
+                Effect.andThen(
                   Effect.sync(() => {
                     if (exitPublished) return false;
                     exitPublished = true;
@@ -299,24 +308,33 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               ),
         );
       const complete = dropSession(spec.id, session, screen).pipe(
-        Effect.zipRight(Deferred.succeed(completion, void 0)),
+        Effect.andThen(Deferred.succeed(completion, void 0)),
       );
       const foreground = Effect.gen(function* () {
-        const publish = (fg: SessionForeground) =>
+        const read = () => {
+          const foreground = session.foreground();
+          return { ...foreground, argv: foregroundArgv(foreground) };
+        };
+        const publish = (fg: SessionForeground & { readonly argv: readonly string[] }) =>
           hub.publish({
             _tag: "foreground",
             session: spec.id,
             pgid: fg.pgid,
             sid: fg.sid,
+            argv: fg.argv,
           } satisfies AttachFrame);
-        let last = yield* Effect.sync(() => session.foreground());
+        let last = yield* Effect.sync(read);
         yield* publish(last);
         while (
           yield* Ref.get(sessions).pipe(Effect.map((current) => current.get(spec.id) === session))
         ) {
           yield* Effect.sleep(FOREGROUND_POLL_MS);
-          const next = yield* Effect.sync(() => session.foreground());
-          if (next.pgid !== last.pgid || next.sid !== last.sid) {
+          const next = yield* Effect.sync(read);
+          if (
+            next.pgid !== last.pgid ||
+            next.sid !== last.sid ||
+            JSON.stringify(next.argv) !== JSON.stringify(last.argv)
+          ) {
             last = next;
             yield* publish(next);
           }
@@ -344,7 +362,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
                   yield* Queue.offer(pending, new Uint8Array(chunk));
               }),
             ),
-            Effect.catchAll((error) =>
+            Effect.catch((error) =>
               Effect.logDebug(`session output ended: ${error.operation}: ${error.message}`),
             ),
           );
@@ -375,10 +393,10 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             Effect.uninterruptible(
               session.kill.pipe(
                 Effect.ignore,
-                Effect.zipRight(session.exit.pipe(Effect.orElseSucceed(() => null))),
+                Effect.andThen(session.exit.pipe(Effect.orElseSucceed(() => null))),
                 Effect.tap((code) => Deferred.succeed(termination, code)),
-                Effect.zipRight(Deferred.succeed(disposition, "aborted")),
-                Effect.zipRight(complete),
+                Effect.andThen(Deferred.succeed(disposition, "aborted")),
+                Effect.andThen(complete),
               ),
             ),
           ),
@@ -394,16 +412,15 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
        * arrive before activation are held, not dropped: a prepared session is
        * absent from the hub, and publishing there would address nobody.
        */
-      const ingest = (event: AgentFrame | AgentEventPayload) =>
-        Effect.gen(function* () {
-          const committed = isAgentEventPayload(event) ? yield* agentLog.append(event) : event;
-          if (isSessionStateTopic(committed) && committed.payload !== lastSessionState) {
-            lastSessionState = committed.payload;
-            yield* stateObserver.onState(spec.id, committed.payload);
-          }
-          if (phase === "active") yield* hub.publish(committed);
-          else yield* Queue.offer(pendingEvents, committed);
-        });
+      const ingest = Effect.fnUntraced(function* (event: AgentFrame | AgentEventPayload) {
+        const committed = isAgentEventPayload(event) ? yield* agentLog.append(event) : event;
+        if (isSessionStateTopic(committed) && committed.payload !== lastSessionState) {
+          lastSessionState = committed.payload;
+          yield* stateObserver.onState(spec.id, committed.payload);
+        }
+        if (phase === "active") yield* hub.publish(committed);
+        else yield* Queue.offer(pendingEvents, committed);
+      });
 
       // Process reports take the same generic topic door as component events,
       // so replay and live subscribers observe one ordered fact stream.
@@ -472,9 +489,9 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
       const abort = Effect.suspend(() => {
         if (phase === "prepared") phase = "aborted";
         return Deferred.succeed(disposition, "aborted").pipe(
-          Effect.zipRight(session.kill.pipe(Effect.ignore)),
-          Effect.zipRight(Deferred.await(termination)),
-          Effect.zipRight(Deferred.await(completion)),
+          Effect.andThen(session.kill.pipe(Effect.ignore)),
+          Effect.andThen(Deferred.await(termination)),
+          Effect.andThen(Deferred.await(completion)),
         );
       });
       return { session, activate, abort } satisfies PreparedSession;
@@ -538,36 +555,11 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
               );
             }),
           ),
-          Match.tag("agent.prompt", (command) =>
+          Match.tag("session.message", (command) =>
             Effect.gen(function* () {
               const session = (yield* Ref.get(sessions)).get(command.session);
               if (!session) return;
-              let options: PromptOptions = {};
-              if (command.id !== undefined) options = { ...options, id: command.id };
-              if (command.delivery !== undefined)
-                options = { ...options, delivery: command.delivery };
-              if (command.resume !== undefined) options = { ...options, resume: command.resume };
-              yield* session.prompt(command.text, options);
-            }),
-          ),
-          Match.tag("agent.permission", (command) =>
-            Effect.gen(function* () {
-              const session = (yield* Ref.get(sessions)).get(command.session);
-              if (!session) return;
-              let answer: Parameters<ManagedSession["decide"]>[0] = {
-                request: command.request,
-                decision: command.decision,
-              };
-              if (command.feedback !== undefined)
-                answer = { ...answer, feedback: command.feedback };
-              yield* session.decide(answer);
-            }),
-          ),
-          Match.tag("agent.interrupt", (command) =>
-            Effect.gen(function* () {
-              const session = (yield* Ref.get(sessions)).get(command.session);
-              if (!session) return;
-              yield* session.interrupt(command.reason);
+              yield* session.message(command.message);
             }),
           ),
           Match.orElse(() => Effect.void),
@@ -606,6 +598,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
             session: id,
             pgid: fg.pgid,
             sid: fg.sid,
+            argv: foregroundArgv(fg),
           } satisfies AttachFrame);
         }
         if (session?.kind === "component") return;
@@ -658,7 +651,7 @@ export class SessionSupervisor extends Effect.Service<SessionSupervisor>()("Sess
     };
   }),
 }) {
-  static Live = SessionSupervisor.Default.pipe(Layer.provide(SessionRegistry.Default));
+  static readonly layer = Layer.effect(this, this.make).pipe(Layer.provide(SessionRegistry.layer));
 }
 
 const isSessionStateTopic = (frame: AgentFrame): frame is Topic & { readonly payload: string } =>

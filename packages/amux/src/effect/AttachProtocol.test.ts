@@ -82,9 +82,10 @@ test("foreground frames carry a negative pgid and sid across the wire", () => {
     session: "agent-1",
     pgid: -1,
     sid: -1,
+    argv: [],
   });
   expect(decodeAttachFrames(encoded).frames).toEqual([
-    { _tag: "foreground", session: "agent-1", pgid: -1, sid: -1 },
+    { _tag: "foreground", session: "agent-1", pgid: -1, sid: -1, argv: [] },
   ]);
 });
 
@@ -164,14 +165,14 @@ test("native agent lifecycle frames round-trip as semantic events", () => {
 test("native agent control frames round-trip without provider or transport details", () => {
   const frames: AttachFrame[] = [
     {
-      _tag: "agent.prompt",
+      _tag: "session.message",
       session: "agent-1",
-      text: "Stop after the current command.",
+      message: { _tag: "agent.prompt", text: "Stop after the current command." },
     },
     {
-      _tag: "agent.interrupt",
+      _tag: "session.message",
       session: "agent-1",
-      reason: "Human requested a pause",
+      message: { _tag: "agent.interrupt", reason: "Human requested a pause" },
     },
   ];
 
@@ -205,6 +206,18 @@ test("an arbitrary plugin-namespaced topic round-trips with an object payload", 
   } as const;
 
   expect(decodeAttachFrames(`${JSON.stringify(frame)}\n`).frames).toEqual([frame]);
+});
+
+test("a component control message is an opaque JSON payload", () => {
+  const frame: AttachFrame = {
+    _tag: "session.message",
+    session: "component-1",
+    message: { _tag: "example.refresh", force: true },
+  };
+
+  const decoded = decodeAttachFrames(encodeAttachFrame(frame));
+  expect(decoded.rest).toBe("");
+  expect(decoded.frames).toEqual([frame]);
 });
 
 test("tool.params-start round-trips as a self-contained semantic event", () => {

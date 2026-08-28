@@ -176,7 +176,7 @@ export class Window {
    * between two windows (see relinquishSession/adopt), and make killSession the
    * closing of exactly one of them.
    */
-  #scopes = new Map<SessionHandle, Scope.CloseableScope>();
+  #scopes = new Map<SessionHandle, Scope.Closeable>();
   /** In a daemon client, exits are projected from model revisions, never authored here. */
   #authoritativeProjection = false;
 
@@ -289,7 +289,7 @@ export class Window {
 
   /** Drop a client projection after the daemon has removed its owner. */
   removeProjectedSession(session: SessionHandle): Effect.Effect<void> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       for (const pane of this.#panes.slice()) if (pane.session === session) this.close(pane);
       const at = this.#sessions.indexOf(session);
       if (at !== -1) this.#sessions.splice(at, 1);
@@ -329,13 +329,13 @@ export class Window {
    * that this one's process is already over and must not be run again.
    */
   startSession(opts: SessionHandleOptions): Effect.Effect<SessionHandle> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const scope = yield* Scope.make();
       // The window's backend is a default, not an override: restore passes its
       // own per-session choice, and a tombstone must keep having no backend at all.
       // Spread order is what encodes that — opts wins where it says anything.
       const session = yield* SessionHandle.make({ backend: this.#backend, ...opts }).pipe(
-        Scope.extend(scope),
+        Scope.provide(scope),
       );
       this.#scopes.set(session, scope);
       this.#bind(session);
@@ -355,7 +355,7 @@ export class Window {
    *
    * Returns the scope to transfer, or null when the session is not ours.
    */
-  relinquishSession(session: SessionHandle): Scope.CloseableScope | null {
+  relinquishSession(session: SessionHandle): Scope.Closeable | null {
     const i = this.#sessions.indexOf(session);
     if (i === -1) return null;
     this.#sessions.splice(i, 1);
@@ -371,7 +371,7 @@ export class Window {
    * All preconditions are checked before the layout or ownership maps change,
    * so callers cannot leave a pane detached when its lifetime is unavailable.
    */
-  releasePane(pane: Pane): { session: SessionHandle; scope: Scope.CloseableScope } | null {
+  releasePane(pane: Pane): { session: SessionHandle; scope: Scope.Closeable } | null {
     const session = pane.session;
     // A sessionless pane (client-rendered plugin) owns no session, so there is
     // nothing to hand over.
@@ -411,7 +411,7 @@ export class Window {
    * after this kill, not before.
    */
   killSession(session: SessionHandle): Effect.Effect<void> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       for (const p of this.#panes.slice()) if (p.session === session) this.close(p);
       const i = this.#sessions.indexOf(session);
       if (i !== -1) this.#sessions.splice(i, 1);
@@ -1037,7 +1037,7 @@ export class Window {
    *  ownership moves, so the session's hooks are re-pointed here and an exit
    *  closes the pane in the window it now lives in. The caller detaches first,
    *  so the pane arrives unmounted and with no other owner. */
-  adopt(session: SessionHandle, pane: Pane, scope: Scope.CloseableScope) {
+  adopt(session: SessionHandle, pane: Pane, scope: Scope.Closeable) {
     // The newcomer is hung straight off the root rather than projected, so the
     // zoom has to come down first: a zoomed window has its other panes
     // unmounted, and adding a second pane beside the zoomed one would leave
@@ -1463,7 +1463,7 @@ export class Window {
    *  use-after-free into ghostty — a segfault on the next frame, not an
    *  exception. */
   get release(): Effect.Effect<void> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       for (const pane of this.#panes.slice()) this.close(pane);
       for (const session of this.#sessions.slice()) yield* this.#releaseSession(session);
       this.#sessions.length = 0;

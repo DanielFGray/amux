@@ -15,7 +15,7 @@
 import { Schema as S } from "effect";
 
 /** What a rule says about an action: allow it, refuse it, or ask a human. */
-export const PermissionEffectSchema = S.Literal("allow", "ask", "deny");
+export const PermissionEffectSchema = S.Literals(["allow", "ask", "deny"]);
 export type PermissionEffect = typeof PermissionEffectSchema.Type;
 
 /**
@@ -25,7 +25,7 @@ export type PermissionEffect = typeof PermissionEffectSchema.Type;
  * the patterns it would save: the answer is a choice between things the user
  * can see, not a promise the UI invents afterwards.
  */
-export const PermissionDecisionSchema = S.Literal("once", "always", "reject");
+export const PermissionDecisionSchema = S.Literals(["once", "always", "reject"]);
 export type PermissionDecision = typeof PermissionDecisionSchema.Type;
 
 export const PermissionRuleSchema = S.Struct({

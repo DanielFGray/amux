@@ -1,4 +1,4 @@
-import { Effect, PubSub, Schema as S, Scope, Stream } from "effect";
+import { Context, Effect, Layer, PubSub, Schema as S, Scope, Stream } from "effect";
 
 /** A daemon-owned session's process state. The state vocabulary is supplied by
  * the process integration, not by the core event transport. */
@@ -27,16 +27,16 @@ const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
  * out-of-band: agent liveness, a notification an agent chose to send, and
  * configuration that changes underneath a client that never asked for it.
  */
-const EventPayload = S.Union(
+const EventPayload = S.Union([
   SessionStateChanged,
   Notification,
   EventsReady,
   CredentialChanged,
   ModelsRefreshed,
   PluginsReload,
-);
+]);
 export const DaemonEvent = S.Struct({
-  sequence: S.NonNegativeInt,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
   event: EventPayload,
 });
 export type DaemonEvent = S.Schema.Type<typeof DaemonEvent>;
@@ -51,16 +51,18 @@ export interface EventBusService {
 }
 
 /** A slow observer must not suspend PTY publication or the mutation queue. */
-export class EventBus extends Effect.Service<EventBus>()("EventBus", {
-  effect: Effect.gen(function* () {
+export class EventBus extends Context.Service<EventBus>()("EventBus", {
+  make: Effect.gen(function* () {
     const pubsub = yield* PubSub.sliding<DaemonEvent>(EVENT_CAPACITY);
     let sequence = 1;
     return {
       publish: (event) =>
         PubSub.publish(pubsub, { sequence: sequence++, event }).pipe(Effect.asVoid),
       subscribe: () =>
-        PubSub.subscribe(pubsub).pipe(Effect.map((queue) => Stream.fromQueue(queue))),
+        PubSub.subscribe(pubsub).pipe(Effect.map((queue) => Stream.fromSubscription(queue))),
       shutdown: PubSub.shutdown(pubsub),
     } satisfies EventBusService;
   }),
-}) {}
+}) {
+  static readonly layer = Layer.effect(this, this.make);
+}

@@ -1,0 +1,5 @@
+id: effect-v3-schema-decode-unknown-to-effect
+language: TypeScript
+rule:
+  pattern: S.decodeUnknown($$$ARGS)
+fix: S.decodeUnknownEffect($$$ARGS)

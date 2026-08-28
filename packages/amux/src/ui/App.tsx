@@ -1,12 +1,13 @@
 /** @jsxImportSource @opentui/solid */
 import { Show } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import type { BoxRenderable } from "@opentui/core";
-import type { Anchor, DockSide, Regions } from "./regions.tsx";
+import type { Anchor, DockSide, RegionReader } from "./regions.tsx";
 
 export interface AppProps {
   /** Every panel on screen. The app declares them; this file only decides
    *  where a region lands and how big it is. */
-  regions: Regions;
+  regions: RegionReader;
   /** The imperative pane tree, adopted as a child so splits keep their own
    *  layout code and their cell-blitting renderables untouched. It is the one
    *  thing here that is not a panel: it is the mux, not a view of it. */
@@ -35,7 +36,6 @@ export function App(props: AppProps) {
    *  than covering the docks. */
   const paneLeft = () =>
     props.regions.thickness("left", "app") + props.regions.thickness("left", "center");
-  const Slot = props.regions.Slot;
 
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column" }}>
@@ -63,13 +63,19 @@ export function App(props: AppProps) {
 
       <Dock regions={props.regions} side="bottom" anchor="app" />
 
-      <Slot
+      <Dynamic
+        component={props.regions.Slot}
         name="float"
         left={paneLeft()}
         width={props.size.width - paneLeft()}
         height={props.size.height}
       />
-      <Slot name="overlay" width={props.size.width} height={props.size.height} />
+      <Dynamic
+        component={props.regions.Slot}
+        name="overlay"
+        width={props.size.width}
+        height={props.size.height}
+      />
     </box>
   );
 }
@@ -83,8 +89,7 @@ export function App(props: AppProps) {
  * comes back can leave its first border at the old sibling geometry for one
  * render.
  */
-function Dock(props: { regions: Regions; side: DockSide; anchor: Anchor }) {
-  const Slot = props.regions.Slot;
+function Dock(props: { regions: RegionReader; side: DockSide; anchor: Anchor }) {
   const across = () => props.side === "left" || props.side === "right";
   const size = () => props.regions.thickness(props.side, props.anchor);
 
@@ -99,7 +104,12 @@ function Dock(props: { regions: Regions; side: DockSide; anchor: Anchor }) {
           position: "relative",
         }}
       >
-        <Slot name={`${props.side}.${props.anchor}`} side={props.side} anchor={props.anchor} />
+        <Dynamic
+          component={props.regions.Slot}
+          name={`${props.side}.${props.anchor}`}
+          side={props.side}
+          anchor={props.anchor}
+        />
         {props.regions.divider(props.side, props.anchor)}
       </box>
     </Show>

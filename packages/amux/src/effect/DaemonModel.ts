@@ -72,13 +72,15 @@ export interface DaemonModelService {
   readonly updateState: (state: SessionState) => Effect.Effect<void>;
 }
 
-export class DaemonModel extends Context.Tag("DaemonModel")<DaemonModel, DaemonModelService>() {}
+export class DaemonModel extends Context.Service<DaemonModel, DaemonModelService>()(
+  "DaemonModel",
+) {}
 
 export const layerDaemonModel = (initial: {
   state: SessionState;
   workspace: WorkspaceSnapshot;
 }): Layer.Layer<DaemonModel, never, Scope.Scope> =>
-  Layer.scoped(
+  Layer.effect(
     DaemonModel,
     Effect.gen(function* () {
       const daemonRef = yield* Ref.make<DaemonState>({
@@ -99,7 +101,7 @@ export const layerDaemonModel = (initial: {
       const enqueue = <A, E>(effect: Effect.Effect<A, E, never>): Effect.Effect<A, E> =>
         Effect.gen(function* () {
           const done = yield* Deferred.make<A, E>();
-          yield* Queue.offer(mutationQueue, Effect.intoDeferred(effect, done).pipe(Effect.asVoid));
+          yield* Queue.offer(mutationQueue, Deferred.into(effect, done).pipe(Effect.asVoid));
           return yield* Deferred.await(done);
         });
 
@@ -128,7 +130,7 @@ export const layerDaemonModel = (initial: {
             attachments.set(connection, { client, attachedSince: now, attachLastSeen: now });
             const newState = { ...cur.state, attached: true, updatedAt: now };
             yield* onPersist(newState).pipe(
-              Effect.catchAll(
+              Effect.catch(
                 (error) =>
                   new DaemonModelError({
                     message: error instanceof Error ? error.message : String(error),
@@ -157,7 +159,7 @@ export const layerDaemonModel = (initial: {
               updatedAt: Date.now(),
             };
             yield* onPersist(newState).pipe(
-              Effect.catchAll(
+              Effect.catch(
                 (error) =>
                   new DaemonModelError({
                     message: error instanceof Error ? error.message : String(error),

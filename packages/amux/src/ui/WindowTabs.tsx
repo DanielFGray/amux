@@ -1,9 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show } from "solid-js";
-import { SPINNER_FRAMES } from "../detect.ts";
 import { ProcessState } from "../process-state.ts";
 import type { Window } from "../window.ts";
-import type { ProcessDisplay, ProcessDisplayResult } from "../plugin/process-display.ts";
+import type {
+  ProcessDisplayReader,
+  ProcessDisplayResult,
+} from "../plugin/process-display.ts";
 import type { AppState } from "./state.ts";
 import { theme } from "./theme.ts";
 import { formatText } from "../format.ts";
@@ -11,7 +13,7 @@ import { formatText } from "../format.ts";
 /** Most urgent display among a window's sessions — the tab-row equivalent of
  *  `space.ts`'s core `rollUp`, but over whatever richer vocabulary
  *  `processDisplay` derives (e.g. failed/detached), never a value core names. */
-function windowDisplay(window: Window, processDisplay: ProcessDisplay): ProcessDisplayResult {
+function windowDisplay(window: Window, processDisplay: ProcessDisplayReader): ProcessDisplayResult {
   let best: ProcessDisplayResult | undefined;
   for (const session of window.sessions) {
     const result = processDisplay.display({
@@ -34,7 +36,7 @@ function windowDisplay(window: Window, processDisplay: ProcessDisplay): ProcessD
  */
 export function WindowTabs(props: {
   app: AppState;
-  processDisplay: ProcessDisplay;
+  processDisplay: ProcessDisplayReader;
   windows: readonly Window[];
   active: Window | null;
   /** Key sequence in progress, e.g. ["^a"]. */
@@ -73,10 +75,9 @@ export function WindowTabs(props: {
         pane_current_command: session?.foregroundCommand,
         agent_state: display.label,
         agent_state_label: display.label,
-        agent_state_glyph:
-          window.state === ProcessState.Running
-            ? SPINNER_FRAMES[props.app.frame() % SPINNER_FRAMES.length]
-            : display.glyph,
+        agent_state_glyph: display.frames
+          ? display.frames[props.app.frame() % display.frames.length]
+          : display.glyph,
         scrolled: session?.scrolled,
         exited: session?.exited,
         viewers: session?.viewers,

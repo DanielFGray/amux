@@ -1,4 +1,4 @@
-import { Chunk, Effect, Stream } from "effect";
+import { Effect, Stream } from "effect";
 import { expect } from "bun:test";
 import { EventBus } from "./EventBus.ts";
 import { testEffect } from "../test-effect.ts";
@@ -30,7 +30,7 @@ testEffect("EventBus broadcasts events and releases subscriptions with scope", (
         event: { _tag: "session.state", session: "agent-1", state: "blocked" },
       },
     ]);
-  }).pipe(Effect.provide(EventBus.Default)),
+  }).pipe(Effect.provide(EventBus.layer)),
 );
 
 testEffect("EventBus uses sliding delivery rather than blocking publishers", () =>
@@ -43,12 +43,11 @@ testEffect("EventBus uses sliding delivery rather than blocking publishers", () 
         session: String(i),
         state: "working",
       });
-    const events = yield* Stream.runCollect(Stream.take(stream, 256));
-    const values = Chunk.toReadonlyArray(events);
+    const values = yield* Stream.runCollect(Stream.take(stream, 256));
     expect(values.length).toBe(256);
     expect(values[0]).toEqual({
       sequence: 45,
       event: { _tag: "session.state", session: "44", state: "working" },
     });
-  }).pipe(Effect.provide(EventBus.Default)),
+  }).pipe(Effect.provide(EventBus.layer)),
 );

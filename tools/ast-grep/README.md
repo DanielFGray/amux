@@ -198,6 +198,62 @@ The installed ast-grep CLI accepts `--lang` on `ast-grep run`, but not on
 `ast-grep scan` in this environment; use `ast-grep run` for a syntax rewrite
 and inspect its preview before adding `--update-all`.
 
+## Effect v4 Error-Handler Rename
+
+The direct v3-to-v4 rename from `Effect.catchAll` to `Effect.catch` is safe
+only when ast-grep can match the complete call expression. Preview it first:
+
+```bash
+ast-grep run --lang ts \
+  --pattern 'Effect.catchAll($HANDLER)' \
+  --rewrite 'Effect.catch($HANDLER)' \
+  packages --globs '**/*.ts' --globs '**/*.tsx'
+```
+
+In the Effect v4 migration this applied to 15 simple TypeScript call sites.
+It did not cover TSX or syntactically nested call shapes; keep those for a
+separate, reviewed pass rather than broadening the rule.
+
+The same complete-call approach safely handled `Effect.catchAllCause` →
+`Effect.catchCause`, `Effect.catchAllDefect` → `Effect.catchDefect`, and
+generic `Effect.async<T>` → `Effect.callback<T>`. Non-generic callback calls
+need their own preview pattern.
+
+## Effect v4 Import Relocation
+
+When an import map retains a module API, rewrite the entire import declaration
+and preserve its clause. This successfully moved the simple `FileSystem` and
+`PlatformError` imports to `effect/*`, and RPC imports to
+`effect/unstable/rpc/*`. Do not apply this to the old `@effect/platform`
+barrel when it imports several symbols: v4 splits that barrel by module, so
+those declarations must be reviewed and divided manually.
+
+`Context.Tag(id)<Self, Shape>()` has a uniform class-declaration rewrite to
+`Context.Service<Self, Shape>()(id)`. It applied to 28 source/test service
+definitions. Fixture source embedded in strings is not parsed by ast-grep and
+must be updated separately.
+
+## Reusable Effect v3 → v4 Suite
+
+The `effect-v3-*.yml` rules package mappings which are syntax-preserving across
+projects: `catchAll*`, `async`, `zipRight`, `Scope.extend`, interrupted-cause
+checks, class-style `Context.Tag`, and `Effect.gen(this, ...)`. Preview each rule separately against a
+small target first:
+
+```bash
+ast-grep scan --rule tools/ast-grep/rules/effect-v3-zip-right-to-and-then.yml src
+```
+
+Then inspect the generated diff before adding `--update-all`. The suite
+intentionally excludes `Effect.Service`, broad `@effect/platform` barrel
+imports, generic `Effect.gen(this, ...)`, and `Context.Tag` type annotations:
+their v4 replacements require project-specific structure or type review.
+
+The suite also includes exact barrel relocation rules for APIs that migrated
+as a unit, such as `@effect/ai` → `effect/unstable/ai` and the individual RPC
+modules. Keep provider packages such as `@effect/ai-anthropic` separate: they
+remain external packages in v4.
+
 ## State Constant Rewrite
 
 For a repeated property comparison, bind the receiver as a metavariable and

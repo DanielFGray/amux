@@ -1,0 +1,10 @@
+id: effect-v3-service-live-default-to-layer
+language: TypeScript
+rule:
+  pattern: $SVC.$PROP
+constraints:
+  SVC:
+    regex: '^(AgentLog|AttachClient|AttachHost|AttachHub|CurrentPlugin|DaemonModel|DetectorEvaluator|EventBus|Fetcher|Pool|RenderCtx|SessionId|SessionRegistry|SessionStore|SessionSupervisor|WorkspaceTransaction|WorkspaceTransactionEvents|WorkspaceTransactionLifecycle|WorkspaceTransactionPersistence|WorkspaceTransactionSessionOps|WorkspaceTransactionWorktreeOps)$'
+  PROP:
+    regex: '^(Live|Default)$'
+fix: $SVC.layer

@@ -7,7 +7,6 @@ import {
   Exit,
   Fiber,
   Layer,
-  Runtime,
   Schema as S,
   Schedule,
   Scope,
@@ -54,10 +53,7 @@ interface SessionOps {
     id: string,
     reason?: string,
   ) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly decide: (
-    id: string,
-    answer: PermissionAnswer,
-  ) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, WorkspaceTransactionError>;
 }
 
 interface SessionHost {
@@ -98,28 +94,30 @@ interface Lifecycle {
   readonly onEmpty: Effect.Effect<void>;
 }
 
-export class WorkspaceTransactionSessionOps extends Context.Tag("WorkspaceTransaction/SessionOps")<
+export class WorkspaceTransactionSessionOps extends Context.Service<
   WorkspaceTransactionSessionOps,
   SessionOps
->() {}
+>()("WorkspaceTransaction/SessionOps") {}
 
-export class WorkspaceTransactionWorktreeOps extends Context.Tag(
-  "WorkspaceTransaction/WorktreeOps",
-)<WorkspaceTransactionWorktreeOps, WorktreeOps>() {}
+export class WorkspaceTransactionWorktreeOps extends Context.Service<
+  WorkspaceTransactionWorktreeOps,
+  WorktreeOps
+>()("WorkspaceTransaction/WorktreeOps") {}
 
-export class WorkspaceTransactionPersistence extends Context.Tag(
-  "WorkspaceTransaction/Persistence",
-)<WorkspaceTransactionPersistence, Persistence>() {}
+export class WorkspaceTransactionPersistence extends Context.Service<
+  WorkspaceTransactionPersistence,
+  Persistence
+>()("WorkspaceTransaction/Persistence") {}
 
-export class WorkspaceTransactionEvents extends Context.Tag("WorkspaceTransaction/Events")<
+export class WorkspaceTransactionEvents extends Context.Service<
   WorkspaceTransactionEvents,
   Events
->() {}
+>()("WorkspaceTransaction/Events") {}
 
-export class WorkspaceTransactionLifecycle extends Context.Tag("WorkspaceTransaction/Lifecycle")<
+export class WorkspaceTransactionLifecycle extends Context.Service<
   WorkspaceTransactionLifecycle,
   Lifecycle
->() {}
+>()("WorkspaceTransaction/Lifecycle") {}
 
 export interface WorkspaceTransactionService {
   readonly run: (
@@ -138,10 +136,10 @@ export interface WorkspaceTransactionResult {
   readonly result?: AnyCommandResult;
 }
 
-export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()(
+export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>()(
   "WorkspaceTransaction",
   {
-    scoped: Effect.gen(function* () {
+    make: Effect.gen(function* () {
       const model = yield* DaemonModel;
       const sessionOps = yield* WorkspaceTransactionSessionOps;
       const worktreeOps = yield* WorkspaceTransactionWorktreeOps;
@@ -209,10 +207,10 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
               const killed = mutation.actions.filter((a) => a._tag === "kill").map((a) => a.agent);
 
               for (const agentId of killed) {
-                const exitRuntime = yield* Effect.runtime<never>();
+                const exitRuntime = yield* Effect.context<never>();
                 exitCommits.set(agentId, async (code) => {
-                  if (!(await Runtime.runPromise(exitRuntime)(Deferred.await(exitsSettled)))) {
-                    await Runtime.runPromise(exitRuntime)(onSessionExit(agentId, code));
+                  if (!(await Effect.runPromiseWith(exitRuntime)(Deferred.await(exitsSettled)))) {
+                    await Effect.runPromiseWith(exitRuntime)(onSessionExit(agentId, code));
                   }
                 });
               }
@@ -305,7 +303,9 @@ export class WorkspaceTransaction extends Effect.Service<WorkspaceTransaction>()
       return { run, onSessionExit } satisfies WorkspaceTransactionService;
     }),
   },
-) {}
+) {
+  static readonly layer = Layer.effect(this, this.make);
+}
 
 interface GitWorktreePlan {
   created: WorkspaceSpace["worktree"] | null;
@@ -401,8 +401,8 @@ export const makeWorktreeOps = (): Layer.Layer<WorkspaceTransactionWorktreeOps> 
 
 export const makePersistence = <PersistenceError>(
   persistFn: (state: SessionState) => Effect.Effect<void, PersistenceError>,
-  activeSaveRef: { current: Fiber.RuntimeFiber<void, WorkspaceTransactionError> | null },
-  scope: Scope.CloseableScope,
+  activeSaveRef: { current: Fiber.Fiber<void, WorkspaceTransactionError> | null },
+  scope: Scope.Closeable,
 ): Layer.Layer<WorkspaceTransactionPersistence, never, DaemonModel> =>
   Layer.effect(
     WorkspaceTransactionPersistence,
@@ -419,14 +419,16 @@ export const makePersistence = <PersistenceError>(
           // is closing must stop waiting for storage that is not coming back,
           // or teardown blocks on a fiber that will never settle.
           const retrySchedule = Schedule.exponential("10 millis").pipe(
-            Schedule.modifyDelay((_, duration) => Duration.min(duration, Duration.seconds(1))),
-            Schedule.tapInput((error) =>
+            Schedule.modifyDelay(({ duration }) =>
+              Effect.succeed(Duration.min(duration, Duration.seconds(1))),
+            ),
+            Schedule.tap(({ input: error }) =>
               model.updateObligation(
                 obligation,
                 `${reason} is waiting for durable storage: ${describe(error)}`,
               ),
             ),
-            Schedule.whileInputEffect(() => Effect.map(model.isClosing, (closing) => !closing)),
+            Schedule.while(() => Effect.map(model.isClosing, (closing) => !closing)),
           );
           const save = Effect.gen(function* () {
             if (yield* model.isClosing)

@@ -155,6 +155,35 @@ test("a mounted component pane reacts when its harness view is registered and re
   expect(t.captureCharFrame()).toContain("Pane type 'native' is unavailable.");
 });
 
+test("a mounted pane follows a replacement view and ignores its retired cleanup", async () => {
+  const { contributions, owner } = testContributor("harness");
+  const views = createSessionViews(contributions);
+  const { t, win } = await workspace(views.view);
+  const chat = run(win.startSession(componentSession("chat")));
+  win.mount(chat);
+
+  const first = views.register(owner, "native", () => <text>first harness</text>);
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("first harness");
+
+  const next = { id: owner.id, generation: owner.generation + 1 };
+  const second = views.register(next, "native", () => <text>second harness</text>);
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("first harness");
+
+  contributions.commit(next);
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("second harness");
+
+  first();
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("second harness");
+
+  second();
+  await draw(t);
+  expect(t.captureCharFrame()).toContain("Pane type 'native' is unavailable.");
+});
+
 test("a component leaf tiles as the exact rectangle the layout model says", async () => {
   const { t, win } = await workspace();
   const chat = run(win.startSession(componentSession("chat")));

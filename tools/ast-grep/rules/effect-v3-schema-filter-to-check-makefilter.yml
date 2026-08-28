@@ -1,0 +1,12 @@
+id: effect-v3-schema-filter-to-check-makefilter
+language: TypeScript
+message: Schema.filter was removed in v4; wrap a predicate filter with Schema.check(Schema.makeFilter(...)).
+rule:
+  pattern: S.filter($$$ARGS)
+  not:
+    inside:
+      kind: call_expression
+      has:
+        field: function
+        pattern: S.makeFilter
+fix: S.check(S.makeFilter($$$ARGS))

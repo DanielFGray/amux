@@ -44,7 +44,13 @@ test("an explicit --session wins over the legacy positional session", () => {
 test("--session is accepted by commands whose schema has no session field", () => {
   const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
   const result = Bun.spawnSync({
-    cmd: [process.execPath, "packages/amux/src/cli.ts", "pane.send-keys", "hello", "--session=no-such-daemon"],
+    cmd: [
+      process.execPath,
+      "packages/amux/src/cli.ts",
+      "pane.send-keys",
+      "hello",
+      "--session=no-such-daemon",
+    ],
     env,
   });
   // The flag selects the daemon, so the parser accepts it and the CLI only

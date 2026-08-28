@@ -147,9 +147,12 @@ test("generateHelp is non-empty", () => {
 test("group help derives command syntax from schemas", () => {
   expect(commandGroups()).toContain("agents");
   expect(generateGroupHelp("agents")).toContain(
-    "agent.prompt <target> <text> [--id=<id>] [--delivery=<steer|queue>] [--resume=<resume>] [--wait=<wait>] [--until=<idle|running|blocked|done>] [--timeout=<timeout>]",
+    "agent.prompt <target> <text> [--id=<id>] [--delivery=<steer|queue>] [--resume] [--wait] [--until=<idle|running|blocked|done>] [--timeout=<timeout>]",
   );
   expect(generateGroupHelp("panes")).toContain("pane.split <row|column> [--cwd=<cwd>]");
+  // A boolean is named, not assigned: `--current=<current>` would tell a reader
+  // to invent a value for a flag whose presence is the whole signal.
+  expect(generateGroupHelp("panes")).toContain("pane.zoom [--pane=<pane>] [--current]");
   expect(generateGroupHelp("missing")).toBeUndefined();
 });
 

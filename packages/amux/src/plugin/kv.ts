@@ -2,7 +2,7 @@ import { Schema as S } from "effect";
 import type { PluginKV, PluginKVKey } from "./types.ts";
 import type { JsonValue } from "../layout.ts";
 
-export const key = <T extends JsonValue>(name: string, schema: S.Schema<T>): PluginKVKey<T> => ({
+export const key = <T extends JsonValue>(name: string, schema: S.Codec<T>): PluginKVKey<T> => ({
   key: name,
   schema,
 });

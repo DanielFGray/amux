@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { Effect, Either, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import {
   COMMAND_DEFS,
   COMMAND_META,
@@ -72,10 +72,10 @@ test("a command can fail with a message the caller can read", () => {
   });
 
   const result = Effect.runSync(
-    Effect.either(commands.run(command("pane.send-keys", { keys: "'" }))),
+    Effect.result(commands.run(command("pane.send-keys", { keys: "'" }))),
   );
 
-  expect(Either.isLeft(result) && result.left.message).toBe("unterminated quote");
+  expect(Result.isFailure(result) && result.failure.message).toBe("unterminated quote");
 });
 
 test("the wire decodes into a command, and rejects one it cannot type", () => {
@@ -89,7 +89,7 @@ test("the wire decodes into a command, and rejects one it cannot type", () => {
   );
 
   const rejects = (input: { readonly _tag: string; readonly [key: string]: string | number }) =>
-    Either.isLeft(Effect.runSync(Effect.either(decodeCommand(input))));
+    Result.isFailure(Effect.runSync(Effect.result(decodeCommand(input))));
   expect(rejects({ _tag: "window.select", number: "two" })).toBe(true);
   expect(rejects({ _tag: "pane.split", axis: "diagonal" })).toBe(true);
   expect(rejects({ _tag: "pane.resize", direction: "diagonal" })).toBe(true);
@@ -100,7 +100,7 @@ test("the wire decodes into a command, and rejects one it cannot type", () => {
 
 test("the buffer verbs carry their stack arguments over the wire", () => {
   const rejects = (input: { readonly _tag: string; readonly [key: string]: string }) =>
-    Either.isLeft(Effect.runSync(Effect.either(decodeCommand(input))));
+    Result.isFailure(Effect.runSync(Effect.result(decodeCommand(input))));
   expect(Effect.runSync(decodeCommand({ _tag: "buffer.set", data: "x" }))).toEqual(
     command("buffer.set", { data: "x" }),
   );
@@ -217,8 +217,8 @@ test("every verb annotates its own description and is unique", () => {
 
   for (const def of COMMAND_DEFS) {
     expect(def.schema.ast.annotations).toMatchObject({
-      [Symbol.for("effect/annotation/Description")]: def.desc,
-      [Symbol.for("effect/annotation/Identifier")]: def.tag,
+      description: def.desc,
+      identifier: def.tag,
     });
     expect(def.desc.length).toBeGreaterThan(0);
     expect(COMMAND_META[def.tag]).toEqual({
@@ -256,10 +256,12 @@ test("agent tools are generated from the command definitions", () => {
     description: "capture the focused pane",
     parameters: {
       type: "object",
-      required: [],
       properties: { session: { type: "string" } },
     },
   });
+  // Every argument of `pane.capture` is optional, and a schema with nothing
+  // required omits the keyword rather than carrying an empty list.
+  expect(capture?.parameters).not.toHaveProperty("required");
 });
 
 /**
@@ -363,13 +365,13 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
 
   // Arguments are validated against the registered schema, not trusted as-is.
   const badArgs = Effect.runSync(
-    Effect.either(commands.run({ _tag: "plugin.agent-awareness.focus", target: 42 })),
+    Effect.result(commands.run({ _tag: "plugin.agent-awareness.focus", target: 42 })),
   );
-  expect(Either.isLeft(badArgs)).toBe(true);
+  expect(Result.isFailure(badArgs)).toBe(true);
 
   // A tag no one registered fails cleanly rather than throwing.
-  const missing = Effect.runSync(Effect.either(commands.run({ _tag: "plugin.nobody.nothing" })));
-  expect(Either.isLeft(missing)).toBe(true);
+  const missing = Effect.runSync(Effect.result(commands.run({ _tag: "plugin.nobody.nothing" })));
+  expect(Result.isFailure(missing)).toBe(true);
 
   // A tag another plugin already claimed is refused, not silently shadowed.
   expect(() =>
@@ -386,7 +388,7 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
   dispose();
   expect(commands.list().map((m) => m.name)).not.toContain("plugin.agent-awareness.focus");
   const afterDispose = Effect.runSync(
-    Effect.either(commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })),
+    Effect.result(commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })),
   );
-  expect(Either.isLeft(afterDispose)).toBe(true);
+  expect(Result.isFailure(afterDispose)).toBe(true);
 });

@@ -22,13 +22,13 @@ import {
 import { errorMessage } from "./error-message.ts";
 import {
   Clock,
+  Context,
   Deferred,
   Effect,
   Exit,
   Layer,
-  Option,
   Queue,
-  Runtime,
+  Random,
   Schedule,
   Scope,
   Stream,
@@ -70,10 +70,8 @@ const EXCLUDED_SESSION_FRAME_TAGS: Set<AttachFrame["_tag"]> = new Set([
   "resize",
   "sync",
   "agent.event",
-  "agent.prompt",
   // Client -> daemon -> worker stdin only; the daemon never emits it here.
-  "agent.interrupt",
-  "agent.permission",
+  "session.message",
   "error",
   "ping",
   "pong",
@@ -109,7 +107,11 @@ export interface AttachClientContract {
   /** Ordered daemon model generations, independent of terminal streams. */
   workspace(): Stream.Stream<WorkspaceSnapshot, never, never>;
   /** Plugin verbs the daemon is asking this client to run — see `respondCommand`. */
-  commandRequests(): Stream.Stream<{ readonly id: string; readonly command: JsonValue }, never, never>;
+  commandRequests(): Stream.Stream<
+    { readonly id: string; readonly command: JsonValue },
+    never,
+    never
+  >;
   respondCommand(id: string, result?: JsonValue, error?: string): void;
   input(session: string, data: string | Uint8Array): void;
   resize(session: string, cols: number, rows: number): void;
@@ -129,12 +131,12 @@ export interface AttachClientContract {
  * {@link AttachClientContract} plus the internal `_`-prefixed methods that the
  * Effect scope machinery calls during setup and teardown.
  *
- * `Effect.Service` cannot itself be the runtime instance because
- * `Effect.Service<T>()` produces a branded tag class whose constructor
+ * `Context.Service` cannot itself be the runtime instance because
+ * `Context.Service<T>()` produces a branded tag class whose constructor
  * expects a service key and identifier, not transport parameters. Two
  * objects that must be constructed differently cannot be the same class.
  * `AttachClientConnection` is the transport state class; the
- * `AttachClient` Effect.Service tag wraps it through the scoped factory.
+ * `AttachClient` service tag wraps it through the scoped factory.
  */
 class AttachClientConnection {
   readonly _tag = "AttachClient" as const;
@@ -142,7 +144,7 @@ class AttachClientConnection {
 
   private _closed = false;
   private readonly _recvBuffer = new AttachFrameAccumulator();
-  private readonly _runtime: Runtime.Runtime<never>;
+  private readonly _runtime: Context.Context<never>;
   private _handshake: { nonce: string; accept: () => void } | null;
   private readonly _closedSignal: Deferred.Deferred<void>;
   private _releaseScope: (() => void) | null = null;
@@ -179,7 +181,7 @@ class AttachClientConnection {
   constructor(
     client: string,
     socket: Bun.Socket<undefined>,
-    runtime: Runtime.Runtime<never>,
+    runtime: Context.Context<never>,
     handshake: { nonce: string; accept: () => void },
   ) {
     this.client = client;
@@ -203,7 +205,7 @@ class AttachClientConnection {
 
   stream(session: string): Stream.Stream<AttachFrame, never, never> {
     return Stream.unwrap(
-      Effect.gen(this, function* () {
+      Effect.gen({ self: this }, function* () {
         if (this._queued.get(session)?.terminal) this._queued.delete(session);
         const entry = this._entryFor(session);
         const queue = yield* Queue.bounded<AttachFrame>(QUEUE_LIMIT);
@@ -211,10 +213,10 @@ class AttachClientConnection {
         // subscriber's history — later ones join live and call sync() instead.
         for (const frame of entry.backlog.splice(0)) yield* Queue.offer(queue, frame);
         entry.queues.push(queue);
-        return Stream.unfoldEffect(false, (done) => {
-          if (done) return Effect.succeed(Option.none());
+        return Stream.unfold(false, (done) => {
+          if (done) return Effect.succeed(undefined);
           return Queue.take(queue).pipe(
-            Effect.map((frame) => Option.some([frame, frame._tag === "exit"] as const)),
+            Effect.map((frame) => [frame, frame._tag === "exit"] as const),
           );
         }).pipe(
           Stream.ensuring(
@@ -246,13 +248,19 @@ class AttachClientConnection {
 
   /** Commands the daemon is asking this client to run — a plugin verb the
    *  daemon cannot execute itself. Each one wants a matching {@link respondCommand}. */
-  commandRequests(): Stream.Stream<{ readonly id: string; readonly command: JsonValue }, never, never> {
+  commandRequests(): Stream.Stream<
+    { readonly id: string; readonly command: JsonValue },
+    never,
+    never
+  > {
     return Stream.fromQueue(this._commandQ);
   }
 
   respondCommand(id: string, result?: JsonValue, error?: string): void {
     const base = { _tag: "command.response" as const, id };
-    this._send(error !== undefined ? { ...base, error } : result !== undefined ? { ...base, result } : base);
+    this._send(
+      error !== undefined ? { ...base, error } : result !== undefined ? { ...base, result } : base,
+    );
   }
 
   input(session: string, data: string | Uint8Array): void {
@@ -308,7 +316,7 @@ class AttachClientConnection {
   }
 
   _heartbeatEffect(seconds: number): Effect.Effect<void> {
-    const beat = Effect.gen(this, function* () {
+    const beat = Effect.gen({ self: this }, function* () {
       this._send({ _tag: "ping", nonce: `beat-${yield* Clock.currentTimeMillis}` });
     });
     return beat.pipe(
@@ -382,7 +390,7 @@ class AttachClientConnection {
       return;
     }
     if (frame._tag === "command.request") {
-      this._commandQ.unsafeOffer({ id: frame.id, command: frame.command });
+      Queue.offerUnsafe(this._commandQ, { id: frame.id, command: frame.command });
       return;
     }
     if (frame._tag === "workspace") {
@@ -390,7 +398,7 @@ class AttachClientConnection {
         const workspace = Effect.runSync(parseWorkspaceJson(frame.state));
         if (workspace.revision !== frame.revision)
           throw new AttachError({ message: "workspace revision does not match frame" });
-        this._workspaceQ.unsafeOffer(workspace);
+        Queue.offerUnsafe(this._workspaceQ, workspace);
       } catch (error) {
         this._finish(
           error instanceof AttachError ? error : new AttachError({ message: errorMessage(error) }),
@@ -412,7 +420,7 @@ class AttachClientConnection {
     const overloaded =
       entry.queues.length === 0
         ? (entry.backlog.push(frame), entry.backlog.length > QUEUE_LIMIT)
-        : entry.queues.map((queue) => queue.unsafeOffer(frame)).includes(false);
+        : entry.queues.map((queue) => Queue.offerUnsafe(queue, frame)).includes(false);
     if (overloaded) {
       this._finish(new AttachError({ message: "attach receive queue is overloaded" }));
       this._socket.end();
@@ -423,7 +431,7 @@ class AttachClientConnection {
   }
 
   private _shutdownQueue<A>(queue: Queue.Queue<A>): void {
-    Runtime.runSync(this._runtime)(Queue.shutdown(queue));
+    Effect.runSyncWith(this._runtime)(Queue.shutdown(queue));
   }
 }
 
@@ -443,12 +451,11 @@ const makeScoped = (
 ): Effect.Effect<AttachClientConnection, AttachError, Scope.Scope> => {
   const helloTimeoutMs = options.helloTimeoutMs ?? HELLO_TIMEOUT_MS;
   return Effect.gen(function* () {
-    const rng = yield* Effect.random;
-    const n = yield* rng.next;
+    const n = yield* Random.next;
     const nonce = `hello-${n.toString(36).slice(2)}`;
-    return yield* Effect.runtime<never>().pipe(
+    return yield* Effect.context<never>().pipe(
       Effect.flatMap((runtime) => {
-        const acquire = Effect.async<AttachClientConnection, AttachError>((resume) => {
+        const acquire = Effect.callback<AttachClientConnection, AttachError>((resume) => {
           let attached: AttachClientConnection | null = null;
           let socketRef: Bun.Socket<undefined> | null = null;
           let settled = false;
@@ -523,14 +530,15 @@ const makeScoped = (
             socketRef?.end();
           });
         }).pipe(
-          Effect.timeoutFail({
+          Effect.timeoutOrElse({
             duration: helloTimeoutMs,
-            onTimeout: () => new AttachError({ message: `attach to ${options.path} timed out` }),
+            orElse: () =>
+              Effect.fail(new AttachError({ message: `attach to ${options.path} timed out` })),
           }),
         );
 
         let acquired: AttachClientConnection | null = null;
-        return Effect.acquireReleaseInterruptible(
+        return Effect.acquireRelease(
           acquire.pipe(
             Effect.tap((client) =>
               Effect.sync(() => {
@@ -539,6 +547,7 @@ const makeScoped = (
             ),
           ),
           () => Effect.sync(() => acquired?.close()),
+          { interruptible: true },
         ).pipe(
           Effect.tap((client) =>
             client._heartbeatEffect(options.pingSeconds ?? PING_SECONDS).pipe(Effect.forkScoped),
@@ -549,15 +558,15 @@ const makeScoped = (
   });
 };
 
-/** Effect.Service tag. The scoped factory creates
+/** Service tag. The scoped factory creates
  *  {@link AttachClientConnection} instances that own the socket and transport
  *  state. The socket is acquired and released with the layer, so a client
  *  cannot outlive the scope that owns its attachment. */
-export class AttachClient extends Effect.Service<AttachClient>()("AttachClient", {
-  scoped: (options: AttachClientOptions) => makeScoped(options),
+export class AttachClient extends Context.Service<AttachClient>()("AttachClient", {
+  make: (options: AttachClientOptions) => makeScoped(options),
 }) {
   static layer(options: AttachClientOptions) {
-    return Layer.scoped(AttachClient, makeScoped(options));
+    return Layer.effect(AttachClient, makeScoped(options));
   }
 
   /** Promise adapter used by the SessionClient constructor. New callers should
@@ -570,9 +579,9 @@ export class AttachClient extends Effect.Service<AttachClient>()("AttachClient",
           Effect.provideService(Scope.Scope, scope),
           Effect.tapError(() => Scope.close(scope, Exit.void)),
         );
-        const runtime = yield* Effect.runtime<never>();
+        const runtime = yield* Effect.context<never>();
         client._setScopeRelease(() => {
-          void Runtime.runPromise(runtime)(Scope.close(scope, Exit.void));
+          void Effect.runPromiseWith(runtime)(Scope.close(scope, Exit.void));
         });
         return client;
       }),

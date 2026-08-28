@@ -1,0 +1,7 @@
+id: effect-v3-http-body-unsafe-json-to-json-unsafe
+language: TypeScript
+message: HttpBody.unsafeJson became HttpBody.jsonUnsafe in Effect v4.
+severity: warning
+rule:
+  pattern: HttpBody.unsafeJson
+fix: HttpBody.jsonUnsafe

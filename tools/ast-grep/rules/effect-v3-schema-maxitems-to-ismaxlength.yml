@@ -1,0 +1,6 @@
+id: effect-v3-schema-maxitems-to-ismaxlength
+language: TypeScript
+message: Schema.maxItems was renamed to Schema.isMaxLength in v4 and must be wrapped in Schema.check.
+rule:
+  pattern: S.maxItems($$$ARGS)
+fix: S.check(S.isMaxLength($$$ARGS))

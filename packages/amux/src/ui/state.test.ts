@@ -9,7 +9,7 @@ import { waitFor } from "../test-wait.ts";
 function scopedRunner() {
   const scope = Effect.runSync(Scope.make());
   const run = Effect.runSync(
-    Scope.extend(
+    Scope.provide(
       Effect.gen(function* () {
         const fibers = yield* FiberMap.make<string>();
         return yield* FiberMap.runtime(fibers)<never>();
@@ -148,7 +148,7 @@ test("model projection starts in stream order and stops with the scope", async (
   const projected: number[] = [];
   const models = Stream.concat(
     Stream.make(1),
-    Stream.repeatEffect(Effect.sleep("15 millis").pipe(Effect.as(2))),
+    Stream.fromEffectRepeat(Effect.sleep("15 millis").pipe(Effect.as(2))),
   );
   fibers.run(
     "workspace-models",

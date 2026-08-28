@@ -169,7 +169,7 @@ export function coerceOption(
 ): OptionValue | undefined {
   switch (spec.kind) {
     case "number":
-      return Option.match(S.decodeUnknownOption(S.Number.pipe(S.finite()))(raw), {
+      return Option.match(S.decodeUnknownOption(S.Number.pipe(S.check(S.isFinite())))(raw), {
         onNone: () => undefined,
         onSome: (value) => clamp(spec, Math.floor(value)),
       });

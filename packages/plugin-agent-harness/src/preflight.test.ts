@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Effect, Either, Layer } from "effect";
+import { Effect, Layer, Result } from "effect";
 import { agentPreflight } from "./preflight.ts";
 import { Service as Integration, type Interface as IntegrationService } from "./integration.ts";
 import {
@@ -54,7 +54,7 @@ function preflight(
   options: { connected?: Record<string, boolean>; catalog?: Record<string, Model> } = {},
 ) {
   return Effect.runPromise(
-    Effect.either(
+    Effect.result(
       agentPreflight(reference).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -72,12 +72,12 @@ function preflight(
 
 async function refusal(reference: string, options?: Parameters<typeof preflight>[1]) {
   const result = await preflight(reference, options);
-  if (Either.isRight(result)) throw new Error(`expected '${reference}' to be refused`);
-  return result.left.message;
+  if (Result.isSuccess(result)) throw new Error(`expected '${reference}' to be refused`);
+  return result.failure.message;
 }
 
 test("a connected provider offering the model passes", async () => {
-  expect(Either.isRight(await preflight("openai/gpt-4o-mini"))).toBe(true);
+  expect(Result.isSuccess(await preflight("openai/gpt-4o-mini"))).toBe(true);
 });
 
 test.each([["invalid"], ["openai/"], ["/gpt-4o"]])(

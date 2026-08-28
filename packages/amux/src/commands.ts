@@ -1,5 +1,7 @@
-import { Cause, Effect, Exit, JSONSchema, ParseResult, Schema as S } from "effect";
-import { JsonValueSchema } from "./effect/AttachProtocol.ts";
+import { Cause, Effect, Exit, JsonSchema, Schema as S, SchemaIssue } from "effect";
+
+const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
+import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import { LAYOUT_PRESETS } from "./layout.ts";
 import { PermissionDecisionSchema } from "./permission.ts";
 import { ProcessStateSchema } from "./process-state.ts";
@@ -70,14 +72,14 @@ export interface Meta {
   readonly exposure: CommandExposure;
 }
 
-type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.Schema.All, R> = {
+type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.Top, R> = {
   readonly tag: T;
   readonly desc: string;
   readonly group: string;
   readonly target: CommandTarget;
   readonly exposure: CommandExposure;
   readonly argumentFields: Fields;
-  readonly arguments: S.Schema<any, any, unknown>;
+  readonly arguments: S.Codec<any>;
   readonly schema: Sch;
   readonly result: R;
 };
@@ -91,7 +93,7 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
   Tag,
   Fields,
   ReturnType<typeof S.TaggedStruct<Tag, Fields>>,
-  R extends S.Schema.All ? R : typeof S.Void
+  R extends S.Top ? R : typeof S.Void
 > => ({
   tag,
   desc: meta.desc,
@@ -99,11 +101,11 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
   target: meta.target,
   exposure: meta.exposure,
   argumentFields: fields,
-  schema: S.TaggedStruct(tag, fields).annotations({
+  schema: S.TaggedStruct(tag, fields).annotate({
     identifier: tag,
     description: meta.desc,
   }) as any,
-  arguments: S.Struct(fields),
+  arguments: S.Struct(fields) as any,
   result: (result ?? S.Void) as any,
 });
 
@@ -115,9 +117,9 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
  * row, and before commands took arguments that was a second copy of
  * agent.kill / window.close / space.close aimed somewhere else.
  */
-const Space = { space: S.optional(S.String) };
-const Window = { ...Space, window: S.optional(S.Int) };
-const SessionTarget = { session: S.optional(S.String) };
+const Space = { space: S.optionalKey(S.String) };
+const Window = { ...Space, window: S.optionalKey(S.Int) };
+const SessionTarget = { session: S.optionalKey(S.String) };
 
 /**
  * Where a pane command acts: a named pane, the caller's own pane (resolved
@@ -126,17 +128,17 @@ const SessionTarget = { session: S.optional(S.String) };
  * surface and every other surface inherit the target.
  */
 const PaneTarget = {
-  pane: S.optional(S.String.pipe(S.minLength(1))),
-  current: S.optional(S.Boolean),
+  pane: S.optionalKey(S.String.pipe(S.check(S.isMinLength(1)))),
+  current: S.optionalKey(S.Boolean),
 };
 
-const Axis = S.Literal("row", "column");
-const Direction = S.Literal("left", "right", "up", "down");
+const Axis = S.Literals(["row", "column"]);
+const Direction = S.Literals(["left", "right", "up", "down"]);
 
 // Panes.
 const PaneSplit = define(
   "pane.split",
-  { axis: Axis, cwd: S.optional(S.String), ...PaneTarget },
+  { axis: Axis, cwd: S.optionalKey(S.String), ...PaneTarget },
   {
     desc: "split the focused pane",
     group: "panes",
@@ -257,7 +259,7 @@ const PaneUndock = define(
 );
 const PaneSwap = define(
   "pane.swap",
-  { to: S.Literal("previous", "next"), ...PaneTarget },
+  { to: S.Literals(["previous", "next"]), ...PaneTarget },
   {
     desc: "swap the focused pane with its neighbour",
     group: "panes",
@@ -287,7 +289,7 @@ const PaneBreak = define(
 );
 const PaneJoin = define(
   "pane.join",
-  { source: S.optional(S.Int), ...PaneTarget },
+  { source: S.optionalKey(S.Int), ...PaneTarget },
   {
     desc: "join a pane from another window into the focused window",
     group: "panes",
@@ -332,7 +334,7 @@ const PaneSendKeys = define(
 // a daemon-side terminal capture: pane.capture's result is the text.
 const PaneCapture = define(
   "pane.capture",
-  { session: S.optional(S.String), ...PaneTarget },
+  { session: S.optionalKey(S.String), ...PaneTarget },
   {
     desc: "capture the focused pane",
     group: "panes",
@@ -394,7 +396,7 @@ const PaneCopyMode = define(
 // pure server operations and therefore scriptable.
 const BufferSet = define(
   "buffer.set",
-  { name: S.optional(S.String), data: S.String },
+  { name: S.optionalKey(S.String), data: S.String },
   {
     desc: "set a paste buffer (a copy pushes onto the stack automatically)",
     group: "buffers",
@@ -405,7 +407,7 @@ const BufferSet = define(
 );
 const BufferPaste = define(
   "buffer.paste",
-  { name: S.optional(S.String) },
+  { name: S.optionalKey(S.String) },
   {
     desc: "paste the top paste buffer into the focused pane",
     group: "buffers",
@@ -426,7 +428,7 @@ const BufferList = define(
 );
 const BufferDelete = define(
   "buffer.delete",
-  { name: S.optional(S.String) },
+  { name: S.optionalKey(S.String) },
   {
     desc: "delete the top paste buffer (or a named one)",
     group: "buffers",
@@ -436,7 +438,7 @@ const BufferDelete = define(
 );
 const BufferShow = define(
   "buffer.show",
-  { name: S.optional(S.String) },
+  { name: S.optionalKey(S.String) },
   {
     desc: "show a paste buffer's contents",
     group: "buffers",
@@ -536,7 +538,7 @@ const WindowNextLayout = define(
 );
 const WindowSelectLayout = define(
   "window.select-layout",
-  { preset: S.Literal(...LAYOUT_PRESETS) },
+  { preset: S.Literals([...LAYOUT_PRESETS]) },
   {
     desc: "arrange panes in a preset layout",
     group: "windows",
@@ -573,17 +575,24 @@ const SessionKill = define("session.kill", SessionTarget, {
   target: "workspace",
   exposure: "agent",
 });
+/** Opaque control payload for a plugin-owned component session. The daemon
+ * orders and routes it; interpreting it is the component's responsibility. */
+const SessionMessage = define(
+  "session.message",
+  { target: S.String, message: JsonValueSchema },
+  { desc: "send a control message to a component session", group: "sessions", target: "session", exposure: "agent" },
+);
 const AgentPrompt = define(
   "agent.prompt",
   {
     target: S.String,
     text: S.String,
-    id: S.optional(S.String),
-    delivery: S.optional(S.Literal("steer", "queue")),
-    resume: S.optional(S.Boolean),
-    wait: S.optional(S.Boolean),
-    until: S.optional(ProcessStateSchema),
-    timeout: S.optional(S.NonNegativeInt),
+    id: S.optionalKey(S.String),
+    delivery: S.optionalKey(S.Literals(["steer", "queue"])),
+    resume: S.optionalKey(S.Boolean),
+    wait: S.optionalKey(S.Boolean),
+    until: S.optionalKey(ProcessStateSchema),
+    timeout: S.optionalKey(S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))),
   },
   {
     desc: "send a prompt to an agent",
@@ -594,7 +603,10 @@ const AgentPrompt = define(
 );
 const AgentWatch = define(
   "agent.watch",
-  { target: S.String, after: S.optional(S.NonNegativeInt) },
+  {
+    target: S.String,
+    after: S.optionalKey(S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))),
+  },
   {
     desc: "stream durable agent events from a replay cursor",
     group: "agents",
@@ -608,7 +620,7 @@ const AgentPermission = define(
     ...SessionTarget,
     request: S.String,
     decision: PermissionDecisionSchema,
-    feedback: S.optional(S.String),
+    feedback: S.optionalKey(S.String),
   },
   {
     desc: "answer an agent's permission request",
@@ -641,7 +653,7 @@ const AgentGet = define(
 );
 const AgentInterrupt = define(
   "agent.interrupt",
-  { ...SessionTarget, reason: S.optional(S.String) },
+  { ...SessionTarget, reason: S.optionalKey(S.String) },
   {
     desc: "interrupt an agent turn",
     group: "agents",
@@ -664,8 +676,8 @@ const Notify = define(
 const AgentNew = define(
   "agent.new",
   {
-    provider: S.optional(S.String.pipe(S.minLength(1))),
-    prompt: S.optional(S.String),
+    provider: S.optionalKey(S.String.pipe(S.check(S.isMinLength(1)))),
+    prompt: S.optionalKey(S.String),
   },
   {
     desc: "start a coding agent",
@@ -706,10 +718,10 @@ const SessionNextBlocked = define(
 const SpaceNew = define(
   "space.new",
   {
-    name: S.optional(S.String),
-    dir: S.optional(S.String),
-    branch: S.optional(S.String),
-    base: S.optional(S.String),
+    name: S.optionalKey(S.String),
+    dir: S.optionalKey(S.String),
+    branch: S.optionalKey(S.String),
+    base: S.optionalKey(S.String),
   },
   {
     desc: "new space",
@@ -793,7 +805,7 @@ const SpaceList = define(
  */
 const ConfigSet = define(
   "config.set",
-  { name: S.String, value: S.Union(S.String, S.Number, S.Boolean) },
+  { name: S.String, value: S.Union([S.String, S.Number, S.Boolean]) },
   { desc: "set an option", group: "config", target: "view", exposure: "human" },
 );
 const ConfigToggle = define(
@@ -837,7 +849,7 @@ const ConfigReset = define(
  */
 const PluginReload = define(
   "plugin.reload",
-  { plugin: S.optional(S.String) },
+  { plugin: S.optionalKey(S.String) },
   {
     desc: "load a plugin's source again; all of them if none is named",
     group: "plugins",
@@ -970,6 +982,7 @@ export const COMMAND_DEFS = [
   AgentGet,
   Notify,
   SessionKill,
+  SessionMessage,
   SessionRestart,
   SessionReveal,
   SessionNextBlocked,
@@ -997,7 +1010,8 @@ export const COMMAND_DEFS = [
 export type AgentToolDefinition = {
   readonly name: CommandTag;
   readonly description: string;
-  readonly parameters: ReturnType<typeof JSONSchema.make>;
+  /** A single self-contained JSON Schema, which is what a tool call declares. */
+  readonly parameters: JsonSchema.JsonSchema;
 };
 
 /** Generate the model-facing tool surface from the command declarations. */
@@ -1005,8 +1019,20 @@ export function agentToolDefinitions(): readonly AgentToolDefinition[] {
   return COMMAND_DEFS.filter((def) => def.exposure === "agent").map((def) => ({
     name: def.tag,
     description: def.desc,
-    parameters: JSONSchema.make(def.arguments),
+    parameters: toolParameters(def.arguments),
   }));
+}
+
+/**
+ * A schema document splits the root from the definitions it references, but a
+ * tool call carries one object. Fold the pool back in under `$defs`, which is
+ * where the document's own `#/$defs/...` references already point.
+ */
+function toolParameters(schema: S.Top): JsonSchema.JsonSchema {
+  const document = S.toJsonSchemaDocument(schema);
+  return Object.keys(document.definitions).length === 0
+    ? document.schema
+    : { ...document.schema, $defs: document.definitions };
 }
 
 export function commandDefinition(tag: CommandTag) {
@@ -1023,7 +1049,7 @@ type CommandDefs = typeof COMMAND_DEFS;
  * A member that is not in COMMAND_DEFS is not in the union and has no handler,
  * so there is no way to declare a verb and forget to expose it.
  */
-export const Command = S.Union(...COMMAND_DEFS.map((def) => def.schema));
+export const Command = S.Union(COMMAND_DEFS.map((def) => def.schema));
 export type Command = typeof Command.Type;
 export type CommandTag = Command["_tag"];
 
@@ -1047,7 +1073,7 @@ export const command = <T extends CommandTag>(
 ): Command => ({ _tag: tag, ...args[0] }) as Command;
 
 /** Decode a command off the wire — the socket and the CLI in ts-14b665. */
-export const decodeCommand = S.decodeUnknown(Command);
+export const decodeCommand = S.decodeUnknownEffect(Command);
 
 /**
  * What a command is, for the palette, the help, and the agent tool surface.
@@ -1096,7 +1122,7 @@ export type CommandHandlerTable = Readonly<
 
 /** A command value arriving at runtime under a tag the compiler has never seen
  *  — a plugin verb, or one read off the wire before it is known to exist. */
-export type RuntimeCommand = { readonly _tag: string } & Record<string, unknown>;
+export type RuntimeCommand = { readonly _tag: string } & Record<string, JsonValue>;
 
 /**
  * The wire shape of a plugin verb: `Command` is a closed compile-time union,
@@ -1106,9 +1132,9 @@ export type RuntimeCommand = { readonly _tag: string } & Record<string, unknown>
  * does not recognise is worth forwarding to an attached client rather than
  * rejecting outright.
  */
-export const RuntimeCommandSchema = S.Struct(
-  { _tag: S.String.pipe(S.pattern(/^plugin\./)) },
-  S.Record({ key: S.String, value: JsonValueSchema }),
+export const RuntimeCommandSchema = S.StructWithRest(
+  S.Struct({ _tag: S.String.pipe(S.check(S.isPattern(/^plugin\./))) }),
+  [S.Record(S.String, JsonValueSchema)],
 );
 
 /** A plugin verb, as registered: the same `desc`/`group`/`target`/`exposure`
@@ -1117,7 +1143,7 @@ export const RuntimeCommandSchema = S.Struct(
  *  table) because a plugin has no compile-time union to be total over. */
 interface PluginCommandEntry {
   readonly meta: CommandMeta;
-  readonly schema: S.Schema<any, any, unknown>;
+  readonly schema: S.Codec<any>;
   readonly handler: (args: any) => Effect.Effect<unknown, CommandError>;
 }
 
@@ -1171,7 +1197,7 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
   const registerCommand: Commands["registerCommand"] = (pluginId, verb, fields, meta, handler) => {
     const tag = `plugin.${pluginId}.${verb}`;
     if (metaFor(tag)) throw new Error(`command already registered: ${tag}`);
-    const schema = S.TaggedStruct(tag, fields).annotations({
+    const schema = S.TaggedStruct(tag, fields).annotate({
       identifier: tag,
       description: meta.desc,
     });
@@ -1183,7 +1209,7 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
         target: meta.target,
         exposure: meta.exposure,
       },
-      schema,
+      schema: schema as any,
       handler,
     });
     return () => {
@@ -1201,11 +1227,11 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
       const plugin = pluginCommands.get(command._tag);
       if (!plugin)
         return Effect.fail(new CommandError({ message: `unknown command: ${command._tag}` }));
-      return S.decodeUnknown(plugin.schema)(command).pipe(
+      return S.decodeUnknownEffect(plugin.schema)(command).pipe(
         Effect.mapError(
           (error) =>
             new CommandError({
-              message: `${command._tag}: ${ParseResult.TreeFormatter.formatErrorSync(error)}`,
+              message: `${command._tag}: ${formatSchemaIssue(error.issue)}`,
             }),
         ),
         Effect.flatMap(plugin.handler),
@@ -1259,7 +1285,7 @@ export function runDetached(
   onError?: (message: string) => void,
 ): void {
   Effect.runFork(Effect.asVoid(effect)).addObserver((exit) => {
-    if (Exit.isSuccess(exit) || Cause.isInterruptedOnly(exit.cause)) return;
+    if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
     const message = `command ${label} failed: ${Cause.pretty(exit.cause)}`;
     console.error(message);
     onError?.(message);
@@ -1306,6 +1332,7 @@ export const Commands = {
   WindowList,
   Notify,
   SessionKill,
+  SessionMessage,
   SessionRestart,
   SessionReveal,
   SessionNextBlocked,

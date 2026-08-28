@@ -21,7 +21,7 @@
  * either, and a headless window is the two of them together.
  */
 
-import { Effect, ParseResult, Schema as S } from "effect";
+import { Effect, Schema as S, SchemaIssue } from "effect";
 import type { SplitDirection } from "./window.ts";
 import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts";
 
@@ -628,7 +628,7 @@ export const LAYOUT_PRESETS = [
 
 export type LayoutPreset = (typeof LAYOUT_PRESETS)[number];
 
-const LayoutPresetSchema = S.Literal(...LAYOUT_PRESETS);
+const LayoutPresetSchema = S.Literals([...LAYOUT_PRESETS]);
 export function isLayoutPreset(value: string | null): value is LayoutPreset {
   return S.is(LayoutPresetSchema)(value);
 }
@@ -784,69 +784,71 @@ export class LayoutFormatError extends S.TaggedError<LayoutFormatError>()("Layou
   message: S.String,
 }) {}
 
-const paneId = S.String.pipe(S.minLength(1)).annotations({ message: () => "pane needs a pane id" });
-const sessionId = S.String.pipe(S.minLength(1)).annotations({
-  message: () => "content needs a session id",
+const paneId = S.String.pipe(S.check(S.isMinLength(1))).annotate({
+  message: "pane needs a pane id",
+});
+const sessionId = S.String.pipe(S.check(S.isMinLength(1))).annotate({
+  message: "content needs a session id",
 });
 // A plugin pane's descriptor is opaque JSON the plugin validates; layout only
 // carries it. Bounded by ts-a4e25e, which also defines what a pane type may put
 // in it — here a value has to be JSON-shaped, and S.Unknown admits it.
-export const PaneContentSchema: S.Schema<PaneContent> = S.Union(
+export const PaneContentSchema: S.Codec<PaneContent> = S.Union([
   S.Struct({
-    kind: S.Literal("pty"),
-    session: S.propertySignature(sessionId).annotations({
-      missingMessage: () => "pty content needs a session id",
-    }),
+    kind: S.Literals(["pty"]),
+    session: sessionId.pipe(S.annotateKey({ messageMissingKey: "pty content needs a session id" })),
   }),
   S.Struct({
-    kind: S.Literal("plugin"),
-    type: S.propertySignature(S.String.pipe(S.minLength(1))).annotations({
-      missingMessage: () => "plugin content needs a pane type",
-    }),
-    descriptor: S.propertySignature(S.Unknown).annotations({
-      missingMessage: () => "plugin content needs a descriptor",
-    }),
+    kind: S.Literals(["plugin"]),
+    type: S.String.pipe(S.check(S.isMinLength(1))).pipe(
+      S.annotateKey({ messageMissingKey: "plugin content needs a pane type" }),
+    ),
+    descriptor: S.Unknown.pipe(
+      S.annotateKey({ messageMissingKey: "plugin content needs a descriptor" }),
+    ),
     session: S.optional(sessionId),
   }),
-) as S.Schema<PaneContent>;
+]) as S.Codec<PaneContent>;
 const weight = S.Number.pipe(
-  S.finite(),
-  S.positive({ message: () => "weight must be a positive number" }),
+  S.check(S.isFinite()),
+  S.check(S.isGreaterThan(0, { message: "weight must be a positive number" })),
 );
-const origin = S.Number.pipe(S.finite(), S.greaterThanOrEqualTo(0), S.lessThan(1)).annotations({
-  message: () => "must be a fraction of the window",
+const origin = S.Number.pipe(
+  S.check(S.isFinite()),
+  S.check(S.isGreaterThanOrEqualTo(0)),
+  S.check(S.isLessThan(1)),
+).annotate({
+  message: "must be a fraction of the window",
 });
 const size = S.Number.pipe(
-  S.finite(),
-  S.positive({ message: () => "must be a fraction of the window" }),
-  S.lessThanOrEqualTo(1, { message: () => "must be a fraction of the window" }),
+  S.check(S.isFinite()),
+  S.check(S.isGreaterThan(0, { message: "must be a fraction of the window" })),
+  S.check(S.isLessThanOrEqualTo(1, { message: "must be a fraction of the window" })),
 );
 
 const LayoutPaneSchema = S.Struct({
-  type: S.Literal("pane"),
-  content: S.propertySignature(PaneContentSchema).annotations({
-    missingMessage: () => "pane needs content",
-  }),
-  id: S.propertySignature(paneId).annotations({ missingMessage: () => "pane needs a pane id" }),
-  weight: S.optionalWith(weight, { default: () => 1 }),
+  type: S.Literals(["pane"]),
+  content: PaneContentSchema.pipe(S.annotateKey({ messageMissingKey: "pane needs content" })),
+  id: paneId.pipe(S.annotateKey({ messageMissingKey: "pane needs a pane id" })),
+  weight: weight.pipe(S.withDecodingDefaultType(Effect.succeed(1))),
 });
 
 // The recursive schema's array is readonly and its optional field encoding does
 // not match the mutable, defaulted public node model, so the boundary cast is
 // required to use the decoded value as LayoutNode.
-const LayoutNodeSchema = S.Union(
+const LayoutNodeSchema = S.Union([
   LayoutPaneSchema,
   S.Struct({
-    type: S.Literal("split"),
-    direction: S.Literal("row", "column").annotations({
-      message: () => 'split needs direction "row" or "column"',
+    type: S.Literals(["split"]),
+    direction: S.Literals(["row", "column"]).annotate({
+      message: 'split needs direction "row" or "column"',
     }),
-    weight: S.optionalWith(weight, { default: () => 1 }),
-    children: S.Array(S.suspend((): S.Schema<LayoutNode> => LayoutNodeSchema))
-      .pipe(S.minItems(1))
-      .annotations({ message: () => "split needs children" }),
+    weight: weight.pipe(S.withDecodingDefaultType(Effect.succeed(1))),
+    children: S.Array(S.suspend((): S.Codec<LayoutNode> => LayoutNodeSchema))
+      .pipe(S.check(S.isMinLength(1)))
+      .annotate({ message: "split needs children" }),
   }),
-) as S.Schema<LayoutNode>;
+]) as S.Codec<LayoutNode>;
 
 const LayoutSchema = S.Struct({
   version: S.Number,
@@ -854,12 +856,10 @@ const LayoutSchema = S.Struct({
   floats: S.optional(
     S.Array(
       S.Struct({
-        id: S.propertySignature(paneId).annotations({
-          missingMessage: () => "float needs a pane id",
-        }),
-        content: S.propertySignature(PaneContentSchema).annotations({
-          missingMessage: () => "float needs content",
-        }),
+        id: paneId.pipe(S.annotateKey({ messageMissingKey: "float needs a pane id" })),
+        content: PaneContentSchema.pipe(
+          S.annotateKey({ messageMissingKey: "float needs content" }),
+        ),
         x: origin,
         y: origin,
         width: size,
@@ -872,32 +872,32 @@ const LayoutSchema = S.Struct({
       left: S.optional(
         S.Array(
           S.Struct({
-            id: S.propertySignature(paneId),
-            content: S.propertySignature(PaneContentSchema),
+            id: paneId,
+            content: PaneContentSchema,
           }),
         ),
       ),
       right: S.optional(
         S.Array(
           S.Struct({
-            id: S.propertySignature(paneId),
-            content: S.propertySignature(PaneContentSchema),
+            id: paneId,
+            content: PaneContentSchema,
           }),
         ),
       ),
       top: S.optional(
         S.Array(
           S.Struct({
-            id: S.propertySignature(paneId),
-            content: S.propertySignature(PaneContentSchema),
+            id: paneId,
+            content: PaneContentSchema,
           }),
         ),
       ),
       bottom: S.optional(
         S.Array(
           S.Struct({
-            id: S.propertySignature(paneId),
-            content: S.propertySignature(PaneContentSchema),
+            id: paneId,
+            content: PaneContentSchema,
           }),
         ),
       ),
@@ -905,10 +905,10 @@ const LayoutSchema = S.Struct({
   ),
   dockSizes: S.optional(
     S.Struct({
-      left: S.optional(S.Int.pipe(S.greaterThan(1))),
-      right: S.optional(S.Int.pipe(S.greaterThan(1))),
-      top: S.optional(S.Int.pipe(S.greaterThan(1))),
-      bottom: S.optional(S.Int.pipe(S.greaterThan(1))),
+      left: S.optional(S.Int.pipe(S.check(S.isGreaterThan(1)))),
+      right: S.optional(S.Int.pipe(S.check(S.isGreaterThan(1)))),
+      top: S.optional(S.Int.pipe(S.check(S.isGreaterThan(1)))),
+      bottom: S.optional(S.Int.pipe(S.check(S.isGreaterThan(1)))),
     }),
   ),
   focus: S.optional(paneId),
@@ -970,31 +970,40 @@ function order(node: LayoutNode | null): LayoutNode | null {
 export function decodeLayout(text: string): Effect.Effect<Layout, LayoutFormatError> {
   if (Buffer.byteLength(text) > MAX_LAYOUT_BYTES)
     return Effect.fail(new LayoutFormatError({ message: "layout is too large" }));
-  return S.decodeUnknown(S.parseJson(S.Unknown) as S.Schema<unknown, string, never>)(text).pipe(
+  return S.decodeUnknownEffect(S.fromJsonString(S.Unknown))(text).pipe(
     Effect.mapError((error) => new LayoutFormatError({ message: `layout is not JSON: ${error}` })),
     Effect.flatMap(parseLayout),
   );
 }
 
 export function parseLayout(value: unknown): Effect.Effect<Layout, LayoutFormatError> {
-  return S.decodeUnknown(LayoutSchema)(value).pipe(
+  return S.decodeUnknownEffect(LayoutSchema)(value).pipe(
     Effect.mapError((error) => new LayoutFormatError({ message: formatSchemaError(error) })),
     Effect.flatMap(validateDecodedLayout),
   );
 }
 
-function formatSchemaError(error: ParseResult.ParseError): string {
-  const issues = ParseResult.ArrayFormatter.formatErrorSync(error);
-  // Prefer the deepest issue; at equal depth, a missing field is more specific than a type error.
-  const issue = [...issues].sort(
-    (left, right) => right.path.length - left.path.length || (left._tag === "Missing" ? -1 : 1),
-  )[0];
+const standardSchemaFormatter = SchemaIssue.makeFormatterStandardSchemaV1();
+
+function formatSchemaError(error: S.SchemaError): string {
+  const issues = standardSchemaFormatter(error.issue).issues;
+  // A node is a union, so every member that does not recognize the node's
+  // `type` reports that discriminant alongside the real complaint from the
+  // member that did recognize it. Rank a discriminant mismatch last, then take
+  // the deepest issue: "unknown type" is only the answer when no member
+  // accepted the node at all.
+  const rank = (issue: (typeof issues)[number]) => {
+    const path = (issue.path ?? []) as ReadonlyArray<PropertyKey>;
+    return (path.at(-1) === "type" ? 0 : 1_000) + path.length;
+  };
+  const issue = [...issues].sort((left, right) => rank(right) - rank(left))[0];
   if (!issue) return "layout is invalid";
-  if (issue.path.at(-1) === "type") {
-    return `${formatPath(issue.path.slice(0, -1))} has unknown type`;
+  const path = (issue.path ?? []) as ReadonlyArray<PropertyKey>;
+  if (path.at(-1) === "type") {
+    return `${formatPath(path.slice(0, -1))} has unknown type`;
   }
-  const path = formatPath(issue.path);
-  return path ? `${path} ${issue.message}` : issue.message;
+  const formatted = formatPath(path);
+  return formatted ? `${formatted} ${issue.message}` : issue.message;
 }
 
 function formatPath(path: ReadonlyArray<PropertyKey>): string {

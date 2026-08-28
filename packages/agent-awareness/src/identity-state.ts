@@ -1,5 +1,5 @@
 import { Option, Schema as S } from "effect";
-import type { Topic } from "@danielfgray/amux/effect/AttachProtocol.ts";
+import { Topic } from "@danielfgray/amux/protocol"
 
 export * as IdentityState from "./identity-state.ts";
 
@@ -18,7 +18,7 @@ export const AGENT_AWARENESS_IDENTITY_TOPIC = "amux.agent-awareness/identity-sta
  * must not import core's process-state vocabulary, so a hook's report is
  * validated here against a copy this plugin owns and can evolve on its own.
  */
-export const AwarenessReportedState = S.Literal("idle", "working", "blocked", "failed", "done");
+export const AwarenessReportedState = S.Literals(["idle", "working", "blocked", "failed", "done"]);
 export type AwarenessReportedState = typeof AwarenessReportedState.Type;
 
 /**

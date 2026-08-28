@@ -1,0 +1,5 @@
+id: effect-v3-fiber-runtime-generic-one-to-fiber
+language: TypeScript
+rule:
+  pattern: Fiber.RuntimeFiber<$A>
+fix: Fiber.Fiber<$A>

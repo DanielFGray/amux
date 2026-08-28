@@ -72,7 +72,7 @@ export class ComponentPane extends Pane {
     options: {
       id: string;
       session: SessionHandle | null;
-      paneType?: string;
+      paneType: string;
       descriptor?: JsonValue;
       view?: PaneView;
     },
@@ -97,11 +97,9 @@ export class ComponentPane extends Pane {
     const renderer = ctx as CliRenderer;
     const props: PaneViewProps = {
       sessionId: this.session?.id ?? "",
-      // The pane type is the content's, not the session's declared agent: a
-      // plugin pane's view is decided by what fills the pane. The declared
-      // agent was the only source before the model split, and the fallback
-      // keeps a view that was registered before the pane carried its own type.
-      paneType: options.paneType ?? this.session?.declaredAgent ?? "",
+      // A plugin pane is selected by its durable content, never by the
+      // process a session happens to be running.
+      paneType: options.paneType,
       descriptor: options.descriptor ?? {},
       width: () => {
         this.#size[0]();

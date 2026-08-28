@@ -1,21 +1,24 @@
-import { Chat } from "@effect/ai";
+import { Chat } from "effect/unstable/ai";
 import { BunFileSystem } from "@effect/platform-bun";
-import { Effect, Stream } from "effect";
+import { Effect, Match, Option, Schema as S, Stream } from "effect";
 import { Default as IntegrationDefault, Service as Integration } from "./integration.ts";
 import { loadConfig } from "@danielfgray/amux/config.ts";
-import { coerceOption } from "@danielfgray/amux/options.ts";
+import { coerceOption } from "@danielfgray/amux"
 import { AGENT_HARNESS_OPTIONS, parseModelReference } from "./options.ts";
 import {
+  AttachFrame,
   encodeAttachFrame,
-  type AgentEventPayload,
   type AgentDelta,
-  type AttachFrame,
-} from "@danielfgray/amux/effect/AttachProtocol.ts";
+  type AgentEventPayload,
+} from "@danielfgray/amux/protocol";
 import { agentToolkit } from "./tools.ts";
 import { makePermissionGate } from "./permission.ts";
-import { DEFAULT_RULES } from "@danielfgray/amux/permission.ts";
+import { DEFAULT_RULES, PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
 import { projectRoot } from "@danielfgray/amux/git.ts";
-import { layer as projectStoreLayer, Service as ProjectStore } from "@danielfgray/amux/project-store.ts";
+import {
+  layer as projectStoreLayer,
+  Service as ProjectStore,
+} from "@danielfgray/amux/project-store.ts";
 import {
   AgentWorkerError,
   closeOpenToolCalls,
@@ -26,6 +29,25 @@ import {
 // --- Process entry point ---
 
 const session = process.env.AMUX_SESSION ?? process.env.AMUX_AGENT_ID;
+
+/** The native harness's private component-control protocol. Core transports
+ * this as `session.message`; it never needs to understand these verbs. */
+const NativeControl = S.Union([
+  S.TaggedStruct("agent.prompt", {
+    text: S.String,
+    id: S.optional(S.String),
+    delivery: S.optional(S.Literals(["steer", "queue"])),
+    resume: S.optional(S.Boolean),
+  }),
+  S.TaggedStruct("agent.interrupt", { reason: S.optional(S.String) }),
+  S.TaggedStruct("agent.permission", {
+    request: S.String,
+    decision: PermissionDecisionSchema,
+    feedback: S.optional(S.String),
+  }),
+]);
+type NativeControl = typeof NativeControl.Type;
+const decodeNativeControl = S.decodeUnknownOption(NativeControl);
 
 if (!import.meta.main) {
   // Imported as a module — exports only, don't validate env or start the daemon.
@@ -94,7 +116,7 @@ else {
         inbox: store,
         persist: chat.exportJson.pipe(
           Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
-          Effect.catchAll(() => Effect.void),
+          Effect.catch(() => Effect.void),
         ),
         onTurnStart: (turnId) =>
           Effect.sync(() => {
@@ -118,31 +140,53 @@ else {
         Stream.splitLines,
         Stream.filter((line) => line.length > 0),
         Stream.mapEffect((line) =>
-          Effect.try({
-            try: () => JSON.parse(line) as AttachFrame,
-            catch: (error) => new AgentWorkerError({ message: sanitizeAgentError(String(error)) }),
-          }),
+          S.decodeUnknownEffect(S.fromJsonString(AttachFrame))(line).pipe(
+            Effect.mapError((error) =>
+              new AgentWorkerError({ message: sanitizeAgentError(String(error)) }),
+            ),
+          ),
         ),
         Stream.runForEach((frame) =>
-          frame._tag === "agent.prompt"
-            ? worker.prompt(
-                frame.text,
-                frame.id === undefined
-                  ? { delivery: frame.delivery ?? "queue", resume: frame.resume }
-                  : { id: frame.id, delivery: frame.delivery ?? "queue", resume: frame.resume },
-              )
-            : frame._tag === "agent.interrupt"
-              ? worker.interrupt(frame.reason)
-              : frame._tag === "agent.permission"
-                ? gate.resolve(frame.request, frame.decision, frame.feedback)
-                : Effect.void,
+          Effect.suspend(() => {
+            // `session.message` is the generic daemon primitive. This
+            // worker's payload vocabulary remains private to the harness.
+            const payload = Match.value(frame).pipe(
+              Match.tag("session.message", (message) => message.message),
+              Match.orElse((other) => other),
+            );
+            return Option.match(decodeNativeControl(payload), {
+              onNone: () =>
+                new AgentWorkerError({ message: "invalid native harness control message" }),
+              onSome: (control: NativeControl) =>
+                Match.value(control).pipe(
+                  Match.tag("agent.prompt", (prompt) =>
+                    worker.prompt(
+                      prompt.text,
+                      prompt.id === undefined
+                        ? { delivery: prompt.delivery ?? "queue", resume: prompt.resume }
+                        : {
+                            id: prompt.id,
+                            delivery: prompt.delivery ?? "queue",
+                            resume: prompt.resume,
+                          },
+                    ),
+                  ),
+                  Match.tag("agent.interrupt", (interrupt) => worker.interrupt(interrupt.reason)),
+                  Match.tag("agent.permission", (permission) =>
+                    gate.resolve(permission.request, permission.decision, permission.feedback),
+                  ),
+                  Match.exhaustive,
+                ),
+            });
+          }),
         ),
-        Effect.catchAll((error) =>
+        Effect.catch((error) =>
           emit({ _tag: "agent.error", message: sanitizeAgentError(String(error)), session }),
         ),
       );
       yield* worker.close;
     }).pipe(Effect.provide(modelLayer), Effect.provide(projectStoreLayer(root)));
+
   });
 
   Effect.runPromise(

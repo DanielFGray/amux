@@ -61,16 +61,19 @@ amux agent.get <session-id>  # one agent, by its session id
 
 ## Run work in another pane
 
-Create a pane with \`pane.split --no-focus\`, which reports the \`session\` and \`pane\` it created. Address later commands by those ids rather than by focus: focus belongs to whoever is driving the UI, and it moves.
+Create a pane with \`pane.split <row|column>\`, which reports the \`session\` and \`pane\` it created. Address later commands by those ids rather than by focus: focus belongs to whoever is driving the UI, and it moves.
 
 \`\`\`bash
-amux pane.split --axis row --no-focus
+amux pane.split row
 amux pane.send-keys --pane s1:p3 --keys "bun test"
+amux pane.send-keys --pane s1:p3 --keys $'\\r'
 amux pane.capture --pane s1:p3
 amux pane.close --pane s1:p3
 \`\`\`
 
-\`pane.capture\` returns terminal text, so wait on the output you expect rather than on elapsed time. A pane moved to another space gets a new space-qualified id; the move reports both the new id and \`previous_pane_id\`, so re-anchor from the result rather than the stale handle. A closed id is never reissued, so a stale handle no-ops instead of reaching the wrong pane.
+\`pane.send-keys\` types bytes; it does not submit. Send the terminating key yourself, and send it as carriage return (\`$'\\r'\`), not newline. A shell prompt accepts either, so a wrong newline works until the target is a full-screen program — where it inserts a line break into the input instead of running anything.
+
+\`pane.capture\` returns the pane's raw output, escape sequences included, not stripped text. Match on a literal substring you expect, or strip the sequences before matching; a pattern anchored to line starts or spacing will silently never fire against cursor-addressed output. Wait on that output rather than on elapsed time. A pane moved to another space gets a new space-qualified id; the move reports both the new id and \`previous_pane_id\`, so re-anchor from the result rather than the stale handle. A closed id is never reissued, so a stale handle no-ops instead of reaching the wrong pane.
 
 ## Delegate work to another agent
 

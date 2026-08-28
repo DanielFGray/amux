@@ -1,4 +1,4 @@
-import { Effect, Queue, Ref, Schema as S, Scope, Stream } from "effect";
+import { Context, Effect, Layer, Queue, Ref, Schema as S, Scope, Semaphore, Stream } from "effect";
 import { encodeAttachFrame, isAgentEvent, type AttachFrame } from "./AttachProtocol.ts";
 import { MAX_PENDING_BYTES } from "../limits.ts";
 
@@ -35,8 +35,8 @@ export interface AttachSubscription {
  * client whose socket cannot keep up is evicted rather than making a PTY
  * publisher wait behind it or silently dropping terminal bytes.
  */
-export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
-  effect: Effect.gen(function* () {
+export class AttachHub extends Context.Service<AttachHub>()("AttachHub", {
+  make: Effect.gen(function* () {
     const clients = yield* Ref.make<
       ReadonlyMap<
         string,
@@ -46,7 +46,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
           pendingBytes: number;
           replaying: boolean;
           replayPending: number;
-          replayLock: Effect.Semaphore;
+          replayLock: Semaphore.Semaphore;
           deferred: QueuedFrame[];
           deferredBytes: number;
           replayWatermarks: Map<string, number>;
@@ -62,7 +62,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
     ): Effect.Effect<AttachSubscription, AttachHubError, Scope.Scope> =>
       Effect.gen(function* () {
         const queue = yield* Queue.bounded<QueuedFrame>(256);
-        const replayLock = yield* Effect.makeSemaphore(1);
+        const replayLock = yield* Semaphore.make(1);
         const registered = yield* Ref.modify(clients, (current) => {
           if (current.has(client)) {
             return [false, current] as const;
@@ -90,7 +90,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
 
         yield* Effect.addFinalizer(() =>
           Queue.shutdown(queue).pipe(
-            Effect.zipRight(
+            Effect.andThen(
               Ref.update(clients, (current) => {
                 const next = new Map(current);
                 if (next.get(client)?.queue === queue) next.delete(client);
@@ -119,7 +119,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
       target: { queue: Queue.Queue<QueuedFrame>; onOverflow?: () => void },
     ): Effect.Effect<void> =>
       Queue.shutdown(target.queue).pipe(
-        Effect.zipRight(
+        Effect.andThen(
           Ref.update(clients, (current) => {
             const next = new Map(current);
             if (next.get(client)?.queue === target.queue) next.delete(client);
@@ -141,7 +141,10 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
             continue;
           }
         }
-        if (target.pendingBytes + size <= MAX_PENDING_BYTES && target.queue.unsafeOffer(item)) {
+        if (
+          target.pendingBytes + size <= MAX_PENDING_BYTES &&
+          Queue.offerUnsafe(target.queue, item)
+        ) {
           target.pendingBytes += size;
           continue;
         }
@@ -172,7 +175,10 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
       }
       const item = queuedFrame(frame);
       const size = item.bytes.byteLength;
-      if (target.pendingBytes + size > MAX_PENDING_BYTES || !target.queue.unsafeOffer(item)) {
+      if (
+        target.pendingBytes + size > MAX_PENDING_BYTES ||
+        !Queue.offerUnsafe(target.queue, item)
+      ) {
         yield* evict(client, target);
       } else target.pendingBytes += size;
     });
@@ -206,7 +212,7 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
       target.replayWatermarks.clear();
       if (
         target.pendingBytes + size > MAX_PENDING_BYTES ||
-        !frames.every((item) => target.queue.unsafeOffer(item))
+        !frames.every((item) => Queue.offerUnsafe(target.queue, item))
       ) {
         yield* evict(client, target);
       } else target.pendingBytes += size;
@@ -215,4 +221,6 @@ export class AttachHub extends Effect.Service<AttachHub>()("AttachHub", {
 
     return { subscribe, publish, publishTo, beginReplay, endReplay };
   }),
-}) {}
+}) {
+  static readonly layer = Layer.effect(this, this.make);
+}

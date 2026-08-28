@@ -1,0 +1,6 @@
+id: effect-v3-schema-minitems-to-ismilength
+language: TypeScript
+message: Schema.minItems was renamed to Schema.isMinLength in v4 and must be wrapped in Schema.check.
+rule:
+  pattern: S.minItems($$$ARGS)
+fix: S.check(S.isMinLength($$$ARGS))

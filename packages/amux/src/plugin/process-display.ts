@@ -1,4 +1,3 @@
-import { STATE_GLYPH } from "../detect.ts";
 import { ProcessState } from "../process-state.ts";
 import type { PluginContributions, PluginInstance } from "./contributions.ts";
 
@@ -22,6 +21,9 @@ export interface ProcessDisplayFacts {
 
 export interface ProcessDisplayResult {
   readonly glyph: string;
+  /** Optional animation frames chosen by the provider. Renderers only select
+   * a frame; deciding that a state merits animation remains plugin policy. */
+  readonly frames?: readonly string[];
   readonly label: string;
   /** How urgently this result wants attention, for rolling many sessions'
    *  results up into one window/space glyph — higher wins. Comparable only
@@ -42,6 +44,8 @@ export interface ProcessDisplay {
   readonly display: (facts: ProcessDisplayFacts) => ProcessDisplayResult;
 }
 
+export type ProcessDisplayReader = Omit<ProcessDisplay, "register">;
+
 /**
  * The seam that keeps core tab/row rendering from importing agent
  * presentation. A plugin registers a provider; core calls
@@ -61,7 +65,7 @@ export function createProcessDisplay(contributions: PluginContributions): Proces
         if (result) return result;
       }
       return {
-        glyph: STATE_GLYPH[facts.state],
+        glyph: "·",
         label: facts.state,
         rank: NEUTRAL_RANK[facts.state],
       };

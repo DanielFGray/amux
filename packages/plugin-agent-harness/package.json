@@ -15,20 +15,18 @@
   },
   "dependencies": {
     "@danielfgray/amux-agent-awareness": "workspace:*",
-    "@effect/ai": "catalog:",
     "@effect/ai-anthropic": "catalog:",
     "@effect/ai-openai": "catalog:",
-    "@effect/platform": "catalog:",
     "@effect/platform-bun": "catalog:",
     "@opentui/core": "catalog:",
     "@opentui/solid": "catalog:",
     "effect": "catalog:",
     "solid-js": "catalog:"
   },
-  "peerDependencies": {
+  "devDependencies": {
     "@danielfgray/amux": "workspace:*"
   },
-  "devDependencies": {
+  "peerDependencies": {
     "@danielfgray/amux": "workspace:*"
   }
 }

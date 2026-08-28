@@ -65,6 +65,7 @@ test("an empty file is every default", () => {
 
 test("the default sidebar is an ordinary enabled plugin spec", () => {
   expect(DEFAULT_CONFIG.plugins).toEqual([
+    { path: "builtin:amux.agent-awareness", enabled: true },
     { path: "builtin:amux.sidebar", enabled: true },
     { path: "builtin:amux.agent-harness", enabled: true },
     { path: "builtin:amux.notifications", enabled: true },
@@ -75,6 +76,7 @@ test("the default sidebar is an ordinary enabled plugin spec", () => {
       plugins: [{ path: "builtin:amux.sidebar", enabled: false }],
     }).plugins,
   ).toEqual([
+    { path: "builtin:amux.agent-awareness", enabled: true },
     { path: "builtin:amux.sidebar", enabled: false },
     { path: "builtin:amux.agent-harness", enabled: true },
     { path: "builtin:amux.notifications", enabled: true },

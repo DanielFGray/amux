@@ -72,7 +72,7 @@ import {
   MAX_TERMINAL_DIMENSION,
   MAX_WINDOWS,
 } from "./limits.ts";
-import { Effect, Either, Schema as S } from "effect";
+import { Effect, Result, Schema as S } from "effect";
 
 export class WorkspaceParseError extends S.TaggedError<WorkspaceParseError>()(
   "WorkspaceParseError",
@@ -161,16 +161,21 @@ export interface WorkspaceCommandContext {
 }
 
 /** The agent amux runs itself, as opposed to a foreign CLI in a shell pane. */
-const NonEmptyString = S.String.pipe(S.minLength(1));
-const PositiveInt = S.Int.pipe(S.greaterThan(0));
-const TerminalDimension = S.Int.pipe(S.greaterThan(0), S.lessThanOrEqualTo(MAX_TERMINAL_DIMENSION));
+const NonEmptyString = S.String.pipe(S.check(S.isMinLength(1)));
+const PositiveInt = S.Int.pipe(S.check(S.isGreaterThan(0)));
+const TerminalDimension = S.Int.pipe(
+  S.check(S.isGreaterThan(0)),
+  S.check(S.isLessThanOrEqualTo(MAX_TERMINAL_DIMENSION)),
+);
 const TerminalSize = S.Struct({
   cols: TerminalDimension,
   rows: TerminalDimension,
 }).pipe(
-  S.filter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {
-    message: () => "terminal size is too large",
-  }),
+  S.check(
+    S.makeFilter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {
+      message: "terminal size is too large",
+    }),
+  ),
 );
 /** The persisted agent record, exported so the machine-facing read surface can
  *  derive its agent entries from the model's own shape rather than restating
@@ -178,9 +183,9 @@ const TerminalSize = S.Struct({
 export const PersistedSessionSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
-  kind: S.optional(S.Literal("pty", "component")),
+  kind: S.optional(S.Literals(["pty", "component"])),
   declaredAgent: S.optional(NonEmptyString),
-  cmd: S.optional(S.Array(NonEmptyString).pipe(S.minItems(1))),
+  cmd: S.optional(S.Array(NonEmptyString).pipe(S.check(S.isMinLength(1)))),
   provider: S.optional(NonEmptyString),
   cwd: S.optional(S.String),
   cols: TerminalDimension,
@@ -188,35 +193,35 @@ export const PersistedSessionSchema = S.Struct({
   exited: S.Boolean,
   exitCode: S.NullOr(S.Int),
 });
-const LayoutNodeSchema: S.Schema<any> = S.suspend(() =>
-  S.Union(
+const LayoutNodeSchema: S.Codec<any> = S.suspend(() =>
+  S.Union([
     S.Struct({
-      type: S.Literal("pane"),
+      type: S.Literals(["pane"]),
       id: NonEmptyString,
       content: PaneContentSchema,
-      weight: S.Number.pipe(S.greaterThan(0)),
+      weight: S.Number.pipe(S.check(S.isGreaterThan(0))),
     }),
     S.Struct({
-      type: S.Literal("split"),
-      direction: S.Union(S.Literal("row"), S.Literal("column")),
-      weight: S.Number.pipe(S.greaterThan(0)),
-      children: S.Array(LayoutNodeSchema).pipe(S.minItems(2)),
+      type: S.Literals(["split"]),
+      direction: S.Literals(["row", "column"]),
+      weight: S.Number.pipe(S.check(S.isGreaterThan(0))),
+      children: S.Array(LayoutNodeSchema).pipe(S.check(S.isMinLength(2))),
     }),
-  ),
-);
+  ]),
+) as S.Codec<any>;
 /** Fractions of the window. Bounds are parseLayout's, restated here because a
  *  schema that merely said "number" would strip nothing and admit anything. */
 const LayoutFloatSchema = S.Struct({
   id: NonEmptyString,
   content: PaneContentSchema,
-  x: S.Number.pipe(S.greaterThanOrEqualTo(0), S.lessThan(1)),
-  y: S.Number.pipe(S.greaterThanOrEqualTo(0), S.lessThan(1)),
-  width: S.Number.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1)),
-  height: S.Number.pipe(S.greaterThan(0), S.lessThanOrEqualTo(1)),
+  x: S.Number.pipe(S.check(S.isGreaterThanOrEqualTo(0)), S.check(S.isLessThan(1))),
+  y: S.Number.pipe(S.check(S.isGreaterThanOrEqualTo(0)), S.check(S.isLessThan(1))),
+  width: S.Number.pipe(S.check(S.isGreaterThan(0)), S.check(S.isLessThanOrEqualTo(1))),
+  height: S.Number.pipe(S.check(S.isGreaterThan(0)), S.check(S.isLessThanOrEqualTo(1))),
 });
 const DockPaneSchema = S.Struct({ id: NonEmptyString, content: PaneContentSchema });
 const LayoutSchema = S.Struct({
-  version: S.Literal(1),
+  version: S.Literals([1]),
   root: S.NullOr(LayoutNodeSchema),
   // Optional, because a snapshot written before floats existed has no such key
   // and meant that nothing floats. Not optional in the Layout it decodes to:
@@ -248,19 +253,19 @@ const WindowStateSchema = S.Struct({
   zoom: S.NullOr(S.Struct({ pane: NonEmptyString, from: LayoutSchema })),
   sync: S.Boolean,
   preset: S.NullOr(
-    S.Union(
-      S.Literal("even-horizontal"),
-      S.Literal("even-vertical"),
-      S.Literal("main-horizontal"),
-      S.Literal("main-vertical"),
-      S.Literal("tiled"),
-    ),
+    S.Union([
+      S.Literals(["even-horizontal"]),
+      S.Literals(["even-vertical"]),
+      S.Literals(["main-horizontal"]),
+      S.Literals(["main-vertical"]),
+      S.Literals(["tiled"]),
+    ]),
   ),
 });
 export const WorkspaceWindowSchema = S.Struct({
   number: PositiveInt,
   name: S.NullOr(S.String),
-  sessions: S.Array(PersistedSessionSchema).pipe(S.maxItems(MAX_SESSIONS)),
+  sessions: S.Array(PersistedSessionSchema).pipe(S.check(S.isMaxLength(MAX_SESSIONS))),
   layout: LayoutSchema,
   state: WindowStateSchema,
 });
@@ -271,7 +276,7 @@ export const WorkspaceSpaceSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
   dir: S.String,
-  windows: S.Array(WorkspaceWindowSchema).pipe(S.maxItems(MAX_WINDOWS)),
+  windows: S.Array(WorkspaceWindowSchema).pipe(S.check(S.isMaxLength(MAX_WINDOWS))),
   state: S.Struct({
     activeWindow: S.NullOr(PositiveInt),
     lastWindow: S.NullOr(PositiveInt),
@@ -281,14 +286,14 @@ export const WorkspaceSpaceSchema = S.Struct({
   worktree: S.optional(S.Struct({ branch: S.String, repo: S.String, path: S.String })),
 });
 const WorkspaceSnapshotSchema = S.Struct({
-  revision: S.Int.pipe(S.greaterThanOrEqualTo(0)),
-  spaces: S.Array(WorkspaceSpaceSchema).pipe(S.maxItems(MAX_SPACES)),
+  revision: S.Int.pipe(S.check(S.isGreaterThanOrEqualTo(0))),
+  spaces: S.Array(WorkspaceSpaceSchema).pipe(S.check(S.isMaxLength(MAX_SPACES))),
   state: S.Struct({
     activeSpace: S.NullOr(NonEmptyString),
     nextSpace: PositiveInt,
   }),
 });
-export const WorkspaceSnapshotJson = S.parseJson(WorkspaceSnapshotSchema);
+export const WorkspaceSnapshotJson = S.fromJsonString(WorkspaceSnapshotSchema);
 
 /** The persisted counter bearing the space's id: `s3` -> 3, anything else -> null. */
 function spaceCounter(id: string): number | null {
@@ -306,7 +311,7 @@ function paneCounter(id: string): number | null {
 export function parseWorkspaceJson(
   value: string,
 ): Effect.Effect<WorkspaceSnapshot, WorkspaceParseError | SessionStateError> {
-  return S.decodeUnknown(WorkspaceSnapshotJson)(value).pipe(
+  return S.decodeUnknownEffect(WorkspaceSnapshotJson)(value).pipe(
     Effect.mapError(
       (error) =>
         new WorkspaceParseError({
@@ -319,7 +324,7 @@ export function parseWorkspaceJson(
 
 export const WorkspaceCommandContextSchema = S.Struct({
   size: TerminalSize,
-  shell: S.Array(NonEmptyString).pipe(S.minItems(1)),
+  shell: S.Array(NonEmptyString).pipe(S.check(S.isMinLength(1))),
   cwd: NonEmptyString,
   agent: S.optional(NonEmptyString),
   pane: S.optional(NonEmptyString),
@@ -337,11 +342,7 @@ export type WorkspaceAction =
       readonly agent: string;
       readonly reason?: string;
     }
-  | {
-      readonly _tag: "decide";
-      readonly agent: string;
-      readonly answer: PermissionAnswer;
-    }
+  | { readonly _tag: "decide"; readonly agent: string; readonly answer: PermissionAnswer }
   | { readonly _tag: "kill"; readonly agent: string }
   | { readonly _tag: "restart"; readonly agent: string }
   | { readonly _tag: "input"; readonly agent: string; readonly data: string };
@@ -403,9 +404,9 @@ export function workspaceFromSession(
               );
               let layout: Layout | null = null;
               if (window.layout) {
-                const result = yield* Effect.either(decodeLayout(window.layout));
-                if (Either.isRight(result)) {
-                  layout = prune(result.right, (agent) => live.has(agent));
+                const result = yield* Effect.result(decodeLayout(window.layout));
+                if (Result.isSuccess(result)) {
+                  layout = prune(result.success, (agent) => live.has(agent));
                 }
               }
               if (!layout?.root && live.size > 0) {
@@ -506,7 +507,7 @@ export function parseWorkspace(
   value: unknown,
 ): Effect.Effect<WorkspaceSnapshot, WorkspaceParseError | SessionStateError> {
   return Effect.gen(function* () {
-    const decoded = yield* S.decodeUnknown(WorkspaceSnapshotSchema)(value).pipe(
+    const decoded = yield* S.decodeUnknownEffect(WorkspaceSnapshotSchema)(value).pipe(
       Effect.mapError(
         (error) =>
           new WorkspaceParseError({
@@ -647,7 +648,7 @@ export function parseWorkspaceCommandContext(
   workspace?: WorkspaceSnapshot,
 ): Effect.Effect<WorkspaceCommandContext, WorkspaceParseError> {
   return Effect.gen(function* () {
-    const decoded = yield* S.decodeUnknown(WorkspaceCommandContextSchema)(value).pipe(
+    const decoded = yield* S.decodeUnknownEffect(WorkspaceCommandContextSchema)(value).pipe(
       Effect.mapError(
         (error) =>
           new WorkspaceParseError({
@@ -836,10 +837,7 @@ export function applyWorkspaceCommand(
   switch (command._tag) {
     case "agent.permission": {
       if (command.session) {
-        const answer = {
-          request: command.request,
-          decision: command.decision,
-        };
+        const answer = { request: command.request, decision: command.decision };
         if (command.feedback !== undefined) Object.assign(answer, { feedback: command.feedback });
         actions.push({
           _tag: "decide",

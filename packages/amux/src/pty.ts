@@ -23,9 +23,15 @@ const KILL_SETTLE_MS = 500;
 export class PtyWriteInterrupted extends S.TaggedError<PtyWriteInterrupted>()(
   "PtyWriteInterrupted",
   {
-    reason: S.Literal("shutdown", "aborted"),
+    reason: S.Literals(["shutdown", "aborted"]),
   },
-) {}
+) {
+  /** A write is rejected from a plain promise, where the reason is only ever
+   *  seen if the message carries it. */
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 export interface Pty {
   master: number;

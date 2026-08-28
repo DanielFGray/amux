@@ -108,6 +108,7 @@ export class SessionHandle {
   #detached = false;
   #exitCode: number | null = null;
   #lastOutputAt = 0;
+  #outputRevision = 0;
   #viewers = 0;
   #unseen = false;
   /** Lazily created: only agents actually asked for their state pay for it. */
@@ -131,7 +132,7 @@ export class SessionHandle {
   #commAt = 0;
   /** The fiber drawing backend output into `term`. Null for a tombstone, which
    *  has nothing to draw. Interrupted before the terminal is freed. */
-  #pumpFiber: Fiber.RuntimeFiber<void> | null = null;
+  #pumpFiber: Fiber.Fiber<void> | null = null;
   /**
    * Owns every FFI handle this agent allocates.
    *
@@ -206,7 +207,7 @@ export class SessionHandle {
    */
   #own<A>(acquire: () => A, free: (handle: A) => void): A {
     return Effect.runSync(
-      Scope.extend(
+      Scope.provide(
         Effect.acquireRelease(Effect.sync(acquire), (handle) => Effect.sync(() => free(handle))),
         this.#scope,
       ),
@@ -263,11 +264,12 @@ export class SessionHandle {
    * frees. Holding the fiber means teardown can interrupt the writer first and
    * free second, instead of racing it.
    */
-  #pump(): Fiber.RuntimeFiber<void> {
+  #pump(): Fiber.Fiber<void> {
     return Effect.runFork(
       Stream.runForEach(this.#backend.stream, (chunk) =>
-        Effect.gen(this, function* () {
+        Effect.gen({ self: this }, function* () {
           this.term.write(chunk);
+          this.#outputRevision++;
           this.#lastOutputAt = yield* Clock.currentTimeMillis;
           if (this.#viewers === 0) this.#unseen = true;
           this.onOutput?.(this);
@@ -366,14 +368,7 @@ export class SessionHandle {
    *  15 bytes and hides the script behind a `node`/`bun` wrapper, so identifying
    *  an agent has to read the command line. */
   #foregroundCmdline(): string {
-    const fg = this.#backend.foregroundPgid();
-    if (fg <= 0 || fg === this.#backend.sessionId()) return "";
-    try {
-      const raw = require("node:fs").readFileSync(`/proc/${fg}/cmdline`, "utf8") as string;
-      return raw.split("\0").filter(Boolean).join(" ");
-    } catch {
-      return "";
-    }
+    return (this.#backend.foregroundArgv?.() ?? []).join(" ");
   }
 
   /**
@@ -397,6 +392,11 @@ export class SessionHandle {
    */
   get state(): ProcessState {
     return this.#state.state;
+  }
+
+  /** Generic process self-report, without detector or executable policy. */
+  get reportedState(): ProcessState | null {
+    return this.#backend.processState?.() ?? null;
   }
 
   /** Read a named structural region of the live terminal grid. */
@@ -516,13 +516,8 @@ export class SessionHandle {
       if (fg <= 0 || fg === this.#backend.sessionId()) {
         this.#comm = "";
       } else {
-        try {
-          this.#comm = (
-            require("node:fs").readFileSync(`/proc/${fg}/comm`, "utf8") as string
-          ).trim();
-        } catch {
-          this.#comm = "";
-        }
+        const argv = this.#backend.foregroundArgv?.() ?? [];
+        this.#comm = argv.length === 0 ? "" : commandName(argv);
       }
     }
     return this.#comm;
@@ -530,6 +525,18 @@ export class SessionHandle {
 
   get msSinceOutput() {
     return this.#lastOutputAt === 0 ? Infinity : Date.now() - this.#lastOutputAt;
+  }
+
+  /** Monotonic terminal-output revision for value-only projections. */
+  get outputRevision(): number {
+    return this.#outputRevision;
+  }
+
+  /** Neutral foreground process evidence, copied out of the backend cache. */
+  get foregroundProcess(): { readonly pid: number; readonly argv: readonly string[] } | null {
+    const pid = this.#backend.foregroundPgid();
+    if (pid <= 0 || pid === this.#backend.sessionId()) return null;
+    return { pid, argv: [...(this.#backend.foregroundArgv?.() ?? [])] };
   }
 
   addViewer() {

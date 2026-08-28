@@ -214,7 +214,7 @@ test("window tabs render the state glyph and space index when requested", async 
     { format: "#{agent_state_glyph} space-#{space_index}", spaceIndex: 0 },
   );
 
-  expect(rows[0]).toContain("○ space-0");
+  expect(rows[0]).toContain("· space-0");
 });
 
 test("window tabs render the configured status format", async () => {

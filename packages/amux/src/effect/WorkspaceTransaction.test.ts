@@ -269,7 +269,7 @@ function testLayer(
     worktreeDirty?: boolean;
   },
 ) {
-  const sessionRef = Ref.unsafeMake<FakeSessionState>({
+  const sessionRef = Ref.makeUnsafe<FakeSessionState>({
     killed: [],
     written: [],
     prepared: [],
@@ -277,22 +277,22 @@ function testLayer(
     aborted: [],
     fail: opts?.sessionFail ?? false,
   });
-  const worktreeRef = Ref.unsafeMake<FakeWorktreeState>({
+  const worktreeRef = Ref.makeUnsafe<FakeWorktreeState>({
     added: [],
     removed: [],
     dirty: opts?.worktreeDirty ?? false,
     fail: opts?.worktreeFail ?? false,
   });
-  const persistRef = Ref.unsafeMake<FakePersistenceState>({
+  const persistRef = Ref.makeUnsafe<FakePersistenceState>({
     persisted: [],
     retried: [],
   });
-  const eventsRef = Ref.unsafeMake<FakeEventsState>({
+  const eventsRef = Ref.makeUnsafe<FakeEventsState>({
     workspaceEvents: [],
     workspaceFrames: [],
   });
 
-  const layer = Layer.provide(WorkspaceTransaction.Default, layerDaemonModel(initial)).pipe(
+  const layer = Layer.provide(WorkspaceTransaction.layer, layerDaemonModel(initial)).pipe(
     Layer.provide(Layer.succeed(WorkspaceTransactionSessionOps, trackingSessionOps(sessionRef))),
     Layer.provide(Layer.succeed(WorkspaceTransactionWorktreeOps, trackingWorktreeOps(worktreeRef))),
     Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, trackingPersistence(persistRef))),

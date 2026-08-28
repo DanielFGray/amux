@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ProcessState } from "@danielfgray/amux/process-state.ts";
+import { ProcessState } from "@danielfgray/amux"
 import { deriveProcessDisplay } from "./display-state.ts";
 
 const facts = (state: ProcessState, exitCode: number | null, detached: boolean) => ({
@@ -46,4 +46,19 @@ test("a blocked process keeps its neutral glyph, which outranks the others", () 
     label: "blocked",
     rank: 4,
   });
+});
+
+test("a running agent contributes its spinner frames rather than asking core to name them", () => {
+  expect(deriveProcessDisplay(facts(ProcessState.Running, null, false)).frames).toEqual([
+    "⠋",
+    "⠙",
+    "⠹",
+    "⠸",
+    "⠼",
+    "⠴",
+    "⠦",
+    "⠧",
+    "⠇",
+    "⠏",
+  ]);
 });

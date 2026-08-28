@@ -1,9 +1,12 @@
 import {
+  Cause,
+  Context,
   Deferred,
   Effect,
   FiberMap,
-  Mailbox,
+  Layer,
   Match,
+  Queue,
   Ref,
   Schema as S,
   Scope,
@@ -19,6 +22,7 @@ import {
   AgentDelta,
   type AgentFrame,
   type AttachFrame,
+  type JsonValue,
   type PermissionAnswer,
 } from "./AttachProtocol.ts";
 
@@ -81,9 +85,9 @@ export interface ManagedSession {
   readonly exit: Effect.Effect<number | null, PtyError>;
   readonly write: (data: string | Uint8Array) => Effect.Effect<void, PtyError>;
   readonly prompt: (text: string, options?: PromptOptions) => Effect.Effect<void, PtyError>;
-  /** Answer a permission request this session is blocked on. */
   readonly decide: (answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly interrupt: (reason?: string) => Effect.Effect<void, PtyError>;
+  readonly message: (message: JsonValue) => Effect.Effect<void, PtyError>;
   readonly resize: (cols: number, rows: number) => Effect.Effect<void, PtyError>;
   readonly kill: Effect.Effect<void, PtyError>;
   /** What is in the foreground of this session's tty right now. Only the
@@ -130,9 +134,7 @@ interface Backend {
   /** Resolves once the backend has fully terminated, with its exit code. */
   readonly wait: Promise<number | null>;
   write(data: string | Uint8Array, signal?: AbortSignal): Promise<void>;
-  prompt(text: string, options?: PromptOptions): Promise<void>;
-  decide(answer: PermissionAnswer): Promise<void>;
-  interrupt(reason?: string): Promise<void>;
+  message(message: JsonValue): Promise<void>;
   resize(cols: number, rows: number): void;
   kill(): Promise<void>;
   close(): void;
@@ -167,11 +169,7 @@ function ptyBackend(spec: SessionSpec): Backend {
       return pty.wait.then(() => pty.exitCode);
     },
     write: (data, signal) => pty.write(data, signal),
-    prompt: async () => {
-      throw new Error("pty sessions do not accept agent prompts");
-    },
-    decide: async () => {},
-    interrupt: async () => {},
+    message: async () => {},
     resize: (cols, rows) => pty.resize(cols, rows),
     kill: () => pty.kill(),
     close: () => pty.close(),
@@ -186,7 +184,7 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
   #values: A[] = [];
   #waiters: ((result: IteratorResult<A>) => void)[] = [];
   #ended = false;
-  #failure: unknown;
+  #failure: Error | undefined;
   #failed = false;
 
   offer(value: A): void {
@@ -204,7 +202,7 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
   /** Ends the mailbox by raising `error` out of the iterator instead of a
    *  clean completion, so a consuming Stream reports it as a typed failure
    *  rather than looking like a graceful close. */
-  fail(error: unknown): void {
+  fail(error: Error): void {
     if (this.#ended) return;
     this.#failure = error;
     this.#failed = true;
@@ -229,6 +227,10 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
 
 const isAgentFrame = (frame: AttachFrame): frame is AgentFrame =>
   isAgentEvent(frame) || S.is(AgentDelta)(frame);
+
+/** How much of a dying worker's stderr is kept to explain its exit. A stack
+ *  trace fits; a worker looping on a warning cannot grow the daemon. */
+const STDERR_TAIL_CHARS = 8192;
 
 /** A component's content comes from a worker isolated from the daemon, speaking
  *  semantic frames on stdout instead of terminal bytes. */
@@ -260,7 +262,34 @@ function componentBackend(spec: SessionSpec): Backend {
   let closed = false;
   let killed = false;
 
-  void new Response(child.stderr).text();
+  /**
+   * A worker that dies before it can speak the frame protocol — a missing
+   * credential, an import that throws, a crash at module scope — says why on
+   * stderr and nowhere else. This used to be drained into nothing, which left
+   * the exit code as the only evidence a session had died and made every such
+   * failure look identical from the daemon, the client and the log.
+   *
+   * Kept bounded, because a worker that loops on a warning must not be able to
+   * grow the daemon's memory with its complaints.
+   */
+  let stderrTail = "";
+  let stderrDropped = false;
+  const stderrDrained = (async () => {
+    const decoder = new TextDecoder();
+    for await (const chunk of child.stderr) {
+      const text = decoder.decode(chunk, { stream: true });
+      if (!text) continue;
+      // Logged as it arrives, so a worker that complains and keeps running is
+      // visible too — not only one that dies with something to say.
+      Effect.runFork(Effect.logWarning(`session '${spec.id}' worker stderr: ${text.trimEnd()}`));
+      stderrTail += text;
+      if (stderrTail.length > STDERR_TAIL_CHARS) {
+        stderrTail = stderrTail.slice(-STDERR_TAIL_CHARS);
+        stderrDropped = true;
+      }
+    }
+  })();
+
   void (async () => {
     const buffer = new AttachFrameAccumulator();
     try {
@@ -279,15 +308,28 @@ function componentBackend(spec: SessionSpec): Backend {
         }
       }
       output.end();
+      // stdout closing means the worker is going away. Its stderr closes at the
+      // same moment, so waiting here is what stops a worker that wrote its
+      // reason and exited from losing the race against this loop — an offer
+      // after `end()` is not reliably drained.
+      await stderrDrained;
+      const reason = stderrTail.trim();
+      if (reason)
+        events.offer({
+          _tag: "agent.error",
+          session: spec.id,
+          message: `worker stderr: ${stderrDropped ? "…" : ""}${reason}`,
+        });
       events.end();
     } catch (error) {
       // A malformed or oversized frame means the worker's protocol stream is
       // no longer trustworthy — kill it and surface the failure through the
       // output/events streams instead of ending them as if the worker had
       // exited cleanly.
+      const failure = error instanceof Error ? error : new Error(String(error));
       child.kill();
-      output.fail(error);
-      events.fail(error);
+      output.fail(failure);
+      events.fail(failure);
     }
   })();
 
@@ -308,12 +350,7 @@ function componentBackend(spec: SessionSpec): Backend {
         session: spec.id,
         data: typeof data === "string" ? new TextEncoder().encode(data) : data,
       }),
-    prompt: (text, options) => send({ _tag: "agent.prompt", session: spec.id, text, ...options }),
-    decide: (answer) => send({ _tag: "agent.permission", session: spec.id, ...answer }),
-    interrupt: (reason) =>
-      reason === undefined
-        ? send({ _tag: "agent.interrupt", session: spec.id })
-        : send({ _tag: "agent.interrupt", session: spec.id, reason }),
+    message: (message) => send({ _tag: "session.message", session: spec.id, message }),
     resize: (cols, rows) => void send({ _tag: "resize", session: spec.id, cols, rows }),
     kill: async () => {
       if (!closed) {
@@ -345,10 +382,10 @@ const asPtyError = (operation: string, error: string): PtyError =>
  * and turns raw backend output into a supervised Effect stream, whatever the
  * backend behind a given session id turns out to be.
  */
-export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionRegistry", {
+export class SessionRegistry extends Context.Service<SessionRegistry>()("SessionRegistry", {
   // scoped, not effect: the command pumps are a FiberMap that has to be
   // finalized, and the scope that owns it is the registry's own lifetime.
-  scoped: Effect.gen(function* () {
+  make: Effect.gen(function* () {
     // The token prevents a late exit from an old backend from releasing a reused id.
     const sessions = yield* Ref.make<ReadonlyMap<string, Reservation>>(new Map());
     const commandPumps = yield* FiberMap.make<string>();
@@ -393,7 +430,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           (owned) =>
             Effect.uninterruptible(
               Effect.tryPromise(() => owned.kill()).pipe(
-                Effect.catchAll(() => Effect.void),
+                Effect.catch(() => Effect.void),
                 Effect.ensuring(Effect.sync(() => owned.close())),
                 Effect.ensuring(release),
               ),
@@ -405,7 +442,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
           next.set(spec.id, { token, backend });
           return next;
         });
-        const commands = yield* Mailbox.make<SessionCommand>({
+        const commands = yield* Queue.make<SessionCommand, Cause.Done>({
           capacity: 256,
           strategy: "suspend",
         });
@@ -418,17 +455,17 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
             Effect.mapError((error) => asPtyError(command._tag, String(error))),
             Effect.exit,
             Effect.flatMap((exit) => Deferred.done(command.done, exit)),
-            Effect.zipRight(command._tag === "kill" ? commands.end : Effect.void),
+            Effect.andThen(command._tag === "kill" ? Queue.end(commands) : Effect.void),
           );
         };
         yield* FiberMap.run(
           commandPumps,
           spec.id,
-          Mailbox.toStream(commands).pipe(Stream.runForEach(runCommand)),
+          Stream.fromQueue(commands).pipe(Stream.runForEach(runCommand)),
         );
 
         const offer = (command: SessionCommand): Effect.Effect<void, PtyError> =>
-          commands.offer(command).pipe(
+          Queue.offer(commands, command).pipe(
             Effect.flatMap((accepted) =>
               accepted
                 ? Effect.void
@@ -470,7 +507,7 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
               catch: (error) =>
                 S.is(PtyWriteInterrupted)(error) ? error : asPtyError("write", String(error)),
             }).pipe(
-              Effect.catchAll((error) =>
+              Effect.catch((error) =>
                 S.is(PtyWriteInterrupted)(error) && error.reason === "shutdown"
                   ? Effect.void
                   : Effect.fail(asPtyError("write", String(error))),
@@ -478,18 +515,28 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
             ),
           prompt: (text, options) =>
             Effect.tryPromise({
-              try: () => backend.prompt(text, options),
+              try: () => backend.message({ _tag: "agent.prompt", text, ...options }),
               catch: (error) => asPtyError("prompt", String(error)),
             }),
           decide: (answer) =>
             Effect.tryPromise({
-              try: () => backend.decide(answer),
+              try: () => backend.message({ _tag: "agent.permission", ...answer }),
               catch: (error) => asPtyError("decide", String(error)),
             }),
           interrupt: (reason) =>
             Effect.tryPromise({
-              try: () => backend.interrupt(reason),
+              try: () =>
+                backend.message(
+                  reason === undefined
+                    ? { _tag: "agent.interrupt" }
+                    : { _tag: "agent.interrupt", reason },
+                ),
               catch: (error) => asPtyError("interrupt", String(error)),
+            }),
+          message: (message) =>
+            Effect.tryPromise({
+              try: () => backend.message(message),
+              catch: (error) => asPtyError("message", String(error)),
             }),
           resize: (cols, rows) =>
             isTerminalSize(cols, rows)
@@ -518,4 +565,6 @@ export class SessionRegistry extends Effect.Service<SessionRegistry>()("SessionR
       sessions: Ref.get(sessions).pipe(Effect.map((current) => new Set(current.keys()))),
     };
   }),
-}) {}
+}) {
+  static readonly layer = Layer.effect(this, this.make);
+}

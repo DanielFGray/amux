@@ -9,9 +9,9 @@
  * {@link controlCall}, which opens and closes a connection per request.
  */
 import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
-import * as RpcClient from "@effect/rpc/RpcClient";
-import type { RpcClientError } from "@effect/rpc/RpcClientError";
-import type * as RpcGroup from "@effect/rpc/RpcGroup";
+import * as RpcClient from "effect/unstable/rpc/RpcClient";
+import type { RpcClientError } from "effect/unstable/rpc/RpcClientError";
+import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { Effect, Layer, Schema as S, Scope, Stream } from "effect";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import type { DaemonEvent, DaemonEventPayload } from "./effect/EventBus.ts";
@@ -114,7 +114,7 @@ export const agentWatch = (
  * never took the work rather than that it is slow. `agent_wait_timeout` is the
  * caller's own deadline elapsing while the turn was genuinely in progress.
  */
-export const AgentWaitReason = S.Literal("agent_prompt_stalled", "agent_wait_timeout");
+export const AgentWaitReason = S.Literals(["agent_prompt_stalled", "agent_wait_timeout"]);
 export type AgentWaitReason = typeof AgentWaitReason.Type;
 
 export class AgentWaitError extends S.TaggedError<AgentWaitError>()("AgentWaitError", {

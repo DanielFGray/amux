@@ -2,8 +2,8 @@ import { test, expect } from "bun:test";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { waitFor } from "@danielfgray/amux/test-wait.ts";
-import { decodeAttachFrames, type AttachFrame } from "@danielfgray/amux/effect/AttachProtocol.ts";
+import { waitFor } from "@danielfgray/amux/testing"
+import { decodeAttachFrames, type AttachFrame } from "@danielfgray/amux/protocol"
 
 /**
  * The DoD's live-provider clause, run against a real model.
@@ -97,9 +97,9 @@ test("a native agent worker streams a real turn with no provider key in its envi
     // input stream, which closes the worker and interrupts the running turn.
     await worker.stdin.write(
       JSON.stringify({
-        _tag: "agent.prompt",
+        _tag: "session.message",
         session: "live-worker",
-        text: "Reply with exactly: hello",
+        message: { _tag: "agent.prompt", text: "Reply with exactly: hello" },
       }) + "\n",
     );
 

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BunFileSystem } from "@effect/platform-bun";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { Credential } from "./credential.ts";
-import { testEffect } from "@danielfgray/amux/test-effect.ts";
+import { testEffect } from "@danielfgray/amux/testing"
 
 async function environment() {
   const home = await mkdtemp(join(tmpdir(), "amux-credential-"));
@@ -17,7 +17,7 @@ function provide<A, E, R>(effect: Effect.Effect<A, E, R>, env: NodeJS.ProcessEnv
   return effect.pipe(
     Effect.provide(Credential.Default),
     Effect.provide(BunFileSystem.layer),
-    Effect.withConfigProvider(ConfigProvider.fromJson(env)),
+    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
   );
 }
 
@@ -224,7 +224,7 @@ testEffect("serializes mutations from separate processes without losing writes",
       Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
     );
     const worker = `
-    import { FileSystem } from "@effect/platform";
+    import * as FileSystem from "effect/FileSystem";
     import { BunFileSystem } from "@effect/platform-bun";
     import { Effect, Redacted } from "effect";
     import { Credential } from ${JSON.stringify(new URL("./credential.ts", import.meta.url).href)};

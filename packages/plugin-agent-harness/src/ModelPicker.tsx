@@ -2,11 +2,11 @@
 import { createEffect, createSignal, For, Show } from "solid-js";
 import { Effect, Scope } from "effect";
 import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core";
-import { theme } from "@danielfgray/amux/ui/theme.ts";
+import { theme } from "@danielfgray/amux"
 import { Service as Integration } from "./integration.ts";
 import { Service as ModelCatalog, type Provider } from "./model-catalog.ts";
-import type { PluginHostContext } from "@danielfgray/amux/plugin/types.ts";
-import { CurrentPlugin, RegionsTag } from "@danielfgray/amux/plugin/services.ts";
+import type { PluginHostContext } from "@danielfgray/amux"
+import { CurrentPlugin, RegionsTag } from "@danielfgray/amux"
 
 export interface ModelPickerEntry {
   readonly value: string;

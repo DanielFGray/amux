@@ -60,10 +60,10 @@ interface CompiledRule {
 
 /** Evaluates closed adapter data. Plugins can provide this service when their
  * detector needs behavior the shared rule vocabulary cannot express. */
-export class DetectorEvaluator extends Context.Tag("amux/DetectorEvaluator")<
+export class DetectorEvaluator extends Context.Service<
   DetectorEvaluator,
   DetectorEvaluatorService
->() {
+>()("amux/DetectorEvaluator") {
   static readonly core: DetectorEvaluatorService = {
     evaluate: (agent, snapshot) => evaluateCompiledAdapter(adapterFor(agent), snapshot),
   };

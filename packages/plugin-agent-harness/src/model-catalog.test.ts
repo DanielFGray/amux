@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ConfigProvider, Effect, Stream } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { ModelCatalog } from "./model-catalog.ts";
-import { testEffect } from "@danielfgray/amux/test-effect.ts";
+import { testEffect } from "@danielfgray/amux/testing"
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
 
 const catalog = {
@@ -40,9 +40,9 @@ function provide<A, E, R>(
 ) {
   return effect.pipe(
     Effect.provide(ModelCatalog.testLayer(fetch)),
-    Effect.provide(EventBus.Default),
+    Effect.provide(EventBus.layer),
     Effect.provide(BunFileSystem.layer),
-    Effect.withConfigProvider(ConfigProvider.fromJson(env)),
+    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
   );
 }
 
@@ -91,9 +91,9 @@ testEffect("shares one fetch between concurrent callers", () =>
       { concurrency: "unbounded" },
     ).pipe(
       Effect.provide(ModelCatalog.testLayer(fetch)),
-      Effect.provide(EventBus.Default),
+      Effect.provide(EventBus.layer),
       Effect.provide(BunFileSystem.layer),
-      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
     );
     expect(result).toHaveLength(2);
     expect(calls).toBe(1);
@@ -130,9 +130,9 @@ testEffect("forced refresh publishes a refresh event", () =>
       const service = yield* ModelCatalog.Service;
       const events = yield* EventBus.pipe(Effect.flatMap((bus) => bus.subscribe()));
       yield* service.refresh(true);
-      expect(
-        (yield* Stream.runCollect(Stream.take(events, 1))).pipe((chunk) => [...chunk][0]?.event),
-      ).toEqual({ _tag: "models.refreshed" });
+      expect((yield* Stream.runCollect(Stream.take(events, 1)))[0]?.event).toEqual({
+        _tag: "models.refreshed",
+      });
     });
     yield* provide(effect, env, fetch);
   }),

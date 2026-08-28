@@ -19,13 +19,13 @@ import type { PaneView } from "./component-pane.tsx";
 /** The renderer everything in a workspace draws into. No default: there is no
  *  sensible stand-in for a renderer, and a missing one should not be silently
  *  papered over with a fake that renders nowhere. */
-export class RenderCtx extends Context.Tag("RenderCtx")<RenderCtx, RenderContext>() {}
+export class RenderCtx extends Context.Service<RenderCtx, RenderContext>()("RenderCtx") {}
 
 /** Command a new agent runs. Comes from config; bash is what the config
  *  defaults to when the user has expressed no preference and $SHELL is unset. */
-export class Shell extends Context.Reference<Shell>()("Shell", {
+export const Shell = Context.Reference<string[]>("Shell", {
   defaultValue: (): string[] => ["bash"],
-}) {}
+});
 
 /**
  * Where agents started in this workspace get their processes.
@@ -40,9 +40,9 @@ export class Shell extends Context.Reference<Shell>()("Shell", {
  * nothing — and that override stays where it is, an argument to the one agent
  * it concerns rather than a default anything inherits.
  */
-export class Backend extends Context.Reference<Backend>()("Backend", {
+export const Backend = Context.Reference<SessionBackendFactory>("Backend", {
   defaultValue: (): SessionBackendFactory => localPty,
-}) {}
+});
 
 /**
  * What draws a component session's pane.
@@ -56,12 +56,15 @@ export class Backend extends Context.Reference<Backend>()("Backend", {
  * test, a headless client) draws such a pane as an empty frame rather than
  * failing, exactly as it draws an unavailable component backend as no pane at all.
  */
-export class PaneViews extends Context.Reference<PaneViews>()("PaneViews", {
+export const PaneViews = Context.Reference<PaneView | null>("PaneViews", {
   defaultValue: (): PaneView | null => null,
-}) {}
+});
 
-/** Everything a workspace reads out of its context. */
-export type WorkspaceEnv = RenderCtx | Shell | Backend | PaneViews;
+/** Everything a workspace reads out of its context. Shell, Backend and
+ *  PaneViews are References, not Services — they always resolve to a default
+ *  and so carry no identity in the requirement channel; only the renderer is
+ *  actually required. */
+export type WorkspaceEnv = RenderCtx;
 
 /**
  * Build a workspace's context.

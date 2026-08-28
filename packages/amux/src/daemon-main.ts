@@ -31,7 +31,7 @@ export function runDaemonMain(id?: string): void {
 
   BunRuntime.runMain(
     Effect.scoped(program).pipe(
-      Effect.provide(SessionStore.Default),
+      Effect.provide(SessionStore.layer),
       Effect.provide(BunFileSystem.layer),
     ),
   );

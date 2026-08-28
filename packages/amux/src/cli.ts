@@ -3,8 +3,8 @@
  * The single `amux` binary.
  *
  * Dispatches on the first argument:
- * - `amux` (no args) — attach to the one running session, prompt if several,
- *   or create and attach `default` if none is running
+ * - `amux` (no args) — attach to the one running session, list them if
+ *   several, or create and attach `default` if none is running
  * - `amux [session-id]` — attach to an existing session
  * - `amux new <session-id>` — create (or resume) a session and attach
  * - `amux daemon [id]` — run the daemon foreground
@@ -31,26 +31,6 @@ export function splitCommandArgs(argv: readonly string[]): string[][] {
     else groups.at(-1)!.push(arg);
   }
   return groups;
-}
-
-/**
- * Ask which of several already-running sessions bare `amux` should attach
- * to. Returns `undefined` if the user cancels (Ctrl+C/Esc) rather than
- * picking one.
- */
-async function pickRunningSession(ids: readonly string[]): Promise<string | undefined> {
-  const [{ Prompt }, { BunTerminal }, { Effect }] = await Promise.all([
-    import("@effect/cli"),
-    import("@effect/platform-bun"),
-    import("effect"),
-  ]);
-  const prompt = Prompt.select({
-    message: "Multiple sessions are running — attach to which?",
-    choices: ids.map((id) => ({ title: id, value: id })),
-  });
-  return Effect.runPromise(
-    prompt.pipe(Effect.provide(BunTerminal.layer), Effect.orElseSucceed(() => undefined)),
-  );
 }
 
 /**
@@ -117,14 +97,18 @@ async function main(): Promise<number> {
 
   // Bare `amux` — tmux-style default: attach to whatever's running. No
   // session running yet creates (and attaches) `default`; exactly one
-  // running session attaches to it directly; more than one asks which.
+  // running session attaches to it directly; more than one is ambiguous, so
+  // list them and let the caller name one explicitly rather than guessing.
   if (!sub) {
     const { runningSessionIds } = await import("./session-cli.ts");
     const running = await runningSessionIds();
-    const id =
-      running.length <= 1 ? (running[0] ?? "default") : await pickRunningSession(running);
-    if (id === undefined) return 130; // picker cancelled (Ctrl+C/Esc)
-    process.env.AMUX_SESSION = id;
+    if (running.length > 1) {
+      console.error("Multiple sessions are running:");
+      for (const id of running) console.error(`  ${id}`);
+      console.error("Run `amux <session-id>` to attach to one.");
+      return 1;
+    }
+    process.env.AMUX_SESSION = running[0] ?? "default";
     await import("./main.tsx");
     return 0;
   }
@@ -345,7 +329,7 @@ async function main(): Promise<number> {
     return await Effect.runPromise(
       controlCall(targetId, (control) =>
         control.Batch({ values: [{ _tag: sub, ...parsedArgs.parsed }] }),
-      ).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+      ).pipe(Effect.provide(SessionStore.layer), Effect.provide(BunFileSystem.layer)),
     ).then(
       ({ outputs }) => {
         const result = outputs[0]?.result;
@@ -406,7 +390,7 @@ async function main(): Promise<number> {
       const { ensureDaemon } = await import("./client.ts");
       const started = await Effect.runPromise(
         ensureDaemon(id!).pipe(
-          Effect.provide(SessionStore.Default),
+          Effect.provide(SessionStore.layer),
           Effect.provide(BunFileSystem.layer),
         ),
       ).then(
@@ -428,7 +412,7 @@ async function main(): Promise<number> {
               Effect.sync(() => process.stdout.write(JSON.stringify(event) + "\n")),
             ),
           ),
-        ).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+        ).pipe(Effect.provide(SessionStore.layer), Effect.provide(BunFileSystem.layer)),
       ).then(
         () => 0,
         (error) => {
@@ -465,9 +449,9 @@ async function main(): Promise<number> {
                 (event._tag === "topic" && event.topic === SESSION_STATE_TOPIC),
             ),
             Stream.runHead,
-            Effect.timeoutFail({
+            Effect.timeoutOrElse({
               duration: Math.min(5000, timeout),
-              onTimeout: () => new AgentWaitError({ reason: "agent_prompt_stalled" }),
+              orElse: () => Effect.fail(new AgentWaitError({ reason: "agent_prompt_stalled" })),
             }),
           );
           if (Option.isNone(first))
@@ -497,14 +481,14 @@ async function main(): Promise<number> {
                 return fold(event);
               }),
               Stream.runDrain,
-              Effect.timeoutFail({
+              Effect.timeoutOrElse({
                 duration: Math.max(0, deadline - Date.now()),
-                onTimeout: () => new AgentWaitError({ reason: "agent_wait_timeout" }),
+                orElse: () => Effect.fail(new AgentWaitError({ reason: "agent_wait_timeout" })),
               }),
             );
           return { outputs: [...outputs, { result: result ?? { turn } }] };
         });
-      }).pipe(Effect.provide(SessionStore.Default), Effect.provide(BunFileSystem.layer)),
+      }).pipe(Effect.provide(SessionStore.layer), Effect.provide(BunFileSystem.layer)),
     );
 
     return await runResult.then(
@@ -552,8 +536,8 @@ async function main(): Promise<number> {
   }
   const { BunFileSystem } = await import("@effect/platform-bun");
   const known = await Effect.runPromise(
-    SessionStore.exists(sub).pipe(
-      Effect.provide(SessionStore.Default),
+    Effect.flatMap(SessionStore, (store) => store.exists(sub)).pipe(
+      Effect.provide(SessionStore.layer),
       Effect.provide(BunFileSystem.layer),
     ),
   );

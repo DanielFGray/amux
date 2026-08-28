@@ -5,9 +5,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Scope } from "effect";
 import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
-import { loadPluginsFromConfig } from "./loader.ts";
-import { testPluginEnvironment } from "./test-environment.ts";
-import { definePlugin } from "./types.ts";
+import { loadPluginsFromConfig as loadConfiguredPlugins } from "./loader.ts";
+import { testPluginEnvironment, type TestPluginEnvironment } from "./test-environment.ts";
+import { definePlugin, type PluginDefinition } from "./types.ts";
 import type { Config, PluginSpec } from "../config.ts";
 import { decodeConfig, loadConfig } from "../config.ts";
 import { testEffect } from "../test-effect.ts";
@@ -24,6 +24,9 @@ afterEach(async () => {
 });
 
 const cleanupFns: (() => void)[] = [];
+const registryEntriesByHost = new WeakMap<PluginHost, readonly PluginDefinition[]>();
+const pluginStatuses = (host: PluginHost) =>
+  host.status().filter((status) => !status.id.startsWith("amux.registry."));
 afterEach(() => {
   for (const fn of cleanupFns.splice(0)) fn();
 });
@@ -41,7 +44,7 @@ async function writePluginFile(dir: string, name: string, content: string): Prom
 }
 
 async function mockRegions(): Promise<{
-  environment: PluginEnvironment;
+  environment: TestPluginEnvironment;
   dispose: () => void;
 }> {
   const t = await createTestRenderer({ width: 80, height: 24 });
@@ -53,9 +56,22 @@ function makeHost(): Effect.Effect<{ host: PluginHost; regions: Regions }, never
   return Effect.gen(function* () {
     const { environment, dispose } = yield* Effect.promise(() => mockRegions());
     cleanupFns.push(dispose);
-    return { host: yield* createPluginHost(environment), regions: environment.registries.regions };
+    const host = yield* createPluginHost(environment);
+    registryEntriesByHost.set(host, environment.registryEntries);
+    return { host, regions: environment.registries.regions };
   });
 }
+
+const loadPluginsFromConfig = (
+  config: Config,
+  host: PluginHost,
+  configDir: string,
+  entries: readonly PluginDefinition[] = [],
+) =>
+  loadConfiguredPlugins(config, host, configDir, [
+    ...(registryEntriesByHost.get(host) ?? []),
+    ...entries,
+  ]);
 
 function baseConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -77,6 +93,7 @@ async function writeExampleConfig(dir: string, example: string): Promise<string>
     path,
     JSON.stringify({
       plugins: [
+        { path: "builtin:amux.agent-awareness", enabled: false },
         { path: "builtin:amux.sidebar", enabled: false },
         { path: "builtin:amux.agent-harness", enabled: false },
         { path: "builtin:amux.notifications", enabled: false },
@@ -123,8 +140,8 @@ testEffect("loads a valid plugin", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(1);
-    expect(host.status()[0]!.id).toBe("my-plugin");
+    expect(pluginStatuses(host).length).toBe(1);
+    expect(pluginStatuses(host)[0]!.id).toBe("my-plugin");
   }),
 );
 
@@ -137,7 +154,7 @@ testEffect("loads the worked external status bar example", () =>
 
     yield* loadPluginsFromConfig(config, host, testDir);
 
-    expect(host.status().map((status) => status.id)).toEqual(["example.status-bar"]);
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.status-bar"]);
     expect(regions.declared("bottom", "app")).toBe(true);
   }),
 );
@@ -151,7 +168,7 @@ testEffect("loads the agent dashboard example through the config loader", () =>
 
     yield* loadPluginsFromConfig(config, host, dirname(configPath));
 
-    expect(host.status().map((status) => status.id)).toEqual(["example.agent-dashboard"]);
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.agent-dashboard"]);
     expect(regions.declared("bottom", "app")).toBe(true);
   }),
 );
@@ -165,7 +182,7 @@ testEffect("loads the agent triage example through the config loader", () =>
 
     yield* loadPluginsFromConfig(config, host, dirname(configPath));
 
-    expect(host.status().map((status) => status.id)).toEqual(["example.agent-triage"]);
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.agent-triage"]);
     expect(regions.declared("right", "app")).toBe(true);
   }),
 );
@@ -183,18 +200,17 @@ testEffect("loads multiple plugins in order", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    const ids = host
-      .status()
+    const ids = pluginStatuses(host)
       .map((s) => s.id)
       .sort();
     expect(ids).toEqual(["a", "b"]);
   }),
 );
 
-testEffect("discovers plugins in the XDG opentui-herdr directory", () =>
+testEffect("discovers plugins in the config directory's plugins/ subdirectory", () =>
   Effect.gen(function* () {
     const configHome = yield* Effect.promise(() => tempDir());
-    const pluginDir = join(configHome, "opentui-herdr", "plugins");
+    const pluginDir = join(configHome, "amux", "plugins");
     yield* Effect.promise(() => mkdir(pluginDir, { recursive: true }));
     yield* Effect.promise(() =>
       writePluginFile(pluginDir, "discovered.ts", mkPluginSrc("discovered")),
@@ -203,7 +219,7 @@ testEffect("discovers plugins in the XDG opentui-herdr directory", () =>
 
     yield* loadPluginsFromConfig(baseConfig(), host, join(configHome, "amux"));
 
-    expect(host.status().map((status) => status.id)).toEqual(["discovered"]);
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["discovered"]);
   }),
 );
 
@@ -219,8 +235,8 @@ testEffect("resolves relative paths against configDir", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(1);
-    expect(host.status()[0]!.id).toBe("rel-plugin");
+    expect(pluginStatuses(host).length).toBe(1);
+    expect(pluginStatuses(host)[0]!.id).toBe("rel-plugin");
   }),
 );
 
@@ -239,8 +255,8 @@ testEffect("resolves file:// URLs to paths", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(1);
-    expect(host.status()[0]!.id).toBe("url-plugin");
+    expect(pluginStatuses(host).length).toBe(1);
+    expect(pluginStatuses(host)[0]!.id).toBe("url-plugin");
   }),
 );
 
@@ -259,8 +275,8 @@ testEffect("skips disabled plugins", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(1);
-    expect(host.status()[0]!.id).toBe("enabled");
+    expect(pluginStatuses(host).length).toBe(1);
+    expect(pluginStatuses(host)[0]!.id).toBe("enabled");
   }),
 );
 
@@ -279,7 +295,7 @@ testEffect("one bad plugin does not block the next", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    const ids = host.status().map((s) => s.id);
+    const ids = pluginStatuses(host).map((s) => s.id);
     expect(ids).toEqual(["good"]);
   }),
 );
@@ -297,8 +313,8 @@ testEffect("a plugin that throws on import does not block others", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(1);
-    expect(host.status()[0]!.id).toBe("ok");
+    expect(pluginStatuses(host).length).toBe(1);
+    expect(pluginStatuses(host)[0]!.id).toBe("ok");
   }),
 );
 
@@ -316,7 +332,7 @@ testEffect("reports a plugin with no default export", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
   }),
 );
 
@@ -334,7 +350,7 @@ testEffect("reports a plugin with a null default export", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
   }),
 );
 
@@ -350,7 +366,7 @@ testEffect("reports a plugin with no id field", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
   }),
 );
 
@@ -366,7 +382,7 @@ testEffect("reports a plugin with an empty id", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
   }),
 );
 
@@ -384,7 +400,7 @@ testEffect("reports a plugin with no apiVersion", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
   }),
 );
 
@@ -402,7 +418,7 @@ testEffect("reports a plugin with no activation function", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
   }),
 );
 
@@ -418,7 +434,7 @@ testEffect("handles a missing file gracefully", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
   }),
 );
 
@@ -431,7 +447,32 @@ testEffect("empty plugins array does nothing", () =>
 
     yield* loadPluginsFromConfig(baseConfig(), host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
+  }),
+);
+
+testEffect("reconciles core and configured entries as one configuration", () =>
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => tempDir());
+    yield* Effect.promise(() => writePluginFile(dir, "configured.ts", mkPluginSrc("configured")));
+    const { host } = yield* makeHost();
+    const core = definePlugin({
+      id: "amux.windows",
+      apiVersion: "1",
+      effect: () => Effect.void,
+    });
+
+    yield* loadPluginsFromConfig(
+      baseConfig({ plugins: [spec(join(dir, "configured.ts"))] }),
+      host,
+      dir,
+      [core],
+    );
+
+    expect(pluginStatuses(host).map((status) => status.id).sort()).toEqual([
+      "amux.windows",
+      "configured",
+    ]);
   }),
 );
 
@@ -446,7 +487,7 @@ testEffect("relative paths that escape configDir are rejected", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(0);
+    expect(pluginStatuses(host).length).toBe(0);
   }),
 );
 
@@ -463,8 +504,8 @@ testEffect("absolute paths outside configDir are allowed", () =>
 
     yield* loadPluginsFromConfig(config, host, dir);
 
-    expect(host.status().length).toBe(1);
-    expect(host.status()[0]!.id).toBe("abs-plugin");
+    expect(pluginStatuses(host).length).toBe(1);
+    expect(pluginStatuses(host)[0]!.id).toBe("abs-plugin");
   }),
 );
 
@@ -488,8 +529,7 @@ testEffect("host continues working after loader finishes", () =>
     );
 
     expect(
-      host
-        .status()
+      pluginStatuses(host)
         .map((s) => s.id)
         .sort(),
     ).toEqual(["post", "pre"]);
@@ -514,6 +554,7 @@ test("decodeConfig preserves valid plugin specs", () => {
   });
 
   expect(config.plugins).toEqual([
+    { path: "builtin:amux.agent-awareness", enabled: true },
     { path: "builtin:amux.sidebar", enabled: true },
     { path: "builtin:amux.agent-harness", enabled: true },
     { path: "builtin:amux.notifications", enabled: true },

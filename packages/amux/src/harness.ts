@@ -64,7 +64,7 @@ export const runAsync = <A>(effect: Effect.Effect<A>): Promise<A> => Effect.runP
  */
 export function scopedSpaceSet(env: Context.Context<WorkspaceEnv>, host: BoxRenderable) {
   const scope = Effect.runSync(Scope.make());
-  const spaces = Effect.runSync(Scope.extend(SpaceSet.make(env, host), scope));
+  const spaces = Effect.runSync(Scope.provide(SpaceSet.make(env, host), scope));
   return { spaces, dispose: () => runAsync(Scope.close(scope, Exit.void)) };
 }
 
@@ -135,7 +135,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const scope = Effect.runSync(Scope.make());
   const build = () =>
     Effect.runSync(
-      Scope.extend(SpaceSet.make(workspaceEnv(t.renderer, { shell }), mounted), scope),
+      Scope.provide(SpaceSet.make(workspaceEnv(t.renderer, { shell }), mounted), scope),
     );
 
   let mounted: BoxRenderable = host;

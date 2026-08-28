@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:net";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Cause, Effect, Exit, Scope } from "effect";
-import { FileSystem } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import {
   installOpencodeHook,
@@ -34,7 +34,7 @@ const temporaryHome = Effect.gen(function* () {
 /** A stand-in for AttachHost's process-state listener that records what arrives. */
 const agentStateSocket = (path: string) =>
   Effect.acquireRelease(
-    Effect.async<{ server: Server; received: unknown[] }>((resume) => {
+    Effect.callback<{ server: Server; received: unknown[] }>((resume) => {
       const received: unknown[] = [];
       const server = createServer((socket) => {
         socket.on("data", (chunk) => {
@@ -47,7 +47,7 @@ const agentStateSocket = (path: string) =>
       server.listen(path, () => resume(Effect.succeed({ server, received })));
     }),
     ({ server }) =>
-      Effect.async<void>((resume) => {
+      Effect.callback<void>((resume) => {
         server.close(() => resume(Effect.void));
       }),
   );

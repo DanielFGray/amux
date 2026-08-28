@@ -1,16 +1,19 @@
 import path from "node:path";
-import { FetchHttpClient, FileSystem, HttpClient, HttpClientRequest } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import { Context, Duration, Effect, Layer, Option, Schedule, Schema as S } from "effect";
 import { stateRoot } from "@danielfgray/amux/session.ts";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
 
 export * as ModelCatalog from "./model-catalog.ts";
 
-export const CatalogModelStatus = S.Union(
-  S.Literal("alpha"),
-  S.Literal("beta"),
-  S.Literal("deprecated"),
-);
+export const CatalogModelStatus = S.Union([
+  S.Literals(["alpha"]),
+  S.Literals(["beta"]),
+  S.Literals(["deprecated"]),
+]);
 export type CatalogModelStatus = typeof CatalogModelStatus.Type;
 
 const Cost = S.Struct({
@@ -43,7 +46,7 @@ export const Provider = S.Struct({
   env: S.Array(S.String),
   id: S.String,
   npm: S.optional(S.String),
-  models: S.Record({ key: S.String, value: Model }),
+  models: S.Record(S.String, Model),
 });
 export type Provider = S.Schema.Type<typeof Provider>;
 
@@ -51,7 +54,7 @@ interface CatalogFetcher {
   readonly fetch: Effect.Effect<string, never>;
 }
 
-class Fetcher extends Context.Tag("amux/ModelCatalogFetcher")<Fetcher, CatalogFetcher>() {}
+class Fetcher extends Context.Service<Fetcher, CatalogFetcher>()("amux/ModelCatalogFetcher") {}
 
 export interface Interface {
   readonly providers: () => Effect.Effect<Readonly<Record<string, Provider>>>;
@@ -61,11 +64,11 @@ export interface Interface {
   readonly invalidate: Effect.Effect<void>;
 }
 
-export class Service extends Context.Tag("amux/ModelCatalog")<Service, Interface>() {}
+export class Service extends Context.Service<Service, Interface>()("amux/ModelCatalog") {}
 
 const CACHE_TTL = Duration.minutes(5);
 const SOURCE = "https://models.opencode.ai/api.json";
-const RawCatalog = S.parseJson(S.Record({ key: S.String, value: S.Unknown }));
+const RawCatalog = S.fromJsonString(S.Record(S.String, S.Unknown));
 
 const httpFetcher = Layer.effect(
   Fetcher,
@@ -108,8 +111,8 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
         const text = yield* fs
           .readFileString(file)
           .pipe(
-            Effect.catchTag("SystemError", (error) =>
-              error.reason === "NotFound"
+            Effect.catchTag("PlatformError", (error) =>
+              error.reason._tag === "NotFound"
                 ? Effect.void.pipe(Effect.as(undefined))
                 : Effect.fail(error),
             ),
@@ -124,7 +127,7 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
             Option.isSome(info.mtime) &&
             Date.now() - info.mtime.value.getTime() < Duration.toMillis(CACHE_TTL),
         ),
-        Effect.catchTag("SystemError", () => Effect.succeed(false)),
+        Effect.catchTag("PlatformError", () => Effect.succeed(false)),
       );
       const writeDisk = (value: Readonly<Record<string, Provider>>) =>
         Effect.scoped(
@@ -149,7 +152,7 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
             const value = decode(text);
             return value === undefined ? Effect.fail("invalid catalog") : Effect.succeed(value);
           }),
-          Effect.catchAll(() =>
+          Effect.catch(() =>
             disk ? Effect.succeed(disk) : Effect.succeed({} as Readonly<Record<string, Provider>>),
           ),
         );
@@ -184,7 +187,7 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
   ).pipe(Layer.provide(fetcher));
 
 export const layer = makeLayer(httpFetcher.pipe(Layer.provide(FetchHttpClient.layer))).pipe(
-  Layer.provide(EventBus.Default),
+  Layer.provide(EventBus.layer),
 );
 export const Default = layer;
 

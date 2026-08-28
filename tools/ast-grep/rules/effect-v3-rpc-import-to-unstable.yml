@@ -1,0 +1,5 @@
+id: effect-v3-rpc-import-to-unstable-rpc
+language: TypeScript
+rule:
+  pattern: import $$$CLAUSE from "@effect/rpc/Rpc"
+fix: import $$$CLAUSE from "effect/unstable/rpc/Rpc"

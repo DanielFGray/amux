@@ -1,6 +1,7 @@
-import type { AgentFrame, JsonValue } from "@danielfgray/amux/effect/AttachProtocol.ts";
+import { AgentFrame } from "@danielfgray/amux/protocol"
+import type { JsonValue } from "@danielfgray/amux/protocol"
 import type { PermissionDecision, PermissionRule } from "@danielfgray/amux/permission.ts";
-import type { ProcessState } from "@danielfgray/amux/process-state.ts";
+import { ProcessState } from "@danielfgray/amux"
 import { agentStateFromTopic } from "./state-topic.ts";
 
 export type TranscriptBlock =

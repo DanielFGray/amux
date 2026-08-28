@@ -20,10 +20,10 @@
     "effect": "catalog:",
     "solid-js": "catalog:"
   },
-  "peerDependencies": {
+  "devDependencies": {
     "@danielfgray/amux": "workspace:*"
   },
-  "devDependencies": {
+  "peerDependencies": {
     "@danielfgray/amux": "workspace:*"
   }
 }

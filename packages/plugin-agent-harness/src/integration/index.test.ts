@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { HttpClientRequest } from "@effect/platform";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import { Redacted } from "effect";
 import { integrations, openAiCompatible } from "./index.ts";
 

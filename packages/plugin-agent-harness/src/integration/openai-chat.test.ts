@@ -1,9 +1,17 @@
 import { expect } from "bun:test";
-import { LanguageModel, Prompt, Response as AiResponse, Tool, Toolkit } from "@effect/ai";
-import { HttpClient, HttpClientResponse } from "@effect/platform";
-import { Chunk, Effect, Layer, Schema as S, Stream } from "effect";
+import {
+  AiError,
+  LanguageModel,
+  Prompt,
+  Response as AiResponse,
+  Tool,
+  Toolkit,
+} from "effect/unstable/ai";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
+import { Effect, Layer, Schema as S, Stream } from "effect";
 import * as OpenAiChat from "./openai-chat.ts";
-import { testEffect } from "@danielfgray/amux/test-effect.ts";
+import { testEffect } from "@danielfgray/amux/testing"
 
 /**
  * The Chat Completions protocol.
@@ -90,11 +98,18 @@ const API = "https://opencode.ai/zen/v1";
 const parts = <Tools extends Record<string, Tool.Any> = {}>(
   model: LanguageModel.Service,
   options?: Partial<LanguageModel.GenerateTextOptions<Tools>>,
-) =>
-  Stream.runCollect(model.streamText({ prompt: "hello", ...options })).pipe(
-    Effect.map(Chunk.toReadonlyArray),
-    Effect.map((all) => all.map(fixture)),
-  );
+) => {
+  // `streamText`'s overloads pick the toolkit-shaped one or the toolkit-free
+  // one from a literal call-site object; a generic `Tools` here can't prove
+  // which one applies, so the call is cast past overload resolution. The
+  // fixture assertions below are what actually check the resulting parts.
+  const stream = (
+    model.streamText as (
+      options: unknown,
+    ) => Stream.Stream<AiResponse.StreamPart<Tools>, AiError.AiError, never>
+  )({ prompt: "hello", ...options });
+  return Stream.runCollect(stream).pipe(Effect.map((all) => all.map(fixture)));
+};
 
 const fixture = <Tools extends Record<string, Tool.Any>>(
   part: AiResponse.StreamPart<Tools>,
@@ -109,10 +124,10 @@ const sse = (...frames: ReadonlyArray<string>) =>
 
 const read = Tool.make("read", {
   description: "Read a file",
-  parameters: { path: S.String },
+  parameters: S.Struct({ path: S.String }),
   success: S.String,
 });
-const list = Tool.make("list", { parameters: { dir: S.String }, success: S.String });
+const list = Tool.make("list", { parameters: S.Struct({ dir: S.String }), success: S.String });
 
 /**
  * A toolkit is required to receive a tool call at all: `LanguageModel` decodes
@@ -126,11 +141,18 @@ const toolkit: Toolkit.WithHandler<TestTools> = {
   // `streamText` runs the tools it is given. These tests are about the
   // protocol, so the handler is a stub and its result is not asserted on.
   handle: () =>
-    Effect.succeed({
-      isFailure: false,
-      result: "ok",
-      encodedResult: "ok",
-    } as const) as Effect.Effect<Tool.HandlerResult<TestTools[keyof TestTools]>, never, never>,
+    Effect.succeed(
+      Stream.make({
+        isFailure: false,
+        result: "ok",
+        encodedResult: "ok",
+        preliminary: false,
+      } as const),
+    ) as Effect.Effect<
+      Stream.Stream<Tool.HandlerResult<TestTools[keyof TestTools]>, never, never>,
+      never,
+      never
+    >,
 };
 
 const without = (type: string) => (all: ReadonlyArray<JsonRecord>) =>
@@ -175,11 +197,11 @@ testEffect("text deltas are bracketed, and the stream ends at the [DONE] sentine
       {
         type: "finish",
         reason: "stop",
+        // `Response.Usage` splits the counts by direction and has no total of
+        // its own, so the gateway's `total_tokens` has nowhere to land.
         usage: {
-          inputTokens: 19,
-          outputTokens: 4,
-          totalTokens: 23,
-          cachedInputTokens: 16,
+          inputTokens: { total: 19, cacheRead: 16 },
+          outputTokens: { total: 4 },
         },
       },
     ]);
@@ -243,7 +265,7 @@ testEffect("tool arguments are assembled across deltas and parsed once whole", (
       },
       // A gateway that reports no usage reports no usage. Zeroes would be a
       // number the provider never said.
-      { type: "finish", reason: "tool-calls", usage: {} },
+      { type: "finish", reason: "tool-calls", usage: { inputTokens: {}, outputTokens: {} } },
     ]);
   }),
 );
@@ -313,7 +335,13 @@ testEffect("a tool call whose arguments never parse fails the turn", () =>
       },
       (model) => parts(model),
     ).pipe(Effect.flip);
-    expect(failure).toMatchObject({ _tag: "MalformedOutput" });
+    expect(failure).toMatchObject({
+      _tag: "AiError",
+      reason: {
+        _tag: "InvalidOutputError",
+        description: expect.stringContaining("Failed to parse arguments for tool 'read'"),
+      },
+    });
   }),
 );
 
@@ -327,7 +355,13 @@ testEffect("a tool call delta that never states its identity fails the turn", ()
       },
       (model) => parts(model),
     ).pipe(Effect.flip);
-    expect(failure).toMatchObject({ _tag: "MalformedOutput" });
+    expect(failure).toMatchObject({
+      _tag: "AiError",
+      reason: {
+        _tag: "InvalidOutputError",
+        description: expect.stringContaining("missing an id or a name"),
+      },
+    });
   }),
 );
 
@@ -337,7 +371,13 @@ testEffect("an error frame is an error, not an empty turn", () =>
       { body: sse(`{"error":{"message":"insufficient credits","type":"quota_exceeded"}}`) },
       (model) => parts(model),
     ).pipe(Effect.flip);
-    expect(failure).toMatchObject({ description: expect.stringContaining("insufficient credits") });
+    expect(failure).toMatchObject({
+      _tag: "AiError",
+      reason: {
+        _tag: "InvalidOutputError",
+        description: expect.stringContaining("insufficient credits"),
+      },
+    });
   }),
 );
 
@@ -346,7 +386,12 @@ testEffect("a rejected request is an error, not an empty turn", () =>
     const failure = yield* run({ status: 401, body: `{"error":{"message":"bad key"}}` }, (model) =>
       parts(model),
     ).pipe(Effect.flip);
-    expect(failure).toMatchObject({ _tag: "HttpResponseError", request: expect.anything() });
+    // A 401 is classified by status, so the reason names the credential
+    // problem rather than restating the status code.
+    expect(failure).toMatchObject({
+      _tag: "AiError",
+      reason: { _tag: "AuthenticationError", kind: "InvalidKey" },
+    });
   }),
 );
 
@@ -370,7 +415,10 @@ testEffect("a frame that is not JSON fails rather than being silently skipped", 
     const failure = yield* run({ body: "data: not json at all\n\ndata: [DONE]\n\n" }, (model) =>
       parts(model),
     ).pipe(Effect.flip);
-    expect(failure).toMatchObject({ _tag: "MalformedOutput" });
+    expect(failure).toMatchObject({
+      _tag: "AiError",
+      reason: { _tag: "InvalidOutputError" },
+    });
   }),
 );
 
@@ -394,7 +442,7 @@ testEffect("generateText is the stream, joined back up", () =>
 
     expect(result.text).toBe("Hello, world");
     expect(result.finishReason).toBe("stop");
-    expect(result.usage.inputTokens).toBe(8);
+    expect(result.usage.inputTokens.total).toBe(8);
   }),
 );
 

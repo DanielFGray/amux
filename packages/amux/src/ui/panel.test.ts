@@ -5,6 +5,7 @@ import type { WorkspaceSnapshot } from "../workspace.ts";
 import { resolveOptions } from "../options.ts";
 import { command, CommandError } from "../commands.ts";
 import { testPanelContext } from "./test-panel.ts";
+import { testEffect } from "../test-effect.ts";
 
 function snapshotAt(revision: number): WorkspaceSnapshot {
   return { revision, spaces: [], state: { activeSpace: null, nextSpace: 1 } };
@@ -37,28 +38,32 @@ test("tick accessor reads the current signal value", () => {
   expect(ctx.tick()).toBe(42);
 });
 
-test("run delegates to the provided command invoker and returns an Effect", async () => {
-  let calledWith: string | undefined;
-  const ctx = testPanelContext({
-    run: (cmd) => {
-      calledWith = cmd._tag;
-      return Effect.succeed(snapshotAt(1));
-    },
-  });
+testEffect("run delegates to the provided command invoker and returns an Effect", () =>
+  Effect.gen(function* () {
+    let calledWith: string | undefined;
+    const ctx = testPanelContext({
+      run: (cmd) => {
+        calledWith = cmd._tag;
+        return Effect.succeed(snapshotAt(1));
+      },
+    });
 
-  const result = await Effect.runPromise(ctx.run(command("pane.split", { axis: "row" })));
-  expect(calledWith).toBe("pane.split");
-  expect(result.revision).toBe(1);
-});
+    const result = yield* ctx.run(command("pane.split", { axis: "row" }));
+    expect(calledWith).toBe("pane.split");
+    expect(result.revision).toBe(1);
+  }),
+);
 
-test("run propagates a CommandError", async () => {
-  const ctx = testPanelContext({
-    run: () => Effect.fail(new CommandError({ message: "no such window" })),
-  });
+testEffect("run propagates a CommandError", () =>
+  Effect.gen(function* () {
+    const ctx = testPanelContext({
+      run: () => Effect.fail(new CommandError({ message: "no such window" })),
+    });
 
-  const exit = await Effect.runPromise(Effect.exit(ctx.run(command("window.close"))));
-  expect(exit._tag).toBe("Failure");
-});
+    const exit = yield* Effect.exit(ctx.run(command("window.close")));
+    expect(exit._tag).toBe("Failure");
+  }),
+);
 
 test("options accessor reads the current resolved values", () => {
   const ctx = testPanelContext();
@@ -83,18 +88,20 @@ test("setOption delegates to the provided setter", () => {
   expect(ctx.options()["appearance.outerBorder"]).toBe(false);
 });
 
-test("run passes the optional input string to the invoker", async () => {
-  let receivedInput: string | undefined;
-  const ctx = testPanelContext({
-    run: (_, input) => {
-      receivedInput = input;
-      return Effect.succeed(snapshotAt(1));
-    },
-  });
+testEffect("run passes the optional input string to the invoker", () =>
+  Effect.gen(function* () {
+    let receivedInput: string | undefined;
+    const ctx = testPanelContext({
+      run: (_, input) => {
+        receivedInput = input;
+        return Effect.succeed(snapshotAt(1));
+      },
+    });
 
-  await Effect.runPromise(ctx.run(command("pane.send-keys", { keys: "ls" }), "\x1b[B"));
-  expect(receivedInput).toBe("\x1b[B");
-});
+    yield* ctx.run(command("pane.send-keys", { keys: "ls" }), "\x1b[B");
+    expect(receivedInput).toBe("\x1b[B");
+  }),
+);
 
 test("the context carries all expected fields", () => {
   const keys = Object.keys(testPanelContext()).sort();

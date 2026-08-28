@@ -1,5 +1,5 @@
 import { testEffect } from "../test-effect.ts";
-import { Chunk, Deferred, Effect, Fiber, Layer, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -21,9 +21,7 @@ import { BunFileSystem } from "@effect/platform-bun";
  * reliable stopping point is the exit frame.
  */
 const untilExit = (frames: Stream.Stream<AttachFrame>) =>
-  Stream.runCollect(Stream.takeUntil(frames, (frame) => frame._tag === "exit")).pipe(
-    Effect.map(Chunk.toReadonlyArray),
-  );
+  Stream.runCollect(Stream.takeUntil(frames, (frame) => frame._tag === "exit"));
 
 const output = (frames: readonly AttachFrame[]) =>
   frames
@@ -60,9 +58,9 @@ testEffect("SessionSupervisor publishes owned PTY output and exit frames", () =>
         .every((frame) => frame._tag === "output"),
     ).toBe(true);
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -99,9 +97,9 @@ testEffect("a self-reported state is committed to the session log, not only publ
     expect(events.map((event) => event.sequence)).toEqual([0, 1]);
     expect(yield* log.read("no-such-pane")).toHaveLength(0);
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -137,9 +135,9 @@ testEffect("a report under a plugin-owned topic commits and replays as an opaque
       payload: { agent: "opencode", state: "working" },
     });
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -176,8 +174,8 @@ testEffect("a file-backed agent log survives rebuilding the supervisor", () =>
       yield* Effect.sleep("1 second");
       yield* supervisor.kill("persisted-agent");
     }).pipe(
-      Effect.provide(SessionSupervisor.Live.pipe(Layer.provide(Layer.succeed(AgentLog, log)))),
-      Effect.provide(AttachHub.Default),
+      Effect.provide(SessionSupervisor.layer.pipe(Layer.provide(Layer.succeed(AgentLog, log)))),
+      Effect.provide(AttachHub.layer),
     );
     expect(yield* log.read("persisted-agent")).toHaveLength(1);
     const rebuilt = yield* makeAgentLog(root);
@@ -207,13 +205,13 @@ testEffect("sync replays a pending component transcript before respawn", () =>
 
     const replay = Stream.runCollect(Stream.take(subscription.frames, 2));
     yield* supervisor.sync("client", "", "pending-agent");
-    const frames = Chunk.toReadonlyArray(yield* replay);
+    const frames = yield* replay;
 
     expect(frames.map((frame) => frame._tag)).toEqual(["turn.start", "turn.end"]);
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -241,7 +239,7 @@ testEffect("a supervised session publishes its foreground process, and its chang
     // states on the published stream.
     const atPrompt = yield* Deferred.make<FgFrame>();
     const running = yield* Deferred.make<FgFrame>();
-    const waiter = yield* Effect.fork(
+    const waiter = yield* Effect.forkChild(
       Stream.runForEach(subscription.frames, (frame) =>
         frame._tag === "foreground"
           ? Effect.gen(function* () {
@@ -285,10 +283,11 @@ testEffect("a supervised session publishes its foreground process, and its chang
     // reports must not be the shell's.
     expect(fg.running.pgid).toBeGreaterThan(0);
     expect(fg.running.pgid).not.toBe(fg.running.sid);
+    expect(fg.running.argv[0]).toContain("sleep");
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -310,13 +309,13 @@ testEffect("scope teardown kills a session left running, without an explicit kil
       rows: 24,
     });
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
     Effect.timeout("5 seconds"),
-    Effect.either,
+    Effect.result,
     Effect.map((outcome) => {
-      expect(outcome._tag).toBe("Right");
+      expect(outcome._tag).toBe("Success");
     }),
   ),
 );
@@ -345,16 +344,16 @@ testEffect("SessionSupervisor routes input through the managed PTY", () =>
       code: 0,
     });
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
-test("concurrent duplicate spawns create one child and one managed session", async () => {
-  const marker = `/tmp/amux-duplicate-${randomUUID()}`;
-  const frames = await Effect.runPromise(
-    Effect.gen(function* () {
+testEffect("concurrent duplicate spawns create one child and one managed session", () =>
+  Effect.gen(function* () {
+    const marker = `/tmp/amux-duplicate-${randomUUID()}`;
+    const frames = yield* Effect.gen(function* () {
       const hub = yield* AttachHub;
       const subscription = yield* hub.subscribe("client");
       const supervisor = yield* SessionSupervisor;
@@ -364,7 +363,7 @@ test("concurrent duplicate spawns create one child and one managed session", asy
         cols: 80,
         rows: 24,
       } as const;
-      const first = yield* Effect.fork(Effect.exit(supervisor.spawn(spec)));
+      const first = yield* Effect.forkChild(Effect.exit(supervisor.spawn(spec)));
       const second = yield* Effect.exit(supervisor.spawn(spec));
       const firstResult = yield* Fiber.join(first);
       expect([firstResult._tag, second._tag].sort()).toEqual(["Failure", "Success"]);
@@ -374,17 +373,17 @@ test("concurrent duplicate spawns create one child and one managed session", asy
       expect(yield* supervisor.live).toEqual(["duplicate-agent"]);
       return yield* untilExit(subscription.frames);
     }).pipe(
-      Effect.provide(SessionSupervisor.Live),
+      Effect.provide(SessionSupervisor.layer),
       Effect.provide(AgentLogDefault),
-      Effect.provide(AttachHub.Default),
+      Effect.provide(AttachHub.layer),
       Effect.scoped,
-    ),
-  );
+    );
 
-  expect(await readFile(marker, "utf8")).toBe("x");
-  await rm(marker, { force: true });
-  expect(frames.at(-1)?._tag).toBe("exit");
-});
+    expect(yield* Effect.promise(() => readFile(marker, "utf8"))).toBe("x");
+    yield* Effect.promise(() => rm(marker, { force: true }));
+    expect(frames.at(-1)?._tag).toBe("exit");
+  }),
+);
 
 testEffect("exit cleanup releases the session and replay terminal for reuse", () =>
   Effect.gen(function* () {
@@ -407,9 +406,9 @@ testEffect("exit cleanup releases the session and replay terminal for reuse", ()
     });
     expect(yield* supervisor.live).toEqual(["reusable-agent"]);
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -429,7 +428,7 @@ testEffect("killing a trapped session publishes one exit and removes it", () =>
       rows: 24,
     });
     const ready = yield* Deferred.make<void>();
-    const collector = yield* Effect.fork(
+    const collector = yield* Effect.forkChild(
       Stream.runCollect(
         subscription.frames.pipe(
           Stream.tap((frame) =>
@@ -443,14 +442,14 @@ testEffect("killing a trapped session publishes one exit and removes it", () =>
     );
     yield* Deferred.await(ready);
     yield* supervisor.kill("trapped-agent");
-    const frames = Chunk.toReadonlyArray(yield* Fiber.join(collector));
+    const frames = yield* Fiber.join(collector);
     expect(yield* supervisor.live).toEqual([]);
     expect(frames.filter((frame) => frame._tag === "exit")).toHaveLength(1);
     expect(frames.at(-1)?._tag).toBe("exit");
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -467,10 +466,10 @@ testEffect("concurrent supervisor kills publish one exit and permit same-id reus
     });
     const received: AttachFrame[] = [];
     const exitSeen = yield* Deferred.make<void>();
-    const collector = yield* Effect.fork(
+    const collector = yield* Effect.forkChild(
       Stream.runForEach(subscription.frames, (frame) =>
         Effect.sync(() => received.push(frame)).pipe(
-          Effect.zipRight(frame._tag === "exit" ? Deferred.succeed(exitSeen, void 0) : Effect.void),
+          Effect.andThen(frame._tag === "exit" ? Deferred.succeed(exitSeen, void 0) : Effect.void),
         ),
       ),
     );
@@ -489,9 +488,9 @@ testEffect("concurrent supervisor kills publish one exit and permit same-id reus
       rows: 24,
     });
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -522,9 +521,9 @@ testEffect("a native agent worker is listed and killed through the supervisor", 
       code: null,
     });
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );
 
@@ -569,8 +568,8 @@ testEffect("a crashed native agent exits with a neutral state and a nonzero code
     });
     expect(yield* supervisor.live).toEqual(["crashed-worker"]);
   }).pipe(
-    Effect.provide(SessionSupervisor.Live),
+    Effect.provide(SessionSupervisor.layer),
     Effect.provide(AgentLogDefault),
-    Effect.provide(AttachHub.Default),
+    Effect.provide(AttachHub.layer),
   ),
 );

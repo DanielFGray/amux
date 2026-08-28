@@ -237,8 +237,8 @@ function restoredLayout(
   return Effect.gen(function* () {
     let recorded: Layout | null = null;
     if (saved.layout) {
-      const result = yield* Effect.either(decodeLayout(saved.layout));
-      if (result._tag === "Right") recorded = result.right;
+      const result = yield* Effect.result(decodeLayout(saved.layout));
+      if (result._tag === "Success") recorded = result.success;
     }
     const pruned = recorded ? prune(recorded, (id) => alive.has(id)) : null;
     if (pruned?.root) return pruned;

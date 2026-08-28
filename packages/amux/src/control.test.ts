@@ -11,7 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigProvider, Deferred, Effect, Fiber, Option, Scope, Stream } from "effect";
-import { FileSystem } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { AttachClient } from "./attach.ts";
@@ -21,6 +21,7 @@ import { MAX_RPC_BYTES } from "./limits.ts";
 import { SessionStore, sessionPaths } from "./session.ts";
 import { waitFor } from "./test-wait.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
+import { testEffect } from "./test-effect.ts";
 
 const dirs: string[] = [];
 const daemons: SessionDaemonService[] = [];
@@ -35,9 +36,9 @@ const run = <A, E>(
 ) =>
   Effect.runPromise(
     Effect.scoped(effect).pipe(
-      Effect.provide(SessionStore.Default),
+      Effect.provide(SessionStore.layer),
       Effect.provide(BunFileSystem.layer),
-      Effect.withConfigProvider(ConfigProvider.fromJson(env)),
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
     ),
   );
 
@@ -236,199 +237,211 @@ test("--session selects the daemon for a command whose schema has no session fie
   expect(Effect.runSync(daemon.getWorkspace).spaces[0]!.name).toBe("flagged");
 });
 
-test("--session also fills a command's session field, targeting the session it selects", async () => {
-  const id = "capture-flag";
-  const { daemon, env } = await started(id);
-  await Effect.runPromise(
-    daemon.spawnSession({
+testEffect("--session also fills a command's session field, targeting the session it selects", () =>
+  Effect.gen(function* () {
+    const id = "capture-flag";
+    const { daemon, env } = yield* Effect.promise(() => started(id));
+    yield* daemon.spawnSession({
       kind: "pty",
       id,
       cmd: ["sh", "-c", "printf 'flag-captured\\n'; sleep 30"],
       cols: 80,
       rows: 24,
-    }),
-  );
-  const capture = () =>
-    ctl(daemon.id, env, (c) => c.Batch({ values: [command("pane.capture", { session: id })] }));
-  let outputs = (await capture()).outputs;
-  await waitFor(async () => {
-    outputs = (await capture()).outputs;
-    return String(outputs[0]!.result).includes("flag-captured");
-  }, "the pane to print before it is captured");
-  expect(outputs[0]!.result).toContain("flag-captured");
+    });
+    const capture = () =>
+      ctl(daemon.id, env, (c) => c.Batch({ values: [command("pane.capture", { session: id })] }));
+    let outputs = (yield* Effect.promise(() => capture())).outputs;
+    yield* Effect.promise(() =>
+      waitFor(async () => {
+        outputs = (await capture()).outputs;
+        return String(outputs[0]!.result).includes("flag-captured");
+      }, "the pane to print before it is captured"),
+    );
+    expect(outputs[0]!.result).toContain("flag-captured");
 
-  const entry = new URL("./cli.ts", import.meta.url).pathname;
-  const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
-  const child = Bun.spawn({
-    cmd: [process.execPath, entry, "pane.capture", `--session=${id}`],
-    env: { ...clean, ...env },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
-  expect(stdout).toContain("flag-captured");
-  await Effect.runPromise(daemon.killSession(id));
-});
+    const entry = new URL("./cli.ts", import.meta.url).pathname;
+    const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+    const child = Bun.spawn({
+      cmd: [process.execPath, entry, "pane.capture", `--session=${id}`],
+      env: { ...clean, ...env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = yield* Effect.promise(() =>
+      Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]),
+    );
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(stdout).toContain("flag-captured");
+    yield* daemon.killSession(id);
+  }),
+);
 
-test("--session satisfies a command's required session field", async () => {
-  const id = "reveal-flag";
-  const { daemon, env } = await started(id);
-  await Effect.runPromise(
-    daemon.spawnSession({ kind: "pty", id, cmd: ["sleep", "30"], cols: 80, rows: 24 }),
-  );
-  const entry = new URL("./cli.ts", import.meta.url).pathname;
-  const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+testEffect("--session satisfies a command's required session field", () =>
+  Effect.gen(function* () {
+    const id = "reveal-flag";
+    const { daemon, env } = yield* Effect.promise(() => started(id));
+    yield* daemon.spawnSession({ kind: "pty", id, cmd: ["sleep", "30"], cols: 80, rows: 24 });
+    const entry = new URL("./cli.ts", import.meta.url).pathname;
+    const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
 
-  const child = Bun.spawn({
-    cmd: [process.execPath, entry, "session.reveal", `--session=${id}`],
-    env: { ...clean, ...env },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-  // Without the feed the required field errors as 'missing required argument:
-  // session'; reaching the daemon at all proves --session supplied it.
-  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
-});
+    const child = Bun.spawn({
+      cmd: [process.execPath, entry, "session.reveal", `--session=${id}`],
+      env: { ...clean, ...env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stderr] = yield* Effect.promise(() =>
+      Promise.all([child.exited, new Response(child.stderr).text()]),
+    );
+    // Without the feed the required field errors as 'missing required argument:
+    // session'; reaching the daemon at all proves --session supplied it.
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+  }),
+);
 
-test("a native agent can capture a live session through the command surface", async () => {
-  const { daemon, env } = await started("agent-tools");
-  const id = "capture-agent";
-  await Effect.runPromise(
-    daemon.spawnSession({
+testEffect("a native agent can capture a live session through the command surface", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("agent-tools"));
+    const id = "capture-agent";
+    yield* daemon.spawnSession({
       kind: "pty",
       id,
       cmd: ["sh", "-c", "printf 'capture-me\\n'; sleep 30"],
       cols: 80,
       rows: 24,
-    }),
-  );
-  const capture = () =>
-    ctl(daemon.id, env, (c) => c.Batch({ values: [command("pane.capture", { session: id })] }));
-  let outputs = (await capture()).outputs;
-  await waitFor(async () => {
-    outputs = (await capture()).outputs;
-    return String(outputs[0]!.result).includes("capture-me");
-  }, "the pane to print before it is captured");
-  expect(outputs[0]!.result).toContain("capture-me");
-  await Effect.runPromise(daemon.killSession(id));
-});
+    });
+    const capture = () =>
+      ctl(daemon.id, env, (c) => c.Batch({ values: [command("pane.capture", { session: id })] }));
+    let outputs = (yield* Effect.promise(() => capture())).outputs;
+    yield* Effect.promise(() =>
+      waitFor(async () => {
+        outputs = (await capture()).outputs;
+        return String(outputs[0]!.result).includes("capture-me");
+      }, "the pane to print before it is captured"),
+    );
+    expect(outputs[0]!.result).toContain("capture-me");
+    yield* daemon.killSession(id);
+  }),
+);
 
-test("a native worker invokes pane.capture through the amux CLI", async () => {
-  const { daemon, env } = await started("agent-cli-tools");
-  const target = "capture-target";
-  await Effect.runPromise(
-    daemon.spawnSession({
+testEffect("a native worker invokes pane.capture through the amux CLI", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("agent-cli-tools"));
+    const target = "capture-target";
+    yield* daemon.spawnSession({
       id: target,
       cmd: ["sh", "-c", "printf 'worker-capture\n'; sleep 30"],
       cols: 80,
       rows: 24,
-    }),
-  );
-  const worker = "capture-worker";
-  const entry = new URL("./cli.ts", import.meta.url).pathname;
-  const script = `
+    });
+    const worker = "capture-worker";
+    const entry = new URL("./cli.ts", import.meta.url).pathname;
+    const script = `
     const p = Bun.spawnSync([process.execPath, ${JSON.stringify(entry)}, "pane.capture", process.env.AMUX_SESSION, "--session=${target}"], { env: process.env });
     const data = Buffer.from(p.stdout).toString("utf8");
     process.stdout.write(JSON.stringify({_tag:"output",session:process.env.AMUX_AGENT_ID,data:Buffer.from(data).toString("base64")})+"\\n");
   `;
-  await Effect.runPromise(
-    daemon.spawnSession({
+    yield* daemon.spawnSession({
       kind: "component",
       id: worker,
       cmd: [process.execPath, "-e", script],
       cols: 80,
       rows: 24,
-    }),
-  );
-  const session = await ctl(daemon.id, env, (c) => c.Status());
-  expect(session.agents).toContain(worker);
-  await Bun.sleep(300);
-  await Effect.runPromise(daemon.killSession(target));
-  await Effect.runPromise(daemon.killSession(worker));
-});
+    });
+    const session = yield* Effect.promise(() => ctl(daemon.id, env, (c) => c.Status()));
+    expect(session.agents).toContain(worker);
+    yield* Effect.sleep(300);
+    yield* daemon.killSession(target);
+    yield* daemon.killSession(worker);
+  }),
+);
 
-test("agent.prompt --wait returns the anchored turn completion", async () => {
-  const { daemon, env } = await started("agent-prompt-wait");
-  const target = "wait-target";
-  const script = `
+testEffect("agent.prompt --wait returns the anchored turn completion", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("agent-prompt-wait"));
+    const target = "wait-target";
+    const script = `
     for await (const chunk of process.stdin) {
       for (const line of chunk.toString().split("\\n")) {
         if (!line) continue;
         const frame = JSON.parse(line);
-        if (frame._tag !== "agent.prompt") continue;
-        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.start",session:process.env.AMUX_AGENT_ID,turn:"turn-e2e",prompt:frame.text}})+"\\n");
+        // The daemon routes harness control inside session.message; the
+        // prompt is the opaque payload, not a frame tag of its own.
+        if (frame._tag !== "session.message" || frame.message?._tag !== "agent.prompt") continue;
+        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.start",session:process.env.AMUX_AGENT_ID,turn:"turn-e2e",prompt:frame.message.text}})+"\\n");
         process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.end",session:process.env.AMUX_AGENT_ID,turn:"turn-e2e",outcome:"completed",text:"finished"}})+"\\n");
       }
     }
   `;
-  await Effect.runPromise(
-    daemon.spawnSession({
+    yield* daemon.spawnSession({
       kind: "component",
       id: target,
       cmd: [process.execPath, "-e", script],
       cols: 80,
       rows: 24,
-    }),
-  );
+    });
 
-  const entry = new URL("./cli.ts", import.meta.url).pathname;
-  const child = Bun.spawn(
-    [process.execPath, entry, "agent.prompt", target, "inspect", "--wait", "--timeout=1000"],
-    {
-      env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
-  expect(JSON.parse(stdout)).toMatchObject({ turn: "turn-e2e", outcome: "completed" });
-});
+    const entry = new URL("./cli.ts", import.meta.url).pathname;
+    const child = Bun.spawn(
+      [process.execPath, entry, "agent.prompt", target, "inspect", "--wait", "--timeout=1000"],
+      {
+        env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [exitCode, stdout, stderr] = yield* Effect.promise(() =>
+      Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]),
+    );
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(stdout)).toMatchObject({ turn: "turn-e2e", outcome: "completed" });
+  }),
+);
 
-test("agent.prompt --wait fails fast with the named stall error", async () => {
-  const { daemon, env } = await started("agent-prompt-stall");
-  await Effect.runPromise(
-    daemon.spawnSession({
+testEffect("agent.prompt --wait fails fast with the named stall error", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("agent-prompt-stall"));
+    yield* daemon.spawnSession({
       kind: "component",
       id: "stall-target",
       cmd: [process.execPath, "-e", "setTimeout(() => {}, 30000)"],
       cols: 80,
       rows: 24,
-    }),
-  );
-  const entry = new URL("./cli.ts", import.meta.url).pathname;
-  const startedAt = Date.now();
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      entry,
-      "agent.prompt",
-      "stall-target",
-      "inspect",
-      "--wait",
-      "--timeout=10000",
-    ],
-    {
-      env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-  expect(exitCode).toBe(1);
-  expect(stderr).toContain("agent_prompt_stalled");
-  expect(Date.now() - startedAt).toBeLessThan(10_000);
-}, 10_000);
+    });
+    const entry = new URL("./cli.ts", import.meta.url).pathname;
+    const startedAt = Date.now();
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        entry,
+        "agent.prompt",
+        "stall-target",
+        "inspect",
+        "--wait",
+        "--timeout=10000",
+      ],
+      {
+        env: { ...process.env, ...env, AMUX_DAEMON_SESSION: daemon.id },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [exitCode, stderr] = yield* Effect.promise(() =>
+      Promise.all([child.exited, new Response(child.stderr).text()]),
+    );
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("agent_prompt_stalled");
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+  }),
+);
 
 /* The DoD round trip: a process inside a real daemon-spawned pane, given only
  * the injected environment, learns which pane it is and where the process-state
@@ -436,9 +449,10 @@ test("agent.prompt --wait fails fast with the named stall error", async () => {
  * the two halves separately — SessionRegistry injects the variables, the
  * socket answers — but a pane whose hook cannot actually dial the mux is the
  * exact failure this task reopened on, so the halves are joined here. */
-test("a script inside a pane reports and gets a response using only the injected env", async () => {
-  const { daemon, env } = await started("pane-roundtrip");
-  const script = `
+testEffect("a script inside a pane reports and gets a response using only the injected env", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("pane-roundtrip"));
+    const script = `
     const net = require("node:net");
     const path = process.env.AMUX_PROCESS_STATE_SOCKET;
     const pane = process.env.AMUX_PANE_ID;
@@ -450,41 +464,44 @@ test("a script inside a pane reports and gets a response using only the injected
     s.on("error", (e) => { process.stdout.write("error:" + e.message + "\\n"); process.exit(1); });
     s.setTimeout(3000, () => { process.stdout.write("timeout\\n"); process.exit(1); });
   `;
-  await Effect.runPromise(
-    daemon.spawnSession({
+    yield* daemon.spawnSession({
       id: "roundtrip-pane",
       paneId: "roundtrip-pane",
       cmd: [process.execPath, "-e", script],
       cols: 80,
       rows: 24,
-    }),
-  );
-  // The supervisor already consumes the session's output stream, so the pane's
-  // bytes are observed where a real client sees them — over the attach plane.
-  const attached = await AttachClient.connect({
-    path: daemon.paths.attach,
-    client: "roundtrip-watcher",
-  });
-  const frames = await run(
-    Effect.scoped(
-      attached.stream("roundtrip-pane").pipe(
-        Stream.takeUntil((frame) => frame._tag === "exit"),
-        Stream.runCollect,
+    });
+    // The supervisor already consumes the session's output stream, so the pane's
+    // bytes are observed where a real client sees them — over the attach plane.
+    const attached = yield* Effect.promise(() =>
+      AttachClient.connect({
+        path: daemon.paths.attach,
+        client: "roundtrip-watcher",
+      }),
+    );
+    const frames = yield* Effect.promise(() =>
+      run(
+        Effect.scoped(
+          attached.stream("roundtrip-pane").pipe(
+            Stream.takeUntil((frame) => frame._tag === "exit"),
+            Stream.runCollect,
+          ),
+        ),
+        env,
       ),
-    ),
-    env,
-  );
-  attached.close();
-  const text = [...frames]
-    .map((frame) => (frame._tag === "output" ? new TextDecoder().decode(frame.data) : ""))
-    .join("");
-  expect(text).toContain("pane=roundtrip-pane");
-  expect(text).toContain("reply:");
-  expect(JSON.parse(text.split("reply:")[1]!.split("\n")[0]!)).toEqual({
-    id: "roundtrip",
-    ok: true,
-  });
-}, 10_000);
+    );
+    attached.close();
+    const text = [...frames]
+      .map((frame) => (frame._tag === "output" ? new TextDecoder().decode(frame.data) : ""))
+      .join("");
+    expect(text).toContain("pane=roundtrip-pane");
+    expect(text).toContain("reply:");
+    expect(JSON.parse(text.split("reply:")[1]!.split("\n")[0]!)).toEqual({
+      id: "roundtrip",
+      ok: true,
+    });
+  }),
+);
 
 test("the process state socket accepts ping and process state reports", async () => {
   const { daemon, env } = await started("pane-control");
@@ -572,60 +589,62 @@ test("a hook that dies mid-write leaves the daemon unaffected", async () => {
  * in AMUX_PANE_ID is a view, not an identity). A report is committed to that
  * session's log before it is published, so an id belonging to no session has
  * nowhere to land and is dropped. */
-test("an agent self-report reaches the session-state topic, not just the socket", async () => {
-  const { daemon, env } = await started("agent-state-publish");
-  const paths = await run(sessionPaths(daemon.id), env);
-  await Effect.runPromise(
-    daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
-  );
+testEffect("an agent self-report reaches the session-state topic, not just the socket", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("agent-state-publish"));
+    const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+    yield* daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 });
 
-  const report = Effect.promise(async () => {
-    const socket = await Bun.connect({
-      unix: paths.processState,
-      socket: { data: () => {} },
-    });
-    socket.write(
-      JSON.stringify({
-        id: "report",
-        method: "process.state",
-        params: { session: "pane-a", state: "running" },
-      }) + "\n",
-    );
-    await Bun.sleep(50);
-    socket.end();
-  });
-
-  const published = await run(
-    Effect.gen(function* () {
-      const control = yield* connectControl(daemon.id);
-      const ready = yield* Deferred.make<void>();
-      const head = yield* Effect.fork(
-        Stream.runHead(
-          control.Events().pipe(
-            Stream.tap((frame) =>
-              frame.event._tag === "events.ready"
-                ? Deferred.succeed(ready, undefined)
-                : Effect.void,
-            ),
-            Stream.filter((frame) => frame.event._tag === "session.state"),
-          ),
-        ),
+    const report = Effect.promise(async () => {
+      const socket = await Bun.connect({
+        unix: paths.processState,
+        socket: { data: () => {} },
+      });
+      socket.write(
+        JSON.stringify({
+          id: "report",
+          method: "process.state",
+          params: { session: "pane-a", state: "running" },
+        }) + "\n",
       );
-      // Report only once the handshake proves this subscriber is live, so the
-      // event cannot be published before anyone is listening for it.
-      yield* Deferred.await(ready);
-      yield* report;
-      return yield* Fiber.join(head).pipe(Effect.timeout("5 seconds"));
-    }),
-    env,
-  );
+      await Bun.sleep(50);
+      socket.end();
+    });
 
-  expect(Option.getOrNull(published)?.event).toEqual({
-    _tag: "session.state",
-    session: "pane-a",
-    state: "running",
-  });
-});
+    const published = yield* Effect.promise(() =>
+      run(
+        Effect.gen(function* () {
+          const control = yield* connectControl(daemon.id);
+          const ready = yield* Deferred.make<void>();
+          const head = yield* Effect.forkChild(
+            Stream.runHead(
+              control.Events().pipe(
+                Stream.tap((frame) =>
+                  frame.event._tag === "events.ready"
+                    ? Deferred.succeed(ready, undefined)
+                    : Effect.void,
+                ),
+                Stream.filter((frame) => frame.event._tag === "session.state"),
+              ),
+            ),
+          );
+          // Report only once the handshake proves this subscriber is live, so the
+          // event cannot be published before anyone is listening for it.
+          yield* Deferred.await(ready);
+          yield* report;
+          return yield* Fiber.join(head).pipe(Effect.timeout("5 seconds"));
+        }),
+        env,
+      ),
+    );
+
+    expect(Option.getOrNull(published)?.event).toEqual({
+      _tag: "session.state",
+      session: "pane-a",
+      state: "running",
+    });
+  }),
+);
 
 /*
  * `topic.publish` is the same private socket generalized: a plugin names its
@@ -639,83 +658,107 @@ test("an agent self-report reaches the session-state topic, not just the socket"
  * fiber alive for as long as a client holds the stream open, so this test
  * stops its own daemon before returning rather than leaving that for the
  * shared afterEach, exactly as the events-stream test above does. */
-test("an opaque plugin topic reaches the daemon's durable log over the same private socket", async () => {
-  const { daemon, env } = await started("topic-publish");
-  const paths = await run(sessionPaths(daemon.id), env);
-  await Effect.runPromise(
-    daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
-  );
+testEffect(
+  "an opaque plugin topic reaches the daemon's durable log over the same private socket",
+  () =>
+    Effect.gen(function* () {
+      const { daemon, env } = yield* Effect.promise(() => started("topic-publish"));
+      const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+      yield* daemon.spawnSession({
+        id: "pane-a",
+        cmd: ["sh", "-c", "sleep 30"],
+        cols: 80,
+        rows: 24,
+      });
 
-  await raw(
-    paths.processState,
-    JSON.stringify({
-      id: "report",
-      method: "topic.publish",
-      params: {
+      yield* Effect.promise(() =>
+        raw(
+          paths.processState,
+          JSON.stringify({
+            id: "report",
+            method: "topic.publish",
+            params: {
+              session: "pane-a",
+              topic: "amux.agent-awareness/identity-state",
+              payload: { agent: "opencode", state: "working" },
+            },
+          }) + "\n",
+        ),
+      );
+
+      const first = yield* Effect.promise(() =>
+        run(
+          Effect.gen(function* () {
+            const control = yield* connectControl(daemon.id);
+            return yield* Stream.runHead(agentWatch(control, "pane-a"));
+          }),
+          env,
+        ),
+      );
+      yield* daemon.stop.pipe(Effect.ignore);
+      daemons.splice(daemons.indexOf(daemon), 1);
+
+      expect(Option.getOrNull(first)).toEqual({
+        _tag: "topic",
         session: "pane-a",
+        sequence: 0,
         topic: "amux.agent-awareness/identity-state",
         payload: { agent: "opencode", state: "working" },
-      },
-    }) + "\n",
-  );
-
-  const first = await run(
-    Effect.gen(function* () {
-      const control = yield* connectControl(daemon.id);
-      return yield* Stream.runHead(agentWatch(control, "pane-a"));
+      });
     }),
-    env,
-  );
-  await Effect.runPromise(daemon.stop).catch(() => {});
-  daemons.splice(daemons.indexOf(daemon), 1);
+);
 
-  expect(Option.getOrNull(first)).toEqual({
-    _tag: "topic",
-    session: "pane-a",
-    sequence: 0,
-    topic: "amux.agent-awareness/identity-state",
-    payload: { agent: "opencode", state: "working" },
-  });
-});
+testEffect(
+  "a malformed envelope on the private socket is rejected without a second event path",
+  () =>
+    Effect.gen(function* () {
+      const { daemon, env } = yield* Effect.promise(() => started("topic-malformed"));
+      const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+      yield* daemon.spawnSession({
+        id: "pane-a",
+        cmd: ["sh", "-c", "sleep 30"],
+        cols: 80,
+        rows: 24,
+      });
 
-test("a malformed envelope on the private socket is rejected without a second event path", async () => {
-  const { daemon, env } = await started("topic-malformed");
-  const paths = await run(sessionPaths(daemon.id), env);
-  await Effect.runPromise(
-    daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
-  );
+      // Not JSON at all.
+      expect(
+        (yield* Effect.promise(() => raw(paths.processState, "not json at all\n"))).received,
+      ).toContain('"ok":false');
 
-  // Not JSON at all.
-  expect((await raw(paths.processState, "not json at all\n")).received).toContain('"ok":false');
+      // Valid JSON, but a method neither `process.state` nor `topic.publish`.
+      expect(
+        (yield* Effect.promise(() =>
+          raw(
+            paths.processState,
+            JSON.stringify({ method: "topic.delete", params: { session: "pane-a" } }) + "\n",
+          ),
+        )).received,
+      ).toContain('"ok":false');
 
-  // Valid JSON, but a method neither `process.state` nor `topic.publish`.
-  expect(
-    (
-      await raw(
-        paths.processState,
-        JSON.stringify({ method: "topic.delete", params: { session: "pane-a" } }) + "\n",
-      )
-    ).received,
-  ).toContain('"ok":false');
+      // `topic.publish` missing the topic name.
+      expect(
+        (yield* Effect.promise(() =>
+          raw(
+            paths.processState,
+            JSON.stringify({
+              method: "topic.publish",
+              params: { session: "pane-a", payload: "x" },
+            }) + "\n",
+          ),
+        )).received,
+      ).toContain('"ok":false');
 
-  // `topic.publish` missing the topic name.
-  expect(
-    (
-      await raw(
-        paths.processState,
-        JSON.stringify({
-          method: "topic.publish",
-          params: { session: "pane-a", payload: "x" },
-        }) + "\n",
-      )
-    ).received,
-  ).toContain('"ok":false');
-
-  // None of the rejected envelopes reached the durable log.
-  const cursor = await ctl(daemon.id, env, (c) => c.AgentCursor({ session: "pane-a" }));
-  expect(cursor).toBe(-1);
-  expect((await ctl(daemon.id, env, (c) => c.Ping())).attached).toBe(false);
-});
+      // None of the rejected envelopes reached the durable log.
+      const cursor = yield* Effect.promise(() =>
+        ctl(daemon.id, env, (c) => c.AgentCursor({ session: "pane-a" })),
+      );
+      expect(cursor).toBe(-1);
+      expect((yield* Effect.promise(() => ctl(daemon.id, env, (c) => c.Ping()))).attached).toBe(
+        false,
+      );
+    }),
+);
 
 /* The socket is shared by every pane this daemon supervises, and those panes
  * are mutually trusted with each other — the same-user boundary tmux has, not
@@ -724,29 +767,35 @@ test("a malformed envelope on the private socket is rejected without a second ev
  * a backend id *this daemon* actually spawned, or it is dropped. This test
  * names a session that exists nowhere at all, as the simplest case of that
  * check. */
-test("a report naming a session this daemon never spawned commits nothing", async () => {
-  const { daemon, env } = await started("topic-cross-session");
-  const paths = await run(sessionPaths(daemon.id), env);
-  await Effect.runPromise(
-    daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
-  );
+testEffect("a report naming a session this daemon never spawned commits nothing", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* Effect.promise(() => started("topic-cross-session"));
+    const paths = yield* Effect.promise(() => run(sessionPaths(daemon.id), env));
+    yield* daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 });
 
-  await raw(
-    paths.processState,
-    JSON.stringify({
-      method: "topic.publish",
-      params: {
-        session: "someone-elses-pane",
-        topic: "amux.agent-awareness/identity-state",
-        payload: { agent: "opencode", state: "working" },
-      },
-    }) + "\n",
-  );
+    yield* Effect.promise(() =>
+      raw(
+        paths.processState,
+        JSON.stringify({
+          method: "topic.publish",
+          params: {
+            session: "someone-elses-pane",
+            topic: "amux.agent-awareness/identity-state",
+            payload: { agent: "opencode", state: "working" },
+          },
+        }) + "\n",
+      ),
+    );
 
-  const cursor = await ctl(daemon.id, env, (c) => c.AgentCursor({ session: "someone-elses-pane" }));
-  expect(cursor).toBe(-1);
-  expect((await ctl(daemon.id, env, (c) => c.Ping())).attached).toBe(false);
-});
+    const cursor = yield* Effect.promise(() =>
+      ctl(daemon.id, env, (c) => c.AgentCursor({ session: "someone-elses-pane" })),
+    );
+    expect(cursor).toBe(-1);
+    expect((yield* Effect.promise(() => ctl(daemon.id, env, (c) => c.Ping()))).attached).toBe(
+      false,
+    );
+  }),
+);
 
 /* The stronger case: a session id that is not a stranger's fiction but a real,
  * live backend — just owned by a different daemon. Two daemons, each with
@@ -756,37 +805,48 @@ test("a report naming a session this daemon never spawned commits nothing", asyn
  * land in A's log only if A itself spawned that id; here it did not, so this
  * proves both that A rejects it and that nothing about B's identically-named,
  * genuinely-live session lets the report leak into either log. */
-test("a live backend id in one daemon grants no standing to name it in another", async () => {
-  const a = await started("cross-daemon-a");
-  const b = await started("cross-daemon-b");
-  const pathsA = await run(sessionPaths(a.daemon.id), a.env);
+testEffect("a live backend id in one daemon grants no standing to name it in another", () =>
+  Effect.gen(function* () {
+    const a = yield* Effect.promise(() => started("cross-daemon-a"));
+    const b = yield* Effect.promise(() => started("cross-daemon-b"));
+    const pathsA = yield* Effect.promise(() => run(sessionPaths(a.daemon.id), a.env));
 
-  // "pane-a" is live only in daemon B.
-  await Effect.runPromise(
-    b.daemon.spawnSession({ id: "pane-a", cmd: ["sh", "-c", "sleep 30"], cols: 80, rows: 24 }),
-  );
+    // "pane-a" is live only in daemon B.
+    yield* b.daemon.spawnSession({
+      id: "pane-a",
+      cmd: ["sh", "-c", "sleep 30"],
+      cols: 80,
+      rows: 24,
+    });
 
-  // The injection happens on daemon A's socket, which never spawned "pane-a".
-  await raw(
-    pathsA.processState,
-    JSON.stringify({
-      method: "topic.publish",
-      params: {
-        session: "pane-a",
-        topic: "amux.agent-awareness/identity-state",
-        payload: { agent: "opencode", state: "working" },
-      },
-    }) + "\n",
-  );
+    // The injection happens on daemon A's socket, which never spawned "pane-a".
+    yield* Effect.promise(() =>
+      raw(
+        pathsA.processState,
+        JSON.stringify({
+          method: "topic.publish",
+          params: {
+            session: "pane-a",
+            topic: "amux.agent-awareness/identity-state",
+            payload: { agent: "opencode", state: "working" },
+          },
+        }) + "\n",
+      ),
+    );
 
-  const cursorA = await ctl(a.daemon.id, a.env, (c) => c.AgentCursor({ session: "pane-a" }));
-  const cursorB = await ctl(b.daemon.id, b.env, (c) => c.AgentCursor({ session: "pane-a" }));
-  // A never accepted it: it did not own that backend id.
-  expect(cursorA).toBe(-1);
-  // B's genuinely-live "pane-a" saw nothing either: the injected event never
-  // crossed from A's socket into B's log, which is the claim under test.
-  expect(cursorB).toBe(-1);
-});
+    const cursorA = yield* Effect.promise(() =>
+      ctl(a.daemon.id, a.env, (c) => c.AgentCursor({ session: "pane-a" })),
+    );
+    const cursorB = yield* Effect.promise(() =>
+      ctl(b.daemon.id, b.env, (c) => c.AgentCursor({ session: "pane-a" })),
+    );
+    // A never accepted it: it did not own that backend id.
+    expect(cursorA).toBe(-1);
+    // B's genuinely-live "pane-a" saw nothing either: the injected event never
+    // crossed from A's socket into B's log, which is the claim under test.
+    expect(cursorB).toBe(-1);
+  }),
+);
 
 test("malformed and oversized frames are refused without taking the daemon down", async () => {
   const { daemon, env } = await started("control-garbage");
@@ -829,7 +889,12 @@ test("stop answers before it tears its own socket down", async () => {
   expect(await gone(paths.lease)).toBe(true);
   expect(await gone(paths.lock)).toBe(true);
   // A stopped session is discarded, not merely unreachable.
-  expect(await run(SessionStore.load(daemon.id), env)).toBeNull();
+  expect(
+    await run(
+      Effect.flatMap(SessionStore, (store) => store.load(daemon.id)),
+      env,
+    ),
+  ).toBeNull();
 });
 
 // The machine-facing contract from inside a pane (ts-33067b): with only the

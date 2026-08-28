@@ -1,0 +1,6 @@
+id: effect-v3-effect-timeoutfail-to-timeoutorelse
+language: TypeScript
+message: Effect.timeoutFail was removed in v4; use Effect.timeoutOrElse with an orElse effect thunk.
+rule:
+  pattern: "Effect.timeoutFail({ duration: $DURATION, onTimeout: $ON_TIMEOUT })"
+fix: "Effect.timeoutOrElse({ duration: $DURATION, orElse: () => Effect.fail(($ON_TIMEOUT)()) })"

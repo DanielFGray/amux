@@ -2,12 +2,12 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { TextareaRenderable } from "@opentui/core";
 import type { Stream } from "effect";
-import type { AttachFrame } from "@danielfgray/amux/effect/AttachProtocol.ts";
-import type { PaneViewProps } from "@danielfgray/amux/component-pane.tsx";
+import { AttachFrame } from "@danielfgray/amux/protocol"
+import type { PaneViewProps } from "@danielfgray/amux"
 import { Transcript, type PermissionBlock } from "./Transcript.tsx";
 import { permissionSummary } from "./transcript.ts";
-import { theme } from "@danielfgray/amux/ui/theme.ts";
-import { ProcessState } from "@danielfgray/amux/process-state.ts";
+import { theme } from "@danielfgray/amux"
+import { ProcessState } from "@danielfgray/amux"
 import type { PermissionDecision } from "@danielfgray/amux/permission.ts";
 
 export interface ChatProps extends PaneViewProps {

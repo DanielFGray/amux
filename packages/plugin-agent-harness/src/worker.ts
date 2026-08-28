@@ -5,7 +5,7 @@ import {
   type Response,
   type Tool,
   type Toolkit,
-} from "@effect/ai";
+} from "effect/unstable/ai";
 import {
   Cause,
   Effect,
@@ -18,8 +18,9 @@ import {
   Schema as S,
   Stream,
 } from "effect";
-import type { AgentEventPayload, AgentDelta } from "@danielfgray/amux/effect/AttachProtocol.ts";
-import { ProcessState } from "@danielfgray/amux/process-state.ts";
+import { AgentDelta } from "@danielfgray/amux/protocol"
+import type { AgentEventPayload, JsonValue } from "@danielfgray/amux/protocol"
+import { ProcessState } from "@danielfgray/amux"
 import type { PromptDelivery, PromptInboxEntry } from "@danielfgray/amux/project-store.ts";
 import { agentStateTopic } from "./state-topic.ts";
 import { AGENT_AWARENESS_IDENTITY_TOPIC } from "@danielfgray/amux-agent-awareness/identity-state.ts";
@@ -147,14 +148,14 @@ export function frameForPart(
         turn,
         call: part.id,
         tool: part.name,
-        input: part.params,
+        input: part.params as JsonValue,
       };
     case "tool-result":
       return {
         _tag: "tool.result",
         turn,
         call: part.id,
-        output: part.result,
+        output: part.result as JsonValue,
         isError: part.isFailure,
       };
     default:
@@ -170,7 +171,7 @@ export function frameForPart(
  * ours is the scheduler above it: a mailbox, one turn at a time, and
  * interruption that leaves the transcript intact.
  */
-export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = never>(options: {
+export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E = never>(options: {
   readonly session: string;
   readonly chat: Chat.Service;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
@@ -194,7 +195,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
 }): Effect.Effect<
   AgentWorker,
   never,
-  Scope.Scope | LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
+  Scope.Scope | LanguageModel.LanguageModel | Tool.HandlerServices<Tools[keyof Tools]>
 > {
   return Effect.gen(function* () {
     const inbox = yield* Ref.make<readonly QueuedTurn[]>([]);
@@ -225,7 +226,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
     const settle = (turn: string, exit: Exit.Exit<void, unknown>, text: string) => {
       const outcome = Exit.isSuccess(exit)
         ? ("completed" as const)
-        : Cause.isInterruptedOnly(exit.cause)
+        : Cause.hasInterruptsOnly(exit.cause)
           ? ("interrupted" as const)
           : ("failed" as const);
       // A turn cut short between a tool call and its result leaves the call
@@ -276,7 +277,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
     ): Effect.Effect<
       void,
       never,
-      LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
+      LanguageModel.LanguageModel | Tool.HandlerServices<Tools[keyof Tools]>
     > => {
       const { turn, prompt } = queued;
       let responseText = "";
@@ -285,44 +286,38 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
       ): Effect.Effect<
         void,
         AgentWorkerError,
-        LanguageModel.LanguageModel | Tool.Requirements<Tools[keyof Tools]>
+        LanguageModel.LanguageModel | Tool.HandlerServices<Tools[keyof Tools]>
       > => {
         let needsContinuation = false;
-        return options.chat
-          .streamText(
-            options.toolkit
-              ? { prompt: stepPrompt, toolkit: options.toolkit }
-              : { prompt: stepPrompt },
-          )
-          .pipe(
-            Stream.runForEach((part) => {
-              const frame = frameForPart(
-                turn,
-                part as Response.StreamPart<Record<string, Tool.Any>>,
-              );
-              if (frame?._tag === "text.delta") responseText += frame.text;
-              if (frame?._tag === "tool.start") needsContinuation = true;
-              return frame ? emit(frame) : Effect.void;
-            }),
-            // Chat commits its response when stream consumption releases.
-            // Checkpoint afterwards, or recovery misses the just-finished step.
-            Effect.andThen(options.persist ?? Effect.void),
-            // A steer is an instruction for the next provider boundary, not a
-            // FIFO turn. Check before tool continuation so it can redirect the
-            // agent before the provider sees the tool result again.
-            Effect.flatMap(() =>
-              needsContinuation
-                ? takeSteer.pipe(
-                    Effect.flatMap((steer) => (steer ? runTurn(steer) : runStep(Prompt.empty))),
-                  )
-                : Effect.void,
-            ),
-            // Keep the provider's own message: settle() runs it through
-            // sanitizeAgentError, which needs the real text (401, rate limit,
-            // unknown model, …) to pick the right category instead of the
-            // generic fallback.
-            Effect.mapError((error) => new AgentWorkerError({ message: String(error) })),
-          );
+        const stream = options.toolkit
+          ? options.chat.streamText({ prompt: stepPrompt, toolkit: options.toolkit })
+          : options.chat.streamText({ prompt: stepPrompt });
+        return stream.pipe(
+          Stream.runForEach((part) => {
+            const frame = frameForPart(turn, part as Response.StreamPart<Record<string, Tool.Any>>);
+            if (frame?._tag === "text.delta") responseText += frame.text;
+            if (frame?._tag === "tool.start") needsContinuation = true;
+            return frame ? emit(frame) : Effect.void;
+          }),
+          // Chat commits its response when stream consumption releases.
+          // Checkpoint afterwards, or recovery misses the just-finished step.
+          Effect.andThen(options.persist ?? Effect.void),
+          // A steer is an instruction for the next provider boundary, not a
+          // FIFO turn. Check before tool continuation so it can redirect the
+          // agent before the provider sees the tool result again.
+          Effect.flatMap(() =>
+            needsContinuation
+              ? takeSteer.pipe(
+                  Effect.flatMap((steer) => (steer ? runTurn(steer) : runStep(Prompt.empty))),
+                )
+              : Effect.void,
+          ),
+          // Keep the provider's own message: settle() runs it through
+          // sanitizeAgentError, which needs the real text (401, rate limit,
+          // unknown model, …) to pick the right category instead of the
+          // generic fallback.
+          Effect.mapError((error) => new AgentWorkerError({ message: String(error) })),
+        );
       };
       return (
         // A steer can start inside an active turn rather than from drain's
@@ -349,7 +344,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
           // transcript is this turn's error channel and there is nothing left to
           // raise. A provider 500 ends a turn, never the session. catchAll takes
           // only typed failures: interruption still unwinds, defects still crash.
-          Effect.catchAll(() => Effect.void),
+          Effect.catch(() => Effect.void),
         )
       );
     };
@@ -373,7 +368,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any>, E = neve
           queued
             ? FiberHandle.run(running, runTurn(queued)).pipe(
                 Effect.flatMap(Fiber.join),
-                Effect.catchAllCause(() => Effect.void),
+                Effect.catchCause(() => Effect.void),
               )
             : Effect.void,
         ),

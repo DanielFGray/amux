@@ -74,11 +74,19 @@ proof of anything beyond "this pane would like this to be true."
 
 ## Plugins, and where an agent harness lives
 
-amux is an agent-aware multiplexer, not an agent. Core recognises that a process
-in a pane is claude/codex/opencode and projects its state (`idle`, `blocked`,
-`running`, …); it owns session kinds, supervision, the framed attach protocol,
-the command registry, and the region/panel model. It contains no provider, no
-model, no credential, no prompt, and no turn loop.
+amux is a multiplexer with a plugin system. Core projects neutral process facts
+(`idle`, `blocked`, `running`, …) and owns session kinds, supervision, the
+framed attach protocol, the command registry, and the region/panel model. It
+contains no provider, no model, no credential, no prompt, and no turn loop.
+Agent awareness is policy, so it lives in a plugin; running a turn lives in a
+harness plugin.
+
+Recognising a process as claude/codex/opencode is "which executables count as
+agents", which the rule below assigns to a default plugin. Three pieces of that
+policy still sit in core and are tracked for migration: the executable table in
+`detect.ts` and `detector-evaluator.ts`, the `agent-hook` subcommand that
+installs a plugin into opencode's own config directory, and the turn, tool and
+permission vocabulary in `AttachProtocol.ts`.
 
 The thing that runs a turn loop is a _harness_, and a harness is a plugin —
 including the one we ship. A plugin is an Effect requiring a `Scope`

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigProvider, Effect } from "effect";
 import { waitFor } from "./test-wait.ts";
-import { FileSystem } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { SessionStore } from "./session.ts";
@@ -37,9 +37,9 @@ const run = <A, E>(
 ) =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(SessionStore.Default),
+      Effect.provide(SessionStore.layer),
       Effect.provide(BunFileSystem.layer),
-      Effect.withConfigProvider(ConfigProvider.fromJson(e)),
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(e)),
     ),
   );
 const open = (id: string, e: NodeJS.ProcessEnv) => run(Effect.scoped(startDaemon(id)), e);

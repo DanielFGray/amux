@@ -1,5 +1,5 @@
 import { afterEach, expect } from "bun:test";
-import { Chunk, Effect, Fiber, Queue, Scope, Schema as S, Stream } from "effect";
+import { Effect, Fiber, Queue, Scope, Schema as S, Stream } from "effect";
 import type { Regions } from "../ui/regions.tsx";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
@@ -14,7 +14,7 @@ import type { PluginService } from "./services.ts";
 import { key } from "./kv.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import type { SessionViews } from "./session-views.tsx";
-import { testPluginEnvironment } from "./test-environment.ts";
+import { testPluginEnvironment, type TestPluginEnvironment } from "./test-environment.ts";
 import { testPanelContext } from "../ui/test-panel.ts";
 import { command } from "../commands.ts";
 import { runCommandByTarget } from "../app.tsx";
@@ -31,7 +31,7 @@ type EnvironmentOverrides = NonNullable<Parameters<typeof testPluginEnvironment>
 
 async function mockEnvironment(
   overrides: EnvironmentOverrides = {},
-): Promise<{ env: PluginEnvironment; dispose: () => void }> {
+): Promise<{ env: TestPluginEnvironment; dispose: () => void }> {
   const t = await createTestRenderer({ width: 80, height: 24 });
   return {
     env: testPluginEnvironment(t.renderer, overrides),
@@ -65,7 +65,12 @@ afterEach(() => {
 function makeHost(
   overrides: EnvironmentOverrides = {},
 ): Effect.Effect<
-  { host: PluginHost; regions: Regions; sessionViews: SessionViews },
+  {
+    host: PluginHost;
+    regions: Regions;
+    sessionViews: SessionViews;
+    registryEntries: readonly PluginDefinition[];
+  },
   never,
   Scope.Scope
 > {
@@ -76,8 +81,18 @@ function makeHost(
       host: yield* createPluginHost(env),
       regions: env.registries.regions,
       sessionViews: env.registries.sessionViews,
+      registryEntries: env.registryEntries,
     };
   });
+}
+
+function registryProviding(
+  entries: readonly PluginDefinition[],
+  tag: PluginService,
+): PluginDefinition {
+  const entry = entries.find((candidate) => candidate.provide?.some((key) => key.key === tag.key));
+  if (!entry) throw new Error(`missing test registry provider for ${tag.key}`);
+  return entry;
 }
 
 // --- Lifecycle ---
@@ -157,7 +172,8 @@ testEffect("dispose removes every active plugin", () =>
 
 testEffect("add replaces a running plugin, taking its registrations with it", () =>
   Effect.gen(function* () {
-    const { host, sessionViews } = yield* makeHost();
+    const { host, sessionViews, registryEntries } = yield* makeHost();
+    yield* host.add(registryProviding(registryEntries, SessionViewsTag));
     const ran: string[] = [];
 
     const version = (name: string) =>
@@ -180,7 +196,9 @@ testEffect("add replaces a running plugin, taking its registrations with it", ()
 
     expect(ran).toEqual(["first", "second"]);
     expect(sessionViews.has("chat")).toBe(true);
-    expect(host.status()).toEqual([{ id: "swap", waitingFor: [] }]);
+    expect(host.status().filter((status) => status.id === "swap")).toEqual([
+      { id: "swap", waitingFor: [] },
+    ]);
   }),
 );
 
@@ -193,14 +211,14 @@ testEffect("add rejects an unsupported apiVersion", () =>
     const errors = yield* Queue.unbounded<PluginErrorEvent>();
     const drain = yield* host.onError.pipe(
       Stream.runForEach((e) => Queue.offer(errors, e)),
-      Effect.forkDaemon,
+      Effect.forkDetach,
     );
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
     yield* host.add(mkPlugin({ id: "badver", apiVersion: "99" }));
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
-    const reported = Chunk.toReadonlyArray(yield* Queue.takeAll(errors));
+    const reported = yield* Queue.takeAll(errors);
     yield* Fiber.interrupt(drain);
 
     const versionError = reported.find((e) => e.pluginId === "badver");
@@ -215,7 +233,9 @@ testEffect("add rejects an unsupported apiVersion", () =>
 
 testEffect("registered panels are disposed when the plugin is removed", () =>
   Effect.gen(function* () {
-    const { host, regions } = yield* makeHost();
+    const { host, regions, registryEntries } = yield* makeHost();
+    const registry = registryProviding(registryEntries, RegionsTag);
+    yield* host.add(registry);
 
     const plugin = mkPlugin({
       id: "panel-plugin",
@@ -237,6 +257,7 @@ testEffect("registered panels are disposed when the plugin is removed", () =>
     yield* host.add(plugin);
     expect(regions.declared("left", "app")).toBe(true);
     yield* host.remove(plugin.id);
+    yield* host.remove(registry.id);
 
     expect(regions.declared("left", "app")).toBe(false);
     expect(host.status()).toEqual([]);
@@ -245,7 +266,9 @@ testEffect("registered panels are disposed when the plugin is removed", () =>
 
 testEffect("registered session views are disposed when the plugin is removed", () =>
   Effect.gen(function* () {
-    const { host, sessionViews: views } = yield* makeHost();
+    const { host, sessionViews: views, registryEntries } = yield* makeHost();
+    const registry = registryProviding(registryEntries, SessionViewsTag);
+    yield* host.add(registry);
     const plugin = mkPlugin({
       id: "view-plugin",
       inject: [SessionViewsTag],
@@ -266,7 +289,7 @@ testEffect("registered session views are disposed when the plugin is removed", (
 testEffect("registered bindings are disposed when the plugin is removed", () =>
   Effect.gen(function* () {
     const active = new Set<string>();
-    const { host } = yield* makeHost({
+    const { host, registryEntries } = yield* makeHost({
       registries: {
         bindings: (_owner, binding) => {
           active.add(binding.name);
@@ -274,6 +297,7 @@ testEffect("registered bindings are disposed when the plugin is removed", () =>
         },
       },
     });
+    yield* host.add(registryProviding(registryEntries, BindingsTag));
     const plugin = mkPlugin({
       id: "binding-plugin",
       inject: [BindingsTag],
@@ -300,7 +324,7 @@ testEffect("registered bindings are disposed when the plugin is removed", () =>
 testEffect("registered options are disposed when the plugin is removed", () =>
   Effect.gen(function* () {
     const active = new Map<string, unknown>();
-    const { host } = yield* makeHost({
+    const { host, registryEntries } = yield* makeHost({
       registries: {
         options: (_owner, name, spec) => {
           active.set(name, spec);
@@ -308,6 +332,7 @@ testEffect("registered options are disposed when the plugin is removed", () =>
         },
       },
     });
+    yield* host.add(registryProviding(registryEntries, OptionsTag));
     const plugin = mkPlugin({
       id: "option-plugin",
       inject: [OptionsTag],
@@ -330,7 +355,8 @@ testEffect("registered options are disposed when the plugin is removed", () =>
 
 testEffect("spawn providers are collision-safe and scoped", () =>
   Effect.gen(function* () {
-    const { host } = yield* makeHost();
+    const { host, registryEntries } = yield* makeHost();
+    yield* host.add(registryProviding(registryEntries, SpawnProvidersTag));
     yield* host.add(
       mkPlugin({
         id: "provider-one",
@@ -364,15 +390,16 @@ testEffect("spawn providers are collision-safe and scoped", () =>
 
 testEffect("a plugin effect that throws a defect reports the error without crashing the host", () =>
   Effect.gen(function* () {
-    const { host, regions } = yield* makeHost();
+    const { host, regions, registryEntries } = yield* makeHost();
+    yield* host.add(registryProviding(registryEntries, RegionsTag));
     let registered = false;
 
     const errors = yield* Queue.unbounded<PluginErrorEvent>();
     const drain = yield* host.onError.pipe(
       Stream.runForEach((e) => Queue.offer(errors, e)),
-      Effect.forkDaemon,
+      Effect.forkDetach,
     );
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
     yield* host.add(
       mkPlugin({
@@ -395,9 +422,9 @@ testEffect("a plugin effect that throws a defect reports the error without crash
           }),
       }),
     );
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
-    const reported = Chunk.toReadonlyArray(yield* Queue.takeAll(errors));
+    const reported = yield* Queue.takeAll(errors);
     yield* Fiber.interrupt(drain);
 
     const crash = reported.find((e) => e.pluginId === "crasher");
@@ -409,8 +436,9 @@ testEffect("a plugin effect that throws a defect reports the error without crash
     expect(regions.declared("left", "app")).toBe(false);
 
     yield* host.add(mkPlugin({ id: "survivor" }));
-    expect(host.status().length).toBe(1);
-    expect(host.status()[0]!.id).toBe("survivor");
+    expect(host.status().filter((status) => status.id === "survivor")).toEqual([
+      { id: "survivor", waitingFor: [] },
+    ]);
   }),
 );
 
@@ -441,9 +469,9 @@ testEffect("onError delivers events to subscribers after add/remove", () =>
     const errors = yield* Queue.unbounded<PluginErrorEvent>();
     const drain = yield* host.onError.pipe(
       Stream.runForEach((e) => Queue.offer(errors, e)),
-      Effect.forkDaemon,
+      Effect.forkDetach,
     );
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
     yield* host.add(mkPlugin({ id: "fine" }));
     yield* host.add(
@@ -455,9 +483,9 @@ testEffect("onError delivers events to subscribers after add/remove", () =>
           }),
       }),
     );
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
-    const reported = Chunk.toReadonlyArray(yield* Queue.takeAll(errors));
+    const reported = yield* Queue.takeAll(errors);
     yield* Fiber.interrupt(drain);
 
     expect(reported.map((e) => e.pluginId)).toEqual(["broken"]);
@@ -498,7 +526,8 @@ testEffect("KV values survive a remove/add cycle", () =>
 
 testEffect("removing and adding a plugin releases and reacquires its scope", () =>
   Effect.gen(function* () {
-    const { host, regions } = yield* makeHost();
+    const { host, regions, registryEntries } = yield* makeHost();
+    yield* host.add(registryProviding(registryEntries, RegionsTag));
     const panel = {
       id: "runtime.panel",
       region: "bottom" as const,
@@ -519,9 +548,9 @@ testEffect("removing and adding a plugin releases and reacquires its scope", () 
     yield* host.add(plugin);
     expect(regions.declared("bottom", "app")).toBe(true);
     yield* host.remove("runtime");
-    expect(host.status()).toEqual([]);
+    expect(host.status().filter((status) => status.id === "runtime")).toEqual([]);
     yield* host.add(plugin);
-    expect(host.status().map((status) => status.id)).toEqual(["runtime"]);
+    expect(host.status().filter((status) => status.id === "runtime").map((status) => status.id)).toEqual(["runtime"]);
   }),
 );
 
@@ -550,7 +579,8 @@ testEffect("defect closes the plugin scope so the id can be re-added", () =>
 
 testEffect("defect closes the plugin scope and runs registered finalizers", () =>
   Effect.gen(function* () {
-    const { host } = yield* makeHost();
+    const { host, registryEntries } = yield* makeHost();
+    yield* host.add(registryProviding(registryEntries, RegionsTag));
 
     yield* host.add(
       mkPlugin({
@@ -574,7 +604,7 @@ testEffect("defect closes the plugin scope and runs registered finalizers", () =
 
     // Re-add must succeed — scope was closed and finalizers ran
     yield* host.add(mkPlugin({ id: "finalize" }));
-    expect(host.status().length).toBe(1);
+    expect(host.status().filter((status) => status.id === "finalize").length).toBe(1);
   }),
 );
 

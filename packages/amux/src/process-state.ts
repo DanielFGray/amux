@@ -39,12 +39,12 @@ export const ProcessState = {
   Done: "done",
 } as const;
 
-export const ProcessStateSchema = S.Literal(
+export const ProcessStateSchema = S.Literals([
   ProcessState.Idle,
   ProcessState.Running,
   ProcessState.Blocked,
   ProcessState.Done,
-);
+]);
 export type ProcessState = typeof ProcessStateSchema.Type;
 
 export const isProcessState = (value: JsonValue): value is ProcessState =>

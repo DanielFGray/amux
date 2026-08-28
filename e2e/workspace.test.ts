@@ -179,12 +179,16 @@ test(
 test(
   "killing the last agent empties the workspace and quits",
   async () => {
+    // The empty state is persisted, then `stopWhenEmpty` (daemon.ts) tears the
+    // session directory down once the client detaches — "stop ends the
+    // session: its directory goes". That teardown can land inside a single
+    // poll interval, so a run may observe the emptied file or its removal;
+    // either is proof nothing survived the cascade.
     await app.press(`${LEADER}K`);
-    await app.until(
-      async () => (await app.workspaceSummary()) === "0sp 0win 0ag",
-      "the empty workspace to persist",
-    );
-    expect(await app.workspaceSummary()).toBe("0sp 0win 0ag");
+    await app.until(async () => {
+      const summary = await app.workspaceSummary();
+      return summary === "0sp 0win 0ag" || summary === "(no session file)";
+    }, "the workspace to empty and the session to tear down");
   },
   E2E_TIMEOUT,
 );

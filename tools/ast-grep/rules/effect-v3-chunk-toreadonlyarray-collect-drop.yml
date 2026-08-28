@@ -1,0 +1,6 @@
+id: effect-v3-chunk-toreadonlyarray-collect-drop
+language: TypeScript
+message: Stream.runCollect and Queue.takeAll return a plain Array in v4, not a Chunk.
+rule:
+  pattern: Chunk.toReadonlyArray(yield* $EFFECT)
+fix: (yield* $EFFECT)

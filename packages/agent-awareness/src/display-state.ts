@@ -1,6 +1,8 @@
-import { STATE_GLYPH } from "@danielfgray/amux/detect.ts";
-import { ProcessState } from "@danielfgray/amux/process-state.ts";
-import type { ProcessDisplayFacts, ProcessDisplayResult } from "@danielfgray/amux/plugin/process-display.ts";
+import {
+  ProcessState,
+  type ProcessDisplayFacts,
+  type ProcessDisplayResult,
+} from "@danielfgray/amux";
 
 /**
  * The agent-facing vocabulary that refines core's neutral `ProcessState`:
@@ -20,6 +22,15 @@ const RANK = {
   [ProcessState.Done]: 0,
 } satisfies Record<ProcessState, number>;
 
+const STATE_GLYPH = {
+  [ProcessState.Blocked]: "●",
+  [ProcessState.Running]: "⠹",
+  [ProcessState.Idle]: "○",
+  [ProcessState.Done]: "✓",
+} satisfies Record<ProcessState, string>;
+
+const SPINNER_FRAMES = [..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"];
+
 export function deriveProcessDisplay(facts: ProcessDisplayFacts): ProcessDisplayResult {
   if (facts.state === ProcessState.Done && facts.exitCode !== null && facts.exitCode !== 0) {
     return { glyph: "!", label: "failed", rank: 3 };
@@ -27,5 +38,10 @@ export function deriveProcessDisplay(facts: ProcessDisplayFacts): ProcessDisplay
   if (facts.detached && facts.state !== ProcessState.Done) {
     return { glyph: "⊘", label: "detached", rank: 2 };
   }
-  return { glyph: STATE_GLYPH[facts.state], label: facts.state, rank: RANK[facts.state] };
+  return {
+    glyph: STATE_GLYPH[facts.state],
+    ...(facts.state === ProcessState.Running ? { frames: SPINNER_FRAMES } : {}),
+    label: facts.state,
+    rank: RANK[facts.state],
+  };
 }

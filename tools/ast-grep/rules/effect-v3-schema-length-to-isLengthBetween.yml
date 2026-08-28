@@ -1,0 +1,5 @@
+id: effect-v3-schema-length-to-isLengthBetween
+language: TypeScript
+rule:
+  pattern: S.length($$$ARGS)
+fix: S.check(S.isLengthBetween($$$ARGS))

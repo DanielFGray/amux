@@ -15,7 +15,7 @@ import { Effect } from "effect";
  * work spends more of it, not less.
  */
 export function scheduledPoll(intervalMs: number, run: () => void): Effect.Effect<void> {
-  return Effect.async<never>(() => {
+  return Effect.callback<never>(() => {
     const timer = setInterval(run, intervalMs);
     timer.unref?.();
     return Effect.sync(() => clearInterval(timer));

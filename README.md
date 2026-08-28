@@ -58,22 +58,28 @@ Plugins must invoke workspace commands through `ctx.panel.run()` and must not mu
 
 ### Plugins that depend on plugins
 
-A plugin publishes a service with `ctx.provide(Tag, service)` and names the services it cannot run without in `inject`. Wrap the definition in `definePlugin` so the two halves are checked against each other:
+A plugin names the services it cannot run without in `inject` and the services it may publish in `provide`. Wrap the definition in `definePlugin` so the two halves are checked against each other:
 
 ```ts
 export default definePlugin({
   id: "amux.mentions",
   apiVersion: "1",
   inject: [SearchService],
+  provide: [MentionIndex],
   effect: (ctx) =>
     Effect.gen(function* () {
       const search = yield* SearchService
+      ctx.provide(MentionIndex, buildIndex(search))
       // ...
     }),
 })
 ```
 
+`provide` is an upper bound, not a promise: a plugin may publish fewer services than it declares, but `ctx.provide` at a key outside the list fails at the call site, and a plugin with no `provide` publishes nothing. Declaring it is what lets the host decide, before anything runs, whether an injected key has any possible provider at all — reading provisions off a running plugin cannot answer that, because the plugin has to start first.
+
 A plugin waits until every injected service has a provider, so load order follows who provides what, not the order of the config file. When a provider stops or is reloaded, its dependents unwind first, while its services are still theirs to use, and then go back to waiting; the replacement picks them up as soon as it provides. `ctx.get(Tag)` is the soft read for a capability a plugin can do without: it never waits, and it returns nothing once the provider leaves.
+
+Waiting is for a provider that is coming, never for one that cannot. The host takes the configuration as a set, so it can tell the difference, and it refuses the change that would strand a plugin: an entry injecting a key nothing in the configuration provides is dropped with that key named, and the other plugins still load. Dropping an entry another plugin injects is refused outright, leaving the configuration as it was — which is why a service something depends on can be replaced but not disabled, with nothing marked as required anywhere.
 
 ### Reloading a plugin
 

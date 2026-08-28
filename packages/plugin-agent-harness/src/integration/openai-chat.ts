@@ -1,12 +1,10 @@
-import { AiError, LanguageModel, Prompt, Response, Tool } from "@effect/ai";
-import {
-  FetchHttpClient,
-  HttpBody,
-  HttpClient,
-  HttpClientRequest,
-  type HttpClientError,
-} from "@effect/platform";
-import { Chunk, Effect, Layer, Schedule, Schema as S, Stream } from "effect";
+import { AiError, LanguageModel, Prompt, Response, Tool } from "effect/unstable/ai";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as HttpBody from "effect/unstable/http/HttpBody";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import type * as HttpClientError from "effect/unstable/http/HttpClientError";
+import { Effect, Layer, Schedule, Schema as S, Stream } from "effect";
 
 /**
  * A `LanguageModel` that speaks OpenAI's Chat Completions API.
@@ -49,22 +47,14 @@ export const make = Effect.fnUntraced(function* (options: Options) {
     body(options.model, provider).pipe(
       Effect.map((payload) =>
         request(
-          client.execute(HttpClientRequest.post(url, { body: HttpBody.unsafeJson(payload) })),
+          client.execute(HttpClientRequest.post(url, { body: HttpBody.jsonUnsafe(payload) })),
         ).pipe(
           Effect.map((response) => response.stream),
-          Stream.unwrapScoped,
-          Stream.catchTag("ResponseError", (error) =>
-            Stream.fromEffect(
-              AiError.HttpResponseError.fromResponseError({
-                module: MODULE,
-                method: "streamText",
-                error,
-              }),
-            ),
-          ),
+          Stream.unwrap,
         ),
       ),
       Stream.unwrap,
+      Stream.mapError((error) => toAiError("streamText", error)),
     );
 
   const stream = (provider: LanguageModel.ProviderOptions) =>
@@ -72,18 +62,14 @@ export const make = Effect.fnUntraced(function* (options: Options) {
       const state = initialState();
       return events(send(provider)).pipe(
         Stream.mapEffect((event) => step(state, event)),
-        Stream.flattenIterables,
+        Stream.flattenIterable,
         Stream.concat(Stream.unwrap(Effect.map(finish(state), Stream.fromIterable))),
       );
     });
 
   return yield* LanguageModel.make({
     streamText: stream,
-    generateText: (provider) =>
-      Stream.runCollect(stream(provider)).pipe(
-        Effect.map(Chunk.toReadonlyArray),
-        Effect.map(gather),
-      ),
+    generateText: (provider) => Stream.runCollect(stream(provider)).pipe(Effect.map(gather)),
   });
 });
 
@@ -102,16 +88,12 @@ const body = Effect.fnUntraced(function* (model: string, options: LanguageModel.
     choice.oneOf === undefined
       ? options.tools
       : options.tools.filter((tool) => choice.oneOf?.has(tool.name));
-  // The AST-level accessors are used rather than `Tool.getJsonSchema` and
-  // `Tool.getDescription` because those are typed for a tool that has no
-  // requirements, which a toolkit's tools generally do have.
   const tools = allowed.filter(Tool.isUserDefined).map((tool) => ({
     type: "function" as const,
     function: {
       name: tool.name,
-      description:
-        tool.description ?? Tool.getDescriptionFromSchemaAst(tool.parametersSchema.ast) ?? "",
-      parameters: Tool.getJsonSchemaFromSchemaAst(tool.parametersSchema.ast),
+      description: Tool.getDescription(tool) ?? "",
+      parameters: Tool.getJsonSchema(tool),
     },
   }));
   const result: RequestBody = {
@@ -182,7 +164,11 @@ const messages = Effect.fnUntraced(function* (prompt: Prompt.Prompt) {
       continue;
     }
     if (message.role === "tool") {
-      out.push(...message.content.map(toolResult));
+      out.push(
+        ...message.content
+          .filter((part): part is Prompt.ToolResultPart => part.type === "tool-result")
+          .map(toolResult),
+      );
       continue;
     }
     out.push(assistantMessage(message.content));
@@ -246,7 +232,7 @@ const toolResult = (part: Prompt.ToolResultPart): ChatMessage => ({
 // gateway actually sends varies, and a frame we do not understand must not be
 // the thing that fails a turn.
 
-const Nullish = <A, I>(schema: S.Schema<A, I>) => S.optional(S.NullOr(schema));
+const Nullish = <A, I>(schema: S.Codec<A, I>) => S.optional(S.NullOr(schema));
 
 const ToolCallDelta = S.Struct({
   index: S.Number,
@@ -283,7 +269,7 @@ const ChatEvent = S.Struct({
 });
 type ChatEvent = typeof ChatEvent.Type;
 
-const decodeEvent = S.decodeUnknown(S.parseJson(ChatEvent));
+const decodeEvent = S.decodeUnknownEffect(S.fromJsonString(ChatEvent));
 
 /**
  * SSE frames, decoded.
@@ -304,48 +290,75 @@ const events = (stream: Stream.Stream<Uint8Array, AiError.AiError>) =>
     Stream.takeWhile((data) => data !== "[DONE]"),
     Stream.mapEffect((data) =>
       decodeEvent(data).pipe(
-        Effect.catchTag("ParseError", (error) =>
-          AiError.MalformedOutput.fromParseError({ module: MODULE, method: "streamText", error }),
+        Effect.catchTag("SchemaError", (error) =>
+          Effect.fail(
+            AiError.make({
+              module: MODULE,
+              method: "streamText",
+              reason: AiError.InvalidOutputError.fromSchemaError(error),
+            }),
+          ),
         ),
       ),
     ),
   );
 
 /**
- * A transport failure, in the shape `@effect/ai` states. A non-2xx status is a
- * `ResponseError` because the client is status-filtered, so an authentication
- * or quota rejection surfaces as an error rather than as an empty turn.
+ * The client is status-filtered, so an authentication or quota rejection
+ * surfaces as an `HttpClientError` rather than as an empty turn. Every non-2xx
+ * response and every transport failure retries a bounded number of times
+ * before it is converted to the `AiError` shape `@effect/ai` states.
  */
 const request = <A>(effect: Effect.Effect<A, HttpClientError.HttpClientError>) =>
   effect.pipe(
-    Effect.catchTags({
-      RequestError: (error) =>
-        Effect.fail(
-          AiError.HttpRequestError.fromRequestError({
-            module: MODULE,
-            method: "streamText",
-            error,
-          }),
-        ),
-      ResponseError: (error) =>
-        AiError.HttpResponseError.fromResponseError({
-          module: MODULE,
-          method: "streamText",
-          error,
-        }),
-    }),
     Effect.retry({
       times: 3,
       schedule: Schedule.exponential("250 millis"),
-      while: retryable,
+      while: retryableHttpError,
     }),
   );
 
-const retryable = (error: AiError.AiError): boolean => {
-  if (error._tag === "HttpRequestError") return true;
-  if (error._tag !== "HttpResponseError" || error.reason !== "StatusCode") return false;
-  const status = error.response.status;
-  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+const retryableHttpError = (error: HttpClientError.HttpClientError): boolean => {
+  switch (error.reason._tag) {
+    case "TransportError":
+    case "EncodeError":
+    case "InvalidUrlError":
+      return true;
+    case "StatusCodeError": {
+      const status = error.reason.response.status;
+      return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+    }
+    default:
+      return false;
+  }
+};
+
+const toAiError = (method: string, error: HttpClientError.HttpClientError): AiError.AiError => {
+  const reason = error.reason;
+  if (reason._tag === "StatusCodeError")
+    return AiError.make({
+      module: MODULE,
+      method,
+      reason: AiError.reasonFromHttpStatus({
+        status: reason.response.status,
+        description: reason.description,
+      }),
+    });
+  if (
+    reason._tag === "TransportError" ||
+    reason._tag === "EncodeError" ||
+    reason._tag === "InvalidUrlError"
+  )
+    return AiError.make({
+      module: MODULE,
+      method,
+      reason: AiError.NetworkError.fromRequestError(reason),
+    });
+  return AiError.make({
+    module: MODULE,
+    method,
+    reason: new AiError.UnknownError({ description: reason.message }),
+  });
 };
 
 // =============================================================================
@@ -370,109 +383,107 @@ type State = {
 
 const initialState = (): State => ({ text: false, reasoning: false, tools: new Map() });
 
+const malformedOutput = (description: string) =>
+  new AiError.AiError({
+    module: MODULE,
+    method: "streamText",
+    reason: new AiError.InvalidOutputError({ description }),
+  });
+
 const TEXT_ID = "text-0";
 const REASONING_ID = "reasoning-0";
 
-const step = (state: State, event: ChatEvent) =>
-  Effect.gen(function* () {
-    if (event.error)
-      return yield* new AiError.MalformedOutput({
-        module: MODULE,
-        method: "streamText",
-        description: `Provider reported an error: ${event.error.message ?? event.error.type ?? "unknown"}`,
-      });
+const step = Effect.fnUntraced(function* (state: State, event: ChatEvent) {
+  if (event.error)
+    return yield* malformedOutput(
+      `Provider reported an error: ${event.error.message ?? event.error.type ?? "unknown"}`,
+    );
 
-    const parts: Response.StreamPartEncoded[] = [];
-    if (event.usage) state.usage = event.usage;
+  const parts: Response.StreamPartEncoded[] = [];
+  if (event.usage) state.usage = event.usage;
 
-    const choice = event.choices?.[0];
-    if (choice?.finish_reason) state.reason = finishReason(choice.finish_reason);
-    const delta = choice?.delta;
-    if (!delta) return parts;
+  const choice = event.choices?.[0];
+  if (choice?.finish_reason) state.reason = finishReason(choice.finish_reason);
+  const delta = choice?.delta;
+  if (!delta) return parts;
 
-    const thought = delta.reasoning_content ?? delta.reasoning;
-    if (thought) {
-      if (!state.reasoning) {
-        state.reasoning = true;
-        parts.push({ type: "reasoning-start", id: REASONING_ID });
+  const thought = delta.reasoning_content ?? delta.reasoning;
+  if (thought) {
+    if (!state.reasoning) {
+      state.reasoning = true;
+      parts.push({ type: "reasoning-start", id: REASONING_ID });
+    }
+    parts.push({ type: "reasoning-delta", id: REASONING_ID, delta: thought });
+  }
+
+  const toolDeltas = delta.tool_calls ?? [];
+  if (delta.content || toolDeltas.length > 0) closeReasoning(state, parts);
+
+  if (delta.content) {
+    if (!state.text) {
+      state.text = true;
+      parts.push({ type: "text-start", id: TEXT_ID });
+    }
+    parts.push({ type: "text-delta", id: TEXT_ID, delta: delta.content });
+  }
+
+  for (const call of toolDeltas) {
+    const open = state.tools.get(call.index);
+    if (open) {
+      const params = call.function?.arguments ?? "";
+      if (params) {
+        open.params += params;
+        parts.push({ type: "tool-params-delta", id: open.id, delta: params });
       }
-      parts.push({ type: "reasoning-delta", id: REASONING_ID, delta: thought });
+      continue;
     }
+    // The first frame for an index is the only one that carries identity.
+    // Without it there is nothing to attribute the arguments to.
+    if (!call.id || !call.function?.name)
+      return yield* malformedOutput(
+        `Tool call delta at index ${call.index} is missing an id or a name`,
+      );
+    const started: ToolAccumulator = {
+      id: call.id,
+      name: call.function.name,
+      params: call.function.arguments ?? "",
+    };
+    state.tools.set(call.index, started);
+    parts.push({ type: "tool-params-start", id: started.id, name: started.name });
+    if (started.params)
+      parts.push({ type: "tool-params-delta", id: started.id, delta: started.params });
+  }
+  return parts;
+});
 
-    const toolDeltas = delta.tool_calls ?? [];
-    if (delta.content || toolDeltas.length > 0) closeReasoning(state, parts);
-
-    if (delta.content) {
-      if (!state.text) {
-        state.text = true;
-        parts.push({ type: "text-start", id: TEXT_ID });
-      }
-      parts.push({ type: "text-delta", id: TEXT_ID, delta: delta.content });
-    }
-
-    for (const call of toolDeltas) {
-      const open = state.tools.get(call.index);
-      if (open) {
-        const params = call.function?.arguments ?? "";
-        if (params) {
-          open.params += params;
-          parts.push({ type: "tool-params-delta", id: open.id, delta: params });
-        }
-        continue;
-      }
-      // The first frame for an index is the only one that carries identity.
-      // Without it there is nothing to attribute the arguments to.
-      if (!call.id || !call.function?.name)
-        return yield* new AiError.MalformedOutput({
-          module: MODULE,
-          method: "streamText",
-          description: `Tool call delta at index ${call.index} is missing an id or a name`,
-        });
-      const started: ToolAccumulator = {
-        id: call.id,
-        name: call.function.name,
-        params: call.function.arguments ?? "",
-      };
-      state.tools.set(call.index, started);
-      parts.push({ type: "tool-params-start", id: started.id, name: started.name });
-      if (started.params)
-        parts.push({ type: "tool-params-delta", id: started.id, delta: started.params });
-    }
-    return parts;
-  });
-
-const finish = (state: State) =>
-  Effect.gen(function* () {
-    const parts: Response.StreamPartEncoded[] = [];
-    closeReasoning(state, parts);
-    if (state.text) {
-      state.text = false;
-      parts.push({ type: "text-end", id: TEXT_ID });
-    }
-    for (const call of state.tools.values()) {
-      parts.push({ type: "tool-params-end", id: call.id });
-      parts.push({
-        type: "tool-call",
-        id: call.id,
-        name: call.name,
-        params: yield* Effect.try({
-          try: () => (call.params === "" ? {} : Tool.unsafeSecureJsonParse(call.params)),
-          catch: (cause) =>
-            new AiError.MalformedOutput({
-              module: MODULE,
-              method: "streamText",
-              description: `Failed to parse arguments for tool '${call.name}':\n${call.params}`,
-              cause,
-            }),
-        }),
-      });
-    }
-    // A model that asked for tools has not stopped, whatever it claims: the
-    // turn continues once the results come back.
-    const reason = state.tools.size > 0 ? "tool-calls" : (state.reason ?? "unknown");
-    parts.push({ type: "finish", reason, usage: usage(state.usage) });
-    return parts;
-  });
+const finish = Effect.fnUntraced(function* (state: State) {
+  const parts: Response.StreamPartEncoded[] = [];
+  closeReasoning(state, parts);
+  if (state.text) {
+    state.text = false;
+    parts.push({ type: "text-end", id: TEXT_ID });
+  }
+  for (const call of state.tools.values()) {
+    parts.push({ type: "tool-params-end", id: call.id });
+    parts.push({
+      type: "tool-call",
+      id: call.id,
+      name: call.name,
+      params: yield* Effect.try({
+        try: () => (call.params === "" ? {} : Tool.unsafeSecureJsonParse(call.params)),
+        catch: (cause) =>
+          malformedOutput(
+            `Failed to parse arguments for tool '${call.name}':\n${call.params}\n${String(cause)}`,
+          ),
+      }),
+    });
+  }
+  // A model that asked for tools has not stopped, whatever it claims: the
+  // turn continues once the results come back.
+  const reason = state.tools.size > 0 ? "tool-calls" : (state.reason ?? "unknown");
+  parts.push({ type: "finish", reason, usage: usage(state.usage) });
+  return parts;
+});
 
 const closeReasoning = (state: State, parts: Response.StreamPartEncoded[]) => {
   if (!state.reasoning) return;
@@ -491,33 +502,29 @@ const finishReason = (reason: string): Response.FinishReason =>
           ? "tool-calls"
           : "unknown";
 
-/**
- * OpenAI reports inclusive totals with subsets broken out of them, which is the
- * same contract `@effect/ai`'s `Usage` states, so the numbers pass through.
- */
-const usage = (reported: ChatEvent["usage"]) => {
-  const result: Usage = {
-    inputTokens: reported?.prompt_tokens,
-    outputTokens: reported?.completion_tokens,
-    totalTokens:
-      reported?.total_tokens ??
-      (reported?.prompt_tokens === undefined && reported?.completion_tokens === undefined
-        ? undefined
-        : (reported?.prompt_tokens ?? 0) + (reported?.completion_tokens ?? 0)),
-  };
-  if (reported?.completion_tokens_details?.reasoning_tokens !== undefined)
-    result.reasoningTokens = reported.completion_tokens_details.reasoning_tokens;
-  if (reported?.prompt_tokens_details?.cached_tokens !== undefined)
-    result.cachedInputTokens = reported.prompt_tokens_details.cached_tokens;
-  return result;
-};
+const usage = (reported: ChatEvent["usage"]): Usage => ({
+  inputTokens: {
+    total: reported?.prompt_tokens,
+    cacheRead: reported?.prompt_tokens_details?.cached_tokens,
+  },
+  outputTokens: {
+    total: reported?.completion_tokens,
+    reasoning: reported?.completion_tokens_details?.reasoning_tokens,
+  },
+});
 
 type Usage = {
-  inputTokens: number | undefined;
-  outputTokens: number | undefined;
-  totalTokens: number | undefined;
-  reasoningTokens?: number;
-  cachedInputTokens?: number;
+  inputTokens: {
+    uncached?: number;
+    total?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
+  outputTokens: {
+    total?: number;
+    text?: number;
+    reasoning?: number;
+  };
 };
 
 // =============================================================================

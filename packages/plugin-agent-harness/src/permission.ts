@@ -10,12 +10,17 @@
 import { Deferred, Effect, Ref } from "effect";
 import { relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
-import { ProcessState } from "@danielfgray/amux/process-state.ts";
+import { ProcessState } from "@danielfgray/amux"
 import { agentStateTopic } from "./state-topic.ts";
-import { evaluateAll, type PermissionDecision, type PermissionRule } from "@danielfgray/amux/permission.ts";
-import type { AgentEventPayload, AgentDelta } from "@danielfgray/amux/effect/AttachProtocol.ts";
+import {
+  evaluateAll,
+  type PermissionDecision,
+  type PermissionRule,
+} from "@danielfgray/amux/permission.ts";
+import { AgentDelta } from "@danielfgray/amux/protocol"
+import type { AgentEventPayload } from "@danielfgray/amux/protocol"
 import type { Interface as ProjectStore } from "@danielfgray/amux/project-store.ts";
-import type { JsonValue } from "@danielfgray/amux/layout.ts";
+import type { JsonValue } from "@danielfgray/amux"
 
 type PermissionStore = Pick<ProjectStore, "addRules">;
 
@@ -41,132 +46,124 @@ export interface PermissionGate {
   ) => Effect.Effect<void>;
 }
 
-export function makePermissionGate(options: {
+export const makePermissionGate = Effect.fnUntraced(function* (options: {
   readonly session: string;
   readonly turn: Effect.Effect<string>;
   readonly rules: readonly PermissionRule[];
   readonly store: PermissionStore;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
-}): Effect.Effect<PermissionGate> {
-  return Effect.gen(function* () {
-    const rules = yield* Ref.make(options.rules);
-    const pending = yield* Ref.make(new Map<string, Deferred.Deferred<Answer>>());
+}) {
+  const rules = yield* Ref.make(options.rules);
+  const pending = yield* Ref.make(new Map<string, Deferred.Deferred<Answer>>());
 
-    const answer = (request: string, decision: PermissionDecision, feedback?: string) =>
-      Ref.get(pending).pipe(
-        Effect.flatMap((map) => {
-          const deferred = map.get(request);
-          return deferred
-            ? Deferred.succeed(deferred, { decision, feedback }).pipe(Effect.asVoid)
-            : Effect.void;
-        }),
-      );
+  const answer = (request: string, decision: PermissionDecision, feedback?: string) =>
+    Ref.get(pending).pipe(
+      Effect.flatMap((map) => {
+        const deferred = map.get(request);
+        return deferred
+          ? Deferred.succeed(deferred, { decision, feedback }).pipe(Effect.asVoid)
+          : Effect.void;
+      }),
+    );
 
-    const emitRequest = (request: string, assertion: Assertion, save: readonly PermissionRule[]) =>
-      options.turn.pipe(
-        Effect.flatMap((turn) =>
-          options.emit({
-            _tag: "permission.request",
-            session: options.session,
-            turn,
-            request,
-            tool: assertion.tool,
-            action: assertion.action,
-            resources: assertion.resources,
-            save,
-            input: assertion.input,
-          }),
-        ),
-      );
-
-    const ask = (assertion: Assertion, save: readonly PermissionRule[]) =>
-      Effect.gen(function* () {
-        const request = randomUUID();
-        const deferred = yield* Deferred.make<Answer>();
-        yield* Ref.update(pending, (map) => new Map(map).set(request, deferred));
-        yield* emitRequest(request, assertion, save);
-        yield* options.emit({
-          ...agentStateTopic(ProcessState.Blocked),
+  const emitRequest = (request: string, assertion: Assertion, save: readonly PermissionRule[]) =>
+    options.turn.pipe(
+      Effect.flatMap((turn) =>
+        options.emit({
+          _tag: "permission.request",
           session: options.session,
-        });
-        // An interrupt unwinds the await like any other Effect, and the record
-        // is written on the way out: a transcript must not keep a question that
-        // can never be answered. No status follows it — the turn is ending, and
-        // its own end frame says so.
-        return yield* Deferred.await(deferred).pipe(
-          Effect.onInterrupt(() =>
-            record(request, { decision: "reject", feedback: "interrupted" }, []),
-          ),
-          Effect.flatMap((decided) => settle(request, decided, save)),
-        );
-      });
-
-    const settle = (
-      request: string,
-      decided: Answer,
-      save: readonly PermissionRule[],
-    ): Effect.Effect<void, string> =>
-      record(request, decided, save).pipe(
-        Effect.andThen(
-          options.emit({
-            ...agentStateTopic(ProcessState.Running),
-            session: options.session,
-          }),
-        ),
-        Effect.andThen(
-          decided.decision === "reject" ? Effect.fail(refusal(decided.feedback)) : Effect.void,
-        ),
-      );
-
-    const record = (request: string, decided: Answer, save: readonly PermissionRule[]) =>
-      Effect.gen(function* () {
-        yield* Ref.update(pending, (map) => {
-          const next = new Map(map);
-          next.delete(request);
-          return next;
-        });
-        // Remembering before echoing: a client that sees "always" and asks the
-        // same question again must find the rule already in force.
-        if (decided.decision === "always" && save.length > 0) {
-          yield* Ref.update(rules, (current) => [...current, ...save]);
-          yield* options.store.addRules(save).pipe(Effect.ignore);
-        }
-        yield* options.emit(
-          decided.feedback === undefined
-            ? {
-                _tag: "permission.response",
-                session: options.session,
-                request,
-                decision: decided.decision,
-              }
-            : {
-                _tag: "permission.response",
-                session: options.session,
-                request,
-                decision: decided.decision,
-                feedback: decided.feedback,
-              },
-        );
-      });
-
-    return {
-      assert: (assertion) =>
-        Effect.gen(function* () {
-          const current = yield* Ref.get(rules);
-          const effect = evaluateAll(assertion.action, assertion.resources, current);
-          if (effect === "allow") return;
-          if (effect === "ask") return yield* ask(assertion, savedRules(assertion));
-          // A refusal is announced as a question that was already answered: an
-          // agent that silently stops trying is a pane where nothing happened
-          // for no visible reason.
-          const request = randomUUID();
-          yield* emitRequest(request, assertion, []);
-          return yield* settle(request, { decision: "reject", feedback: "policy denies this" }, []);
+          turn,
+          request,
+          tool: assertion.tool,
+          action: assertion.action,
+          resources: assertion.resources,
+          save,
+          input: assertion.input,
         }),
-      resolve: answer,
-    } satisfies PermissionGate;
+      ),
+    );
+
+  const ask = Effect.fnUntraced(function*(assertion: Assertion, save: readonly PermissionRule[]) { const request = randomUUID();
+  const deferred = yield* Deferred.make<Answer>();
+  yield* Ref.update(pending, (map) => new Map(map).set(request, deferred));
+  yield* emitRequest(request, assertion, save);
+  yield* options.emit({
+    ...agentStateTopic(ProcessState.Blocked),
+    session: options.session,
   });
-}
+  // An interrupt unwinds the await like any other Effect, and the record
+  // is written on the way out: a transcript must not keep a question that
+  // can never be answered. No status follows it — the turn is ending, and
+  // its own end frame says so.
+  return yield* Deferred.await(deferred).pipe(
+    Effect.onInterrupt(() =>
+      record(request, { decision: "reject", feedback: "interrupted" }, []),
+    ),
+    Effect.flatMap((decided) => settle(request, decided, save)),
+  ); })
+
+  const settle = (
+    request: string,
+    decided: Answer,
+    save: readonly PermissionRule[],
+  ): Effect.Effect<void, string> =>
+    record(request, decided, save).pipe(
+      Effect.andThen(
+        options.emit({
+          ...agentStateTopic(ProcessState.Running),
+          session: options.session,
+        }),
+      ),
+      Effect.andThen(
+        decided.decision === "reject" ? Effect.fail(refusal(decided.feedback)) : Effect.void,
+      ),
+    );
+
+  const record = Effect.fnUntraced(function*(request: string, decided: Answer, save: readonly PermissionRule[]) { yield* Ref.update(pending, (map) => {
+    const next = new Map(map);
+    next.delete(request);
+    return next;
+  });
+  // Remembering before echoing: a client that sees "always" and asks the
+  // same question again must find the rule already in force.
+  if (decided.decision === "always" && save.length > 0) {
+    yield* Ref.update(rules, (current) => [...current, ...save]);
+    yield* options.store.addRules(save).pipe(Effect.ignore);
+  }
+  yield* options.emit(
+    decided.feedback === undefined
+      ? {
+          _tag: "permission.response",
+          session: options.session,
+          request,
+          decision: decided.decision,
+        }
+      : {
+          _tag: "permission.response",
+          session: options.session,
+          request,
+          decision: decided.decision,
+          feedback: decided.feedback,
+        },
+  ); })
+
+  return {
+    assert: (assertion) =>
+      Effect.gen(function* () {
+        const current = yield* Ref.get(rules);
+        const effect = evaluateAll(assertion.action, assertion.resources, current);
+        if (effect === "allow") return;
+        if (effect === "ask") return yield* ask(assertion, savedRules(assertion));
+        // A refusal is announced as a question that was already answered: an
+        // agent that silently stops trying is a pane where nothing happened
+        // for no visible reason.
+        const request = randomUUID();
+        yield* emitRequest(request, assertion, []);
+        return yield* settle(request, { decision: "reject", feedback: "policy denies this" }, []);
+      }),
+    resolve: answer,
+  } satisfies PermissionGate;
+});
 
 type Answer = { readonly decision: PermissionDecision; readonly feedback?: string };
 

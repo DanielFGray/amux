@@ -1,11 +1,12 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { FileSystem } from "@effect/platform";
+import { closeSync, openSync } from "node:fs";
+import * as FileSystem from "effect/FileSystem";
 import { Context, Duration, Effect, Layer, Option, Redacted, Schema as S } from "effect";
 import { stateRoot } from "@danielfgray/amux/session.ts";
 import { flock, flockUnlock } from "@danielfgray/amux/shim.ts";
-import type { JsonValue } from "@danielfgray/amux/effect/AttachProtocol.ts";
-import { JsonValueSchema } from "@danielfgray/amux/effect/AttachProtocol.ts";
+import type { JsonValue } from "@danielfgray/amux/protocol"
+import { JsonValueSchema } from "@danielfgray/amux/protocol"
 
 export * as Credential from "./credential.ts";
 
@@ -58,23 +59,23 @@ export interface Interface {
   readonly remove: (id: ID) => Effect.Effect<void>;
 }
 
-export class Service extends Context.Tag("amux/Credential")<Service, Interface>() {}
+export class Service extends Context.Service<Service, Interface>()("amux/Credential") {}
 
-const PersistedValue = S.Union(
+const PersistedValue = S.Union([
   S.Struct({
-    type: S.Literal("key"),
+    type: S.Literals(["key"]),
     key: S.String,
-    metadata: S.optional(S.Record({ key: S.String, value: JsonValueSchema })),
+    metadata: S.optional(S.Record(S.String, JsonValueSchema)),
   }),
   S.Struct({
-    type: S.Literal("oauth"),
+    type: S.Literals(["oauth"]),
     methodID: S.String,
     refresh: S.String,
     access: S.String,
-    expires: S.NonNegativeInt,
-    metadata: S.optional(S.Record({ key: S.String, value: JsonValueSchema })),
+    expires: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+    metadata: S.optional(S.Record(S.String, JsonValueSchema)),
   }),
-);
+]);
 const PersistedInfo = S.Struct({
   id: S.String,
   integrationID: S.String,
@@ -96,7 +97,7 @@ const unredact = (value: Value): Persisted["value"] =>
 const present = (row: Persisted): Info => ({ ...row, id: row.id as ID, value: redact(row.value) });
 
 const decodeText = (text: string) => {
-  const parsed = S.decodeUnknownOption(S.parseJson(S.Array(S.Unknown)))(text);
+  const parsed = S.decodeUnknownOption(S.fromJsonString(S.Array(S.Unknown)))(text);
   if (Option.isNone(parsed)) return { valid: false, rows: [] };
   return {
     valid: true,
@@ -132,39 +133,45 @@ const implementation = Effect.gen(function* () {
     const text = yield* fs
       .readFileString(target.file)
       .pipe(
-        Effect.catchTag("SystemError", (error) =>
-          error.reason === "NotFound" ? Effect.succeed("[]") : Effect.fail(error),
+        Effect.catchTag("PlatformError", (error) =>
+          error.reason._tag === "NotFound" ? Effect.succeed("[]") : Effect.fail(error),
         ),
       );
     return decodeText(text);
   });
 
+  // effect/FileSystem's File handle no longer exposes the raw fd flock needs
+  // (v4 dropped it entirely), so the lock file is opened directly through
+  // node:fs instead of through the FileSystem abstraction. Every other file
+  // in this store still goes through `fs`; only the fd this advisory lock is
+  // taken on has to bypass it.
   const withLock = <A, E, R>(shared: boolean, body: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {
       yield* fs.makeDirectory(target.directory, { recursive: true, mode: 0o700 });
       yield* fs.chmod(target.directory, 0o700);
       return yield* Effect.scoped(
         Effect.acquireUseRelease(
-          fs.open(target.lock, { flag: "a+", mode: 0o600 }),
-          (handle) =>
+          Effect.sync(() => openSync(target.lock, "a+", 0o600)),
+          (fd) =>
             fs
               .chmod(target.lock, 0o600)
               .pipe(
-                Effect.zipRight(lock(handle.fd, shared)),
-                Effect.zipRight(
+                Effect.andThen(lock(fd, shared)),
+                Effect.andThen(
                   fs
                     .chmod(target.file, 0o600)
                     .pipe(
-                      Effect.catchTag("SystemError", (error) =>
-                        error.reason === "NotFound" ? Effect.void : Effect.fail(error),
+                      Effect.catchTag("PlatformError", (error) =>
+                        error.reason._tag === "NotFound" ? Effect.void : Effect.fail(error),
                       ),
                     ),
                 ),
-                Effect.zipRight(body),
+                Effect.andThen(body),
               ),
-          (handle) =>
+          (fd) =>
             Effect.sync(() => {
-              flockUnlock(handle.fd);
+              flockUnlock(fd);
+              closeSync(fd);
             }),
         ),
       );
@@ -180,7 +187,7 @@ const implementation = Effect.gen(function* () {
       (file) =>
         file
           .writeAll(new TextEncoder().encode(JSON.stringify(rows) + "\n"))
-          .pipe(Effect.zipRight(file.sync)),
+          .pipe(Effect.andThen(file.sync)),
       () => Effect.void,
     );
     yield* fs.chmod(temp, 0o600);

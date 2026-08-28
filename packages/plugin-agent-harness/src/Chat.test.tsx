@@ -1,12 +1,12 @@
 /** @jsxImportSource @opentui/solid */
-import { Effect, Stream } from "effect";
+import { Effect, Queue, Stream } from "effect";
 import { expect, test } from "bun:test";
 import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Chat } from "./Chat.tsx";
-import type { AttachFrame } from "@danielfgray/amux/effect/AttachProtocol.ts";
-import { waitFor } from "@danielfgray/amux/test-wait.ts";
+import { AttachFrame } from "@danielfgray/amux/protocol"
+import { waitFor } from "@danielfgray/amux/testing"
 
 /**
  * The chat pane's content: a transcript with a composer under it.
@@ -85,8 +85,8 @@ const waitFrame = (t: Renderer, condition: (frame: string) => boolean, label = "
 async function blocked() {
   let push: (frame: AttachFrame) => void = () => {};
   const world = await chat(true, () =>
-    Stream.asyncPush<AttachFrame>((emit) => {
-      push = (frame) => emit.single(frame);
+    Stream.callback<AttachFrame>((queue) => {
+      push = (frame) => Queue.offerUnsafe(queue, frame);
       return Effect.void;
     }),
   );
@@ -282,8 +282,8 @@ test("a submitted message is answered by the agent in the transcript", async () 
         height={() => 20}
         active={() => true}
         frames={() =>
-          Stream.asyncPush<AttachFrame>((emit) => {
-            push = (frame) => emit.single(frame);
+          Stream.callback<AttachFrame>((queue) => {
+            push = (frame) => Queue.offerUnsafe(queue, frame);
             return Effect.void;
           })
         }
@@ -358,8 +358,8 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
         height={() => 20}
         active={() => true}
         frames={() =>
-          Stream.asyncPush<AttachFrame>((emit) => {
-            push = (frame) => emit.single(frame);
+          Stream.callback<AttachFrame>((queue) => {
+            push = (frame) => Queue.offerUnsafe(queue, frame);
             return Effect.void;
           })
         }
@@ -415,8 +415,8 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
 test("chat joins an approved permission to its tool instead of rendering a second card", async () => {
   let push: (frame: AttachFrame) => void = () => {};
   const { t } = await chat(true, () =>
-    Stream.asyncPush<AttachFrame>((emit) => {
-      push = (frame) => emit.single(frame);
+    Stream.callback<AttachFrame>((queue) => {
+      push = (frame) => Queue.offerUnsafe(queue, frame);
       return Effect.void;
     }),
   );

@@ -1,0 +1,5 @@
+id: effect-v3-schema-greaterThan-to-isGreaterThan
+language: TypeScript
+rule:
+  pattern: S.greaterThan($$$ARGS)
+fix: S.check(S.isGreaterThan($$$ARGS))

@@ -16,17 +16,7 @@
  * the wrong thing impossible to write rather than merely discouraged.
  */
 
-import {
-  Context,
-  Deferred,
-  Effect,
-  Either,
-  ExecutionStrategy,
-  Layer,
-  Runtime,
-  Schema as S,
-  Scope,
-} from "effect";
+import { Context, Deferred, Effect, Exit, Layer, Schema as S, Scope } from "effect";
 import { createServer, type Server } from "node:net";
 import { randomUUID } from "node:crypto";
 import { chmod } from "node:fs/promises";
@@ -36,8 +26,8 @@ import {
   JsonValueSchema,
   SESSION_STATE_TOPIC,
   type AttachFrame,
-  type JsonValue,
   type PermissionAnswer,
+  type JsonValue,
 } from "./AttachProtocol.ts";
 import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import { AgentLog, AgentLogDefault, type AgentLogError, type AgentLogService } from "./AgentLog.ts";
@@ -65,19 +55,19 @@ import { errorMessage } from "../error-message.ts";
  */
 const ProcessStateEnvelope = S.Struct({
   id: S.optional(S.String),
-  method: S.Literal("process.state"),
+  method: S.Literals(["process.state"]),
   params: S.Struct({ session: S.String, state: S.String }),
 });
 const TopicPublishEnvelope = S.Struct({
   id: S.optional(S.String),
-  method: S.Literal("topic.publish"),
+  method: S.Literals(["topic.publish"]),
   params: S.Struct({ session: S.String, topic: S.String, payload: JsonValueSchema }),
 });
 const PingEnvelope = S.Struct({
   id: S.optional(S.String),
-  method: S.Literal("ping"),
+  method: S.Literals(["ping"]),
 });
-const ProcessSocketRequest = S.Union(ProcessStateEnvelope, TopicPublishEnvelope, PingEnvelope);
+const ProcessSocketRequest = S.Union([ProcessStateEnvelope, TopicPublishEnvelope, PingEnvelope]);
 
 export interface AttachHostOptions<
   AttachError = never,
@@ -151,13 +141,9 @@ export interface AttachHostService {
   readonly paste: (id: string, data: Uint8Array) => Effect.Effect<void, PtyError>;
   /** Raw child input used by daemon-side pane.send-keys. */
   readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-  readonly prompt: (
-    id: string,
-    text: string,
-    options?: PromptOptions,
-  ) => Effect.Effect<void, PtyError>;
+  readonly prompt: (id: string, text: string, options?: PromptOptions) => Effect.Effect<void, PtyError>;
+  readonly message: (id: string, message: JsonValue) => Effect.Effect<void, PtyError>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
-  /** Answer a permission request a native agent session is blocked on. */
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
   readonly capture: (id: string) => Effect.Effect<string, PtyError>;
   /**
@@ -179,7 +165,7 @@ export interface AttachHostService {
   readonly buffers: PasteBuffers;
 }
 
-export class AttachHost extends Context.Tag("AttachHost")<AttachHost, AttachHostService>() {}
+export class AttachHost extends Context.Service<AttachHost, AttachHostService>()("AttachHost") {}
 
 const make = <
   AttachError,
@@ -212,7 +198,7 @@ const make = <
     // Register session teardown before the server resources below. Host scope
     // finalizers run in reverse order, so connections close and clients observe
     // detach before session shutdown can publish process exit frames.
-    const sessions = yield* Scope.fork(host, ExecutionStrategy.sequential);
+    const sessions = yield* Scope.fork(host, "sequential");
 
     if (options.processStatePath) {
       const processStatePath = options.processStatePath;
@@ -220,7 +206,7 @@ const make = <
       // way the attach server's callbacks do. Without a runtime to run it in,
       // `onSessionState` would only ever be *constructed* here and discarded —
       // an Effect that is never run reports nothing.
-      const runtime = yield* Effect.runtime<never>();
+      const runtime = yield* Effect.context<never>();
       yield* Effect.acquireRelease(
         Effect.promise(
           () =>
@@ -235,12 +221,14 @@ const make = <
                   for (const frame of buffer.push(chunk)) {
                     const line = Buffer.from(frame).toString("utf8").trimEnd();
                     if (!line) continue;
-                    const decoded = S.decodeUnknownEither(S.parseJson(ProcessSocketRequest))(line);
-                    if (Either.isLeft(decoded)) {
+                    const decoded = S.decodeUnknownExit(S.fromJsonString(ProcessSocketRequest))(
+                      line,
+                    );
+                    if (Exit.isFailure(decoded)) {
                       socket.write('{"ok":false,"error":"invalid request"}\n');
                       continue;
                     }
-                    const request = decoded.right;
+                    const request = decoded.value;
                     if (request.method === "ping") {
                       socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
                       continue;
@@ -262,7 +250,7 @@ const make = <
                             request.params.topic,
                             request.params.payload,
                           );
-                    Runtime.runFork(runtime)(report);
+                    Effect.runForkWith(runtime)(report);
                     socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
                   }
                 });
@@ -329,9 +317,9 @@ const make = <
         pendingCommands.set(id, deferred);
         yield* hub.publishTo(client, connection, { _tag: "command.request", id, command });
         return yield* Deferred.await(deferred).pipe(
-          Effect.timeoutFail({
+          Effect.timeoutOrElse({
             duration: "10 seconds",
-            onTimeout: () => "the client did not answer in time",
+            orElse: () => Effect.fail("the client did not answer in time"),
           }),
           Effect.ensuring(Effect.sync(() => pendingCommands.delete(id))),
           Effect.mapError((message) => new AttachHostCommandError({ message })),
@@ -345,9 +333,9 @@ const make = <
       return next;
     };
     return {
-      prepare: (spec) => Scope.extend(supervisor.prepare(sessionSpec(spec)), sessions),
+      prepare: (spec) => Scope.provide(supervisor.prepare(sessionSpec(spec)), sessions),
       spawn: (spec) =>
-        Scope.extend(supervisor.prepare(sessionSpec(spec)), sessions).pipe(
+        Scope.provide(supervisor.prepare(sessionSpec(spec)), sessions).pipe(
           Effect.tap((prepared) => prepared.activate),
           Effect.map((prepared) => prepared.session),
         ),
@@ -362,19 +350,76 @@ const make = <
           data: typeof data === "string" ? new TextEncoder().encode(data) : data,
         }),
       prompt: (id, text, options) =>
-        supervisor.handle({ _tag: "agent.prompt", session: id, text, ...options }),
+        supervisor.handle({
+          _tag: "session.message",
+          session: id,
+          message: { _tag: "agent.prompt", text, ...options },
+        }),
+      message: (id, message) => supervisor.handle({ _tag: "session.message", session: id, message }),
       interrupt: (id, reason) =>
-        reason === undefined
-          ? supervisor.handle({ _tag: "agent.interrupt", session: id })
-          : supervisor.handle({ _tag: "agent.interrupt", session: id, reason }),
+        supervisor.handle({
+          _tag: "session.message",
+          session: id,
+          message:
+            reason === undefined
+              ? { _tag: "agent.interrupt" }
+              : { _tag: "agent.interrupt", reason },
+        }),
       decide: (id, answer) =>
-        supervisor.handle({ _tag: "agent.permission", session: id, ...answer }),
+        supervisor.handle({
+          _tag: "session.message",
+          session: id,
+          message: { _tag: "agent.permission", ...answer },
+        }),
       capture: supervisor.capture,
       runOnClient,
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),
     };
   });
+
+/** The options a supervisor reads, taken from the host's own so the two cannot drift. */
+export type SessionSupervisorOptions<SessionExitError = never, SessionStateError = never> = Pick<
+  AttachHostOptions<never, never, never, never, SessionExitError, SessionStateError>,
+  "agentLog" | "onSessionExit" | "onSessionState"
+>;
+
+/**
+ * The supervisor, with the observers and agent log it answers to.
+ *
+ * Built apart from the attach host because a supervisor nested inside the
+ * host's layer graph is reachable only to the host, and a registry can mount
+ * only what is a key. `layerAttachHost` still provides it, so who releases it
+ * and in what order are unchanged.
+ */
+export const layerSessionSupervisor = <SessionExitError, SessionStateError>(
+  options: SessionSupervisorOptions<SessionExitError, SessionStateError>,
+) =>
+  SessionSupervisor.layer.pipe(
+    Layer.provide(options.agentLog ? Layer.succeed(AgentLog, options.agentLog) : AgentLogDefault),
+    Layer.provide(
+      Layer.succeed(SessionExitObserver, {
+        beforePublish: (session, code) =>
+          (options.onSessionExit?.(session, code) ?? Effect.void).pipe(
+            Effect.mapError(
+              (error) =>
+                new SessionObserverError({ message: errorMessage(error), operation: "exit" }),
+            ),
+          ),
+      }),
+    ),
+    Layer.provide(
+      Layer.succeed(SessionStateObserver, {
+        onState: (session, state) =>
+          (options.onSessionState?.(session, state) ?? Effect.void).pipe(
+            Effect.mapError(
+              (error) =>
+                new SessionObserverError({ message: errorMessage(error), operation: "state" }),
+            ),
+          ),
+      }),
+    ),
+  );
 
 /**
  * The whole data plane as one layer.
@@ -383,6 +428,11 @@ const make = <
  * session output and the server subscribing clients to it are talking to the
  * same hub — layer memoization is doing load-bearing work here, not just
  * saving an allocation.
+ *
+ * The supervisor is merged rather than provided, so it leaves as a key of its
+ * own. Merging changes what the layer exposes, not how it is built or torn
+ * down: the host's finalizers still run before the supervisor's, and the hub's
+ * after both.
  */
 export const layerAttachHost = <
   AttachError,
@@ -400,36 +450,8 @@ export const layerAttachHost = <
     SessionExitError,
     SessionStateError
   >,
-): Layer.Layer<AttachHost, AttachServerError> =>
-  Layer.scoped(AttachHost, make(options)).pipe(
-    Layer.provide(
-      SessionSupervisor.Live.pipe(
-        Layer.provide(
-          options.agentLog ? Layer.succeed(AgentLog, options.agentLog) : AgentLogDefault,
-        ),
-        Layer.provide(
-          Layer.succeed(SessionExitObserver, {
-            beforePublish: (session, code) =>
-              (options.onSessionExit?.(session, code) ?? Effect.void).pipe(
-                Effect.mapError(
-                  (error) =>
-                    new SessionObserverError({ message: errorMessage(error), operation: "exit" }),
-                ),
-              ),
-          }),
-        ),
-        Layer.provide(
-          Layer.succeed(SessionStateObserver, {
-            onState: (session, state) =>
-              (options.onSessionState?.(session, state) ?? Effect.void).pipe(
-                Effect.mapError(
-                  (error) =>
-                    new SessionObserverError({ message: errorMessage(error), operation: "state" }),
-                ),
-              ),
-          }),
-        ),
-      ),
-    ),
-    Layer.provide(AttachHub.Default),
+): Layer.Layer<AttachHost | SessionSupervisor, AttachServerError> =>
+  Layer.effect(AttachHost, make(options)).pipe(
+    Layer.provideMerge(layerSessionSupervisor(options)),
+    Layer.provide(AttachHub.layer),
   );

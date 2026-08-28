@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Browse `bun run typecheck` diagnostics with fzf and open them in nvim.
+#
+#   tools/typecheck-fzf                         picker (or `bun run typecheck:fzf`)
+#   tools/typecheck-fzf --open FILE LINE COL    open one diagnostic (fzf binding)
+#   tools/typecheck-fzf --open-all LINE...      open selected diagnostics via quickfix
+#
+# `tsc --pretty false` emits one `path/file.ts(L,C): message` per diagnostic.
+# The picker rewrites that to `path/file.ts:L:C: message`, so fzf's `-d:` splits
+# `{1}`=file `{2}`=line `{3}`=col with no runtime extraction, and nvim's stock
+# errorformat (`%f:%l:%c:%m`) parses the rewritten lines for the -q quickfix path.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+open_one() {
+  local file="$1" line="$2" col="$3"
+  if [[ "$line" =~ ^[0-9]+$ && "$col" =~ ^[0-9]+$ ]]; then
+    exec nvim "+call cursor($line,$col)" "$file"
+  else
+    # unparseable line: open the file without a position
+    exec nvim "$file"
+  fi
+}
+
+open_all() {
+  local errfile
+  errfile="$(mktemp)"
+  printf '%s\n' "$@" > "$errfile"
+  nvim -q "$errfile"
+  rm -f "$errfile"
+}
+
+case "${1:-}" in
+  --open)
+    shift
+    if (( $# < 3 )); then
+      echo "usage: $0 --open FILE LINE COL" >&2
+      exit 2
+    fi
+    open_one "$@"
+    ;;
+  --open-all)
+    shift
+    open_all "$@"
+    ;;
+esac
+
+cd "$root"
+
+reload='bun run typecheck --pretty false 2>/dev/null | sed -E "s/^([^(]*)\(([0-9]+),([0-9]+)\)/\1:\2:\3/"'
+tool="$root/tools/typecheck-fzf"
+
+fzf --multi \
+  --no-hscroll \
+  --delimiter=: \
+  --bind "start:reload:$reload" \
+  --bind "ctrl-r:reload:$reload" \
+  --bind "enter:execute($tool --open {1} {2} {3})" \
+  --bind "alt-enter:execute($tool --open-all {+})" \
+  --header 'enter: open (fix, then return)   alt-enter: open all selected via quickfix   ctrl-r: re-typecheck' \
+  || true

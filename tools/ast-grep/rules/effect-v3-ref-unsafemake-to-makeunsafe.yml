@@ -1,0 +1,6 @@
+id: effect-v3-ref-unsafemake-to-makeunsafe
+language: TypeScript
+message: Ref.unsafeMake was renamed to Ref.makeUnsafe in v4 (unsafe suffix moved to the end).
+rule:
+  pattern: Ref.unsafeMake<$T>($ARG)
+fix: Ref.makeUnsafe<$T>($ARG)

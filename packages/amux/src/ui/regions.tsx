@@ -8,6 +8,7 @@ import type {
   PluginContributions,
   PluginInstance,
 } from "../plugin/contributions.ts";
+import type { DockSide } from "../layout.ts";
 
 /**
  * Where a panel can be put, and what the app draws around it.
@@ -16,7 +17,7 @@ import type {
  * it is the pane mux, an imperative BoxRenderable the workspace owns. `overlay`
  * is the modal stack and `float` is transient chrome that never takes focus.
  */
-export type DockSide = "left" | "right" | "top" | "bottom";
+export type { DockSide } from "../layout.ts";
 export type Region = DockSide | "overlay" | "float";
 
 /**
@@ -133,6 +134,8 @@ export interface Regions {
   /** The visible overlay on top of the stack, which owns unhandled keys. */
   topOverlay: () => OverlayPanel | null;
 }
+
+export type RegionReader = Omit<Regions, "register">;
 
 /**
  * The panel registry.

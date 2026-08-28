@@ -2,9 +2,7 @@
  * Branch mark, ahead/behind, and worktree operations for a space's directory.
  */
 import { dirname, resolve } from "node:path";
-import * as BunContext from "@effect/platform-bun/BunContext";
-import * as Command from "@effect/platform/Command";
-import * as Chunk from "effect/Chunk";
+import * as BunServices from "@effect/platform-bun/BunServices";
 import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -12,6 +10,8 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { pipe } from "effect/Function";
 import * as Stream from "effect/Stream";
+import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 export interface GitInfo {
   branch: string;
@@ -86,43 +86,39 @@ interface GitResult {
 const runGit = (args: string[], cwd: string, timeoutMs: number) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const process = yield* Command.start(
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const process = yield* spawner.spawn(
         pipe(
-          Command.make("git", ...args),
-          Command.workingDirectory(cwd),
+          ChildProcess.make("git", args, { stdout: "pipe", stderr: "pipe" }),
+          ChildProcess.setCwd(cwd),
           // amux observes a repository it does not own. `git status` would
           // otherwise take .git/index.lock to refresh the index, so a poll
           // landing between the user's own `git add` and `git commit` makes
           // their command fail — and a poll killed mid-refresh leaves the
           // lock behind. This disables only the locks git takes for its own
           // convenience; the ones an operation requires are unaffected.
-          Command.env({ GIT_OPTIONAL_LOCKS: "0" }),
-          Command.stdout("pipe"),
-          Command.stderr("pipe"),
+          ChildProcess.setEnv({ GIT_OPTIONAL_LOCKS: "0" }),
         ),
       );
-      const stdout = yield* Effect.fork(
+      const stdout = yield* Effect.forkChild(
         Stream.decodeText()(process.stdout).pipe(Stream.runCollect),
       );
-      const stderr = yield* Effect.fork(
+      const stderr = yield* Effect.forkChild(
         Stream.decodeText()(process.stderr).pipe(Stream.runCollect),
       );
-      const code = yield* process.exitCode.pipe(
-        Effect.timeoutFail({
-          duration: `${timeoutMs} millis`,
-          onTimeout: () =>
-            new GitError({ message: `git ${args[0]} timed out after ${timeoutMs}ms` }),
-        }),
-      );
+      const code = yield* Effect.timeoutOrElse(process.exitCode, {
+        duration: `${timeoutMs} millis`,
+        orElse: () => new GitError({ message: `git ${args[0]} timed out after ${timeoutMs}ms` }),
+      });
       const out = yield* Fiber.join(stdout);
       const err = yield* Fiber.join(stderr);
       return {
         code,
-        out: Chunk.toReadonlyArray(out).join("").trim(),
-        err: Chunk.toReadonlyArray(err).join("").trim(),
+        out: out.join("").trim(),
+        err: err.join("").trim(),
       };
     }),
-  ).pipe(Effect.provide(BunContext.layer));
+  ).pipe(Effect.provide(BunServices.layer));
 
 async function runGitResult(
   args: string[],

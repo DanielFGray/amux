@@ -15,7 +15,7 @@
  */
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { FileSystem } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
 import { Context, Effect, Layer, Schema as S, type Scope } from "effect";
 import { basename, join, resolve } from "node:path";
 import { PermissionEffectSchema, type PermissionRule } from "./permission.ts";
@@ -71,13 +71,13 @@ export interface Interface {
   readonly promotePrompt: (id: string) => Effect.Effect<void, ProjectStoreError>;
 }
 
-export class Service extends Context.Tag("amux/ProjectStore")<Service, Interface>() {}
+export class Service extends Context.Service<Service, Interface>()("amux/ProjectStore") {}
 
 /** Open (and migrate) the database for one project, closing it with the scope. */
 export const layer = (
   root: string,
 ): Layer.Layer<Service, ProjectStoreError, FileSystem.FileSystem> =>
-  Layer.scoped(Service, open(root));
+  Layer.effect(Service, open(root));
 
 /**
  * Where a project's state lives.

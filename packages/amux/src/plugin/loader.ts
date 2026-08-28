@@ -1,40 +1,56 @@
 import { Effect } from "effect";
 import { readdirSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost } from "./host.ts";
 import { decodePlugin, hotImport } from "./hot.ts";
+import * as sidebarModule from "@danielfgray/amux-plugin-sidebar";
+import * as agentHarnessModule from "@danielfgray/amux-plugin-agent-harness";
+import * as notificationsModule from "@danielfgray/amux-plugin-notifications";
+import * as agentAwarenessModule from "@danielfgray/amux-agent-awareness";
 
 /**
  * The plugins amux ships, named twice on purpose.
  *
- * `load` is a literal specifier so `bun build --compile` still finds them and
- * puts them in the binary. `source` is the same module resolved to a file on
- * disk (via the workspace symlink in node_modules), which is what a reload
- * re-imports. A run from source uses `source` and is therefore reloadable; a
- * compiled binary falls back to `load`, because there is no source there to
- * reload and nothing to watch.
+ * `load` is a static import bound above: a `bun build --compile` executable
+ * resolves a dynamic `import()` of a bare workspace-package specifier against
+ * the real filesystem at runtime, which does not exist inside the binary — it
+ * embeds the module's code (reachable from the static import) but cannot then
+ * find it by name. A static import sidesteps that resolution step entirely.
+ * `resolveSource` is the same module resolved to a file on disk (via the
+ * workspace symlink in node_modules), which is what a reload re-imports. It
+ * is a function, not a value, because `import.meta.resolve` on a bare
+ * specifier throws in a compiled binary for the same reason the dynamic
+ * `import()` above would — deferring the call lets `builtinSource` turn that
+ * failure into "no source" instead of crashing every run of the binary before
+ * it reaches plugin loading. A run from source uses that source and is
+ * therefore reloadable; a compiled binary falls back to `load`, because there
+ * is no source there to reload and nothing to watch.
  */
 const BUILTIN_PLUGINS = {
+  "builtin:amux.agent-awareness": {
+    load: () => Promise.resolve(agentAwarenessModule),
+    resolveSource: () => import.meta.resolve("@danielfgray/amux-agent-awareness"),
+  },
   "builtin:amux.sidebar": {
-    load: () => import("@danielfgray/amux-plugin-sidebar"),
-    source: new URL(import.meta.resolve("@danielfgray/amux-plugin-sidebar")),
+    load: () => Promise.resolve(sidebarModule),
+    resolveSource: () => import.meta.resolve("@danielfgray/amux-plugin-sidebar"),
   },
   "builtin:amux.agent-harness": {
-    load: () => import("@danielfgray/amux-plugin-agent-harness"),
-    source: new URL(import.meta.resolve("@danielfgray/amux-plugin-agent-harness")),
+    load: () => Promise.resolve(agentHarnessModule),
+    resolveSource: () => import.meta.resolve("@danielfgray/amux-plugin-agent-harness"),
   },
   "builtin:amux.notifications": {
-    load: () => import("@danielfgray/amux-plugin-notifications"),
-    source: new URL(import.meta.resolve("@danielfgray/amux-plugin-notifications")),
+    load: () => Promise.resolve(notificationsModule),
+    resolveSource: () => import.meta.resolve("@danielfgray/amux-plugin-notifications"),
   },
 } satisfies Readonly<Record<string, BuiltinEntry>>;
 
 interface BuiltinEntry {
   readonly load: () => Promise<unknown>;
-  readonly source: URL;
+  readonly resolveSource: () => string;
 }
 
 function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
@@ -43,8 +59,17 @@ function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
 
 function builtinAt(path: string): BuiltinEntry | undefined {
   if (!hasOwn(BUILTIN_PLUGINS, path)) return undefined;
-  const entry = BUILTIN_PLUGINS[path];
-  return { load: () => entry.load(), source: entry.source };
+  return BUILTIN_PLUGINS[path];
+}
+
+/** A builtin's source file, or null when running compiled and there is none
+ *  on disk to resolve. */
+function builtinSource(builtin: BuiltinEntry): URL | null {
+  try {
+    return new URL(builtin.resolveSource());
+  } catch {
+    return null;
+  }
 }
 
 /** A plugin whose source amux can see, and can therefore load again. */
@@ -57,7 +82,7 @@ export interface HotPlugin {
 
 /** Discover user entry files without making discovery a second loading path. */
 function discoveredPlugins(configDir: string): readonly string[] {
-  const root = join(dirname(configDir), "opentui-herdr", "plugins");
+  const root = join(configDir, "plugins");
   try {
     return readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isFile() && /\.(?:[cm]?js|[cm]?ts)x?$/.test(entry.name))
@@ -71,8 +96,10 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
   config: Config,
   host: PluginHost,
   configDir: string,
+  coreEntries: readonly PluginDefinition[] = [],
 ) {
   const hot: HotPlugin[] = [];
+  const enabled: PluginDefinition[] = [];
 
   const configured = new Map(config.plugins.map((spec) => [spec.path, spec]));
   const specs = [
@@ -83,28 +110,30 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
   ];
 
   for (const spec of specs) {
-    const source = sourceOf(spec.path, configDir);
-    if (!source) {
+    // A builtin that cannot be read from disk is a compiled binary, not a
+    // broken install: the module is in the bundle, and only reloading is lost.
+    const builtin = builtinAt(spec.path);
+    const source = builtin ? builtinSource(builtin) : sourceOf(spec.path, configDir);
+    if (!source && !builtin) {
       yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
       continue;
     }
 
-    // A builtin that cannot be read from disk is a compiled binary, not a
-    // broken install: the module is in the bundle, and only reloading is lost.
-    const builtin = builtinAt(spec.path);
-    const loaded = yield* hotImport(source).pipe(
-      Effect.map((definition) => ({ definition, reloadable: true })),
-      Effect.catchAll((error) =>
-        builtin
-          ? Effect.tryPromise({
-              try: () => builtin.load(),
-              catch: () => "builtin plugin load failed",
-            }).pipe(
-              Effect.flatMap(decodePlugin),
-              Effect.map((definition) => ({ definition, reloadable: false })),
-            )
-          : Effect.fail(error),
-      ),
+    const fromBuiltin = Effect.tryPromise({
+      try: () => builtin!.load(),
+      catch: () => "builtin plugin load failed",
+    }).pipe(
+      Effect.flatMap(decodePlugin),
+      Effect.map((definition) => ({ definition, reloadable: false })),
+    );
+    const loaded = yield* (
+      source
+        ? hotImport(source).pipe(
+            Effect.map((definition) => ({ definition, reloadable: true })),
+            Effect.catch((error) => (builtin ? fromBuiltin : Effect.fail(error))),
+          )
+        : fromBuiltin
+    ).pipe(
       Effect.tapError((error) =>
         Effect.logWarning(`Could not load plugin '${spec.path}': ${error}`),
       ),
@@ -112,9 +141,11 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
     );
     if (!loaded) continue;
 
-    if (spec.enabled)
-      yield* host.add(loaded.definition).pipe(Effect.catchAllCause(() => Effect.void));
-    if (loaded.reloadable)
+    if (spec.enabled) enabled.push(loaded.definition);
+    // `reloadable` is only true when `hotImport(source)` itself succeeded, so
+    // `source` is never null here — the guard just proves that to the type
+    // checker without a non-null assertion.
+    if (loaded.reloadable && source)
       hot.push({
         id: loaded.definition.id,
         path: spec.path,
@@ -122,6 +153,11 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
         definition: loaded.definition,
       });
   }
+
+  // One configuration, not a plugin at a time: whether an injected key has any
+  // provider is only answerable once every entry has been read, and a provider
+  // listed after its consumer is still a provider.
+  yield* host.reconcile([...coreEntries, ...enabled]).pipe(Effect.catchCause(() => Effect.void));
 
   return hot as readonly HotPlugin[];
 });
@@ -133,8 +169,6 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
  * merely joins.
  */
 function sourceOf(specPath: string, configDir: string): URL | null {
-  const builtin = builtinAt(specPath);
-  if (builtin) return builtin.source;
   if (specPath.startsWith("file://")) {
     try {
       return pathToFileURL(fileURLToPath(specPath));

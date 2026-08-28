@@ -6,15 +6,15 @@ import { testRender, useRenderer } from "@opentui/solid";
 import { createSignal, onMount } from "solid-js";
 import { SpaceSet, type Space } from "@danielfgray/amux/space.ts";
 import { sidebarPlugin, SIDEBAR_OPTIONS } from "./index.tsx";
-import { type SidebarDisplay, type SidebarDisplayRow } from "@danielfgray/amux/ui/panel.ts";
-import { createRegions } from "@danielfgray/amux/ui/regions.tsx";
+import { type SidebarDisplay, type SidebarDisplayRow } from "@danielfgray/amux"
+import { createRegions } from "@danielfgray/amux/testing";
 import { createPluginContributions } from "@danielfgray/amux/plugin/contributions.ts";
 import { workspaceEnv } from "@danielfgray/amux/env.ts";
 import { createPluginHost, type PluginHost } from "@danielfgray/amux/plugin/host.ts";
-import { testPluginEnvironment } from "@danielfgray/amux/plugin/test-environment.ts";
-import { testPanelContext } from "@danielfgray/amux/ui/test-panel.ts";
+import { testPluginEnvironment } from "@danielfgray/amux/testing"
+import { testPanelContext } from "@danielfgray/amux/testing"
 import { formatText } from "@danielfgray/amux/format.ts";
-import { resolveOptions } from "@danielfgray/amux/options.ts";
+import { resolveOptions } from "@danielfgray/amux"
 
 test("format strings can choose the command or OSC title in a sidebar row", () => {
   expect(
@@ -120,7 +120,7 @@ async function setup(options?: { width?: number; height?: number; format?: strin
   let space!: Space;
   let win!: Space["windows"][number];
   let regions!: ReturnType<typeof createRegions>;
-  let scope!: Scope.CloseableScope;
+  let scope!: Scope.Closeable;
   let ready!: () => void;
   const initialized = new Promise<void>((resolve) => (ready = resolve));
 
@@ -134,7 +134,7 @@ async function setup(options?: { width?: number; height?: number; format?: strin
         regions = registeredRegions;
         scope = Effect.runSync(Scope.make());
         spaces = Effect.runSync(
-          Scope.extend(SpaceSet.make(workspaceEnv(renderer, { shell }), paneHost), scope),
+          Scope.provide(SpaceSet.make(workspaceEnv(renderer, { shell }), paneHost), scope),
         );
         space = Effect.runSync(spaces.create("proj", process.cwd()));
         win = Effect.runSync(space.newWindow());
@@ -160,12 +160,19 @@ async function setup(options?: { width?: number; height?: number; format?: strin
           regions: registeredRegions,
         });
         const host: PluginHost = Effect.runSync(
-          Scope.extend(
+          Scope.provide(
             createPluginHost(environment).pipe(Effect.provideService(Scope.Scope, scope)),
             scope,
           ),
         );
-        Effect.runSync(Scope.extend(host.add(sidebarPlugin), scope));
+        // The registries are entries too, so the sidebar and the providers it
+        // injects go in as one configuration rather than one plugin at a time.
+        Effect.runSync(
+          Scope.provide(
+            Effect.orDie(host.reconcile([...environment.registryEntries, sidebarPlugin])),
+            scope,
+          ),
+        );
         ready();
       });
 

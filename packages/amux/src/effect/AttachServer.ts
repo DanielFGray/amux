@@ -4,7 +4,6 @@ import {
   Effect,
   Exit,
   Fiber,
-  FiberId,
   FiberMap,
   Match,
   Schema as S,
@@ -81,7 +80,7 @@ interface ClientState {
   buffer: AttachFrameAccumulator;
   client: string | null;
   connection: string;
-  scope: Scope.CloseableScope | null;
+  scope: Scope.Closeable | null;
   writer: {
     readonly closed: boolean;
     send(frame: AttachFrame): boolean;
@@ -90,8 +89,8 @@ interface ClientState {
     closeAfterFlush(onFlushed: () => void): void;
   } | null;
   run: ClientRun | null;
-  owner: Fiber.RuntimeFiber<void, never> | null;
-  lanes: Map<string, Fiber.RuntimeFiber<void, never>>;
+  owner: Fiber.Fiber<void, never> | null;
+  lanes: Map<string, Fiber.Fiber<void, never>>;
   pending: Buffer[];
   nextFiber: number;
   closed: boolean;
@@ -101,7 +100,7 @@ type ClientRun = <E>(
   key: string,
   effect: Effect.Effect<void, E>,
   options?: { readonly onlyIfMissing?: boolean },
-) => Fiber.RuntimeFiber<void, E>;
+) => Fiber.Fiber<void, E>;
 
 export const createAttachWriter = (
   socket: Pick<Bun.Socket, "write">,
@@ -148,7 +147,7 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
       const state = socket.data;
       if (state.closed) return;
       state.closed = true;
-      state.owner?.unsafeInterruptAsFork(FiberId.none);
+      state.owner?.interruptUnsafe();
     };
 
     const terminate = (socket: Bun.Socket<ClientState>, frame?: AttachFrame) => {
@@ -167,7 +166,7 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
     /** Accept a hello, or tell the client why it was refused and hang up. */
     const attach = Effect.fnUntraced(function* (socket: Bun.Socket<ClientState>, client: string) {
       const child = yield* Scope.make();
-      const subscribed = yield* Scope.extend(
+      const subscribed = yield* Scope.provide(
         hub.subscribe(client, socket.data.connection, () => {
           requestClose(socket);
         }),
@@ -221,58 +220,60 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
       );
     });
 
-    const handleFrame = (socket: Bun.Socket<ClientState>, frame: AttachFrame) =>
-      Effect.gen(function* () {
-        if (socket.data.client) {
-          yield* options.onActivity?.(socket.data.client, socket.data.connection) ?? Effect.void;
-        }
-        yield* Match.value(frame).pipe(
-          Match.tag("hello", (hello) =>
-            Effect.gen(function* () {
-              if (socket.data.client) {
-                socket.data.writer?.send({ _tag: "error", message: "hello already received" });
-                return;
-              }
-              yield* attach(socket, hello.client);
-            }),
-          ),
-          Match.tag("ping", (ping) =>
-            Effect.sync(() => {
-              if (!socket.data.client) {
-                terminate(socket, { _tag: "error", message: "hello is required first" });
-                return;
-              }
-              socket.data.writer?.send({ _tag: "pong", nonce: ping.nonce });
-            }),
-          ),
-          Match.tag("sync", (sync) =>
-            Effect.gen(function* () {
-              if (!socket.data.client) {
-                terminate(socket, { _tag: "error", message: "hello is required first" });
-                return;
-              }
-              yield* hub.beginReplay(socket.data.client, socket.data.connection);
-              yield* (
-                options.onSync?.(
-                  socket.data.client,
-                  socket.data.connection,
-                  sync.session,
-                  sync.after,
-                ) ?? Effect.void
-              ).pipe(Effect.ensuring(hub.endReplay(socket.data.client, socket.data.connection)));
-            }),
-          ),
-          Match.orElse((clientFrame) =>
-            Effect.gen(function* () {
-              if (!socket.data.client) {
-                terminate(socket, { _tag: "error", message: "hello is required first" });
-                return;
-              }
-              yield* options.onFrame?.(socket.data.client, clientFrame) ?? Effect.void;
-            }),
-          ),
-        );
-      });
+    const handleFrame = Effect.fnUntraced(function* (
+      socket: Bun.Socket<ClientState>,
+      frame: AttachFrame,
+    ) {
+      if (socket.data.client) {
+        yield* options.onActivity?.(socket.data.client, socket.data.connection) ?? Effect.void;
+      }
+      yield* Match.value(frame).pipe(
+        Match.tag("hello", (hello) =>
+          Effect.gen(function* () {
+            if (socket.data.client) {
+              socket.data.writer?.send({ _tag: "error", message: "hello already received" });
+              return;
+            }
+            yield* attach(socket, hello.client);
+          }),
+        ),
+        Match.tag("ping", (ping) =>
+          Effect.sync(() => {
+            if (!socket.data.client) {
+              terminate(socket, { _tag: "error", message: "hello is required first" });
+              return;
+            }
+            socket.data.writer?.send({ _tag: "pong", nonce: ping.nonce });
+          }),
+        ),
+        Match.tag("sync", (sync) =>
+          Effect.gen(function* () {
+            if (!socket.data.client) {
+              terminate(socket, { _tag: "error", message: "hello is required first" });
+              return;
+            }
+            yield* hub.beginReplay(socket.data.client, socket.data.connection);
+            yield* (
+              options.onSync?.(
+                socket.data.client,
+                socket.data.connection,
+                sync.session,
+                sync.after,
+              ) ?? Effect.void
+            ).pipe(Effect.ensuring(hub.endReplay(socket.data.client, socket.data.connection)));
+          }),
+        ),
+        Match.orElse((clientFrame) =>
+          Effect.gen(function* () {
+            if (!socket.data.client) {
+              terminate(socket, { _tag: "error", message: "hello is required first" });
+              return;
+            }
+            yield* options.onFrame?.(socket.data.client, clientFrame) ?? Effect.void;
+          }),
+        ),
+      );
+    });
 
     const laneFor = (frame: AttachFrame): string =>
       frame._tag === "input" || frame._tag === "resize" || frame._tag === "sync"
@@ -293,9 +294,9 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
           discard: true,
         }).pipe(
           Effect.andThen(handleFrame(socket, frame)),
-          Effect.catchAllCause((cause) =>
+          Effect.catchCause((cause) =>
             Effect.sync(() => {
-              if (!state.closed && !Cause.isInterruptedOnly(cause)) {
+              if (!state.closed && !Cause.hasInterruptsOnly(cause)) {
                 terminate(socket, { _tag: "error", message: reason(cause) });
               }
             }),
@@ -342,7 +343,7 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
                   dispatchFrame(socket, frame);
             }),
           ),
-          Effect.catchAll((error) =>
+          Effect.catch((error) =>
             Effect.sync(() => {
               if (!state.closed) terminate(socket, { _tag: "error", message: errorMessage(error) });
             }),

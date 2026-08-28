@@ -1,0 +1,5 @@
+id: effect-v3-schema-finite-to-isFinite
+language: TypeScript
+rule:
+  pattern: S.finite($$$ARGS)
+fix: S.check(S.isFinite($$$ARGS))

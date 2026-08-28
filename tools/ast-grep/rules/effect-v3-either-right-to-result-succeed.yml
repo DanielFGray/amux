@@ -1,0 +1,6 @@
+id: effect-v3-either-right-to-result-succeed
+language: TypeScript
+message: Either was renamed to Result in v4; Either.right became Result.succeed.
+rule:
+  pattern: Either.right($X)
+fix: Result.succeed($X)

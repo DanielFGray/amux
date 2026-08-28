@@ -1,0 +1,7 @@
+id: effect-v3-effect-either-to-result
+language: TypeScript
+message: Effect.either became Effect.result in Effect v4.
+severity: warning
+rule:
+  pattern: Effect.either
+fix: Effect.result

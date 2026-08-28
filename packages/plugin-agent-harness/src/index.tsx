@@ -1,29 +1,24 @@
 /** @jsxImportSource @opentui/solid */
-import { Effect, Layer, Redacted, Runtime } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { For, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem } from "@effect/platform-bun";
-import { command } from "@danielfgray/amux/commands.ts";
+import { command } from "@danielfgray/amux"
 import { Default as IntegrationDefault, integrations } from "./integration.ts";
 import { Default as ModelCatalogDefault } from "./model-catalog.ts";
-import { definePlugin, type PluginDefinition } from "@danielfgray/amux/plugin/types.ts";
-import {
-  BindingsTag,
-  OptionsTag,
-  RegionsTag,
-  SessionViewsTag,
-  SettingsTag,
-  SpawnProvidersTag,
-} from "@danielfgray/amux/plugin/services.ts";
+import { definePlugin, type PluginDefinition } from "@danielfgray/amux"
+import { BindingsTag,
+OptionsTag,
+RegionsTag,
+SessionViewsTag,
+SettingsTag,
+SpawnProvidersTag, } from "@danielfgray/amux"
 import { Chat } from "./Chat.tsx";
 import { registerModelPicker } from "./ModelPicker.tsx";
 import { agentPreflight } from "./preflight.ts";
 import { AGENT_HARNESS_OPTIONS } from "./options.ts";
-import { theme } from "@danielfgray/amux/ui/theme.ts";
-import {
-  Service as Integration,
-  type Info as IntegrationInfo,
-} from "./integration.ts";
+import { theme } from "@danielfgray/amux"
+import { Service as Integration, type Info as IntegrationInfo } from "./integration.ts";
 import { Credential } from "./credential.ts";
 
 export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
@@ -52,7 +47,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       const sessionViews = yield* SessionViewsTag;
       const settings = yield* SettingsTag;
       const spawnProviders = yield* SpawnProvidersTag;
-      const runtime = yield* Effect.runtime();
+      const runtime = yield* Effect.context();
       yield* Effect.all(
         Object.entries(AGENT_HARNESS_OPTIONS).map(([name, spec]) => options.register([name, spec])),
       );
@@ -90,7 +85,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
           if (event.name === "d") {
             const connection = providers()[selected]?.connections[0];
             if (connection)
-              Runtime.runFork(runtime)(
+              Effect.runForkWith(runtime)(
                 yieldCredential().pipe(
                   Effect.flatMap((credentials) => credentials.remove(connection.id)),
                   Effect.provide(Credential.Default),
@@ -132,10 +127,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       yield* spawnProviders.register([
         "native",
         () => ({
-          argv: [
-            process.execPath,
-            new URL("./native-worker.ts", import.meta.url).pathname,
-          ],
+          argv: [process.execPath, new URL("./native-worker.ts", import.meta.url).pathname],
           // A provider key exported into the daemon's environment must not reach
           // the worker's environ, where any process could read it via /proc. The
           // harness knows which variables its integrations treat as credentials.
@@ -171,12 +163,10 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       });
 
       const run = (value: Parameters<typeof ctx.panel.run>[0]) =>
-        Runtime.runFork(runtime)(
+        Effect.runForkWith(runtime)(
           ctx.panel
             .run(value)
-            .pipe(
-              Effect.catchAll((error) => Effect.sync(() => ctx.panel.reportError(error.message))),
-            ),
+            .pipe(Effect.catch((error) => Effect.sync(() => ctx.panel.reportError(error.message)))),
         );
 
       yield* sessionViews.register([
@@ -188,7 +178,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             showThinking={ctx.panel.options()["agent.showThinking"] as boolean}
             onSlashCommand={(command) => {
               if (command !== "/model") return false;
-              Runtime.runFork(runtime)(openModelPicker);
+              Effect.runForkWith(runtime)(openModelPicker);
               return true;
             }}
             slashCommands={[{ name: "model", description: "choose the agent model" }]}
@@ -222,7 +212,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       }
       const connect = (provider: IntegrationInfo | undefined, key: string) => {
         if (!provider || !key) return;
-        Runtime.runFork(runtime)(
+        Effect.runForkWith(runtime)(
           yieldCredential().pipe(
             Effect.flatMap((credentials) =>
               provider.connections[0]

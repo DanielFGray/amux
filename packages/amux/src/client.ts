@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { Deferred, Effect, Option, Queue, Schedule, Scope, Stream, Schema as S } from "effect";
-import { FileSystem } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
 import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SessionBackendFactory } from "./backend.ts";
 import { connectControl, controlCall, toControlError } from "./control-client.ts";
@@ -124,7 +124,7 @@ const make = (
       catch: (error) => new SessionClientError({ message: errorMessage(error) }),
     }).pipe(
       Effect.retry({
-        schedule: Schedule.spaced("200 millis").pipe(Schedule.upTo("5000 millis")),
+        schedule: Schedule.spaced("200 millis").pipe(Schedule.upTo({ duration: "5000 millis" })),
         while: (error) =>
           S.is(SessionClientError)(error) && error.message.includes("already attached"),
       }),
@@ -209,10 +209,14 @@ const make = (
         ),
       ),
     );
+    // Release everyone waiting on an in-flight command first, then discard the
+    // requests that never started. `Queue.clear` is the non-blocking drain:
+    // `Queue.takeAll` waits for an element, and a closing client's queue is
+    // normally empty.
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
-        yield* Queue.takeAll(commandQueue);
         yield* Deferred.succeed(closed, undefined);
+        yield* Queue.clear(commandQueue);
       }),
     );
     service = {
@@ -269,7 +273,7 @@ const make = (
       close: () => attach.close(),
       // A daemon that dies mid-response is a successful stop, so transport
       // failures here are expected rather than reported.
-      stop: () => control.Stop().pipe(Effect.catchAll(() => Effect.void)),
+      stop: () => control.Stop().pipe(Effect.catch(() => Effect.void)),
     };
     return service;
   });
@@ -278,7 +282,9 @@ export function daemonAlive(
   id: string,
 ): Effect.Effect<boolean, never, SessionStore | FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const lease = yield* SessionStore.readLease(id).pipe(Effect.orElseSucceed(() => null));
+    const lease = yield* Effect.flatMap(SessionStore, (store) => store.readLease(id)).pipe(
+      Effect.orElseSucceed(() => null),
+    );
     if (!lease || !processAlive(lease.pid)) return false;
     return yield* controlCall(id, (control) => control.Ping()).pipe(
       Effect.as(true),
@@ -322,7 +328,9 @@ export function ensureDaemon(
     );
     yield* daemonReady.pipe(
       Effect.retry(
-        Schedule.spaced(`${POLL_MS} millis`).pipe(Schedule.upTo(`${START_TIMEOUT_MS} millis`)),
+        Schedule.spaced(`${POLL_MS} millis`).pipe(
+          Schedule.upTo({ duration: `${START_TIMEOUT_MS} millis` }),
+        ),
       ),
       Effect.mapError(
         () =>

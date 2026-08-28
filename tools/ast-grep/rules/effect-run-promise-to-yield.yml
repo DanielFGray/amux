@@ -1,5 +1,13 @@
 id: effect-run-promise-to-yield
 language: TypeScript
+# Only inside a generator. `await Effect.runPromise(...)` in an async function is
+# the legitimate boundary where an Effect meets promise-land; rewriting it there
+# produces a `yield*` in a non-generator, which is a parse error, not a type error
+# — the file stops compiling and every test in it errors out at once.
 rule:
-  pattern: await Effect.runPromise($E)
+  all:
+    - pattern: await Effect.runPromise($E)
+    - inside:
+        kind: generator_function
+        stopBy: end
 fix: yield* $E

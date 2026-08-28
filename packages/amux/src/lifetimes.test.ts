@@ -78,7 +78,7 @@ async function fixture() {
   const spy = spyBackend();
   const scope = Effect.runSync(Scope.make());
   const spaces = run(
-    Scope.extend(SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host), scope),
+    Scope.provide(SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host), scope),
   );
   return {
     spaces,
@@ -217,7 +217,7 @@ test("scoped app release detaches daemon projections and terminates local owners
     try {
       // Starting the app reads its plugins off disk, so this is not synchronous.
       await runAsync(
-        Scope.extend(
+        Scope.provide(
           createApp({
             renderer: t.renderer,
             paneHost: host,

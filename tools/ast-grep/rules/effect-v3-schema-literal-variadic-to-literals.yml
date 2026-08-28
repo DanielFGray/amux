@@ -1,0 +1,11 @@
+id: effect-v3-schema-literal-variadic-to-literals
+language: TypeScript
+message: Schema.Literal accepts one value in Effect v4; use Schema.Literals with an array for multiple values.
+severity: warning
+rule:
+  pattern: S.Literal($$$VALUES)
+  not:
+    has:
+      kind: call_expression
+      pattern: S.Literal($VALUE)
+fix: S.Literals([$$$VALUES])

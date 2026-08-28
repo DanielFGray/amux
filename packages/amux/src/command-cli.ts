@@ -1,4 +1,4 @@
-import { JSONSchema, Option, Schema as S } from "effect";
+import { Option, Schema as S } from "effect";
 import { COMMAND_DEFS, COMMAND_META, type CommandTag } from "./commands.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 
@@ -14,7 +14,7 @@ type FieldSpec = {
   literals?: readonly string[];
 };
 
-type JsonSchemaObject = ReturnType<typeof JSONSchema.make> & {
+type JsonSchemaObject = {
   properties?: Record<string, JsonSchemaObject>;
   required?: readonly string[];
   type?: string;
@@ -22,17 +22,27 @@ type JsonSchemaObject = ReturnType<typeof JSONSchema.make> & {
   items?: JsonSchemaObject;
   $ref?: string;
   $defs?: Record<string, JsonSchemaObject>;
+  anyOf?: readonly JsonSchemaObject[];
 };
 
 function commandSchema(tag: CommandTag): JsonSchemaObject {
   const def = COMMAND_DEFS.find((item) => item.tag === tag);
   if (!def) throw new Error(`unknown command: ${tag}`);
-  return JSONSchema.make(def.arguments) as JsonSchemaObject;
+  const document = S.toJsonSchemaDocument(def.arguments);
+  const schema = document.schema as JsonSchemaObject;
+  if (Object.keys(document.definitions).length > 0) {
+    schema.$defs = document.definitions as Record<string, JsonSchemaObject>;
+  }
+  return schema;
 }
 
+/** Optional fields encode as `anyOf: [<type>, {type: "null"}]`; unwrap to the real branch. */
 function resolveSchema(schema: JsonSchemaObject, root: JsonSchemaObject): JsonSchemaObject {
   const key = schema.$ref?.match(/^#\/\$defs\/(.+)$/)?.[1];
-  return key && root.$defs?.[key] ? root.$defs[key]! : schema;
+  const dereferenced = key && root.$defs?.[key] ? root.$defs[key]! : schema;
+  const nonNull = dereferenced.anyOf?.filter((branch) => branch.type !== "null");
+  if (nonNull?.length === 1) return resolveSchema(nonNull[0]!, root);
+  return dereferenced;
 }
 
 function fieldSpec(
@@ -152,7 +162,7 @@ function coerce(value: string | undefined, field: FieldSpec): JsonValue | undefi
       return n;
     }
     case "array": {
-      const parsed = S.decodeUnknownOption(S.parseJson(S.Array(JsonValueSchema)))(value);
+      const parsed = S.decodeUnknownOption(S.fromJsonString(S.Array(JsonValueSchema)))(value);
       return Option.getOrUndefined(parsed);
     }
     case "boolean": {
@@ -184,7 +194,7 @@ export function parsePluginArgs(argv: readonly string[]): ParseArgsResult {
       continue;
     }
     const [, name, raw] = flagMatch as [string, string, string];
-    const decoded = S.decodeUnknownOption(S.parseJson(JsonValueSchema))(raw);
+    const decoded = S.decodeUnknownOption(S.fromJsonString(JsonValueSchema))(raw);
     parsed[name] = Option.getOrElse(decoded, () => raw);
   }
   if (errors.length > 0) return { parsed: null, errors };
@@ -249,7 +259,11 @@ function commandHelp(def: (typeof COMMAND_DEFS)[number]): string {
   const syntax = fieldNames(def.tag)
     .map((field) => {
       const value = field.literals?.join("|") ?? field.name;
-      return field.required ? `<${value}>` : `[--${field.name}=<${value}>]`;
+      if (field.required) return `<${value}>`;
+      // A boolean is set by naming it, so showing it as `--flag=<flag>` tells
+      // the reader to invent a value. The parser accepts the bare form, and
+      // this CLI's audience reads the usage line as the contract.
+      return field.kind === "boolean" ? `[--${field.name}]` : `[--${field.name}=<${value}>]`;
     })
     .join(" ");
   return `  ${def.tag} ${syntax}`.trimEnd() + `\n      ${COMMAND_META[def.tag].desc}`;

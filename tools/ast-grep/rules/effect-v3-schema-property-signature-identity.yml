@@ -1,0 +1,6 @@
+id: effect-v3-schema-property-signature-identity
+language: TypeScript
+message: Schema.propertySignature was removed in v4; a bare wrap with no annotations is a no-op.
+rule:
+  pattern: S.propertySignature($SCHEMA)
+fix: $SCHEMA

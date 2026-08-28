@@ -1,10 +1,13 @@
-import { FileSystem } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
 import { Context, Effect, Layer, PubSub, Schema as S, Scope, Stream } from "effect";
 import { join } from "node:path";
 import { AgentEvent, type AgentEventPayload } from "./AttachProtocol.ts";
 import { isSessionId } from "../session.ts";
 
-const Entry = S.Struct({ sequence: S.NonNegativeInt, event: AgentEvent });
+const Entry = S.Struct({
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+  event: AgentEvent,
+});
 const Entries = S.Array(Entry);
 type Entry = S.Schema.Type<typeof Entry>;
 
@@ -28,19 +31,18 @@ export interface AgentLogService {
   ) => Effect.Effect<Stream.Stream<AgentEvent, AgentLogError>, AgentLogError, Scope.Scope>;
 }
 
-export class AgentLog extends Context.Tag("AgentLog")<AgentLog, AgentLogService>() {}
+export class AgentLog extends Context.Service<AgentLog, AgentLogService>()("AgentLog") {}
 
 const memoryLog = (): AgentLogService => {
   const values = new Map<string, AgentEvent[]>();
   const feeds = new Map<string, PubSub.PubSub<AgentEvent>>();
-  const feed = (session: string) =>
-    Effect.gen(function* () {
-      const existing = feeds.get(session);
-      if (existing) return existing;
-      const created = yield* PubSub.unbounded<AgentEvent>();
-      feeds.set(session, created);
-      return created;
-    });
+  const feed = Effect.fnUntraced(function* (session: string) {
+    const existing = feeds.get(session);
+    if (existing) return existing;
+    const created = yield* PubSub.unbounded<AgentEvent>();
+    feeds.set(session, created);
+    return created;
+  });
   return {
     append: (frame) =>
       Effect.gen(function* () {
@@ -66,7 +68,7 @@ const memoryLog = (): AgentLogService => {
         const boundary = replay.at(-1)?.sequence ?? after;
         return Stream.concat(
           Stream.fromIterable(replay),
-          Stream.fromQueue(queue).pipe(Stream.filter((event) => event.sequence > boundary)),
+          Stream.fromSubscription(queue).pipe(Stream.filter((event) => event.sequence > boundary)),
         );
       }),
   };
@@ -82,14 +84,13 @@ export function makeAgentLog(
     const fs = yield* FileSystem.FileSystem;
     const entries = new Map<string, Entry[]>();
     const feeds = new Map<string, PubSub.PubSub<AgentEvent>>();
-    const feed = (session: string) =>
-      Effect.gen(function* () {
-        const existing = feeds.get(session);
-        if (existing) return existing;
-        const created = yield* PubSub.unbounded<AgentEvent>();
-        feeds.set(session, created);
-        return created;
-      });
+    const feed = Effect.fnUntraced(function* (session: string) {
+      const existing = feeds.get(session);
+      if (existing) return existing;
+      const created = yield* PubSub.unbounded<AgentEvent>();
+      feeds.set(session, created);
+      return created;
+    });
 
     const pathFor = (session: string) => join(root, "agent-events", `${session}.json`);
 
@@ -104,11 +105,11 @@ export function makeAgentLog(
         const text = yield* fs
           .readFileString(pathFor(session))
           .pipe(
-            Effect.catchTag("SystemError", (error) =>
-              error.reason === "NotFound" ? Effect.succeed("[]") : Effect.fail(error),
+            Effect.catchTag("PlatformError", (error) =>
+              error.reason._tag === "NotFound" ? Effect.succeed("[]") : Effect.fail(error),
             ),
           );
-        const decoded = yield* S.decodeUnknown(S.parseJson(Entries))(text).pipe(
+        const decoded = yield* S.decodeUnknownEffect(S.fromJsonString(Entries))(text).pipe(
           Effect.mapError((error) => new AgentLogError({ message: String(error) })),
         );
         const mutable = [...decoded];
@@ -176,19 +177,18 @@ export function makeAgentLog(
         })),
       );
 
-    const watch = (session: string, after = -1) =>
-      Effect.gen(function* () {
-        // This subscription intentionally precedes load/read. The queue holds
-        // events appended while the durable replay is being decoded.
-        const bus = yield* feed(session);
-        const queue = yield* PubSub.subscribe(bus);
-        const replay = yield* read(session, after);
-        const boundary = replay.at(-1)?.sequence ?? after;
-        return Stream.concat(
-          Stream.fromIterable(replay),
-          Stream.fromQueue(queue).pipe(Stream.filter((event) => event.sequence > boundary)),
-        );
-      });
+    const watch = Effect.fnUntraced(function* (session: string, after = -1) {
+      // This subscription intentionally precedes load/read. The queue holds
+      // events appended while the durable replay is being decoded.
+      const bus = yield* feed(session);
+      const queue = yield* PubSub.subscribe(bus);
+      const replay = yield* read(session, after);
+      const boundary = replay.at(-1)?.sequence ?? after;
+      return Stream.concat(
+        Stream.fromIterable(replay),
+        Stream.fromSubscription(queue).pipe(Stream.filter((event) => event.sequence > boundary)),
+      );
+    });
 
     return { append, read, bounds, watch } satisfies AgentLogService;
   });

@@ -45,7 +45,7 @@ export const WindowEntrySchema = S.Struct({
   name: WorkspaceWindowSchema.fields.name,
   panes: S.Int,
   active: S.Boolean,
-  focused: S.Union(S.String, S.Null),
+  focused: S.Union([S.String, S.Null]),
 });
 export type WindowEntry = S.Schema.Type<typeof WindowEntrySchema>;
 
@@ -89,7 +89,7 @@ export type PaneLayout = S.Schema.Type<typeof PaneLayoutSchema>;
 export const SpaceListResultSchema = S.Array(SpaceEntrySchema);
 export const WindowListResultSchema = S.Array(WindowEntrySchema);
 export const PaneListResultSchema = S.Array(PaneEntrySchema);
-export const PaneCurrentResultSchema = S.Union(PaneEntrySchema, S.Null);
-export const PaneLayoutResultSchema = S.Union(PaneLayoutSchema, S.Null);
+export const PaneCurrentResultSchema = S.Union([PaneEntrySchema, S.Null]);
+export const PaneLayoutResultSchema = S.Union([PaneLayoutSchema, S.Null]);
 export const AgentListResultSchema = S.Array(AgentEntrySchema);
-export const AgentGetResultSchema = S.Union(AgentEntrySchema, S.Null);
+export const AgentGetResultSchema = S.Union([AgentEntrySchema, S.Null]);

@@ -1,11 +1,11 @@
 import { afterEach, expect } from "bun:test";
-import { Chunk, Context, Effect, Fiber, Option, Queue, Scope, Stream } from "effect";
+import { Context, Effect, Fiber, Option, Queue, Scope, Stream } from "effect";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
 import { definePlugin, type PluginDefinition, type PluginErrorEvent } from "./types.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
-import { RegionsTag, SpawnProvidersTag } from "./services.ts";
+import { RegionsTag, SpawnProvidersTag, type PluginService } from "./services.ts";
 import type { Panel } from "../ui/regions.tsx";
 
 /**
@@ -20,9 +20,9 @@ interface Pool {
   open: boolean;
 }
 
-class PoolTag extends Context.Tag("test/Pool")<PoolTag, Pool>() {}
-class IndexTag extends Context.Tag("test/Index")<IndexTag, { readonly of: string }>() {}
-class NumberTag extends Context.Tag("test/Number")<NumberTag, number>() {}
+class PoolTag extends Context.Service<PoolTag, Pool>()("test/Pool") {}
+class IndexTag extends Context.Service<IndexTag, { readonly of: string }>()("test/Index") {}
+class NumberTag extends Context.Service<NumberTag, number>()("test/Number") {}
 
 type AssertFalse<T extends false> = T;
 type UndeclaredRequirement =
@@ -40,11 +40,31 @@ afterEach(() => {
   for (const fn of cleanupFns.splice(0)) fn();
 });
 
-function makeHost(): Effect.Effect<PluginHost, never, Scope.Scope> {
+/**
+ * A host holding only the registry entries a test names.
+ *
+ * Registries are entries now, so a test that wants one has to configure it. The
+ * default is none: most of these tests trade services between plugins of their
+ * own and would only be reading a registry they never registered with.
+ */
+function makeHost(
+  registries: readonly PluginService[] = [],
+): Effect.Effect<PluginHost, never, Scope.Scope> {
   return Effect.gen(function* () {
     const t = yield* Effect.promise(() => createTestRenderer({ width: 80, height: 24 }));
     cleanupFns.push(() => t.renderer.destroy());
-    return yield* createPluginHost(testPluginEnvironment(t.renderer));
+    const environment = testPluginEnvironment(t.renderer);
+    const host = yield* createPluginHost(environment);
+    for (const tag of registries) {
+      const entry = environment.registryEntries.find((candidate) =>
+        candidate.provide?.some((provided) => provided.key === tag.key),
+      );
+      if (!entry) return yield* Effect.die(`missing test registry provider for ${tag.key}`);
+      // A registry that will not start is a broken fixture, not a case under
+      // test, so it dies here rather than colouring every caller's error type.
+      yield* Effect.orDie(host.add(entry));
+    }
+    return host;
   });
 }
 
@@ -57,6 +77,7 @@ function poolProvider(
   const definition = definePlugin({
     id,
     apiVersion: "1",
+    provide: [PoolTag],
     effect: (ctx) =>
       Effect.gen(function* () {
         pool.open = true;
@@ -92,22 +113,26 @@ function poolConsumer(log: string[], id = "consumer"): PluginDefinition {
 
 // --- Gating ---
 
-testEffect("a plugin whose injected service has no provider does not start", () =>
+testEffect("a plugin whose injected service nothing can provide is refused", () =>
   Effect.gen(function* () {
     const host = yield* makeHost();
     const log: string[] = [];
 
-    yield* host.add(poolConsumer(log));
-    yield* Effect.yieldNow();
+    const refused = yield* host.reconcile([poolConsumer(log)]);
+    yield* Effect.yieldNow;
 
+    // Not "waiting". No entry in the configuration declares 'test/Pool', so no
+    // provider can arrive, and waiting on one is a plugin that is broken rather
+    // than pending — which the host can tell before it starts anything.
+    expect(refused).toEqual([{ id: "consumer", key: "test/Pool" }]);
+    expect(host.status()).toEqual([]);
     expect(log).toEqual([]);
-    expect(host.status()).toEqual([{ id: "consumer", waitingFor: ["test/Pool"] }]);
   }),
 );
 
 testEffect("registry services attribute writes to the running plugin", () =>
   Effect.gen(function* () {
-    const host = yield* makeHost();
+    const host = yield* makeHost([RegionsTag]);
     const panel: Panel = {
       id: "service-panel",
       region: "left",
@@ -127,7 +152,9 @@ testEffect("registry services attribute writes to the running plugin", () =>
           }),
       }),
     );
-    expect(host.status()).toEqual([{ id: "registry-consumer", waitingFor: [] }]);
+    expect(host.status().filter((status) => status.id === "registry-consumer")).toEqual([
+      { id: "registry-consumer", waitingFor: [] },
+    ]);
   }),
 );
 
@@ -140,6 +167,7 @@ testEffect("provider contexts preserve primitive service values", () =>
       definePlugin({
         id: "number-provider",
         apiVersion: "1",
+        provide: [NumberTag],
         effect: (ctx) => Effect.sync(() => void ctx.provide(NumberTag, 42)),
       }),
     );
@@ -164,12 +192,12 @@ testEffect("the provider arriving last still activates the plugins that waited",
     const host = yield* makeHost();
     const log: string[] = [];
 
-    yield* host.add(poolConsumer(log, "first"));
-    yield* host.add(poolConsumer(log, "second"));
-    expect(log).toEqual([]);
-
-    yield* host.add(poolProvider(log).definition);
-    yield* Effect.yieldNow();
+    yield* host.reconcile([
+      poolConsumer(log, "first"),
+      poolConsumer(log, "second"),
+      poolProvider(log).definition,
+    ]);
+    yield* Effect.yieldNow;
 
     // The provider is configured after both consumers and still runs before
     // them: order comes from who provides what, not from the config file.
@@ -183,20 +211,19 @@ testEffect("a chain activates in dependency order from a single root", () =>
     const host = yield* makeHost();
     const log: string[] = [];
 
-    // Added leaf-first, so nothing can start until the root arrives.
-    yield* host.add(
+    // Listed leaf-first, so nothing can start until the root arrives.
+    yield* host.reconcile([
       definePlugin({
         id: "search",
         apiVersion: "1",
         inject: [IndexTag],
         effect: () => IndexTag.pipe(Effect.map((index) => void log.push(`search on ${index.of}`))),
       }),
-    );
-    yield* host.add(
       definePlugin({
         id: "index",
         apiVersion: "1",
         inject: [PoolTag],
+        provide: [IndexTag],
         effect: (ctx) =>
           Effect.gen(function* () {
             const pool = yield* PoolTag;
@@ -204,10 +231,10 @@ testEffect("a chain activates in dependency order from a single root", () =>
             log.push("index built");
           }),
       }),
-    );
-    yield* host.add(poolProvider(log).definition);
-    yield* Effect.yieldNow();
-    yield* Effect.yieldNow();
+      poolProvider(log).definition,
+    ]);
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
 
     expect(log).toEqual(["pool provided v1", "index built", "search on pool v1"]);
   }),
@@ -218,31 +245,34 @@ testEffect("two plugins that inject each other both wait instead of deadlocking"
     const host = yield* makeHost();
     const started: string[] = [];
 
-    yield* host.add(
+    // Each declares the other's key, so the configuration is satisfiable on
+    // paper and both are admitted; the cycle only shows up at runtime, as two
+    // plugins that never stop waiting.
+    yield* host.reconcile([
       definePlugin({
         id: "a",
         apiVersion: "1",
         inject: [IndexTag],
+        provide: [PoolTag],
         effect: (ctx) =>
           Effect.sync(() => {
             started.push("a");
             ctx.provide(PoolTag, { version: 1, open: true });
           }),
       }),
-    );
-    yield* host.add(
       definePlugin({
         id: "b",
         apiVersion: "1",
         inject: [PoolTag],
+        provide: [IndexTag],
         effect: (ctx) =>
           Effect.sync(() => {
             started.push("b");
             ctx.provide(IndexTag, { of: "b" });
           }),
       }),
-    );
-    yield* Effect.yieldNow();
+    ]);
+    yield* Effect.yieldNow;
 
     expect(started).toEqual([]);
     expect(host.status().map((s) => [s.id, s.waitingFor])).toEqual([
@@ -256,7 +286,7 @@ testEffect("two plugins that inject each other both wait instead of deadlocking"
 
 testEffect("get reads the current provider and stops reading once it leaves", () =>
   Effect.gen(function* () {
-    const host = yield* makeHost();
+    const host = yield* makeHost([SpawnProvidersTag]);
     const log: string[] = [];
     const seen: number[] = [];
 
@@ -303,15 +333,15 @@ testEffect("two plugins cannot provide the same service", () =>
     const errors = yield* Queue.unbounded<PluginErrorEvent>();
     const drain = yield* host.onError.pipe(
       Stream.runForEach((e) => Queue.offer(errors, e)),
-      Effect.forkDaemon,
+      Effect.forkDetach,
     );
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
     yield* host.add(poolProvider(log, { id: "pool-one" }).definition);
     yield* host.add(poolProvider(log, { id: "pool-two", version: 2 }).definition);
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
-    const reported = Chunk.toReadonlyArray(yield* Queue.takeAll(errors));
+    const reported = yield* Queue.takeAll(errors);
     yield* Fiber.interrupt(drain);
 
     const clash = reported.find((e) => e.pluginId === "pool-two");
@@ -323,6 +353,44 @@ testEffect("two plugins cannot provide the same service", () =>
   }),
 );
 
+testEffect("a plugin cannot provide a service it did not declare", () =>
+  Effect.gen(function* () {
+    const host = yield* makeHost();
+    const errors = yield* Queue.unbounded<PluginErrorEvent>();
+    const drain = yield* host.onError.pipe(
+      Stream.runForEach((e) => Queue.offer(errors, e)),
+      Effect.forkDetach,
+    );
+    yield* Effect.yieldNow;
+
+    const log: string[] = [];
+    const refused = yield* host.reconcile([
+      definePlugin({
+        id: "smuggler",
+        apiVersion: "1",
+        effect: (ctx) => Effect.sync(() => ctx.provide(PoolTag, { version: 1, open: true })),
+      }),
+      poolConsumer(log),
+    ]);
+    yield* Effect.yieldNow;
+
+    const reported = yield* Queue.takeAll(errors);
+    yield* Fiber.interrupt(drain);
+
+    expect(reported.find((e) => e.pluginId === "smuggler")?.error.message).toBe(
+      "plugin 'smuggler' provided 'test/Pool', which it does not declare in 'provide'",
+    );
+    // An undeclared provision counts for nothing when the graph is read, which
+    // is the whole reason the declaration has to be total: the consumer is
+    // refused even though the smuggler would in fact have published the key.
+    expect(refused).toEqual([{ id: "consumer", key: "test/Pool" }]);
+    // Rejected at the call site too, so the service never reaches the registry
+    // and the smuggler does not stay listed as running.
+    expect(host.status()).toEqual([]);
+    expect(log).toEqual([]);
+  }),
+);
+
 // --- Withdrawal ordering ---
 
 testEffect("a dependent finishes unwinding before its provider releases anything", () =>
@@ -330,12 +398,13 @@ testEffect("a dependent finishes unwinding before its provider releases anything
     const host = yield* makeHost();
     const log: string[] = [];
 
-    yield* host.add(poolProvider(log).definition);
-    yield* host.add(poolConsumer(log));
-    yield* Effect.yieldNow();
+    yield* host.reconcile([poolProvider(log).definition, poolConsumer(log)]);
+    yield* Effect.yieldNow;
     log.length = 0;
 
-    yield* host.remove("pool");
+    // Both leave together: dropping only the provider is refused while the
+    // consumer still injects it, so this is how a provider is taken away.
+    yield* host.reconcile([]);
 
     expect(log).toEqual(["consumer released, pool open=true", "pool closed pool"]);
   }),
@@ -346,20 +415,19 @@ testEffect("teardown walks the chain leaf-first", () =>
     const host = yield* makeHost();
     const log: string[] = [];
 
-    yield* host.add(poolProvider(log).definition);
-    yield* host.add(
+    yield* host.reconcile([
+      poolProvider(log).definition,
       definePlugin({
         id: "index",
         apiVersion: "1",
         inject: [PoolTag],
+        provide: [IndexTag],
         effect: (ctx) =>
           Effect.gen(function* () {
             ctx.provide(IndexTag, { of: "pool" });
             yield* Effect.addFinalizer(() => Effect.sync(() => void log.push("index released")));
           }),
       }),
-    );
-    yield* host.add(
       definePlugin({
         id: "search",
         apiVersion: "1",
@@ -369,12 +437,12 @@ testEffect("teardown walks the chain leaf-first", () =>
             Effect.asVoid,
           ),
       }),
-    );
-    yield* Effect.yieldNow();
-    yield* Effect.yieldNow();
+    ]);
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
     log.length = 0;
 
-    yield* host.remove("pool");
+    yield* host.reconcile([]);
 
     expect(log).toEqual(["search released", "index released", "pool closed pool"]);
   }),
@@ -387,7 +455,7 @@ testEffect("dispose unwinds dependents before their providers", () =>
 
     yield* host.add(poolProvider(log).definition);
     yield* host.add(poolConsumer(log));
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
     log.length = 0;
 
     yield* host.dispose;
@@ -399,23 +467,24 @@ testEffect("dispose unwinds dependents before their providers", () =>
 
 // --- Replacement ---
 
-testEffect("a withdrawn provider leaves its dependents waiting, not stopped", () =>
+testEffect("a provider cannot be dropped while something injects it", () =>
   Effect.gen(function* () {
     const host = yield* makeHost();
     const log: string[] = [];
 
-    yield* host.add(poolProvider(log).definition);
-    yield* host.add(poolConsumer(log));
-    yield* Effect.yieldNow();
-
-    yield* host.remove("pool");
-    expect(host.status()).toEqual([{ id: "consumer", waitingFor: ["test/Pool"] }]);
-
+    yield* host.reconcile([poolProvider(log).definition, poolConsumer(log)]);
+    yield* Effect.yieldNow;
     log.length = 0;
-    yield* host.add(poolProvider(log, { version: 7 }).definition);
-    yield* Effect.yieldNow();
 
-    expect(log).toEqual(["pool provided v7", "consumer started on v7"]);
+    const error = yield* Effect.flip(host.remove("pool"));
+
+    // The consumer did nothing wrong, so the departure is refused rather than
+    // the consumer unloaded behind the user's back. This is the whole of
+    // "replaceable, not removable" — replacement is the test below, and no
+    // plugin carries a flag saying which it is.
+    expect(error).toBe("cannot drop the provider of 'test/Pool': plugin 'consumer' injects it");
+    expect(host.status().map((s) => s.id)).toEqual(["pool", "consumer"]);
+    expect(log).toEqual([]);
   }),
 );
 
@@ -427,11 +496,11 @@ testEffect("replacing a provider re-acquires its dependents on the new service",
     const first = poolProvider(log);
     yield* host.add(first.definition);
     yield* host.add(poolConsumer(log));
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
     log.length = 0;
 
     yield* host.add(poolProvider(log, { version: 2 }).definition);
-    yield* Effect.yieldNow();
+    yield* Effect.yieldNow;
 
     expect(log).toEqual([
       // The candidate starts privately before it replaces the old provider.
@@ -444,30 +513,60 @@ testEffect("replacing a provider re-acquires its dependents on the new service",
   }),
 );
 
+testEffect("equal-valued replacement providers still invalidate the committed view", () =>
+  Effect.gen(function* () {
+    const host = yield* makeHost();
+    const acquired: Pool[] = [];
+
+    yield* host.add(poolProvider([]).definition);
+    yield* host.add(
+      definePlugin({
+        id: "consumer",
+        apiVersion: "1",
+        inject: [PoolTag],
+        effect: () =>
+          PoolTag.pipe(
+            Effect.tap((pool) => Effect.sync(() => void acquired.push(pool))),
+            Effect.asVoid,
+          ),
+      }),
+    );
+    yield* Effect.yieldNow;
+
+    yield* host.add(poolProvider([]).definition);
+    yield* Effect.yieldNow;
+
+    expect(acquired).toHaveLength(2);
+    expect(acquired[0]!.version).toBe(acquired[1]!.version);
+    expect(acquired[0]).not.toBe(acquired[1]);
+  }),
+);
+
 testEffect("a provider that crashes takes its dependents back to waiting", () =>
   Effect.gen(function* () {
     const host = yield* makeHost();
     const log: string[] = [];
 
-    yield* host.add(poolConsumer(log));
-    yield* host.add(
+    yield* host.reconcile([
+      poolConsumer(log),
       definePlugin({
         id: "pool",
         apiVersion: "1",
+        provide: [PoolTag],
         effect: (ctx) =>
           Effect.gen(function* () {
             ctx.provide(PoolTag, { version: 1, open: true });
             log.push("pool provided v1");
-            yield* Effect.yieldNow();
+            yield* Effect.yieldNow;
             return yield* Effect.sync(() => {
               throw new Error("provider died");
             });
           }),
       }),
-    );
-    yield* Effect.yieldNow();
-    yield* Effect.yieldNow();
-    yield* Effect.yieldNow();
+    ]);
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
 
     expect(log).toEqual([
       "pool provided v1",

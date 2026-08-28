@@ -1,0 +1,5 @@
+id: effect-v3-fork-to-fork-child
+language: TypeScript
+rule:
+  pattern: Effect.fork($EFFECT)
+fix: Effect.forkChild($EFFECT)

@@ -1,17 +1,19 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createEffect, createMemo } from "solid-js";
-import { Effect, Runtime } from "effect";
-import { theme } from "@danielfgray/amux/ui/theme.ts";
-import type { DockPanel } from "@danielfgray/amux/ui/regions.tsx";
-import { definePlugin, type PluginDefinition } from "@danielfgray/amux/plugin/types.ts";
-import { OptionsTag, ProcessDisplayTag, RegionsTag } from "@danielfgray/amux/plugin/services.ts";
-import type { SidebarDisplayRow } from "@danielfgray/amux/ui/panel.ts";
-import { SPINNER_FRAMES } from "@danielfgray/amux/detect.ts";
-import { ProcessState } from "@danielfgray/amux/process-state.ts";
+import { Effect } from "effect";
+import { theme } from "@danielfgray/amux"
+import {
+  definePlugin,
+  type DockPanel,
+  type PluginDefinition,
+} from "@danielfgray/amux"
+import { OptionsTag, RegionsTag } from "@danielfgray/amux"
+import type { SidebarDisplayRow } from "@danielfgray/amux"
+import { ProcessState } from "@danielfgray/amux"
 import { deriveProcessDisplay } from "@danielfgray/amux-agent-awareness/display-state.ts";
-import { command } from "@danielfgray/amux/commands.ts";
+import { command } from "@danielfgray/amux"
 import { formatText } from "@danielfgray/amux/format.ts";
-import type { OptionSpec } from "@danielfgray/amux/options.ts";
+import type { OptionSpec } from "@danielfgray/amux"
 
 export const SIDEBAR_PLUGIN_ID = "amux.sidebar";
 
@@ -36,19 +38,15 @@ export const SIDEBAR_OPTIONS = {
 export const sidebarPlugin: PluginDefinition = definePlugin({
   id: SIDEBAR_PLUGIN_ID,
   apiVersion: "1",
-  inject: [RegionsTag, OptionsTag, ProcessDisplayTag],
+  inject: [RegionsTag, OptionsTag],
   effect: (ctx) =>
     Effect.gen(function* () {
       const regions = yield* RegionsTag;
       const options = yield* OptionsTag;
-      const processDisplay = yield* ProcessDisplayTag;
       yield* Effect.all(
         Object.entries(SIDEBAR_OPTIONS).map(([name, spec]) => options.register([name, spec])),
       );
-      // The one registration that lets core's WindowTabs show failed/detached
-      // without importing plugin code — see plugin/process-display.ts.
-      yield* processDisplay.register(deriveProcessDisplay);
-      const runtime = yield* Effect.runtime();
+      const runtime = yield* Effect.context();
       let selected = 0;
       let hovered: number | null = null;
 
@@ -69,9 +67,9 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
                 )
               : ctx.panel.run(command("session.reveal", { session: row.agentId! }));
 
-        Runtime.runFork(runtime)(
+        Effect.runForkWith(runtime)(
           effect.pipe(
-            Effect.catchAll((error) => Effect.sync(() => ctx.panel.reportError(error.message))),
+            Effect.catch((error) => Effect.sync(() => ctx.panel.reportError(error.message))),
           ),
         );
       }
@@ -274,8 +272,8 @@ function SidebarRow(props: {
       agent_state: display()?.label,
       agent_state_label: display()?.label,
       agent_state_glyph: display()
-        ? row.agentState === ProcessState.Running
-          ? SPINNER_FRAMES[props.frame % SPINNER_FRAMES.length]
+        ? display()!.frames
+          ? display()!.frames![props.frame % display()!.frames!.length]
           : display()!.glyph
         : "·",
       branch: row.branch,

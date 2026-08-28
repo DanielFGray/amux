@@ -12,10 +12,10 @@ import {
   wrapText,
   type TranscriptBlock,
 } from "./transcript.ts";
-import { AgentFrame, type AttachFrame } from "@danielfgray/amux/effect/AttachProtocol.ts";
-import type { ProcessState } from "@danielfgray/amux/process-state.ts";
+import { AgentFrame, type AttachFrame } from "@danielfgray/amux/protocol"
+import { ProcessState } from "@danielfgray/amux"
 import { agentStateFromTopic } from "./state-topic.ts";
-import { theme } from "@danielfgray/amux/ui/theme.ts";
+import { theme } from "@danielfgray/amux"
 
 export interface TranscriptProps {
   sessionId: string;

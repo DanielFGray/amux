@@ -1,6 +1,6 @@
 import { Duration, Effect, Schema as S } from "effect";
-import { FileSystem } from "@effect/platform";
-import { BunContext, BunRuntime } from "@effect/platform-bun";
+import * as FileSystem from "effect/FileSystem"
+import { BunServices, BunRuntime } from "@effect/platform-bun";
 import solidPlugin from "@opentui/solid/bun-plugin";
 
 const root = process.cwd();
@@ -72,4 +72,4 @@ const compile = Effect.gen(function* () {
   yield* Effect.logInfo(`Done in ${Duration.format(duration)}`);
 });
 
-compile.pipe(Effect.provide(BunContext.layer), BunRuntime.runMain);
+compile.pipe(Effect.provide(BunServices.layer), BunRuntime.runMain);

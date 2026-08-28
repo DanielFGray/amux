@@ -10,6 +10,7 @@ import { testPluginEnvironment } from "./test-environment.ts";
 import { hotImport } from "./hot.ts";
 import { testEffect } from "../test-effect.ts";
 import { waitFor } from "../test-wait.ts";
+import { RegionsTag } from "./services.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
 
@@ -20,6 +21,8 @@ declare global {
 
 const temporary: string[] = [];
 const cleanupFns: (() => void)[] = [];
+const pluginStatuses = (host: PluginHost) =>
+  host.status().filter((status) => !status.id.startsWith("amux.registry."));
 afterEach(async () => {
   for (const fn of cleanupFns.splice(0)) fn();
   await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -33,20 +36,20 @@ testEffect("a reload runs the edited source in place of the running one", () =>
     yield* world.reloader.reload("swap");
 
     expect(world.activations()).toEqual(["1", "2"]);
-    expect(world.host.status().map((status) => status.id)).toEqual(["swap"]);
+    expect(pluginStatuses(world.host).map((status) => status.id)).toEqual(["swap"]);
   }),
 );
 
 testEffect("reload replaces UI scope without touching external agent work", () =>
   Effect.gen(function* () {
     const world = yield* start("survives", version("survives", 1));
-    const work = yield* Effect.forkDaemon(Effect.never);
+    const work = yield* Effect.forkDetach(Effect.never);
 
     yield* Effect.promise(() => writeFile(world.entry, version("survives", 2)));
     yield* world.reloader.reload("survives");
 
     expect(world.activations()).toEqual(["1", "2"]);
-    expect(["Running", "Suspended"]).toContain((yield* Fiber.status(work))._tag);
+    expect(work.pollUnsafe()).toBeUndefined();
     yield* Fiber.interrupt(work);
   }),
 );
@@ -77,11 +80,11 @@ testEffect("a source that will not import leaves the running version alone", () 
     const world = yield* start("broken", version("broken", 1));
 
     yield* Effect.promise(() => writeFile(world.entry, `this is not typescript ===`));
-    const failure = yield* Effect.either(world.reloader.reload("broken"));
+    const failure = yield* Effect.result(world.reloader.reload("broken"));
 
-    expect(failure._tag).toBe("Left");
+    expect(failure._tag).toBe("Failure");
     expect(world.activations()).toEqual(["1"]);
-    expect(world.host.status().map((status) => status.id)).toEqual(["broken"]);
+    expect(pluginStatuses(world.host).map((status) => status.id)).toEqual(["broken"]);
   }),
 );
 
@@ -123,7 +126,7 @@ testEffect("a failed candidate never becomes visible", () =>
     globalThis.AMUX_RELOAD_GATE = new Promise((resolve) => {
       release = resolve;
     });
-    const reloading = yield* Effect.forkDaemon(world.reloader.reload("crash"));
+    const reloading = yield* Effect.forkDetach(world.reloader.reload("crash"));
     yield* Effect.promise(() =>
       waitFor(() => world.activations().includes("candidate registered"), "candidate registration"),
     );
@@ -132,13 +135,15 @@ testEffect("a failed candidate never becomes visible", () =>
     // the committed generation remains the panel the layout can read.
     expect(world.panelThickness()).toBe(1);
     release();
-    const failure = yield* Effect.either(Fiber.join(reloading));
+    const failure = yield* Effect.result(Fiber.join(reloading));
 
-    expect(failure._tag === "Left" && failure.left).toContain("kept the version that was running");
+    expect(failure._tag === "Failure" && failure.failure).toContain(
+      "kept the version that was running",
+    );
     // The version that worked stayed running while the candidate was closed.
     expect(world.activations()).toEqual(["1", "candidate registered"]);
     expect(world.panelVisible()).toBe(true);
-    expect(world.host.status().map((status) => status.id)).toEqual(["crash"]);
+    expect(pluginStatuses(world.host).map((status) => status.id)).toEqual(["crash"]);
   }),
 );
 
@@ -147,8 +152,8 @@ testEffect("a plugin amux cannot see is not reloadable", () =>
     const world = yield* start("named", version("named", 1));
 
     expect(world.reloader.reloadable()).toEqual(["named"]);
-    const failure = yield* Effect.either(world.reloader.reload("someone-else"));
-    expect(failure._tag === "Left" && failure.left).toContain("no reloadable plugin");
+    const failure = yield* Effect.result(world.reloader.reload("someone-else"));
+    expect(failure._tag === "Failure" && failure.failure).toContain("no reloadable plugin");
   }),
 );
 
@@ -189,6 +194,11 @@ const start = (
     cleanupFns.push(() => renderer.renderer.destroy());
     const environment = testPluginEnvironment(renderer.renderer);
     const host = yield* createPluginHost(environment);
+    const regions = environment.registryEntries.find((entry) =>
+      entry.provide?.some((tag) => tag.key === RegionsTag.key),
+    );
+    if (!regions) return yield* Effect.fail("missing regions registry provider");
+    yield* host.add(regions);
 
     const definition = yield* hotImport(pathToFileURL(entry)).pipe(Effect.orDie);
     yield* host.add(definition);

@@ -1,0 +1,5 @@
+id: effect-v3-ai-import-to-unstable
+language: TypeScript
+rule:
+  pattern: import $$$CLAUSE from "@effect/ai"
+fix: import $$$CLAUSE from "effect/unstable/ai"

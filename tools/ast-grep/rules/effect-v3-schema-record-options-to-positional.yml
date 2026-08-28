@@ -1,0 +1,6 @@
+id: effect-v3-schema-record-options-to-positional
+language: TypeScript
+message: Schema.Record takes positional (key, value) arguments in v4, not an options object.
+rule:
+  pattern: "S.Record({ key: $KEY, value: $VALUE })"
+fix: "S.Record($KEY, $VALUE)"

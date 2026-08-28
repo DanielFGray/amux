@@ -1,9 +1,7 @@
-import {
-  SESSION_STATE_TOPIC,
-  type AgentEventPayload,
-  type Topic,
-} from "@danielfgray/amux/effect/AttachProtocol.ts";
-import { isProcessState, type ProcessState } from "@danielfgray/amux/process-state.ts";
+import { SESSION_STATE_TOPIC,
+type AgentEventPayload,
+type Topic, } from "@danielfgray/amux/protocol"
+import { isProcessState, type ProcessState } from "@danielfgray/amux"
 
 type StateTopicPayload = Extract<AgentEventPayload, { readonly _tag: "topic" }>;
 

@@ -2,6 +2,7 @@ import { Context, Effect, Predicate, Schema as S } from "effect";
 import { plugin } from "bun";
 import { fileURLToPath } from "node:url";
 import type { PluginDefinition } from "./types.ts";
+import type { PluginService } from "./services.ts";
 
 /**
  * A plugin's own source, imported again.
@@ -70,7 +71,7 @@ export const hotImport = (source: URL): Effect.Effect<PluginDefinition, string> 
 
 /** The one place a module becomes a plugin, however it was imported. */
 export const decodePlugin = (module: unknown): Effect.Effect<PluginDefinition, string> =>
-  S.decodeUnknown(PluginModule)(module).pipe(
+  S.decodeUnknownEffect(PluginModule)(module).pipe(
     Effect.map((decoded) => ({
       ...decoded.default,
       activate: decoded.default.activate as PluginDefinition["activate"],
@@ -89,7 +90,12 @@ const PluginModule = S.Struct({
   default: S.Struct({
     id: S.NonEmptyString,
     apiVersion: S.String,
-    inject: S.optional(S.Array(S.declare(Context.isTag, { identifier: "PluginService" }))),
+    inject: S.optional(
+      S.Array(S.declare<PluginService>(Context.isKey, { identifier: "PluginService" })),
+    ),
+    provide: S.optional(
+      S.Array(S.declare<PluginService>(Context.isKey, { identifier: "PluginService" })),
+    ),
     activate: S.declare(Predicate.isFunction, { identifier: "PluginActivate" }),
   }),
 });

@@ -74,7 +74,7 @@ const program = Effect.gen(function* () {
     config,
     configDir: dirname(CONFIG_PATH),
     session,
-    quit: () => Deferred.unsafeDone(quit, Exit.void),
+    quit: () => Deferred.doneUnsafe(quit, Exit.void),
   });
   yield* Effect.promise(() => render(app.View, renderer));
   yield* Deferred.await(quit);
@@ -138,7 +138,7 @@ function installFrameProbe(renderer: import("@opentui/core").CliRenderer): void 
 BunRuntime.runMain(
   program.pipe(
     Effect.scoped,
-    Effect.provide(SessionStore.Default),
+    Effect.provide(SessionStore.layer),
     Effect.provide(BunFileSystem.layer),
   ),
 );

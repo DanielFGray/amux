@@ -1,0 +1,6 @@
+id: effect-v3-effect-runtime-noargs-to-context
+language: TypeScript
+message: Effect.runtime was removed in v4; grab services with Effect.context and run with runPromiseWith/runForkWith/runSyncWith.
+rule:
+  pattern: Effect.runtime()
+fix: Effect.context()

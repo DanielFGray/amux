@@ -258,7 +258,12 @@ export async function launch(
   };
   const cols = opts.cols ?? 100;
   const rows = opts.rows ?? 30;
-  const pty = spawnPty(["bun", join(REPO, "src/main.tsx")], { cols, rows, cwd: REPO, env });
+  const pty = spawnPty(["bun", join(REPO, "packages/amux/src/main.tsx")], {
+    cols,
+    rows,
+    cwd: REPO,
+    env,
+  });
   let out = "";
   const term = new Terminal(cols, rows);
   const reader = (async () => {

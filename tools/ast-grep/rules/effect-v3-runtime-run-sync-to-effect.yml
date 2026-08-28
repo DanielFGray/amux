@@ -1,0 +1,5 @@
+id: effect-v3-runtime-run-sync-to-effect
+language: TypeScript
+rule:
+  pattern: Runtime.runSync($RUNTIME)($EFFECT)
+fix: Effect.runSyncWith($RUNTIME)($EFFECT)

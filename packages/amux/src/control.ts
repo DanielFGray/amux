@@ -11,9 +11,9 @@
  * revalidated by `parseWorkspace` on arrival, whose relational checks (panes
  * naming live agents) no structural schema can express.
  */
-import * as Rpc from "@effect/rpc/Rpc";
-import * as RpcGroup from "@effect/rpc/RpcGroup";
-import * as RpcSerialization from "@effect/rpc/RpcSerialization";
+import * as Rpc from "effect/unstable/rpc/Rpc";
+import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
+import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import { Layer, Schema as S } from "effect";
 import { Command, RuntimeCommandSchema } from "./commands.ts";
 import { DaemonEvent } from "./effect/EventBus.ts";
@@ -64,7 +64,7 @@ const BatchOutputSchema = S.Struct({
 const BatchResultSchema = S.Struct({ outputs: S.Array(BatchOutputSchema) });
 
 /** `Command` plus the permissive plugin-verb fallback — see `RuntimeCommandSchema`. */
-const WireCommand = S.Union(Command, RuntimeCommandSchema);
+const WireCommand = S.Union([Command, RuntimeCommandSchema]);
 
 export class ControlRpcs extends RpcGroup.make(
   Rpc.make("Ping", { success: AttachInfoSchema, error: ControlError }),
@@ -83,8 +83,8 @@ export class ControlRpcs extends RpcGroup.make(
     payload: {
       session: S.String,
       provider: S.String,
-      argv: S.optional(S.Array(S.String).pipe(S.minItems(1))),
-      env: S.optional(S.Record({ key: S.String, value: S.String })),
+      argv: S.optional(S.Array(S.String).pipe(S.check(S.isMinLength(1)))),
+      env: S.optional(S.Record(S.String, S.String)),
       stripEnv: S.optional(S.Array(S.String)),
     },
     success: S.Void,
@@ -125,7 +125,10 @@ export class ControlRpcs extends RpcGroup.make(
     error: ControlError,
   }),
   Rpc.make("AgentWatch", {
-    payload: { session: S.String, after: S.optional(S.NonNegativeInt) },
+    payload: {
+      session: S.String,
+      after: S.optional(S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))),
+    },
     success: AgentEvent,
     stream: true,
   }),

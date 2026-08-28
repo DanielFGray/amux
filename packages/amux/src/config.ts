@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { DEFAULT_LEADER, type Keys } from "./bindings.ts";
 import { type OptionDeltas } from "./options.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
-import { Option, Schema as S } from "effect";
+import { Effect, Option, Schema as S } from "effect";
 import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
 
 export interface PluginSpec {
@@ -39,6 +39,7 @@ export const DEFAULT_CONFIG: Config = {
   options: {},
   keys: { leader: DEFAULT_LEADER, bindings: {} },
   plugins: [
+    { path: "builtin:amux.agent-awareness", enabled: true },
     { path: "builtin:amux.sidebar", enabled: true },
     { path: "builtin:amux.agent-harness", enabled: true },
     { path: "builtin:amux.notifications", enabled: true },
@@ -50,29 +51,27 @@ const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", 
 export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json");
 
 const KeysSchema = S.Struct({
-  leader: S.optionalWith(JsonValueSchema, { default: () => DEFAULT_LEADER }),
-  bindings: S.optionalWith(S.Record({ key: S.String, value: JsonValueSchema }), {
-    default: () => ({}),
-  }),
+  leader: JsonValueSchema.pipe(S.withDecodingDefaultType(Effect.succeed(DEFAULT_LEADER))),
+  bindings: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),
 });
 
 const PluginSpecSchema = S.Struct({
-  path: S.String.pipe(S.minLength(1)),
-  enabled: S.optionalWith(S.Boolean, { default: () => true }),
+  path: S.String.pipe(S.check(S.isMinLength(1))),
+  enabled: S.Boolean.pipe(S.withDecodingDefaultType(Effect.succeed(true))),
 });
 const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = DEFAULT_CONFIG.plugins.map(
   (plugin): JsonValue => ({ path: plugin.path, enabled: plugin.enabled }),
 );
 
 const ConfigSchema = S.Struct({
-  options: S.optionalWith(S.Record({ key: S.String, value: JsonValueSchema }), {
-    default: () => ({}),
-  }),
-  keys: S.optionalWith(KeysSchema, {
-    default: () => ({ leader: DEFAULT_LEADER, bindings: {} }),
-  }),
-  plugins: S.optionalWith(S.Array(JsonValueSchema), { default: () => DEFAULT_PLUGINS_JSON }),
-  permissions: S.optionalWith(S.Array(JsonValueSchema), { default: () => [] }),
+  options: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),
+  keys: KeysSchema.pipe(
+    S.withDecodingDefaultType(Effect.succeed({ leader: DEFAULT_LEADER, bindings: {} })),
+  ),
+  plugins: S.Array(JsonValueSchema).pipe(
+    S.withDecodingDefaultType(Effect.succeed(DEFAULT_PLUGINS_JSON)),
+  ),
+  permissions: S.Array(JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed([]))),
 });
 
 /**
@@ -89,7 +88,9 @@ export function decodeConfig(loaded: JsonValue): Config {
   );
   const keys = decoded.keys;
   const leader = Option.getOrElse(
-    S.decodeUnknownOption(S.String.pipe(S.filter((value) => value.trim().length > 0)))(keys.leader),
+    S.decodeUnknownOption(S.String.pipe(S.check(S.makeFilter((value) => value.trim().length > 0))))(
+      keys.leader,
+    ),
     () => DEFAULT_LEADER,
   );
   const bindings = Object.fromEntries(
@@ -100,7 +101,7 @@ export function decodeConfig(loaded: JsonValue): Config {
         [
           name,
           entries.value.flatMap((key) => {
-            const decoded = S.decodeUnknownOption(S.String.pipe(S.minLength(1)))(key);
+            const decoded = S.decodeUnknownOption(S.String.pipe(S.check(S.isMinLength(1))))(key);
             return Option.isSome(decoded) ? [decoded.value] : [];
           }),
         ],
@@ -129,10 +130,13 @@ const decodePermissionRule = S.decodeUnknownOption(PermissionRuleSchema);
 const decodePluginEntry = (entry: JsonValue): Option.Option<PluginSpec> => {
   const spec = S.decodeUnknownOption(PluginSpecSchema)(entry);
   if (Option.isSome(spec)) return spec;
-  return Option.map(S.decodeUnknownOption(S.String.pipe(S.minLength(1)))(entry), (path) => ({
-    path,
-    enabled: true,
-  }));
+  return Option.map(
+    S.decodeUnknownOption(S.String.pipe(S.check(S.isMinLength(1))))(entry),
+    (path) => ({
+      path,
+      enabled: true,
+    }),
+  );
 };
 
 /** New bundled plugins are enabled for existing configs unless the user has an

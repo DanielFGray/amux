@@ -1,5 +1,8 @@
 import { Clock, Context, Duration, Effect, Layer } from "effect";
-import { FileSystem, HttpClient, HttpClientRequest } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
+import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import type { LanguageModel } from "effect/unstable/ai";
 import { Credential } from "./credential.ts";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
 import * as ModelCatalog from "./model-catalog.ts";
@@ -23,12 +26,10 @@ export interface Interface {
   readonly model: (
     integrationID: string,
     model: string,
-  ) => Effect.Effect<
-    Layer.Layer<import("@effect/ai").LanguageModel.LanguageModel, never, never> | undefined
-  >;
+  ) => Effect.Effect<Layer.Layer<LanguageModel.LanguageModel, never, never> | undefined>;
 }
 
-export class Service extends Context.Tag("amux/Integration")<Service, Interface>() {}
+export class Service extends Context.Service<Service, Interface>()("amux/Integration") {}
 
 /**
  * The registry, over a set of integration definitions and a model catalog.
@@ -93,13 +94,12 @@ export const makeLayer = (
         });
         return value;
       });
-      const resolve = (connection: Connection) =>
-        Effect.gen(function* () {
-          const credential = yield* credentials.get(connection.id);
-          if (!credential) return undefined;
-          const integration = find(credential.integrationID);
-          return integration ? yield* refresh(integration, credential) : undefined;
-        });
+      const resolve = Effect.fnUntraced(function* (connection: Connection) {
+        const credential = yield* credentials.get(connection.id);
+        if (!credential) return undefined;
+        const integration = find(credential.integrationID);
+        return integration ? yield* refresh(integration, credential) : undefined;
+      });
 
       return {
         get: (id) =>
@@ -142,23 +142,22 @@ export const makeLayer = (
           Effect.gen(function* () {
             const integration = find(integrationID);
             if (!integration) return undefined;
-            const authorize = (request: HttpClientRequest.HttpClientRequest) =>
-              Effect.gen(function* () {
-                const connection = yield* Effect.flatMap(
-                  credentialsFor(integration),
-                  (items) =>
-                    items[0]
-                      ? Effect.succeed({
-                          type: "credential" as const,
-                          id: items[0].id,
-                          label: items[0].label,
-                        })
-                      : Effect.fail("credential missing"),
-                );
-                const value = yield* resolve(connection);
-                if (!value) return yield* Effect.fail("credential missing");
-                return integration.authorize(value, request);
-              });
+            const authorize = Effect.fnUntraced(function* (
+              request: HttpClientRequest.HttpClientRequest,
+            ) {
+              const connection = yield* Effect.flatMap(credentialsFor(integration), (items) =>
+                items[0]
+                  ? Effect.succeed({
+                      type: "credential" as const,
+                      id: items[0].id,
+                      label: items[0].label,
+                    })
+                  : Effect.fail("credential missing"),
+              );
+              const value = yield* resolve(connection);
+              if (!value) return yield* Effect.fail("credential missing");
+              return integration.authorize(value, request);
+            });
             // The catalog is the one place a provider's host and protocol are
             // written down, so an integration reads them from there rather than
             // carrying a copy. Both are stated per model and fall back to the
@@ -181,7 +180,7 @@ export const makeLayer = (
     }),
   ).pipe(
     Layer.provide(Credential.Default),
-    Layer.provide(EventBus.Default),
+    Layer.provide(EventBus.layer),
     Layer.provide(catalogLayer),
   );
 

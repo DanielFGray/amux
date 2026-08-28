@@ -1,0 +1,6 @@
+id: effect-v3-scope-extend-to-provide
+language: TypeScript
+message: Scope.extend was renamed to Scope.provide in v4.
+rule:
+  pattern: Scope.extend($EFFECT, $SCOPE)
+fix: Scope.provide($EFFECT, $SCOPE)

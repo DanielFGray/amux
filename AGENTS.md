@@ -1,4 +1,4 @@
-`amux` is an agent-aware terminal multiplexer with an advanced plugin system. Built with Effect-TS, OpenTUI, Solid-JS, and libghostty-vt via Bun FFI.
+`amux` is a terminal multiplexer with an advanced plugin system. Agent awareness and the agent harness ship as plugins. Built with Effect-TS, OpenTUI, Solid-JS, and libghostty-vt via Bun FFI.
 
 ## Architectural invariants
 
@@ -6,7 +6,7 @@
 - All workspace mutations go through ordered commands via the daemon's model queue. A client-side mutation will diverge from the daemon's generation.
 - Newline-framed JSON over Unix sockets. Terminal bytes (input/output) are base64-encoded within frames. Workspace frames embed full JSON snapshots.
 - State persistence is write-temp-then-rename (atomic against process crash). Durability obligations in the daemon treat a completed write as discharged. `ARCHITECTURE.md` documents the transaction ordering in detail.
-- **Core is agent-AWARE, not an agent.** Core knows a pane is running claude/codex/opencode and what state it is in. It must never contain a provider, model, credential, prompt, or turn loop. An agent _harness_ is a plugin — including ours. See `ARCHITECTURE.md` and `ts-8305f4`.
+- **Core's agent surface stops at neutral process facts.** Which executables count as agents, what their states mean, and anything that runs a turn belong to plugins — including ours. Keep providers, models, credentials, prompts, and turn loops in plugin code. See `ARCHITECTURE.md`'s policy-versus-algebra rule. Four pieces of agent policy remain in core and are tracked for migration: `detect.ts`, `detector-evaluator.ts`, the `agent-hook` subcommand, and the turn/tool/permission vocabulary in `AttachProtocol.ts`.
 
 These rules must not be violated — the dead "second authority" in the client exists because they were once broken
 
@@ -37,6 +37,7 @@ bun test packages     # unit tests only, while iterating
 bun test e2e          # e2e only: drives the real app, the command table and the
                       #   keymap, which nothing under packages/*/src exercises
 bunx tsc --noEmit     # typecheck
+bun run typecheck:fzf # pick typecheck diagnostics with fzf, open in nvim (needs fzf)
 bun run start         # client (same as `bun packages/amux/src/cli.ts <session>`)
 bun run daemon        # daemon (same as `bun packages/amux/src/cli.ts daemon <session>`)
 bun run cli           # unified `amux` CLI entry

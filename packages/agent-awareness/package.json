@@ -9,15 +9,16 @@
   },
   "type": "module",
   "exports": {
+    ".": "./src/index.ts",
     "./*": "./src/*"
   },
   "dependencies": {
     "effect": "catalog:"
   },
-  "peerDependencies": {
+  "devDependencies": {
     "@danielfgray/amux": "workspace:*"
   },
-  "devDependencies": {
+  "peerDependencies": {
     "@danielfgray/amux": "workspace:*"
   }
 }

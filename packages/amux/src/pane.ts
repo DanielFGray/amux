@@ -21,7 +21,6 @@ import { NativeImage } from "@opentui/core";
 import { Effect, Exit, Scope } from "effect";
 import type { SessionHandle } from "./session-handle.ts";
 import { runtime } from "./options.ts";
-import { STATE_GLYPH } from "./detect.ts";
 import { captureRange } from "./shim.ts";
 import { clearSelection, setSelection } from "./shim.ts";
 import { cellWidth } from "./copy.ts";
@@ -37,8 +36,6 @@ const CURSOR_IDLE = RGBA.fromInts(108, 112, 134, 255);
 const SELECTION_FG = 0x1e1e2e;
 const SELECTION_BG = 0x89b4fa;
 
-/** @deprecated the sidebar owns state glyphs now; see detect.ts STATE_GLYPH. */
-export const STATUS_DOT = STATE_GLYPH;
 
 /**
  * Which of a pane's four sides it draws itself.
@@ -640,7 +637,7 @@ export class TerminalPane extends Pane {
   /** Allocate an FFI handle into this pane's scope. See Agent's #own. */
   #own<A>(acquire: () => A, free: (handle: A) => void): A {
     return Effect.runSync(
-      Scope.extend(
+      Scope.provide(
         Effect.acquireRelease(Effect.sync(acquire), (handle) => Effect.sync(() => free(handle))),
         this.#scope,
       ),

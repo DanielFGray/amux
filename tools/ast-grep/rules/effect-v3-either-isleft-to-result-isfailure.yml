@@ -1,0 +1,6 @@
+id: effect-v3-either-isleft-to-result-isfailure
+language: TypeScript
+message: Either was renamed to Result in v4; Left became Failure.
+rule:
+  pattern: Either.isLeft($X)
+fix: Result.isFailure($X)

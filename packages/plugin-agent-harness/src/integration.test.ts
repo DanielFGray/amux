@@ -3,14 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigProvider, Effect, Layer, Redacted, Schema as S } from "effect";
-import { LanguageModel } from "@effect/ai";
+import { LanguageModel } from "effect/unstable/ai";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Credential } from "./credential.ts";
 import { ModelCatalog } from "./model-catalog.ts";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
 import { makeLayer, Service, type Integration } from "./integration.ts";
 import { openAiCompatible, type ModelRequest } from "./integration/index.ts";
-import { testEffect } from "@danielfgray/amux/test-effect.ts";
+import { testEffect } from "@danielfgray/amux/testing"
 
 class NoModelLayer extends S.TaggedError<NoModelLayer>()("NoModelLayer", {}) {}
 
@@ -24,7 +24,7 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>, variables: NodeJS.ProcessE
     Effect.provide(makeLayer()),
     Effect.provide(Credential.Default),
     Effect.provide(BunFileSystem.layer),
-    Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
+    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
   );
 
 const key = (value: string) => ({
@@ -103,7 +103,7 @@ testEffect("an integration is told the API host the catalog names for it", () =>
     const registry = makeLayer(
       [spy("opencode-go"), spy("anthropic")],
       ModelCatalog.testLayer(Effect.succeed(JSON.stringify(catalog))).pipe(
-        Layer.provide(EventBus.Default),
+        Layer.provide(EventBus.layer),
       ),
     );
     const build = (id: string, model: string) =>
@@ -112,7 +112,7 @@ testEffect("an integration is told the API host the catalog names for it", () =>
         Effect.provide(registry),
         Effect.provide(Credential.Default),
         Effect.provide(BunFileSystem.layer),
-        Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
+        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
       );
 
     yield* build("opencode-go", "glm-5");
@@ -177,7 +177,7 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
         Effect.provide(registry),
         Effect.provide(Credential.Default),
         Effect.provide(BunFileSystem.layer),
-        Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
+        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
       );
     const connection = {
       type: "credential" as const,
@@ -233,7 +233,7 @@ const catalogLayer = (apiUrl: string) =>
         fake: { id: "fake", name: "Fake", env: [], api: apiUrl, models: {} },
       }),
     ),
-  ).pipe(Layer.provide(EventBus.Default));
+  ).pipe(Layer.provide(EventBus.layer));
 
 /** The registry for the fake integration, over one catalog. */
 const registry = (apiUrl: string, refresh?: Integration["refresh"]) =>
@@ -261,7 +261,7 @@ const adapterLayers =
     effect.pipe(
       Effect.provide(Credential.Default),
       Effect.provide(BunFileSystem.layer),
-      Effect.withConfigProvider(ConfigProvider.fromJson(variables)),
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
     );
 
 testEffect("a model built from the registry stamps its credential on every request", () =>

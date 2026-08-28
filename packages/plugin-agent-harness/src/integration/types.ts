@@ -1,6 +1,6 @@
-import type { LanguageModel } from "@effect/ai";
-import type { HttpClient } from "@effect/platform";
-import type { HttpClientRequest } from "@effect/platform/HttpClientRequest";
+import type { LanguageModel } from "effect/unstable/ai";
+import type * as HttpClient from "effect/unstable/http/HttpClient";
+import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type { Layer } from "effect";
 import type { Credential } from "../credential.ts";
 import type { OAuthRefreshError } from "../credential.ts";
@@ -100,6 +100,6 @@ export type Integration = {
   readonly model: (request: ModelRequest) => Layer.Layer<LanguageModel.LanguageModel, never, never>;
   readonly authorize: (
     credential: Credential.Value,
-    request: HttpClientRequest,
-  ) => HttpClientRequest;
+    request: HttpClientRequest.HttpClientRequest,
+  ) => HttpClientRequest.HttpClientRequest;
 };

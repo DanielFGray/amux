@@ -5,24 +5,27 @@ import {
   Context,
   Deferred,
   Effect,
-  Either,
   Exit,
   Fiber,
   Layer,
   ManagedRuntime,
   Option,
-  Runtime,
+  Ref,
+  Result,
   Schedule,
   Schema as S,
   Scope,
+  Semaphore,
   Stream,
 } from "effect";
-import { Event, Machine, State } from "effect-machine/v3";
-import { FileSystem, SocketServer } from "@effect/platform";
+import * as FileSystem from "effect/FileSystem";
+import * as SocketServer from "effect/unstable/socket/SocketServer";
+import * as Socket from "effect/unstable/socket/Socket";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
-import * as RpcServer from "@effect/rpc/RpcServer";
+import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
+import { SessionSupervisor } from "./effect/SessionSupervisor.ts";
 import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
 import { makeAgentLog } from "./effect/AgentLog.ts";
 import { EventBus } from "./effect/EventBus.ts";
@@ -38,7 +41,7 @@ import {
   makeEvents,
   type WorkspaceTransactionResult,
 } from "./effect/WorkspaceTransaction.ts";
-import type { PlatformError } from "@effect/platform/Error";
+import type { PlatformError } from "effect/PlatformError";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type {
@@ -94,6 +97,13 @@ export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
   message: S.String,
 }) {}
 
+/** The data plane the daemon holds open: the attach host and the supervisor it
+ *  is built over, which is a key of its own so a registry can reach it. */
+type HostRuntime = ManagedRuntime.ManagedRuntime<
+  AttachHost | SessionSupervisor,
+  AttachServerError
+>;
+
 /**
  * The daemon's lifecycle, as one tagged state.
  *
@@ -101,36 +111,30 @@ export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
  * heartbeat fiber were once four independently-nullable fields set and cleared
  * across start() and one teardown path; nothing enforced that they move
  * together. Now they exist together inside a single `running` tag or not at
- * all, and only the lifecycle machine's handlers may construct or discard
- * that tag.
+ * all, and only `dispatch`'s handlers below may construct or discard that tag.
  *
  * `starting` is the half-built state: the host (and its attach socket) exists,
  * but nothing is restored and no control plane listens yet. It exists because
  * startup's own second half — restore, the default space, the control server —
  * runs the workspace transaction, and that transaction reads the host off the
- * committed machine state. The mailbox cannot serve itself, so the host has to
- * be committed before the transaction can run.
+ * committed state. Dispatch cannot serve itself, so the host has to be
+ * committed before the transaction can run.
  */
-/** Pass-through typing for live resources a state variant carries: they are
- *  never validated or serialized, only held. */
-const opaque = <T>(): S.Schema<T> => S.declare((_input): _input is T => true);
-
-const DaemonState = State({
-  stopped: {},
-  starting: {
-    host: opaque<AttachHostService>(),
-    hostRuntime: opaque<ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>>(),
-  },
-  running: {
-    host: opaque<AttachHostService>(),
-    hostRuntime: opaque<ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>>(),
-    controlScope: opaque<Scope.CloseableScope>(),
-    heartbeatFiber: opaque<Fiber.RuntimeFiber<void, never>>(),
-  },
-  closed: {},
-});
-
-type DaemonPhase = typeof DaemonState.Type;
+type DaemonPhase =
+  | { readonly _tag: "stopped" }
+  | {
+      readonly _tag: "starting";
+      readonly host: AttachHostService;
+      readonly hostRuntime: HostRuntime;
+    }
+  | {
+      readonly _tag: "running";
+      readonly host: AttachHostService;
+      readonly hostRuntime: HostRuntime;
+      readonly controlScope: Scope.Closeable;
+      readonly heartbeatFiber: Fiber.Fiber<void, never>;
+    }
+  | { readonly _tag: "closed" };
 
 type WorkspaceCommandRequestContext = Omit<WorkspaceCommandContext, "shell"> & {
   readonly shell: readonly string[];
@@ -142,61 +146,11 @@ const hostOf = (
   state: DaemonPhase,
 ): {
   host: AttachHostService;
-  hostRuntime: ManagedRuntime.ManagedRuntime<AttachHost, AttachServerError>;
+  hostRuntime: HostRuntime;
 } | null =>
   state._tag === "starting" || state._tag === "running"
     ? { host: state.host, hostRuntime: state.hostRuntime }
     : null;
-
-/** Every reply is `Either.right(value)` on success or `Either.left(error)` on
- *  failure — `effect-machine` transition handlers cannot fail (their error
- *  channel is `never`), so `DaemonError` travels back through the reply. */
-const daemonReply = <A>() => opaque<Either.Either<A, DaemonError>>();
-
-// The mailbox events that drive the lifecycle and every host-bound verb.
-// The seven host operations are procedures, not guards: outside the live
-// states their handlers reject with "daemon not started" instead of a
-// scattered nullable-field check.
-const DaemonEvent = Event({
-  start: Event.reply({}, daemonReply<void>()),
-  finishStartup: Event.reply({}, daemonReply<void>()),
-  shutdown: Event.reply({ mode: S.Literal("stop", "close") }, daemonReply<void>()),
-  spawn: Event.reply({ spec: opaque<SessionSpec>() }, daemonReply<ManagedSession>()),
-  kill: Event.reply({ id: S.String }, daemonReply<void>()),
-  live: Event.reply({}, opaque<readonly string[]>()),
-  setBuffer: Event.reply(
-    { name: opaque<string | undefined>(), data: S.String },
-    daemonReply<string>(),
-  ),
-  pasteBuffer: Event.reply(
-    { name: opaque<string | undefined>(), target: S.String, deleteAfter: S.Boolean },
-    daemonReply<void>(),
-  ),
-  listBuffers: Event.reply({}, daemonReply<readonly BufferEntry[]>()),
-  deleteBuffer: Event.reply({ name: opaque<string | undefined>() }, daemonReply<void>()),
-  showBuffer: Event.reply({ name: opaque<string | undefined>() }, daemonReply<string>()),
-});
-
-const allDaemonStates = [
-  DaemonState.stopped,
-  DaemonState.starting,
-  DaemonState.running,
-  DaemonState.closed,
-] as const;
-
-/** Every handler already guards on `state._tag` itself (a request may arrive
- *  in any lifecycle phase), so every event is wired to every state. On
- *  failure the reply carries the error and the state is left as it was
- *  handed to the handler — matching the old Machine's behavior of never
- *  committing a transition for a failed procedure. */
-const withReply = <A, R>(
-  state: DaemonPhase,
-  effect: Effect.Effect<readonly [A, DaemonPhase], DaemonError, R>,
-): Effect.Effect<Machine.ReplyResult<DaemonPhase, Either.Either<A, DaemonError>>, never, R> =>
-  Effect.match(effect, {
-    onFailure: (error) => Machine.reply(state, Either.left(error)),
-    onSuccess: ([value, newState]) => Machine.reply(newState, Either.right(value)),
-  });
 
 /**
  * Raised inside the lock acquisition loop when the lock file exists but is
@@ -253,7 +207,7 @@ export interface SessionDaemonService {
   readonly getAttachedClient: Effect.Effect<string | null, never>;
 }
 
-export const SessionDaemon = Context.GenericTag<SessionDaemonService>("@amux/SessionDaemon");
+export const SessionDaemon = Context.Service<SessionDaemonService>("@amux/SessionDaemon");
 
 const SHUTDOWN_SAVE_TIMEOUT_MS = 500;
 
@@ -306,12 +260,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       }).pipe(
         Effect.retry({
           while: (error) => error._tag === "LockContended",
-          schedule: Schedule.spaced("10 millis").pipe(Schedule.upTo("500 millis")),
+          schedule: Schedule.spaced("10 millis").pipe(Schedule.upTo({ duration: "500 millis" })),
         }),
       );
 
       const acquire = Effect.gen(function* () {
-        const result = yield* Effect.either(
+        const result = yield* Effect.result(
           Effect.gen(function* () {
             const file = yield* fs.open(paths.lock, {
               flag: "wx",
@@ -321,18 +275,17 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             return file;
           }),
         );
-        if (Either.isRight(result)) return result.right;
-        const error = result.left;
-        if (error._tag !== "SystemError" || error.reason !== "AlreadyExists")
-          return yield* Effect.die(error);
+        if (Result.isSuccess(result)) return result.success;
+        const error = result.failure;
+        if (error.reason._tag !== "AlreadyExists") return yield* Effect.die(error);
 
-        const owner = yield* Effect.either(lockOwner);
-        if (Either.isLeft(owner)) {
+        const owner = yield* Effect.result(lockOwner);
+        if (Result.isFailure(owner)) {
           // Never written: the claimant died between the open and the write.
           yield* fs.remove(paths.lock).pipe(Effect.ignore);
           return yield* new StaleLock();
         }
-        if (processAlive(owner.right))
+        if (processAlive(owner.success))
           return yield* new DaemonError({
             message: `session '${id}' is already being opened`,
           });
@@ -389,15 +342,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   // and asking a dead actor would hang. Nothing ever stops this actor; it
   // idles on its mailbox until the process ends.
   const daemonScope = yield* Scope.make();
-  const eventBusContext = yield* Layer.build(EventBus.Default).pipe(Scope.extend(daemonScope));
+  const eventBusContext = yield* Layer.build(EventBus.layer).pipe(Scope.provide(daemonScope));
   const eventBus = Context.get(eventBusContext, EventBus);
   const modelContext = yield* Layer.build(layerDaemonModel({ state, workspace })).pipe(
-    Scope.extend(daemonScope),
+    Scope.provide(daemonScope),
   );
   const model = Context.get(modelContext, DaemonModel);
 
   const activeSaveRef = {
-    current: null as Fiber.RuntimeFiber<void, WorkspaceTransactionError> | null,
+    current: null as Fiber.Fiber<void, WorkspaceTransactionError> | null,
   };
   let terminationShared: Promise<void> | null = null;
 
@@ -462,8 +415,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       Effect.mapError((e) => new DaemonError({ message: describe(e) })),
     );
 
-  /** Lift a synchronous host call (buffers throw on a missing target) into the
-   *  machine's typed error channel. A defect here would kill the actor. */
+  /** Lift a synchronous host call (buffers throw on a missing target) into
+   *  the daemon's typed error channel. */
   const bufferOp = <A>(op: () => A): Effect.Effect<A, DaemonError> =>
     Effect.try({
       try: op,
@@ -479,17 +432,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       ),
     );
 
-  /**
-   * The lifecycle machine. Requests are serialized through the mailbox, so no
-   * request ever observes the daemon half-started or half-torn-down: a host
-   * verb either runs against a complete `running` state or is rejected.
-   *
-   * `Start` and `Shutdown` build and dismantle the `running` tag; the host
-   * verbs read their resources straight off that tag. The heavy lifting
-   * (lease, attach runtime, control server, heartbeat, restore, drain, final
-   * persistence) lives in these handlers because the state transition and the
-   * work it represents must not be able to drift apart.
-   */
+  // `runStart` and `runShutdown` build and dismantle the `running` tag; the
+  // other host verbs read their resources straight off that tag. The heavy
+  // lifting (lease, attach runtime, control server, heartbeat, restore,
+  // drain, final persistence) lives in these handlers because the state
+  // transition and the work it represents must not be able to drift apart.
+
   // Shared by the two startup halves: the lease is written when the host
   // comes up and refreshed by the heartbeat after the daemon is running.
   const lease: SessionLease = {
@@ -501,365 +449,371 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     heartbeatAt: Date.now(),
   };
 
-  const daemonMachine = Machine.make({
-    state: DaemonState,
-    event: DaemonEvent,
-    initial: DaemonState.stopped,
-  })
-    .on(allDaemonStates, DaemonEvent.start, ({ state }) =>
-      withReply(
-        state,
-        Effect.gen(function* () {
-          if (state._tag !== "stopped") return [void 0, state] as const;
+  const stateRef = yield* Ref.make<DaemonPhase>({ _tag: "stopped" });
+  const daemonLock = yield* Semaphore.make(1);
 
-          yield* Effect.gen(function* () {
-            const cur = yield* model.get;
-            yield* persist(cur.state);
-          }).pipe(enqueue);
-
-          yield* session.writeLease(lease);
-
-          yield* fs
-            .remove(paths.attach)
-            .pipe(
-              Effect.catchTag("SystemError", (e) =>
-                e.reason === "NotFound" ? Effect.void : Effect.die(e),
-              ),
-            );
-
-          // node:net's Server.listen(path) does not unlink a stale socket
-          // file the way a listener whose owner exited cleanly would; a
-          // daemon that died without running its finalizers (a crash, a
-          // kill -9) leaves this file behind, and every future start then
-          // fails bind with EADDRINUSE forever until it is removed.
-          yield* fs
-            .remove(paths.processState)
-            .pipe(
-              Effect.catchTag("SystemError", (e) =>
-                e.reason === "NotFound" ? Effect.void : Effect.die(e),
-              ),
-            );
-
-          const rt = ManagedRuntime.make(
-            layerAttachHost({
-              path: paths.attach,
-              processStatePath: paths.processState,
-              rpcPath: paths.socket,
-              daemonSession: id,
-              onAttach: attachEffect,
-              onDetach: detachEffect,
-              onActivity: touchEffect,
-              onSessionExit: (sid, code) => sessionExitEffect(sid, code).pipe(Effect.ignore),
-              onSessionState: (sid, s) =>
-                eventBus.publish({ _tag: "session.state", session: sid, state: s }),
-              agentLog,
-            }),
-          );
-          const host = yield* Effect.promise(() => rt.runPromise(AttachHost));
-
-          // The host and its attach socket are committed here, in the
-          // `starting` state: the rest of startup runs the workspace
-          // transaction, which reads the host off the machine state, and
-          // the mailbox cannot serve itself.
-          return [void 0, DaemonState.starting({ host, hostRuntime: rt })] as const;
-        }).pipe(toDaemonError),
-      ),
-    )
-
-    .on(allDaemonStates, DaemonEvent.finishStartup, ({ state }) =>
-      withReply(
-        state,
-        Effect.gen(function* () {
-          if (state._tag !== "starting") return [void 0, state] as const;
-          const { host, hostRuntime } = state;
-
-          yield* Effect.gen(function* () {
-            const cur = yield* model.get;
-            let next = cur.workspace;
-            let changed = false;
-            for (const space of next.spaces) {
-              if (space.worktree) {
-                const exists = yield* Effect.promise(() => gitWorktreeExists(space.worktree!.path));
-                if (!exists) {
-                  for (const w of space.windows)
-                    for (const a of w.sessions) {
-                      if (!a.exited) {
-                        next = markSessionExited(next, a.id, null);
-                        changed = true;
-                      }
-                    }
-                  continue;
-                }
-              }
-              for (const w of space.windows) {
-                for (const a of w.sessions) {
-                  if (a.exited || a.kind === "component") continue;
-                  const pane = findPaneBySession(next, a.id);
-                  const spec: SessionSpec = {
-                    kind: a.kind,
-                    id: a.id,
-                    cmd: a.cmd ?? [],
-                    cwd: a.cwd,
-                    rpcPath: paths.socket,
-                    daemonSession: id,
-                    cols: a.cols,
-                    rows: a.rows,
-                  };
-                  const withAgent =
-                    a.declaredAgent === undefined ? spec : { ...spec, agent: a.declaredAgent };
-                  const finalSpec = pane === null ? withAgent : { ...withAgent, paneId: pane.id };
-                  yield* rawSpawn(finalSpec, host).pipe(
-                    Effect.catchAll((error) => {
-                      next = markSessionUnavailable(next, a.id, describe(error));
-                      changed = true;
-                      return Effect.void;
-                    }),
-                  );
-                }
-              }
-            }
-            const newState = workspaceSession(next, cur.state);
-            if (changed) yield* persist(newState);
-            yield* model.commitWorkspace(next, newState);
-          }).pipe(enqueue);
-
-          const curSpace = yield* model.workspace;
-          if (curSpace.spaces.length === 0) {
-            yield* runWorkspaceCommand(command("space.new"), curSpace.revision, {
-              size: { cols: 80, rows: 24 },
-              shell: [defaultShell],
-              cwd: process.cwd(),
-            });
-          }
-
-          yield* fs
-            .remove(paths.socket)
-            .pipe(
-              Effect.catchTag("SystemError", (e) =>
-                e.reason === "NotFound" ? Effect.void : Effect.die(e),
-              ),
-            );
-
-          const controlScope = yield* Scope.make();
-          const socketServer = yield* NodeSocketServer.make({
-            path: paths.socket,
-          }).pipe(Scope.extend(controlScope));
-          yield* Layer.build(
-            RpcServer.layer(ControlRpcs, { disableTracing: true }).pipe(
-              Layer.provide(RpcServer.layerProtocolSocketServer),
-              Layer.provide(ControlSerialization),
-              Layer.provide(Layer.succeed(SocketServer.SocketServer, socketServer)),
-              Layer.provide(controlHandlers),
-            ),
-          ).pipe(Scope.extend(controlScope));
-
-          const heartbeatFiber = yield* Effect.forkIn(
-            Effect.forever(
-              Effect.sleep("1 second").pipe(
-                Effect.zipRight(
-                  enqueue(
-                    Effect.gen(function* () {
-                      const info = yield* attachInfo();
-                      const hbAt = yield* Clock.currentTimeMillis;
-                      yield* session.writeLease({
-                        ...lease,
-                        heartbeatAt: hbAt,
-                        ...info,
-                      });
-                      yield* model.setHeartbeatError(null);
-                    }),
-                  ),
-                ),
-                Effect.catchAllCause((c) =>
-                  Cause.isInterruptedOnly(c)
-                    ? Effect.interrupt
-                    : model.setHeartbeatError(`lease heartbeat failed: ${Cause.pretty(c)}`),
-                ),
-              ),
-            ),
-            daemonScope,
-          );
-
-          return [
-            void 0,
-            DaemonState.running({ host, hostRuntime, controlScope, heartbeatFiber }),
-          ] as const;
-        }).pipe(toDaemonError),
-      ),
-    )
-
-    .on(allDaemonStates, DaemonEvent.shutdown, ({ state, event }) =>
-      withReply(
-        state,
-        Effect.gen(function* () {
-          if (state._tag === "closed") return [void 0, state] as const;
-          let finalFailure: string | null = null;
-          if (state._tag === "running") {
-            yield* Fiber.interrupt(state.heartbeatFiber);
-            yield* Scope.close(state.controlScope, Exit.void);
-          }
-
-          const drained = yield* Effect.raceFirst(
-            enqueue(Effect.void).pipe(Effect.as(true)),
-            Effect.sleep(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`).pipe(Effect.as(false)),
-          );
-          if (!drained) {
-            yield* model.markCancelPersistence;
-            if (activeSaveRef.current) yield* Fiber.interrupt(activeSaveRef.current!);
-            yield* Effect.raceFirst(
-              enqueue(Effect.void),
-              Effect.sleep(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`),
-            );
-          }
-
-          const live = hostOf(state);
-          if (live) {
-            yield* Effect.promise(() => live.hostRuntime.dispose().catch(() => {}));
-            yield* fs.remove(paths.attach).pipe(Effect.ignore);
-          }
-
-          if (event.mode === "stop") {
-            yield* session.remove(id);
-          } else {
-            yield* enqueue(
-              Effect.gen(function* () {
-                const cur = yield* model.get;
-                const newState = {
-                  ...cur.state,
-                  attached: false,
-                  updatedAt: Date.now(),
-                };
-                const result = yield* Effect.exit(
-                  persist(newState).pipe(Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`)),
-                );
-                if (Exit.isFailure(result)) finalFailure = describe(Cause.squash(result.cause));
-                yield* model.updateState(newState);
-                yield* model.setAttachments(new Map());
-                yield* model.commitWorkspace(cur.workspace, newState);
-              }),
-            );
-          }
-
-          yield* fs.remove(paths.socket).pipe(Effect.ignore);
-          yield* fs.remove(paths.lease).pipe(Effect.ignore);
-          yield* Scope.close(lockScope, Exit.void);
-          if (finalFailure !== null) return yield* new DaemonError({ message: finalFailure });
-          return [void 0, DaemonState.closed] as const;
-        }).pipe(toDaemonError),
-      ),
-    )
-
-    .on(allDaemonStates, DaemonEvent.spawn, ({ state, event }) => {
-      const live = hostOf(state);
-      return withReply(
-        state,
-        live
-          ? rawSpawn(event.spec, live.host).pipe(Effect.map((session) => [session, state] as const))
-          : Effect.fail(new DaemonError({ message: "daemon not started" })),
-      );
-    })
-
-    .on(allDaemonStates, DaemonEvent.kill, ({ state, event }) => {
-      const live = hostOf(state);
-      return withReply(
-        state,
-        live
-          ? live.host.kill(event.id).pipe(
-              toDaemonError,
-              Effect.map((_) => [void 0, state] as const),
-            )
-          : Effect.fail(new DaemonError({ message: "daemon not started" })),
-      );
-    })
-
-    // A stopped daemon answers `live` with nothing running rather than an
-    // error: after stop, callers may still ask what is left to adopt.
-    .on(allDaemonStates, DaemonEvent.live, ({ state }) => {
-      const live = hostOf(state);
-      return live
-        ? live.host.live.pipe(Effect.map((sessions) => Machine.reply(state, sessions)))
-        : Effect.succeed(Machine.reply(state, [] as readonly string[]));
-    })
-
-    .on(allDaemonStates, DaemonEvent.setBuffer, ({ state, event }) => {
-      const live = hostOf(state);
-      return withReply(
-        state,
-        live
-          ? bufferOp(() => live.host.buffers.set(event.name, event.data)).pipe(
-              Effect.map((name) => [name, state] as const),
-            )
-          : Effect.fail(new DaemonError({ message: "daemon not started" })),
-      );
-    })
-
-    .on(allDaemonStates, DaemonEvent.pasteBuffer, ({ state, event }) => {
-      const live = hostOf(state);
-      return withReply(
-        state,
-        live
-          ? Effect.gen(function* () {
-              const bytes = yield* bufferOp(() => live.host.buffers.show(event.name));
-              yield* live.host.paste(event.target, bytes).pipe(toDaemonError);
-              if (event.deleteAfter) yield* bufferOp(() => live.host.buffers.delete(event.name));
-              return [void 0, state] as const;
-            }).pipe(toDaemonError)
-          : Effect.fail(new DaemonError({ message: "daemon not started" })),
-      );
-    })
-
-    .on(allDaemonStates, DaemonEvent.listBuffers, ({ state }) => {
-      const live = hostOf(state);
-      return withReply(
-        state,
-        live
-          ? bufferOp(() => live.host.buffers.list()).pipe(
-              Effect.map((buffers) => [buffers, state] as const),
-            )
-          : Effect.fail(new DaemonError({ message: "daemon not started" })),
-      );
-    })
-
-    .on(allDaemonStates, DaemonEvent.deleteBuffer, ({ state, event }) => {
-      const live = hostOf(state);
-      return withReply(
-        state,
-        live
-          ? bufferOp(() => live.host.buffers.delete(event.name)).pipe(
-              Effect.map((_) => [void 0, state] as const),
-            )
-          : Effect.fail(new DaemonError({ message: "daemon not started" })),
-      );
-    })
-
-    .on(allDaemonStates, DaemonEvent.showBuffer, ({ state, event }) => {
-      const live = hostOf(state);
-      return withReply(
-        state,
-        live
-          ? bufferOp(() => new TextDecoder().decode(live.host.buffers.show(event.name))).pipe(
-              Effect.map((text) => [text, state] as const),
-            )
-          : Effect.fail(new DaemonError({ message: "daemon not started" })),
-      );
-    });
-
-  const actor = yield* Machine.spawn(daemonMachine, { id: "SessionDaemon" });
-  yield* actor.start;
-
-  /** Unwrap an `ask` reply's `Either<A, DaemonError>` back into `DaemonError`
-   *  as the effect's own failure; `ask`'s own `NoReplyError`/`ActorStoppedError`
-   *  cannot happen against this always-running, always-replying actor. */
-  const unwrapAsk = <A>(
-    effect: Effect.Effect<Either.Either<A, DaemonError>, unknown>,
-  ): Effect.Effect<A, DaemonError> =>
-    effect.pipe(
-      Effect.mapError((e) => new DaemonError({ message: describe(e) })),
-      Effect.flatMap(Either.match({ onLeft: Effect.fail, onRight: Effect.succeed })),
+  /** Runs `handler` against the current lifecycle state with exclusive
+   *  access, committing the returned next-state only on success — so no
+   *  request ever observes the daemon half-started or half-torn-down, and a
+   *  failed procedure leaves the state exactly as it found it. */
+  const dispatch = <A, E, R>(
+    handler: (state: DaemonPhase) => Effect.Effect<readonly [A, DaemonPhase], E, R>,
+  ): Effect.Effect<A, E, R> =>
+    daemonLock.withPermits(1)(
+      Effect.gen(function* () {
+        const state = yield* Ref.get(stateRef);
+        const [value, next] = yield* handler(state);
+        yield* Ref.set(stateRef, next);
+        return value;
+      }),
     );
 
+  // The seven host operations below are procedures, not guards: outside the
+  // live states their handlers reject with "daemon not started" instead of a
+  // scattered nullable-field check.
+
+  const runStart: Effect.Effect<void, DaemonError> = dispatch((state) =>
+    Effect.gen(function* () {
+      if (state._tag !== "stopped") return [void 0, state] as const;
+
+      yield* Effect.gen(function* () {
+        const cur = yield* model.get;
+        yield* persist(cur.state);
+      }).pipe(enqueue);
+
+      yield* session.writeLease(lease);
+
+      yield* fs
+        .remove(paths.attach)
+        .pipe(
+          Effect.catchTag("PlatformError", (e) =>
+            e.reason._tag === "NotFound" ? Effect.void : Effect.die(e),
+          ),
+        );
+
+      // node:net's Server.listen(path) does not unlink a stale socket
+      // file the way a listener whose owner exited cleanly would; a
+      // daemon that died without running its finalizers (a crash, a
+      // kill -9) leaves this file behind, and every future start then
+      // fails bind with EADDRINUSE forever until it is removed.
+      yield* fs
+        .remove(paths.processState)
+        .pipe(
+          Effect.catchTag("PlatformError", (e) =>
+            e.reason._tag === "NotFound" ? Effect.void : Effect.die(e),
+          ),
+        );
+
+      const rt = ManagedRuntime.make(
+        layerAttachHost({
+          path: paths.attach,
+          processStatePath: paths.processState,
+          rpcPath: paths.socket,
+          daemonSession: id,
+          onAttach: attachEffect,
+          onDetach: detachEffect,
+          onActivity: touchEffect,
+          onSessionExit: (sid, code) => sessionExitEffect(sid, code).pipe(Effect.ignore),
+          onSessionState: (sid, s) =>
+            eventBus.publish({ _tag: "session.state", session: sid, state: s }),
+          agentLog,
+        }),
+      );
+      const host = yield* Effect.promise(() => rt.runPromise(AttachHost));
+
+      // The host and its attach socket are committed here, in the
+      // `starting` state: the rest of startup runs the workspace
+      // transaction, which reads the host off the dispatch state, and
+      // dispatch cannot serve itself.
+      return [void 0, { _tag: "starting", host, hostRuntime: rt }] as const;
+    }).pipe(toDaemonError),
+  );
+
+  const runFinishStartup: Effect.Effect<void, DaemonError> = dispatch((state) =>
+    Effect.gen(function* () {
+      if (state._tag !== "starting") return [void 0, state] as const;
+      const { host, hostRuntime } = state;
+
+      yield* Effect.gen(function* () {
+        const cur = yield* model.get;
+        let next = cur.workspace;
+        let changed = false;
+        for (const space of next.spaces) {
+          if (space.worktree) {
+            const exists = yield* Effect.promise(() => gitWorktreeExists(space.worktree!.path));
+            if (!exists) {
+              for (const w of space.windows)
+                for (const a of w.sessions) {
+                  if (!a.exited) {
+                    next = markSessionExited(next, a.id, null);
+                    changed = true;
+                  }
+                }
+              continue;
+            }
+          }
+          for (const w of space.windows) {
+            for (const a of w.sessions) {
+              if (a.exited || a.kind === "component") continue;
+              const pane = findPaneBySession(next, a.id);
+              const spec: SessionSpec = {
+                kind: a.kind,
+                id: a.id,
+                cmd: a.cmd ?? [],
+                cwd: a.cwd,
+                rpcPath: paths.socket,
+                daemonSession: id,
+                cols: a.cols,
+                rows: a.rows,
+              };
+              const withAgent =
+                a.declaredAgent === undefined ? spec : { ...spec, agent: a.declaredAgent };
+              const finalSpec = pane === null ? withAgent : { ...withAgent, paneId: pane.id };
+              yield* rawSpawn(finalSpec, host).pipe(
+                Effect.catch((error) => {
+                  next = markSessionUnavailable(next, a.id, describe(error));
+                  changed = true;
+                  return Effect.void;
+                }),
+              );
+            }
+          }
+        }
+        const newState = workspaceSession(next, cur.state);
+        if (changed) yield* persist(newState);
+        yield* model.commitWorkspace(next, newState);
+      }).pipe(enqueue);
+
+      const curSpace = yield* model.workspace;
+      if (curSpace.spaces.length === 0) {
+        yield* runWorkspaceCommand(command("space.new"), curSpace.revision, {
+          size: { cols: 80, rows: 24 },
+          shell: [defaultShell],
+          cwd: process.cwd(),
+        });
+      }
+
+      yield* fs
+        .remove(paths.socket)
+        .pipe(
+          Effect.catchTag("PlatformError", (e) =>
+            e.reason._tag === "NotFound" ? Effect.void : Effect.die(e),
+          ),
+        );
+
+      const controlScope = yield* Scope.make();
+      const socketServer = yield* NodeSocketServer.make({
+        path: paths.socket,
+      }).pipe(Scope.provide(controlScope));
+      const controlSocketServer = SocketServer.SocketServer.of({
+        ...socketServer,
+        run: (handler) =>
+          socketServer.run((socket) =>
+            handler(socket).pipe(
+              Effect.catchCause((cause) => {
+                const error = Cause.squash(cause);
+                return Socket.SocketError.is(error) && error.reason._tag === "SocketReadError"
+                  ? Effect.void
+                  : Effect.failCause(cause);
+              }),
+            ),
+          ),
+      });
+      yield* Layer.build(
+        RpcServer.layer(ControlRpcs, { disableTracing: true }).pipe(
+          Layer.provide(RpcServer.layerProtocolSocketServer),
+          Layer.provide(ControlSerialization),
+          Layer.provide(Layer.succeed(SocketServer.SocketServer, controlSocketServer)),
+          Layer.provide(controlHandlers),
+        ),
+      ).pipe(Scope.provide(controlScope));
+
+      const heartbeatFiber = yield* Effect.forkIn(
+        Effect.forever(
+          Effect.sleep("1 second").pipe(
+            Effect.andThen(
+              enqueue(
+                Effect.gen(function* () {
+                  const info = yield* attachInfo();
+                  const hbAt = yield* Clock.currentTimeMillis;
+                  yield* session.writeLease({
+                    ...lease,
+                    heartbeatAt: hbAt,
+                    ...info,
+                  });
+                  yield* model.setHeartbeatError(null);
+                }),
+              ),
+            ),
+            Effect.catchCause((c) =>
+              Cause.hasInterruptsOnly(c)
+                ? Effect.interrupt
+                : model.setHeartbeatError(`lease heartbeat failed: ${Cause.pretty(c)}`),
+            ),
+          ),
+        ),
+        daemonScope,
+      );
+
+      return [
+        void 0,
+        { _tag: "running", host, hostRuntime, controlScope, heartbeatFiber },
+      ] as const;
+    }).pipe(toDaemonError),
+  );
+
+  const runShutdown = (mode: "stop" | "close"): Effect.Effect<void, DaemonError> =>
+    dispatch((state) =>
+      Effect.gen(function* () {
+        if (state._tag === "closed") return [void 0, state] as const;
+        let finalFailure: string | null = null;
+        if (state._tag === "running") {
+          yield* Fiber.interrupt(state.heartbeatFiber);
+          yield* Scope.close(state.controlScope, Exit.void);
+        }
+
+        const drained = yield* Effect.raceFirst(
+          enqueue(Effect.void).pipe(Effect.as(true)),
+          Effect.sleep(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`).pipe(Effect.as(false)),
+        );
+        if (!drained) {
+          yield* model.markCancelPersistence;
+          if (activeSaveRef.current) yield* Fiber.interrupt(activeSaveRef.current!);
+          yield* Effect.raceFirst(
+            enqueue(Effect.void),
+            Effect.sleep(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`),
+          );
+        }
+
+        const live = hostOf(state);
+        if (live) {
+          yield* Effect.promise(() => live.hostRuntime.dispose().catch(() => {}));
+          yield* fs.remove(paths.attach).pipe(Effect.ignore);
+        }
+
+        if (mode === "stop") {
+          yield* session.remove(id);
+        } else {
+          yield* enqueue(
+            Effect.gen(function* () {
+              const cur = yield* model.get;
+              const newState = {
+                ...cur.state,
+                attached: false,
+                updatedAt: Date.now(),
+              };
+              const result = yield* Effect.exit(
+                persist(newState).pipe(Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`)),
+              );
+              if (Exit.isFailure(result)) finalFailure = describe(Cause.squash(result.cause));
+              yield* model.updateState(newState);
+              yield* model.setAttachments(new Map());
+              yield* model.commitWorkspace(cur.workspace, newState);
+            }),
+          );
+        }
+
+        yield* fs.remove(paths.socket).pipe(Effect.ignore);
+        yield* fs.remove(paths.lease).pipe(Effect.ignore);
+        yield* Scope.close(lockScope, Exit.void);
+        if (finalFailure !== null) return yield* new DaemonError({ message: finalFailure });
+        return [void 0, { _tag: "closed" }] as const;
+      }).pipe(toDaemonError),
+    );
+
+  const spawnEvent = (spec: SessionSpec): Effect.Effect<ManagedSession, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? rawSpawn(spec, live.host).pipe(Effect.map((session) => [session, state] as const))
+        : Effect.fail(new DaemonError({ message: "daemon not started" }));
+    });
+
+  const killEvent = (sessionId: string): Effect.Effect<void, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? live.host.kill(sessionId).pipe(
+            toDaemonError,
+            Effect.map(() => [void 0, state] as const),
+          )
+        : Effect.fail(new DaemonError({ message: "daemon not started" }));
+    });
+
+  // A stopped daemon answers `live` with nothing running rather than an
+  // error: after stop, callers may still ask what is left to adopt.
+  // A stopped daemon answers `live` with nothing running rather than an
+  // error: after stop, callers may still ask what is left to adopt.
+  const liveEvent = (): Effect.Effect<readonly string[], never> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? live.host.live.pipe(Effect.map((sessions) => [sessions, state] as const))
+        : Effect.succeed([[] as readonly string[], state] as const);
+    });
+
+  const setBufferEvent = (
+    name: string | undefined,
+    data: string,
+  ): Effect.Effect<string, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? bufferOp(() => live.host.buffers.set(name, data)).pipe(
+            Effect.map((n) => [n, state] as const),
+          )
+        : Effect.fail(new DaemonError({ message: "daemon not started" }));
+    });
+
+  const pasteBufferEvent = (
+    name: string | undefined,
+    target: string,
+    deleteAfter: boolean,
+  ): Effect.Effect<void, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? Effect.gen(function* () {
+            const bytes = yield* bufferOp(() => live.host.buffers.show(name));
+            yield* live.host.paste(target, bytes).pipe(toDaemonError);
+            if (deleteAfter) yield* bufferOp(() => live.host.buffers.delete(name));
+            return [void 0, state] as const;
+          }).pipe(toDaemonError)
+        : Effect.fail(new DaemonError({ message: "daemon not started" }));
+    });
+
+  const listBuffersEvent = (): Effect.Effect<readonly BufferEntry[], DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? bufferOp(() => live.host.buffers.list()).pipe(
+            Effect.map((buffers) => [buffers, state] as const),
+          )
+        : Effect.fail(new DaemonError({ message: "daemon not started" }));
+    });
+
+  const deleteBufferEvent = (name: string | undefined): Effect.Effect<void, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? bufferOp(() => live.host.buffers.delete(name)).pipe(
+            Effect.map(() => [void 0, state] as const),
+          )
+        : Effect.fail(new DaemonError({ message: "daemon not started" }));
+    });
+
+  const showBufferEvent = (name: string | undefined): Effect.Effect<string, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? bufferOp(() => new TextDecoder().decode(live.host.buffers.show(name))).pipe(
+            Effect.map((text) => [text, state] as const),
+          )
+        : Effect.fail(new DaemonError({ message: "daemon not started" }));
+    });
+
   const requireHost: Effect.Effect<AttachHostService, DaemonError> = Effect.flatMap(
-    actor.snapshot,
+    Ref.get(stateRef),
     (state) => {
       const live = hostOf(state);
       return live
@@ -872,7 +826,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     makePersistence(persist, activeSaveRef, daemonScope).pipe(
       Layer.provide(Layer.succeed(DaemonModel, model)),
     ),
-  ).pipe(Scope.extend(daemonScope));
+  ).pipe(Scope.provide(daemonScope));
   const persistence = Context.get(persistenceContext, WorkspaceTransactionPersistence);
 
   const detachEffect = (client: string, connection: string) =>
@@ -890,7 +844,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const touchEffect = (client: string, connection: string) => model.touch(client, connection);
 
   const transactionContext = yield* Layer.build(
-    WorkspaceTransaction.Default.pipe(
+    WorkspaceTransaction.layer.pipe(
       Layer.provide(Layer.succeed(DaemonModel, model)),
       Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
       Layer.provide(makeSessionOps(requireHost, (id) => killSession(id))),
@@ -915,7 +869,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         ),
       ),
     ),
-  ).pipe(Scope.extend(daemonScope));
+  ).pipe(Scope.provide(daemonScope));
   const transaction = Context.get(transactionContext, WorkspaceTransaction);
 
   const sessionExitEffect = Effect.fnUntraced(function* (sid: string, code: number | null) {
@@ -925,17 +879,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   });
 
   let spawnSession = (spec: SessionSpec): Effect.Effect<ManagedSession, DaemonError> =>
-    unwrapAsk(actor.ask(DaemonEvent.spawn({ spec })));
-  let killSession = (sessionId: string): Effect.Effect<void, DaemonError> =>
-    unwrapAsk(actor.ask(DaemonEvent.kill({ id: sessionId })));
+    spawnEvent(spec);
+  let killSession = (sessionId: string): Effect.Effect<void, DaemonError> => killEvent(sessionId);
   let stopWhenEmpty: Effect.Effect<void> = Effect.void;
 
   // Two requests, strictly ordered: the host must be committed in `starting`
   // before the transaction-driven restore half can run under it.
-  const start = Effect.all([
-    unwrapAsk(actor.ask(DaemonEvent.start)),
-    unwrapAsk(actor.ask(DaemonEvent.finishStartup)),
-  ]).pipe(Effect.asVoid);
+  const start = Effect.all([runStart, runFinishStartup]).pipe(Effect.asVoid);
 
   /**
    * Shuts the daemon down, in one of two modes that differ only in what
@@ -958,14 +908,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     function* (mode: "stop" | "close") {
       if (terminationShared) return;
       yield* model.markClosing;
-      const runtime = yield* Effect.runtime<never>();
+      const context = yield* Effect.context<never>();
       // The teardown runs detached: it must survive even when the caller is a
       // fiber the daemon scope owns (the last-pane stop is forked from inside
       // the model queue), because closing the daemon scope interrupts exactly
       // those fibers.
-      terminationShared = Runtime.runPromise(runtime)(
+      terminationShared = Effect.runPromiseWith(context)(
         Effect.gen(function* () {
-          const exit = yield* Effect.exit(unwrapAsk(actor.ask(DaemonEvent.shutdown({ mode }))));
+          const exit = yield* Effect.exit(runShutdown(mode));
           yield* Scope.close(daemonScope, Exit.void);
           yield* Deferred.succeed(closed, undefined);
           if (Exit.isFailure(exit)) return yield* Exit.failCause(exit.cause);
@@ -978,7 +928,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const stop = terminate("stop");
   const close = terminate("close");
-  stopWhenEmpty = Effect.forkDaemon(
+  stopWhenEmpty = Effect.forkDetach(
     Effect.gen(function* () {
       // The empty snapshot is published before this runs. Keep the session
       // directory until every projection has received it and detached; stop
@@ -1008,7 +958,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
    */
   const guard = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, ControlError> =>
     effect.pipe(
-      Effect.catchAllCause((cause: Cause.Cause<E>) =>
+      Effect.catchCause((cause: Cause.Cause<E>) =>
         Effect.fail(new ControlError({ message: describe(Cause.squash(cause)) })),
       ),
     );
@@ -1055,97 +1005,102 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       });
     });
 
-  const runRemote = (
+  const runRemote = Effect.fnUntraced(function* (
     value: Command | RuntimeCommand,
     expectedRevision?: number,
     context?: WorkspaceCommandRequestContext,
-  ) =>
-    Effect.gen(function* () {
-      const meta = (COMMAND_META as Record<string, CommandMeta>)[value._tag];
-      if (!meta) {
-        // Not a core command: only a plugin verb reaches here (the control
-        // socket's wire schema admits nothing else), and the daemon runs no
-        // plugins — the tag can only mean something to a client that loaded
-        // it. Any attached one will do: see runOnClient's doc comment.
-        const connections = yield* model.attachedConnections;
-        const first = connections[0];
-        if (!first) return yield* controlFail(`no client attached, cannot run '${value._tag}'`);
-        const host = yield* requireHost;
-        const result = yield* host.runOnClient(first.client, first.connection, value as JsonValue);
-        return result === undefined ? {} : { result };
+  ) {
+    const meta = (COMMAND_META as Record<string, CommandMeta>)[value._tag];
+    if (!meta) {
+      // Not a core command: only a plugin verb reaches here (the control
+      // socket's wire schema admits nothing else), and the daemon runs no
+      // plugins — the tag can only mean something to a client that loaded
+      // it. Any attached one will do: see runOnClient's doc comment.
+      const connections = yield* model.attachedConnections;
+      const first = connections[0];
+      if (!first) return yield* controlFail(`no client attached, cannot run '${value._tag}'`);
+      const host = yield* requireHost;
+      const result = yield* host.runOnClient(first.client, first.connection, value as JsonValue);
+      return result === undefined ? {} : { result };
+    }
+    const command = value as Command;
+    if (meta.target === "view")
+      return yield* controlFail(
+        `command '${command._tag}' is a view command, not remotely invocable`,
+      );
+    if (meta.target === "workspace") {
+      const cur = yield* model.get;
+      const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+      const output = yield* runWorkspaceCommand(
+        command,
+        expectedRevision ?? cur.workspace.revision,
+        ctx,
+      );
+      if (output.result === undefined) return { workspace: JSON.stringify(output.snapshot) };
+      return { workspace: JSON.stringify(output.snapshot), result: output.result };
+    }
+    if (meta.target === "buffers") {
+      switch (command._tag) {
+        case "buffer.set":
+          return { result: yield* setBuffer(command.name, command.data) };
+        case "buffer.list":
+          return { result: yield* listBuffers() };
+        case "buffer.show":
+          return { result: yield* showBuffer(command.name) };
+        case "buffer.delete":
+          yield* deleteBuffer(command.name);
+          return {};
       }
-      const command = value as Command;
-      if (meta.target === "view")
-        return yield* controlFail(
-          `command '${command._tag}' is a view command, not remotely invocable`,
+      return yield* controlFail(`buffer command '${command._tag}' is not implemented for batch`);
+    }
+    if (meta.target === "server") {
+      // The daemon runs no plugins; it only tells the clients that do.
+      if (command._tag === "plugin.reload") {
+        if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
+        else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
+        return {};
+      }
+      return yield* controlFail(`server command '${command._tag}' is not implemented for batch`);
+    }
+    if (meta.target === "session") {
+      if (command._tag === "session.message") {
+        yield* requireHost.pipe(
+          Effect.flatMap((h) => h.message(command.target, command.message)),
         );
-      if (meta.target === "workspace") {
+        return {};
+      }
+      if (command._tag === "agent.prompt") {
+        let promptOptions: PromptOptions = {};
+        if (command.id !== undefined) promptOptions = { ...promptOptions, id: command.id };
+        if (command.delivery !== undefined)
+          promptOptions = { ...promptOptions, delivery: command.delivery };
+        if (command.resume !== undefined)
+          promptOptions = { ...promptOptions, resume: command.resume };
+        yield* requireHost.pipe(
+          Effect.flatMap((h) => h.prompt(command.target, command.text, promptOptions)),
+        );
+        return {};
+      }
+      if (command._tag === "pane.capture") {
+        // The capture target is a session: named directly, or a named or
+        // calling pane resolved server-side to the session it shows.
         const cur = yield* model.get;
-        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
-        const output = yield* runWorkspaceCommand(
-          command,
-          expectedRevision ?? cur.workspace.revision,
-          ctx,
-        );
-        if (output.result === undefined) return { workspace: JSON.stringify(output.snapshot) };
-        return { workspace: JSON.stringify(output.snapshot), result: output.result };
+        const session = yield* resolveCaptureSession(command, context, cur.workspace);
+        return { result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))) };
       }
-      if (meta.target === "buffers") {
-        switch (command._tag) {
-          case "buffer.set":
-            return { result: yield* setBuffer(command.name, command.data) };
-          case "buffer.list":
-            return { result: yield* listBuffers() };
-          case "buffer.show":
-            return { result: yield* showBuffer(command.name) };
-          case "buffer.delete":
-            yield* deleteBuffer(command.name);
-            return {};
-        }
-        return yield* controlFail(`buffer command '${command._tag}' is not implemented for batch`);
+      if (command._tag === "notify") {
+        yield* eventBus.publish({
+          _tag: "notification",
+          session: id,
+          title: command.title,
+          body: command.body,
+        });
+        return {};
       }
-      if (meta.target === "server") {
-        // The daemon runs no plugins; it only tells the clients that do.
-        if (command._tag === "plugin.reload") {
-          if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
-          else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
-          return {};
-        }
-        return yield* controlFail(`server command '${command._tag}' is not implemented for batch`);
-      }
-      if (meta.target === "session") {
-        if (command._tag === "agent.prompt") {
-          let promptOptions: PromptOptions = {};
-          if (command.id !== undefined) promptOptions = { ...promptOptions, id: command.id };
-          if (command.delivery !== undefined)
-            promptOptions = { ...promptOptions, delivery: command.delivery };
-          if (command.resume !== undefined)
-            promptOptions = { ...promptOptions, resume: command.resume };
-          yield* requireHost.pipe(
-            Effect.flatMap((h) => h.prompt(command.target, command.text, promptOptions)),
-          );
-          return {};
-        }
-        if (command._tag === "pane.capture") {
-          // The capture target is a session: named directly, or a named or
-          // calling pane resolved server-side to the session it shows.
-          const cur = yield* model.get;
-          const session = yield* resolveCaptureSession(command, context, cur.workspace);
-          return { result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))) };
-        }
-        if (command._tag === "notify") {
-          yield* eventBus.publish({
-            _tag: "notification",
-            session: id,
-            title: command.title,
-            body: command.body,
-          });
-          return {};
-        }
-        return yield* controlFail(`session command '${command._tag}' is not implemented for batch`);
-      }
-      return yield* controlFail("session commands are not yet implemented for batch");
-    });
+      return yield* controlFail(`session command '${command._tag}' is not implemented for batch`);
+    }
+    return yield* controlFail("session commands are not yet implemented for batch");
+  });
 
   const controlHandlers = ControlRpcs.toLayer({
     Ping: () =>
@@ -1178,7 +1133,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     // serving this very request, so the stop runs on a detached fiber.
     Stop: () =>
       guard(
-        Effect.forkDaemon(
+        Effect.forkDetach(
           Effect.provideService(stop, SessionStore, session).pipe(Effect.ignore),
         ).pipe(Effect.asVoid),
       ),
@@ -1250,7 +1205,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             };
             const finalSpec = pane === null ? spec : { ...spec, paneId: pane.id };
             yield* spawnSession(finalSpec).pipe(
-              Effect.catchAll((error) =>
+              Effect.catch((error) =>
                 Effect.gen(function* () {
                   const next = markSessionUnavailable(cur.workspace, sessionId, describe(error));
                   const state = workspaceSession(next, cur.state);
@@ -1290,16 +1245,16 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           sequence: 0,
           event: { _tag: "events.ready" },
         } as const),
-        Stream.unwrapScoped(eventBus.subscribe()),
+        Stream.unwrap(eventBus.subscribe()),
       ),
 
     AgentCursor: ({ session }) =>
       guard(agentLog.bounds(session).pipe(Effect.map(({ latest }) => latest))),
 
     AgentWatch: ({ session, after }) =>
-      Stream.unwrapScoped(
+      Stream.unwrap(
         agentLog.watch(session, after).pipe(
-          Effect.map((eventStream) => Stream.catchAll(eventStream, () => Stream.empty)),
+          Effect.map((eventStream) => Stream.catch(eventStream, () => Stream.empty)),
           Effect.orElseSucceed(() => Stream.empty),
         ),
       ),
@@ -1307,27 +1262,24 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const spawnSessionService = spawnSession;
 
-  const liveSessions = (): Effect.Effect<readonly string[], never> =>
-    actor.ask(DaemonEvent.live).pipe(Effect.orDie);
+  const liveSessions = liveEvent;
 
   const setBuffer = (n: string | undefined, d: string): Effect.Effect<string, DaemonError> =>
-    unwrapAsk(actor.ask(DaemonEvent.setBuffer({ name: n, data: d })));
+    setBufferEvent(n, d);
 
   const pasteBuffer = (
     n: string | undefined,
     t: string,
     d: boolean,
-  ): Effect.Effect<void, DaemonError> =>
-    unwrapAsk(actor.ask(DaemonEvent.pasteBuffer({ name: n, target: t, deleteAfter: d })));
+  ): Effect.Effect<void, DaemonError> => pasteBufferEvent(n, t, d);
 
-  const listBuffers = (): Effect.Effect<readonly BufferEntry[], DaemonError> =>
-    unwrapAsk(actor.ask(DaemonEvent.listBuffers));
+  const listBuffers = (): Effect.Effect<readonly BufferEntry[], DaemonError> => listBuffersEvent();
 
   const deleteBuffer = (n: string | undefined): Effect.Effect<void, DaemonError> =>
-    unwrapAsk(actor.ask(DaemonEvent.deleteBuffer({ name: n })));
+    deleteBufferEvent(n);
 
   const showBuffer = (n: string | undefined): Effect.Effect<string, DaemonError> =>
-    unwrapAsk(actor.ask(DaemonEvent.showBuffer({ name: n })));
+    showBufferEvent(n);
 
   const service: SessionDaemonService = {
     id,

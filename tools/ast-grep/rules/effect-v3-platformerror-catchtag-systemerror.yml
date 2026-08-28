@@ -1,0 +1,6 @@
+id: effect-v3-platformerror-catchtag-systemerror
+language: TypeScript
+message: PlatformError's own _tag is always "PlatformError" in v4; the SystemErrorTag moved to error.reason._tag.
+rule:
+  pattern: 'Effect.catchTag("SystemError", $HANDLER)'
+fix: 'Effect.catchTag("PlatformError", $HANDLER)'

@@ -16,7 +16,23 @@
   "type": "module",
   "module": "src/main.tsx",
   "exports": {
-    "./*": "./src/*"
+    ".": "./src/api.ts",
+    "./testing": "./src/testing.ts",
+    "./protocol": "./src/effect/AttachProtocol.ts",
+    "./permission.ts": "./src/permission.ts",
+    "./project-store.ts": "./src/project-store.ts",
+    "./session.ts": "./src/session.ts",
+    "./config.ts": "./src/config.ts",
+    "./env.ts": "./src/env.ts",
+    "./git.ts": "./src/git.ts",
+    "./space.ts": "./src/space.ts",
+    "./format.ts": "./src/format.ts",
+    "./shim.ts": "./src/shim.ts",
+    "./effect/EventBus.ts": "./src/effect/EventBus.ts",
+    "./effect/timer.ts": "./src/effect/timer.ts",
+    "./plugin/host.ts": "./src/plugin/host.ts",
+    "./plugin/contributions.ts": "./src/plugin/contributions.ts",
+    "./detect.ts": "./src/detect.ts"
   },
   "scripts": {
     "start": "bun src/main.tsx",
@@ -26,22 +42,17 @@
     "build:help": "bun src/cli.ts --help"
   },
   "dependencies": {
+    "@danielfgray/amux-agent-awareness": "workspace:*",
     "@danielfgray/amux-plugin-agent-harness": "workspace:*",
     "@danielfgray/amux-plugin-notifications": "workspace:*",
     "@danielfgray/amux-plugin-sidebar": "workspace:*",
-    "@effect/cli": "catalog:",
-    "effect-machine": "catalog:",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node-shared": "catalog:",
-    "@effect/rpc": "catalog:",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",
     "effect": "catalog:",
     "solid-js": "catalog:"
-  },
-  "devDependencies": {
-    "@danielfgray/amux-agent-awareness": "workspace:*"
   },
   "engines": {
     "bun": ">=1.4.0"

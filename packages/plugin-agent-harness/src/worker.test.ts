@@ -1,9 +1,11 @@
 import { test, expect } from "bun:test";
-import { AiError, Chat, LanguageModel, Prompt, Response, Tool, Toolkit } from "@effect/ai";
-import { Effect, Schema as S, Stream } from "effect";
+import { AiError, Chat, LanguageModel, Prompt, Response, Tool, Toolkit } from "effect/unstable/ai";
+import { Effect, Ref, Schema as S, Stream } from "effect";
 import { makeAgentWorker, sanitizeAgentError } from "./worker.ts";
-import type { AgentEventPayload, AgentDelta } from "@danielfgray/amux/effect/AttachProtocol.ts";
-import { waitFor } from "@danielfgray/amux/test-wait.ts";
+import { testEffect } from "@danielfgray/amux/testing"
+import { AgentDelta } from "@danielfgray/amux/protocol"
+import type { AgentEventPayload } from "@danielfgray/amux/protocol"
+import { waitFor } from "@danielfgray/amux/testing"
 type WorkerFrame = AgentEventPayload | AgentDelta;
 
 /** Wait for the worker to emit a frame, since a turn ends asynchronously. */
@@ -68,15 +70,18 @@ const runWorker = <A>(
     Effect.scoped(
       Effect.gen(function* () {
         const chat = yield* Chat.empty;
-        const workerOptions = options?.toolkit === undefined ? {} : { toolkit: options.toolkit };
         const worker = yield* makeAgentWorker({
           session: "agent-test",
           chat,
           emit: options?.emit ?? (() => Effect.void),
-          ...workerOptions,
+          toolkit: options?.toolkit,
         });
         return yield* body(worker, chat);
-      }).pipe(Effect.provideServiceEffect(LanguageModel.LanguageModel, model)),
+        // `toolkit` above is typed as `Toolkit.WithHandler<Record<string, Tool.Any>>`, and
+        // `Tool.Any`'s requirements resolve to `any`, so `makeAgentWorker`'s inferred
+        // context is `any` here even though every call site provides the toolkit's
+        // real handlers via `Effect.provide` before it ever reaches `runWorker`.
+      }).pipe(Effect.provideServiceEffect(LanguageModel.LanguageModel, model)) as Effect.Effect<A>,
     ),
   );
 
@@ -134,7 +139,7 @@ test("a tool call is resolved by the toolkit and reported as a result frame", as
   const seen: Prompt.Prompt[] = [];
   const capture = Tool.make("pane_capture", {
     description: "capture a pane",
-    parameters: { session: S.String },
+    parameters: S.Struct({ session: S.String }),
     success: S.Unknown,
   });
   const toolkit = Toolkit.make(capture);
@@ -192,7 +197,7 @@ test("continues through successive tool calls before ending the turn", async () 
   const frames: WorkerFrame[] = [];
   const lookup = Tool.make("lookup", {
     description: "look up a value",
-    parameters: { value: S.String },
+    parameters: S.Struct({ value: S.String }),
     success: S.String,
   });
   const toolkit = Toolkit.make(lookup);
@@ -237,7 +242,7 @@ test("a steer at a tool continuation boundary replaces the empty continuation", 
   });
   const lookup = Tool.make("lookup", {
     description: "look up a value",
-    parameters: {},
+    parameters: S.Struct({}),
     success: S.String,
   });
   const toolkit = Toolkit.make(lookup);
@@ -315,10 +320,10 @@ test("a second prompt carries prior turns as structured messages, not concatenat
   expect(roles(seen[1]!)).toEqual(["user", "assistant", "user"]);
 });
 
-test("a restored chat sends prior structured history exactly once", async () => {
-  const saved: string[] = [];
-  await Effect.runPromise(
-    Effect.scoped(
+testEffect("a restored chat sends prior structured history exactly once", () =>
+  Effect.gen(function* () {
+    const saved: string[] = [];
+    yield* Effect.scoped(
       Effect.gen(function* () {
         const chat = yield* Chat.empty;
         const worker = yield* makeAgentWorker({
@@ -342,11 +347,9 @@ test("a restored chat sends prior structured history exactly once", async () => 
           ]),
         ),
       ),
-    ),
-  );
-  const seen: Prompt.Prompt[] = [];
-  await Effect.runPromise(
-    Effect.scoped(
+    );
+    const seen: Prompt.Prompt[] = [];
+    yield* Effect.scoped(
       Effect.gen(function* () {
         const chat = yield* Chat.fromJson(saved[0]!);
         const worker = yield* makeAgentWorker({
@@ -362,11 +365,11 @@ test("a restored chat sends prior structured history exactly once", async () => 
           scriptedModel(() => [{ type: "text-delta", id: "t2", delta: "again" }], { seen }),
         ),
       ),
-    ),
-  );
+    );
 
-  expect(roles(seen[0]!)).toEqual(["user", "assistant", "user"]);
-});
+    expect(roles(seen[0]!)).toEqual(["user", "assistant", "user"]);
+  }),
+);
 
 test("interrupt ends the turn as interrupted and keeps the partial text", async () => {
   const frames: WorkerFrame[] = [];
@@ -419,10 +422,12 @@ test("a turn that fails reports the cause and leaves the session usable", async 
       streamText: () =>
         calls++ === 0
           ? Stream.fail(
-              new AiError.MalformedOutput({
+              new AiError.AiError({
                 module: "test",
                 method: "streamText",
-                description: "provider rejected the tool schema",
+                reason: new AiError.InvalidOutputError({
+                  description: "provider rejected the tool schema",
+                }),
               }),
             )
           : Stream.fromIterable([
@@ -506,7 +511,7 @@ test("a turn interrupted mid-tool-call leaves no unpaired tool call in history",
   // still open — the only state that can strand an unpaired call.
   const slow = Tool.make("slow_tool", {
     description: "never finishes",
-    parameters: {},
+    parameters: S.Struct({}),
     success: S.String,
   });
   const toolkit = Toolkit.make(slow);
@@ -531,7 +536,7 @@ test("a turn interrupted mid-tool-call leaves no unpaired tool call in history",
         yield* awaitFrame(frames, "tool.start");
         yield* worker.interrupt();
         yield* awaitFrame(frames, "turn.end");
-        return yield* chat.history;
+        return yield* Ref.get(chat.history);
       }),
     {
       emit: (frame) => Effect.sync(() => void frames.push(frame)),

@@ -1,0 +1,6 @@
+id: effect-v3-schema-nonnegativeint-to-number-check
+language: TypeScript
+message: Schema.NonNegativeInt was removed in v4; rebuild it from Schema.Number checks.
+rule:
+  pattern: S.NonNegativeInt
+fix: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))

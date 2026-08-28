@@ -55,7 +55,7 @@ export class Space {
   /** One scope per window, for the same reason Window keeps one per session:
    *  closeWindow must end exactly one window, and a window will eventually be
    *  movable between spaces (ts-e10c3a), which a forked child scope forbids. */
-  #scopes = new Map<Window, Scope.CloseableScope>();
+  #scopes = new Map<Window, Scope.Closeable>();
   #state: SpaceState = spaceState();
 
   onChange?: () => void;
@@ -117,11 +117,11 @@ export class Space {
    * way, so a window created afterwards still gets a free one.
    */
   newWindow(name?: string, number?: number): Effect.Effect<Window> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       let claimed: number;
       [this.#state, claimed] = claimWindowNumber(this.#state, number);
       const scope = yield* Scope.make();
-      const window = yield* Window.make(this.#env, this.dir, claimed).pipe(Scope.extend(scope));
+      const window = yield* Window.make(this.#env, this.dir, claimed).pipe(Scope.provide(scope));
       this.#scopes.set(window, scope);
       if (name) window.customName = name;
       window.onChange = () => this.onChange?.();
@@ -197,7 +197,7 @@ export class Space {
    * the pane is not in this space.
    */
   breakPane(pane: Pane): Effect.Effect<Window | null> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const source = this.#windows.find((w) => w.panes.includes(pane));
       if (!source) return null;
       // Ownership is checked BEFORE anything is mutated. The session's scope has
@@ -223,7 +223,7 @@ export class Space {
 
   /** Move a pane into the active window, preserving its session and lifetime. */
   joinPane(pane: Pane, sourceNumber?: number): Effect.Effect<Window | null> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const destination = this.active;
       const source = this.#windows.find(
         (window) =>
@@ -253,7 +253,7 @@ export class Space {
 
   /** Close a window and everything running in it. */
   closeWindow(window: Window): Effect.Effect<void> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const i = this.#windows.indexOf(window);
       if (i === -1) return;
       this.#windows.splice(i, 1);
@@ -293,7 +293,7 @@ export class Space {
   }
 
   get release(): Effect.Effect<void> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       for (const w of this.#windows.slice()) yield* this.#releaseWindow(w);
       this.#windows.length = 0;
       this.#state = spaceState();
@@ -354,7 +354,7 @@ export class SpaceSet {
   #ctx: RenderContext;
   #host: BoxRenderable;
   #spaces: Space[] = [];
-  #scopes = new Map<Space, Scope.CloseableScope>();
+  #scopes = new Map<Space, Scope.Closeable>();
   #state: SpaceSetState = spaceSetState();
   #mounted: Window | null = null;
   onChange?: () => void;
@@ -400,9 +400,9 @@ export class SpaceSet {
   }
 
   create(name: string, dir = process.cwd(), id?: string): Effect.Effect<Space> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const scope = yield* Scope.make();
-      const space = yield* Space.make(this.#env, { name, dir, id }).pipe(Scope.extend(scope));
+      const space = yield* Space.make(this.#env, { name, dir, id }).pipe(Scope.provide(scope));
       this.#scopes.set(space, scope);
       space.onChange = () => {
         if (space === this.active) this.#project();
@@ -479,7 +479,7 @@ export class SpaceSet {
   }
 
   remove(space: Space): Effect.Effect<void> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       const i = this.#spaces.indexOf(space);
       if (i === -1) return;
       this.#spaces.splice(i, 1);
@@ -530,7 +530,7 @@ export class SpaceSet {
   }
 
   get release(): Effect.Effect<void> {
-    return Effect.gen(this, function* () {
+    return Effect.gen({ self: this }, function* () {
       // Unmount before disposing: mounted panes draw from terminals whose
       // scopes are about to close.
       this.#state = spaceSetState();

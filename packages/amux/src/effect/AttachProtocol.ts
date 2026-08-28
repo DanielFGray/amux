@@ -4,16 +4,16 @@ import { PermissionDecisionSchema, PermissionRuleSchema } from "../permission.ts
 export const SESSION_STATE_TOPIC = "session.state";
 
 /** JSON values are the only opaque values that may cross a persisted or wire boundary. */
-export const JsonValueSchema: S.Schema<JsonValue, JsonValue, never> = S.suspend(() =>
-  S.Union(
+export const JsonValueSchema: S.Codec<JsonValue> = S.suspend(() =>
+  S.Union([
     S.Null,
     S.String,
     S.Boolean,
-    S.Number.pipe(S.finite()),
+    S.Number.pipe(S.check(S.isFinite())),
     S.Array(JsonValueSchema),
-    S.Record({ key: S.String, value: JsonValueSchema }),
-  ),
-) as S.Schema<JsonValue, JsonValue, never>;
+    S.Record(S.String, JsonValueSchema),
+  ]),
+) as S.Codec<JsonValue>;
 
 export type JsonValue =
   | string
@@ -64,7 +64,7 @@ const Resize = S.TaggedStruct("resize", {
  */
 const Sync = S.TaggedStruct("sync", {
   session: S.String,
-  after: S.optional(S.NonNegativeInt),
+  after: S.optional(S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))),
 });
 
 /**
@@ -76,7 +76,8 @@ const Sync = S.TaggedStruct("sync", {
  * and once when the session starts, so attached clients observing a new or
  * adopted session learn the current state without asking. The client keeps
  * reading /proc for the actual cmdline: pids are a global namespace, the
- * foreground pgid is not.
+ * foreground pgid is not. The daemon also reads the process's argv so plugins
+ * never need process-table access in the client.
  */
 const Foreground = S.TaggedStruct("foreground", {
   session: S.String,
@@ -85,6 +86,9 @@ const Foreground = S.TaggedStruct("foreground", {
   pgid: S.Int,
   /** Session id = the session leader's pid, or -1 when it is not knowable. */
   sid: S.Int,
+  /** Full argv of the foreground process, read by the PTY-owning daemon. Empty
+   *  at a shell prompt or when process inspection is unavailable. */
+  argv: S.Array(S.String),
 });
 
 /**
@@ -93,7 +97,7 @@ const Foreground = S.TaggedStruct("foreground", {
  * session ordering and routing.
  */
 const Workspace = S.TaggedStruct("workspace", {
-  revision: S.NonNegativeInt,
+  revision: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
   state: S.String,
 });
 
@@ -114,19 +118,22 @@ const turnStartFields = {
   prompt: S.String,
 };
 const TurnStartPayload = S.TaggedStruct("turn.start", turnStartFields);
-const TurnStart = S.TaggedStruct("turn.start", { ...turnStartFields, sequence: S.NonNegativeInt });
+const TurnStart = S.TaggedStruct("turn.start", {
+  ...turnStartFields,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+});
 
 /** A durably admitted prompt that has not yet been promoted to provider input. */
 const turnQueuedFields = {
   session: S.String,
   turn: S.String,
   prompt: S.String,
-  delivery: S.Literal("steer", "queue"),
+  delivery: S.Literals(["steer", "queue"]),
 };
 const TurnQueuedPayload = S.TaggedStruct("turn.queued", turnQueuedFields);
 const TurnQueued = S.TaggedStruct("turn.queued", {
   ...turnQueuedFields,
-  sequence: S.NonNegativeInt,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
 });
 
 const TextDelta = S.TaggedStruct("text.delta", {
@@ -146,7 +153,7 @@ const reasoningDeltaFields = {
 const ReasoningDeltaPayload = S.TaggedStruct("reasoning.delta", reasoningDeltaFields);
 const ReasoningDelta = S.TaggedStruct("reasoning.delta", {
   ...reasoningDeltaFields,
-  sequence: S.NonNegativeInt,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
 });
 
 const toolStartFields = {
@@ -157,7 +164,10 @@ const toolStartFields = {
   input: JsonValueSchema,
 };
 const ToolStartPayload = S.TaggedStruct("tool.start", toolStartFields);
-const ToolStart = S.TaggedStruct("tool.start", { ...toolStartFields, sequence: S.NonNegativeInt });
+const ToolStart = S.TaggedStruct("tool.start", {
+  ...toolStartFields,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+});
 
 /**
  * A provider begins streaming a tool argument as incremental JSON fragments.
@@ -206,22 +216,9 @@ const toolResultFields = {
 const ToolResultPayload = S.TaggedStruct("tool.result", toolResultFields);
 const ToolResult = S.TaggedStruct("tool.result", {
   ...toolResultFields,
-  sequence: S.NonNegativeInt,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
 });
 
-/**
- * An agent asking to be allowed to do something, and blocked until it is answered.
- *
- * `action` and `resources` are what policy is evaluated against — the verb a
- * tool declares and the paths or shell segments it would touch — while `tool`
- * and `input` are what the pane shows. `save` is what "always" would record, so
- * the human is choosing between rules they can read rather than trusting the UI
- * to invent one afterwards.
- *
- * There is no call id: a tool handler is given its parameters and nothing else,
- * so the asking tool cannot name the call it belongs to. The transcript places
- * the question after the call that raised it, which is the same answer.
- */
 const permissionRequestFields = {
   session: S.String,
   turn: S.String,
@@ -235,32 +232,18 @@ const permissionRequestFields = {
 const PermissionRequestPayload = S.TaggedStruct("permission.request", permissionRequestFields);
 const PermissionRequest = S.TaggedStruct("permission.request", {
   ...permissionRequestFields,
-  sequence: S.NonNegativeInt,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
 });
-
-/**
- * The answer, from a client or echoed by the agent once it has taken one.
- *
- * The agent re-emits the decision it acted on, so every attached client
- * converges on the answer that actually happened rather than on the one it
- * sent: with several panes on one session, only the first reply resolves the
- * request and the rest are dropped.
- *
- * There is no `turn`: the request id names the pending question, and the agent
- * holding it already knows which turn asked. A client that echoed the turn back
- * could only ever agree or be wrong.
- */
 const permissionResponseFields = {
   session: S.String,
   request: S.String,
   decision: PermissionDecisionSchema,
-  /** What to tell the model about a refusal, so a rejected turn can correct itself. */
   feedback: S.optional(S.String),
 };
 const PermissionResponsePayload = S.TaggedStruct("permission.response", permissionResponseFields);
 const PermissionResponse = S.TaggedStruct("permission.response", {
   ...permissionResponseFields,
-  sequence: S.NonNegativeInt,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
 });
 
 /** A durable value whose meaning belongs to the named subscriber, not core. */
@@ -272,7 +255,7 @@ const topicFields = {
 const TopicPayload = S.TaggedStruct("topic", topicFields);
 export const Topic = S.TaggedStruct("topic", {
   ...topicFields,
-  sequence: S.NonNegativeInt,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
 });
 export type Topic = S.Schema.Type<typeof Topic>;
 
@@ -283,13 +266,13 @@ const AgentErrorFields = {
 const AgentErrorPayload = S.TaggedStruct("agent.error", AgentErrorFields);
 const AgentError = S.TaggedStruct("agent.error", {
   ...AgentErrorFields,
-  sequence: S.NonNegativeInt,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
 });
 
 const turnEndFields = {
   session: S.String,
   turn: S.String,
-  outcome: S.Literal("completed", "interrupted", "failed"),
+  outcome: S.Literals(["completed", "interrupted", "failed"]),
   // The final text makes a completed turn reconstructible after live deltas expire.
   text: S.optional(S.String),
   // Why a failed turn failed. Without it the pane can only say that something
@@ -298,9 +281,12 @@ const turnEndFields = {
   error: S.optional(S.String),
 };
 const TurnEndPayload = S.TaggedStruct("turn.end", turnEndFields);
-const TurnEnd = S.TaggedStruct("turn.end", { ...turnEndFields, sequence: S.NonNegativeInt });
+const TurnEnd = S.TaggedStruct("turn.end", {
+  ...turnEndFields,
+  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+});
 
-export const AgentEventPayloadSchema = S.Union(
+export const AgentEventPayloadSchema = S.Union([
   TurnQueuedPayload,
   TurnStartPayload,
   ReasoningDeltaPayload,
@@ -311,41 +297,23 @@ export const AgentEventPayloadSchema = S.Union(
   TopicPayload,
   AgentErrorPayload,
   TurnEndPayload,
-);
+]);
 const AgentEventInputFrame = S.TaggedStruct("agent.event", { event: AgentEventPayloadSchema });
 
-const AgentPrompt = S.TaggedStruct("agent.prompt", {
-  session: S.String,
-  text: S.String,
-  id: S.optional(S.String),
-  delivery: S.optional(S.Literal("steer", "queue")),
-  resume: S.optional(S.Boolean),
-  wait: S.optional(S.Boolean),
-  until: S.optional(S.String),
-  timeout: S.optional(S.NonNegativeInt),
-});
+/** Private harness control payload. It is carried in `session.message`, not a
+ * core attach-frame tag. */
+export type PermissionAnswer = {
+  readonly request: string;
+  readonly decision: S.Schema.Type<typeof PermissionDecisionSchema>;
+  readonly feedback?: string;
+};
 
-const AgentInterrupt = S.TaggedStruct("agent.interrupt", {
+/** Opaque control input for a component session. Core routes the envelope but
+ * assigns no meaning to its payload; that protocol belongs to the harness. */
+const SessionMessage = S.TaggedStruct("session.message", {
   session: S.String,
-  reason: S.optional(S.String),
+  message: JsonValueSchema,
 });
-
-/**
- * A client answering a question the agent is blocked on.
- *
- * Distinct from `permission.response`, which is the durable event the agent
- * emits once it has acted: an answer is a request to the session, and several
- * clients may send one for the same request. The agent decides which is the
- * answer, then says so in its own frame.
- */
-const AgentPermission = S.TaggedStruct("agent.permission", {
-  session: S.String,
-  request: S.String,
-  decision: PermissionDecisionSchema,
-  feedback: S.optional(S.String),
-});
-/** An answer travelling towards a session, before the session it belongs to is known. */
-export type PermissionAnswer = Omit<S.Schema.Type<typeof AgentPermission>, "_tag" | "session">;
 
 const ErrorFrame = S.TaggedStruct("error", {
   message: S.String,
@@ -379,7 +347,7 @@ const CommandResponse = S.TaggedStruct("command.response", {
   error: S.optional(S.String),
 });
 
-export const AgentEvent = S.Union(
+export const AgentEvent = S.Union([
   TurnQueued,
   TurnStart,
   ReasoningDelta,
@@ -390,7 +358,7 @@ export const AgentEvent = S.Union(
   Topic,
   AgentError,
   TurnEnd,
-);
+]);
 export type AgentEvent = S.Schema.Type<typeof AgentEvent>;
 export type AgentEventPayload = AgentEvent extends infer Event
   ? Event extends { readonly sequence: number }
@@ -399,10 +367,10 @@ export type AgentEventPayload = AgentEvent extends infer Event
   : never;
 export const isAgentEventPayload = S.is(AgentEventPayloadSchema);
 
-export const AgentDelta = S.Union(TextDelta, ToolParamsStart, ToolParamsDelta, ToolParamsEnd);
+export const AgentDelta = S.Union([TextDelta, ToolParamsStart, ToolParamsDelta, ToolParamsEnd]);
 export type AgentDelta = S.Schema.Type<typeof AgentDelta>;
 
-export const AttachFrame = S.Union(
+export const AttachFrame = S.Union([
   Hello,
   Output,
   Input,
@@ -426,20 +394,18 @@ export const AttachFrame = S.Union(
   Topic,
   AgentError,
   TurnEnd,
-  AgentPrompt,
-  AgentInterrupt,
-  AgentPermission,
+  SessionMessage,
   ErrorFrame,
   Ping,
   Pong,
   CommandRequest,
   CommandResponse,
-);
+]);
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
 export type AgentEventInputFrame = S.Schema.Type<typeof AgentEventInputFrame>;
 
 function taggedSchemaTag(ast: AST.AST): string | undefined {
-  if (!AST.isTypeLiteral(ast)) return undefined;
+  if (ast._tag !== "Objects") return undefined;
   const tag = ast.propertySignatures.find((property) => property.name === "_tag")?.type;
   return tag && AST.isLiteral(tag) && typeof tag.literal === "string" ? tag.literal : undefined;
 }
@@ -451,7 +417,7 @@ export const AttachFrameTags = new Set(
     .filter((tag): tag is string => tag !== undefined),
 );
 
-export const AgentFrame = S.Union(AgentEvent, AgentDelta);
+export const AgentFrame = S.Union([AgentEvent, AgentDelta]);
 export type AgentFrame = AgentEvent | AgentDelta;
 export const isAgentEvent = S.is(AgentEvent);
 
@@ -507,7 +473,7 @@ export function decodeAttachFrames(input: string) {
   for (const line of lines) {
     if (!line) continue;
     try {
-      frames.push(S.decodeUnknownSync(S.parseJson(AttachFrame))(line));
+      frames.push(S.decodeUnknownSync(S.fromJsonString(AttachFrame))(line));
     } catch (error) {
       throw new AttachProtocolError({
         message: error instanceof Error ? error.message : String(error),

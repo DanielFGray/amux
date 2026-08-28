@@ -13,8 +13,6 @@
  * we project here — a supervised PTY has no hooks to lean on.
  */
 
-import { ProcessState } from "./process-state.ts";
-
 /**
  * Executable names that mean "this is an agent CLI", mapped to a short label.
  *
@@ -131,13 +129,3 @@ export function splitActivity(title: string) {
   if (rest && !/^\s/.test(rest)) return { spinning: false, text: trimmed };
   return { spinning: true, text: rest.trim() };
 }
-
-/** Braille frames for our own rendering of the "working" state. */
-export const SPINNER_FRAMES = [..."⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"];
-
-export const STATE_GLYPH = {
-  [ProcessState.Blocked]: "●",
-  [ProcessState.Running]: "⠹", // replaced with the live spinner frame when rendering
-  [ProcessState.Idle]: "○",
-  [ProcessState.Done]: "✓",
-} satisfies Record<ProcessState, string>;
