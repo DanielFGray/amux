@@ -515,14 +515,14 @@ testEffect("an agent started from a shell is detected through the daemon backend
       () => session.foregroundCommand === "",
       "the shell at a prompt to report no command",
     );
-    expect(session.agentKind).toBe(null);
+    expect(session.foregroundProcess).toBe(null);
 
     session.write(`${claude} --norc --noprofile\n`);
-    yield* until(() => session.agentKind === "claude", "the foreground agent to be detected");
+    yield* until(() => session.foregroundProcess?.argv[0]?.endsWith("claude") === true, "the foreground argv to arrive");
     expect(session.foregroundCommand).toBe("claude");
     // The visible consequence of the fix: the agents-only filter would keep this
     // pane now.
-    expect(session.agentKind).toBe("claude");
+    expect(session.foregroundProcess?.argv[0]).toEndWith("claude");
   }),
 );
 
@@ -549,7 +549,7 @@ testEffect("a reattaching client detects an agent already in the foreground", ()
       "the shell at a prompt to report no command",
     );
     session.write(`${claude} --norc --noprofile\n`);
-    yield* until(() => session.agentKind === "claude", "the foreground agent to be detected");
+    yield* until(() => session.foregroundProcess?.argv[0]?.endsWith("claude") === true, "the foreground argv to arrive");
 
     first.close();
     yield* until(
@@ -565,7 +565,7 @@ testEffect("a reattaching client detects an agent already in the foreground", ()
 
     // Nothing changes on this session after adoption — no keystroke, no output,
     // no foreground switch. The daemon's sync reply must carry the answer.
-    yield* until(() => readopted.agentKind === "claude", "the adopted agent to be detected");
+    yield* until(() => readopted.foregroundProcess?.argv[0]?.endsWith("claude") === true, "the adopted foreground argv to arrive");
     expect(readopted.foregroundCommand).toBe("claude");
   }),
 );

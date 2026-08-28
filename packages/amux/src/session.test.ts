@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as FileSystem from "effect/FileSystem";
@@ -446,4 +446,22 @@ test("persisted snapshots bound aggregate model size", () => {
   }));
   crowded.activeSpace = crowded.spaces[0].id;
   expect(() => Effect.runSync(parseSessionState(crowded))).toThrow("too many spaces");
+});
+
+test("the directory holding a session's sockets is owner-only", async () => {
+  const e = await env();
+  const paths = await run(sessionPaths("modes"), e);
+  // The mode a directory is created with is not the mode it keeps: an earlier
+  // tool, or a restore that dropped permissions, can leave the root wide open,
+  // and creating it again would not narrow it. The daemon's control and attach
+  // sockets live in here, so the mode is a property worth asserting.
+  await mkdir(paths.root, { recursive: true, mode: 0o755 });
+  await chmod(paths.root, 0o755);
+  expect((await stat(paths.root)).mode & 0o777).toBe(0o755);
+
+  await run(
+    Effect.flatMap(SessionStore, (store) => store.save(state("modes"))),
+    e,
+  );
+  expect((await stat(paths.root)).mode & 0o777).toBe(0o700);
 });

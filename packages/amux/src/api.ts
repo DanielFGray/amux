@@ -40,10 +40,15 @@ export {
   SpawnProvidersTag,
   CommandsTag,
   SessionFactsTag,
+  intercept,
   registerCommand,
   type CommandRegistration,
   type RegistryService,
   type PluginService,
+  type PluginDependency,
+  type InterceptedDependency,
+  type InterceptablePluginService,
+  type ServiceInterception,
 } from "./plugin/services.ts";
 
 export {
@@ -106,6 +111,7 @@ export {
 // The vocabulary of what a session is doing. Four consumers share it — the most
 // widely held type in the repo.
 export { ProcessState, ProcessStateSchema, isProcessState } from "./process-state.ts";
+export { ProcessStateAuthority, type ProcessStateSource } from "./process-state-arbiter.ts";
 
 // The pieces of the layout a plugin reads or describes. The layout algebra
 // itself — splitting, collapsing, appending — stays in core.

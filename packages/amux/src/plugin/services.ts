@@ -103,6 +103,42 @@ export interface PluginService {
   readonly key: string;
 }
 
+export interface ServiceInterception<Service, Metadata> {
+  readonly empty: Metadata;
+  readonly combine: (left: Metadata, right: Metadata) => Metadata;
+  readonly access: (service: Service, metadata: () => Metadata) => Service;
+}
+
+export type InterceptablePluginService<Id, Service, Metadata> = Context.Service<Id, Service> & {
+  readonly interception: ServiceInterception<Service, Metadata>;
+};
+
+export interface InterceptedDependency<
+  Service extends PluginService = PluginService,
+  Metadata = unknown,
+> {
+  readonly service: Service;
+  readonly metadata: Metadata;
+}
+
+export type PluginDependency = PluginService | InterceptedDependency;
+
+export const intercept = <Id, Service, Metadata>(
+  service: InterceptablePluginService<Id, Service, Metadata>,
+  metadata: NoInfer<Metadata>,
+): InterceptedDependency<typeof service, Metadata> => ({ service, metadata });
+
+export const dependencyService = (dependency: PluginDependency): PluginService =>
+  "service" in dependency ? dependency.service : dependency;
+
+const serviceInterception = (
+  service: PluginService,
+): ServiceInterception<unknown, unknown> | undefined =>
+  "interception" in service
+    ? (service as PluginService & { readonly interception: ServiceInterception<unknown, unknown> })
+        .interception
+    : undefined;
+
 export interface PluginServices {
   readonly provide: <Id, S>(owner: PluginInstance, tag: Context.Service<Id, S>, service: S) => void;
   readonly withdraw: (owner: PluginInstance, tag: PluginService) => void;
@@ -111,11 +147,17 @@ export interface PluginServices {
   /** Make an instance's staged services available to injectors. */
   readonly commit: (owner: PluginInstance) => void;
   readonly retire: (owner: PluginInstance) => void;
-  readonly declare: (owner: PluginInstance, tags: readonly PluginService[]) => void;
+  readonly declare: (owner: PluginInstance, dependencies: readonly PluginDependency[]) => void;
+  readonly intercept: <Id, Service, Metadata>(
+    owner: string,
+    tag: InterceptablePluginService<Id, Service, Metadata>,
+    metadata: Metadata,
+  ) => void;
+  readonly clearInterception: (owner: string, tag: PluginService) => void;
   readonly forget: (owner: PluginInstance) => void;
   readonly awaitAll: (
     owner: PluginInstance,
-    tags: readonly PluginService[],
+    dependencies: readonly PluginDependency[],
   ) => Effect.Effect<Context.Context<never>>;
   readonly waitingOn: (owner: PluginInstance) => readonly string[];
   readonly dependentsOf: (owner: PluginInstance) => readonly string[];
@@ -132,10 +174,11 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
     string,
     {
       readonly owner: PluginInstance;
-      readonly tags: readonly PluginService[];
+      readonly dependencies: readonly PluginDependency[];
       committed: ReadonlyMap<string, PluginInstance> | undefined;
     }
   >();
+  const interceptions = new Map<string, unknown>();
   const committed = new Map<string, number>();
 
   function slotFor(key: string): Slot {
@@ -209,24 +252,47 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
       for (const slot of slots.values()) update(slot);
     },
 
-    declare(owner, tags) {
-      injects.set(instanceKey(owner), { owner, tags, committed: undefined });
+    declare(owner, dependencies) {
+      injects.set(instanceKey(owner), { owner, dependencies, committed: undefined });
+    },
+
+    intercept(owner, tag, metadata) {
+      interceptions.set(interceptionKey(owner, tag.key), metadata);
+    },
+
+    clearInterception(owner, tag) {
+      interceptions.delete(interceptionKey(owner, tag.key));
     },
 
     forget(owner) {
       injects.delete(instanceKey(owner));
     },
 
-    awaitAll: (owner, tags) =>
+    awaitAll: (owner, dependencies) =>
       Effect.gen(function* () {
         let context = Context.empty();
         let suspended = false;
         const view = new Map<string, PluginInstance>();
-        for (const tag of tags) {
+        for (const dependency of dependencies) {
+          const tag = dependencyService(dependency);
           const { deferred } = slotFor(tag.key);
           suspended ||= !Deferred.isDoneUnsafe(deferred);
           const provider = yield* Deferred.await(deferred);
-          context = Context.mergeAll(context, provider.context);
+          const service = Context.getUnsafe(
+            provider.context,
+            tag as Context.Key<unknown, unknown>,
+          );
+          const interception = serviceInterception(tag);
+          const value = interception
+            ? interception.access(service, () => {
+                const declared = "service" in dependency ? dependency.metadata : interception.empty;
+                const installed = interceptions.get(interceptionKey(owner.id, tag.key));
+                return installed === undefined
+                  ? declared
+                  : interception.combine(declared, installed);
+              })
+            : service;
+          context = Context.addUnsafe(context, tag.key, value);
           view.set(tag.key, provider.owner);
         }
         const declaration = injects.get(instanceKey(owner));
@@ -241,16 +307,17 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
       }),
 
     waitingOn: (owner) =>
-      (injects.get(instanceKey(owner))?.tags ?? [])
+      (injects.get(instanceKey(owner))?.dependencies ?? [])
+        .map(dependencyService)
         .filter((tag) => !slots.get(tag.key)?.provider)
         .map((tag) => tag.key),
 
     dependentsOf(owner) {
       return [...injects.values()]
-        .filter(({ tags, committed: view }) => {
+        .filter(({ dependencies, committed: view }) => {
           if (!view || ![...view.values()].some((provider) => sameInstance(provider, owner)))
             return false;
-          return tags.some((tag) => {
+          return dependencies.map(dependencyService).some((tag) => {
             const committedProvider = view.get(tag.key);
             const targetProvider = slots.get(tag.key)?.provider?.owner;
             return (
@@ -278,5 +345,6 @@ interface Provider {
 }
 
 const instanceKey = (owner: PluginInstance) => `${owner.id}#${owner.generation}`;
+const interceptionKey = (owner: string, key: string) => `${owner}\0${key}`;
 const sameInstance = (a: PluginInstance, b: PluginInstance) =>
   a.id === b.id && a.generation === b.generation;

@@ -250,9 +250,11 @@ function SidebarRow(props: {
   const display = () =>
     row.kind === "agent" && row.agentState
       ? deriveProcessDisplay({
+          session: row.agentId ?? null,
           state: row.agentState as ProcessState,
           exitCode: row.exitCode ?? null,
           detached: row.detached ?? false,
+          title: row.title ?? "",
         })
       : undefined;
 

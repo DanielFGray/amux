@@ -7,6 +7,7 @@ import { stateRoot } from "@danielfgray/amux/session.ts";
 import { flock, flockUnlock } from "@danielfgray/amux/shim.ts";
 import type { JsonValue } from "@danielfgray/amux/protocol"
 import { JsonValueSchema } from "@danielfgray/amux/protocol"
+import type { ServiceInterception } from "@danielfgray/amux";
 
 export * as Credential from "./credential.ts";
 
@@ -59,7 +60,80 @@ export interface Interface {
   readonly remove: (id: ID) => Effect.Effect<void>;
 }
 
-export class Service extends Context.Service<Service, Interface>()("amux/Credential") {}
+export interface Access {
+  /** Absent means every integration; multiple interceptors intersect their sets. */
+  readonly integrations?: ReadonlySet<string>;
+  /** Absent means writable; any interceptor may attenuate the service to read-only. */
+  readonly write?: boolean;
+}
+
+const mergeAccess = (left: Access, right: Access): Access => ({
+  integrations:
+    left.integrations === undefined
+      ? right.integrations
+      : right.integrations === undefined
+        ? left.integrations
+        : new Set([...left.integrations].filter((id) => right.integrations!.has(id))),
+  write:
+    left.write === undefined
+      ? right.write
+      : right.write === undefined
+        ? left.write
+        : left.write && right.write,
+});
+
+const credentialAccess: ServiceInterception<Interface, Access> = {
+  empty: {},
+  combine: mergeAccess,
+  access: (service, metadata) => {
+    const permits = (integrationID: string) =>
+      metadata().integrations?.has(integrationID) ?? true;
+    const writable = () => metadata().write ?? true;
+    const requireWrite = <A>(effect: Effect.Effect<A>, integrationID: string) =>
+      writable() && permits(integrationID)
+        ? effect
+        : Effect.die(new Error(`credential access to '${integrationID}' is read-only`));
+    const permitted = (id: ID) =>
+      service.get(id).pipe(Effect.map((credential) => credential?.integrationID));
+    return {
+      all: () => service.all().pipe(Effect.map((rows) => rows.filter((row) => permits(row.integrationID)))),
+      list: (integrationID) => permits(integrationID) ? service.list(integrationID) : Effect.succeed([]),
+      get: (id) =>
+        service.get(id).pipe(
+          Effect.map((credential) =>
+            credential && permits(credential.integrationID) ? credential : undefined,
+          ),
+        ),
+      create: (input) => requireWrite(service.create(input), input.integrationID),
+      update: (id, updates) =>
+        permitted(id).pipe(
+          Effect.flatMap((integrationID) =>
+            integrationID ? requireWrite(service.update(id, updates), integrationID) : Effect.void,
+          ),
+        ),
+      refreshOAuth: (id, now, refresh) =>
+        permitted(id).pipe(
+          Effect.flatMap((integrationID) =>
+            integrationID
+              ? requireWrite(service.refreshOAuth(id, now, refresh), integrationID)
+              : Effect.as(Effect.void, undefined as Value | undefined),
+          ),
+        ),
+      remove: (id) =>
+        permitted(id).pipe(
+          Effect.flatMap((integrationID) =>
+            integrationID ? requireWrite(service.remove(id), integrationID) : Effect.void,
+          ),
+        ),
+    };
+  },
+};
+
+class ServiceId {}
+export const Service = Object.assign(
+  Context.Service<ServiceId, Interface>()("amux/Credential"),
+  { interception: credentialAccess } as const,
+);
 
 const PersistedValue = S.Union([
   S.Struct({

@@ -805,6 +805,13 @@ function buildApp(
 
         for (const [paneIndex, session] of window.sessions.entries()) {
           const isFocusedAgent = isActiveWindow && session === focusedSession;
+          const process = processDisplay.display({
+            session: session.id,
+            state: session.state,
+            exitCode: session.exitCode,
+            detached: session.detached,
+            title: session.title,
+          });
           rows.push({
             kind: "agent",
             index: index++,
@@ -819,9 +826,9 @@ function buildApp(
             agentState: session.state,
             exitCode: session.exitCode,
             detached: session.detached,
-            agentCliKind: session.agentKind,
+            agentCliKind: process.agent ?? null,
             agentSessionKind: session.kind,
-            title: session.title,
+            title: process.title ?? session.title,
             foregroundCommand: session.foregroundCommand,
             viewers: session.viewers,
             unseen: session.unseen,
@@ -2311,9 +2318,11 @@ function buildApp(
               const state = pane?.state;
               const display = pane
                 ? processDisplay.display({
+                    session: pane.id,
                     state: pane.state,
                     exitCode: pane.exitCode,
                     detached: pane.detached,
+                    title: pane.title,
                   })
                 : undefined;
               const spaceIndex = space ? spaces.spaces.indexOf(space) : undefined;
@@ -2325,10 +2334,10 @@ function buildApp(
                 git_branch: space?.branch,
                 git_ahead: space?.ahead,
                 git_behind: space?.behind,
-                window_name: window?.title,
+                window_name: display?.title ?? window?.title,
                 window_number: window?.number,
                 pane_index: pane ? window?.sessions.indexOf(pane) : undefined,
-                pane_title: pane?.title,
+                pane_title: display?.title ?? pane?.title,
                 pane_current_command: pane?.foregroundCommand,
                 agent_state: display?.label,
                 agent_state_label: display?.label,

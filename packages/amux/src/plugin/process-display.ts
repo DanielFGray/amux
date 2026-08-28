@@ -14,9 +14,11 @@ const NEUTRAL_RANK = {
  *  an agent-aware plugin needs to derive a richer presentation (`failed`,
  *  `detached`, …) without core naming those states itself. */
 export interface ProcessDisplayFacts {
+  readonly session: string | null;
   readonly state: ProcessState;
   readonly exitCode: number | null;
   readonly detached: boolean;
+  readonly title: string;
 }
 
 export interface ProcessDisplayResult {
@@ -30,6 +32,8 @@ export interface ProcessDisplayResult {
    *  against other results from the same provider chain within one render;
    *  core never assigns meaning to the number itself. */
   readonly rank: number;
+  readonly title?: string;
+  readonly agent?: string | null;
 }
 
 /** Answers a display for one process's facts, or defers by returning

@@ -1,5 +1,6 @@
 import { Effect, Queue, Scope, Stream } from "effect";
 import type { ProcessState } from "./process-state.ts";
+import type { ProcessStateSource } from "./process-state-arbiter.ts";
 import type { ScreenRegion } from "./screen-regions.ts";
 
 export const SESSION_FACTS_REFRESH_MS = 250;
@@ -15,6 +16,8 @@ export interface SessionFact {
   readonly lifecycle: "running" | "detached" | "exited";
   readonly exitCode: number | null;
   readonly processState: ProcessState | null;
+  readonly command: readonly string[];
+  readonly declaredAgent: string | null;
   readonly foreground: ForegroundProcessFact | null;
   readonly outputRevision: number;
   readonly screenRevision: number;
@@ -38,6 +41,10 @@ export interface SessionFactsService {
   readonly observe: (
     regions: readonly ScreenRegion[],
   ) => Effect.Effect<SessionFactsObservation, never, Scope.Scope>;
+  readonly registerStateSource: (
+    session: string,
+    source: ProcessStateSource,
+  ) => Effect.Effect<void, never, Scope.Scope>;
 }
 
 interface SessionFactSource {
@@ -46,9 +53,12 @@ interface SessionFactSource {
   readonly detached: boolean;
   readonly exitCode: number | null;
   readonly reportedState: ProcessState | null;
+  readonly cmd: readonly string[];
+  readonly declaredAgent: string | null;
   readonly foregroundProcess: ForegroundProcessFact | null;
   readonly outputRevision: number;
   readonly screenRegion: (region: ScreenRegion) => string;
+  readonly registerStateSource: (source: ProcessStateSource) => () => void;
 }
 
 interface Observer {
@@ -58,10 +68,19 @@ interface Observer {
   nextRevision: number;
 }
 
+interface StateBinding {
+  readonly session: string;
+  readonly stateSource: ProcessStateSource;
+  bound?: SessionFactSource;
+  unregister?: () => void;
+}
+
 const sameFact = (left: SessionFact, right: SessionFact): boolean =>
   left.lifecycle === right.lifecycle &&
   left.exitCode === right.exitCode &&
   left.processState === right.processState &&
+  JSON.stringify(left.command) === JSON.stringify(right.command) &&
+  left.declaredAgent === right.declaredAgent &&
   left.outputRevision === right.outputRevision &&
   left.screenRevision === right.screenRevision &&
   left.foreground?.pid === right.foreground?.pid &&
@@ -81,6 +100,8 @@ const capture = (
     lifecycle: source.exited ? "exited" : source.detached ? "detached" : "running",
     exitCode: source.exitCode,
     processState: source.reportedState,
+    command: Object.freeze([...source.cmd]),
+    declaredAgent: source.declaredAgent,
     foreground:
       foreground === null
         ? null
@@ -95,7 +116,19 @@ export const makeSessionFacts = (
   sources: () => readonly SessionFactSource[],
 ): SessionFactsService => {
   const observers = new Set<Observer>();
+  const bindings = new Set<StateBinding>();
   let timer: ReturnType<typeof setInterval> | null = null;
+
+  const refreshBindings = (): void => {
+    const current = new Map(sources().map((source) => [source.id, source]));
+    for (const binding of bindings) {
+      const source = current.get(binding.session);
+      if (source === binding.bound) continue;
+      binding.unregister?.();
+      binding.bound = source;
+      binding.unregister = source?.registerStateSource(binding.stateSource);
+    }
+  };
 
   const scan = (observer: Observer, notify: boolean): void => {
     const previous = observer.snapshot;
@@ -127,6 +160,17 @@ export const makeSessionFacts = (
   };
 
   return {
+    registerStateSource: (session, stateSource) =>
+      Effect.gen(function* () {
+        const scope = yield* Scope.Scope;
+        const binding: StateBinding = { session, stateSource };
+        bindings.add(binding);
+        refreshBindings();
+        yield* Scope.addFinalizer(scope, Effect.sync(() => {
+          bindings.delete(binding);
+          binding.unregister?.();
+        }));
+      }),
     observe: (regions) =>
       Effect.gen(function* () {
         const scope = yield* Scope.Scope;
@@ -141,6 +185,7 @@ export const makeSessionFacts = (
         observers.add(observer);
         if (timer === null) {
           timer = setInterval(() => {
+            refreshBindings();
             for (const active of observers) scan(active, true);
           }, SESSION_FACTS_REFRESH_MS);
           timer.unref?.();

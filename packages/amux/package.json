@@ -31,8 +31,7 @@
     "./effect/EventBus.ts": "./src/effect/EventBus.ts",
     "./effect/timer.ts": "./src/effect/timer.ts",
     "./plugin/host.ts": "./src/plugin/host.ts",
-    "./plugin/contributions.ts": "./src/plugin/contributions.ts",
-    "./detect.ts": "./src/detect.ts"
+    "./plugin/contributions.ts": "./src/plugin/contributions.ts"
   },
   "scripts": {
     "start": "bun src/main.tsx",

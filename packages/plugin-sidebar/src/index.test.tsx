@@ -82,7 +82,7 @@ function computeDisplay(spaces: SpaceSet): SidebarDisplay {
           windowLabel: window.label,
           agentId: agent.id,
           agentState: agent.state,
-          agentCliKind: agent.agentKind,
+          agentCliKind: agent.declaredAgent,
           agentSessionKind: agent.kind,
           title: agent.title,
           foregroundCommand: agent.foregroundCommand,

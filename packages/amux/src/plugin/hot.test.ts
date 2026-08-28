@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Effect } from "effect";
 import { hotImport, pluginRoot } from "./hot.ts";
+import { dependencyService } from "./services.ts";
 import { testEffect } from "../test-effect.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
@@ -76,21 +77,30 @@ testEffect("a module outside the plugin's directory is the same instance after a
  * exist. Nothing else catches that: the plugin still loads and still works in
  * memory, where the definition never goes through the schema at all.
  */
-testEffect("a declared dependency survives the trip through the decoder", () =>
+testEffect("an intercepted dependency survives the trip through the decoder", () =>
   Effect.gen(function* () {
     const dir = yield* scratch;
     yield* write(
       join(dir, "needs.ts"),
-      `import { Context, Effect } from "effect";
+     `import { Context, Effect } from "effect";
      import { definePlugin } from "../types.ts";
+     import { intercept } from "../services.ts";
      class Pool extends Context.Service<Pool, number>()("test/Pool") {}
-     export default definePlugin({ id: "needs", apiVersion: "1", inject: [Pool],
+     Object.assign(Pool, { interception: {
+       empty: {}, combine: (left, right) => ({ ...left, ...right }),
+       access: (service) => service,
+     }});
+     export default definePlugin({ id: "needs", apiVersion: "1",
+       inject: [intercept(Pool, { access: "read" })],
        effect: () => Effect.void });`,
     );
 
     const definition = yield* hotImport(pathToFileURL(join(dir, "needs.ts")));
 
-    expect(definition.inject?.map((tag) => tag.key)).toEqual(["test/Pool"]);
+    expect(definition.inject?.map((dependency) => dependencyService(dependency).key)).toEqual([
+      "test/Pool",
+    ]);
+    expect(definition.inject?.[0]).toMatchObject({ metadata: { access: "read" } });
   }),
 );
 

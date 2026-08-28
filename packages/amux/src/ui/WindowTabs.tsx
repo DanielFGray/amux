@@ -17,13 +17,15 @@ function windowDisplay(window: Window, processDisplay: ProcessDisplayReader): Pr
   let best: ProcessDisplayResult | undefined;
   for (const session of window.sessions) {
     const result = processDisplay.display({
+      session: session.id,
       state: session.state,
       exitCode: session.exitCode,
       detached: session.detached,
+      title: session.title,
     });
     if (!best || result.rank > best.rank) best = result;
   }
-  return best ?? processDisplay.display({ state: window.state, exitCode: null, detached: false });
+  return best ?? processDisplay.display({ session: null, state: window.state, exitCode: null, detached: false, title: window.title });
 }
 
 /**
@@ -66,12 +68,12 @@ export function WindowTabs(props: {
         space_index: props.spaceIndex,
         space_name: props.spaceName,
         window_number: window.number,
-        window_name: window.title,
+        window_name: display.title ?? window.title,
         zoomed: window.zoomed,
         synchronized: window.sync,
         sync: window.sync,
         pane_index: session ? window.sessions.indexOf(session) : undefined,
-        pane_title: session?.title,
+        pane_title: display.title ?? session?.title,
         pane_current_command: session?.foregroundCommand,
         agent_state: display.label,
         agent_state_label: display.label,

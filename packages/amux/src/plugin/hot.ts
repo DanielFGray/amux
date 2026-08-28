@@ -2,7 +2,7 @@ import { Context, Effect, Predicate, Schema as S } from "effect";
 import { plugin } from "bun";
 import { fileURLToPath } from "node:url";
 import type { PluginDefinition } from "./types.ts";
-import type { PluginService } from "./services.ts";
+import type { PluginDependency, PluginService } from "./services.ts";
 
 /**
  * A plugin's own source, imported again.
@@ -91,7 +91,14 @@ const PluginModule = S.Struct({
     id: S.NonEmptyString,
     apiVersion: S.String,
     inject: S.optional(
-      S.Array(S.declare<PluginService>(Context.isKey, { identifier: "PluginService" })),
+      S.Array(
+        S.declare<PluginDependency>(
+          (input): input is PluginDependency =>
+            Context.isKey(input) ||
+            (Predicate.isObject(input) && "service" in input && Context.isKey(input.service)),
+          { identifier: "PluginDependency" },
+        ),
+      ),
     ),
     provide: S.optional(
       S.Array(S.declare<PluginService>(Context.isKey, { identifier: "PluginService" })),

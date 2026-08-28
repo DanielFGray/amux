@@ -1,9 +1,5 @@
 import { test, expect } from "bun:test";
-import { which } from "bun";
 import { BoxRenderable } from "@opentui/core";
-import { mkdtemp, chmod } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Divider } from "./divider.ts";
 import { applyOptions, resolveOptions } from "./options.ts";
 import { rollUp, nextBlockedAfter } from "./space.ts";
@@ -11,6 +7,7 @@ import { createHarness, run, runAsync } from "./harness.ts";
 import type { Window } from "./window.ts";
 import { SessionHandle } from "./session-handle.ts";
 import type { ProcessState } from "./process-state.ts";
+import { ProcessStateAuthority } from "./process-state-arbiter.ts";
 import { waitFor } from "./test-wait.ts";
 import { captureScrollback } from "./capture.ts";
 
@@ -36,22 +33,10 @@ async function setup() {
  * because state detection reads the foreground process's argv — see the note in
  * detect.test.ts.
  */
-async function fakeAgent(name: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "amux-space-"));
-  const path = join(dir, name);
-  const bash = which("bash");
-  if (!bash) throw new Error("no bash on PATH to impersonate");
-  await Bun.write(path, Bun.file(bash));
-  await chmod(path, 0o755);
-  return path;
-}
-
-/** Spawn a detached fake agent and put a confirmation prompt on its screen. */
+/** Spawn a detached process with a detector-owned blocked state. */
 async function blockedAgent(window: Window, name: string): Promise<SessionHandle> {
-  const session = run(window.spawn(name, [await fakeAgent("claude"), "--norc", "--noprofile"]));
-  await waitFor(() => session.agentKind === "claude", `${name} to start`);
-  session.write("printf 'Do you want to proceed?\\n'\n");
-  await waitFor(() => session.state === "blocked", `${name} to become blocked`);
+  const session = run(window.spawn(name, ["bash", "--norc", "--noprofile"]));
+  session.registerStateSource({ authority: ProcessStateAuthority.Detector, state: () => "blocked" });
   return session;
 }
 

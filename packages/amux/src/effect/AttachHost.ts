@@ -42,6 +42,7 @@ import {
 } from "./SessionSupervisor.ts";
 import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./SessionRegistry.ts";
 import { errorMessage } from "../error-message.ts";
+import { isSameUserPeer, socketFd } from "../peer-credentials.ts";
 
 /**
  * Requests a process may send over its daemon-private self-report socket.
@@ -212,6 +213,13 @@ const make = <
           () =>
             new Promise<Server>((resolve, reject) => {
               const value = createServer((socket) => {
+                // 0600 on the socket file already turns another user away at
+                // open(); this refuses one that got a descriptor anyway, which
+                // the file mode alone cannot rule out.
+                if (!isSameUserPeer(socketFd(socket))) {
+                  socket.destroy();
+                  return;
+                }
                 const buffer = new AttachFrameAccumulator();
                 socket.on("data", (chunk: Buffer) => {
                   if (buffer.byteLength + chunk.byteLength > MAX_ATTACH_FRAME_BYTES) {

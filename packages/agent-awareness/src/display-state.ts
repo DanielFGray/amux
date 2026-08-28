@@ -38,9 +38,11 @@ export function deriveProcessDisplay(facts: ProcessDisplayFacts): ProcessDisplay
   if (facts.detached && facts.state !== ProcessState.Done) {
     return { glyph: "⊘", label: "detached", rank: 2 };
   }
+  // Only a running agent animates; every other state is a still glyph, and
+  // `frames` being absent is what tells the renderer so.
   return {
     glyph: STATE_GLYPH[facts.state],
-    ...(facts.state === ProcessState.Running ? { frames: SPINNER_FRAMES } : {}),
+    frames: facts.state === ProcessState.Running ? SPINNER_FRAMES : undefined,
     label: facts.state,
     rank: RANK[facts.state],
   };

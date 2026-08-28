@@ -1,6 +1,11 @@
 import { Effect, type Context, type Option, type Scope, type Stream } from "effect";
 import type { Schema } from "effect";
-import { CurrentPlugin, type PluginService } from "./services.ts";
+import {
+  CurrentPlugin,
+  type InterceptedDependency,
+  type PluginDependency,
+  type PluginService,
+} from "./services.ts";
 import type { JSX } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import type { PanelContext } from "../ui/panel.ts";
@@ -29,7 +34,7 @@ export interface PluginDefinition {
    * requirements; the host holds them erased, because it holds many plugins
    * with different requirements in one map.
    */
-  readonly inject?: readonly PluginService[];
+  readonly inject?: readonly PluginDependency[];
   /**
    * Services this plugin may publish — an upper bound, not a promise that it
    * will. `ctx.provide` at a key outside this list fails at the call site.
@@ -47,9 +52,13 @@ export interface PluginDefinition {
   ) => Effect.Effect<void, never, Scope.Scope | CurrentPlugin>;
 }
 
-export type TagIdentifier<T> = T extends Context.Service<infer Id, infer _Service> ? Id : never;
-export type PluginRequirements<Tags extends readonly PluginService[]> =
-  | TagIdentifier<Tags[number]>
+export type TagIdentifier<T> = T extends InterceptedDependency<infer Service, infer _Metadata>
+  ? TagIdentifier<Service>
+  : T extends Context.Service<infer Id, infer _Service>
+    ? Id
+    : never;
+export type PluginRequirements<Dependencies extends readonly PluginDependency[]> =
+  | TagIdentifier<Dependencies[number]>
   | CurrentPlugin
   | Scope.Scope;
 
@@ -61,14 +70,14 @@ export type PluginRequirements<Tags extends readonly PluginService[]> =
  * plugin that suspends on nothing and dies on a missing service. Inferring the
  * tags here makes the two halves one declaration.
  */
-export const definePlugin = <const Tags extends readonly PluginService[] = []>(definition: {
+export const definePlugin = <const Dependencies extends readonly PluginDependency[] = []>(definition: {
   readonly id: string;
   readonly apiVersion: string;
-  readonly inject?: Tags;
+  readonly inject?: Dependencies;
   readonly provide?: readonly PluginService[];
   readonly effect: (
     context: PluginHostContext,
-  ) => Effect.Effect<void, never, PluginRequirements<Tags>>;
+  ) => Effect.Effect<void, never, PluginRequirements<Dependencies>>;
 }): PluginDefinition => ({
   id: definition.id,
   apiVersion: definition.apiVersion,
@@ -77,7 +86,7 @@ export const definePlugin = <const Tags extends readonly PluginService[] = []>(d
   activate: (context, provided) =>
     Effect.provide(
       definition.effect(context),
-      provided as Context.Context<TagIdentifier<Tags[number]>>,
+      provided as Context.Context<TagIdentifier<Dependencies[number]>>,
     ),
 });
 

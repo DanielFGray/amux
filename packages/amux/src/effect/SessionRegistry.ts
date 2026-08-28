@@ -51,8 +51,8 @@ export interface SessionSpec {
    * The agent CLI or worker this session runs, if it runs one.
    *
    * Declared for sessions the mux starts as an agent; a foreign agent launched
-   * inside a shell pane is detected rather than declared (see identifyAgent and
-   * the process-state hook), so this being absent does not mean "not an agent".
+   * inside a shell pane is detected by the awareness plugin rather than
+   * declared, so this being absent does not mean "not an agent".
    * What it does mean is that the session's *exit* is an agent's exit, and so
    * worth reporting as agent lifecycle.
    */

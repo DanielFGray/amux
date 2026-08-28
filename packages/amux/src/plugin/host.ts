@@ -2,7 +2,14 @@ import { Effect, Deferred, Equal, Exit, Fiber, Queue, Scope, Stream } from "effe
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import { createPluginKV } from "./kv.ts";
-import { createPluginServices, SpawnProvidersTag, type PluginService, type PluginServices } from "./services.ts";
+import {
+  createPluginServices,
+  dependencyService,
+  SpawnProvidersTag,
+  type InterceptablePluginService,
+  type PluginService,
+  type PluginServices,
+} from "./services.ts";
 import { Option } from "effect";
 import type { PluginContributions, PluginInstance } from "./contributions.ts";
 import type {
@@ -49,6 +56,12 @@ export interface PluginHost {
   readonly onError: Stream.Stream<PluginErrorEvent>;
   readonly onServiceChange: Stream.Stream<string>;
   readonly get: PluginServices["get"];
+  readonly intercept: <Id, Service, Metadata>(
+    pluginId: string,
+    tag: InterceptablePluginService<Id, Service, Metadata>,
+    metadata: Metadata,
+  ) => void;
+  readonly clearInterception: (pluginId: string, tag: PluginService) => void;
   readonly status: () => readonly PluginStatus[];
   readonly spawnProvider: (id: string) => SpawnProvider | undefined;
   readonly dispose: Effect.Effect<void>;
@@ -352,7 +365,9 @@ export function createPluginHost(
           for (const tag of entry.provide ?? []) provided.add(tag.key);
 
         const stranded = [...admitted.values()].flatMap((entry) => {
-          const missing = (entry.inject ?? []).find((tag) => !provided.has(tag.key));
+          const missing = (entry.inject ?? [])
+            .map(dependencyService)
+            .find((tag) => !provided.has(tag.key));
           return missing ? [{ entry, key: missing.key }] : [];
         });
         if (stranded.length === 0) break;
@@ -437,6 +452,8 @@ export function createPluginHost(
       onError: Stream.fromQueue(errorQueue),
       onServiceChange: Stream.fromQueue(serviceChangeQueue),
       get: services.get,
+      intercept: services.intercept,
+      clearInterception: services.clearInterception,
       status() {
         if (disposed) return [];
         return [...activePlugins.entries()].map(([id, state]) => ({

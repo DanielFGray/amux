@@ -9,6 +9,8 @@ const source = {
   detached: false,
   exitCode: null as number | null,
   reportedState: ProcessState.Idle as ProcessState | null,
+  cmd: ["bash"],
+  declaredAgent: null,
   foregroundProcess: { pid: 42, argv: ["codex", "--quiet"] } as {
     readonly pid: number;
     readonly argv: readonly string[];
@@ -19,6 +21,7 @@ const source = {
     source.scans++;
     return `screen-${source.outputRevision}`;
   },
+  registerStateSource: () => () => {},
 };
 
 test("observations expose immutable values and revision-only invalidations", async () => {
@@ -53,4 +56,31 @@ test("closing the consumer scope stops terminal scans", async () => {
   const stoppedAt = source.scans;
   await Bun.sleep(SESSION_FACTS_REFRESH_MS + 30);
   expect(source.scans).toBe(stoppedAt);
+});
+
+test("state-source registration follows a same-id session replacement", async () => {
+  let current = source;
+  let firstRemoved = 0;
+  let secondAdded = 0;
+  const first = {
+    ...source,
+    registerStateSource: () => () => { firstRemoved++; },
+  };
+  const second = {
+    ...source,
+    registerStateSource: () => {
+      secondAdded++;
+      return () => {};
+    },
+  };
+  current = first;
+  const service = makeSessionFacts(() => [current]);
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* service.observe([]);
+    yield* service.registerStateSource(source.id, { authority: 0, state: () => "unknown" });
+    current = second;
+    yield* Effect.sleep(`${SESSION_FACTS_REFRESH_MS + 30} millis`);
+    expect(firstRemoved).toBe(1);
+    expect(secondAdded).toBe(1);
+  })));
 });

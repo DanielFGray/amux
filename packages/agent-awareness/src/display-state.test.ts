@@ -3,9 +3,11 @@ import { ProcessState } from "@danielfgray/amux"
 import { deriveProcessDisplay } from "./display-state.ts";
 
 const facts = (state: ProcessState, exitCode: number | null, detached: boolean) => ({
+  session: "session-1",
   state,
   exitCode,
   detached,
+  title: "title",
 });
 
 test("a done process with a nonzero exit derives failed", () => {

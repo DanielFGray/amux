@@ -21,6 +21,7 @@ import {
   type AttachFrame,
 } from "./AttachProtocol.ts";
 import { errorMessage } from "../error-message.ts";
+import { isSameUserPeer, socketFd } from "../peer-credentials.ts";
 
 export class AttachServerError extends S.TaggedError<AttachServerError>()("AttachServerError", {
   message: S.String,
@@ -422,6 +423,12 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
             socket: {
               binaryType: "buffer",
               open(socket) {
+                // Before any state is built for this connection: a peer that is
+                // not this user gets nothing, not even a framing buffer.
+                if (!isSameUserPeer(socketFd(socket))) {
+                  socket.end();
+                  return;
+                }
                 // Listener data is shared as a template; each connection
                 // needs independent framing and attachment state.
                 socket.data = {

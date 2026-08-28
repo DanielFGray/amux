@@ -1,11 +1,12 @@
 import { afterEach, expect } from "bun:test";
-import { Context, Effect, Fiber, Option, Queue, Scope, Stream } from "effect";
+import { Context, Effect, Fiber, Option, Queue, Redacted, Scope, Stream } from "effect";
+import { Credential } from "@danielfgray/amux-plugin-agent-harness/credential.ts";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
 import { definePlugin, type PluginDefinition, type PluginErrorEvent } from "./types.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
-import { RegionsTag, SpawnProvidersTag, type PluginService } from "./services.ts";
+import { intercept, RegionsTag, SpawnProvidersTag, type PluginService } from "./services.ts";
 import type { Panel } from "../ui/regions.tsx";
 
 /**
@@ -184,6 +185,80 @@ testEffect("provider contexts preserve primitive service values", () =>
     );
 
     expect(seen).toEqual([42]);
+  }),
+);
+
+testEffect("credential interception updates captured access without reloading the consumer", () =>
+  Effect.gen(function* () {
+    const host = yield* makeHost();
+    const rows: Credential.Info[] = ["openai", "anthropic"].map((integrationID) => ({
+      id: `${integrationID}-credential` as Credential.ID,
+      integrationID,
+      label: integrationID,
+      value: { type: "key", key: Redacted.make("secret") },
+    }));
+    const credentials: Credential.Interface = {
+      all: () => Effect.succeed(rows),
+      list: (integrationID) =>
+        Effect.succeed(rows.filter((row) => row.integrationID === integrationID)),
+      get: (id) => Effect.succeed(rows.find((row) => row.id === id)),
+      create: (input) =>
+        Effect.succeed({
+          id: "created" as Credential.ID,
+          integrationID: input.integrationID,
+          label: input.label ?? "default",
+          value: input.value,
+        }),
+      update: () => Effect.void,
+      refreshOAuth: () => Effect.as(Effect.void, undefined as Credential.Value | undefined),
+      remove: () => Effect.void,
+    };
+    let acquired: Credential.Interface | undefined;
+    let activations = 0;
+
+    yield* host.add(
+      definePlugin({
+        id: "credentials",
+        apiVersion: "1",
+        provide: [Credential.Service],
+        effect: (ctx) => Effect.sync(() => void ctx.provide(Credential.Service, credentials)),
+      }),
+    );
+    yield* host.add(
+      definePlugin({
+        id: "credential-consumer",
+        apiVersion: "1",
+        inject: [
+          intercept(Credential.Service, {
+            integrations: new Set(["openai", "anthropic"]),
+          }),
+        ],
+        effect: () =>
+          Effect.gen(function* () {
+            activations += 1;
+            acquired = yield* Credential.Service;
+          }),
+      }),
+    );
+
+    expect((yield* acquired!.all()).map((row) => row.integrationID)).toEqual([
+      "openai",
+      "anthropic",
+    ]);
+    host.intercept("credential-consumer", Credential.Service, {
+      integrations: new Set(["openai"]),
+    });
+    expect((yield* acquired!.all()).map((row) => row.integrationID)).toEqual(["openai"]);
+    host.intercept("credential-consumer", Credential.Service, {
+      integrations: new Set(["anthropic"]),
+    });
+    expect((yield* acquired!.all()).map((row) => row.integrationID)).toEqual(["anthropic"]);
+    host.clearInterception("credential-consumer", Credential.Service);
+    expect((yield* acquired!.all()).map((row) => row.integrationID)).toEqual([
+      "openai",
+      "anthropic",
+    ]);
+    expect(activations).toBe(1);
   }),
 );
 

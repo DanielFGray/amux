@@ -363,6 +363,22 @@ export function sessionRoot(): Effect.Effect<string> {
   return Effect.map(stateRoot(), (root) => path.join(root, "amux", "sessions"));
 }
 
+/**
+ * Create a session directory, and hold it to owner-only whether or not this
+ * call is the one that made it.
+ *
+ * `mode` on a directory creation applies only when the directory is created, so
+ * a root that already exists keeps whatever mode it was made with — a session
+ * root left at 0755 by an earlier tool, or by a restore that did not preserve
+ * modes, stays traversable by every user on the machine. The daemon's sockets
+ * live in here, so the mode is set every time rather than hoped for.
+ */
+export const ensurePrivateDirectory = Effect.fnUntraced(function* (dir: string) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 });
+  yield* fs.chmod(dir, 0o700);
+});
+
 /** Root directory for space worktrees, siblings to the sessions root. */
 export function worktreesRoot(): Effect.Effect<string> {
   return Effect.map(stateRoot(), (root) => path.join(root, "amux", "worktrees"));
@@ -550,6 +566,10 @@ export class SessionStore extends Context.Service<SessionStore>()("Session", {
   make: Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* sessionRoot();
+    // The store's methods are declared without a FileSystem requirement, so the
+    // one this service was built from is what satisfies it.
+    const ensureRoot = (dir: string) =>
+      Effect.provideService(ensurePrivateDirectory(dir), FileSystem.FileSystem, fs);
     const pathFor = (id: string): Effect.Effect<SessionPaths, SessionIdError> =>
       isSessionId(id)
         ? Effect.succeed(sessionPathsFromRoot(id, root))
@@ -570,7 +590,7 @@ export class SessionStore extends Context.Service<SessionStore>()("Session", {
     const save = Effect.fnUntraced(function* (state: SessionState) {
       yield* parseSessionState(state);
       const paths = yield* pathFor(state.id);
-      yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
+      yield* ensureRoot(paths.root);
       const temp = `${paths.state}.${process.pid}.tmp`;
       const updatedAt = yield* Clock.currentTimeMillis;
       const bytes =
@@ -603,7 +623,7 @@ export class SessionStore extends Context.Service<SessionStore>()("Session", {
 
     const writeLease = Effect.fnUntraced(function* (lease: SessionLease) {
       const paths = yield* pathFor(lease.session);
-      yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
+      yield* ensureRoot(paths.root);
       const temp = `${paths.lease}.${process.pid}.tmp`;
       yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", {
         mode: 0o600,

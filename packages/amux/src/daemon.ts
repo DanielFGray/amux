@@ -22,6 +22,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
 import * as Socket from "effect/unstable/socket/Socket";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
+import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
+import { isSameUserPeer, socketFd } from "./peer-credentials.ts";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
 import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
@@ -56,6 +58,7 @@ import {
   SessionStore,
   optionalEnvVar,
   sessionPaths,
+  ensurePrivateDirectory,
   worktreesRoot,
   SessionIdError,
   SessionStateError,
@@ -228,7 +231,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const fs = yield* FileSystem.FileSystem;
   const agentLog = yield* makeAgentLog(paths.root);
 
-  yield* fs.makeDirectory(paths.root, { recursive: true, mode: 0o700 });
+  yield* ensurePrivateDirectory(paths.root);
 
   // `lockScope` owns the lock file.  It is closed by `terminate` on normal
   // shutdown and by an ambient-scope finalizer on failure or interrupt.
@@ -609,13 +612,27 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         ...socketServer,
         run: (handler) =>
           socketServer.run((socket) =>
-            handler(socket).pipe(
-              Effect.catchCause((cause) => {
-                const error = Cause.squash(cause);
-                return Socket.SocketError.is(error) && error.reason._tag === "SocketReadError"
-                  ? Effect.void
-                  : Effect.failCause(cause);
-              }),
+            // The control socket is the boundary that matters: anything that
+            // reaches the RPC handler can Run commands as this user. The peer's
+            // uid comes from the kernel, so it is the one claim about a caller
+            // the caller cannot make up.
+            // `NetSocket` is placed in the connection's context by the node
+            // socket server but absent from `run`'s signature, so it is read as
+            // an option. Absent means the peer cannot be identified, which is
+            // refused for the same reason an unreadable uid is.
+            Effect.flatMap(Effect.serviceOption(NodeSocket.NetSocket), (conn) =>
+              Option.isNone(conn) || !isSameUserPeer(socketFd(conn.value))
+                ? Effect.sync(() => {
+                    if (Option.isSome(conn)) conn.value.destroy();
+                  })
+                : handler(socket).pipe(
+                    Effect.catchCause((cause) => {
+                      const error = Cause.squash(cause);
+                      return Socket.SocketError.is(error) && error.reason._tag === "SocketReadError"
+                        ? Effect.void
+                        : Effect.failCause(cause);
+                    }),
+                  ),
             ),
           ),
       });
