@@ -23,6 +23,7 @@ import {
   type WorkspaceSpace,
 } from "../workspace.ts";
 import { COMMAND_META, type AnyCommandResult, type Command } from "../commands.ts";
+import type { PaneEntry } from "../read-model.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { PtyError, SessionSpec } from "./SessionRegistry.ts";
@@ -58,7 +59,32 @@ interface SessionOps {
     id: string,
     answer: PermissionAnswer,
   ) => Effect.Effect<void, WorkspaceTransactionError>;
+  /** Each live session's leader pid, for enriching `pane.list`/`pane.current`. */
+  readonly pids: Effect.Effect<ReadonlyMap<string, number>, WorkspaceTransactionError>;
 }
+
+const withPanePid = (entry: PaneEntry, pids: ReadonlyMap<string, number>): PaneEntry =>
+  entry.session === undefined ? entry : { ...entry, pid: pids.get(entry.session) };
+
+/** `pane.list`/`pane.current` answer from the pure workspace reducer, which
+ *  knows nothing live — pid comes from the daemon's session registry, so it
+ *  is stitched on here rather than threaded through `applyWorkspaceCommand`. */
+const withPanePids = (
+  tag: Command["_tag"],
+  result: AnyCommandResult,
+  sessionOps: SessionOps,
+): Effect.Effect<AnyCommandResult, WorkspaceTransactionError> => {
+  if (tag !== "pane.list" && tag !== "pane.current") return Effect.succeed(result);
+  return sessionOps.pids.pipe(
+    Effect.map((pids) =>
+      Array.isArray(result)
+        ? result.map((entry) => withPanePid(entry as PaneEntry, pids))
+        : result === null
+          ? result
+          : withPanePid(result as PaneEntry, pids),
+    ),
+  );
+};
 
 interface SessionHost {
   readonly prepare: (spec: SessionSpec) => Effect.Effect<PreparedSession, PtyError>;
@@ -66,6 +92,7 @@ interface SessionHost {
   readonly prompt: (id: string, text: string) => Effect.Effect<void, PtyError>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
+  readonly pids: Effect.Effect<ReadonlyMap<string, number>>;
 }
 
 interface WorktreeOps {
@@ -280,8 +307,10 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                   const committed = {
                     snapshot: structuredClone(final.workspace),
                   };
-                  if (mutation.result !== undefined)
-                    return { ...committed, result: mutation.result };
+                  if (mutation.result !== undefined) {
+                    const result = yield* withPanePids(value._tag, mutation.result, sessionOps);
+                    return { ...committed, result };
+                  }
                   return committed;
                 }),
               );
@@ -394,6 +423,10 @@ export const makeSessionOps = <HostError, KillError>(
         Effect.flatMap((host) => host.decide(id, answer)),
         Effect.mapError(transactionError),
       ),
+    pids: getHost.pipe(
+      Effect.flatMap((host) => host.pids),
+      Effect.mapError(transactionError),
+    ),
   } satisfies SessionOps);
 
 export const makeWorktreeOps: Layer.Layer<WorkspaceTransactionWorktreeOps> = Layer.succeed(

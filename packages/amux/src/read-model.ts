@@ -58,6 +58,9 @@ export const PaneEntrySchema = S.Struct({
   session: S.optional(S.String),
   focused: S.Boolean,
   zoomed: S.Boolean,
+  /** The session leader's pid, for resource attribution. Absent for a pane
+   *  with no live session, or one whose daemon cannot resolve it. */
+  pid: S.optional(S.Int),
 });
 export type PaneEntry = S.Schema.Type<typeof PaneEntrySchema>;
 

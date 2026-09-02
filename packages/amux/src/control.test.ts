@@ -958,7 +958,9 @@ test("the CLI read surface resolves the calling pane from inside one", async () 
   const panes = await run(["pane.list"]);
   expect(panes.code).toBe(0);
   expect(JSON.parse(panes.stdout)).toEqual(
-    expect.arrayContaining([expect.objectContaining({ id: pane, space: space.id })]),
+    expect.arrayContaining([
+      expect.objectContaining({ id: pane, space: space.id, pid: expect.any(Number) }),
+    ]),
   );
 
   const agents = await run(["agent.list"]);

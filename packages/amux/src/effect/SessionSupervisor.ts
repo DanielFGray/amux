@@ -642,6 +642,20 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
 
       live: Ref.get(sessions).pipe(Effect.map((current) => [...current.keys()])),
 
+      // Session id = the leader's pid (SessionForeground.sid). Read straight
+      // off each backend's cached tty state, so this costs no syscall beyond
+      // what the foreground poller already pays.
+      pids: Ref.get(sessions).pipe(
+        Effect.map((current) => {
+          const entries: [string, number][] = [];
+          for (const [id, session] of current) {
+            const sid = session.foreground().sid;
+            if (sid > 0) entries.push([id, sid]);
+          }
+          return new Map(entries);
+        }),
+      ),
+
       kill: Effect.fnUntraced(function* (id: string) {
         const session = (yield* Ref.get(sessions)).get(id);
         // If the process exited between the workspace-level kill decision

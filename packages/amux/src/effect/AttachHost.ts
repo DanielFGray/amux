@@ -132,6 +132,9 @@ export interface AttachHostService {
   readonly kill: (id: string) => Effect.Effect<void, PtyError>;
   /** The session ids currently running, for a client deciding what to adopt. */
   readonly live: Effect.Effect<readonly string[]>;
+  /** Each live session's leader pid, keyed by session id, for resource
+   *  attribution (`pane.list`). Absent when a session's pid is not knowable. */
+  readonly pids: Effect.Effect<ReadonlyMap<string, number>>;
   /** Send a frame to every attached client. */
   readonly publish: (frame: AttachFrame) => Effect.Effect<void>;
   /**
@@ -364,6 +367,7 @@ const make = <
         ),
       kill: supervisor.kill,
       live: supervisor.live,
+      pids: supervisor.pids,
       publish: hub.publish,
       paste: (id, data) => supervisor.paste(id, data),
       write: (id, data) =>
