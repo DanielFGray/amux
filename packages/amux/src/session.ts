@@ -187,7 +187,10 @@ const TerminalDimension = S.Int.pipe(
   S.check(S.isGreaterThan(0)),
   S.check(S.isLessThanOrEqualTo(MAX_TERMINAL_DIMENSION)),
 );
-const PersistedSessionSchema = S.Struct({
+/** The persisted agent record. Exported so workspace.ts's live model — which
+ *  decodes and re-encodes the same shape — validates against one definition
+ *  rather than a second copy that can silently drift from this one. */
+export const PersistedSessionSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
   kind: S.optional(S.Literals(["pty", "component"])),

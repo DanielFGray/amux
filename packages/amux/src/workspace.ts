@@ -49,6 +49,7 @@ import {
 } from "./layout.ts";
 import {
   parseSessionState,
+  PersistedSessionSchema,
   SessionStateError,
   SESSION_VERSION,
   type PersistedSession,
@@ -178,22 +179,9 @@ const TerminalSize = S.Struct({
     }),
   ),
 );
-/** The persisted agent record, exported so the machine-facing read surface can
- *  derive its agent entries from the model's own shape rather than restating
- *  it (ts-33067b). */
-export const PersistedSessionSchema = S.Struct({
-  id: NonEmptyString,
-  name: S.String,
-  kind: S.optional(S.Literals(["pty", "component"])),
-  declaredAgent: S.optional(NonEmptyString),
-  cmd: S.optional(S.Array(NonEmptyString).pipe(S.check(S.isMinLength(1)))),
-  provider: S.optional(NonEmptyString),
-  cwd: S.optional(S.String),
-  cols: TerminalDimension,
-  rows: TerminalDimension,
-  exited: S.Boolean,
-  exitCode: S.NullOr(S.Int),
-});
+/** Re-exported so the machine-facing read surface can derive its agent
+ *  entries from the model's own shape rather than restating it (ts-33067b). */
+export { PersistedSessionSchema };
 const LayoutNodeSchema: S.Codec<any> = S.suspend(() =>
   S.Union([
     S.Struct({
