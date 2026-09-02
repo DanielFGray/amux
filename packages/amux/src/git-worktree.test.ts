@@ -1,3 +1,5 @@
+/** @effect-diagnostics *:skip-file -- a real OS boundary (daemon process, git subprocess, filesystem)
+ * this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";

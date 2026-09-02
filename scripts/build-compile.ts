@@ -1,5 +1,5 @@
 import { Duration, Effect, Schema as S } from "effect";
-import * as FileSystem from "effect/FileSystem"
+import * as FileSystem from "effect/FileSystem";
 import { BunServices, BunRuntime } from "@effect/platform-bun";
 import solidPlugin from "@opentui/solid/bun-plugin";
 

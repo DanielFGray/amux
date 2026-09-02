@@ -4,7 +4,7 @@ import * as HttpBody from "effect/unstable/http/HttpBody";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type * as HttpClientError from "effect/unstable/http/HttpClientError";
-import { Effect, Layer, Schedule, Schema as S, Stream } from "effect";
+import { Effect, Layer, Match, Schedule, Schema as S, Stream } from "effect";
 
 /**
  * A `LanguageModel` that speaks OpenAI's Chat Completions API.
@@ -235,7 +235,7 @@ const toolResult = (part: Prompt.ToolResultPart): ChatMessage => ({
 const Nullish = <A, I>(schema: S.Codec<A, I>) => S.optional(S.NullOr(schema));
 
 const ToolCallDelta = S.Struct({
-  index: S.Number,
+  index: S.Finite,
   id: Nullish(S.String),
   function: Nullish(S.Struct({ name: Nullish(S.String), arguments: Nullish(S.String) })),
 });
@@ -258,11 +258,11 @@ const ChatEvent = S.Struct({
   ),
   usage: Nullish(
     S.Struct({
-      prompt_tokens: S.optional(S.Number),
-      completion_tokens: S.optional(S.Number),
-      total_tokens: S.optional(S.Number),
-      prompt_tokens_details: Nullish(S.Struct({ cached_tokens: S.optional(S.Number) })),
-      completion_tokens_details: Nullish(S.Struct({ reasoning_tokens: S.optional(S.Number) })),
+      prompt_tokens: S.optional(S.Finite),
+      completion_tokens: S.optional(S.Finite),
+      total_tokens: S.optional(S.Finite),
+      prompt_tokens_details: Nullish(S.Struct({ cached_tokens: S.optional(S.Finite) })),
+      completion_tokens_details: Nullish(S.Struct({ reasoning_tokens: S.optional(S.Finite) })),
     }),
   ),
   error: Nullish(S.Struct({ message: S.optional(S.String), type: S.optional(S.String) })),
@@ -281,27 +281,40 @@ const decodeEvent = S.decodeUnknownEffect(S.fromJsonString(ChatEvent));
  * a parse error instead of a result.
  */
 const events = (stream: Stream.Stream<Uint8Array, AiError.AiError>) =>
-  stream.pipe(
-    Stream.decodeText(),
-    Stream.splitLines,
-    Stream.map((line) => line.trim()),
-    Stream.filter((line) => line.startsWith("data:")),
-    Stream.map((line) => line.slice("data:".length).trim()),
-    Stream.takeWhile((data) => data !== "[DONE]"),
-    Stream.mapEffect((data) =>
-      decodeEvent(data).pipe(
-        Effect.catchTag("SchemaError", (error) =>
-          Effect.fail(
-            AiError.make({
-              module: MODULE,
-              method: "streamText",
-              reason: AiError.InvalidOutputError.fromSchemaError(error),
-            }),
+  Stream.suspend(() => {
+    let done = false;
+    return stream.pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.map((line) => line.trim()),
+      Stream.filter((line) => line.startsWith("data:")),
+      Stream.map((line) => line.slice("data:".length).trim()),
+      // `[DONE]` ends the model response, but not necessarily the HTTP body.
+      // Keep reading until EOF so the fetch client can finish and release the
+      // connection before a caller starts another request.
+      Stream.filter((data) => {
+        if (done) return false;
+        if (data === "[DONE]") {
+          done = true;
+          return false;
+        }
+        return true;
+      }),
+      Stream.mapEffect((data) =>
+        decodeEvent(data).pipe(
+          Effect.catchTag("SchemaError", (error) =>
+            Effect.fail(
+              AiError.make({
+                module: MODULE,
+                method: "streamText",
+                reason: AiError.InvalidOutputError.fromSchemaError(error),
+              }),
+            ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  });
 
 /**
  * The client is status-filtered, so an authentication or quota rejection
@@ -334,31 +347,39 @@ const retryableHttpError = (error: HttpClientError.HttpClientError): boolean => 
 };
 
 const toAiError = (method: string, error: HttpClientError.HttpClientError): AiError.AiError => {
-  const reason = error.reason;
-  if (reason._tag === "StatusCodeError")
-    return AiError.make({
-      module: MODULE,
-      method,
-      reason: AiError.reasonFromHttpStatus({
-        status: reason.response.status,
-        description: reason.description,
-      }),
-    });
-  if (
-    reason._tag === "TransportError" ||
-    reason._tag === "EncodeError" ||
-    reason._tag === "InvalidUrlError"
-  )
-    return AiError.make({
+  const networkError = (
+    reason: Extract<
+      HttpClientError.HttpClientError["reason"],
+      { _tag: "TransportError" | "EncodeError" | "InvalidUrlError" }
+    >,
+  ) =>
+    AiError.make({
       module: MODULE,
       method,
       reason: AiError.NetworkError.fromRequestError(reason),
     });
-  return AiError.make({
-    module: MODULE,
-    method,
-    reason: new AiError.UnknownError({ description: reason.message }),
-  });
+  return Match.value(error.reason).pipe(
+    Match.tag("StatusCodeError", (reason) =>
+      AiError.make({
+        module: MODULE,
+        method,
+        reason: AiError.reasonFromHttpStatus({
+          status: reason.response.status,
+          description: reason.description,
+        }),
+      }),
+    ),
+    Match.tag("TransportError", networkError),
+    Match.tag("EncodeError", networkError),
+    Match.tag("InvalidUrlError", networkError),
+    Match.orElse((reason) =>
+      AiError.make({
+        module: MODULE,
+        method,
+        reason: new AiError.UnknownError({ description: reason.message }),
+      }),
+    ),
+  );
 };
 
 // =============================================================================
@@ -492,15 +513,13 @@ const closeReasoning = (state: State, parts: Response.StreamPartEncoded[]) => {
 };
 
 const finishReason = (reason: string): Response.FinishReason =>
-  reason === "stop"
-    ? "stop"
-    : reason === "length"
-      ? "length"
-      : reason === "content_filter"
-        ? "content-filter"
-        : reason === "tool_calls" || reason === "function_call"
-          ? "tool-calls"
-          : "unknown";
+  Match.value(reason).pipe(
+    Match.when(Match.is("stop"), () => "stop" as const),
+    Match.when(Match.is("length"), () => "length" as const),
+    Match.when(Match.is("content_filter"), () => "content-filter" as const),
+    Match.when(Match.is("tool_calls", "function_call"), () => "tool-calls" as const),
+    Match.orElse(() => "unknown" as const),
+  );
 
 const usage = (reported: ChatEvent["usage"]): Usage => ({
   inputTokens: {

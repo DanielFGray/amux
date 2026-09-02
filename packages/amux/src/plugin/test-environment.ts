@@ -10,7 +10,14 @@ import {
 import { createPluginContributions, type PluginInstance } from "./contributions.ts";
 import { createRegions, type Regions } from "../ui/regions.tsx";
 import { testPanelContext } from "../ui/test-panel.ts";
-import type { PluginDefinition, PluginSettingsSection, SpawnProvider } from "./types.ts";
+import type { PanelContext } from "../ui/panel.ts";
+import type { AttachFrame } from "../effect/AttachProtocol.ts";
+import {
+  definePlugin,
+  type PluginDefinition,
+  type PluginSettingsSection,
+  type SpawnProvider,
+} from "./types.ts";
 import type { OptionSpec } from "../options.ts";
 import { createBindings, type CommandSpec } from "../bindings.ts";
 import { makeCommands } from "../commands.ts";
@@ -19,10 +26,12 @@ import {
   BindingsTag,
   CommandsTag,
   OptionsTag,
+  PanelTag,
   ProcessDisplayTag,
   RegionsTag,
   SessionViewsTag,
   SettingsTag,
+  SessionStreamTag,
   SpawnProvidersTag,
   scopedRegistry,
   type CommandRegistration,
@@ -50,6 +59,9 @@ export type TestPluginEnvironment = PluginEnvironment & {
 };
 
 type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "contributions"> & {
+  readonly panel?: PanelContext;
+  readonly frames?: (session: string) => Stream.Stream<AttachFrame, never>;
+  readonly sync?: (session: string) => void;
   readonly regions?: Regions;
   readonly sessionViews?: SessionViews;
   readonly processDisplay?: ProcessDisplay;
@@ -70,6 +82,11 @@ export function testPluginEnvironment(
   const optionsTable = contributions.table<OptionSpec>();
   const spawnProviders = contributions.table<() => SpawnProvider>();
   const commandTable = contributions.table<CommandRegistration>();
+  const panel = parts.panel ?? testPanelContext();
+  const sessionStream = {
+    frames: parts.frames ?? (() => Stream.empty),
+    sync: parts.sync ?? (() => {}),
+  };
   const rawBindings = createBindings(renderer, [], { onUnhandled: () => false });
   const rawCommands = makeCommands({});
   const registries: RawTestRegistries = {
@@ -112,8 +129,7 @@ export function testPluginEnvironment(
     ),
     options: scopedRegistry(
       { get: optionsTable.get, all: optionsTable.all },
-      (owner, [name, spec]: readonly [string, OptionSpec]) =>
-        registries.options(owner, name, spec),
+      (owner, [name, spec]: readonly [string, OptionSpec]) => registries.options(owner, name, spec),
     ),
     spawnProviders: scopedRegistry(
       { get: registries.spawnProvider },
@@ -141,26 +157,68 @@ export function testPluginEnvironment(
     activate: (ctx) => Effect.sync(() => publish(ctx)),
   });
   const registryEntries = [
-    provider("amux.registry.regions", RegionsTag, (ctx) => void ctx.provide(RegionsTag, services.regions)),
-    provider("amux.registry.session-views", SessionViewsTag, (ctx) => void ctx.provide(SessionViewsTag, services.sessionViews)),
-    provider("amux.registry.process-display", ProcessDisplayTag, (ctx) => void ctx.provide(ProcessDisplayTag, services.processDisplay)),
-    provider("amux.registry.bindings", BindingsTag, (ctx) => void ctx.provide(BindingsTag, services.bindings)),
-    provider("amux.registry.settings", SettingsTag, (ctx) => void ctx.provide(SettingsTag, services.settings)),
-    provider("amux.registry.options", OptionsTag, (ctx) => void ctx.provide(OptionsTag, services.options)),
-    provider("amux.registry.spawn-providers", SpawnProvidersTag, (ctx) => void ctx.provide(SpawnProvidersTag, services.spawnProviders)),
-    provider("amux.registry.commands", CommandsTag, (ctx) => void ctx.provide(CommandsTag, services.commands)),
+    provider(
+      "amux.registry.regions",
+      RegionsTag,
+      (ctx) => void ctx.provide(RegionsTag, services.regions),
+    ),
+    provider(
+      "amux.registry.session-views",
+      SessionViewsTag,
+      (ctx) => void ctx.provide(SessionViewsTag, services.sessionViews),
+    ),
+    provider(
+      "amux.registry.process-display",
+      ProcessDisplayTag,
+      (ctx) => void ctx.provide(ProcessDisplayTag, services.processDisplay),
+    ),
+    provider(
+      "amux.registry.bindings",
+      BindingsTag,
+      (ctx) => void ctx.provide(BindingsTag, services.bindings),
+    ),
+    provider(
+      "amux.registry.settings",
+      SettingsTag,
+      (ctx) => void ctx.provide(SettingsTag, services.settings),
+    ),
+    provider(
+      "amux.registry.options",
+      OptionsTag,
+      (ctx) => void ctx.provide(OptionsTag, services.options),
+    ),
+    provider(
+      "amux.registry.spawn-providers",
+      SpawnProvidersTag,
+      (ctx) => void ctx.provide(SpawnProvidersTag, services.spawnProviders),
+    ),
+    provider(
+      "amux.registry.commands",
+      CommandsTag,
+      (ctx) => void ctx.provide(CommandsTag, services.commands),
+    ),
+    definePlugin({
+      id: "amux.registry.client",
+      apiVersion: "1",
+      provide: [PanelTag, SessionStreamTag],
+      effect: (ctx) =>
+        Effect.sync(() => {
+          ctx.provide(PanelTag, panel);
+          ctx.provide(SessionStreamTag, sessionStream);
+        }),
+    }),
   ];
   const {
     regions: _regions,
     sessionViews: _sessionViews,
     processDisplay: _processDisplay,
     registries: _registries,
+    panel: _panel,
+    frames: _frames,
+    sync: _sync,
     ...environment
   } = parts;
   return {
-    panel: testPanelContext(),
-    frames: () => Stream.empty,
-    sync: () => {},
     ...environment,
     contributions,
     registries,

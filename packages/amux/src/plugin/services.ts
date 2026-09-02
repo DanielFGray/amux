@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, Option, Scope, type Schema as S } from "effect";
+import { Context, Deferred, Effect, Option, Scope, type Schema as S, type Stream } from "effect";
 import type { Contribution, PluginInstance } from "./contributions.ts";
 import type { Panel, Regions } from "../ui/regions.tsx";
 import type { SessionViews } from "./session-views.tsx";
@@ -9,6 +9,8 @@ import type { OptionSpec } from "../options.ts";
 import type { ProcessDisplay, ProcessDisplayProvider } from "./process-display.ts";
 import type { CommandError, Commands, Meta } from "../commands.ts";
 import type { SessionFactsService } from "../session-facts.ts";
+import type { PanelContext } from "../ui/panel.ts";
+import type { AttachFrame } from "../effect/AttachProtocol.ts";
 
 export class CurrentPlugin extends Context.Service<CurrentPlugin, PluginInstance>()(
   "amux/CurrentPlugin",
@@ -41,32 +43,59 @@ export interface OptionsService extends RegistryService<readonly [string, Option
   readonly get: (name: string) => OptionSpec | undefined;
   readonly all: () => readonly Contribution<OptionSpec>[];
 }
-export interface SpawnProvidersService
-  extends RegistryService<readonly [string, () => SpawnProvider]> {
+export interface SpawnProvidersService extends RegistryService<
+  readonly [string, () => SpawnProvider]
+> {
   readonly get: (id: string) => SpawnProvider | undefined;
 }
 export type CommandsService = Omit<Commands, "registerCommand"> &
   RegistryService<CommandRegistration>;
 
+/**
+ * A subcommand a plugin contributes to the bare `amux` binary — a setup verb
+ * like installing a hook file, not a second command system. `handler` gets
+ * the remaining argv and reports its own outcome as an exit code; there is no
+ * daemon or attached client backing it, so it cannot assume one.
+ */
+export interface CliCommandRegistration {
+  readonly name: string;
+  readonly description: string;
+  readonly handler: (argv: readonly string[]) => Effect.Effect<number>;
+}
+export interface CliCommandsService extends RegistryService<CliCommandRegistration> {
+  readonly all: () => readonly Contribution<CliCommandRegistration>[];
+}
+
 export class RegionsTag extends Context.Service<RegionsTag, RegionsService>()("amux/Regions") {}
-export class SessionViewsTag extends Context.Service<
-  SessionViewsTag,
-  SessionViewsService
->()("amux/SessionViews") {}
-export class ProcessDisplayTag extends Context.Service<
-  ProcessDisplayTag,
-  ProcessDisplayService
->()("amux/ProcessDisplay") {}
+export class SessionViewsTag extends Context.Service<SessionViewsTag, SessionViewsService>()(
+  "amux/SessionViews",
+) {}
+export class ProcessDisplayTag extends Context.Service<ProcessDisplayTag, ProcessDisplayService>()(
+  "amux/ProcessDisplay",
+) {}
 export class BindingsTag extends Context.Service<BindingsTag, BindingsService>()("amux/Bindings") {}
 export class SettingsTag extends Context.Service<SettingsTag, SettingsService>()("amux/Settings") {}
 export class OptionsTag extends Context.Service<OptionsTag, OptionsService>()("amux/Options") {}
-export class SpawnProvidersTag extends Context.Service<
-  SpawnProvidersTag,
-  SpawnProvidersService
->()("amux/SpawnProviders") {}
+export class SpawnProvidersTag extends Context.Service<SpawnProvidersTag, SpawnProvidersService>()(
+  "amux/SpawnProviders",
+) {}
 export class CommandsTag extends Context.Service<CommandsTag, CommandsService>()("amux/Commands") {}
+export class CliCommandsTag extends Context.Service<CliCommandsTag, CliCommandsService>()(
+  "amux/CliCommands",
+) {}
 export class SessionFactsTag extends Context.Service<SessionFactsTag, SessionFactsService>()(
   "amux/SessionFacts",
+) {}
+export class PanelTag extends Context.Service<PanelTag, PanelContext>()("amux/Panel") {}
+/** One service rather than two keys: reading a session's frames and asking for
+ *  a replay are the same capability seen from both ends, and a plugin holding
+ *  one without the other could only ever watch a stream it cannot rewind. */
+export interface SessionStreamService {
+  readonly frames: (session: string) => Stream.Stream<AttachFrame, never>;
+  readonly sync: (session: string) => void;
+}
+export class SessionStreamTag extends Context.Service<SessionStreamTag, SessionStreamService>()(
+  "amux/SessionStream",
 ) {}
 
 export const scopedRegistry = <A extends object, Value>(
@@ -278,10 +307,7 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
           const { deferred } = slotFor(tag.key);
           suspended ||= !Deferred.isDoneUnsafe(deferred);
           const provider = yield* Deferred.await(deferred);
-          const service = Context.getUnsafe(
-            provider.context,
-            tag as Context.Key<unknown, unknown>,
-          );
+          const service = Context.getUnsafe(provider.context, tag as Context.Key<unknown, unknown>);
           const interception = serviceInterception(tag);
           const value = interception
             ? interception.access(service, () => {

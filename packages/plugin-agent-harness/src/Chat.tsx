@@ -1,13 +1,14 @@
 /** @jsxImportSource @opentui/solid */
+/** @effect-diagnostics *:skip-file -- Solid render-tree event and timer control flow belongs to OpenTUI/Solid's lifecycle, not the service Effect graph. */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { TextareaRenderable } from "@opentui/core";
 import type { Stream } from "effect";
-import { AttachFrame } from "@danielfgray/amux/protocol"
-import type { PaneViewProps } from "@danielfgray/amux"
+import { AttachFrame } from "@danielfgray/amux/protocol";
+import type { PaneViewProps } from "@danielfgray/amux";
 import { Transcript, type PermissionBlock } from "./Transcript.tsx";
 import { permissionSummary } from "./transcript.ts";
-import { theme } from "@danielfgray/amux"
-import { ProcessState } from "@danielfgray/amux"
+import { theme } from "@danielfgray/amux";
+import { ProcessState } from "@danielfgray/amux";
 import type { PermissionDecision } from "@danielfgray/amux/permission.ts";
 
 export interface ChatProps extends PaneViewProps {

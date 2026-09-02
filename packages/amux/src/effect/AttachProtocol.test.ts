@@ -89,69 +89,38 @@ test("foreground frames carry a negative pgid and sid across the wire", () => {
   ]);
 });
 
-test("native agent lifecycle frames round-trip as semantic events", () => {
+test("a session's durable log carries events core assigns no meaning to", () => {
   const frames: AttachFrame[] = [
     {
-      _tag: "turn.start",
+      _tag: "agent.message",
       session: "agent-1",
       sequence: 1,
-      turn: "turn-1",
-      prompt: "Fix the failing test",
+      // Turn and tool vocabulary belongs to whatever wrote it. Core sees JSON.
+      event: { _tag: "turn.start", turn: "turn-1", prompt: "Fix the failing test" },
     },
     {
-      _tag: "text.delta",
+      _tag: "agent.message",
       session: "agent-1",
-      turn: "turn-1",
-      text: "I will inspect the test.",
+      sequence: 2,
+      event: { _tag: "tool.result", turn: "turn-1", call: "call-1", output: { passed: 42 } },
     },
     {
-      _tag: "tool.start",
+      // A component with no turns at all uses the same envelope.
+      _tag: "agent.message",
       session: "agent-1",
       sequence: 3,
-      turn: "turn-1",
-      call: "call-1",
-      tool: "shell",
-      input: { command: "bun test" },
+      event: ["anything", 1, null],
     },
     {
-      _tag: "permission.request",
+      _tag: "session.error",
       session: "agent-1",
       sequence: 4,
-      turn: "turn-1",
-      request: "permission-1",
-      tool: "bash",
-      action: "bash",
-      resources: ["bun test"],
-      save: [{ action: "bash", resource: "bun *", effect: "allow" }],
-      input: { command: "bun test" },
-    },
-    {
-      _tag: "permission.response",
-      session: "agent-1",
-      sequence: 5,
-      request: "permission-1",
-      decision: "always",
-    },
-    {
-      _tag: "tool.result",
-      session: "agent-1",
-      sequence: 6,
-      turn: "turn-1",
-      call: "call-1",
-      output: { passed: 42 },
-      isError: false,
-    },
-    {
-      _tag: "turn.end",
-      session: "agent-1",
-      sequence: 7,
-      turn: "turn-1",
-      outcome: "completed",
+      message: "worker stderr: missing credential",
     },
     {
       _tag: "topic",
       session: "agent-1",
-      sequence: 8,
+      sequence: 5,
       topic: "session.state",
       payload: "idle",
     },
@@ -220,94 +189,53 @@ test("a component control message is an opaque JSON payload", () => {
   expect(decoded.frames).toEqual([frame]);
 });
 
-test("tool.params-start round-trips as a self-contained semantic event", () => {
+test("a live fragment round-trips without a place in the order", () => {
   const frame: AttachFrame = {
-    _tag: "tool.params-start",
+    _tag: "agent.delta",
     session: "agent-1",
-    turn: "turn-1",
-    call: "call-1",
-    tool: "write",
+    delta: { _tag: "tool.params-delta", turn: "turn-1", call: "call-1", delta: '{"path":' },
   };
   const decoded = decodeAttachFrames(encodeAttachFrame(frame));
   expect(decoded.rest).toBe("");
   expect(decoded.frames).toEqual([frame]);
+  expect("sequence" in decoded.frames[0]!).toBe(false);
 });
 
-test("tool.params-delta round-trips incremental JSON fragments", () => {
-  const frame: AttachFrame = {
-    _tag: "tool.params-delta",
-    session: "agent-1",
-    turn: "turn-1",
-    call: "call-1",
-    delta: '{"path":',
+test("a worker proposes an event and cannot choose its sequence", () => {
+  const emit: AttachFrame = {
+    _tag: "agent.emit",
+    event: { _tag: "agent.message", session: "agent-1", event: { _tag: "turn.end" } },
   };
-  const decoded = decodeAttachFrames(encodeAttachFrame(frame));
-  expect(decoded.rest).toBe("");
-  expect(decoded.frames).toEqual([frame]);
+  expect(decodeAttachFrames(encodeAttachFrame(emit)).frames).toEqual([emit]);
+
+  // A worker that writes a `sequence` anyway does not get to keep it: the
+  // request has no such field, so it is gone before the daemon assigns one.
+  const forged = decodeAttachFrames(
+    `${JSON.stringify({
+      _tag: "agent.emit",
+      event: { _tag: "agent.message", session: "agent-1", event: null, sequence: 7 },
+    })}\n`,
+  ).frames[0];
+  expect(forged).toEqual({
+    _tag: "agent.emit",
+    event: { _tag: "agent.message", session: "agent-1", event: null },
+  });
 });
 
-test("tool.params-end terminates a streaming call", () => {
-  const frame: AttachFrame = {
-    _tag: "tool.params-end",
-    session: "agent-1",
-    turn: "turn-1",
-    call: "call-1",
-  };
-  const decoded = decodeAttachFrames(encodeAttachFrame(frame));
-  expect(decoded.rest).toBe("");
-  expect(decoded.frames).toEqual([frame]);
-});
-
-test("tool.params-start, deltas, end stream as an ordered lifecycle", () => {
-  const frames: AttachFrame[] = [
-    {
-      _tag: "tool.params-start",
-      session: "agent-1",
-      turn: "turn-1",
-      call: "call-1",
-      tool: "write",
-    },
-    {
-      _tag: "tool.params-delta",
-      session: "agent-1",
-      turn: "turn-1",
-      call: "call-1",
-      delta: '{"path":',
-    },
-    {
-      _tag: "tool.params-delta",
-      session: "agent-1",
-      turn: "turn-1",
-      call: "call-1",
-      delta: '"/tmp/f"',
-    },
-    {
-      _tag: "tool.params-end",
-      session: "agent-1",
-      turn: "turn-1",
-      call: "call-1",
-    },
-  ];
-
-  const decoded = decodeAttachFrames(frames.map(encodeAttachFrame).join(""));
-  expect(decoded.rest).toBe("");
-  expect(decoded.frames).toEqual(frames);
-});
-
-test("daemon agent events reject malformed semantic frames", () => {
+test("daemon agent events reject a committed event with no sequence", () => {
   expect(() =>
     S.decodeUnknownSync(DaemonEvent)({
       sequence: 1,
       event: {
         _tag: "agent.frame",
         session: "agent-1",
-        frame: { _tag: "text.delta", session: "agent-1", sequence: "bad" },
+        frame: { _tag: "agent.message", session: "agent-1", event: null },
       },
     }),
   ).toThrow();
 });
 
-test("daemon agent events reject malformed tool.params-start frame", () => {
+test("daemon agent events reject a non-JSON payload", () => {
   expect(() =>
     S.decodeUnknownSync(DaemonEvent)({
       sequence: 1,
@@ -315,43 +243,11 @@ test("daemon agent events reject malformed tool.params-start frame", () => {
         _tag: "agent.frame",
         session: "agent-1",
         frame: {
-          _tag: "tool.params-start",
+          _tag: "agent.message",
           session: "agent-1",
           sequence: 1,
-          turn: "turn-1",
-          call: "call-1",
+          event: { fn: () => 1 },
         },
-      },
-    }),
-  ).toThrow();
-});
-
-test("daemon agent events reject malformed tool.params-delta frame", () => {
-  expect(() =>
-    S.decodeUnknownSync(DaemonEvent)({
-      sequence: 1,
-      event: {
-        _tag: "agent.frame",
-        session: "agent-1",
-        frame: {
-          _tag: "tool.params-delta",
-          session: "agent-1",
-          sequence: 2,
-          turn: "turn-1",
-        },
-      },
-    }),
-  ).toThrow();
-});
-
-test("daemon agent events reject malformed tool.params-end frame", () => {
-  expect(() =>
-    S.decodeUnknownSync(DaemonEvent)({
-      sequence: 1,
-      event: {
-        _tag: "agent.frame",
-        session: "agent-1",
-        frame: { _tag: "tool.params-end", session: "agent-1", turn: "turn-1" },
       },
     }),
   ).toThrow();

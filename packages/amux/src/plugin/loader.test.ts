@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { mkdtemp } from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Scope } from "effect";
-import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
+import * as FileSystem from "effect/FileSystem";
+import type { PlatformError } from "effect/PlatformError";
+import { BunFileSystem } from "@effect/platform-bun";
+import { createPluginHost, type PluginHost } from "./host.ts";
 import { loadPluginsFromConfig as loadConfiguredPlugins } from "./loader.ts";
 import { testPluginEnvironment, type TestPluginEnvironment } from "./test-environment.ts";
 import { definePlugin, type PluginDefinition } from "./types.ts";
@@ -16,13 +18,6 @@ import { createTestRenderer } from "@opentui/core/testing";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
 
-const temporaryDirectories: string[] = [];
-afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories.splice(0).map((p) => rm(p, { recursive: true, force: true })),
-  );
-});
-
 const cleanupFns: (() => void)[] = [];
 const registryEntriesByHost = new WeakMap<PluginHost, readonly PluginDefinition[]>();
 const pluginStatuses = (host: PluginHost) =>
@@ -31,18 +26,25 @@ afterEach(() => {
   for (const fn of cleanupFns.splice(0)) fn();
 });
 
-async function tempDir(): Promise<string> {
-  const dir = await mkdtemp(join(testDir, ".test-"));
-  temporaryDirectories.push(dir);
-  return dir;
-}
+const tempDir: Effect.Effect<string, PlatformError, FileSystem.FileSystem | Scope.Scope> =
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.makeTempDirectoryScoped({ directory: testDir, prefix: ".test-" });
+  });
 
-async function writePluginFile(dir: string, name: string, content: string): Promise<string> {
-  const fp = join(dir, name);
-  await writeFile(fp, content);
-  return fp;
-}
+const writePluginFile = (
+  dir: string,
+  name: string,
+  content: string,
+): Effect.Effect<string, PlatformError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const fp = join(dir, name);
+    yield* fs.writeFileString(fp, content);
+    return fp;
+  });
 
+// @effect-diagnostics-next-line asyncFunction:off -- opentui's test renderer is plain-async by design; see harness.ts's seam.
 async function mockRegions(): Promise<{
   environment: TestPluginEnvironment;
   dispose: () => void;
@@ -87,22 +89,29 @@ function spec(path: string, enabled = true): PluginSpec {
   return { path, enabled };
 }
 
-async function writeExampleConfig(dir: string, example: string): Promise<string> {
-  const path = join(dir, "config.json");
-  await writeFile(
-    path,
-    JSON.stringify({
-      plugins: [
-        { path: "builtin:amux.agent-awareness", enabled: false },
-        { path: "builtin:amux.sidebar", enabled: false },
-        { path: "builtin:amux.agent-harness", enabled: false },
-        { path: "builtin:amux.notifications", enabled: false },
-        { path: join(testDir, "../../../../examples", example), enabled: true },
-      ],
-    }),
-  );
-  return path;
-}
+const writeExampleConfig = (
+  dir: string,
+  example: string,
+): Effect.Effect<string, PlatformError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = join(dir, "config.json");
+    yield* fs.writeFileString(
+      path,
+      // Fixture JSON, not an encode of a typed Config — the plugin list is deliberately partial.
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      JSON.stringify({
+        plugins: [
+          { path: "builtin:amux.agent-awareness", enabled: false },
+          { path: "builtin:amux.sidebar", enabled: false },
+          { path: "builtin:amux.agent-harness", enabled: false },
+          { path: "builtin:amux.notifications", enabled: false },
+          { path: join(testDir, "../../../../examples", example), enabled: true },
+        ],
+      }),
+    );
+    return path;
+  });
 
 function mkPluginSrc(id: string, variant?: string): string {
   const typesPath = fileURLToPath(new URL("./types.ts", import.meta.url));
@@ -132,8 +141,8 @@ import { definePlugin } from ${JSON.stringify(typesPath)};`;
 
 testEffect("loads a valid plugin", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "my-plugin.ts", mkPluginSrc("my-plugin")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "my-plugin.ts", mkPluginSrc("my-plugin"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "my-plugin.ts"))] });
     const { host } = yield* makeHost();
@@ -142,7 +151,7 @@ testEffect("loads a valid plugin", () =>
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("my-plugin");
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 testEffect("loads the worked external status bar example", () =>
@@ -156,42 +165,42 @@ testEffect("loads the worked external status bar example", () =>
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.status-bar"]);
     expect(regions.declared("bottom", "app")).toBe(true);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 testEffect("loads the agent dashboard example through the config loader", () =>
   Effect.gen(function* () {
     const { host, regions } = yield* makeHost();
-    const dir = yield* Effect.promise(() => tempDir());
-    const configPath = yield* Effect.promise(() => writeExampleConfig(dir, "agent-dashboard.tsx"));
-    const config = yield* Effect.promise(() => loadConfig(configPath));
+    const dir = yield* tempDir;
+    const configPath = yield* writeExampleConfig(dir, "agent-dashboard.tsx");
+    const config = yield* loadConfig(configPath).pipe(Effect.provide(BunFileSystem.layer));
 
     yield* loadPluginsFromConfig(config, host, dirname(configPath));
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.agent-dashboard"]);
     expect(regions.declared("bottom", "app")).toBe(true);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 testEffect("loads the agent triage example through the config loader", () =>
   Effect.gen(function* () {
     const { host, regions } = yield* makeHost();
-    const dir = yield* Effect.promise(() => tempDir());
-    const configPath = yield* Effect.promise(() => writeExampleConfig(dir, "agent-triage.tsx"));
-    const config = yield* Effect.promise(() => loadConfig(configPath));
+    const dir = yield* tempDir;
+    const configPath = yield* writeExampleConfig(dir, "agent-triage.tsx");
+    const config = yield* loadConfig(configPath).pipe(Effect.provide(BunFileSystem.layer));
 
     yield* loadPluginsFromConfig(config, host, dirname(configPath));
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.agent-triage"]);
     expect(regions.declared("right", "app")).toBe(true);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 testEffect("loads multiple plugins in order", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "a.ts", mkPluginSrc("a")));
-    yield* Effect.promise(() => writePluginFile(dir, "b.ts", mkPluginSrc("b")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "a.ts", mkPluginSrc("a"));
+    yield* writePluginFile(dir, "b.ts", mkPluginSrc("b"));
 
     const config = baseConfig({
       plugins: [spec(join(dir, "a.ts")), spec(join(dir, "b.ts"))],
@@ -204,31 +213,30 @@ testEffect("loads multiple plugins in order", () =>
       .map((s) => s.id)
       .sort();
     expect(ids).toEqual(["a", "b"]);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 testEffect("discovers plugins in the config directory's plugins/ subdirectory", () =>
   Effect.gen(function* () {
-    const configHome = yield* Effect.promise(() => tempDir());
+    const configHome = yield* tempDir;
     const pluginDir = join(configHome, "amux", "plugins");
-    yield* Effect.promise(() => mkdir(pluginDir, { recursive: true }));
-    yield* Effect.promise(() =>
-      writePluginFile(pluginDir, "discovered.ts", mkPluginSrc("discovered")),
-    );
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(pluginDir, { recursive: true });
+    yield* writePluginFile(pluginDir, "discovered.ts", mkPluginSrc("discovered"));
     const { host } = yield* makeHost();
 
     yield* loadPluginsFromConfig(baseConfig(), host, join(configHome, "amux"));
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["discovered"]);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Relative paths ---
 
 testEffect("resolves relative paths against configDir", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "rel.ts", mkPluginSrc("rel-plugin")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "rel.ts", mkPluginSrc("rel-plugin"));
 
     const config = baseConfig({ plugins: [spec("rel.ts")] });
     const { host } = yield* makeHost();
@@ -237,17 +245,15 @@ testEffect("resolves relative paths against configDir", () =>
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("rel-plugin");
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- file:// URLs ---
 
 testEffect("resolves file:// URLs to paths", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    const fp = yield* Effect.promise(() =>
-      writePluginFile(dir, "url.ts", mkPluginSrc("url-plugin")),
-    );
+    const dir = yield* tempDir;
+    const fp = yield* writePluginFile(dir, "url.ts", mkPluginSrc("url-plugin"));
     const urlSpec = spec("file://" + fp);
 
     const config = baseConfig({ plugins: [urlSpec] });
@@ -257,16 +263,16 @@ testEffect("resolves file:// URLs to paths", () =>
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("url-plugin");
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- enabled / disabled ---
 
 testEffect("skips disabled plugins", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "enabled.ts", mkPluginSrc("enabled")));
-    yield* Effect.promise(() => writePluginFile(dir, "disabled.ts", mkPluginSrc("disabled")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "enabled.ts", mkPluginSrc("enabled"));
+    yield* writePluginFile(dir, "disabled.ts", mkPluginSrc("disabled"));
 
     const config = baseConfig({
       plugins: [spec(join(dir, "enabled.ts")), spec(join(dir, "disabled.ts"), false)],
@@ -277,16 +283,16 @@ testEffect("skips disabled plugins", () =>
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("enabled");
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- One bad plugin does not block others ---
 
 testEffect("one bad plugin does not block the next", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "bad.ts", mkPluginSrc("bad", "no-default")));
-    yield* Effect.promise(() => writePluginFile(dir, "good.ts", mkPluginSrc("good")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "bad.ts", mkPluginSrc("bad", "no-default"));
+    yield* writePluginFile(dir, "good.ts", mkPluginSrc("good"));
 
     const config = baseConfig({
       plugins: [spec(join(dir, "bad.ts")), spec(join(dir, "good.ts"))],
@@ -297,14 +303,14 @@ testEffect("one bad plugin does not block the next", () =>
 
     const ids = pluginStatuses(host).map((s) => s.id);
     expect(ids).toEqual(["good"]);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 testEffect("a plugin that throws on import does not block others", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "crash.ts", mkPluginSrc("crash", "throw")));
-    yield* Effect.promise(() => writePluginFile(dir, "ok.ts", mkPluginSrc("ok")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "crash.ts", mkPluginSrc("crash", "throw"));
+    yield* writePluginFile(dir, "ok.ts", mkPluginSrc("ok"));
 
     const config = baseConfig({
       plugins: [spec(join(dir, "crash.ts")), spec(join(dir, "ok.ts"))],
@@ -315,17 +321,15 @@ testEffect("a plugin that throws on import does not block others", () =>
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("ok");
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Validation: missing default export ---
 
 testEffect("reports a plugin with no default export", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() =>
-      writePluginFile(dir, "nodefault.ts", mkPluginSrc("nodefault", "no-default")),
-    );
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "nodefault.ts", mkPluginSrc("nodefault", "no-default"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "nodefault.ts"))] });
     const { host } = yield* makeHost();
@@ -333,17 +337,15 @@ testEffect("reports a plugin with no default export", () =>
     yield* loadPluginsFromConfig(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Validation: null default export ---
 
 testEffect("reports a plugin with a null default export", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() =>
-      writePluginFile(dir, "null.ts", mkPluginSrc("null", "null-default")),
-    );
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "null.ts", mkPluginSrc("null", "null-default"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "null.ts"))] });
     const { host } = yield* makeHost();
@@ -351,15 +353,15 @@ testEffect("reports a plugin with a null default export", () =>
     yield* loadPluginsFromConfig(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Validation: missing or empty id ---
 
 testEffect("reports a plugin with no id field", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "noid.ts", mkPluginSrc("noid", "no-id")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "noid.ts", mkPluginSrc("noid", "no-id"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "noid.ts"))] });
     const { host } = yield* makeHost();
@@ -367,15 +369,13 @@ testEffect("reports a plugin with no id field", () =>
     yield* loadPluginsFromConfig(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 testEffect("reports a plugin with an empty id", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() =>
-      writePluginFile(dir, "emptyid.ts", mkPluginSrc("emptyid", "empty-id")),
-    );
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "emptyid.ts", mkPluginSrc("emptyid", "empty-id"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "emptyid.ts"))] });
     const { host } = yield* makeHost();
@@ -383,17 +383,15 @@ testEffect("reports a plugin with an empty id", () =>
     yield* loadPluginsFromConfig(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Validation: missing apiVersion ---
 
 testEffect("reports a plugin with no apiVersion", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() =>
-      writePluginFile(dir, "noapi.ts", mkPluginSrc("noapi", "no-apiVersion")),
-    );
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "noapi.ts", mkPluginSrc("noapi", "no-apiVersion"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "noapi.ts"))] });
     const { host } = yield* makeHost();
@@ -401,17 +399,15 @@ testEffect("reports a plugin with no apiVersion", () =>
     yield* loadPluginsFromConfig(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Validation: missing activation function ---
 
 testEffect("reports a plugin with no activation function", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() =>
-      writePluginFile(dir, "noeff.ts", mkPluginSrc("noeff", "no-activate")),
-    );
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "noeff.ts", mkPluginSrc("noeff", "no-activate"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "noeff.ts"))] });
     const { host } = yield* makeHost();
@@ -419,14 +415,14 @@ testEffect("reports a plugin with no activation function", () =>
     yield* loadPluginsFromConfig(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Missing file ---
 
 testEffect("handles a missing file gracefully", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
+    const dir = yield* tempDir;
     const missing = join(dir, "does-not-exist.ts");
 
     const config = baseConfig({ plugins: [spec(missing)] });
@@ -435,26 +431,26 @@ testEffect("handles a missing file gracefully", () =>
     yield* loadPluginsFromConfig(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Malformed config defaults ---
 
 testEffect("empty plugins array does nothing", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
+    const dir = yield* tempDir;
     const { host } = yield* makeHost();
 
     yield* loadPluginsFromConfig(baseConfig(), host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 testEffect("reconciles core and configured entries as one configuration", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "configured.ts", mkPluginSrc("configured")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "configured.ts", mkPluginSrc("configured"));
     const { host } = yield* makeHost();
     const core = definePlugin({
       id: "amux.windows",
@@ -469,18 +465,19 @@ testEffect("reconciles core and configured entries as one configuration", () =>
       [core],
     );
 
-    expect(pluginStatuses(host).map((status) => status.id).sort()).toEqual([
-      "amux.windows",
-      "configured",
-    ]);
-  }),
+    expect(
+      pluginStatuses(host)
+        .map((status) => status.id)
+        .sort(),
+    ).toEqual(["amux.windows", "configured"]);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Path traversal prevention ---
 
 testEffect("relative paths that escape configDir are rejected", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
+    const dir = yield* tempDir;
 
     const config = baseConfig({ plugins: [spec("../other/plugin.ts")] });
     const { host } = yield* makeHost();
@@ -488,16 +485,16 @@ testEffect("relative paths that escape configDir are rejected", () =>
     yield* loadPluginsFromConfig(config, host, dir);
 
     expect(pluginStatuses(host).length).toBe(0);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Explicit absolute paths are allowed ---
 
 testEffect("absolute paths outside configDir are allowed", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    const other = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(other, "abs.ts", mkPluginSrc("abs-plugin")));
+    const dir = yield* tempDir;
+    const other = yield* tempDir;
+    yield* writePluginFile(other, "abs.ts", mkPluginSrc("abs-plugin"));
 
     const config = baseConfig({ plugins: [spec(join(other, "abs.ts"))] });
     const { host } = yield* makeHost();
@@ -506,15 +503,15 @@ testEffect("absolute paths outside configDir are allowed", () =>
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("abs-plugin");
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- loadPluginsFromConfig doesn't block host lifecycle ---
 
 testEffect("host continues working after loader finishes", () =>
   Effect.gen(function* () {
-    const dir = yield* Effect.promise(() => tempDir());
-    yield* Effect.promise(() => writePluginFile(dir, "pre.ts", mkPluginSrc("pre")));
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "pre.ts", mkPluginSrc("pre"));
 
     const config = baseConfig({ plugins: [spec(join(dir, "pre.ts"))] });
     const { host } = yield* makeHost();
@@ -533,7 +530,7 @@ testEffect("host continues working after loader finishes", () =>
         .map((s) => s.id)
         .sort(),
     ).toEqual(["post", "pre"]);
-  }),
+  }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
 // --- Decode config preserves plugins ---

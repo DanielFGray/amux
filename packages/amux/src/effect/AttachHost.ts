@@ -16,10 +16,10 @@
  * the wrong thing impossible to write rather than merely discouraged.
  */
 
-import { Context, Deferred, Effect, Exit, Layer, Schema as S, Scope } from "effect";
+import { Context, Deferred, Effect, Exit, Layer, Match, Schema as S, Scope } from "effect";
+import * as FileSystem from "effect/FileSystem";
 import { createServer, type Server } from "node:net";
 import { randomUUID } from "node:crypto";
-import { chmod } from "node:fs/promises";
 import { AttachHub } from "./AttachHub.ts";
 import {
   AttachFrameAccumulator,
@@ -31,7 +31,7 @@ import {
 } from "./AttachProtocol.ts";
 import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import { AgentLog, AgentLogDefault, type AgentLogError, type AgentLogService } from "./AgentLog.ts";
-import { startAttachServer, type AttachServerError } from "./AttachServer.ts";
+import { AttachServerError, startAttachServer } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
 import {
   SessionObserverError,
@@ -142,7 +142,11 @@ export interface AttachHostService {
   readonly paste: (id: string, data: Uint8Array) => Effect.Effect<void, PtyError>;
   /** Raw child input used by daemon-side pane.send-keys. */
   readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-  readonly prompt: (id: string, text: string, options?: PromptOptions) => Effect.Effect<void, PtyError>;
+  readonly prompt: (
+    id: string,
+    text: string,
+    options?: PromptOptions,
+  ) => Effect.Effect<void, PtyError>;
   readonly message: (id: string, message: JsonValue) => Effect.Effect<void, PtyError>;
   readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
   readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
@@ -187,11 +191,12 @@ const make = <
 ): Effect.Effect<
   AttachHostService,
   AttachServerError,
-  Scope.Scope | AttachHub | SessionSupervisor
+  Scope.Scope | AttachHub | SessionSupervisor | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const supervisor = yield* SessionSupervisor;
+    const fs = yield* FileSystem.FileSystem;
     const host = yield* Effect.scope;
     // Keyed by request id rather than by client: nothing else needs to find a
     // pending command by who it was asked of, only by which answer just came back.
@@ -209,73 +214,80 @@ const make = <
       // an Effect that is never run reports nothing.
       const runtime = yield* Effect.context<never>();
       yield* Effect.acquireRelease(
-        Effect.promise(
-          () =>
-            new Promise<Server>((resolve, reject) => {
-              const value = createServer((socket) => {
-                // 0600 on the socket file already turns another user away at
-                // open(); this refuses one that got a descriptor anyway, which
-                // the file mode alone cannot rule out.
-                if (!isSameUserPeer(socketFd(socket))) {
-                  socket.destroy();
-                  return;
+        Effect.callback<Server, AttachServerError>((resume) => {
+          const value = createServer((socket) => {
+            // 0600 on the socket file already turns another user away at
+            // open(); this refuses one that got a descriptor anyway, which
+            // the file mode alone cannot rule out.
+            if (!isSameUserPeer(socketFd(socket))) {
+              socket.destroy();
+              return;
+            }
+            const buffer = new AttachFrameAccumulator();
+            socket.on("data", (chunk: Buffer) => {
+              if (buffer.byteLength + chunk.byteLength > MAX_ATTACH_FRAME_BYTES) {
+                socket.destroy();
+                return;
+              }
+              for (const frame of buffer.push(chunk)) {
+                const line = Buffer.from(frame).toString("utf8").trimEnd();
+                if (!line) continue;
+                const decoded = S.decodeExit(S.fromJsonString(ProcessSocketRequest))(line);
+                if (Exit.isFailure(decoded)) {
+                  socket.write('{"ok":false,"error":"invalid request"}\n');
+                  continue;
                 }
-                const buffer = new AttachFrameAccumulator();
-                socket.on("data", (chunk: Buffer) => {
-                  if (buffer.byteLength + chunk.byteLength > MAX_ATTACH_FRAME_BYTES) {
-                    socket.destroy();
-                    return;
-                  }
-                  for (const frame of buffer.push(chunk)) {
-                    const line = Buffer.from(frame).toString("utf8").trimEnd();
-                    if (!line) continue;
-                    const decoded = S.decodeUnknownExit(S.fromJsonString(ProcessSocketRequest))(
-                      line,
-                    );
-                    if (Exit.isFailure(decoded)) {
-                      socket.write('{"ok":false,"error":"invalid request"}\n');
-                      continue;
-                    }
-                    const request = decoded.value;
-                    if (request.method === "ping") {
-                      socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
-                      continue;
-                    }
-                    // Built, not run: an Effect is a description, so this costs
-                    // nothing when the report turns out to be malformed.
-                    // Through the supervisor, not straight to the observer:
-                    // the receiving integration owns validation and durable
-                    // state handling before observers see this process fact.
-                    const report =
-                      request.method === "process.state"
-                        ? supervisor.report(
-                            request.params.session,
-                            SESSION_STATE_TOPIC,
-                            request.params.state,
-                          )
-                        : supervisor.report(
-                            request.params.session,
-                            request.params.topic,
-                            request.params.payload,
-                          );
-                    Effect.runForkWith(runtime)(report);
-                    socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
-                  }
-                });
-              });
-              value.once("error", reject);
-              // A pane runs arbitrary commands, so the socket it dials must be
-              // owner-only even when the daemon inherited a permissive umask —
-              // nothing a pane process runs may fabricate another pane's report.
-              // Resolve only once the mode is pinned, so a daemon that is up is
-              // one whose process-state socket is already private.
-              value.listen(processStatePath, () => {
-                chmod(processStatePath, 0o600).then(() => resolve(value), reject);
-              });
-            }),
-        ),
+                const request = decoded.value;
+                if (request.method === "ping") {
+                  socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
+                  continue;
+                }
+                // Built, not run: an Effect is a description, so this costs
+                // nothing when the report turns out to be malformed.
+                // Through the supervisor, not straight to the observer:
+                // the receiving integration owns validation and durable
+                // state handling before observers see this process fact.
+                const report =
+                  request.method === "process.state"
+                    ? supervisor.report(
+                        request.params.session,
+                        SESSION_STATE_TOPIC,
+                        request.params.state,
+                      )
+                    : supervisor.report(
+                        request.params.session,
+                        request.params.topic,
+                        request.params.payload,
+                      );
+                Effect.runForkWith(runtime)(report);
+                socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
+              }
+            });
+          });
+          value.once("error", (error) =>
+            resume(Effect.fail(new AttachServerError({ message: errorMessage(error) }))),
+          );
+          // A pane runs arbitrary commands, so the socket it dials must be
+          // owner-only even when the daemon inherited a permissive umask —
+          // nothing a pane process runs may fabricate another pane's report.
+          // Resolve only once the mode is pinned, so a daemon that is up is
+          // one whose process-state socket is already private.
+          value.listen(processStatePath, () => {
+            Effect.runForkWith(runtime)(
+              fs.chmod(processStatePath, 0o600).pipe(
+                Effect.matchCause({
+                  onFailure: (cause) =>
+                    resume(Effect.fail(new AttachServerError({ message: errorMessage(cause) }))),
+                  onSuccess: () => resume(Effect.succeed(value)),
+                }),
+              ),
+            );
+          });
+        }),
         (value) =>
-          Effect.promise(() => new Promise<void>((resolve) => value.close(() => resolve()))),
+          Effect.callback<void, never>((resume) => {
+            value.close(() => resume(Effect.void));
+          }),
       );
     }
 
@@ -296,23 +308,26 @@ const make = <
       // not a protocol violation. Logging it keeps the attachment alive;
       // failing here would tear down the socket and every other session with
       // it.
-      onFrame: (_client, frame) => {
-        if (frame._tag === "command.response") {
-          const pending = pendingCommands.get(frame.id);
-          if (!pending) return Effect.void;
-          pendingCommands.delete(frame.id);
-          return frame.error !== undefined
-            ? Deferred.fail(pending, frame.error)
-            : Deferred.succeed(pending, frame.result);
-        }
-        return supervisor
-          .handle(frame)
-          .pipe(
-            Effect.catchTag("PtyError", (error) =>
-              Effect.logDebug(`attach frame ignored: ${error.operation}: ${error.message}`),
-            ),
-          );
-      },
+      onFrame: (_client, frame) =>
+        Match.value(frame).pipe(
+          Match.tag("command.response", (frame) => {
+            const pending = pendingCommands.get(frame.id);
+            if (!pending) return Effect.void;
+            pendingCommands.delete(frame.id);
+            return frame.error !== undefined
+              ? Deferred.fail(pending, frame.error)
+              : Deferred.succeed(pending, frame.result);
+          }),
+          Match.orElse((frame) =>
+            supervisor
+              .handle(frame)
+              .pipe(
+                Effect.catchTag("PtyError", (error) =>
+                  Effect.logDebug(`attach frame ignored: ${error.operation}: ${error.message}`),
+                ),
+              ),
+          ),
+        ),
     });
     const runOnClient = (
       client: string,
@@ -363,7 +378,8 @@ const make = <
           session: id,
           message: { _tag: "agent.prompt", text, ...options },
         }),
-      message: (id, message) => supervisor.handle({ _tag: "session.message", session: id, message }),
+      message: (id, message) =>
+        supervisor.handle({ _tag: "session.message", session: id, message }),
       interrupt: (id, reason) =>
         supervisor.handle({
           _tag: "session.message",
@@ -458,7 +474,7 @@ export const layerAttachHost = <
     SessionExitError,
     SessionStateError
   >,
-): Layer.Layer<AttachHost | SessionSupervisor, AttachServerError> =>
+): Layer.Layer<AttachHost | SessionSupervisor, AttachServerError, FileSystem.FileSystem> =>
   Layer.effect(AttachHost, make(options)).pipe(
     Layer.provideMerge(layerSessionSupervisor(options)),
     Layer.provide(AttachHub.layer),

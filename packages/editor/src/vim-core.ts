@@ -185,16 +185,26 @@ function normalKey(state: EditorState, key: KeyEvent): EditorState {
   }
 }
 
+function insertCol(
+  state: EditorState,
+  line: string,
+  where: "here" | "after" | "start" | "end",
+): number {
+  switch (where) {
+    case "start":
+      return 0;
+    case "end":
+      return line.length;
+    case "after":
+      return state.cursor.col + 1;
+    case "here":
+      return state.cursor.col;
+  }
+}
+
 function enterInsert(state: EditorState, where: "here" | "after" | "start" | "end"): EditorState {
   const line = state.lines[state.cursor.row]!;
-  const col =
-    where === "start"
-      ? 0
-      : where === "end"
-        ? line.length
-        : where === "after"
-          ? state.cursor.col + 1
-          : state.cursor.col;
+  const col = insertCol(state, line, where);
   return {
     ...state,
     mode: "insert",

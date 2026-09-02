@@ -1,5 +1,0 @@
-id: effect-v3-closeable-scope-to-closeable
-language: TypeScript
-rule:
-  pattern: Scope.CloseableScope
-fix: Scope.Closeable

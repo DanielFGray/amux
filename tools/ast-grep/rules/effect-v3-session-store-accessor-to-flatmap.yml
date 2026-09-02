@@ -1,9 +1,0 @@
-id: effect-v3-session-store-accessor-to-flatmap
-language: TypeScript
-message: Context.Service in v4 has no auto-generated static accessors; go through the service instance.
-rule:
-  pattern: SessionStore.$METHOD($$$ARGS)
-constraints:
-  METHOD:
-    regex: '^(load|save|readLease|writeLease|remove|exists)$'
-fix: Effect.flatMap(SessionStore, (store) => store.$METHOD($$$ARGS))

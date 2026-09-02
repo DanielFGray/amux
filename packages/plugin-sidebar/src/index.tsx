@@ -1,19 +1,15 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { Effect } from "effect";
-import { theme } from "@danielfgray/amux"
-import {
-  definePlugin,
-  type DockPanel,
-  type PluginDefinition,
-} from "@danielfgray/amux"
-import { OptionsTag, RegionsTag } from "@danielfgray/amux"
-import type { SidebarDisplayRow } from "@danielfgray/amux"
-import { ProcessState } from "@danielfgray/amux"
+import { theme } from "@danielfgray/amux";
+import { definePlugin, type DockPanel, type PluginDefinition } from "@danielfgray/amux";
+import { OptionsTag, PanelTag, RegionsTag } from "@danielfgray/amux";
+import type { SidebarDisplayRow } from "@danielfgray/amux";
+import { ProcessState } from "@danielfgray/amux";
 import { deriveProcessDisplay } from "@danielfgray/amux-agent-awareness/display-state.ts";
-import { command } from "@danielfgray/amux"
+import { command } from "@danielfgray/amux";
 import { formatText } from "@danielfgray/amux/format.ts";
-import type { OptionSpec } from "@danielfgray/amux"
+import type { OptionSpec } from "@danielfgray/amux";
 
 export const SIDEBAR_PLUGIN_ID = "amux.sidebar";
 
@@ -38,11 +34,12 @@ export const SIDEBAR_OPTIONS = {
 export const sidebarPlugin: PluginDefinition = definePlugin({
   id: SIDEBAR_PLUGIN_ID,
   apiVersion: "1",
-  inject: [RegionsTag, OptionsTag],
-  effect: (ctx) =>
+  inject: [RegionsTag, OptionsTag, PanelTag],
+  effect: () =>
     Effect.gen(function* () {
       const regions = yield* RegionsTag;
       const options = yield* OptionsTag;
+      const panelContext = yield* PanelTag;
       yield* Effect.all(
         Object.entries(SIDEBAR_OPTIONS).map(([name, spec]) => options.register([name, spec])),
       );
@@ -53,23 +50,23 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
       function activate(row: SidebarDisplayRow) {
         if (row.kind === "branch") return;
         selected = row.index;
-        ctx.panel.setSelectedAgentId(row.agentId ?? null);
+        panelContext.setSelectedAgentId(row.agentId ?? null);
 
         const effect =
           row.kind === "space"
-            ? ctx.panel.run(command("space.select", { space: row.spaceId }))
+            ? panelContext.run(command("space.select", { space: row.spaceId }))
             : row.kind === "window"
-              ? ctx.panel.run(
+              ? panelContext.run(
                   command("window.select", {
                     space: row.spaceId,
                     number: row.windowNumber!,
                   }),
                 )
-              : ctx.panel.run(command("session.reveal", { session: row.agentId! }));
+              : panelContext.run(command("session.reveal", { session: row.agentId! }));
 
         Effect.runForkWith(runtime)(
           effect.pipe(
-            Effect.catch((error) => Effect.sync(() => ctx.panel.reportError(error.message))),
+            Effect.catch((error) => Effect.sync(() => panelContext.reportError(error.message))),
           ),
         );
       }
@@ -79,25 +76,25 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
         region: "left",
         anchor: "app",
         title: "spaces",
-        visible: () => ctx.panel.options()["sidebar.open"] as boolean,
-        size: () => ctx.panel.options()["sidebar.width"] as number,
+        visible: () => panelContext.options()["sidebar.open"] as boolean,
+        size: () => panelContext.options()["sidebar.width"] as number,
         resizable: true,
         onResize: (delta) => {
-          const width = ctx.panel.options()["sidebar.width"] as number;
-          ctx.panel.setOption("sidebar.width", width + delta);
+          const width = panelContext.options()["sidebar.width"] as number;
+          panelContext.setOption("sidebar.width", width + delta);
         },
         component: () => (
           <SidebarView
-            display={() => ctx.panel.display()}
-            tick={() => ctx.panel.tick()}
+            display={() => panelContext.display()}
+            tick={() => panelContext.tick()}
             selected={() => selected}
             setSelected={(v) => {
               selected = v;
             }}
             hovered={() => hovered}
             setHovered={(v) => (hovered = v)}
-            agentsOnly={() => !!ctx.panel.options()["sidebar.agentsOnly"]}
-            format={() => ctx.panel.options()["sidebar.format"] as string}
+            agentsOnly={() => !!panelContext.options()["sidebar.agentsOnly"]}
+            format={() => panelContext.options()["sidebar.format"] as string}
             onActivate={activate}
           />
         ),

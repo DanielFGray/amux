@@ -181,6 +181,75 @@ ast-grep scan \
 This is a warning rule rather than a rewrite because choosing `orElse`,
 `exhaustive`, or an explicit fallback depends on the surrounding control flow.
 
+## Same-Value Nested Ternary Checks
+
+`same-value-nested-ternary.yml` warns on a chain of `$A === $X ? ... : $A === $Y ? ...`
+where the same expression is compared at least twice. The one caveat that keeps
+it a warning rule: the pattern matches every depth of a chain, so a 4-arm chain
+reports three matches. Act on the topmost one only.
+
+The canonical replacements, by shape:
+
+- Closed literal union (e.g. copy-mode `dir`): collect every arm and end with
+  `Match.exhaustive` so adding a value to the union fails to compile:
+
+  ```ts
+  Match.value(dir).pipe(
+    Match.when(Match.is("forward-start"), () => forwardWordStart(line, startAt)),
+    Match.when(Match.is("forward-end"), () => forwardWordEnd(line, startAt)),
+    Match.when(Match.is("backward-start"), () => backwardWordStart(line, startAt)),
+    Match.exhaustive,
+  );
+  ```
+
+- Untyped input or an opaque fallback (e.g. an OpenAI finish reason on a
+  `string`): end with `Match.orElse`. Literal arms need `as const` — the
+  contextual return type does not flow through `Match`'s generics, and the
+  literals otherwise widen to `string`:
+
+  ```ts
+  Match.value(reason).pipe(
+    Match.when(Match.is("stop"), () => "stop" as const),
+    Match.when(Match.is("content_filter"), () => "content-filter" as const),
+    Match.when(Match.is("tool_calls", "function_call"), () => "tool-calls" as const),
+    Match.orElse(() => "unknown" as const),
+  );
+  ```
+
+- Tagged-union dispatch inside an expression position (e.g. a stream frame
+  switch that must yield an Effect): use `Match.tag` and keep an
+  `Match.orElse(() => Effect.void)` default instead of folding a compound
+  `_tag === x && field === y` check into a `when` predicate.
+
+- Two+ values deriving one result are a lookup table, not `Match`. The old
+  dock-resize `grows` cross-product of `side` and `direction` became
+  `direction === DOCK_GROW_DIRECTION[side]`; a table also beats `Match` for a
+  closed literal union that maps to plain functions.
+
+- A two-branch comparison plus an identity default (e.g. `at === from ?
+b : at === to ? a : pane` in a rewrite callback) stays a ternary.
+
+- Effect-free packages (the editor, which deliberately depends only on
+  `@opentui/core`) use a plain exhaustive `switch` over the closed union —
+  do not pull `effect` into a package just for `Match`.
+
+Do not write a blanket `-U` fix rule for this warning. Anchoring the pattern so
+the else branch is not another ternary still rewrites the tail of a multi-level
+chain and leaves a nested `Match.value` in the `orElse` body. The four shapes
+above share no single rewrite, so review each occurrence by hand.
+
+```bash
+ast-grep scan \
+  --rule tools/ast-grep/rules/same-value-nested-ternary.yml \
+  packages \
+  --globs '**/*.ts' \
+  --report-style medium
+```
+
+Gotcha: a ternary pattern's `$A === $X ? $B : $A === $Y ? $D : $E` must be
+single-quoted in YAML — the unquoted plain scalar parses the `: ` sequences as
+nested mappings and the rule file fails to load.
+
 ## Applying A Reviewed Rule
 
 Only after reviewing the dry-run output should a rule be applied:

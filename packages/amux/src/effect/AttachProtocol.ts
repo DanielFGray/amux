@@ -1,5 +1,5 @@
 import { Schema as S, SchemaAST as AST } from "effect";
-import { PermissionDecisionSchema, PermissionRuleSchema } from "../permission.ts";
+import { PermissionDecisionSchema } from "../permission.ts";
 
 export const SESSION_STATE_TOPIC = "session.state";
 
@@ -9,7 +9,7 @@ export const JsonValueSchema: S.Codec<JsonValue> = S.suspend(() =>
     S.Null,
     S.String,
     S.Boolean,
-    S.Number.pipe(S.check(S.isFinite())),
+    S.Finite,
     S.Array(JsonValueSchema),
     S.Record(S.String, JsonValueSchema),
   ]),
@@ -64,7 +64,7 @@ const Resize = S.TaggedStruct("resize", {
  */
 const Sync = S.TaggedStruct("sync", {
   session: S.String,
-  after: S.optional(S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))),
+  after: S.optional(S.Int.check(S.isGreaterThanOrEqualTo(0))),
 });
 
 /**
@@ -97,7 +97,7 @@ const Foreground = S.TaggedStruct("foreground", {
  * session ordering and routing.
  */
 const Workspace = S.TaggedStruct("workspace", {
-  revision: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+  revision: S.Int.check(S.isGreaterThanOrEqualTo(0)),
   state: S.String,
 });
 
@@ -107,146 +107,9 @@ const Exit = S.TaggedStruct("exit", {
 });
 
 /**
- * Durable semantic events emitted by a native agent session. `sequence` is
- * assigned by the daemon when the event is committed to the session log.
- * Payloads remain provider-neutral JSON values rather than rendered terminal
- * content or transport-specific handles.
+ * A durable value published under a name whose meaning belongs to the named
+ * subscriber, not core.
  */
-const turnStartFields = {
-  session: S.String,
-  turn: S.String,
-  prompt: S.String,
-};
-const TurnStartPayload = S.TaggedStruct("turn.start", turnStartFields);
-const TurnStart = S.TaggedStruct("turn.start", {
-  ...turnStartFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
-});
-
-/** A durably admitted prompt that has not yet been promoted to provider input. */
-const turnQueuedFields = {
-  session: S.String,
-  turn: S.String,
-  prompt: S.String,
-  delivery: S.Literals(["steer", "queue"]),
-};
-const TurnQueuedPayload = S.TaggedStruct("turn.queued", turnQueuedFields);
-const TurnQueued = S.TaggedStruct("turn.queued", {
-  ...turnQueuedFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
-});
-
-const TextDelta = S.TaggedStruct("text.delta", {
-  session: S.String,
-  turn: S.String,
-  text: S.String,
-});
-
-// Reasoning is an event, not a live-only delta: the pane rebuilds its blocks by
-// folding the durable log, so thinking that was never appended vanishes on the
-// next remount. It therefore carries a sequence like every other event.
-const reasoningDeltaFields = {
-  session: S.String,
-  turn: S.String,
-  text: S.String,
-};
-const ReasoningDeltaPayload = S.TaggedStruct("reasoning.delta", reasoningDeltaFields);
-const ReasoningDelta = S.TaggedStruct("reasoning.delta", {
-  ...reasoningDeltaFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
-});
-
-const toolStartFields = {
-  session: S.String,
-  turn: S.String,
-  call: S.String,
-  tool: S.String,
-  input: JsonValueSchema,
-};
-const ToolStartPayload = S.TaggedStruct("tool.start", toolStartFields);
-const ToolStart = S.TaggedStruct("tool.start", {
-  ...toolStartFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
-});
-
-/**
- * A provider begins streaming a tool argument as incremental JSON fragments.
- * `tool.params-start` arrives before any deltas; the `tool.start` frame with
- * the parsed input follows the last delta. Every partial-tool frame shares
- * the call id so a transcript can append deltas into a block the start frame
- * created.
- */
-const ToolParamsStart = S.TaggedStruct("tool.params-start", {
-  session: S.String,
-  turn: S.String,
-  call: S.String,
-  tool: S.String,
-});
-
-/**
- * A single incremental JSON fragment of a streaming tool argument.
- * Concatenating deltas produces the JSON value that will be in the eventual
- * `tool.start` frame's `input` field.
- */
-const ToolParamsDelta = S.TaggedStruct("tool.params-delta", {
-  session: S.String,
-  turn: S.String,
-  call: S.String,
-  delta: S.String,
-});
-
-/**
- * The last partial-tool frame for this call — no further deltas arrive.
- * The provider has finished streaming the argument; the next tool event
- * for the same call id is `tool.start` with the parsed `input`.
- */
-const ToolParamsEnd = S.TaggedStruct("tool.params-end", {
-  session: S.String,
-  turn: S.String,
-  call: S.String,
-});
-
-const toolResultFields = {
-  session: S.String,
-  turn: S.String,
-  call: S.String,
-  output: JsonValueSchema,
-  isError: S.Boolean,
-};
-const ToolResultPayload = S.TaggedStruct("tool.result", toolResultFields);
-const ToolResult = S.TaggedStruct("tool.result", {
-  ...toolResultFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
-});
-
-const permissionRequestFields = {
-  session: S.String,
-  turn: S.String,
-  request: S.String,
-  tool: S.String,
-  action: S.String,
-  resources: S.Array(S.String),
-  save: S.Array(PermissionRuleSchema),
-  input: JsonValueSchema,
-};
-const PermissionRequestPayload = S.TaggedStruct("permission.request", permissionRequestFields);
-const PermissionRequest = S.TaggedStruct("permission.request", {
-  ...permissionRequestFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
-});
-const permissionResponseFields = {
-  session: S.String,
-  request: S.String,
-  decision: PermissionDecisionSchema,
-  feedback: S.optional(S.String),
-};
-const PermissionResponsePayload = S.TaggedStruct("permission.response", permissionResponseFields);
-const PermissionResponse = S.TaggedStruct("permission.response", {
-  ...permissionResponseFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
-});
-
-/** A durable value whose meaning belongs to the named subscriber, not core. */
 const topicFields = {
   session: S.String,
   topic: S.String,
@@ -255,50 +118,88 @@ const topicFields = {
 const TopicPayload = S.TaggedStruct("topic", topicFields);
 export const Topic = S.TaggedStruct("topic", {
   ...topicFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+  sequence: S.Int.check(S.isGreaterThanOrEqualTo(0)),
 });
 export type Topic = S.Schema.Type<typeof Topic>;
 
-const AgentErrorFields = {
+/**
+ * One durable event in a session's log, whose contents core does not read.
+ *
+ * A turn beginning, a tool call, a permission request — that is a turn loop's
+ * vocabulary, and a multiplexor that spelled it out here would be asserting
+ * that every component session has turns and tools. What core actually needs
+ * is far less: `session` says which log, `sequence` orders it, and `event` is
+ * carried verbatim. `AgentLog` bears this out — it reads only those two fields
+ * and never inspects a payload.
+ *
+ * The harness owns the schema inside `event` and is the only thing that
+ * decodes it. Core stores, orders and replays.
+ */
+const agentMessageFields = {
+  session: S.String,
+  event: JsonValueSchema,
+};
+const AgentMessagePayload = S.TaggedStruct("agent.message", agentMessageFields);
+const AgentMessage = S.TaggedStruct("agent.message", {
+  ...agentMessageFields,
+  sequence: S.Int.check(S.isGreaterThanOrEqualTo(0)),
+});
+
+/**
+ * A component's worker failed in a way core itself observed.
+ *
+ * Core spawns and supervises that worker, so its stderr and its death are
+ * core's business rather than the harness's — unlike everything inside
+ * `agent.message`, which core only carries. Durable, because a worker that
+ * died before emitting anything must still leave a trace in the log.
+ */
+const sessionErrorFields = {
   session: S.String,
   message: S.String,
 };
-const AgentErrorPayload = S.TaggedStruct("agent.error", AgentErrorFields);
-const AgentError = S.TaggedStruct("agent.error", {
-  ...AgentErrorFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+const SessionErrorPayload = S.TaggedStruct("session.error", sessionErrorFields);
+const SessionError = S.TaggedStruct("session.error", {
+  ...sessionErrorFields,
+  sequence: S.Int.check(S.isGreaterThanOrEqualTo(0)),
 });
 
-const turnEndFields = {
-  session: S.String,
-  turn: S.String,
-  outcome: S.Literals(["completed", "interrupted", "failed"]),
-  // The final text makes a completed turn reconstructible after live deltas expire.
-  text: S.optional(S.String),
-  // Why a failed turn failed. Without it the pane can only say that something
-  // went wrong, which leaves a rejected request or a bad credential looking
-  // exactly like a model that had nothing to say.
-  error: S.optional(S.String),
-};
-const TurnEndPayload = S.TaggedStruct("turn.end", turnEndFields);
-const TurnEnd = S.TaggedStruct("turn.end", {
-  ...turnEndFields,
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
-});
-
+/**
+ * Everything a component may add to its log, before the daemon commits it.
+ *
+ * Three envelopes, none of which core reads into: a value published under a
+ * name, an opaque durable event, and the one failure core saw for itself.
+ */
 export const AgentEventPayloadSchema = S.Union([
-  TurnQueuedPayload,
-  TurnStartPayload,
-  ReasoningDeltaPayload,
-  ToolStartPayload,
-  ToolResultPayload,
-  PermissionRequestPayload,
-  PermissionResponsePayload,
   TopicPayload,
-  AgentErrorPayload,
-  TurnEndPayload,
+  AgentMessagePayload,
+  SessionErrorPayload,
 ]);
-const AgentEventInputFrame = S.TaggedStruct("agent.event", { event: AgentEventPayloadSchema });
+export const isAgentEventPayload = S.is(AgentEventPayloadSchema);
+
+/**
+ * A component asking the daemon to commit one event to its log.
+ *
+ * The payload is nested rather than sent flat because the committed form
+ * carries the same tag plus a `sequence` the daemon alone assigns. Keeping the
+ * request in its own frame is what stops a worker from writing that field
+ * itself and choosing its own place in the order.
+ */
+const AgentEmit = S.TaggedStruct("agent.emit", { event: AgentEventPayloadSchema });
+
+/**
+ * A live fragment that is never appended to the log.
+ *
+ * Streamed text and partial tool arguments exist only to keep a pane moving
+ * while a durable event is still being assembled; a client that attaches later
+ * rebuilds from the log instead. Opaque for the same reason as `agent.message`,
+ * and a frame of its own because carrying a sequence would promise a replay
+ * that never comes.
+ */
+export const AgentDelta = S.TaggedStruct("agent.delta", {
+  session: S.String,
+  delta: JsonValueSchema,
+});
+export type AgentDelta = S.Schema.Type<typeof AgentDelta>;
 
 /** Private harness control payload. It is carried in `session.message`, not a
  * core attach-frame tag. */
@@ -347,28 +248,11 @@ const CommandResponse = S.TaggedStruct("command.response", {
   error: S.optional(S.String),
 });
 
-export const AgentEvent = S.Union([
-  TurnQueued,
-  TurnStart,
-  ReasoningDelta,
-  ToolStart,
-  ToolResult,
-  PermissionRequest,
-  PermissionResponse,
-  Topic,
-  AgentError,
-  TurnEnd,
-]);
+/** A committed log entry: what the daemon publishes after assigning `sequence`. */
+export const AgentEvent = S.Union([Topic, AgentMessage, SessionError]);
 export type AgentEvent = S.Schema.Type<typeof AgentEvent>;
-export type AgentEventPayload = AgentEvent extends infer Event
-  ? Event extends { readonly sequence: number }
-    ? Omit<Event, "sequence">
-    : never
-  : never;
-export const isAgentEventPayload = S.is(AgentEventPayloadSchema);
-
-export const AgentDelta = S.Union([TextDelta, ToolParamsStart, ToolParamsDelta, ToolParamsEnd]);
-export type AgentDelta = S.Schema.Type<typeof AgentDelta>;
+export type AgentEventPayload = S.Schema.Type<typeof AgentEventPayloadSchema>;
+export const isAgentEvent = S.is(AgentEvent);
 
 export const AttachFrame = S.Union([
   Hello,
@@ -379,21 +263,11 @@ export const AttachFrame = S.Union([
   Exit,
   Foreground,
   Workspace,
-  AgentEventInputFrame,
-  TurnQueued,
-  TurnStart,
-  TextDelta,
-  ReasoningDelta,
-  ToolStart,
-  ToolParamsStart,
-  ToolParamsDelta,
-  ToolParamsEnd,
-  ToolResult,
-  PermissionRequest,
-  PermissionResponse,
+  AgentEmit,
   Topic,
-  AgentError,
-  TurnEnd,
+  AgentMessage,
+  SessionError,
+  AgentDelta,
   SessionMessage,
   ErrorFrame,
   Ping,
@@ -402,7 +276,7 @@ export const AttachFrame = S.Union([
   CommandResponse,
 ]);
 export type AttachFrame = S.Schema.Type<typeof AttachFrame>;
-export type AgentEventInputFrame = S.Schema.Type<typeof AgentEventInputFrame>;
+export type AgentEmit = S.Schema.Type<typeof AgentEmit>;
 
 function taggedSchemaTag(ast: AST.AST): string | undefined {
   if (ast._tag !== "Objects") return undefined;
@@ -419,7 +293,6 @@ export const AttachFrameTags = new Set(
 
 export const AgentFrame = S.Union([AgentEvent, AgentDelta]);
 export type AgentFrame = AgentEvent | AgentDelta;
-export const isAgentEvent = S.is(AgentEvent);
 
 export class AttachProtocolError extends S.TaggedError<AttachProtocolError>()(
   "AttachProtocolError",
@@ -473,7 +346,7 @@ export function decodeAttachFrames(input: string) {
   for (const line of lines) {
     if (!line) continue;
     try {
-      frames.push(S.decodeUnknownSync(S.fromJsonString(AttachFrame))(line));
+      frames.push(S.decodeSync(S.fromJsonString(AttachFrame))(line));
     } catch (error) {
       throw new AttachProtocolError({
         message: error instanceof Error ? error.message : String(error),

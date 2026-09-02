@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: this suite drives the SolidJS/opentui render tree; see the seam documented in packages/amux/src/harness.ts. */
 /** @jsxImportSource @opentui/solid */
 import { scopedSpaceSet } from "../harness.ts";
 import { Effect } from "effect";

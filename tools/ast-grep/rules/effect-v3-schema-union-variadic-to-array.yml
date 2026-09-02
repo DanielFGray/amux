@@ -1,7 +1,0 @@
-id: effect-v3-schema-union-variadic-to-array
-language: TypeScript
-message: Schema.Union takes an array of members in Effect v4, not variadic arguments.
-severity: warning
-rule:
-  pattern: S.Union($A, $B, $$$REST)
-fix: S.Union([$A, $B, $$$REST])

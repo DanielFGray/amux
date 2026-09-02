@@ -1,4 +1,4 @@
-import { Option, Schema as S } from "effect";
+import { Match, Option, Schema as S } from "effect";
 import { COMMAND_DEFS, COMMAND_META, type CommandTag } from "./commands.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 
@@ -6,13 +6,12 @@ import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
  * Field metadata derived from each command's schema fields.
  * Keyed by command tag, mapping field name → kind.
  */
-type FieldKind = "string" | "int" | "boolean" | "literal" | "array";
-type FieldSpec = {
-  name: string;
-  kind: FieldKind;
-  required: boolean;
-  literals?: readonly string[];
-};
+type FieldSpec =
+  | { name: string; kind: "string"; required: boolean }
+  | { name: string; kind: "int"; required: boolean; minimum?: number }
+  | { name: string; kind: "boolean"; required: boolean }
+  | { name: string; kind: "literal"; required: boolean; literals: readonly string[] }
+  | { name: string; kind: "array"; required: boolean };
 
 type JsonSchemaObject = {
   properties?: Record<string, JsonSchemaObject>;
@@ -23,6 +22,7 @@ type JsonSchemaObject = {
   $ref?: string;
   $defs?: Record<string, JsonSchemaObject>;
   anyOf?: readonly JsonSchemaObject[];
+  minimum?: number;
 };
 
 function commandSchema(tag: CommandTag): JsonSchemaObject {
@@ -53,7 +53,8 @@ function fieldSpec(
 ): FieldSpec {
   const resolved = resolveSchema(schema, root);
   if (resolved.enum) return { name, kind: "literal", required, literals: resolved.enum };
-  if (resolved.type === "integer") return { name, kind: "int", required };
+  if (resolved.type === "integer")
+    return { name, kind: "int", required, minimum: resolved.minimum };
   if (resolved.type === "boolean") return { name, kind: "boolean", required };
   if (resolved.type === "array") return { name, kind: "array", required };
   return { name, kind: "string", required };
@@ -152,27 +153,27 @@ function coerce(value: string | undefined, field: FieldSpec): JsonValue | undefi
     if (field.kind === "boolean") return true;
     return undefined;
   }
-  switch (field.kind) {
-    case "string":
-    case "literal":
-      return value;
-    case "int": {
-      const n = Number(value);
-      if (!Number.isSafeInteger(n)) return undefined;
-      return n;
-    }
-    case "array": {
-      const parsed = S.decodeUnknownOption(S.fromJsonString(S.Array(JsonValueSchema)))(value);
-      return Option.getOrUndefined(parsed);
-    }
-    case "boolean": {
-      if (value === "true" || value === "1") return true;
-      if (value === "false" || value === "0") return false;
-      return undefined;
-    }
-    default:
-      return value;
-  }
+  return Match.value(field).pipe(
+    Match.discriminatorsExhaustive("kind")({
+      string: () => value,
+      literal: (f) => (f.literals.includes(value) ? value : undefined),
+      int: (f) => {
+        const n = Number(value);
+        if (!Number.isSafeInteger(n)) return undefined;
+        if (f.minimum !== undefined && n < f.minimum) return undefined;
+        return n;
+      },
+      array: () => {
+        const parsed = S.decodeOption(S.fromJsonString(S.Array(JsonValueSchema)))(value);
+        return Option.getOrUndefined(parsed);
+      },
+      boolean: () => {
+        if (value === "true" || value === "1") return true;
+        if (value === "false" || value === "0") return false;
+        return undefined;
+      },
+    }),
+  );
 }
 
 /**
@@ -194,7 +195,7 @@ export function parsePluginArgs(argv: readonly string[]): ParseArgsResult {
       continue;
     }
     const [, name, raw] = flagMatch as [string, string, string];
-    const decoded = S.decodeUnknownOption(S.fromJsonString(JsonValueSchema))(raw);
+    const decoded = S.decodeOption(S.fromJsonString(JsonValueSchema))(raw);
     parsed[name] = Option.getOrElse(decoded, () => raw);
   }
   if (errors.length > 0) return { parsed: null, errors };
@@ -258,7 +259,7 @@ export function generateHelp(): string {
 function commandHelp(def: (typeof COMMAND_DEFS)[number]): string {
   const syntax = fieldNames(def.tag)
     .map((field) => {
-      const value = field.literals?.join("|") ?? field.name;
+      const value = field.kind === "literal" ? field.literals.join("|") : field.name;
       if (field.required) return `<${value}>`;
       // A boolean is set by naming it, so showing it as `--flag=<flag>` tells
       // the reader to invent a value. The parser accepts the bare form, and

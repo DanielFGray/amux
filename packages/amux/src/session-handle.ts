@@ -87,7 +87,7 @@ export class SessionHandle {
   readonly cmd: string[];
   readonly cwd: string | undefined;
   readonly term: Terminal;
-  readonly startedAt = Date.now();
+  readonly startedAt = Effect.runSync(Clock.currentTimeMillis);
 
   #backend: SessionBackend;
   #exited = false;
@@ -114,7 +114,7 @@ export class SessionHandle {
    * the heap if something frees them twice, and they used to be freed by
    * dispose() remembering to name each one. Closing a scope cannot forget.
    */
-  #scope = Effect.runSync(Scope.make());
+  #scope = Scope.makeUnsafe();
   #disposed = false;
 
   /** Bumped whenever output arrives, so views can invalidate caches. */
@@ -189,7 +189,10 @@ export class SessionHandle {
    * needs dispose(); this is what the call sites become as they convert.
    */
   static make(opts: SessionHandleOptions): Effect.Effect<SessionHandle, never, Scope.Scope> {
-    return Effect.acquireRelease(Effect.sync(() => new SessionHandle(opts)), (agent) => agent.release());
+    return Effect.acquireRelease(
+      Effect.sync(() => new SessionHandle(opts)),
+      (agent) => agent.release(),
+    );
   }
 
   /**
@@ -340,7 +343,10 @@ export class SessionHandle {
 
   #screenSnapshot(): ScreenSnapshot {
     if (this.#disposed) return { lines: [], oscTitle: "", oscProgress: "" };
-    this.#detect ??= this.#own(() => new RenderState(), (state) => state.free());
+    this.#detect ??= this.#own(
+      () => new RenderState(),
+      (state) => state.free(),
+    );
     this.#detect.update(this.term);
     return {
       lines: this.#detect.tailText(this.term.rows),
@@ -372,7 +378,7 @@ export class SessionHandle {
    *  starting is not a sub-second event. */
   get foregroundCommand(): string {
     if (this.#exited) return "";
-    const now = Date.now();
+    const now = Effect.runSync(Clock.currentTimeMillis);
     if (now - this.#commAt >= AGENT_POLL_MS) {
       this.#commAt = now;
       const fg = this.#backend.foregroundPgid();
@@ -387,7 +393,9 @@ export class SessionHandle {
   }
 
   get msSinceOutput() {
-    return this.#lastOutputAt === 0 ? Infinity : Date.now() - this.#lastOutputAt;
+    return this.#lastOutputAt === 0
+      ? Infinity
+      : Effect.runSync(Clock.currentTimeMillis) - this.#lastOutputAt;
   }
 
   /** Monotonic terminal-output revision for value-only projections. */

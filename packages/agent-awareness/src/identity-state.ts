@@ -1,5 +1,5 @@
 import { Option, Schema as S } from "effect";
-import { Topic } from "@danielfgray/amux/protocol"
+import { Topic } from "@danielfgray/amux/protocol";
 
 export * as IdentityState from "./identity-state.ts";
 

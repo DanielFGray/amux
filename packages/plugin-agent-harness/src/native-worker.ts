@@ -1,9 +1,9 @@
 import { Chat } from "effect/unstable/ai";
 import { BunFileSystem } from "@effect/platform-bun";
-import { Effect, Match, Option, Schema as S, Stream } from "effect";
+import { Effect, Layer, Match, Option, Schema as S, Stream } from "effect";
 import { Default as IntegrationDefault, Service as Integration } from "./integration.ts";
 import { loadConfig } from "@danielfgray/amux/config.ts";
-import { coerceOption } from "@danielfgray/amux"
+import { coerceOption } from "@danielfgray/amux";
 import { AGENT_HARNESS_OPTIONS, parseModelReference } from "./options.ts";
 import {
   AttachFrame,
@@ -11,6 +11,7 @@ import {
   type AgentDelta,
   type AgentEventPayload,
 } from "@danielfgray/amux/protocol";
+import { emit as toAgentMessage, type HarnessEvent } from "./protocol.ts";
 import { agentToolkit } from "./tools.ts";
 import { makePermissionGate } from "./permission.ts";
 import { DEFAULT_RULES, PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
@@ -28,6 +29,7 @@ import {
 
 // --- Process entry point ---
 
+// @effect-diagnostics-next-line processEnv:off -- bootstrap read before any Effect runs.
 const session = process.env.AMUX_SESSION ?? process.env.AMUX_AGENT_ID;
 
 /** The native harness's private component-control protocol. Core transports
@@ -55,21 +57,27 @@ if (!import.meta.main) {
 else {
   // The turn a permission request belongs to is the one currently executing.
   let turn = "";
+  // A live fragment (`agent.delta`) is already a full wire frame; a durable
+  // payload needs the daemon to assign it a place in the order, so it goes out
+  // wrapped as `agent.emit` instead of being written to stdout as-is.
   const emit = (frame: AgentEventPayload | AgentDelta) =>
     Effect.sync(() =>
       process.stdout.write(
         encodeAttachFrame(
-          frame._tag === "text.delta" || frame._tag.startsWith("tool.params-")
-            ? (frame as AttachFrame)
-            : ({ _tag: "agent.event", event: frame } as AttachFrame),
+          frame._tag === "agent.delta"
+            ? frame
+            : ({ _tag: "agent.emit", event: frame } as AttachFrame),
         ),
       ),
     );
+  const emitError = (message: string) =>
+    emit(toAgentMessage(session, { _tag: "agent.error", message } satisfies HarnessEvent));
 
+  // @effect-diagnostics-next-line processEnv:off -- bootstrap read before any Effect runs.
   const workspace = process.env.AMUX_AGENT_CWD ?? process.cwd();
 
   const program = Effect.gen(function* () {
-    const config = yield* Effect.promise(() => loadConfig());
+    const config = yield* loadConfig();
     const modelSpec = AGENT_HARNESS_OPTIONS["agent.model"];
     const modelReference = (coerceOption(modelSpec, config.options["agent.model"]) ??
       modelSpec.default) as string;
@@ -116,7 +124,7 @@ else {
         inbox: store,
         persist: chat.exportJson.pipe(
           Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
-          Effect.catch(() => Effect.void),
+          Effect.ignore,
         ),
         onTurnStart: (turnId) =>
           Effect.sync(() => {
@@ -140,9 +148,9 @@ else {
         Stream.splitLines,
         Stream.filter((line) => line.length > 0),
         Stream.mapEffect((line) =>
-          S.decodeUnknownEffect(S.fromJsonString(AttachFrame))(line).pipe(
-            Effect.mapError((error) =>
-              new AgentWorkerError({ message: sanitizeAgentError(String(error)) }),
+          S.decodeEffect(S.fromJsonString(AttachFrame))(line).pipe(
+            Effect.mapError(
+              (error) => new AgentWorkerError({ message: sanitizeAgentError(String(error)) }),
             ),
           ),
         ),
@@ -180,23 +188,21 @@ else {
             });
           }),
         ),
-        Effect.catch((error) =>
-          emit({ _tag: "agent.error", message: sanitizeAgentError(String(error)), session }),
-        ),
+        Effect.catch((error) => emitError(sanitizeAgentError(String(error)))),
       );
       yield* worker.close;
-    }).pipe(Effect.provide(modelLayer), Effect.provide(projectStoreLayer(root)));
-
+    }).pipe(Effect.provide(Layer.mergeAll(modelLayer, projectStoreLayer(root))));
   });
 
   Effect.runPromise(
     Effect.scoped(
-      program.pipe(Effect.provide(IntegrationDefault), Effect.provide(BunFileSystem.layer)),
+      program.pipe(
+        Effect.provide(IntegrationDefault.pipe(Layer.provideMerge(BunFileSystem.layer))),
+      ),
     ),
+    // @effect-diagnostics-next-line asyncFunction:off -- the outermost process-boundary catch; nothing above it to run this Effect in.
   ).catch(async (error) => {
-    await Effect.runPromise(
-      emit({ _tag: "agent.error", message: sanitizeAgentError(String(error)), session }),
-    );
+    await Effect.runPromise(emitError(sanitizeAgentError(String(error))));
     process.exitCode = 1;
   });
 }

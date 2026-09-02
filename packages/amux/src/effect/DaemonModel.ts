@@ -6,7 +6,7 @@
  * transactions; this service owns no I/O beyond the queue consumer fiber.
  */
 
-import { Context, Deferred, Effect, Layer, Queue, Ref, Schema as S, Scope } from "effect";
+import { Clock, Context, Deferred, Effect, Layer, Queue, Ref, Schema as S, Scope } from "effect";
 import type { SessionAttachment, SessionState } from "../session.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
 
@@ -125,7 +125,7 @@ export const layerDaemonModel = (initial: {
         enqueue(
           Effect.gen(function* () {
             const cur = yield* Ref.get(daemonRef);
-            const now = Date.now();
+            const now = yield* Clock.currentTimeMillis;
             const attachments = new Map(cur.attachments);
             attachments.set(connection, { client, attachedSince: now, attachLastSeen: now });
             const newState = { ...cur.state, attached: true, updatedAt: now };
@@ -156,7 +156,7 @@ export const layerDaemonModel = (initial: {
             const newState = {
               ...cur.state,
               attached: attachments.size > 0,
-              updatedAt: Date.now(),
+              updatedAt: yield* Clock.currentTimeMillis,
             };
             yield* onPersist(newState).pipe(
               Effect.catch(
@@ -170,16 +170,18 @@ export const layerDaemonModel = (initial: {
           }),
         );
 
-      const touch = (client: string, connection: string) =>
-        Ref.modify(daemonRef, (cur) => {
+      const touch = Effect.fnUntraced(function* (client: string, connection: string) {
+        const now = yield* Clock.currentTimeMillis;
+        yield* Ref.modify(daemonRef, (cur) => {
           const att = cur.attachments.get(connection);
           if (att?.client === client) {
             const attachments = new Map(cur.attachments);
-            attachments.set(connection, { ...att, attachLastSeen: Date.now() });
+            attachments.set(connection, { ...att, attachLastSeen: now });
             return [undefined as void, { ...cur, attachments }];
           }
           return [undefined as void, cur];
         });
+      });
 
       const commitWorkspace = (next: WorkspaceSnapshot, sessionState: SessionState) =>
         Ref.update(daemonRef, (cur) => ({ ...cur, workspace: next, state: sessionState }));

@@ -277,11 +277,11 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
     });
 
     const laneFor = (frame: AttachFrame): string =>
-      frame._tag === "input" || frame._tag === "resize" || frame._tag === "sync"
-        ? `session:${frame.session}`
-        : frame._tag === "hello"
-          ? "handshake"
-          : "connection";
+      Match.value(frame).pipe(
+        Match.tag("input", "resize", "sync", (f) => `session:${f.session}`),
+        Match.tag("hello", () => "handshake"),
+        Match.orElse(() => "connection"),
+      );
 
     const dispatchFrame = (socket: Bun.Socket<ClientState>, frame: AttachFrame) => {
       const state = socket.data;

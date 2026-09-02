@@ -2,7 +2,7 @@
 import { For, createMemo } from "solid-js";
 import { Effect } from "effect";
 import { definePlugin, type PluginDefinition } from "../packages/amux/src/plugin/types.ts";
-import { RegionsTag } from "../packages/amux/src/plugin/services.ts";
+import { PanelTag, RegionsTag } from "../packages/amux/src/plugin/services.ts";
 
 type TriageAgent = {
   id: string;
@@ -17,13 +17,14 @@ type TriageAgent = {
 const agentTriage: PluginDefinition = definePlugin({
   id: "example.agent-triage",
   apiVersion: "1",
-  inject: [RegionsTag],
-  effect: (ctx) =>
+  inject: [PanelTag, RegionsTag],
+  effect: () =>
     Effect.gen(function* () {
       const regions = yield* RegionsTag;
+      const panelContext = yield* PanelTag;
       const agents = createMemo<readonly TriageAgent[]>(() => {
-        ctx.panel.tick();
-        return ctx.panel
+        panelContext.tick();
+        return panelContext
           .display()
           .rows.filter((row) => row.kind === "agent" && row.agentId)
           .map((row) => ({

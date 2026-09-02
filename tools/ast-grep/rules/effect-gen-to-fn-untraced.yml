@@ -1,4 +1,5 @@
 id: effect-gen-to-fn-untraced
+severity: warning
 language: TypeScript
 rule:
   any:

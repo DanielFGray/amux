@@ -1,3 +1,5 @@
+import { Config, ConfigProvider, Effect, Option } from "effect";
+
 const AGENT_EXECUTABLES = {
   claude: "claude",
   "claude-code": "claude",
@@ -19,9 +21,23 @@ const AGENT_EXECUTABLES = {
   cline: "cline",
 } satisfies Record<string, string>;
 
+const shell = Effect.runSync(
+  Config.option(Config.string("SHELL")).pipe(
+    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
+  ),
+);
+
 const INTERPRETERS = new Set([
-  "node", "bun", "deno", "python", "python3", "sh", "bash", "fish", "zsh",
-  process.env.SHELL?.split("/").pop()?.toLowerCase() ?? "",
+  "node",
+  "bun",
+  "deno",
+  "python",
+  "python3",
+  "sh",
+  "bash",
+  "fish",
+  "zsh",
+  Option.isSome(shell) ? (shell.value.split("/").pop()?.toLowerCase() ?? "") : "",
 ]);
 
 function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
@@ -29,10 +45,15 @@ function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
 }
 
 const executableName = (token: string): string =>
-  token.split("/").pop()!.replace(/\.(exe|cmd|js|mjs|ts)$/i, "").toLowerCase();
+  token
+    .split("/")
+    .pop()!
+    .replace(/\.(exe|cmd|js|mjs|ts)$/i, "")
+    .toLowerCase();
 
 export function identifyAgent(command: string | readonly string[]): string | null {
-  const tokens = typeof command === "string" ? command.trim().split(/\s+/).filter(Boolean) : command;
+  const tokens =
+    typeof command === "string" ? command.trim().split(/\s+/).filter(Boolean) : command;
   const first = tokens[0];
   if (!first) return null;
   const base = executableName(first);
@@ -47,7 +68,9 @@ const CLAUDE_ACTIVITY_GLYPHS = "·✢✳✶✻✽";
 
 const isActivityGlyph = (ch: string): boolean => {
   const cp = ch.codePointAt(0);
-  return cp !== undefined && ((cp >= 0x2800 && cp <= 0x28ff) || CLAUDE_ACTIVITY_GLYPHS.includes(ch));
+  return (
+    cp !== undefined && ((cp >= 0x2800 && cp <= 0x28ff) || CLAUDE_ACTIVITY_GLYPHS.includes(ch))
+  );
 };
 
 export function splitActivity(title: string) {

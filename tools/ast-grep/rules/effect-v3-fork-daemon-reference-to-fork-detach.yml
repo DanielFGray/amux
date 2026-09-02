@@ -1,5 +1,0 @@
-id: effect-v3-fork-daemon-reference-to-fork-detach
-language: TypeScript
-rule:
-  pattern: Effect.forkDaemon
-fix: Effect.forkDetach

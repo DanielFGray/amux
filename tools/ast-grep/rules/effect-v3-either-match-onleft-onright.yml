@@ -1,6 +1,0 @@
-id: effect-v3-either-match-onleft-onright
-language: TypeScript
-message: Either.match's onLeft/onRight options were renamed to onFailure/onSuccess on Result in v4.
-rule:
-  pattern: "Either.match({ onLeft: $L, onRight: $R })"
-fix: "Result.match({ onFailure: $L, onSuccess: $R })"

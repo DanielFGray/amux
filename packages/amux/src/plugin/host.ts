@@ -1,6 +1,4 @@
-import { Effect, Deferred, Equal, Exit, Fiber, Queue, Scope, Stream } from "effect";
-import type { PanelContext } from "../ui/panel.ts";
-import type { AttachFrame } from "../effect/AttachProtocol.ts";
+import { Clock, Effect, Deferred, Equal, Exit, Fiber, Queue, Scope, Stream } from "effect";
 import { createPluginKV } from "./kv.ts";
 import {
   createPluginServices,
@@ -90,18 +88,19 @@ interface PluginState {
 }
 
 /**
- * Everything a plugin can reach, in one place.
+ * What the host itself needs, which is only the tables it files registrations
+ * in.
  *
- * Every field is required. An optional collaborator here would mean a host that
- * accepts a registration and silently drops it — a plugin cannot tell that from
- * a registration that worked, and the caller who left the field out cannot tell
- * either.
+ * A panel context, an attach frame stream and a sync callback used to sit here
+ * too, and that is what kept the host inside the UI: a process with no client —
+ * a CLI-time host loading plugins to collect their subcommands — had nothing
+ * honest to pass. Capabilities are services now, so a host publishes the ones
+ * its process actually has and a plugin injects what it needs. One that injects
+ * a capability nobody provides is left inactive and reported, which is the same
+ * answer `reconcile` already gives for every other unsatisfiable injection.
  */
 export interface PluginEnvironment {
-  readonly panel: PanelContext;
   readonly contributions: PluginContributions;
-  readonly frames: (session: string) => Stream.Stream<AttachFrame, never>;
-  readonly sync: (session: string) => void;
 }
 
 export function createPluginHost(
@@ -150,7 +149,6 @@ export function createPluginHost(
       const declaredKeys = new Set(declared.map((tag) => tag.key));
       return {
         id: pluginId,
-        panel: env.panel,
         kv: kvFor(pluginId),
         provide: (tag, service) => {
           // The declaration is what the host reasons about before anything
@@ -164,8 +162,6 @@ export function createPluginHost(
           return scoped(() => services.withdraw(owner, tag));
         },
         get: (tag) => services.get(tag),
-        frames: env.frames,
-        sync: env.sync,
       };
     }
 
@@ -176,7 +172,7 @@ export function createPluginHost(
           phase: "activate",
           source: "host",
           error: new Error("Plugin host is disposed"),
-          timestamp: Date.now(),
+          timestamp: yield* Clock.currentTimeMillis,
         });
         return;
       }
@@ -189,7 +185,7 @@ export function createPluginHost(
           error: new Error(
             `Plugin '${plugin.id}' declares apiVersion '${plugin.apiVersion}' but this host supports '${SUPPORTED_API_VERSION}'`,
           ),
-          timestamp: Date.now(),
+          timestamp: yield* Clock.currentTimeMillis,
         });
         return;
       }
@@ -209,7 +205,7 @@ export function createPluginHost(
             error: new Error(
               `Plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
             ),
-            timestamp: Date.now(),
+            timestamp: yield* Clock.currentTimeMillis,
           });
           return;
         }
@@ -233,7 +229,7 @@ export function createPluginHost(
               phase: "activate",
               source: "plugin",
               error,
-              timestamp: Date.now(),
+              timestamp: yield* Clock.currentTimeMillis,
             });
             yield* Deferred.succeed(started, "failed");
             if (previous) yield* Scope.close(pluginScope, Exit.void);
@@ -277,7 +273,7 @@ export function createPluginHost(
           error: new Error(
             `Plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
           ),
-          timestamp: Date.now(),
+          timestamp: yield* Clock.currentTimeMillis,
         });
         return yield* Effect.fail(
           `plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
@@ -324,7 +320,7 @@ export function createPluginHost(
       for (const dependent of services.dependentsOf(state.instance)) {
         const dependentState = activePlugins.get(dependent);
         if (!dependentState) continue;
-        regated.push(dependentState.reactivate.pipe(Effect.catch(() => Effect.void)));
+        regated.push(dependentState.reactivate.pipe(Effect.ignore));
         yield* removePlugin(dependent);
       }
 
@@ -413,7 +409,7 @@ export function createPluginHost(
           error: new Error(
             `plugin '${id}' injects '${key}', which nothing in the configuration provides`,
           ),
-          timestamp: Date.now(),
+          timestamp: yield* Clock.currentTimeMillis,
         });
       if (startFailure) return yield* Effect.fail(startFailure);
       return refused as readonly RefusedPlugin[];

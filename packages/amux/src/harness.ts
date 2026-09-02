@@ -12,6 +12,8 @@
  * These harnesses run real PTYs and a real ghostty VT behind a real renderer.
  * Nothing is mocked, because what they assert is the domain: split trees,
  * agent lifecycle, and geometry that only exists once yoga has run a frame.
+ *
+ * @effect-diagnostics *:skip-file -- this file constructs the render-tree/PTY seam it documents above.
  */
 
 import { BoxRenderable } from "@opentui/core";
@@ -63,7 +65,7 @@ export const runAsync = <A>(effect: Effect.Effect<A>): Promise<A> => Effect.runP
  * those suites had.
  */
 export function scopedSpaceSet(env: Context.Context<WorkspaceEnv>, host: BoxRenderable) {
-  const scope = Effect.runSync(Scope.make());
+  const scope = Scope.makeUnsafe();
   const spaces = Effect.runSync(Scope.provide(SpaceSet.make(env, host), scope));
   return { spaces, dispose: () => runAsync(Scope.close(scope, Exit.void)) };
 }
@@ -132,7 +134,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   // here, so `dispose` closing it is what ends the PTYs — the suites no longer
   // reach for disposeAll, and a suite that forgets to dispose leaks nothing it
   // did not already leak through the renderer.
-  const scope = Effect.runSync(Scope.make());
+  const scope = Scope.makeUnsafe();
   const build = () =>
     Effect.runSync(
       Scope.provide(SpaceSet.make(workspaceEnv(t.renderer, { shell }), mounted), scope),

@@ -1,9 +1,9 @@
 import { Effect, Schema as S } from "effect";
-import { ProcessState } from "@danielfgray/amux"
-import { POLL_MS } from "@danielfgray/amux"
+import { ProcessState } from "@danielfgray/amux";
+import { POLL_MS } from "@danielfgray/amux";
 import { scheduledPoll } from "@danielfgray/amux/effect/timer.ts";
-import { definePlugin, type PluginDefinition } from "@danielfgray/amux"
-import { CommandsTag, OptionsTag, registerCommand } from "@danielfgray/amux"
+import { definePlugin, type PluginDefinition } from "@danielfgray/amux";
+import { CommandsTag, OptionsTag, PanelTag, registerCommand } from "@danielfgray/amux";
 
 export const NOTIFICATIONS_PLUGIN_ID = "amux.notifications";
 
@@ -16,10 +16,11 @@ export const NOTIFICATIONS_PLUGIN_ID = "amux.notifications";
 export const notificationsPlugin: PluginDefinition = definePlugin({
   id: NOTIFICATIONS_PLUGIN_ID,
   apiVersion: "1",
-  inject: [OptionsTag, CommandsTag],
-  effect: (ctx) =>
+  inject: [OptionsTag, CommandsTag, PanelTag],
+  effect: () =>
     Effect.gen(function* () {
       const options = yield* OptionsTag;
+      const panel = yield* PanelTag;
       yield* options.register([
         "notifications.blocked",
         { kind: "boolean", default: true, desc: "ring the terminal when an agent becomes blocked" },
@@ -51,12 +52,12 @@ export const notificationsPlugin: PluginDefinition = definePlugin({
       yield* Effect.forkScoped(
         scheduledPoll(POLL_MS, () => {
           const next = new Set(
-            ctx.panel
+            panel
               .display()
               .rows.filter((row) => row.agentState === ProcessState.Blocked)
               .map((row) => row.agentId!),
           );
-          if (ctx.panel.options()["notifications.blocked"]) {
+          if (panel.options()["notifications.blocked"]) {
             for (const id of next) if (!blocked.has(id)) process.stdout.write("\x07");
           }
           blocked = next;

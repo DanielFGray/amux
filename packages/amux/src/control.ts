@@ -37,8 +37,8 @@ const BufferEntrySchema = S.Struct({
 
 const AttachInfoSchema = S.Struct({
   attached: S.Boolean,
-  attachedSince: S.optional(S.Number),
-  attachLastSeen: S.optional(S.Number),
+  attachedSince: S.optional(S.Finite),
+  attachLastSeen: S.optional(S.Finite),
 });
 
 const StatusSchema = S.Struct({
@@ -127,7 +127,7 @@ export class ControlRpcs extends RpcGroup.make(
   Rpc.make("AgentWatch", {
     payload: {
       session: S.String,
-      after: S.optional(S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))),
+      after: S.optional(S.Int.check(S.isGreaterThanOrEqualTo(0))),
     },
     success: AgentEvent,
     stream: true,

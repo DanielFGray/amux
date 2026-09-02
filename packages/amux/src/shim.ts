@@ -1,16 +1,17 @@
 import { dlopen, CString, FFIType as T, ptr } from "bun:ffi";
-import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { Effect, Path } from "effect";
+const existsSync = (process.getBuiltinModule("node:fs") as typeof import("node:fs")).existsSync;
 
 /** See src/shim.c for why the shim exists. The native library is pre-built;
  *  `bun run build:shim` recompiles it when shim.c changes. */
 function resolveShimPath(): string {
   const sourcePath = new URL("../../../vendor/libamux-shim.so", import.meta.url).pathname;
+  const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
   if (existsSync(sourcePath)) return sourcePath;
   // A compiled executable runs its entry from Bun's virtual filesystem, so
   // argv[0] is /$bunfs/... rather than the installed binary's path.
-  const binaryDir = dirname(process.execPath);
-  const adjacentPath = `${binaryDir}/libamux-shim.so`;
+  const binaryDir = path.dirname(process.execPath);
+  const adjacentPath = path.join(binaryDir, "libamux-shim.so");
   if (existsSync(adjacentPath)) return adjacentPath;
   return sourcePath;
 }

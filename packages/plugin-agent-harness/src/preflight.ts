@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { CommandError } from "@danielfgray/amux"
+import { CommandError } from "@danielfgray/amux";
 import { parseModelReference } from "./options.ts";
 import { Service as Integration } from "./integration.ts";
 import { Service as ModelCatalog } from "./model-catalog.ts";

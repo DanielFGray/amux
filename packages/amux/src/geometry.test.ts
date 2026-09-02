@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { afterEach, expect, test } from "bun:test";
 import { computeRects, moveFloat, paneInDirection, resizeDivider, resizePane } from "./geometry.ts";
 import { createHarness, run } from "./harness.ts";

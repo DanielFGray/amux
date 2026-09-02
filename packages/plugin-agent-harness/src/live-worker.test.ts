@@ -1,9 +1,11 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { waitFor } from "@danielfgray/amux/testing"
-import { decodeAttachFrames, type AttachFrame } from "@danielfgray/amux/protocol"
+import { waitFor } from "@danielfgray/amux/testing";
+import { decodeAttachFrames, type AttachFrame } from "@danielfgray/amux/protocol";
+import { readDelta, readEvent, type HarnessDelta } from "./protocol.ts";
 
 /**
  * The DoD's live-provider clause, run against a real model.
@@ -122,11 +124,21 @@ test("a native agent worker streams a real turn with no provider key in its envi
       if (!line.trim()) continue;
       emitted.push(...decodeAttachFrames(`${line}\n`).frames);
     }
-    const texts = emitted.filter(
-      (frame): frame is Extract<AttachFrame, { _tag: "text.delta" }> => frame._tag === "text.delta",
-    );
+    const texts = emitted
+      .filter(
+        (frame): frame is Extract<AttachFrame, { _tag: "agent.delta" }> =>
+          frame._tag === "agent.delta",
+      )
+      .map((frame) => readDelta(frame))
+      .filter(
+        (fragment): fragment is Extract<HarnessDelta, { _tag: "text.delta" }> =>
+          fragment?._tag === "text.delta",
+      );
     const ended = emitted.filter(
-      (frame) => frame._tag === "agent.event" && frame.event._tag === "turn.end",
+      (frame) =>
+        frame._tag === "agent.emit" &&
+        frame.event._tag === "agent.message" &&
+        readEvent({ ...frame.event, sequence: 0 })?._tag === "turn.end",
     );
     expect(texts.length).toBeGreaterThan(0);
     expect(

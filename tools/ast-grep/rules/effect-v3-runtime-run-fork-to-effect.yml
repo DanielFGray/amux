@@ -1,5 +1,0 @@
-id: effect-v3-runtime-run-fork-to-effect
-language: TypeScript
-rule:
-  pattern: Runtime.runFork($RUNTIME)($EFFECT)
-fix: Effect.runForkWith($RUNTIME)($EFFECT)

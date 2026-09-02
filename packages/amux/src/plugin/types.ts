@@ -1,4 +1,4 @@
-import { Effect, type Context, type Option, type Scope, type Stream } from "effect";
+import { Effect, type Context, type Option, type Scope } from "effect";
 import type { Schema } from "effect";
 import {
   CurrentPlugin,
@@ -8,8 +8,6 @@ import {
 } from "./services.ts";
 import type { JSX } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
-import type { PanelContext } from "../ui/panel.ts";
-import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import type { JsonValue } from "../layout.ts";
 
 export interface SpawnProvider {
@@ -52,11 +50,12 @@ export interface PluginDefinition {
   ) => Effect.Effect<void, never, Scope.Scope | CurrentPlugin>;
 }
 
-export type TagIdentifier<T> = T extends InterceptedDependency<infer Service, infer _Metadata>
-  ? TagIdentifier<Service>
-  : T extends Context.Service<infer Id, infer _Service>
-    ? Id
-    : never;
+export type TagIdentifier<T> =
+  T extends InterceptedDependency<infer Service, infer _Metadata>
+    ? TagIdentifier<Service>
+    : T extends Context.Service<infer Id, infer _Service>
+      ? Id
+      : never;
 export type PluginRequirements<Dependencies extends readonly PluginDependency[]> =
   | TagIdentifier<Dependencies[number]>
   | CurrentPlugin
@@ -70,7 +69,9 @@ export type PluginRequirements<Dependencies extends readonly PluginDependency[]>
  * plugin that suspends on nothing and dies on a missing service. Inferring the
  * tags here makes the two halves one declaration.
  */
-export const definePlugin = <const Dependencies extends readonly PluginDependency[] = []>(definition: {
+export const definePlugin = <
+  const Dependencies extends readonly PluginDependency[] = [],
+>(definition: {
   readonly id: string;
   readonly apiVersion: string;
   readonly inject?: Dependencies;
@@ -92,14 +93,11 @@ export const definePlugin = <const Dependencies extends readonly PluginDependenc
 
 export interface PluginHostContext {
   readonly id: string;
-  readonly panel: PanelContext;
   readonly kv: PluginKV;
   /** Publish a service other plugins may inject. It is withdrawn when this plugin stops. */
   readonly provide: <Id, S>(tag: Context.Service<Id, S>, service: S) => () => void;
   /** Read a service without depending on it. `inject` is what makes the host wait. */
   readonly get: <Id, S>(tag: Context.Service<Id, S>) => Option.Option<S>;
-  readonly frames: (session: string) => Stream.Stream<AttachFrame, never>;
-  readonly sync: (session: string) => void;
 }
 
 export interface PluginSettingsSection {

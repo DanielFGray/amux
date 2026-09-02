@@ -36,7 +36,6 @@ const CURSOR_IDLE = RGBA.fromInts(108, 112, 134, 255);
 const SELECTION_FG = 0x1e1e2e;
 const SELECTION_BG = 0x89b4fa;
 
-
 /**
  * Which of a pane's four sides it draws itself.
  *
@@ -331,7 +330,7 @@ export class TerminalPane extends Pane {
   /** Owns this pane's FFI handles, so closing it frees them all — see the note
    *  on Agent's scope. A pane is destroyed from OpenTUI's tree rather than from
    *  an Effect, so the scope is closed by destroySelf rather than by a parent. */
-  #scope = Effect.runSync(Scope.make());
+  #scope = Scope.makeUnsafe();
   #state = this.#own(
     () => new RenderState(),
     (state) => state.free(),

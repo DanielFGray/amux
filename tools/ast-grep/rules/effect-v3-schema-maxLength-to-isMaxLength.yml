@@ -1,5 +1,0 @@
-id: effect-v3-schema-maxLength-to-isMaxLength
-language: TypeScript
-rule:
-  pattern: S.maxLength($$$ARGS)
-fix: S.check(S.isMaxLength($$$ARGS))

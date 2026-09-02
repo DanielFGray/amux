@@ -1,7 +1,0 @@
-id: effect-v3-stream-unwrap-scoped-to-unwrap
-language: TypeScript
-message: Stream.unwrapScoped became Stream.unwrap in Effect v4.
-severity: warning
-rule:
-  pattern: Stream.unwrapScoped
-fix: Stream.unwrap

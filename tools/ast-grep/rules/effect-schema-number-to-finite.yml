@@ -1,0 +1,6 @@
+id: effect-schema-number-to-finite
+language: TypeScript
+message: S.Number accepts NaN/Infinity; use S.Finite for a finite domain number.
+rule:
+  pattern: S.Number
+fix: S.Finite

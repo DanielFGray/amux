@@ -1,5 +1,5 @@
-import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
-import { Effect } from "effect";
+import { BunFileSystem, BunPath, BunRuntime } from "@effect/platform-bun";
+import { Config, Effect, Layer, Option } from "effect";
 
 import { startDaemon } from "./daemon.ts";
 import { SessionStore } from "./session.ts";
@@ -31,8 +31,11 @@ export function runDaemonMain(id?: string): void {
 
   BunRuntime.runMain(
     Effect.scoped(program).pipe(
-      Effect.provide(SessionStore.layer),
-      Effect.provide(BunFileSystem.layer),
+      Effect.provide(
+        SessionStore.layer.pipe(
+          Layer.provideMerge(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.layer))),
+        ),
+      ),
     ),
   );
 }
@@ -40,12 +43,18 @@ export function runDaemonMain(id?: string): void {
 if (import.meta.main) {
   // The e2e lifecycle test uses this barrier to signal after spawn but before
   // the daemon creates its lease. Normal daemon launches never set it.
-  const barrier = process.env.AMUX_DAEMON_START_BARRIER;
+  const barrier = Option.getOrUndefined(
+    Effect.runSync(Config.option(Config.string("AMUX_DAEMON_START_BARRIER"))),
+  );
   if (barrier) {
-    const waitForBarrier = async () => {
-      while (!(await Bun.file(barrier).exists())) await Bun.sleep(10);
-    };
-    await waitForBarrier();
+    Effect.runPromise(
+      Effect.gen(function* () {
+        while (!(yield* Effect.promise(() => Bun.file(barrier).exists()))) {
+          yield* Effect.promise(() => Bun.sleep(10));
+        }
+      }),
+    ).then(() => runDaemonMain(process.argv[2]));
+  } else {
+    runDaemonMain(process.argv[2]);
   }
-  runDaemonMain(process.argv[2]);
 }

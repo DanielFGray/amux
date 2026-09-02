@@ -1,14 +1,14 @@
 /**
  * Branch mark, ahead/behind, and worktree operations for a space's directory.
  */
-import { dirname, resolve } from "node:path";
+import * as Path from "effect/Path";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import * as Cause from "effect/Cause";
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { pipe } from "effect/Function";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
@@ -21,25 +21,32 @@ export interface GitInfo {
 
 const EMPTY: GitInfo = { branch: "", ahead: 0, behind: 0 };
 
-export async function readGit(dir: string): Promise<GitInfo> {
-  try {
-    const branch = await git(["rev-parse", "--abbrev-ref", "HEAD"], dir);
-    if (!branch) return EMPTY;
-    if (branch === "HEAD") {
-      const sha = await git(["rev-parse", "--short", "HEAD"], dir);
-      return { branch: sha ? `(${sha})` : "(detached)", ahead: 0, behind: 0 };
-    }
-    try {
-      const counts = await git(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"], dir);
-      const [behind = "0", ahead = "0"] = counts.trim().split(/\s+/);
-      return { branch, ahead: Number(ahead) || 0, behind: Number(behind) || 0 };
-    } catch {
-      // No upstream configured: branch is local-only.
-      return { branch, ahead: 0, behind: 0 };
-    }
-  } catch {
-    return EMPTY;
-  }
+export function readGit(dir: string): Promise<GitInfo> {
+  return Effect.runPromise(
+    Effect.tryPromise(() => git(["rev-parse", "--abbrev-ref", "HEAD"], dir)).pipe(
+      Effect.flatMap((branch) => {
+        if (!branch) return Effect.succeed(EMPTY);
+        if (branch === "HEAD")
+          return Effect.tryPromise(() => git(["rev-parse", "--short", "HEAD"], dir)).pipe(
+            Effect.map((sha) => ({
+              branch: sha ? `(${sha})` : "(detached)",
+              ahead: 0,
+              behind: 0,
+            })),
+          );
+        return Effect.tryPromise(() =>
+          git(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"], dir),
+        ).pipe(
+          Effect.map((counts) => {
+            const [behind = "0", ahead = "0"] = counts.trim().split(/\s+/);
+            return { branch, ahead: Number(ahead) || 0, behind: Number(behind) || 0 };
+          }),
+          Effect.orElseSucceed(() => ({ branch, ahead: 0, behind: 0 })),
+        );
+      }),
+      Effect.orElseSucceed(() => EMPTY),
+    ),
+  );
 }
 
 export interface WorktreeSpec {
@@ -57,13 +64,16 @@ export const worktreeDirname = (branch: string): string => branch.replace(/\//g,
  * unit a permission rule or a conversation is scoped to. A directory that is
  * not in a repository is its own project, which keeps the notion total.
  */
-export async function projectRoot(dir: string): Promise<string> {
-  try {
-    const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], dir);
-    return common ? dirname(common) : resolve(dir);
-  } catch {
-    return resolve(dir);
-  }
+export function projectRoot(dir: string): Promise<string> {
+  const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
+  return Effect.runPromise(
+    Effect.tryPromise(() =>
+      git(["rev-parse", "--path-format=absolute", "--git-common-dir"], dir),
+    ).pipe(
+      Effect.map((common) => (common ? path.dirname(common) : path.resolve(dir))),
+      Effect.orElseSucceed(() => path.resolve(dir)),
+    ),
+  );
 }
 
 /** Imperative git operations for daemon-side use. The daemon runs outside the
@@ -73,9 +83,9 @@ export async function projectRoot(dir: string): Promise<string> {
  *  model-queue head, so the subprocess is killed after #GIT_TIMEOUT_MS. */
 const GIT_TIMEOUT_MS = 10_000;
 
-class GitError extends Data.TaggedError("GitError")<{
-  readonly message: string;
-}> {}
+class GitError extends Schema.TaggedError<GitError>()("GitError", {
+  message: Schema.String,
+}) {}
 
 interface GitResult {
   readonly code: number;
@@ -120,50 +130,41 @@ const runGit = (args: string[], cwd: string, timeoutMs: number) =>
     }),
   ).pipe(Effect.provide(BunServices.layer));
 
-async function runGitResult(
-  args: string[],
-  cwd: string,
-  timeoutMs = GIT_TIMEOUT_MS,
-): Promise<GitResult> {
-  const result = await Effect.runPromiseExit(runGit(args, cwd, timeoutMs));
-  return Exit.match(result, {
-    onFailure: (cause) => Promise.reject(Cause.squash(cause)),
-    onSuccess: (value) => value,
-  });
+function runGitResult(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
+  return Effect.runPromiseExit(runGit(args, cwd, timeoutMs)).then((result) =>
+    Exit.match(result, {
+      onFailure: (cause) => Promise.reject(Cause.squash(cause)),
+      onSuccess: (value) => value,
+    }),
+  );
 }
 
-export async function git(
-  args: string[],
-  cwd: string,
-  timeoutMs = GIT_TIMEOUT_MS,
-): Promise<string> {
-  const { code, out, err } = await runGitResult(args, cwd, timeoutMs);
-  if (code !== 0) throw new GitError({ message: err || `git ${args[0]} failed` });
-  return out;
+export function git(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<string> {
+  return runGitResult(args, cwd, timeoutMs).then(({ code, out, err }) => {
+    if (code !== 0) throw new GitError({ message: err || `git ${args[0]} failed` });
+    return out;
+  });
 }
 
 /** Exit code 0 (yes) or 1 (no) only; any other code is a repository error and
  *  must not be read as a quiet "no". */
-async function gitExitCode(
-  args: string[],
-  cwd: string,
-  timeoutMs = GIT_TIMEOUT_MS,
-): Promise<number> {
-  const { code, err } = await runGitResult(args, cwd, timeoutMs);
-  if (code !== 0 && code !== 1) {
-    throw new GitError({ message: err || `git ${args[0]} failed` });
-  }
-  return code;
+function gitExitCode(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<number> {
+  return runGitResult(args, cwd, timeoutMs).then(({ code, err }) => {
+    if (code !== 0 && code !== 1) throw new GitError({ message: err || `git ${args[0]} failed` });
+    return code;
+  });
 }
 
-async function branchExists(repo: string, branch: string): Promise<boolean> {
-  return (
-    (await gitExitCode(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)) === 0
+function branchExists(repo: string, branch: string): Promise<boolean> {
+  return gitExitCode(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo).then(
+    (code) => code === 0,
   );
 }
 
-async function isAncestor(repo: string, ancestor: string, descendant: string): Promise<boolean> {
-  return (await gitExitCode(["merge-base", "--is-ancestor", ancestor, descendant], repo)) === 0;
+function isAncestor(repo: string, ancestor: string, descendant: string): Promise<boolean> {
+  return gitExitCode(["merge-base", "--is-ancestor", ancestor, descendant], repo).then(
+    (code) => code === 0,
+  );
 }
 
 /** Create a new branch and a worktree checked out to it, or re-attach an
@@ -179,41 +180,36 @@ async function isAncestor(repo: string, ancestor: string, descendant: string): P
  *  explicit base is never dropped: it is either applied, or refused by git
  *  (advancing a checked-out branch, an unresolvable base) and surfaced as an
  *  error. */
-export async function gitWorktreeAdd(
-  repo: string,
-  spec: WorktreeSpec,
-  path: string,
-): Promise<void> {
-  if (await branchExists(repo, spec.branch)) {
-    if (spec.base && (await isAncestor(repo, spec.branch, spec.base))) {
-      await git(["branch", "-f", spec.branch, spec.base], repo);
+export function gitWorktreeAdd(repo: string, spec: WorktreeSpec, path: string): Promise<void> {
+  return branchExists(repo, spec.branch).then((exists) => {
+    if (!exists) {
+      const args = ["worktree", "add", "-b", spec.branch, path];
+      if (spec.base) args.push(spec.base);
+      return git(args, repo).then(() => undefined);
     }
-    await git(["worktree", "add", path, spec.branch], repo);
-    return;
-  }
-  const args = ["worktree", "add", "-b", spec.branch, path];
-  if (spec.base) args.push(spec.base);
-  await git(args, repo);
+    return Promise.resolve(spec.base && isAncestor(repo, spec.branch, spec.base))
+      .then((ancestor) =>
+        ancestor ? git(["branch", "-f", spec.branch, spec.base!], repo) : undefined,
+      )
+      .then(() => git(["worktree", "add", path, spec.branch], repo))
+      .then(() => undefined);
+  });
 }
 
 /** The repo is the cwd: a worktree being removed cannot be the git invocation's
  *  own working directory. Removal must run from a sibling worktree or the
  *  repository itself. */
-export async function gitWorktreeRemove(repo: string, path: string, force = false): Promise<void> {
+export function gitWorktreeRemove(repo: string, path: string, force = false): Promise<void> {
   const args = force ? ["worktree", "remove", "--force", path] : ["worktree", "remove", path];
-  await git(args, repo);
+  return git(args, repo).then(() => undefined);
 }
 
-export async function gitWorktreeDirty(path: string): Promise<boolean> {
-  const out = await git(["status", "--porcelain"], path);
-  return out.length > 0;
+export function gitWorktreeDirty(path: string): Promise<boolean> {
+  return git(["status", "--porcelain"], path).then((out) => out.length > 0);
 }
 
-export async function gitWorktreeExists(path: string): Promise<boolean> {
-  try {
-    const out = await git(["rev-parse", "--git-dir"], path);
-    return out.length > 0;
-  } catch {
-    return false;
-  }
+export function gitWorktreeExists(path: string): Promise<boolean> {
+  return git(["rev-parse", "--git-dir"], path)
+    .then((out) => out.length > 0)
+    .catch(() => false);
 }

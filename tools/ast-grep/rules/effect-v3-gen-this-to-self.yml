@@ -1,5 +1,0 @@
-id: effect-v3-gen-this-to-self
-language: TypeScript
-rule:
-  pattern: "Effect.gen(this, $GENERATOR)"
-fix: "Effect.gen({ self: this }, $GENERATOR)"

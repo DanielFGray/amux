@@ -1,5 +1,0 @@
-id: effect-v3-make-semaphore-to-semaphore-make
-language: TypeScript
-rule:
-  pattern: Effect.makeSemaphore($PERMITS)
-fix: Semaphore.make($PERMITS)

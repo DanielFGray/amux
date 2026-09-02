@@ -1,6 +1,0 @@
-id: effect-v3-platformerror-reason-notfound
-language: TypeScript
-message: PlatformError.reason is now a SystemError/BadArgument object; check reason._tag instead of reason.
-rule:
-  pattern: $E.reason === "NotFound"
-fix: $E.reason._tag === "NotFound"

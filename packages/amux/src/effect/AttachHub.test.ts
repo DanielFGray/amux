@@ -3,7 +3,9 @@ import { expect } from "bun:test";
 import { AttachHub } from "./AttachHub.ts";
 import { testEffect } from "../test-effect.ts";
 
-testEffect("AttachHub fans frames out and removes subscriptions with scope", () =>
+const it = testEffect(AttachHub.layer);
+
+it.effect("AttachHub fans frames out and removes subscriptions with scope", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const one = yield* hub.subscribe("one");
@@ -15,19 +17,19 @@ testEffect("AttachHub fans frames out and removes subscriptions with scope", () 
     ]);
     expect([...oneFrames]).toEqual([{ _tag: "hello", client: "daemon" }]);
     expect([...twoFrames]).toEqual([{ _tag: "hello", client: "daemon" }]);
-  }).pipe(Effect.provide(AttachHub.layer)),
+  }),
 );
 
-testEffect("AttachHub rejects duplicate client ids", () =>
+it.effect("AttachHub rejects duplicate client ids", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     yield* hub.subscribe("same");
     const result = yield* hub.subscribe("same").pipe(Effect.result);
     expect(result._tag).toBe("Failure");
-  }).pipe(Effect.provide(AttachHub.layer)),
+  }),
 );
 
-testEffect("targeted replay requires the live connection token", () =>
+it.effect("targeted replay requires the live connection token", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("same", "new");
@@ -35,10 +37,10 @@ testEffect("targeted replay requires the live connection token", () =>
     yield* hub.publishTo("same", "new", { _tag: "hello", client: "current" });
     const frames = yield* Stream.runCollect(subscription.frames.pipe(Stream.take(1)));
     expect([...frames]).toEqual([{ _tag: "hello", client: "current" }]);
-  }).pipe(Effect.provide(AttachHub.layer)),
+  }),
 );
 
-testEffect("concurrent sync barriers keep every replay ahead of live output", () =>
+it.effect("concurrent sync barriers keep every replay ahead of live output", () =>
   Effect.gen(function* () {
     const hub = yield* AttachHub;
     const subscription = yield* hub.subscribe("same", "connection");
@@ -69,10 +71,10 @@ testEffect("concurrent sync barriers keep every replay ahead of live output", ()
       { _tag: "output", session: "s", data: new Uint8Array([2]) },
       { _tag: "output", session: "s", data: new Uint8Array([0]) },
     ]);
-  }).pipe(Effect.provide(AttachHub.layer)),
+  }),
 );
 
-testEffect("a replay that cannot fit the bounded queue evicts the client", () =>
+it.effect("a replay that cannot fit the bounded queue evicts the client", () =>
   Effect.gen(function* () {
     let overflow = 0;
     const hub = yield* AttachHub;
@@ -98,5 +100,5 @@ testEffect("a replay that cannot fit the bounded queue evicts the client", () =>
     });
     expect(result).toBeUndefined();
     expect(overflow).toBe(1);
-  }).pipe(Effect.provide(AttachHub.layer)),
+  }),
 );

@@ -1,11 +1,11 @@
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { Context, Effect, Layer, PubSub, Schema as S, Scope, Stream } from "effect";
-import { join } from "node:path";
 import { AgentEvent, type AgentEventPayload } from "./AttachProtocol.ts";
 import { isSessionId } from "../session.ts";
 
 const Entry = S.Struct({
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+  sequence: S.Int.check(S.isGreaterThanOrEqualTo(0)),
   event: AgentEvent,
 });
 const Entries = S.Array(Entry);
@@ -82,6 +82,7 @@ export function makeAgentLog(
 ): Effect.Effect<AgentLogService, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path.pipe(Effect.provide(Path.layer));
     const entries = new Map<string, Entry[]>();
     const feeds = new Map<string, PubSub.PubSub<AgentEvent>>();
     const feed = Effect.fnUntraced(function* (session: string) {
@@ -92,14 +93,16 @@ export function makeAgentLog(
       return created;
     });
 
-    const pathFor = (session: string) => join(root, "agent-events", `${session}.json`);
+    const pathFor = (session: string) => path.join(root, "agent-events", `${session}.json`);
 
     const load = (session: string) =>
       Effect.gen(function* () {
-        if (!isSessionId(session))
+        if (!isSessionId(session)) {
+          const encoded = yield* S.encodeEffect(S.fromJsonString(S.String))(session);
           return yield* new AgentLogError({
-            message: `invalid session id ${JSON.stringify(session)}`,
+            message: `invalid session id ${encoded}`,
           });
+        }
         const existing = entries.get(session);
         if (existing) return existing;
         const text = yield* fs
@@ -109,7 +112,7 @@ export function makeAgentLog(
               error.reason._tag === "NotFound" ? Effect.succeed("[]") : Effect.fail(error),
             ),
           );
-        const decoded = yield* S.decodeUnknownEffect(S.fromJsonString(Entries))(text).pipe(
+        const decoded = yield* S.decodeEffect(S.fromJsonString(Entries))(text).pipe(
           Effect.mapError((error) => new AgentLogError({ message: String(error) })),
         );
         const mutable = [...decoded];
@@ -117,7 +120,7 @@ export function makeAgentLog(
         return mutable;
       }).pipe(
         Effect.mapError((error) =>
-          error instanceof AgentLogError
+          S.is(AgentLogError)(error)
             ? error
             : new AgentLogError({
                 message: error instanceof Error ? error.message : String(error),
@@ -127,19 +130,22 @@ export function makeAgentLog(
 
     const write = (session: string, value: readonly Entry[]) =>
       Effect.gen(function* () {
-        if (!isSessionId(session))
+        if (!isSessionId(session)) {
+          const encoded = yield* S.encodeEffect(S.fromJsonString(S.String))(session);
           return yield* new AgentLogError({
-            message: `invalid session id ${JSON.stringify(session)}`,
+            message: `invalid session id ${encoded}`,
           });
-        const directory = join(root, "agent-events");
+        }
+        const directory = path.join(root, "agent-events");
         const file = pathFor(session);
         yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
         const temp = `${file}.${process.pid}.tmp`;
-        yield* fs.writeFileString(temp, JSON.stringify(value) + "\n", { mode: 0o600 });
+        const encoded = yield* S.encodeEffect(S.fromJsonString(Entries))(value);
+        yield* fs.writeFileString(temp, encoded + "\n", { mode: 0o600 });
         yield* fs.rename(temp, file);
       }).pipe(
         Effect.mapError((error) =>
-          error instanceof AgentLogError
+          S.is(AgentLogError)(error)
             ? error
             : new AgentLogError({
                 message: error instanceof Error ? error.message : String(error),
@@ -158,7 +164,7 @@ export function makeAgentLog(
         return entry.event;
       }).pipe(
         Effect.mapError((error) =>
-          error instanceof AgentLogError ? error : new AgentLogError({ message: String(error) }),
+          S.is(AgentLogError)(error) ? error : new AgentLogError({ message: String(error) }),
         ),
       );
 

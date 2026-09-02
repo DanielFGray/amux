@@ -1,5 +1,0 @@
-id: effect-v3-fiber-runtime-generic-to-fiber
-language: TypeScript
-rule:
-  pattern: Fiber.RuntimeFiber<$A, $E>
-fix: Fiber.Fiber<$A, $E>

@@ -1,4 +1,4 @@
-import path from "node:path";
+import { Path } from "effect";
 import { homedir } from "node:os";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
@@ -178,7 +178,7 @@ export interface SessionAttachment {
 
 const NonEmptyString = S.String.pipe(S.check(S.isMinLength(1)));
 const PositiveInt = S.Int.pipe(S.check(S.isGreaterThan(0)));
-const NonNegativeNumber = S.Number.pipe(S.check(S.isGreaterThanOrEqualTo(0)));
+const NonNegativeNumber = S.Finite.pipe(S.check(S.isGreaterThanOrEqualTo(0)));
 const SessionIdSchema = S.String.pipe(
   S.check(S.makeFilter(isSessionId, { message: "invalid session id" })),
 );
@@ -359,9 +359,22 @@ export interface SessionPaths {
   processState: string;
 }
 
-export function sessionRoot(): Effect.Effect<string> {
-  return Effect.map(stateRoot(), (root) => path.join(root, "amux", "sessions"));
-}
+export const stateRoot = Effect.fnUntraced(function* () {
+  const xdgStateHome = yield* optionalEnvVar("XDG_STATE_HOME");
+  if (Option.isSome(xdgStateHome)) return xdgStateHome.value;
+  const home = yield* optionalEnvVar("HOME");
+  const path = yield* Path.Path;
+  return path.join(
+    Option.getOrElse(home, () => homedir()),
+    ".local",
+    "state",
+  );
+});
+
+export const sessionRoot: Effect.Effect<string> = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  return path.join(yield* stateRoot(), "amux", "sessions");
+}).pipe(Effect.provide(Path.layer));
 
 /**
  * Create a session directory, and hold it to owner-only whether or not this
@@ -380,19 +393,20 @@ export const ensurePrivateDirectory = Effect.fnUntraced(function* (dir: string) 
 });
 
 /** Root directory for space worktrees, siblings to the sessions root. */
-export function worktreesRoot(): Effect.Effect<string> {
-  return Effect.map(stateRoot(), (root) => path.join(root, "amux", "worktrees"));
-}
+export const worktreesRoot: Effect.Effect<string> = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  return path.join(yield* stateRoot(), "amux", "worktrees");
+}).pipe(Effect.provide(Path.layer));
 
 export function sessionPaths(id: string): Effect.Effect<SessionPaths, SessionIdError> {
   return Effect.gen(function* () {
     if (!isSessionId(id)) {
       return yield* new SessionIdError({
-        message: `invalid session id ${JSON.stringify(id)}`,
+        message: `invalid session id ${id}`,
       });
     }
-    const root = yield* sessionRoot();
-    return sessionPathsFromRoot(id, root);
+    const root = yield* sessionRoot;
+    return yield* sessionPathsFromRoot(id, root);
   });
 }
 
@@ -402,17 +416,6 @@ export const optionalEnvVar = (name: string) =>
     Config.map(Option.filter((value) => value.length > 0)),
     Effect.orDie,
   );
-
-export const stateRoot = Effect.fnUntraced(function* () {
-  const xdgStateHome = yield* optionalEnvVar("XDG_STATE_HOME");
-  if (Option.isSome(xdgStateHome)) return xdgStateHome.value;
-  const home = yield* optionalEnvVar("HOME");
-  return path.join(
-    Option.getOrElse(home, () => homedir()),
-    ".local",
-    "state",
-  );
-});
 
 export function parseSessionState(
   value: SessionStateInput | SessionState | import("./effect/AttachProtocol.ts").JsonValue,
@@ -455,7 +458,7 @@ export function parseSessionState(
           owned.set(entry.id, entry.exited);
         }
         if (candidate.layout) {
-          const parsed = yield* S.decodeUnknownEffect(S.fromJsonString(JsonValueSchema))(
+          const parsed = yield* S.decodeEffect(S.fromJsonString(JsonValueSchema))(
             candidate.layout,
           ).pipe(Effect.mapError(schemaError));
           const layout = yield* parseLayout(parsed).pipe(
@@ -559,20 +562,20 @@ const jsonFile = <A, I>(path: string, schema: S.Codec<A, I>) =>
     if (info === null) return Option.none();
     if (info.size > MAX_SESSION_BYTES) return Option.none();
     const text = yield* fs.readFileString(path);
-    return S.decodeUnknownOption(S.fromJsonString(schema))(text);
+    return S.decodeOption(S.fromJsonString(schema))(text);
   });
 
 export class SessionStore extends Context.Service<SessionStore>()("Session", {
   make: Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const root = yield* sessionRoot();
+    const root = yield* sessionRoot;
     // The store's methods are declared without a FileSystem requirement, so the
     // one this service was built from is what satisfies it.
     const ensureRoot = (dir: string) =>
       Effect.provideService(ensurePrivateDirectory(dir), FileSystem.FileSystem, fs);
     const pathFor = (id: string): Effect.Effect<SessionPaths, SessionIdError> =>
       isSessionId(id)
-        ? Effect.succeed(sessionPathsFromRoot(id, root))
+        ? sessionPathsFromRoot(id, root)
         : Effect.fail(
             new SessionIdError({
               message: `invalid session id ${JSON.stringify(id)}`,
@@ -593,8 +596,14 @@ export class SessionStore extends Context.Service<SessionStore>()("Session", {
       yield* ensureRoot(paths.root);
       const temp = `${paths.state}.${process.pid}.tmp`;
       const updatedAt = yield* Clock.currentTimeMillis;
-      const bytes =
-        JSON.stringify({ ...state, version: SESSION_VERSION, updatedAt }, null, 2) + "\n";
+      const bytes = yield* S.encodeEffect(S.fromJsonString(SessionStateSchema, { space: 2 }))({
+        ...state,
+        version: SESSION_VERSION,
+        updatedAt,
+      }).pipe(
+        Effect.mapError(schemaError),
+        Effect.map((text) => text + "\n"),
+      );
       if (Buffer.byteLength(bytes) > MAX_SESSION_BYTES)
         return yield* new SessionSizeError({
           message: "session state is too large",
@@ -625,7 +634,11 @@ export class SessionStore extends Context.Service<SessionStore>()("Session", {
       const paths = yield* pathFor(lease.session);
       yield* ensureRoot(paths.root);
       const temp = `${paths.lease}.${process.pid}.tmp`;
-      yield* fs.writeFileString(temp, JSON.stringify(lease) + "\n", {
+      const bytes = yield* S.encodeEffect(S.fromJsonString(SessionLeaseSchema))(lease).pipe(
+        Effect.mapError(schemaError),
+        Effect.map((text) => text + "\n"),
+      );
+      yield* fs.writeFileString(temp, bytes, {
         mode: 0o600,
       });
       yield* fs.rename(temp, paths.lease);
@@ -638,7 +651,7 @@ export class SessionStore extends Context.Service<SessionStore>()("Session", {
 
     const exists = Effect.fnUntraced(function* (id: string) {
       if (!isSessionId(id)) return false;
-      const sessionPaths = sessionPathsFromRoot(id, root);
+      const sessionPaths = yield* sessionPathsFromRoot(id, root);
       return yield* fs.stat(sessionPaths.root).pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
@@ -665,18 +678,21 @@ export class SessionStore extends Context.Service<SessionStore>()("Session", {
   static readonly layer = Layer.effect(this, this.make);
 }
 
-function sessionPathsFromRoot(id: string, root: string): SessionPaths {
-  const rootPath = path.join(root, id);
-  return {
-    root: rootPath,
-    state: path.join(rootPath, "session.json"),
-    backup: path.join(rootPath, "session.json.prev"),
-    lease: path.join(rootPath, "lease.json"),
-    lock: path.join(rootPath, "daemon.lock"),
-    socket: path.join(rootPath, "daemon.sock"),
-    attach: path.join(rootPath, "attach.sock"),
-    processState: path.join(rootPath, "process-state.sock"),
-  };
+function sessionPathsFromRoot(id: string, root: string): Effect.Effect<SessionPaths> {
+  return Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const rootPath = path.join(root, id);
+    return {
+      root: rootPath,
+      state: path.join(rootPath, "session.json"),
+      backup: path.join(rootPath, "session.json.prev"),
+      lease: path.join(rootPath, "lease.json"),
+      lock: path.join(rootPath, "daemon.lock"),
+      socket: path.join(rootPath, "daemon.sock"),
+      attach: path.join(rootPath, "attach.sock"),
+      processState: path.join(rootPath, "process-state.sock"),
+    };
+  }).pipe(Effect.provide(Path.layer));
 }
 
 export function processAlive(pid: number): boolean {

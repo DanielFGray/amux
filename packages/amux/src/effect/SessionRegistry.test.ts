@@ -1,6 +1,6 @@
 import { testEffect } from "../test-effect.ts";
 import { Effect, Fiber, Stream } from "effect";
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
 import { SessionRegistry } from "./SessionRegistry.ts";
 
 const session = Effect.gen(function* () {
@@ -59,75 +59,77 @@ testEffect("SessionRegistry rejects oversized terminals before allocating a PTY"
   }).pipe(Effect.provide(SessionRegistry.layer)),
 );
 
-test("a non-reading child cannot wedge writes, kill, or another session", async () => {
-  const result = await Promise.race([
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const registry = yield* SessionRegistry;
-        const blocked = yield* registry.spawn({
-          id: "blocked-pty",
-          cmd: ["sh", "-c", "sleep 30"],
-          cols: 80,
-          rows: 24,
-        });
-        const pendingWrite = yield* Effect.forkChild(
-          Effect.exit(blocked.write("x".repeat(16 * 1024 * 1024))),
-        );
+testEffect(
+  "a non-reading child cannot wedge writes, kill, or another session",
+  Effect.promise(() =>
+    Promise.race([
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const registry = yield* SessionRegistry;
+          const blocked = yield* registry.spawn({
+            id: "blocked-pty",
+            cmd: ["sh", "-c", "sleep 30"],
+            cols: 80,
+            rows: 24,
+          });
+          const pendingWrite = yield* Effect.forkChild(
+            Effect.exit(blocked.write("x".repeat(16 * 1024 * 1024))),
+          );
 
-        // Give the nonblocking writer a chance to fill the child's input queue.
-        yield* Effect.sleep(20);
-        const other = yield* registry.spawn({
-          id: "responsive-pty",
-          cmd: ["sh", "-c", "printf 'responsive\\n'"],
-          cols: 80,
-          rows: 24,
-        });
-        const output = yield* Stream.runCollect(other.output);
+          // Give the nonblocking writer a chance to fill the child's input queue.
+          yield* Effect.sleep(20);
+          const other = yield* registry.spawn({
+            id: "responsive-pty",
+            cmd: ["sh", "-c", "printf 'responsive\\n'"],
+            cols: 80,
+            rows: 24,
+          });
+          const output = yield* Stream.runCollect(other.output);
 
-        // Shutdown owns this cancellation and must not report it as a failed
-        // daemon operation or wait behind the blocked write.
-        yield* blocked.kill;
-        const pendingResult = yield* Fiber.join(pendingWrite);
-        expect(pendingResult._tag).toBe("Success");
-        return new TextDecoder().decode(
-          Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
-        );
-      }).pipe(Effect.provide(SessionRegistry.layer), Effect.scoped),
-    ),
-    Bun.sleep(3000).then(() => {
-      throw new Error("registry responsiveness deadline exceeded");
-    }),
-  ]);
+          // Shutdown owns this cancellation and must not report it as a failed
+          // daemon operation or wait behind the blocked write.
+          yield* blocked.kill;
+          const pendingResult = yield* Fiber.join(pendingWrite);
+          expect(pendingResult._tag).toBe("Success");
+          return new TextDecoder().decode(
+            Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
+          );
+        }).pipe(Effect.provide(SessionRegistry.layer), Effect.scoped),
+      ),
+      Bun.sleep(3000).then(() => {
+        throw new Error("registry responsiveness deadline exceeded");
+      }),
+    ]),
+  ).pipe(Effect.tap((result) => Effect.sync(() => expect(result).toContain("responsive")))),
+);
 
-  expect(result).toContain("responsive");
-});
-
-test("interrupting a registry write cancels the PTY operation", async () => {
-  const result = await Promise.race([
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const registry = yield* SessionRegistry;
-        const pty = yield* registry.spawn({
-          id: "interruptible-pty",
-          cmd: ["sh", "-c", "sleep 30"],
-          cols: 80,
-          rows: 24,
-        });
-        const write = yield* Effect.forkChild(pty.write("x".repeat(16 * 1024 * 1024)));
-        yield* Effect.sleep(25);
-        yield* Fiber.interrupt(write);
-        const exit = yield* Fiber.await(write);
-        yield* pty.kill;
-        return exit._tag;
-      }).pipe(Effect.provide(SessionRegistry.layer), Effect.scoped),
-    ),
-    Bun.sleep(3000).then(() => {
-      throw new Error("interruptibility deadline exceeded");
-    }),
-  ]);
-
-  expect(result).toBe("Failure");
-});
+testEffect(
+  "interrupting a registry write cancels the PTY operation",
+  Effect.promise(() =>
+    Promise.race([
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const registry = yield* SessionRegistry;
+          const pty = yield* registry.spawn({
+            id: "interruptible-pty",
+            cmd: ["sh", "-c", "sleep 30"],
+            cols: 80,
+            rows: 24,
+          });
+          const write = yield* Effect.forkChild(pty.write("x".repeat(16 * 1024 * 1024)));
+          yield* Effect.sleep(25);
+          yield* Fiber.interrupt(write);
+          const exit = yield* Fiber.await(write);
+          yield* pty.kill;
+          return exit._tag;
+        }).pipe(Effect.provide(SessionRegistry.layer), Effect.scoped),
+      ),
+      Bun.sleep(3000).then(() => {
+        throw new Error("interruptibility deadline exceeded");
+      }),
+    ]),
+  ).pipe(Effect.tap((result) => Effect.sync(() => expect(result).toBe("Failure")))),
+);
 
 testEffect("duplicate reservations fail and failed spawns release the id", () =>
   Effect.gen(function* () {
@@ -193,7 +195,7 @@ testEffect("an agent worker registers, emits semantic events, and is killed", ()
       cmd: [
         process.execPath,
         "-e",
-        `process.stdout.write(JSON.stringify({_tag:"topic",session:"worker-agent",sequence:1,topic:"session.state",payload:"working"})+"\\n"); setTimeout(()=>{},30000)`,
+        `process.stdout.write(JSON.stringify({_tag:"agent.emit",event:{_tag:"topic",session:"worker-agent",topic:"session.state",payload:"working"}})+"\\n"); setTimeout(()=>{},30000)`,
       ],
       cols: 80,
       rows: 24,
@@ -243,14 +245,14 @@ testEffect("a component worker does not inherit the provider keys its spec names
   Effect.gen(function* () {
     const previous: Array<[string, string | undefined]> = [];
     const set = (name: string, value: string) => {
-      previous.push([name, process.env[name]]);
-      process.env[name] = value;
+      previous.push([name, Bun.env[name]]);
+      Bun.env[name] = value;
     };
     set("OPENAI_API_KEY", "sk-openai");
     set("ANTHROPIC_API_KEY", "sk-anthropic");
     set("OPENCODE_API_KEY", "sk-opencode");
     const script = `
-    const env = Object.entries(process.env).map(([k, v]) => k + "=" + v).join("\\n");
+    const env = Object.entries(Bun.env).map(([k, v]) => k + "=" + v).join("\\n");
     process.stdout.write(JSON.stringify({_tag:"output",session:process.env.AMUX_SESSION,data:Buffer.from(env).toString("base64")})+"\\n");
   `;
     const chunks = yield* Effect.gen(function* () {
@@ -268,8 +270,8 @@ testEffect("a component worker does not inherit the provider keys its spec names
       return [...output].map((chunk) => Buffer.from(chunk).toString("utf8"));
     }).pipe(Effect.provide(SessionRegistry.layer), Effect.scoped);
     for (const [name, value] of previous)
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
+      if (value === undefined) delete Bun.env[name];
+      else Bun.env[name] = value;
     const environ = chunks
       .map((chunk) => Buffer.from(chunk.trim(), "base64").toString("utf8"))
       .join("\n");
@@ -307,8 +309,8 @@ testEffect("native sessions spawned with rpcPath receive it as AMUX_CONTROL_SOCK
 
 testEffect("native sessions spawned without rpcPath do not set AMUX_CONTROL_SOCKET", () =>
   Effect.gen(function* () {
-    const previous = process.env.AMUX_CONTROL_SOCKET;
-    delete process.env.AMUX_CONTROL_SOCKET;
+    const previous = Bun.env.AMUX_CONTROL_SOCKET;
+    delete Bun.env.AMUX_CONTROL_SOCKET;
     // Restored in `finally`, because a test that scrubs a variable and then fails
     // its assertion would otherwise leave it scrubbed for everything after it —
     // the same ambient-environment coupling this test exists to rule out.
@@ -334,8 +336,8 @@ testEffect("native sessions spawned without rpcPath do not set AMUX_CONTROL_SOCK
       }).pipe(Effect.provide(SessionRegistry.layer), Effect.scoped);
       expect(result).toContain("none");
     } finally {
-      if (previous === undefined) delete process.env.AMUX_CONTROL_SOCKET;
-      else process.env.AMUX_CONTROL_SOCKET = previous;
+      if (previous === undefined) delete Bun.env.AMUX_CONTROL_SOCKET;
+      else Bun.env.AMUX_CONTROL_SOCKET = previous;
     }
   }),
 );
@@ -375,12 +377,12 @@ testEffect("pty sessions carry pane identity and both sockets", () =>
 
 testEffect("a pty session without an rpcPath leaves AMUX_CONTROL_SOCKET unset", () =>
   Effect.gen(function* () {
-    const previous = process.env.AMUX_CONTROL_SOCKET;
-    delete process.env.AMUX_CONTROL_SOCKET;
+    const previous = Bun.env.AMUX_CONTROL_SOCKET;
+    delete Bun.env.AMUX_CONTROL_SOCKET;
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
-        if (previous === undefined) delete process.env.AMUX_CONTROL_SOCKET;
-        else process.env.AMUX_CONTROL_SOCKET = previous;
+        if (previous === undefined) delete Bun.env.AMUX_CONTROL_SOCKET;
+        else Bun.env.AMUX_CONTROL_SOCKET = previous;
       }),
     );
     const registry = yield* SessionRegistry;
@@ -415,7 +417,7 @@ testEffect("pane identity extends the inherited environment", () =>
     const text = new TextDecoder().decode(
       Buffer.concat([...output].map((chunk) => Buffer.from(chunk))),
     );
-    expect(text).toContain(`home=${process.env.HOME}`);
+    expect(text).toContain(`home=${Bun.env.HOME}`);
   }).pipe(Effect.provide(SessionRegistry.layer)),
 );
 
@@ -424,7 +426,7 @@ testEffect("pane identity extends the inherited environment", () =>
  * say why. The daemon used to drain that into nothing, so the exit code was the
  * whole story and every such death looked the same.
  */
-testEffect("a component worker's stderr reaches the consumer as an agent error", () =>
+testEffect("a component worker's stderr reaches the consumer as a session error", () =>
   Effect.gen(function* () {
     const events = yield* Effect.gen(function* () {
       const registry = yield* SessionRegistry;
@@ -439,20 +441,18 @@ testEffect("a component worker's stderr reaches the consumer as an agent error",
       yield* agent.exit;
       return [...collected];
     }).pipe(Effect.provide(SessionRegistry.layer), Effect.scoped);
-    const errors = events.filter((event) => event._tag === "agent.error");
+    const errors = events.filter((event) => event._tag === "session.error");
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({
-      _tag: "agent.error",
+      _tag: "session.error",
       session: "stderr-agent",
+      message: expect.stringContaining("credential missing for opencode-go"),
     });
-    expect((errors[0] as { message: string }).message).toContain(
-      "credential missing for opencode-go",
-    );
   }),
 );
 
 /** A worker that says nothing on stderr must not manufacture an error event. */
-testEffect("a clean component worker produces no stderr agent error", () =>
+testEffect("a clean component worker produces no stderr session error", () =>
   Effect.gen(function* () {
     const events = yield* Effect.gen(function* () {
       const registry = yield* SessionRegistry;
@@ -467,6 +467,6 @@ testEffect("a clean component worker produces no stderr agent error", () =>
       yield* agent.exit;
       return [...collected];
     }).pipe(Effect.provide(SessionRegistry.layer), Effect.scoped);
-    expect(events.filter((event) => event._tag === "agent.error")).toHaveLength(0);
+    expect(events.filter((event) => event._tag === "session.error")).toHaveLength(0);
   }),
 );

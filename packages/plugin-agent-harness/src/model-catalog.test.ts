@@ -1,11 +1,10 @@
 import { expect } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ConfigProvider, Effect, Stream } from "effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { ConfigProvider, Effect, Layer, Stream } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { ModelCatalog } from "./model-catalog.ts";
-import { testEffect } from "@danielfgray/amux/testing"
+import { testEffect } from "@danielfgray/amux/testing";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
 
 const catalog = {
@@ -27,11 +26,23 @@ const catalog = {
     },
   },
 };
+const catalogJson = JSON.stringify(catalog);
+const staleJson = JSON.stringify({
+  ...catalog,
+  broken: { id: "broken", name: 42, env: [], models: {} },
+});
+const it = testEffect(Layer.mergeAll(BunFileSystem.layer, Path.layer));
 
-async function environment() {
-  const home = await mkdtemp(join(tmpdir(), "amux-model-catalog-"));
-  return { HOME: home, XDG_STATE_HOME: join(home, "state") };
-}
+const environment = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const home = yield* fs.makeTempDirectory({ prefix: "amux-model-catalog-" });
+  return {
+    fs,
+    path,
+    env: { HOME: home, XDG_STATE_HOME: path.join(home, "state") },
+  };
+});
 
 function provide<A, E, R>(
   effect: Effect.Effect<A, E, R>,
@@ -39,80 +50,80 @@ function provide<A, E, R>(
   fetch: Effect.Effect<string, never>,
 ) {
   return effect.pipe(
-    Effect.provide(ModelCatalog.testLayer(fetch)),
-    Effect.provide(EventBus.layer),
-    Effect.provide(BunFileSystem.layer),
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
+    Effect.provide(
+      ModelCatalog.testLayer(fetch).pipe(
+        Layer.provideMerge(EventBus.layer),
+        Layer.provide(BunFileSystem.layer),
+        Layer.provide(
+          Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
+        ),
+      ),
+    ),
   );
 }
 
-const cleanup = (env: NodeJS.ProcessEnv) =>
-  Effect.addFinalizer(() => Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })));
+const cleanup = (fs: FileSystem.FileSystem, env: NodeJS.ProcessEnv) =>
+  Effect.addFinalizer(() =>
+    fs.remove(env.HOME!, { recursive: true, force: true }).pipe(Effect.ignore),
+  );
 
-testEffect("fetches, caches, and lists the catalog", () =>
+it.effect("fetches, caches, and lists the catalog", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* cleanup(env);
+    const { fs, path, env } = yield* environment;
+    yield* cleanup(fs, env);
     let calls = 0;
     const fetch = Effect.sync(() => {
       calls++;
-      return JSON.stringify(catalog);
+      return catalogJson;
     });
     const providers = yield* provide(
-      ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers())),
+      ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers)),
       env,
       fetch,
     );
     expect(providers.openai?.models["gpt-test"]?.name).toBe("GPT Test");
     expect(calls).toBe(1);
-    const file = join(env.XDG_STATE_HOME!, "amux", "cache", "models.json");
-    expect((yield* Effect.promise(() => stat(file))).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(yield* Effect.promise(() => readFile(file, "utf8"))).openai.id).toBe(
-      "openai",
-    );
+    const file = path.join(env.XDG_STATE_HOME!, "amux", "cache", "models.json");
+    expect((yield* fs.stat(file)).mode & 0o777).toBe(0o600);
+    expect(yield* fs.readFileString(file)).toContain('"openai"');
   }),
 );
 
-testEffect("shares one fetch between concurrent callers", () =>
+it.live("shares one fetch between concurrent callers", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* cleanup(env);
+    const { fs, env } = yield* environment;
+    yield* cleanup(fs, env);
     let calls = 0;
-    const fetch = Effect.promise(async () => {
+    const fetch = Effect.gen(function* () {
       calls++;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      return JSON.stringify(catalog);
+      yield* Effect.sleep("20 millis");
+      return catalogJson;
     });
-    const result = yield* Effect.all(
-      [
-        ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers())),
-        ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers())),
-      ],
-      { concurrency: "unbounded" },
-    ).pipe(
-      Effect.provide(ModelCatalog.testLayer(fetch)),
-      Effect.provide(EventBus.layer),
-      Effect.provide(BunFileSystem.layer),
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
+    const result = yield* provide(
+      Effect.all(
+        [
+          ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers)),
+          ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers)),
+        ],
+        { concurrency: "unbounded" },
+      ),
+      env,
+      fetch,
     );
     expect(result).toHaveLength(2);
     expect(calls).toBe(1);
   }),
 );
 
-testEffect("falls back to a stale valid cache and skips corrupt rows", () =>
+it.effect("falls back to a stale valid cache and skips corrupt rows", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* cleanup(env);
-    const directory = join(env.XDG_STATE_HOME!, "amux", "cache");
-    yield* Effect.promise(() => mkdir(directory, { recursive: true }));
-    const stale = {
-      ...catalog,
-      broken: { id: "broken", name: 42, env: [], models: {} },
-    };
-    yield* Effect.promise(() => writeFile(join(directory, "models.json"), JSON.stringify(stale)));
+    const { fs, path, env } = yield* environment;
+    yield* cleanup(fs, env);
+    const directory = path.join(env.XDG_STATE_HOME!, "amux", "cache");
+    yield* fs.makeDirectory(directory, { recursive: true });
+    yield* fs.writeFileString(path.join(directory, "models.json"), staleJson);
     const providers = yield* provide(
-      ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers())),
+      ModelCatalog.Service.pipe(Effect.flatMap((service) => service.providers)),
       env,
       Effect.succeed("network unavailable"),
     );
@@ -121,14 +132,14 @@ testEffect("falls back to a stale valid cache and skips corrupt rows", () =>
   }),
 );
 
-testEffect("forced refresh publishes a refresh event", () =>
+it.effect("forced refresh publishes a refresh event", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* cleanup(env);
-    const fetch = Effect.succeed(JSON.stringify(catalog));
+    const { fs, env } = yield* environment;
+    yield* cleanup(fs, env);
+    const fetch = Effect.succeed(catalogJson);
     const effect = Effect.gen(function* () {
       const service = yield* ModelCatalog.Service;
-      const events = yield* EventBus.pipe(Effect.flatMap((bus) => bus.subscribe()));
+      const events = yield* EventBus.pipe(Effect.flatMap((bus) => bus.subscribe));
       yield* service.refresh(true);
       expect((yield* Stream.runCollect(Stream.take(events, 1)))[0]?.event).toEqual({
         _tag: "models.refreshed",

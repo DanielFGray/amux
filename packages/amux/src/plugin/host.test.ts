@@ -2,7 +2,7 @@ import { afterEach, expect } from "bun:test";
 import { Effect, Fiber, Queue, Scope, Schema as S, Stream } from "effect";
 import type { Regions } from "../ui/regions.tsx";
 import { testEffect } from "../test-effect.ts";
-import { createPluginHost, type PluginEnvironment, type PluginHost } from "./host.ts";
+import { createPluginHost, type PluginHost } from "./host.ts";
 import {
   definePlugin,
   type PluginDefinition,
@@ -21,22 +21,29 @@ import { runCommandByTarget } from "../app.tsx";
 import type { PanelContext } from "../ui/panel.ts";
 import {
   BindingsTag,
+  CliCommandsTag,
   OptionsTag,
+  PanelTag,
   RegionsTag,
+  scopedRegistry,
   SessionViewsTag,
   SpawnProvidersTag,
+  type CliCommandRegistration,
 } from "./services.ts";
+import { createPluginContributions } from "./contributions.ts";
 
 type EnvironmentOverrides = NonNullable<Parameters<typeof testPluginEnvironment>[1]>;
 
-async function mockEnvironment(
+function mockEnvironment(
   overrides: EnvironmentOverrides = {},
 ): Promise<{ env: TestPluginEnvironment; dispose: () => void }> {
-  const t = await createTestRenderer({ width: 80, height: 24 });
-  return {
-    env: testPluginEnvironment(t.renderer, overrides),
-    dispose: () => t.renderer.destroy(),
-  };
+  return Effect.tryPromise(() => createTestRenderer({ width: 80, height: 24 })).pipe(
+    Effect.map((t) => ({
+      env: testPluginEnvironment(t.renderer, overrides),
+      dispose: () => t.renderer.destroy(),
+    })),
+    Effect.runPromise,
+  );
 }
 
 function mkPlugin<const Tags extends readonly PluginService[] = []>(
@@ -62,9 +69,7 @@ afterEach(() => {
   for (const fn of cleanupFns.splice(0)) fn();
 });
 
-function makeHost(
-  overrides: EnvironmentOverrides = {},
-): Effect.Effect<
+function makeHost(overrides: EnvironmentOverrides = {}): Effect.Effect<
   {
     host: PluginHost;
     regions: Regions;
@@ -126,18 +131,86 @@ testEffect("plugin panel run accepts session-target commands", () =>
             }),
         ),
     };
-    const { host } = yield* makeHost({ panel });
+    const { host, registryEntries } = yield* makeHost({ panel });
+    yield* host.add(registryProviding(registryEntries, PanelTag));
     yield* host.add(
       mkPlugin({
         id: "session-command-plugin",
-        effect: (ctx) =>
-          ctx.panel
-            .run(command("agent.prompt", { target: "agent", text: "hello" }))
-            .pipe(Effect.asVoid, Effect.orDie),
+        inject: [PanelTag],
+        effect: () =>
+          PanelTag.pipe(
+            Effect.flatMap((panel) =>
+              panel.run(command("agent.prompt", { target: "agent", text: "hello" })),
+            ),
+            Effect.asVoid,
+            Effect.orDie,
+          ),
       }),
     );
     expect(calls).toEqual(["session"]);
   }),
+);
+
+testEffect("a host without client services refuses UI plugins", () =>
+  Effect.gen(function* () {
+    const { host } = yield* makeHost();
+    const refused = yield* host.reconcile([
+      mkPlugin({
+        id: "ui-plugin",
+        inject: [PanelTag],
+        effect: () => PanelTag.pipe(Effect.asVoid),
+      }),
+    ]);
+
+    expect(refused).toEqual([{ id: "ui-plugin", key: PanelTag.key }]);
+    expect(host.status()).toEqual([]);
+  }),
+);
+
+testEffect(
+  "a CLI-shaped host (contributions only) refuses a UI plugin but activates a CliCommandsTag plugin",
+  () =>
+    Effect.gen(function* () {
+      const contributions = createPluginContributions();
+      const table = contributions.table<CliCommandRegistration>();
+      const cliCommands = scopedRegistry(
+        { all: table.all },
+        (owner, registration: CliCommandRegistration) =>
+          table.add(owner, registration.name, registration),
+      );
+      const host = yield* createPluginHost({ contributions });
+
+      const refused = yield* host.reconcile([
+        definePlugin({
+          id: "amux.registry.cli-commands",
+          apiVersion: "1",
+          provide: [CliCommandsTag],
+          effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
+        }),
+        mkPlugin({
+          id: "ui-plugin",
+          inject: [PanelTag],
+          effect: () => PanelTag.pipe(Effect.asVoid),
+        }),
+        mkPlugin({
+          id: "cli-plugin",
+          inject: [CliCommandsTag],
+          effect: () =>
+            CliCommandsTag.pipe(
+              Effect.flatMap((cli) =>
+                cli.register({
+                  name: "my-verb",
+                  description: "does a thing",
+                  handler: () => Effect.succeed(0),
+                }),
+              ),
+            ),
+        }),
+      ]);
+
+      expect(refused).toEqual([{ id: "ui-plugin", key: PanelTag.key }]);
+      expect(table.all().map((entry) => entry.value.name)).toEqual(["my-verb"]);
+    }),
 );
 
 testEffect("remove deactivates a plugin and status clears it", () =>
@@ -503,7 +576,7 @@ testEffect("KV values survive a remove/add cycle", () =>
         id: "kv-test",
         effect: (ctx) =>
           Effect.sync(() => {
-            ctx.kv.set(key("answer", S.Number), 42);
+            ctx.kv.set(key("answer", S.Finite), 42);
           }),
       }),
     );
@@ -515,7 +588,7 @@ testEffect("KV values survive a remove/add cycle", () =>
         id: "kv-test",
         effect: (ctx) =>
           Effect.sync(() => {
-            stored = ctx.kv.get(key("answer", S.Number));
+            stored = ctx.kv.get(key("answer", S.Finite));
           }),
       }),
     );
@@ -550,7 +623,12 @@ testEffect("removing and adding a plugin releases and reacquires its scope", () 
     yield* host.remove("runtime");
     expect(host.status().filter((status) => status.id === "runtime")).toEqual([]);
     yield* host.add(plugin);
-    expect(host.status().filter((status) => status.id === "runtime").map((status) => status.id)).toEqual(["runtime"]);
+    expect(
+      host
+        .status()
+        .filter((status) => status.id === "runtime")
+        .map((status) => status.id),
+    ).toEqual(["runtime"]);
   }),
 );
 

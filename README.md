@@ -54,7 +54,7 @@ Relative paths resolve from the config directory. A plugin must default-export a
 
 In addition to configured entries, amux discovers entry files in `$XDG_CONFIG_HOME/opentui-herdr/plugins/` (or `~/.config/opentui-herdr/plugins/`). Discovery uses the same validation and failure isolation as configured plugins. The host can enable or disable a plugin at runtime; disabling closes its scope immediately and enabling it acquires a new one. Module state is not persistence: use `ctx.kv` for state that must survive disable and re-enable.
 
-Plugins must invoke workspace commands through `ctx.panel.run()` and must not mutate client projection objects or access terminal handles.
+Plugins must inject `PanelTag` and invoke workspace commands through its `run()` method; they must not mutate client projection objects or access terminal handles.
 
 ### Plugins that depend on plugins
 
@@ -68,11 +68,11 @@ export default definePlugin({
   provide: [MentionIndex],
   effect: (ctx) =>
     Effect.gen(function* () {
-      const search = yield* SearchService
-      ctx.provide(MentionIndex, buildIndex(search))
+      const search = yield* SearchService;
+      ctx.provide(MentionIndex, buildIndex(search));
       // ...
     }),
-})
+});
 ```
 
 `provide` is an upper bound, not a promise: a plugin may publish fewer services than it declares, but `ctx.provide` at a key outside the list fails at the call site, and a plugin with no `provide` publishes nothing. Declaring it is what lets the host decide, before anything runs, whether an injected key has any possible provider at all — reading provisions off a running plugin cannot answer that, because the plugin has to start first.

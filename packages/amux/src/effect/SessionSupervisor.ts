@@ -59,7 +59,10 @@ const INITIAL_OUTPUT_GRACE_MS = 100;
 const foregroundArgv = (foreground: SessionForeground): readonly string[] => {
   if (foreground.pgid <= 0 || foreground.pgid === foreground.sid) return [];
   try {
-    const raw = require("node:fs").readFileSync(`/proc/${foreground.pgid}/cmdline`, "utf8") as string;
+    const raw = require("node:fs").readFileSync(
+      `/proc/${foreground.pgid}/cmdline`,
+      "utf8",
+    ) as string;
     return raw.split("\0").filter(Boolean);
   } catch {
     return [];
@@ -333,7 +336,7 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
           if (
             next.pgid !== last.pgid ||
             next.sid !== last.sid ||
-            JSON.stringify(next.argv) !== JSON.stringify(last.argv)
+            next.argv.join("\0") !== last.argv.join("\0")
           ) {
             last = next;
             yield* publish(next);

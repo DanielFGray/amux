@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- exercises Bun's real dynamic import and file-write timing for hot reload; a FileSystem service would not change what's under test. See the seam documented in packages/amux/src/harness.ts. */
 import { afterEach, expect } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";

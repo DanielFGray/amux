@@ -52,10 +52,11 @@ export function installHotLoader(): void {
       // deliberately not matched: @opentui/solid's preload already claims those
       // and already strips the query, and taking a component away from that
       // handler would silently produce a UI that never updates.
-      build.onLoad({ filter: /\.[cm]?ts\?hot=\d+$/ }, async (args) => ({
-        contents: await Bun.file(args.path.replace(TOKEN, "")).text(),
-        loader: "ts",
-      }));
+      build.onLoad({ filter: /\.[cm]?ts\?hot=\d+$/ }, (args) =>
+        Bun.file(args.path.replace(TOKEN, ""))
+          .text()
+          .then((contents) => ({ contents, loader: "ts" })),
+      );
     },
   });
 }

@@ -9,9 +9,9 @@ import {
 } from "effect/unstable/ai";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
-import { Effect, Layer, Schema as S, Stream } from "effect";
+import { Effect, Layer, Option, Schema as S, Stream } from "effect";
 import * as OpenAiChat from "./openai-chat.ts";
-import { testEffect } from "@danielfgray/amux/testing"
+import { testEffect } from "@danielfgray/amux/testing";
 
 /**
  * The Chat Completions protocol.
@@ -43,7 +43,11 @@ const gateway = (recorded: Recorded) => {
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
       if (request.body._tag !== "Uint8Array") throw new Error("expected a JSON request body");
-      sent.push(JSON.parse(new TextDecoder().decode(request.body.body)) as JsonRecord);
+      const decoded = S.decodeOption(S.fromJsonString(S.Record(S.String, S.Unknown)))(
+        new TextDecoder().decode(request.body.body),
+      );
+      if (Option.isNone(decoded)) throw new Error("expected a JSON request body");
+      sent.push(decoded.value as JsonRecord);
       const bytes = new TextEncoder().encode(recorded.body);
       const size = Math.ceil(bytes.length / (recorded.chunks ?? 1));
       // Delivered in pieces, because a real socket does: a decoder that splits
@@ -82,8 +86,7 @@ const run = <A, E>(
       Effect.provide(stub.layer),
     );
     const result = yield* use(model).pipe(
-      Effect.provide(Layer.succeed(LanguageModel.LanguageModel, model)),
-      Effect.provide(stub.layer),
+      Effect.provide(Layer.mergeAll(Layer.succeed(LanguageModel.LanguageModel, model), stub.layer)),
     );
     return { result, sent: stub.sent };
   });

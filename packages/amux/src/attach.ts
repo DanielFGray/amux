@@ -27,6 +27,7 @@ import {
   Effect,
   Exit,
   Layer,
+  Match,
   Queue,
   Random,
   Schedule,
@@ -69,7 +70,9 @@ const EXCLUDED_SESSION_FRAME_TAGS: Set<AttachFrame["_tag"]> = new Set([
   "input",
   "resize",
   "sync",
-  "agent.event",
+  // Worker -> daemon: the request to commit an event. Clients see the
+  // committed `agent.message` the daemon publishes in its place.
+  "agent.emit",
   // Client -> daemon -> worker stdin only; the daemon never emits it here.
   "session.message",
   "error",
@@ -105,9 +108,9 @@ export interface AttachClientContract {
   readonly closed: boolean;
   stream(session: string): Stream.Stream<AttachFrame, never, never>;
   /** Ordered daemon model generations, independent of terminal streams. */
-  workspace(): Stream.Stream<WorkspaceSnapshot, never, never>;
+  readonly workspace: Stream.Stream<WorkspaceSnapshot, never, never>;
   /** Plugin verbs the daemon is asking this client to run — see `respondCommand`. */
-  commandRequests(): Stream.Stream<
+  readonly commandRequests: Stream.Stream<
     { readonly id: string; readonly command: JsonValue },
     never,
     never
@@ -188,7 +191,7 @@ class AttachClientConnection {
     this._socket = socket;
     this._runtime = runtime;
     this._handshake = handshake;
-    this._closedSignal = Effect.runSync(Deferred.make<void>());
+    this._closedSignal = Deferred.makeUnsafe<void>();
     this._workspaceQ = Effect.runSync(Queue.sliding<WorkspaceSnapshot>(1));
     this._commandQ = Effect.runSync(
       Queue.unbounded<{ readonly id: string; readonly command: JsonValue }>(),
@@ -214,7 +217,7 @@ class AttachClientConnection {
         for (const frame of entry.backlog.splice(0)) yield* Queue.offer(queue, frame);
         entry.queues.push(queue);
         return Stream.unfold(false, (done) => {
-          if (done) return Effect.succeed(undefined);
+          if (done) return Effect.as(Effect.void, undefined);
           return Queue.take(queue).pipe(
             Effect.map((frame) => [frame, frame._tag === "exit"] as const),
           );
@@ -242,13 +245,13 @@ class AttachClientConnection {
     return entry;
   }
 
-  workspace(): Stream.Stream<WorkspaceSnapshot, never, never> {
+  get workspace(): Stream.Stream<WorkspaceSnapshot, never, never> {
     return Stream.fromQueue(this._workspaceQ);
   }
 
   /** Commands the daemon is asking this client to run — a plugin verb the
    *  daemon cannot execute itself. Each one wants a matching {@link respondCommand}. */
-  commandRequests(): Stream.Stream<
+  get commandRequests(): Stream.Stream<
     { readonly id: string; readonly command: JsonValue },
     never,
     never
@@ -283,8 +286,8 @@ class AttachClientConnection {
 
   ping(timeoutMs = 5_000): Promise<boolean> {
     if (this._closed) return Promise.resolve(false);
-    const nonce = `ping-${Math.random().toString(36).slice(2)}`;
-    const pong = Effect.runSync(Deferred.make<boolean>());
+    const nonce = `ping-${Effect.runSync(Random.next).toString(36)}`;
+    const pong = Deferred.makeUnsafe<boolean>();
     this._pongs.set(nonce, pong);
     this._send({ _tag: "ping", nonce });
     return Effect.runPromise(
@@ -339,8 +342,9 @@ class AttachClientConnection {
         .push(chunk)
         .flatMap((frame) => decodeAttachFrames(new TextDecoder().decode(frame)).frames);
     } catch (error) {
-      const protocolError =
-        error instanceof AttachError ? error : new AttachError({ message: errorMessage(error) });
+      const protocolError = S.is(AttachError)(error)
+        ? error
+        : new AttachError({ message: errorMessage(error) });
       onProtocolError(protocolError);
       this._finish(protocolError);
       this._socket.end();
@@ -373,61 +377,61 @@ class AttachClientConnection {
   }
 
   private _route(frame: AttachFrame): void {
-    if (frame._tag === "pong") {
-      if (this._handshake?.nonce === frame.nonce) {
-        const accept = this._handshake.accept;
-        this._handshake = null;
-        accept();
-        return;
-      }
-      const pong = this._pongs.get(frame.nonce);
-      if (pong) Effect.runSync(Deferred.succeed(pong, true));
-      this._pongs.delete(frame.nonce);
-      return;
-    }
-    if (frame._tag === "error") {
-      this._onError?.(frame.message);
-      return;
-    }
-    if (frame._tag === "command.request") {
-      Queue.offerUnsafe(this._commandQ, { id: frame.id, command: frame.command });
-      return;
-    }
-    if (frame._tag === "workspace") {
-      try {
-        const workspace = Effect.runSync(parseWorkspaceJson(frame.state));
-        if (workspace.revision !== frame.revision)
-          throw new AttachError({ message: "workspace revision does not match frame" });
-        Queue.offerUnsafe(this._workspaceQ, workspace);
-      } catch (error) {
-        this._finish(
-          error instanceof AttachError ? error : new AttachError({ message: errorMessage(error) }),
-        );
-        this._socket.end();
-      }
-      return;
-    }
-    if (!isDeliverableFrame(frame)) return;
+    Match.value(frame).pipe(
+      Match.tag("pong", (frame) => {
+        if (this._handshake?.nonce === frame.nonce) {
+          const accept = this._handshake.accept;
+          this._handshake = null;
+          accept();
+          return;
+        }
+        const pong = this._pongs.get(frame.nonce);
+        if (pong) Effect.runSync(Deferred.succeed(pong, true));
+        this._pongs.delete(frame.nonce);
+      }),
+      Match.tag("error", (frame) => {
+        this._onError?.(frame.message);
+      }),
+      Match.tag("command.request", (frame) => {
+        Queue.offerUnsafe(this._commandQ, { id: frame.id, command: frame.command });
+      }),
+      Match.tag("workspace", (frame) => {
+        try {
+          const workspace = Effect.runSync(parseWorkspaceJson(frame.state));
+          if (workspace.revision !== frame.revision)
+            throw new AttachError({ message: "workspace revision does not match frame" });
+          Queue.offerUnsafe(this._workspaceQ, workspace);
+        } catch (error) {
+          this._finish(
+            S.is(AttachError)(error) ? error : new AttachError({ message: errorMessage(error) }),
+          );
+          this._socket.end();
+        }
+      }),
+      Match.orElse((frame) => {
+        if (!isDeliverableFrame(frame)) return;
 
-    // A frame after `exit` belongs to the next session of that name, so the
-    // entry rotates. The old subscribers keep their own queues and close them
-    // when their streams end — the queues are theirs, not the entry's.
-    if (this._queued.get(frame.session)?.terminal) this._queued.delete(frame.session);
-    const entry = this._entryFor(frame.session);
+        // A frame after `exit` belongs to the next session of that name, so the
+        // entry rotates. The old subscribers keep their own queues and close them
+        // when their streams end — the queues are theirs, not the entry's.
+        if (this._queued.get(frame.session)?.terminal) this._queued.delete(frame.session);
+        const entry = this._entryFor(frame.session);
 
-    // Every subscriber sees every frame; with none, the backlog stands in for
-    // the one they will each be given a copy of.
-    const overloaded =
-      entry.queues.length === 0
-        ? (entry.backlog.push(frame), entry.backlog.length > QUEUE_LIMIT)
-        : entry.queues.map((queue) => Queue.offerUnsafe(queue, frame)).includes(false);
-    if (overloaded) {
-      this._finish(new AttachError({ message: "attach receive queue is overloaded" }));
-      this._socket.end();
-      return;
-    }
-    entry.terminal ||= frame._tag === "exit";
-    if (frame._tag === "exit" && entry.queues.length === 0) this._queued.delete(frame.session);
+        // Every subscriber sees every frame; with none, the backlog stands in for
+        // the one they will each be given a copy of.
+        const overloaded =
+          entry.queues.length === 0
+            ? (entry.backlog.push(frame), entry.backlog.length > QUEUE_LIMIT)
+            : entry.queues.map((queue) => Queue.offerUnsafe(queue, frame)).includes(false);
+        if (overloaded) {
+          this._finish(new AttachError({ message: "attach receive queue is overloaded" }));
+          this._socket.end();
+          return;
+        }
+        entry.terminal ||= frame._tag === "exit";
+        if (frame._tag === "exit" && entry.queues.length === 0) this._queued.delete(frame.session);
+      }),
+    );
   }
 
   private _shutdownQueue<A>(queue: Queue.Queue<A>): void {

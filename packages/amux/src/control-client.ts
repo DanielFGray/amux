@@ -133,7 +133,7 @@ export const eventGap = (previous: DaemonEvent, current: DaemonEvent): number =>
 
 /** Collapse transport and protocol failures onto the control plane's one error. */
 export const toControlError = (error: ControlError | RpcClientError | Error): ControlError =>
-  error instanceof ControlError
+  S.is(ControlError)(error)
     ? error
     : new ControlError({
         message: errorMessage(error),

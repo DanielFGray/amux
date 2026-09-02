@@ -1,5 +1,0 @@
-id: effect-v3-queue-unsafe-offer-method-to-offer-unsafe
-language: TypeScript
-rule:
-  pattern: $QUEUE.offerUnsafe($VALUE)
-fix: Queue.offerUnsafe($QUEUE, $VALUE)

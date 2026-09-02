@@ -1,9 +1,14 @@
-import { mkdir } from "node:fs/promises";
+// Path.Path-service adoption (replacing node:path across the service layer for
+// injectable path handling) is a repo-wide policy decision tracked separately,
+// not something to half-apply in one file.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { dirname, join } from "node:path";
 import { DEFAULT_LEADER, type Keys } from "./bindings.ts";
 import { type OptionDeltas } from "./options.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import { Effect, Option, Schema as S } from "effect";
+import * as FileSystem from "effect/FileSystem";
+import type { PlatformError } from "effect/PlatformError";
 import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
 
 export interface PluginSpec {
@@ -47,6 +52,10 @@ export const DEFAULT_CONFIG: Config = {
   permissions: [],
 };
 
+// XDG base-dir bootstrap constant, resolved once at module load before any Effect
+// runs and read synchronously by render code; nothing substitutes it via a
+// ConfigProvider today.
+// @effect-diagnostics-next-line processEnv:off
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config");
 export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json");
 
@@ -84,7 +93,7 @@ const ConfigSchema = S.Struct({
  */
 export function decodeConfig(loaded: JsonValue): Config {
   const decoded = Option.getOrElse(S.decodeUnknownOption(ConfigSchema)(loaded), () =>
-    S.decodeUnknownSync(ConfigSchema)({}),
+    S.decodeSync(ConfigSchema)({}),
   );
   const keys = decoded.keys;
   const leader = Option.getOrElse(
@@ -149,20 +158,33 @@ function mergeDefaultPlugins(saved: PluginSpec[]): PluginSpec[] {
   ];
 }
 
-export async function loadConfig(path = CONFIG_PATH): Promise<Config> {
-  try {
-    const file = Bun.file(path);
-    if (!(await file.exists())) return structuredClone(DEFAULT_CONFIG);
-    return decodeConfig(await file.json());
-  } catch (error) {
-    console.warn(
-      `Ignoring unreadable config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return structuredClone(DEFAULT_CONFIG);
-  }
-}
+export const loadConfig = (
+  path = CONFIG_PATH,
+): Effect.Effect<Config, never, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs.exists(path);
+    if (!exists) return structuredClone(DEFAULT_CONFIG);
+    const contents = yield* fs.readFileString(path);
+    return decodeConfig(yield* S.decodeEffect(S.fromJsonString(JsonValueSchema))(contents));
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning(
+        `Ignoring unreadable config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      ).pipe(Effect.as(structuredClone(DEFAULT_CONFIG))),
+    ),
+  );
 
-export async function saveConfig(config: Config, path = CONFIG_PATH): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await Bun.write(path, JSON.stringify(config, null, 2) + "\n");
-}
+export const saveConfig = (
+  config: Config,
+  path = CONFIG_PATH,
+): Effect.Effect<void, PlatformError, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(dirname(path), { recursive: true });
+    // Config is validated field-by-field on read, by design (see decodeConfig's
+    // doc comment) rather than through one derived schema for the whole shape;
+    // encoding an already-typed Config has no unknown-shape risk to guard against.
+    // @effect-diagnostics-next-line preferSchemaOverJson:off
+    yield* fs.writeFileString(path, JSON.stringify(config, null, 2) + "\n");
+  });

@@ -43,6 +43,18 @@ test("parseArgs rejects bad int values", () => {
   expect(result.errors.length).toBeGreaterThan(0);
 });
 
+test("parseArgs rejects an int flag below its schema minimum", () => {
+  const result = parseArgs("agent.prompt", ["s1", "do x", "--timeout", "-5"]);
+  expect(result.parsed).toBeNull();
+  expect(result.errors).toEqual(['invalid value for --timeout: "-5"']);
+});
+
+test("parseArgs rejects a literal flag value outside its enum", () => {
+  const result = parseArgs("agent.prompt", ["s1", "do x", "--delivery", "bogus"]);
+  expect(result.parsed).toBeNull();
+  expect(result.errors).toEqual(['invalid value for --delivery: "bogus"']);
+});
+
 test("parseArgs reports missing required args", () => {
   const result = parseArgs("pane.split", []);
   expect(result.parsed).toBeNull();
@@ -83,8 +95,8 @@ test("parseArgs accepts separated notify flags", () => {
 test("parseArgs accepts separated values for every flag kind", () => {
   expect(parseArgs("window.select", ["--number", "3"]).parsed).toEqual({ number: 3 });
   expect(
-    parseArgs("agent.prompt", ["s1", "do x", "--until", "working", "--timeout", "5000"]).parsed,
-  ).toEqual({ target: "s1", text: "do x", until: "working", timeout: 5000 });
+    parseArgs("agent.prompt", ["s1", "do x", "--until", "idle", "--timeout", "5000"]).parsed,
+  ).toEqual({ target: "s1", text: "do x", until: "idle", timeout: 5000 });
   expect(
     parseArgs("agent.prompt", [
       "s1",

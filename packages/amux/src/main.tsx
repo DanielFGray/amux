@@ -1,9 +1,11 @@
 import { createCliRenderer, BoxRenderable } from "@opentui/core";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { dirname } from "node:path";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- synchronous by necessity; see installFrameProbe's doc comment.
 import { writeFileSync } from "node:fs";
 import { render } from "@opentui/solid";
 import { BunFileSystem, BunRuntime } from "@effect/platform-bun";
-import { Schema as S, Deferred, Effect, Exit } from "effect";
+import { Schema as S, Deferred, Effect, Exit, Layer, Option } from "effect";
 
 class SessionIdError extends S.TaggedError<SessionIdError>()("SessionIdError", {
   message: S.String,
@@ -13,7 +15,7 @@ import { loadConfig } from "./config.ts";
 import { CONFIG_PATH } from "./config.ts";
 import { applyOptions, resolveOptions } from "./options.ts";
 import { SessionClient } from "./client.ts";
-import { isSessionId, SessionStore } from "./session.ts";
+import { isSessionId, optionalEnvVar, SessionStore } from "./session.ts";
 import { createApp } from "./app.tsx";
 
 /**
@@ -33,7 +35,7 @@ import { createApp } from "./app.tsx";
  * app asks to leave by completing it.
  */
 const program = Effect.gen(function* () {
-  const config = yield* Effect.promise(() => loadConfig());
+  const config = yield* loadConfig();
   applyOptions(resolveOptions(config.options));
 
   const renderer = yield* Effect.acquireRelease(
@@ -56,10 +58,10 @@ const program = Effect.gen(function* () {
     flexGrow: 1,
   });
 
-  const SESSION_ID = process.env.AMUX_SESSION || "default";
+  const SESSION_ID = Option.getOrElse(yield* optionalEnvVar("AMUX_SESSION"), () => "default");
   if (!isSessionId(SESSION_ID)) {
     return yield* new SessionIdError({
-      message: `invalid AMUX_SESSION ${JSON.stringify(SESSION_ID)}`,
+      message: `invalid AMUX_SESSION "${SESSION_ID}"`,
     });
   }
 
@@ -110,6 +112,7 @@ const program = Effect.gen(function* () {
  * must return a status synchronously; there is no Effect to run it in.
  */
 function installFrameProbe(renderer: import("@opentui/core").CliRenderer): void {
+  // @effect-diagnostics-next-line processEnv:off -- synchronous by necessity, see doc comment above.
   if (process.env.AMUX_FRAME_PROBE !== "1") return;
 
   const path = `/tmp/amux-frame-probe-${process.pid}.json`;
@@ -138,7 +141,6 @@ function installFrameProbe(renderer: import("@opentui/core").CliRenderer): void 
 BunRuntime.runMain(
   program.pipe(
     Effect.scoped,
-    Effect.provide(SessionStore.layer),
-    Effect.provide(BunFileSystem.layer),
+    Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
   ),
 );

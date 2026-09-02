@@ -2,17 +2,13 @@ import { defineRule } from "@oxlint/plugins";
 import type { ESTree } from "@oxlint/plugins";
 
 function unwrapType(type: ESTree.TSType): ESTree.TSType {
-  return type.type === "TSParenthesizedType"
-    ? unwrapType(type.typeAnnotation)
-    : type;
+  return type.type === "TSParenthesizedType" ? unwrapType(type.typeAnnotation) : type;
 }
 
 function isTopType(type: ESTree.TSType | null | undefined): boolean {
   if (type === null || type === undefined) return false;
   const unwrapped = unwrapType(type);
-  return (
-    unwrapped.type === "TSUnknownKeyword" || unwrapped.type === "TSAnyKeyword"
-  );
+  return unwrapped.type === "TSUnknownKeyword" || unwrapped.type === "TSAnyKeyword";
 }
 
 function isUnparsedValue(node: ESTree.IdentifierReference): boolean {
@@ -24,12 +20,10 @@ function isUnparsedValue(node: ESTree.IdentifierReference): boolean {
       current.type === "ArrowFunctionExpression"
     ) {
       const parameter = current.params.find(
-        (candidate) =>
-          candidate.type === "Identifier" && candidate.name === node.name,
+        (candidate) => candidate.type === "Identifier" && candidate.name === node.name,
       );
       return (
-        parameter?.type === "Identifier" &&
-        isTopType(parameter.typeAnnotation?.typeAnnotation)
+        parameter?.type === "Identifier" && isTopType(parameter.typeAnnotation?.typeAnnotation)
       );
     }
     if (

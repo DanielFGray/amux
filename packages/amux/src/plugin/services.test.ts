@@ -198,7 +198,7 @@ testEffect("credential interception updates captured access without reloading th
       value: { type: "key", key: Redacted.make("secret") },
     }));
     const credentials: Credential.Interface = {
-      all: () => Effect.succeed(rows),
+      all: Effect.succeed(rows),
       list: (integrationID) =>
         Effect.succeed(rows.filter((row) => row.integrationID === integrationID)),
       get: (id) => Effect.succeed(rows.find((row) => row.id === id)),
@@ -241,23 +241,17 @@ testEffect("credential interception updates captured access without reloading th
       }),
     );
 
-    expect((yield* acquired!.all()).map((row) => row.integrationID)).toEqual([
-      "openai",
-      "anthropic",
-    ]);
+    expect((yield* acquired!.all).map((row) => row.integrationID)).toEqual(["openai", "anthropic"]);
     host.intercept("credential-consumer", Credential.Service, {
       integrations: new Set(["openai"]),
     });
-    expect((yield* acquired!.all()).map((row) => row.integrationID)).toEqual(["openai"]);
+    expect((yield* acquired!.all).map((row) => row.integrationID)).toEqual(["openai"]);
     host.intercept("credential-consumer", Credential.Service, {
       integrations: new Set(["anthropic"]),
     });
-    expect((yield* acquired!.all()).map((row) => row.integrationID)).toEqual(["anthropic"]);
+    expect((yield* acquired!.all).map((row) => row.integrationID)).toEqual(["anthropic"]);
     host.clearInterception("credential-consumer", Credential.Service);
-    expect((yield* acquired!.all()).map((row) => row.integrationID)).toEqual([
-      "openai",
-      "anthropic",
-    ]);
+    expect((yield* acquired!.all).map((row) => row.integrationID)).toEqual(["openai", "anthropic"]);
     expect(activations).toBe(1);
   }),
 );

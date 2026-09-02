@@ -10,8 +10,24 @@ import {
   wrapText,
   type TranscriptBlock,
 } from "./transcript.ts";
+import { emit, delta, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+import type { AgentFrame } from "@danielfgray/amux/protocol";
 
-const frame = (value: any) => ({ session: "agent", sequence: 1, ...value });
+/** Wrap a harness event or fragment the way core actually delivers it — a
+ *  `topic` rides the wire as-is, live-only tags are `agent.delta`, and
+ *  everything else is a committed `agent.message` with a `sequence`. */
+const DELTA_TAGS = new Set<string>([
+  "text.delta",
+  "tool.params-start",
+  "tool.params-delta",
+  "tool.params-end",
+]);
+const frame = (value: any): AgentFrame =>
+  value._tag === "topic"
+    ? ({ session: "agent", sequence: 1, ...value } as AgentFrame)
+    : DELTA_TAGS.has(value._tag)
+      ? delta("agent", value as HarnessDelta)
+      : ({ ...emit("agent", value as HarnessEvent), sequence: 1 } as AgentFrame);
 
 test("transcript reduction joins text deltas and attaches tool results", () => {
   let blocks: readonly TranscriptBlock[] = [];

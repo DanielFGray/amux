@@ -1,0 +1,7 @@
+id: same-value-nested-ternary
+language: TypeScript
+severity: warning
+message: >-
+  Same-value nested ternary chain; prefer Match.value(...).pipe(Match.is(...), Match.is(...), Match.orElse|Match.exhaustive)
+rule:
+  pattern: "$A === $X ? $B : $A === $Y ? $D : $E"

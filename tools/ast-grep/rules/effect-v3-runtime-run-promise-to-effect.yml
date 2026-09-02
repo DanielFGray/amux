@@ -1,5 +1,0 @@
-id: effect-v3-runtime-run-promise-to-effect
-language: TypeScript
-rule:
-  pattern: Runtime.runPromise($RUNTIME)($EFFECT)
-fix: Effect.runPromiseWith($RUNTIME)($EFFECT)

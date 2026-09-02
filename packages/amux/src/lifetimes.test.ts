@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 /**
  * The scope chain actually releases.
  *
@@ -76,7 +77,7 @@ async function fixture() {
   const host = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
   t.renderer.root.add(host);
   const spy = spyBackend();
-  const scope = Effect.runSync(Scope.make());
+  const scope = Scope.makeUnsafe();
   const spaces = run(
     Scope.provide(SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host), scope),
   );
@@ -212,7 +213,7 @@ test("scoped app release detaches daemon projections and terminates local owners
     };
     const workspace = lifecycleWorkspace(`agent-${ownership}`);
     const session = lifecycleSession(workspace, backend);
-    const scope = Effect.runSync(Scope.make());
+    const scope = Scope.makeUnsafe();
 
     try {
       // Starting the app reads its plugins off disk, so this is not synchronous.
@@ -309,10 +310,10 @@ function lifecycleSession(
     resumeAgent: () => Effect.void,
     run: () => Effect.void,
     close() {},
-    stop: () => Effect.void,
+    stop: Effect.void,
     setBuffer: () => Effect.succeed("buffer"),
     pasteBuffer: () => Effect.void,
-    listBuffers: () => Effect.succeed([]),
+    listBuffers: Effect.succeed([]),
     deleteBuffer: () => Effect.void,
     showBuffer: () => Effect.succeed(""),
     attach: {} as SessionClientContract["attach"],

@@ -1,8 +1,7 @@
+import * as FileSystem from "effect/FileSystem";
 import { Clock, Effect, Exit, Scope } from "effect";
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { BunFileSystem } from "@effect/platform-bun";
 import { AttachHub } from "./AttachHub.ts";
 import { decodeAttachFrames, encodeAttachFrame, type AttachFrame } from "./AttachProtocol.ts";
 import { createAttachWriter, startAttachServer } from "./AttachServer.ts";
@@ -20,35 +19,35 @@ const concatenate = (parts: Uint8Array[]) => {
   return result;
 };
 
-testEffect("attach writer resumes partial writes without interleaving frames", () =>
-  Effect.gen(function* () {
-    const writes: Uint8Array[] = [];
-    const limits = [2, 1, 7, 3, 1000];
-    const writer = createAttachWriter(
-      {
-        write(data, offset = 0, length = (data as Uint8Array).byteLength - offset) {
-          const bytes = data as Uint8Array;
-          const count = Math.min(length, limits.shift() ?? 1000);
-          writes.push(new Uint8Array(bytes.buffer, bytes.byteOffset + offset, count).slice());
-          return count;
-        },
-      },
-      () => {
-        throw new Error("unexpected overload");
-      },
-    );
+const join = (root: string, name: string) => `${root}/${name}`;
 
-    expect(writer.send({ _tag: "output", session: "one", data: new Uint8Array([1]) })).toBe(true);
-    expect(writer.send({ _tag: "output", session: "two", data: new Uint8Array([2]) })).toBe(true);
-    for (let index = 0; index < 10; index++) writer.drain();
-    const wire = new TextDecoder().decode(concatenate(writes));
-    const received = decodeAttachFrames(wire).frames;
-    expect(received).toEqual([
-      { _tag: "output", session: "one", data: new Uint8Array([1]) },
-      { _tag: "output", session: "two", data: new Uint8Array([2]) },
-    ]);
-  }),
-);
+test("attach writer resumes partial writes without interleaving frames", () => {
+  const writes: Uint8Array[] = [];
+  const limits = [2, 1, 7, 3, 1000];
+  const writer = createAttachWriter(
+    {
+      write(data, offset = 0, length = (data as Uint8Array).byteLength - offset) {
+        const bytes = data as Uint8Array;
+        const count = Math.min(length, limits.shift() ?? 1000);
+        writes.push(new Uint8Array(bytes.buffer, bytes.byteOffset + offset, count).slice());
+        return count;
+      },
+    },
+    () => {
+      throw new Error("unexpected overload");
+    },
+  );
+
+  expect(writer.send({ _tag: "output", session: "one", data: new Uint8Array([1]) })).toBe(true);
+  expect(writer.send({ _tag: "output", session: "two", data: new Uint8Array([2]) })).toBe(true);
+  for (let index = 0; index < 10; index++) writer.drain();
+  const wire = new TextDecoder().decode(concatenate(writes));
+  const received = decodeAttachFrames(wire).frames;
+  expect(received).toEqual([
+    { _tag: "output", session: "one", data: new Uint8Array([1]) },
+    { _tag: "output", session: "two", data: new Uint8Array([2]) },
+  ]);
+});
 
 test("attach writer waits for drain after zero and closes on -1 or throw", () => {
   const bytes = new TextEncoder().encode("abcdef");
@@ -225,10 +224,14 @@ const waitUntil = (predicate: () => boolean, what: string, timeout = 500) =>
  *  test needs its own: a unix socket path is a real file, and a leftover one
  *  from a previous run would be bound before the server ever starts. */
 const tempRoot = (prefix: string) =>
-  Effect.acquireRelease(
-    Effect.promise(() => mkdtemp(join(tmpdir(), prefix))),
-    (root) => Effect.promise(() => rm(root, { recursive: true, force: true })),
-  );
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectory({ prefix });
+    yield* Effect.addFinalizer(() =>
+      fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore),
+    );
+    return root;
+  }).pipe(Effect.provide(BunFileSystem.layer));
 
 testEffect("native attach server routes output and releases clients on close", () =>
   Effect.gen(function* () {

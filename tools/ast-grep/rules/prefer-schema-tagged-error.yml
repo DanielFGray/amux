@@ -1,0 +1,6 @@
+id: prefer-schema-tagged-error
+language: TypeScript
+severity: warning
+message: Prefer Schema.TaggedError over Data.TaggedError so fields are validated and the error is encoded for transport
+rule:
+  pattern: Data.TaggedError($$$ARGS)

@@ -17,10 +17,8 @@ import { isTerminalSize, MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import {
   AttachFrameAccumulator,
   decodeAttachFrames,
-  isAgentEvent,
   type AgentEventPayload,
   AgentDelta,
-  type AgentFrame,
   type AttachFrame,
   type JsonValue,
   type PermissionAnswer,
@@ -169,7 +167,7 @@ function ptyBackend(spec: SessionSpec): Backend {
       return pty.wait.then(() => pty.exitCode);
     },
     write: (data, signal) => pty.write(data, signal),
-    message: async () => {},
+    message: () => Promise.resolve(),
     resize: (cols, rows) => pty.resize(cols, rows),
     kill: () => pty.kill(),
     close: () => pty.close(),
@@ -209,24 +207,28 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
     this.end();
   }
 
-  async *[Symbol.asyncIterator](): AsyncIterator<A> {
-    while (this.#values.length || !this.#ended) {
-      if (this.#values.length) yield this.#values.shift()!;
-      else {
-        const next = await new Promise<IteratorResult<A>>((resolve) => this.#waiters.push(resolve));
-        if (next.done) {
-          if (this.#failed) throw this.#failure;
-          return;
-        }
-        yield next.value;
+  [Symbol.asyncIterator](): AsyncIterator<A> {
+    const next = (): Promise<IteratorResult<A>> => {
+      if (this.#values.length)
+        return Promise.resolve({ done: false, value: this.#values.shift()! });
+      if (this.#ended) {
+        return this.#failed
+          ? Promise.reject(this.#failure)
+          : Promise.resolve({ done: true, value: undefined as never });
       }
-    }
-    if (this.#failed) throw this.#failure;
+      return Effect.runPromise(
+        Effect.callback<IteratorResult<A>, never>((resume) => {
+          this.#waiters.push((result) => resume(Effect.succeed(result)));
+        }),
+      );
+    };
+    return { next };
   }
 }
 
-const isAgentFrame = (frame: AttachFrame): frame is AgentFrame =>
-  isAgentEvent(frame) || S.is(AgentDelta)(frame);
+/** A worker may send a live delta directly; a durable event only through
+ *  `agent.emit`, because `sequence` is the daemon's to assign. */
+const isAgentDelta = S.is(AgentDelta);
 
 /** How much of a dying worker's stderr is kept to explain its exit. A stack
  *  trace fits; a worker looping on a warning cannot grow the daemon. */
@@ -274,68 +276,93 @@ function componentBackend(spec: SessionSpec): Backend {
    */
   let stderrTail = "";
   let stderrDropped = false;
-  const stderrDrained = (async () => {
-    const decoder = new TextDecoder();
-    for await (const chunk of child.stderr) {
-      const text = decoder.decode(chunk, { stream: true });
-      if (!text) continue;
-      // Logged as it arrives, so a worker that complains and keeps running is
-      // visible too — not only one that dies with something to say.
-      Effect.runFork(Effect.logWarning(`session '${spec.id}' worker stderr: ${text.trimEnd()}`));
-      stderrTail += text;
-      if (stderrTail.length > STDERR_TAIL_CHARS) {
-        stderrTail = stderrTail.slice(-STDERR_TAIL_CHARS);
-        stderrDropped = true;
-      }
-    }
-  })();
+  const stderrDrained = Effect.runPromise(
+    Effect.callback<void, unknown>((resume) => {
+      const decoder = new TextDecoder();
+      const iterator = child.stderr[Symbol.asyncIterator]();
+      const read = (): void => {
+        iterator.next().then(
+          (result) => {
+            if (result.done) {
+              resume(Effect.void);
+              return;
+            }
+            const text = decoder.decode(result.value, { stream: true });
+            if (!text) {
+              read();
+              return;
+            }
+            // Logged as it arrives, so a worker that complains and keeps running is
+            // visible too — not only one that dies with something to say.
+            Effect.runFork(
+              Effect.logWarning(`session '${spec.id}' worker stderr: ${text.trimEnd()}`),
+            );
+            stderrTail += text;
+            if (stderrTail.length > STDERR_TAIL_CHARS) {
+              stderrTail = stderrTail.slice(-STDERR_TAIL_CHARS);
+              stderrDropped = true;
+            }
+            read();
+          },
+          (error) => resume(Effect.fail(error)),
+        );
+      };
+      read();
+    }),
+  );
 
-  void (async () => {
+  void Promise.resolve().then(() => {
     const buffer = new AttachFrameAccumulator();
-    try {
-      for await (const chunk of child.stdout) {
-        if (buffer.byteLength + chunk.byteLength > MAX_ATTACH_FRAME_BYTES) {
-          throw new Error("component worker frame exceeds MAX_ATTACH_FRAME_BYTES");
+    const iterator = child.stdout[Symbol.asyncIterator]();
+    const read = (): Promise<void> =>
+      iterator.next().then((result) => {
+        if (result.done) {
+          output.end();
+          return stderrDrained.then(() => {
+            const reason = stderrTail.trim();
+            if (reason)
+              events.offer({
+                _tag: "session.error",
+                session: spec.id,
+                message: `worker stderr: ${stderrDropped ? "…" : ""}${reason}`,
+              });
+            events.end();
+          });
         }
-        for (const complete of buffer.push(chunk)) {
-          for (const decoded of decodeAttachFrames(new TextDecoder().decode(complete)).frames) {
-            if (decoded._tag === "output" && decoded.session === spec.id)
-              output.offer(new Uint8Array(decoded.data));
-            else if (decoded._tag === "agent.event" && decoded.event.session === spec.id)
-              events.offer(decoded.event);
-            else if (isAgentFrame(decoded) && decoded.session === spec.id) events.offer(decoded);
+        try {
+          const chunk = result.value;
+          if (buffer.byteLength + chunk.byteLength > MAX_ATTACH_FRAME_BYTES) {
+            throw new Error("component worker frame exceeds MAX_ATTACH_FRAME_BYTES");
           }
+          for (const complete of buffer.push(chunk)) {
+            for (const decoded of decodeAttachFrames(new TextDecoder().decode(complete)).frames) {
+              if (decoded._tag === "output" && decoded.session === spec.id)
+                output.offer(new Uint8Array(decoded.data));
+              else if (decoded._tag === "agent.emit" && decoded.event.session === spec.id)
+                events.offer(decoded.event);
+              else if (isAgentDelta(decoded) && decoded.session === spec.id) events.offer(decoded);
+            }
+          }
+          return read();
+        } catch (error) {
+          // A malformed or oversized frame means the worker's protocol stream is
+          // no longer trustworthy — kill it and surface the failure through the
+          // output/events streams instead of ending them as if the worker had
+          // exited cleanly.
+          const failure = error instanceof Error ? error : new Error(String(error));
+          child.kill();
+          output.fail(failure);
+          events.fail(failure);
+          return Promise.resolve();
         }
-      }
-      output.end();
-      // stdout closing means the worker is going away. Its stderr closes at the
-      // same moment, so waiting here is what stops a worker that wrote its
-      // reason and exited from losing the race against this loop — an offer
-      // after `end()` is not reliably drained.
-      await stderrDrained;
-      const reason = stderrTail.trim();
-      if (reason)
-        events.offer({
-          _tag: "agent.error",
-          session: spec.id,
-          message: `worker stderr: ${stderrDropped ? "…" : ""}${reason}`,
-        });
-      events.end();
-    } catch (error) {
-      // A malformed or oversized frame means the worker's protocol stream is
-      // no longer trustworthy — kill it and surface the failure through the
-      // output/events streams instead of ending them as if the worker had
-      // exited cleanly.
-      const failure = error instanceof Error ? error : new Error(String(error));
-      child.kill();
-      output.fail(failure);
-      events.fail(failure);
-    }
-  })();
+      });
+    return read();
+  });
 
-  const send = async (frame: AttachFrame) => {
-    if (!closed) await child.stdin.write(`${JSON.stringify(frame)}\n`);
-  };
+  const send = (frame: AttachFrame) =>
+    closed
+      ? Promise.resolve()
+      : Promise.resolve(child.stdin.write(`${JSON.stringify(frame)}\n`)).then(() => undefined);
   const wait = child.exited.then((code) => {
     closed = true;
     return killed ? null : code;
@@ -352,12 +379,11 @@ function componentBackend(spec: SessionSpec): Backend {
       }),
     message: (message) => send({ _tag: "session.message", session: spec.id, message }),
     resize: (cols, rows) => void send({ _tag: "resize", session: spec.id, cols, rows }),
-    kill: async () => {
-      if (!closed) {
-        killed = true;
-        child.kill();
-        await child.exited;
-      }
+    kill: () => {
+      if (closed) return Promise.resolve();
+      killed = true;
+      child.kill();
+      return child.exited.then(() => undefined);
     },
     close: () => {
       if (!closed) child.kill();
@@ -430,7 +456,7 @@ export class SessionRegistry extends Context.Service<SessionRegistry>()("Session
           (owned) =>
             Effect.uninterruptible(
               Effect.tryPromise(() => owned.kill()).pipe(
-                Effect.catch(() => Effect.void),
+                Effect.ignore,
                 Effect.ensuring(Effect.sync(() => owned.close())),
                 Effect.ensuring(release),
               ),

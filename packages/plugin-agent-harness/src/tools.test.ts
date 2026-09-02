@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
 import { AiError, Tool } from "effect/unstable/ai";
-import { Effect, Option, Stream } from "effect";
+import { Effect, Layer, Option, Stream } from "effect";
 import { agentToolkit } from "./tools.ts";
-import { testEffect } from "@danielfgray/amux/testing"
+import { testEffect } from "@danielfgray/amux/testing";
 import type { Assertion, PermissionGate } from "./permission.ts";
+
+const it = testEffect(Layer.empty);
 
 /** Runs a tool call to its final result. Handlers stream preliminary progress
  *  updates before the authoritative one, which these tests don't need. */
@@ -25,7 +27,7 @@ const recording = (answer: (assertion: Assertion) => Effect.Effect<void, string>
 
 const allowAll = () => recording(() => Effect.void);
 
-testEffect("agent toolkit exposes coding tools rather than amux commands", () =>
+it.live("agent toolkit exposes coding tools rather than amux commands", () =>
   Effect.gen(function* () {
     const toolkit = yield* agentToolkit(process.cwd(), allowAll().gate);
     expect(Object.keys(toolkit.tools)).toEqual(["read", "write", "glob", "grep", "bash"]);
@@ -35,7 +37,7 @@ testEffect("agent toolkit exposes coding tools rather than amux commands", () =>
   }),
 );
 
-testEffect("read uses workspace-relative paths and line numbers", () =>
+it.live("read uses workspace-relative paths and line numbers", () =>
   Effect.gen(function* () {
     const toolkit = yield* agentToolkit(process.cwd(), allowAll().gate);
     const output = yield* runHandle(
@@ -49,7 +51,7 @@ testEffect("read uses workspace-relative paths and line numbers", () =>
   }),
 );
 
-testEffect("every tool declares its action and what it would touch", () =>
+it.live("every tool declares its action and what it would touch", () =>
   Effect.gen(function* () {
     const { gate, seen } = allowAll();
     const toolkit = yield* agentToolkit(process.cwd(), gate);
@@ -62,7 +64,7 @@ testEffect("every tool declares its action and what it would touch", () =>
   }),
 );
 
-testEffect("a refusal reaches the model as the tool's failure, and nothing runs", () =>
+it.live("a refusal reaches the model as the tool's failure, and nothing runs", () =>
   Effect.gen(function* () {
     const { gate } = recording(() => Effect.fail("Denied by the user: not this time"));
     const toolkit = yield* agentToolkit(process.cwd(), gate);

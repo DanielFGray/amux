@@ -361,6 +361,13 @@ function geometry(layout: Layout, size: LayoutSize): Geometry {
   return { panes, nodes };
 }
 
+const DOCK_GROW_DIRECTION = {
+  left: "left",
+  right: "right",
+  top: "up",
+  bottom: "down",
+} as const satisfies Readonly<Record<DockSide, Direction>>;
+
 function resizeDock(
   layout: Layout,
   size: LayoutSize,
@@ -368,14 +375,7 @@ function resizeDock(
   direction: Direction,
   cells: number,
 ): Layout {
-  const grows =
-    side === "left"
-      ? direction === "left"
-      : side === "right"
-        ? direction === "right"
-        : side === "top"
-          ? direction === "up"
-          : direction === "down";
+  const grows = direction === DOCK_GROW_DIRECTION[side];
   const axis = side === "left" || side === "right" ? size.cols : size.rows;
   const current = layout.dockSizes?.[side] ?? dockDefaultSize(side);
   const next = current + (grows ? cells : -cells);

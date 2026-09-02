@@ -1,0 +1,6 @@
+id: effect-run-sync-scope-make-to-unsafe
+language: TypeScript
+message: Effect.runSync(Scope.make(...)) starts a fiber to run a pure constructor. Use Scope.makeUnsafe(...) instead.
+rule:
+  pattern: Effect.runSync(Scope.make($$$ARGS))
+fix: Scope.makeUnsafe($$$ARGS)

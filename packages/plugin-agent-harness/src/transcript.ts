@@ -1,8 +1,9 @@
-import { AgentFrame } from "@danielfgray/amux/protocol"
-import type { JsonValue } from "@danielfgray/amux/protocol"
+import type { AgentFrame } from "@danielfgray/amux/protocol";
+import type { JsonValue } from "@danielfgray/amux/protocol";
 import type { PermissionDecision, PermissionRule } from "@danielfgray/amux/permission.ts";
-import { ProcessState } from "@danielfgray/amux"
+import { ProcessState } from "@danielfgray/amux";
 import { agentStateFromTopic } from "./state-topic.ts";
+import { readDelta, readEvent, type HarnessDelta, type SequencedHarnessEvent } from "./protocol.ts";
 
 export type TranscriptBlock =
   | { readonly kind: "reasoning"; readonly turn: string; readonly text: string }
@@ -66,7 +67,7 @@ export class Transcript {
 type PermissionBlock = Extract<TranscriptBlock, { kind: "permission" }>;
 
 const permissionBlock = (
-  frame: Extract<AgentFrame, { _tag: "permission.request" }>,
+  frame: Extract<SequencedHarnessEvent, { _tag: "permission.request" }>,
 ): PermissionBlock => ({
   kind: "permission",
   turn: frame.turn,
@@ -80,7 +81,7 @@ const permissionBlock = (
 
 const decided = (
   block: PermissionBlock,
-  frame: Extract<AgentFrame, { _tag: "permission.response" }>,
+  frame: Extract<SequencedHarnessEvent, { _tag: "permission.response" }>,
 ): PermissionBlock =>
   frame.feedback === undefined
     ? { ...block, decision: frame.decision }
@@ -112,10 +113,41 @@ export function toolPermission(
   );
 }
 
-/** Reduce semantic agent frames into stable render blocks. */
+/**
+ * Reduce one wire frame into stable render blocks.
+ *
+ * `agent.message` and `agent.delta` are opaque at this level — this harness's
+ * own vocabulary lives inside them, so `readEvent`/`readDelta` unwrap it and
+ * hand back `undefined` for anything the harness did not write, which this
+ * folds over unchanged rather than failing on. `topic` and `session.error`
+ * carry meaning core itself assigns and are handled directly.
+ */
 export function appendTranscriptFrame(
   blocks: readonly TranscriptBlock[],
   frame: AgentFrame,
+): readonly TranscriptBlock[] {
+  switch (frame._tag) {
+    case "topic": {
+      const state = agentStateFromTopic(frame);
+      return state === undefined ? blocks : [...blocks, { kind: "status", state }];
+    }
+    case "session.error":
+      return [...blocks, { kind: "error", text: frame.message }];
+    case "agent.delta": {
+      const fragment = readDelta(frame);
+      return fragment === undefined ? blocks : appendHarnessDelta(blocks, fragment);
+    }
+    case "agent.message": {
+      const event = readEvent(frame);
+      return event === undefined ? blocks : appendHarnessEvent(blocks, event);
+    }
+  }
+}
+
+/** Fold one durable harness event, committed to the log, into render blocks. */
+function appendHarnessEvent(
+  blocks: readonly TranscriptBlock[],
+  frame: SequencedHarnessEvent,
 ): readonly TranscriptBlock[] {
   switch (frame._tag) {
     case "turn.queued":
@@ -129,21 +161,6 @@ export function appendTranscriptFrame(
               : block,
           )
         : [...blocks, { kind: "user", turn: frame.turn, text: frame.prompt }];
-    }
-    case "text.delta": {
-      const index = blocks.findLastIndex(
-        (block) => block.kind === "assistant" && block.turn === frame.turn,
-      );
-      if (index >= 0) {
-        const assistant = blocks[index]!;
-        if (assistant.kind !== "assistant") return blocks;
-        return [
-          ...blocks.slice(0, index),
-          { ...assistant, text: assistant.text + frame.text },
-          ...blocks.slice(index + 1),
-        ];
-      }
-      return [...blocks, { kind: "assistant", turn: frame.turn, text: frame.text }];
     }
     case "reasoning.delta": {
       const index = blocks.findLastIndex(
@@ -182,6 +199,65 @@ export function appendTranscriptFrame(
         ...blocks,
         { kind: "tool", turn: frame.turn, call: frame.call, name: frame.tool, input: frame.input },
       ];
+    }
+    case "tool.result": {
+      const index = blocks.findLastIndex(
+        (block) => block.kind === "tool" && block.turn === frame.turn && block.call === frame.call,
+      );
+      if (index < 0) return blocks;
+      const tool = blocks[index]!;
+      if (tool.kind !== "tool") return blocks;
+      return [
+        ...blocks.slice(0, index),
+        { ...tool, output: frame.output, isError: frame.isError },
+        ...blocks.slice(index + 1),
+      ];
+    }
+    case "permission.request":
+      return [...blocks, permissionBlock(frame)];
+    case "permission.response": {
+      const index = blocks.findLastIndex(
+        (block) => block.kind === "permission" && block.request === frame.request,
+      );
+      if (index < 0) return blocks;
+      const permission = blocks[index]!;
+      if (permission.kind !== "permission") return blocks;
+      return [...blocks.slice(0, index), decided(permission, frame), ...blocks.slice(index + 1)];
+    }
+    case "turn.end":
+      return [
+        ...blocks,
+        ...(frame.text &&
+        !blocks.some((block) => block.kind === "assistant" && block.turn === frame.turn)
+          ? [{ kind: "assistant" as const, turn: frame.turn, text: frame.text }]
+          : []),
+        ...(frame.error ? [{ kind: "error" as const, turn: frame.turn, text: frame.error }] : []),
+      ];
+    case "agent.error":
+      return [...blocks, { kind: "error", text: frame.message }];
+  }
+}
+
+/** Fold one live-only fragment — never appended to the durable log — into render blocks. */
+function appendHarnessDelta(
+  blocks: readonly TranscriptBlock[],
+  frame: HarnessDelta,
+): readonly TranscriptBlock[] {
+  switch (frame._tag) {
+    case "text.delta": {
+      const index = blocks.findLastIndex(
+        (block) => block.kind === "assistant" && block.turn === frame.turn,
+      );
+      if (index >= 0) {
+        const assistant = blocks[index]!;
+        if (assistant.kind !== "assistant") return blocks;
+        return [
+          ...blocks.slice(0, index),
+          { ...assistant, text: assistant.text + frame.text },
+          ...blocks.slice(index + 1),
+        ];
+      }
+      return [...blocks, { kind: "assistant", turn: frame.turn, text: frame.text }];
     }
     case "tool.params-start": {
       const index = blocks.findLastIndex(
@@ -233,45 +309,6 @@ export function appendTranscriptFrame(
     }
     case "tool.params-end":
       return blocks;
-    case "tool.result": {
-      const index = blocks.findLastIndex(
-        (block) => block.kind === "tool" && block.turn === frame.turn && block.call === frame.call,
-      );
-      if (index < 0) return blocks;
-      const tool = blocks[index]!;
-      if (tool.kind !== "tool") return blocks;
-      return [
-        ...blocks.slice(0, index),
-        { ...tool, output: frame.output, isError: frame.isError },
-        ...blocks.slice(index + 1),
-      ];
-    }
-    case "permission.request":
-      return [...blocks, permissionBlock(frame)];
-    case "permission.response": {
-      const index = blocks.findLastIndex(
-        (block) => block.kind === "permission" && block.request === frame.request,
-      );
-      if (index < 0) return blocks;
-      const permission = blocks[index]!;
-      if (permission.kind !== "permission") return blocks;
-      return [...blocks.slice(0, index), decided(permission, frame), ...blocks.slice(index + 1)];
-    }
-    case "topic": {
-      const state = agentStateFromTopic(frame);
-      return state === undefined ? blocks : [...blocks, { kind: "status", state }];
-    }
-    case "turn.end":
-      return [
-        ...blocks,
-        ...(frame.text &&
-        !blocks.some((block) => block.kind === "assistant" && block.turn === frame.turn)
-          ? [{ kind: "assistant" as const, turn: frame.turn, text: frame.text }]
-          : []),
-        ...(frame.error ? [{ kind: "error" as const, turn: frame.turn, text: frame.error }] : []),
-      ];
-    case "agent.error":
-      return [...blocks, { kind: "error", text: frame.message }];
   }
 }
 

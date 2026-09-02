@@ -1,5 +1,0 @@
-id: effect-v3-schema-between-to-isBetween
-language: TypeScript
-rule:
-  pattern: S.between($$$ARGS)
-fix: S.check(S.isBetween($$$ARGS))

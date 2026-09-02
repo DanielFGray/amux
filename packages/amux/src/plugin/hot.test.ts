@@ -1,17 +1,25 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Effect } from "effect";
+import { Effect, Path } from "effect";
+import * as FileSystem from "effect/FileSystem";
+import { BunFileSystem } from "@effect/platform-bun";
 import { hotImport, pluginRoot } from "./hot.ts";
 import { dependencyService } from "./services.ts";
 import { testEffect } from "../test-effect.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
+const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
 
 const temporary: string[] = [];
-afterEach(async () => {
-  await Promise.all(temporary.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+afterEach(() => {
+  const paths = temporary.splice(0);
+  return Effect.runPromise(
+    Effect.forEach(paths, (path) =>
+      Effect.flatMap(FileSystem.FileSystem, (fs) => fs.remove(path, { recursive: true })).pipe(
+        Effect.ignore,
+      ),
+    ).pipe(Effect.provide(BunFileSystem.layer)),
+  );
 });
 
 test("a plugin's reloadable half is the directory named after its entry", () => {
@@ -22,18 +30,18 @@ test("a plugin's reloadable half is the directory named after its entry", () => 
 testEffect("importing again picks up an edit inside the plugin's own directory", () =>
   Effect.gen(function* () {
     const dir = yield* scratch;
-    yield* write(join(dir, "colours/palette.ts"), `export const accent = "red";`);
+    yield* write(path.join(dir, "colours/palette.ts"), `export const accent = "red";`);
     yield* write(
-      join(dir, "colours.ts"),
+      path.join(dir, "colours.ts"),
       `import { Effect } from "effect";
      import { definePlugin } from "../types.ts";
      import { accent } from "./colours/palette.ts";
      export default definePlugin({ id: accent, apiVersion: "1", effect: () => Effect.void });`,
     );
-    const source = pathToFileURL(join(dir, "colours.ts"));
+    const source = pathToFileURL(path.join(dir, "colours.ts"));
 
     const before = yield* hotImport(source);
-    yield* write(join(dir, "colours/palette.ts"), `export const accent = "blue";`);
+    yield* write(path.join(dir, "colours/palette.ts"), `export const accent = "blue";`);
     const after = yield* hotImport(source);
 
     expect(before.id).toBe("red");
@@ -52,15 +60,15 @@ testEffect("importing again picks up an edit inside the plugin's own directory",
 testEffect("a module outside the plugin's directory is the same instance after a reload", () =>
   Effect.gen(function* () {
     const dir = yield* scratch;
-    yield* write(join(dir, "shared.ts"), `export const once = "load-" + Math.random();`);
+    yield* write(path.join(dir, "shared.ts"), `export const once = "load-" + Math.random();`);
     yield* write(
-      join(dir, "reader.ts"),
+      path.join(dir, "reader.ts"),
       `import { Effect } from "effect";
      import { definePlugin } from "../types.ts";
      import { once } from "./shared.ts";
      export default definePlugin({ id: once, apiVersion: "1", effect: () => Effect.void });`,
     );
-    const source = pathToFileURL(join(dir, "reader.ts"));
+    const source = pathToFileURL(path.join(dir, "reader.ts"));
 
     const first = yield* hotImport(source);
     const second = yield* hotImport(source);
@@ -81,8 +89,8 @@ testEffect("an intercepted dependency survives the trip through the decoder", ()
   Effect.gen(function* () {
     const dir = yield* scratch;
     yield* write(
-      join(dir, "needs.ts"),
-     `import { Context, Effect } from "effect";
+      path.join(dir, "needs.ts"),
+      `import { Context, Effect } from "effect";
      import { definePlugin } from "../types.ts";
      import { intercept } from "../services.ts";
      class Pool extends Context.Service<Pool, number>()("test/Pool") {}
@@ -95,7 +103,7 @@ testEffect("an intercepted dependency survives the trip through the decoder", ()
        effect: () => Effect.void });`,
     );
 
-    const definition = yield* hotImport(pathToFileURL(join(dir, "needs.ts")));
+    const definition = yield* hotImport(pathToFileURL(path.join(dir, "needs.ts")));
 
     expect(definition.inject?.map((dependency) => dependencyService(dependency).key)).toEqual([
       "test/Pool",
@@ -107,9 +115,9 @@ testEffect("an intercepted dependency survives the trip through the decoder", ()
 testEffect("a module that is not a plugin is refused with the reason", () =>
   Effect.gen(function* () {
     const dir = yield* scratch;
-    yield* write(join(dir, "nope.ts"), `export default { id: "nope" };`);
+    yield* write(path.join(dir, "nope.ts"), `export default { id: "nope" };`);
 
-    const failure = yield* Effect.result(hotImport(pathToFileURL(join(dir, "nope.ts"))));
+    const failure = yield* Effect.result(hotImport(pathToFileURL(path.join(dir, "nope.ts"))));
     expect(failure._tag).toBe("Failure");
     expect(failure._tag === "Failure" && failure.failure).toContain("apiVersion");
   }),
@@ -117,11 +125,13 @@ testEffect("a module that is not a plugin is refused with the reason", () =>
 
 /** A fixture directory under the plugin tree, removed after the test. It has to
  *  live beside the real plugins: the resolver's boundary is a directory. */
-const scratch = Effect.promise(async () => {
-  const dir = await mkdtemp(join(testDir, ".test-hot-"));
+const scratch = Effect.gen(function* () {
+  const dir = yield* FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.makeTempDirectory({ directory: testDir, prefix: ".test-hot-" })),
+  );
   temporary.push(dir);
   return dir;
-});
+}).pipe(Effect.provide(BunFileSystem.layer));
 
 /** `Bun.write` creates missing parent directories; `writeFile` does not. The
  *  fixtures rely on that for nested files, so both go through Bun's writer. */

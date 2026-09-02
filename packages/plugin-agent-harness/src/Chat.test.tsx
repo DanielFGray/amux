@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 /** @jsxImportSource @opentui/solid */
 import { Effect, Queue, Stream } from "effect";
 import { expect, test } from "bun:test";
@@ -5,8 +6,32 @@ import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Chat } from "./Chat.tsx";
-import { AttachFrame } from "@danielfgray/amux/protocol"
-import { waitFor } from "@danielfgray/amux/testing"
+import { AttachFrame, type JsonValue } from "@danielfgray/amux/protocol";
+import { waitFor } from "@danielfgray/amux/testing";
+import { emit, delta, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+
+/** Wrap a harness event/fragment the way core actually delivers it — this
+ *  test used to push the harness tags directly onto the wire, which the
+ *  protocol no longer carries at its top level. */
+const DELTA_TAGS = new Set<string>([
+  "text.delta",
+  "tool.params-start",
+  "tool.params-delta",
+  "tool.params-end",
+]);
+type TopicPayload = { readonly _tag: "topic"; readonly topic: string; readonly payload: JsonValue };
+function wrap(
+  value: (HarnessEvent | HarnessDelta | TopicPayload) & {
+    readonly session: string;
+    readonly sequence?: number;
+  },
+): AttachFrame {
+  const { session, sequence, ...event } = value;
+  if (event._tag === "topic") return { session, sequence: sequence ?? 0, ...event } as AttachFrame;
+  return DELTA_TAGS.has(event._tag)
+    ? delta(session, event as HarnessDelta)
+    : ({ ...emit(session, event as HarnessEvent), sequence: sequence ?? 0 } as AttachFrame);
+}
 
 /**
  * The chat pane's content: a transcript with a composer under it.
@@ -90,18 +115,20 @@ async function blocked() {
       return Effect.void;
     }),
   );
-  push({
-    _tag: "permission.request",
-    session: "native",
-    sequence: 1,
-    turn: "t1",
-    request: "req-1",
-    tool: "bash",
-    action: "bash",
-    resources: ["git status"],
-    save: [{ action: "bash", resource: "git status *", effect: "allow" }],
-    input: { command: "git status" },
-  });
+  push(
+    wrap({
+      _tag: "permission.request",
+      session: "native",
+      sequence: 1,
+      turn: "t1",
+      request: "req-1",
+      tool: "bash",
+      action: "bash",
+      resources: ["git status"],
+      save: [{ action: "bash", resource: "git status *", effect: "allow" }],
+      input: { command: "git status" },
+    }),
+  );
   await waitFrame(world.t, (frame) => frame.includes("[o]"), "the approval bar");
   return { ...world, push: (frame: AttachFrame) => push(frame) };
 }
@@ -125,13 +152,15 @@ test("a key answers the question instead of typing into the composer", async () 
   // is a request, and with several panes on one session it may not be the one
   // that won.
   expect(t.captureCharFrame()).toContain("[o]");
-  push({
-    _tag: "permission.response",
-    session: "native",
-    sequence: 2,
-    request: "req-1",
-    decision: "always",
-  });
+  push(
+    wrap({
+      _tag: "permission.response",
+      session: "native",
+      sequence: 2,
+      request: "req-1",
+      decision: "always",
+    }),
+  );
   await waitFrame(t, (frame) => !frame.includes("[o]"), "the bar to clear");
   t.renderer.destroy();
 });
@@ -210,7 +239,7 @@ test("whitespace alone is not a message", async () => {
 test("the transcript rewraps when the pane it lives in is resized", async () => {
   const line = "the quick brown fox jumps over the lazy dog and keeps going";
   const { t, setWidth } = await chat(true, () =>
-    Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: line } as const),
+    Stream.make(wrap({ _tag: "text.delta", session: "native", turn: "t1", text: line })),
   );
   await waitFrame(t, (frame) => frame.includes("the quick brown fox"), "the delta to render");
 
@@ -225,13 +254,15 @@ test("the transcript rewraps when the pane it lives in is resized", async () => 
 
 test("working status is shown as a spinner below the editor", async () => {
   const { t } = await chat(true, () =>
-    Stream.make({
-      _tag: "topic",
-      session: "native",
-      sequence: 1,
-      topic: "session.state",
-      payload: "running",
-    } as const),
+    Stream.make(
+      wrap({
+        _tag: "topic",
+        session: "native",
+        sequence: 1,
+        topic: "session.state",
+        payload: "running",
+      }),
+    ),
   );
   await waitFrame(t, (frame) => frame.includes("working"), "the status to render");
 
@@ -301,31 +332,37 @@ test("a submitted message is answered by the agent in the transcript", async () 
   await waitUi(t, () => sent.length > 0, "the message to be sent");
   expect(sent).toEqual(["fix the bug"]);
 
-  push({
-    _tag: "topic",
-    session: "native",
-    sequence: 1,
-    topic: "session.state",
-    payload: "running",
-  });
-  push({
-    _tag: "turn.start",
-    session: "native",
-    sequence: 2,
-    turn: "t1",
-    prompt: "fix the bug",
-  });
-  push({ _tag: "text.delta", session: "native", turn: "t1", text: "I will " });
+  push(
+    wrap({
+      _tag: "topic",
+      session: "native",
+      sequence: 1,
+      topic: "session.state",
+      payload: "running",
+    }),
+  );
+  push(
+    wrap({
+      _tag: "turn.start",
+      session: "native",
+      sequence: 2,
+      turn: "t1",
+      prompt: "fix the bug",
+    }),
+  );
+  push(wrap({ _tag: "text.delta", session: "native", turn: "t1", text: "I will " }));
   await t.renderOnce();
-  push({ _tag: "text.delta", session: "native", turn: "t1", text: "inspect." });
-  push({
-    _tag: "turn.end",
-    session: "native",
-    sequence: 3,
-    turn: "t1",
-    outcome: "completed",
-    text: "I will inspect.",
-  });
+  push(wrap({ _tag: "text.delta", session: "native", turn: "t1", text: "inspect." }));
+  push(
+    wrap({
+      _tag: "turn.end",
+      session: "native",
+      sequence: 3,
+      turn: "t1",
+      outcome: "completed",
+      text: "I will inspect.",
+    }),
+  );
 
   await waitFrame(t, (frame) => frame.includes("I will inspect."), "the agent's answer");
   expect(t.captureCharFrame()).toContain("fix the bug");
@@ -335,7 +372,7 @@ test("a submitted message is answered by the agent in the transcript", async () 
 test("the latest agent response stays visible in a short chat pane", async () => {
   const response = Array.from({ length: 12 }, (_, index) => `answer ${index}`).join("\n");
   const { t } = await chat(true, () =>
-    Stream.make({ _tag: "text.delta", session: "native", turn: "t1", text: response } as const),
+    Stream.make(wrap({ _tag: "text.delta", session: "native", turn: "t1", text: response })),
   );
 
   await waitFrame(t, (frame) => frame.includes("answer 11"), "the latest response line");
@@ -373,40 +410,48 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
   );
   await t.renderOnce();
 
-  push({
-    _tag: "topic",
-    session: "native",
-    sequence: 1,
-    topic: "session.state",
-    payload: "running",
-  });
-  push({ _tag: "turn.start", session: "native", sequence: 2, turn: "t1", prompt: "run it" });
-  push({
-    _tag: "tool.params-start",
-    session: "native",
-    turn: "t1",
-    call: "c1",
-    tool: "bash",
-  });
-  push({
-    _tag: "tool.params-delta",
-    session: "native",
-    turn: "t1",
-    call: "c1",
-    delta: '{"command": "git s',
-  });
+  push(
+    wrap({
+      _tag: "topic",
+      session: "native",
+      sequence: 1,
+      topic: "session.state",
+      payload: "running",
+    }),
+  );
+  push(wrap({ _tag: "turn.start", session: "native", sequence: 2, turn: "t1", prompt: "run it" }));
+  push(
+    wrap({
+      _tag: "tool.params-start",
+      session: "native",
+      turn: "t1",
+      call: "c1",
+      tool: "bash",
+    }),
+  );
+  push(
+    wrap({
+      _tag: "tool.params-delta",
+      session: "native",
+      turn: "t1",
+      call: "c1",
+      delta: '{"command": "git s',
+    }),
+  );
   await t.renderOnce();
   await waitFrame(t, (frame) => frame.includes("~ Writing command..."), "the pending placeholder");
 
-  push({
-    _tag: "tool.start",
-    session: "native",
-    sequence: 3,
-    turn: "t1",
-    call: "c1",
-    tool: "bash",
-    input: { command: "git status" },
-  });
+  push(
+    wrap({
+      _tag: "tool.start",
+      session: "native",
+      sequence: 3,
+      turn: "t1",
+      call: "c1",
+      tool: "bash",
+      input: { command: "git status" },
+    }),
+  );
   await waitFrame(t, (frame) => frame.includes("$ git status"), "the revealed command");
   expect(t.captureCharFrame()).not.toContain("~ Writing command...");
   t.renderer.destroy();
@@ -420,44 +465,52 @@ test("chat joins an approved permission to its tool instead of rendering a secon
       return Effect.void;
     }),
   );
-  push({
-    _tag: "tool.start",
-    session: "native",
-    sequence: 1,
-    turn: "t1",
-    call: "c1",
-    tool: "bash",
-    input: { command: "ls" },
-  });
-  push({
-    _tag: "permission.request",
-    session: "native",
-    sequence: 2,
-    turn: "t1",
-    request: "r1",
-    tool: "bash",
-    action: "bash",
-    resources: ["ls"],
-    save: [],
-    input: { command: "ls" },
-  });
+  push(
+    wrap({
+      _tag: "tool.start",
+      session: "native",
+      sequence: 1,
+      turn: "t1",
+      call: "c1",
+      tool: "bash",
+      input: { command: "ls" },
+    }),
+  );
+  push(
+    wrap({
+      _tag: "permission.request",
+      session: "native",
+      sequence: 2,
+      turn: "t1",
+      request: "r1",
+      tool: "bash",
+      action: "bash",
+      resources: ["ls"],
+      save: [],
+      input: { command: "ls" },
+    }),
+  );
   await waitFrame(t, (rendered) => rendered.includes("$ ls"), "the approval request");
-  push({
-    _tag: "permission.response",
-    session: "native",
-    sequence: 3,
-    request: "r1",
-    decision: "once",
-  });
-  push({
-    _tag: "tool.result",
-    session: "native",
-    sequence: 4,
-    turn: "t1",
-    call: "c1",
-    output: "AGENTS.md",
-    isError: false,
-  });
+  push(
+    wrap({
+      _tag: "permission.response",
+      session: "native",
+      sequence: 3,
+      request: "r1",
+      decision: "once",
+    }),
+  );
+  push(
+    wrap({
+      _tag: "tool.result",
+      session: "native",
+      sequence: 4,
+      turn: "t1",
+      call: "c1",
+      output: "AGENTS.md",
+      isError: false,
+    }),
+  );
   await waitFrame(t, (rendered) => rendered.includes("AGENTS.md"), "the tool result");
   const rendered = t.captureCharFrame();
   expect(rendered).not.toContain("permission>");

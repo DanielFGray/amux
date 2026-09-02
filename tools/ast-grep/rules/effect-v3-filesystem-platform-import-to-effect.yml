@@ -1,6 +1,0 @@
-id: effect-v3-filesystem-platform-import-to-effect
-language: TypeScript
-message: FileSystem moved from @effect/platform into effect core in v4.
-rule:
-  pattern: import { FileSystem } from "@effect/platform";
-fix: import * as FileSystem from "effect/FileSystem";

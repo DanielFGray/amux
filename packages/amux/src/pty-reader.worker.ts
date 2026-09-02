@@ -1,4 +1,6 @@
-import { readSync } from "node:fs";
+import { Effect } from "effect";
+
+const readSync = (process.getBuiltinModule("node:fs") as typeof import("node:fs")).readSync;
 
 type Command = { readonly type: "start"; readonly fd: number } | { readonly type: "stop" };
 
@@ -15,11 +17,11 @@ const read = (fd: number) => {
         postMessage({ type: "data", data }, [data.buffer]);
         continue;
       }
-      setTimeout(() => read(fd), 0);
+      Effect.runFork(Effect.sleep("0 millis").pipe(Effect.andThen(Effect.sync(() => read(fd)))));
       return;
     } catch (error: any) {
       if (error?.code === "EAGAIN") {
-        setTimeout(() => read(fd), 4);
+        Effect.runFork(Effect.sleep("4 millis").pipe(Effect.andThen(Effect.sync(() => read(fd)))));
         return;
       }
       postMessage({ type: "error", code: error?.code ?? "EIO" });

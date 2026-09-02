@@ -1,3 +1,5 @@
+/** @effect-diagnostics *:skip-file -- builds on harness.ts's real PTY/renderer scaffold; see the seam
+ * documented there. */
 import { test, expect, afterEach } from "bun:test";
 import { createHarness, run } from "./harness.ts";
 import { RenderState } from "./ghostty.ts";

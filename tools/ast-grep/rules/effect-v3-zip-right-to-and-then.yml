@@ -1,5 +1,0 @@
-id: effect-v3-zip-right-to-and-then
-language: TypeScript
-rule:
-  pattern: Effect.zipRight($NEXT)
-fix: Effect.andThen($NEXT)

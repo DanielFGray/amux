@@ -1,5 +1,0 @@
-id: effect-v3-stream-unfold-effect-to-unfold
-language: TypeScript
-rule:
-  pattern: Stream.unfoldEffect($STATE, $STEP)
-fix: Stream.unfold($STATE, $STEP)

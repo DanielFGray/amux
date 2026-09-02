@@ -1,5 +1,5 @@
 {
-  "$schema": "./node_modules/@effect/language-service/schema.json",
+  "$schema": "./node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     // Environment setup & latest features
     "lib": ["ESNext"],
@@ -10,20 +10,17 @@
     "jsxImportSource": "@opentui/solid",
     "allowJs": true,
     "types": ["bun"],
-
     // Bundler mode
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
-
     // Best practices
     "strict": true,
     "skipLibCheck": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-
     // Enable after the existing unused-symbol backlog is cleaned up.
     "noUnusedLocals": false,
     "noUnusedParameters": false,
@@ -32,28 +29,27 @@
       {
         "name": "@effect/language-service",
         "diagnosticSeverity": {
-          "abortControllerInEffect": "off",
-          "asyncFunction": "off",
-          "cryptoRandomUUID": "off",
-          "cryptoRandomUUIDInEffect": "off",
-          "extendsNativeError": "off",
-          "globalConsole": "off",
-          "globalConsoleInEffect": "off",
-          "globalDate": "off",
-          "globalDateInEffect": "off",
-          "globalFetch": "off",
-          "globalFetchInEffect": "off",
-          "globalRandom": "off",
-          "globalRandomInEffect": "off",
-          "globalTimers": "off",
-          "globalTimersInEffect": "off",
-          "instanceOfSchema": "off",
-          "multipleEffectProvide": "off",
-          "newPromise": "off",
-          "nodeBuiltinImport": "off",
-          "preferSchemaOverJson": "off",
-          "processEnv": "off",
-          "processEnvInEffect": "off",
+          "abortControllerInEffect": "warning",
+          "asyncFunction": "warning",
+          "cryptoRandomUUID": "warning",
+          "cryptoRandomUUIDInEffect": "warning",
+          "extendsNativeError": "warning",
+          "globalConsole": "warning",
+          "globalConsoleInEffect": "warning",
+          "globalDate": "warning",
+          "globalDateInEffect": "warning",
+          "globalFetch": "warning",
+          "globalFetchInEffect": "warning",
+          "globalRandom": "warning",
+          "globalRandomInEffect": "warning",
+          "globalTimers": "warning",
+          "globalTimersInEffect": "warning",
+          "instanceOfSchema": "warning",
+          "newPromise": "warning",
+          "nodeBuiltinImport": "warning",
+          "preferSchemaOverJson": "warning",
+          "processEnv": "warning",
+          "processEnvInEffect": "warning",
           "unsafeEffectTypeAssertion": "warning"
         }
       }

@@ -20,7 +20,7 @@ export type Info = {
 
 export interface Interface {
   readonly get: (id: string) => Effect.Effect<Info | undefined>;
-  readonly list: () => Effect.Effect<readonly Info[]>;
+  readonly list: Effect.Effect<readonly Info[]>;
   readonly active: (id: string) => Effect.Effect<Connection | undefined>;
   readonly resolve: (connection: Connection) => Effect.Effect<Credential.Value | undefined>;
   readonly model: (
@@ -73,7 +73,7 @@ export const makeLayer = (
        *  key entered under either OpenCode gateway resolves for both. */
       const ids = (integration: Integration) => [integration.id, ...(integration.aliases ?? [])];
       const credentialsFor = (integration: Integration) =>
-        Effect.map(credentials.all(), (saved) =>
+        Effect.map(credentials.all, (saved) =>
           saved.filter((credential) => ids(integration).includes(credential.integrationID)),
         );
       const refresh = Effect.fnUntraced(function* (
@@ -113,18 +113,17 @@ export const makeLayer = (
               connections: connections(yield* credentialsFor(integration)),
             };
           }),
-        list: () =>
-          Effect.gen(function* () {
-            const saved = yield* credentials.all();
-            return definitions.map((integration) => ({
-              id: integration.id,
-              label: integration.label,
-              methods: integration.methods,
-              connections: connections(
-                saved.filter((credential) => ids(integration).includes(credential.integrationID)),
-              ),
-            }));
-          }),
+        list: Effect.gen(function* () {
+          const saved = yield* credentials.all;
+          return definitions.map((integration) => ({
+            id: integration.id,
+            label: integration.label,
+            methods: integration.methods,
+            connections: connections(
+              saved.filter((credential) => ids(integration).includes(credential.integrationID)),
+            ),
+          }));
+        }),
         active: (id) =>
           Effect.gen(function* () {
             const integration = find(id);

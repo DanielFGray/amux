@@ -1,5 +1,0 @@
-id: effect-v3-catch-all-cause-to-catch-cause
-language: TypeScript
-rule:
-  pattern: Effect.catchAllCause($HANDLER)
-fix: Effect.catchCause($HANDLER)

@@ -1,6 +1,0 @@
-id: effect-v3-schema-property-signature-missing-message
-language: TypeScript
-message: Schema.propertySignature was removed in v4; annotate the field's key directly with messageMissingKey.
-rule:
-  pattern: "$SCHEMA.annotate({ missingMessage: () => $MSG })"
-fix: "$SCHEMA.pipe(S.annotateKey({ messageMissingKey: $MSG }))"

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { Effect, Fiber, Layer, Option, Schedule, Stream } from "effect";
+import { ConfigProvider, Effect, Fiber, Layer, Option, Schedule, Stream } from "effect";
+import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { agentToolkit } from "./tools.ts";
@@ -16,11 +17,24 @@ import {
   type Assertion,
 } from "./permission.ts";
 import { DEFAULT_RULES, type PermissionRule } from "@danielfgray/amux/permission.ts";
-import { decodeAttachFrames,
-encodeAttachFrame,
-type AgentDelta,
-type AgentEventPayload, } from "@danielfgray/amux/protocol"
-import { testEffect } from "@danielfgray/amux/testing"
+import {
+  decodeAttachFrames,
+  encodeAttachFrame,
+  type AgentDelta,
+  type AgentEventPayload,
+} from "@danielfgray/amux/protocol";
+import { readEvent, type SequencedHarnessEvent } from "./protocol.ts";
+import { testEffect } from "@danielfgray/amux/testing";
+
+/** Recover the harness event a test's recorded frame carries, the same way a
+ *  real consumer would via `readEvent` — a `topic` frame has no harness event
+ *  and is returned as-is. The synthetic `sequence` is only what `readEvent`
+ *  requires of a committed frame; these tests emit before any daemon assigns one. */
+function unwrap(
+  frame: AgentEventPayload | AgentDelta,
+): SequencedHarnessEvent | AgentEventPayload | AgentDelta | undefined {
+  return frame._tag === "agent.message" ? readEvent({ ...frame, sequence: 0 }) : frame;
+}
 
 /** Runs a tool call to its final result. Handlers stream preliminary progress
  *  updates before the authoritative one, which these tests don't need. */
@@ -60,10 +74,14 @@ test("always proposes a rule the user can read, and nothing for an opaque comman
   ]);
 });
 
-test("a project-wide file rule covers the project and nothing outside it", () => {
-  expect(pathResource("/repo", "/repo/src/a.ts")).toBe("./src/a.ts");
-  expect(pathResource("/repo", "/etc/passwd")).toBe("/etc/passwd");
-});
+testEffect("a project-wide file rule covers the project and nothing outside it", () =>
+  Effect.gen(function* () {
+    const inside = yield* pathResource("/repo", "/repo/src/a.ts").pipe(Effect.provide(Path.layer));
+    const outside = yield* pathResource("/repo", "/etc/passwd").pipe(Effect.provide(Path.layer));
+    expect(inside).toBe("./src/a.ts");
+    expect(outside).toBe("/etc/passwd");
+  }),
+);
 
 testEffect("a read runs without asking, and nothing is emitted for it", () =>
   Effect.gen(function* () {
@@ -86,15 +104,18 @@ testEffect("a write blocks until it is answered, then runs once", () =>
       return yield* Fiber.join(running);
     });
     expect(decided).toBeUndefined();
-    expect(world.emitted().map((frame) => frame._tag)).toEqual([
+    expect(world.emitted().map((frame) => unwrap(frame)?._tag)).toEqual([
       "permission.request",
       "topic",
       "permission.response",
       "topic",
     ]);
-    expect(world.emitted().find((frame) => frame._tag === "permission.response")).toMatchObject({
-      decision: "once",
-    });
+    expect(
+      world
+        .emitted()
+        .map(unwrap)
+        .find((event) => event?._tag === "permission.response"),
+    ).toMatchObject({ decision: "once" });
     expect(world.saved).toEqual([]);
   }),
 );
@@ -124,7 +145,12 @@ testEffect("always is remembered, so the same call does not ask twice", () =>
       yield* Fiber.join(first);
       yield* gate.assert(assertion("bash", ["git status --porcelain"]));
     });
-    expect(world.emitted().filter((frame) => frame._tag === "permission.request")).toHaveLength(1);
+    expect(
+      world
+        .emitted()
+        .map(unwrap)
+        .filter((event) => event?._tag === "permission.request"),
+    ).toHaveLength(1);
     expect(world.saved).toEqual([{ action: "bash", resource: "git status *", effect: "allow" }]);
   }),
 );
@@ -138,7 +164,12 @@ testEffect("an interrupt answers the pending request instead of leaving it open"
       yield* world.awaitRequest;
       yield* Fiber.interrupt(running);
     });
-    expect(world.emitted().find((frame) => frame._tag === "permission.response")).toMatchObject({
+    expect(
+      world
+        .emitted()
+        .map(unwrap)
+        .find((event) => event?._tag === "permission.response"),
+    ).toMatchObject({
       decision: "reject",
       feedback: "interrupted",
     });
@@ -156,7 +187,7 @@ testEffect("a standing deny is refused without ever asking", () =>
       failure: "Denied by the user: policy denies this",
     });
     // The refusal is still shown: a question and its answer, in one breath.
-    expect(world.emitted().map((frame) => frame._tag)).toEqual([
+    expect(world.emitted().map((frame) => unwrap(frame)?._tag)).toEqual([
       "permission.request",
       "permission.response",
       "topic",
@@ -177,10 +208,16 @@ testEffect("an approved write runs, is remembered on disk, and does not ask agai
     const fs = yield* Effect.provide(FileSystem.FileSystem, BunFileSystem.layer);
     const state = yield* fs.makeTempDirectory({ prefix: "amux-gate-" });
     const workspace = yield* fs.makeTempDirectory({ prefix: "amux-work-" });
-    const previous = process.env.XDG_STATE_HOME;
-    process.env.XDG_STATE_HOME = state;
     const frames: (AgentEventPayload | AgentDelta)[] = [];
-    const store = projectStoreLayer(workspace).pipe(Layer.provide(BunFileSystem.layer));
+    const store = projectStoreLayer(workspace).pipe(
+      Layer.provide(BunFileSystem.layer),
+      Layer.provide(
+        Layer.succeed(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({ XDG_STATE_HOME: state }),
+        ),
+      ),
+    );
 
     try {
       const written = yield* Effect.scoped(
@@ -206,7 +243,9 @@ testEffect("an approved write runs, is remembered on disk, and does not ask agai
       expect(written.isFailure).toBe(false);
       expect(yield* Effect.promise(() => Bun.file(`${workspace}/notes.md`).text())).toBe("hello");
       expect(yield* Effect.promise(() => Bun.file(`${workspace}/other.md`).text())).toBe("hi");
-      expect(frames.filter((frame) => frame._tag === "permission.request")).toHaveLength(1);
+      expect(
+        frames.map(unwrap).filter((event) => event?._tag === "permission.request"),
+      ).toHaveLength(1);
       // A fresh handle on the same project: the rule outlives the worker.
       const persisted = yield* Effect.scoped(
         Effect.flatMap(ProjectStore, (opened) => opened.rules).pipe(
@@ -216,8 +255,6 @@ testEffect("an approved write runs, is remembered on disk, and does not ask agai
       );
       expect(persisted).toEqual([{ action: "write", resource: "./**", effect: "allow" }]);
     } finally {
-      if (previous === undefined) delete process.env.XDG_STATE_HOME;
-      else process.env.XDG_STATE_HOME = previous;
       yield* Effect.all([
         fs.remove(state, { recursive: true }),
         fs.remove(workspace, { recursive: true }),
@@ -254,7 +291,12 @@ testEffect("the second answer to a resolved request is dropped", () =>
           encodeAttachFrame({
             _tag: "session.message",
             session: "agent-1",
-            message: { _tag: "agent.permission", request, decision: "reject", feedback: "too late" },
+            message: {
+              _tag: "agent.permission",
+              request,
+              decision: "reject",
+              feedback: "too late",
+            },
           }),
         ).frames[0]!;
         if (first._tag !== "session.message" || later._tag !== "session.message")
@@ -266,12 +308,12 @@ testEffect("the second answer to a resolved request is dropped", () =>
       });
 
       expect(yield* Effect.promise(() => Bun.file(`${workspace}/answer.txt`).text())).toBe("first");
-      expect(world.emitted().filter((frame) => frame._tag === "permission.response")).toHaveLength(
-        1,
-      );
-      expect(world.emitted().find((frame) => frame._tag === "permission.response")).toMatchObject({
-        decision: "once",
-      });
+      const responses = world
+        .emitted()
+        .map(unwrap)
+        .filter((event) => event?._tag === "permission.response");
+      expect(responses).toHaveLength(1);
+      expect(responses[0]).toMatchObject({ decision: "once" });
     } finally {
       const fs = yield* Effect.provide(FileSystem.FileSystem, BunFileSystem.layer);
       yield* fs.remove(workspace, { recursive: true }).pipe(Effect.ignore);
@@ -321,12 +363,15 @@ testEffect(
         expect(yield* Effect.promise(() => Bun.file(`${workspace}/rejected.txt`).exists())).toBe(
           false,
         );
-        expect(world.emitted().find((frame) => frame._tag === "permission.response")).toMatchObject(
-          {
-            decision: "reject",
-            feedback: "Use notes.md instead.",
-          },
-        );
+        expect(
+          world
+            .emitted()
+            .map(unwrap)
+            .find((event) => event?._tag === "permission.response"),
+        ).toMatchObject({
+          decision: "reject",
+          feedback: "Use notes.md instead.",
+        });
       } finally {
         const fs = yield* Effect.provide(FileSystem.FileSystem, BunFileSystem.layer);
         yield* fs.remove(workspace, { recursive: true }).pipe(Effect.ignore);
@@ -363,9 +408,11 @@ function harness(extra: readonly PermissionRule[] = []) {
 /** The id of the request the agent is blocked on, once it has asked. */
 function awaitRequest(frames: readonly (AgentEventPayload | AgentDelta)[]) {
   return Effect.suspend(() => {
-    const frame = frames.findLast((candidate) => candidate._tag === "permission.request");
-    return frame?._tag === "permission.request"
-      ? Effect.succeed(frame.request)
+    const event = frames
+      .map(unwrap)
+      .findLast((candidate) => candidate?._tag === "permission.request");
+    return event?._tag === "permission.request"
+      ? Effect.succeed(event.request)
       : Effect.fail("no request yet" as const);
   }).pipe(
     Effect.retry(Schedule.spaced("1 millis").pipe(Schedule.upTo({ duration: "2 seconds" }))),

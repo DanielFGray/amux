@@ -1,7 +1,0 @@
-id: effect-v3-schema-parse-json-to-from-json-string
-language: TypeScript
-message: Schema.parseJson became Schema.fromJsonString in Effect v4.
-severity: warning
-rule:
-  pattern: S.parseJson($SCHEMA)
-fix: S.fromJsonString($SCHEMA)

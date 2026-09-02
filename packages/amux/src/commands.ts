@@ -580,7 +580,12 @@ const SessionKill = define("session.kill", SessionTarget, {
 const SessionMessage = define(
   "session.message",
   { target: S.String, message: JsonValueSchema },
-  { desc: "send a control message to a component session", group: "sessions", target: "session", exposure: "agent" },
+  {
+    desc: "send a control message to a component session",
+    group: "sessions",
+    target: "session",
+    exposure: "agent",
+  },
 );
 const AgentPrompt = define(
   "agent.prompt",
@@ -592,7 +597,7 @@ const AgentPrompt = define(
     resume: S.optionalKey(S.Boolean),
     wait: S.optionalKey(S.Boolean),
     until: S.optionalKey(ProcessStateSchema),
-    timeout: S.optionalKey(S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))),
+    timeout: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
   },
   {
     desc: "send a prompt to an agent",
@@ -605,7 +610,7 @@ const AgentWatch = define(
   "agent.watch",
   {
     target: S.String,
-    after: S.optionalKey(S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0))),
+    after: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
   },
   {
     desc: "stream durable agent events from a replay cursor",
@@ -805,7 +810,7 @@ const SpaceList = define(
  */
 const ConfigSet = define(
   "config.set",
-  { name: S.String, value: S.Union([S.String, S.Number, S.Boolean]) },
+  { name: S.String, value: S.Union([S.String, S.Finite, S.Boolean]) },
   { desc: "set an option", group: "config", target: "view", exposure: "human" },
 );
 const ConfigToggle = define(
@@ -1227,7 +1232,7 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
       const plugin = pluginCommands.get(command._tag);
       if (!plugin)
         return Effect.fail(new CommandError({ message: `unknown command: ${command._tag}` }));
-      return S.decodeUnknownEffect(plugin.schema)(command).pipe(
+      return S.decodeEffect(plugin.schema)(command).pipe(
         Effect.mapError(
           (error) =>
             new CommandError({
@@ -1287,7 +1292,7 @@ export function runDetached(
   Effect.runFork(Effect.asVoid(effect)).addObserver((exit) => {
     if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
     const message = `command ${label} failed: ${Cause.pretty(exit.cause)}`;
-    console.error(message);
+    Effect.runFork(Effect.logError(message));
     onError?.(message);
   });
 }

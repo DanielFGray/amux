@@ -1,5 +1,0 @@
-id: effect-v3-schema-multipleOf-to-isMultipleOf
-language: TypeScript
-rule:
-  pattern: S.multipleOf($$$ARGS)
-fix: S.check(S.isMultipleOf($$$ARGS))

@@ -1,3 +1,7 @@
+/** @effect-diagnostics *:skip-file -- the raw PTY primitive itself: fd-level reads/writes, worker
+ * threads, and process-group signaling with hard timing constraints (see readPty's doc comment).
+ * SessionRegistry.ts is the Effect service layer that wraps it; this file is what's under the seam
+ * documented in packages/amux/src/harness.ts, not on either side of it. */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Schema as S } from "effect";

@@ -2,9 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
-import { Cause, Effect, Layer } from "effect";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { Cause, ConfigProvider, Effect, Layer, Path } from "effect";
 import {
   layer,
   projectDirectory,
@@ -17,12 +15,11 @@ import type { PermissionRule } from "./permission.ts";
 import { testEffect } from "./test-effect.ts";
 
 const directories: string[] = [];
-const previousStateHome = process.env.XDG_STATE_HOME;
+let testConfigProvider = ConfigProvider.fromUnknown({});
 
-afterEach(async () => {
-  if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
-  else process.env.XDG_STATE_HOME = previousStateHome;
-  await Effect.runPromise(
+afterEach(() => {
+  testConfigProvider = ConfigProvider.fromUnknown({});
+  return Effect.runPromise(
     Effect.forEach(directories.splice(0), (path) =>
       FileSystem.FileSystem.pipe(
         Effect.flatMap((fs) => fs.remove(path, { recursive: true })),
@@ -36,16 +33,21 @@ afterEach(async () => {
 const isolate = () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const directory = yield* fs.makeTempDirectory({ directory: tmpdir(), prefix: "amux-project-" });
+    const directory = yield* fs.makeTempDirectory({ prefix: "amux-project-" });
     directories.push(directory);
-    process.env.XDG_STATE_HOME = directory;
+    testConfigProvider = ConfigProvider.fromUnknown({ XDG_STATE_HOME: directory });
   }).pipe(Effect.provide(BunFileSystem.layer), Effect.orDie);
 
 /** Open the store for one project, run one thing against it, and close it. */
 const run = <A>(root: string, body: (store: Interface) => Effect.Effect<A, ProjectStoreError>) =>
   Effect.scoped(
     Effect.flatMap(Service, body).pipe(
-      Effect.provide(layer(root).pipe(Layer.provide(BunFileSystem.layer))),
+      Effect.provide(
+        layer(root).pipe(
+          Layer.provide(BunFileSystem.layer),
+          Layer.provide(Layer.succeed(ConfigProvider.ConfigProvider, testConfigProvider)),
+        ),
+      ),
       Effect.orDie,
     ),
   );
@@ -71,8 +73,11 @@ testEffect("a fresh database migrates, records its own root, and starts with no 
 
     // Read back with a plain handle: the root is what lets a scan of the projects
     // directory rebuild an index, so it has to be in the file, not in the module.
-    const directory = yield* projectDirectory("/tmp/project-one");
-    const database = new Database(join(directory, "amux.db"));
+    const directory = yield* projectDirectory("/tmp/project-one").pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, testConfigProvider),
+    );
+    const path = yield* Path.Path;
+    const database = new Database(path.join(directory, "amux.db"));
     expect(database.query<{ root: string }, []>("SELECT root FROM project").get()?.root).toBe(
       "/tmp/project-one",
     );
@@ -80,7 +85,7 @@ testEffect("a fresh database migrates, records its own root, and starts with no 
       database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
     ).toBe(4);
     database.close();
-  }),
+  }).pipe(Effect.provide(Path.layer)),
 );
 
 testEffect("rules survive reopening, in the order they were approved", () =>
@@ -122,7 +127,11 @@ testEffect("an approval in one project is invisible in another", () =>
 testEffect("two open handles on one project both land their writes", () =>
   Effect.gen(function* () {
     yield* isolate();
-    const store = (root: string) => layer(root).pipe(Layer.provide(BunFileSystem.layer));
+    const store = (root: string) =>
+      layer(root).pipe(
+        Layer.provide(BunFileSystem.layer),
+        Layer.provide(Layer.succeed(ConfigProvider.ConfigProvider, testConfigProvider)),
+      );
     const rules = yield* Effect.scoped(
       Effect.gen(function* () {
         const one = yield* Service;

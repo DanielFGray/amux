@@ -5,6 +5,9 @@
  * Everything here goes over the wire on purpose. The daemon's in-process
  * surface is a different thing from what a script, a CLI or another machine's
  * client can ask of it, and the second is the contract worth pinning.
+ *
+ * @effect-diagnostics *:skip-file -- a real OS boundary (sockets, subprocess) this suite deliberately
+ * drives unmocked. See the seam documented in packages/amux/src/harness.ts.
  */
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -360,7 +363,12 @@ testEffect("a native worker invokes pane.capture through the amux CLI", () =>
   }),
 );
 
-testEffect("agent.prompt --wait returns the anchored turn completion", () =>
+/**
+ * `--wait` follows the one signal core owns: the state the session publishes.
+ * The CLI loads no plugins, so it cannot recognise a turn and must not try —
+ * it waits for the prompt to move the session, then for it to settle again.
+ */
+testEffect("agent.prompt --wait returns once the session settles again", () =>
   Effect.gen(function* () {
     const { daemon, env } = yield* Effect.promise(() => started("agent-prompt-wait"));
     const target = "wait-target";
@@ -372,8 +380,9 @@ testEffect("agent.prompt --wait returns the anchored turn completion", () =>
         // The daemon routes harness control inside session.message; the
         // prompt is the opaque payload, not a frame tag of its own.
         if (frame._tag !== "session.message" || frame.message?._tag !== "agent.prompt") continue;
-        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.start",session:process.env.AMUX_AGENT_ID,turn:"turn-e2e",prompt:frame.message.text}})+"\\n");
-        process.stdout.write(JSON.stringify({_tag:"agent.event",event:{_tag:"turn.end",session:process.env.AMUX_AGENT_ID,turn:"turn-e2e",outcome:"completed",text:"finished"}})+"\\n");
+        const publish = (payload) => process.stdout.write(JSON.stringify({_tag:"agent.emit",event:{_tag:"topic",session:process.env.AMUX_AGENT_ID,topic:"session.state",payload}})+"\\n");
+        publish("running");
+        publish("idle");
       }
     }
   `;
@@ -402,7 +411,7 @@ testEffect("agent.prompt --wait returns the anchored turn completion", () =>
       ]),
     );
     expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
-    expect(JSON.parse(stdout)).toMatchObject({ turn: "turn-e2e", outcome: "completed" });
+    expect(JSON.parse(stdout)).toMatchObject({ topic: "session.state", payload: "idle" });
   }),
 );
 

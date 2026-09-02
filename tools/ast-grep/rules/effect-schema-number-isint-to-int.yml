@@ -1,0 +1,6 @@
+id: effect-schema-number-isint-to-int
+language: TypeScript
+message: S.Number accepts NaN/Infinity; use S.Int for an integer domain instead of chaining S.isInt() onto S.Number.
+rule:
+  pattern: S.Number.check(S.isInt(), $$$REST)
+fix: S.Int.check($$$REST)

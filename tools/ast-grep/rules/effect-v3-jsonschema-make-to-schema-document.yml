@@ -1,6 +1,0 @@
-id: effect-v3-jsonschema-make-to-schema-document
-language: TypeScript
-message: JSONSchema.make was removed in v4; use S.toJsonSchemaDocument (the module itself is JsonSchema, not JSONSchema).
-rule:
-  pattern: JSONSchema.make($ARG)
-fix: S.toJsonSchemaDocument($ARG)

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
-import { mkdir, readFile } from "node:fs/promises";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { join } from "node:path";
 import { Cause, Effect, Exit, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
@@ -56,9 +56,14 @@ const agentStateSocket = (path: string) =>
 const pluginWith = (env: Record<string, string | undefined>) =>
   Effect.acquireRelease(
     Effect.sync(() => {
+      // The plugin under test (opencode.js) reads process.env directly, as it
+      // must run unmodified inside opencode's own process — there is no Config
+      // seam to swap here without changing the shipped asset.
       const previous = { ...process.env };
       for (const [key, value] of Object.entries(env)) {
+        // @effect-diagnostics-next-line processEnvInEffect:off
         if (value === undefined) delete process.env[key];
+        // @effect-diagnostics-next-line processEnvInEffect:off
         else process.env[key] = value;
       }
       return previous;
@@ -95,13 +100,14 @@ test("the hook's identity-state topic literal matches the awareness plugin's sch
 testEffect("installs and uninstalls only the amux opencode plugin", () =>
   scoped(
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
       const home = yield* temporaryHome;
-      yield* Effect.promise(() => mkdir(join(home, ".config/opencode"), { recursive: true }));
+      yield* fs.makeDirectory(join(home, ".config/opencode"), { recursive: true });
 
-      const path = yield* Effect.promise(() => installOpencodeHook(home));
-      expect(yield* Effect.promise(() => readFile(path, "utf8"))).toContain(OPENCODE_PLUGIN_MARKER);
-      expect(yield* Effect.promise(() => uninstallOpencodeHook(home))).toBe(true);
-      expect(yield* Effect.promise(() => uninstallOpencodeHook(home))).toBe(false);
+      const path = yield* installOpencodeHook(home);
+      expect(yield* fs.readFileString(path)).toContain(OPENCODE_PLUGIN_MARKER);
+      expect(yield* uninstallOpencodeHook(home)).toBe(true);
+      expect(yield* uninstallOpencodeHook(home)).toBe(false);
     }),
   ),
 );
@@ -109,16 +115,15 @@ testEffect("installs and uninstalls only the amux opencode plugin", () =>
 testEffect("does not remove an unrelated opencode plugin", () =>
   scoped(
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
       const home = yield* temporaryHome;
       const path = join(home, ".config/opencode/plugins/amux-agent-state.js");
-      yield* Effect.promise(() =>
-        mkdir(join(home, ".config/opencode/plugins"), { recursive: true }),
-      );
-      yield* Effect.promise(() => Bun.write(path, "export default {}\n"));
+      yield* fs.makeDirectory(join(home, ".config/opencode/plugins"), { recursive: true });
+      yield* fs.writeFileString(path, "export default {}\n");
 
       // A rejection here surfaces as a defect, not a typed failure — assert on
       // the cause so a silently-succeeding uninstall cannot pass this test.
-      const exit = yield* Effect.promise(() => uninstallOpencodeHook(home)).pipe(Effect.exit);
+      const exit = yield* uninstallOpencodeHook(home).pipe(Effect.exit);
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) {
         expect(String(Cause.squash(exit.cause))).toContain("unrecognised");
@@ -243,15 +248,22 @@ testEffect("contributes nothing outside an amux pane", () =>
 );
 
 // The hook runs inside somebody else's agent: a dead or absent daemon must cost
-// the agent a bounded pause, never a hang and never a thrown event handler.
+// the agent a bounded pause, never a hang and never a thrown event handler. This
+// test measures the plain-async opencode.js asset directly against process.env
+// and wall-clock time, the same external-plugin boundary as pluginWith above.
+// @effect-diagnostics-next-line asyncFunction:off
 test("a report to a socket nobody is listening on settles quickly", async () => {
   const previous = { ...process.env };
+  // @effect-diagnostics-next-line processEnv:off
   process.env.AMUX_PROCESS_STATE_SOCKET = join(process.cwd(), "does-not-exist.sock");
+  // @effect-diagnostics-next-line processEnv:off
   process.env.AMUX_AGENT_ID = "agent-a";
   try {
     const plugin = await AmuxAgentStatePlugin();
+    // @effect-diagnostics-next-line globalDate:off
     const started = Date.now();
     await plugin.event!(statusEvent("streaming"));
+    // @effect-diagnostics-next-line globalDate:off
     expect(Date.now() - started).toBeLessThan(1_000);
   } finally {
     process.env = previous;

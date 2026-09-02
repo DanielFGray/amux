@@ -10,7 +10,7 @@ import type {
   WindowEntry as ReadWindowEntry,
 } from "./read-model.ts";
 import { randomUUID } from "node:crypto";
-import { basename, join, resolve } from "node:path";
+import { Path } from "effect";
 import { worktreeDirname } from "./git.ts";
 import {
   computeRects,
@@ -72,7 +72,9 @@ import {
   MAX_TERMINAL_DIMENSION,
   MAX_WINDOWS,
 } from "./limits.ts";
-import { Effect, Result, Schema as S } from "effect";
+import { Clock, Effect, Result, Schema as S } from "effect";
+
+const { basename, join, resolve } = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
 
 export class WorkspaceParseError extends S.TaggedError<WorkspaceParseError>()(
   "WorkspaceParseError",
@@ -199,12 +201,12 @@ const LayoutNodeSchema: S.Codec<any> = S.suspend(() =>
       type: S.Literals(["pane"]),
       id: NonEmptyString,
       content: PaneContentSchema,
-      weight: S.Number.pipe(S.check(S.isGreaterThan(0))),
+      weight: S.Finite.pipe(S.check(S.isGreaterThan(0))),
     }),
     S.Struct({
       type: S.Literals(["split"]),
       direction: S.Literals(["row", "column"]),
-      weight: S.Number.pipe(S.check(S.isGreaterThan(0))),
+      weight: S.Finite.pipe(S.check(S.isGreaterThan(0))),
       children: S.Array(LayoutNodeSchema).pipe(S.check(S.isMinLength(2))),
     }),
   ]),
@@ -214,10 +216,10 @@ const LayoutNodeSchema: S.Codec<any> = S.suspend(() =>
 const LayoutFloatSchema = S.Struct({
   id: NonEmptyString,
   content: PaneContentSchema,
-  x: S.Number.pipe(S.check(S.isGreaterThanOrEqualTo(0)), S.check(S.isLessThan(1))),
-  y: S.Number.pipe(S.check(S.isGreaterThanOrEqualTo(0)), S.check(S.isLessThan(1))),
-  width: S.Number.pipe(S.check(S.isGreaterThan(0)), S.check(S.isLessThanOrEqualTo(1))),
-  height: S.Number.pipe(S.check(S.isGreaterThan(0)), S.check(S.isLessThanOrEqualTo(1))),
+  x: S.Finite.pipe(S.check(S.isGreaterThanOrEqualTo(0)), S.check(S.isLessThan(1))),
+  y: S.Finite.pipe(S.check(S.isGreaterThanOrEqualTo(0)), S.check(S.isLessThan(1))),
+  width: S.Finite.pipe(S.check(S.isGreaterThan(0)), S.check(S.isLessThanOrEqualTo(1))),
+  height: S.Finite.pipe(S.check(S.isGreaterThan(0)), S.check(S.isLessThanOrEqualTo(1))),
 });
 const DockPaneSchema = S.Struct({ id: NonEmptyString, content: PaneContentSchema });
 const LayoutSchema = S.Struct({
@@ -311,7 +313,7 @@ function paneCounter(id: string): number | null {
 export function parseWorkspaceJson(
   value: string,
 ): Effect.Effect<WorkspaceSnapshot, WorkspaceParseError | SessionStateError> {
-  return S.decodeUnknownEffect(WorkspaceSnapshotJson)(value).pipe(
+  return S.decodeEffect(WorkspaceSnapshotJson)(value).pipe(
     Effect.mapError(
       (error) =>
         new WorkspaceParseError({
@@ -481,7 +483,7 @@ export function workspaceSession(workspace: WorkspaceSnapshot, base: SessionStat
   return {
     ...base,
     version: SESSION_VERSION,
-    updatedAt: Date.now(),
+    updatedAt: Effect.runSync(Clock.currentTimeMillis),
     activeSpace: workspace.state.activeSpace,
     nextSpace: workspace.state.nextSpace,
     spaces: workspace.spaces.map((space) => ({

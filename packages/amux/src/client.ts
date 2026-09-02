@@ -1,5 +1,3 @@
-import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
 import { Deferred, Effect, Option, Queue, Schedule, Scope, Stream, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { AttachClient } from "./attach.ts";
@@ -72,7 +70,7 @@ export interface SessionClientContract extends DaemonSession {
   }) => Effect.Effect<void, ControlError>;
   readonly backend: () => SessionBackendFactory;
   readonly close: () => void;
-  readonly stop: () => Effect.Effect<void, ControlError, never>;
+  readonly stop: Effect.Effect<void, ControlError, never>;
   /** tmux's buffer verbs, all server-side: the stack lives in the daemon
    *  beside the PTYs, so a copy and a paste work with no client attached. */
   readonly setBuffer: (
@@ -84,7 +82,7 @@ export interface SessionClientContract extends DaemonSession {
     target: string,
     deleteAfter?: boolean,
   ) => Effect.Effect<void, ControlError, never>;
-  readonly listBuffers: () => Effect.Effect<readonly BufferEntry[], ControlError, never>;
+  readonly listBuffers: Effect.Effect<readonly BufferEntry[], ControlError, never>;
   readonly deleteBuffer: (name: string | undefined) => Effect.Effect<void, ControlError, never>;
   readonly showBuffer: (name: string | undefined) => Effect.Effect<string, ControlError, never>;
 }
@@ -227,13 +225,13 @@ const make = (
       session: structuredClone(status.session) as SessionState,
       live: new Set(status.agents),
       workspace: () => structuredClone(workspace),
-      models: attach.workspace().pipe(Stream.map(accept)),
+      models: attach.workspace.pipe(Stream.map(accept)),
       events: control.Events().pipe(
         Stream.drop(1),
         Stream.map(({ event }) => event),
         Stream.mapError(toControlError),
       ),
-      commandRequests: attach.commandRequests(),
+      commandRequests: attach.commandRequests,
       respondCommand: (id, result, error) => attach.respondCommand(id, result, error),
       runWorkspace: (command, context) =>
         Effect.gen(function* () {
@@ -267,13 +265,13 @@ const make = (
         control.SetBuffer({ name, data }).pipe(Effect.mapError(toControlError)),
       pasteBuffer: (name, target, deleteAfter = false) =>
         control.PasteBuffer({ name, target, deleteAfter }).pipe(Effect.mapError(toControlError)),
-      listBuffers: () => control.ListBuffers().pipe(Effect.mapError(toControlError)),
+      listBuffers: control.ListBuffers().pipe(Effect.mapError(toControlError)),
       deleteBuffer: (name) => control.DeleteBuffer({ name }).pipe(Effect.mapError(toControlError)),
       showBuffer: (name) => control.ShowBuffer({ name }).pipe(Effect.mapError(toControlError)),
       close: () => attach.close(),
       // A daemon that dies mid-response is a successful stop, so transport
       // failures here are expected rather than reported.
-      stop: () => control.Stop().pipe(Effect.catch(() => Effect.void)),
+      stop: control.Stop().pipe(Effect.ignore),
     };
     return service;
   });
@@ -310,16 +308,19 @@ export function ensureDaemon(
     if (Option.isSome(stateHome)) env.XDG_STATE_HOME = stateHome.value;
     const child = yield* Effect.try({
       try: () =>
-        spawn(process.execPath, args, {
+        Bun.spawn([process.execPath, ...args], {
           detached: true,
-          stdio: "ignore",
+          stdio: ["ignore", "ignore", "ignore"],
           env,
         }),
       catch: (error) => new SessionClientError({ message: errorMessage(error) }),
     });
     child.unref();
-    const pidFile = process.env.AMUX_DAEMON_PID_FILE;
-    if (pidFile) writeFileSync(pidFile, `${child.pid}\n`);
+    const pidFile = yield* optionalEnvVar("AMUX_DAEMON_PID_FILE");
+    if (Option.isSome(pidFile))
+      yield* FileSystem.FileSystem.pipe(
+        Effect.flatMap((fs) => fs.writeFileString(pidFile.value, `${child.pid}\n`)),
+      );
     const daemonReady = daemonAlive(id).pipe(
       Effect.filterOrFail(
         Boolean,
@@ -339,5 +340,11 @@ export function ensureDaemon(
           }),
       ),
     );
-  });
+  }).pipe(
+    Effect.mapError((error) =>
+      S.is(SessionClientError)(error)
+        ? error
+        : new SessionClientError({ message: errorMessage(error) }),
+    ),
+  );
 }

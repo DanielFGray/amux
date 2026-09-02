@@ -1,5 +1,0 @@
-id: effect-v3-interrupted-only-to-has-interrupts-only
-language: TypeScript
-rule:
-  pattern: Cause.isInterruptedOnly($CAUSE)
-fix: Cause.hasInterruptsOnly($CAUSE)

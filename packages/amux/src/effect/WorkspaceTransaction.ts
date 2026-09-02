@@ -7,6 +7,7 @@ import {
   Exit,
   Fiber,
   Layer,
+  Match,
   Schema as S,
   Schedule,
   Scope,
@@ -37,7 +38,7 @@ export class WorkspaceTransactionError extends S.TaggedError<WorkspaceTransactio
 ) {}
 
 const transactionError = <E>(error: E): WorkspaceTransactionError =>
-  error instanceof WorkspaceTransactionError
+  S.is(WorkspaceTransactionError)(error)
     ? error
     : new WorkspaceTransactionError({ message: describe(error) });
 
@@ -53,7 +54,10 @@ interface SessionOps {
     id: string,
     reason?: string,
   ) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, WorkspaceTransactionError>;
+  readonly decide: (
+    id: string,
+    answer: PermissionAnswer,
+  ) => Effect.Effect<void, WorkspaceTransactionError>;
 }
 
 interface SessionHost {
@@ -208,11 +212,14 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
 
               for (const agentId of killed) {
                 const exitRuntime = yield* Effect.context<never>();
-                exitCommits.set(agentId, async (code) => {
-                  if (!(await Effect.runPromiseWith(exitRuntime)(Deferred.await(exitsSettled)))) {
-                    await Effect.runPromiseWith(exitRuntime)(onSessionExit(agentId, code));
-                  }
-                });
+                exitCommits.set(agentId, (code) =>
+                  Effect.runPromiseWith(exitRuntime)(Deferred.await(exitsSettled)).then(
+                    (settled) =>
+                      settled
+                        ? undefined
+                        : Effect.runPromiseWith(exitRuntime)(onSessionExit(agentId, code)),
+                  ),
+                );
               }
 
               const bodyResult = yield* Effect.exit(
@@ -230,8 +237,11 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                     prepared.push(yield* sessionOps.prepare(a.agent, a.pane));
                   }
                   for (const a of mutation.actions) {
-                    if (a._tag === "kill") yield* sessionOps.kill(a.agent);
-                    if (a._tag === "input") yield* sessionOps.write(a.agent, a.data);
+                    yield* Match.value(a).pipe(
+                      Match.tag("kill", (a) => sessionOps.kill(a.agent)),
+                      Match.tag("input", (a) => sessionOps.write(a.agent, a.data)),
+                      Match.orElse(() => Effect.void),
+                    );
                   }
                   for (const wt of worktrees.removed) {
                     const dirty = yield* worktreeOps.isDirty(wt!.path);
@@ -259,9 +269,12 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                   yield* Deferred.succeed(exitsSettled, true);
                   for (const p of prepared) yield* p.activate;
                   for (const a of mutation.actions) {
-                    if (a._tag === "prompt") yield* sessionOps.prompt(a.agent, a.text);
-                    if (a._tag === "interrupt") yield* sessionOps.interrupt(a.agent, a.reason);
-                    if (a._tag === "decide") yield* sessionOps.decide(a.agent, a.answer);
+                    yield* Match.value(a).pipe(
+                      Match.tag("prompt", (a) => sessionOps.prompt(a.agent, a.text)),
+                      Match.tag("interrupt", (a) => sessionOps.interrupt(a.agent, a.reason)),
+                      Match.tag("decide", (a) => sessionOps.decide(a.agent, a.answer)),
+                      Match.orElse(() => Effect.void),
+                    );
                   }
                   const final = yield* model.get;
                   const committed = {
@@ -283,7 +296,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                   yield* worktreeOps
                     .remove(worktrees.created.repo, worktrees.created.path, true)
                     .pipe(Effect.ignore);
-                if (error instanceof WorkspaceTransactionError) return yield* error;
+                if (S.is(WorkspaceTransactionError)(error)) return yield* error;
                 return yield* new WorkspaceTransactionError({
                   message: describe(error),
                 });
@@ -294,7 +307,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
           )
           .pipe(
             Effect.mapError((e) =>
-              e instanceof WorkspaceTransactionError
+              S.is(WorkspaceTransactionError)(e)
                 ? e
                 : new WorkspaceTransactionError({ message: describe(e) }),
             ),
@@ -318,29 +331,29 @@ export function gitWorktreesFor(
   next: WorkspaceSnapshot,
   current: WorkspaceSnapshot,
 ): GitWorktreePlan {
-  const none = {
-    created: null as WorkspaceSpace["worktree"] | null,
-    base: undefined as string | undefined,
-    removed: [] as WorkspaceSpace["worktree"][],
+  const none: GitWorktreePlan = {
+    created: null,
+    base: undefined,
+    removed: [],
   };
-  if (value._tag === "space.new") {
-    const created = next.spaces.find(
-      (s) => s.worktree && !current.spaces.some((c) => c.id === s.id),
-    );
-    if (created?.worktree) {
+  return Match.value(value).pipe(
+    Match.tag("space.new", (value): GitWorktreePlan => {
+      const created = next.spaces.find(
+        (s) => s.worktree && !current.spaces.some((c) => c.id === s.id),
+      );
+      if (!created?.worktree) return none;
       const base = (value as { base?: string }).base?.trim() || undefined;
       return { created: created.worktree, base, removed: [] };
-    }
-    return none;
-  }
-  if (value._tag === "space.close") {
-    const closedIds = new Set(next.spaces.map((s) => s.id));
-    const removed = current.spaces
-      .filter((s) => s.worktree && !closedIds.has(s.id))
-      .map((s) => s.worktree!);
-    return { created: null, base: undefined, removed };
-  }
-  return none;
+    }),
+    Match.tag("space.close", (): GitWorktreePlan => {
+      const closedIds = new Set(next.spaces.map((s) => s.id));
+      const removed = current.spaces
+        .filter((s) => s.worktree && !closedIds.has(s.id))
+        .map((s) => s.worktree!);
+      return { created: null, base: undefined, removed };
+    }),
+    Match.orElse(() => none),
+  );
 }
 
 export const makeSessionOps = <HostError, KillError>(
@@ -383,8 +396,9 @@ export const makeSessionOps = <HostError, KillError>(
       ),
   } satisfies SessionOps);
 
-export const makeWorktreeOps = (): Layer.Layer<WorkspaceTransactionWorktreeOps> =>
-  Layer.succeed(WorkspaceTransactionWorktreeOps, {
+export const makeWorktreeOps: Layer.Layer<WorkspaceTransactionWorktreeOps> = Layer.succeed(
+  WorkspaceTransactionWorktreeOps,
+  {
     add: (repo, spec, path) =>
       Effect.tryPromise(() =>
         import("../git.ts").then((m) => m.gitWorktreeAdd(repo, spec, path)),
@@ -397,7 +411,8 @@ export const makeWorktreeOps = (): Layer.Layer<WorkspaceTransactionWorktreeOps> 
       Effect.tryPromise(() => import("../git.ts").then((m) => m.gitWorktreeDirty(path))).pipe(
         Effect.mapError(transactionError),
       ),
-  } satisfies WorktreeOps);
+  } satisfies WorktreeOps,
+);
 
 export const makePersistence = <PersistenceError>(
   persistFn: (state: SessionState) => Effect.Effect<void, PersistenceError>,

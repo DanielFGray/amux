@@ -9,7 +9,9 @@ import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
 import { Context, Effect, Exit, FiberMap, Option, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- path access is part of the plain render-tree boundary.
 import { basename, dirname, join } from "node:path";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- file output is part of the plain render-tree boundary.
 import { writeFile } from "node:fs/promises";
 import { ProcessState } from "./process-state.ts";
 
@@ -42,13 +44,13 @@ import {
   makeCommands,
   runDetached,
   type Command,
-  type Commands,
   type CommandHandlers,
   type CommandTag,
   type CommandResult,
   type RuntimeCommand,
 } from "./commands.ts";
-import { CONFIG_PATH, saveConfig, type Config } from "./config.ts";
+import { BunFileSystem } from "@effect/platform-bun";
+import { CONFIG_PATH, saveConfig as saveConfigEffect, type Config } from "./config.ts";
 import {
   adjustedValue,
   applyOptions,
@@ -78,10 +80,12 @@ import {
   BindingsTag,
   CommandsTag,
   OptionsTag,
+  PanelTag,
   ProcessDisplayTag,
   RegionsTag,
   SessionViewsTag,
   SessionFactsTag,
+  SessionStreamTag,
   SettingsTag,
   SpawnProvidersTag,
   scopedRegistry,
@@ -123,13 +127,16 @@ import { workspaceEnv } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
-import {
-  createProcessDisplay,
-  type ProcessDisplayProvider,
-} from "./plugin/process-display.ts";
+import { createProcessDisplay, type ProcessDisplayProvider } from "./plugin/process-display.ts";
 import type { PaneView } from "./component-pane.tsx";
 import { errorMessage } from "./error-message.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
+
+/** app.tsx sits on the render/plain-async side of the seam (see harness.ts): it
+ *  crosses into the Effect service layer here, the same way cli.ts provides
+ *  BunFileSystem.layer at each boundary crossing. */
+const saveConfig = (config: Config): Promise<void> =>
+  Effect.runPromise(saveConfigEffect(config).pipe(Effect.provide(BunFileSystem.layer)));
 
 export interface AppOptions {
   readonly renderer: CliRenderer;
@@ -251,6 +258,7 @@ export type Overlay = "none" | "settings" | "palette";
  */
 export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, Scope.Scope> {
   const initialShell = [
+    // @effect-diagnostics-next-line processEnv:off -- initial shell fallback is evaluated before the Effect program starts.
     resolveOptions(options.config.options)["behaviour.shell"] || process.env.SHELL || "bash",
   ];
   return Effect.gen(function* () {
@@ -334,10 +342,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       (app) => app.release,
     );
     const pluginHost = yield* createPluginHost({
-      panel: app.panel,
       contributions,
-      frames: (id) => options.session.attach.stream(id),
-      sync: (id) => options.session.attach.sync(id),
     });
     runFiber(
       "plugin-service-changes",
@@ -345,7 +350,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         Effect.sync(() => app.updateRegistry(pluginHost, key)),
       ),
     );
-    const hotPlugins = yield* loadPluginsFromConfig(
+    const { hot: hotPlugins } = yield* loadPluginsFromConfig(
       options.config,
       pluginHost,
       options.configDir ?? dirname(CONFIG_PATH),
@@ -515,10 +520,12 @@ function buildApp(
   // same as the clipboard write itself.
   spaces.onCopy = (text) => {
     void Effect.runPromise(session.setBuffer(undefined, text)).catch((error) =>
+      // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
       console.error(`could not push paste buffer: ${String(error)}`),
     );
     return renderer.copyToClipboardOSC52(text);
   };
+  // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
   spaces.onCopyError = (error) => console.error(error.message);
   const app = createAppState(spaces);
   const [snapshot, setSnapshot] = createSignal<WorkspaceSnapshot>(session.workspace());
@@ -591,6 +598,7 @@ function buildApp(
         if (model.spaces.length === 0) shutdown();
       })
       .catch((error) =>
+        // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
         console.error(`could not project workspace revision ${model.revision}: ${String(error)}`),
       );
     return projection;
@@ -602,6 +610,7 @@ function buildApp(
       rows: Math.max(1, paneHost.height),
     },
     shell: [
+      // @effect-diagnostics-next-line processEnv:off -- render-tree workspace context fallback.
       resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash",
     ],
     cwd: spaces.active?.dir ?? process.cwd(),
@@ -731,8 +740,7 @@ function buildApp(
   const settingsSectionTable = contributions.table<PluginSettingsSection>();
   const settingsService = scopedRegistry(
     { all: () => settingsSectionTable.all().map((entry) => entry.value) },
-    (owner, section: PluginSettingsSection) =>
-      settingsSectionTable.add(owner, section.id, section),
+    (owner, section: PluginSettingsSection) => settingsSectionTable.add(owner, section.id, section),
   );
   const settingsProvider = providerRef<SettingsService>(settingsService);
   const pluginSettings = () => settingsProvider.value.all();
@@ -748,6 +756,7 @@ function buildApp(
   const [commandError, setCommandError] = createSignal<string | null>(null);
   function showCommandError(message: string) {
     setCommandError(message);
+    // @effect-diagnostics-next-line globalTimers:off -- transient render-tree notification timer.
     setTimeout(() => setCommandError(null), 3000);
   }
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false);
@@ -1184,6 +1193,7 @@ function buildApp(
     }
     const dir = spaces.active?.dir ?? process.cwd();
     const name = target.describe().replace(/[^\w.-]+/g, "-") || "pane";
+    // @effect-diagnostics-next-line globalDate:off -- capture names are UI-facing filesystem labels.
     const path = join(dir, `capture-${name}-${Date.now()}.txt`);
     const open = (span: CaptureSpan) => {
       const content = captureSpan(target.term, span);
@@ -1231,15 +1241,14 @@ function buildApp(
         const pane = spaces.activeWindow?.focused;
         if (pane?.session) {
           void Effect.runPromise(session.pasteBuffer(name, pane.session.id)).catch((error) =>
+            // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
             console.error(`could not paste buffer '${name}': ${String(error)}`),
           );
         }
         setChooseView(null);
       },
       onDelete: (name) => {
-        void Effect.runPromise(
-          session.deleteBuffer(name).pipe(Effect.andThen(session.listBuffers())),
-        )
+        void Effect.runPromise(session.deleteBuffer(name).pipe(Effect.andThen(session.listBuffers)))
           .then((buffers) => {
             setChooseView((view) =>
               view
@@ -1251,7 +1260,10 @@ function buildApp(
                 : view,
             );
           })
-          .catch((error) => console.error(`could not delete buffer '${name}': ${String(error)}`));
+          .catch((error) => {
+            // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
+            console.error(`could not delete buffer '${name}': ${String(error)}`);
+          });
       },
       onClose: () => setChooseView(null),
     });
@@ -1400,7 +1412,7 @@ function buildApp(
           .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
       }),
     "buffer.list": () =>
-      session.listBuffers().pipe(
+      session.listBuffers.pipe(
         Effect.map((bufs) =>
           bufs.map((b) => ({
             name: b.name,
@@ -1420,9 +1432,9 @@ function buildApp(
         .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) }))),
     "buffer.choose": () =>
       Effect.gen(function* () {
-        const buffers = yield* session
-          .listBuffers()
-          .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
+        const buffers = yield* session.listBuffers.pipe(
+          Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        );
         openChooseBuffer(buffers);
       }),
 
@@ -1469,6 +1481,7 @@ function buildApp(
         const coerced = coerceOption(spec, value);
         if (coerced === undefined) {
           return yield* new CommandError({
+            // @effect-diagnostics-next-line preferSchemaOverJson:off -- this formats an already-validated command value for a UI error.
             message: `${name} does not take ${JSON.stringify(value)}`,
           });
         }
@@ -1544,11 +1557,11 @@ function buildApp(
           pluginRuntime.reloader?.enable(plugin) ?? Effect.fail("plugin runtime is unavailable"),
       ).pipe(
         Effect.tap(() =>
-          Effect.promise(async () => {
+          Effect.promise(() => {
             const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
             const next = setPluginEnabled(configState(), path, true);
             setConfigState(next);
-            await saveConfig(next);
+            return saveConfig(next);
           }),
         ),
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
@@ -1559,11 +1572,11 @@ function buildApp(
           pluginRuntime.reloader?.disable(plugin) ?? Effect.fail("plugin runtime is unavailable"),
       ).pipe(
         Effect.tap(() =>
-          Effect.promise(async () => {
+          Effect.promise(() => {
             const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
             const next = setPluginEnabled(configState(), path, false);
             setConfigState(next);
-            await saveConfig(next);
+            return saveConfig(next);
           }),
         ),
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
@@ -2117,6 +2130,7 @@ function buildApp(
   /** Write the config file. Answers with the failure message, because the two
    *  callers show it in different places: the settings window has an error line,
    *  a panel that saves has only the command-error banner. */
+  // @effect-diagnostics-next-line asyncFunction:off -- Solid prompt flow awaits a plain render-tree answer.
   async function persistConfig(): Promise<string | null> {
     try {
       await saveConfig(configState());
@@ -2127,6 +2141,7 @@ function buildApp(
     }
   }
 
+  // @effect-diagnostics-next-line asyncFunction:off -- Solid settings flow is intentionally plain async.
   async function saveSettings() {
     setSettingsError((await persistConfig()) ?? "");
   }
@@ -2288,414 +2303,409 @@ function buildApp(
    * the one asked about a keystroke first.
    */
   const windowsPanel = (): Panel => ({
-        id: "amux.windows",
-        region: "top",
-        // The pane area, not the app: amux has no app-wide bar, and a tab row
-        // above the sidebar is a different program.
-        anchor: "center",
-        title: "windows",
-        // Always present, even at one window — a tab bar that appears and
-        // disappears shifts the whole pane area by a row, and it is where the
-        // prefix indicator lives.
-        size: () => 1,
-        component: () => (
-          <WindowTabs
-            app={app}
-            processDisplay={processDisplay}
-            windows={app.active()?.windows ?? []}
-            active={app.activeWindow()}
-            spaceIndex={app.active() ? spaces.spaces.indexOf(app.active()!) : undefined}
-            spaceName={app.active()?.name}
-            branch={app.active()?.branch}
-            gitAhead={app.active()?.ahead}
-            gitBehind={app.active()?.behind}
-            format={options()["window.format"]}
-            status={(() => {
-              app.tick();
-              const space = app.active();
-              const window = app.activeWindow();
-              const pane = window?.focused?.session ?? null;
-              const state = pane?.state;
-              const display = pane
-                ? processDisplay.display({
-                    session: pane.id,
-                    state: pane.state,
-                    exitCode: pane.exitCode,
-                    detached: pane.detached,
-                    title: pane.title,
-                  })
-                : undefined;
-              const spaceIndex = space ? spaces.spaces.indexOf(space) : undefined;
-              return formatText(options()["status.format"], {
-                active: true,
-                space_name: space?.name,
-                space_index: spaceIndex,
-                branch: space?.branch,
-                git_branch: space?.branch,
-                git_ahead: space?.ahead,
-                git_behind: space?.behind,
-                window_name: display?.title ?? window?.title,
-                window_number: window?.number,
-                pane_index: pane ? window?.sessions.indexOf(pane) : undefined,
-                pane_title: display?.title ?? pane?.title,
-                pane_current_command: pane?.foregroundCommand,
-                agent_state: display?.label,
-                agent_state_label: display?.label,
-                agent_state_glyph: display
-                  ? display.frames
-                    ? display.frames[app.frame() % display.frames.length]
-                    : display.glyph
-                  : "",
-                zoomed: window?.zoomed,
-                synchronized: window?.sync,
-                sync: window?.sync,
-                scrolled: pane?.scrolled,
-                exited: pane?.exited,
-                viewers: pane?.viewers,
-                unseen: pane?.unseen,
-              });
-            })()}
-            pending={pending()}
-            copying={copying()}
-            onSelect={(w) => {
-              const space = spaces.active;
-              if (space) {
-                runProjectedCommand(
-                  command("window.select", {
-                    space: space.id,
-                    number: w.number,
-                  }),
-                );
-              }
-            }}
-          />
-        ),
+    id: "amux.windows",
+    region: "top",
+    // The pane area, not the app: amux has no app-wide bar, and a tab row
+    // above the sidebar is a different program.
+    anchor: "center",
+    title: "windows",
+    // Always present, even at one window — a tab bar that appears and
+    // disappears shifts the whole pane area by a row, and it is where the
+    // prefix indicator lives.
+    size: () => 1,
+    component: () => (
+      <WindowTabs
+        app={app}
+        processDisplay={processDisplay}
+        windows={app.active()?.windows ?? []}
+        active={app.activeWindow()}
+        spaceIndex={app.active() ? spaces.spaces.indexOf(app.active()!) : undefined}
+        spaceName={app.active()?.name}
+        branch={app.active()?.branch}
+        gitAhead={app.active()?.ahead}
+        gitBehind={app.active()?.behind}
+        format={options()["window.format"]}
+        status={(() => {
+          app.tick();
+          const space = app.active();
+          const window = app.activeWindow();
+          const pane = window?.focused?.session ?? null;
+          const display = pane
+            ? processDisplay.display({
+                session: pane.id,
+                state: pane.state,
+                exitCode: pane.exitCode,
+                detached: pane.detached,
+                title: pane.title,
+              })
+            : undefined;
+          const spaceIndex = space ? spaces.spaces.indexOf(space) : undefined;
+          return formatText(options()["status.format"], {
+            active: true,
+            space_name: space?.name,
+            space_index: spaceIndex,
+            branch: space?.branch,
+            git_branch: space?.branch,
+            git_ahead: space?.ahead,
+            git_behind: space?.behind,
+            window_name: display?.title ?? window?.title,
+            window_number: window?.number,
+            pane_index: pane ? window?.sessions.indexOf(pane) : undefined,
+            pane_title: display?.title ?? pane?.title,
+            pane_current_command: pane?.foregroundCommand,
+            agent_state: display?.label,
+            agent_state_label: display?.label,
+            agent_state_glyph: display
+              ? display.frames
+                ? display.frames[app.frame() % display.frames.length]
+                : display.glyph
+              : "",
+            zoomed: window?.zoomed,
+            synchronized: window?.sync,
+            sync: window?.sync,
+            scrolled: pane?.scrolled,
+            exited: pane?.exited,
+            viewers: pane?.viewers,
+            unseen: pane?.unseen,
+          });
+        })()}
+        pending={pending()}
+        copying={copying()}
+        onSelect={(w) => {
+          const space = spaces.active;
+          if (space) {
+            runProjectedCommand(
+              command("window.select", {
+                space: space.id,
+                number: w.number,
+              }),
+            );
+          }
+        }}
+      />
+    ),
   });
 
   const settingsPanel = (): Panel => ({
-        id: "amux.settings",
-        region: "overlay",
-        order: 10,
-        title: "settings",
-        visible: () => overlay() === "settings",
-        keys: (event) => settingsKey(event),
-        component: (props) => (
-          <Settings
-            options={allOptions()}
-            section={settingsSection()}
-            selected={settingsSelected()}
-            groups={groups()}
-            leader={configState().keys.leader}
-            conflicts={conflicts()}
-            capturing={capturing()}
-            width={props.width}
-            height={props.height}
-            dirty={settingsDirty()}
-            error={settingsError()}
-            onKeybindList={(box) => {
-              keybindList = box;
-            }}
-            pluginSections={pluginSettings()}
-            registeredOptions={optionsProvider.value.all()}
-            focus={settingsFocus()}
-            editText={editText()}
-            onEditInput={(value) => {
-              const option = selectedOption();
-              const spec = option ? specFor(option) : undefined;
-              if (!option || !spec) return;
-              if (spec.kind === "number") {
-                setEditText(value);
-                const parsed = Number(value);
-                if (!Number.isFinite(parsed)) return;
-                const coerced = coerceOption(spec, parsed);
-                if (coerced === undefined) return;
-                changeOption(option, coerced);
-                saveOptions();
-                return;
-              }
-              changeOption(option, value);
-            }}
-            onEditSubmit={() => {
-              setEditOriginal(null);
-              setEditText(undefined);
-              setSettingsFocus("items");
-              saveOptions();
-            }}
-          />
-        ),
+    id: "amux.settings",
+    region: "overlay",
+    order: 10,
+    title: "settings",
+    visible: () => overlay() === "settings",
+    keys: (event) => settingsKey(event),
+    component: (props) => (
+      <Settings
+        options={allOptions()}
+        section={settingsSection()}
+        selected={settingsSelected()}
+        groups={groups()}
+        leader={configState().keys.leader}
+        conflicts={conflicts()}
+        capturing={capturing()}
+        width={props.width}
+        height={props.height}
+        dirty={settingsDirty()}
+        error={settingsError()}
+        onKeybindList={(box) => {
+          keybindList = box;
+        }}
+        pluginSections={pluginSettings()}
+        registeredOptions={optionsProvider.value.all()}
+        focus={settingsFocus()}
+        editText={editText()}
+        onEditInput={(value) => {
+          const option = selectedOption();
+          const spec = option ? specFor(option) : undefined;
+          if (!option || !spec) return;
+          if (spec.kind === "number") {
+            setEditText(value);
+            const parsed = Number(value);
+            if (!Number.isFinite(parsed)) return;
+            const coerced = coerceOption(spec, parsed);
+            if (coerced === undefined) return;
+            changeOption(option, coerced);
+            saveOptions();
+            return;
+          }
+          changeOption(option, value);
+        }}
+        onEditSubmit={() => {
+          setEditOriginal(null);
+          setEditText(undefined);
+          setSettingsFocus("items");
+          saveOptions();
+        }}
+      />
+    ),
   });
 
   const keybindPickerPanel = (): Panel => ({
-        id: "amux.keybind-picker",
-        region: "overlay",
-        order: 15,
-        title: "keybind picker",
-        visible: () => keybindPicker() !== null,
-        keys: keybindPickerKey,
-        component: (props) => (
-          <Show when={keybindPicker()}>
-            {() => (
-              <KeybindPicker
-                view={keybindPicker()!}
-                width={props.width}
-                onSubmit={() => {
-                  const current = keybindPicker();
-                  const command = current?.entries[current.selected]?.name;
-                  if (command && current) captureBinding(command, current.add);
-                }}
-                onInput={(query) =>
-                  setKeybindPicker((current) =>
-                    current
-                      ? {
-                          ...current,
-                          query,
-                          selected: 0,
-                          entries: sortKeybindEntries(
-                            filterPaletteEntries(allPaletteEntries(), query),
-                          ),
-                        }
-                      : current,
-                  )
-                }
-              />
-            )}
-          </Show>
-        ),
+    id: "amux.keybind-picker",
+    region: "overlay",
+    order: 15,
+    title: "keybind picker",
+    visible: () => keybindPicker() !== null,
+    keys: keybindPickerKey,
+    component: (props) => (
+      <Show when={keybindPicker()}>
+        {() => (
+          <KeybindPicker
+            view={keybindPicker()!}
+            width={props.width}
+            onSubmit={() => {
+              const current = keybindPicker();
+              const command = current?.entries[current.selected]?.name;
+              if (command && current) captureBinding(command, current.add);
+            }}
+            onInput={(query) =>
+              setKeybindPicker((current) =>
+                current
+                  ? {
+                      ...current,
+                      query,
+                      selected: 0,
+                      entries: sortKeybindEntries(filterPaletteEntries(allPaletteEntries(), query)),
+                    }
+                  : current,
+              )
+            }
+          />
+        )}
+      </Show>
+    ),
   });
 
   const palettePanel = (): Panel => ({
-        id: "amux.palette",
-        region: "overlay",
-        // Same rung as settings: one signal holds both, so they cannot be up at
-        // the same time.
-        order: 10,
-        title: "commands",
-        visible: () => overlay() === "palette",
-        keys: (event) => {
-          if (event.name === "escape") {
-            setOverlay("none");
-            return true;
-          }
-          return paletteKey(event);
-        },
-        component: (props) => (
-          <CommandPalette
-            entries={filteredPalette()}
-            query={paletteQuery()}
-            selected={paletteSelected()}
-            width={props.width}
-            onInput={(value) => {
-              setPaletteQuery(value);
-              setPaletteSelected(0);
-            }}
-            onSubmit={submitPalette}
-          />
-        ),
+    id: "amux.palette",
+    region: "overlay",
+    // Same rung as settings: one signal holds both, so they cannot be up at
+    // the same time.
+    order: 10,
+    title: "commands",
+    visible: () => overlay() === "palette",
+    keys: (event) => {
+      if (event.name === "escape") {
+        setOverlay("none");
+        return true;
+      }
+      return paletteKey(event);
+    },
+    component: (props) => (
+      <CommandPalette
+        entries={filteredPalette()}
+        query={paletteQuery()}
+        selected={paletteSelected()}
+        width={props.width}
+        onInput={(value) => {
+          setPaletteQuery(value);
+          setPaletteSelected(0);
+        }}
+        onSubmit={submitPalette}
+      />
+    ),
   });
 
   const buffersPanel = (): Panel => ({
-        id: "amux.buffers",
-        region: "overlay",
-        order: 20,
-        title: "buffers",
-        visible: () => chooseView() !== null,
-        // ↑↓ picks, enter pastes the selection into the focused pane, d deletes
-        // it, escape closes. With no buffers there is nothing to pick, so only
-        // escape does anything.
-        keys: (event) => {
-          const view = chooseView();
-          if (!view) return true;
-          const count = view.buffers.length;
-          if (event.name === "j" || event.name === "down") {
-            setChooseView((v) =>
-              v
-                ? {
-                    ...v,
-                    selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 1),
-                  }
-                : v,
-            );
-          } else if (event.name === "k" || event.name === "up") {
-            setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v));
-          } else if (event.name === "pagedown") {
-            setChooseView((v) =>
-              v
-                ? {
-                    ...v,
-                    selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 10),
-                  }
-                : v,
-            );
-          } else if (event.name === "pageup") {
-            setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v));
-          } else if (event.name === "return" || event.name === "enter") {
-            const name = view.buffers[view.selected]?.name;
-            if (name) view.onPaste(name);
-          } else if (event.name === "d") {
-            const name = view.buffers[view.selected]?.name;
-            if (name) view.onDelete(name);
-          } else if (event.name === "escape") {
-            view.onClose();
-          }
-          return true;
-        },
-        component: (props) => (
-          <Show when={chooseView()} keyed>
-            {(view: BufferChooseView) => (
-              <BufferChoose view={view} width={props.width} height={props.height} />
-            )}
-          </Show>
-        ),
+    id: "amux.buffers",
+    region: "overlay",
+    order: 20,
+    title: "buffers",
+    visible: () => chooseView() !== null,
+    // ↑↓ picks, enter pastes the selection into the focused pane, d deletes
+    // it, escape closes. With no buffers there is nothing to pick, so only
+    // escape does anything.
+    keys: (event) => {
+      const view = chooseView();
+      if (!view) return true;
+      const count = view.buffers.length;
+      if (event.name === "j" || event.name === "down") {
+        setChooseView((v) =>
+          v
+            ? {
+                ...v,
+                selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 1),
+              }
+            : v,
+        );
+      } else if (event.name === "k" || event.name === "up") {
+        setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v));
+      } else if (event.name === "pagedown") {
+        setChooseView((v) =>
+          v
+            ? {
+                ...v,
+                selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 10),
+              }
+            : v,
+        );
+      } else if (event.name === "pageup") {
+        setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v));
+      } else if (event.name === "return" || event.name === "enter") {
+        const name = view.buffers[view.selected]?.name;
+        if (name) view.onPaste(name);
+      } else if (event.name === "d") {
+        const name = view.buffers[view.selected]?.name;
+        if (name) view.onDelete(name);
+      } else if (event.name === "escape") {
+        view.onClose();
+      }
+      return true;
+    },
+    component: (props) => (
+      <Show when={chooseView()} keyed>
+        {(view: BufferChooseView) => (
+          <BufferChoose view={view} width={props.width} height={props.height} />
+        )}
+      </Show>
+    ),
   });
 
   const capturePanel = (): Panel => ({
-        id: "amux.capture",
-        region: "overlay",
-        order: 30,
-        title: "capture",
-        visible: () => captureView() !== null,
-        // s writes the file, f re-captures the other span, escape backs out
-        // without saving. Everything else stays with the popup.
-        keys: (event) => {
-          const view = captureView();
-          if (!view) return true;
-          if (event.name === "s") view.onSave();
-          else if (event.name === "f") view.onToggleSpan();
-          else if (event.name === "escape") view.onClose();
-          return true;
-        },
-        component: (props) => (
-          <Show when={captureView()} keyed>
-            {(view: CaptureView) => (
-              <Capture view={view} width={props.width} height={props.height} />
-            )}
-          </Show>
-        ),
+    id: "amux.capture",
+    region: "overlay",
+    order: 30,
+    title: "capture",
+    visible: () => captureView() !== null,
+    // s writes the file, f re-captures the other span, escape backs out
+    // without saving. Everything else stays with the popup.
+    keys: (event) => {
+      const view = captureView();
+      if (!view) return true;
+      if (event.name === "s") view.onSave();
+      else if (event.name === "f") view.onToggleSpan();
+      else if (event.name === "escape") view.onClose();
+      return true;
+    },
+    component: (props) => (
+      <Show when={captureView()} keyed>
+        {(view: CaptureView) => <Capture view={view} width={props.width} height={props.height} />}
+      </Show>
+    ),
   });
 
   const promptPanel = (): Panel => ({
-        id: "amux.prompt",
-        region: "overlay",
-        // Top of the stack: a prompt is opened *by* the overlays below it, and
-        // the answer it is waiting for is the only thing the keyboard is for
-        // while it is up.
-        order: 40,
-        title: "prompt",
-        visible: () => promptRequest() !== null,
-        keys: (event) => {
-          const request = promptRequest();
-          if (!request) return true;
-          // A notice is a message, not a form: nothing is focused to hand the
-          // key to, so every key is consumed here and enter/escape dismiss it.
-          if (request.notice) {
-            if (event.name === "escape" || event.name === "return" || event.name === "enter") {
-              request.resolve(null);
-            }
-            return true;
-          }
-          // Escape cancels; everything else belongs to the focused input, so
-          // leave the event alone and let focus routing deliver it.
-          if (event.name === "escape") {
-            request.resolve(null);
-            return true;
-          }
-          return false;
-        },
-        component: (props) => (
-          <Show when={promptRequest()} keyed>
-            {(request: PromptRequest) => (
-              <Prompt request={request} width={props.width} error={promptError()} />
-            )}
-          </Show>
-        ),
+    id: "amux.prompt",
+    region: "overlay",
+    // Top of the stack: a prompt is opened *by* the overlays below it, and
+    // the answer it is waiting for is the only thing the keyboard is for
+    // while it is up.
+    order: 40,
+    title: "prompt",
+    visible: () => promptRequest() !== null,
+    keys: (event) => {
+      const request = promptRequest();
+      if (!request) return true;
+      // A notice is a message, not a form: nothing is focused to hand the
+      // key to, so every key is consumed here and enter/escape dismiss it.
+      if (request.notice) {
+        if (event.name === "escape" || event.name === "return" || event.name === "enter") {
+          request.resolve(null);
+        }
+        return true;
+      }
+      // Escape cancels; everything else belongs to the focused input, so
+      // leave the event alone and let focus routing deliver it.
+      if (event.name === "escape") {
+        request.resolve(null);
+        return true;
+      }
+      return false;
+    },
+    component: (props) => (
+      <Show when={promptRequest()} keyed>
+        {(request: PromptRequest) => (
+          <Prompt request={request} width={props.width} error={promptError()} />
+        )}
+      </Show>
+    ),
   });
 
   const hintsPanel = (): Panel => ({
-        id: "amux.hints",
-        region: "float",
-        title: "which-key",
-        // Only while a sequence is half-typed, and never over a modal — an
-        // overlay that is already answering "what now?" does not need a second
-        // one on top of it.
-        visible: () => hintsVisible() && hints().length > 0 && regions.topOverlay() === null,
-        component: (props) => (
-          <Hints
-            groups={hints()}
-            pending={pending().join(" ")}
-            left={props.left}
-            width={props.width}
-            height={props.height}
-          />
-        ),
+    id: "amux.hints",
+    region: "float",
+    title: "which-key",
+    // Only while a sequence is half-typed, and never over a modal — an
+    // overlay that is already answering "what now?" does not need a second
+    // one on top of it.
+    visible: () => hintsVisible() && hints().length > 0 && regions.topOverlay() === null,
+    component: (props) => (
+      <Hints
+        groups={hints()}
+        pending={pending().join(" ")}
+        left={props.left}
+        width={props.width}
+        height={props.height}
+      />
+    ),
   });
 
   const disconnectedPanel = (): Panel => ({
-        id: "amux.disconnected",
-        region: "overlay",
-        order: 50,
-        title: "disconnected",
-        visible: () => daemonDisconnected(),
-        keys: (event) => {
-          if (event.name === "escape" || event.name === "q") shutdown();
-          return true;
-        },
-        component: (props) => (
-          <box
-            style={{
-              position: "absolute",
-              width: 58,
-              height: 5,
-              flexDirection: "column",
-              backgroundColor: theme.base,
-              border: true,
-              borderColor: theme.red,
-              padding: 1,
-              zIndex: 400,
-              left: Math.max(0, Math.floor((props.width - 58) / 2)),
-              top: Math.max(0, Math.floor((props.height - 5) / 2)),
-            }}
-            title=" daemon disconnected "
-          >
-            <text style={{ fg: theme.red, height: 1 }}>The daemon has stopped.</text>
-            <text style={{ height: 1 }}>Session is gone; every command</text>
-            <text style={{ fg: theme.overlay1, height: 1, marginTop: 1 }}>
-              ^a q / q / escape — exit
-            </text>
-          </box>
-        ),
+    id: "amux.disconnected",
+    region: "overlay",
+    order: 50,
+    title: "disconnected",
+    visible: () => daemonDisconnected(),
+    keys: (event) => {
+      if (event.name === "escape" || event.name === "q") shutdown();
+      return true;
+    },
+    component: (props) => (
+      <box
+        style={{
+          position: "absolute",
+          width: 58,
+          height: 5,
+          flexDirection: "column",
+          backgroundColor: theme.base,
+          border: true,
+          borderColor: theme.red,
+          padding: 1,
+          zIndex: 400,
+          left: Math.max(0, Math.floor((props.width - 58) / 2)),
+          top: Math.max(0, Math.floor((props.height - 5) / 2)),
+        }}
+        title=" daemon disconnected "
+      >
+        <text style={{ fg: theme.red, height: 1 }}>The daemon has stopped.</text>
+        <text style={{ height: 1 }}>Session is gone; every command</text>
+        <text style={{ fg: theme.overlay1, height: 1, marginTop: 1 }}>
+          ^a q / q / escape — exit
+        </text>
+      </box>
+    ),
   });
 
   const errorPanel = (): Panel => ({
-        id: "amux.error",
-        region: "overlay",
-        order: 55,
-        title: "error",
-        visible: () => commandError() !== null,
-        keys: () => {
-          setCommandError(null);
-          return true;
-        },
-        component: () => (
-          <box
-            style={{
-              position: "absolute",
-              width: "100%",
-              // Border rows are part of the box, so a bordered banner holding
-              // one line of text is three rows tall. Asking for one row put the
-              // message on the bottom border — below the screen, where nothing
-              // reported a command failure at all.
-              height: 3,
-              backgroundColor: theme.base,
-              border: true,
-              borderColor: theme.red,
-              zIndex: 500,
-              left: 0,
-              bottom: 0,
-            }}
-          >
-            <text style={{ fg: theme.red, height: 1 }}>{commandError() ?? ""}</text>
-          </box>
-        ),
+    id: "amux.error",
+    region: "overlay",
+    order: 55,
+    title: "error",
+    visible: () => commandError() !== null,
+    keys: () => {
+      setCommandError(null);
+      return true;
+    },
+    component: () => (
+      <box
+        style={{
+          position: "absolute",
+          width: "100%",
+          // Border rows are part of the box, so a bordered banner holding
+          // one line of text is three rows tall. Asking for one row put the
+          // message on the bottom border — below the screen, where nothing
+          // reported a command failure at all.
+          height: 3,
+          backgroundColor: theme.base,
+          border: true,
+          borderColor: theme.red,
+          zIndex: 500,
+          left: 0,
+          bottom: 0,
+        }}
+      >
+        <text style={{ fg: theme.red, height: 1 }}>{commandError() ?? ""}</text>
+      </box>
+    ),
   });
 
   const panelGroups = {
@@ -2750,7 +2760,7 @@ function buildApp(
   });
 
   /** Core options plus every plugin-registered one, resolved by the same rule —
-   *  what a plugin reads through `ctx.panel.options()`. */
+   *  what a plugin reads through the injected panel service. */
   const allOptions = () => {
     const merged = { ...options() } as Options & Record<string, OptionValue>;
     for (const entry of optionsProvider.value.all())
@@ -2795,7 +2805,28 @@ function buildApp(
     ),
     registry("commands", CommandsTag, commandsProvider, commandsService),
   ];
-  const registryEntries = registries.map((entry) => entry.plugin);
+  const registryEntries = [
+    ...registries.map((entry) => entry.plugin),
+    // Apart from the rows above because it is not a registry: those publish a
+    // default a plugin may replace, and are re-read through a provider ref when
+    // one does. These two are the attached client itself. A host running
+    // without a client — the CLI collecting plugin subcommands — omits this
+    // entry, and every plugin that needs a UI is then left inactive rather than
+    // handed a panel that draws nowhere.
+    definePlugin({
+      id: "amux.registry.client",
+      apiVersion: "1",
+      provide: [PanelTag, SessionStreamTag],
+      effect: (ctx) =>
+        Effect.sync(() => {
+          ctx.provide(PanelTag, panel);
+          ctx.provide(SessionStreamTag, {
+            frames: (id) => session.attach.stream(id),
+            sync: (id) => session.attach.sync(id),
+          });
+        }),
+    }),
+  ];
   const sessionFacts = makeSessionFacts(() => spaces.allSessions);
 
   const updateRegistry = (host: PluginHost, key: string): void => {

@@ -1,4 +1,4 @@
-import type { OptionSpec } from "@danielfgray/amux"
+import type { OptionSpec } from "@danielfgray/amux";
 
 /**
  * The native harness's own option declarations, registered through

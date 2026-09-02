@@ -14,7 +14,7 @@
  */
 
 import { spawnPty, readPty } from "./pty.ts";
-import { Cause, Effect, Fiber, Queue, Stream } from "effect";
+import { Cause, Effect, Fiber, Match, Queue, Stream } from "effect";
 import type { AttachClientContract } from "./attach.ts";
 import { isProcessState, type ProcessState } from "./process-state.ts";
 import { SESSION_STATE_TOPIC } from "./effect/AttachProtocol.ts";
@@ -102,7 +102,7 @@ export const localPty: SessionBackendFactory = (opts) => {
       // live PTY failure must not disappear silently. Interruption during
       // close/kill is expected; all other failures are actionable diagnostics.
       void pty.write(data).catch((error) => {
-        if (!pty.closed) console.error("local PTY write failed", error);
+        if (!pty.closed) void Effect.runPromise(Effect.logError("local PTY write failed", error));
       });
     },
     resize: (cols, rows) => pty.resize(cols, rows),
@@ -193,21 +193,25 @@ export function daemonBackend(
 
     const streamFiber = Effect.runFork(
       Stream.runForEach(session.attach.stream(opts.id), (frame) =>
-        frame._tag === "output"
-          ? Queue.offer(output, frame.data)
-          : frame._tag === "exit"
-            ? Effect.sync(() => end(frame.code))
-            : frame._tag === "foreground"
-              ? Effect.sync(() => {
-                  foregroundPgid = frame.pgid;
-                  foregroundSid = frame.sid;
-                  foregroundArgv = frame.argv;
-                })
-              : frame._tag === "topic" && frame.topic === SESSION_STATE_TOPIC
-                ? Effect.sync(() => {
-                    if (isProcessState(frame.payload)) processState = frame.payload;
-                  })
-                : Effect.void,
+        Match.value(frame).pipe(
+          Match.tag("output", (frame) => Queue.offer(output, frame.data)),
+          Match.tag("exit", (frame) => Effect.sync(() => end(frame.code))),
+          Match.tag("foreground", (frame) =>
+            Effect.sync(() => {
+              foregroundPgid = frame.pgid;
+              foregroundSid = frame.sid;
+              foregroundArgv = frame.argv;
+            }),
+          ),
+          Match.tag("topic", (frame) =>
+            Effect.sync(() => {
+              if (frame.topic === SESSION_STATE_TOPIC && isProcessState(frame.payload)) {
+                processState = frame.payload;
+              }
+            }),
+          ),
+          Match.orElse(() => Effect.void),
+        ),
       ).pipe(
         Effect.ensuring(
           Effect.sync(() => {

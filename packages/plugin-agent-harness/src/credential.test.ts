@@ -1,23 +1,30 @@
 import { expect } from "bun:test";
-import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { BunFileSystem } from "@effect/platform-bun";
-import { ConfigProvider, Effect, Redacted } from "effect";
+import { ConfigProvider, Effect, Layer, Redacted } from "effect";
 import { Credential } from "./credential.ts";
-import { testEffect } from "@danielfgray/amux/testing"
+import { testEffect } from "@danielfgray/amux/testing";
 
-async function environment() {
-  const home = await mkdtemp(join(tmpdir(), "amux-credential-"));
-  return { HOME: home, XDG_STATE_HOME: join(home, "state") };
-}
+const it = testEffect(Layer.mergeAll(BunFileSystem.layer, Path.layer));
+
+const environment = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const home = yield* fs.makeTempDirectory({ prefix: "amux-credential-" });
+  return { fs, path, env: { HOME: home, XDG_STATE_HOME: path.join(home, "state") } };
+});
 
 function provide<A, E, R>(effect: Effect.Effect<A, E, R>, env: NodeJS.ProcessEnv) {
   return effect.pipe(
-    Effect.provide(Credential.Default),
-    Effect.provide(BunFileSystem.layer),
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
+    Effect.provide(
+      Credential.Default.pipe(
+        Layer.provideMerge(BunFileSystem.layer),
+        Layer.provideMerge(
+          Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
+        ),
+      ),
+    ),
   );
 }
 
@@ -25,13 +32,18 @@ const key = (value: string) => ({
   type: "key" as const,
   key: Redacted.make(value),
 });
+const corruptRowsJson = JSON.stringify([
+  { id: "good", integrationID: "openai", label: "good", value: { type: "key", key: "secret" } },
+  { id: "bad", integrationID: "openai", label: 42, value: { type: "key", key: "broken" } },
+]);
+const existingRowJson = JSON.stringify([
+  { id: "one", integrationID: "openai", label: "x", value: { type: "key", key: "secret" } },
+]);
 
-testEffect("stores multiple credentials and redacts values", () =>
+it.effect("stores multiple credentials and redacts values", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
-    );
+    const { fs, env } = yield* environment;
+    yield* Effect.addFinalizer(() => fs.remove(env.HOME!, { recursive: true }).pipe(Effect.ignore));
     const first = yield* provide(
       Credential.Service.pipe(
         Effect.flatMap((store) =>
@@ -68,101 +80,58 @@ testEffect("stores multiple credentials and redacts values", () =>
   }),
 );
 
-testEffect("skips a corrupt row without hiding valid credentials", () =>
+it.effect("skips a corrupt row without hiding valid credentials", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
-    );
-    const directory = join(env.XDG_STATE_HOME!, "amux");
-    yield* Effect.promise(() => mkdir(directory, { recursive: true }));
-    yield* Effect.promise(() =>
-      writeFile(
-        join(directory, "auth.json"),
-        JSON.stringify([
-          {
-            id: "good",
-            integrationID: "openai",
-            label: "good",
-            value: { type: "key", key: "secret" },
-          },
-          {
-            id: "bad",
-            integrationID: "openai",
-            label: 42,
-            value: { type: "key", key: "broken" },
-          },
-        ]),
-      ),
-    );
-    const rows = yield* provide(
-      Credential.Service.pipe(Effect.flatMap((store) => store.all())),
-      env,
-    );
+    const { fs, path, env } = yield* environment;
+    yield* Effect.addFinalizer(() => fs.remove(env.HOME!, { recursive: true }).pipe(Effect.ignore));
+    const directory = path.join(env.XDG_STATE_HOME!, "amux");
+    yield* fs.makeDirectory(directory, { recursive: true });
+    yield* fs.writeFileString(path.join(directory, "auth.json"), corruptRowsJson);
+    const rows = yield* provide(Credential.Service.pipe(Effect.flatMap((store) => store.all)), env);
     expect(rows.map((row) => row.id)).toEqual(["good" as Credential.ID]);
   }),
 );
 
-testEffect("creates private state and credential files", () =>
+it.effect("creates private state and credential files", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
-    );
+    const { fs, path, env } = yield* environment;
+    yield* Effect.addFinalizer(() => fs.remove(env.HOME!, { recursive: true }).pipe(Effect.ignore));
     yield* provide(
       Credential.Service.pipe(
         Effect.flatMap((store) => store.create({ integrationID: "openai", value: key("secret") })),
       ),
       env,
     );
-    const directory = join(env.XDG_STATE_HOME!, "amux");
-    expect((yield* Effect.promise(() => stat(directory))).mode & 0o777).toBe(0o700);
-    expect((yield* Effect.promise(() => stat(join(directory, "auth.json")))).mode & 0o777).toBe(
-      0o600,
-    );
+    const directory = path.join(env.XDG_STATE_HOME!, "amux");
+    expect((yield* fs.stat(directory)).mode & 0o777).toBe(0o700);
+    expect((yield* fs.stat(path.join(directory, "auth.json"))).mode & 0o777).toBe(0o600);
   }),
 );
 
-testEffect("repairs permissions before reading existing credentials", () =>
+it.effect("repairs permissions before reading existing credentials", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
-    );
-    const directory = join(env.XDG_STATE_HOME!, "amux");
-    const file = join(directory, "auth.json");
-    yield* Effect.promise(() => mkdir(directory, { recursive: true, mode: 0o777 }));
-    yield* Effect.promise(() =>
-      writeFile(
-        file,
-        JSON.stringify([
-          {
-            id: "one",
-            integrationID: "openai",
-            label: "x",
-            value: { type: "key", key: "secret" },
-          },
-        ]),
-      ),
-    );
-    yield* Effect.promise(() => chmod(directory, 0o777));
-    yield* Effect.promise(() => chmod(file, 0o644));
-    yield* provide(Credential.Service.pipe(Effect.flatMap((store) => store.all())), env);
-    expect((yield* Effect.promise(() => stat(directory))).mode & 0o777).toBe(0o700);
-    expect((yield* Effect.promise(() => stat(file))).mode & 0o777).toBe(0o600);
+    const { fs, path, env } = yield* environment;
+    yield* Effect.addFinalizer(() => fs.remove(env.HOME!, { recursive: true }).pipe(Effect.ignore));
+    const directory = path.join(env.XDG_STATE_HOME!, "amux");
+    const file = path.join(directory, "auth.json");
+    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o777 });
+    yield* fs.writeFileString(file, existingRowJson);
+    yield* fs.chmod(directory, 0o777);
+    yield* fs.chmod(file, 0o644);
+    yield* provide(Credential.Service.pipe(Effect.flatMap((store) => store.all)), env);
+    expect((yield* fs.stat(directory)).mode & 0o777).toBe(0o700);
+    expect((yield* fs.stat(file)).mode & 0o777).toBe(0o600);
   }),
 );
 
-testEffect("does not overwrite malformed top-level JSON", () =>
+it.effect("does not overwrite malformed top-level JSON", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
-    );
-    const directory = join(env.XDG_STATE_HOME!, "amux");
-    const file = join(directory, "auth.json");
-    yield* Effect.promise(() => mkdir(directory, { recursive: true }));
-    yield* Effect.promise(() => writeFile(file, "not json"));
+    const { fs, path, env } = yield* environment;
+    yield* Effect.addFinalizer(() => fs.remove(env.HOME!, { recursive: true }).pipe(Effect.ignore));
+    const directory = path.join(env.XDG_STATE_HOME!, "amux");
+    const file = path.join(directory, "auth.json");
+    yield* fs.makeDirectory(directory, { recursive: true });
+    yield* fs.writeFileString(file, "not json");
     const result = yield* Effect.exit(
       provide(
         Credential.Service.pipe(
@@ -174,16 +143,14 @@ testEffect("does not overwrite malformed top-level JSON", () =>
       ),
     );
     expect(result._tag).toBe("Failure");
-    expect(yield* Effect.promise(() => Bun.file(file).text())).toBe("not json");
+    expect(yield* fs.readFileString(file)).toBe("not json");
   }),
 );
 
-testEffect("updates and removes by credential id", () =>
+it.effect("updates and removes by credential id", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
-    );
+    const { fs, env } = yield* environment;
+    yield* Effect.addFinalizer(() => fs.remove(env.HOME!, { recursive: true }).pipe(Effect.ignore));
     const created = yield* provide(
       Credential.Service.pipe(
         Effect.flatMap((store) => store.create({ integrationID: "openai", value: key("secret") })),
@@ -217,17 +184,15 @@ testEffect("updates and removes by credential id", () =>
   }),
 );
 
-testEffect("serializes mutations from separate processes without losing writes", () =>
+it.effect("serializes mutations from separate processes without losing writes", () =>
   Effect.gen(function* () {
-    const env = yield* Effect.promise(environment);
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(env.HOME!, { recursive: true, force: true })),
-    );
+    const { fs, env } = yield* environment;
+    yield* Effect.addFinalizer(() => fs.remove(env.HOME!, { recursive: true }).pipe(Effect.ignore));
     const worker = `
     import * as FileSystem from "effect/FileSystem";
     import { BunFileSystem } from "@effect/platform-bun";
     import { Effect, Redacted } from "effect";
-    import { Credential } from ${JSON.stringify(new URL("./credential.ts", import.meta.url).href)};
+    import { Credential } from "${new URL("./credential.ts", import.meta.url).href}";
     const value = { type: "key", key: Redacted.make("secret") };
     const program = Effect.gen(function* () {
       const store = yield* Credential.Service;
@@ -244,10 +209,11 @@ testEffect("serializes mutations from separate processes without losing writes",
     );
     const results = yield* Effect.promise(() =>
       Promise.all(
-        children.map(async (child) => ({
-          code: await child.exited,
-          stderr: await new Response(child.stderr).text(),
-        })),
+        children.map((child) =>
+          child.exited.then((code) =>
+            new Response(child.stderr).text().then((stderr) => ({ code, stderr })),
+          ),
+        ),
       ),
     );
     expect(results).toEqual([

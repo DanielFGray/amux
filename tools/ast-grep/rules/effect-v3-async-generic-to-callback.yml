@@ -1,5 +1,0 @@
-id: effect-v3-async-generic-to-callback
-language: TypeScript
-rule:
-  pattern: Effect.async<$$$TYPE>($CALLBACK)
-fix: Effect.callback<$$$TYPE>($CALLBACK)

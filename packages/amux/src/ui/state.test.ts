@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { expect, test } from "bun:test";
 import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
 import { runModelProjections, scheduleHintVisibility } from "../app.tsx";
@@ -7,7 +8,7 @@ import { createAppState, POLL_MS } from "./state.ts";
 import { waitFor } from "../test-wait.ts";
 
 function scopedRunner() {
-  const scope = Effect.runSync(Scope.make());
+  const scope = Scope.makeUnsafe();
   const run = Effect.runSync(
     Scope.provide(
       Effect.gen(function* () {

@@ -10,5 +10,4 @@ export function narrowTypedUnion(value: string | number) {
   return typeof value === "string" ? value.length : value;
 }
 
-export const omitOptional = (enabled: boolean) =>
-  enabled ? { enabled } : { enabled: false };
+export const omitOptional = (enabled: boolean) => (enabled ? { enabled } : { enabled: false });

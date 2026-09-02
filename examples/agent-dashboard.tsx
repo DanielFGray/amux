@@ -2,16 +2,17 @@
 import { createMemo } from "solid-js";
 import { Effect } from "effect";
 import { definePlugin, type PluginDefinition } from "../packages/amux/src/plugin/types.ts";
-import { RegionsTag } from "../packages/amux/src/plugin/services.ts";
+import { PanelTag, RegionsTag } from "../packages/amux/src/plugin/services.ts";
 
 /** A read-only agent roster built entirely on the public panel projection. */
 const agentDashboard: PluginDefinition = definePlugin({
   id: "example.agent-dashboard",
   apiVersion: "1",
-  inject: [RegionsTag],
-  effect: (ctx) =>
+  inject: [PanelTag, RegionsTag],
+  effect: () =>
     Effect.gen(function* () {
       const regions = yield* RegionsTag;
+      const panelContext = yield* PanelTag;
       const panel = {
         id: "example.agent-dashboard.panel",
         region: "bottom" as const,
@@ -20,8 +21,8 @@ const agentDashboard: PluginDefinition = definePlugin({
         size: () => 2,
         component: () => {
           const lines = createMemo(() => {
-            ctx.panel.tick();
-            const display = ctx.panel.display();
+            panelContext.tick();
+            const display = panelContext.display();
             const agents = display.rows.filter((row) => row.kind === "agent");
             const roster = agents.length
               ? agents

@@ -1,11 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { For, Show } from "solid-js";
-import { ProcessState } from "../process-state.ts";
 import type { Window } from "../window.ts";
-import type {
-  ProcessDisplayReader,
-  ProcessDisplayResult,
-} from "../plugin/process-display.ts";
+import type { ProcessDisplayReader, ProcessDisplayResult } from "../plugin/process-display.ts";
 import type { AppState } from "./state.ts";
 import { theme } from "./theme.ts";
 import { formatText } from "../format.ts";
@@ -25,7 +21,16 @@ function windowDisplay(window: Window, processDisplay: ProcessDisplayReader): Pr
     });
     if (!best || result.rank > best.rank) best = result;
   }
-  return best ?? processDisplay.display({ session: null, state: window.state, exitCode: null, detached: false, title: window.title });
+  return (
+    best ??
+    processDisplay.display({
+      session: null,
+      state: window.state,
+      exitCode: null,
+      detached: false,
+      title: window.title,
+    })
+  );
 }
 
 /**

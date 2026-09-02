@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ProcessState } from "@danielfgray/amux"
+import { ProcessState } from "@danielfgray/amux";
 import { deriveProcessDisplay } from "./display-state.ts";
 
 const facts = (state: ProcessState, exitCode: number | null, detached: boolean) => ({

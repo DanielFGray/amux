@@ -1,10 +1,10 @@
-import { Effect } from "effect";
-import { readdirSync, realpathSync } from "node:fs";
+import { BunServices } from "@effect/platform-bun";
+import { Effect, Path } from "effect";
+import * as FileSystem from "effect/FileSystem";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { isAbsolute, join, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
-import type { PluginHost } from "./host.ts";
+import type { PluginHost, RefusedPlugin } from "./host.ts";
 import { decodePlugin, hotImport } from "./hot.ts";
 import * as sidebarModule from "@danielfgray/amux-plugin-sidebar";
 import * as agentHarnessModule from "@danielfgray/amux-plugin-agent-harness";
@@ -80,19 +80,33 @@ export interface HotPlugin {
   readonly definition: PluginDefinition;
 }
 
-/** Discover user entry files without making discovery a second loading path. */
-function discoveredPlugins(configDir: string): readonly string[] {
-  const root = join(configDir, "plugins");
-  try {
-    return readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && /\.(?:[cm]?js|[cm]?ts)x?$/.test(entry.name))
-      .map((entry) => join(root, entry.name));
-  } catch {
-    return [];
-  }
+export interface LoadedPlugins {
+  readonly hot: readonly HotPlugin[];
+  /** Entries the host's configuration could not satisfy — see `RefusedPlugin`. */
+  readonly refused: readonly RefusedPlugin[];
 }
 
-export const loadPluginsFromConfig = Effect.fnUntraced(function* (
+/** Discover user entry files without making discovery a second loading path. */
+function discoveredPlugins(configDir: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = path.join(configDir, "plugins");
+    const entries = yield* fs.readDirectory(root);
+    return yield* Effect.forEach(entries, (name) =>
+      fs.stat(path.join(root, name)).pipe(
+        Effect.map((info) =>
+          info.type === "File" && /\.(?:[cm]?js|[cm]?ts)x?$/.test(name)
+            ? path.join(root, name)
+            : null,
+        ),
+        Effect.orElseSucceed(() => null),
+      ),
+    ).pipe(Effect.map((paths) => paths.filter((value): value is string => value !== null)));
+  }).pipe(Effect.orElseSucceed(() => [] as readonly string[]));
+}
+
+const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
   config: Config,
   host: PluginHost,
   configDir: string,
@@ -104,7 +118,7 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
   const configured = new Map(config.plugins.map((spec) => [spec.path, spec]));
   const specs = [
     ...config.plugins,
-    ...discoveredPlugins(configDir)
+    ...(yield* discoveredPlugins(configDir))
       .filter((path) => !configured.has(path))
       .map((path) => ({ path, enabled: true })),
   ];
@@ -113,7 +127,7 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
     // A builtin that cannot be read from disk is a compiled binary, not a
     // broken install: the module is in the bundle, and only reloading is lost.
     const builtin = builtinAt(spec.path);
-    const source = builtin ? builtinSource(builtin) : sourceOf(spec.path, configDir);
+    const source = builtin ? builtinSource(builtin) : yield* sourceOf(spec.path, configDir);
     if (!source && !builtin) {
       yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
       continue;
@@ -157,10 +171,15 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
   // One configuration, not a plugin at a time: whether an injected key has any
   // provider is only answerable once every entry has been read, and a provider
   // listed after its consumer is still a provider.
-  yield* host.reconcile([...coreEntries, ...enabled]).pipe(Effect.catchCause(() => Effect.void));
+  const refused = yield* host
+    .reconcile([...coreEntries, ...enabled])
+    .pipe(Effect.catchCause(() => Effect.succeed([] as readonly RefusedPlugin[])));
 
-  return hot as readonly HotPlugin[];
+  return { hot, refused } as LoadedPlugins;
 });
+
+export const loadPluginsFromConfig = (...args: Parameters<typeof loadPluginsFromConfigEffect>) =>
+  loadPluginsFromConfigEffect(...args).pipe(Effect.provide(BunServices.layer));
 
 /**
  * Where a configured plugin's entry file is, or null if it is somewhere a
@@ -168,24 +187,23 @@ export const loadPluginsFromConfig = Effect.fnUntraced(function* (
  * directory, symlinks included — that check is why this resolves rather than
  * merely joins.
  */
-function sourceOf(specPath: string, configDir: string): URL | null {
+function sourceOf(specPath: string, configDir: string) {
   if (specPath.startsWith("file://")) {
     try {
-      return pathToFileURL(fileURLToPath(specPath));
+      return Effect.succeed(pathToFileURL(fileURLToPath(specPath)));
     } catch {
-      return null;
+      return Effect.succeed(null);
     }
   }
-  if (isAbsolute(specPath)) return pathToFileURL(specPath);
-  const resolved = resolve(configDir, specPath);
-  let realConfigDir: string;
-  let realPath: string;
-  try {
-    realConfigDir = realpathSync.native(configDir);
-    realPath = realpathSync.native(resolved);
-  } catch {
-    return null;
-  }
-  if (!realPath.startsWith(realConfigDir + "/") && realPath !== realConfigDir) return null;
-  return pathToFileURL(resolved);
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    if (path.isAbsolute(specPath)) return pathToFileURL(specPath);
+    const resolved = path.resolve(configDir, specPath);
+    const realConfigDir = yield* fs.realPath(configDir).pipe(Effect.orElseSucceed(() => null));
+    const realPath = yield* fs.realPath(resolved).pipe(Effect.orElseSucceed(() => null));
+    if (!realConfigDir || !realPath) return null;
+    if (!realPath.startsWith(realConfigDir + path.sep) && realPath !== realConfigDir) return null;
+    return pathToFileURL(resolved);
+  });
 }

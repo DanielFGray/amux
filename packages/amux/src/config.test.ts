@@ -1,22 +1,35 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { Effect, Layer, Path } from "effect";
+import * as FileSystem from "effect/FileSystem";
+import { BunFileSystem } from "@effect/platform-bun";
 import { DEFAULT_CONFIG, decodeConfig, loadConfig, saveConfig } from "./config.ts";
 import { resolveOptions } from "./options.ts";
+import { testEffect } from "./test-effect.ts";
 
 const temporaryDirectories: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
+afterEach(() => {
+  const paths = temporaryDirectories.splice(0);
+  return Effect.runPromise(
+    Effect.forEach(paths, (path) =>
+      Effect.flatMap(FileSystem.FileSystem, (fs) => fs.remove(path, { recursive: true })).pipe(
+        Effect.ignore,
+      ),
+    ).pipe(Effect.provide(BunFileSystem.layer)),
   );
 });
 
-async function temporaryConfig(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "amux-config-"));
-  temporaryDirectories.push(directory);
-  return join(directory, "config.json");
+function temporaryConfig(): Promise<string> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const directory = yield* FileSystem.FileSystem.pipe(
+        Effect.flatMap((fs) => fs.makeTempDirectory({ prefix: "amux-config-" })),
+      );
+      temporaryDirectories.push(directory);
+      return path.join(directory, "config.json");
+    }).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, Path.layer))),
+  );
 }
 
 test("malformed key bindings cannot break keymap compilation", () => {
@@ -99,26 +112,31 @@ test("an explicit disabled bundled plugin remains disabled", () => {
   ).toContainEqual({ path: "builtin:amux.agent-harness", enabled: false });
 });
 
-test("a changed config survives save and load", async () => {
-  const path = await temporaryConfig();
-  const config = decodeConfig({
-    // The last is an option this build does not declare — a plugin's, or one
-    // from a newer release. It has to come back out of the file unchanged.
-    options: {
-      "behaviour.scrollRows": 10,
-      "appearance.gap": true,
-      "clock.format": "%H:%M",
-    },
-    keys: { leader: "ctrl+b", bindings: { "app.quit": ["<leader>q"] } },
-  });
+testEffect("a changed config survives save and load", () =>
+  Effect.gen(function* () {
+    const path = yield* Effect.promise(() => temporaryConfig());
+    const config = decodeConfig({
+      // The last is an option this build does not declare — a plugin's, or one
+      // from a newer release. It has to come back out of the file unchanged.
+      options: {
+        "behaviour.scrollRows": 10,
+        "appearance.gap": true,
+        "clock.format": "%H:%M",
+      },
+      keys: { leader: "ctrl+b", bindings: { "app.quit": ["<leader>q"] } },
+    });
 
-  await saveConfig(config, path);
-  expect(await loadConfig(path)).toEqual(config);
-});
+    yield* saveConfig(config, path);
+    expect(yield* loadConfig(path)).toEqual(config);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
 
-test("invalid JSON falls back without throwing", async () => {
-  const path = await temporaryConfig();
-  await Bun.write(path, "{not json");
+testEffect("invalid JSON falls back without throwing", () =>
+  Effect.gen(function* () {
+    const path = yield* Effect.promise(() => temporaryConfig());
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(path, "{not json");
 
-  await expect(loadConfig(path)).resolves.toEqual(DEFAULT_CONFIG);
-});
+    expect(yield* loadConfig(path)).toEqual(DEFAULT_CONFIG);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);

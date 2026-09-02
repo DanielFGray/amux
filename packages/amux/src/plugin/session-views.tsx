@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 /** @jsxImportSource @opentui/solid */
 import { Show } from "solid-js";
 import type { PaneView } from "../component-pane.tsx";

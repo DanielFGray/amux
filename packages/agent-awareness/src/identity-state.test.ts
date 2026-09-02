@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { JsonValue, Topic } from "@danielfgray/amux/protocol"
+import type { JsonValue, Topic } from "@danielfgray/amux/protocol";
 import { AGENT_AWARENESS_IDENTITY_TOPIC, agentIdentityStateFromTopic } from "./identity-state.ts";
 
 const frame = (topic: string, payload: JsonValue): Topic => ({

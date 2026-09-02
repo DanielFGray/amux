@@ -36,7 +36,7 @@
  * client is attached after restore.
  */
 
-import { Effect } from "effect";
+import { Clock, Effect, Match } from "effect";
 import {
   decodeLayout,
   encodeLayout,
@@ -116,7 +116,7 @@ export function snapshotSession(spaces: SpaceSet, base: SessionState): SessionSt
   return {
     ...base,
     version: SESSION_VERSION,
-    updatedAt: Date.now(),
+    updatedAt: Effect.runSync(Clock.currentTimeMillis),
     activeSpace: spaces.activeSpaceId,
     spaces: spaces.spaces.map(snapshotSpace),
   };
@@ -238,7 +238,10 @@ function restoredLayout(
     let recorded: Layout | null = null;
     if (saved.layout) {
       const result = yield* Effect.result(decodeLayout(saved.layout));
-      if (result._tag === "Success") recorded = result.success;
+      recorded = Match.value(result).pipe(
+        Match.tag("Success", (r) => r.success),
+        Match.orElse(() => null),
+      );
     }
     const pruned = recorded ? prune(recorded, (id) => alive.has(id)) : null;
     if (pruned?.root) return pruned;

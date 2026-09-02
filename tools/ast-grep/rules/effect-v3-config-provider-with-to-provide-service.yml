@@ -1,5 +1,0 @@
-id: effect-v3-config-provider-with-to-provide-service
-language: TypeScript
-rule:
-  pattern: Effect.withConfigProvider($PROVIDER)
-fix: Effect.provideService(ConfigProvider.ConfigProvider, $PROVIDER)

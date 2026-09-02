@@ -1,9 +1,10 @@
 import { Tool, Toolkit } from "effect/unstable/ai";
-import { Effect, Schema as S } from "effect";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { BunFileSystem } from "@effect/platform-bun";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { Duration, Effect, Layer, Schema as S } from "effect";
 import { bashResources, pathResource, type PermissionGate } from "./permission.ts";
-import type { JsonValue } from "@danielfgray/amux"
+import type { JsonValue } from "@danielfgray/amux";
 
 const DEFAULT_LIMIT = 2_000;
 const DEFAULT_TIMEOUT = 120_000;
@@ -13,8 +14,8 @@ const Read = Tool.make("read", {
   description: "Read a text file or list a directory. Relative paths resolve from the workspace.",
   parameters: S.Struct({
     path: S.String,
-    offset: S.optional(S.Number),
-    limit: S.optional(S.Number),
+    offset: S.optional(S.Finite),
+    limit: S.optional(S.Finite),
   }),
   success: S.String,
   failure: S.String,
@@ -34,7 +35,7 @@ const Glob = Tool.make("glob", {
   parameters: S.Struct({
     pattern: S.String,
     path: S.optional(S.String),
-    limit: S.optional(S.Number),
+    limit: S.optional(S.Finite),
   }),
   success: S.String,
   failure: S.String,
@@ -48,7 +49,7 @@ const Grep = Tool.make("grep", {
     pattern: S.String,
     path: S.optional(S.String),
     include: S.optional(S.String),
-    limit: S.optional(S.Number),
+    limit: S.optional(S.Finite),
   }),
   success: S.String,
   failure: S.String,
@@ -61,7 +62,7 @@ const Bash = Tool.make("bash", {
   parameters: S.Struct({
     command: S.String,
     workdir: S.optional(S.String),
-    timeout: S.optional(S.Number),
+    timeout: S.optional(S.Finite),
   }),
   success: S.String,
   failure: S.String,
@@ -75,114 +76,177 @@ const Bash = Tool.make("bash", {
  * here rather than derived from the call by a layer above: `read` on a directory
  * is still a read, and `bash` names shell segments, not files.
  */
-export function agentToolkit(workspace: string, gate: PermissionGate) {
+export const agentToolkit = Effect.fnUntraced(function* (workspace: string, gate: PermissionGate) {
   const toolkit = Toolkit.make(Read, Write, Glob, Grep, Bash);
   /** Clear the call, then run it. A refusal is the tool's failure text. */
-  const gated = (
+  const gated = <E>(
     tool: string,
     action: string,
     resources: readonly string[],
     input: JsonValue,
-    body: () => Promise<string>,
-  ) => gate.assert({ tool, action, resources, input }).pipe(Effect.andThen(tryTool(body)));
+    body: Effect.Effect<string, E, FileSystem.FileSystem | Path.Path>,
+  ) =>
+    gate
+      .assert({ tool, action, resources, input })
+      .pipe(
+        Effect.andThen(
+          tryTool(body.pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, Path.layer)))),
+        ),
+      );
   const paths = (...values: string[]) =>
-    values.map((value) => pathResource(workspace, fromWorkspace(workspace, value)));
+    Effect.forEach(values, (value) =>
+      pathResource(workspace, fromWorkspace(workspace, value)),
+    ).pipe(Effect.provide(Path.layer));
   const handlers = toolkit.of({
     read: (input) =>
-      gated("read", "read", paths(input.path), input, async () => {
-        const { path, offset, limit } = input;
-        const target = fromWorkspace(workspace, path);
-        const stat = await Bun.file(target).stat();
-        if (stat.isDirectory()) {
-          const entries = await readdir(target, { withFileTypes: true });
-          return entries
-            .slice(offset ?? 0, (offset ?? 0) + (limit ?? DEFAULT_LIMIT))
-            .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
-            .join("\n");
-        }
-        const lines = (await readFile(target, "utf8")).split("\n");
-        const start = Math.max(0, (offset ?? 1) - 1);
-        return lines
-          .slice(start, start + (limit ?? DEFAULT_LIMIT))
-          .map((line, index) => `${start + index + 1}: ${line}`)
-          .join("\n");
+      Effect.gen(function* () {
+        const resources = yield* paths(input.path);
+        return yield* gated(
+          "read",
+          "read",
+          resources,
+          input,
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const { path, offset, limit } = input;
+            const target = fromWorkspace(workspace, path);
+            const stat = yield* fs.stat(target);
+            if (stat.type === "Directory") {
+              const entries = yield* fs.readDirectory(target, { recursive: false });
+              return entries
+                .slice(offset ?? 0, (offset ?? 0) + (limit ?? DEFAULT_LIMIT))
+                .map((entry) => entry)
+                .join("\n");
+            }
+            const lines = (yield* fs.readFileString(target)).split("\n");
+            const start = Math.max(0, (offset ?? 1) - 1);
+            return lines
+              .slice(start, start + (limit ?? DEFAULT_LIMIT))
+              .map((line, index) => `${start + index + 1}: ${line}`)
+              .join("\n");
+          }),
+        );
       }),
     write: (input) =>
-      gated("write", "write", paths(input.path), input, async () => {
-        const target = fromWorkspace(workspace, input.path);
-        await mkdir(dirname(target), { recursive: true });
-        await writeFile(target, input.content, "utf8");
-        return `Wrote ${target}`;
+      Effect.gen(function* () {
+        const resources = yield* paths(input.path);
+        return yield* gated(
+          "write",
+          "write",
+          resources,
+          input,
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const target = fromWorkspace(workspace, input.path);
+            yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+            yield* fs.writeFileString(target, input.content);
+            return `Wrote ${target}`;
+          }),
+        );
       }),
     glob: (input) =>
-      gated("glob", "read", paths(input.path ?? "."), input, async () => {
-        const root = fromWorkspace(workspace, input.path ?? ".");
-        const matches: string[] = [];
-        for await (const match of new Bun.Glob(input.pattern).scan({
-          cwd: root,
-          onlyFiles: true,
-        })) {
-          matches.push(resolve(root, match));
-          if (matches.length >= (input.limit ?? DEFAULT_LIMIT)) break;
-        }
-        return matches.length ? matches.join("\n") : "No files found";
+      Effect.gen(function* () {
+        const resources = yield* paths(input.path ?? ".");
+        return yield* gated(
+          "glob",
+          "read",
+          resources,
+          input,
+          Effect.gen(function* () {
+            const path = yield* Path.Path;
+            const root = fromWorkspace(workspace, input.path ?? ".");
+            const matches: string[] = [];
+            for (const match of new Bun.Glob(input.pattern).scanSync({
+              cwd: root,
+              onlyFiles: true,
+            })) {
+              matches.push(path.resolve(root, match));
+              if (matches.length >= (input.limit ?? DEFAULT_LIMIT)) break;
+            }
+            return matches.length ? matches.join("\n") : "No files found";
+          }),
+        );
       }),
     grep: (input) =>
-      gated("grep", "read", paths(input.path ?? "."), input, async () => {
-        const args = [
-          "rg",
-          "--line-number",
-          "--color=never",
-          "--max-count",
-          String(input.limit ?? DEFAULT_LIMIT),
-        ];
-        if (input.include) args.push("--glob", input.include);
-        args.push("--", input.pattern, fromWorkspace(workspace, input.path ?? "."));
-        const result = await run(args, workspace, DEFAULT_TIMEOUT);
-        if (result.exit === 1) return "No files found";
-        if (result.exit !== 0)
-          throw new Error(result.output || `rg exited with code ${result.exit}`);
-        return result.output || "No files found";
+      Effect.gen(function* () {
+        const resources = yield* paths(input.path ?? ".");
+        return yield* gated(
+          "grep",
+          "read",
+          resources,
+          input,
+          Effect.gen(function* () {
+            const args = [
+              "rg",
+              "--line-number",
+              "--color=never",
+              "--max-count",
+              String(input.limit ?? DEFAULT_LIMIT),
+            ];
+            if (input.include) args.push("--glob", input.include);
+            args.push("--", input.pattern, fromWorkspace(workspace, input.path ?? "."));
+            const result = yield* run(args, workspace, DEFAULT_TIMEOUT);
+            if (result.exit === 1) return "No files found";
+            if (result.exit !== 0)
+              throw new Error(result.output || `rg exited with code ${result.exit}`);
+            return result.output || "No files found";
+          }),
+        );
       }),
     // The workdir is where the command runs, but what is judged is the command:
     // a rule about `git status` is about the words, not the directory.
     bash: (input) =>
-      gated("bash", "bash", bashResources(input.command), input, async () => {
-        const result = await run(
-          ["bash", "-lc", input.command],
-          fromWorkspace(workspace, input.workdir ?? "."),
-          input.timeout ?? DEFAULT_TIMEOUT,
-        );
-        return `${result.output}${result.output ? "\n\n" : ""}Command exited with code ${result.exit}.`;
-      }),
+      gated(
+        "bash",
+        "bash",
+        bashResources(input.command),
+        input,
+        Effect.gen(function* () {
+          const result = yield* run(
+            ["bash", "-lc", input.command],
+            fromWorkspace(workspace, input.workdir ?? "."),
+            input.timeout ?? DEFAULT_TIMEOUT,
+          );
+          return `${result.output}${result.output ? "\n\n" : ""}Command exited with code ${result.exit}.`;
+        }),
+      ),
   });
-  return toolkit.pipe(Effect.provide(toolkit.toLayer(handlers)));
-}
+  return yield* toolkit.pipe(
+    Effect.provide(
+      toolkit.toLayer(handlers).pipe(Layer.provide(BunFileSystem.layer), Layer.provide(Path.layer)),
+    ),
+  );
+});
 
-const tryTool = (body: () => Promise<string>) =>
-  Effect.tryPromise({ try: body, catch: (error) => String(error) });
+const tryTool = <E>(body: Effect.Effect<string, E>) =>
+  body.pipe(Effect.mapError((error) => String(error)));
 
 const fromWorkspace = (workspace: string, path: string) =>
-  isAbsolute(path) ? path : resolve(workspace, path);
+  path.startsWith("/") ? path : `${workspace}/${path}`;
 
-async function run(args: string[], cwd: string, timeout: number) {
+const run = Effect.fnUntraced(function* (args: string[], cwd: string, timeout: number) {
   const process = Bun.spawn(args, { cwd, stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => process.kill(), timeout);
-  try {
-    const [stdout, stderr, exit] = await Promise.all([
+  const collect = Effect.promise(() =>
+    Promise.all([
       new Response(process.stdout).text(),
       new Response(process.stderr).text(),
       process.exited,
-    ]);
-    const output = `${stdout}${stderr}`;
-    return {
-      exit,
-      output:
-        output.length > MAX_OUTPUT_BYTES
-          ? `${output.slice(0, MAX_OUTPUT_BYTES)}\n[output truncated]`
-          : output.trimEnd(),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
+    ]),
+  );
+  const [stdout, stderr, exit] = yield* Effect.race(
+    collect,
+    Effect.sleep(Duration.millis(timeout)).pipe(
+      Effect.andThen(Effect.sync(() => process.kill())),
+      Effect.andThen(Effect.fail("command timed out")),
+    ),
+  );
+  const output = `${stdout}${stderr}`;
+  return {
+    exit,
+    output:
+      output.length > MAX_OUTPUT_BYTES
+        ? `${output.slice(0, MAX_OUTPUT_BYTES)}\n[output truncated]`
+        : output.trimEnd(),
+  };
+});

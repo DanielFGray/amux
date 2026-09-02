@@ -29,9 +29,11 @@
       "oxfmt": "0.62.0",
       "oxlint": "1.80.0",
       "oxlint-tsgolint": "7.0.2001",
-      "typescript": "^7.0.2"
+      "typescript": "^7.0.2",
+      "ultracite": "^7.10.7"
     }
   },
+  "type": "module",
   "scripts": {
     "start": "bun packages/amux/src/main.tsx",
     "daemon": "bun packages/amux/src/daemon-main.ts",
@@ -45,19 +47,20 @@
     "typecheck:fzf": "./tools/typecheck-fzf",
     "format": "bunx oxfmt --write packages e2e",
     "format:check": "bunx oxfmt --check packages e2e",
-    "test": "run-s typecheck lint sg-scan test:unit",
+    "test": "run-s typecheck lint ultracite sg-scan test:unit",
     "test:unit": "bun test packages",
+    "ultracite": "ultracite check packages e2e",
     "sg-scan": "ast-grep scan packages --globs '**/*.ts' --globs '**/*.tsx' --report-style medium",
     "lint": "oxlint packages e2e",
     "lint:fix": "oxlint --fix packages e2e",
     "e2e": "bun test e2e",
     "patch-tsgo": "effect-tsgo patch --typescript --oxlint",
-    "prepare": "run-s build:shim patch-tsgo"
+    "prepare": "run-s build:shim patch-tsgo && effect-tsgo patch --typescript --oxlint"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",
     "@effect/platform-bun": "catalog:",
-    "@effect/tsgo": "catalog:",
+    "@effect/tsgo": "0.37.0",
     "@effect/vitest": "catalog:",
     "@opentui/solid": "catalog:",
     "@oxlint/plugins": "catalog:",
@@ -68,7 +71,8 @@
     "oxlint": "catalog:",
     "oxlint-tsgolint": "catalog:",
     "solid-js": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "ultracite": "catalog:"
   },
   "engines": {
     "bun": ">=1.4.0"

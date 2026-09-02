@@ -1,7 +1,8 @@
+import { Match } from "effect";
 import { dlopen, FFIType as T, ptr } from "bun:ffi";
 import type { TerminalPane } from "./pane.ts";
 import { captureRows } from "./capture.ts";
-import { LIB_DIR } from "./ghostty-library.ts";
+import { LIB } from "./ghostty-library.ts";
 import { ScrollTo, captureRange, clearSelection, scrollViewport, setSelection } from "./shim.ts";
 
 /**
@@ -104,7 +105,7 @@ export function foldQuery(query: string): string {
  *  It measures already-laid-out text; it is not a terminal binding, so it
  *  lives apart from the bindings in ghostty.ts. */
 const graphemeWidth = (() => {
-  const lib = process.env.GHOSTTY_VT_LIB ?? `${LIB_DIR}/libghostty-vt.so.0.1.0`;
+  const lib = LIB;
   const { symbols } = dlopen(lib, {
     ghostty_unicode_grapheme_width: {
       args: [T.ptr, T.u64, T.ptr],
@@ -542,12 +543,12 @@ export class CopyMode {
         : dir === "backward-start"
           ? line.length
           : -1;
-      const next =
-        dir === "forward-start"
-          ? forwardWordStart(line, startAt)
-          : dir === "forward-end"
-            ? forwardWordEnd(line, startAt)
-            : backwardWordStart(line, startAt);
+      const next = Match.value(dir).pipe(
+        Match.when(Match.is("forward-start"), () => forwardWordStart(line, startAt)),
+        Match.when(Match.is("forward-end"), () => forwardWordEnd(line, startAt)),
+        Match.when(Match.is("backward-start"), () => backwardWordStart(line, startAt)),
+        Match.exhaustive,
+      );
       if (next !== null) {
         // The target is a string index; convert it to the cell column of the
         // grapheme it lands on. A word start is always a grapheme boundary,

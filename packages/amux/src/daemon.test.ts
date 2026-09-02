@@ -1,8 +1,10 @@
+/** @effect-diagnostics *:skip-file -- a real OS boundary (sockets, subprocess) this suite deliberately
+ * drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigProvider, Effect, Scope, Stream } from "effect";
+import { Cause, ConfigProvider, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import {
@@ -455,7 +457,7 @@ testEffect("the control plane exposes no unrevisioned spawn or kill procedure", 
   Effect.gen(function* () {
     const e = yield* Effect.promise(() => env());
     const d = yield* Effect.promise(() => open("no-bypass", e));
-    const before = yield* d.liveSessions();
+    const before = yield* d.liveSessions;
     // The group is the whole surface: anything outside it is refused by the
     // server before a handler exists to run it.
     const rejected = yield* Effect.promise(() =>
@@ -465,7 +467,7 @@ testEffect("the control plane exposes no unrevisioned spawn or kill procedure", 
       ),
     );
     expect(rejected).toBe(true);
-    expect(yield* d.liveSessions()).toEqual(before);
+    expect(yield* d.liveSessions).toEqual(before);
     yield* Effect.promise(() => S(d));
   }),
 );
@@ -488,7 +490,7 @@ testEffect("a persistence failure compensates a spawned PTY and installs no gene
     const e = yield* Effect.promise(() => env());
     const d = yield* Effect.promise(() => open("persist-transaction", e));
     const before = ws(d);
-    const beforeLive = yield* d.liveSessions();
+    const beforeLive = yield* d.liveSessions;
     const p = yield* Effect.promise(() => paths("persist-transaction", e));
     yield* Effect.promise(() => rm(p.backup, { recursive: true, force: true }));
     yield* Effect.promise(() => mkdir(p.backup));
@@ -501,7 +503,7 @@ testEffect("a persistence failure compensates a spawned PTY and installs no gene
     );
     expect(rejected).toBe(true);
     expect(ws(d)).toEqual(before);
-    expect(yield* d.liveSessions()).toEqual(beforeLive);
+    expect(yield* d.liveSessions).toEqual(beforeLive);
     yield* Effect.promise(() => S(d));
   }),
 );
@@ -549,7 +551,7 @@ testEffect("a fast prepared exit cannot deadlock failed-write compensation", () 
     expect(String(failure)).toContain("injected candidate failure");
     expect(yield* Effect.promise(() => Bun.file(marker).text())).toBe("exited");
     expect(ws(daemon)).toEqual(before);
-    expect(yield* daemon.liveSessions()).toHaveLength(1);
+    expect(yield* daemon.liveSessions).toHaveLength(1);
     rejectCandidate = false;
     yield* Effect.promise(() => S(daemon));
   }),
@@ -595,8 +597,8 @@ testEffect(
           client: "subscriber",
         }),
       );
-      const beforeLive = yield* daemon.liveSessions();
-      const model = Effect.runPromise(Stream.runHead(subscriber.workspace()));
+      const beforeLive = yield* daemon.liveSessions;
+      const model = yield* Effect.forkChild(Stream.runHead(subscriber.workspace));
       const commandRun = rwc(daemon)(command("pane.split", { axis: "row" }), ws(daemon).revision, {
         ...context,
         shell: ["sh", "-c", "printf private; sleep 30"],
@@ -606,25 +608,27 @@ testEffect(
       // leaked it, AttachClient would already have created an unknown-session queue
       // and runHead would consume that stale frame immediately.
       yield* Effect.sleep(30);
-      const terminal = Effect.runPromise(Stream.runHead(subscriber.stream(preparedId)));
+      const terminal = yield* Effect.forkChild(Stream.runHead(subscriber.stream(preparedId)));
       const live = yield* Effect.promise(() => status(daemon, e));
       expect(live.agents).toEqual([...beforeLive]);
-      expect(yield* daemon.liveSessions()).toEqual(beforeLive);
+      expect(yield* daemon.liveSessions).toEqual(beforeLive);
       expect(
-        yield* Effect.promise(() =>
-          Promise.race([model.then(() => "published"), Bun.sleep(30).then(() => "private")]),
+        yield* Effect.race(
+          Fiber.join(model).pipe(Effect.as("published" as const)),
+          Effect.sleep(30).pipe(Effect.as("private" as const)),
         ),
       ).toBe("private");
       expect(
-        yield* Effect.promise(() =>
-          Promise.race([terminal.then(() => "published"), Bun.sleep(30).then(() => "private")]),
+        yield* Effect.race(
+          Fiber.join(terminal).pipe(Effect.as("published" as const)),
+          Effect.sleep(30).pipe(Effect.as("private" as const)),
         ),
       ).toBe("private");
 
       release();
       yield* Effect.promise(() => commandRun);
-      expect((yield* Effect.promise(() => model))._tag).toBe("Some");
-      expect((yield* Effect.promise(() => terminal))._tag).toBe("Some");
+      expect((yield* Fiber.join(model))._tag).toBe("Some");
+      expect((yield* Fiber.join(terminal))._tag).toBe("Some");
       subscriber.close();
       yield* Effect.promise(() => S(daemon));
     }),
@@ -862,7 +866,7 @@ testEffect("stop interrupts and joins a never-settling destructive persistence o
       ),
     );
     expect(mutationRejected).toBe(true);
-    expect(yield* daemon.liveSessions()).toEqual([]);
+    expect(yield* daemon.liveSessions).toEqual([]);
     expect(
       yield* Effect.promise(() =>
         run(
@@ -1176,7 +1180,7 @@ testEffect("close interrupts and joins a never-settling natural-exit persistence
     );
     expect(Date.now() - started).toBeLessThan(1_500);
     expect(cancelled).toBe(true);
-    expect(yield* daemon.liveSessions()).toEqual([]);
+    expect(yield* daemon.liveSessions).toEqual([]);
     yield* Effect.promise(() => expectProcessGone(heldPid));
   }),
 );
@@ -1336,7 +1340,7 @@ testEffect("component restore is attach-gated and ResumeAgent does not create a 
     );
     const daemon = yield* Effect.promise(() => open("attach-gated", e));
 
-    expect(yield* daemon.liveSessions()).not.toContain("component-session");
+    expect(yield* daemon.liveSessions).not.toContain("component-session");
 
     const argv = ["sh", "-c", `printf 'spawned\\n' >> ${marker}; sleep 30`];
     yield* Effect.promise(() =>
@@ -1485,7 +1489,7 @@ testEffect("a blocked daemon write does not starve timers, RPC, or shutdown", ()
         cols: 80,
         rows: 24,
       });
-      const write = Effect.runPromise(pty.write("x".repeat(16 * 1024 * 1024)));
+      const write = yield* Effect.forkChild(pty.write("x".repeat(16 * 1024 * 1024)));
       let timerRan = false;
       setTimeout(() => {
         timerRan = true;
@@ -1502,14 +1506,13 @@ testEffect("a blocked daemon write does not starve timers, RPC, or shutdown", ()
       yield* Effect.sleep(40);
       expect(timerRan).toBe(true);
       yield* daemon.killSession("blocked");
-      const writeResult = yield* Effect.promise(() =>
-        Promise.race([
-          write.then(
-            () => "succeeded",
-            (error) => String(error),
+      const writeResult = yield* Effect.race(
+        Effect.exit(Fiber.join(write)).pipe(
+          Effect.map((exit) =>
+            Exit.isSuccess(exit) ? "succeeded" : String(Cause.squash(exit.cause)),
           ),
-          Bun.sleep(1000).then(() => "deadline exceeded"),
-        ]),
+        ),
+        Effect.sleep(1000).pipe(Effect.as("deadline exceeded" as const)),
       );
       // Session shutdown owns this cancellation; it is not a failed daemon operation.
       expect(writeResult).toBe("succeeded");

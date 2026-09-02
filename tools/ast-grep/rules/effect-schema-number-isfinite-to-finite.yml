@@ -1,0 +1,6 @@
+id: effect-schema-number-isfinite-to-finite
+language: TypeScript
+message: S.Number accepts NaN/Infinity; use S.Finite for a finite domain instead of chaining S.isFinite() onto S.Number.
+rule:
+  pattern: S.Number.pipe(S.check(S.isFinite()), $$$REST)
+fix: S.Finite.pipe($$$REST)

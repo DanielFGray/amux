@@ -273,14 +273,12 @@ test("agent tools are generated from the command definitions", () => {
  */
 test("a detached command reports its failure", () => {
   const errors: string[] = [];
-  const original = console.error;
-  console.error = (message: string) => void errors.push(message);
-  try {
-    runDetached("pane.send-keys", Effect.fail(new CommandError({ message: "no pane to send to" })));
-    runDetached("pane.zoom", Effect.void);
-  } finally {
-    console.error = original;
-  }
+  runDetached(
+    "pane.send-keys",
+    Effect.fail(new CommandError({ message: "no pane to send to" })),
+    (message) => errors.push(message),
+  );
+  runDetached("pane.zoom", Effect.void, (message) => errors.push(message));
 
   expect(errors).toHaveLength(1);
   expect(errors[0]).toContain("pane.send-keys");
@@ -320,19 +318,19 @@ test("command result types match the declared schema", () => {
   const paneCaptureDef = COMMAND_DEFS.find((d) => d.tag === "pane.capture")!;
 
   // buffer.set → string
-  expect(Schema.decodeUnknownSync(bufSetDef.result)("hello")).toBe("hello");
+  expect(Schema.decodeSync(bufSetDef.result)("hello")).toBe("hello");
   // buffer.list → array of {name, bytes, preview}
-  expect(
-    Schema.decodeUnknownSync(bufListDef.result)([{ name: "x", bytes: 3, preview: "..." }]),
-  ).toEqual([{ name: "x", bytes: 3, preview: "..." }]);
+  expect(Schema.decodeSync(bufListDef.result)([{ name: "x", bytes: 3, preview: "..." }])).toEqual([
+    { name: "x", bytes: 3, preview: "..." },
+  ]);
   // pane.capture → string
-  expect(Schema.decodeUnknownSync(paneCaptureDef.result)("captured text")).toBe("captured text");
+  expect(Schema.decodeSync(paneCaptureDef.result)("captured text")).toBe("captured text");
   // void-schema decodes to undefined
   const paneZoomDef = COMMAND_DEFS.find((d) => d.tag === "pane.zoom")!;
-  expect(Schema.decodeUnknownSync(paneZoomDef.result)(undefined)).toBe(undefined);
+  expect(Schema.decodeSync(paneZoomDef.result)(undefined)).toBe(undefined);
   const agentNewDef = COMMAND_DEFS.find((d) => d.tag === "agent.new")!;
   expect(
-    Schema.decodeUnknownSync(agentNewDef.result)({
+    Schema.decodeSync(agentNewDef.result)({
       session: "agent-2",
       pane: "pane-2",
     }),

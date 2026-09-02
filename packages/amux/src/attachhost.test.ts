@@ -7,13 +7,11 @@
  * and a client that dies without saying goodbye must still be noticed.
  */
 
-import { ConfigProvider, Effect } from "effect";
+import { ConfigProvider, Effect, Layer, Path } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
-import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { afterEach, expect } from "bun:test";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
 import {
@@ -25,6 +23,29 @@ import { SessionStore } from "./session.ts";
 import { testEffect } from "./test-effect.ts";
 
 const dirs: string[] = [];
+const join = (...paths: string[]) =>
+  Effect.runSync(
+    Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
+  );
+const basename = (value: string) =>
+  Effect.runSync(
+    Effect.map(Path.Path, (path) => path.basename(value)).pipe(Effect.provide(Path.layer)),
+  );
+const fsRun = <A>(
+  effect: Effect.Effect<A, import("effect/PlatformError").PlatformError, FileSystem.FileSystem>,
+) => Effect.runPromise(effect.pipe(Effect.provide(BunFileSystem.layer)));
+const mkdtemp = (prefix: string) =>
+  fsRun(
+    Effect.flatMap(FileSystem.FileSystem, (fs) =>
+      fs.makeTempDirectory({ directory: tmpdir(), prefix: basename(prefix) }),
+    ),
+  );
+const rm = (path: string, _options?: { recursive?: boolean; force?: boolean }) =>
+  fsRun(
+    Effect.flatMap(FileSystem.FileSystem, (fs) =>
+      fs.remove(path, { recursive: true, force: true }),
+    ),
+  );
 const daemons: SessionDaemonService[] = [];
 const run = <A, E>(
   effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
@@ -32,27 +53,30 @@ const run = <A, E>(
 ) =>
   Effect.runPromise(
     Effect.scoped(effect).pipe(
-      Effect.provide(SessionStore.layer),
-      Effect.provide(BunFileSystem.layer),
+      Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
     ),
   );
-afterEach(async () => {
-  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
-});
-
+afterEach(() =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      for (const daemon of daemons.splice(0)) yield* daemon.stop.pipe(Effect.ignore);
+      for (const dir of dirs.splice(0))
+        yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
+    }),
+  ),
+);
 const envs = new Map<string, NodeJS.ProcessEnv>();
 
-async function started(id: string) {
-  const home = await mkdtemp(join(tmpdir(), "amux-attach-host-"));
+const started = Effect.fnUntraced(function* (id: string) {
+  const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-attach-host-")));
   dirs.push(home);
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") };
-  const daemon = await run(Effect.scoped(startDaemon(id)), env);
+  const daemon = yield* Effect.promise(() => run(Effect.scoped(startDaemon(id)), env));
   daemons.push(daemon);
   envs.set(daemon.id, env);
   return daemon;
-}
+});
 
 /** One control-plane request over the daemon's real Unix socket. */
 const control = <A, E>(
@@ -61,10 +85,10 @@ const control = <A, E>(
 ) => run(controlCall(daemon.id, use), envs.get(daemon.id)!);
 
 /** A client of the attach socket that keeps every frame it was sent. */
-async function client(path: string, hello: string, extra: string = "") {
+function client(path: string, hello: string, extra: string = "") {
   const frames: AttachFrame[] = [];
   let buffer = "";
-  const socket = await Bun.connect({
+  return Bun.connect({
     unix: path,
     socket: {
       binaryType: "buffer",
@@ -80,8 +104,7 @@ async function client(path: string, hello: string, extra: string = "") {
         frames.push(...decoded.frames);
       },
     },
-  });
-  return { socket, frames };
+  }).then((socket) => ({ socket, frames }));
 }
 
 const settle = (ms = 60) => Bun.sleep(ms);
@@ -93,7 +116,7 @@ const text = (frames: AttachFrame[]) =>
 
 testEffect("a session outlives the client that was watching it", () =>
   Effect.gen(function* () {
-    const daemon = yield* Effect.promise(() => started("survives"));
+    const daemon = yield* started("survives");
     yield* daemon.spawnSession({
       id: "agent-1",
       cmd: ["sh", "-c", "sleep 0.4; echo still-here"],
@@ -121,7 +144,7 @@ testEffect("a session outlives the client that was watching it", () =>
 
 testEffect("hello is honoured alongside frames batched behind it in one write", () =>
   Effect.gen(function* () {
-    const daemon = yield* Effect.promise(() => started("batched"));
+    const daemon = yield* started("batched");
     yield* daemon.spawnSession({ id: "agent-1", cmd: ["cat"], cols: 80, rows: 24 });
 
     const attached = yield* Effect.promise(() =>
@@ -146,7 +169,7 @@ testEffect("hello is honoured alongside frames batched behind it in one write", 
 
 testEffect("multiple clients hold independent attachments", () =>
   Effect.gen(function* () {
-    const daemon = yield* Effect.promise(() => started("shared"));
+    const daemon = yield* started("shared");
     const first = yield* Effect.promise(() => client(daemon.paths.attach, "one"));
     yield* Effect.sleep(60);
 
@@ -171,7 +194,7 @@ testEffect("multiple clients hold independent attachments", () =>
 
 testEffect("a reconnect with the same client id cannot be released by the old socket", () =>
   Effect.gen(function* () {
-    const daemon = yield* Effect.promise(() => started("same-client-reconnect"));
+    const daemon = yield* started("same-client-reconnect");
     const first = yield* Effect.promise(() => client(daemon.paths.attach, "stable"));
     yield* Effect.sleep(60);
 
@@ -193,7 +216,7 @@ testEffect("a reconnect with the same client id cannot be released by the old so
 
 testEffect("client death is reflected in the persisted session, not just in memory", () =>
   Effect.gen(function* () {
-    const daemon = yield* Effect.promise(() => started("persisted"));
+    const daemon = yield* started("persisted");
     const attached = yield* Effect.promise(() => client(daemon.paths.attach, "transient"));
     yield* Effect.sleep(60);
     expect((yield* daemon.getState).attached).toBe(true);
@@ -206,7 +229,7 @@ testEffect("client death is reflected in the persisted session, not just in memo
 
 testEffect("an input naming a dead session is ignored rather than dropping the attachment", () =>
   Effect.gen(function* () {
-    const daemon = yield* Effect.promise(() => started("stale-input"));
+    const daemon = yield* started("stale-input");
     const attached = yield* Effect.promise(() => client(daemon.paths.attach, "racer"));
     yield* Effect.sleep(60);
 
@@ -231,7 +254,7 @@ testEffect("an input naming a dead session is ignored rather than dropping the a
 
 testEffect("stopping the daemon closes the attach socket and its sessions", () =>
   Effect.gen(function* () {
-    const daemon = yield* Effect.promise(() => started("teardown"));
+    const daemon = yield* started("teardown");
     const pty = yield* daemon.spawnSession({
       id: "agent-1",
       cmd: ["sleep", "30"],
@@ -243,9 +266,12 @@ testEffect("stopping the daemon closes the attach socket and its sessions", () =
     yield* daemon.stop;
     daemons.splice(daemons.indexOf(daemon), 1);
 
-    yield* Effect.promise(async () => {
-      await expect(Bun.connect({ unix: path, socket: { data() {} } })).rejects.toThrow();
-    });
+    yield* Effect.promise(() =>
+      Bun.connect({ unix: path, socket: { data() {} } }).then(
+        () => Promise.reject(new Error("attach socket unexpectedly accepted a connection")),
+        () => undefined,
+      ),
+    );
     // The scope that owned the PTY is gone, so the process it was supervising is
     // gone with it rather than being orphaned. `sleep 30` would still be running
     // if the finalizer had not fired.
@@ -259,7 +285,7 @@ testEffect("stopping the daemon closes the attach socket and its sessions", () =
 
 testEffect("closing a daemon persists that the preserved session is detached", () =>
   Effect.gen(function* () {
-    const daemon = yield* Effect.promise(() => started("close-detached"));
+    const daemon = yield* started("close-detached");
     const attached = yield* Effect.promise(() => client(daemon.paths.attach, "watcher"));
     yield* Effect.sleep(60);
 
@@ -282,29 +308,31 @@ testEffect("closing a daemon persists that the preserved session is detached", (
   }),
 );
 
-test("the daemon tracks when the attached client was last seen", async () => {
-  const daemon = await started("last-seen");
-  const attached = await client(daemon.paths.attach, "watcher");
-  await settle();
+testEffect("the daemon tracks when the attached client was last seen", () =>
+  Effect.gen(function* () {
+    const daemon = yield* started("last-seen");
+    const attached = yield* Effect.promise(() => client(daemon.paths.attach, "watcher"));
+    yield* Effect.promise(() => settle());
 
-  const claimed = await control(daemon, (c) => c.Ping());
-  expect(claimed.attached).toBe(true);
-  expect(claimed.attachedSince).toBeGreaterThan(0);
-  expect(claimed.attachLastSeen).toBeGreaterThan(0);
+    const claimed = yield* Effect.promise(() => control(daemon, (c) => c.Ping()));
+    expect(claimed.attached).toBe(true);
+    expect(claimed.attachedSince).toBeGreaterThan(0);
+    expect(claimed.attachLastSeen).toBeGreaterThan(0);
 
-  // Any inbound frame refreshes last-seen — a heartbeat above all, because an
-  // attached UI showing an idle agent sends nothing else for hours.
-  const before = (await control(daemon, (c) => c.Ping())).attachLastSeen!;
-  attached.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "keepalive" }));
-  await settle(25);
-  const after = (await control(daemon, (c) => c.Ping())).attachLastSeen!;
-  expect(after).toBeGreaterThan(before);
+    // Any inbound frame refreshes last-seen — a heartbeat above all, because an
+    // attached UI showing an idle agent sends nothing else for hours.
+    const before = (yield* Effect.promise(() => control(daemon, (c) => c.Ping()))).attachLastSeen!;
+    attached.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "keepalive" }));
+    yield* Effect.promise(() => settle(25));
+    const after = (yield* Effect.promise(() => control(daemon, (c) => c.Ping()))).attachLastSeen!;
+    expect(after).toBeGreaterThan(before);
 
-  // Detach clears the freshness along with the attachment itself.
-  attached.socket.end();
-  await settle();
-  const released = await control(daemon, (c) => c.Ping());
-  expect(released.attached).toBe(false);
-  expect(released.attachedSince).toBeUndefined();
-  expect(released.attachLastSeen).toBeUndefined();
-});
+    // Detach clears the freshness along with the attachment itself.
+    attached.socket.end();
+    yield* Effect.promise(() => settle());
+    const released = yield* Effect.promise(() => control(daemon, (c) => c.Ping()));
+    expect(released.attached).toBe(false);
+    expect(released.attachedSince).toBeUndefined();
+    expect(released.attachLastSeen).toBeUndefined();
+  }),
+);

@@ -1,20 +1,21 @@
 /** @jsxImportSource @opentui/solid */
 import { afterEach, expect, test } from "bun:test";
-import { Effect, Exit, Scope } from "effect";
+import { Deferred, Effect, Exit, Scope } from "effect";
 import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { testRender, useRenderer } from "@opentui/solid";
 import { createSignal, onMount } from "solid-js";
 import { SpaceSet, type Space } from "@danielfgray/amux/space.ts";
 import { sidebarPlugin, SIDEBAR_OPTIONS } from "./index.tsx";
-import { type SidebarDisplay, type SidebarDisplayRow } from "@danielfgray/amux"
+import { type SidebarDisplay, type SidebarDisplayRow } from "@danielfgray/amux";
 import { createRegions } from "@danielfgray/amux/testing";
 import { createPluginContributions } from "@danielfgray/amux/plugin/contributions.ts";
 import { workspaceEnv } from "@danielfgray/amux/env.ts";
 import { createPluginHost, type PluginHost } from "@danielfgray/amux/plugin/host.ts";
-import { testPluginEnvironment } from "@danielfgray/amux/testing"
-import { testPanelContext } from "@danielfgray/amux/testing"
+import { testPluginEnvironment } from "@danielfgray/amux/testing";
+import { testPanelContext } from "@danielfgray/amux/testing";
 import { formatText } from "@danielfgray/amux/format.ts";
-import { resolveOptions } from "@danielfgray/amux"
+import { resolveOptions } from "@danielfgray/amux";
+import { testEffect } from "@danielfgray/amux/testing";
 
 test("format strings can choose the command or OSC title in a sidebar row", () => {
   expect(
@@ -106,12 +107,14 @@ function computeDisplay(spaces: SpaceSet): SidebarDisplay {
   };
 }
 
-const cleanupFns: (() => void | Promise<void>)[] = [];
-afterEach(async () => {
-  for (const fn of cleanupFns.splice(0)) await fn();
-});
+const cleanupFns: Effect.Effect<void>[] = [];
+afterEach(() => Effect.runPromise(Effect.forEach(cleanupFns.splice(0), (cleanup) => cleanup)));
 
-async function setup(options?: { width?: number; height?: number; format?: string }) {
+const setup = Effect.fnUntraced(function* (options?: {
+  width?: number;
+  height?: number;
+  format?: string;
+}) {
   const w = options?.width ?? WIDTH;
   const h = options?.height ?? HEIGHT;
   const shell = ["bash", "--norc", "--noprofile"];
@@ -121,90 +124,94 @@ async function setup(options?: { width?: number; height?: number; format?: strin
   let win!: Space["windows"][number];
   let regions!: ReturnType<typeof createRegions>;
   let scope!: Scope.Closeable;
-  let ready!: () => void;
-  const initialized = new Promise<void>((resolve) => (ready = resolve));
+  const initialized = yield* Deferred.make<void>();
+  const runSync = Effect.runSyncWith(yield* Effect.context());
 
-  const t = await testRender(
-    () => {
-      const renderer = useRenderer();
-      const contributions = createPluginContributions();
-      const registeredRegions = createRegions(renderer, contributions);
-      const paneHost = new BoxRenderable(renderer, { id: "pane-host", flexGrow: 1 });
-      onMount(() => {
-        regions = registeredRegions;
-        scope = Effect.runSync(Scope.make());
-        spaces = Effect.runSync(
-          Scope.provide(SpaceSet.make(workspaceEnv(renderer, { shell }), paneHost), scope),
-        );
-        space = Effect.runSync(spaces.create("proj", process.cwd()));
-        win = Effect.runSync(space.newWindow());
-        Effect.runSync(win!.init("shell"));
-        const [displaySignal, setDisplaySignal] = createSignal(computeDisplay(spaces));
-        spaces.onChange = () => setDisplaySignal(computeDisplay(spaces));
-        const panelCtx = testPanelContext({
-          display: displaySignal,
-          // sidebar.* is the sidebar plugin's own option, not core, so its
-          // defaults are added onto the resolved core table rather than
-          // coming out of `resolveOptions` itself.
-          options: () => ({
-            ...resolveOptions({}),
-            "sidebar.open": SIDEBAR_OPTIONS["sidebar.open"].default,
-            "sidebar.width": SIDEBAR_OPTIONS["sidebar.width"].default,
-            "sidebar.agentsOnly": SIDEBAR_OPTIONS["sidebar.agentsOnly"].default,
-            "sidebar.format": options?.format ?? SIDEBAR_OPTIONS["sidebar.format"].default,
-          }),
+  const t = yield* Effect.tryPromise(() =>
+    testRender(
+      () => {
+        const renderer = useRenderer();
+        const contributions = createPluginContributions();
+        const registeredRegions = createRegions(renderer, contributions);
+        const paneHost = new BoxRenderable(renderer, { id: "pane-host", flexGrow: 1 });
+        onMount(() => {
+          regions = registeredRegions;
+          scope = Scope.makeUnsafe();
+          spaces = runSync(
+            Scope.provide(SpaceSet.make(workspaceEnv(renderer, { shell }), paneHost), scope),
+          );
+          space = runSync(spaces.create("proj", process.cwd()));
+          win = runSync(space.newWindow());
+          runSync(win!.init("shell"));
+          const [displaySignal, setDisplaySignal] = createSignal(computeDisplay(spaces));
+          spaces.onChange = () => setDisplaySignal(computeDisplay(spaces));
+          const panelCtx = testPanelContext({
+            display: displaySignal,
+            // sidebar.* is the sidebar plugin's own option, not core, so its
+            // defaults are added onto the resolved core table rather than
+            // coming out of `resolveOptions` itself.
+            options: () => ({
+              ...resolveOptions({}),
+              "sidebar.open": SIDEBAR_OPTIONS["sidebar.open"].default,
+              "sidebar.width": SIDEBAR_OPTIONS["sidebar.width"].default,
+              "sidebar.agentsOnly": SIDEBAR_OPTIONS["sidebar.agentsOnly"].default,
+              "sidebar.format": options?.format ?? SIDEBAR_OPTIONS["sidebar.format"].default,
+            }),
+          });
+          const environment = testPluginEnvironment(renderer, {
+            panel: panelCtx,
+            contributions,
+            regions: registeredRegions,
+          });
+          const host: PluginHost = runSync(
+            Scope.provide(
+              createPluginHost(environment).pipe(Effect.provideService(Scope.Scope, scope)),
+              scope,
+            ),
+          );
+          // The registries are entries too, so the sidebar and the providers it
+          // injects go in as one configuration rather than one plugin at a time.
+          runSync(
+            Scope.provide(
+              Effect.orDie(host.reconcile([...environment.registryEntries, sidebarPlugin])),
+              scope,
+            ),
+          );
+          runSync(Deferred.succeed(initialized, void 0));
         });
-        const environment = testPluginEnvironment(renderer, {
-          panel: panelCtx,
-          contributions,
-          regions: registeredRegions,
-        });
-        const host: PluginHost = Effect.runSync(
-          Scope.provide(
-            createPluginHost(environment).pipe(Effect.provideService(Scope.Scope, scope)),
-            scope,
-          ),
-        );
-        // The registries are entries too, so the sidebar and the providers it
-        // injects go in as one configuration rather than one plugin at a time.
-        Effect.runSync(
-          Scope.provide(
-            Effect.orDie(host.reconcile([...environment.registryEntries, sidebarPlugin])),
-            scope,
-          ),
-        );
-        ready();
-      });
 
-      return (
-        <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
-          <box
-            style={{
-              width: 30,
-              height: "100%",
-              flexShrink: 0,
-              flexDirection: "column",
-              position: "relative",
-            }}
-          >
-            <registeredRegions.Slot name="left.app" side="left" anchor="app" />
-            {registeredRegions.divider("left", "app")}
+        return (
+          <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
+            <box
+              style={{
+                width: 30,
+                height: "100%",
+                flexShrink: 0,
+                flexDirection: "column",
+                position: "relative",
+              }}
+            >
+              <registeredRegions.Slot name="left.app" side="left" anchor="app" />
+              {registeredRegions.divider("left", "app")}
+            </box>
+            {paneHost}
           </box>
-          {paneHost}
-        </box>
-      );
-    },
-    { width: w, height: h },
+        );
+      },
+      { width: w, height: h },
+    ),
   );
-  await initialized;
-  await t.renderOnce();
-  cleanupFns.push(async () => {
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-    await Bun.sleep(50);
-    t.renderer.destroy();
-  });
+  yield* Deferred.await(initialized);
+  yield* Effect.promise(() => t.renderOnce());
+  cleanupFns.push(
+    Effect.gen(function* () {
+      yield* Scope.close(scope, Exit.void);
+      yield* Effect.sleep("50 millis");
+      t.renderer.destroy();
+    }),
+  );
   return { t, spaces, space, win, regions };
-}
+});
 
 function refreshDisplay(spaces: SpaceSet): void {
   spaces.onChange?.();
@@ -366,45 +373,53 @@ test("window label carries the window number and title", () => {
 
 // -- Render tests --
 
-test("renders the space/agent tree with a state glyph per row", async () => {
-  const s = await setup();
-  const frame = s.t.captureCharFrame();
-  expect(frame).toContain("proj");
-  expect(frame).toContain("1 space · 1 agent");
-  expect(frame).toMatch(/[○●!✓⊘⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
-});
+testEffect("renders the space/agent tree with a state glyph per row", () =>
+  Effect.gen(function* () {
+    const s = yield* setup();
+    const frame = s.t.captureCharFrame();
+    expect(frame).toContain("proj");
+    expect(frame).toContain("1 space · 1 agent");
+    expect(frame).toMatch(/[○●!✓⊘⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+  }),
+);
 
-test("renders the configured sidebar format", async () => {
-  const s = await setup({ format: "#{space_name}/#{window_number}/#{pane_index}" });
-  const frame = s.t.captureCharFrame();
-  expect(frame).toContain("proj/1/");
-});
+testEffect("renders the configured sidebar format", () =>
+  Effect.gen(function* () {
+    const s = yield* setup({ format: "#{space_name}/#{window_number}/#{pane_index}" });
+    const frame = s.t.captureCharFrame();
+    expect(frame).toContain("proj/1/");
+  }),
+);
 
-test("the footer counts what the tree shows", async () => {
-  const s = await setup();
-  const frame = s.t.captureCharFrame();
-  expect(frame).toContain("1 space · 1 agent");
-  const second = Effect.runSync(s.space.newWindow());
-  Effect.runSync(second.init("shell"));
-  refreshDisplay(s.spaces);
-  await s.t.renderOnce();
-  expect(s.t.captureCharFrame()).toContain("1 space · 2 agents");
-});
+testEffect("the footer counts what the tree shows", () =>
+  Effect.gen(function* () {
+    const s = yield* setup();
+    const frame = s.t.captureCharFrame();
+    expect(frame).toContain("1 space · 1 agent");
+    const second = yield* s.space.newWindow();
+    yield* second.init("shell");
+    refreshDisplay(s.spaces);
+    yield* Effect.promise(() => s.t.renderOnce());
+    expect(s.t.captureCharFrame()).toContain("1 space · 2 agents");
+  }),
+);
 
-test("the branch row appears under its space once git info arrives", async () => {
-  const s = await setup();
-  expect(s.t.captureCharFrame()).not.toContain("feat/thing");
-  s.space.branch = "feat/thing";
-  s.space.ahead = 2;
-  s.space.behind = 1;
-  await s.t.renderOnce();
-  const display = computeDisplay(s.spaces);
-  const branch = display.rows.find((r) => r.kind === "branch");
-  expect(branch).toBeDefined();
-  expect(branch!.branch).toBe("feat/thing");
-  expect(branch!.ahead).toBe(2);
-  expect(branch!.behind).toBe(1);
-});
+testEffect("the branch row appears under its space once git info arrives", () =>
+  Effect.gen(function* () {
+    const s = yield* setup();
+    expect(s.t.captureCharFrame()).not.toContain("feat/thing");
+    s.space.branch = "feat/thing";
+    s.space.ahead = 2;
+    s.space.behind = 1;
+    yield* Effect.promise(() => s.t.renderOnce());
+    const display = computeDisplay(s.spaces);
+    const branch = display.rows.find((r) => r.kind === "branch");
+    expect(branch).toBeDefined();
+    expect(branch!.branch).toBe("feat/thing");
+    expect(branch!.ahead).toBe(2);
+    expect(branch!.behind).toBe(1);
+  }),
+);
 
 test("agents-only filtering shows only agent CLI agents", () => {
   const rows = displayRows([
@@ -473,9 +488,11 @@ function findScrollBox(root: RenderTreeNode): ScrollBoxRenderable | null {
   return null;
 }
 
-test("a tree that fits shows no scrollbar thumb on the first frame", async () => {
-  const s = await setup();
-  expect(s.t.captureCharFrame()).toContain("proj");
-  const scrollBox = findScrollBox(s.t.renderer.root);
-  expect(scrollBox?.verticalScrollBar.visible).toBe(false);
-});
+testEffect("a tree that fits shows no scrollbar thumb on the first frame", () =>
+  Effect.gen(function* () {
+    const s = yield* setup();
+    expect(s.t.captureCharFrame()).toContain("proj");
+    const scrollBox = findScrollBox(s.t.renderer.root);
+    expect(scrollBox?.verticalScrollBar.visible).toBe(false);
+  }),
+);

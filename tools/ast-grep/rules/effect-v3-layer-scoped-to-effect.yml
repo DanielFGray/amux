@@ -1,6 +1,0 @@
-id: effect-v3-layer-scoped-to-effect
-language: TypeScript
-message: Layer.scoped was merged into Layer.effect in v4, which now supplies and excludes the layer Scope.
-rule:
-  pattern: Layer.scoped($TAG, $EFFECT)
-fix: Layer.effect($TAG, $EFFECT)

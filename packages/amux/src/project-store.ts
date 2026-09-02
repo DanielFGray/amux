@@ -16,8 +16,8 @@
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import * as FileSystem from "effect/FileSystem";
-import { Context, Effect, Layer, Schema as S, type Scope } from "effect";
-import { basename, join, resolve } from "node:path";
+import { Clock, Context, Effect, Layer, Schema as S, type Scope } from "effect";
+import * as Path from "effect/Path";
 import { PermissionEffectSchema, type PermissionRule } from "./permission.ts";
 import { stateRoot } from "./session.ts";
 
@@ -77,7 +77,7 @@ export class Service extends Context.Service<Service, Interface>()("amux/Project
 export const layer = (
   root: string,
 ): Layer.Layer<Service, ProjectStoreError, FileSystem.FileSystem> =>
-  Layer.effect(Service, open(root));
+  Layer.effect(Service, open(root)).pipe(Layer.provide(Path.layer));
 
 /**
  * Where a project's state lives.
@@ -87,13 +87,17 @@ export const layer = (
  * different parents are different projects.
  */
 export function projectSlug(root: string): string {
-  const absolute = resolve(root);
+  const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
+  const absolute = path.resolve(root);
   const digest = createHash("sha256").update(absolute).digest("hex").slice(0, 8);
-  return `${basename(absolute) || "root"}-${digest}`;
+  return `${path.basename(absolute) || "root"}-${digest}`;
 }
 
 export const projectDirectory = (root: string): Effect.Effect<string> =>
-  Effect.map(stateRoot(), (state) => join(state, "amux", "projects", projectSlug(root)));
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    return path.join(yield* stateRoot(), "amux", "projects", projectSlug(root));
+  }).pipe(Effect.provide(Path.layer));
 
 /**
  * Schema history, applied in order against `PRAGMA user_version`.
@@ -138,7 +142,7 @@ const MIGRATIONS: readonly string[] = [
 
 const open = (
   root: string,
-): Effect.Effect<Interface, ProjectStoreError, Scope.Scope | FileSystem.FileSystem> =>
+): Effect.Effect<Interface, ProjectStoreError, Scope.Scope | FileSystem.FileSystem | Path.Path> =>
   Effect.acquireRelease(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -151,9 +155,10 @@ const open = (
             (error) => new ProjectStoreError({ operation: "open", message: error.message }),
           ),
         );
+      const path = yield* Path.Path;
       const database = yield* attempt(
         "open",
-        () => new Database(join(directory, "amux.db"), { create: true }),
+        () => new Database(path.join(directory, "amux.db"), { create: true }),
       );
       yield* attempt("migrate", () => migrate(database, root));
       return database;
@@ -222,7 +227,7 @@ function queries(database: Database, root: string): Interface {
     addRules: (rules) =>
       attempt("addRules", () =>
         database.transaction(() => {
-          const now = Date.now();
+          const now = Effect.runSync(Clock.currentTimeMillis);
           for (const rule of rules)
             insert.run(randomUUID(), rule.action, rule.resource, rule.effect, now);
         })(),
@@ -230,7 +235,9 @@ function queries(database: Database, root: string): Interface {
     conversation: (session) =>
       attempt("conversation", () => selectConversation.get(session)?.conversation),
     saveConversation: (session, conversation) =>
-      attempt("saveConversation", () => saveConversation.run(session, conversation, Date.now())),
+      attempt("saveConversation", () =>
+        saveConversation.run(session, conversation, Effect.runSync(Clock.currentTimeMillis)),
+      ),
     admitPrompt: (session, prompt, delivery, resume = true, requestedId = randomUUID()) =>
       attempt("admitPrompt", () =>
         database.transaction(() => {
@@ -246,7 +253,7 @@ function queries(database: Database, root: string): Interface {
               );
             return promptEntry(existing);
           }
-          const admitted = Date.now();
+          const admitted = Effect.runSync(Clock.currentTimeMillis);
           const turn = `turn-${requestedId}`;
           insertPrompt.run(requestedId, turn, session, prompt, delivery, admitted, resume ? 1 : 0);
           return { id: requestedId, turn, session, prompt, delivery, admitted, resume };
@@ -254,7 +261,8 @@ function queries(database: Database, root: string): Interface {
       ),
     pendingPrompts: (session) =>
       attempt("pendingPrompts", () => selectPending.all(session).map(promptEntry)),
-    promotePrompt: (id) => attempt("promotePrompt", () => markPrompt.run(Date.now(), id)),
+    promotePrompt: (id) =>
+      attempt("promotePrompt", () => markPrompt.run(Effect.runSync(Clock.currentTimeMillis), id)),
   };
 }
 

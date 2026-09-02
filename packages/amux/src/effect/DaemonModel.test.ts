@@ -26,7 +26,9 @@ const initial = {
   ),
 };
 
-testEffect("reads initial state and workspace", () =>
+const it = testEffect(layerDaemonModel(initial));
+
+it.effect("reads initial state and workspace", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const s = yield* model.state;
@@ -35,10 +37,10 @@ testEffect("reads initial state and workspace", () =>
     expect(s.attached).toBe(false);
     expect(w.revision).toBe(0);
     expect(w.spaces).toEqual([]);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("enqueue preserves order", () =>
+it.effect("enqueue preserves order", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const order: number[] = [];
@@ -53,10 +55,10 @@ testEffect("enqueue preserves order", () =>
       { concurrency: "unbounded" },
     );
     expect(order).toEqual([1, 2, 3]);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("enqueue serializes mutations", () =>
+it.effect("enqueue serializes mutations", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const counter = yield* Ref.make(0);
@@ -72,10 +74,10 @@ testEffect("enqueue serializes mutations", () =>
       { concurrency: "unbounded" },
     );
     expect(results).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("enqueue propagates typed errors", () =>
+it.effect("enqueue propagates typed errors", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const result = yield* Effect.exit(
@@ -86,10 +88,10 @@ testEffect("enqueue propagates typed errors", () =>
       const error = Cause.squash(result.cause) as DaemonModelError;
       expect(error.message).toBe("boom");
     }
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("attach registers a client and updates state", () =>
+it.effect("attach registers a client and updates state", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     let persisted: SessionState | null = null;
@@ -108,10 +110,10 @@ testEffect("attach registers a client and updates state", () =>
 
     const clients = yield* model.attachedClients;
     expect(clients).toEqual(["client-a"]);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("detach removes a client and updates state", () =>
+it.effect("detach removes a client and updates state", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const noop = () => Effect.void;
@@ -129,10 +131,10 @@ testEffect("detach removes a client and updates state", () =>
 
     const s = yield* model.state;
     expect(s.attached).toBe(false);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("detach of unknown client is a no-op", () =>
+it.effect("detach of unknown client is a no-op", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     let persisted = false;
@@ -142,10 +144,10 @@ testEffect("detach of unknown client is a no-op", () =>
       }),
     );
     expect(persisted).toBe(false);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("touch updates attachLastSeen", () =>
+it.effect("touch updates attachLastSeen", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const noop = () => Effect.void;
@@ -158,19 +160,19 @@ testEffect("touch updates attachLastSeen", () =>
 
     const after = yield* model.get;
     expect(after.attachments.get("conn-1")!.attachLastSeen).toBeGreaterThanOrEqual(beforeSeen);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("touch is a no-op for unknown client", () =>
+it.effect("touch is a no-op for unknown client", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     yield* model.touch("unknown", "unknown");
     const s = yield* model.get;
     expect(s.attachments.size).toBe(0);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("commitWorkspace updates workspace and state atomically", () =>
+it.effect("commitWorkspace updates workspace and state atomically", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const next = yield* workspaceFromSession({
@@ -202,10 +204,10 @@ testEffect("commitWorkspace updates workspace and state atomically", () =>
     const w = yield* model.workspace;
     expect(w.spaces).toHaveLength(1);
     expect(w.spaces[0]!.name).toBe("new-space");
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("obligation bookkeeping tracks durable obligations", () =>
+it.effect("obligation bookkeeping tracks durable obligations", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
 
@@ -220,10 +222,10 @@ testEffect("obligation bookkeeping tracks durable obligations", () =>
     yield* model.clearObligation(sym);
     const cleared = yield* model.get;
     expect(cleared.durableObligations.has(sym)).toBe(false);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("multiple obligations are tracked independently", () =>
+it.effect("multiple obligations are tracked independently", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
 
@@ -237,28 +239,28 @@ testEffect("multiple obligations are tracked independently", () =>
     const after = yield* model.get;
     expect(after.durableObligations.size).toBe(1);
     expect(after.durableObligations.has(b)).toBe(true);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("markClosing sets closing flag", () =>
+it.effect("markClosing sets closing flag", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     expect(yield* model.isClosing).toBe(false);
     yield* model.markClosing;
     expect(yield* model.isClosing).toBe(true);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("markCancelPersistence sets cancelPersistence flag", () =>
+it.effect("markCancelPersistence sets cancelPersistence flag", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     yield* model.markCancelPersistence;
     const s = yield* model.get;
     expect(s.cancelPersistence).toBe(true);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("heartbeat error is tracked", () =>
+it.effect("heartbeat error is tracked", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     expect(yield* model.heartbeatError).toBeNull();
@@ -268,10 +270,10 @@ testEffect("heartbeat error is tracked", () =>
 
     yield* model.setHeartbeatError(null);
     expect(yield* model.heartbeatError).toBeNull();
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );
 
-testEffect("concurrent attaches are serialized", () =>
+it.effect("concurrent attaches are serialized", () =>
   Effect.gen(function* () {
     const model = yield* DaemonModel;
     const clients: string[] = [];
@@ -288,5 +290,5 @@ testEffect("concurrent attaches are serialized", () =>
     );
 
     expect(yield* model.attachedClients).toEqual(["a", "b", "c"]);
-  }).pipe(Effect.provide(layerDaemonModel(initial))),
+  }),
 );

@@ -1,0 +1,6 @@
+id: effect-run-sync-deferred-make-to-unsafe
+language: TypeScript
+message: Effect.runSync(Deferred.make(...)) starts a fiber to run a pure constructor. Use Deferred.makeUnsafe(...) instead.
+rule:
+  pattern: Effect.runSync(Deferred.make<$T>())
+fix: Deferred.makeUnsafe<$T>()

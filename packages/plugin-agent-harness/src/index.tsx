@@ -3,21 +3,25 @@ import { Effect, Layer, Redacted } from "effect";
 import { For, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem } from "@effect/platform-bun";
-import { command } from "@danielfgray/amux"
+import { command } from "@danielfgray/amux";
 import { Default as IntegrationDefault, integrations } from "./integration.ts";
 import { Default as ModelCatalogDefault } from "./model-catalog.ts";
-import { definePlugin, type PluginDefinition } from "@danielfgray/amux"
-import { BindingsTag,
-OptionsTag,
-RegionsTag,
-SessionViewsTag,
-SettingsTag,
-SpawnProvidersTag, } from "@danielfgray/amux"
+import { definePlugin, type PluginDefinition } from "@danielfgray/amux";
+import {
+  BindingsTag,
+  OptionsTag,
+  PanelTag,
+  RegionsTag,
+  SessionStreamTag,
+  SessionViewsTag,
+  SettingsTag,
+  SpawnProvidersTag,
+} from "@danielfgray/amux";
 import { Chat } from "./Chat.tsx";
 import { registerModelPicker } from "./ModelPicker.tsx";
 import { agentPreflight } from "./preflight.ts";
 import { AGENT_HARNESS_OPTIONS } from "./options.ts";
-import { theme } from "@danielfgray/amux"
+import { theme } from "@danielfgray/amux";
 import { Service as Integration, type Info as IntegrationInfo } from "./integration.ts";
 import { Credential } from "./credential.ts";
 
@@ -39,11 +43,22 @@ export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
 export const agentHarnessPlugin: PluginDefinition = definePlugin({
   id: AGENT_HARNESS_PLUGIN_ID,
   apiVersion: "1",
-  inject: [BindingsTag, OptionsTag, RegionsTag, SessionViewsTag, SettingsTag, SpawnProvidersTag],
-  effect: (ctx) =>
+  inject: [
+    BindingsTag,
+    OptionsTag,
+    PanelTag,
+    RegionsTag,
+    SessionStreamTag,
+    SessionViewsTag,
+    SettingsTag,
+    SpawnProvidersTag,
+  ],
+  effect: () =>
     Effect.gen(function* () {
       const bindings = yield* BindingsTag;
       const options = yield* OptionsTag;
+      const panel = yield* PanelTag;
+      const sessionStream = yield* SessionStreamTag;
       const sessionViews = yield* SessionViewsTag;
       const settings = yield* SettingsTag;
       const spawnProviders = yield* SpawnProvidersTag;
@@ -51,7 +66,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       yield* Effect.all(
         Object.entries(AGENT_HARNESS_OPTIONS).map(([name, spec]) => options.register([name, spec])),
       );
-      const openModelPicker = (yield* registerModelPicker(ctx)).pipe(Effect.provide(llmServices));
+      const openModelPicker = (yield* registerModelPicker).pipe(Effect.provide(llmServices));
       const [providers, setProviders] = createSignal<readonly IntegrationInfo[]>([]);
       // The API-key input only takes keyboard focus in this mode, and while it
       // does this section's `keys` returns `false` so the settings window
@@ -59,7 +74,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       const [editing, setEditing] = createSignal(false);
       const refreshProviders = Effect.gen(function* () {
         const integrations = yield* Integration;
-        setProviders(yield* integrations.list());
+        setProviders(yield* integrations.list);
       }).pipe(Effect.provide(llmServices));
       yield* Effect.forkScoped(refreshProviders);
       yield* settings.register({
@@ -88,8 +103,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
               Effect.runForkWith(runtime)(
                 yieldCredential().pipe(
                   Effect.flatMap((credentials) => credentials.remove(connection.id)),
-                  Effect.provide(Credential.Default),
-                  Effect.provide(BunFileSystem.layer),
+                  Effect.provide(Credential.Default.pipe(Layer.provideMerge(BunFileSystem.layer))),
                   Effect.tap(() => refreshProviders),
                 ),
               );
@@ -112,10 +126,10 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       // it: `agent.model` is settings the user changes while amux runs, and a
       // value captured here would be whichever model was configured at startup.
       const start = Effect.suspend(() =>
-        agentPreflight(ctx.panel.options()["agent.model"] as string),
+        agentPreflight(panel.options()["agent.model"] as string),
       ).pipe(
         Effect.flatMap(() =>
-          ctx.panel.run({
+          panel.run({
             _tag: "agent.new",
             provider: "native",
           }),
@@ -148,7 +162,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         key: "<leader>a",
         desc: "jump to the next blocked agent",
         group: "sessions",
-        run: ctx.panel.run(command("session.next-blocked")).pipe(Effect.asVoid),
+        run: panel.run(command("session.next-blocked")).pipe(Effect.asVoid),
       });
 
       // Named after the option it edits. An option whose value is a list to
@@ -162,11 +176,11 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         run: openModelPicker,
       });
 
-      const run = (value: Parameters<typeof ctx.panel.run>[0]) =>
+      const run = (value: Parameters<typeof panel.run>[0]) =>
         Effect.runForkWith(runtime)(
-          ctx.panel
+          panel
             .run(value)
-            .pipe(Effect.catch((error) => Effect.sync(() => ctx.panel.reportError(error.message)))),
+            .pipe(Effect.catch((error) => Effect.sync(() => panel.reportError(error.message)))),
         );
 
       yield* sessionViews.register([
@@ -174,16 +188,16 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         (props) => (
           <Chat
             {...props}
-            model={ctx.panel.options()["agent.model"] as string}
-            showThinking={ctx.panel.options()["agent.showThinking"] as boolean}
+            model={panel.options()["agent.model"] as string}
+            showThinking={panel.options()["agent.showThinking"] as boolean}
             onSlashCommand={(command) => {
               if (command !== "/model") return false;
               Effect.runForkWith(runtime)(openModelPicker);
               return true;
             }}
             slashCommands={[{ name: "model", description: "choose the agent model" }]}
-            frames={ctx.frames}
-            sync={ctx.sync}
+            frames={sessionStream.frames}
+            sync={sessionStream.sync}
             onSubmit={(message) =>
               run(
                 command("agent.prompt", {
@@ -226,8 +240,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
                     })
                     .pipe(Effect.asVoid),
             ),
-            Effect.provide(Credential.Default),
-            Effect.provide(BunFileSystem.layer),
+            Effect.provide(Credential.Default.pipe(Layer.provideMerge(BunFileSystem.layer))),
             Effect.tap(() => refreshProviders),
           ),
         );

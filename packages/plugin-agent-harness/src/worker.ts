@@ -18,12 +18,17 @@ import {
   Schema as S,
   Stream,
 } from "effect";
-import { AgentDelta } from "@danielfgray/amux/protocol"
-import type { AgentEventPayload, JsonValue } from "@danielfgray/amux/protocol"
-import { ProcessState } from "@danielfgray/amux"
+import type { AgentDelta, AgentEventPayload, JsonValue } from "@danielfgray/amux/protocol";
+import { ProcessState } from "@danielfgray/amux";
 import type { PromptDelivery, PromptInboxEntry } from "@danielfgray/amux/project-store.ts";
 import { agentStateTopic } from "./state-topic.ts";
 import { AGENT_AWARENESS_IDENTITY_TOPIC } from "@danielfgray/amux-agent-awareness/identity-state.ts";
+import {
+  emit as toAgentMessage,
+  delta as toAgentDelta,
+  type HarnessDelta,
+  type HarnessEvent,
+} from "./protocol.ts";
 
 /** Matches the provider id `agent-harness.tsx` registers this worker under
  *  (`spawnProviders.register(["native", ...])`) — the identity a turn's
@@ -96,15 +101,6 @@ export const closeOpenToolCalls = (chat: Chat.Service) =>
     return Prompt.make([...prompt.content, Prompt.makeMessage("tool", { content: results })]);
   });
 
-/**
- * What the worker hands to `emit`: any agent frame except the `session` field,
- * which `emit` supplies because the worker runs one session and cannot name
- * another. Derived from the protocol rather than restated, so a frame added to
- * the wire is emittable here without a second edit that can be forgotten.
- */
-type AgentFramePayload = WithoutSession<AgentEventPayload | AgentDelta>;
-type WithoutSession<Frame> = Frame extends unknown ? Omit<Frame, "session"> : never;
-
 type QueuedTurn = {
   readonly turn: string;
   readonly prompt: string;
@@ -113,35 +109,20 @@ type QueuedTurn = {
 };
 
 /**
- * Project one provider stream part onto the wire frame the mux already speaks.
+ * Project one provider stream part onto a durable harness event, if it is one.
  *
- * Parts with no transcript meaning (sources, finish metadata) return undefined.
+ * Reasoning and tool calls/results are events: the pane rebuilds its blocks by
+ * folding the durable log, so they must survive a remount. Parts with no
+ * transcript meaning (sources, finish metadata) and live-only fragments return
+ * undefined here — see `harnessDeltaForPart`.
  */
-export function frameForPart(
+export function harnessEventForPart(
   turn: string,
   part: Response.StreamPart<Record<string, Tool.Any>>,
-): AgentFramePayload | undefined {
+): HarnessEvent | undefined {
   switch (part.type) {
-    case "text-delta":
-      return { _tag: "text.delta", turn, text: part.delta };
     case "reasoning-delta":
       return { _tag: "reasoning.delta", turn, text: part.delta };
-    case "tool-params-start":
-      return {
-        _tag: "tool.params-start",
-        turn,
-        call: part.id,
-        tool: part.name,
-      };
-    case "tool-params-delta":
-      return {
-        _tag: "tool.params-delta",
-        turn,
-        call: part.id,
-        delta: part.delta,
-      };
-    case "tool-params-end":
-      return { _tag: "tool.params-end", turn, call: part.id };
     case "tool-call":
       return {
         _tag: "tool.start",
@@ -158,6 +139,30 @@ export function frameForPart(
         output: part.result as JsonValue,
         isError: part.isFailure,
       };
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Project one provider stream part onto a live-only fragment, if it is one.
+ *
+ * Streamed text and partial tool arguments exist only to keep a pane moving;
+ * a client that attaches later rebuilds from the durable log instead.
+ */
+export function harnessDeltaForPart(
+  turn: string,
+  part: Response.StreamPart<Record<string, Tool.Any>>,
+): HarnessDelta | undefined {
+  switch (part.type) {
+    case "text-delta":
+      return { _tag: "text.delta", turn, text: part.delta };
+    case "tool-params-start":
+      return { _tag: "tool.params-start", turn, call: part.id, tool: part.name };
+    case "tool-params-delta":
+      return { _tag: "tool.params-delta", turn, call: part.id, delta: part.delta };
+    case "tool-params-end":
+      return { _tag: "tool.params-end", turn, call: part.id };
     default:
       return undefined;
   }
@@ -203,8 +208,16 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
     const turns = yield* Ref.make(0);
     const running = yield* FiberHandle.make<void, never>();
 
-    const emit = (frame: AgentFramePayload) =>
-      options.emit({ ...frame, session: options.session } as AgentEventPayload | AgentDelta);
+    const emitEvent = (event: HarnessEvent) => options.emit(toAgentMessage(options.session, event));
+    const emitDelta = (fragment: HarnessDelta) =>
+      options.emit(toAgentDelta(options.session, fragment));
+    /** A worker-observed topic isn't harness vocabulary — it rides `agent.emit`'s
+     *  `topic` variant directly, with `session` filled in here. */
+    const emitTopic = (frame: {
+      readonly _tag: "topic";
+      readonly topic: string;
+      readonly payload: JsonValue;
+    }) => options.emit({ ...frame, session: options.session } as AgentEventPayload);
 
     /**
      * Pair every tool call the history left open with a cancelled result.
@@ -241,7 +254,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
       if (text) Object.assign(turnEnd, { text });
       if (error) Object.assign(turnEnd, { error });
       return repair.pipe(
-        Effect.andThen(emit(turnEnd)),
+        Effect.andThen(emitEvent(turnEnd)),
         // The process itself is idle either way — a failed turn does not exit
         // it, so SESSION_STATE_TOPIC (core's neutral ProcessState) can only
         // ever say `idle` here. `turnEnd` above already carries the failure
@@ -249,9 +262,9 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
         // second report rides the same awareness-owned topic the opencode
         // hook uses, so a live (non-exited) failure still reaches the
         // sidebar/tab glyph the way `turnEnd` alone cannot.
-        Effect.andThen(emit(agentStateTopic(ProcessState.Idle))),
+        Effect.andThen(emitTopic(agentStateTopic(ProcessState.Idle))),
         Effect.andThen(
-          emit({
+          emitTopic({
             _tag: "topic",
             topic: AGENT_AWARENESS_IDENTITY_TOPIC,
             payload: {
@@ -293,11 +306,19 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
           ? options.chat.streamText({ prompt: stepPrompt, toolkit: options.toolkit })
           : options.chat.streamText({ prompt: stepPrompt });
         return stream.pipe(
-          Stream.runForEach((part) => {
-            const frame = frameForPart(turn, part as Response.StreamPart<Record<string, Tool.Any>>);
-            if (frame?._tag === "text.delta") responseText += frame.text;
-            if (frame?._tag === "tool.start") needsContinuation = true;
-            return frame ? emit(frame) : Effect.void;
+          Stream.runForEach((rawPart) => {
+            const part = rawPart as Response.StreamPart<Record<string, Tool.Any>>;
+            const event = harnessEventForPart(turn, part);
+            if (event) {
+              if (event._tag === "tool.start") needsContinuation = true;
+              return emitEvent(event);
+            }
+            const fragment = harnessDeltaForPart(turn, part);
+            if (fragment) {
+              if (fragment._tag === "text.delta") responseText += fragment.text;
+              return emitDelta(fragment);
+            }
+            return Effect.void;
           }),
           // Chat commits its response when stream consumption releases.
           // Checkpoint afterwards, or recovery misses the just-finished step.
@@ -335,16 +356,16 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
                   )
               : Effect.void,
           ),
-          Effect.andThen(emit({ _tag: "turn.start", turn, prompt })),
+          Effect.andThen(emitEvent({ _tag: "turn.start", turn, prompt })),
           Effect.andThen(options.onTurnStart?.(turn) ?? Effect.void),
-          Effect.andThen(emit(agentStateTopic(ProcessState.Running))),
+          Effect.andThen(emitTopic(agentStateTopic(ProcessState.Running))),
           Effect.andThen(runStep(prompt)),
           Effect.onExit((exit) => settle(turn, exit, responseText)),
           // settle has already reported the failure as turn.end{failed}, so the
           // transcript is this turn's error channel and there is nothing left to
           // raise. A provider 500 ends a turn, never the session. catchAll takes
           // only typed failures: interruption still unwinds, defects still crash.
-          Effect.catch(() => Effect.void),
+          Effect.ignore,
         )
       );
     };
@@ -368,7 +389,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
           queued
             ? FiberHandle.run(running, runTurn(queued)).pipe(
                 Effect.flatMap(Fiber.join),
-                Effect.catchCause(() => Effect.void),
+                Effect.ignoreCause,
               )
             : Effect.void,
         ),
@@ -403,7 +424,7 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
                   delivery: promptOptions.delivery ?? "queue",
                 } satisfies QueuedTurn;
                 if (admitted) Object.assign(queued, { id: admitted.id });
-                return emit({
+                return emitEvent({
                   _tag: "turn.queued",
                   turn,
                   prompt: text,

@@ -1,5 +1,0 @@
-id: effect-v3-schema-minLength-to-isMinLength
-language: TypeScript
-rule:
-  pattern: S.minLength($$$ARGS)
-fix: S.check(S.isMinLength($$$ARGS))

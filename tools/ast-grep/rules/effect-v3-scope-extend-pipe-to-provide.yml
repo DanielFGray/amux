@@ -1,5 +1,0 @@
-id: effect-v3-scope-extend-pipe-to-provide
-language: TypeScript
-rule:
-  pattern: $EFFECT.pipe(Scope.extend($SCOPE))
-fix: $EFFECT.pipe(Scope.provide($SCOPE))

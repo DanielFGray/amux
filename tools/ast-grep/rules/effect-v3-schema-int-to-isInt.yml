@@ -1,5 +1,0 @@
-id: effect-v3-schema-int-to-isInt
-language: TypeScript
-rule:
-  pattern: S.int($$$ARGS)
-fix: S.check(S.isInt($$$ARGS))

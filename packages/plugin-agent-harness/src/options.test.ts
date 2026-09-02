@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { coerceOption } from "@danielfgray/amux"
+import { coerceOption } from "@danielfgray/amux";
 import { AGENT_HARNESS_OPTIONS, parseModelReference } from "./options.ts";
 
 test("the native agent model is a provider/model config value", () => {

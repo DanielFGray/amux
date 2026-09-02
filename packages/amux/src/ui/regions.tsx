@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: this module owns the SolidJS/opentui slot registry and render tree; see the seam documented in packages/amux/src/harness.ts. */
 /** @jsxImportSource @opentui/solid */
 import { Show, createComponent, type JSX } from "solid-js";
 import type { CliRenderer, KeyEvent, PluginContext } from "@opentui/core";

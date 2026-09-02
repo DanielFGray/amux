@@ -21,7 +21,7 @@
  * either, and a headless window is the two of them together.
  */
 
-import { Effect, Schema as S, SchemaIssue } from "effect";
+import { Effect, Match, Schema as S, SchemaIssue } from "effect";
 import type { SplitDirection } from "./window.ts";
 import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts";
 
@@ -414,7 +414,11 @@ export function swapLayout(layout: Layout, from: number, to: number): Layout {
     content: into.content,
   });
   const root = rewritePanes(layout.root, (pane, at) =>
-    at === from ? move(pane, b) : at === to ? move(pane, a) : pane,
+    Match.value(at).pipe(
+      Match.when(Match.is(from), () => move(pane, b)),
+      Match.when(Match.is(to), () => move(pane, a)),
+      Match.orElse(() => pane),
+    ),
   );
   return makeLayout({ ...layout, root: collapse(root) });
 }
@@ -800,7 +804,8 @@ export const PaneContentSchema: S.Codec<PaneContent> = S.Union([
   }),
   S.Struct({
     kind: S.Literals(["plugin"]),
-    type: S.String.pipe(S.check(S.isMinLength(1))).pipe(
+    type: S.String.pipe(
+      S.check(S.isMinLength(1)),
       S.annotateKey({ messageMissingKey: "plugin content needs a pane type" }),
     ),
     descriptor: S.Unknown.pipe(
@@ -809,19 +814,16 @@ export const PaneContentSchema: S.Codec<PaneContent> = S.Union([
     session: S.optional(sessionId),
   }),
 ]) as S.Codec<PaneContent>;
-const weight = S.Number.pipe(
-  S.check(S.isFinite()),
+const weight = S.Finite.pipe(
   S.check(S.isGreaterThan(0, { message: "weight must be a positive number" })),
 );
-const origin = S.Number.pipe(
-  S.check(S.isFinite()),
+const origin = S.Finite.pipe(
   S.check(S.isGreaterThanOrEqualTo(0)),
   S.check(S.isLessThan(1)),
 ).annotate({
   message: "must be a fraction of the window",
 });
-const size = S.Number.pipe(
-  S.check(S.isFinite()),
+const size = S.Finite.pipe(
   S.check(S.isGreaterThan(0, { message: "must be a fraction of the window" })),
   S.check(S.isLessThanOrEqualTo(1, { message: "must be a fraction of the window" })),
 );
@@ -851,7 +853,7 @@ const LayoutNodeSchema = S.Union([
 ]) as S.Codec<LayoutNode>;
 
 const LayoutSchema = S.Struct({
-  version: S.Number,
+  version: S.Finite,
   root: S.optional(S.NullOr(LayoutNodeSchema)),
   floats: S.optional(
     S.Array(
@@ -970,7 +972,7 @@ function order(node: LayoutNode | null): LayoutNode | null {
 export function decodeLayout(text: string): Effect.Effect<Layout, LayoutFormatError> {
   if (Buffer.byteLength(text) > MAX_LAYOUT_BYTES)
     return Effect.fail(new LayoutFormatError({ message: "layout is too large" }));
-  return S.decodeUnknownEffect(S.fromJsonString(S.Unknown))(text).pipe(
+  return S.decodeEffect(S.fromJsonString(S.Unknown))(text).pipe(
     Effect.mapError((error) => new LayoutFormatError({ message: `layout is not JSON: ${error}` })),
     Effect.flatMap(parseLayout),
   );

@@ -1,12 +1,18 @@
 {
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
   "jsPlugins": [
     {
       "name": "qa-review",
       "specifier": "./tools/oxlint/qa-review/index.ts"
     }
   ],
+  "plugins": ["typescript"],
+  "categories": {
+    "correctness": "error"
+  },
   "rules": {
+    "typescript/no-redundant-type-constituents": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
     "qa-review/no-chained-type-assertions": "error",
     "qa-review/no-conditional-empty-object-spread": "error",
     "qa-review/no-known-value-widening": "error",

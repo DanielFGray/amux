@@ -1,6 +1,0 @@
-id: effect-v3-effect-yieldnow-call-to-value
-language: TypeScript
-message: Effect.yieldNow is a value in v4, not a function to call.
-rule:
-  pattern: Effect.yieldNow()
-fix: Effect.yieldNow

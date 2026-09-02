@@ -1,8 +1,7 @@
 import { expect } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ConfigProvider, Effect, Layer, Redacted, Schema as S } from "effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { Clock, ConfigProvider, Effect, Layer, Redacted, Schema as S } from "effect";
 import { LanguageModel } from "effect/unstable/ai";
 import { BunFileSystem } from "@effect/platform-bun";
 import { Credential } from "./credential.ts";
@@ -10,21 +9,34 @@ import { ModelCatalog } from "./model-catalog.ts";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
 import { makeLayer, Service, type Integration } from "./integration.ts";
 import { openAiCompatible, type ModelRequest } from "./integration/index.ts";
-import { testEffect } from "@danielfgray/amux/testing"
+import { testEffect } from "@danielfgray/amux/testing";
 
 class NoModelLayer extends S.TaggedError<NoModelLayer>()("NoModelLayer", {}) {}
 
-const env = (root: string): NodeJS.ProcessEnv => ({
-  HOME: root,
-  XDG_STATE_HOME: join(root, "state"),
+const withFileServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, Path.layer)));
+
+const environment = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fs.makeTempDirectory({ prefix: "amux-integration-" });
+  return {
+    fs,
+    variables: { HOME: root, XDG_STATE_HOME: path.join(root, "state") },
+  };
 });
 
 const run = <A, E, R>(effect: Effect.Effect<A, E, R>, variables: NodeJS.ProcessEnv) =>
   effect.pipe(
-    Effect.provide(makeLayer()),
-    Effect.provide(Credential.Default),
-    Effect.provide(BunFileSystem.layer),
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+    Effect.provide(
+      makeLayer().pipe(
+        Layer.provideMerge(Credential.Default),
+        Layer.provideMerge(BunFileSystem.layer),
+        Layer.provideMerge(
+          Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+        ),
+      ),
+    ),
   );
 
 const key = (value: string) => ({
@@ -34,11 +46,9 @@ const key = (value: string) => ({
 
 testEffect("stored credentials are the active connection", () =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(root, { recursive: true, force: true })),
-    );
-    const variables = env(root);
+    const { fs, variables } = yield* environment;
+    const root = variables.HOME!;
+    yield* Effect.addFinalizer(() => fs.remove(root, { recursive: true }).pipe(Effect.ignore));
     const created = yield* run(
       Credential.Service.pipe(
         Effect.flatMap((store) =>
@@ -65,16 +75,14 @@ testEffect("stored credentials are the active connection", () =>
       variables,
     );
     expect(value && value.type === "key" ? Redacted.value(value.key) : undefined).toBe("stored");
-  }),
+  }).pipe(withFileServices),
 );
 
 testEffect("an integration is told the API host the catalog names for it", () =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(root, { recursive: true, force: true })),
-    );
-    const variables = env(root);
+    const { fs, variables } = yield* environment;
+    const root = variables.HOME!;
+    yield* Effect.addFinalizer(() => fs.remove(root, { recursive: true }).pipe(Effect.ignore));
     // Two providers: one the catalog gives a host, one it does not. An
     // OpenAI-compatible provider is nothing but its host, and a first-party one
     // must not have its SDK's own default overwritten with an absent value.
@@ -102,17 +110,22 @@ testEffect("an integration is told the API host the catalog names for it", () =>
     });
     const registry = makeLayer(
       [spy("opencode-go"), spy("anthropic")],
-      ModelCatalog.testLayer(Effect.succeed(JSON.stringify(catalog))).pipe(
-        Layer.provide(EventBus.layer),
-      ),
+      ModelCatalog.testLayer(
+        S.encodeEffect(S.fromJsonString(S.Unknown))(catalog).pipe(Effect.orDie),
+      ).pipe(Layer.provide(EventBus.layer)),
     );
     const build = (id: string, model: string) =>
       Service.pipe(
         Effect.flatMap((integration) => integration.model(id, model)),
-        Effect.provide(registry),
-        Effect.provide(Credential.Default),
-        Effect.provide(BunFileSystem.layer),
-        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+        Effect.provide(
+          registry.pipe(
+            Layer.provide(Credential.Default),
+            Layer.provide(BunFileSystem.layer),
+            Layer.provide(
+              Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+            ),
+          ),
+        ),
       );
 
     yield* build("opencode-go", "glm-5");
@@ -124,15 +137,14 @@ testEffect("an integration is told the API host the catalog names for it", () =>
       // own host is right for a provider the catalog names none for.
       ["claude-opus-4-5", undefined],
     ]);
-  }),
+  }).pipe(withFileServices),
 );
 
 testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(root, { recursive: true, force: true })),
-    );
+    const { fs, variables } = yield* environment;
+    const root = variables.HOME!;
+    yield* Effect.addFinalizer(() => fs.remove(root, { recursive: true }).pipe(Effect.ignore));
     let refreshed = 0;
     const definition: Integration = {
       id: "fake",
@@ -151,8 +163,7 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
       model: () => Effect.die("unused") as never,
       authorize: (credential, request) => request,
     };
-    const variables = env(root);
-    const now = Date.now();
+    const now = yield* Clock.currentTimeMillis;
     const created = yield* run(
       Credential.Service.pipe(
         Effect.flatMap((store) =>
@@ -174,10 +185,15 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
     const registry = makeLayer([definition]);
     const runRegistry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
-        Effect.provide(registry),
-        Effect.provide(Credential.Default),
-        Effect.provide(BunFileSystem.layer),
-        Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+        Effect.provide(
+          registry.pipe(
+            Layer.provide(Credential.Default),
+            Layer.provide(BunFileSystem.layer),
+            Layer.provide(
+              Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+            ),
+          ),
+        ),
       );
     const connection = {
       type: "credential" as const,
@@ -192,7 +208,7 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
       Service.pipe(Effect.flatMap((integration) => integration.resolve(connection))),
     );
     expect(refreshed).toBe(1);
-  }),
+  }).pipe(withFileServices),
 );
 
 // =============================================================================
@@ -259,18 +275,21 @@ const adapterLayers =
   (variables: NodeJS.ProcessEnv) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
-      Effect.provide(Credential.Default),
-      Effect.provide(BunFileSystem.layer),
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+      Effect.provide(
+        Credential.Default.pipe(
+          Layer.provideMerge(BunFileSystem.layer),
+          Layer.provideMerge(
+            Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+          ),
+        ),
+      ),
     );
 
 testEffect("a model built from the registry stamps its credential on every request", () =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(root, { recursive: true, force: true })),
-    );
-    const variables = env(root);
+    const { fs, variables } = yield* environment;
+    const root = variables.HOME!;
+    yield* Effect.addFinalizer(() => fs.remove(root, { recursive: true }).pipe(Effect.ignore));
     const layers = adapterLayers(variables);
     const gw = gateway();
     yield* Effect.addFinalizer(() => Effect.promise(() => gw.stop()));
@@ -285,19 +304,18 @@ testEffect("a model built from the registry stamps its credential on every reque
     yield* generate(modelLayer).pipe(layers);
     // The request actually reached a gateway, and it carried the stored key.
     expect(gw.authorization).toEqual(["Bearer stored-key"]);
-  }),
+  }).pipe(withFileServices),
 );
 
 testEffect("a token expiring mid-session is refreshed on the next request", () =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-integration-")));
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => rm(root, { recursive: true, force: true })),
-    );
-    const variables = env(root);
+    const { fs, variables } = yield* environment;
+    const root = variables.HOME!;
+    yield* Effect.addFinalizer(() => fs.remove(root, { recursive: true }).pipe(Effect.ignore));
     const layers = adapterLayers(variables);
     const gw = gateway();
     yield* Effect.addFinalizer(() => Effect.promise(() => gw.stop()));
+    const freshExpiry = yield* Clock.currentTimeMillis;
     const created = yield* layers(
       Credential.Service.pipe(
         Effect.flatMap((store) =>
@@ -308,7 +326,7 @@ testEffect("a token expiring mid-session is refreshed on the next request", () =
               methodID: "fake-oauth",
               access: Redacted.make("old-access"),
               refresh: Redacted.make("refresh"),
-              expires: Date.now() + 10 * 60_000,
+              expires: freshExpiry + 10 * 60_000,
             },
             label: "fake",
           }),
@@ -323,6 +341,7 @@ testEffect("a token expiring mid-session is refreshed on the next request", () =
       credentialRefresh,
     ).pipe(layers);
     yield* generate(modelLayer).pipe(layers);
+    const expiredAt = yield* Clock.currentTimeMillis;
     yield* layers(
       Credential.Service.pipe(
         Effect.flatMap((store) =>
@@ -332,7 +351,7 @@ testEffect("a token expiring mid-session is refreshed on the next request", () =
               methodID: "fake-oauth",
               access: Redacted.make("old-access"),
               refresh: Redacted.make("refresh"),
-              expires: Date.now() - 1,
+              expires: expiredAt - 1,
             },
           }),
         ),
@@ -340,12 +359,14 @@ testEffect("a token expiring mid-session is refreshed on the next request", () =
     );
     yield* generate(modelLayer).pipe(layers);
     expect(gw.authorization).toEqual(["Bearer old-access", "Bearer new-access"]);
-  }),
+  }).pipe(withFileServices),
 );
 
 const credentialRefresh: Integration["refresh"] = (credential) =>
-  Effect.sync(() => ({
-    ...credential,
-    access: Redacted.make("new-access"),
-    expires: Date.now() + 10 * 60_000,
-  }));
+  Clock.currentTimeMillis.pipe(
+    Effect.map((now) => ({
+      ...credential,
+      access: Redacted.make("new-access"),
+      expires: now + 10 * 60_000,
+    })),
+  );

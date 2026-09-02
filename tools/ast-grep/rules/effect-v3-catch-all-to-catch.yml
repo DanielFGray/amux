@@ -1,5 +1,0 @@
-id: effect-v3-catch-all-to-catch
-language: TypeScript
-rule:
-  pattern: Effect.catchAll($HANDLER)
-fix: Effect.catch($HANDLER)

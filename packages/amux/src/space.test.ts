@@ -1,3 +1,4 @@
+/** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
 import { Divider } from "./divider.ts";
@@ -36,7 +37,10 @@ async function setup() {
 /** Spawn a detached process with a detector-owned blocked state. */
 async function blockedAgent(window: Window, name: string): Promise<SessionHandle> {
   const session = run(window.spawn(name, ["bash", "--norc", "--noprofile"]));
-  session.registerStateSource({ authority: ProcessStateAuthority.Detector, state: () => "blocked" });
+  session.registerStateSource({
+    authority: ProcessStateAuthority.Detector,
+    state: () => "blocked",
+  });
   return session;
 }
 

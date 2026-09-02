@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Schedule } from "effect";
 
 /**
  * A periodic callback whose timer is owned by the fiber that runs this effect:
@@ -15,9 +15,8 @@ import { Effect } from "effect";
  * work spends more of it, not less.
  */
 export function scheduledPoll(intervalMs: number, run: () => void): Effect.Effect<void> {
-  return Effect.callback<never>(() => {
-    const timer = setInterval(run, intervalMs);
-    timer.unref?.();
-    return Effect.sync(() => clearInterval(timer));
-  });
+  return Effect.repeat(
+    Effect.sleep(intervalMs).pipe(Effect.andThen(Effect.sync(run))),
+    Schedule.forever,
+  ).pipe(Effect.asVoid);
 }

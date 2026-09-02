@@ -3,11 +3,13 @@ import { expect } from "bun:test";
 import { EventBus } from "./EventBus.ts";
 import { testEffect } from "../test-effect.ts";
 
-testEffect("EventBus broadcasts events and releases subscriptions with scope", () =>
+const it = testEffect(EventBus.layer);
+
+it.effect("EventBus broadcasts events and releases subscriptions with scope", () =>
   Effect.gen(function* () {
     const bus = yield* EventBus;
-    const one = yield* bus.subscribe();
-    const two = yield* bus.subscribe();
+    const one = yield* bus.subscribe;
+    const two = yield* bus.subscribe;
     yield* bus.publish({
       _tag: "session.state",
       session: "agent-1",
@@ -30,13 +32,13 @@ testEffect("EventBus broadcasts events and releases subscriptions with scope", (
         event: { _tag: "session.state", session: "agent-1", state: "blocked" },
       },
     ]);
-  }).pipe(Effect.provide(EventBus.layer)),
+  }),
 );
 
-testEffect("EventBus uses sliding delivery rather than blocking publishers", () =>
+it.effect("EventBus uses sliding delivery rather than blocking publishers", () =>
   Effect.gen(function* () {
     const bus = yield* EventBus;
-    const stream = yield* bus.subscribe();
+    const stream = yield* bus.subscribe;
     for (let i = 0; i < 300; i++)
       yield* bus.publish({
         _tag: "session.state",
@@ -49,5 +51,5 @@ testEffect("EventBus uses sliding delivery rather than blocking publishers", () 
       sequence: 45,
       event: { _tag: "session.state", session: "44", state: "working" },
     });
-  }).pipe(Effect.provide(EventBus.layer)),
+  }),
 );

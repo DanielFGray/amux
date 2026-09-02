@@ -22,7 +22,7 @@
  * import graph of the ones that route it.
  */
 import net from "node:net";
-import { Schema as S } from "effect";
+import { Clock, Effect, Schema as S } from "effect";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 
 /**
@@ -50,6 +50,12 @@ export type ProcessState = typeof ProcessStateSchema.Type;
 export const isProcessState = (value: JsonValue): value is ProcessState =>
   S.is(ProcessStateSchema)(value);
 
+class ProcessStateError extends S.TaggedError<ProcessStateError>()("ProcessStateError", {
+  message: S.String,
+}) {}
+
+const encodeJson = S.encodeSync(S.fromJsonString(S.Unknown));
+
 /**
  * Write one self-report to a session's process-state socket.
  *
@@ -62,24 +68,26 @@ export function reportProcessState(
   session: string,
   state: ProcessState,
 ): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const socket = net.createConnection(socketPath);
-    const request = JSON.stringify({
-      id: `amux:process-state:${Date.now()}`,
-      method: "process.state",
-      params: { session, state },
-    });
-    let settled = false;
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      if (error) reject(error);
-      else resolve();
-    };
-    socket.setTimeout(500, () => finish(new Error("process state request timed out")));
-    socket.once("error", finish);
-    socket.once("data", () => finish());
-    socket.once("connect", () => socket.write(`${request}\n`));
-  });
+  return Effect.runPromise(
+    Effect.callback<void, ProcessStateError>((resume) => {
+      const socket = net.createConnection(socketPath);
+      const request = encodeJson({
+        id: `amux:process-state:${Effect.runSync(Clock.currentTimeMillis)}`,
+        method: "process.state",
+        params: { session, state },
+      });
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        if (error) resume(Effect.fail(new ProcessStateError({ message: error.message })));
+        else resume(Effect.void);
+      };
+      socket.setTimeout(500, () => finish(new Error("process state request timed out")));
+      socket.once("error", finish);
+      socket.once("data", () => finish());
+      socket.once("connect", () => socket.write(`${request}\n`));
+    }),
+  );
 }

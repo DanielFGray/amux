@@ -1,5 +1,0 @@
-id: effect-v3-schema-annotations-to-annotate
-language: TypeScript
-rule:
-  pattern: $SCHEMA.annotations($$$ARGS)
-fix: $SCHEMA.annotate($$$ARGS)

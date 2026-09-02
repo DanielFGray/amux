@@ -1,6 +1,0 @@
-id: effect-v3-either-either-type-to-result
-language: TypeScript
-message: Either<A, E> was renamed to Result<A, E> in v4.
-rule:
-  pattern: Either.Either<$A, $E>
-fix: Result.Result<$A, $E>

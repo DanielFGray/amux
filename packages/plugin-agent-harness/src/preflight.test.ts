@@ -1,6 +1,7 @@
-import { expect, test } from "bun:test";
-import { Effect, Layer, Result } from "effect";
+import { expect } from "bun:test";
+import { Effect, Layer, Option, Result } from "effect";
 import { agentPreflight } from "./preflight.ts";
+import { testEffect } from "@danielfgray/amux/testing";
 import { Service as Integration, type Interface as IntegrationService } from "./integration.ts";
 import {
   Service as ModelCatalog,
@@ -19,7 +20,7 @@ function fakeIntegrations(has: Record<string, boolean>): IntegrationService {
         methods: [{ type: "key" as const }],
         connections: connections(id),
       }),
-    list: () => Effect.succeed([]),
+    list: Effect.succeed([]),
     active: (id) => Effect.succeed(connections(id)[0]),
     resolve: () => Effect.as(Effect.void, undefined),
     model: () => Effect.as(Effect.void, undefined),
@@ -28,7 +29,7 @@ function fakeIntegrations(has: Record<string, boolean>): IntegrationService {
 
 function fakeModelCatalog(models: Record<string, Model>): ModelCatalogService {
   return {
-    providers: () => Effect.succeed({}),
+    providers: Effect.succeed({}),
     provider: () => Effect.as(Effect.void, undefined),
     model: (providerID, modelID) => Effect.succeed(models[`${providerID}/${modelID}`]),
     refresh: () => Effect.void,
@@ -48,21 +49,19 @@ const sampleModel: Model = {
 };
 
 /** The whole check, against a provider that is connected or not and a catalog
- *  that lists the model or not. */
+ *  that lists the model or not. Returns the Result so the caller can inspect it. */
 function preflight(
   reference: string,
   options: { connected?: Record<string, boolean>; catalog?: Record<string, Model> } = {},
 ) {
-  return Effect.runPromise(
-    Effect.result(
-      agentPreflight(reference).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            Layer.succeed(Integration, fakeIntegrations(options.connected ?? { openai: true })),
-            Layer.succeed(
-              ModelCatalog,
-              fakeModelCatalog(options.catalog ?? { "openai/gpt-4o-mini": sampleModel }),
-            ),
+  return Effect.result(
+    agentPreflight(reference).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(Integration, fakeIntegrations(options.connected ?? { openai: true })),
+          Layer.succeed(
+            ModelCatalog,
+            fakeModelCatalog(options.catalog ?? { "openai/gpt-4o-mini": sampleModel }),
           ),
         ),
       ),
@@ -70,39 +69,63 @@ function preflight(
   );
 }
 
-async function refusal(reference: string, options?: Parameters<typeof preflight>[1]) {
-  const result = await preflight(reference, options);
-  if (Result.isSuccess(result)) throw new Error(`expected '${reference}' to be refused`);
-  return result.failure.message;
+/** The refusal reason, or None when the reference was wrongly accepted. */
+function refusal(reference: string, options?: Parameters<typeof preflight>[1]) {
+  return Effect.map(preflight(reference, options), (result) =>
+    result._tag === "Failure" ? Option.some(result.failure.message) : Option.none(),
+  );
 }
 
-test("a connected provider offering the model passes", async () => {
-  expect(Result.isSuccess(await preflight("openai/gpt-4o-mini"))).toBe(true);
-});
-
-test.each([["invalid"], ["openai/"], ["/gpt-4o"]])(
-  "a model reference that is not provider/model is refused: %p",
-  async (reference) => {
-    expect(await refusal(reference)).toBe(
-      `invalid agent.model '${reference}', expected provider/model`,
-    );
-  },
+testEffect("a connected provider offering the model passes", () =>
+  Effect.gen(function* () {
+    expect(Result.isSuccess(yield* preflight("openai/gpt-4o-mini"))).toBe(true);
+  }),
 );
 
-test("a provider with no stored credential is refused", async () => {
-  expect(await refusal("openai/gpt-4o-mini", { connected: {} })).toBe(
-    "no credential stored for openai",
-  );
-});
+testEffect("an invalid model reference (empty) is refused", () =>
+  Effect.gen(function* () {
+    expect(yield* refusal("invalid")).toEqual(
+      Option.some("invalid agent.model 'invalid', expected provider/model"),
+    );
+  }),
+);
 
-test("a provider the registry does not know is refused as unconnected", async () => {
-  expect(await refusal("unknown/gpt-4o-mini", { connected: {} })).toBe(
-    "no credential stored for unknown",
-  );
-});
+testEffect("a providerless model reference is refused", () =>
+  Effect.gen(function* () {
+    expect(yield* refusal("openai/")).toEqual(
+      Option.some("invalid agent.model 'openai/', expected provider/model"),
+    );
+  }),
+);
 
-test("a model the catalog does not list is refused", async () => {
-  expect(await refusal("openai/gpt-4o-mini", { catalog: {} })).toBe(
-    "model openai/gpt-4o-mini is not available",
-  );
-});
+testEffect("a bare model reference is refused", () =>
+  Effect.gen(function* () {
+    expect(yield* refusal("/gpt-4o")).toEqual(
+      Option.some("invalid agent.model '/gpt-4o', expected provider/model"),
+    );
+  }),
+);
+
+testEffect("a provider with no stored credential is refused", () =>
+  Effect.gen(function* () {
+    expect(yield* refusal("openai/gpt-4o-mini", { connected: {} })).toEqual(
+      Option.some("no credential stored for openai"),
+    );
+  }),
+);
+
+testEffect("a provider the registry does not know is refused as unconnected", () =>
+  Effect.gen(function* () {
+    expect(yield* refusal("unknown/gpt-4o-mini", { connected: {} })).toEqual(
+      Option.some("no credential stored for unknown"),
+    );
+  }),
+);
+
+testEffect("a model the catalog does not list is refused", () =>
+  Effect.gen(function* () {
+    expect(yield* refusal("openai/gpt-4o-mini", { catalog: {} })).toEqual(
+      Option.some("model openai/gpt-4o-mini is not available"),
+    );
+  }),
+);

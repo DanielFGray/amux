@@ -1,6 +1,0 @@
-id: effect-v3-either-isright-to-result-issuccess
-language: TypeScript
-message: Either was renamed to Result in v4; Right became Success.
-rule:
-  pattern: Either.isRight($X)
-fix: Result.isSuccess($X)

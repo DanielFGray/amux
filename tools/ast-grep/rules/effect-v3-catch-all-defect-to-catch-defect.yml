@@ -1,5 +1,0 @@
-id: effect-v3-catch-all-defect-to-catch-defect
-language: TypeScript
-rule:
-  pattern: Effect.catchAllDefect($HANDLER)
-fix: Effect.catchDefect($HANDLER)

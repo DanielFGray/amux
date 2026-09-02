@@ -1,10 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import * as FileSystem from "effect/FileSystem";
+import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
-import { ConfigProvider, Effect } from "effect";
+import { ConfigProvider, Effect, Layer, Path, Schema as S } from "effect";
 import {
   isSessionId,
   parseSessionState,
@@ -13,17 +12,67 @@ import {
   sessionRoot,
 } from "./session.ts";
 import { MAX_SPACES } from "./limits.ts";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
+import { testEffect } from "./test-effect.ts";
 
 const dirs: string[] = [];
-afterEach(async () => {
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
-});
+const join = (...paths: string[]) =>
+  Effect.runSync(
+    Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
+  );
+const basename = (value: string) =>
+  Effect.runSync(
+    Effect.map(Path.Path, (path) => path.basename(value)).pipe(Effect.provide(Path.layer)),
+  );
+const fsRun = <A>(effect: Effect.Effect<A, PlatformError, FileSystem.FileSystem>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(BunFileSystem.layer)));
+const mkdtemp = (prefix: string) =>
+  fsRun(
+    Effect.flatMap(FileSystem.FileSystem, (fs) =>
+      fs.makeTempDirectory({ directory: tmpdir(), prefix: basename(prefix) }),
+    ),
+  );
+const rm = (path: string, _options?: { recursive?: boolean; force?: boolean }) =>
+  fsRun(
+    Effect.flatMap(FileSystem.FileSystem, (fs) =>
+      fs.remove(path, { recursive: true, force: true }),
+    ),
+  );
+const mkdir = (path: string, options?: { recursive?: boolean; mode?: number }) =>
+  fsRun(Effect.flatMap(FileSystem.FileSystem, (fs) => fs.makeDirectory(path, options)));
+const chmod = (path: string, mode: number) =>
+  fsRun(Effect.flatMap(FileSystem.FileSystem, (fs) => fs.chmod(path, mode)));
+const stat = (path: string) => fsRun(Effect.flatMap(FileSystem.FileSystem, (fs) => fs.stat(path)));
+const readFile = (path: string, _encoding?: string) =>
+  fsRun(Effect.flatMap(FileSystem.FileSystem, (fs) => fs.readFileString(path)));
+afterEach(() =>
+  Effect.runPromise(
+    Effect.forEach(
+      dirs.splice(0),
+      (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+      {
+        discard: true,
+      },
+    ),
+  ),
+);
 
-async function env() {
-  const home = await mkdtemp(join(tmpdir(), "amux-session-"));
-  dirs.push(home);
-  return { HOME: home, XDG_STATE_HOME: join(home, "state") };
+function env() {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-session-")));
+      dirs.push(home);
+      return { HOME: home, XDG_STATE_HOME: join(home, "state") };
+    }),
+  );
 }
+
+const encodeJson = (value: JsonValue) => S.encodeEffect(S.fromJsonString(S.Unknown))(value);
+const expectRejected = (promise: Promise<unknown>) =>
+  promise.then(
+    () => Promise.reject(new Error("expected promise to reject")),
+    () => undefined,
+  );
 
 function state(id: string) {
   return {
@@ -42,276 +91,329 @@ const run = <A, E>(
 ) =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(SessionStore.layer),
-      Effect.provide(BunFileSystem.layer),
+      Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
     ),
   );
 
-test("session writes are atomic and recover the previous generation", async () => {
-  const e = await env();
-  await run(
-    Effect.flatMap(SessionStore, (store) => store.save(state("one"))),
-    e,
-  );
-  const next = { ...state("one"), attached: true };
-  await run(
-    Effect.flatMap(SessionStore, (store) => store.save(next)),
-    e,
-  );
-  expect(
-    (
-      await run(
-        Effect.flatMap(SessionStore, (store) => store.load("one")),
+testEffect("session writes are atomic and recover the previous generation", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.save(state("one"))),
         e,
-      )
-    )?.attached,
-  ).toBe(true);
-  expect(
-    JSON.parse(await readFile((await run(sessionPaths("one"), e)).backup, "utf8")).attached,
-  ).toBe(false);
-});
-
-test("a truncated current file falls back to the previous generation", async () => {
-  const e = await env();
-  await run(
-    Effect.flatMap(SessionStore, (store) => store.save(state("recover"))),
-    e,
-  );
-  await run(
-    Effect.flatMap(SessionStore, (store) => store.save({ ...state("recover"), attached: true })),
-    e,
-  );
-  await Bun.write((await run(sessionPaths("recover"), e)).state, '{"version":1');
-  expect(
-    (
-      await run(
-        Effect.flatMap(SessionStore, (store) => store.load("recover")),
+      ),
+    );
+    const next = { ...state("one"), attached: true };
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.save(next)),
         e,
-      )
-    )?.attached,
-  ).toBe(false);
-});
+      ),
+    );
+    expect(
+      (yield* Effect.promise(() =>
+        run(
+          Effect.flatMap(SessionStore, (store) => store.load("one")),
+          e,
+        ),
+      ))?.attached,
+    ).toBe(true);
+    const paths = yield* Effect.promise(() => run(sessionPaths("one"), e));
+    const contents = yield* Effect.promise(() => readFile(paths.backup, "utf8"));
+    const backup = yield* S.decodeEffect(S.fromJsonString(S.Struct({ attached: S.Boolean })))(
+      contents,
+    );
+    expect(backup.attached).toBe(false);
+  }),
+);
 
-test("a dead lease leaves the session it owned intact", async () => {
-  const e = await env();
-  await run(
-    Effect.flatMap(SessionStore, (store) => store.save(state("dead"))),
-    e,
-  );
-  await run(
-    Effect.flatMap(SessionStore, (store) =>
-      store.writeLease({
-        version: 1,
-        session: "dead",
-        pid: 999999,
-        socket: "/tmp/dead.sock",
-        startedAt: 1,
-        heartbeatAt: 1,
-      }),
-    ),
-    e,
-  );
-  // A lease says who is running the session, never whether it should exist.
-  // Its owner dying is how a session waits to be restored, not how one ends.
-  expect(
-    await run(
-      Effect.flatMap(SessionStore, (store) => store.load("dead")),
-      e,
-    ),
-  ).not.toBeNull();
-});
+testEffect("a truncated current file falls back to the previous generation", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.save(state("recover"))),
+        e,
+      ),
+    );
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) =>
+          store.save({ ...state("recover"), attached: true }),
+        ),
+        e,
+      ),
+    );
+    const paths = yield* Effect.promise(() => run(sessionPaths("recover"), e));
+    yield* Effect.promise(() => Bun.write(paths.state, '{"version":1'));
+    expect(
+      (yield* Effect.promise(() =>
+        run(
+          Effect.flatMap(SessionStore, (store) => store.load("recover")),
+          e,
+        ),
+      ))?.attached,
+    ).toBe(false);
+  }),
+);
 
-test("lease files are schema-validated before ownership checks", async () => {
-  const e = await env();
-  const paths = await run(sessionPaths("lease-validation"), e);
-  await mkdir(paths.root, { recursive: true });
+testEffect("a dead lease leaves the session it owned intact", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.save(state("dead"))),
+        e,
+      ),
+    );
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) =>
+          store.writeLease({
+            version: 1,
+            session: "dead",
+            pid: 999999,
+            socket: "/tmp/dead.sock",
+            startedAt: 1,
+            heartbeatAt: 1,
+          }),
+        ),
+        e,
+      ),
+    );
+    // A lease says who is running the session, never whether it should exist.
+    // Its owner dying is how a session waits to be restored, not how one ends.
+    expect(
+      yield* Effect.promise(() =>
+        run(
+          Effect.flatMap(SessionStore, (store) => store.load("dead")),
+          e,
+        ),
+      ),
+    ).not.toBeNull();
+  }),
+);
 
-  await Bun.write(
-    paths.lease,
-    JSON.stringify({
+testEffect("lease files are schema-validated before ownership checks", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    const paths = yield* Effect.promise(() => run(sessionPaths("lease-validation"), e));
+    yield* Effect.promise(() => mkdir(paths.root, { recursive: true }));
+
+    const invalidOwnerLease = yield* encodeJson({
       version: 1,
       session: "other-session",
       pid: process.pid,
       socket: paths.socket,
       startedAt: 1,
       heartbeatAt: 1,
-    }),
-  );
-  expect(
-    await run(
-      Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
-      e,
-    ),
-  ).toBeNull();
+    });
+    yield* Effect.promise(() => Bun.write(paths.lease, invalidOwnerLease));
+    expect(
+      yield* Effect.promise(() =>
+        run(
+          Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
+          e,
+        ),
+      ),
+    ).toBeNull();
 
-  await Bun.write(
-    paths.lease,
-    JSON.stringify({
+    const invalidSocketLease = yield* encodeJson({
       version: 1,
       session: "lease-validation",
       pid: process.pid,
       socket: "",
       startedAt: 1,
       heartbeatAt: 1,
-    }),
-  );
-  expect(
-    await run(
-      Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
-      e,
-    ),
-  ).toBeNull();
+    });
+    yield* Effect.promise(() => Bun.write(paths.lease, invalidSocketLease));
+    expect(
+      yield* Effect.promise(() =>
+        run(
+          Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
+          e,
+        ),
+      ),
+    ).toBeNull();
 
-  await run(
-    Effect.flatMap(SessionStore, (store) =>
-      store.writeLease({
-        version: 1,
-        session: "lease-validation",
-        pid: process.pid,
-        socket: paths.socket,
-        startedAt: 1,
-        heartbeatAt: 2,
-        attachedSince: 3,
-        attachLastSeen: 4,
-        attachments: [{ client: "client-a", attachedSince: 3, attachLastSeen: 4 }],
-      }),
-    ),
-    e,
-  );
-  expect(
-    await run(
-      Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
-      e,
-    ),
-  ).toMatchObject({
-    session: "lease-validation",
-    attachedSince: 3,
-    attachments: [{ client: "client-a" }],
-  });
-});
-
-test("valid session ids resolve to a single path component", async () => {
-  const e = await env();
-  const root = await run(sessionRoot(), e);
-  const ids = [
-    "default",
-    "e2e-boot-1",
-    "c3f2a9b4-1d7e-4c5b-9f6a-0e8d2b7a4f11",
-    ".hidden",
-    "...",
-    "..hidden",
-    "_leading",
-    "-leading",
-    "a.b_c-1",
-    "a",
-    "x".repeat(128),
-  ];
-  for (const id of ids) {
-    expect(isSessionId(id)).toBe(true);
-    const paths = await run(sessionPaths(id), e);
-    expect(paths.root).toBe(join(root, id));
-    for (const file of [
-      paths.state,
-      paths.backup,
-      paths.lease,
-      paths.lock,
-      paths.socket,
-      paths.attach,
-    ]) {
-      expect(file.startsWith(root + "/")).toBe(true);
-    }
-  }
-});
-
-test("invalid session ids are rejected before any path is built", async () => {
-  const e = await env();
-  const ids = [
-    "",
-    ".",
-    "..",
-    "../escape",
-    "a/b",
-    "a/b/c",
-    "a/../b",
-    "a\\b",
-    "a\nb",
-    "a\tb",
-    "a\u0000b",
-    "\u001b[0m",
-    "a b",
-    "a".repeat(129),
-    "h\u00e9llo",
-    "\u{1F600}",
-  ];
-  for (const id of ids) {
-    expect(isSessionId(id)).toBe(false);
-    await expect(run(sessionPaths(id), e)).rejects.toThrow(
-      `invalid session id ${JSON.stringify(id)}`,
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) =>
+          store.writeLease({
+            version: 1,
+            session: "lease-validation",
+            pid: process.pid,
+            socket: paths.socket,
+            startedAt: 1,
+            heartbeatAt: 2,
+            attachedSince: 3,
+            attachLastSeen: 4,
+            attachments: [{ client: "client-a", attachedSince: 3, attachLastSeen: 4 }],
+          }),
+        ),
+        e,
+      ),
     );
-  }
-});
+    expect(
+      yield* Effect.promise(() =>
+        run(
+          Effect.flatMap(SessionStore, (store) => store.readLease("lease-validation")),
+          e,
+        ),
+      ),
+    ).toMatchObject({
+      session: "lease-validation",
+      attachedSince: 3,
+      attachments: [{ client: "client-a" }],
+    });
+  }),
+);
 
-test("no session helper touches the filesystem for a traversal id", async () => {
-  const e = await env();
-  await run(
-    Effect.flatMap(SessionStore, (store) => store.save(state("ok"))),
-    e,
-  );
-  for (const id of ["..", "../escape", "a/../../victim"]) {
-    await expect(
-      run(
-        Effect.flatMap(SessionStore, (store) => store.load(id)),
-        e,
-      ),
-    ).rejects.toThrow();
-    await expect(
-      run(
-        Effect.flatMap(SessionStore, (store) => store.remove(id)),
-        e,
-      ),
-    ).rejects.toThrow();
-    await expect(
-      run(
-        Effect.flatMap(SessionStore, (store) => store.exists(id)),
-        e,
-      ),
-    ).resolves.toBe(false);
-  }
-  // The valid session is untouched.
-  expect(
-    await run(
-      Effect.flatMap(SessionStore, (store) => store.load("ok")),
-      e,
-    ),
-  ).not.toBeNull();
-});
+testEffect("valid session ids resolve to a single path component", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    const root = yield* Effect.promise(() => run(sessionRoot, e));
+    const ids = [
+      "default",
+      "e2e-boot-1",
+      "c3f2a9b4-1d7e-4c5b-9f6a-0e8d2b7a4f11",
+      ".hidden",
+      "...",
+      "..hidden",
+      "_leading",
+      "-leading",
+      "a.b_c-1",
+      "a",
+      "x".repeat(128),
+    ];
+    for (const id of ids) {
+      expect(isSessionId(id)).toBe(true);
+      const paths = yield* Effect.promise(() => run(sessionPaths(id), e));
+      expect(paths.root).toBe(join(root, id));
+      for (const file of [
+        paths.state,
+        paths.backup,
+        paths.lease,
+        paths.lock,
+        paths.socket,
+        paths.attach,
+      ]) {
+        expect(file.startsWith(root + "/")).toBe(true);
+      }
+    }
+  }),
+);
 
-test("traversal ids cannot read or delete files outside the sessions root", async () => {
-  const e = await env();
-  const victim = join(e.HOME!, "victim.json");
-  await Bun.write(victim, "secret");
-  await expect(
-    run(
-      Effect.flatMap(SessionStore, (store) => store.save({ ...state("../..") })),
-      e,
-    ),
-  ).rejects.toThrow();
-  await expect(
-    run(
-      Effect.flatMap(SessionStore, (store) => store.remove("..")),
-      e,
-    ),
-  ).rejects.toThrow();
-  await expect(
-    run(
-      Effect.flatMap(SessionStore, (store) => store.remove("../..")),
-      e,
-    ),
-  ).rejects.toThrow();
-  expect(await Bun.file(victim).exists()).toBe(true);
-  expect(await Bun.file(victim).text()).toBe("secret");
-});
+testEffect("invalid session ids are rejected before any path is built", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    const ids = [
+      "",
+      ".",
+      "..",
+      "../escape",
+      "a/b",
+      "a/b/c",
+      "a/../b",
+      "a\\b",
+      "a\nb",
+      "a\tb",
+      "a\u0000b",
+      "\u001b[0m",
+      "a b",
+      "a".repeat(129),
+      "h\u00e9llo",
+      "\u{1F600}",
+    ];
+    for (const id of ids) {
+      expect(isSessionId(id)).toBe(false);
+      yield* Effect.promise(() => expectRejected(run(sessionPaths(id), e)));
+    }
+  }),
+);
+
+testEffect("no session helper touches the filesystem for a traversal id", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.save(state("ok"))),
+        e,
+      ),
+    );
+    for (const id of ["..", "../escape", "a/../../victim"]) {
+      yield* Effect.promise(() =>
+        expectRejected(
+          run(
+            Effect.flatMap(SessionStore, (store) => store.load(id)),
+            e,
+          ),
+        ),
+      );
+      yield* Effect.promise(() =>
+        expectRejected(
+          run(
+            Effect.flatMap(SessionStore, (store) => store.remove(id)),
+            e,
+          ),
+        ),
+      );
+      expect(
+        yield* Effect.promise(() =>
+          run(
+            Effect.flatMap(SessionStore, (store) => store.exists(id)),
+            e,
+          ),
+        ),
+      ).toBe(false);
+    }
+    // The valid session is untouched.
+    expect(
+      yield* Effect.promise(() =>
+        run(
+          Effect.flatMap(SessionStore, (store) => store.load("ok")),
+          e,
+        ),
+      ),
+    ).not.toBeNull();
+  }),
+);
+
+testEffect("traversal ids cannot read or delete files outside the sessions root", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    const victim = join(e.HOME!, "victim.json");
+    yield* Effect.promise(() => Bun.write(victim, "secret"));
+    yield* Effect.promise(() =>
+      expectRejected(
+        run(
+          Effect.flatMap(SessionStore, (store) => store.save({ ...state("../..") })),
+          e,
+        ),
+      ),
+    );
+    yield* Effect.promise(() =>
+      expectRejected(
+        run(
+          Effect.flatMap(SessionStore, (store) => store.remove("..")),
+          e,
+        ),
+      ),
+    );
+    yield* Effect.promise(() =>
+      expectRejected(
+        run(
+          Effect.flatMap(SessionStore, (store) => store.remove("../..")),
+          e,
+        ),
+      ),
+    );
+    expect(yield* Effect.promise(() => Bun.file(victim).exists())).toBe(true);
+    expect(yield* Effect.promise(() => Bun.file(victim).text())).toBe("secret");
+  }),
+);
 
 test("nested persisted state rejects duplicate identities and invalid layout relationships", () => {
   const value: any = {
@@ -448,20 +550,24 @@ test("persisted snapshots bound aggregate model size", () => {
   expect(() => Effect.runSync(parseSessionState(crowded))).toThrow("too many spaces");
 });
 
-test("the directory holding a session's sockets is owner-only", async () => {
-  const e = await env();
-  const paths = await run(sessionPaths("modes"), e);
-  // The mode a directory is created with is not the mode it keeps: an earlier
-  // tool, or a restore that dropped permissions, can leave the root wide open,
-  // and creating it again would not narrow it. The daemon's control and attach
-  // sockets live in here, so the mode is a property worth asserting.
-  await mkdir(paths.root, { recursive: true, mode: 0o755 });
-  await chmod(paths.root, 0o755);
-  expect((await stat(paths.root)).mode & 0o777).toBe(0o755);
+testEffect("the directory holding a session's sockets is owner-only", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    const paths = yield* Effect.promise(() => run(sessionPaths("modes"), e));
+    // The mode a directory is created with is not the mode it keeps: an earlier
+    // tool, or a restore that dropped permissions, can leave the root wide open,
+    // and creating it again would not narrow it. The daemon's control and attach
+    // sockets live in here, so the mode is a property worth asserting.
+    yield* Effect.promise(() => mkdir(paths.root, { recursive: true, mode: 0o755 }));
+    yield* Effect.promise(() => chmod(paths.root, 0o755));
+    expect((yield* Effect.promise(() => stat(paths.root))).mode & 0o777).toBe(0o755);
 
-  await run(
-    Effect.flatMap(SessionStore, (store) => store.save(state("modes"))),
-    e,
-  );
-  expect((await stat(paths.root)).mode & 0o777).toBe(0o700);
-});
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.save(state("modes"))),
+        e,
+      ),
+    );
+    expect((yield* Effect.promise(() => stat(paths.root))).mode & 0o777).toBe(0o700);
+  }),
+);

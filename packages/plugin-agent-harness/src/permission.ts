@@ -8,19 +8,19 @@
  * what happened.
  */
 import { Deferred, Effect, Ref } from "effect";
-import { relative, isAbsolute } from "node:path";
+import * as Path from "effect/Path";
 import { randomUUID } from "node:crypto";
-import { ProcessState } from "@danielfgray/amux"
+import { ProcessState } from "@danielfgray/amux";
 import { agentStateTopic } from "./state-topic.ts";
 import {
   evaluateAll,
   type PermissionDecision,
   type PermissionRule,
 } from "@danielfgray/amux/permission.ts";
-import { AgentDelta } from "@danielfgray/amux/protocol"
-import type { AgentEventPayload } from "@danielfgray/amux/protocol"
+import type { AgentDelta, AgentEventPayload } from "@danielfgray/amux/protocol";
 import type { Interface as ProjectStore } from "@danielfgray/amux/project-store.ts";
-import type { JsonValue } from "@danielfgray/amux"
+import type { JsonValue } from "@danielfgray/amux";
+import { emit as toAgentMessage, type HarnessEvent } from "./protocol.ts";
 
 type PermissionStore = Pick<ProjectStore, "addRules">;
 
@@ -55,6 +55,7 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
 }) {
   const rules = yield* Ref.make(options.rules);
   const pending = yield* Ref.make(new Map<string, Deferred.Deferred<Answer>>());
+  const emitEvent = (event: HarnessEvent) => options.emit(toAgentMessage(options.session, event));
 
   const answer = (request: string, decision: PermissionDecision, feedback?: string) =>
     Ref.get(pending).pipe(
@@ -69,9 +70,8 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
   const emitRequest = (request: string, assertion: Assertion, save: readonly PermissionRule[]) =>
     options.turn.pipe(
       Effect.flatMap((turn) =>
-        options.emit({
+        emitEvent({
           _tag: "permission.request",
-          session: options.session,
           turn,
           request,
           tool: assertion.tool,
@@ -83,24 +83,26 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
       ),
     );
 
-  const ask = Effect.fnUntraced(function*(assertion: Assertion, save: readonly PermissionRule[]) { const request = randomUUID();
-  const deferred = yield* Deferred.make<Answer>();
-  yield* Ref.update(pending, (map) => new Map(map).set(request, deferred));
-  yield* emitRequest(request, assertion, save);
-  yield* options.emit({
-    ...agentStateTopic(ProcessState.Blocked),
-    session: options.session,
+  const ask = Effect.fnUntraced(function* (assertion: Assertion, save: readonly PermissionRule[]) {
+    const request = randomUUID();
+    const deferred = yield* Deferred.make<Answer>();
+    yield* Ref.update(pending, (map) => new Map(map).set(request, deferred));
+    yield* emitRequest(request, assertion, save);
+    yield* options.emit({
+      ...agentStateTopic(ProcessState.Blocked),
+      session: options.session,
+    });
+    // An interrupt unwinds the await like any other Effect, and the record
+    // is written on the way out: a transcript must not keep a question that
+    // can never be answered. No status follows it — the turn is ending, and
+    // its own end frame says so.
+    return yield* Deferred.await(deferred).pipe(
+      Effect.onInterrupt(() =>
+        record(request, { decision: "reject", feedback: "interrupted" }, []),
+      ),
+      Effect.flatMap((decided) => settle(request, decided, save)),
+    );
   });
-  // An interrupt unwinds the await like any other Effect, and the record
-  // is written on the way out: a transcript must not keep a question that
-  // can never be answered. No status follows it — the turn is ending, and
-  // its own end frame says so.
-  return yield* Deferred.await(deferred).pipe(
-    Effect.onInterrupt(() =>
-      record(request, { decision: "reject", feedback: "interrupted" }, []),
-    ),
-    Effect.flatMap((decided) => settle(request, decided, save)),
-  ); })
 
   const settle = (
     request: string,
@@ -119,33 +121,37 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
       ),
     );
 
-  const record = Effect.fnUntraced(function*(request: string, decided: Answer, save: readonly PermissionRule[]) { yield* Ref.update(pending, (map) => {
-    const next = new Map(map);
-    next.delete(request);
-    return next;
+  const record = Effect.fnUntraced(function* (
+    request: string,
+    decided: Answer,
+    save: readonly PermissionRule[],
+  ) {
+    yield* Ref.update(pending, (map) => {
+      const next = new Map(map);
+      next.delete(request);
+      return next;
+    });
+    // Remembering before echoing: a client that sees "always" and asks the
+    // same question again must find the rule already in force.
+    if (decided.decision === "always" && save.length > 0) {
+      yield* Ref.update(rules, (current) => [...current, ...save]);
+      yield* options.store.addRules(save).pipe(Effect.ignore);
+    }
+    yield* emitEvent(
+      decided.feedback === undefined
+        ? {
+            _tag: "permission.response",
+            request,
+            decision: decided.decision,
+          }
+        : {
+            _tag: "permission.response",
+            request,
+            decision: decided.decision,
+            feedback: decided.feedback,
+          },
+    );
   });
-  // Remembering before echoing: a client that sees "always" and asks the
-  // same question again must find the rule already in force.
-  if (decided.decision === "always" && save.length > 0) {
-    yield* Ref.update(rules, (current) => [...current, ...save]);
-    yield* options.store.addRules(save).pipe(Effect.ignore);
-  }
-  yield* options.emit(
-    decided.feedback === undefined
-      ? {
-          _tag: "permission.response",
-          session: options.session,
-          request,
-          decision: decided.decision,
-        }
-      : {
-          _tag: "permission.response",
-          session: options.session,
-          request,
-          decision: decided.decision,
-          feedback: decided.feedback,
-        },
-  ); })
 
   return {
     assert: (assertion) =>
@@ -281,7 +287,10 @@ function commandPrefix(segment: string): string {
  * in this project" expressible as a pattern: `./**` cannot match an absolute
  * path, so a project-wide approval never reaches outside the project.
  */
-export function pathResource(root: string, path: string): string {
-  const inside = relative(root, path);
-  return inside && !inside.startsWith("..") && !isAbsolute(inside) ? `./${inside}` : path;
-}
+export const pathResource = Effect.fnUntraced(function* (root: string, path: string) {
+  const pathService = yield* Path.Path;
+  const inside = pathService.relative(root, path);
+  return inside && !inside.startsWith("..") && !pathService.isAbsolute(inside)
+    ? `./${inside}`
+    : path;
+});

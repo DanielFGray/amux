@@ -40,6 +40,8 @@ export {
   SpawnProvidersTag,
   CommandsTag,
   SessionFactsTag,
+  PanelTag,
+  SessionStreamTag,
   intercept,
   registerCommand,
   type CommandRegistration,
@@ -49,6 +51,7 @@ export {
   type InterceptedDependency,
   type InterceptablePluginService,
   type ServiceInterception,
+  type SessionStreamService,
 } from "./plugin/services.ts";
 
 export {
@@ -93,10 +96,7 @@ export { type PanelContext, type SidebarDisplay, type SidebarDisplayRow } from "
 export { type PaneViewProps } from "./component-pane.tsx";
 
 // What a process-display contribution is asked, and what it may answer.
-export {
-  type ProcessDisplayFacts,
-  type ProcessDisplayResult,
-} from "./plugin/process-display.ts";
+export { type ProcessDisplayFacts, type ProcessDisplayResult } from "./plugin/process-display.ts";
 
 // Options a plugin declares, reads, or edits.
 export {

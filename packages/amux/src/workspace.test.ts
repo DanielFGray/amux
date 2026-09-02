@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { command } from "./commands.ts";
-import { resolve } from "node:path";
-import { Effect, Cause } from "effect";
+import { Effect, Cause, Path } from "effect";
 import {
   applyWorkspaceCommand,
   markSessionExited,
@@ -442,7 +441,13 @@ test("space.new uses node path resolution and basename semantics", () => {
     context,
   ).snapshot;
   const created = next.spaces.at(-1)!;
-  expect(created.dir).toBe(resolve("./tmp/../portable-project"));
+  expect(created.dir).toBe(
+    Effect.runSync(
+      Effect.map(Path.Path, (path) => path.resolve("./tmp/../portable-project")).pipe(
+        Effect.provide(Path.layer),
+      ),
+    ),
+  );
   expect(created.name).toBe("portable-project");
 });
 

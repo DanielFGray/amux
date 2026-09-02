@@ -1,12 +1,11 @@
-import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { closeSync, openSync } from "node:fs";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { Context, Duration, Effect, Layer, Option, Redacted, Schema as S } from "effect";
 import { stateRoot } from "@danielfgray/amux/session.ts";
 import { flock, flockUnlock } from "@danielfgray/amux/shim.ts";
-import type { JsonValue } from "@danielfgray/amux/protocol"
-import { JsonValueSchema } from "@danielfgray/amux/protocol"
+import type { JsonValue } from "@danielfgray/amux/protocol";
+import { JsonValueSchema } from "@danielfgray/amux/protocol";
 import type { ServiceInterception } from "@danielfgray/amux";
 
 export * as Credential from "./credential.ts";
@@ -42,7 +41,7 @@ export interface Info {
 }
 
 export interface Interface {
-  readonly all: () => Effect.Effect<Info[]>;
+  readonly all: Effect.Effect<Info[]>;
   readonly list: (integrationID: string) => Effect.Effect<Info[]>;
   readonly get: (id: ID) => Effect.Effect<Info | undefined>;
   readonly create: (input: {
@@ -86,8 +85,7 @@ const credentialAccess: ServiceInterception<Interface, Access> = {
   empty: {},
   combine: mergeAccess,
   access: (service, metadata) => {
-    const permits = (integrationID: string) =>
-      metadata().integrations?.has(integrationID) ?? true;
+    const permits = (integrationID: string) => metadata().integrations?.has(integrationID) ?? true;
     const writable = () => metadata().write ?? true;
     const requireWrite = <A>(effect: Effect.Effect<A>, integrationID: string) =>
       writable() && permits(integrationID)
@@ -96,14 +94,17 @@ const credentialAccess: ServiceInterception<Interface, Access> = {
     const permitted = (id: ID) =>
       service.get(id).pipe(Effect.map((credential) => credential?.integrationID));
     return {
-      all: () => service.all().pipe(Effect.map((rows) => rows.filter((row) => permits(row.integrationID)))),
-      list: (integrationID) => permits(integrationID) ? service.list(integrationID) : Effect.succeed([]),
+      all: service.all.pipe(Effect.map((rows) => rows.filter((row) => permits(row.integrationID)))),
+      list: (integrationID) =>
+        permits(integrationID) ? service.list(integrationID) : Effect.succeed([]),
       get: (id) =>
-        service.get(id).pipe(
-          Effect.map((credential) =>
-            credential && permits(credential.integrationID) ? credential : undefined,
+        service
+          .get(id)
+          .pipe(
+            Effect.map((credential) =>
+              credential && permits(credential.integrationID) ? credential : undefined,
+            ),
           ),
-        ),
       create: (input) => requireWrite(service.create(input), input.integrationID),
       update: (id, updates) =>
         permitted(id).pipe(
@@ -130,10 +131,9 @@ const credentialAccess: ServiceInterception<Interface, Access> = {
 };
 
 class ServiceId {}
-export const Service = Object.assign(
-  Context.Service<ServiceId, Interface>()("amux/Credential"),
-  { interception: credentialAccess } as const,
-);
+export const Service = Object.assign(Context.Service<ServiceId, Interface>()("amux/Credential"), {
+  interception: credentialAccess,
+} as const);
 
 const PersistedValue = S.Union([
   S.Struct({
@@ -146,7 +146,7 @@ const PersistedValue = S.Union([
     methodID: S.String,
     refresh: S.String,
     access: S.String,
-    expires: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+    expires: S.Int.check(S.isGreaterThanOrEqualTo(0)),
     metadata: S.optional(S.Record(S.String, JsonValueSchema)),
   }),
 ]);
@@ -171,7 +171,7 @@ const unredact = (value: Value): Persisted["value"] =>
 const present = (row: Persisted): Info => ({ ...row, id: row.id as ID, value: redact(row.value) });
 
 const decodeText = (text: string) => {
-  const parsed = S.decodeUnknownOption(S.fromJsonString(S.Array(S.Unknown)))(text);
+  const parsed = S.decodeOption(S.fromJsonString(S.Array(S.Unknown)))(text);
   if (Option.isNone(parsed)) return { valid: false, rows: [] };
   return {
     valid: true,
@@ -179,14 +179,15 @@ const decodeText = (text: string) => {
   };
 };
 
-const paths = (root: string) => {
+const paths = Effect.fnUntraced(function* (root: string) {
+  const path = yield* Path.Path;
   const directory = path.join(root, "amux");
   return {
     directory,
     file: path.join(directory, "auth.json"),
     lock: path.join(directory, "auth.json.lock"),
   };
-};
+});
 
 const lock = Effect.fnUntraced(function* (fd: number, shared: boolean) {
   for (;;) {
@@ -200,8 +201,9 @@ const lock = Effect.fnUntraced(function* (fd: number, shared: boolean) {
 
 const implementation = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
+  const nodeFs = yield* Effect.promise(() => import("node:fs"));
   const root = yield* stateRoot();
-  const target = paths(root);
+  const target = yield* paths(root);
 
   const readRows = Effect.fnUntraced(function* () {
     const text = yield* fs
@@ -225,7 +227,7 @@ const implementation = Effect.gen(function* () {
       yield* fs.chmod(target.directory, 0o700);
       return yield* Effect.scoped(
         Effect.acquireUseRelease(
-          Effect.sync(() => openSync(target.lock, "a+", 0o600)),
+          Effect.sync(() => nodeFs.openSync(target.lock, "a+", 0o600)),
           (fd) =>
             fs
               .chmod(target.lock, 0o600)
@@ -245,7 +247,7 @@ const implementation = Effect.gen(function* () {
           (fd) =>
             Effect.sync(() => {
               flockUnlock(fd);
-              closeSync(fd);
+              nodeFs.closeSync(fd);
             }),
         ),
       );
@@ -260,7 +262,11 @@ const implementation = Effect.gen(function* () {
       Effect.succeed(handle),
       (file) =>
         file
-          .writeAll(new TextEncoder().encode(JSON.stringify(rows) + "\n"))
+          .writeAll(
+            new TextEncoder().encode(
+              S.encodeSync(S.fromJsonString(S.Array(S.Unknown)))(rows) + "\n",
+            ),
+          )
           .pipe(Effect.andThen(file.sync)),
       () => Effect.void,
     );
@@ -291,7 +297,7 @@ const implementation = Effect.gen(function* () {
     );
 
   return {
-    all: () => read((rows) => rows.map(present)),
+    all: read((rows) => rows.map(present)),
     list: (integrationID: string) =>
       read((rows) => rows.filter((row) => row.integrationID === integrationID).map(present)),
     get: (id: ID) =>
@@ -353,4 +359,4 @@ const implementation = Effect.gen(function* () {
 
 export const layer = Layer.effect(Service, implementation);
 
-export const Default = layer;
+export const Default = layer.pipe(Layer.provide(Path.layer));

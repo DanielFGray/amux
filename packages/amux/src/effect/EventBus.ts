@@ -36,7 +36,7 @@ const EventPayload = S.Union([
   PluginsReload,
 ]);
 export const DaemonEvent = S.Struct({
-  sequence: S.Number.check(S.isInt(), S.isGreaterThanOrEqualTo(0)),
+  sequence: S.Int.check(S.isGreaterThanOrEqualTo(0)),
   event: EventPayload,
 });
 export type DaemonEvent = S.Schema.Type<typeof DaemonEvent>;
@@ -46,7 +46,7 @@ const EVENT_CAPACITY = 256;
 
 export interface EventBusService {
   readonly publish: (event: DaemonEventPayload) => Effect.Effect<void>;
-  readonly subscribe: () => Effect.Effect<Stream.Stream<DaemonEvent>, never, Scope.Scope>;
+  readonly subscribe: Effect.Effect<Stream.Stream<DaemonEvent>, never, Scope.Scope>;
   readonly shutdown: Effect.Effect<void>;
 }
 
@@ -58,8 +58,9 @@ export class EventBus extends Context.Service<EventBus>()("EventBus", {
     return {
       publish: (event) =>
         PubSub.publish(pubsub, { sequence: sequence++, event }).pipe(Effect.asVoid),
-      subscribe: () =>
-        PubSub.subscribe(pubsub).pipe(Effect.map((queue) => Stream.fromSubscription(queue))),
+      subscribe: PubSub.subscribe(pubsub).pipe(
+        Effect.map((queue) => Stream.fromSubscription(queue)),
+      ),
       shutdown: PubSub.shutdown(pubsub),
     } satisfies EventBusService;
   }),

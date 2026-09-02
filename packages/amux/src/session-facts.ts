@@ -1,4 +1,4 @@
-import { Effect, Queue, Scope, Stream } from "effect";
+import { Effect, Fiber, Queue, Schedule, Scope, Stream } from "effect";
 import type { ProcessState } from "./process-state.ts";
 import type { ProcessStateSource } from "./process-state-arbiter.ts";
 import type { ScreenRegion } from "./screen-regions.ts";
@@ -117,7 +117,7 @@ export const makeSessionFacts = (
 ): SessionFactsService => {
   const observers = new Set<Observer>();
   const bindings = new Set<StateBinding>();
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: Fiber.Fiber<void> | null = null;
 
   const refreshBindings = (): void => {
     const current = new Map(sources().map((source) => [source.id, source]));
@@ -155,7 +155,7 @@ export const makeSessionFacts = (
 
   const stop = (): void => {
     if (timer === null) return;
-    clearInterval(timer);
+    Effect.runFork(Fiber.interrupt(timer));
     timer = null;
   };
 
@@ -166,10 +166,13 @@ export const makeSessionFacts = (
         const binding: StateBinding = { session, stateSource };
         bindings.add(binding);
         refreshBindings();
-        yield* Scope.addFinalizer(scope, Effect.sync(() => {
-          bindings.delete(binding);
-          binding.unregister?.();
-        }));
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => {
+            bindings.delete(binding);
+            binding.unregister?.();
+          }),
+        );
       }),
     observe: (regions) =>
       Effect.gen(function* () {
@@ -184,16 +187,24 @@ export const makeSessionFacts = (
         scan(observer, false);
         observers.add(observer);
         if (timer === null) {
-          timer = setInterval(() => {
-            refreshBindings();
-            for (const active of observers) scan(active, true);
-          }, SESSION_FACTS_REFRESH_MS);
-          timer.unref?.();
+          timer = yield* Effect.forkIn(
+            Effect.repeat(
+              Effect.sync(() => {
+                refreshBindings();
+                for (const active of observers) scan(active, true);
+              }),
+              Schedule.spaced(`${SESSION_FACTS_REFRESH_MS} millis`),
+            ).pipe(Effect.asVoid),
+            scope,
+          );
         }
-        yield* Scope.addFinalizer(scope, Effect.sync(() => {
-          observers.delete(observer);
-          if (observers.size === 0) stop();
-        }));
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => {
+            observers.delete(observer);
+            if (observers.size === 0) stop();
+          }),
+        );
         return {
           current: () => observer.snapshot,
           invalidations: Stream.fromQueue(queue),

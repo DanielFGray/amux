@@ -1,12 +1,12 @@
 /** @jsxImportSource @opentui/solid */
+/** @effect-diagnostics *:skip-file -- Solid render-tree event handlers and lifecycle control flow belong to OpenTUI/Solid, not the service Effect graph. */
 import { createEffect, createSignal, For, Show } from "solid-js";
 import { Effect, Scope } from "effect";
 import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core";
-import { theme } from "@danielfgray/amux"
+import { theme } from "@danielfgray/amux";
 import { Service as Integration } from "./integration.ts";
 import { Service as ModelCatalog, type Provider } from "./model-catalog.ts";
-import type { PluginHostContext } from "@danielfgray/amux"
-import { CurrentPlugin, RegionsTag } from "@danielfgray/amux"
+import { CurrentPlugin, PanelTag, RegionsTag } from "@danielfgray/amux";
 
 export interface ModelPickerEntry {
   readonly value: string;
@@ -31,88 +31,83 @@ export interface ModelPickerView {
  * offers the plugin a way in — a second harness builds its own picker the same
  * way, over its own option.
  */
-export function registerModelPicker(
-  ctx: PluginHostContext,
-): Effect.Effect<
+export const registerModelPicker: Effect.Effect<
   Effect.Effect<void, never, Integration | ModelCatalog>,
   never,
-  RegionsTag | CurrentPlugin | Scope.Scope
-> {
-  return Effect.gen(function* () {
-    const [view, setView] = createSignal<ModelPickerView | null>(null);
+  RegionsTag | PanelTag | CurrentPlugin | Scope.Scope
+> = Effect.gen(function* () {
+  const panel = yield* PanelTag;
+  const [view, setView] = createSignal<ModelPickerView | null>(null);
 
-    const choose = () => {
-      const current = view();
-      const entry = current?.entries[current.selected];
-      if (!entry) return;
-      ctx.panel.setOption("agent.model", entry.value);
-      setView(null);
-      ctx.panel.saveOptions();
-    };
+  const choose = () => {
+    const current = view();
+    const entry = current?.entries[current.selected];
+    if (!entry) return;
+    panel.setOption("agent.model", entry.value);
+    setView(null);
+    panel.saveOptions();
+  };
 
-    const regions = yield* RegionsTag;
-    yield* regions.register({
-      id: "amux.agent-harness.model-picker",
-      region: "overlay",
-      // Above the settings window, because the option row in it is one of the two
-      // ways here and the settings stay up behind the picker.
-      order: 15,
-      title: "model picker",
-      visible: () => view() !== null,
-      keys: (event: KeyEvent) => {
-        if (!view()) return true;
-        switch (event.name) {
-          case "escape":
-            setView(null);
-            return true;
-          case "j":
-          case "down":
-            setView((v) => v && { ...v, selected: Math.min(v.entries.length - 1, v.selected + 1) });
-            return true;
-          case "k":
-          case "up":
-            setView((v) => v && { ...v, selected: Math.max(0, v.selected - 1) });
-            return true;
-          case "return":
-          case "enter":
-            choose();
-            return true;
-        }
-        return false;
-      },
-      component: (props) => (
-        <Show when={view()}>
-          {(current: () => ModelPickerView) => (
-            <ModelPicker
-              view={current()}
-              width={props.width}
-              onInput={(query) => setView((v) => v && filterEntries(v, query))}
-              onSubmit={choose}
-            />
-          )}
-        </Show>
-      ),
-    });
-
-    return yield* Effect.succeed(
-      Effect.gen(function* () {
-        const catalog = yield* ModelCatalog;
-        const integrations = yield* Integration;
-        const providers = yield* catalog.providers();
-        const connected = new Set(
-          (yield* integrations.list())
-            .filter((integration) => integration.connections.length > 0)
-            .map((integration) => integration.id),
-        );
-        const entries = modelEntries(providers, connected);
-        const selected = entries.findIndex(
-          (entry) => entry.value === ctx.panel.options()["agent.model"],
-        );
-        setView({ allEntries: entries, entries, query: "", selected: Math.max(0, selected) });
-      }),
-    );
+  const regions = yield* RegionsTag;
+  yield* regions.register({
+    id: "amux.agent-harness.model-picker",
+    region: "overlay",
+    // Above the settings window, because the option row in it is one of the two
+    // ways here and the settings stay up behind the picker.
+    order: 15,
+    title: "model picker",
+    visible: () => view() !== null,
+    keys: (event: KeyEvent) => {
+      if (!view()) return true;
+      switch (event.name) {
+        case "escape":
+          setView(null);
+          return true;
+        case "j":
+        case "down":
+          setView((v) => v && { ...v, selected: Math.min(v.entries.length - 1, v.selected + 1) });
+          return true;
+        case "k":
+        case "up":
+          setView((v) => v && { ...v, selected: Math.max(0, v.selected - 1) });
+          return true;
+        case "return":
+        case "enter":
+          choose();
+          return true;
+      }
+      return false;
+    },
+    component: (props) => (
+      <Show when={view()}>
+        {(current: () => ModelPickerView) => (
+          <ModelPicker
+            view={current()}
+            width={props.width}
+            onInput={(query) => setView((v) => v && filterEntries(v, query))}
+            onSubmit={choose}
+          />
+        )}
+      </Show>
+    ),
   });
-}
+
+  return yield* Effect.succeed(
+    Effect.gen(function* () {
+      const catalog = yield* ModelCatalog;
+      const integrations = yield* Integration;
+      const providers = yield* catalog.providers;
+      const connected = new Set(
+        (yield* integrations.list)
+          .filter((integration) => integration.connections.length > 0)
+          .map((integration) => integration.id),
+      );
+      const entries = modelEntries(providers, connected);
+      const selected = entries.findIndex((entry) => entry.value === panel.options()["agent.model"]);
+      setView({ allEntries: entries, entries, query: "", selected: Math.max(0, selected) });
+    }),
+  );
+});
 
 /** Every model a stored credential can actually reach, and that can hold a tool
  *  conversation: no deprecated model, nothing without tool calls or text in. */

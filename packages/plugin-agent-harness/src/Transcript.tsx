@@ -1,4 +1,5 @@
 /** @jsxImportSource @opentui/solid */
+/** @effect-diagnostics *:skip-file -- Solid render-tree event handlers and lifecycle control flow belong to OpenTUI/Solid, not the service Effect graph. */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import type { Accessor } from "solid-js";
 import { Effect, Fiber, Schema as S, Stream, type Stream as StreamType } from "effect";
@@ -12,10 +13,10 @@ import {
   wrapText,
   type TranscriptBlock,
 } from "./transcript.ts";
-import { AgentFrame, type AttachFrame } from "@danielfgray/amux/protocol"
-import { ProcessState } from "@danielfgray/amux"
+import { AgentFrame, type AttachFrame } from "@danielfgray/amux/protocol";
+import { ProcessState } from "@danielfgray/amux";
 import { agentStateFromTopic } from "./state-topic.ts";
-import { theme } from "@danielfgray/amux"
+import { theme } from "@danielfgray/amux";
 
 export interface TranscriptProps {
   sessionId: string;

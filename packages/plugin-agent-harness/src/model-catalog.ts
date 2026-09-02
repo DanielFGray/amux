@@ -1,9 +1,9 @@
-import path from "node:path";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
-import { Context, Duration, Effect, Layer, Option, Schedule, Schema as S } from "effect";
+import { Clock, Context, Duration, Effect, Layer, Option, Schedule, Schema as S } from "effect";
 import { stateRoot } from "@danielfgray/amux/session.ts";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
 
@@ -57,7 +57,7 @@ interface CatalogFetcher {
 class Fetcher extends Context.Service<Fetcher, CatalogFetcher>()("amux/ModelCatalogFetcher") {}
 
 export interface Interface {
-  readonly providers: () => Effect.Effect<Readonly<Record<string, Provider>>>;
+  readonly providers: Effect.Effect<Readonly<Record<string, Provider>>>;
   readonly provider: (id: string) => Effect.Effect<Provider | undefined>;
   readonly model: (providerID: string, modelID: string) => Effect.Effect<Model | undefined>;
   readonly refresh: (force?: boolean) => Effect.Effect<void>;
@@ -94,11 +94,12 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
       const events = yield* EventBus;
       const source = yield* Fetcher;
       const root = yield* stateRoot();
+      const path = yield* Path.Path;
       const directory = path.join(root, "amux", "cache");
       const file = path.join(directory, "models.json");
 
       const decode = (text: string): Readonly<Record<string, Provider>> | undefined => {
-        const raw = S.decodeUnknownOption(RawCatalog)(text);
+        const raw = S.decodeOption(RawCatalog)(text);
         if (Option.isNone(raw)) return undefined;
         const providers: Record<string, Provider> = {};
         for (const [id, value] of Object.entries(raw.value)) {
@@ -121,22 +122,24 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
         const value = decode(text);
         return value;
       });
-      const fresh = fs.stat(file).pipe(
-        Effect.map(
-          (info) =>
-            Option.isSome(info.mtime) &&
-            Date.now() - info.mtime.value.getTime() < Duration.toMillis(CACHE_TTL),
-        ),
-        Effect.catchTag("PlatformError", () => Effect.succeed(false)),
-      );
+      const fresh = Effect.gen(function* () {
+        const info = yield* fs.stat(file).pipe(Effect.catchTag("PlatformError", () => Effect.void));
+        if (info === undefined || Option.isNone(info.mtime)) return false;
+        const now = yield* Clock.currentTimeMillis;
+        return now - info.mtime.value.getTime() < Duration.toMillis(CACHE_TTL);
+      });
       const writeDisk = (value: Readonly<Record<string, Provider>>) =>
         Effect.scoped(
           Effect.gen(function* () {
             yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
             yield* fs.chmod(directory, 0o700);
-            const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+            const now = yield* Clock.currentTimeMillis;
+            const temp = `${file}.${process.pid}.${now}.tmp`;
             const handle = yield* fs.open(temp, { flag: "wx", mode: 0o600 });
-            yield* handle.writeAll(new TextEncoder().encode(JSON.stringify(value) + "\n"));
+            const encoded = yield* S.encodeEffect(S.fromJsonString(S.Record(S.String, S.Unknown)))(
+              value,
+            );
+            yield* handle.writeAll(new TextEncoder().encode(encoded + "\n"));
             yield* handle.sync;
             yield* fs.chmod(temp, 0o600);
             yield* fs.rename(temp, file);
@@ -163,7 +166,7 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
       const safeGet = get.pipe(Effect.orDie);
 
       return {
-        providers: () => safeGet,
+        providers: safeGet,
         provider: (id) => safeGet.pipe(Effect.map((providers) => providers[id])),
         model: (providerID, modelID) =>
           safeGet.pipe(Effect.map((providers) => providers[providerID]?.models[modelID])),
@@ -184,7 +187,7 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
         invalidate: invalidate.pipe(Effect.orDie),
       } satisfies Interface;
     }),
-  ).pipe(Layer.provide(fetcher));
+  ).pipe(Layer.provide(fetcher), Layer.provide(Path.layer));
 
 export const layer = makeLayer(httpFetcher.pipe(Layer.provide(FetchHttpClient.layer))).pipe(
   Layer.provide(EventBus.layer),
