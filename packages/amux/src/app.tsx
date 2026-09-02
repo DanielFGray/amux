@@ -1214,7 +1214,7 @@ function buildApp(
                 view
                   ? {
                       ...view,
-                      error: `could not save capture to ${path}: ${error instanceof Error ? error.message : String(error)}`,
+                      error: `could not save capture to ${path}: ${errorMessage(error)}`,
                     }
                   : view,
               );
@@ -2137,7 +2137,7 @@ function buildApp(
       setSettingsDirty(false);
       return null;
     } catch (error) {
-      return `could not save settings: ${error instanceof Error ? error.message : String(error)}`;
+      return `could not save settings: ${errorMessage(error)}`;
     }
   }
 

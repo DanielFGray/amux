@@ -10,6 +10,7 @@ import { Effect, Option, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
+import { errorMessage } from "./error-message.ts";
 
 export interface PluginSpec {
   readonly path: string;
@@ -169,9 +170,9 @@ export const loadConfig = (
     return decodeConfig(yield* S.decodeEffect(S.fromJsonString(JsonValueSchema))(contents));
   }).pipe(
     Effect.catch((error) =>
-      Effect.logWarning(
-        `Ignoring unreadable config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
-      ).pipe(Effect.as(structuredClone(DEFAULT_CONFIG))),
+      Effect.logWarning(`Ignoring unreadable config at ${path}: ${errorMessage(error)}`).pipe(
+        Effect.as(structuredClone(DEFAULT_CONFIG)),
+      ),
     ),
   );
 

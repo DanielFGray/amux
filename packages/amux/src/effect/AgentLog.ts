@@ -3,6 +3,7 @@ import * as Path from "effect/Path";
 import { Context, Effect, Layer, PubSub, Schema as S, Scope, Stream } from "effect";
 import { AgentEvent, type AgentEventPayload } from "./AttachProtocol.ts";
 import { isSessionId } from "../session.ts";
+import { errorMessage } from "../error-message.ts";
 
 const Entry = S.Struct({
   sequence: S.Int.check(S.isGreaterThanOrEqualTo(0)),
@@ -113,18 +114,14 @@ export function makeAgentLog(
             ),
           );
         const decoded = yield* S.decodeEffect(S.fromJsonString(Entries))(text).pipe(
-          Effect.mapError((error) => new AgentLogError({ message: String(error) })),
+          Effect.mapError((error) => new AgentLogError({ message: errorMessage(error) })),
         );
         const mutable = [...decoded];
         entries.set(session, mutable);
         return mutable;
       }).pipe(
         Effect.mapError((error) =>
-          S.is(AgentLogError)(error)
-            ? error
-            : new AgentLogError({
-                message: error instanceof Error ? error.message : String(error),
-              }),
+          S.is(AgentLogError)(error) ? error : new AgentLogError({ message: errorMessage(error) }),
         ),
       );
 
@@ -145,11 +142,7 @@ export function makeAgentLog(
         yield* fs.rename(temp, file);
       }).pipe(
         Effect.mapError((error) =>
-          S.is(AgentLogError)(error)
-            ? error
-            : new AgentLogError({
-                message: error instanceof Error ? error.message : String(error),
-              }),
+          S.is(AgentLogError)(error) ? error : new AgentLogError({ message: errorMessage(error) }),
         ),
       );
 
@@ -164,7 +157,7 @@ export function makeAgentLog(
         return entry.event;
       }).pipe(
         Effect.mapError((error) =>
-          S.is(AgentLogError)(error) ? error : new AgentLogError({ message: String(error) }),
+          S.is(AgentLogError)(error) ? error : new AgentLogError({ message: errorMessage(error) }),
         ),
       );
 

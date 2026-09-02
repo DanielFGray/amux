@@ -1,5 +1,6 @@
 import { Schema as S, SchemaAST as AST } from "effect";
 import { PermissionDecisionSchema } from "../permission.ts";
+import { errorMessage } from "../error-message.ts";
 
 export const SESSION_STATE_TOPIC = "session.state";
 
@@ -348,9 +349,7 @@ export function decodeAttachFrames(input: string) {
     try {
       frames.push(S.decodeSync(S.fromJsonString(AttachFrame))(line));
     } catch (error) {
-      throw new AttachProtocolError({
-        message: error instanceof Error ? error.message : String(error),
-      });
+      throw new AttachProtocolError({ message: errorMessage(error) });
     }
   }
 

@@ -124,10 +124,7 @@ export const createAttachWriter = (
   };
 };
 
-const reason = <E>(cause: Cause.Cause<E>): string => {
-  const error = Cause.squash(cause);
-  return error instanceof Error ? error.message : String(error);
-};
+const reason = <E>(cause: Cause.Cause<E>): string => errorMessage(Cause.squash(cause));
 
 /**
  * Native Bun Unix-socket adapter for the Effect attach protocol.

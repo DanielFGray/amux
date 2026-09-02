@@ -20,6 +20,7 @@ import { Clock, Context, Effect, Layer, Schema as S, type Scope } from "effect";
 import * as Path from "effect/Path";
 import { PermissionEffectSchema, type PermissionRule } from "./permission.ts";
 import { stateRoot } from "./session.ts";
+import { errorMessage } from "./error-message.ts";
 
 export class ProjectStoreError extends S.TaggedError<ProjectStoreError>()("ProjectStoreError", {
   operation: S.String,
@@ -269,9 +270,5 @@ function queries(database: Database, root: string): Interface {
 const attempt = <A>(operation: string, body: () => A) =>
   Effect.try({
     try: body,
-    catch: (error) =>
-      new ProjectStoreError({
-        operation,
-        message: error instanceof Error ? error.message : String(error),
-      }),
+    catch: (error) => new ProjectStoreError({ operation, message: errorMessage(error) }),
   });

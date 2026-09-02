@@ -9,6 +9,7 @@
 import { Clock, Context, Deferred, Effect, Layer, Queue, Ref, Schema as S, Scope } from "effect";
 import type { SessionAttachment, SessionState } from "../session.ts";
 import type { WorkspaceSnapshot } from "../workspace.ts";
+import { errorMessage } from "../error-message.ts";
 
 export class DaemonModelError extends S.TaggedError<DaemonModelError>()("DaemonModelError", {
   message: S.String,
@@ -130,12 +131,7 @@ export const layerDaemonModel = (initial: {
             attachments.set(connection, { client, attachedSince: now, attachLastSeen: now });
             const newState = { ...cur.state, attached: true, updatedAt: now };
             yield* onPersist(newState).pipe(
-              Effect.catch(
-                (error) =>
-                  new DaemonModelError({
-                    message: error instanceof Error ? error.message : String(error),
-                  }),
-              ),
+              Effect.catch((error) => new DaemonModelError({ message: errorMessage(error) })),
             );
             yield* Ref.set(daemonRef, { ...cur, attachments, state: newState });
           }),
@@ -159,12 +155,7 @@ export const layerDaemonModel = (initial: {
               updatedAt: yield* Clock.currentTimeMillis,
             };
             yield* onPersist(newState).pipe(
-              Effect.catch(
-                (error) =>
-                  new DaemonModelError({
-                    message: error instanceof Error ? error.message : String(error),
-                  }),
-              ),
+              Effect.catch((error) => new DaemonModelError({ message: errorMessage(error) })),
             );
             yield* Ref.set(daemonRef, { ...cur, attachments, state: newState });
           }),
