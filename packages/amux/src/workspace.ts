@@ -72,6 +72,7 @@ import {
   MAX_TERMINAL_DIMENSION,
   MAX_WINDOWS,
 } from "./limits.ts";
+import { NonEmptyString, PositiveInt } from "./schema-primitives.ts";
 import { Clock, Effect, Result, Schema as S } from "effect";
 
 const { basename, join, resolve } = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
@@ -163,8 +164,6 @@ export interface WorkspaceCommandContext {
 }
 
 /** The agent amux runs itself, as opposed to a foreign CLI in a shell pane. */
-const NonEmptyString = S.String.pipe(S.check(S.isMinLength(1)));
-const PositiveInt = S.Int.pipe(S.check(S.isGreaterThan(0)));
 const TerminalDimension = S.Int.pipe(
   S.check(S.isGreaterThan(0)),
   S.check(S.isLessThanOrEqualTo(MAX_TERMINAL_DIMENSION)),

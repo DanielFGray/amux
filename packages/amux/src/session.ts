@@ -10,8 +10,11 @@ import {
   MAX_LAYOUT_BYTES,
   MAX_SESSION_BYTES,
   MAX_SPACES,
+  MAX_TERMINAL_CELLS,
+  MAX_TERMINAL_DIMENSION,
   MAX_WINDOWS,
 } from "./limits.ts";
+import { NonEmptyString, PositiveInt } from "./schema-primitives.ts";
 
 export class SessionId extends Context.Service<SessionId, string>()("SessionId") {}
 
@@ -176,15 +179,13 @@ export interface SessionAttachment {
   attachLastSeen: number;
 }
 
-const NonEmptyString = S.String.pipe(S.check(S.isMinLength(1)));
-const PositiveInt = S.Int.pipe(S.check(S.isGreaterThan(0)));
 const NonNegativeNumber = S.Finite.pipe(S.check(S.isGreaterThanOrEqualTo(0)));
 const SessionIdSchema = S.String.pipe(
   S.check(S.makeFilter(isSessionId, { message: "invalid session id" })),
 );
 const TerminalDimension = S.Int.pipe(
   S.check(S.isGreaterThan(0)),
-  S.check(S.isLessThanOrEqualTo(1_000)),
+  S.check(S.isLessThanOrEqualTo(MAX_TERMINAL_DIMENSION)),
 );
 const PersistedSessionSchema = S.Struct({
   id: NonEmptyString,
@@ -200,7 +201,7 @@ const PersistedSessionSchema = S.Struct({
   exitCode: S.NullOr(S.Int),
 }).pipe(
   S.check(
-    S.makeFilter(({ cols, rows }) => cols * rows <= 500_000, {
+    S.makeFilter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {
       message: "terminal size is too large",
     }),
   ),
