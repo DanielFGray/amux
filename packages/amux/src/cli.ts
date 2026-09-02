@@ -180,9 +180,14 @@ function main(): Effect.Effect<number> {
 
     if (sub === "status" || sub === "stop" || sub === "list") {
       const { runSessionCli } = yield* Effect.promise(() => import("./session-cli.ts"));
-      return yield* Effect.promise(() =>
-        runSessionCli(sub === "list" ? ["list"] : [sub, argv[1] ?? "default"]),
-      );
+      if (sub === "list") return yield* Effect.promise(() => runSessionCli(["list"]));
+      const stripped = stripSessionFlag(argv.slice(1));
+      if ("error" in stripped) {
+        writeErr(`error: ${stripped.error}`);
+        return 2;
+      }
+      const id = stripped.session ?? stripped.rest[0] ?? "default";
+      return yield* Effect.promise(() => runSessionCli([sub, id]));
     }
 
     if (sub === "process-state") {

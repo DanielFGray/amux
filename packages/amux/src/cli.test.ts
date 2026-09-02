@@ -72,6 +72,20 @@ test("a malformed --session is a syntax error, not a silent default", () => {
   }
 }, 20_000);
 
+test("status and stop accept --session, not just a positional id", () => {
+  const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
+  for (const verb of ["status", "stop"]) {
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, "packages/amux/src/cli.ts", verb, "--session=no-such-daemon"],
+      env,
+    });
+    // The flag names the daemon, so parsing succeeds; the CLI only fails
+    // reaching a socket that doesn't exist — never with 'invalid session id'.
+    expect(Buffer.from(result.stderr).toString()).not.toContain("invalid session id");
+    expect(result.exitCode).not.toBe(2);
+  }
+}, 20_000);
+
 test("session-required commands report missing pane identity from the CLI", () => {
   const { AMUX_DAEMON_SESSION: _session, ...env } = process.env;
   const result = Bun.spawnSync({
