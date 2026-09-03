@@ -122,6 +122,20 @@ export const loadDaemonPluginsFromConfig = (
     Effect.provide(BunServices.layer),
   );
 
+/** Load only the CLI-command export used by the headless dispatch host — a
+ *  setup verb like an agent-hook installer, which injects `CliCommandsTag`
+ *  and so can never activate under any other host. */
+export const loadCliPluginsFromConfig = (
+  config: Config,
+  host: PluginHost,
+  configDir: string,
+  coreEntries: readonly PluginDefinition[] = [],
+  storeDir: string = PLUGIN_STORE_DIR,
+) =>
+  loadPluginsFromConfigEffect(config, host, configDir, coreEntries, storeDir, "./cli").pipe(
+    Effect.provide(BunServices.layer),
+  );
+
 /**
  * Where a configured plugin's entry file is, or null if it is somewhere a
  * plugin is not allowed to be. A relative path must stay inside the config

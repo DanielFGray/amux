@@ -778,10 +778,11 @@ function buildApp(
    *  longer than the window. */
   let keybindList: ScrollBoxRenderable | null = null;
   const [commandError, setCommandError] = createSignal<string | null>(null);
+  // Stays up until dismissed (errorPanel's own key handler clears it on any
+  // keypress) rather than on a timer: a message worth reading is worth
+  // copying, and a fixed auto-hide can outrun both.
   function showCommandError(message: string) {
     setCommandError(message);
-    // @effect-diagnostics-next-line globalTimers:off -- transient render-tree notification timer.
-    setTimeout(() => setCommandError(null), 3000);
   }
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false);
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null);

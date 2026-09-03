@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { CONFIG_PATH, loadConfig } from "../config.ts";
 import { createPluginContributions } from "./contributions.ts";
 import { createPluginHost, type RefusedPlugin } from "./host.ts";
-import { loadPluginsFromConfig } from "./loader.ts";
+import { loadCliPluginsFromConfig } from "./loader.ts";
 import { definePlugin } from "./types.ts";
 import { CliCommandsTag, scopedRegistry, type CliCommandRegistration } from "./services.ts";
 
@@ -45,7 +45,7 @@ export const dispatchCliCommand = (
             table.add(owner, registration.name, registration),
         );
         const host = yield* createPluginHost({ contributions });
-        const { refused } = yield* loadPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
+        const { refused } = yield* loadCliPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
           definePlugin({
             id: "amux.registry.cli-commands",
             provide: [CliCommandsTag],
