@@ -2699,7 +2699,10 @@ function buildApp(
     order: 55,
     title: "error",
     visible: () => commandError() !== null,
-    keys: () => {
+    // Only Escape dismisses: swallowing every key would eat the very next
+    // command a user types after seeing an error, not just the error itself.
+    keys: (event) => {
+      if (event.name !== "escape") return false;
       setCommandError(null);
       return true;
     },
