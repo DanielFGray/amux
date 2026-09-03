@@ -44,6 +44,10 @@ export function runPluginCli(
   const writeErr = (text: string) => process.stderr.write(text + "\n");
   const program = Effect.gen(function* () {
     const [verb, arg] = argv;
+    if (verb === "-h" || verb === "--help" || arg === "-h" || arg === "--help") {
+      writeOut(PLUGIN_CLI_HELP);
+      return 0;
+    }
     switch (verb) {
       case "add":
         if (arg === undefined || argv.length > 2) {

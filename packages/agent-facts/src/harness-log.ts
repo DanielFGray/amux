@@ -119,22 +119,29 @@ const decodeOpencodeMessage = S.decodeUnknownOption(OpencodeMessageSchema);
 
 // ---- claude-code: ~/.claude/projects/<cwd with / and . -> ->/*.jsonl ----
 const CLAUDE_CODE: HarnessLogAdapter = {
+  // One project directory holds every Claude Code session ever run against
+  // this cwd, concurrent ones included; only the most recently written file
+  // is this reader's own, so — like the other adapters below — pick that one
+  // file rather than merging every session's messages into one stream.
   readLast: (cwd, limit, home) =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const dir = path.join(home, ".claude", "projects", cwd.replace(/[/.]/g, "-"));
       const files = yield* findFiles(dir, ".jsonl");
-      const messages: HarnessLogMessage[] = [];
+      let best: string | undefined;
       for (const file of files) {
-        for (const raw of yield* readJsonLines(file)) {
-          const decoded = decodeClaudeLine(raw);
-          if (Option.isNone(decoded)) continue;
-          const line = decoded.value;
-          if (line.isSidechain === true) continue;
-          const text = textOfContent(line.message.content);
-          if (!text) continue;
-          messages.push({ role: line.message.role, text, timestamp: line.timestamp });
-        }
+        if (!best || (yield* mtimeOf(file)) > (yield* mtimeOf(best))) best = file;
+      }
+      if (!best) return [];
+      const messages: HarnessLogMessage[] = [];
+      for (const raw of yield* readJsonLines(best)) {
+        const decoded = decodeClaudeLine(raw);
+        if (Option.isNone(decoded)) continue;
+        const line = decoded.value;
+        if (line.isSidechain === true) continue;
+        const text = textOfContent(line.message.content);
+        if (!text) continue;
+        messages.push({ role: line.message.role, text, timestamp: line.timestamp });
       }
       messages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
       return messages.slice(-limit);

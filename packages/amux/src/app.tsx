@@ -603,6 +603,15 @@ function buildApp(
         installModelCallbacks();
         app.refresh();
         if (model.spaces.length === 0) shutdown();
+        // A component session can arrive from any client — a daemon-side
+        // plugin command, another attached client, a resumed reload — not
+        // only from this client's own runPanelCommand. Every broadcast
+        // model update is the one place all of those converge, so this is
+        // where a still-unspawned component agent gets its worker started;
+        // resumePending is idempotent per session id.
+        return pluginRuntime.resumePending
+          ? Effect.runPromise(pluginRuntime.resumePending(model))
+          : undefined;
       })
       .catch((error) =>
         // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.

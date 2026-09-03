@@ -171,6 +171,13 @@ const agentLogs = {
       );
     const lines =
       typeof command.lines === "number" && Number.isSafeInteger(command.lines) ? command.lines : 50;
+    // A component session's declaredAgent is a spawn-provider id (this
+    // plugin's own "native", or another plugin's), not a claim that some
+    // real CLI process wrote a log on disk — reading one by that name would
+    // risk matching an unrelated real session that happens to share both a
+    // provider name and this cwd. Only a pty session's declaredAgent (set by
+    // detecting its actual argv) names a process this reader can trust.
+    if (found.session.kind === "component") return Effect.succeed([]);
     const harness = found.session.declaredAgent ?? identifyAgent(found.session.cmd ?? []);
     return readHarnessLog(harness ?? undefined, found.session.cwd, lines).pipe(
       Effect.provide(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.layer))),
