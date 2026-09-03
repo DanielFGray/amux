@@ -1,4 +1,5 @@
-import type { AnyCommandResult, Command } from "./commands.ts";
+import { isCoreCommand, type Command, type RuntimeCommand } from "./commands.ts";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
 import type { CreationResult } from "./creation-result.ts";
 import type { PaneMoveResult } from "./commands.ts";
 import type { PermissionAnswer } from "./effect/AttachProtocol.ts";
@@ -323,7 +324,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
   worktreesRoot: S.optional(S.String),
 });
 
-export type WorkspaceAction =
+export type CoreWorkspaceAction =
   | { readonly _tag: "spawn"; readonly agent: PersistedSession; pane?: string }
   | { readonly _tag: "prompt"; readonly agent: string; readonly text: string }
   | {
@@ -336,12 +337,76 @@ export type WorkspaceAction =
   | { readonly _tag: "restart"; readonly agent: string }
   | { readonly _tag: "input"; readonly agent: string; readonly data: string };
 
+const CORE_ACTION_TAGS: ReadonlySet<string> = new Set([
+  "spawn",
+  "prompt",
+  "interrupt",
+  "decide",
+  "kill",
+  "restart",
+  "input",
+]);
+
+export const isCoreWorkspaceAction = (action: WorkspaceAction): action is CoreWorkspaceAction =>
+  CORE_ACTION_TAGS.has(action._tag);
+
+/** A plugin-contributed action variant. Core never produces these; the
+ *  transaction routes them to the executor the contributing plugin registered. */
+export interface PluginWorkspaceAction {
+  readonly _tag: string;
+  readonly [key: string]: JsonValue;
+}
+
+export type WorkspaceAction = CoreWorkspaceAction | PluginWorkspaceAction;
+
 export interface WorkspaceMutation {
   readonly snapshot: WorkspaceSnapshot;
   readonly actions: readonly WorkspaceAction[];
   readonly changed: boolean;
-  readonly result?: AnyCommandResult;
+  readonly result?: JsonValue;
 }
+
+/**
+ * What a daemon-resident plugin may do to the workspace draft for a command
+ * core does not own.
+ *
+ * The layout algebra stays behind this interface: a reducer names sessions
+ * and panes through opaque entries, never touching tree structure or id
+ * counters itself. Methods mutate the same draft core's own reducer writes,
+ * so the post-reduce fixups (spawn pane resolution, no-focus restore,
+ * normalization, change detection) apply to plugin commands unchanged.
+ */
+export interface WorkspaceDraft {
+  /** The window a command without an explicit target acts in. */
+  readonly activeWindow: () => WindowEntry | null;
+  /** A session by id, or the focused pane's session when no id is given. */
+  readonly findSession: (id?: string) => SessionEntry | null;
+  /**
+   * Add a backend to a window's roster and queue its spawn. A `provider`
+   * makes it a component session (a harness worker the client respawns);
+   * without one it is a plain shell session. A `prompt` queues the
+   * component's first turn alongside the spawn.
+   */
+  readonly addSession: (
+    target: WorkspaceWindow,
+    dir: string,
+    opts?: { readonly provider?: string; readonly prompt?: string },
+  ) => PersistedSession;
+  /** Show a session in its window, splitting or appending as needed, and
+   *  focus it. Returns the new pane id. */
+  readonly placeSessionPane: (target: WindowEntry, agent: PersistedSession) => string;
+  readonly pushAction: (action: WorkspaceAction) => void;
+  readonly setResult: (result: JsonValue) => void;
+  /** Every agent in the draft, as the machine-facing read surface shapes them. */
+  readonly listAgents: () => readonly ReadAgentEntry[];
+  readonly getAgent: (id: string) => ReadAgentEntry | null;
+}
+
+export type PluginWorkspaceReducer = (
+  draft: WorkspaceDraft,
+  command: RuntimeCommand,
+  context: WorkspaceCommandContext,
+) => void;
 
 /**
  * Adopt persisted state at the daemon boundary.
@@ -662,11 +727,19 @@ export function parseWorkspaceCommandContext(
   });
 }
 
-/** Apply one existing command value to a private candidate generation. */
+/**
+ * Apply one existing command value to a private candidate generation.
+ *
+ * Core tags run the switch below; anything else is a daemon-plugin command
+ * and runs the reducer the plugin registered for its tag, against the same
+ * draft and the same post-reduce fixups. An unregistered tag reduces to a
+ * no-op mutation (the daemon refuses it before it ever gets here).
+ */
 export function applyWorkspaceCommand(
   current: WorkspaceSnapshot,
-  command: Command,
+  command: Command | RuntimeCommand,
   context: WorkspaceCommandContext,
+  plugins?: { readonly reducers: ReadonlyMap<string, PluginWorkspaceReducer> },
 ): WorkspaceMutation {
   const next = structuredClone(current);
   const agentIds = workspaceSessionIds(next);
@@ -686,9 +759,13 @@ export function applyWorkspaceCommand(
     return `${space.id}:p${counter}`;
   };
   const actions: WorkspaceAction[] = [];
-  let result: AnyCommandResult | undefined;
+  let result: JsonValue | undefined;
   const before = JSON.stringify(next);
-  const space = () => findSpace(next, "space" in command ? command.space : undefined);
+  const space = () =>
+    findSpace(
+      next,
+      "space" in command && typeof command.space === "string" ? command.space : undefined,
+    );
   const window = () => findWindow(next, command as { space?: string; window?: number });
   const activeWindow = () =>
     context.agent
@@ -768,12 +845,15 @@ export function applyWorkspaceCommand(
     target.state.focus = id;
     target.layout = makeLayout({ ...target.layout, focus: id });
   };
-  const addSession = (target: WorkspaceWindow, dir: string): PersistedSession => {
-    const component = command._tag === "agent.new";
-    if (component && !command.provider) throw new Error("agent.new requires a spawn provider");
+  const addSession = (
+    target: WorkspaceWindow,
+    dir: string,
+    opts?: { readonly provider?: string; readonly prompt?: string },
+  ): PersistedSession => {
+    const component = opts?.provider !== undefined;
     const agent = {
       id: newAgentId(),
-      name: component ? `${command.provider!}-agent` : commandName(context.shell),
+      name: component ? `${opts.provider}-agent` : commandName(context.shell),
       cwd: dir,
       // Both axes: the worker's content is frames a component draws, and it is
       // an agent. A shell pane is neither, even when the user starts an agent
@@ -787,15 +867,38 @@ export function applyWorkspaceCommand(
     if (component) {
       Object.assign(agent, {
         kind: "component" as const,
-        declaredAgent: command.provider,
-        provider: command.provider,
+        declaredAgent: opts.provider,
+        provider: opts.provider,
       });
     }
     target.sessions.push(agent);
     actions.push({ _tag: "spawn", agent });
-    if (component && command.prompt)
-      actions.push({ _tag: "prompt", agent: agent.id, text: command.prompt });
+    if (component && opts?.prompt)
+      actions.push({ _tag: "prompt", agent: agent.id, text: opts.prompt });
     return agent;
+  };
+  const placeSessionPane = (entry: WindowEntry, agent: PersistedSession): string => {
+    const pane = { id: newPaneId(entry.space), content: paneContentFor(agent) };
+    entry.window.layout = entry.window.layout.root
+      ? splitLayout(entry.window.layout, 0, "row", pane)
+      : appendPane(entry.window.layout, pane);
+    entry.window.state.focus = pane.id;
+    return pane.id;
+  };
+  const draft: WorkspaceDraft = {
+    activeWindow: () => activeWindow(),
+    findSession: (id) => findSession(next, id),
+    addSession,
+    placeSessionPane,
+    pushAction: (action) => void actions.push(action),
+    setResult: (value) => {
+      result = value;
+    },
+    listAgents: () => agentEntries(next),
+    getAgent: (id) => {
+      const found = findSession(next, id);
+      return found ? agentEntry(found.space, found.window, found.session) : null;
+    },
   };
   const addWindow = (target: WorkspaceSpace): WorkspaceWindow => {
     let number: number;
@@ -822,43 +925,11 @@ export function applyWorkspaceCommand(
     created.state.focus = pane;
     return created;
   };
-
+  if (!isCoreCommand(command)) {
+    plugins?.reducers.get(command._tag)?.(draft, command, context);
+    return finish();
+  }
   switch (command._tag) {
-    case "agent.permission": {
-      if (command.session) {
-        const answer = { request: command.request, decision: command.decision };
-        if (command.feedback !== undefined) Object.assign(answer, { feedback: command.feedback });
-        actions.push({
-          _tag: "decide",
-          agent: command.session,
-          answer,
-        });
-      }
-      break;
-    }
-    case "agent.interrupt": {
-      if (command.session) {
-        const action = {
-          _tag: "interrupt" as const,
-          agent: command.session,
-        };
-        if (command.reason) Object.assign(action, { reason: command.reason });
-        actions.push(action);
-      }
-      break;
-    }
-    case "agent.new": {
-      const target = activeWindow();
-      if (!target) break;
-      const agent = addSession(target.window, target.space.dir);
-      const pane = { id: newPaneId(target.space), content: paneContentFor(agent) };
-      target.window.layout = target.window.layout.root
-        ? splitLayout(target.window.layout, 0, "row", pane)
-        : appendPane(target.window.layout, pane);
-      target.window.state.focus = pane.id;
-      result = { session: agent.id, pane: pane.id } satisfies CreationResult<"agent.new">;
-      break;
-    }
     case "pane.split": {
       const target = paneTarget();
       if (!target) break;
@@ -1410,71 +1481,68 @@ export function applyWorkspaceCommand(
       result = target ? paneLayout(next, target.pane.id, context.size) : null;
       break;
     }
-    case "agent.list": {
-      result = agentEntries(next);
-      break;
-    }
-    case "agent.get": {
-      const found = findSession(next, command.target);
-      result = found ? agentEntry(found.space, found.window, found.session) : null;
-      break;
-    }
   }
 
-  // A spawn names the pane it will show, so the daemon can hand the child its
-  // own pane id as the AMUX_PANE_ID env var. Resolved here, after the command
-  // placed the pane, because the pane id is a fact about the resulting layout.
-  for (const a of actions) {
-    if (a._tag !== "spawn" || a.pane !== undefined) continue;
-    const pane = findPaneBySession(next, a.agent.id);
-    if (pane) a.pane = pane.id;
-  }
+  return finish();
 
-  // A background caller asked for no focus to move. The command's structure
-  // stays, but the workspace's view — active space, active window, focused
-  // pane, last and zoom — is put back the way it was. Only targets that still
-  // exist get their view back: closing the focused pane cannot restore its
-  // focus, so the window's own heir focus stands. The id counters are not view
-  // state and advance regardless.
-  if (context.noFocus) {
-    next.state = { ...next.state, activeSpace: current.state.activeSpace };
-    for (const space of next.spaces) {
-      const prior = current.spaces.find((item) => item.id === space.id);
-      if (!prior) continue;
-      space.state = {
-        ...space.state,
-        activeWindow: prior.state.activeWindow,
-        lastWindow: prior.state.lastWindow,
-      };
-      for (const window of space.windows) {
-        const priorWindow = prior.windows.find((item) => item.number === window.number);
-        if (!priorWindow) continue;
-        const priorFocus = priorWindow.state.focus;
-        const placed =
-          priorFocus !== null && layoutRefs(window.layout).some((pane) => pane.id === priorFocus);
-        window.layout = makeLayout({
-          ...window.layout,
-          focus: placed ? priorFocus : window.layout.focus,
-        });
-        window.state = {
-          ...window.state,
-          focus: window.layout.focus ?? null,
-          last: priorWindow.state.last,
-          zoom: priorWindow.state.zoom,
+  // The post-reduce fixups both core and plugin commands share: spawn pane
+  // resolution, the no-focus restore, normalization, and change detection.
+  function finish(): WorkspaceMutation {
+    // A spawn names the pane it will show, so the daemon can hand the child its
+    // own pane id as the AMUX_PANE_ID env var. Resolved here, after the command
+    // placed the pane, because the pane id is a fact about the resulting layout.
+    for (const a of actions) {
+      if (!isCoreWorkspaceAction(a) || a._tag !== "spawn" || a.pane !== undefined) continue;
+      const pane = findPaneBySession(next, a.agent.id);
+      if (pane) a.pane = pane.id;
+    }
+
+    // A background caller asked for no focus to move. The command's structure
+    // stays, but the workspace's view — active space, active window, focused
+    // pane, last and zoom — is put back the way it was. Only targets that still
+    // exist get their view back: closing the focused pane cannot restore its
+    // focus, so the window's own heir focus stands. The id counters are not view
+    // state and advance regardless.
+    if (context.noFocus) {
+      next.state = { ...next.state, activeSpace: current.state.activeSpace };
+      for (const space of next.spaces) {
+        const prior = current.spaces.find((item) => item.id === space.id);
+        if (!prior) continue;
+        space.state = {
+          ...space.state,
+          activeWindow: prior.state.activeWindow,
+          lastWindow: prior.state.lastWindow,
         };
+        for (const window of space.windows) {
+          const priorWindow = prior.windows.find((item) => item.number === window.number);
+          if (!priorWindow) continue;
+          const priorFocus = priorWindow.state.focus;
+          const placed =
+            priorFocus !== null && layoutRefs(window.layout).some((pane) => pane.id === priorFocus);
+          window.layout = makeLayout({
+            ...window.layout,
+            focus: placed ? priorFocus : window.layout.focus,
+          });
+          window.state = {
+            ...window.state,
+            focus: window.layout.focus ?? null,
+            last: priorWindow.state.last,
+            zoom: priorWindow.state.zoom,
+          };
+        }
       }
     }
+
+    for (const { window } of workspaceWindows(next)) normalizeWindowState(window);
+
+    const changed = before !== JSON.stringify(next);
+    const mutation = {
+      snapshot: changed ? { ...next, revision: current.revision + 1 } : current,
+      actions,
+      changed,
+    };
+    return result === undefined ? mutation : { ...mutation, result };
   }
-
-  for (const { window } of workspaceWindows(next)) normalizeWindowState(window);
-
-  const changed = before !== JSON.stringify(next);
-  const mutation = {
-    snapshot: changed ? { ...next, revision: current.revision + 1 } : current,
-    actions,
-    changed,
-  };
-  return result === undefined ? mutation : { ...mutation, result };
 }
 
 /** Natural PTY exit is a daemon-side model mutation too. */
@@ -1829,3 +1897,4 @@ export function paneLayout(
   }
   return null;
 }
+// ---------------------------------------------------------------------------

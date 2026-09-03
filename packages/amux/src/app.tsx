@@ -42,6 +42,7 @@ import {
   CommandError,
   command,
   makeCommands,
+  isCoreCommand,
   runDetached,
   type Command,
   type CommandHandlers,
@@ -182,11 +183,13 @@ export interface AppHandle {
 }
 
 export function runCommandByTarget<A, B>(
-  command: Command,
+  command: Command | RuntimeCommand,
   workspace: () => Effect.Effect<A, CommandError>,
   session: () => Effect.Effect<B, CommandError>,
 ): Effect.Effect<A | B, CommandError> {
-  return COMMAND_META[command._tag].target === "workspace" ? workspace() : session();
+  return isCoreCommand(command) && COMMAND_META[command._tag].target === "workspace"
+    ? workspace()
+    : session();
 }
 
 interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
@@ -652,6 +655,14 @@ function buildApp(
           Effect.map((result) => result as CommandResult<T>),
         ),
     );
+
+  const runRuntimeCommand = (
+    value: RuntimeCommand,
+    _input?: string,
+  ): Effect.Effect<unknown, CommandError> =>
+    session
+      .run(value)
+      .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
 
   const [configState, setConfigState] = createSignal<Config>(config);
   /** Every core option resolved against its declared default — what the app
@@ -1454,14 +1465,6 @@ function buildApp(
     "window.synchronize-panes": runCommand,
     "window.list": runCommand,
 
-    "agent.new": runCommand,
-    "agent.prompt": runCommand,
-    "agent.watch": runCommand,
-    "agent.logs": runCommand,
-    "agent.interrupt": runCommand,
-    "agent.permission": runCommand,
-    "agent.list": runCommand,
-    "agent.get": runCommand,
     notify: runCommand,
     "session.kill": runCommand,
     "session.message": runCommand,
@@ -2776,7 +2779,10 @@ function buildApp(
   const panel = createPanelContext({
     snapshot,
     tick: app.tick,
-    run: (command, input) => runCommand(command, input).pipe(Effect.as(session.workspace())),
+    run: (value, input) =>
+      isCoreCommand(value)
+        ? runCommand(value, input).pipe(Effect.as(session.workspace()))
+        : runRuntimeCommand(value, input).pipe(Effect.as(session.workspace())),
     options: allOptions,
     setOption: changeOption,
     saveOptions,

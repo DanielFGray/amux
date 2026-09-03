@@ -7,10 +7,13 @@ import type { Bindings, CommandSpec } from "../bindings.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
 import type { OptionSpec } from "../options.ts";
 import type { ProcessDisplay, ProcessDisplayProvider } from "./process-display.ts";
-import type { CommandError, Commands, Meta } from "../commands.ts";
+import type { CommandError, Commands, Meta, RuntimeCommand } from "../commands.ts";
 import type { SessionFactsService } from "../session-facts.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
+import type { PromptOptions } from "../effect/SessionRegistry.ts";
+import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
+import type { PluginActionRegistration } from "../effect/WorkspaceTransaction.ts";
 
 export class CurrentPlugin extends Context.Service<CurrentPlugin, PluginInstance>()(
   "amux/CurrentPlugin",
@@ -48,8 +51,54 @@ export interface SpawnProvidersService extends RegistryService<
 > {
   readonly get: (id: string) => SpawnProvider | undefined;
 }
-export type CommandsService = Omit<Commands, "registerCommand"> &
+export type CommandsService = Omit<Commands, "registerCommand" | "registerFullCommand"> &
   RegistryService<CommandRegistration>;
+
+/**
+ * A command a daemon-resident plugin authors: the same authority core's
+ * commands.ts has for built-in commands — a full tag (not namespaced), the
+ * CLI argument shape, the target classification, and how it executes.
+ *
+ * Workspace-target commands reduce through the daemon's model queue: `reduce`
+ * runs inside the transaction against a Draft, alongside core's own reducer,
+ * and may push actions — core variants or new ones from `actions` below.
+ * Session-target commands never touch the model queue: `run` executes
+ * directly with a per-call context (a fresh snapshot read plus the live
+ * session capabilities).
+ */
+export interface DaemonCommandSpec {
+  readonly tag: string;
+  readonly fields: S.Struct.Fields;
+  readonly meta: Meta;
+}
+
+export interface DaemonCommandRegistration extends DaemonCommandSpec {
+  readonly reduce?: PluginWorkspaceReducer;
+  readonly run?: (
+    command: RuntimeCommand,
+    context: DaemonSessionCommandContext,
+  ) => Effect.Effect<unknown, CommandError>;
+  /** New WorkspaceAction variants this command's reducer may push, with the
+   *  executors the transaction routes them to. */
+  readonly actions?: readonly PluginActionRegistration[];
+}
+
+/** Per-call capabilities for a session-target daemon command. Read-only plus
+ *  the live session surface — mutation of daemon-owned model state goes
+ *  through workspace-target commands, never through here. */
+export interface DaemonSessionCommandContext {
+  readonly snapshot: WorkspaceSnapshot;
+  readonly prompt: (
+    target: string,
+    text: string,
+    options?: PromptOptions,
+  ) => Effect.Effect<void, CommandError>;
+  readonly capture: (session: string) => Effect.Effect<string, CommandError>;
+}
+
+export interface DaemonCommandsService extends RegistryService<DaemonCommandRegistration> {
+  readonly all: () => readonly Contribution<DaemonCommandRegistration>[];
+}
 
 /**
  * A subcommand a plugin contributes to the bare `amux` binary — a setup verb
@@ -82,6 +131,9 @@ export class SpawnProvidersTag extends Context.Service<SpawnProvidersTag, SpawnP
 export class CommandsTag extends Context.Service<CommandsTag, CommandsService>()("amux/Commands") {}
 export class CliCommandsTag extends Context.Service<CliCommandsTag, CliCommandsService>()(
   "amux/CliCommands",
+) {}
+export class DaemonCommandsTag extends Context.Service<DaemonCommandsTag, DaemonCommandsService>()(
+  "amux/DaemonCommands",
 ) {}
 export class SessionFactsTag extends Context.Service<SessionFactsTag, SessionFactsService>()(
   "amux/SessionFacts",
@@ -127,6 +179,16 @@ export const registerCommand = <Fields extends S.Struct.Fields>(
   CommandsTag.pipe(
     Effect.flatMap((commands) => commands.register({ verb, fields, meta, handler })),
   );
+
+/**
+ * Author a daemon-side command: the full tag plus its workspace reducer
+ * and/or session runner. The type-safe surface over `DaemonCommandsTag` —
+ * a plugin actually calls this, never `register` directly.
+ */
+export const registerDaemonCommand = (
+  registration: DaemonCommandRegistration,
+): Effect.Effect<void, never, DaemonCommandsTag | CurrentPlugin | Scope.Scope> =>
+  DaemonCommandsTag.pipe(Effect.flatMap((commands) => commands.register(registration)));
 
 export interface PluginService {
   readonly key: string;

@@ -49,6 +49,7 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
   storeDir: string = PLUGIN_STORE_DIR,
+  entrypoint: string = ".",
 ) {
   const hot: HotPlugin[] = [];
   const enabled: PluginDefinition[] = [];
@@ -65,14 +66,14 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
     const key = pluginSpecKey(spec);
     const source =
       "package" in spec
-        ? yield* resolveInstalledEntry(spec.package, storeDir).pipe(
+        ? yield* resolveInstalledEntry(spec.package, storeDir, entrypoint).pipe(
             Effect.map((entry) => pathToFileURL(entry)),
             Effect.tapError((error) =>
               Effect.logWarning(`Could not load plugin '${key}': ${error}`),
             ),
             Effect.orElseSucceed(() => null),
           )
-        : yield* sourceOf(spec.path, configDir);
+        : yield* sourceOf(spec.path, configDir, entrypoint);
     if (!source) {
       if (!("package" in spec))
         yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
@@ -109,16 +110,30 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
 export const loadPluginsFromConfig = (...args: Parameters<typeof loadPluginsFromConfigEffect>) =>
   loadPluginsFromConfigEffect(...args).pipe(Effect.provide(BunServices.layer));
 
+/** Load only the privileged package export used by a daemon host. */
+export const loadDaemonPluginsFromConfig = (
+  config: Config,
+  host: PluginHost,
+  configDir: string,
+  coreEntries: readonly PluginDefinition[] = [],
+  storeDir: string = PLUGIN_STORE_DIR,
+) =>
+  loadPluginsFromConfigEffect(config, host, configDir, coreEntries, storeDir, "./daemon").pipe(
+    Effect.provide(BunServices.layer),
+  );
+
 /**
  * Where a configured plugin's entry file is, or null if it is somewhere a
  * plugin is not allowed to be. A relative path must stay inside the config
  * directory, symlinks included — that check is why this resolves rather than
  * merely joins.
  */
-function sourceOf(specPath: string, configDir: string) {
+function sourceOf(specPath: string, configDir: string, entrypoint: string = ".") {
   if (specPath.startsWith("file://")) {
     try {
-      return Effect.succeed(pathToFileURL(fileURLToPath(specPath)));
+      const filePath = fileURLToPath(specPath);
+      const entry = resolvePathEntry(filePath, entrypoint);
+      return Effect.succeed(entry ? pathToFileURL(entry) : null);
     } catch {
       return Effect.succeed(null);
     }
@@ -126,12 +141,30 @@ function sourceOf(specPath: string, configDir: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    if (path.isAbsolute(specPath)) return pathToFileURL(specPath);
+    if (path.isAbsolute(specPath)) {
+      const entry = resolvePathEntry(specPath, entrypoint);
+      return entry ? pathToFileURL(entry) : null;
+    }
     const resolved = path.resolve(configDir, specPath);
+    const entry = resolvePathEntry(resolved, entrypoint, path.dirname(resolved));
+    if (!entry) return null;
     const realConfigDir = yield* fs.realPath(configDir).pipe(Effect.orElseSucceed(() => null));
-    const realPath = yield* fs.realPath(resolved).pipe(Effect.orElseSucceed(() => null));
+    const realPath = yield* fs.realPath(entry).pipe(Effect.orElseSucceed(() => null));
     if (!realConfigDir || !realPath) return null;
     if (!realPath.startsWith(realConfigDir + path.sep) && realPath !== realConfigDir) return null;
-    return pathToFileURL(resolved);
+    return pathToFileURL(entry);
   });
+}
+
+function resolvePathEntry(
+  filePath: string,
+  entrypoint: string,
+  baseDir = filePath.slice(0, filePath.lastIndexOf("/")),
+): string | null {
+  if (entrypoint === ".") return filePath;
+  try {
+    return Bun.resolveSync(entrypoint, baseDir);
+  } catch {
+    return null;
+  }
 }

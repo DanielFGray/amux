@@ -107,10 +107,31 @@ export const readInstalledManifest = (
     );
   });
 
+/** Whether the package explicitly publishes the privileged daemon entrypoint. */
+export const installedHasDaemonExport = (
+  packageName: string,
+  storeDir: string = PLUGIN_STORE_DIR,
+): Effect.Effect<boolean, string, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const path = join(
+      pluginDirFor(packageName, storeDir),
+      "node_modules",
+      packageName,
+      "package.json",
+    );
+    const value = yield* readJsonFile(path);
+    const manifest = yield* S.decodeUnknownEffect(S.Struct({ exports: S.optionalKey(S.Unknown) }))(
+      value,
+    ).pipe(Effect.mapError(() => `cannot parse ${path}: not a package manifest`));
+    const exports = manifest.exports;
+    return typeof exports === "object" && exports !== null && Object.hasOwn(exports, "./daemon");
+  });
+
 /** The entry file of an installed package, resolved the way an import would. */
 export const resolveInstalledEntry = (
   packageName: string,
   storeDir: string = PLUGIN_STORE_DIR,
+  subpath: string = ".",
 ): Effect.Effect<string, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -119,7 +140,11 @@ export const resolveInstalledEntry = (
       .stat(dir)
       .pipe(Effect.mapError(() => `plugin '${packageName}' is not installed (no store directory)`));
     return yield* Effect.try({
-      try: () => Bun.resolveSync(packageName, dir),
+      try: () =>
+        Bun.resolveSync(
+          subpath === "." ? packageName : `${packageName}/${subpath.replace(/^\.\//, "")}`,
+          dir,
+        ),
       catch: () => `plugin '${packageName}' is installed but has no resolvable entry point`,
     });
   });

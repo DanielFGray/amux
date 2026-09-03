@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- CONFIG_PATH is a filesystem path.
+import { dirname } from "node:path";
 import {
   Cause,
   Clock,
@@ -20,7 +22,7 @@ import {
   Stream,
 } from "effect";
 import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem, BunPath } from "@effect/platform-bun";
+import { BunFileSystem } from "@effect/platform-bun";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
 import * as Socket from "effect/unstable/socket/Socket";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
@@ -43,8 +45,18 @@ import {
   makeWorktreeOps,
   makePersistence,
   makeEvents,
+  WorkspaceTransactionPlugins,
   type WorkspaceTransactionResult,
 } from "./effect/WorkspaceTransaction.ts";
+import { CONFIG_PATH, loadConfig, type Config } from "./config.ts";
+import { createPluginContributions } from "./plugin/contributions.ts";
+import { createPluginHost } from "./plugin/host.ts";
+import { loadDaemonPluginsFromConfig } from "./plugin/loader.ts";
+import {
+  DaemonCommandsTag,
+  scopedRegistry,
+  type DaemonCommandRegistration,
+} from "./plugin/services.ts";
 import type { PlatformError } from "effect/PlatformError";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
@@ -74,7 +86,9 @@ const encodeJson = S.encodeSync(S.fromJsonString(S.Unknown));
 const decodeJson = S.decodeSync(S.fromJsonString(S.Unknown));
 import {
   command,
+  CommandError,
   COMMAND_META,
+  isCoreCommand,
   type Command,
   type CommandMeta,
   type RuntimeCommand,
@@ -94,9 +108,6 @@ import {
 import { gitWorktreeExists } from "./git.ts";
 import { paneSession } from "./layout.ts";
 import { errorMessage } from "./error-message.ts";
-import { identifyAgent } from "@danielfgray/amux-agent-facts/identify.ts";
-import { readHarnessLog } from "@danielfgray/amux-agent-facts/harness-log.ts";
-import { DEFAULT_HARNESS_LOG_LINES } from "./limits.ts";
 
 const describe = errorMessage;
 
@@ -172,6 +183,8 @@ class LockContended extends S.TaggedError<LockContended>()("LockContended", {}) 
 class StaleLock extends S.TaggedError<StaleLock>()("StaleLock", {}) {}
 
 export interface SessionDaemonOptions {
+  /** Explicit daemon-plugin configuration for an embedded daemon. */
+  readonly pluginConfig?: Config;
   readonly saveState?: (
     state: SessionState,
   ) => Effect.Effect<
@@ -193,7 +206,7 @@ export interface SessionDaemonService {
   /** Completes when stop or close has finished releasing daemon resources. */
   readonly closed: Effect.Effect<void>;
   readonly runWorkspaceCommand: (
-    value: Command,
+    value: Command | RuntimeCommand,
     expectedRevision: number,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<WorkspaceTransactionResult, DaemonError>;
@@ -356,6 +369,25 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     Scope.provide(daemonScope),
   );
   const model = Context.get(modelContext, DaemonModel);
+
+  const pluginContributions = createPluginContributions();
+  const daemonCommandTable = pluginContributions.table<DaemonCommandRegistration>();
+  const daemonCommands = scopedRegistry(
+    { all: daemonCommandTable.all },
+    (owner, registration: DaemonCommandRegistration) =>
+      daemonCommandTable.add(owner, registration.tag, registration),
+  );
+  const pluginHost = yield* createPluginHost({ contributions: pluginContributions }).pipe(
+    Effect.provideService(Scope.Scope, daemonScope),
+  );
+  const daemonConfig = options.pluginConfig ?? (yield* loadConfig());
+  yield* loadDaemonPluginsFromConfig(daemonConfig, pluginHost, dirname(CONFIG_PATH), [
+    {
+      id: "amux.registry.daemon-commands",
+      provide: [DaemonCommandsTag],
+      activate: (ctx) => Effect.sync(() => void ctx.provide(DaemonCommandsTag, daemonCommands)),
+    },
+  ]);
 
   const activeSaveRef = {
     current: null as Fiber.Fiber<void, WorkspaceTransactionError> | null,
@@ -844,6 +876,24 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     },
   );
 
+  const transactionPlugins = {
+    get reducers() {
+      return new Map(
+        daemonCommandTable
+          .all()
+          .filter(({ value }) => value.reduce)
+          .map(({ name, value }) => [name, value.reduce!]),
+      );
+    },
+    get actions() {
+      return new Map(
+        daemonCommandTable
+          .all()
+          .flatMap(({ value }) => value.actions ?? [])
+          .map((registration) => [registration.tag, registration.execute]),
+      );
+    },
+  };
   const persistenceContext = yield* Layer.build(
     makePersistence(persist, activeSaveRef, daemonScope).pipe(
       Layer.provide(Layer.succeed(DaemonModel, model)),
@@ -869,6 +919,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     WorkspaceTransaction.layer.pipe(
       Layer.provide(Layer.succeed(DaemonModel, model)),
       Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
+      Layer.provide(Layer.succeed(WorkspaceTransactionPlugins, transactionPlugins)),
       Layer.provide(makeSessionOps(requireHost, (id) => killSession(id))),
       Layer.provide(makeWorktreeOps),
       Layer.provide(
@@ -961,7 +1012,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   ).pipe(Effect.asVoid);
 
   const runWorkspaceCommand = (
-    value: Command,
+    value: Command | RuntimeCommand,
     expectedRevision: number,
     context: WorkspaceCommandContext,
   ): Effect.Effect<WorkspaceTransactionResult, DaemonError> => {
@@ -1034,6 +1085,39 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   ) {
     const meta = (COMMAND_META as Record<string, CommandMeta>)[value._tag];
     if (!meta) {
+      const registration = daemonCommandTable.get(value._tag);
+      if (registration) {
+        if (registration.meta.target === "workspace") {
+          const cur = yield* model.get;
+          const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+          const output = yield* runWorkspaceCommand(
+            value,
+            expectedRevision ?? cur.workspace.revision,
+            ctx,
+          );
+          if (output.result === undefined) return { workspace: encodeJson(output.snapshot) };
+          return { workspace: encodeJson(output.snapshot), result: output.result };
+        }
+        if (registration.meta.target === "session" && registration.run) {
+          const cur = yield* model.get;
+          const commandContext = {
+            snapshot: structuredClone(cur.workspace),
+            prompt: (target: string, text: string, options?: PromptOptions) =>
+              requireHost.pipe(
+                Effect.flatMap((host) => host.prompt(target, text, options)),
+                Effect.mapError((error) => new CommandError({ message: describe(error) })),
+              ),
+            capture: (target: string) =>
+              requireHost.pipe(
+                Effect.flatMap((host) => host.capture(target)),
+                Effect.mapError((error) => new CommandError({ message: describe(error) })),
+              ),
+          };
+          const result = yield* registration.run(value, commandContext);
+          return result === undefined ? {} : { result };
+        }
+        return yield* controlFail(`daemon command '${value._tag}' has no handler`);
+      }
       // Not a core command: only a plugin verb reaches here (the control
       // socket's wire schema admits nothing else), and the daemon runs no
       // plugins — the tag can only mean something to a client that loaded
@@ -1045,7 +1129,8 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       const result = yield* host.runOnClient(first.client, first.connection, value as JsonValue);
       return result === undefined ? {} : { result };
     }
-    const command = value as Command;
+    if (!isCoreCommand(value)) return yield* controlFail(`unknown command: ${value._tag}`);
+    const command = value;
     if (meta.target === "view")
       return yield* controlFail(
         `command '${command._tag}' is a view command, not remotely invocable`,
@@ -1098,20 +1183,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             Effect.as({}),
           ),
         ),
-        Match.tag("agent.prompt", (command) =>
-          Effect.gen(function* () {
-            let promptOptions: PromptOptions = {};
-            if (command.id !== undefined) promptOptions = { ...promptOptions, id: command.id };
-            if (command.delivery !== undefined)
-              promptOptions = { ...promptOptions, delivery: command.delivery };
-            if (command.resume !== undefined)
-              promptOptions = { ...promptOptions, resume: command.resume };
-            yield* requireHost.pipe(
-              Effect.flatMap((h) => h.prompt(command.target, command.text, promptOptions)),
-            );
-            return {};
-          }),
-        ),
         Match.tag("pane.capture", (command) =>
           // The capture target is a session: named directly, or a named or
           // calling pane resolved server-side to the session it shows.
@@ -1119,25 +1190,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             const cur = yield* model.get;
             const session = yield* resolveCaptureSession(command, context, cur.workspace);
             return { result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))) };
-          }),
-        ),
-        Match.tag("agent.logs", (command) =>
-          // Reads the harness's own durable log fresh, on demand; amux never
-          // stores a copy of it. The session's cwd and its declared/detected
-          // harness id are what a per-harness adapter needs to find it.
-          Effect.gen(function* () {
-            const cur = yield* model.get;
-            const found = [...workspaceSessions(cur.workspace)].find(
-              ({ session }) => session.id === command.target,
-            );
-            if (!found) return yield* controlFail(`session '${command.target}' does not exist`);
-            const harness = found.session.declaredAgent ?? identifyAgent(found.session.cmd ?? []);
-            const result = yield* readHarnessLog(
-              harness ?? undefined,
-              found.session.cwd,
-              command.lines ?? DEFAULT_HARNESS_LOG_LINES,
-            ).pipe(Effect.provide(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.layer))));
-            return { result };
           }),
         ),
         Match.tag("notify", (command) =>

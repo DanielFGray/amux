@@ -7,7 +7,10 @@ import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
 import { createPluginHost, type PluginHost } from "./host.ts";
-import { loadPluginsFromConfig as loadConfiguredPlugins } from "./loader.ts";
+import {
+  loadDaemonPluginsFromConfig,
+  loadPluginsFromConfig as loadConfiguredPlugins,
+} from "./loader.ts";
 import { testPluginEnvironment, type TestPluginEnvironment } from "./test-environment.ts";
 import { definePlugin, type PluginDefinition } from "./types.ts";
 import type { Config, PluginSpec } from "../config.ts";
@@ -150,6 +153,21 @@ testEffect("loads a valid plugin", () =>
 
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("my-plugin");
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
+testEffect("loads a path plugin's daemon entrypoint", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    yield* writePluginFile(dir, "index.ts", mkPluginSrc("client-plugin"));
+    yield* writePluginFile(dir, "daemon.ts", mkPluginSrc("daemon-plugin"));
+
+    const config = baseConfig({ plugins: [spec(join(dir, "index.ts"))] });
+    const { host } = yield* makeHost();
+
+    yield* loadDaemonPluginsFromConfig(config, host, dir);
+
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["daemon-plugin"]);
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 

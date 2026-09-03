@@ -43,11 +43,16 @@ export {
   PanelTag,
   SessionStreamTag,
   CliCommandsTag,
+  DaemonCommandsTag,
   intercept,
   registerCommand,
+  registerDaemonCommand,
   type CommandRegistration,
   type CliCommandRegistration,
   type CliCommandsService,
+  type DaemonCommandRegistration,
+  type DaemonCommandsService,
+  type DaemonSessionCommandContext,
   type RegistryService,
   type PluginService,
   type PluginDependency,
@@ -56,6 +61,10 @@ export {
   type ServiceInterception,
   type SessionStreamService,
 } from "./plugin/services.ts";
+export type { Meta } from "./commands.ts";
+export type { CoreWorkspaceAction, WorkspaceDraft, WorkspaceSnapshot } from "./workspace.ts";
+export type { PermissionAnswer } from "./effect/AttachProtocol.ts";
+export type { PromptOptions } from "./effect/SessionRegistry.ts";
 
 export {
   type ForegroundProcessFact,
@@ -70,11 +79,13 @@ export { type ScreenRegion } from "./screen-regions.ts";
 // Commands: constructing one, and the failure a handler reports.
 export {
   command,
+  runtimeCommand,
   CommandError,
   type Command,
   type CommandTag,
   type CommandOf,
   type CommandResult,
+  type RuntimeCommand,
 } from "./commands.ts";
 
 // Where a panel can be put, and what it is told about where it landed.

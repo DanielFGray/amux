@@ -1,6 +1,6 @@
 import type { Accessor } from "solid-js";
 import type { WorkspaceSnapshot } from "../workspace.ts";
-import type { Command, CommandError } from "../commands.ts";
+import type { Command, CommandError, RuntimeCommand } from "../commands.ts";
 import { Effect } from "effect";
 import type { Options, OptionValue } from "../options.ts";
 
@@ -69,7 +69,7 @@ export interface PanelContext {
    *  is the authored generation; the snapshot signal updates from the attach
    *  stream independently. */
   readonly run: (
-    command: Command,
+    command: Command | RuntimeCommand,
     input?: string,
   ) => Effect.Effect<WorkspaceSnapshot, CommandError>;
   /** Current resolved option values — core options plus whatever plugins have

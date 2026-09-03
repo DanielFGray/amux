@@ -16,18 +16,21 @@ import {
 import { DaemonModel } from "./DaemonModel.ts";
 import {
   applyWorkspaceCommand,
+  isCoreWorkspaceAction,
   markSessionExited,
   workspaceSession,
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
   type WorkspaceSpace,
+  type PluginWorkspaceAction,
+  type PluginWorkspaceReducer,
 } from "../workspace.ts";
-import { COMMAND_META, type AnyCommandResult, type Command } from "../commands.ts";
+import { COMMAND_META, isCoreCommand, type Command, type RuntimeCommand } from "../commands.ts";
 import type { PaneEntry } from "../read-model.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { PtyError, SessionSpec } from "./SessionRegistry.ts";
-import type { PermissionAnswer } from "./AttachProtocol.ts";
+import type { JsonValue, PermissionAnswer } from "./AttachProtocol.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { errorMessage } from "../error-message.ts";
 
@@ -43,7 +46,7 @@ const transactionError = <E>(error: E): WorkspaceTransactionError =>
     ? error
     : new WorkspaceTransactionError({ message: describe(error) });
 
-interface SessionOps {
+export interface SessionOps {
   readonly prepare: (
     session: PersistedSession,
     paneId?: string,
@@ -63,6 +66,24 @@ interface SessionOps {
   readonly pids: Effect.Effect<ReadonlyMap<string, number>, WorkspaceTransactionError>;
 }
 
+export interface PluginActionRegistration {
+  readonly tag: string;
+  readonly execute: (
+    action: PluginWorkspaceAction,
+    sessionOps: SessionOps,
+  ) => Effect.Effect<void, WorkspaceTransactionError>;
+}
+
+export interface WorkspaceTransactionPluginsService {
+  readonly reducers: ReadonlyMap<string, PluginWorkspaceReducer>;
+  readonly actions: ReadonlyMap<string, PluginActionRegistration["execute"]>;
+}
+
+export class WorkspaceTransactionPlugins extends Context.Service<
+  WorkspaceTransactionPlugins,
+  WorkspaceTransactionPluginsService
+>()("WorkspaceTransaction/Plugins") {}
+
 const withPanePid = (entry: PaneEntry, pids: ReadonlyMap<string, number>): PaneEntry =>
   entry.session === undefined ? entry : { ...entry, pid: pids.get(entry.session) };
 
@@ -70,10 +91,10 @@ const withPanePid = (entry: PaneEntry, pids: ReadonlyMap<string, number>): PaneE
  *  knows nothing live — pid comes from the daemon's session registry, so it
  *  is stitched on here rather than threaded through `applyWorkspaceCommand`. */
 const withPanePids = (
-  tag: Command["_tag"],
-  result: AnyCommandResult,
+  tag: string,
+  result: JsonValue,
   sessionOps: SessionOps,
-): Effect.Effect<AnyCommandResult, WorkspaceTransactionError> => {
+): Effect.Effect<JsonValue, WorkspaceTransactionError> => {
   if (tag !== "pane.list" && tag !== "pane.current") return Effect.succeed(result);
   return sessionOps.pids.pipe(
     Effect.map((pids) =>
@@ -152,7 +173,7 @@ export class WorkspaceTransactionLifecycle extends Context.Service<
 
 export interface WorkspaceTransactionService {
   readonly run: (
-    value: Command,
+    value: Command | RuntimeCommand,
     expectedRevision: number,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<WorkspaceTransactionResult, WorkspaceTransactionError>;
@@ -164,7 +185,7 @@ export interface WorkspaceTransactionService {
 
 export interface WorkspaceTransactionResult {
   readonly snapshot: WorkspaceSnapshot;
-  readonly result?: AnyCommandResult;
+  readonly result?: JsonValue;
 }
 
 export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>()(
@@ -177,6 +198,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
       const persistence = yield* WorkspaceTransactionPersistence;
       const events = yield* WorkspaceTransactionEvents;
       const lifecycle = yield* Effect.serviceOption(WorkspaceTransactionLifecycle);
+      const plugins = yield* Effect.serviceOption(WorkspaceTransactionPlugins);
       const closeIfEmpty = lifecycle.pipe(
         Option.match({
           onNone: () => Effect.void,
@@ -211,7 +233,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
       });
 
       const run = (
-        value: Command,
+        value: Command | RuntimeCommand,
         expectedRevision: number,
         context: WorkspaceCommandContext,
       ): Effect.Effect<WorkspaceTransactionResult, WorkspaceTransactionError> =>
@@ -224,18 +246,26 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                   message: `stale workspace revision ${expectedRevision}; current revision is ${cur.workspace.revision}`,
                 });
               }
-              if (COMMAND_META[value._tag].target !== "workspace") {
+              if (isCoreCommand(value) && COMMAND_META[value._tag].target !== "workspace") {
                 return yield* new WorkspaceTransactionError({
                   message: `command '${value._tag}' is not a workspace command`,
                 });
               }
 
-              const mutation = applyWorkspaceCommand(cur.workspace, value, context);
+              const mutation = applyWorkspaceCommand(
+                cur.workspace,
+                value,
+                context,
+                plugins.pipe(Option.getOrElse(() => ({ reducers: new Map() }))),
+              );
               const candidate = workspaceSession(mutation.snapshot, cur.state);
               const worktrees = gitWorktreesFor(value, mutation.snapshot, cur.workspace);
               const prepared: PreparedSession[] = [];
               const exitsSettled = yield* Deferred.make<boolean>();
-              const killed = mutation.actions.filter((a) => a._tag === "kill").map((a) => a.agent);
+              const killed = mutation.actions
+                .filter(isCoreWorkspaceAction)
+                .filter((a) => a._tag === "kill")
+                .map((a) => a.agent);
 
               for (const agentId of killed) {
                 const exitRuntime = yield* Effect.context<never>();
@@ -259,15 +289,30 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                     yield* worktreeOps.add(worktrees.created.repo, spec, worktrees.created.path);
                   }
                   for (const a of mutation.actions) {
+                    if (!isCoreWorkspaceAction(a)) continue;
                     if (a._tag !== "spawn") continue;
                     if (a.agent.kind === "component") continue;
                     prepared.push(yield* sessionOps.prepare(a.agent, a.pane));
                   }
                   for (const a of mutation.actions) {
+                    if (!isCoreWorkspaceAction(a)) continue;
                     yield* Match.value(a).pipe(
                       Match.tag("kill", (a) => sessionOps.kill(a.agent)),
                       Match.tag("input", (a) => sessionOps.write(a.agent, a.data)),
                       Match.orElse(() => Effect.void),
+                    );
+                  }
+                  for (const action of mutation.actions) {
+                    if (isCoreWorkspaceAction(action)) continue;
+                    const execute = plugins.pipe(
+                      Option.flatMap((value) =>
+                        Option.fromNullishOr(value.actions.get(action._tag)),
+                      ),
+                    );
+                    if (Option.isNone(execute)) continue;
+                    yield* Effect.scoped(execute.value(action, sessionOps)).pipe(
+                      Effect.timeout("30 seconds"),
+                      Effect.asVoid,
                     );
                   }
                   for (const wt of worktrees.removed) {
@@ -296,6 +341,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                   yield* Deferred.succeed(exitsSettled, true);
                   for (const p of prepared) yield* p.activate;
                   for (const a of mutation.actions) {
+                    if (!isCoreWorkspaceAction(a)) continue;
                     yield* Match.value(a).pipe(
                       Match.tag("prompt", (a) => sessionOps.prompt(a.agent, a.text)),
                       Match.tag("interrupt", (a) => sessionOps.interrupt(a.agent, a.reason)),
@@ -356,7 +402,7 @@ interface GitWorktreePlan {
 }
 
 export function gitWorktreesFor(
-  value: Command,
+  value: Command | RuntimeCommand,
   next: WorkspaceSnapshot,
   current: WorkspaceSnapshot,
 ): GitWorktreePlan {
@@ -365,6 +411,7 @@ export function gitWorktreesFor(
     base: undefined,
     removed: [],
   };
+  if (!isCoreCommand(value)) return none;
   return Match.value(value).pipe(
     Match.tag("space.new", (value): GitWorktreePlan => {
       const created = next.spaces.find(

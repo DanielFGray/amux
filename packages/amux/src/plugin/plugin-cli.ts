@@ -16,6 +16,7 @@ import {
   parsePackageSpec,
   pluginDirFor,
   readInstalledManifest,
+  installedHasDaemonExport,
   uninstallPackage,
   PLUGIN_STORE_DIR,
 } from "./store.ts";
@@ -153,6 +154,22 @@ const addPlugin = (
     const ref = parsePackageSpec(spec);
     if (!ref) return yield* Effect.fail(`not a plugin path or package spec: '${spec}'`);
     const installed = yield* installPackage(ref, storeDir);
+    const privileged = yield* installedHasDaemonExport(ref.name, storeDir);
+    if (privileged) {
+      yield* Effect.logWarning(
+        `${ref.name} publishes a ./daemon entrypoint and can mutate daemon-owned workspace state.`,
+      );
+      const confirmed = yield* Effect.callback<boolean>((resume) => {
+        process.stdout.write("Enable this privileged plugin? [y/N] ");
+        process.stdin.once("data", (data) =>
+          resume(Effect.succeed(/^y(?:es)?\s*$/i.test(String(data)))),
+        );
+      });
+      if (!confirmed) {
+        yield* uninstallPackage(ref.name, storeDir);
+        return yield* Effect.fail("privileged plugin was not enabled");
+      }
+    }
     const config = yield* loadConfig(configPath);
     const entry: PluginSpec =
       ref.version === undefined

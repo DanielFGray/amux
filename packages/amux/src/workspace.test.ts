@@ -12,6 +12,7 @@ import {
 } from "./workspace.ts";
 import { layoutPanes } from "./layout.ts";
 import type { SessionState } from "./session.ts";
+import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
@@ -19,6 +20,14 @@ const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
   if (exit._tag === "Success") throw new Error("expected effect to fail");
   const error = Cause.squash(exit.cause);
   return error instanceof Error ? error.message : String(error);
+};
+
+const agentPlugins = {
+  reducers: new Map(
+    agentHarnessDaemonCommands.flatMap((registration) =>
+      registration.reduce ? [[registration.tag, registration.reduce] as const] : [],
+    ),
+  ),
 };
 
 const base = (layout: string): SessionState => ({
@@ -1158,6 +1167,7 @@ test("agent.permission carries the answer to the session that asked", () => {
       feedback: "not that file",
     }),
     context,
+    agentPlugins,
   );
   expect(answered.actions).toEqual([
     {
@@ -1175,6 +1185,7 @@ test("agent.permission carries the answer to the session that asked", () => {
     current,
     command("agent.permission", { request: "req-1", decision: "once" }),
     context,
+    agentPlugins,
   );
   expect(unaddressed.actions).toEqual([]);
 });
@@ -1192,6 +1203,7 @@ test("agent.new creates an agent session and queues its initial prompt", () => {
       shell: ["sh"],
       size: { cols: 80, rows: 24 },
     },
+    agentPlugins,
   );
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.sessions.at(-1)!;
   const pane = mutation.snapshot.spaces[0]!.windows[0]!.layout.focus!;
@@ -1221,6 +1233,7 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
       shell: ["sh"],
       size: { cols: 80, rows: 24 },
     },
+    agentPlugins,
   );
 
   const agent = mutation.snapshot.spaces[0]!.windows[0]!.sessions.at(-1)!;
@@ -1362,7 +1375,7 @@ test("pane.list reports every pane with its home, session and focus flags", () =
 
 test("agent.list and agent.get report agents with their home and pane", () => {
   const adopted = run(workspaceFromSession(wideBase()));
-  const list = applyWorkspaceCommand(adopted, command("agent.list"), context);
+  const list = applyWorkspaceCommand(adopted, command("agent.list"), context, agentPlugins);
   expect(list.changed).toBe(false);
   expect(list.result).toEqual([
     expect.objectContaining({
@@ -1375,7 +1388,12 @@ test("agent.list and agent.get report agents with their home and pane", () => {
     expect.objectContaining({ id: "agent-b1", space: "space-b", window: 1, pane: "pane-b1" }),
     expect.objectContaining({ id: "agent-b2", space: "space-b", window: 1, pane: "pane-b2" }),
   ]);
-  const get = applyWorkspaceCommand(adopted, command("agent.get", { target: "agent-b2" }), context);
+  const get = applyWorkspaceCommand(
+    adopted,
+    command("agent.get", { target: "agent-b2" }),
+    context,
+    agentPlugins,
+  );
   expect(get.result).toEqual(
     expect.objectContaining({ id: "agent-b2", space: "space-b", window: 1, pane: "pane-b2" }),
   );
@@ -1383,6 +1401,7 @@ test("agent.list and agent.get report agents with their home and pane", () => {
     adopted,
     command("agent.get", { target: "agent-gone" }),
     context,
+    agentPlugins,
   );
   expect(missing.result).toBeNull();
 });

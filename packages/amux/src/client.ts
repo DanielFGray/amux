@@ -4,7 +4,7 @@ import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SessionBackendFactory } from "./backend.ts";
 import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
-import type { AnyCommandResult, Command } from "./commands.ts";
+import type { Command, RuntimeCommand } from "./commands.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 import {
   parseWorkspaceJson,
@@ -52,15 +52,15 @@ export interface SessionClientContract extends DaemonSession {
   >;
   readonly respondCommand: (id: string, result?: JsonValue, error?: string) => void;
   readonly runWorkspace: (
-    command: Command,
+    command: Command | RuntimeCommand,
     context: WorkspaceCommandContext,
   ) => Effect.Effect<
-    { readonly snapshot: WorkspaceSnapshot; readonly result?: AnyCommandResult },
+    { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue },
     ControlError | SessionClientError,
     never
   >;
   /** Raw control-protocol Run for commands that do not produce a workspace snapshot. */
-  readonly run: (command: Command) => Effect.Effect<unknown, ControlError>;
+  readonly run: (command: Command | RuntimeCommand) => Effect.Effect<unknown, ControlError>;
   readonly resumeAgent: (input: {
     session: string;
     provider: string;
@@ -151,10 +151,10 @@ const make = (
     );
     let workspace = initialWorkspace;
     const commandQueue = yield* Queue.unbounded<{
-      readonly command: Command;
+      readonly command: Command | RuntimeCommand;
       readonly context: WorkspaceCommandContext;
       readonly done: Deferred.Deferred<
-        { readonly snapshot: WorkspaceSnapshot; readonly result?: AnyCommandResult },
+        { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue },
         SessionClientError
       >;
     }>();
@@ -171,7 +171,7 @@ const make = (
       return workspace;
     };
     const runQueuedWorkspaceCommand = (request: {
-      readonly command: Command;
+      readonly command: Command | RuntimeCommand;
       readonly context: WorkspaceCommandContext;
     }) =>
       Effect.gen(function* () {
@@ -191,7 +191,7 @@ const make = (
         const result = outputs[0]?.result;
         return result === undefined
           ? { snapshot: structuredClone(workspace) }
-          : { snapshot: structuredClone(workspace), result: result as AnyCommandResult };
+          : { snapshot: structuredClone(workspace), result: result as JsonValue };
       }).pipe(Effect.mapError((error) => new SessionClientError({ message: errorMessage(error) })));
     yield* Effect.forkScoped(
       Effect.forever(
@@ -236,7 +236,7 @@ const make = (
       runWorkspace: (command, context) =>
         Effect.gen(function* () {
           const done = yield* Deferred.make<
-            { readonly snapshot: WorkspaceSnapshot; readonly result?: AnyCommandResult },
+            { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue },
             SessionClientError
           >();
           return yield* Effect.raceFirst(
