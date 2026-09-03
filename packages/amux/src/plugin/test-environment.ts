@@ -152,7 +152,6 @@ export function testPluginEnvironment(
     publish: (ctx: Parameters<PluginDefinition["activate"]>[0]) => void,
   ): PluginDefinition => ({
     id,
-    apiVersion: "1",
     provide: [tag],
     activate: (ctx) => Effect.sync(() => publish(ctx)),
   });
@@ -199,7 +198,6 @@ export function testPluginEnvironment(
     ),
     definePlugin({
       id: "amux.registry.client",
-      apiVersion: "1",
       provide: [PanelTag, SessionStreamTag],
       effect: (ctx) =>
         Effect.sync(() => {

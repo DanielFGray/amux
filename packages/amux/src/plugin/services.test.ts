@@ -1,12 +1,17 @@
 import { afterEach, expect } from "bun:test";
-import { Context, Effect, Fiber, Option, Queue, Redacted, Scope, Stream } from "effect";
-import { Credential } from "@danielfgray/amux-plugin-agent-harness/credential.ts";
+import { Context, Effect, Fiber, Option, Queue, Scope, Stream } from "effect";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
 import { definePlugin, type PluginDefinition, type PluginErrorEvent } from "./types.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
-import { intercept, RegionsTag, SpawnProvidersTag, type PluginService } from "./services.ts";
+import {
+  intercept,
+  RegionsTag,
+  SpawnProvidersTag,
+  type PluginService,
+  type ServiceInterception,
+} from "./services.ts";
 import type { Panel } from "../ui/regions.tsx";
 
 /**
@@ -24,6 +29,38 @@ interface Pool {
 class PoolTag extends Context.Service<PoolTag, Pool>()("test/Pool") {}
 class IndexTag extends Context.Service<IndexTag, { readonly of: string }>()("test/Index") {}
 class NumberTag extends Context.Service<NumberTag, number>()("test/Number") {}
+
+/**
+ * A stand-in for a plugin-owned interceptable service (the shape the
+ * agent harness's credential service has): a list attenuated by an
+ * integration set the consumer declares and the test narrows.
+ */
+interface FilteredItems {
+  readonly all: Effect.Effect<readonly string[]>;
+}
+interface ItemAccess {
+  readonly integrations?: ReadonlySet<string>;
+}
+class ItemsId {}
+const itemsInterception: ServiceInterception<FilteredItems, ItemAccess> = {
+  empty: {},
+  combine: (left, right) => ({
+    integrations:
+      left.integrations === undefined
+        ? right.integrations
+        : right.integrations === undefined
+          ? left.integrations
+          : new Set([...left.integrations].filter((id) => right.integrations!.has(id))),
+  }),
+  access: (service, metadata) => ({
+    all: service.all.pipe(
+      Effect.map((names) => names.filter((name) => metadata().integrations?.has(name) ?? true)),
+    ),
+  }),
+};
+const ItemsService = Object.assign(Context.Service<ItemsId, FilteredItems>()("test/Items"), {
+  interception: itemsInterception,
+} as const);
 
 type AssertFalse<T extends false> = T;
 type UndeclaredRequirement =
@@ -77,7 +114,6 @@ function poolProvider(
   const pool: Pool = { version, open: false };
   const definition = definePlugin({
     id,
-    apiVersion: "1",
     provide: [PoolTag],
     effect: (ctx) =>
       Effect.gen(function* () {
@@ -99,7 +135,6 @@ function poolProvider(
 function poolConsumer(log: string[], id = "consumer"): PluginDefinition {
   return definePlugin({
     id,
-    apiVersion: "1",
     inject: [PoolTag],
     effect: () =>
       Effect.gen(function* () {
@@ -144,7 +179,6 @@ testEffect("registry services attribute writes to the running plugin", () =>
     yield* host.add(
       definePlugin({
         id: "registry-consumer",
-        apiVersion: "1",
         inject: [RegionsTag],
         effect: () =>
           Effect.gen(function* () {
@@ -167,7 +201,6 @@ testEffect("provider contexts preserve primitive service values", () =>
     yield* host.add(
       definePlugin({
         id: "number-provider",
-        apiVersion: "1",
         provide: [NumberTag],
         effect: (ctx) => Effect.sync(() => void ctx.provide(NumberTag, 42)),
       }),
@@ -175,7 +208,6 @@ testEffect("provider contexts preserve primitive service values", () =>
     yield* host.add(
       definePlugin({
         id: "number-consumer",
-        apiVersion: "1",
         inject: [NumberTag],
         effect: () =>
           Effect.gen(function* () {
@@ -188,70 +220,49 @@ testEffect("provider contexts preserve primitive service values", () =>
   }),
 );
 
-testEffect("credential interception updates captured access without reloading the consumer", () =>
+testEffect("service interception updates captured access without reloading the consumer", () =>
   Effect.gen(function* () {
     const host = yield* makeHost();
-    const rows: Credential.Info[] = ["openai", "anthropic"].map((integrationID) => ({
-      id: `${integrationID}-credential` as Credential.ID,
-      integrationID,
-      label: integrationID,
-      value: { type: "key", key: Redacted.make("secret") },
-    }));
-    const credentials: Credential.Interface = {
-      all: Effect.succeed(rows),
-      list: (integrationID) =>
-        Effect.succeed(rows.filter((row) => row.integrationID === integrationID)),
-      get: (id) => Effect.succeed(rows.find((row) => row.id === id)),
-      create: (input) =>
-        Effect.succeed({
-          id: "created" as Credential.ID,
-          integrationID: input.integrationID,
-          label: input.label ?? "default",
-          value: input.value,
-        }),
-      update: () => Effect.void,
-      refreshOAuth: () => Effect.as(Effect.void, undefined as Credential.Value | undefined),
-      remove: () => Effect.void,
+    const items: FilteredItems = {
+      all: Effect.succeed(["openai", "anthropic"]),
     };
-    let acquired: Credential.Interface | undefined;
+    let acquired: FilteredItems | undefined;
     let activations = 0;
 
     yield* host.add(
       definePlugin({
-        id: "credentials",
-        apiVersion: "1",
-        provide: [Credential.Service],
-        effect: (ctx) => Effect.sync(() => void ctx.provide(Credential.Service, credentials)),
+        id: "items",
+        provide: [ItemsService],
+        effect: (ctx) => Effect.sync(() => void ctx.provide(ItemsService, items)),
       }),
     );
     yield* host.add(
       definePlugin({
-        id: "credential-consumer",
-        apiVersion: "1",
+        id: "item-consumer",
         inject: [
-          intercept(Credential.Service, {
+          intercept(ItemsService, {
             integrations: new Set(["openai", "anthropic"]),
           }),
         ],
         effect: () =>
           Effect.gen(function* () {
             activations += 1;
-            acquired = yield* Credential.Service;
+            acquired = yield* ItemsService;
           }),
       }),
     );
 
-    expect((yield* acquired!.all).map((row) => row.integrationID)).toEqual(["openai", "anthropic"]);
-    host.intercept("credential-consumer", Credential.Service, {
+    expect(yield* acquired!.all).toEqual(["openai", "anthropic"]);
+    host.intercept("item-consumer", ItemsService, {
       integrations: new Set(["openai"]),
     });
-    expect((yield* acquired!.all).map((row) => row.integrationID)).toEqual(["openai"]);
-    host.intercept("credential-consumer", Credential.Service, {
+    expect(yield* acquired!.all).toEqual(["openai"]);
+    host.intercept("item-consumer", ItemsService, {
       integrations: new Set(["anthropic"]),
     });
-    expect((yield* acquired!.all).map((row) => row.integrationID)).toEqual(["anthropic"]);
-    host.clearInterception("credential-consumer", Credential.Service);
-    expect((yield* acquired!.all).map((row) => row.integrationID)).toEqual(["openai", "anthropic"]);
+    expect(yield* acquired!.all).toEqual(["anthropic"]);
+    host.clearInterception("item-consumer", ItemsService);
+    expect(yield* acquired!.all).toEqual(["openai", "anthropic"]);
     expect(activations).toBe(1);
   }),
 );
@@ -284,13 +295,11 @@ testEffect("a chain activates in dependency order from a single root", () =>
     yield* host.reconcile([
       definePlugin({
         id: "search",
-        apiVersion: "1",
         inject: [IndexTag],
         effect: () => IndexTag.pipe(Effect.map((index) => void log.push(`search on ${index.of}`))),
       }),
       definePlugin({
         id: "index",
-        apiVersion: "1",
         inject: [PoolTag],
         provide: [IndexTag],
         effect: (ctx) =>
@@ -320,7 +329,6 @@ testEffect("two plugins that inject each other both wait instead of deadlocking"
     yield* host.reconcile([
       definePlugin({
         id: "a",
-        apiVersion: "1",
         inject: [IndexTag],
         provide: [PoolTag],
         effect: (ctx) =>
@@ -331,7 +339,6 @@ testEffect("two plugins that inject each other both wait instead of deadlocking"
       }),
       definePlugin({
         id: "b",
-        apiVersion: "1",
         inject: [PoolTag],
         provide: [IndexTag],
         effect: (ctx) =>
@@ -361,7 +368,6 @@ testEffect("get reads the current provider and stops reading once it leaves", ()
 
     const watcher = definePlugin({
       id: "watcher",
-      apiVersion: "1",
       inject: [SpawnProvidersTag],
       effect: (ctx) =>
         Effect.gen(function* () {
@@ -436,7 +442,6 @@ testEffect("a plugin cannot provide a service it did not declare", () =>
     const refused = yield* host.reconcile([
       definePlugin({
         id: "smuggler",
-        apiVersion: "1",
         effect: (ctx) => Effect.sync(() => ctx.provide(PoolTag, { version: 1, open: true })),
       }),
       poolConsumer(log),
@@ -488,7 +493,6 @@ testEffect("teardown walks the chain leaf-first", () =>
       poolProvider(log).definition,
       definePlugin({
         id: "index",
-        apiVersion: "1",
         inject: [PoolTag],
         provide: [IndexTag],
         effect: (ctx) =>
@@ -499,7 +503,6 @@ testEffect("teardown walks the chain leaf-first", () =>
       }),
       definePlugin({
         id: "search",
-        apiVersion: "1",
         inject: [IndexTag],
         effect: () =>
           Effect.addFinalizer(() => Effect.sync(() => void log.push("search released"))).pipe(
@@ -591,7 +594,6 @@ testEffect("equal-valued replacement providers still invalidate the committed vi
     yield* host.add(
       definePlugin({
         id: "consumer",
-        apiVersion: "1",
         inject: [PoolTag],
         effect: () =>
           PoolTag.pipe(
@@ -620,7 +622,6 @@ testEffect("a provider that crashes takes its dependents back to waiting", () =>
       poolConsumer(log),
       definePlugin({
         id: "pool",
-        apiVersion: "1",
         provide: [PoolTag],
         effect: (ctx) =>
           Effect.gen(function* () {

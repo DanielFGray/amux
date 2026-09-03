@@ -36,7 +36,7 @@ testEffect("importing again picks up an edit inside the plugin's own directory",
       `import { Effect } from "effect";
      import { definePlugin } from "../types.ts";
      import { accent } from "./colours/palette.ts";
-     export default definePlugin({ id: accent, apiVersion: "1", effect: () => Effect.void });`,
+      export default definePlugin({ id: accent, effect: () => Effect.void });`,
     );
     const source = pathToFileURL(path.join(dir, "colours.ts"));
 
@@ -66,7 +66,7 @@ testEffect("a module outside the plugin's directory is the same instance after a
       `import { Effect } from "effect";
      import { definePlugin } from "../types.ts";
      import { once } from "./shared.ts";
-     export default definePlugin({ id: once, apiVersion: "1", effect: () => Effect.void });`,
+      export default definePlugin({ id: once, effect: () => Effect.void });`,
     );
     const source = pathToFileURL(path.join(dir, "reader.ts"));
 
@@ -98,7 +98,7 @@ testEffect("an intercepted dependency survives the trip through the decoder", ()
        empty: {}, combine: (left, right) => ({ ...left, ...right }),
        access: (service) => service,
      }});
-     export default definePlugin({ id: "needs", apiVersion: "1",
+      export default definePlugin({ id: "needs",
        inject: [intercept(Pool, { access: "read" })],
        effect: () => Effect.void });`,
     );
@@ -119,7 +119,7 @@ testEffect("a module that is not a plugin is refused with the reason", () =>
 
     const failure = yield* Effect.result(hotImport(pathToFileURL(path.join(dir, "nope.ts"))));
     expect(failure._tag).toBe("Failure");
-    expect(failure._tag === "Failure" && failure.failure).toContain("apiVersion");
+    expect(failure._tag === "Failure" && failure.failure).toContain("activate");
   }),
 );
 

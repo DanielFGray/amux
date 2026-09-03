@@ -71,8 +71,6 @@ export interface RefusedPlugin {
   readonly key: string;
 }
 
-const SUPPORTED_API_VERSION = "1";
-
 /** Add, remove and re-gate call one another around the dependency graph, so
  *  each of them has to say its own type rather than infer it from the others. */
 type Add = (plugin: PluginDefinition) => Effect.Effect<void, string>;
@@ -172,19 +170,6 @@ export function createPluginHost(
           phase: "activate",
           source: "host",
           error: new Error("Plugin host is disposed"),
-          timestamp: yield* Clock.currentTimeMillis,
-        });
-        return;
-      }
-
-      if (plugin.apiVersion !== SUPPORTED_API_VERSION) {
-        emitError({
-          pluginId: plugin.id,
-          phase: "activate",
-          source: "host",
-          error: new Error(
-            `Plugin '${plugin.id}' declares apiVersion '${plugin.apiVersion}' but this host supports '${SUPPORTED_API_VERSION}'`,
-          ),
           timestamp: yield* Clock.currentTimeMillis,
         });
         return;

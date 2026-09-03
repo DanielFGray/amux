@@ -2,80 +2,12 @@ import { BunServices } from "@effect/platform-bun";
 import { Effect, Path } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { Config } from "../config.ts";
+import { pluginSpecKey, type Config, type PluginSpec } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost, RefusedPlugin } from "./host.ts";
-import { decodePlugin, hotImport } from "./hot.ts";
-import * as sidebarModule from "@danielfgray/amux-plugin-sidebar";
-import * as agentHarnessModule from "@danielfgray/amux-plugin-agent-harness";
-import * as notificationsModule from "@danielfgray/amux-plugin-notifications";
-import * as agentAwarenessModule from "@danielfgray/amux-agent-awareness";
-import * as agentHooksCliModule from "@danielfgray/amux-agent-awareness/hooks-cli.ts";
-
-/**
- * The plugins amux ships, named twice on purpose.
- *
- * `load` is a static import bound above: a `bun build --compile` executable
- * resolves a dynamic `import()` of a bare workspace-package specifier against
- * the real filesystem at runtime, which does not exist inside the binary — it
- * embeds the module's code (reachable from the static import) but cannot then
- * find it by name. A static import sidesteps that resolution step entirely.
- * `resolveSource` is the same module resolved to a file on disk (via the
- * workspace symlink in node_modules), which is what a reload re-imports. It
- * is a function, not a value, because `import.meta.resolve` on a bare
- * specifier throws in a compiled binary for the same reason the dynamic
- * `import()` above would — deferring the call lets `builtinSource` turn that
- * failure into "no source" instead of crashing every run of the binary before
- * it reaches plugin loading. A run from source uses that source and is
- * therefore reloadable; a compiled binary falls back to `load`, because there
- * is no source there to reload and nothing to watch.
- */
-const BUILTIN_PLUGINS = {
-  "builtin:amux.agent-awareness": {
-    load: () => Promise.resolve(agentAwarenessModule),
-    resolveSource: () => import.meta.resolve("@danielfgray/amux-agent-awareness"),
-  },
-  "builtin:amux.sidebar": {
-    load: () => Promise.resolve(sidebarModule),
-    resolveSource: () => import.meta.resolve("@danielfgray/amux-plugin-sidebar"),
-  },
-  "builtin:amux.agent-harness": {
-    load: () => Promise.resolve(agentHarnessModule),
-    resolveSource: () => import.meta.resolve("@danielfgray/amux-plugin-agent-harness"),
-  },
-  "builtin:amux.notifications": {
-    load: () => Promise.resolve(notificationsModule),
-    resolveSource: () => import.meta.resolve("@danielfgray/amux-plugin-notifications"),
-  },
-  "builtin:amux.agent-hooks-cli": {
-    load: () => Promise.resolve(agentHooksCliModule),
-    resolveSource: () => import.meta.resolve("@danielfgray/amux-agent-awareness/hooks-cli.ts"),
-  },
-} satisfies Readonly<Record<string, BuiltinEntry>>;
-
-interface BuiltinEntry {
-  readonly load: () => Promise<unknown>;
-  readonly resolveSource: () => string;
-}
-
-function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
-  return Object.hasOwn(record, key);
-}
-
-function builtinAt(path: string): BuiltinEntry | undefined {
-  if (!hasOwn(BUILTIN_PLUGINS, path)) return undefined;
-  return BUILTIN_PLUGINS[path];
-}
-
-/** A builtin's source file, or null when running compiled and there is none
- *  on disk to resolve. */
-function builtinSource(builtin: BuiltinEntry): URL | null {
-  try {
-    return new URL(builtin.resolveSource());
-  } catch {
-    return null;
-  }
-}
+import { hotImport } from "./hot.ts";
+import { checkPluginCompat } from "./compat.ts";
+import { PLUGIN_STORE_DIR, resolveInstalledEntry } from "./store.ts";
 
 /** A plugin whose source amux can see, and can therefore load again. */
 export interface HotPlugin {
@@ -116,12 +48,13 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
+  storeDir: string = PLUGIN_STORE_DIR,
 ) {
   const hot: HotPlugin[] = [];
   const enabled: PluginDefinition[] = [];
 
-  const configured = new Map(config.plugins.map((spec) => [spec.path, spec]));
-  const specs = [
+  const configured = new Map(config.plugins.map((spec) => [pluginSpecKey(spec), spec]));
+  const specs: readonly PluginSpec[] = [
     ...config.plugins,
     ...(yield* discoveredPlugins(configDir))
       .filter((path) => !configured.has(path))
@@ -129,48 +62,38 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
   ];
 
   for (const spec of specs) {
-    // A builtin that cannot be read from disk is a compiled binary, not a
-    // broken install: the module is in the bundle, and only reloading is lost.
-    const builtin = builtinAt(spec.path);
-    const source = builtin ? builtinSource(builtin) : yield* sourceOf(spec.path, configDir);
-    if (!source && !builtin) {
-      yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
+    const key = pluginSpecKey(spec);
+    const source =
+      "package" in spec
+        ? yield* resolveInstalledEntry(spec.package, storeDir).pipe(
+            Effect.map((entry) => pathToFileURL(entry)),
+            Effect.tapError((error) =>
+              Effect.logWarning(`Could not load plugin '${key}': ${error}`),
+            ),
+            Effect.orElseSucceed(() => null),
+          )
+        : yield* sourceOf(spec.path, configDir);
+    if (!source) {
+      if (!("package" in spec))
+        yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
       continue;
     }
 
-    const fromBuiltin = Effect.tryPromise({
-      try: () => builtin!.load(),
-      catch: () => "builtin plugin load failed",
-    }).pipe(
-      Effect.flatMap(decodePlugin),
-      Effect.map((definition) => ({ definition, reloadable: false })),
-    );
-    const loaded = yield* (
-      source
-        ? hotImport(source).pipe(
-            Effect.map((definition) => ({ definition, reloadable: true })),
-            Effect.catch((error) => (builtin ? fromBuiltin : Effect.fail(error))),
-          )
-        : fromBuiltin
-    ).pipe(
-      Effect.tapError((error) =>
-        Effect.logWarning(`Could not load plugin '${spec.path}': ${error}`),
-      ),
+    const loaded = yield* hotImport(source).pipe(
+      Effect.tapError((error) => Effect.logWarning(`Could not load plugin '${key}': ${error}`)),
       Effect.orElseSucceed(() => null),
     );
     if (!loaded) continue;
 
-    if (spec.enabled) enabled.push(loaded.definition);
-    // `reloadable` is only true when `hotImport(source)` itself succeeded, so
-    // `source` is never null here — the guard just proves that to the type
-    // checker without a non-null assertion.
-    if (loaded.reloadable && source)
-      hot.push({
-        id: loaded.definition.id,
-        path: spec.path,
-        source,
-        definition: loaded.definition,
-      });
+    const compatible = yield* checkPluginCompat(source, loaded.id).pipe(
+      Effect.tapError((error) => Effect.logWarning(error)),
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!compatible) continue;
+
+    if (spec.enabled) enabled.push(loaded);
+    hot.push({ id: loaded.id, path: key, source, definition: loaded });
   }
 
   // One configuration, not a plugin at a time: whether an injected key has any

@@ -24,7 +24,6 @@ export interface SpawnProvider {
 
 export interface PluginDefinition {
   readonly id: string;
-  readonly apiVersion: string;
   /**
    * Services this plugin cannot run without. It does not start until every one
    * of them has a provider, and it is torn down and re-gated when a provider
@@ -73,7 +72,6 @@ export const definePlugin = <
   const Dependencies extends readonly PluginDependency[] = [],
 >(definition: {
   readonly id: string;
-  readonly apiVersion: string;
   readonly inject?: Dependencies;
   readonly provide?: readonly PluginService[];
   readonly effect: (
@@ -81,7 +79,6 @@ export const definePlugin = <
   ) => Effect.Effect<void, never, PluginRequirements<Dependencies>>;
 }): PluginDefinition => ({
   id: definition.id,
-  apiVersion: definition.apiVersion,
   inject: definition.inject,
   provide: definition.provide,
   activate: (context, provided) =>

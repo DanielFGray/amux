@@ -49,7 +49,6 @@ function mockEnvironment(
 function mkPlugin<const Tags extends readonly PluginService[] = []>(
   overrides: {
     readonly id?: string;
-    readonly apiVersion?: string;
     readonly inject?: Tags;
     readonly effect?: (
       context: PluginHostContext,
@@ -58,7 +57,6 @@ function mkPlugin<const Tags extends readonly PluginService[] = []>(
 ): PluginDefinition {
   return definePlugin({
     id: "test.plugin",
-    apiVersion: "1",
     effect: () => Effect.void,
     ...overrides,
   });
@@ -183,7 +181,6 @@ testEffect(
       const refused = yield* host.reconcile([
         definePlugin({
           id: "amux.registry.cli-commands",
-          apiVersion: "1",
           provide: [CliCommandsTag],
           effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
         }),
@@ -272,33 +269,6 @@ testEffect("add replaces a running plugin, taking its registrations with it", ()
     expect(host.status().filter((status) => status.id === "swap")).toEqual([
       { id: "swap", waitingFor: [] },
     ]);
-  }),
-);
-
-// --- apiVersion ---
-
-testEffect("add rejects an unsupported apiVersion", () =>
-  Effect.gen(function* () {
-    const { host } = yield* makeHost();
-
-    const errors = yield* Queue.unbounded<PluginErrorEvent>();
-    const drain = yield* host.onError.pipe(
-      Stream.runForEach((e) => Queue.offer(errors, e)),
-      Effect.forkDetach,
-    );
-    yield* Effect.yieldNow;
-
-    yield* host.add(mkPlugin({ id: "badver", apiVersion: "99" }));
-    yield* Effect.yieldNow;
-
-    const reported = yield* Queue.takeAll(errors);
-    yield* Fiber.interrupt(drain);
-
-    const versionError = reported.find((e) => e.pluginId === "badver");
-    expect(versionError).toBeDefined();
-    expect(versionError!.error.message).toContain("apiVersion '99'");
-    expect(versionError!.error.message).toContain("supports '1'");
-    expect(host.status()).toEqual([]);
   }),
 );
 

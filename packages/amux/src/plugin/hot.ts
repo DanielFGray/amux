@@ -90,7 +90,6 @@ export const decodePlugin = (module: unknown): Effect.Effect<PluginDefinition, s
 const PluginModule = S.Struct({
   default: S.Struct({
     id: S.NonEmptyString,
-    apiVersion: S.String,
     inject: S.optional(
       S.Array(
         S.declare<PluginDependency>(

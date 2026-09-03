@@ -48,7 +48,6 @@ export const dispatchCliCommand = (
         const { refused } = yield* loadPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
           definePlugin({
             id: "amux.registry.cli-commands",
-            apiVersion: "1",
             provide: [CliCommandsTag],
             effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
           }),

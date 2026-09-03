@@ -1,7 +1,9 @@
 import { Effect } from "effect";
+import { BunFileSystem } from "@effect/platform-bun";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost } from "./host.ts";
 import { hotImport } from "./hot.ts";
+import { checkPluginCompat } from "./compat.ts";
 import type { HotPlugin } from "./loader.ts";
 
 export interface PluginReloader {
@@ -52,6 +54,15 @@ export const createReloader = (host: PluginHost, plugins: readonly HotPlugin[]):
       if (!current) return yield* Effect.fail(`no reloadable plugin '${id}'`);
 
       const next = yield* hotImport(current.source).pipe(
+        Effect.mapError((error) => `plugin '${id}' was not reloaded: ${error}`),
+      );
+      // Checked before `add` replaces the running instance: a reloaded
+      // source that no longer satisfies its engines.amux range leaves the
+      // last version that worked alone, the same as one that will not import.
+      // Provided here, at the one filesystem touch, so `reload` stays
+      // service-free for its callers the way the loader already is.
+      yield* checkPluginCompat(current.source, next.id).pipe(
+        Effect.provide(BunFileSystem.layer),
         Effect.mapError((error) => `plugin '${id}' was not reloaded: ${error}`),
       );
       yield* host.add(next);

@@ -248,6 +248,10 @@ export function generateHelp(): string {
   lines.push("  status [id]       print a session's status as JSON");
   lines.push("  stop [id]         stop a session");
   lines.push("  list              list known sessions and whether each is running");
+  lines.push("  plugin add <spec> install a plugin (npm package or local path) and enable it");
+  lines.push("  plugin rm <name>  disable a plugin and uninstall its package");
+  lines.push("  plugin ls         list configured plugins and installed packages");
+  lines.push("  plugin upgrade <name> install the latest version of a configured package");
   lines.push("");
   lines.push("  amux new <session-id>   create a session (or resume a stopped one) and attach");
   lines.push("  amux <session-id>       attach to an existing session");

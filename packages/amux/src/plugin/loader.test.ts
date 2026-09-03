@@ -69,11 +69,15 @@ const loadPluginsFromConfig = (
   host: PluginHost,
   configDir: string,
   entries: readonly PluginDefinition[] = [],
+  storeDir?: string,
 ) =>
-  loadConfiguredPlugins(config, host, configDir, [
-    ...(registryEntriesByHost.get(host) ?? []),
-    ...entries,
-  ]);
+  loadConfiguredPlugins(
+    config,
+    host,
+    configDir,
+    [...(registryEntriesByHost.get(host) ?? []), ...entries],
+    ...(storeDir === undefined ? [] : [storeDir]),
+  );
 
 function baseConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -102,10 +106,7 @@ const writeExampleConfig = (
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       JSON.stringify({
         plugins: [
-          { path: "builtin:amux.agent-awareness", enabled: false },
-          { path: "builtin:amux.sidebar", enabled: false },
-          { path: "builtin:amux.agent-harness", enabled: false },
-          { path: "builtin:amux.notifications", enabled: false },
+          { path: join(dir, "not-a-plugin.ts"), enabled: false },
           { path: join(testDir, "../../../../examples", example), enabled: true },
         ],
       }),
@@ -123,17 +124,15 @@ import { definePlugin } from ${JSON.stringify(typesPath)};`;
     case "null-default":
       return `export default null;`;
     case "no-id":
-      return `${preamble}\nexport default { apiVersion: "1", activate: () => Effect.void };`;
+      return `${preamble}\nexport default { activate: () => Effect.void };`;
     case "empty-id":
-      return `${preamble}\nexport default { id: "", apiVersion: "1", activate: () => Effect.void };`;
-    case "no-apiVersion":
-      return `${preamble}\nexport default { id: "${id}", activate: () => Effect.void };`;
+      return `${preamble}\nexport default { id: "", activate: () => Effect.void };`;
     case "no-activate":
-      return `export default { id: "${id}", apiVersion: "1" };`;
+      return `export default { id: "${id}" };`;
     case "throw":
       return `throw new Error("syntax error");`;
     default:
-      return `${preamble}\nexport default definePlugin({ id: "${id}", apiVersion: "1", effect: () => Effect.void });`;
+      return `${preamble}\nexport default definePlugin({ id: "${id}", effect: () => Effect.void });`;
   }
 }
 
@@ -386,22 +385,6 @@ testEffect("reports a plugin with an empty id", () =>
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
-// --- Validation: missing apiVersion ---
-
-testEffect("reports a plugin with no apiVersion", () =>
-  Effect.gen(function* () {
-    const dir = yield* tempDir;
-    yield* writePluginFile(dir, "noapi.ts", mkPluginSrc("noapi", "no-apiVersion"));
-
-    const config = baseConfig({ plugins: [spec(join(dir, "noapi.ts"))] });
-    const { host } = yield* makeHost();
-
-    yield* loadPluginsFromConfig(config, host, dir);
-
-    expect(pluginStatuses(host).length).toBe(0);
-  }).pipe(Effect.provide(BunFileSystem.layer)),
-);
-
 // --- Validation: missing activation function ---
 
 testEffect("reports a plugin with no activation function", () =>
@@ -454,7 +437,6 @@ testEffect("reconciles core and configured entries as one configuration", () =>
     const { host } = yield* makeHost();
     const core = definePlugin({
       id: "amux.windows",
-      apiVersion: "1",
       effect: () => Effect.void,
     });
 
@@ -520,7 +502,6 @@ testEffect("host continues working after loader finishes", () =>
     yield* host.add(
       definePlugin({
         id: "post",
-        apiVersion: "1",
         effect: () => Effect.void,
       }),
     );
@@ -533,6 +514,95 @@ testEffect("host continues working after loader finishes", () =>
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
+// --- Package specs resolve through the plugin store ---
+
+/** A store tree shaped the way `installPackage` leaves one, without the network. */
+const fakeInstall = Effect.fnUntraced(function* (
+  store: string,
+  name: string,
+  pluginId: string,
+  engines?: Record<string, string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const dir = join(store, name);
+  yield* fs.makeDirectory(join(dir, "node_modules", name), { recursive: true });
+  yield* fs.writeFileString(
+    join(dir, "package.json"),
+    // Fixture JSON, not an encode of a typed manifest.
+    // @effect-diagnostics-next-line preferSchemaOverJson:off
+    JSON.stringify({
+      name: "amux-installed-plugin",
+      private: true,
+      dependencies: { [name]: "^0.2.0" },
+    }),
+  );
+  const installedBase = {
+    name,
+    version: "0.2.0",
+    exports: { ".": "./index.js" },
+  };
+  yield* fs.writeFileString(
+    join(dir, "node_modules", name, "package.json"),
+    // Fixture JSON, not an encode of a typed manifest.
+    // @effect-diagnostics-next-line preferSchemaOverJson:off
+    JSON.stringify(engines === undefined ? installedBase : { ...installedBase, engines }),
+  );
+  yield* fs.writeFileString(
+    join(dir, "node_modules", name, "index.js"),
+    `import { Effect } from "effect";\nexport default { id: "${pluginId}", activate: () => Effect.void };\n`,
+  );
+});
+
+testEffect("loads an installed package by name", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    const store = join(dir, "store");
+    yield* fakeInstall(store, "fake-example-plugin", "fake-example");
+
+    const config = baseConfig({ plugins: [{ package: "fake-example-plugin", enabled: true }] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir, [], store);
+
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["fake-example"]);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
+testEffect("a configured package with no install is skipped", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    const store = join(dir, "store");
+
+    const config = baseConfig({ plugins: [{ package: "absent-plugin", enabled: true }] });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir, [], store);
+
+    expect(pluginStatuses(host).length).toBe(0);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
+testEffect("a package whose engines.amux misses the host is refused, without blocking others", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    const store = join(dir, "store");
+    yield* fakeInstall(store, "future-plugin", "future", { amux: "^99.0.0" });
+    yield* fakeInstall(store, "present-plugin", "present", { amux: "^0.1.0" });
+
+    const config = baseConfig({
+      plugins: [
+        { package: "future-plugin", enabled: true },
+        { package: "present-plugin", enabled: true },
+      ],
+    });
+    const { host } = yield* makeHost();
+
+    yield* loadPluginsFromConfig(config, host, dir, [], store);
+
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["present"]);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
 // --- Decode config preserves plugins ---
 
 test("decodeConfig preserves valid plugin specs", () => {
@@ -542,23 +612,23 @@ test("decodeConfig preserves valid plugin specs", () => {
       "/absolute/path.ts",
       { path: "/with/options.ts", enabled: true },
       { path: "/disabled.ts", enabled: false },
+      { package: "example-plugin" },
+      { package: "@scope/example-plugin", version: "^1.2.0", enabled: false },
       "",
       null,
       42,
       { enabled: true },
       { path: 123 },
+      { package: "" },
     ],
   });
 
   expect(config.plugins).toEqual([
-    { path: "builtin:amux.agent-awareness", enabled: true },
-    { path: "builtin:amux.sidebar", enabled: true },
-    { path: "builtin:amux.agent-harness", enabled: true },
-    { path: "builtin:amux.notifications", enabled: true },
-    { path: "builtin:amux.agent-hooks-cli", enabled: true },
     { path: "./relative.ts", enabled: true },
     { path: "/absolute/path.ts", enabled: true },
     { path: "/with/options.ts", enabled: true },
     { path: "/disabled.ts", enabled: false },
+    { package: "example-plugin", enabled: true },
+    { package: "@scope/example-plugin", version: "^1.2.0", enabled: false },
   ]);
 });

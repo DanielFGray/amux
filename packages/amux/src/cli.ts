@@ -9,6 +9,7 @@
  * - `amux new <session-id>` — create (or resume) a session and attach
  * - `amux daemon [id]` — run the daemon foreground
  * - `amux status|stop|list [id]` — one-shot lifecycle commands
+ * - `amux plugin add|rm|ls|upgrade` — manage the plugin store and config
  * - `amux <command> [args]` — invoke a remote command via the daemon RPC
  * - `amux help` — show usage
  *
@@ -220,6 +221,15 @@ function main(): Effect.Effect<number> {
           ),
         );
       });
+    }
+
+    // Plugin store management — carved into core's CLI rather than
+    // plugin-registered: these verbs edit the store and the config file, so
+    // they work with zero plugins installed, when no registry exists to
+    // register them into.
+    if (sub === "plugin") {
+      const { runPluginCli } = yield* Effect.promise(() => import("./plugin/plugin-cli.ts"));
+      return yield* Effect.promise(() => runPluginCli(argv.slice(1)));
     }
 
     // Command dispatch — needs Effect, control-client, commands, etc.

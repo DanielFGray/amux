@@ -62,7 +62,7 @@ testEffect("a change inside the plugin's directory is part of the reload", () =>
       `import { Effect } from "effect";
        import { mark } from "./inner/mark.ts";
        import { definePlugin } from "../types.ts";
-       export default definePlugin({ id: "inner", apiVersion: "1",
+       export default definePlugin({ id: "inner",
           effect: () => Effect.sync(() => { (globalThis.AMUX_RELOAD_TEST ??= []).push(mark); }) });`,
       { "inner/mark.ts": `export const mark = "1";` },
     );
@@ -96,7 +96,7 @@ testEffect("a failed candidate never becomes visible", () =>
       `import { Effect } from "effect";
        import { RegionsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
        import { definePlugin } from "../types.ts";
-       export default definePlugin({ id: "crash", apiVersion: "1",
+       export default definePlugin({ id: "crash",
           inject: [RegionsTag], effect: () => Effect.gen(function* () {
            const regions = yield* RegionsTag;
            yield* regions.register({ id: "crash.panel", region: "left", anchor: "app",
@@ -112,7 +112,7 @@ testEffect("a failed candidate never becomes visible", () =>
         `import { Effect } from "effect";
          import { RegionsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
          import { definePlugin } from "../types.ts";
-         export default definePlugin({ id: "crash", apiVersion: "1",
+         export default definePlugin({ id: "crash",
              inject: [RegionsTag], effect: () => Effect.gen(function* () {
                const regions = yield* RegionsTag;
                yield* regions.register({ id: "crash.panel", region: "left", anchor: "app",
@@ -162,7 +162,7 @@ testEffect("a plugin amux cannot see is not reloadable", () =>
 const version = (id: string, generation: number) =>
   `import { Effect } from "effect";
    import { definePlugin } from "../types.ts";
-   export default definePlugin({ id: "${id}", apiVersion: "1",
+   export default definePlugin({ id: "${id}",
      effect: () => Effect.sync(() => { (globalThis.AMUX_RELOAD_TEST ??= []).push("${generation}"); }) });`;
 
 interface World {
