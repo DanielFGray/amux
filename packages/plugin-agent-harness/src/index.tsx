@@ -3,7 +3,7 @@ import { Effect, Layer, Redacted } from "effect";
 import { For, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem } from "@effect/platform-bun";
-import { command } from "@danielfgray/amux";
+import { command, runtimeCommand } from "@danielfgray/amux";
 import { Default as IntegrationDefault, integrations } from "./integration.ts";
 import { Default as ModelCatalogDefault } from "./model-catalog.ts";
 import { definePlugin, type PluginDefinition } from "@danielfgray/amux";
@@ -129,7 +129,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       ).pipe(
         Effect.flatMap(() =>
           panel.run({
-            _tag: "agent.new",
+            ...runtimeCommand("agent.new"),
             provider: "native",
           }),
         ),
@@ -199,7 +199,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             sync={sessionStream.sync}
             onSubmit={(message) =>
               run(
-                command("agent.prompt", {
+                runtimeCommand("agent.prompt", {
                   target: props.sessionId,
                   text: message,
                 }),
@@ -207,7 +207,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             }
             onPermission={(request, decision, feedback) =>
               run(
-                command(
+                runtimeCommand(
                   "agent.permission",
                   feedback
                     ? { session: props.sessionId, request, decision, feedback }
@@ -215,7 +215,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
                 ),
               )
             }
-            onInterrupt={() => run(command("agent.interrupt", { session: props.sessionId }))}
+            onInterrupt={() => run(runtimeCommand("agent.interrupt", { session: props.sessionId }))}
           />
         ),
       ]);

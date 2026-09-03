@@ -10,6 +10,8 @@ import {
 import { deriveProcessDisplay } from "./display-state.ts";
 import { DETECTOR_REGIONS, evaluateAgent } from "./detector.ts";
 import { splitActivity } from "@danielfgray/amux-agent-facts/identify.ts";
+export { identifyAgent } from "@danielfgray/amux-agent-facts/identify.ts";
+export { readHarnessLog } from "@danielfgray/amux-agent-facts/harness-log.ts";
 import {
   hookAgentFromFrame,
   resolveAgentId,

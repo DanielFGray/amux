@@ -1,5 +1,5 @@
 import { Match, Option, Schema as S } from "effect";
-import { COMMAND_DEFS, COMMAND_META, type CommandTag } from "./commands.ts";
+import { COMMAND_DEFS, COMMAND_META } from "./commands.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 
 /**
@@ -25,7 +25,7 @@ type JsonSchemaObject = {
   minimum?: number;
 };
 
-function commandSchema(tag: CommandTag): JsonSchemaObject {
+function commandSchema(tag: string): JsonSchemaObject {
   const def = COMMAND_DEFS.find((item) => item.tag === tag);
   if (!def) throw new Error(`unknown command: ${tag}`);
   const document = S.toJsonSchemaDocument(def.arguments);
@@ -60,8 +60,12 @@ function fieldSpec(
   return { name, kind: "string", required };
 }
 
-export function fieldNames(tag: CommandTag): FieldSpec[] {
+export function fieldNames(tag: string): FieldSpec[] {
   const schema = commandSchema(tag);
+  return fieldsForSchema(schema);
+}
+
+function fieldsForSchema(schema: JsonSchemaObject): FieldSpec[] {
   const required = new Set(schema.required ?? []);
   return Object.entries(schema.properties ?? {}).map(([name, field]) =>
     fieldSpec(name, field, schema, required.has(name)),
@@ -73,8 +77,24 @@ export interface ParseArgsResult {
   errors: string[];
 }
 
-export function parseArgs(tag: CommandTag, argv: string[]): ParseArgsResult {
-  const fields = fieldNames(tag);
+export function parseArgs(tag: string, argv: string[]): ParseArgsResult {
+  return parseFieldSpecs(tag, fieldNames(tag), argv);
+}
+
+/** Parse a daemon plugin's declared command fields with the core CLI grammar. */
+export function parseFields(
+  tag: string,
+  fields: S.Struct.Fields,
+  argv: string[],
+): ParseArgsResult {
+  const document = S.toJsonSchemaDocument(S.Struct(fields));
+  const schema = document.schema as JsonSchemaObject;
+  if (Object.keys(document.definitions).length > 0)
+    schema.$defs = document.definitions as Record<string, JsonSchemaObject>;
+  return parseFieldSpecs(tag, fieldsForSchema(schema), argv);
+}
+
+function parseFieldSpecs(tag: string, fields: FieldSpec[], argv: string[]): ParseArgsResult {
   if (fields.length === 0) {
     for (const arg of argv) {
       if (arg.startsWith("--")) return { parsed: null, errors: [`unknown flag: ${arg}`] };

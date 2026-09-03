@@ -1,11 +1,5 @@
 import { test, expect } from "bun:test";
-import {
-  commandGroups,
-  parseArgs,
-  fieldNames,
-  generateGroupHelp,
-  generateHelp,
-} from "./command-cli.ts";
+import { parseArgs, fieldNames, generateGroupHelp, generateHelp } from "./command-cli.ts";
 
 test("parseArgs handles commands with no arguments", () => {
   expect(parseArgs("pane.zoom", [])).toEqual({ parsed: {}, errors: [] });
@@ -43,16 +37,16 @@ test("parseArgs rejects bad int values", () => {
   expect(result.errors.length).toBeGreaterThan(0);
 });
 
-test("parseArgs rejects an int flag below its schema minimum", () => {
-  const result = parseArgs("agent.prompt", ["s1", "do x", "--timeout", "-5"]);
+test("parseArgs rejects an invalid int flag", () => {
+  const result = parseArgs("window.select", ["--number", "not-a-number"]);
   expect(result.parsed).toBeNull();
-  expect(result.errors).toEqual(['invalid value for --timeout: "-5"']);
+  expect(result.errors).toContain('invalid value for --number: "not-a-number"');
 });
 
 test("parseArgs rejects a literal flag value outside its enum", () => {
-  const result = parseArgs("agent.prompt", ["s1", "do x", "--delivery", "bogus"]);
+  const result = parseArgs("pane.split", ["--axis", "bogus"]);
   expect(result.parsed).toBeNull();
-  expect(result.errors).toEqual(['invalid value for --delivery: "bogus"']);
+  expect(result.errors).toContain('invalid value for --axis: "bogus"');
 });
 
 test("parseArgs reports missing required args", () => {
@@ -94,43 +88,15 @@ test("parseArgs accepts separated notify flags", () => {
 
 test("parseArgs accepts separated values for every flag kind", () => {
   expect(parseArgs("window.select", ["--number", "3"]).parsed).toEqual({ number: 3 });
-  expect(
-    parseArgs("agent.prompt", ["s1", "do x", "--until", "idle", "--timeout", "5000"]).parsed,
-  ).toEqual({ target: "s1", text: "do x", until: "idle", timeout: 5000 });
-  expect(
-    parseArgs("agent.prompt", [
-      "s1",
-      "do x",
-      "--id",
-      "request-1",
-      "--delivery",
-      "steer",
-      "--resume",
-      "false",
-    ]).parsed,
-  ).toEqual({
-    target: "s1",
-    text: "do x",
-    id: "request-1",
-    delivery: "steer",
-    resume: false,
-  });
+  expect(parseArgs("window.select", ["--number", "3"]).parsed).toEqual({ number: 3 });
   expect(
     parseArgs("pane.resize-divider", ["--path", "[1,0]", "--index", "0", "--delta", "-1"]).parsed,
   ).toEqual({ path: [1, 0], index: 0, delta: -1 });
 });
 
 test("parseArgs accepts a separated boolean value only when it is a boolean", () => {
-  expect(parseArgs("agent.prompt", ["s1", "do x", "--wait", "false"]).parsed).toEqual({
-    target: "s1",
-    text: "do x",
-    wait: false,
-  });
-  expect(parseArgs("agent.prompt", ["s1", "do x", "--wait", "true"]).parsed).toEqual({
-    target: "s1",
-    text: "do x",
-    wait: true,
-  });
+  expect(parseArgs("pane.zoom", ["--current", "false"]).parsed).toEqual({ current: false });
+  expect(parseArgs("pane.zoom", ["--current", "true"]).parsed).toEqual({ current: true });
   // A non-boolean token after a boolean flag stays a positional, so a bare
   // flag never swallows the argument that follows it.
   expect(parseArgs("pane.close", ["--current", "--pane", "s1:p3"]).parsed).toEqual({
@@ -157,10 +123,6 @@ test("generateHelp is non-empty", () => {
 });
 
 test("group help derives command syntax from schemas", () => {
-  expect(commandGroups()).toContain("agents");
-  expect(generateGroupHelp("agents")).toContain(
-    "agent.prompt <target> <text> [--id=<id>] [--delivery=<steer|queue>] [--resume] [--wait] [--until=<idle|running|blocked|done>] [--timeout=<timeout>]",
-  );
   expect(generateGroupHelp("panes")).toContain("pane.split <row|column> [--cwd=<cwd>]");
   // A boolean is named, not assigned: `--current=<current>` would tell a reader
   // to invent a value for a flag whose presence is the whole signal.
@@ -191,12 +153,9 @@ test("the read surface is exposed to agents with derived fields", () => {
   expect(panes.map((f) => f.name)).toEqual([]);
   expect(fieldNames("pane.current").map((f) => f.name)).toEqual(["pane", "current"]);
   expect(fieldNames("pane.layout").map((f) => f.name)).toEqual(["pane", "current"]);
-  expect(fieldNames("agent.get").map((f) => f.name)).toEqual(["target"]);
   expect(generateGroupHelp("panes")).toContain("pane.current");
   expect(generateGroupHelp("panes")).toContain("pane.layout");
   expect(generateGroupHelp("panes")).toContain("pane.list");
   expect(generateGroupHelp("spaces")).toContain("space.list");
   expect(generateGroupHelp("windows")).toContain("window.list");
-  expect(generateGroupHelp("agents")).toContain("agent.list");
-  expect(generateGroupHelp("agents")).toContain("agent.get");
 });

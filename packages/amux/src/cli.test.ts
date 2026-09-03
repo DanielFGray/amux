@@ -104,7 +104,7 @@ test("skill output teaches managed discovery and safety", () => {
   expect(result.exitCode).toBe(0);
   expect(stdout).toContain("name: amux");
   expect(stdout).toContain('test -n "${AMUX_DAEMON_SESSION:-}"');
-  expect(stdout).toContain("amux agents");
+  expect(stdout).toContain("amux panes");
   expect(stdout).toContain("Do not close spaces, windows, panes, or sessions");
 });
 
@@ -123,12 +123,10 @@ test("skill output documents the delegate loop against the real contract", () =>
 });
 
 test("a bare command group prints its derived syntax", () => {
-  const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "agents"]);
+  const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "panes"]);
   const stdout = Buffer.from(result.stdout).toString();
   expect(result.exitCode).toBe(0);
-  expect(stdout).toContain("usage: amux agents <command>");
-  expect(stdout).toContain("agent.new");
-  expect(stdout).toContain("agent.prompt");
+  expect(stdout).toContain("usage: amux panes <command>");
 });
 
 test("a typo'd flag is a syntax error (exit 2), not a refusal of a session it named", () => {

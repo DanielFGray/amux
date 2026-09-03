@@ -11,7 +11,6 @@ import {
   makeCommands,
   runDetached,
   type CommandHandlerTable,
-  type CommandTag,
 } from "./commands.ts";
 
 /** Handlers that record what they were called with, so a test can watch a
@@ -157,7 +156,7 @@ test("filtering by target and exposure produces the expected subsets", () => {
     expect(commands.isWorkspaceCommand(name)).toBe(true);
   }
 
-  const viewOnly: CommandTag[] = [
+  const viewOnly: string[] = [
     "app.settings",
     "app.command-palette",
     "app.help",
@@ -185,23 +184,10 @@ test("filtering by target and exposure produces the expected subsets", () => {
   expect(commands.list({ exposure: "agent" }).map((c) => c.name)).not.toContain("app.quit");
 });
 
-/**
- * The delegate-loop decision (ts-e7dcbf): a hosted agent can spawn, prompt and
- * watch another agent, but the human stays in the approval loop. The cap that
- * governs spawn depth is ts-bd1d66; exposure is only what puts a verb on the
- * tool surface, so this pins the surface, not the policy.
- */
-test("the agent tool surface exposes the delegate loop, not the human loop", () => {
+test("agent commands are supplied by the daemon plugin, not core", () => {
   const commands = makeCommands(recording().handlers);
   const exposed = commands.list({ exposure: "agent" }).map((c) => c.name);
-  const delegateLoop: CommandTag[] = ["agent.new", "agent.prompt", "agent.watch"];
-  for (const verb of delegateLoop) {
-    expect(exposed).toContain(verb);
-  }
-  const humanLoop: CommandTag[] = ["agent.permission", "agent.interrupt"];
-  for (const verb of humanLoop) {
-    expect(exposed).not.toContain(verb);
-  }
+  expect(exposed.some((verb) => verb.startsWith("agent."))).toBe(false);
 });
 
 /**
@@ -328,13 +314,6 @@ test("command result types match the declared schema", () => {
   // void-schema decodes to undefined
   const paneZoomDef = COMMAND_DEFS.find((d) => d.tag === "pane.zoom")!;
   expect(Schema.decodeSync(paneZoomDef.result)(undefined)).toBe(undefined);
-  const agentNewDef = COMMAND_DEFS.find((d) => d.tag === "agent.new")!;
-  expect(
-    Schema.decodeSync(agentNewDef.result)({
-      session: "agent-2",
-      pane: "pane-2",
-    }),
-  ).toEqual({ session: "agent-2", pane: "pane-2" });
 });
 
 test("a plugin registers a verb under its own namespace and it dispatches, lists, and validates", () => {

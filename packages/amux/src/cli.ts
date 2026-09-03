@@ -237,7 +237,7 @@ function main(): Effect.Effect<number> {
       { SessionStore, isSessionId },
       { controlCall, agentWatch, AgentWaitError },
       commandsMod,
-      { parseArgs, fieldNames, parsePluginArgs },
+      { parseArgs, fieldNames, parseFields, parsePluginArgs },
       { SESSION_STATE_TOPIC },
     ] = yield* Effect.promise(() =>
       Promise.all([
@@ -248,8 +248,19 @@ function main(): Effect.Effect<number> {
         import("./effect/AttachProtocol.ts"),
       ]),
     );
-    const { COMMAND_META, Command, commandDefinition } = commandsMod;
-    type CommandTag = (typeof Command.Type)["_tag"];
+    const { COMMAND_META, Command, commandDefinition, isCoreCommandTag, runtimeCommand } =
+      commandsMod;
+    const daemonCommands = splitCommandArgs(argv).some(
+      (group) => group[0] !== undefined && !isCoreCommandTag(group[0]),
+    )
+      ? yield* Effect.promise(() =>
+          import("./plugin/daemon-command-host.ts").then(({ daemonCommandRegistrations }) =>
+            daemonCommandRegistrations(),
+          ),
+        )
+      : [];
+    const daemonCommandByTag = new Map(daemonCommands.map((registration) => [registration.tag, registration]));
+    type CommandTag = string;
     type CommandContext = {
       size: { cols: number; rows: number };
       shell: readonly string[];
@@ -258,9 +269,27 @@ function main(): Effect.Effect<number> {
       pane?: string;
       noFocus?: boolean;
     };
+    type PromptCommand = import("./commands.ts").RuntimeCommand & {
+      readonly _tag: "agent.prompt";
+      readonly target: string;
+      readonly wait?: boolean;
+      readonly until?: string;
+      readonly timeout?: number;
+    };
+    type WatchCommand = import("./commands.ts").RuntimeCommand & {
+      readonly _tag: "agent.watch";
+      readonly target: string;
+      readonly after?: number;
+    };
+    const isPromptCommand = (
+      value: typeof Command.Type | import("./commands.ts").RuntimeCommand,
+    ): value is PromptCommand => value._tag === "agent.prompt" && typeof value.target === "string";
+    const isWatchCommand = (
+      value: typeof Command.Type | import("./commands.ts").RuntimeCommand,
+    ): value is WatchCommand => value._tag === "agent.watch" && typeof value.target === "string";
 
     function isCommandTag(s: string): s is CommandTag {
-      return s in COMMAND_META;
+      return s in COMMAND_META || daemonCommandByTag.has(s) || s.startsWith("plugin.");
     }
 
     // A plugin verb the compiler has never seen — see commands.ts's
@@ -282,7 +311,7 @@ function main(): Effect.Effect<number> {
       session: string | undefined,
       parsed: Record<string, import("./effect/AttachProtocol.ts").JsonValue>,
     ) {
-      if (session === undefined || "session" in parsed) return parsed;
+      if (session === undefined || "session" in parsed || !isCoreCommandTag(tag)) return parsed;
       if (!fieldNames(tag).some((field) => field.name === "session")) return parsed;
       return { ...parsed, session };
     }
@@ -302,7 +331,12 @@ function main(): Effect.Effect<number> {
       const stripped = stripSessionFlag(argv.slice(1));
       if ("error" in stripped) return { errors: [stripped.error] };
 
-      const direct = parseArgs(tag, stripped.rest);
+      const daemonCommand = daemonCommandByTag.get(tag);
+      const direct = isCoreCommandTag(tag)
+        ? parseArgs(tag, stripped.rest)
+        : daemonCommand
+          ? parseFields(tag, daemonCommand.fields, stripped.rest)
+          : parsePluginArgs(stripped.rest);
       if (direct.parsed)
         return {
           tag,
@@ -314,6 +348,7 @@ function main(): Effect.Effect<number> {
       // driving flag: the direct parse proved the args alone cannot. Re-parse
       // with the flag as a field so parseArgs applies its own rules unchanged.
       if (
+        isCoreCommandTag(tag) &&
         stripped.session !== undefined &&
         fieldNames(tag).some((field) => field.name === "session")
       ) {
@@ -330,7 +365,11 @@ function main(): Effect.Effect<number> {
         !positionalSession.startsWith("--") &&
         isSessionId(positionalSession)
       ) {
-        const legacy = parseArgs(tag, stripped.rest.slice(1));
+        const legacy = isCoreCommandTag(tag)
+          ? parseArgs(tag, stripped.rest.slice(1))
+          : daemonCommand
+            ? parseFields(tag, daemonCommand.fields, stripped.rest.slice(1))
+            : parsePluginArgs(stripped.rest.slice(1));
         if (legacy.parsed)
           return {
             tag,
@@ -388,7 +427,7 @@ function main(): Effect.Effect<number> {
 
     if (isCommandTag(sub)) {
       const groups = splitCommandArgs(argv);
-      const cmds: (typeof Command.Type)[] = [];
+      const cmds: Array<typeof Command.Type | import("./commands.ts").RuntimeCommand> = [];
       let id: string | undefined;
       // --no-focus is a batch-level context flag, not a command field: it says
       // "this whole invocation is background work, do not move the human's focus".
@@ -407,7 +446,9 @@ function main(): Effect.Effect<number> {
           return 2;
         }
         const targetId: string | null = resolveCommandSession(
-          commandDefinition(parsed.tag).target,
+          isCoreCommandTag(parsed.tag)
+            ? commandDefinition(parsed.tag).target
+            : daemonCommandByTag.get(parsed.tag)?.meta.target ?? "workspace",
           parsed.sessionFlag,
           parsed.positionalSession,
         );
@@ -421,7 +462,9 @@ function main(): Effect.Effect<number> {
         }
         id = targetId;
         cmds.push(
-          yield* Schema.decodeUnknownEffect(Command)({ _tag: parsed.tag, ...parsed.parsed }),
+          isCoreCommandTag(parsed.tag)
+            ? yield* Schema.decodeUnknownEffect(Command)({ _tag: parsed.tag, ...parsed.parsed })
+            : runtimeCommand(parsed.tag, parsed.parsed),
         );
       }
 
@@ -440,8 +483,8 @@ function main(): Effect.Effect<number> {
         );
         if (!started) return 1;
       }
-      const prompt = cmds.length === 1 && cmds[0]?._tag === "agent.prompt" ? cmds[0] : undefined;
-      const watch = cmds.length === 1 && cmds[0]?._tag === "agent.watch" ? cmds[0] : undefined;
+      const prompt = cmds.length === 1 && cmds[0] && isPromptCommand(cmds[0]) ? cmds[0] : undefined;
+      const watch = cmds.length === 1 && cmds[0] && isWatchCommand(cmds[0]) ? cmds[0] : undefined;
       if (watch) {
         return yield* controlCall(id!, (control) =>
           agentWatch(control, watch.target, watch.after).pipe(

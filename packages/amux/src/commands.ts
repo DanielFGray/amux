@@ -3,13 +3,8 @@ import { Cause, Effect, Exit, JsonSchema, Schema as S, SchemaIssue } from "effec
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import { LAYOUT_PRESETS } from "./layout.ts";
-import { PermissionDecisionSchema } from "./permission.ts";
-import { ProcessStateSchema } from "./process-state.ts";
 import { creationResultSchema } from "./creation-result.ts";
-import { MAX_HARNESS_LOG_LINES } from "./limits.ts";
 import {
-  AgentGetResultSchema,
-  AgentListResultSchema,
   PaneCurrentResultSchema,
   PaneLayoutResultSchema,
   PaneListResultSchema,
@@ -588,109 +583,6 @@ const SessionMessage = define(
     exposure: "agent",
   },
 );
-const AgentPrompt = define(
-  "agent.prompt",
-  {
-    target: S.String,
-    text: S.String,
-    id: S.optionalKey(S.String),
-    delivery: S.optionalKey(S.Literals(["steer", "queue"])),
-    resume: S.optionalKey(S.Boolean),
-    wait: S.optionalKey(S.Boolean),
-    until: S.optionalKey(ProcessStateSchema),
-    timeout: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
-  },
-  {
-    desc: "send a prompt to an agent",
-    group: "agents",
-    target: "session",
-    exposure: "agent",
-  },
-);
-const AgentWatch = define(
-  "agent.watch",
-  {
-    target: S.String,
-    after: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
-  },
-  {
-    desc: "stream durable agent events from a replay cursor",
-    group: "agents",
-    target: "session",
-    exposure: "agent",
-  },
-);
-const HarnessLogMessageSchema = S.Struct({
-  role: S.String,
-  text: S.String,
-  timestamp: S.String,
-});
-const AgentLogs = define(
-  "agent.logs",
-  {
-    target: S.String,
-    lines: S.optionalKey(
-      S.Int.pipe(
-        S.check(S.isGreaterThan(0)),
-        S.check(S.isLessThanOrEqualTo(MAX_HARNESS_LOG_LINES)),
-      ),
-    ),
-  },
-  {
-    desc: "read the last N messages straight from the harness's own durable log, if it keeps one",
-    group: "agents",
-    target: "session",
-    exposure: "agent",
-  },
-  S.Array(HarnessLogMessageSchema),
-);
-const AgentPermission = define(
-  "agent.permission",
-  {
-    ...SessionTarget,
-    request: S.String,
-    decision: PermissionDecisionSchema,
-    feedback: S.optionalKey(S.String),
-  },
-  {
-    desc: "answer an agent's permission request",
-    group: "agents",
-    target: "workspace",
-    exposure: "human",
-  },
-);
-const AgentList = define(
-  "agent.list",
-  {},
-  {
-    desc: "list agents and where they live",
-    group: "agents",
-    target: "workspace",
-    exposure: "agent",
-  },
-  AgentListResultSchema,
-);
-const AgentGet = define(
-  "agent.get",
-  { target: S.String },
-  {
-    desc: "one agent, by its session id",
-    group: "agents",
-    target: "workspace",
-    exposure: "agent",
-  },
-  AgentGetResultSchema,
-);
-const AgentInterrupt = define(
-  "agent.interrupt",
-  { ...SessionTarget, reason: S.optionalKey(S.String) },
-  {
-    desc: "interrupt an agent turn",
-    group: "agents",
-    target: "session",
-    exposure: "human",
-  },
-);
 const Notify = define(
   "notify",
   { title: S.String, body: S.String, ...SessionTarget },
@@ -700,22 +592,6 @@ const Notify = define(
     target: "session",
     exposure: "agent",
   },
-);
-/** A prompt is optional: an agent pane exists, idle, before it has been asked
- *  anything, and the pane's own composer is the normal way to give it work. */
-const AgentNew = define(
-  "agent.new",
-  {
-    provider: S.optionalKey(S.String.pipe(S.check(S.isMinLength(1)))),
-    prompt: S.optionalKey(S.String),
-  },
-  {
-    desc: "start a coding agent",
-    group: "agents",
-    target: "workspace",
-    exposure: "agent",
-  },
-  creationResultSchema("agent.new"),
 );
 const SessionRestart = define("session.restart", SessionTarget, {
   desc: "restart an exited session",
@@ -1003,14 +879,6 @@ export const COMMAND_DEFS = [
   WindowSelectLayout,
   WindowSynchronize,
   WindowList,
-  AgentNew,
-  AgentPrompt,
-  AgentWatch,
-  AgentLogs,
-  AgentInterrupt,
-  AgentPermission,
-  AgentList,
-  AgentGet,
   Notify,
   SessionKill,
   SessionMessage,
@@ -1072,6 +940,14 @@ export function commandDefinition(tag: CommandTag) {
   return def;
 }
 
+/** Whether a tag names a command core declares. Anything else reaching the
+ *  daemon is either a daemon-plugin command (in the daemon's own table) or a
+ *  client-plugin verb (forwarded to an attached client). */
+export const isCoreCommandTag = (tag: string): tag is CommandTag => tag in COMMAND_META;
+
+export const isCoreCommand = (command: Command | RuntimeCommand): command is Command =>
+  isCoreCommandTag(command._tag);
+
 type CommandDefs = typeof COMMAND_DEFS;
 
 /**
@@ -1098,10 +974,14 @@ export type AnyCommandResult = CommandResult<CommandTag>;
  * `command("window.select", { number: 3 })` — the tag picks the argument type,
  * so a binding that supplies the wrong shape is a type error at the table.
  */
-export const command = <T extends CommandTag>(
+export function command<T extends CommandTag>(
   tag: T,
   ...args: {} extends ArgsOf<T> ? [args?: ArgsOf<T>] : [args: ArgsOf<T>]
-): Command => ({ _tag: tag, ...args[0] }) as Command;
+): Command;
+export function command(tag: string, args?: Record<string, JsonValue>): RuntimeCommand;
+export function command(tag: string, args?: Record<string, JsonValue>): Command | RuntimeCommand {
+  return { _tag: tag, ...args } as Command | RuntimeCommand;
+}
 
 /** Decode a command off the wire — the socket and the CLI in ts-14b665. */
 export const decodeCommand = S.decodeUnknownEffect(Command);
@@ -1156,6 +1036,19 @@ export type CommandHandlerTable = Readonly<
 export type RuntimeCommand = { readonly _tag: string } & Record<string, JsonValue>;
 
 /**
+ * Build a runtime command value, the way a caller thinks of it.
+ *
+ * `command()` is total over the core union; this is the equivalent for tags
+ * core never declared — daemon-plugin commands and client-plugin verbs.
+ * Nothing is validated here: the receiving table decodes the arguments
+ * against the schema the tag's owner registered.
+ */
+export const runtimeCommand = (tag: string, args?: Record<string, JsonValue>): RuntimeCommand => ({
+  _tag: tag,
+  ...args,
+});
+
+/**
  * The wire shape of a plugin verb: `Command` is a closed compile-time union,
  * so a control-socket payload needs a permissive fallback to admit
  * `plugin.<id>.<verb>` tags the daemon has never seen and cannot validate
@@ -1163,10 +1056,9 @@ export type RuntimeCommand = { readonly _tag: string } & Record<string, JsonValu
  * does not recognise is worth forwarding to an attached client rather than
  * rejecting outright.
  */
-export const RuntimeCommandSchema = S.StructWithRest(
-  S.Struct({ _tag: S.String.pipe(S.check(S.isPattern(/^plugin\./))) }),
-  [S.Record(S.String, JsonValueSchema)],
-);
+export const RuntimeCommandSchema = S.StructWithRest(S.Struct({ _tag: S.String }), [
+  S.Record(S.String, JsonValueSchema),
+]);
 
 /** A plugin verb, as registered: the same `desc`/`group`/`target`/`exposure`
  *  metadata a core command carries, plus the schema and handler a core
@@ -1214,6 +1106,19 @@ export interface Commands {
     meta: Meta,
     handler: (args: S.Struct.Type<Fields>) => Effect.Effect<unknown, CommandError>,
   ) => () => void;
+  /**
+   * Claim a full tag — one core never declared but a daemon-resident plugin
+   * authors, like `agent.new`. Same validation and disposal contract as
+   * `registerCommand`, minus the namespacing: the tag must match the daemon
+   * side exactly, or the forwarder below addresses nothing. A tag core or
+   * another plugin already holds is refused, never shadowed.
+   */
+  readonly registerFullCommand: <Fields extends S.Struct.Fields>(
+    tag: string,
+    fields: Fields,
+    meta: Meta,
+    handler: (args: S.Struct.Type<Fields>) => Effect.Effect<unknown, CommandError>,
+  ) => () => void;
 }
 
 export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): Commands => {
@@ -1225,8 +1130,12 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
   const metaFor = (tag: string): CommandMeta | undefined =>
     (COMMAND_META as Record<string, CommandMeta>)[tag] ?? pluginCommands.get(tag)?.meta;
 
-  const registerCommand: Commands["registerCommand"] = (pluginId, verb, fields, meta, handler) => {
-    const tag = `plugin.${pluginId}.${verb}`;
+  const claim = (
+    tag: string,
+    fields: S.Struct.Fields,
+    meta: Meta,
+    handler: (args: any) => Effect.Effect<unknown, CommandError>,
+  ): (() => void) => {
     if (metaFor(tag)) throw new Error(`command already registered: ${tag}`);
     const schema = S.TaggedStruct(tag, fields).annotate({
       identifier: tag,
@@ -1247,6 +1156,12 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
       pluginCommands.delete(tag);
     };
   };
+
+  const registerCommand: Commands["registerCommand"] = (pluginId, verb, fields, meta, handler) =>
+    claim(`plugin.${pluginId}.${verb}`, fields, meta, handler);
+
+  const registerFullCommand: Commands["registerFullCommand"] = (tag, fields, meta, handler) =>
+    claim(tag, fields, meta, handler);
 
   const run = ((command: RuntimeCommand) =>
     // Suspended, because a caller builds the effect once — a binding's `run` is
@@ -1293,6 +1208,7 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
       return meta ? isRemoteCommand(meta.target) : false;
     },
     registerCommand,
+    registerFullCommand,
   };
 };
 

@@ -14,6 +14,7 @@
   "module": "src/index.tsx",
   "exports": {
     ".": "./src/index.tsx",
+    "./daemon": "./src/daemon.ts",
     "./*": "./src/*"
   },
   "dependencies": {

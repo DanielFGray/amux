@@ -10,7 +10,7 @@
  * drives unmocked. See the seam documented in packages/amux/src/harness.ts.
  */
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigProvider, Deferred, Effect, Fiber, Option, Scope, Stream } from "effect";
@@ -48,11 +48,25 @@ const run = <A, E>(
 async function started(id: string) {
   const home = await mkdtemp(join(tmpdir(), "amux-control-"));
   dirs.push(home);
+  const configHome = join(home, "config");
+  const harness = new URL("../../plugin-agent-harness/src/index.tsx", import.meta.url).pathname;
+  const pluginConfig = {
+    options: {},
+    keys: { leader: "ctrl+a", bindings: {} },
+    plugins: [{ path: harness, enabled: true }],
+    permissions: [],
+  };
+  await mkdir(join(configHome, "amux"), { recursive: true });
+  await writeFile(
+    join(configHome, "amux", "config.json"),
+    JSON.stringify({ plugins: [{ path: harness, enabled: true }] }),
+  );
   const env = {
     HOME: home,
     XDG_STATE_HOME: join(home, "state"),
+    XDG_CONFIG_HOME: configHome,
   } as NodeJS.ProcessEnv;
-  const daemon = await run(startDaemon(id), env);
+  const daemon = await run(startDaemon(id, { pluginConfig }), env);
   daemons.push(daemon);
   return { daemon, env };
 }
