@@ -1,0 +1,759 @@
+[
+  {
+    "id": "default",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": [],
+    "rules": [
+      {
+        "id": "osc_title_working",
+        "state": "running",
+        "priority": 1100,
+        "region": "osc_title",
+        "visible_working": true,
+        "regex": [
+          {
+            "pattern": "^[\\u2800-\\u28ff·✢✳✶✻✽]\\s"
+          }
+        ]
+      },
+      {
+        "id": "confirmation_prompt",
+        "state": "blocked",
+        "priority": 500,
+        "region": "bottom_lines(20)",
+        "any": [
+          {
+            "regex": [
+              {
+                "pattern": "Do you want to (proceed|continue|make this edit)",
+                "flags": "i"
+              }
+            ]
+          },
+          {
+            "regex": [
+              {
+                "pattern": "❯\\s*1\\.\\s*Yes"
+              }
+            ]
+          },
+          {
+            "line_regex": [
+              {
+                "pattern": "\\bAllow\\b.*\\?\\s*$",
+                "flags": "i"
+              }
+            ]
+          },
+          {
+            "contains": ["[y/n]"]
+          },
+          {
+            "contains": ["(y/n)"]
+          },
+          {
+            "regex": [
+              {
+                "pattern": "Press\\s+(enter|return)\\s+to\\s+continue",
+                "flags": "i"
+              }
+            ]
+          },
+          {
+            "regex": [
+              {
+                "pattern": "Waiting for (your )?(input|response|approval)",
+                "flags": "i"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "claude",
+    "version": "2026.07.13.1",
+    "min_engine_version": 1,
+    "executables": ["claude", "claude-code"],
+    "rules": [
+      {
+        "id": "osc_title_working",
+        "state": "running",
+        "priority": 1100,
+        "region": "osc_title",
+        "visible_working": true,
+        "regex": [
+          {
+            "pattern": "^[⠀-⣿]\\s"
+          }
+        ]
+      },
+      {
+        "id": "btw_overlay_working",
+        "state": "running",
+        "priority": 975,
+        "region": "bottom_non_empty_lines(5)",
+        "visible_working": true,
+        "line_regex": [
+          {
+            "pattern": "^\\s*/btw(?:\\s|$)"
+          },
+          {
+            "pattern": "esc to close\\s*$",
+            "flags": "i"
+          }
+        ]
+      },
+      {
+        "id": "transcript_viewer",
+        "state": "unknown",
+        "priority": 1000,
+        "region": "bottom_non_empty_lines(3)",
+        "skip_state_update": true,
+        "contains": ["showing detailed transcript"],
+        "any": [
+          {
+            "contains": ["ctrl+o", "to toggle"]
+          },
+          {
+            "contains": ["ctrl+e", "show all"]
+          },
+          {
+            "contains": ["ctrl+e", "collapse"]
+          },
+          {
+            "contains": ["↑↓ scroll"]
+          },
+          {
+            "contains": ["? for shortcuts"]
+          }
+        ]
+      },
+      {
+        "id": "live_blocked_form",
+        "state": "blocked",
+        "priority": 980,
+        "region": "after_last_horizontal_rule",
+        "visible_blocker": true,
+        "contains": ["enter to select", "esc to cancel"],
+        "any": [
+          {
+            "contains": ["tab/arrow keys to navigate"]
+          },
+          {
+            "contains": ["arrow keys to navigate"]
+          },
+          {
+            "contains": ["arrows to navigate"]
+          },
+          {
+            "contains": ["↑/↓ to navigate"]
+          },
+          {
+            "contains": ["↑↓ to navigate"]
+          }
+        ]
+      },
+      {
+        "id": "dynamic_workflow_prompt",
+        "state": "blocked",
+        "priority": 980,
+        "region": "whole_recent",
+        "visible_blocker": true,
+        "contains": ["run a dynamic workflow?", "esc to cancel"]
+      },
+      {
+        "id": "live_prompt_box",
+        "state": "idle",
+        "priority": 950,
+        "region": "prompt_box_body",
+        "visible_idle": true,
+        "line_regex": [
+          {
+            "pattern": "^\\s*❯"
+          }
+        ],
+        "not": [
+          {
+            "contains": ["enter to select"]
+          },
+          {
+            "contains": ["esc to cancel"]
+          },
+          {
+            "contains": ["tab/arrow keys"]
+          },
+          {
+            "contains": ["arrow keys to navigate"]
+          },
+          {
+            "contains": ["↑/↓ to navigate"]
+          }
+        ]
+      },
+      {
+        "id": "model_picker_menu",
+        "state": "unknown",
+        "priority": 900,
+        "region": "whole_recent",
+        "skip_state_update": true,
+        "contains": ["select model", "enter to set as default", "esc to cancel"],
+        "not": [
+          {
+            "contains": ["do you want to proceed?"]
+          },
+          {
+            "contains": ["enter to select"]
+          }
+        ]
+      },
+      {
+        "id": "bash_permission_prompt",
+        "state": "blocked",
+        "priority": 850,
+        "region": "whole_recent",
+        "visible_blocker": true,
+        "contains": ["do you want to proceed?"],
+        "any": [
+          {
+            "contains": ["bash command"]
+          },
+          {
+            "contains": ["bash("]
+          },
+          {
+            "contains": ["contains expansion"]
+          },
+          {
+            "contains": ["tab to amend"]
+          },
+          {
+            "contains": ["ctrl+e to explain"]
+          }
+        ],
+        "all": [
+          {
+            "any": [
+              {
+                "line_regex": [
+                  {
+                    "pattern": "^\\s*❯?\\s*yes\\b",
+                    "flags": "i"
+                  }
+                ]
+              },
+              {
+                "line_regex": [
+                  {
+                    "pattern": "^\\s*1\\.\\s*yes\\b",
+                    "flags": "i"
+                  }
+                ]
+              },
+              {
+                "line_regex": [
+                  {
+                    "pattern": "^\\s*2\\.\\s*no\\b",
+                    "flags": "i"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "generic_permission_prompt",
+        "state": "blocked",
+        "priority": 840,
+        "region": "after_last_horizontal_rule",
+        "visible_blocker": true,
+        "contains": ["do you want to proceed?", "esc to cancel"],
+        "all": [
+          {
+            "any": [
+              {
+                "line_regex": [
+                  {
+                    "pattern": "^\\s*❯?\\s*1\\.\\s*yes\\b",
+                    "flags": "i"
+                  }
+                ]
+              },
+              {
+                "line_regex": [
+                  {
+                    "pattern": "^\\s*2\\.\\s*yes\\b",
+                    "flags": "i"
+                  }
+                ]
+              },
+              {
+                "line_regex": [
+                  {
+                    "pattern": "^\\s*2\\.\\s*no\\b",
+                    "flags": "i"
+                  }
+                ]
+              },
+              {
+                "line_regex": [
+                  {
+                    "pattern": "^\\s*3\\.\\s*no\\b",
+                    "flags": "i"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "legacy_no_prompt_blocker",
+        "state": "blocked",
+        "priority": 300,
+        "region": "whole_recent",
+        "any": [
+          {
+            "contains": ["do you want to"],
+            "any": [
+              {
+                "contains": ["yes"]
+              },
+              {
+                "contains": ["❯"]
+              }
+            ]
+          },
+          {
+            "contains": ["would you like to"],
+            "any": [
+              {
+                "contains": ["yes"]
+              },
+              {
+                "contains": ["❯"]
+              }
+            ]
+          },
+          {
+            "contains": ["waiting for permission"]
+          },
+          {
+            "contains": ["do you want to allow this connection?"]
+          },
+          {
+            "contains": ["tab to amend"]
+          },
+          {
+            "contains": ["ctrl+e to explain"]
+          },
+          {
+            "contains": ["do you want to proceed?", "esc to cancel"]
+          },
+          {
+            "contains": ["review your answers"]
+          },
+          {
+            "contains": ["skip interview and plan immediately"]
+          }
+        ],
+        "not": [
+          {
+            "regex": [
+              {
+                "pattern": "^\\s*❯\\s*$",
+                "flags": "m"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "osc_title_idle",
+        "state": "idle",
+        "priority": 250,
+        "region": "osc_title",
+        "visible_idle": true,
+        "regex": [
+          {
+            "pattern": "^✳\\s"
+          }
+        ]
+      },
+      {
+        "id": "osc_progress_idle",
+        "state": "idle",
+        "priority": 250,
+        "region": "osc_progress",
+        "regex": [
+          {
+            "pattern": "^4;0"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "opencode",
+    "version": "2026.06.10.1",
+    "min_engine_version": 1,
+    "executables": ["opencode", "open-code"],
+    "rules": [
+      {
+        "id": "permission_required",
+        "state": "blocked",
+        "priority": 300,
+        "region": "whole_recent",
+        "visible_blocker": true,
+        "any": [
+          {
+            "contains": ["△ Permission required"]
+          },
+          {
+            "contains": ["esc dismiss"],
+            "any": [
+              {
+                "contains": ["enter confirm"]
+              },
+              {
+                "contains": ["enter submit"]
+              },
+              {
+                "contains": ["enter toggle"]
+              }
+            ],
+            "all": [
+              {
+                "any": [
+                  {
+                    "contains": ["↑↓ select"]
+                  },
+                  {
+                    "contains": ["⇆ tab"]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "interrupt_hint_working",
+        "state": "running",
+        "priority": 110,
+        "region": "whole_recent",
+        "visible_working": true,
+        "any": [
+          {
+            "contains": ["esc to interrupt"]
+          },
+          {
+            "contains": ["ctrl+c to interrupt"]
+          },
+          {
+            "contains": ["press esc to interrupt"]
+          },
+          {
+            "line_regex": [
+              {
+                "pattern": ".*opencode.*esc (again to )?interrupt",
+                "flags": "i"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "progress_bar_working",
+        "state": "running",
+        "priority": 100,
+        "region": "whole_recent",
+        "visible_working": true,
+        "regex": [
+          {
+            "pattern": "(■|⬝){4,}"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "codex",
+    "version": "2026.07.18.1",
+    "min_engine_version": 1,
+    "executables": ["codex"],
+    "rules": [
+      {
+        "id": "osc_title_blocked",
+        "state": "blocked",
+        "priority": 1100,
+        "region": "osc_title",
+        "visible_blocker": true,
+        "contains": ["Action Required"]
+      },
+      {
+        "id": "osc_title_working",
+        "state": "running",
+        "priority": 1050,
+        "region": "osc_title",
+        "visible_working": true,
+        "regex": [
+          {
+            "pattern": "(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)"
+          }
+        ]
+      },
+      {
+        "id": "transcript_viewer",
+        "state": "unknown",
+        "priority": 1000,
+        "region": "after_last_prompt_marker",
+        "skip_state_update": true,
+        "contains": ["↑/↓ to scroll", "pgup/pgdn to", "home/end to jump", "q to quit"],
+        "any": [
+          {
+            "contains": ["esc to edit prev"]
+          },
+          {
+            "contains": ["esc/← to edit prev"]
+          }
+        ]
+      },
+      {
+        "id": "live_strong_blocker",
+        "state": "blocked",
+        "priority": 900,
+        "region": "after_last_prompt_marker",
+        "visible_blocker": true,
+        "any": [
+          {
+            "contains": ["press enter to confirm or esc to cancel"]
+          },
+          {
+            "contains": ["enter to submit answer"]
+          },
+          {
+            "contains": ["enter to submit all"]
+          },
+          {
+            "contains": ["allow command?"]
+          }
+        ]
+      },
+      {
+        "id": "weak_blocker",
+        "state": "blocked",
+        "priority": 600,
+        "region": "whole_recent",
+        "any": [
+          {
+            "contains": ["[y/n]"]
+          },
+          {
+            "contains": ["yes (y)"]
+          },
+          {
+            "contains": ["do you want to"],
+            "any": [
+              {
+                "contains": ["yes"]
+              },
+              {
+                "contains": ["❯"]
+              }
+            ]
+          },
+          {
+            "contains": ["would you like to"],
+            "any": [
+              {
+                "contains": ["yes"]
+              },
+              {
+                "contains": ["❯"]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "screen_working_fallback",
+        "state": "running",
+        "priority": 500,
+        "region": "bottom_non_empty_lines(3)",
+        "visible_working": true,
+        "line_regex": [
+          {
+            "pattern": "^[•◦]\\s+Working \\([^)]*esc to interrupt\\)(?: · .*)?$"
+          }
+        ],
+        "not": [
+          {
+            "contains": ["■ Conversation interrupted"]
+          }
+        ]
+      },
+      {
+        "id": "osc_title_idle",
+        "state": "idle",
+        "priority": 100,
+        "region": "osc_title",
+        "visible_idle": true,
+        "regex": [
+          {
+            "pattern": "\\S"
+          }
+        ],
+        "not": [
+          {
+            "regex": [
+              {
+                "pattern": "(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)"
+              }
+            ]
+          },
+          {
+            "contains": ["Action Required"]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "gemini",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["gemini"],
+    "rules": []
+  },
+  {
+    "id": "cursor",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["cursor", "cursor-agent"],
+    "rules": []
+  },
+  {
+    "id": "amp",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["amp"],
+    "rules": []
+  },
+  {
+    "id": "droid",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["droid"],
+    "rules": []
+  },
+  {
+    "id": "copilot",
+    "version": "2026.07.07.1",
+    "min_engine_version": 1,
+    "executables": ["copilot", "github-copilot", "ghcs"],
+    "rules": [
+      {
+        "id": "selection_blocker",
+        "state": "blocked",
+        "priority": 300,
+        "region": "whole_recent",
+        "visible_blocker": true,
+        "all": [
+          {
+            "any": [
+              {
+                "contains": ["esc to cancel"]
+              },
+              {
+                "contains": ["esc cancel"]
+              }
+            ]
+          },
+          {
+            "any": [
+              {
+                "contains": ["enter to select"]
+              },
+              {
+                "contains": ["enter to confirm"]
+              },
+              {
+                "contains": ["enter to submit"]
+              },
+              {
+                "contains": ["enter accept"]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "working_cancel_hint",
+        "state": "running",
+        "priority": 100,
+        "region": "whole_recent",
+        "visible_working": true,
+        "any": [
+          {
+            "contains": ["esc to cancel"]
+          },
+          {
+            "contains": ["esc cancel"]
+          },
+          {
+            "contains": ["esc again to cancel"]
+          },
+          {
+            "contains": ["esc interrupt"]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "grok",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["grok"],
+    "rules": []
+  },
+  {
+    "id": "kimi",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["kimi"],
+    "rules": []
+  },
+  {
+    "id": "aider",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["aider"],
+    "rules": []
+  },
+  {
+    "id": "goose",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["goose"],
+    "rules": []
+  },
+  {
+    "id": "pi",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["pi"],
+    "rules": []
+  },
+  {
+    "id": "cline",
+    "version": "1",
+    "min_engine_version": 1,
+    "executables": ["cline"],
+    "rules": []
+  }
+]

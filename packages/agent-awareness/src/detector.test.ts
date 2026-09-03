@@ -33,7 +33,42 @@ test("bundled adapters preserve picker suppression and prompt detection", () => 
     }),
   ).toEqual({ state: "unknown", rule: "model_picker_menu", skipStateUpdate: true });
   expect(
-    evaluateAgent("opencode", { "bottom_lines(20)": "Allow this command? [y/n]" }),
+    evaluateAgent("opencode", { whole_recent: "△ Permission required\nesc dismiss" }),
   ).toMatchObject({ state: "blocked" });
   expect(evaluateAgent("claude", { osc_title: "⠋ thinking" })).toMatchObject({ state: "running" });
+});
+
+test("claude's working spinner and idle marker are distinct osc_title rules", () => {
+  expect(evaluateAgent("claude", { osc_title: "⠋ thinking" })).toMatchObject({
+    state: "running",
+    rule: "osc_title_working",
+  });
+  expect(evaluateAgent("claude", { osc_title: "✳ done" })).toMatchObject({
+    state: "idle",
+    rule: "osc_title_idle",
+  });
+});
+
+test("codex distinguishes action-required, spinner, and plain idle titles", () => {
+  expect(evaluateAgent("codex", { osc_title: "Action Required" })).toMatchObject({
+    state: "blocked",
+    rule: "osc_title_blocked",
+  });
+  expect(evaluateAgent("codex", { osc_title: "⠋ working" })).toMatchObject({
+    state: "running",
+    rule: "osc_title_working",
+  });
+  expect(evaluateAgent("codex", { osc_title: "my-project" })).toMatchObject({
+    state: "idle",
+    rule: "osc_title_idle",
+  });
+});
+
+test("copilot detects a cancel-hinted working state and a selection blocker", () => {
+  expect(
+    evaluateAgent("copilot", { whole_recent: "Generating suggestion...\nesc to cancel" }),
+  ).toMatchObject({ state: "running", rule: "working_cancel_hint" });
+  expect(
+    evaluateAgent("copilot", { whole_recent: "Pick a suggestion\nenter to select\nesc to cancel" }),
+  ).toMatchObject({ state: "blocked", rule: "selection_blocker" });
 });

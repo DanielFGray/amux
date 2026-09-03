@@ -1,4 +1,5 @@
 import { ProcessState, type ScreenRegion } from "@danielfgray/amux";
+import { AgentManifests } from "./manifests.ts";
 
 type DetectorState = ProcessState | "unknown";
 interface RegexPattern {
@@ -46,64 +47,21 @@ interface CompiledRule {
   readonly matches: (text: string) => boolean;
 }
 
-const COMMON_RULES: readonly AdapterRule[] = [
-  {
-    id: "osc_title_working",
-    state: ProcessState.Running,
-    priority: 1_100,
-    region: "osc_title",
-    visible_working: true,
-    regex: [{ pattern: "^[\\u2800-\\u28ff·✢✳✶✻✽]\\s" }],
-  },
-  {
-    id: "confirmation_prompt",
-    state: ProcessState.Blocked,
-    priority: 500,
-    region: "bottom_lines(20)",
-    any: [
-      { regex: [{ pattern: "Do you want to (proceed|continue|make this edit)", flags: "i" }] },
-      { regex: [{ pattern: "❯\\s*1\\.\\s*Yes" }] },
-      { line_regex: [{ pattern: "\\bAllow\\b.*\\?\\s*$", flags: "i" }] },
-      { contains: ["[y/n]"] },
-      { contains: ["(y/n)"] },
-      { regex: [{ pattern: "Press\\s+(enter|return)\\s+to\\s+continue", flags: "i" }] },
-      { regex: [{ pattern: "Waiting for (your )?(input|response|approval)", flags: "i" }] },
-    ],
-  },
-];
-const CLAUDE: Adapter = {
-  id: "claude",
-  aliases: ["claude-code"],
-  rules: [
-    ...COMMON_RULES,
-    {
-      id: "model_picker_menu",
-      state: "unknown",
-      priority: 900,
-      region: "whole_recent",
-      skip_state_update: true,
-      contains: ["select model", "enter to set as default", "esc to cancel"],
-      not: [{ contains: ["do you want to proceed?"] }, { contains: ["enter to select"] }],
-    },
-  ],
-};
-const OPENCODE: Adapter = { id: "opencode", aliases: ["open-code"], rules: COMMON_RULES };
-const FALLBACK: Adapter = { id: "default", rules: COMMON_RULES };
-const ADAPTERS = [CLAUDE, OPENCODE].map(compileAdapter);
-const COMPILED_FALLBACK = compileAdapter(FALLBACK);
-
 export const DETECTOR_REGIONS: readonly ScreenRegion[] = Object.freeze([
   ...new Set(
-    [CLAUDE, OPENCODE, FALLBACK].flatMap((adapter) => adapter.rules.map((rule) => rule.region)),
+    AgentManifests.manifests.flatMap((manifest) => manifest.rules.map((rule) => rule.region)),
   ),
 ]);
 
+const compiledAdapters = new Map<string, CompiledAdapter>();
+
 function adapterFor(agent: string): CompiledAdapter {
-  const id = agent.toLowerCase();
-  return (
-    ADAPTERS.find((adapter) => adapter.id === id || adapter.aliases.includes(id)) ??
-    COMPILED_FALLBACK
-  );
+  const adapter = AgentManifests.adapterFor(agent);
+  const cached = compiledAdapters.get(adapter.id);
+  if (cached) return cached;
+  const compiled = compileAdapter(adapter);
+  compiledAdapters.set(adapter.id, compiled);
+  return compiled;
 }
 function compileAdapter(adapter: Adapter): CompiledAdapter {
   return {

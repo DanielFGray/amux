@@ -1,67 +1,7 @@
-import { Config, ConfigProvider, Effect, Option } from "effect";
-
-const AGENT_EXECUTABLES = {
-  claude: "claude",
-  "claude-code": "claude",
-  codex: "codex",
-  gemini: "gemini",
-  opencode: "opencode",
-  "open-code": "opencode",
-  cursor: "cursor",
-  "cursor-agent": "cursor",
-  amp: "amp",
-  droid: "droid",
-  copilot: "copilot",
-  "github-copilot": "copilot",
-  grok: "grok",
-  kimi: "kimi",
-  aider: "aider",
-  goose: "goose",
-  pi: "pi",
-  cline: "cline",
-} satisfies Record<string, string>;
-
-const shell = Effect.runSync(
-  Config.option(Config.string("SHELL")).pipe(
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
-  ),
-);
-
-const INTERPRETERS = new Set([
-  "node",
-  "bun",
-  "deno",
-  "python",
-  "python3",
-  "sh",
-  "bash",
-  "fish",
-  "zsh",
-  Option.isSome(shell) ? (shell.value.split("/").pop()?.toLowerCase() ?? "") : "",
-]);
-
-function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
-  return Object.hasOwn(record, key);
-}
-
-const executableName = (token: string): string =>
-  token
-    .split("/")
-    .pop()!
-    .replace(/\.(exe|cmd|js|mjs|ts)$/i, "")
-    .toLowerCase();
+import { AgentManifests } from "./manifests.ts";
 
 export function identifyAgent(command: string | readonly string[]): string | null {
-  const tokens =
-    typeof command === "string" ? command.trim().split(/\s+/).filter(Boolean) : command;
-  const first = tokens[0];
-  if (!first) return null;
-  const base = executableName(first);
-  const direct = hasOwn(AGENT_EXECUTABLES, base) ? AGENT_EXECUTABLES[base] : undefined;
-  if (direct) return direct;
-  if (!INTERPRETERS.has(base) || !tokens[1]) return null;
-  const script = executableName(tokens[1]);
-  return hasOwn(AGENT_EXECUTABLES, script) ? AGENT_EXECUTABLES[script] : null;
+  return AgentManifests.identifyAgent(command);
 }
 
 const CLAUDE_ACTIVITY_GLYPHS = "·✢✳✶✻✽";
