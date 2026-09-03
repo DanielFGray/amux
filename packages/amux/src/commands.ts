@@ -6,6 +6,7 @@ import { LAYOUT_PRESETS } from "./layout.ts";
 import { PermissionDecisionSchema } from "./permission.ts";
 import { ProcessStateSchema } from "./process-state.ts";
 import { creationResultSchema } from "./creation-result.ts";
+import { MAX_HARNESS_LOG_LINES } from "./limits.ts";
 import {
   AgentGetResultSchema,
   AgentListResultSchema,
@@ -619,6 +620,30 @@ const AgentWatch = define(
     exposure: "agent",
   },
 );
+const HarnessLogMessageSchema = S.Struct({
+  role: S.String,
+  text: S.String,
+  timestamp: S.String,
+});
+const AgentLogs = define(
+  "agent.logs",
+  {
+    target: S.String,
+    lines: S.optionalKey(
+      S.Int.pipe(
+        S.check(S.isGreaterThan(0)),
+        S.check(S.isLessThanOrEqualTo(MAX_HARNESS_LOG_LINES)),
+      ),
+    ),
+  },
+  {
+    desc: "read the last N messages straight from the harness's own durable log, if it keeps one",
+    group: "agents",
+    target: "session",
+    exposure: "agent",
+  },
+  S.Array(HarnessLogMessageSchema),
+);
 const AgentPermission = define(
   "agent.permission",
   {
@@ -981,6 +1006,7 @@ export const COMMAND_DEFS = [
   AgentNew,
   AgentPrompt,
   AgentWatch,
+  AgentLogs,
   AgentInterrupt,
   AgentPermission,
   AgentList,

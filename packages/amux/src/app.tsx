@@ -1453,6 +1453,7 @@ function buildApp(
     "agent.new": runCommand,
     "agent.prompt": runCommand,
     "agent.watch": runCommand,
+    "agent.logs": runCommand,
     "agent.interrupt": runCommand,
     "agent.permission": runCommand,
     "agent.list": runCommand,

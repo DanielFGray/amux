@@ -11,6 +11,8 @@ export const MAX_PENDING_BYTES = 4 * 1_048_576;
 export const MAX_SPACES = 256;
 export const MAX_WINDOWS = 2_048;
 export const MAX_SESSIONS = 4_096;
+export const MAX_HARNESS_LOG_LINES = 500;
+export const DEFAULT_HARNESS_LOG_LINES = 50;
 
 export function isTerminalSize(cols: number, rows: number): boolean {
   return (

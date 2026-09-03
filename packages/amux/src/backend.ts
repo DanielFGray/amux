@@ -14,7 +14,7 @@
  */
 
 import { spawnPty, readPty } from "./pty.ts";
-import { Cause, Effect, Fiber, Match, Queue, Stream } from "effect";
+import { Cause, Clock, Effect, Fiber, Match, Queue, Stream } from "effect";
 import type { AttachClientContract } from "./attach.ts";
 import { isProcessState, type ProcessState } from "./process-state.ts";
 import { SESSION_STATE_TOPIC } from "./effect/AttachProtocol.ts";
@@ -80,6 +80,19 @@ const OUTPUT_LIMIT = 1024;
 
 /** How an Agent obtains its backend. Swapping this is the whole point. */
 export type SessionBackendFactory = (opts: BackendOptions) => SessionBackend;
+
+/**
+ * How long a self-report stays trusted with no follow-up.
+ *
+ * A reporter (the native harness, an installed hook) is not required to ever
+ * send a terminal "idle" event — Codex's own hook vocabulary, for one, has no
+ * turn-complete event at all — so a report with no expiry would win
+ * `SelfReport` authority forever the moment anything arrives, permanently
+ * shadowing the `Detector` tier's screen heuristic underneath it. Past this
+ * window with nothing new, `processState()` answers null and the arbiter
+ * falls through on its own; no per-reporter bookkeeping needed elsewhere.
+ */
+export const SELF_REPORT_TTL_MS = 60_000;
 
 /** A PTY in this process — what every agent used before there was a choice. */
 export const localPty: SessionBackendFactory = (opts) => {
@@ -158,6 +171,7 @@ export function daemonBackend(
     let detached = false;
     let exitCode: number | null = null;
     let processState: ProcessState | null = null;
+    let processStateAt = 0;
 
     /**
      * Foreground process group and session id, as reported by the daemon.
@@ -207,6 +221,7 @@ export function daemonBackend(
             Effect.sync(() => {
               if (frame.topic === SESSION_STATE_TOPIC && isProcessState(frame.payload)) {
                 processState = frame.payload;
+                processStateAt = Effect.runSync(Clock.currentTimeMillis);
               }
             }),
           ),
@@ -283,7 +298,11 @@ export function daemonBackend(
       foregroundPgid: () => foregroundPgid,
       sessionId: () => foregroundSid,
       foregroundArgv: () => foregroundArgv,
-      processState: () => processState,
+      processState: () =>
+        processState !== null &&
+        Effect.runSync(Clock.currentTimeMillis) - processStateAt <= SELF_REPORT_TTL_MS
+          ? processState
+          : null,
     };
   };
 }

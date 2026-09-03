@@ -4,22 +4,21 @@ import { Topic } from "@danielfgray/amux/protocol";
 export * as IdentityState from "./identity-state.ts";
 
 /**
- * The one topic name adapter hooks publish an agent's identity and lifecycle
- * state under. Core routes this as an opaque `Topic` payload and never
- * imports the schema below; the opencode hook asset hardcodes this same
- * string literal because it cannot import from the amux TypeScript sources,
- * so `identity-state.test.ts` cross-checks the two stay in sync.
+ * The one topic name adapter hooks publish an agent's identity under. Core
+ * routes this as an opaque `Topic` payload and never imports the schema
+ * below; the opencode hook asset hardcodes this same string literal because
+ * it cannot import from the amux TypeScript sources, so
+ * `identity-state.test.ts` cross-checks the two stay in sync.
+ *
+ * Identity only, not state: a hook reports its live state through core's own
+ * generic `process.state`/`topic.publish(SESSION_STATE_TOPIC)` channel,
+ * exactly like the native harness does — that is what feeds the
+ * `ProcessStateArbiter`'s `SelfReport` tier, and awareness reads the result
+ * back off `SessionFact.processState` rather than keeping a second, parallel
+ * copy of it. This topic exists only for the one thing core's channel cannot
+ * carry: which agent vendor is reporting.
  */
 export const AGENT_AWARENESS_IDENTITY_TOPIC = "amux.agent-awareness/identity-state";
-
-/**
- * Awareness's own lifecycle vocabulary for a reported agent. This mirrors
- * core's `process.state` states but is declared independently: awareness
- * must not import core's process-state vocabulary, so a hook's report is
- * validated here against a copy this plugin owns and can evolve on its own.
- */
-export const AwarenessReportedState = S.Literals(["idle", "working", "blocked", "failed", "done"]);
-export type AwarenessReportedState = typeof AwarenessReportedState.Type;
 
 /**
  * `agent` identifies which tracked agent this report is about, matching
@@ -28,15 +27,12 @@ export type AwarenessReportedState = typeof AwarenessReportedState.Type;
  * sources, so it must accept any string a hook names rather than a closed
  * enum core or this schema would need to keep current.
  */
-export const AgentIdentityStateSchema = S.Struct({
-  agent: S.NonEmptyString,
-  state: AwarenessReportedState,
-});
-export type AgentIdentityState = typeof AgentIdentityStateSchema.Type;
+export const AgentIdentitySchema = S.Struct({ agent: S.NonEmptyString });
+export type AgentIdentity = typeof AgentIdentitySchema.Type;
 
-const decodeAgentIdentityState = S.decodeUnknownOption(AgentIdentityStateSchema);
+const decodeAgentIdentity = S.decodeUnknownOption(AgentIdentitySchema);
 
-export const agentIdentityStateFromTopic = (frame: Topic): AgentIdentityState | undefined =>
+export const agentIdentityFromTopic = (frame: Topic): AgentIdentity | undefined =>
   frame.topic === AGENT_AWARENESS_IDENTITY_TOPIC
-    ? Option.getOrUndefined(decodeAgentIdentityState(frame.payload))
+    ? Option.getOrUndefined(decodeAgentIdentity(frame.payload))
     : undefined;

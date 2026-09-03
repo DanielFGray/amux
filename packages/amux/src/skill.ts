@@ -88,6 +88,8 @@ Send work with \`agent.prompt <target> <text>\`:
 
 Observe the child with \`agent.watch <target>\`, which streams durable events as JSON lines from a replay cursor. \`--after=<sequence>\` resumes from an earlier cursor, so a reconnect loses nothing. Events include \`turn.start\`, \`turn.end\` (with \`outcome\`), \`tool.start\`, \`tool.result\`, the \`session.state\` topic, and \`permission.request\`.
 
+To review what a child agent has actually said or been asked, use \`agent.logs <target>\`, not \`pane.capture\`: it reads the last N messages straight from the coding harness's own durable log, so it survives scrollback loss and returns clean role/text/timestamp records instead of raw terminal frames.
+
 \`agent.permission\` and \`agent.interrupt\` stay human-gated: the approval loop above the agents answers permission requests, and interrupt is the user's escape hatch. If the child emits \`permission.request\` or reaches \`blocked\`, it is waiting on the user; do not answer it yourself.
 
 Read the session id from the \`agent.new\` result and from \`agent.watch\` events. Do not derive it from layout order, names, or examples.

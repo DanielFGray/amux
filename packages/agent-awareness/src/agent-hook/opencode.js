@@ -16,10 +16,10 @@ const TIMEOUT_MS = 500;
 // opencode, not by amux, and may not reach into a codebase that is not there.
 //
 // This is awareness's own vocabulary (matches AwarenessReportedState in
-// identity-state.ts, independent of core's ProcessState) — it is what goes to
-// `topic.publish` on the identity topic. `process.state` speaks a narrower,
-// core-owned vocabulary and is derived from this one below, in `send`'s
-// caller: core has no `failed`, so that report maps to `idle`.
+// presence.ts, independent of core's ProcessState) — it drives `process.state`
+// below via `coreProcessState`. The identity topic carries only which agent
+// this is; state rides core's own process.state/SESSION_STATE_TOPIC channel,
+// same as the native harness, so awareness never keeps a second copy of it.
 export const STATE_BY_EVENT = new Map([
   // OpenCode is actively making progress during these events.
   ["session.status:active", "working"],
@@ -51,7 +51,7 @@ export function coreProcessState(state) {
 }
 
 /**
- * The topic amux's agent-awareness plugin owns for identity/state reports.
+ * The topic amux's agent-awareness plugin owns for identity reports.
  * Exported so amux's own tests can check this literal against the one schema
  * that defines it; this file cannot import that schema (see note above).
  */
@@ -139,7 +139,7 @@ export const AmuxAgentStatePlugin = async () => {
           send(socketPath, "topic.publish", {
             session: agent,
             topic: AGENT_AWARENESS_IDENTITY_TOPIC,
-            payload: { agent: AGENT_KIND, state },
+            payload: { agent: AGENT_KIND },
           }),
         ]),
       );

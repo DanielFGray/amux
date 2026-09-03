@@ -20,7 +20,7 @@ import {
   Stream,
 } from "effect";
 import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
+import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
 import * as Socket from "effect/unstable/socket/Socket";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
@@ -94,6 +94,9 @@ import {
 import { gitWorktreeExists } from "./git.ts";
 import { paneSession } from "./layout.ts";
 import { errorMessage } from "./error-message.ts";
+import { identifyAgent } from "@danielfgray/amux-agent-awareness/identify.ts";
+import { readHarnessLog } from "@danielfgray/amux-agent-awareness/harness-log.ts";
+import { DEFAULT_HARNESS_LOG_LINES } from "./limits.ts";
 
 const describe = errorMessage;
 
@@ -1116,6 +1119,25 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             const cur = yield* model.get;
             const session = yield* resolveCaptureSession(command, context, cur.workspace);
             return { result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))) };
+          }),
+        ),
+        Match.tag("agent.logs", (command) =>
+          // Reads the harness's own durable log fresh, on demand; amux never
+          // stores a copy of it. The session's cwd and its declared/detected
+          // harness id are what a per-harness adapter needs to find it.
+          Effect.gen(function* () {
+            const cur = yield* model.get;
+            const found = [...workspaceSessions(cur.workspace)].find(
+              ({ session }) => session.id === command.target,
+            );
+            if (!found) return yield* controlFail(`session '${command.target}' does not exist`);
+            const harness = found.session.declaredAgent ?? identifyAgent(found.session.cmd ?? []);
+            const result = yield* readHarnessLog(
+              harness ?? undefined,
+              found.session.cwd,
+              command.lines ?? DEFAULT_HARNESS_LOG_LINES,
+            ).pipe(Effect.provide(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.layer))));
+            return { result };
           }),
         ),
         Match.tag("notify", (command) =>
