@@ -15,11 +15,14 @@
  * config it can edit.
  */
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { launch, LEADER, E2E_TIMEOUT, type App, type E2eConfig } from "./app.ts";
+import { launch, LEADER, E2E_TIMEOUT, defaultE2ePlugins, type App, type E2eConfig } from "./app.ts";
 
 // ^a g is bound to nothing by default, so a split appearing under it can only
 // have come from the config.
-const REBOUND = { keys: { leader: "ctrl+a", bindings: { "pane.split-row": ["<leader>g"] } } };
+const REBOUND = {
+  keys: { leader: "ctrl+a", bindings: { "pane.split-row": ["<leader>g"] } },
+  plugins: defaultE2ePlugins(),
+};
 
 let configured: App;
 let edited: App;

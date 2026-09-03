@@ -74,7 +74,6 @@ const handleAgentHook = (argv: readonly string[]): Effect.Effect<number> =>
  */
 export const agentHooksCliPlugin: PluginDefinition = definePlugin({
   id: "amux.agent-hooks-cli",
-  apiVersion: "1",
   inject: [CliCommandsTag],
   effect: () =>
     Effect.gen(function* () {

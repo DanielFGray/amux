@@ -50,7 +50,12 @@ import {
   type RuntimeCommand,
 } from "./commands.ts";
 import { BunFileSystem } from "@effect/platform-bun";
-import { CONFIG_PATH, saveConfig as saveConfigEffect, type Config } from "./config.ts";
+import {
+  CONFIG_PATH,
+  pluginSpecKey,
+  saveConfig as saveConfigEffect,
+  type Config,
+} from "./config.ts";
 import {
   adjustedValue,
   applyOptions,
@@ -158,9 +163,9 @@ export interface PluginRuntime {
   resumePending?: (workspace: WorkspaceSnapshot) => Effect.Effect<void>;
 }
 
-function setPluginEnabled(config: Config, path: string, enabled: boolean): Config {
-  const index = config.plugins.findIndex((entry) => entry.path === path);
-  if (index < 0) return { ...config, plugins: [...config.plugins, { path, enabled }] };
+function setPluginEnabled(config: Config, key: string, enabled: boolean): Config {
+  const index = config.plugins.findIndex((entry) => pluginSpecKey(entry) === key);
+  if (index < 0) return { ...config, plugins: [...config.plugins, { path: key, enabled }] };
   const plugins = [...config.plugins];
   plugins[index] = { ...plugins[index]!, enabled };
   return { ...config, plugins };
@@ -231,7 +236,6 @@ function registry<Id, S extends object>(
     key: tag.key,
     plugin: definePlugin({
       id: `amux.registry.${name}`,
-      apiVersion: "1",
       provide: [tag],
       effect: (ctx) => Effect.sync(() => void ctx.provide(tag, fallback)),
     }),
@@ -2816,7 +2820,6 @@ function buildApp(
     // handed a panel that draws nowhere.
     definePlugin({
       id: "amux.registry.client",
-      apiVersion: "1",
       provide: [PanelTag, SessionStreamTag],
       effect: (ctx) =>
         Effect.sync(() => {
@@ -2837,13 +2840,11 @@ function buildApp(
   const coreEntries = [
     definePlugin({
       id: "amux.session-facts",
-      apiVersion: "1",
       provide: [SessionFactsTag],
       effect: (ctx) => Effect.sync(() => void ctx.provide(SessionFactsTag, sessionFacts)),
     }),
     definePlugin({
       id: "amux.windows",
-      apiVersion: "1",
       inject: [RegionsTag],
       effect: () =>
         RegionsTag.pipe(
@@ -2854,7 +2855,6 @@ function buildApp(
     }),
     definePlugin({
       id: "amux.settings",
-      apiVersion: "1",
       inject: [RegionsTag],
       effect: () =>
         RegionsTag.pipe(
@@ -2865,7 +2865,6 @@ function buildApp(
     }),
     definePlugin({
       id: "amux.commands",
-      apiVersion: "1",
       inject: [RegionsTag, BindingsTag],
       effect: () =>
         Effect.gen(function* () {
@@ -2877,7 +2876,6 @@ function buildApp(
     }),
     definePlugin({
       id: "amux.sessions",
-      apiVersion: "1",
       inject: [RegionsTag],
       effect: () =>
         RegionsTag.pipe(

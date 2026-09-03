@@ -41,10 +41,7 @@
     "build:help": "bun src/cli.ts --help"
   },
   "dependencies": {
-    "@danielfgray/amux-agent-awareness": "workspace:*",
-    "@danielfgray/amux-plugin-agent-harness": "workspace:*",
-    "@danielfgray/amux-plugin-notifications": "workspace:*",
-    "@danielfgray/amux-plugin-sidebar": "workspace:*",
+    "@danielfgray/amux-agent-facts": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node-shared": "catalog:",
     "@opentui/core": "catalog:",

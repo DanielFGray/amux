@@ -7,7 +7,6 @@ import { PanelTag, RegionsTag } from "../packages/amux/src/plugin/services.ts";
 /** A minimal user plugin driven only by the public panel context. */
 const statusBar: PluginDefinition = definePlugin({
   id: "example.status-bar",
-  apiVersion: "1",
   inject: [PanelTag, RegionsTag],
   effect: () =>
     Effect.gen(function* () {

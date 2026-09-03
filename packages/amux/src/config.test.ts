@@ -76,42 +76,29 @@ test("an empty file is every default", () => {
   expect(resolveOptions(decodeConfig({}).options)["behaviour.scrollRows"]).toBe(3);
 });
 
-test("the default sidebar is an ordinary enabled plugin spec", () => {
-  expect(DEFAULT_CONFIG.plugins).toEqual([
-    { path: "builtin:amux.agent-awareness", enabled: true },
-    { path: "builtin:amux.sidebar", enabled: true },
-    { path: "builtin:amux.agent-harness", enabled: true },
-    { path: "builtin:amux.notifications", enabled: true },
-    { path: "builtin:amux.agent-hooks-cli", enabled: true },
-  ]);
-  expect(decodeConfig({}).plugins).toEqual(DEFAULT_CONFIG.plugins);
+test("no plugins are active by default", () => {
+  expect(DEFAULT_CONFIG.plugins).toEqual([]);
+  expect(decodeConfig({}).plugins).toEqual([]);
+});
+
+test("a config that names no plugins loads none", () => {
+  expect(decodeConfig({ plugins: [] }).plugins).toEqual([]);
+});
+
+test("package specs decode beside path specs", () => {
   expect(
     decodeConfig({
-      plugins: [{ path: "builtin:amux.sidebar", enabled: false }],
+      plugins: [
+        { package: "example-plugin" },
+        { package: "@scope/example-plugin", version: "^1.2.0", enabled: false },
+        { path: "/plugins/sidebar.ts", enabled: false },
+      ],
     }).plugins,
   ).toEqual([
-    { path: "builtin:amux.agent-awareness", enabled: true },
-    { path: "builtin:amux.sidebar", enabled: false },
-    { path: "builtin:amux.agent-harness", enabled: true },
-    { path: "builtin:amux.notifications", enabled: true },
-    { path: "builtin:amux.agent-hooks-cli", enabled: true },
+    { package: "example-plugin", enabled: true },
+    { package: "@scope/example-plugin", version: "^1.2.0", enabled: false },
+    { path: "/plugins/sidebar.ts", enabled: false },
   ]);
-});
-
-test("existing plugin lists gain new bundled defaults without duplicating saved entries", () => {
-  expect(
-    decodeConfig({
-      plugins: [{ path: "builtin:amux.sidebar", enabled: true }],
-    }).plugins,
-  ).toEqual(DEFAULT_CONFIG.plugins);
-});
-
-test("an explicit disabled bundled plugin remains disabled", () => {
-  expect(
-    decodeConfig({
-      plugins: [{ path: "builtin:amux.agent-harness", enabled: false }],
-    }).plugins,
-  ).toContainEqual({ path: "builtin:amux.agent-harness", enabled: false });
 });
 
 testEffect("a changed config survives save and load", () =>

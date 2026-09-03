@@ -44,8 +44,10 @@ bun run cli           # unified `amux` CLI entry
 ```
 
 `amux` is a Bun workspace: `packages/amux` is the app, `packages/plugin-*` and
-`packages/agent-awareness`/`packages/editor` are its builtin plugins and their
-support libraries, each a separate package. Shared dependency versions live in
+`packages/agent-awareness` are its first-party plugins and `packages/editor`
+and `packages/agent-facts` their support libraries, each a separate package. No
+plugin package is a dependency of the app itself: plugins install at runtime
+into the plugin store (`amux plugin add`) or load by path. Shared dependency versions live in
 the root `package.json`'s `workspaces.catalog`; a package references one with
 `"catalog:"` rather than restating the version.
 

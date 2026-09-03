@@ -217,6 +217,26 @@ export interface E2eConfig {
 export const hasSidebarFooter = (screen: string): boolean =>
   /\d+ spaces? · \d+ agents?/.test(screen);
 
+/**
+ * The composed app this suite drives: bare amux loads no plugins, so the
+ * sidebar, harness, notifications and awareness the checks assert on come
+ * from an explicit config, the same way a user's own config names them by
+ * path. A check that wants bare tmux-mode passes `{ plugins: [] }` instead.
+ */
+export function defaultE2ePlugins() {
+  return [
+    { path: join(REPO, "packages/agent-awareness/src/index.ts"), enabled: true },
+    { path: join(REPO, "packages/plugin-sidebar/src/index.tsx"), enabled: true },
+    { path: join(REPO, "packages/plugin-agent-harness/src/index.tsx"), enabled: true },
+    { path: join(REPO, "packages/plugin-notifications/src/index.ts"), enabled: true },
+    { path: join(REPO, "packages/agent-awareness/src/hooks-cli.ts"), enabled: true },
+  ];
+}
+
+function defaultE2eConfig() {
+  return { plugins: defaultE2ePlugins() };
+}
+
 export async function launch(
   session: string,
   opts: {
@@ -240,8 +260,7 @@ export async function launch(
 
   const home = await mkdtemp(join(tmpdir(), `amux-${session}-`));
   const configPath = join(home, "config", "amux", "config.json");
-  if (opts.config !== undefined)
-    await Bun.write(configPath, JSON.stringify(opts.config, null, 2) + "\n");
+  await Bun.write(configPath, JSON.stringify(opts.config ?? defaultE2eConfig(), null, 2) + "\n");
   const env = {
     ...process.env,
     // A throwaway HOME so a real session file, config or shell rc can neither

@@ -1,7 +1,7 @@
 import { ProcessState, type SessionFact } from "@danielfgray/amux";
 import type { AttachFrame, Topic } from "@danielfgray/amux/protocol";
 import { evaluateAgent } from "./detector.ts";
-import { identifyAgent } from "./identify.ts";
+import { identifyAgent } from "@danielfgray/amux-agent-facts/identify.ts";
 import { agentIdentityFromTopic } from "./identity-state.ts";
 
 export type PresenceSource = "harness" | "hook" | "manifest" | "unknown";

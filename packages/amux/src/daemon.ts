@@ -94,8 +94,8 @@ import {
 import { gitWorktreeExists } from "./git.ts";
 import { paneSession } from "./layout.ts";
 import { errorMessage } from "./error-message.ts";
-import { identifyAgent } from "@danielfgray/amux-agent-awareness/identify.ts";
-import { readHarnessLog } from "@danielfgray/amux-agent-awareness/harness-log.ts";
+import { identifyAgent } from "@danielfgray/amux-agent-facts/identify.ts";
+import { readHarnessLog } from "@danielfgray/amux-agent-facts/harness-log.ts";
 import { DEFAULT_HARNESS_LOG_LINES } from "./limits.ts";
 
 const describe = errorMessage;

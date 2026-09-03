@@ -9,7 +9,7 @@ import {
 } from "@danielfgray/amux";
 import { deriveProcessDisplay } from "./display-state.ts";
 import { DETECTOR_REGIONS, evaluateAgent } from "./detector.ts";
-import { splitActivity } from "./identify.ts";
+import { splitActivity } from "@danielfgray/amux-agent-facts/identify.ts";
 import {
   hookAgentFromFrame,
   resolveAgentId,
@@ -24,7 +24,6 @@ import {
  */
 export const agentAwarenessPlugin: PluginDefinition = definePlugin({
   id: "amux.agent-awareness",
-  apiVersion: "1",
   inject: [ProcessDisplayTag, SessionFactsTag, SessionStreamTag],
   effect: () =>
     Effect.gen(function* () {

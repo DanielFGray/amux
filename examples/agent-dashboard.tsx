@@ -7,7 +7,6 @@ import { PanelTag, RegionsTag } from "../packages/amux/src/plugin/services.ts";
 /** A read-only agent roster built entirely on the public panel projection. */
 const agentDashboard: PluginDefinition = definePlugin({
   id: "example.agent-dashboard",
-  apiVersion: "1",
   inject: [PanelTag, RegionsTag],
   effect: () =>
     Effect.gen(function* () {

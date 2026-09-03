@@ -15,7 +15,6 @@ export const NOTIFICATIONS_PLUGIN_ID = "amux.notifications";
  */
 export const notificationsPlugin: PluginDefinition = definePlugin({
   id: NOTIFICATIONS_PLUGIN_ID,
-  apiVersion: "1",
   inject: [OptionsTag, CommandsTag, PanelTag],
   effect: () =>
     Effect.gen(function* () {

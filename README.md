@@ -39,18 +39,18 @@ An empty list leaves the command unbound. Two commands on one sequence is not an
 
 ## Plugins
 
-Plugins are trusted in-process TypeScript modules loaded at startup. The default sidebar is itself the builtin plugin `builtin:amux.sidebar`, so it can be disabled or replaced through the same configuration list:
+Plugins are trusted in-process TypeScript modules loaded at startup. Bare amux loads none; every plugin, first-party or third-party, is installed on demand into the plugin store (`amux plugin add`) or named by path, and enabled through the same configuration list:
 
 ```json
 {
   "plugins": [
-    { "path": "builtin:amux.sidebar", "enabled": true },
+    { "package": "@danielfgray/amux-plugin-sidebar", "enabled": true },
     { "path": "./plugins/status-bar.tsx", "enabled": true }
   ]
 }
 ```
 
-Relative paths resolve from the config directory. A plugin must default-export an object with `id`, `apiVersion: "1"`, and an Effect `effect` function. The effect receives a value-only `PanelContext`, registers panels with `ctx.registerPanel`, and everything registered is removed when the plugin is disabled or fails. `PanelContext.display()` provides cloned space, window, and agent rows with state and blocked counts; `examples/agent-dashboard.tsx` uses that projection for a live agent roster. See `examples/status-bar.tsx` for a minimal bottom-bar plugin, or `examples/agent-triage.tsx` for a right-side attention rail.
+Relative paths resolve from the config directory. A plugin must default-export an object with `id` and an Effect `effect` function. Compatibility is declared by the published package, not the module: a plugin package carries an `engines.amux` semver range, and a plugin whose range misses the host is refused outright. The effect receives a value-only `PanelContext`, registers panels with `ctx.registerPanel`, and everything registered is removed when the plugin is disabled or fails. `PanelContext.display()` provides cloned space, window, and agent rows with state and blocked counts; `examples/agent-dashboard.tsx` uses that projection for a live agent roster. See `examples/status-bar.tsx` for a minimal bottom-bar plugin, or `examples/agent-triage.tsx` for a right-side attention rail.
 
 In addition to configured entries, amux discovers entry files in `$XDG_CONFIG_HOME/opentui-herdr/plugins/` (or `~/.config/opentui-herdr/plugins/`). Discovery uses the same validation and failure isolation as configured plugins. The host can enable or disable a plugin at runtime; disabling closes its scope immediately and enabling it acquires a new one. Module state is not persistence: use `ctx.kv` for state that must survive disable and re-enable.
 
@@ -63,7 +63,6 @@ A plugin names the services it cannot run without in `inject` and the services i
 ```ts
 export default definePlugin({
   id: "amux.mentions",
-  apiVersion: "1",
   inject: [SearchService],
   provide: [MentionIndex],
   effect: (ctx) =>

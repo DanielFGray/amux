@@ -33,7 +33,6 @@ export const SIDEBAR_OPTIONS = {
 
 export const sidebarPlugin: PluginDefinition = definePlugin({
   id: SIDEBAR_PLUGIN_ID,
-  apiVersion: "1",
   inject: [RegionsTag, OptionsTag, PanelTag],
   effect: () =>
     Effect.gen(function* () {

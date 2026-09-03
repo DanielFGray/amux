@@ -16,7 +16,6 @@ type TriageAgent = {
 /** A read-only attention rail assembled from the public value projections. */
 const agentTriage: PluginDefinition = definePlugin({
   id: "example.agent-triage",
-  apiVersion: "1",
   inject: [PanelTag, RegionsTag],
   effect: () =>
     Effect.gen(function* () {

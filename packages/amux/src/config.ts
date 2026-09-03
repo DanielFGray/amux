@@ -12,9 +12,21 @@ import type { PlatformError } from "effect/PlatformError";
 import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
 import { errorMessage } from "./error-message.ts";
 
-export interface PluginSpec {
-  readonly path: string;
-  readonly enabled: boolean;
+/**
+ * One entry in config's `plugins` array, naming a plugin and whether it is
+ * active. A path names a plugin file directly (relative paths resolve
+ * against the config directory); a package names an npm package installed
+ * in the plugin store, with an optional version pin. Bare strings are paths —
+ * a package spec is always the object form, so a scoped package name is
+ * never mistaken for a relative path.
+ */
+export type PluginSpec =
+  | { readonly path: string; readonly enabled: boolean }
+  | { readonly package: string; readonly version?: string; readonly enabled: boolean };
+
+/** The config key a spec is filed under: its path, or its package name. */
+export function pluginSpecKey(spec: PluginSpec): string {
+  return "package" in spec ? spec.package : spec.path;
 }
 
 /**
@@ -30,9 +42,10 @@ export interface Config {
   /** Prefix key and per-command overrides. Only commands the user has actually
    * rebound appear here, so the defaults stay free to change. */
   keys: Keys;
-  /** Ordered list of user plugins to load. Each entry is a path string or a
-   * { path, enabled } object. Relative paths resolve against the config
-   * directory. Malformed entries are silently skipped. */
+  /** Ordered list of user plugins to load. Each entry is a path string, a
+   * { path, enabled } object, or a { package, version?, enabled } object
+   * naming an npm package in the plugin store. Relative paths resolve
+   * against the config directory. Malformed entries are silently skipped. */
   plugins: PluginSpec[];
   /** Standing agent permission policy, in force in every project. Written by
    * hand: what the user approves in a pane is recorded against that project
@@ -44,13 +57,9 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   options: {},
   keys: { leader: DEFAULT_LEADER, bindings: {} },
-  plugins: [
-    { path: "builtin:amux.agent-awareness", enabled: true },
-    { path: "builtin:amux.sidebar", enabled: true },
-    { path: "builtin:amux.agent-harness", enabled: true },
-    { path: "builtin:amux.notifications", enabled: true },
-    { path: "builtin:amux.agent-hooks-cli", enabled: true },
-  ],
+  // Bare amux is tmux with nothing extra loaded: no plugin is active until
+  // the user names one, by path or by installed package.
+  plugins: [],
   permissions: [],
 };
 
@@ -74,13 +83,17 @@ const KeysSchema = S.Struct({
   bindings: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),
 });
 
-const PluginSpecSchema = S.Struct({
+const PluginPathSpecSchema = S.Struct({
   path: S.String.pipe(S.check(S.isMinLength(1))),
   enabled: S.Boolean.pipe(S.withDecodingDefaultType(Effect.succeed(true))),
 });
-const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = DEFAULT_CONFIG.plugins.map(
-  (plugin): JsonValue => ({ path: plugin.path, enabled: plugin.enabled }),
-);
+const PluginPackageSpecSchema = S.Struct({
+  package: S.String.pipe(S.check(S.isMinLength(1))),
+  version: S.optional(S.String.pipe(S.check(S.isMinLength(1)))),
+  enabled: S.Boolean.pipe(S.withDecodingDefaultType(Effect.succeed(true))),
+});
+const PluginSpecSchema = S.Union([PluginPathSpecSchema, PluginPackageSpecSchema]);
+const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = [];
 
 const ConfigSchema = S.Struct({
   options: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),
@@ -139,7 +152,7 @@ export function decodeConfig(loaded: JsonValue): Config {
   return {
     options: { ...decoded.options },
     keys: { leader, bindings },
-    plugins: mergeDefaultPlugins(plugins),
+    plugins,
     permissions,
   };
 }
@@ -157,16 +170,6 @@ const decodePluginEntry = (entry: JsonValue): Option.Option<PluginSpec> => {
     }),
   );
 };
-
-/** New bundled plugins are enabled for existing configs unless the user has an
- * explicit entry for that path. An explicit disabled entry remains authoritative. */
-function mergeDefaultPlugins(saved: PluginSpec[]): PluginSpec[] {
-  const byPath = new Map(saved.map((plugin) => [plugin.path, plugin]));
-  return [
-    ...DEFAULT_CONFIG.plugins.map((plugin) => byPath.get(plugin.path) ?? structuredClone(plugin)),
-    ...saved.filter((plugin) => !DEFAULT_CONFIG.plugins.some((item) => item.path === plugin.path)),
-  ];
-}
 
 export const loadConfig = (
   path = CONFIG_PATH,

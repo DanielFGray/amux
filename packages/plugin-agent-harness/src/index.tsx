@@ -42,7 +42,6 @@ export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
  */
 export const agentHarnessPlugin: PluginDefinition = definePlugin({
   id: AGENT_HARNESS_PLUGIN_ID,
-  apiVersion: "1",
   inject: [
     BindingsTag,
     OptionsTag,
