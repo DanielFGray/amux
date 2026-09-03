@@ -3,8 +3,8 @@
  * log, on demand, for a given working directory. amux never copies this data
  * anywhere: each call re-reads whatever the harness has on disk right now.
  *
- * One static adapter per harness, keyed by the id `identifyAgent` (from
- * `@danielfgray/amux-agent-awareness/identify.ts`) or a session's
+ * One static adapter per harness, keyed by the id `identifyAgent`
+ * (`@danielfgray/amux-agent-facts/identify.ts`) or a session's
  * `declaredAgent` produces. Modeled on scrape-my-messages' knowledge of each
  * harness's on-disk format, generalized from "messages the user typed" to
  * "the last N messages of any role" and scoped to one project directory

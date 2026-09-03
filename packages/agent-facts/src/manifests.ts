@@ -2,7 +2,7 @@
  * Writing or improving an agent manifest
  * =======================================
  *
- * A manifest tells this plugin two things about one coding agent: which
+ * A manifest tells amux two things about one coding agent: which
  * executables identify it, and how to read its on-screen state from a
  * terminal snapshot. `manifests.json` bundles the manifests amux ships with;
  * anyone can add or override one locally without touching this package's
@@ -67,11 +67,45 @@ import path from "node:path";
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { readdirSync, readFileSync } from "node:fs";
 import { Config, Effect, Schema as S } from "effect";
-import { CONFIG_DIR } from "@danielfgray/amux/config.ts";
-import type { Adapter, AdapterRule } from "./detector.ts";
 import bundledData from "./manifests.json" with { type: "json" };
 
 export const MANIFEST_ENGINE_VERSION = 1;
+
+/**
+ * The data shapes a manifest carries. Owned here rather than by the
+ * detector so both core (which reads them as neutral facts) and the
+ * agent-awareness plugin (which interprets them) share one definition.
+ * `region` and `state` stay wide strings: manifests are validated against
+ * the same sets at decode time, and the detector narrows them at its own
+ * boundary.
+ */
+export interface RegexPattern {
+  readonly pattern: string;
+  readonly flags?: string;
+}
+export interface RuleGate {
+  readonly contains?: readonly string[];
+  readonly regex?: readonly RegexPattern[];
+  readonly line_regex?: readonly RegexPattern[];
+  readonly all?: readonly RuleGate[];
+  readonly any?: readonly RuleGate[];
+  readonly not?: readonly RuleGate[];
+}
+export interface AdapterRule extends RuleGate {
+  readonly id: string;
+  readonly state: string;
+  readonly priority: number;
+  readonly region: string;
+  readonly skip_state_update?: boolean;
+  readonly visible_working?: boolean;
+  readonly visible_idle?: boolean;
+  readonly visible_blocker?: boolean;
+}
+export interface Adapter {
+  readonly id: string;
+  readonly aliases?: readonly string[];
+  readonly rules: readonly AdapterRule[];
+}
 
 export interface AgentManifest extends Adapter {
   readonly version: string;
@@ -297,10 +331,21 @@ function loadRegistry(configHome: string): AgentManifestRegistry {
 }
 
 /** Loaded once at module import: bundled manifests plus whatever local
- *  overrides were present in XDG config at that moment. Every consumer in
- *  this plugin (`identify.ts`, `detector.ts`, `presence.ts`) shares this one
- *  instance rather than re-reading the filesystem per call. */
-export const AgentManifests: AgentManifestRegistry = loadRegistry(CONFIG_DIR);
+ *  overrides were present in XDG config at that moment. Every consumer
+ *  shares this one instance rather than re-reading the filesystem per call.
+ *
+ *  The XDG resolution mirrors amux's own config dir rather than importing
+ *  it: this package is a support library core and plugins both depend on,
+ *  so it cannot import either of them back. */
+const FACTS_CONFIG_DIR = Effect.runSync(
+  Config.string("XDG_CONFIG_HOME").pipe(
+    Config.orElse(() =>
+      Config.string("HOME").pipe(Config.map((home) => path.join(home, ".config"))),
+    ),
+    Config.withDefault(path.join(".", ".config")),
+  ),
+);
+export const AgentManifests: AgentManifestRegistry = loadRegistry(FACTS_CONFIG_DIR);
 
 /** Exposed for tests, which need a registry built against a temp XDG dir
  *  rather than the process's real one. */

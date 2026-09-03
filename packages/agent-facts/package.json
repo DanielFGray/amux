@@ -1,0 +1,22 @@
+{
+  "name": "@danielfgray/amux-agent-facts",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/agent-facts"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*",
+    "@effect/platform-bun": "catalog:"
+  }
+}

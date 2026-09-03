@@ -1,34 +1,15 @@
 import { ProcessState, type ScreenRegion } from "@danielfgray/amux";
-import { AgentManifests } from "./manifests.ts";
+import {
+  AgentManifests,
+  type Adapter,
+  type AdapterRule,
+  type RegexPattern,
+  type RuleGate,
+} from "@danielfgray/amux-agent-facts/manifests.ts";
+
+export type { Adapter, AdapterRule, RegexPattern, RuleGate };
 
 type DetectorState = ProcessState | "unknown";
-interface RegexPattern {
-  readonly pattern: string;
-  readonly flags?: string;
-}
-export interface RuleGate {
-  readonly contains?: readonly string[];
-  readonly regex?: readonly RegexPattern[];
-  readonly line_regex?: readonly RegexPattern[];
-  readonly all?: readonly RuleGate[];
-  readonly any?: readonly RuleGate[];
-  readonly not?: readonly RuleGate[];
-}
-export interface AdapterRule extends RuleGate {
-  readonly id: string;
-  readonly state: DetectorState;
-  readonly priority: number;
-  readonly region: ScreenRegion;
-  readonly skip_state_update?: boolean;
-  readonly visible_working?: boolean;
-  readonly visible_idle?: boolean;
-  readonly visible_blocker?: boolean;
-}
-export interface Adapter {
-  readonly id: string;
-  readonly aliases?: readonly string[];
-  readonly rules: readonly AdapterRule[];
-}
 export interface DetectorResult {
   readonly state: DetectorState;
   readonly rule?: string;
@@ -49,7 +30,11 @@ interface CompiledRule {
 
 export const DETECTOR_REGIONS: readonly ScreenRegion[] = Object.freeze([
   ...new Set(
-    AgentManifests.manifests.flatMap((manifest) => manifest.rules.map((rule) => rule.region)),
+    // Safe by construction: manifest decode rejects any region outside the
+    // ScreenRegion set (see isScreenRegion in agent-facts/manifests.ts).
+    AgentManifests.manifests.flatMap((manifest) =>
+      manifest.rules.map((rule) => rule.region as ScreenRegion),
+    ),
   ),
 ]);
 
@@ -116,12 +101,15 @@ function evaluateCompiledAdapter(
   }
   if (!matched) return { state: "unknown", skipStateUpdate: false };
   const { rule } = matched;
+  // Safe by construction: manifest decode only admits the DetectorState
+  // literals as rule states.
+  const state = rule.state as DetectorState;
   return {
-    state: rule.state,
+    state,
     rule: rule.id,
     skipStateUpdate: rule.skip_state_update ?? false,
-    visibleWorking: rule.visible_working && rule.state === ProcessState.Running,
-    visibleIdle: rule.visible_idle && rule.state === ProcessState.Idle,
-    visibleBlocker: rule.visible_blocker && rule.state === ProcessState.Blocked,
+    visibleWorking: rule.visible_working && state === ProcessState.Running,
+    visibleIdle: rule.visible_idle && state === ProcessState.Idle,
+    visibleBlocker: rule.visible_blocker && state === ProcessState.Blocked,
   };
 }
