@@ -22,7 +22,7 @@
  *
  * Static imports are deliberately absent: Bun evaluates them before main() runs,
  * so this file has none. Every subcommand lazy-loads only what it needs, keeping
- * `process-state`, and `agent-hook` sub-millisecond.
+ * `process-state` sub-millisecond.
  */
 import { Clock, Config, ConfigProvider, Effect, Layer, Option, Schema, Stream } from "effect";
 
@@ -217,44 +217,6 @@ function main(): Effect.Effect<number> {
               writeErr(`error: ${String(error)}`);
               return 1;
             },
-          ),
-        );
-      });
-    }
-
-    if (sub === "agent-hook") {
-      return yield* Effect.gen(function* () {
-        const { installOpencodeHook, uninstallOpencodeHook } = yield* Effect.promise(
-          () => import("./agent-hook.ts"),
-        );
-        const { BunFileSystem } = yield* Effect.promise(() => import("@effect/platform-bun"));
-        type Hook = Effect.Effect<
-          string | boolean,
-          import("./agent-hook.ts").AgentHookError | import("effect/PlatformError").PlatformError,
-          import("effect/FileSystem").FileSystem
-        >;
-        const [vendor, action] = argv.slice(1);
-        if (vendor !== "opencode" || (action !== "install" && action !== "uninstall")) {
-          writeErr("usage: amux agent-hook opencode <install|uninstall> --yes");
-          return 2;
-        }
-        if (!argv.includes("--yes")) {
-          writeErr("error: editing opencode config requires explicit consent; add --yes");
-          return 2;
-        }
-        const hook: Hook = action === "install" ? installOpencodeHook() : uninstallOpencodeHook();
-        return yield* hook.pipe(
-          Effect.provide(BunFileSystem.layer),
-          Effect.map((result) => {
-            if (action === "install") writeOut(`installed opencode hook at ${result}`);
-            else writeOut(result ? "removed opencode hook" : "no opencode hook installed");
-            return 0;
-          }),
-          Effect.catch((error) =>
-            Effect.sync(() => {
-              writeErr(`error: ${String(error)}`);
-              return 1;
-            }),
           ),
         );
       });

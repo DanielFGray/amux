@@ -10,6 +10,7 @@ import * as sidebarModule from "@danielfgray/amux-plugin-sidebar";
 import * as agentHarnessModule from "@danielfgray/amux-plugin-agent-harness";
 import * as notificationsModule from "@danielfgray/amux-plugin-notifications";
 import * as agentAwarenessModule from "@danielfgray/amux-agent-awareness";
+import * as agentHooksCliModule from "@danielfgray/amux-agent-awareness/hooks-cli.ts";
 
 /**
  * The plugins amux ships, named twice on purpose.
@@ -45,6 +46,10 @@ const BUILTIN_PLUGINS = {
   "builtin:amux.notifications": {
     load: () => Promise.resolve(notificationsModule),
     resolveSource: () => import.meta.resolve("@danielfgray/amux-plugin-notifications"),
+  },
+  "builtin:amux.agent-hooks-cli": {
+    load: () => Promise.resolve(agentHooksCliModule),
+    resolveSource: () => import.meta.resolve("@danielfgray/amux-agent-awareness/hooks-cli.ts"),
   },
 } satisfies Readonly<Record<string, BuiltinEntry>>;
 

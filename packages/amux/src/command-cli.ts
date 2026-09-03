@@ -225,7 +225,6 @@ export function generateHelp(): string {
     "usage: amux <command> [args] [--flag=value] [--session=<id>]",
     "       amux <command> [args] \\; <command> [args] ...",
     "       amux process-state --state <idle|running|blocked|done>",
-    "       amux agent-hook opencode <install|uninstall> --yes",
     "",
     "Commands:",
   ];

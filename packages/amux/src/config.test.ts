@@ -82,6 +82,7 @@ test("the default sidebar is an ordinary enabled plugin spec", () => {
     { path: "builtin:amux.sidebar", enabled: true },
     { path: "builtin:amux.agent-harness", enabled: true },
     { path: "builtin:amux.notifications", enabled: true },
+    { path: "builtin:amux.agent-hooks-cli", enabled: true },
   ]);
   expect(decodeConfig({}).plugins).toEqual(DEFAULT_CONFIG.plugins);
   expect(
@@ -93,6 +94,7 @@ test("the default sidebar is an ordinary enabled plugin spec", () => {
     { path: "builtin:amux.sidebar", enabled: false },
     { path: "builtin:amux.agent-harness", enabled: true },
     { path: "builtin:amux.notifications", enabled: true },
+    { path: "builtin:amux.agent-hooks-cli", enabled: true },
   ]);
 });
 

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { DEFAULT_LEADER, type Keys } from "./bindings.ts";
 import { type OptionDeltas } from "./options.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
-import { Effect, Option, Schema as S } from "effect";
+import { Config as EffectConfig, Effect, Option, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { PermissionRuleSchema, type PermissionRule } from "./permission.ts";
@@ -49,15 +49,24 @@ export const DEFAULT_CONFIG: Config = {
     { path: "builtin:amux.sidebar", enabled: true },
     { path: "builtin:amux.agent-harness", enabled: true },
     { path: "builtin:amux.notifications", enabled: true },
+    { path: "builtin:amux.agent-hooks-cli", enabled: true },
   ],
   permissions: [],
 };
 
-// XDG base-dir bootstrap constant, resolved once at module load before any Effect
-// runs and read synchronously by render code; nothing substitutes it via a
-// ConfigProvider today.
-// @effect-diagnostics-next-line processEnv:off
-const CONFIG_DIR = process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? ".", ".config");
+/** `${XDG_CONFIG_HOME:-~/.config}`, resolved once at module load (before any
+ *  Effect runtime exists) and read synchronously by render code — nothing
+ *  substitutes it via a `ConfigProvider` today. `Effect.runSync` against
+ *  `Config.string` still routes the read through Effect's config layer
+ *  instead of touching `process.env` directly. */
+export const CONFIG_DIR = Effect.runSync(
+  EffectConfig.string("XDG_CONFIG_HOME").pipe(
+    EffectConfig.orElse(() =>
+      EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
+    ),
+    EffectConfig.withDefault(join(".", ".config")),
+  ),
+);
 export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json");
 
 const KeysSchema = S.Struct({

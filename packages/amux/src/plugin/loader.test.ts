@@ -555,6 +555,7 @@ test("decodeConfig preserves valid plugin specs", () => {
     { path: "builtin:amux.sidebar", enabled: true },
     { path: "builtin:amux.agent-harness", enabled: true },
     { path: "builtin:amux.notifications", enabled: true },
+    { path: "builtin:amux.agent-hooks-cli", enabled: true },
     { path: "./relative.ts", enabled: true },
     { path: "/absolute/path.ts", enabled: true },
     { path: "/with/options.ts", enabled: true },

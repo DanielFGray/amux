@@ -82,10 +82,8 @@ Agent awareness is policy, so it lives in a plugin; running a turn lives in a
 harness plugin.
 
 Recognising a process as claude/codex/opencode is "which executables count as
-agents", which the rule below assigns to a default plugin. Three pieces of that
-policy still sit in core and are tracked for migration: the executable table in
-`detect.ts` and `detector-evaluator.ts`, the `agent-hook` subcommand that
-installs a plugin into opencode's own config directory, and the turn, tool and
+agents", which the rule below assigns to a default plugin. One piece of that
+policy still sits in core and is tracked for migration: the turn, tool and
 permission vocabulary in `AttachProtocol.ts`.
 
 The thing that runs a turn loop is a _harness_, and a harness is a plugin —

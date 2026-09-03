@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { join } from "node:path";
-import { Cause, Effect, Exit, Scope } from "effect";
+import { Cause, Clock, Effect, Exit, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import {
@@ -18,9 +18,9 @@ import {
   coreProcessState,
   STATE_BY_EVENT,
 } from "./agent-hook/opencode.js";
-import { isProcessState } from "./process-state.ts";
-import { AGENT_AWARENESS_IDENTITY_TOPIC as PLUGIN_AGENT_AWARENESS_IDENTITY_TOPIC } from "@danielfgray/amux-agent-awareness/identity-state.ts";
-import { testEffect } from "./test-effect.ts";
+import { isProcessState } from "@danielfgray/amux";
+import { AGENT_AWARENESS_IDENTITY_TOPIC as PLUGIN_AGENT_AWARENESS_IDENTITY_TOPIC } from "./identity-state.ts";
+import { testEffect } from "@danielfgray/amux/testing";
 
 const scoped = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Scope.Scope>) =>
   effect.pipe(Effect.provide(BunFileSystem.layer));
@@ -166,17 +166,17 @@ testEffect("reports opencode lifecycle transitions to the agent-state socket", (
         {
           session: "agent-a",
           topic: AGENT_AWARENESS_IDENTITY_TOPIC,
-          payload: { agent: "opencode", state: "working" },
+          payload: { agent: "opencode" },
         },
         {
           session: "agent-a",
           topic: AGENT_AWARENESS_IDENTITY_TOPIC,
-          payload: { agent: "opencode", state: "blocked" },
+          payload: { agent: "opencode" },
         },
         {
           session: "agent-a",
           topic: AGENT_AWARENESS_IDENTITY_TOPIC,
-          payload: { agent: "opencode", state: "idle" },
+          payload: { agent: "opencode" },
         },
       ]);
     }),
@@ -203,38 +203,32 @@ testEffect("collapses repeated states so streaming does not flood the socket", (
       ) as { params: { state: string } };
       const topicPublish = received.find(
         (message) => (message as { method: string }).method === "topic.publish",
-      ) as { params: { payload: { state: string } } };
+      ) as { params: { payload: { agent: string } } };
       expect(processState.params.state).toBe("running");
-      expect(topicPublish.params.payload.state).toBe("working");
+      expect(topicPublish.params.payload).toEqual({ agent: "opencode" });
     }),
   ),
 );
 
-testEffect(
-  "maps a failed turn to idle on process.state but preserves it on the identity topic",
-  () =>
-    scoped(
-      Effect.gen(function* () {
-        const home = yield* temporaryHome;
-        const path = join(home, "agent-state.sock");
-        const { received } = yield* agentStateSocket(path);
-        const plugin = yield* pluginWith({
-          AMUX_PROCESS_STATE_SOCKET: path,
-          AMUX_AGENT_ID: "agent-a",
-        });
+testEffect("maps a failed turn to idle on process.state", () =>
+  scoped(
+    Effect.gen(function* () {
+      const home = yield* temporaryHome;
+      const path = join(home, "agent-state.sock");
+      const { received } = yield* agentStateSocket(path);
+      const plugin = yield* pluginWith({
+        AMUX_PROCESS_STATE_SOCKET: path,
+        AMUX_AGENT_ID: "agent-a",
+      });
 
-        yield* Effect.promise(() => plugin.event!({ event: { type: "session.error" } }));
+      yield* Effect.promise(() => plugin.event!({ event: { type: "session.error" } }));
 
-        const processState = received.find(
-          (message) => (message as { method: string }).method === "process.state",
-        ) as { params: { state: string } };
-        const topicPublish = received.find(
-          (message) => (message as { method: string }).method === "topic.publish",
-        ) as { params: { payload: { state: string } } };
-        expect(processState.params.state).toBe("idle");
-        expect(topicPublish.params.payload.state).toBe("failed");
-      }),
-    ),
+      const processState = received.find(
+        (message) => (message as { method: string }).method === "process.state",
+      ) as { params: { state: string } };
+      expect(processState.params.state).toBe("idle");
+    }),
+  ),
 );
 
 testEffect("contributes nothing outside an amux pane", () =>
@@ -248,24 +242,15 @@ testEffect("contributes nothing outside an amux pane", () =>
 );
 
 // The hook runs inside somebody else's agent: a dead or absent daemon must cost
-// the agent a bounded pause, never a hang and never a thrown event handler. This
-// test measures the plain-async opencode.js asset directly against process.env
-// and wall-clock time, the same external-plugin boundary as pluginWith above.
-// @effect-diagnostics-next-line asyncFunction:off
-test("a report to a socket nobody is listening on settles quickly", async () => {
-  const previous = { ...process.env };
-  // @effect-diagnostics-next-line processEnv:off
-  process.env.AMUX_PROCESS_STATE_SOCKET = join(process.cwd(), "does-not-exist.sock");
-  // @effect-diagnostics-next-line processEnv:off
-  process.env.AMUX_AGENT_ID = "agent-a";
-  try {
-    const plugin = await AmuxAgentStatePlugin();
-    // @effect-diagnostics-next-line globalDate:off
-    const started = Date.now();
-    await plugin.event!(statusEvent("streaming"));
-    // @effect-diagnostics-next-line globalDate:off
-    expect(Date.now() - started).toBeLessThan(1_000);
-  } finally {
-    process.env = previous;
-  }
-});
+// the agent a bounded pause, never a hang and never a thrown event handler.
+testEffect("a report to a socket nobody is listening on settles quickly", () =>
+  Effect.gen(function* () {
+    const plugin = yield* pluginWith({
+      AMUX_PROCESS_STATE_SOCKET: join(process.cwd(), "does-not-exist.sock"),
+      AMUX_AGENT_ID: "agent-a",
+    });
+    const started = yield* Clock.currentTimeMillis;
+    yield* Effect.promise(() => plugin.event!(statusEvent("streaming")));
+    expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(1_000);
+  }),
+);
