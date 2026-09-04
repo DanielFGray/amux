@@ -665,13 +665,23 @@ function buildApp(
         ),
     );
 
+  // A plugin verb's daemon-side registration can target "workspace" (needs
+  // size/shell/cwd to mutate the model, e.g. spawning an agent's pane) or
+  // "session" (ignores it). That target lives only in the daemon's command
+  // table, invisible from here, so this always attaches the panel's live
+  // context — a "session"-target command simply never reads it.
   const runRuntimeCommand = (
     value: RuntimeCommand,
-    _input?: string,
+    input?: string,
   ): Effect.Effect<unknown, CommandError> =>
     session
-      .run(value)
-      .pipe(Effect.mapError((error) => new CommandError({ message: errorMessage(error) })));
+      .runWorkspace(value, { ...workspaceContext(), input })
+      .pipe(
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+        Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
+        Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
+        Effect.map(({ result }) => result),
+      );
 
   const [configState, setConfigState] = createSignal<Config>(config);
   /** Every core option resolved against its declared default — what the app
