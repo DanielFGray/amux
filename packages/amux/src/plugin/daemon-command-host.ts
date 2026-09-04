@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Logger } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { dirname } from "node:path";
@@ -7,11 +7,7 @@ import { createPluginContributions } from "./contributions.ts";
 import { createPluginHost } from "./host.ts";
 import { loadDaemonPluginsFromConfig } from "./loader.ts";
 import { definePlugin } from "./types.ts";
-import {
-  DaemonCommandsTag,
-  scopedRegistry,
-  type DaemonCommandRegistration,
-} from "./services.ts";
+import { DaemonCommandsTag, scopedRegistry, type DaemonCommandRegistration } from "./services.ts";
 
 /**
  * Read daemon-command declarations before a daemon starts. The CLI needs the
@@ -40,5 +36,5 @@ export const daemonCommandRegistrations = (): Promise<readonly DaemonCommandRegi
         ]);
         return table.all().map(({ value }) => value);
       }),
-    ).pipe(Effect.provide(BunFileSystem.layer)),
+    ).pipe(Effect.provide(BunFileSystem.layer), Effect.provideService(Logger.LogToStderr, true)),
   );

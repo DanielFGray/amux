@@ -203,7 +203,7 @@ export const agentHarnessDaemonPlugin: PluginDefinition = definePlugin({
     Effect.gen(function* () {
       for (const registration of agentHarnessDaemonCommands)
         yield* registerDaemonCommand(registration);
-  }),
+    }),
 });
 
 export default agentHarnessDaemonPlugin;

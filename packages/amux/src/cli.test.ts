@@ -139,10 +139,23 @@ test("a typo'd flag is a syntax error (exit 2), not a refusal of a session it na
   expect(Buffer.from(result.stderr).toString()).toContain("unknown flag: --bogus");
 });
 
+test("a client launch refuses to nest inside a pane amux already owns", () => {
+  const result = Bun.spawnSync({
+    cmd: [process.execPath, "packages/amux/src/cli.ts", "new", "some-session"],
+    env: { ...process.env, AMUX_DAEMON_SESSION: "outer-session" },
+  });
+  expect(result.exitCode).toBe(1);
+  expect(Buffer.from(result.stderr).toString()).toContain("already inside amux");
+  expect(Buffer.from(result.stdout).toString()).toBe("");
+});
+
 test("--help prints the derived help, not a stale static copy", async () => {
   const { generateHelp } = await import("./command-cli.ts");
-  const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"]);
+  const { daemonCommandRegistrations } = await import("./plugin/daemon-command-host.ts");
+  const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"], {
+    env: process.env,
+  });
   const stdout = Buffer.from(result.stdout).toString();
   expect(result.exitCode).toBe(0);
-  expect(stdout).toBe(generateHelp() + "\n");
+  expect(stdout).toBe(generateHelp(await daemonCommandRegistrations()) + "\n");
 });

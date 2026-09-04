@@ -25,7 +25,17 @@
  * so this file has none. Every subcommand lazy-loads only what it needs, keeping
  * `process-state` sub-millisecond.
  */
-import { Clock, Config, ConfigProvider, Effect, Layer, Option, Schema, Stream } from "effect";
+import {
+  Clock,
+  Config,
+  ConfigProvider,
+  Effect,
+  Layer,
+  Logger,
+  Option,
+  Schema,
+  Stream,
+} from "effect";
 
 const writeOut = (text: string) => process.stdout.write(text + "\n");
 const writeErr = (text: string) => process.stderr.write(text + "\n");
@@ -37,8 +47,27 @@ const readEnv = (name: string): string | undefined =>
       ),
     ),
   );
-const runClient = (session: string): Effect.Effect<number> =>
-  Effect.promise(() => {
+
+/**
+ * tmux refuses to nest a second server inside a pane it already owns unless
+ * $TMUX is unset first; a pane amux spawns carries the same kind of marker
+ * (AMUX_DAEMON_SESSION, set so a command run from inside a pane can resolve
+ * its own daemon without --session). Rendering a second client into that
+ * pane corrupts the outer client's terminal state — mode-setting, alt-screen,
+ * and mouse-tracking sequences from the inner renderer land in a terminal the
+ * outer renderer still thinks it owns exclusively.
+ */
+const runClient = (session: string): Effect.Effect<number> => {
+  const nestedIn = readEnv("AMUX_DAEMON_SESSION");
+  if (nestedIn !== undefined) {
+    return Effect.sync(() => {
+      writeErr(
+        `error: already inside amux (session '${nestedIn}'); sessions should be nested with care, unset AMUX_DAEMON_SESSION to force`,
+      );
+      return 1;
+    });
+  }
+  return Effect.promise(() => {
     const child = Bun.spawn(
       [
         "env",
@@ -50,6 +79,7 @@ const runClient = (session: string): Effect.Effect<number> =>
     );
     return child.exited;
   });
+};
 
 export function splitCommandArgs(argv: readonly string[]): string[][] {
   const groups: string[][] = [[]];
@@ -122,8 +152,10 @@ const dispatchPluginCommand = Effect.fnUntraced(function* (sub: string, argv: st
   const { dispatchCliCommand } = yield* Effect.promise(() => import("./plugin/cli-host.ts"));
   const result = yield* Effect.promise(() => dispatchCliCommand(sub, argv));
   if ("code" in result) return result.code;
-  const { generateHelp } = yield* Effect.promise(() => import("./command-cli.ts"));
-  let text = generateHelp();
+  const [{ generateHelp }, { daemonCommandRegistrations }] = yield* Effect.promise(() =>
+    Promise.all([import("./command-cli.ts"), import("./plugin/daemon-command-host.ts")]),
+  );
+  let text = generateHelp(yield* Effect.promise(() => daemonCommandRegistrations()));
   if (result.refused.length > 0) {
     text +=
       "\n\nPlugins unavailable outside an attached client:\n" +
@@ -139,8 +171,12 @@ function main(): Effect.Effect<number> {
     const sub = argv[0];
 
     if (sub === "help" || sub === "--help" || sub === "-h") {
-      const { generateHelp } = yield* Effect.promise(() => import("./command-cli.ts"));
-      process.stdout.write(generateHelp() + "\n");
+      const [{ generateHelp }, { daemonCommandRegistrations }] = yield* Effect.promise(() =>
+        Promise.all([import("./command-cli.ts"), import("./plugin/daemon-command-host.ts")]),
+      );
+      process.stdout.write(
+        generateHelp(yield* Effect.promise(() => daemonCommandRegistrations())) + "\n",
+      );
       return 0;
     }
 
@@ -259,7 +295,9 @@ function main(): Effect.Effect<number> {
           ),
         )
       : [];
-    const daemonCommandByTag = new Map(daemonCommands.map((registration) => [registration.tag, registration]));
+    const daemonCommandByTag = new Map(
+      daemonCommands.map((registration) => [registration.tag, registration]),
+    );
     type CommandTag = string;
     type CommandContext = {
       size: { cols: number; rows: number };
@@ -448,7 +486,7 @@ function main(): Effect.Effect<number> {
         const targetId: string | null = resolveCommandSession(
           isCoreCommandTag(parsed.tag)
             ? commandDefinition(parsed.tag).target
-            : daemonCommandByTag.get(parsed.tag)?.meta.target ?? "workspace",
+            : (daemonCommandByTag.get(parsed.tag)?.meta.target ?? "workspace"),
           parsed.sessionFlag,
           parsed.positionalSession,
         );
@@ -633,5 +671,9 @@ function main(): Effect.Effect<number> {
 }
 
 if (import.meta.main) {
-  Effect.runPromise(main()).then((code) => (process.exitCode = code));
+  // stdout is protocol output — command results, --help text, JSON — so
+  // logs (plugin-load warnings, etc.) must not interleave with it.
+  Effect.runPromise(main().pipe(Effect.provideService(Logger.LogToStderr, true))).then(
+    (code) => (process.exitCode = code),
+  );
 }
