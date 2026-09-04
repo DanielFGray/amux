@@ -286,15 +286,27 @@ function main(): Effect.Effect<number> {
     );
     const { COMMAND_META, Command, commandDefinition, isCoreCommandTag, runtimeCommand } =
       commandsMod;
-    const daemonCommands = splitCommandArgs(argv).some(
-      (group) => group[0] !== undefined && !isCoreCommandTag(group[0]),
-    )
-      ? yield* Effect.promise(() =>
-          import("./plugin/daemon-command-host.ts").then(({ daemonCommandRegistrations }) =>
-            daemonCommandRegistrations(),
-          ),
-        )
-      : [];
+    // `new`, an out-of-schema plugin verb (its own single-command path
+    // below, matched by prefix alone), and a bare session-id attach never
+    // consult daemonCommandByTag — they dispatch on sub alone, without ever
+    // reaching parseCommandGroup/isCommandTag. Booting a plugin host to
+    // build a map none of them will read would just tax those paths
+    // (notably runClient's nesting-guard refusal) for nothing. Every core
+    // and daemon command tag is dot-namespaced ("pane.split", "agent.new"),
+    // so a bare, dot-free sub unambiguously can't be one — the only shape a
+    // real session id takes here, since a dotted sub must still be checked
+    // against daemonCommands in case it names a plugin verb.
+    const daemonCommands =
+      sub !== "new" &&
+      !sub.startsWith("plugin.") &&
+      !(!sub.includes(".") && isSessionId(sub)) &&
+      splitCommandArgs(argv).some((group) => group[0] !== undefined && !isCoreCommandTag(group[0]))
+        ? yield* Effect.promise(() =>
+            import("./plugin/daemon-command-host.ts").then(({ daemonCommandRegistrations }) =>
+              daemonCommandRegistrations(),
+            ),
+          )
+        : [];
     const daemonCommandByTag = new Map(
       daemonCommands.map((registration) => [registration.tag, registration]),
     );
