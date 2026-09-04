@@ -1468,12 +1468,7 @@ testEffect("closing a client rejects queued workspace commands", () =>
   }),
 );
 
-// Blocked by ts-d99630: interrupting a split strands a half-created PTY, and
-// the daemon can then neither stop gracefully nor be torn down without hanging
-// the whole file. The client contract this would assert — a caller woken with
-// "client is closing" rather than left waiting — is covered for queued commands
-// by the test above. Unskip when the daemon defect is fixed.
-test.skip("closing a client rejects a workspace command in flight", () =>
+test("closing a client rejects a workspace command in flight", () =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
