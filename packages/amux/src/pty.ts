@@ -2,23 +2,8 @@
  * threads, and process-group signaling with hard timing constraints (see readPty's doc comment).
  * SessionRegistry.ts is the Effect service layer that wraps it; this file is what's under the seam
  * documented in packages/amux/src/harness.ts, not on either side of it. */
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { Schema as S } from "effect";
 import { closeFd, ptyForegroundPgid, resizePty, spawnNativePty, waitPid } from "./shim.ts";
-
-/**
- * scripts/build-compile.ts builds pty-reader.worker.ts as its own file next
- * to the `amux` executable — see that script for why it can't just be a
- * second entrypoint of the main compile. In dev (`bun run`/`bun test`) that
- * sibling file doesn't exist, so this falls back to the real source, which
- * Bun resolves and transpiles like any other module.
- */
-function resolveWorkerScript(): string {
-  const compiled = join(dirname(process.execPath), "pty-reader.worker.js");
-  if (existsSync(compiled)) return compiled;
-  return new URL("./pty-reader.worker.ts", import.meta.url).href;
-}
 
 /** A trapped TERM must not make daemon shutdown unbounded. */
 const TERMINATE_GRACE_MS = 200;
@@ -331,7 +316,7 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
       else resolveMessage = resolve;
     });
   const startWorker = () => {
-    worker = new Worker(resolveWorkerScript());
+    worker = new Worker(new URL("./pty-reader.worker.ts", import.meta.url).href);
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const resolve = resolveMessage;
       resolveMessage = null;

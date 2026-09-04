@@ -299,10 +299,7 @@ export function ensureDaemon(
     const home = yield* optionalEnvVar("HOME");
     const stateHome = yield* optionalEnvVar("XDG_STATE_HOME");
     const entry = new URL("./daemon-main.ts", import.meta.url).pathname;
-    // A compiled executable's modules live under /$bunfs, which is not a
-    // path a child process can execute. Re-enter its public daemon subcommand;
-    // source mode still asks Bun to run daemon-main.ts directly.
-    const args = entry.startsWith("/$bunfs/") ? ["daemon", id] : [entry, id];
+    const args = [entry, id];
     const env = { ...process.env };
     if (Option.isSome(home)) env.HOME = home.value;
     if (Option.isSome(stateHome)) env.XDG_STATE_HOME = stateHome.value;
