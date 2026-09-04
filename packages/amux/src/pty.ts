@@ -58,6 +58,11 @@ export interface Pty {
   /** Idempotent: the master fd is closed exactly once no matter how many of
    *  {process exit, kill, dispose, shutdown} fire. */
   close(): void;
+  /** Registers an active drain of this pty's output, so natural-exit teardown
+   *  waits for it to reach real EOF instead of closing the master out from
+   *  under it. Call the returned function once the reader stops draining, for
+   *  any reason. Used by readPty(); no other caller has a reason to. */
+  registerReader(): () => void;
 }
 
 /** PIDs of every process in a session, so kill() can take down background jobs
@@ -128,10 +133,38 @@ export function spawnPty(
     closeFd(master);
   };
 
-  /** How long the master stays open after the child exits, so a reader can
-   *  collect what the child wrote on its way out. Reads are memory-speed; this
-   *  only has to outlast one poll interval of readPty. */
-  const DRAIN_GRACE_MS = 100;
+  // A reader reaches real EOF on its own once the kernel hangs the master up
+  // (the child was the slave's last holder), independent of us ever closing
+  // it — see readPty's EIO handling. So natural-exit teardown does not need
+  // to guess how long that takes: it waits for every registered reader to
+  // finish draining before it reclaims the fd. Under load, spawning many
+  // ptys at once starves both timers and the reader's own worker thread
+  // alike, so a fixed sleep here (as this once was) closes the master out
+  // from under a reader that has not had a single chance to read yet,
+  // silently discarding whatever the child printed on its way out.
+  let activeReaders = 0;
+  let idleWaiters: Array<() => void> = [];
+  const registerReader = (): (() => void) => {
+    activeReaders++;
+    let unregistered = false;
+    return () => {
+      if (unregistered) return;
+      unregistered = true;
+      activeReaders--;
+      if (activeReaders === 0) {
+        const waiters = idleWaiters;
+        idleWaiters = [];
+        for (const resolve of waiters) resolve();
+      }
+    };
+  };
+  const readersIdle = (): Promise<void> =>
+    activeReaders === 0 ? Promise.resolve() : new Promise((resolve) => idleWaiters.push(resolve));
+
+  /** Safety net only: bounds how long teardown waits for a reader that is
+   *  stuck or never attaches at all. A reader that is actually draining exits
+   *  on its own via kernel EOF (see above) long before this matters. */
+  const DRAIN_GRACE_MS = 5_000;
 
   beginTermination = (immediate) => {
     if (killPromise) return killPromise;
@@ -157,7 +190,7 @@ export function spawnPty(
         }
       };
 
-      if (!immediate) await Bun.sleep(DRAIN_GRACE_MS);
+      if (!immediate) await Promise.race([readersIdle(), Bun.sleep(DRAIN_GRACE_MS)]);
       signal("SIGTERM");
       await Promise.race([processExited, Bun.sleep(TERMINATE_GRACE_MS)]);
       if (sid > 0) {
@@ -252,6 +285,7 @@ export function spawnPty(
       // therefore enter the same drain-aware termination operation instead.
       void beginTermination(true);
     },
+    registerReader,
   };
 
   void (async () => {
@@ -304,6 +338,7 @@ const READ_GAP_MS = 1;
  * at their ownership boundary.
  */
 export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
+  const unregister = pty.registerReader();
   const fs = require("node:fs");
   const prime = Buffer.alloc(READ_BATCH);
   let worker: Worker | null = null;
@@ -431,6 +466,7 @@ export async function* readPty(pty: Pty): AsyncGenerator<Uint8Array> {
       if (len > 0) yield take();
     }
   } finally {
+    unregister();
     const activeWorker = worker as Worker | null;
     if (activeWorker) {
       activeWorker.postMessage({ type: "stop" });
