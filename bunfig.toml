@@ -4,4 +4,4 @@
 preload = ["@opentui/solid/preload"]
 
 [test]
-preload = ["@opentui/solid/preload"]
+preload = ["./packages/amux/src/test-env.ts", "@opentui/solid/preload"]
