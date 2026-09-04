@@ -21,6 +21,7 @@ import {
 } from "./effect/AttachProtocol.ts";
 import { SessionStore } from "./session.ts";
 import { testEffect } from "./test-effect.ts";
+import { until } from "./test-wait.ts";
 
 const dirs: string[] = [];
 const join = (...paths: string[]) =>
@@ -107,12 +108,19 @@ function client(path: string, hello: string, extra: string = "") {
   }).then((socket) => ({ socket, frames }));
 }
 
-const settle = (ms = 60) => Bun.sleep(ms);
 const text = (frames: AttachFrame[]) =>
   frames
     .filter((frame) => frame._tag === "output")
     .map((frame) => Buffer.from(frame.data).toString("utf8"))
     .join("");
+
+// These tests assert on daemon state a real socket round trip settles
+// asynchronously — attach/detach bookkeeping, frame delivery. A fixed sleep
+// before asserting only holds up on a quiet machine; under the load a full
+// suite run puts on the box, the round trip can still be in flight and the
+// assertion sees the state from before it landed (ts-525c9b). `until` polls
+// for the outcome instead, so a slow machine just takes longer rather than
+// flaking.
 
 testEffect("a session outlives the client that was watching it", () =>
   Effect.gen(function* () {
@@ -125,19 +133,25 @@ testEffect("a session outlives the client that was watching it", () =>
     });
 
     const first = yield* Effect.promise(() => client(daemon.paths.attach, "watcher"));
-    yield* Effect.sleep(60);
-    expect(yield* daemon.getAttachedClient).toBe("watcher");
+    yield* until(
+      () => Effect.map(daemon.getAttachedClient, (c) => c === "watcher"),
+      "the watcher to attach",
+    );
 
     // The client goes away while the process is still working.
     first.socket.end();
-    yield* Effect.sleep(60);
-    expect(yield* daemon.getAttachedClient).toBeNull();
+    yield* until(
+      () => Effect.map(daemon.getAttachedClient, (c) => c === null),
+      "the watcher to detach",
+    );
 
     // A new client sees the output the old one was never around for, which is
     // only possible because nothing killed the PTY on disconnect.
     const second = yield* Effect.promise(() => client(daemon.paths.attach, "replacement"));
-    yield* Effect.sleep(800);
-    expect(text(second.frames)).toContain("still-here");
+    yield* until(
+      () => text(second.frames).includes("still-here"),
+      "the still-running process's output",
+    );
     second.socket.end();
   }),
 );
@@ -158,11 +172,12 @@ testEffect("hello is honoured alongside frames batched behind it in one write", 
         }),
       ),
     );
-    yield* Effect.sleep(250);
-
     // `cat` echoes its input back, so seeing it proves the input frame was read
     // rather than stranded behind the hello.
-    expect(text(attached.frames)).toContain("echoed");
+    yield* until(
+      () => text(attached.frames).includes("echoed"),
+      "cat to echo the batched input",
+    );
     attached.socket.end();
   }),
 );
@@ -171,24 +186,33 @@ testEffect("multiple clients hold independent attachments", () =>
   Effect.gen(function* () {
     const daemon = yield* started("shared");
     const first = yield* Effect.promise(() => client(daemon.paths.attach, "one"));
-    yield* Effect.sleep(60);
+    yield* until(
+      () => Effect.map(daemon.getAttachedClients, (c) => c.includes("one")),
+      "the first client to attach",
+    );
 
     const second = yield* Effect.promise(() => client(daemon.paths.attach, "two"));
-    yield* Effect.sleep(60);
-    expect(second.frames.some((f) => f._tag === "error")).toBe(false);
     // Both, not "whichever arrived first": there is no owner to name any more.
-    expect((yield* daemon.getAttachedClients).sort()).toEqual(["one", "two"]);
+    yield* until(
+      () => Effect.map(daemon.getAttachedClients, (c) => [...c].sort().join(",") === "one,two"),
+      "both clients to attach",
+    );
+    expect(second.frames.some((f) => f._tag === "error")).toBe(false);
 
     first.socket.end();
-    yield* Effect.sleep(60);
     // The survivor keeps the session attached, and it is specifically the one
     // that did NOT leave — asserting `attached` alone would also pass if the
     // release had wiped both and something else had re-attached.
-    expect(yield* daemon.getAttachedClients).toEqual(["two"]);
+    yield* until(
+      () => Effect.map(daemon.getAttachedClients, (c) => c.join(",") === "two"),
+      "the leaving client to release, the survivor to remain",
+    );
     expect((yield* daemon.getState).attached).toBe(true);
     second.socket.end();
-    yield* Effect.sleep(60);
-    expect(yield* daemon.getAttachedClient).toBeNull();
+    yield* until(
+      () => Effect.map(daemon.getAttachedClient, (c) => c === null),
+      "the last client to detach",
+    );
   }),
 );
 
@@ -196,20 +220,20 @@ testEffect("a reconnect with the same client id cannot be released by the old so
   Effect.gen(function* () {
     const daemon = yield* started("same-client-reconnect");
     const first = yield* Effect.promise(() => client(daemon.paths.attach, "stable"));
-    yield* Effect.sleep(60);
+    yield* until(
+      () => Effect.map(daemon.getAttachedClient, (c) => c === "stable"),
+      "the first connection to attach",
+    );
 
     first.socket.end();
     const second = yield* Effect.promise(() => client(daemon.paths.attach, "stable"));
-    yield* Effect.sleep(60);
-
+    second.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "replacement-alive" }));
+    yield* until(
+      () => second.frames.some((f) => f._tag === "pong" && f.nonce === "replacement-alive"),
+      "the reconnected socket to answer a ping",
+    );
     expect(yield* daemon.getAttachedClient).toBe("stable");
     expect(second.frames.some((frame) => frame._tag === "error")).toBe(false);
-    second.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "replacement-alive" }));
-    yield* Effect.sleep(60);
-    expect(second.frames).toContainEqual({
-      _tag: "pong",
-      nonce: "replacement-alive",
-    });
     second.socket.end();
   }),
 );
@@ -218,12 +242,16 @@ testEffect("client death is reflected in the persisted session, not just in memo
   Effect.gen(function* () {
     const daemon = yield* started("persisted");
     const attached = yield* Effect.promise(() => client(daemon.paths.attach, "transient"));
-    yield* Effect.sleep(60);
-    expect((yield* daemon.getState).attached).toBe(true);
+    yield* until(
+      () => Effect.map(daemon.getState, (s) => s.attached),
+      "the client to attach",
+    );
 
     attached.socket.end();
-    yield* Effect.sleep(60);
-    expect((yield* daemon.getState).attached).toBe(false);
+    yield* until(
+      () => Effect.map(daemon.getState, (s) => !s.attached),
+      "the client's death to persist",
+    );
   }),
 );
 
@@ -231,7 +259,10 @@ testEffect("an input naming a dead session is ignored rather than dropping the a
   Effect.gen(function* () {
     const daemon = yield* started("stale-input");
     const attached = yield* Effect.promise(() => client(daemon.paths.attach, "racer"));
-    yield* Effect.sleep(60);
+    yield* until(
+      () => Effect.map(daemon.getAttachedClient, (c) => c === "racer"),
+      "the client to attach",
+    );
 
     attached.socket.write(
       encodeAttachFrame({
@@ -240,14 +271,15 @@ testEffect("an input naming a dead session is ignored rather than dropping the a
         data: new TextEncoder().encode("x"),
       }),
     );
-    yield* Effect.sleep(60);
-
-    // Still attached: a keystroke in flight when a process exits is a race, not
-    // a protocol violation, and must not take the whole connection down.
-    expect(yield* daemon.getAttachedClient).toBe("racer");
     attached.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "alive" }));
-    yield* Effect.sleep(60);
-    expect(attached.frames.some((f) => f._tag === "pong" && f.nonce === "alive")).toBe(true);
+    // Still attached: a keystroke in flight when a process exits is a race, not
+    // a protocol violation, and must not take the whole connection down. The
+    // ping answered proves it — a dropped connection would never reply.
+    yield* until(
+      () => attached.frames.some((f) => f._tag === "pong" && f.nonce === "alive"),
+      "a ping sent after the stale input to be answered",
+    );
+    expect(yield* daemon.getAttachedClient).toBe("racer");
     attached.socket.end();
   }),
 );
@@ -287,7 +319,10 @@ testEffect("closing a daemon persists that the preserved session is detached", (
   Effect.gen(function* () {
     const daemon = yield* started("close-detached");
     const attached = yield* Effect.promise(() => client(daemon.paths.attach, "watcher"));
-    yield* Effect.sleep(60);
+    yield* until(
+      () => Effect.map(daemon.getAttachedClient, (c) => c === "watcher"),
+      "the watcher to attach",
+    );
 
     yield* daemon.close;
     daemons.splice(daemons.indexOf(daemon), 1);
@@ -312,26 +347,44 @@ testEffect("the daemon tracks when the attached client was last seen", () =>
   Effect.gen(function* () {
     const daemon = yield* started("last-seen");
     const attached = yield* Effect.promise(() => client(daemon.paths.attach, "watcher"));
-    yield* Effect.promise(() => settle());
-
-    const claimed = yield* Effect.promise(() => control(daemon, (c) => c.Ping()));
-    expect(claimed.attached).toBe(true);
+    const ping = () => control(daemon, (c) => c.Ping());
+    let claimed = yield* Effect.promise(ping);
+    yield* until(
+      () =>
+        ping().then((c) => {
+          claimed = c;
+          return claimed.attached === true;
+        }),
+      "the watcher to attach",
+    );
     expect(claimed.attachedSince).toBeGreaterThan(0);
     expect(claimed.attachLastSeen).toBeGreaterThan(0);
 
     // Any inbound frame refreshes last-seen — a heartbeat above all, because an
     // attached UI showing an idle agent sends nothing else for hours.
-    const before = (yield* Effect.promise(() => control(daemon, (c) => c.Ping()))).attachLastSeen!;
+    const before = claimed.attachLastSeen!;
     attached.socket.write(encodeAttachFrame({ _tag: "ping", nonce: "keepalive" }));
-    yield* Effect.promise(() => settle(25));
-    const after = (yield* Effect.promise(() => control(daemon, (c) => c.Ping()))).attachLastSeen!;
-    expect(after).toBeGreaterThan(before);
+    let after = before;
+    yield* until(
+      () =>
+        ping().then((c) => {
+          after = c.attachLastSeen!;
+          return after > before;
+        }),
+      "the keepalive to refresh last-seen",
+    );
 
     // Detach clears the freshness along with the attachment itself.
     attached.socket.end();
-    yield* Effect.promise(() => settle());
-    const released = yield* Effect.promise(() => control(daemon, (c) => c.Ping()));
-    expect(released.attached).toBe(false);
+    let released = yield* Effect.promise(ping);
+    yield* until(
+      () =>
+        ping().then((c) => {
+          released = c;
+          return released.attached === false;
+        }),
+      "the watcher's detach to clear the attachment",
+    );
     expect(released.attachedSince).toBeUndefined();
     expect(released.attachLastSeen).toBeUndefined();
   }),

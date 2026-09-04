@@ -10,7 +10,6 @@
 
 import { afterEach, expect, test } from "bun:test";
 import {
-  Clock,
   Config,
   ConfigProvider,
   Effect,
@@ -45,6 +44,7 @@ import {
 import { command } from "./commands.ts";
 import { controlCall } from "./control-client.ts";
 import { testEffect } from "./test-effect.ts";
+import { until } from "./test-wait.ts";
 
 const dirs: string[] = [];
 const join = (...paths: string[]) =>
@@ -175,22 +175,6 @@ function modeledAgent(client: SessionClientContract): ModeledAgent {
   if (!session) throw new Error("no modeled live agent");
   return { ...session, cmd: session.cmd ?? [] };
 }
-
-/** Wait for a predicate, so tests assert on outcomes rather than on sleeps. */
-const until = <E = never>(
-  predicate: () => boolean | Effect.Effect<boolean, E>,
-  what: string,
-  timeoutMs = 5_000,
-) =>
-  Effect.gen(function* () {
-    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
-    while ((yield* Clock.currentTimeMillis) < deadline) {
-      const result = predicate();
-      if (Effect.isEffect(result) ? yield* result : result) return;
-      yield* Effect.sleep(10);
-    }
-    return yield* Effect.die(new Error(`timed out waiting for ${what}`));
-  });
 
 /** What the agent's terminal is actually showing, as text. The app's own
  *  capture path, so these assertions read the screen the user would. */
