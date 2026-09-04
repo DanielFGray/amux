@@ -991,7 +991,7 @@ testEffect("a delayed handshake closes its socket and rejects on timeout", () =>
     expect(acquire("late-pong")).rejects.toThrow("timed out");
     yield* until(() => closed === 2, "the delayed pong handshake socket to close");
     yield* until(() => latePongs === 1, "the late pong callback to run");
-    yield* Effect.sleep(20);
+    yield* until(() => settlements === 2, "both acquire attempts to settle");
     expect(settlements).toBe(2);
     expect(closed).toBe(2);
     expect(resurrected).toBeNull();

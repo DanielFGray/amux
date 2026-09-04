@@ -14,6 +14,7 @@ import {
 } from "./snapshot.ts";
 import { SESSION_VERSION, type PersistedSpace, type SessionState } from "./session.ts";
 import type { SessionHandle } from "./session-handle.ts";
+import { waitFor } from "./test-wait.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -451,7 +452,7 @@ test("a restored agent runs its command again and does NOT get its screen back",
   const source = await setup({ shell: ["bash", "--norc", "-i"] });
   const session = source.window.panes[0]!.session!;
   session.write("echo snapshot-marker-42\n");
-  await Bun.sleep(400);
+  await waitFor(() => screenTail(session).includes("snapshot-marker-42"), "the echoed marker");
   expect(screenTail(session)).toContain("snapshot-marker-42");
   await source.layout();
   const saved = snapshotSpace(source.space);

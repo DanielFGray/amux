@@ -353,6 +353,6 @@ test("draining a session leaves no fd behind", async () => {
     await p.kill();
     await out.done;
   }
-  await Bun.sleep(100);
+  await waitFor(() => ptmxFds() === before, "the leaked ptmx fds to close");
   expect(ptmxFds()).toBe(before);
 });

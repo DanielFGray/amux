@@ -22,7 +22,7 @@ import {
 } from "./effect/AttachProtocol.ts";
 import { SessionStore } from "./session.ts";
 import { testEffect } from "./test-effect.ts";
-import { waitFor } from "./test-wait.ts";
+import { until, waitFor } from "./test-wait.ts";
 
 const dirs: string[] = [];
 const join = (...paths: string[]) =>
@@ -114,7 +114,6 @@ const attach = (path: string, client: string) =>
     }).then((socket) => ({ socket, frames }));
   });
 
-const settle = (ms = 80) => Effect.sleep(ms);
 const output = (frames: AttachFrame[]) =>
   frames
     .filter((frame) => frame._tag === "output")
@@ -139,7 +138,7 @@ testEffect("a copy pushed onto the stack pastes into a real pane's PTY", () =>
     const { daemon, env } = yield* started("copy-paste");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* settle();
+    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
 
     // A copy is set-buffer with no name: it becomes the top of the stack.
     const set = yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "pasted text\n" }), env);
@@ -161,7 +160,7 @@ testEffect("the stack is a stack: the newest copy is what a default paste reads"
     const { daemon, env } = yield* started("stack-order");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* settle();
+    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "older\n" }), env);
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "newer\n" }), env);
@@ -179,7 +178,7 @@ testEffect("a named buffer pastes, shows, and deletes by name", () =>
     const { daemon, env } = yield* started("named-buffer");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* settle();
+    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ name: "clip", data: "named\n" }), env);
     expect(yield* rpc(daemon.id, (c) => c.ShowBuffer({ name: "clip" }), env)).toBe("named\n");
@@ -198,7 +197,7 @@ testEffect("paste-buffer -d deletes the buffer only after it was pasted", () =>
     const { daemon, env } = yield* started("paste-delete");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* settle();
+    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "gone after\n" }), env);
     yield* rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane", deleteAfter: true }), env);
@@ -224,7 +223,7 @@ testEffect("a paste into a bracketed-paste-enabled child arrives wrapped", () =>
       rows: 24,
     });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* settle();
+    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "bracketed\n" }), env);
     yield* rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env);
@@ -238,7 +237,10 @@ testEffect("buffer failures are answers, not crashes", () =>
   Effect.gen(function* () {
     const { daemon, env } = yield* started("buffer-errors");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
-    yield* settle();
+    yield* until(
+      () => Effect.map(daemon.liveSessions, (sessions) => sessions.includes("pane")),
+      "the pane to become live",
+    );
 
     expect(yield* refusal(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env)).toContain(
       "no buffers",

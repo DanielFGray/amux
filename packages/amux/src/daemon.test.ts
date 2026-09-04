@@ -388,18 +388,18 @@ test("a daemon killed by a signal leaves its session restorable", async () => {
   // started daemon has registered the finalizer under test. Waiting for the
   // lease instead would race it: the lease is written first.
   const p = await run(sessionPaths("signalled"), e);
-  let ready = false;
-  for (let waited = 0; waited < 10000 && !ready; waited += 50) {
-    ready = await run(
-      controlCall("signalled", (c) => c.Ping()),
-      e,
-    ).then(
-      () => true,
-      () => false,
-    );
-    if (!ready) await Bun.sleep(50);
-  }
-  expect(ready).toBe(true);
+  await waitFor(
+    () =>
+      run(
+        controlCall("signalled", (c) => c.Ping()),
+        e,
+      ).then(
+        () => true,
+        () => false,
+      ),
+    "the daemon to answer on its control socket",
+    10_000,
+  );
 
   child.kill("SIGTERM");
   await child.exited;
@@ -795,13 +795,15 @@ test("a destructive commit retries its single durable write after process comple
   await rwc(daemon)(command("session.kill", { session: agent }), ws(daemon).revision, context);
   expect(failed).toBe(true);
   expect(ws(daemon).spaces).toHaveLength(0);
-  await Bun.sleep(100);
-  expect(
-    await run(
+  let lease: unknown;
+  await waitFor(async () => {
+    lease = await run(
       Effect.flatMap(SessionStore, (store) => store.readLease("kill-write-retry")),
       e,
-    ),
-  ).toBeNull();
+    );
+    return lease === null;
+  }, "the retried destructive write to clear the lease");
+  expect(lease).toBeNull();
 });
 
 testEffect("stop interrupts and joins a never-settling destructive persistence operation", () =>
@@ -1000,7 +1002,11 @@ test("heartbeat failure is visible and the heartbeat stops with the daemon scope
   expect(await healthy(daemon, e)).toBe(true);
 
   await C(daemon);
-  await Bun.sleep(1_100);
+  await waitFor(
+    async () => !(await Bun.file(p.lease).exists()),
+    "the lease file to be removed after close",
+    1_500,
+  );
   expect(await Bun.file(p.lease).exists()).toBe(false);
 });
 
@@ -1503,7 +1509,7 @@ testEffect("a blocked daemon write does not starve timers, RPC, or shutdown", ()
         ]),
       );
       expect(response.attached).toBe(false);
-      yield* Effect.sleep(40);
+      yield* Effect.promise(() => waitFor(() => timerRan, "the timer to run despite the blocked write"));
       expect(timerRan).toBe(true);
       yield* daemon.killSession("blocked");
       const writeResult = yield* Effect.race(

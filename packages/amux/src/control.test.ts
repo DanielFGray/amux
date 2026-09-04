@@ -79,8 +79,15 @@ const ctl = <A, E>(
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
-/** Write raw bytes to the control socket and report whether it stayed open. */
-async function raw(path: string, line: string) {
+/**
+ * Write raw bytes to the control socket and report whether it stayed open.
+ * Some malformed inputs draw a reply, some draw a server-initiated close, and
+ * some draw neither (silently dropped) — so this polls for either signal
+ * instead of sleeping a fixed amount, falling through to the timeout
+ * unanswered rather than throwing, since "no response at all" is itself a
+ * valid, asserted-on outcome for a caller.
+ */
+async function raw(path: string, line: string, timeoutMs = 300) {
   const received: string[] = [];
   let closed = false;
   const socket = await Bun.connect({
@@ -92,7 +99,10 @@ async function raw(path: string, line: string) {
     },
   });
   socket.write(line);
-  await Bun.sleep(150);
+  const deadline = Date.now() + timeoutMs;
+  while (!closed && received.length === 0 && Date.now() < deadline) {
+    await Bun.sleep(5);
+  }
   socket.end();
   return { received: received.join(""), closed };
 }
