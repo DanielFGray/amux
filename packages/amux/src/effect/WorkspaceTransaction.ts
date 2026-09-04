@@ -30,7 +30,7 @@ import type { PaneEntry } from "../read-model.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { PtyError, SessionSpec } from "./SessionRegistry.ts";
-import type { JsonValue, PermissionAnswer } from "./AttachProtocol.ts";
+import type { JsonValue } from "./AttachProtocol.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { errorMessage } from "../error-message.ts";
 
@@ -53,14 +53,12 @@ export interface SessionOps {
   ) => Effect.Effect<PreparedSession, WorkspaceTransactionError>;
   readonly kill: (id: string) => Effect.Effect<void, WorkspaceTransactionError>;
   readonly write: (id: string, data: string) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly prompt: (id: string, text: string) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly interrupt: (
+  /** Deliver an opaque payload to a live session's backend. Core assigns no
+   *  meaning to `message` — a turn prompt, an interrupt, a permission answer
+   *  are all just this, interpreted by whichever plugin's worker reads it. */
+  readonly message: (
     id: string,
-    reason?: string,
-  ) => Effect.Effect<void, WorkspaceTransactionError>;
-  readonly decide: (
-    id: string,
-    answer: PermissionAnswer,
+    message: JsonValue,
   ) => Effect.Effect<void, WorkspaceTransactionError>;
   /** Each live session's leader pid, for enriching `pane.list`/`pane.current`. */
   readonly pids: Effect.Effect<ReadonlyMap<string, number>, WorkspaceTransactionError>;
@@ -110,9 +108,7 @@ const withPanePids = (
 interface SessionHost {
   readonly prepare: (spec: SessionSpec) => Effect.Effect<PreparedSession, PtyError>;
   readonly write: (id: string, data: string | Uint8Array) => Effect.Effect<void, PtyError>;
-  readonly prompt: (id: string, text: string) => Effect.Effect<void, PtyError>;
-  readonly interrupt: (id: string, reason?: string) => Effect.Effect<void, PtyError>;
-  readonly decide: (id: string, answer: PermissionAnswer) => Effect.Effect<void, PtyError>;
+  readonly message: (id: string, message: JsonValue) => Effect.Effect<void, PtyError>;
   readonly pids: Effect.Effect<ReadonlyMap<string, number>>;
 }
 
@@ -340,15 +336,6 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                   }
                   yield* Deferred.succeed(exitsSettled, true);
                   for (const p of prepared) yield* p.activate;
-                  for (const a of mutation.actions) {
-                    if (!isCoreWorkspaceAction(a)) continue;
-                    yield* Match.value(a).pipe(
-                      Match.tag("prompt", (a) => sessionOps.prompt(a.agent, a.text)),
-                      Match.tag("interrupt", (a) => sessionOps.interrupt(a.agent, a.reason)),
-                      Match.tag("decide", (a) => sessionOps.decide(a.agent, a.answer)),
-                      Match.orElse(() => Effect.void),
-                    );
-                  }
                   const final = yield* model.get;
                   const committed = {
                     snapshot: structuredClone(final.workspace),
@@ -432,49 +419,44 @@ export function gitWorktreesFor(
   );
 }
 
+export const buildSessionOps = <HostError, KillError>(
+  getHost: Effect.Effect<SessionHost, HostError>,
+  killFn: (id: string) => Effect.Effect<void, KillError>,
+): SessionOps => ({
+  prepare: (agent, paneId) =>
+    getHost.pipe(
+      // The transaction only prepares non-component agents, which always
+      // carry a command; PersistedSession only leaves `cmd` optional because
+      // component sessions do not need one.
+      Effect.flatMap((host) => {
+        const spec = { ...(agent as SessionSpec) };
+        if (paneId) spec.paneId = paneId;
+        return host.prepare(spec);
+      }),
+      Effect.mapError(transactionError),
+    ),
+  kill: (id) => killFn(id).pipe(Effect.mapError(transactionError)),
+  write: (id, data) =>
+    getHost.pipe(
+      Effect.flatMap((host) => host.write(id, data)),
+      Effect.mapError(transactionError),
+    ),
+  message: (id, message) =>
+    getHost.pipe(
+      Effect.flatMap((host) => host.message(id, message)),
+      Effect.mapError(transactionError),
+    ),
+  pids: getHost.pipe(
+    Effect.flatMap((host) => host.pids),
+    Effect.mapError(transactionError),
+  ),
+});
+
 export const makeSessionOps = <HostError, KillError>(
   getHost: Effect.Effect<SessionHost, HostError>,
   killFn: (id: string) => Effect.Effect<void, KillError>,
 ): Layer.Layer<WorkspaceTransactionSessionOps> =>
-  Layer.succeed(WorkspaceTransactionSessionOps, {
-    prepare: (agent, paneId) =>
-      getHost.pipe(
-        // The transaction only prepares non-component agents, which always
-        // carry a command; PersistedSession only leaves `cmd` optional because
-        // component sessions do not need one.
-        Effect.flatMap((host) => {
-          const spec = { ...(agent as SessionSpec) };
-          if (paneId) spec.paneId = paneId;
-          return host.prepare(spec);
-        }),
-        Effect.mapError(transactionError),
-      ),
-    kill: (id) => killFn(id).pipe(Effect.mapError(transactionError)),
-    write: (id, data) =>
-      getHost.pipe(
-        Effect.flatMap((host) => host.write(id, data)),
-        Effect.mapError(transactionError),
-      ),
-    prompt: (id, text) =>
-      getHost.pipe(
-        Effect.flatMap((host) => host.prompt(id, text)),
-        Effect.mapError(transactionError),
-      ),
-    interrupt: (id, reason) =>
-      getHost.pipe(
-        Effect.flatMap((host) => host.interrupt(id, reason)),
-        Effect.mapError(transactionError),
-      ),
-    decide: (id, answer) =>
-      getHost.pipe(
-        Effect.flatMap((host) => host.decide(id, answer)),
-        Effect.mapError(transactionError),
-      ),
-    pids: getHost.pipe(
-      Effect.flatMap((host) => host.pids),
-      Effect.mapError(transactionError),
-    ),
-  } satisfies SessionOps);
+  Layer.succeed(WorkspaceTransactionSessionOps, buildSessionOps(getHost, killFn));
 
 export const makeWorktreeOps: Layer.Layer<WorkspaceTransactionWorktreeOps> = Layer.succeed(
   WorkspaceTransactionWorktreeOps,

@@ -38,6 +38,7 @@
 
 import { Clock, Effect, Match } from "effect";
 import {
+  componentViewType,
   decodeLayout,
   encodeLayout,
   newPaneId,
@@ -252,7 +253,7 @@ function restoredLayout(
           session.kind === "component"
             ? {
                 kind: "plugin",
-                type: session.declaredAgent ?? "component",
+                type: componentViewType(session),
                 descriptor: {},
                 session: session.id,
               }

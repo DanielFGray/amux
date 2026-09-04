@@ -156,13 +156,16 @@ else {
         ),
         Stream.runForEach((frame) =>
           Effect.suspend(() => {
-            // `session.message` is the generic daemon primitive. This
-            // worker's payload vocabulary remains private to the harness.
-            const payload = Match.value(frame).pipe(
-              Match.tag("session.message", (message) => message.message),
-              Match.orElse((other) => other),
-            );
-            return Option.match(decodeNativeControl(payload), {
+            // `session.message` is the generic daemon primitive this harness's
+            // own verbs (agent.prompt, agent.interrupt, agent.permission) ride
+            // on. Every other frame tag — resize, input, sync, ping, and
+            // whatever else the daemon sends any backend on this same stdin
+            // channel — is administrative traffic no component worker acts on
+            // and must be skipped rather than treated as a malformed command:
+            // this is the process's one control loop, so failing it over a
+            // frame that was never meant for it ends the whole session.
+            if (frame._tag !== "session.message") return Effect.void;
+            return Option.match(decodeNativeControl(frame.message), {
               onNone: () =>
                 new AgentWorkerError({ message: "invalid native harness control message" }),
               onSome: (control: NativeControl) =>

@@ -13,7 +13,8 @@ import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import type { PromptOptions } from "../effect/SessionRegistry.ts";
 import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
-import type { PluginActionRegistration } from "../effect/WorkspaceTransaction.ts";
+import type { PersistedSession } from "../session.ts";
+import type { PluginActionRegistration, SessionOps } from "../effect/WorkspaceTransaction.ts";
 
 export class CurrentPlugin extends Context.Service<CurrentPlugin, PluginInstance>()(
   "amux/CurrentPlugin",
@@ -81,6 +82,14 @@ export interface DaemonCommandRegistration extends DaemonCommandSpec {
   /** New WorkspaceAction variants this command's reducer may push, with the
    *  executors the transaction routes them to. */
   readonly actions?: readonly PluginActionRegistration[];
+  /** Fires once after a session's backend process has been spawned and is
+   *  live — the ResumeAgent handler runs every registered hook so a plugin
+   *  can act on session-scoped state (a queued initial prompt, say) that
+   *  had nowhere to go while the session was still declared but unspawned. */
+  readonly onSessionLive?: (
+    session: PersistedSession,
+    sessionOps: SessionOps,
+  ) => Effect.Effect<void>;
 }
 
 /** Per-call capabilities for a session-target daemon command. Read-only plus

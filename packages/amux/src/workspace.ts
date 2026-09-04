@@ -2,7 +2,6 @@ import { isCoreCommand, type Command, type RuntimeCommand } from "./commands.ts"
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 import type { CreationResult } from "./creation-result.ts";
 import type { PaneMoveResult } from "./commands.ts";
-import type { PermissionAnswer } from "./effect/AttachProtocol.ts";
 import type {
   AgentEntry as ReadAgentEntry,
   PaneEntry as ReadPaneEntry,
@@ -28,6 +27,7 @@ import {
   appendPane,
   layoutPanes,
   layoutRefs,
+  componentViewType,
   layoutSessions,
   makeLayout,
   nextPreset,
@@ -324,28 +324,18 @@ export const WorkspaceCommandContextSchema = S.Struct({
   worktreesRoot: S.optional(S.String),
 });
 
+// A turn's prompt/interrupt/permission-decision used to be named tags here.
+// They carried no meaning core acts on beyond "deliver this opaque payload to
+// a live session" — exactly what `SessionOps.message` already does generically
+// — so they are ordinary `PluginWorkspaceAction`s now, owned and interpreted
+// by whichever plugin pushes them (plugin-agent-harness).
 export type CoreWorkspaceAction =
   | { readonly _tag: "spawn"; readonly agent: PersistedSession; pane?: string }
-  | { readonly _tag: "prompt"; readonly agent: string; readonly text: string }
-  | {
-      readonly _tag: "interrupt";
-      readonly agent: string;
-      readonly reason?: string;
-    }
-  | { readonly _tag: "decide"; readonly agent: string; readonly answer: PermissionAnswer }
   | { readonly _tag: "kill"; readonly agent: string }
   | { readonly _tag: "restart"; readonly agent: string }
   | { readonly _tag: "input"; readonly agent: string; readonly data: string };
 
-const CORE_ACTION_TAGS: ReadonlySet<string> = new Set([
-  "spawn",
-  "prompt",
-  "interrupt",
-  "decide",
-  "kill",
-  "restart",
-  "input",
-]);
+const CORE_ACTION_TAGS: ReadonlySet<string> = new Set(["spawn", "kill", "restart", "input"]);
 
 export const isCoreWorkspaceAction = (action: WorkspaceAction): action is CoreWorkspaceAction =>
   CORE_ACTION_TAGS.has(action._tag);
@@ -384,13 +374,12 @@ export interface WorkspaceDraft {
   /**
    * Add a backend to a window's roster and queue its spawn. A `provider`
    * makes it a component session (a harness worker the client respawns);
-   * without one it is a plain shell session. A `prompt` queues the
-   * component's first turn alongside the spawn.
+   * without one it is a plain shell session.
    */
   readonly addSession: (
     target: WorkspaceWindow,
     dir: string,
-    opts?: { readonly provider?: string; readonly prompt?: string },
+    opts?: { readonly provider?: string },
   ) => PersistedSession;
   /** Show a session in its window, splitting or appending as needed, and
    *  focus it. Returns the new pane id. */
@@ -848,7 +837,7 @@ export function applyWorkspaceCommand(
   const addSession = (
     target: WorkspaceWindow,
     dir: string,
-    opts?: { readonly provider?: string; readonly prompt?: string },
+    opts?: { readonly provider?: string },
   ): PersistedSession => {
     const component = opts?.provider !== undefined;
     const agent = {
@@ -867,14 +856,11 @@ export function applyWorkspaceCommand(
     if (component) {
       Object.assign(agent, {
         kind: "component" as const,
-        declaredAgent: opts.provider,
         provider: opts.provider,
       });
     }
     target.sessions.push(agent);
     actions.push({ _tag: "spawn", agent });
-    if (component && opts?.prompt)
-      actions.push({ _tag: "prompt", agent: agent.id, text: opts.prompt });
     return agent;
   };
   const placeSessionPane = (entry: WindowEntry, agent: PersistedSession): string => {
@@ -1747,16 +1733,16 @@ function allocateId(prefix: string, used: Set<string>): string {
   return id;
 }
 
-/** The content a session's pane shows: a pty view onto the session, or a plugin
- *  view of its declared agent kind when the session is a component (the
- *  agent-harness worker). The descriptor is empty for a session-backed plugin
- *  pane — the session already names the backend — and becomes the remount
- *  contract for a client-only plugin pane (ts-a4e25e). */
+/** The content a session's pane shows: a pty view onto the session, or a
+ *  plugin view under its provider's registered key when the session is a
+ *  component (the agent-harness worker). The descriptor is empty for a
+ *  session-backed plugin pane — the session already names the backend — and
+ *  becomes the remount contract for a client-only plugin pane (ts-a4e25e). */
 function paneContentFor(session: PersistedSession): PaneContent {
   return session.kind === "component"
     ? {
         kind: "plugin",
-        type: session.declaredAgent ?? session.provider ?? "component",
+        type: componentViewType(session),
         descriptor: {},
         session: session.id,
       }

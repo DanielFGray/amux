@@ -18,6 +18,7 @@ import { runtime } from "./options.ts";
 import {
   appendPane,
   closeLayout,
+  componentViewType,
   layoutPanes,
   layoutRefs,
   makeLayout,
@@ -66,7 +67,7 @@ function contentFor(session: SessionHandle): PaneContent {
   return session.kind === "component"
     ? {
         kind: "plugin",
-        type: session.declaredAgent ?? "component",
+        type: componentViewType(session),
         descriptor: {},
         session: session.id,
       }

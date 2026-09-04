@@ -64,6 +64,22 @@ export function paneSession(content: PaneContent): string | undefined {
   return content.kind === "pty" ? content.session : content.session;
 }
 
+/**
+ * The registered plugin view key for a component session's pane —
+ * `provider` names the session view a plugin registered (see
+ * `SessionViewsTag.register`), the only key that ever resolves to anything.
+ * `declaredAgent` is read only as a fallback for a session persisted before
+ * `provider` existed; a session written by today's `addSession` always has
+ * `provider` set, so that branch never fires on new data. `"component"` is a
+ * terminal default with no registered view, rendered as a blank placeholder.
+ */
+export function componentViewType(session: {
+  readonly provider?: string;
+  readonly declaredAgent?: string | null;
+}): string {
+  return session.provider ?? session.declaredAgent ?? "component";
+}
+
 /** Rewrite a pane's content with a resolved session id. Materializing an
  *  imported layout hands the resident model the session that actually fills the
  *  pane — the pty case already names it, a session-backed plugin pane gets its

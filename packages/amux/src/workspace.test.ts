@@ -1171,7 +1171,7 @@ test("agent.permission carries the answer to the session that asked", () => {
   );
   expect(answered.actions).toEqual([
     {
-      _tag: "decide",
+      _tag: "agent.permission",
       agent: "agent-7",
       answer: {
         request: "req-1",
@@ -1190,7 +1190,12 @@ test("agent.permission carries the answer to the session that asked", () => {
   expect(unaddressed.actions).toEqual([]);
 });
 
-test("agent.new creates an agent session and queues its initial prompt", () => {
+/* An initial prompt has nowhere live to go yet at reduce time — the
+ * component's backend spawns later, when a client calls resumeAgent — so
+ * core sees no "prompt" action at all; plugin-agent-harness queues it
+ * internally and delivers it through its own onSessionLive hook once the
+ * session is actually live (see plugin-agent-harness/src/daemon.test.ts). */
+test("agent.new creates an agent session without pushing a prompt through core", () => {
   const current = run(workspaceFromSession(base(twoPaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
@@ -1210,12 +1215,9 @@ test("agent.new creates an agent session and queues its initial prompt", () => {
   expect(mutation.result).toEqual({ session: agent.id, pane });
   expect(agent.kind).toBe("component");
   expect(agent.cmd).toBeUndefined();
-  expect(agent.declaredAgent).toBe("test");
-  expect(mutation.actions).toContainEqual({
-    _tag: "prompt",
-    agent: agent.id,
-    text: "Inspect this",
-  });
+  expect(agent.provider).toBe("test");
+  expect(agent.declaredAgent).toBeUndefined();
+  expect(mutation.actions).toEqual([{ _tag: "spawn", agent, pane }]);
 });
 
 /* An agent that has not been asked anything is a normal state, not a half-built

@@ -67,26 +67,28 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
     const source =
       "package" in spec
         ? yield* resolveInstalledEntry(spec.package, storeDir, entrypoint).pipe(
-            Effect.map((entry) => pathToFileURL(entry)),
+            Effect.map((entry): SourceResolution => ({ _tag: "found", url: pathToFileURL(entry) })),
             Effect.tapError((error) =>
               Effect.logWarning(`Could not load plugin '${key}': ${error}`),
             ),
-            Effect.orElseSucceed(() => null),
+            Effect.orElseSucceed((): SourceResolution => ({ _tag: "missing" })),
           )
         : yield* sourceOf(spec.path, configDir, entrypoint);
-    if (!source) {
-      if (!("package" in spec))
-        yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
-      continue;
-    }
+    // A plugin simply not implementing the requested host variant ("./daemon",
+    // "./cli", ...) is the ordinary case — most plugins only implement ".".
+    // Only a relative path that resolved outside the config directory is an
+    // actual refusal worth telling the user about.
+    if (source._tag === "outside-config" && !("package" in spec))
+      yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
+    if (source._tag !== "found") continue;
 
-    const loaded = yield* hotImport(source).pipe(
+    const loaded = yield* hotImport(source.url).pipe(
       Effect.tapError((error) => Effect.logWarning(`Could not load plugin '${key}': ${error}`)),
       Effect.orElseSucceed(() => null),
     );
     if (!loaded) continue;
 
-    const compatible = yield* checkPluginCompat(source, loaded.id).pipe(
+    const compatible = yield* checkPluginCompat(source.url, loaded.id).pipe(
       Effect.tapError((error) => Effect.logWarning(error)),
       Effect.as(true),
       Effect.orElseSucceed(() => false),
@@ -94,7 +96,7 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
     if (!compatible) continue;
 
     if (spec.enabled) enabled.push(loaded);
-    hot.push({ id: loaded.id, path: key, source, definition: loaded });
+    hot.push({ id: loaded.id, path: key, source: source.url, definition: loaded });
   }
 
   // One configuration, not a plugin at a time: whether an injected key has any
@@ -137,19 +139,31 @@ export const loadCliPluginsFromConfig = (
   );
 
 /**
- * Where a configured plugin's entry file is, or null if it is somewhere a
- * plugin is not allowed to be. A relative path must stay inside the config
- * directory, symlinks included — that check is why this resolves rather than
- * merely joins.
+ * Where a configured plugin's entry file is for the requested host variant
+ * ("." for the interactive UI, "./daemon", "./cli", ...). Most plugins only
+ * implement "."; a plugin missing the requested variant is the ordinary case
+ * (`"missing"`), not a refusal. `"outside-config"` is the real refusal: a
+ * relative path must stay inside the config directory, symlinks included —
+ * that check is why this resolves rather than merely joins.
  */
-function sourceOf(specPath: string, configDir: string, entrypoint: string = ".") {
+type SourceResolution =
+  | { readonly _tag: "found"; readonly url: URL }
+  | { readonly _tag: "missing" }
+  | { readonly _tag: "outside-config" };
+
+function sourceOf(
+  specPath: string,
+  configDir: string,
+  entrypoint: string = ".",
+): Effect.Effect<SourceResolution, never, FileSystem.FileSystem | Path.Path> {
+  const found = (entry: string): SourceResolution => ({ _tag: "found", url: pathToFileURL(entry) });
   if (specPath.startsWith("file://")) {
     try {
       const filePath = fileURLToPath(specPath);
       const entry = resolvePathEntry(filePath, entrypoint);
-      return Effect.succeed(entry ? pathToFileURL(entry) : null);
+      return Effect.succeed(entry ? found(entry) : { _tag: "missing" });
     } catch {
-      return Effect.succeed(null);
+      return Effect.succeed({ _tag: "missing" });
     }
   }
   return Effect.gen(function* () {
@@ -157,16 +171,17 @@ function sourceOf(specPath: string, configDir: string, entrypoint: string = ".")
     const path = yield* Path.Path;
     if (path.isAbsolute(specPath)) {
       const entry = resolvePathEntry(specPath, entrypoint);
-      return entry ? pathToFileURL(entry) : null;
+      return entry ? found(entry) : { _tag: "missing" as const };
     }
     const resolved = path.resolve(configDir, specPath);
     const entry = resolvePathEntry(resolved, entrypoint, path.dirname(resolved));
-    if (!entry) return null;
+    if (!entry) return { _tag: "missing" as const };
     const realConfigDir = yield* fs.realPath(configDir).pipe(Effect.orElseSucceed(() => null));
     const realPath = yield* fs.realPath(entry).pipe(Effect.orElseSucceed(() => null));
-    if (!realConfigDir || !realPath) return null;
-    if (!realPath.startsWith(realConfigDir + path.sep) && realPath !== realConfigDir) return null;
-    return pathToFileURL(entry);
+    if (!realConfigDir || !realPath) return { _tag: "outside-config" as const };
+    if (!realPath.startsWith(realConfigDir + path.sep) && realPath !== realConfigDir)
+      return { _tag: "outside-config" as const };
+    return found(entry);
   });
 }
 

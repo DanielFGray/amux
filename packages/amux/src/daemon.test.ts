@@ -4,6 +4,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -1392,6 +1393,76 @@ testEffect("component restore is attach-gated and ResumeAgent does not create a 
   }),
 );
 
+testEffect("a plugin's onSessionLive hook fires once ResumeAgent spawns the session", () =>
+  Effect.gen(function* () {
+    const e = yield* Effect.promise(() => env());
+    const marker = join(e.HOME!, "session-live-marker");
+    // Placed alongside this test file, not under the OS tmpdir: a plugin
+    // fixture that imports "effect" needs Bun's node_modules resolution to
+    // walk up from a path inside this package.
+    const pluginDir = fileURLToPath(new URL("./.test-on-session-live", import.meta.url));
+    dirs.push(pluginDir);
+    yield* Effect.promise(() => mkdir(pluginDir, { recursive: true }));
+    const apiPath = fileURLToPath(new URL("./api.ts", import.meta.url));
+    yield* Effect.promise(() =>
+      writeFile(
+        join(pluginDir, "daemon.ts"),
+        `import { Effect } from "effect";
+import { definePlugin, DaemonCommandsTag, registerDaemonCommand } from ${JSON.stringify(apiPath)};
+export default definePlugin({
+  id: "test.on-session-live",
+  inject: [DaemonCommandsTag],
+  effect: () =>
+    Effect.gen(function* () {
+      yield* registerDaemonCommand({
+        tag: "test.on-session-live-probe",
+        fields: {},
+        meta: { desc: "probe", group: "test", target: "session", exposure: "human" },
+        onSessionLive: (session) =>
+          Effect.sync(() => {
+            require("node:fs").appendFileSync(${JSON.stringify(marker)}, session.id + "\\n");
+          }),
+      });
+    }),
+});
+`,
+      ),
+    );
+
+    yield* Effect.promise(() =>
+      run(
+        Effect.flatMap(SessionStore, (store) => store.save(componentState("live-hook", "test"))),
+        e,
+      ),
+    );
+    const pluginConfig = {
+      options: {},
+      keys: { leader: "ctrl+a", bindings: {} },
+      plugins: [{ path: join(pluginDir, "daemon.ts"), enabled: true }],
+      permissions: [],
+    };
+    const daemon = yield* Effect.promise(() => open("live-hook", e, { pluginConfig }));
+
+    yield* Effect.promise(() =>
+      ctl("live-hook", e, (control) =>
+        control.ResumeAgent({
+          session: "component-session",
+          provider: "test",
+          argv: ["sh", "-c", "sleep 30"],
+        }),
+      ),
+    );
+
+    yield* Effect.promise(() =>
+      waitFor(() => Bun.file(marker).exists(), "the onSessionLive hook to fire", 2_000),
+    );
+    expect((yield* Effect.promise(() => readFile(marker, "utf8"))).trim()).toBe(
+      "component-session",
+    );
+    yield* Effect.promise(() => S(daemon));
+  }),
+);
+
 test("an unavailable component provider becomes a tombstone without spawning", async () => {
   const e = await env();
   await run(
@@ -1509,7 +1580,9 @@ testEffect("a blocked daemon write does not starve timers, RPC, or shutdown", ()
         ]),
       );
       expect(response.attached).toBe(false);
-      yield* Effect.promise(() => waitFor(() => timerRan, "the timer to run despite the blocked write"));
+      yield* Effect.promise(() =>
+        waitFor(() => timerRan, "the timer to run despite the blocked write"),
+      );
       expect(timerRan).toBe(true);
       yield* daemon.killSession("blocked");
       const writeResult = yield* Effect.race(

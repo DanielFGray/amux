@@ -4,6 +4,7 @@ import {
   LAYOUT_VERSION,
   closeLayout,
   collapse,
+  componentViewType,
   decodeLayout,
   encodeLayout,
   layoutSessions,
@@ -695,4 +696,20 @@ test("a swap with itself, or with a pane that is not there, changes nothing", ()
   const before = layout(split("row", [pane("a"), pane("b")]), "a");
   expect(swapLayout(before, 0, 0)).toEqual(before);
   expect(swapLayout(before, 0, 5)).toEqual(before);
+});
+
+/* provider is the only string a session view is ever registered under (see
+ * SessionViewsTag.register in plugin-agent-harness/src/index.tsx, keyed
+ * "native") — declaredAgent only matters for a session persisted before
+ * provider existed, and is never set by today's addSession. */
+test("a component session's view type prefers provider over declaredAgent", () => {
+  expect(componentViewType({ provider: "native", declaredAgent: "opencode" })).toBe("native");
+});
+
+test("a component session's view type falls back to declaredAgent for pre-provider data", () => {
+  expect(componentViewType({ declaredAgent: "native" })).toBe("native");
+});
+
+test("a component session's view type with neither field falls back to a blank placeholder", () => {
+  expect(componentViewType({})).toBe("component");
 });

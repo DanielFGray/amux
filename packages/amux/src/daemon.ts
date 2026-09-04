@@ -41,7 +41,8 @@ import {
   WorkspaceTransactionError,
   WorkspaceTransactionLifecycle,
   WorkspaceTransactionPersistence,
-  makeSessionOps,
+  WorkspaceTransactionSessionOps,
+  buildSessionOps,
   makeWorktreeOps,
   makePersistence,
   makeEvents,
@@ -894,6 +895,11 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       );
     },
   };
+  const onSessionLiveHooks = () =>
+    daemonCommandTable
+      .all()
+      .flatMap(({ value }) => (value.onSessionLive ? [value.onSessionLive] : []));
+  const sessionOps = buildSessionOps(requireHost, (id) => killSession(id));
   const persistenceContext = yield* Layer.build(
     makePersistence(persist, activeSaveRef, daemonScope).pipe(
       Layer.provide(Layer.succeed(DaemonModel, model)),
@@ -920,7 +926,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       Layer.provide(Layer.succeed(DaemonModel, model)),
       Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
       Layer.provide(Layer.succeed(WorkspaceTransactionPlugins, transactionPlugins)),
-      Layer.provide(makeSessionOps(requireHost, (id) => killSession(id))),
+      Layer.provide(Layer.succeed(WorkspaceTransactionSessionOps, sessionOps)),
       Layer.provide(makeWorktreeOps),
       Layer.provide(
         Layer.succeed(WorkspaceTransactionLifecycle, {
@@ -1332,6 +1338,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 }),
               ),
             );
+            yield* Effect.forEach(onSessionLiveHooks(), (hook) => hook(found.session, sessionOps), {
+              discard: true,
+            });
           }),
         ),
       ),

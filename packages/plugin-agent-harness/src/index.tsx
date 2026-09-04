@@ -127,12 +127,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       const start = Effect.suspend(() =>
         agentPreflight(panel.options()["agent.model"] as string),
       ).pipe(
-        Effect.flatMap(() =>
-          panel.run({
-            ...runtimeCommand("agent.new"),
-            provider: "native",
-          }),
-        ),
+        Effect.flatMap(() => panel.run(runtimeCommand("agent.new"))),
         Effect.asVoid,
         Effect.provide(llmServices),
       );

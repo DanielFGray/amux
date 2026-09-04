@@ -9,6 +9,7 @@ import {
   registerDaemonCommand,
   type PluginDefinition,
   type DaemonCommandRegistration,
+  type JsonValue,
 } from "@danielfgray/amux";
 import { PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
 
@@ -28,16 +29,13 @@ interface PromptOptionsDraft {
   delivery?: "steer" | "queue";
   resume?: boolean;
 }
-interface InterruptActionDraft {
-  _tag: "interrupt";
-  agent: string;
-  reason?: string;
-}
-interface PermissionAnswerDraft {
-  request: string;
-  decision: "once" | "always" | "reject";
-  feedback?: string;
-}
+
+// A session named here has an initial prompt to deliver once its backend
+// actually spawns. Spawning a component session is deferred to whichever
+// client later calls resumeAgent (daemon.ts:1266), which can be long after
+// this reduce runs — core has nothing live to hand the prompt to yet, so it
+// waits here instead, and onSessionLive below drains it once the session is.
+const pendingPrompts = new Map<string, string>();
 
 const agentNew = {
   tag: "agent.new",
@@ -49,11 +47,23 @@ const agentNew = {
   reduce: (draft, command) => {
     const target = draft.activeWindow();
     if (!target) return;
-    const provider = typeof command.provider === "string" ? command.provider : undefined;
-    const prompt = typeof command.prompt === "string" ? command.prompt : undefined;
-    const agent = draft.addSession(target.window, target.space.dir, { provider, prompt });
+    // This plugin registers the tag and is the only spawn provider it ever
+    // names, so an omitted provider always means its own worker — not a
+    // choice callers outside the palette (the CLI, an agent script) have any
+    // way to make correctly, since providers are a client-local registry.
+    const provider = typeof command.provider === "string" ? command.provider : "native";
+    const agent = draft.addSession(target.window, target.space.dir, { provider });
+    if (typeof command.prompt === "string") pendingPrompts.set(agent.id, command.prompt);
     const pane = draft.placeSessionPane(target, agent);
     draft.setResult({ session: agent.id, pane });
+  },
+  onSessionLive: (session, sessionOps) => {
+    const prompt = pendingPrompts.get(session.id);
+    if (prompt === undefined) return Effect.void;
+    pendingPrompts.delete(session.id);
+    return sessionOps
+      .message(session.id, { _tag: "agent.prompt", text: prompt })
+      .pipe(Effect.ignore);
   },
 } satisfies DaemonCommandRegistration;
 
@@ -99,15 +109,28 @@ const agentInterrupt = {
   fields: { ...sessionTarget, reason: S.optionalKey(S.String) },
   meta: agentPluginMeta("interrupt an agent turn", "workspace", "human"),
   reduce: (draft, command) => {
-    if (typeof command.session === "string") {
-      const action: InterruptActionDraft = {
-        _tag: "interrupt",
-        agent: command.session,
-      };
-      if (typeof command.reason === "string") action.reason = command.reason;
-      draft.pushAction(action);
+    if (typeof command.session !== "string") return;
+    if (typeof command.reason === "string") {
+      draft.pushAction({ _tag: "agent.interrupt", agent: command.session, reason: command.reason });
+    } else {
+      draft.pushAction({ _tag: "agent.interrupt", agent: command.session });
     }
   },
+  // Core knows only "deliver this opaque payload to a live session" —
+  // `agent.interrupt` is a plugin-owned action tag whose meaning (and wire
+  // shape) belongs entirely here, not in core's action vocabulary.
+  actions: [
+    {
+      tag: "agent.interrupt",
+      execute: (action, sessionOps) =>
+        sessionOps.message(
+          action.agent as string,
+          action.reason === undefined
+            ? { _tag: "agent.interrupt" }
+            : { _tag: "agent.interrupt", reason: action.reason },
+        ),
+    },
+  ],
 } satisfies DaemonCommandRegistration;
 
 const agentPermission = {
@@ -127,14 +150,35 @@ const agentPermission = {
         command.decision === "always" ||
         command.decision === "reject")
     ) {
-      let answer: PermissionAnswerDraft = {
-        request: command.request,
-        decision: command.decision,
-      };
-      if (typeof command.feedback === "string") answer = { ...answer, feedback: command.feedback };
-      draft.pushAction({ _tag: "decide", agent: command.session, answer });
+      if (typeof command.feedback === "string") {
+        draft.pushAction({
+          _tag: "agent.permission",
+          agent: command.session,
+          answer: {
+            request: command.request,
+            decision: command.decision,
+            feedback: command.feedback,
+          },
+        });
+      } else {
+        draft.pushAction({
+          _tag: "agent.permission",
+          agent: command.session,
+          answer: { request: command.request, decision: command.decision },
+        });
+      }
     }
   },
+  actions: [
+    {
+      tag: "agent.permission",
+      execute: (action, sessionOps) =>
+        sessionOps.message(action.agent as string, {
+          _tag: "agent.permission",
+          ...(action.answer as Record<string, JsonValue>),
+        }),
+    },
+  ],
 } satisfies DaemonCommandRegistration;
 
 const agentList = {

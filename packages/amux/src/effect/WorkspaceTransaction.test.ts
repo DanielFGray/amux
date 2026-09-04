@@ -17,6 +17,7 @@ import { command } from "../commands.ts";
 import type { PreparedSession } from "./SessionSupervisor.ts";
 import type { WorktreeSpec } from "../git.ts";
 import { makeLayout, layoutPanes, paneSession } from "../layout.ts";
+import type { JsonValue } from "./AttachProtocol.ts";
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
 
@@ -159,13 +160,11 @@ function trackingSessionOps(stateRef: Ref.Ref<FakeSessionState>) {
           written: [...s.written, { id, data }],
         }));
       }),
-    prompt: (id: string, text: string) =>
+    message: (id: string, message: JsonValue) =>
       Ref.update(stateRef, (s) => ({
         ...s,
-        written: [...s.written, { id, data: text }],
+        written: [...s.written, { id, data: JSON.stringify(message) }],
       })),
-    interrupt: () => Effect.void,
-    decide: () => Effect.void,
     pids: Effect.succeed(new Map()),
   };
 }
