@@ -53,7 +53,7 @@
     "lint:fix": "oxlint --fix packages e2e",
     "e2e": "bun test e2e",
     "patch-tsgo": "effect-tsgo patch --typescript --oxlint",
-    "prepare": "run-s build:shim patch-tsgo && effect-tsgo patch --typescript --oxlint"
+    "prepare": "run-s build:shim patch-tsgo"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",
