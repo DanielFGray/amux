@@ -229,7 +229,6 @@ export function defaultE2ePlugins() {
     { path: join(REPO, "packages/plugin-sidebar/src/index.tsx"), enabled: true },
     { path: join(REPO, "packages/plugin-agent-harness/src/index.tsx"), enabled: true },
     { path: join(REPO, "packages/plugin-notifications/src/index.ts"), enabled: true },
-    { path: join(REPO, "packages/agent-awareness/src/hooks-cli.ts"), enabled: true },
   ];
 }
 
