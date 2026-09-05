@@ -108,6 +108,9 @@ export interface KeybindRow {
   keys: string;
   desc: string;
   custom: boolean;
+  /** See `HelpEntry.orphaned` — shown dimmed and unselectable, same as a
+   *  fixed row, but for the opposite reason: nothing currently runs it. */
+  orphaned: boolean;
 }
 
 export interface KeybindGroup {
@@ -126,7 +129,7 @@ export function keybindTargets(groups: HelpGroup[]): (string | null)[] {
   return [
     null,
     ...groups.flatMap((g) =>
-      g.entries.filter((e) => e.keys !== "unbound" && !e.fixed).map((e) => e.name),
+      g.entries.filter((e) => e.keys !== "unbound" && !e.fixed && !e.orphaned).map((e) => e.name),
     ),
   ];
 }
@@ -134,11 +137,12 @@ export function keybindTargets(groups: HelpGroup[]): (string | null)[] {
 export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup[] {
   const targets = keybindTargets(groups);
   const row = (entry: HelpEntry) => ({
-    index: entry.fixed ? null : targets.indexOf(entry.name),
+    index: entry.fixed || entry.orphaned ? null : targets.indexOf(entry.name),
     name: entry.name,
     keys: entry.keys,
     desc: entry.desc,
     custom: entry.custom,
+    orphaned: entry.orphaned,
   });
   return [
     {
@@ -150,6 +154,7 @@ export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup
           keys: formatKey(leader, leader),
           desc: "prefix, pressed before every binding",
           custom: false,
+          orphaned: false,
         },
       ],
     },

@@ -296,6 +296,7 @@ test("a command hidden from help still dispatches", async () => {
         desc: "select 1..9",
         custom: false,
         fixed: false,
+        orphaned: false,
       },
     ]);
   } finally {
@@ -411,6 +412,54 @@ test("an empty override unbinds the command", async () => {
     t.mockInput.pressKey("q");
     expect(fired).toEqual([]);
     expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("unbound");
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("a binding for a command nothing registers is surfaced as orphaned, not dropped", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const commands: CommandSpec[] = [
+      { name: "t.quit", key: "<leader>q", desc: "quit", group: "t", run: Effect.void },
+    ];
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
+    const keys = {
+      leader: "ctrl+a",
+      bindings: { "t.quit": ["<leader>q"], "plugin.disabled-verb": ["<leader>z"] },
+    };
+    bindings.apply(keys);
+
+    const groups = helpGroups(bindings, commands, keys);
+    expect(groups.map((g) => g.group)).toEqual(["t", "orphaned"]);
+    expect(groups.find((g) => g.group === "orphaned")!.entries).toEqual([
+      {
+        name: "plugin.disabled-verb",
+        keys: "^a z",
+        desc: "unknown command",
+        custom: true,
+        fixed: false,
+        orphaned: true,
+      },
+    ]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("an unbound orphaned entry reads back as unbound, same as any other command", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const commands: CommandSpec[] = [];
+    const bindings = createBindings(t.renderer, commands, {
+      onUnhandled: () => true,
+    });
+    const keys = { leader: "ctrl+a", bindings: { "plugin.disabled-verb": [] } };
+    bindings.apply(keys);
+
+    expect(helpGroups(bindings, commands, keys)[0]!.entries[0]!.keys).toBe("unbound");
   } finally {
     t.renderer.destroy();
   }

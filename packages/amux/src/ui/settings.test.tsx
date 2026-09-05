@@ -24,17 +24,65 @@ const GROUPS: HelpGroup[] = [
   {
     group: "panes",
     entries: [
-      { name: "pane.zoom", keys: "^a z", desc: "zoom", custom: false, fixed: false },
-      { name: "pane.close", keys: "^a x", desc: "close pane", custom: true, fixed: false },
-      { name: "pane.send-keys", keys: "unbound", desc: "send keys", custom: false, fixed: false },
+      {
+        name: "pane.zoom",
+        keys: "^a z",
+        desc: "zoom",
+        custom: false,
+        fixed: false,
+        orphaned: false,
+      },
+      {
+        name: "pane.close",
+        keys: "^a x",
+        desc: "close pane",
+        custom: true,
+        fixed: false,
+        orphaned: false,
+      },
+      {
+        name: "pane.send-keys",
+        keys: "unbound",
+        desc: "send keys",
+        custom: false,
+        fixed: false,
+        orphaned: false,
+      },
     ],
   },
   {
     group: "global",
     entries: [
-      { name: "app.quit", keys: "^a q", desc: "quit", custom: false, fixed: false },
+      {
+        name: "app.quit",
+        keys: "^a q",
+        desc: "quit",
+        custom: false,
+        fixed: false,
+        orphaned: false,
+      },
       // Not rebindable, so it takes no selection index of its own.
-      { name: "app.send-prefix", keys: "^a ^a", desc: "send prefix", custom: false, fixed: true },
+      {
+        name: "app.send-prefix",
+        keys: "^a ^a",
+        desc: "send prefix",
+        custom: false,
+        fixed: true,
+        orphaned: false,
+      },
+    ],
+  },
+  {
+    group: "orphaned",
+    entries: [
+      {
+        name: "plugin.disabled-verb",
+        keys: "^a z",
+        desc: "unknown command",
+        custom: true,
+        fixed: false,
+        orphaned: true,
+      },
     ],
   },
 ];
@@ -62,11 +110,33 @@ test("the editor hides unbound actions from the keybind list", () => {
 test("rows carry the selection index they are drawn at", () => {
   const rows = keybindGroups(GROUPS, "ctrl+a");
 
-  expect(rows.map((g) => g.group)).toEqual(["prefix", "panes", "global"]);
+  expect(rows.map((g) => g.group)).toEqual(["prefix", "panes", "global", "orphaned"]);
   expect(rows[0]!.entries[0]).toMatchObject({ index: 0, keys: "^a", name: null });
   expect(rows[1]!.entries.map((e) => e.index)).toEqual([1, 2]);
   // The fixed row is drawn but cannot be landed on.
   expect(rows[2]!.entries.map((e) => e.index)).toEqual([3, null]);
+});
+
+/**
+ * A binding whose command nothing currently registers used to vanish from
+ * this list entirely; it stays visible now, just unselectable — the same
+ * treatment a fixed row gets, for the opposite reason.
+ */
+test("an orphaned binding is shown, not editable, and labelled as unknown", () => {
+  const rows = keybindGroups(GROUPS, "ctrl+a");
+
+  expect(keybindTargets(GROUPS)).not.toContain("plugin.disabled-verb");
+  const orphanedGroup = rows.find((g) => g.group === "orphaned")!;
+  expect(orphanedGroup.entries).toEqual([
+    {
+      index: null,
+      name: "plugin.disabled-verb",
+      keys: "^a z",
+      desc: "unknown command",
+      custom: true,
+      orphaned: true,
+    },
+  ]);
 });
 
 /**

@@ -435,6 +435,10 @@ export interface HelpEntry {
   custom: boolean;
   /** Not editable; see CommandSpec.fixed. */
   fixed: boolean;
+  /** The binding names a command nothing currently registers — a plugin verb
+   *  whose plugin is disabled or missing. The keys stay in config either way;
+   *  the command just won't dispatch until something registers it again. */
+  orphaned: boolean;
 }
 
 export interface HelpGroup {
@@ -514,6 +518,7 @@ export function helpGroups(
   });
 
   const groups = new Map<string, HelpEntry[]>();
+  const known = new Set(commands.map((cmd) => cmd.name));
   for (const cmd of commands) {
     if (cmd.hidden) continue;
     // Render the compiled sequence, not the source string, so a binding
@@ -528,10 +533,42 @@ export function helpGroups(
       desc: cmd.desc,
       custom: cmd.name in keys.bindings,
       fixed: cmd.fixed === true,
+      orphaned: false,
     });
     groups.set(cmd.group, entries);
   }
+
+  // config.keys.bindings preserves a binding whose command no longer exists
+  // — a plugin verb from a disabled or missing plugin. Surfaced rather than
+  // silently dropped, so re-enabling the plugin finds the binding still there.
+  const orphaned = orphanedEntries(bindings, keys, known);
+  if (orphaned.length > 0) groups.set("orphaned", orphaned);
+
   return [...groups].map(([group, entries]) => ({ group, entries }));
+}
+
+function orphanedEntries(bindings: Bindings, keys: Keys, known: ReadonlySet<string>): HelpEntry[] {
+  const entries: HelpEntry[] = [];
+  for (const [name, tokens] of Object.entries(keys.bindings)) {
+    if (known.has(name)) continue;
+    const sequences = tokens.flatMap((token) => {
+      try {
+        const parts = bindings.keymap.parseKeySequence(token);
+        return parts.length > 0 ? [formatSequence(parts, bindings.leader())] : [];
+      } catch {
+        return [];
+      }
+    });
+    entries.push({
+      name,
+      keys: sequences.join(" / ") || "unbound",
+      desc: "unknown command",
+      custom: true,
+      fixed: false,
+      orphaned: true,
+    });
+  }
+  return entries;
 }
 
 /**
