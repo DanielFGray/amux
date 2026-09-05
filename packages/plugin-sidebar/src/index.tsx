@@ -2,11 +2,15 @@
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { Effect } from "effect";
 import { theme } from "@danielfgray/amux";
-import { definePlugin, type DockPanel, type PluginDefinition } from "@danielfgray/amux";
-import { OptionsTag, PanelTag, RegionsTag } from "@danielfgray/amux";
+import { definePlugin, type DockOccupant, type PluginDefinition } from "@danielfgray/amux";
+import { OptionsTag, PanelTag, SlotsTag } from "@danielfgray/amux";
 import type { SidebarDisplayRow } from "@danielfgray/amux";
 import { ProcessState } from "@danielfgray/amux";
 import { deriveProcessDisplay } from "@danielfgray/amux-agent-awareness/display-state.ts";
+import {
+  AgentAwarenessTag,
+  type AgentAwarenessService,
+} from "@danielfgray/amux-agent-awareness/presence.ts";
 import { command } from "@danielfgray/amux";
 import { formatText } from "@danielfgray/amux/format.ts";
 import type { OptionSpec } from "@danielfgray/amux";
@@ -33,12 +37,13 @@ export const SIDEBAR_OPTIONS = {
 
 export const sidebarPlugin: PluginDefinition = definePlugin({
   id: SIDEBAR_PLUGIN_ID,
-  inject: [RegionsTag, OptionsTag, PanelTag],
+  inject: [SlotsTag, OptionsTag, PanelTag, AgentAwarenessTag],
   effect: () =>
     Effect.gen(function* () {
-      const regions = yield* RegionsTag;
+      const slots = yield* SlotsTag;
       const options = yield* OptionsTag;
       const panelContext = yield* PanelTag;
+      const awareness = yield* AgentAwarenessTag;
       yield* Effect.all(
         Object.entries(SIDEBAR_OPTIONS).map(([name, spec]) => options.register([name, spec])),
       );
@@ -70,10 +75,8 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
         );
       }
 
-      const panel: DockPanel = {
+      const panel: DockOccupant = {
         id: SIDEBAR_PLUGIN_ID,
-        region: "left",
-        anchor: "app",
         title: "spaces",
         visible: () => panelContext.options()["sidebar.open"] as boolean,
         size: () => panelContext.options()["sidebar.width"] as number,
@@ -95,27 +98,31 @@ export const sidebarPlugin: PluginDefinition = definePlugin({
             agentsOnly={() => !!panelContext.options()["sidebar.agentsOnly"]}
             format={() => panelContext.options()["sidebar.format"] as string}
             onActivate={activate}
+            awareness={awareness}
           />
         ),
       };
-      yield* regions.register(panel);
+      yield* slots.register({ slot: "left.app", occupant: panel });
     }),
 });
 
 /** Loaded from its own source like any other plugin, and so exported like one. */
 export default sidebarPlugin;
 
-function filterRows(
+export function filterRows(
   rows: readonly SidebarDisplayRow[],
   agentsOnly: boolean,
+  awareness: AgentAwarenessService,
 ): readonly SidebarDisplayRow[] {
   if (!agentsOnly) {
     return rows.filter((r) => r.kind === "branch" || r.kind !== "agent" || !r.exited);
   }
+  const isAgentCli = (row: SidebarDisplayRow) =>
+    row.kind === "agent" && !!row.agentId && awareness.presence(row.agentId)?.agent != null;
   const spaceHasAgentCli = new Map<string, boolean>();
   const windowHasAgentCli = new Map<string, boolean>();
   for (const row of rows) {
-    if (row.kind === "agent" && row.agentCliKind !== null) {
+    if (isAgentCli(row)) {
       spaceHasAgentCli.set(row.spaceId, true);
       windowHasAgentCli.set(row.spaceId + ":" + row.windowNumber, true);
     }
@@ -132,7 +139,7 @@ function filterRows(
       if (!windowHasAgentCli.get(row.spaceId + ":" + row.windowNumber)) continue;
       out.push(row);
     } else if (row.kind === "agent") {
-      if (row.agentCliKind === null || row.exited) continue;
+      if (!isAgentCli(row) || row.exited) continue;
       out.push(row);
     }
   }
@@ -153,8 +160,6 @@ function SidebarView(props: {
   display: () => {
     rows: readonly SidebarDisplayRow[];
     spaceCount: number;
-    agentCount: number;
-    blockedCount: number;
   };
   tick: () => number;
   selected: () => number;
@@ -164,11 +169,12 @@ function SidebarView(props: {
   agentsOnly: () => boolean;
   format: () => string;
   onActivate: (row: SidebarDisplayRow) => void;
+  awareness: AgentAwarenessService;
 }) {
   const filtered = createMemo(() => {
     const d = props.display();
     props.tick();
-    return { summary: d, rows: filterRows(d.rows, props.agentsOnly()) };
+    return { summary: d, rows: filterRows(d.rows, props.agentsOnly(), props.awareness) };
   });
 
   createEffect(() => {
@@ -179,7 +185,15 @@ function SidebarView(props: {
   const summaryText = createMemo(() => {
     props.tick();
     const d = filtered().summary;
-    return `${d.spaceCount} space${d.spaceCount === 1 ? "" : "s"} · ${d.agentCount} agent${d.agentCount === 1 ? "" : "s"}${d.blockedCount ? ` · ${d.blockedCount}!` : ""}`;
+    // Unfiltered by the agentsOnly toggle — the summary always counts the
+    // whole workspace, matching what it counted before this row moved off
+    // core-precomputed fields.
+    const agentRows = d.rows.filter((r) => r.kind === "agent" && !r.exited);
+    const blockedCount = agentRows.filter(
+      (r) => r.agentId && props.awareness.presence(r.agentId)?.state === "blocked",
+    ).length;
+    const agentCount = agentRows.length;
+    return `${d.spaceCount} space${d.spaceCount === 1 ? "" : "s"} · ${agentCount} agent${agentCount === 1 ? "" : "s"}${blockedCount ? ` · ${blockedCount}!` : ""}`;
   });
 
   return (
@@ -220,6 +234,7 @@ function SidebarView(props: {
                 onActivate={props.onActivate}
                 frame={props.tick()}
                 format={props.format()}
+                awareness={props.awareness}
               />
             </Show>
           )}
@@ -240,8 +255,13 @@ function SidebarRow(props: {
   onActivate: (row: SidebarDisplayRow) => void;
   frame: number;
   format: string;
+  awareness: AgentAwarenessService;
 }) {
   const row = props.row;
+  const agentCli = () =>
+    row.kind === "agent" && row.agentId
+      ? (props.awareness.presence(row.agentId)?.agent ?? null)
+      : null;
 
   const display = () =>
     row.kind === "agent" && row.agentState
@@ -283,8 +303,8 @@ function SidebarRow(props: {
       scrolled: row.scrolled,
       exited: row.exited,
       indicators: indicators(),
-      session_kind: row.agentSessionKind,
-      agent_cli: row.agentCliKind,
+      session_kind: row.sessionKind,
+      agent_cli: agentCli(),
     });
 
   const indicators = (): string => {

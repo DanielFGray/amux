@@ -1,6 +1,6 @@
 import { afterEach, expect } from "bun:test";
 import { Effect, Fiber, Queue, Scope, Schema as S, Stream } from "effect";
-import type { Regions } from "../ui/regions.tsx";
+import type { Slots } from "../ui/slots.ts";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
 import {
@@ -24,7 +24,7 @@ import {
   CliCommandsTag,
   OptionsTag,
   PanelTag,
-  RegionsTag,
+  SlotsTag,
   scopedRegistry,
   SessionViewsTag,
   SpawnProvidersTag,
@@ -70,7 +70,7 @@ afterEach(() => {
 function makeHost(overrides: EnvironmentOverrides = {}): Effect.Effect<
   {
     host: PluginHost;
-    regions: Regions;
+    slots: Slots;
     sessionViews: SessionViews;
     registryEntries: readonly PluginDefinition[];
   },
@@ -82,7 +82,7 @@ function makeHost(overrides: EnvironmentOverrides = {}): Effect.Effect<
     cleanupFns.push(dispose);
     return {
       host: yield* createPluginHost(env),
-      regions: env.registries.regions,
+      slots: env.registries.slots,
       sessionViews: env.registries.sessionViews,
       registryEntries: env.registryEntries,
     };
@@ -276,33 +276,30 @@ testEffect("add replaces a running plugin, taking its registrations with it", ()
 
 testEffect("registered panels are disposed when the plugin is removed", () =>
   Effect.gen(function* () {
-    const { host, regions, registryEntries } = yield* makeHost();
-    const registry = registryProviding(registryEntries, RegionsTag);
+    const { host, slots, registryEntries } = yield* makeHost();
+    const registry = registryProviding(registryEntries, SlotsTag);
     yield* host.add(registry);
 
     const plugin = mkPlugin({
       id: "panel-plugin",
-      inject: [RegionsTag],
+      inject: [SlotsTag],
       effect: () =>
         Effect.gen(function* () {
-          const regions = yield* RegionsTag;
-          yield* regions.register({
-            id: "panel-plugin.test",
-            region: "left",
-            anchor: "app",
-            size: () => 20,
-            component: () => null as never,
+          const slots = yield* SlotsTag;
+          yield* slots.register({
+            slot: "left.app",
+            occupant: { id: "panel-plugin.test", size: () => 20, component: () => null as never },
           });
           yield* Effect.addFinalizer(() => Effect.sync(() => void 0));
         }),
     });
 
     yield* host.add(plugin);
-    expect(regions.declared("left", "app")).toBe(true);
+    expect(slots.declared("left", "app")).toBe(true);
     yield* host.remove(plugin.id);
     yield* host.remove(registry.id);
 
-    expect(regions.declared("left", "app")).toBe(false);
+    expect(slots.declared("left", "app")).toBe(false);
     expect(host.status()).toEqual([]);
   }),
 );
@@ -433,8 +430,8 @@ testEffect("spawn providers are collision-safe and scoped", () =>
 
 testEffect("a plugin effect that throws a defect reports the error without crashing the host", () =>
   Effect.gen(function* () {
-    const { host, regions, registryEntries } = yield* makeHost();
-    yield* host.add(registryProviding(registryEntries, RegionsTag));
+    const { host, slots, registryEntries } = yield* makeHost();
+    yield* host.add(registryProviding(registryEntries, SlotsTag));
     let registered = false;
 
     const errors = yield* Queue.unbounded<PluginErrorEvent>();
@@ -447,16 +444,13 @@ testEffect("a plugin effect that throws a defect reports the error without crash
     yield* host.add(
       mkPlugin({
         id: "crasher",
-        inject: [RegionsTag],
+        inject: [SlotsTag],
         effect: () =>
           Effect.gen(function* () {
-            const regions = yield* RegionsTag;
-            yield* regions.register({
-              id: "crasher.test",
-              region: "left",
-              anchor: "app",
-              size: () => 20,
-              component: () => null as never,
+            const slots = yield* SlotsTag;
+            yield* slots.register({
+              slot: "left.app",
+              occupant: { id: "crasher.test", size: () => 20, component: () => null as never },
             });
             registered = true;
             return yield* Effect.sync(() => {
@@ -476,7 +470,7 @@ testEffect("a plugin effect that throws a defect reports the error without crash
     expect(crash!.phase).toBe("activate");
     expect(crash!.error.message).toBe("boom from plugin");
     expect(registered).toBe(true);
-    expect(regions.declared("left", "app")).toBe(false);
+    expect(slots.declared("left", "app")).toBe(false);
 
     yield* host.add(mkPlugin({ id: "survivor" }));
     expect(host.status().filter((status) => status.id === "survivor")).toEqual([
@@ -569,27 +563,27 @@ testEffect("KV values survive a remove/add cycle", () =>
 
 testEffect("removing and adding a plugin releases and reacquires its scope", () =>
   Effect.gen(function* () {
-    const { host, regions, registryEntries } = yield* makeHost();
-    yield* host.add(registryProviding(registryEntries, RegionsTag));
-    const panel = {
-      id: "runtime.panel",
-      region: "bottom" as const,
-      anchor: "app" as const,
-      size: () => 1,
-      component: () => null as never,
-    };
+    const { host, slots, registryEntries } = yield* makeHost();
+    yield* host.add(registryProviding(registryEntries, SlotsTag));
     const plugin = mkPlugin({
       id: "runtime",
-      inject: [RegionsTag],
+      inject: [SlotsTag],
       effect: () =>
         Effect.gen(function* () {
-          const regions = yield* RegionsTag;
-          yield* regions.register(panel);
+          const slots = yield* SlotsTag;
+          yield* slots.register({
+            slot: "bottom.app",
+            occupant: {
+              id: "runtime.panel",
+              size: () => 1,
+              component: () => null as never,
+            },
+          });
         }),
     });
 
     yield* host.add(plugin);
-    expect(regions.declared("bottom", "app")).toBe(true);
+    expect(slots.declared("bottom", "app")).toBe(true);
     yield* host.remove("runtime");
     expect(host.status().filter((status) => status.id === "runtime")).toEqual([]);
     yield* host.add(plugin);
@@ -628,21 +622,18 @@ testEffect("defect closes the plugin scope so the id can be re-added", () =>
 testEffect("defect closes the plugin scope and runs registered finalizers", () =>
   Effect.gen(function* () {
     const { host, registryEntries } = yield* makeHost();
-    yield* host.add(registryProviding(registryEntries, RegionsTag));
+    yield* host.add(registryProviding(registryEntries, SlotsTag));
 
     yield* host.add(
       mkPlugin({
         id: "finalize",
-        inject: [RegionsTag],
+        inject: [SlotsTag],
         effect: () =>
           Effect.gen(function* () {
-            const regions = yield* RegionsTag;
-            yield* regions.register({
-              id: "finalize.test",
-              region: "left",
-              anchor: "app",
-              size: () => 20,
-              component: () => null as never,
+            const slots = yield* SlotsTag;
+            yield* slots.register({
+              slot: "left.app",
+              occupant: { id: "finalize.test", size: () => 20, component: () => null as never },
             });
             yield* Effect.addFinalizer(() => Effect.void);
             throw new Error("defect after registration");

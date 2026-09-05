@@ -7,12 +7,12 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
 import {
   intercept,
-  RegionsTag,
+  SlotsTag,
   SpawnProvidersTag,
   type PluginService,
   type ServiceInterception,
 } from "./services.ts";
-import type { Panel } from "../ui/regions.tsx";
+import type { DockOccupant } from "../ui/slots.ts";
 
 /**
  * What a plugin trades: an object whose liveness a check can see.
@@ -168,22 +168,23 @@ testEffect("a plugin whose injected service nothing can provide is refused", () 
 
 testEffect("registry services attribute writes to the running plugin", () =>
   Effect.gen(function* () {
-    const host = yield* makeHost([RegionsTag]);
-    const panel: Panel = {
+    const host = yield* makeHost([SlotsTag]);
+    const panel: DockOccupant = {
       id: "service-panel",
-      region: "left",
-      anchor: "app",
       size: () => 1,
       component: () => null as never,
     };
     yield* host.add(
       definePlugin({
         id: "registry-consumer",
-        inject: [RegionsTag],
+        inject: [SlotsTag],
         effect: () =>
           Effect.gen(function* () {
-            const regions = yield* RegionsTag;
-            yield* regions.register(panel);
+            const slots = yield* SlotsTag;
+            yield* slots.register({
+              slot: "left.app",
+              occupant: panel,
+            });
           }),
       }),
     );

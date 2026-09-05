@@ -2,12 +2,13 @@
 import { Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { BoxRenderable } from "@opentui/core";
-import type { Anchor, DockSide, RegionReader } from "./regions.tsx";
+import type { ValidComponent } from "solid-js";
+import type { Anchor, DockSide, SlotReader } from "./slots.ts";
 
 export interface AppProps {
   /** Every panel on screen. The app declares them; this file only decides
    *  where a region lands and how big it is. */
-  regions: RegionReader;
+  slots: SlotReader;
   /** The imperative pane tree, adopted as a child so splits keep their own
    *  layout code and their cell-blitting renderables untouched. It is the one
    *  thing here that is not a panel: it is the mux, not a view of it. */
@@ -35,44 +36,46 @@ export function App(props: AppProps) {
   /** Where the pane area starts, so transient chrome lines up with it rather
    *  than covering the docks. */
   const paneLeft = () =>
-    props.regions.thickness("left", "app") + props.regions.thickness("left", "center");
+    props.slots.thickness("left", "app") + props.slots.thickness("left", "center");
 
   return (
     <box style={{ width: "100%", height: "100%", flexDirection: "column" }}>
-      <Dock regions={props.regions} side="top" anchor="app" />
+      <Dock slots={props.slots} side="top" anchor="app" />
 
       <box style={{ flexGrow: 1, flexDirection: "row" }}>
-        <Dock regions={props.regions} side="left" anchor="app" />
+        <Dock slots={props.slots} side="left" anchor="app" />
 
         <box style={{ flexGrow: 1, flexDirection: "column" }}>
-          <Dock regions={props.regions} side="top" anchor="center" />
+          <Dock slots={props.slots} side="top" anchor="center" />
 
           <box style={{ flexGrow: 1, flexDirection: "row" }}>
-            <Dock regions={props.regions} side="left" anchor="center" />
+            <Dock slots={props.slots} side="left" anchor="center" />
             <box style={{ flexGrow: 1, flexDirection: "row", padding: props.padding ?? 0 }}>
               {props.paneHost}
             </box>
-            <Dock regions={props.regions} side="right" anchor="center" />
+            <Dock slots={props.slots} side="right" anchor="center" />
           </box>
 
-          <Dock regions={props.regions} side="bottom" anchor="center" />
+          <Dock slots={props.slots} side="bottom" anchor="center" />
         </box>
 
-        <Dock regions={props.regions} side="right" anchor="app" />
+        <Dock slots={props.slots} side="right" anchor="app" />
       </box>
 
-      <Dock regions={props.regions} side="bottom" anchor="app" />
+      <Dock slots={props.slots} side="bottom" anchor="app" />
 
       <Dynamic
-        component={props.regions.Slot}
+        component={props.slots.Slot as ValidComponent}
         name="float"
+        mode="replace"
         left={paneLeft()}
         width={props.size.width - paneLeft()}
         height={props.size.height}
       />
       <Dynamic
-        component={props.regions.Slot}
+        component={props.slots.Slot as ValidComponent}
         name="overlay"
+        mode="replace"
         width={props.size.width}
         height={props.size.height}
       />
@@ -89,12 +92,12 @@ export function App(props: AppProps) {
  * comes back can leave its first border at the old sibling geometry for one
  * render.
  */
-function Dock(props: { regions: RegionReader; side: DockSide; anchor: Anchor }) {
+function Dock(props: { slots: SlotReader; side: DockSide; anchor: Anchor }) {
   const across = () => props.side === "left" || props.side === "right";
-  const size = () => props.regions.thickness(props.side, props.anchor);
+  const size = () => props.slots.thickness(props.side, props.anchor);
 
   return (
-    <Show when={props.regions.declared(props.side, props.anchor)}>
+    <Show when={props.slots.declared(props.side, props.anchor)}>
       <box
         style={{
           ...(across() ? { width: size(), height: "100%" } : { height: size(), width: "100%" }),
@@ -105,12 +108,13 @@ function Dock(props: { regions: RegionReader; side: DockSide; anchor: Anchor }) 
         }}
       >
         <Dynamic
-          component={props.regions.Slot}
+          component={props.slots.Slot as ValidComponent}
           name={`${props.side}.${props.anchor}`}
+          mode="replace"
           side={props.side}
           anchor={props.anchor}
         />
-        {props.regions.divider(props.side, props.anchor)}
+        {props.slots.divider(props.side, props.anchor)}
       </box>
     </Show>
   );

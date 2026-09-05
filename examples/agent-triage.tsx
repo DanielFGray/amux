@@ -2,7 +2,8 @@
 import { For, createMemo } from "solid-js";
 import { Effect } from "effect";
 import { definePlugin, type PluginDefinition } from "../packages/amux/src/plugin/types.ts";
-import { PanelTag, RegionsTag } from "../packages/amux/src/plugin/services.ts";
+import { PanelTag, SlotsTag } from "../packages/amux/src/plugin/services.ts";
+import { AgentAwarenessTag } from "../packages/agent-awareness/src/presence.ts";
 
 type TriageAgent = {
   id: string;
@@ -16,39 +17,41 @@ type TriageAgent = {
 /** A read-only attention rail assembled from the public value projections. */
 const agentTriage: PluginDefinition = definePlugin({
   id: "example.agent-triage",
-  inject: [PanelTag, RegionsTag],
+  inject: [PanelTag, SlotsTag, AgentAwarenessTag],
   effect: () =>
     Effect.gen(function* () {
-      const regions = yield* RegionsTag;
+      const slots = yield* SlotsTag;
       const panelContext = yield* PanelTag;
+      const awareness = yield* AgentAwarenessTag;
       const agents = createMemo<readonly TriageAgent[]>(() => {
         panelContext.tick();
         return panelContext
           .display()
           .rows.filter((row) => row.kind === "agent" && row.agentId)
-          .map((row) => ({
-            id: row.agentId!,
-            label: row.agentCliKind ?? row.title ?? row.foregroundCommand ?? "pty",
-            state: row.exited ? "done" : (row.agentState ?? "idle"),
-            reason: row.exited
-              ? "exited"
-              : row.agentState === "blocked"
-                ? "needs input"
-                : row.unseen
-                  ? "unseen"
-                  : row.scrolled
-                    ? "scrolled"
-                    : "working",
-            space: row.spaceName,
-            exited: !!row.exited,
-          }))
+          .map((row) => {
+            const presence = awareness.presence(row.agentId!);
+            return {
+              id: row.agentId!,
+              label: presence?.agent ?? row.title ?? row.foregroundCommand ?? "pty",
+              state: row.exited ? "done" : (presence?.state ?? "idle"),
+              reason: row.exited
+                ? "exited"
+                : presence?.state === "blocked"
+                  ? "needs input"
+                  : row.unseen
+                    ? "unseen"
+                    : row.scrolled
+                      ? "scrolled"
+                      : "working",
+              space: row.spaceName,
+              exited: !!row.exited,
+            };
+          })
           .sort((a, b) => score(b) - score(a));
       });
 
       const panel = {
         id: "example.agent-triage.panel",
-        region: "right" as const,
-        anchor: "app" as const,
         title: "triage",
         size: () => 30,
         component: () => (
@@ -69,7 +72,7 @@ const agentTriage: PluginDefinition = definePlugin({
         ),
       };
 
-      yield* regions.register(panel);
+      yield* slots.register({ slot: "right.app", occupant: panel });
     }),
 });
 

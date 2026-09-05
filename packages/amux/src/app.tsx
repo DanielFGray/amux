@@ -7,6 +7,8 @@ import {
 } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
+import { Dynamic } from "solid-js/web";
+import type { ValidComponent } from "solid-js";
 import { Context, Effect, Exit, FiberMap, Option, Scope, Stream } from "effect";
 import { theme } from "./ui/theme.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- path access is part of the plain render-tree boundary.
@@ -73,13 +75,18 @@ import type { SessionClientContract } from "./client.ts";
 import { workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
 import { createAppState, POLL_MS } from "./ui/state.ts";
 import { createPanelContext, type PanelContext } from "./ui/panel.ts";
-import { App } from "./ui/App.tsx";
-import { createRegions, type Panel } from "./ui/regions.tsx";
+import {
+  createSlots,
+  type DockOccupant,
+  type FloatOccupant,
+  type OverlayOccupant,
+} from "./ui/slots.ts";
 import {
   createPluginContributions,
   type PluginContributions,
   type PluginInstance,
 } from "./plugin/contributions.ts";
+
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
 import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import {
@@ -88,11 +95,11 @@ import {
   OptionsTag,
   PanelTag,
   ProcessDisplayTag,
-  RegionsTag,
   SessionViewsTag,
   SessionFactsTag,
   SessionStreamTag,
   SettingsTag,
+  SlotsTag,
   SpawnProvidersTag,
   scopedRegistry,
   type BindingsService,
@@ -100,7 +107,8 @@ import {
   type CommandsService,
   type OptionsService,
   type ProcessDisplayService,
-  type RegionsService,
+  type SlotsService,
+  type SlotsRegisterValue,
   type SessionViewsService,
   type SettingsService,
   type SpawnProvidersService,
@@ -301,18 +309,26 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       }),
       options.paneHost,
     );
-    const regions = createRegions(options.renderer, contributions);
-    const regionsService = scopedRegistry(
+    const slots = createSlots(options.renderer, contributions);
+    const slotsService = scopedRegistry(
       {
-        Slot: regions.Slot,
-        declared: regions.declared,
-        thickness: regions.thickness,
-        divider: regions.divider,
-        topOverlay: regions.topOverlay,
+        Slot: slots.Slot,
+        declared: slots.declared,
+        thickness: slots.thickness,
+        divider: slots.divider,
+        topOverlay: slots.topOverlay,
       },
-      regions.register,
+      (owner, entry: SlotsRegisterValue) => {
+        // The union discriminant narrows each branch onto the matching
+        // `Slots.register` overload — a mismatched pair fails to compile.
+        if (entry.slot === "overlay")
+          return slots.register(owner, entry.slot, entry.occupant, entry.priority);
+        if (entry.slot === "float")
+          return slots.register(owner, entry.slot, entry.occupant, entry.priority);
+        return slots.register(owner, entry.slot, entry.occupant, entry.priority);
+      },
     );
-    const regionsProvider = providerRef<RegionsService>(regionsService);
+    const slotsProvider = providerRef<SlotsService>(slotsService);
     const spawnProviders = contributions.table<() => SpawnProvider>();
     const spawnProvidersService = scopedRegistry(
       { get: (id: string) => spawnProviders.get(id)?.() },
@@ -328,18 +344,18 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
           spaces,
           fiberScope,
           runFiber,
-          regionsProvider.value,
+          slotsProvider.value,
           contributions,
           pluginRuntime,
           processDisplayProvider.value,
           {
-            regions: regionsProvider,
+            slots: slotsProvider,
             sessionViews: sessionViewsProvider,
             processDisplay: processDisplayProvider,
             spawnProviders: spawnProvidersProvider,
           },
           {
-            regions: regionsService,
+            slots: slotsService,
             sessionViews: sessionViewsService,
             processDisplay: processDisplayService,
             spawnProviders: spawnProvidersService,
@@ -490,18 +506,18 @@ function buildApp(
   spaces: SpaceSet,
   fiberScope: Scope.Closeable,
   runFiber: AppFiberRunner,
-  regions: RegionsService,
+  slots: SlotsService,
   contributions: PluginContributions,
   pluginRuntime: PluginRuntime,
   processDisplay: ProcessDisplayService,
   externalProviders: {
-    readonly regions: ProviderRef<RegionsService>;
+    readonly slots: ProviderRef<SlotsService>;
     readonly sessionViews: ProviderRef<SessionViewsService>;
     readonly processDisplay: ProviderRef<ProcessDisplayService>;
     readonly spawnProviders: ProviderRef<SpawnProvidersService>;
   },
   externalDefaults: {
-    readonly regions: RegionsService;
+    readonly slots: SlotsService;
     readonly sessionViews: SessionViewsService;
     readonly processDisplay: ProcessDisplayService;
     readonly spawnProviders: SpawnProvidersService;
@@ -674,14 +690,12 @@ function buildApp(
     value: RuntimeCommand,
     input?: string,
   ): Effect.Effect<unknown, CommandError> =>
-    session
-      .runWorkspace(value, { ...workspaceContext(), input })
-      .pipe(
-        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
-        Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
-        Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
-        Effect.map(({ result }) => result),
-      );
+    session.runWorkspace(value, { ...workspaceContext(), input }).pipe(
+      Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      Effect.tap(({ snapshot }) => Effect.promise(() => project(snapshot))),
+      Effect.tap(({ snapshot }) => pluginRuntime.resumePending?.(snapshot) ?? Effect.void),
+      Effect.map(({ result }) => result),
+    );
 
   const [configState, setConfigState] = createSignal<Config>(config);
   /** Every core option resolved against its declared default — what the app
@@ -870,8 +884,7 @@ function buildApp(
             agentState: session.state,
             exitCode: session.exitCode,
             detached: session.detached,
-            agentCliKind: process.agent ?? null,
-            agentSessionKind: session.kind,
+            sessionKind: session.kind,
             title: process.title ?? session.title,
             foregroundCommand: session.foregroundCommand,
             viewers: session.viewers,
@@ -883,14 +896,9 @@ function buildApp(
       }
     }
 
-    const allSessions = spaces.allSessions.filter((session) => !session.exited);
-    const blocked = allSessions.filter((session) => session.state === ProcessState.Blocked).length;
-
     return {
       rows,
       spaceCount: spaces.spaces.length,
-      agentCount: allSessions.length,
-      blockedCount: blocked,
     };
   });
   const onResize = (width: number, height: number) => setSize({ width, height });
@@ -1877,7 +1885,7 @@ function buildApp(
     // overlay panel carries its own key handling, so there is no chain here and
     // no priority order written twice: the panel drawn last is the panel asked
     // first, both from its `order`.
-    const modal = regions.topOverlay();
+    const modal = slots.topOverlay();
     if (modal) return modal.keys?.(event) ?? true;
     // Copy mode owns the focused pane's unhandled keys. Bound keys never reach
     // here, so the leader and every ^a sequence keep their normal meaning — and
@@ -2330,12 +2338,8 @@ function buildApp(
    * claim. The overlays' `order` is the modal stack, so the one drawn on top is
    * the one asked about a keystroke first.
    */
-  const windowsPanel = (): Panel => ({
+  const windowsPanel = (): DockOccupant => ({
     id: "amux.windows",
-    region: "top",
-    // The pane area, not the app: amux has no app-wide bar, and a tab row
-    // above the sidebar is a different program.
-    anchor: "center",
     title: "windows",
     // Always present, even at one window — a tab bar that appears and
     // disappears shifts the whole pane area by a row, and it is where the
@@ -2414,10 +2418,8 @@ function buildApp(
     ),
   });
 
-  const settingsPanel = (): Panel => ({
+  const settingsPanel = (): OverlayOccupant => ({
     id: "amux.settings",
-    region: "overlay",
-    order: 10,
     title: "settings",
     visible: () => overlay() === "settings",
     keys: (event) => settingsKey(event),
@@ -2467,10 +2469,8 @@ function buildApp(
     ),
   });
 
-  const keybindPickerPanel = (): Panel => ({
+  const keybindPickerPanel = (): OverlayOccupant => ({
     id: "amux.keybind-picker",
-    region: "overlay",
-    order: 15,
     title: "keybind picker",
     visible: () => keybindPicker() !== null,
     keys: keybindPickerKey,
@@ -2503,12 +2503,10 @@ function buildApp(
     ),
   });
 
-  const palettePanel = (): Panel => ({
+  const palettePanel = (): OverlayOccupant => ({
     id: "amux.palette",
-    region: "overlay",
     // Same rung as settings: one signal holds both, so they cannot be up at
     // the same time.
-    order: 10,
     title: "commands",
     visible: () => overlay() === "palette",
     keys: (event) => {
@@ -2533,10 +2531,8 @@ function buildApp(
     ),
   });
 
-  const buffersPanel = (): Panel => ({
+  const buffersPanel = (): OverlayOccupant => ({
     id: "amux.buffers",
-    region: "overlay",
-    order: 20,
     title: "buffers",
     visible: () => chooseView() !== null,
     // ↑↓ picks, enter pastes the selection into the focused pane, d deletes
@@ -2588,10 +2584,8 @@ function buildApp(
     ),
   });
 
-  const capturePanel = (): Panel => ({
+  const capturePanel = (): OverlayOccupant => ({
     id: "amux.capture",
-    region: "overlay",
-    order: 30,
     title: "capture",
     visible: () => captureView() !== null,
     // s writes the file, f re-captures the other span, escape backs out
@@ -2611,13 +2605,11 @@ function buildApp(
     ),
   });
 
-  const promptPanel = (): Panel => ({
+  const promptPanel = (): OverlayOccupant => ({
     id: "amux.prompt",
-    region: "overlay",
     // Top of the stack: a prompt is opened *by* the overlays below it, and
     // the answer it is waiting for is the only thing the keyboard is for
     // while it is up.
-    order: 40,
     title: "prompt",
     visible: () => promptRequest() !== null,
     keys: (event) => {
@@ -2648,14 +2640,13 @@ function buildApp(
     ),
   });
 
-  const hintsPanel = (): Panel => ({
+  const hintsPanel = (): FloatOccupant => ({
     id: "amux.hints",
-    region: "float",
     title: "which-key",
     // Only while a sequence is half-typed, and never over a modal — an
     // overlay that is already answering "what now?" does not need a second
     // one on top of it.
-    visible: () => hintsVisible() && hints().length > 0 && regions.topOverlay() === null,
+    visible: () => hintsVisible() && hints().length > 0 && slots.topOverlay() === null,
     component: (props) => (
       <Hints
         groups={hints()}
@@ -2667,10 +2658,8 @@ function buildApp(
     ),
   });
 
-  const disconnectedPanel = (): Panel => ({
+  const disconnectedPanel = (): OverlayOccupant => ({
     id: "amux.disconnected",
-    region: "overlay",
-    order: 50,
     title: "disconnected",
     visible: () => daemonDisconnected(),
     keys: (event) => {
@@ -2703,10 +2692,8 @@ function buildApp(
     ),
   });
 
-  const errorPanel = (): Panel => ({
+  const errorPanel = (): OverlayOccupant => ({
     id: "amux.error",
-    region: "overlay",
-    order: 55,
     title: "error",
     visible: () => commandError() !== null,
     // Only Escape dismisses: swallowing every key would eat the very next
@@ -2739,11 +2726,27 @@ function buildApp(
     ),
   });
 
+  // Slot placement lives here, beside the occupant, as the register call's
+  //  discriminant — never embedded in the occupant itself.
   const panelGroups = {
-    "amux.windows": () => [windowsPanel()],
-    "amux.settings": () => [settingsPanel(), keybindPickerPanel()],
-    "amux.commands": () => [palettePanel(), promptPanel(), hintsPanel(), errorPanel()],
-    "amux.sessions": () => [buffersPanel(), capturePanel(), disconnectedPanel()],
+    "amux.windows": (): readonly SlotsRegisterValue[] => [
+      { slot: "top.center", occupant: windowsPanel() },
+    ],
+    "amux.settings": (): readonly SlotsRegisterValue[] => [
+      { slot: "overlay", occupant: settingsPanel(), priority: 10 },
+      { slot: "overlay", occupant: keybindPickerPanel(), priority: 15 },
+    ],
+    "amux.commands": (): readonly SlotsRegisterValue[] => [
+      { slot: "overlay", occupant: palettePanel(), priority: 10 },
+      { slot: "overlay", occupant: promptPanel(), priority: 40 },
+      { slot: "float", occupant: hintsPanel() },
+      { slot: "overlay", occupant: errorPanel(), priority: 55 },
+    ],
+    "amux.sessions": (): readonly SlotsRegisterValue[] => [
+      { slot: "overlay", occupant: buffersPanel(), priority: 20 },
+      { slot: "overlay", occupant: capturePanel(), priority: 30 },
+      { slot: "overlay", occupant: disconnectedPanel(), priority: 50 },
+    ],
   } as const;
 
   // Before the first window exists, so its panes are built with the right edges.
@@ -2762,8 +2765,11 @@ function buildApp(
   refreshGitNow();
   runFiber("git-poll", scheduledPoll(5000, refreshGitNow));
   const View = () => (
-    <App
-      regions={regions}
+    <Dynamic
+      component={slots.Slot as ValidComponent}
+      name="root"
+      mode="replace"
+      slots={slots}
       paneHost={paneHost}
       size={size()}
       padding={options()["appearance.padding"] ? 1 : 0}
@@ -2815,7 +2821,7 @@ function buildApp(
     setSelectedAgentId,
   });
   const registries = [
-    registry("regions", RegionsTag, externalProviders.regions, externalDefaults.regions),
+    registry("slots", SlotsTag, externalProviders.slots, externalDefaults.slots),
     registry(
       "session-views",
       SessionViewsTag,
@@ -2874,42 +2880,42 @@ function buildApp(
     }),
     definePlugin({
       id: "amux.windows",
-      inject: [RegionsTag],
+      inject: [SlotsTag],
       effect: () =>
-        RegionsTag.pipe(
-          Effect.flatMap((regions) =>
-            Effect.forEach(panelGroups["amux.windows"](), (panel) => regions.register(panel)),
+        SlotsTag.pipe(
+          Effect.flatMap((slots) =>
+            Effect.forEach(panelGroups["amux.windows"](), (entry) => slots.register(entry)),
           ),
         ),
     }),
     definePlugin({
       id: "amux.settings",
-      inject: [RegionsTag],
+      inject: [SlotsTag],
       effect: () =>
-        RegionsTag.pipe(
-          Effect.flatMap((regions) =>
-            Effect.forEach(panelGroups["amux.settings"](), (panel) => regions.register(panel)),
+        SlotsTag.pipe(
+          Effect.flatMap((slots) =>
+            Effect.forEach(panelGroups["amux.settings"](), (entry) => slots.register(entry)),
           ),
         ),
     }),
     definePlugin({
       id: "amux.commands",
-      inject: [RegionsTag, BindingsTag],
+      inject: [SlotsTag, BindingsTag],
       effect: () =>
         Effect.gen(function* () {
-          const regions = yield* RegionsTag;
+          const slots = yield* SlotsTag;
           const bindings = yield* BindingsTag;
-          yield* Effect.forEach(panelGroups["amux.commands"](), (panel) => regions.register(panel));
+          yield* Effect.forEach(panelGroups["amux.commands"](), (entry) => slots.register(entry));
           yield* Effect.forEach(COMMANDS, (binding) => bindings.register(binding));
         }),
     }),
     definePlugin({
       id: "amux.sessions",
-      inject: [RegionsTag],
+      inject: [SlotsTag],
       effect: () =>
-        RegionsTag.pipe(
-          Effect.flatMap((regions) =>
-            Effect.forEach(panelGroups["amux.sessions"](), (panel) => regions.register(panel)),
+        SlotsTag.pipe(
+          Effect.flatMap((slots) =>
+            Effect.forEach(panelGroups["amux.sessions"](), (entry) => slots.register(entry)),
           ),
         ),
     }),

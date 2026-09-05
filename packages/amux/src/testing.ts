@@ -11,5 +11,5 @@ export { waitFor } from "./test-wait.ts";
 export { testPanelContext } from "./ui/test-panel.ts";
 export { testPluginEnvironment } from "./plugin/test-environment.ts";
 
-// Standing up a real region tree is a test-only need: the app builds its own.
-export { createRegions, type Regions } from "./ui/regions.tsx";
+// Standing up a real slot tree is a test-only need: the app builds its own.
+export { createSlots, type Slots } from "./ui/slots.ts";

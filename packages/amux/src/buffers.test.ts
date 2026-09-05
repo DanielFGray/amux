@@ -138,7 +138,10 @@ testEffect("a copy pushed onto the stack pastes into a real pane's PTY", () =>
     const { daemon, env } = yield* started("copy-paste");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
+    yield* until(
+      () => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")),
+      "the viewer to attach",
+    );
 
     // A copy is set-buffer with no name: it becomes the top of the stack.
     const set = yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "pasted text\n" }), env);
@@ -160,7 +163,10 @@ testEffect("the stack is a stack: the newest copy is what a default paste reads"
     const { daemon, env } = yield* started("stack-order");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
+    yield* until(
+      () => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")),
+      "the viewer to attach",
+    );
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "older\n" }), env);
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "newer\n" }), env);
@@ -178,7 +184,10 @@ testEffect("a named buffer pastes, shows, and deletes by name", () =>
     const { daemon, env } = yield* started("named-buffer");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
+    yield* until(
+      () => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")),
+      "the viewer to attach",
+    );
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ name: "clip", data: "named\n" }), env);
     expect(yield* rpc(daemon.id, (c) => c.ShowBuffer({ name: "clip" }), env)).toBe("named\n");
@@ -197,7 +206,10 @@ testEffect("paste-buffer -d deletes the buffer only after it was pasted", () =>
     const { daemon, env } = yield* started("paste-delete");
     yield* daemon.spawnSession({ id: "pane", cmd: ["cat"], cols: 80, rows: 24 });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
+    yield* until(
+      () => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")),
+      "the viewer to attach",
+    );
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "gone after\n" }), env);
     yield* rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane", deleteAfter: true }), env);
@@ -223,7 +235,10 @@ testEffect("a paste into a bracketed-paste-enabled child arrives wrapped", () =>
       rows: 24,
     });
     const viewer = yield* attach(daemon.paths.attach, "watcher");
-    yield* until(() => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")), "the viewer to attach");
+    yield* until(
+      () => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")),
+      "the viewer to attach",
+    );
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "bracketed\n" }), env);
     yield* rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env);

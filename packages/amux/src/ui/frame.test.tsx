@@ -13,8 +13,7 @@ import { resolveOptions, type Options, type OptionValue } from "../options.ts";
 import { formatText } from "../format.ts";
 import { createAppState } from "./state.ts";
 import { App } from "./App.tsx";
-import type { Panel } from "./regions.tsx";
-import { testRegions } from "./test-regions.ts";
+import { testSlots } from "./test-slots.ts";
 import { WindowTabs } from "./WindowTabs.tsx";
 import { createProcessDisplay } from "../plugin/process-display.ts";
 import { createPluginContributions } from "../plugin/contributions.ts";
@@ -73,13 +72,10 @@ async function screen(
   spaces.refreshChrome();
 
   // The same panels the app registers, minus the ones no check here draws.
-  const { regions, owner } = testRegions(t.renderer);
-  const register = (panel: Panel) => regions.register(owner, panel);
+  const { slots, owner } = testSlots(t.renderer);
   cleanup.push(
-    register({
+    slots.register(owner, "left.app", {
       id: "test.sidebar",
-      region: "left",
-      anchor: "app",
       visible: () => options()["sidebar.open"] as boolean,
       size: () => options()["sidebar.width"] as number,
       resizable: true,
@@ -92,10 +88,8 @@ async function screen(
     }),
   );
   cleanup.push(
-    register({
+    slots.register(owner, "top.center", {
       id: "test.windows",
-      region: "top",
-      anchor: "center",
       size: () => 1,
       component: () => (
         <WindowTabs
@@ -114,9 +108,8 @@ async function screen(
     }),
   );
   cleanup.push(
-    register({
+    slots.register(owner, "overlay", {
       id: "test.settings",
-      region: "overlay",
       visible: () => extra.overlay ?? false,
       component: (props) => (
         <Settings
@@ -138,13 +131,12 @@ async function screen(
     }),
   );
   cleanup.push(
-    register({
+    slots.register(owner, "float", {
       id: "test.hints",
-      region: "float",
       visible: () =>
         (extra.hintsVisible ?? true) &&
         (extra.hints ?? []).length > 0 &&
-        regions.topOverlay() === null,
+        slots.topOverlay() === null,
       component: (props) => (
         <Hints
           groups={extra.hints ?? []}
@@ -158,7 +150,7 @@ async function screen(
   );
 
   await render(
-    () => <App regions={regions} paneHost={paneHost} size={{ width: WIDTH, height: HEIGHT }} />,
+    () => <App slots={slots} paneHost={paneHost} size={{ width: WIDTH, height: HEIGHT }} />,
     t.renderer,
   );
   await t.renderOnce();

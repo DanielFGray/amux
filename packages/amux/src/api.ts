@@ -31,7 +31,7 @@ export {
 // `CurrentPlugin` and a `Scope`, so disabling a plugin is releasing its scope.
 export {
   CurrentPlugin,
-  RegionsTag,
+  SlotsTag,
   SessionViewsTag,
   ProcessDisplayTag,
   BindingsTag,
@@ -90,18 +90,23 @@ export {
 
 // Where a panel can be put, and what it is told about where it landed.
 export {
-  type Region,
   type Anchor,
-  type DockSlot,
-  type SlotName,
+  type DockSlotName,
+  type SlotKind,
+  type SlotDeclaration,
+  type SlotContext,
+  type SlotRegistration,
+  SlotConflictError,
+  type Slots,
+  type SlotReader,
+  type ChromeOccupant,
+  type DockOccupant,
+  type OverlayOccupant,
+  type FloatOccupant,
   type DockSlotProps,
   type OverlaySlotProps,
   type FloatSlotProps,
-  type Panel,
-  type DockPanel,
-  type OverlayPanel,
-  type FloatPanel,
-} from "./ui/regions.tsx";
+} from "./ui/slots.ts";
 
 // What a panel is handed at render time.
 export { type PanelContext, type SidebarDisplay, type SidebarDisplayRow } from "./ui/panel.ts";

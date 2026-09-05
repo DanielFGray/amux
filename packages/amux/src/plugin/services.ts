@@ -1,6 +1,12 @@
 import { Context, Deferred, Effect, Option, Scope, type Schema as S, type Stream } from "effect";
 import type { Contribution, PluginInstance } from "./contributions.ts";
-import type { Panel, Regions } from "../ui/regions.tsx";
+import type {
+  DockOccupant,
+  DockSlotName,
+  FloatOccupant,
+  OverlayOccupant,
+  Slots,
+} from "../ui/slots.ts";
 import type { SessionViews } from "./session-views.tsx";
 import type { PaneView } from "../component-pane.tsx";
 import type { Bindings, CommandSpec } from "../bindings.ts";
@@ -34,7 +40,20 @@ export interface RegistryService<A> {
   readonly register: (value: A) => Effect.Effect<void, never, CurrentPlugin | Scope.Scope>;
 }
 
-export type RegionsService = Omit<Regions, "register"> & RegistryService<Panel>;
+/**
+ * The plugin-facing single-argument form of `Slots.register`. A
+ * discriminated union mirroring its three overloads, so a mismatched
+ * slot/occupant pair (an overlay occupant into a dock slot, say) is a
+ * compile error at the plugin call site, not a silent runtime misplace.
+ */
+export type SlotsRegisterValue =
+  | { readonly slot: DockSlotName; readonly occupant: DockOccupant; readonly priority?: number }
+  | { readonly slot: "overlay"; readonly occupant: OverlayOccupant; readonly priority?: number }
+  | { readonly slot: "float"; readonly occupant: FloatOccupant; readonly priority?: number };
+
+export type SlotsService = Omit<Slots, "register"> & {
+  readonly register: RegistryService<SlotsRegisterValue>["register"];
+};
 export type SessionViewsService = Omit<SessionViews, "register"> &
   RegistryService<readonly [string, PaneView]>;
 export type ProcessDisplayService = Omit<ProcessDisplay, "register"> &
@@ -124,7 +143,7 @@ export interface CliCommandsService extends RegistryService<CliCommandRegistrati
   readonly all: () => readonly Contribution<CliCommandRegistration>[];
 }
 
-export class RegionsTag extends Context.Service<RegionsTag, RegionsService>()("amux/Regions") {}
+export class SlotsTag extends Context.Service<SlotsTag, SlotsService>()("amux/Slots") {}
 export class SessionViewsTag extends Context.Service<SessionViewsTag, SessionViewsService>()(
   "amux/SessionViews",
 ) {}

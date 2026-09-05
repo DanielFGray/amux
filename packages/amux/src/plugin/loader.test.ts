@@ -16,7 +16,7 @@ import { definePlugin, type PluginDefinition } from "./types.ts";
 import type { Config, PluginSpec } from "../config.ts";
 import { decodeConfig, loadConfig } from "../config.ts";
 import { testEffect } from "../test-effect.ts";
-import type { Regions } from "../ui/regions.tsx";
+import type { Slots } from "../ui/slots.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
@@ -57,13 +57,13 @@ async function mockRegions(): Promise<{
   return { environment, dispose: () => t.renderer.destroy() };
 }
 
-function makeHost(): Effect.Effect<{ host: PluginHost; regions: Regions }, never, Scope.Scope> {
+function makeHost(): Effect.Effect<{ host: PluginHost; slots: Slots }, never, Scope.Scope> {
   return Effect.gen(function* () {
     const { environment, dispose } = yield* Effect.promise(() => mockRegions());
     cleanupFns.push(dispose);
     const host = yield* createPluginHost(environment);
     registryEntriesByHost.set(host, environment.registryEntries);
-    return { host, regions: environment.registries.regions };
+    return { host, slots: environment.registries.slots };
   });
 }
 
@@ -173,7 +173,7 @@ testEffect("loads a path plugin's daemon entrypoint", () =>
 
 testEffect("loads the worked external status bar example", () =>
   Effect.gen(function* () {
-    const { host, regions } = yield* makeHost();
+    const { host, slots } = yield* makeHost();
     const config = baseConfig({
       plugins: [spec(join(testDir, "../../../../examples/status-bar.tsx"))],
     });
@@ -181,35 +181,38 @@ testEffect("loads the worked external status bar example", () =>
     yield* loadPluginsFromConfig(config, host, testDir);
 
     expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.status-bar"]);
-    expect(regions.declared("bottom", "app")).toBe(true);
+    expect(slots.declared("bottom", "app")).toBe(true);
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
-testEffect("loads the agent dashboard example through the config loader", () =>
+testEffect("the agent dashboard example stays gated with no AgentAwarenessTag provider", () =>
   Effect.gen(function* () {
-    const { host, regions } = yield* makeHost();
+    const { host, slots } = yield* makeHost();
     const dir = yield* tempDir;
     const configPath = yield* writeExampleConfig(dir, "agent-dashboard.tsx");
     const config = yield* loadConfig(configPath).pipe(Effect.provide(BunFileSystem.layer));
 
     yield* loadPluginsFromConfig(config, host, dirname(configPath));
 
-    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.agent-dashboard"]);
-    expect(regions.declared("bottom", "app")).toBe(true);
+    // This test's host provides no `AgentAwarenessTag`, and the example
+    // injects it for its roster view, so it never activates — the same
+    // gating a real client would show with the awareness plugin disabled.
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual([]);
+    expect(slots.declared("bottom", "app")).toBe(false);
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
-testEffect("loads the agent triage example through the config loader", () =>
+testEffect("the agent triage example stays gated with no AgentAwarenessTag provider", () =>
   Effect.gen(function* () {
-    const { host, regions } = yield* makeHost();
+    const { host, slots } = yield* makeHost();
     const dir = yield* tempDir;
     const configPath = yield* writeExampleConfig(dir, "agent-triage.tsx");
     const config = yield* loadConfig(configPath).pipe(Effect.provide(BunFileSystem.layer));
 
     yield* loadPluginsFromConfig(config, host, dirname(configPath));
 
-    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["example.agent-triage"]);
-    expect(regions.declared("right", "app")).toBe(true);
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual([]);
+    expect(slots.declared("right", "app")).toBe(false);
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 

@@ -174,10 +174,7 @@ testEffect("hello is honoured alongside frames batched behind it in one write", 
     );
     // `cat` echoes its input back, so seeing it proves the input frame was read
     // rather than stranded behind the hello.
-    yield* until(
-      () => text(attached.frames).includes("echoed"),
-      "cat to echo the batched input",
-    );
+    yield* until(() => text(attached.frames).includes("echoed"), "cat to echo the batched input");
     attached.socket.end();
   }),
 );
@@ -242,10 +239,7 @@ testEffect("client death is reflected in the persisted session, not just in memo
   Effect.gen(function* () {
     const daemon = yield* started("persisted");
     const attached = yield* Effect.promise(() => client(daemon.paths.attach, "transient"));
-    yield* until(
-      () => Effect.map(daemon.getState, (s) => s.attached),
-      "the client to attach",
-    );
+    yield* until(() => Effect.map(daemon.getState, (s) => s.attached), "the client to attach");
 
     attached.socket.end();
     yield* until(

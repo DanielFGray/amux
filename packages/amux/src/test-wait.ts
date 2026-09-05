@@ -32,7 +32,9 @@ export const until = <E = never>(
     const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
     while ((yield* Clock.currentTimeMillis) < deadline) {
       const result = predicate();
-      const ok = Effect.isEffect(result) ? yield* result : yield* Effect.promise(async () => result);
+      const ok = Effect.isEffect(result)
+        ? yield* result
+        : yield* Effect.promise(async () => result);
       if (ok) return;
       yield* Effect.sleep(10);
     }

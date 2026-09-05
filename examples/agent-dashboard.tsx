@@ -2,39 +2,40 @@
 import { createMemo } from "solid-js";
 import { Effect } from "effect";
 import { definePlugin, type PluginDefinition } from "../packages/amux/src/plugin/types.ts";
-import { PanelTag, RegionsTag } from "../packages/amux/src/plugin/services.ts";
+import { PanelTag, SlotsTag } from "../packages/amux/src/plugin/services.ts";
+import { AgentAwarenessTag } from "../packages/agent-awareness/src/presence.ts";
 
 /** A read-only agent roster built entirely on the public panel projection. */
 const agentDashboard: PluginDefinition = definePlugin({
   id: "example.agent-dashboard",
-  inject: [PanelTag, RegionsTag],
+  inject: [PanelTag, SlotsTag, AgentAwarenessTag],
   effect: () =>
     Effect.gen(function* () {
-      const regions = yield* RegionsTag;
+      const slots = yield* SlotsTag;
       const panelContext = yield* PanelTag;
+      const awareness = yield* AgentAwarenessTag;
       const panel = {
         id: "example.agent-dashboard.panel",
-        region: "bottom" as const,
-        anchor: "app" as const,
         title: "agents",
         size: () => 2,
         component: () => {
           const lines = createMemo(() => {
             panelContext.tick();
             const display = panelContext.display();
-            const agents = display.rows.filter((row) => row.kind === "agent");
+            const agents = display.rows.filter((row) => row.kind === "agent" && !row.exited);
+            const blocked = agents.filter(
+              (row) => awareness.presence(row.agentId!)?.state === "blocked",
+            ).length;
             const roster = agents.length
               ? agents
                   .map((agent) => {
-                    const state = agent.agentState ?? (agent.exited ? "done" : "idle");
-                    return `${agent.agentCliKind ?? "pty"}:${state}`;
+                    const cli = awareness.presence(agent.agentId!)?.agent ?? "pty";
+                    const state = agent.agentState ?? "idle";
+                    return `${cli}:${state}`;
                   })
                   .join(" ")
               : "no agents";
-            return [
-              ` agents ${display.agentCount} | blocked ${display.blockedCount} `,
-              ` ${roster} `,
-            ];
+            return [` agents ${agents.length} | blocked ${blocked} `, ` ${roster} `];
           });
 
           return (
@@ -45,7 +46,7 @@ const agentDashboard: PluginDefinition = definePlugin({
           );
         },
       };
-      yield* regions.register(panel);
+      yield* slots.register({ slot: "bottom.app", occupant: panel });
     }),
 });
 

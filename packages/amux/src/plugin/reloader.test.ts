@@ -11,7 +11,7 @@ import { testPluginEnvironment } from "./test-environment.ts";
 import { hotImport } from "./hot.ts";
 import { testEffect } from "../test-effect.ts";
 import { waitFor } from "../test-wait.ts";
-import { RegionsTag } from "./services.ts";
+import { SlotsTag } from "./services.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
 
@@ -94,13 +94,13 @@ testEffect("a failed candidate never becomes visible", () =>
     const world = yield* start(
       "crash",
       `import { Effect } from "effect";
-       import { RegionsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
+       import { SlotsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
        import { definePlugin } from "../types.ts";
        export default definePlugin({ id: "crash",
-          inject: [RegionsTag], effect: () => Effect.gen(function* () {
-           const regions = yield* RegionsTag;
-           yield* regions.register({ id: "crash.panel", region: "left", anchor: "app",
-              size: () => 1, component: () => null as never });
+          inject: [SlotsTag], effect: () => Effect.gen(function* () {
+           const slots = yield* SlotsTag;
+           yield* slots.register({ slot: "left.app", occupant: { id: "crash.panel",
+              size: () => 1, component: () => null as never } });
            (globalThis.AMUX_RELOAD_TEST ??= []).push("1");
           }) });`,
     );
@@ -110,13 +110,13 @@ testEffect("a failed candidate never becomes visible", () =>
       writeFile(
         world.entry,
         `import { Effect } from "effect";
-         import { RegionsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
+         import { SlotsTag } from "${pathToFileURL(join(testDir, "services.ts")).href}";
          import { definePlugin } from "../types.ts";
          export default definePlugin({ id: "crash",
-             inject: [RegionsTag], effect: () => Effect.gen(function* () {
-               const regions = yield* RegionsTag;
-               yield* regions.register({ id: "crash.panel", region: "left", anchor: "app",
-                 size: () => 2, component: () => null as never });
+             inject: [SlotsTag], effect: () => Effect.gen(function* () {
+               const slots = yield* SlotsTag;
+               yield* slots.register({ slot: "left.app", occupant: { id: "crash.panel",
+                 size: () => 2, component: () => null as never } });
               (globalThis.AMUX_RELOAD_TEST ??= []).push("candidate registered");
               yield* Effect.promise(() => globalThis.AMUX_RELOAD_GATE!);
               throw new Error("bad edit");
@@ -195,11 +195,11 @@ const start = (
     cleanupFns.push(() => renderer.renderer.destroy());
     const environment = testPluginEnvironment(renderer.renderer);
     const host = yield* createPluginHost(environment);
-    const regions = environment.registryEntries.find((entry) =>
-      entry.provide?.some((tag) => tag.key === RegionsTag.key),
+    const slots = environment.registryEntries.find((entry) =>
+      entry.provide?.some((tag) => tag.key === SlotsTag.key),
     );
-    if (!regions) return yield* Effect.fail("missing regions registry provider");
-    yield* host.add(regions);
+    if (!slots) return yield* Effect.fail("missing slots registry provider");
+    yield* host.add(slots);
 
     const definition = yield* hotImport(pathToFileURL(entry)).pipe(Effect.orDie);
     yield* host.add(definition);
@@ -210,7 +210,7 @@ const start = (
       directory,
       reloader: createReloader(host, [{ id, source: pathToFileURL(entry), definition }]),
       activations: () => globalThis.AMUX_RELOAD_TEST ?? [],
-      panelVisible: () => environment.registries.regions.declared("left", "app"),
-      panelThickness: () => environment.registries.regions.thickness("left", "app"),
+      panelVisible: () => environment.registries.slots.declared("left", "app"),
+      panelThickness: () => environment.registries.slots.thickness("left", "app"),
     };
   });

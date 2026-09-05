@@ -4,18 +4,29 @@ import { Deferred, Effect, Exit, Scope } from "effect";
 import { BoxRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { testRender, useRenderer } from "@opentui/solid";
 import { createSignal, onMount } from "solid-js";
+import { Dynamic } from "solid-js/web";
+import type { ValidComponent } from "solid-js";
 import { SpaceSet, type Space } from "@danielfgray/amux/space.ts";
-import { sidebarPlugin, SIDEBAR_OPTIONS } from "./index.tsx";
-import { type SidebarDisplay, type SidebarDisplayRow } from "@danielfgray/amux";
-import { createRegions } from "@danielfgray/amux/testing";
+import { sidebarPlugin, SIDEBAR_OPTIONS, filterRows } from "./index.tsx";
+import {
+  type SidebarDisplay,
+  type SidebarDisplayRow,
+  type PluginDefinition,
+} from "@danielfgray/amux";
+import { createSlots } from "@danielfgray/amux/testing";
 import { createPluginContributions } from "@danielfgray/amux/plugin/contributions.ts";
 import { workspaceEnv } from "@danielfgray/amux/env.ts";
 import { createPluginHost, type PluginHost } from "@danielfgray/amux/plugin/host.ts";
 import { testPluginEnvironment } from "@danielfgray/amux/testing";
 import { testPanelContext } from "@danielfgray/amux/testing";
 import { formatText } from "@danielfgray/amux/format.ts";
-import { resolveOptions } from "@danielfgray/amux";
+import { resolveOptions, definePlugin } from "@danielfgray/amux";
 import { testEffect } from "@danielfgray/amux/testing";
+import {
+  AgentAwarenessTag,
+  type AgentAwarenessService,
+  type AgentPresence,
+} from "@danielfgray/amux-agent-awareness/presence.ts";
 
 test("format strings can choose the command or OSC title in a sidebar row", () => {
   expect(
@@ -83,8 +94,7 @@ function computeDisplay(spaces: SpaceSet): SidebarDisplay {
           windowLabel: window.label,
           agentId: agent.id,
           agentState: agent.state,
-          agentCliKind: agent.declaredAgent,
-          agentSessionKind: agent.kind,
+          sessionKind: agent.kind,
           title: agent.title,
           foregroundCommand: agent.foregroundCommand,
           viewers: agent.viewers,
@@ -96,15 +106,39 @@ function computeDisplay(spaces: SpaceSet): SidebarDisplay {
     }
   }
 
-  const allAgents = spaces.allSessions.filter((a) => !a.exited);
-  const blocked = allAgents.filter((a) => a.state === "blocked").length;
-
   return {
     rows,
     spaceCount: spaces.spaces.length,
-    agentCount: allAgents.length,
-    blockedCount: blocked,
   };
+}
+
+const AWARENESS_STATE = {
+  idle: "idle",
+  running: "working",
+  blocked: "blocked",
+  done: "done",
+} satisfies Record<string, AgentPresence["state"]>;
+
+function fakeAwarenessPlugin(spaces: () => SpaceSet): PluginDefinition {
+  return definePlugin({
+    id: "test.agent-awareness",
+    provide: [AgentAwarenessTag],
+    effect: (ctx) =>
+      Effect.sync(() => {
+        const presence = (session: string): AgentPresence | undefined => {
+          const agent = spaces().allSessions.find((a) => a.id === session);
+          if (!agent) return undefined;
+          return {
+            session,
+            agent: agent.declaredAgent,
+            state: AWARENESS_STATE[agent.state] ?? "unknown",
+            source: agent.declaredAgent ? "harness" : "unknown",
+            evidence: null,
+          };
+        };
+        ctx.provide(AgentAwarenessTag, { presence } satisfies AgentAwarenessService);
+      }),
+  });
 }
 
 const cleanupFns: Effect.Effect<void>[] = [];
@@ -122,7 +156,7 @@ const setup = Effect.fnUntraced(function* (options?: {
   let spaces!: SpaceSet;
   let space!: Space;
   let win!: Space["windows"][number];
-  let regions!: ReturnType<typeof createRegions>;
+  let slots!: ReturnType<typeof createSlots>;
   let scope!: Scope.Closeable;
   const initialized = yield* Deferred.make<void>();
   const runSync = Effect.runSyncWith(yield* Effect.context());
@@ -132,10 +166,10 @@ const setup = Effect.fnUntraced(function* (options?: {
       () => {
         const renderer = useRenderer();
         const contributions = createPluginContributions();
-        const registeredRegions = createRegions(renderer, contributions);
+        const registeredSlots = createSlots(renderer, contributions);
         const paneHost = new BoxRenderable(renderer, { id: "pane-host", flexGrow: 1 });
         onMount(() => {
-          regions = registeredRegions;
+          slots = registeredSlots;
           scope = Scope.makeUnsafe();
           spaces = runSync(
             Scope.provide(SpaceSet.make(workspaceEnv(renderer, { shell }), paneHost), scope),
@@ -161,7 +195,7 @@ const setup = Effect.fnUntraced(function* (options?: {
           const environment = testPluginEnvironment(renderer, {
             panel: panelCtx,
             contributions,
-            regions: registeredRegions,
+            slots: registeredSlots,
           });
           const host: PluginHost = runSync(
             Scope.provide(
@@ -173,7 +207,13 @@ const setup = Effect.fnUntraced(function* (options?: {
           // injects go in as one configuration rather than one plugin at a time.
           runSync(
             Scope.provide(
-              Effect.orDie(host.reconcile([...environment.registryEntries, sidebarPlugin])),
+              Effect.orDie(
+                host.reconcile([
+                  ...environment.registryEntries,
+                  fakeAwarenessPlugin(() => spaces),
+                  sidebarPlugin,
+                ]),
+              ),
               scope,
             ),
           );
@@ -191,8 +231,14 @@ const setup = Effect.fnUntraced(function* (options?: {
                 position: "relative",
               }}
             >
-              <registeredRegions.Slot name="left.app" side="left" anchor="app" />
-              {registeredRegions.divider("left", "app")}
+              <Dynamic
+                component={registeredSlots.Slot as ValidComponent}
+                name="left.app"
+                mode="replace"
+                side="left"
+                anchor="app"
+              />
+              {registeredSlots.divider("left", "app")}
             </box>
             {paneHost}
           </box>
@@ -210,7 +256,7 @@ const setup = Effect.fnUntraced(function* (options?: {
       t.renderer.destroy();
     }),
   );
-  return { t, spaces, space, win, regions };
+  return { t, spaces, space, win, slots };
 });
 
 function refreshDisplay(spaces: SpaceSet): void {
@@ -290,8 +336,7 @@ function displayRows(spaces: SpaceRowDef[]): SidebarDisplayRow[] {
           agentId,
           paneIndex,
           agentState: agent.state ?? (agent.exited ? "done" : "idle"),
-          agentCliKind: agent.agentKind ?? null,
-          agentSessionKind: "pty",
+          sessionKind: "pty",
           title: agent.name,
           foregroundCommand: null,
           viewers: 1,
@@ -310,7 +355,7 @@ test("display rows include space, window, and agent entries", () => {
   expect(rows.map((r) => r.kind)).toEqual(["space", "window", "agent"]);
   expect(rows[0]!.spaceName).toBe("proj");
   expect(rows[1]!.windowNumber).toBe(1);
-  expect(rows[2]!.agentSessionKind).toBe("pty");
+  expect(rows[2]!.sessionKind).toBe("pty");
 });
 
 test("display rows expose space and pane indices", () => {
@@ -421,7 +466,7 @@ testEffect("the branch row appears under its space once git info arrives", () =>
   }),
 );
 
-test("agents-only filtering shows only agent CLI agents", () => {
+test("agents-only filtering shows only rows awareness recognises as an agent CLI", () => {
   const rows = displayRows([
     {
       s: "proj",
@@ -435,10 +480,15 @@ test("agents-only filtering shows only agent CLI agents", () => {
       ],
     },
   ]);
-  const hasBash = rows.some((r) => r.kind === "agent" && r.agentCliKind === null);
-  const hasClaude = rows.some((r) => r.kind === "agent" && r.agentCliKind === "claude");
-  expect(hasBash).toBe(true);
-  expect(hasClaude).toBe(true);
+  const awareness: AgentAwarenessService = {
+    presence: (session) =>
+      session === "claude-id"
+        ? { session, agent: "claude", state: "idle", source: "manifest", evidence: null }
+        : undefined,
+  };
+  const filtered = filterRows(rows, true, awareness);
+  const agentRows = filtered.filter((r) => r.kind === "agent");
+  expect(agentRows.map((r) => r.agentId)).toEqual(["claude-id"]);
 });
 
 test("blocked count appears in summary", () => {

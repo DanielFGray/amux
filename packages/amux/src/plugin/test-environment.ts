@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect";
+import { Effect, Scope, Stream } from "effect";
 import type { CliRenderer } from "@opentui/core";
 import type { PluginEnvironment } from "./host.ts";
 import { createSessionViews, type SessionViews } from "./session-views.tsx";
@@ -8,7 +8,7 @@ import {
   type ProcessDisplayProvider,
 } from "./process-display.ts";
 import { createPluginContributions, type PluginInstance } from "./contributions.ts";
-import { createRegions, type Regions } from "../ui/regions.tsx";
+import { createSlots, type Slots } from "../ui/slots.ts";
 import { testPanelContext } from "../ui/test-panel.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
@@ -25,20 +25,22 @@ import type { PaneView } from "../component-pane.tsx";
 import {
   BindingsTag,
   CommandsTag,
+  CurrentPlugin,
   OptionsTag,
   PanelTag,
   ProcessDisplayTag,
-  RegionsTag,
+  SlotsTag,
   SessionViewsTag,
   SettingsTag,
   SessionStreamTag,
   SpawnProvidersTag,
   scopedRegistry,
   type CommandRegistration,
+  type SlotsRegisterValue,
 } from "./services.ts";
 
 interface RawTestRegistries {
-  readonly regions: Regions;
+  readonly slots: Slots;
   readonly sessionViews: SessionViews;
   readonly processDisplay: ProcessDisplay;
   readonly bindings: (owner: PluginInstance, binding: CommandSpec) => () => void;
@@ -62,7 +64,7 @@ type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "contributions"> & 
   readonly panel?: PanelContext;
   readonly frames?: (session: string) => Stream.Stream<AttachFrame, never>;
   readonly sync?: (session: string) => void;
-  readonly regions?: Regions;
+  readonly slots?: Slots;
   readonly sessionViews?: SessionViews;
   readonly processDisplay?: ProcessDisplay;
   readonly registries?: Partial<RawTestRegistries>;
@@ -74,7 +76,7 @@ export function testPluginEnvironment(
   parts: TestEnvironmentParts = {},
 ): TestPluginEnvironment {
   const contributions = parts.contributions ?? createPluginContributions();
-  const regions = parts.regions ?? createRegions(renderer, contributions);
+  const slots = parts.slots ?? createSlots(renderer, contributions);
   const sessionViews = parts.sessionViews ?? createSessionViews(contributions);
   const processDisplay = parts.processDisplay ?? createProcessDisplay(contributions);
   const bindingTable = contributions.table<CommandSpec>();
@@ -90,7 +92,7 @@ export function testPluginEnvironment(
   const rawBindings = createBindings(renderer, [], { onUnhandled: () => false });
   const rawCommands = makeCommands({});
   const registries: RawTestRegistries = {
-    regions,
+    slots,
     sessionViews,
     processDisplay,
     bindings: (owner, binding) => bindingTable.add(owner, binding.name, binding),
@@ -102,16 +104,29 @@ export function testPluginEnvironment(
     ...parts.registries,
   };
   const services = {
-    regions: scopedRegistry(
-      {
-        Slot: regions.Slot,
-        declared: regions.declared,
-        thickness: regions.thickness,
-        divider: regions.divider,
-        topOverlay: regions.topOverlay,
+    slots: {
+      ...{
+        Slot: slots.Slot,
+        declared: slots.declared,
+        thickness: slots.thickness,
+        divider: slots.divider,
+        topOverlay: slots.topOverlay,
       },
-      registries.regions.register,
-    ),
+      register: (entry: SlotsRegisterValue) =>
+        Effect.gen(function* () {
+          const owner = yield* CurrentPlugin;
+          const scope = yield* Scope.Scope;
+          // The union discriminant narrows each branch onto the matching
+          // `Slots.register` overload — a mismatched pair fails to compile.
+          const dispose =
+            entry.slot === "overlay"
+              ? slots.register(owner, entry.slot, entry.occupant, entry.priority)
+              : entry.slot === "float"
+                ? slots.register(owner, entry.slot, entry.occupant, entry.priority)
+                : slots.register(owner, entry.slot, entry.occupant, entry.priority);
+          yield* Scope.addFinalizer(scope, Effect.sync(dispose));
+        }),
+    },
     sessionViews: scopedRegistry(
       { view: sessionViews.view, has: sessionViews.has },
       (owner, [type, view]: readonly [string, PaneView]) =>
@@ -156,11 +171,7 @@ export function testPluginEnvironment(
     activate: (ctx) => Effect.sync(() => publish(ctx)),
   });
   const registryEntries = [
-    provider(
-      "amux.registry.regions",
-      RegionsTag,
-      (ctx) => void ctx.provide(RegionsTag, services.regions),
-    ),
+    provider("amux.registry.slots", SlotsTag, (ctx) => void ctx.provide(SlotsTag, services.slots)),
     provider(
       "amux.registry.session-views",
       SessionViewsTag,
@@ -207,7 +218,7 @@ export function testPluginEnvironment(
     }),
   ];
   const {
-    regions: _regions,
+    slots: _slots,
     sessionViews: _sessionViews,
     processDisplay: _processDisplay,
     registries: _registries,

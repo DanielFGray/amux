@@ -6,7 +6,7 @@ import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core";
 import { theme } from "@danielfgray/amux";
 import { Service as Integration } from "./integration.ts";
 import { Service as ModelCatalog, type Provider } from "./model-catalog.ts";
-import { CurrentPlugin, PanelTag, RegionsTag } from "@danielfgray/amux";
+import { CurrentPlugin, PanelTag, SlotsTag, type OverlayOccupant } from "@danielfgray/amux";
 
 export interface ModelPickerEntry {
   readonly value: string;
@@ -34,7 +34,7 @@ export interface ModelPickerView {
 export const registerModelPicker: Effect.Effect<
   Effect.Effect<void, never, Integration | ModelCatalog>,
   never,
-  RegionsTag | PanelTag | CurrentPlugin | Scope.Scope
+  SlotsTag | PanelTag | CurrentPlugin | Scope.Scope
 > = Effect.gen(function* () {
   const panel = yield* PanelTag;
   const [view, setView] = createSignal<ModelPickerView | null>(null);
@@ -48,13 +48,9 @@ export const registerModelPicker: Effect.Effect<
     panel.saveOptions();
   };
 
-  const regions = yield* RegionsTag;
-  yield* regions.register({
+  const slots = yield* SlotsTag;
+  const occupant: OverlayOccupant = {
     id: "amux.agent-harness.model-picker",
-    region: "overlay",
-    // Above the settings window, because the option row in it is one of the two
-    // ways here and the settings stay up behind the picker.
-    order: 15,
     title: "model picker",
     visible: () => view() !== null,
     keys: (event: KeyEvent) => {
@@ -90,6 +86,13 @@ export const registerModelPicker: Effect.Effect<
         )}
       </Show>
     ),
+  };
+  yield* slots.register({
+    slot: "overlay",
+    occupant,
+    // Above the settings window, because the option row in it is one of the two
+    // ways here and the settings stay up behind the picker.
+    priority: 15,
   });
 
   return yield* Effect.succeed(

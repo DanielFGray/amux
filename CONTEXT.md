@@ -41,3 +41,28 @@ _Avoid_: community plugin, external plugin
 **Discovery keyword**:
 The npm `keywords` field value (`amux-plugin`) a plugin package tags itself with, so a future `amux plugin search` can find candidates by npm registry search rather than by name pattern. Not a naming convention — a plugin's package name is unconstrained.
 _Avoid_: naming convention, plugin prefix
+
+**Slot** *(supersedes "chrome slot"; ui/regions.tsx's `Region` + `Anchor` pair, generalized)*:
+A declared placement, keyed by name, that a plugin registers an occupant into. Modeled on deepseek-harness's `ui-slots`: a slot has a `kind` (`single` — exactly one occupant; `keyed` — one per literal key; `list` — many, ordered; `chain` — ordered selectors elect one at render time) and resolves a same-priority collision by throwing rather than silently stacking or dropping. A slot is declared by an occupant of some other slot ("declaring is claiming"); the **root slot** is the one a-priori exception, seeded by the host itself rather than declared by a plugin. Slots are never persisted — the running declaration tree exists only for the session.
+_Avoid_: chrome slot, dock, region — "chrome slot" wrongly implied only non-pane content could occupy one (see **pane occupant** below); "dock"/"region" are the code-level names for the side, not the concept a plugin claims.
+
+**Slot occupant**:
+One registration into a slot. Two flavors distinguished by content, not by mechanism — both register the same way: a **chrome occupant** is plugin UI (what a sidebar or status-bar plugin registers); a **pane occupant** is a real pane, placed against a slot instead of sized against siblings in the tiled split tree.
+
+**Pinned pane** *(a pane occupant of a `list`-kind slot; was modeled on layout.ts's `DockStrips`)*:
+A pane placed via slot registration rather than the tiled split tree. The name survives the merge of "pinned pane" and "chrome slot" into one mechanism (slot occupancy) — it still names a real, distinct placement outcome (pinned to an edge vs. tiled among siblings), it just no longer names a second, parallel registration system. Persists as a core-defined shape (slot name → ordered pane-id list), not an opaque blob — unlike a tiling algorithm's state, a list-kind slot's content is always a real pane, a concept core already understands. A pinned pane whose slot no longer exists on restore (its declaring plugin disabled/uninstalled) is promoted into the elected tiling algorithm's pane list, never closed.
+_Avoid_: dock, docked pane
+
+**Frame**:
+A candidate registered into the **root slot**, a `chain`-kind slot: each frame supplies a selector over live context (terminal size, workspace, session count), and the first selector to match at render time is elected — exactly one frame is ever rendered, but which one can change as context changes (a responsive frame that collapses to one pane below some width, for instance). A frame declares which slots exist below it and how they nest, scoped to its own election (see docs/adr/0001-lazy-election-scoped-slot-children.md) — this is what `ui/App.tsx`'s current hard-coded two-ring nesting becomes: the built-in default frame, registered with an always-matching selector at the lowest priority, so an install with no custom frame plugin behaves identically to today.
+_Avoid_: layout (ambiguous with **tiling algorithm** and with `layout.ts`'s persisted `Layout` type)
+
+**Pane-host slot**:
+The `chain`-kind slot a frame declares to mark where tiled panes render. Its occupant is a **tiling algorithm**; election works exactly like the root slot's frame election (live-context selectors, first match wins, re-evaluated every render).
+
+**Tiling algorithm** *(today: layout.ts's split/weight/preset logic — `splitLayout`, `presetLayout`, `tiled`, one fixed instance)*:
+A chain candidate for the **pane-host slot** (see docs/adr/0002-tiling-algorithm-as-slot-occupant.md) — a responsive algorithm can react to live terminal size the way a responsive frame does. Its output and persisted state are opaque and plugin-owned: unlike a chrome occupant, core never interprets a tiling algorithm's internal model, only stores its blob and renders what it returns. When election changes (a resize, or a config change), the newly-elected algorithm always initializes from the flat list of currently-open real panes, never from the outgoing algorithm's opaque state. An algorithm may define its own operation vocabulary beyond the universal subset (close-pane, focus-move) every algorithm supports.
+_Avoid_: "not a slot occupant" (an earlier, since-revised framing — see ADR 0002)
+
+**Layout plugin** *(umbrella term)*:
+A plugin that supplies one or more of: (a) a **frame** (registers into the root slot), (b) a **slot occupant** (chrome, pane, or tiling-algorithm content in any slot), (c) both. Frame, chrome, pinned pane, and tiling algorithm are now all the same underlying mechanism — slot registration — differing only in which slot, what kind, and what shape of value. Whether "layout plugin" should stay one umbrella term or split into named roles (frame plugin / tiling plugin) is still open.
