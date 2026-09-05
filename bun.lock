@@ -95,10 +95,12 @@
       "name": "@danielfgray/amux-plugin-notifications",
       "version": "0.1.0",
       "dependencies": {
+        "@danielfgray/amux-agent-awareness": "workspace:*",
         "effect": "catalog:",
       },
       "devDependencies": {
         "@danielfgray/amux": "workspace:*",
+        "@opentui/core": "catalog:",
       },
       "peerDependencies": {
         "@danielfgray/amux": "workspace:*",

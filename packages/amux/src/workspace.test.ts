@@ -1216,7 +1216,7 @@ test("agent.new creates an agent session without pushing a prompt through core",
   expect(agent.kind).toBe("component");
   expect(agent.cmd).toBeUndefined();
   expect(agent.provider).toBe("test");
-  expect(agent.declaredAgent).toBeUndefined();
+  expect(agent.declaredAgent).toBe("test");
   expect(mutation.actions).toEqual([{ _tag: "spawn", agent, pane }]);
 });
 

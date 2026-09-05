@@ -1,9 +1,9 @@
 import { Effect, Schema as S } from "effect";
-import { ProcessState } from "@danielfgray/amux";
 import { POLL_MS } from "@danielfgray/amux";
 import { scheduledPoll } from "@danielfgray/amux/effect/timer.ts";
 import { definePlugin, type PluginDefinition } from "@danielfgray/amux";
 import { CommandsTag, OptionsTag, PanelTag, registerCommand } from "@danielfgray/amux";
+import { AgentAwarenessTag } from "@danielfgray/amux-agent-awareness/presence.ts";
 
 export const NOTIFICATIONS_PLUGIN_ID = "amux.notifications";
 
@@ -15,11 +15,12 @@ export const NOTIFICATIONS_PLUGIN_ID = "amux.notifications";
  */
 export const notificationsPlugin: PluginDefinition = definePlugin({
   id: NOTIFICATIONS_PLUGIN_ID,
-  inject: [OptionsTag, CommandsTag, PanelTag],
+  inject: [OptionsTag, CommandsTag, PanelTag, AgentAwarenessTag],
   effect: () =>
     Effect.gen(function* () {
       const options = yield* OptionsTag;
       const panel = yield* PanelTag;
+      const awareness = yield* AgentAwarenessTag;
       yield* options.register([
         "notifications.blocked",
         { kind: "boolean", default: true, desc: "ring the terminal when an agent becomes blocked" },
@@ -46,14 +47,18 @@ export const notificationsPlugin: PluginDefinition = definePlugin({
 
       // Rows are the client's arbitrated view of agent state, the same one the
       // sidebar renders from — polled rather than pushed, since the plugin API
-      // hands out no raw daemon event stream.
+      // hands out no raw daemon event stream. Awareness's own "blocked" is a
+      // recognised agent waiting on input, not any shell sitting at a prompt.
       let blocked = new Set<string>();
       yield* Effect.forkScoped(
         scheduledPoll(POLL_MS, () => {
           const next = new Set(
             panel
               .display()
-              .rows.filter((row) => row.agentState === ProcessState.Blocked)
+              .rows.filter(
+                (row) =>
+                  row.kind === "agent" && awareness.presence(row.agentId!)?.state === "blocked",
+              )
               .map((row) => row.agentId!),
           );
           if (panel.options()["notifications.blocked"]) {

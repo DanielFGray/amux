@@ -13,6 +13,7 @@ import { splitActivity } from "@danielfgray/amux-agent-facts/identify.ts";
 export { identifyAgent } from "@danielfgray/amux-agent-facts/identify.ts";
 export { readHarnessLog } from "@danielfgray/amux-agent-facts/harness-log.ts";
 import {
+  AgentAwarenessTag,
   hookAgentFromFrame,
   resolveAgentId,
   resolvePresence,
@@ -27,7 +28,8 @@ import {
 export const agentAwarenessPlugin: PluginDefinition = definePlugin({
   id: "amux.agent-awareness",
   inject: [ProcessDisplayTag, SessionFactsTag, SessionStreamTag],
-  effect: () =>
+  provide: [AgentAwarenessTag],
+  effect: (ctx) =>
     Effect.gen(function* () {
       const processDisplay = yield* ProcessDisplayTag;
       const facts = yield* SessionFactsTag;
@@ -38,6 +40,7 @@ export const agentAwarenessPlugin: PluginDefinition = definePlugin({
         const fact = observation.current()[session];
         return fact ? resolvePresence(session, fact, hookAgents.get(session)) : undefined;
       };
+      ctx.provide(AgentAwarenessTag, { presence: presenceOf });
 
       const registered = new Set<string>();
       const register = Effect.fnUntraced(function* (session: string) {

@@ -857,6 +857,9 @@ export function applyWorkspaceCommand(
       Object.assign(agent, {
         kind: "component" as const,
         provider: opts.provider,
+        // The spawning plugin names its own worker unambiguously — the
+        // highest-authority identity source presence.ts arbitrates over.
+        declaredAgent: opts.provider,
       });
     }
     target.sessions.push(agent);

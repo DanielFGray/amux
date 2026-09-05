@@ -1,3 +1,4 @@
+import { Context } from "effect";
 import { ProcessState, type SessionFact } from "@danielfgray/amux";
 import type { AttachFrame, Topic } from "@danielfgray/amux/protocol";
 import { evaluateAgent } from "./detector.ts";
@@ -89,3 +90,16 @@ export function hookAgentFromFrame(frame: AttachFrame): string | undefined {
   if (frame._tag !== "topic") return undefined;
   return agentIdentityFromTopic(frame as Topic)?.agent;
 }
+
+/**
+ * What another plugin gets by injecting this plugin's identity/state
+ * resolution instead of re-deriving it: a sync read, matching the poll-driven
+ * cadence every consumer (sidebar, notifications) already recomputes on.
+ */
+export interface AgentAwarenessService {
+  readonly presence: (session: string) => AgentPresence | undefined;
+}
+
+export class AgentAwarenessTag extends Context.Service<AgentAwarenessTag, AgentAwarenessService>()(
+  "amux.agent-awareness/Presence",
+) {}

@@ -33,8 +33,7 @@ export interface SidebarDisplayRow {
   readonly agentState?: string;
   readonly exitCode?: number | null;
   readonly detached?: boolean;
-  readonly agentCliKind?: string | null;
-  readonly agentSessionKind?: string;
+  readonly sessionKind?: string;
   readonly title?: string;
   readonly foregroundCommand?: string | null;
   readonly viewers?: number;
@@ -46,8 +45,6 @@ export interface SidebarDisplayRow {
 export interface SidebarDisplay {
   readonly rows: readonly SidebarDisplayRow[];
   readonly spaceCount: number;
-  readonly agentCount: number;
-  readonly blockedCount: number;
 }
 
 /**
