@@ -198,6 +198,31 @@ describe("scroll", () => {
     expect(topBorder.slice(pane.x, pane.x + pane.width)).toMatch(/┌ myservice ─+┐/);
   });
 
+  it("labels the border with the command name when the child sets no OSC title", async () => {
+    const t = await createTestRenderer({ width: 40, height: 8 });
+    const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
+    t.renderer.root.add(host);
+    const { spaces, dispose: disposeSpaces } = scopedSpaceSet(workspaceEnv(t.renderer), host);
+    disposers.push(async () => {
+      await disposeSpaces();
+      t.renderer.destroy();
+    });
+
+    runtime["appearance.gap"] = true;
+
+    const space = run(spaces.create("test", process.cwd()));
+    const window = run(space.newWindow());
+    const pane = run(window.init());
+    await t.renderOnce();
+    await t.renderOnce();
+
+    const frame = t.captureCharFrame().split("\n");
+    const topBorder = frame[pane.y]!;
+    const label = pane.session!.title;
+    expect(label).not.toBe("");
+    expect(topBorder.slice(pane.x, pane.x + pane.width)).toMatch(new RegExp(`┌ ${label} ─+┐`));
+  });
+
   it("no title in the border when gaps are disabled", async () => {
     const t = await createTestRenderer({ width: 40, height: 8 });
     const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });

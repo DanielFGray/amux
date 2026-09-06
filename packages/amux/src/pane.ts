@@ -285,7 +285,10 @@ export abstract class Pane extends Renderable {
     const y1 = this.y + this.height - 1;
 
     if (top) {
-      const title = this.session?.term.title ?? "";
+      // The OSC title when the child reports one, else what it was launched
+      // as — a bare shell or a tool that never sets a title is still worth a
+      // border label, and `session.title` is the one place that knows both.
+      const title = this.session?.title ?? "";
       const titleWidth = cellWidth(title);
       if (title && runtime["appearance.gap"] && this.width >= titleWidth + 4) {
         if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
