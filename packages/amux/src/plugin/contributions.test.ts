@@ -1,7 +1,80 @@
 import { expect, test } from "bun:test";
+import { createComputed, createRoot, createSignal } from "solid-js";
 import { createPluginContributions, type PluginInstance } from "./contributions.ts";
 
 const instance = (id: string, generation: number): PluginInstance => ({ id, generation });
+
+test("visibility subscribers only run for successful generation changes", () => {
+  const contributions = createPluginContributions();
+  const panels = contributions.table<string>();
+  const first = instance("sidebar", 0);
+  const second = instance("sidebar", 1);
+  const other = instance("other", 0);
+  panels.add(first, "tree", "first");
+  panels.add(second, "tree", "second");
+  panels.add(other, "tree", "other");
+  const observed: (string | undefined)[] = [];
+  const unsubscribe = contributions.onChange(() => observed.push(panels.get("tree")));
+
+  contributions.commit(first);
+  contributions.commit(first);
+  expect(contributions.commit(other)).toEqual(["tree"]);
+  contributions.commit(second);
+  contributions.retire(first);
+  contributions.retire(second);
+  contributions.retire(second);
+  expect(observed).toEqual(["first", "second", undefined]);
+
+  unsubscribe();
+  unsubscribe();
+  contributions.commit(first);
+  expect(observed).toEqual(["first", "second", undefined]);
+});
+
+test("subscribers added during notification wait until the next visibility change", () => {
+  const contributions = createPluginContributions();
+  const owner = instance("sidebar", 0);
+  const calls: string[] = [];
+  const unsubscribe = contributions.onChange(() => {
+    calls.push("first");
+    unsubscribe();
+    contributions.onChange(() => calls.push("second"));
+  });
+  contributions.commit(owner);
+  expect(calls).toEqual(["first"]);
+  contributions.retire(owner);
+  expect(calls).toEqual(["first", "second"]);
+});
+
+test("reactive observers see contributions and subscriber state change together", () => {
+  createRoot((dispose) => {
+    try {
+      const contributions = createPluginContributions();
+      const panels = contributions.table<string>();
+      const first = instance("sidebar", 0);
+      const second = instance("sidebar", 1);
+      panels.add(first, "tree", "first");
+      panels.add(second, "tree", "second");
+      const [service, setService] = createSignal<string>();
+      contributions.onChange(() => setService(panels.get("tree")));
+      const observed: (string | undefined)[][] = [];
+      createComputed(() => observed.push([panels.get("tree"), service()]));
+
+      contributions.commit(first);
+      contributions.commit(second);
+      contributions.retire(second);
+
+      expect(observed).toEqual([
+        [undefined, undefined],
+        ["first", "first"],
+        ["second", "second"],
+        [undefined, undefined],
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+});
 
 test("a plugin that has not committed has registered nothing anyone can see", () => {
   const contributions = createPluginContributions();

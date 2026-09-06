@@ -950,7 +950,8 @@ export function commandDefinition(tag: CommandTag) {
 /** Whether a tag names a command core declares. Anything else reaching the
  *  daemon is either a daemon-plugin command (in the daemon's own table) or a
  *  client-plugin verb (forwarded to an attached client). */
-export const isCoreCommandTag = (tag: string): tag is CommandTag => tag in COMMAND_META;
+export const isCoreCommandTag = (tag: string): tag is CommandTag =>
+  Object.hasOwn(COMMAND_META, tag);
 
 export const isCoreCommand = (command: Command | RuntimeCommand): command is Command =>
   isCoreCommandTag(command._tag);
@@ -1067,11 +1068,7 @@ export const RuntimeCommandSchema = S.StructWithRest(S.Struct({ _tag: S.String }
   S.Record(S.String, JsonValueSchema),
 ]);
 
-/** A plugin verb, as registered: the same `desc`/`group`/`target`/`exposure`
- *  metadata a core command carries, plus the schema and handler a core
- *  command gets from two separate places (COMMAND_DEFS and the handler
- *  table) because a plugin has no compile-time union to be total over. */
-interface PluginCommandEntry {
+interface CommandEntry {
   readonly meta: CommandMeta;
   readonly schema: S.Codec<any>;
   readonly handler: (args: any) => Effect.Effect<unknown, CommandError>;
@@ -1080,9 +1077,8 @@ interface PluginCommandEntry {
 export interface Commands {
   /** Run a command. Local dispatch, not a round trip: the keymap needs the
    *  effect's synchronous prefix to run in the keypress it was dispatched from.
-   *  A plugin tag is looked up in the runtime map and its arguments decoded
-   *  against the schema it registered with — the compile-time totality below
-   *  only covers the core union. */
+   *  Arguments are decoded against the registered schema for both core and
+   *  plugin tags. Compile-time totality only covers the core union. */
   readonly run: {
     (command: Command): Effect.Effect<AnyCommandResult, CommandError>;
     (command: RuntimeCommand): Effect.Effect<unknown, CommandError>;
@@ -1129,13 +1125,20 @@ export interface Commands {
 }
 
 export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): Commands => {
-  // The one map ts-996769 asks for: core registers into COMMAND_META eagerly
-  // at module load (below), plugins register into this one at load time.
-  // Two population paths, one place every other method reads from.
-  const pluginCommands = new Map<string, PluginCommandEntry>();
+  const entries = new Map<string, CommandEntry>(
+    COMMAND_DEFS.map((def) => [
+      def.tag,
+      {
+        meta: COMMAND_META[def.tag],
+        schema: def.schema,
+        handler:
+          (handlers as CommandHandlerTable)[def.tag] ??
+          (() => Effect.fail(new CommandError({ message: `unknown command: ${def.tag}` }))),
+      },
+    ]),
+  );
 
-  const metaFor = (tag: string): CommandMeta | undefined =>
-    (COMMAND_META as Record<string, CommandMeta>)[tag] ?? pluginCommands.get(tag)?.meta;
+  const metaFor = (tag: string): CommandMeta | undefined => entries.get(tag)?.meta;
 
   const claim = (
     tag: string,
@@ -1148,7 +1151,7 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
       identifier: tag,
       description: meta.desc,
     });
-    pluginCommands.set(tag, {
+    const entry: CommandEntry = {
       meta: {
         name: tag,
         desc: meta.desc,
@@ -1158,9 +1161,10 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
       },
       schema: schema as any,
       handler,
-    });
+    };
+    entries.set(tag, entry);
     return () => {
-      pluginCommands.delete(tag);
+      if (entries.get(tag) === entry) entries.delete(tag);
     };
   };
 
@@ -1175,27 +1179,22 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
     // built when the table is built — and the handler has to read the workspace
     // at the moment it runs, not at the moment it was named.
     Effect.suspend(() => {
-      const coreHandler = (handlers as CommandHandlerTable)[command._tag];
-      if (coreHandler) return coreHandler(command as Command);
-      const plugin = pluginCommands.get(command._tag);
-      if (!plugin)
+      const entry = entries.get(command._tag);
+      if (!entry)
         return Effect.fail(new CommandError({ message: `unknown command: ${command._tag}` }));
-      return S.decodeEffect(plugin.schema)(command).pipe(
+      return S.decodeEffect(entry.schema)(command).pipe(
         Effect.mapError(
           (error) =>
             new CommandError({
               message: `${command._tag}: ${formatSchemaIssue(error.issue)}`,
             }),
         ),
-        Effect.flatMap(plugin.handler),
+        Effect.flatMap(entry.handler),
       );
     })) as Commands["run"];
 
   const list: Commands["list"] = (filter) => {
-    const all = [
-      ...COMMAND_DEFS.map((def) => COMMAND_META[def.tag]!),
-      ...[...pluginCommands.values()].map((entry) => entry.meta),
-    ];
+    const all = [...entries.values()].map((entry) => entry.meta);
     return all.filter(
       (m) =>
         (!filter?.target || m.target === filter.target) &&

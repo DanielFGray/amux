@@ -1,17 +1,19 @@
 import { afterEach, expect } from "bun:test";
-import { Context, Effect, Fiber, Option, Queue, Scope, Stream } from "effect";
+import { Context, Deferred, Effect, Fiber, Option, Queue, Scope, Stream } from "effect";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
 import { definePlugin, type PluginDefinition, type PluginErrorEvent } from "./types.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
 import {
+  createPluginServices,
   intercept,
   SlotsTag,
   SpawnProvidersTag,
   type PluginService,
   type ServiceInterception,
 } from "./services.ts";
+import { createPluginContributions } from "./contributions.ts";
 import type { DockOccupant } from "../ui/slots.ts";
 
 /**
@@ -29,6 +31,74 @@ interface Pool {
 class PoolTag extends Context.Service<PoolTag, Pool>()("test/Pool") {}
 class IndexTag extends Context.Service<IndexTag, { readonly of: string }>()("test/Index") {}
 class NumberTag extends Context.Service<NumberTag, number>()("test/Number") {}
+
+testEffect("one generation commit publishes every service and contribution together", () =>
+  Effect.gen(function* () {
+    const contributions = createPluginContributions();
+    const services = yield* createPluginServices(contributions);
+    const views = contributions.table<number>();
+    const first = { id: "provider", generation: 0 };
+    const next = { id: "provider", generation: 1 };
+    for (const [owner, version] of [
+      [first, 1],
+      [next, 2],
+    ] as const) {
+      services.provide(owner, NumberTag, version);
+      services.provide(owner, PoolTag, { version, open: true });
+      views.add(owner, "view", version);
+    }
+    contributions.commit(first);
+    const seen: unknown[] = [];
+    contributions.onChange(() => {
+      seen.push([
+        views.get("view"),
+        Option.getOrUndefined(services.get(NumberTag)),
+        Option.getOrUndefined(services.get(PoolTag))?.version,
+      ]);
+    });
+
+    contributions.commit(next);
+    contributions.retire(first);
+    services.withdrawAll(first);
+    contributions.retire(next);
+
+    expect(seen).toEqual([
+      [2, 2, 2],
+      [undefined, undefined, undefined],
+    ]);
+  }),
+);
+
+testEffect("an unavailable first dependency stays missing when a later one arrives", () =>
+  Effect.gen(function* () {
+    const contributions = createPluginContributions();
+    const services = yield* createPluginServices(contributions);
+    const first = { id: "number", generation: 0 };
+    const next = { id: "number", generation: 1 };
+    const index = { id: "index", generation: 0 };
+    const consumer = { id: "consumer", generation: 0 };
+    services.provide(first, NumberTag, 1);
+    contributions.commit(first);
+    services.declare(consumer, [NumberTag, IndexTag]);
+    const acquired = yield* Deferred.make<number>();
+    yield* services.awaitAll(consumer, [NumberTag, IndexTag]).pipe(
+      Effect.flatMap((context) =>
+        Deferred.succeed(acquired, Context.getUnsafe(context, NumberTag)),
+      ),
+      Effect.forkScoped,
+    );
+    yield* Effect.yieldNow;
+    contributions.retire(first);
+    services.provide(index, IndexTag, { of: "ready" });
+    contributions.commit(index);
+    yield* Effect.yieldNow;
+    expect(Deferred.isDoneUnsafe(acquired)).toBe(false);
+
+    services.provide(next, NumberTag, 2);
+    contributions.commit(next);
+    expect(yield* Deferred.await(acquired)).toBe(2);
+  }),
+);
 
 /**
  * A stand-in for a plugin-owned interceptable service (the shape the
@@ -189,7 +259,7 @@ testEffect("registry services attribute writes to the running plugin", () =>
       }),
     );
     expect(host.status().filter((status) => status.id === "registry-consumer")).toEqual([
-      { id: "registry-consumer", waitingFor: [] },
+      { id: "registry-consumer", phase: "active", waitingFor: [] },
     ]);
   }),
 );
@@ -314,6 +384,10 @@ testEffect("a chain activates in dependency order from a single root", () =>
     ]);
     yield* Effect.yieldNow;
     yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
 
     expect(log).toEqual(["pool provided v1", "index built", "search on pool v1"]);
   }),
@@ -360,6 +434,40 @@ testEffect("two plugins that inject each other both wait instead of deadlocking"
 );
 
 // --- Soft reads ---
+
+testEffect("waiting for a second dependency does not retain a replaced first provider", () =>
+  Effect.gen(function* () {
+    const host = yield* makeHost();
+    const releaseIndex = yield* Deferred.make<void>();
+    const acquired = yield* Deferred.make<Pool>();
+    yield* host.reconcile([
+      poolProvider([]).definition,
+      definePlugin({
+        id: "index",
+        provide: [IndexTag],
+        effect: (ctx) =>
+          Effect.gen(function* () {
+            yield* Deferred.await(releaseIndex);
+            ctx.provide(IndexTag, { of: "ready" });
+          }),
+      }),
+      definePlugin({
+        id: "consumer",
+        inject: [PoolTag, IndexTag],
+        effect: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(acquired, yield* PoolTag);
+          }),
+      }),
+    ]);
+    yield* host.add(poolProvider([], { version: 2 }).definition);
+    yield* Deferred.succeed(releaseIndex, undefined);
+
+    const pool = yield* Deferred.await(acquired);
+    expect(pool.version).toBe(2);
+    expect(pool.open).toBe(true);
+  }),
+);
 
 testEffect("get reads the current provider and stops reading once it leaves", () =>
   Effect.gen(function* () {
@@ -423,8 +531,17 @@ testEffect("two plugins cannot provide the same service", () =>
     const clash = reported.find((e) => e.pluginId === "pool-two");
     expect(clash?.error.message).toBe("service 'test/Pool' is already provided by 'pool-one'");
     // The first provider is untouched and still the one that answers; the
-    // second unwinds its own half-built state and leaves nothing behind.
-    expect(host.status().map((s) => s.id)).toEqual(["pool-one"]);
+    // second unwinds its own half-built state and is kept only as a failure
+    // to inspect, not as something still running.
+    expect(host.status()).toEqual([
+      { id: "pool-one", phase: "active", waitingFor: [] },
+      {
+        id: "pool-two",
+        phase: "failed",
+        error: new Error("service 'test/Pool' is already provided by 'pool-one'"),
+        waitingFor: [],
+      },
+    ]);
     expect(log).toEqual(["pool-one provided v1", "pool-two closed pool"]);
   }),
 );
@@ -459,9 +576,19 @@ testEffect("a plugin cannot provide a service it did not declare", () =>
     // is the whole reason the declaration has to be total: the consumer is
     // refused even though the smuggler would in fact have published the key.
     expect(refused).toEqual([{ id: "consumer", key: "test/Pool" }]);
-    // Rejected at the call site too, so the service never reaches the registry
-    // and the smuggler does not stay listed as running.
-    expect(host.status()).toEqual([]);
+    // Rejected at the call site too, so the service never reaches the registry;
+    // the smuggler is kept only as an inspectable failure, not as something
+    // still running.
+    expect(host.status()).toEqual([
+      {
+        id: "smuggler",
+        phase: "failed",
+        error: new Error(
+          "plugin 'smuggler' provided 'test/Pool', which it does not declare in 'provide'",
+        ),
+        waitingFor: [],
+      },
+    ]);
     expect(log).toEqual([]);
   }),
 );
@@ -638,12 +765,20 @@ testEffect("a provider that crashes takes its dependents back to waiting", () =>
     yield* Effect.yieldNow;
     yield* Effect.yieldNow;
     yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
+    yield* Effect.yieldNow;
 
     expect(log).toEqual([
       "pool provided v1",
       "consumer started on v1",
       "consumer released, pool open=true",
     ]);
-    expect(host.status()).toEqual([{ id: "consumer", waitingFor: ["test/Pool"] }]);
+    expect(host.status()).toEqual([
+      { id: "consumer", phase: "waiting", waitingFor: ["test/Pool"] },
+      { id: "pool", phase: "failed", error: new Error("provider died"), waitingFor: [] },
+    ]);
   }),
 );

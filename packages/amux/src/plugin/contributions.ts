@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 
 /**
  * One run of a plugin.
@@ -55,11 +55,14 @@ export interface PluginContributions {
   /** Drop this instance's claim to being visible, if it still holds it. */
   readonly retire: (owner: PluginInstance) => void;
   readonly isCommitted: (owner: PluginInstance) => boolean;
+  /** Synchronize dependent registries before reactive observers see a visibility change. */
+  readonly onChange: (listener: () => void) => () => void;
 }
 
 export function createPluginContributions(): PluginContributions {
   const [committed, setCommitted] = createSignal<ReadonlyMap<string, number>>(new Map());
   const tables: { readonly conflicts: (owner: PluginInstance) => readonly string[] }[] = [];
+  const listeners = new Set<() => void>();
 
   const isCommitted = (owner: PluginInstance) => committed().get(owner.id) === owner.generation;
 
@@ -107,18 +110,29 @@ export function createPluginContributions(): PluginContributions {
   return {
     table,
     isCommitted,
+    onChange(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
     commit(owner) {
       const conflicts = tables.flatMap((registered) => registered.conflicts(owner));
       if (conflicts.length > 0) return conflicts;
-      setCommitted((current) => new Map(current).set(owner.id, owner.generation));
+      if (isCommitted(owner)) return [];
+      batch(() => {
+        setCommitted((current) => new Map(current).set(owner.id, owner.generation));
+        for (const listener of [...listeners]) listener();
+      });
       return [];
     },
     retire(owner) {
-      setCommitted((current) => {
-        if (current.get(owner.id) !== owner.generation) return current;
-        const next = new Map(current);
+      if (!isCommitted(owner)) return;
+      batch(() => {
+        const next = new Map(committed());
         next.delete(owner.id);
-        return next;
+        setCommitted(next);
+        for (const listener of [...listeners]) listener();
       });
     },
   };

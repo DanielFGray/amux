@@ -159,12 +159,10 @@ function sourceOf(
   const found = (entry: string): SourceResolution => ({ _tag: "found", url: pathToFileURL(entry) });
   if (specPath.startsWith("file://")) {
     return Effect.gen(function* () {
-      let filePath: string;
-      try {
-        filePath = fileURLToPath(specPath);
-      } catch {
-        return { _tag: "missing" as const };
-      }
+      const filePath = yield* Effect.try(() => fileURLToPath(specPath)).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (filePath === null) return { _tag: "missing" as const };
       const entry = yield* resolvePathEntry(filePath, entrypoint);
       return entry ? found(entry) : { _tag: "missing" as const };
     });
@@ -263,10 +261,8 @@ function resolvePathEntry(
       return entrypoint === "." ? filePath : null;
     }
     if (entrypoint === ".") return filePath;
-    try {
-      return Bun.resolveSync(entrypoint, filePath.slice(0, filePath.lastIndexOf("/")));
-    } catch {
-      return null;
-    }
+    return yield* Effect.try(() =>
+      Bun.resolveSync(entrypoint, filePath.slice(0, filePath.lastIndexOf("/"))),
+    ).pipe(Effect.orElseSucceed(() => null));
   });
 }

@@ -131,13 +131,14 @@ export interface PluginErrorEvent {
   readonly timestamp: number;
 }
 
-/**
- * A plugin the host is holding. Being listed at all is what "running" means —
- * a plugin that failed is removed, and its failure goes out on `onError`, so
- * there is no error to report here and no `active` flag to set.
- */
+export type PluginPhase = "waiting" | "starting" | "active" | "failed" | "stopping";
+
+/** A configured plugin, including failed activation and pending replacement. */
 export interface PluginStatus {
   readonly id: string;
+  readonly phase: PluginPhase;
+  readonly error?: Error;
+  readonly replacement?: { readonly phase: PluginPhase; readonly error?: Error };
   /** Injected tags with no provider yet; empty for a plugin that has started. */
   readonly waitingFor: readonly string[];
 }

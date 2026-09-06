@@ -1,5 +1,5 @@
 import { Context, Deferred, Effect, Option, Scope, type Schema as S, type Stream } from "effect";
-import type { Contribution, PluginInstance } from "./contributions.ts";
+import type { Contribution, PluginContributions, PluginInstance } from "./contributions.ts";
 import type {
   DockOccupant,
   DockSlotName,
@@ -24,6 +24,7 @@ import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts"
 import type { PersistedSession } from "../session.ts";
 import type { PluginActionRegistration, SessionOps } from "../effect/WorkspaceTransaction.ts";
 
+/** @effect-leakable-service */
 export class CurrentPlugin extends Context.Service<CurrentPlugin, PluginInstance>()(
   "amux/CurrentPlugin",
 ) {}
@@ -330,9 +331,6 @@ export interface PluginServices {
   readonly withdraw: (owner: PluginInstance, tag: PluginService) => void;
   readonly withdrawAll: (owner: PluginInstance) => void;
   readonly get: <Id, S>(tag: Context.Service<Id, S>) => Option.Option<S>;
-  /** Make an instance's staged services available to injectors. */
-  readonly commit: (owner: PluginInstance) => void;
-  readonly retire: (owner: PluginInstance) => void;
   readonly declare: (owner: PluginInstance, dependencies: readonly PluginDependency[]) => void;
   readonly intercept: <Id, Service, Metadata>(
     owner: string,
@@ -354,7 +352,10 @@ export interface PluginServices {
  * contributions. A replacement becomes readable only when its host generation
  * commits; until then injectors keep the service they already acquired.
  */
-export function createPluginServices(onChange: (key: string) => void = () => {}): PluginServices {
+export const createPluginServices = Effect.fnUntraced(function* (
+  contributions: PluginContributions,
+  onChange: (key: string) => void = () => {},
+) {
   const slots = new Map<string, Slot>();
   const injects = new Map<
     string,
@@ -365,36 +366,39 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
     }
   >();
   const interceptions = new Map<string, unknown>();
-  const committed = new Map<string, number>();
+  let changed = Deferred.makeUnsafe<void>();
 
   function slotFor(key: string): Slot {
     let slot = slots.get(key);
     if (!slot) {
-      slot = { key, deferred: Deferred.makeUnsafe(), provider: undefined, providers: [] };
+      slot = { key, provider: undefined, providers: [] };
       slots.set(key, slot);
     }
     return slot;
   }
 
   function visible(slot: Slot): Provider | undefined {
-    return slot.providers.find(
-      (provider) => committed.get(provider.owner.id) === provider.owner.generation,
-    );
+    return slot.providers.find((provider) => contributions.isCommitted(provider.owner));
   }
 
-  function update(slot: Slot): void {
-    const provider = visible(slot);
-    if (slot.provider === provider) return;
-    const previous = slot.provider;
-    slot.provider = provider;
-    onChange(slot.key);
-    if (!previous && provider) {
-      Deferred.doneUnsafe(slot.deferred, Effect.succeed(provider));
-      return;
+  function update(): void {
+    const keys: string[] = [];
+    for (const slot of slots.values()) {
+      const provider = visible(slot);
+      if (slot.provider === provider) continue;
+      slot.provider = provider;
+      keys.push(slot.key);
     }
-    slot.deferred = Deferred.makeUnsafe();
-    if (provider) Deferred.doneUnsafe(slot.deferred, Effect.succeed(provider));
+    if (keys.length === 0) return;
+    const previous = changed;
+    changed = Deferred.makeUnsafe<void>();
+    // Publish a whole generation before waking any consumer or observer.
+    Deferred.doneUnsafe(previous, Effect.void);
+    for (const key of keys) onChange(key);
   }
+
+  const unsubscribe = contributions.onChange(update);
+  yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
 
   return {
     provide(owner, tag, service) {
@@ -405,38 +409,27 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
       if (slot.providers.some((provider) => sameInstance(provider.owner, owner)))
         throw new Error(`plugin '${owner.id}' provided '${tag.key}' twice`);
       slot.providers.push({ owner, context: Context.make(tag, service) });
-      update(slot);
+      update();
     },
 
     withdraw(owner, tag) {
       const slot = slots.get(tag.key);
       if (!slot) return;
       slot.providers = slot.providers.filter((provider) => !sameInstance(provider.owner, owner));
-      update(slot);
+      update();
     },
 
     withdrawAll(owner) {
       for (const slot of slots.values()) {
         slot.providers = slot.providers.filter((provider) => !sameInstance(provider.owner, owner));
-        update(slot);
       }
+      update();
     },
 
     get: <Id, S>(tag: Context.Service<Id, S>) =>
       Option.fromNullishOr(slots.get(tag.key)?.provider).pipe(
         Option.flatMap((provider) => Context.getOption(provider.context, tag)),
       ),
-
-    commit(owner) {
-      committed.set(owner.id, owner.generation);
-      for (const slot of slots.values()) update(slot);
-    },
-
-    retire(owner) {
-      if (committed.get(owner.id) !== owner.generation) return;
-      committed.delete(owner.id);
-      for (const slot of slots.values()) update(slot);
-    },
 
     declare(owner, dependencies) {
       injects.set(instanceKey(owner), { owner, dependencies, committed: undefined });
@@ -457,13 +450,22 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
     awaitAll: (owner, dependencies) =>
       Effect.gen(function* () {
         let context = Context.empty();
-        let suspended = false;
         const view = new Map<string, PluginInstance>();
-        for (const dependency of dependencies) {
+        const required = dependencies.map((dependency) =>
+          slotFor(dependencyService(dependency).key),
+        );
+        while (required.some((slot) => !slot.provider)) {
+          yield* Deferred.await(changed);
+          // Providers wake waiters inside ctx.provide. Let them finish registering
+          // finalizers before capturing the current view and entering plugin code.
+          yield* Effect.yieldNow;
+        }
+        const resolved = dependencies.map((dependency, index) => ({
+          dependency,
+          provider: required[index]!.provider!,
+        }));
+        for (const { dependency, provider } of resolved) {
           const tag = dependencyService(dependency);
-          const { deferred } = slotFor(tag.key);
-          suspended ||= !Deferred.isDoneUnsafe(deferred);
-          const provider = yield* Deferred.await(deferred);
           const service = Context.getUnsafe(provider.context, tag as Context.Key<unknown, unknown>);
           const interception = serviceInterception(tag);
           const value = interception
@@ -480,12 +482,6 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
         }
         const declaration = injects.get(instanceKey(owner));
         if (declaration) declaration.committed = view;
-        // A provider completes these deferreds from inside its own activation,
-        // and the runtime resumes a waiter inline on the completer's stack.
-        // Taking a turn after a real suspension is what keeps a dependent's
-        // activation after its provider's rather than in the middle of it: the
-        // provider's finalizers and its remaining services are registered first.
-        if (suspended) yield* Effect.yieldNow;
         return context;
       }),
 
@@ -512,12 +508,11 @@ export function createPluginServices(onChange: (key: string) => void = () => {})
         })
         .map(({ owner }) => owner.id);
     },
-  };
-}
+  } satisfies PluginServices;
+});
 
 interface Slot {
   readonly key: string;
-  deferred: Deferred.Deferred<Provider>;
   provider: Provider | undefined;
   providers: Provider[];
 }

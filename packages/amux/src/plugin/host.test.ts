@@ -104,7 +104,7 @@ testEffect("add activates a plugin and status reports it", () =>
   Effect.gen(function* () {
     const { host } = yield* makeHost();
     yield* host.add(mkPlugin({ id: "p1" }));
-    expect(host.status()).toEqual([{ id: "p1", waitingFor: [] }]);
+    expect(host.status()).toEqual([{ id: "p1", phase: "active", waitingFor: [] }]);
   }),
 );
 
@@ -224,7 +224,7 @@ testEffect("remove of an unknown id is a no-op", () =>
     const { host } = yield* makeHost();
     yield* host.add(mkPlugin({ id: "p1" }));
     yield* host.remove("nope");
-    expect(host.status()).toEqual([{ id: "p1", waitingFor: [] }]);
+    expect(host.status()).toEqual([{ id: "p1", phase: "active", waitingFor: [] }]);
   }),
 );
 
@@ -267,7 +267,7 @@ testEffect("add replaces a running plugin, taking its registrations with it", ()
     expect(ran).toEqual(["first", "second"]);
     expect(sessionViews.has("chat")).toBe(true);
     expect(host.status().filter((status) => status.id === "swap")).toEqual([
-      { id: "swap", waitingFor: [] },
+      { id: "swap", phase: "active", waitingFor: [] },
     ]);
   }),
 );
@@ -505,7 +505,7 @@ testEffect("a plugin effect that throws a defect reports the error without crash
 
     yield* host.add(mkPlugin({ id: "survivor" }));
     expect(host.status().filter((status) => status.id === "survivor")).toEqual([
-      { id: "survivor", waitingFor: [] },
+      { id: "survivor", phase: "active", waitingFor: [] },
     ]);
   }),
 );

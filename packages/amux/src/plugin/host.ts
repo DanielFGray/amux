@@ -1,4 +1,4 @@
-import { Clock, Effect, Deferred, Equal, Exit, Fiber, Queue, Scope, Stream } from "effect";
+import { Cause, Clock, Effect, Deferred, Exit, Fiber, Queue, Scope, Stream, Types } from "effect";
 import { createPluginKV } from "./kv.ts";
 import {
   createPluginServices,
@@ -73,7 +73,9 @@ export interface RefusedPlugin {
 
 /** Add, remove and re-gate call one another around the dependency graph, so
  *  each of them has to say its own type rather than infer it from the others. */
-type Add = (plugin: PluginDefinition) => Effect.Effect<void, string>;
+type Add = (
+  plugin: PluginDefinition,
+) => Effect.Effect<Deferred.Deferred<void, string> | undefined, string>;
 type ById = (id: string) => Effect.Effect<void>;
 
 interface PluginState {
@@ -83,6 +85,14 @@ interface PluginState {
   readonly fiber: Fiber.Fiber<void, never>;
   /** Start this same definition again, for a plugin re-gated by a provider leaving. */
   readonly reactivate: Effect.Effect<void, string>;
+  readonly definition: PluginDefinition;
+  phase: "waiting" | "starting" | "active" | "stopping";
+  readonly result: Deferred.Deferred<void, string>;
+}
+
+interface FailedAttempt {
+  readonly definition: PluginDefinition;
+  readonly error: Error;
 }
 
 /**
@@ -109,16 +119,17 @@ export function createPluginHost(
     const errorQueue = yield* Queue.unbounded<PluginErrorEvent>();
     const serviceChangeQueue = yield* Queue.unbounded<string>();
     const activePlugins = new Map<string, PluginState>();
+    const candidates = new Map<string, PluginState>();
+    const failures = new Map<string, FailedAttempt>();
+    const operations = yield* Queue.unbounded<Effect.Effect<void>>();
     const kvStores = new Map<string, PluginKV>();
     /** How many times each id has been started; the next run gets the next number. */
     const generations = new Map<string, number>();
-    const services = createPluginServices((key) => {
+    const services = yield* createPluginServices(env.contributions, (key) => {
       Queue.offerUnsafe(serviceChangeQueue, key);
     });
     const hostScope = yield* Scope.make();
     let disposed = false;
-
-    yield* Effect.addFinalizer(() => disposeAll());
 
     function emitError(e: PluginErrorEvent): void {
       if (disposed) return;
@@ -164,117 +175,114 @@ export function createPluginHost(
     }
 
     const addPlugin: Add = Effect.fnUntraced(function* (plugin: PluginDefinition) {
-      if (disposed) {
-        emitError({
-          pluginId: plugin.id,
-          phase: "activate",
-          source: "host",
-          error: new Error("Plugin host is disposed"),
-          timestamp: yield* Clock.currentTimeMillis,
-        });
-        return;
+      if (disposed) return yield* Effect.fail("Plugin host is disposed");
+      const pending = candidates.get(plugin.id);
+      if (pending) {
+        candidates.delete(plugin.id);
+        yield* closeRun(pending, "superseded");
       }
-
+      failures.delete(plugin.id);
       const generation = (generations.get(plugin.id) ?? -1) + 1;
       generations.set(plugin.id, generation);
       const instance: PluginInstance = { id: plugin.id, generation };
       const previous = activePlugins.get(plugin.id);
       const injected = plugin.inject ?? [];
-      if (!previous) {
-        const conflicts = env.contributions.commit(instance);
-        if (conflicts.length > 0) {
-          emitError({
-            pluginId: plugin.id,
-            phase: "activate",
-            source: "host",
-            error: new Error(
-              `Plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
-            ),
-            timestamp: yield* Clock.currentTimeMillis,
-          });
-          return;
-        }
-        services.commit(instance);
-      }
+      if (!previous) env.contributions.commit(instance);
       services.declare(instance, injected);
       const pluginScope = yield* Scope.fork(hostScope, "sequential");
       const context = makeContext(instance, pluginScope, plugin.provide ?? []);
-      const started = yield* Deferred.make<"started" | "failed", never>();
+      const result = yield* Deferred.make<void, string>();
 
-      // Waiting on the injected tags is the whole of "pending": the fiber
-      // suspends on their Deferreds and resumes in the order they are provided,
-      // so a provider configured last still activates its dependents.
       const pluginEffect = services.awaitAll(instance, injected).pipe(
-        Effect.flatMap((provided) => plugin.activate(context, provided)),
-        Effect.catchDefect((defect) =>
+        Effect.flatMap((provided) =>
           Effect.gen(function* () {
-            const error = defect instanceof Error ? defect : new Error(String(defect));
-            emitError({
-              pluginId: plugin.id,
-              phase: "activate",
-              source: "plugin",
-              error,
-              timestamp: yield* Clock.currentTimeMillis,
-            });
-            yield* Deferred.succeed(started, "failed");
-            if (previous) yield* Scope.close(pluginScope, Exit.void);
-            else yield* removePlugin(plugin.id);
+            yield* Queue.offer(
+              operations,
+              Effect.sync(() => {
+                const current = candidates.get(plugin.id) ?? activePlugins.get(plugin.id);
+                if (current?.instance === instance) current.phase = "starting";
+              }),
+            );
+            yield* plugin.activate(context, provided);
           }),
         ),
-        Effect.tap(() => Deferred.succeed(started, "started")),
+        Effect.exit,
+        Effect.flatMap((exit) => Queue.offer(operations, finishActivation(instance, exit))),
+        Effect.asVoid,
         Effect.provideService(Scope.Scope, pluginScope),
         Effect.provideService(CurrentPlugin, instance),
       );
-
       const fiber = yield* Effect.forkIn(pluginEffect, hostScope);
-      if (!previous) {
-        activePlugins.set(plugin.id, {
-          instance,
-          scope: pluginScope,
-          fiber,
-          reactivate: Effect.suspend(() => addPlugin(plugin)),
-        });
-        yield* Effect.yieldNow;
-        return;
-      }
-      const result = yield* Deferred.await(started);
-      yield* Fiber.await(fiber);
-      if (result === "failed") {
-        services.forget(instance);
-        yield* Scope.close(pluginScope, Exit.void);
-        return yield* Effect.fail(
-          `plugin '${plugin.id}' failed to start; kept the version that was running`,
-        );
-      }
-
-      const conflicts = env.contributions.commit(instance);
-      if (conflicts.length > 0) {
-        services.forget(instance);
-        yield* Scope.close(pluginScope, Exit.void);
-        emitError({
-          pluginId: plugin.id,
-          phase: "activate",
-          source: "host",
-          error: new Error(
-            `Plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
-          ),
-          timestamp: yield* Clock.currentTimeMillis,
-        });
-        return yield* Effect.fail(
-          `plugin '${plugin.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
-        );
-      }
-
-      services.commit(instance);
-      // The old provider is still active until after the new generation has
-      // committed. Removing it now re-gates its dependents onto the new service.
-      yield* removePlugin(plugin.id);
-      activePlugins.set(plugin.id, {
+      const state: PluginState = {
         instance,
         scope: pluginScope,
         fiber,
-        reactivate: Effect.suspend(() => addPlugin(plugin)),
-      });
+        definition: plugin,
+        result,
+        phase: "waiting",
+        reactivate: Effect.suspend(() => addPlugin(plugin)).pipe(Effect.asVoid),
+      };
+      if (previous) candidates.set(plugin.id, state);
+      else activePlugins.set(plugin.id, state);
+      yield* Effect.yieldNow;
+      return previous ? result : undefined;
+    });
+
+    const closeRun = Effect.fnUntraced(function* (state: PluginState, reason: string) {
+      state.phase = "stopping";
+      env.contributions.retire(state.instance);
+      yield* Fiber.interrupt(state.fiber);
+      services.withdrawAll(state.instance);
+      services.forget(state.instance);
+      yield* Scope.close(state.scope, Exit.void);
+      yield* Deferred.fail(state.result, `plugin '${state.instance.id}' ${reason}`);
+    });
+
+    const finishActivation = Effect.fnUntraced(function* (
+      instance: PluginInstance,
+      exit: Exit.Exit<void, never>,
+    ) {
+      const candidate = candidates.get(instance.id);
+      const state = candidate ?? activePlugins.get(instance.id);
+      if (disposed || state?.instance !== instance) return;
+      const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
+      let error = Exit.isFailure(exit)
+        ? defect instanceof Error
+          ? defect
+          : new Error(String(defect))
+        : undefined;
+      if (!error && candidate) {
+        const conflicts = env.contributions.commit(instance);
+        if (conflicts.length > 0)
+          error = new Error(
+            `plugin '${instance.id}' claims names another plugin already holds: ${conflicts.join(", ")}`,
+          );
+      }
+      if (error) {
+        emitError({
+          pluginId: instance.id,
+          phase: "activate",
+          source: "plugin",
+          error,
+          timestamp: yield* Clock.currentTimeMillis,
+        });
+        if (candidate) {
+          candidates.delete(instance.id);
+          yield* closeRun(candidate, "failed to start; kept the version that was running");
+        } else {
+          yield* removePlugin(instance.id);
+        }
+        failures.set(instance.id, { definition: state.definition, error });
+        return;
+      }
+      if (candidate) {
+        candidates.delete(instance.id);
+        yield* removePlugin(instance.id);
+        activePlugins.set(instance.id, candidate);
+      }
+      state.phase = "active";
+      failures.delete(instance.id);
+      yield* Deferred.succeed(state.result, undefined);
     });
 
     /**
@@ -293,7 +301,6 @@ export function createPluginHost(
 
       // L-Leave: stop contributing to target views before any teardown runs.
       // Committed views remain intact until each scope has finished closing.
-      services.retire(state.instance);
       env.contributions.retire(state.instance);
 
       // Dependents unwind first, one level at a time, so each of them finishes
@@ -309,16 +316,7 @@ export function createPluginHost(
         yield* removePlugin(dependent);
       }
 
-      services.withdrawAll(state.instance);
-      services.forget(state.instance);
-      // A plugin that crashed is removed by its own fiber, which cannot wait
-      // for itself to finish; its scope still closes below.
-      const self = yield* Effect.fiberId;
-      if (!Equal.equals(state.fiber.id, self)) {
-        yield* Fiber.interrupt(state.fiber);
-        yield* Fiber.await(state.fiber);
-      }
-      yield* Scope.close(state.scope, Exit.void);
+      yield* closeRun(state, "was removed");
 
       if (disposed) return;
       for (const reactivate of regated) yield* reactivate;
@@ -334,7 +332,11 @@ export function createPluginHost(
      */
     const desired = new Map<string, PluginDefinition>();
 
-    const reconcile = Effect.fnUntraced(function* (entries: readonly PluginDefinition[]) {
+    const reconcile = Effect.fnUntraced(function* (
+      entries: readonly PluginDefinition[],
+      retry: (id: string) => boolean,
+    ) {
+      if (disposed) return yield* Effect.fail("Plugin host is disposed");
       const admitted = new Map(entries.map((entry) => [entry.id, entry] as const));
       const refused: RefusedPlugin[] = [];
 
@@ -371,6 +373,12 @@ export function createPluginHost(
       for (const id of [...desired.keys()]) {
         if (admitted.has(id)) continue;
         desired.delete(id);
+        failures.delete(id);
+        const candidate = candidates.get(id);
+        if (candidate) {
+          candidates.delete(id);
+          yield* closeRun(candidate, "was removed");
+        }
         yield* removePlugin(id);
       }
       // A plugin whose activation threw is reported and unloaded by `addPlugin`
@@ -378,10 +386,17 @@ export function createPluginHost(
       // version that was already running was kept. Reported once the whole
       // configuration is applied, so one bad entry does not strand the rest.
       let startFailure: string | undefined;
+      const replacements: Deferred.Deferred<void, string>[] = [];
       for (const entry of admitted.values()) {
-        if (desired.get(entry.id) === entry) continue;
+        if (desired.get(entry.id) === entry && !(failures.has(entry.id) && retry(entry.id)))
+          continue;
         yield* addPlugin(entry).pipe(
-          Effect.tap(() => Effect.sync(() => void desired.set(entry.id, entry))),
+          Effect.tap((result) =>
+            Effect.sync(() => {
+              desired.set(entry.id, entry);
+              if (result) replacements.push(result);
+            }),
+          ),
           Effect.catch((error) => Effect.sync(() => void (startFailure ??= error))),
         );
       }
@@ -397,12 +412,14 @@ export function createPluginHost(
           timestamp: yield* Clock.currentTimeMillis,
         });
       if (startFailure) return yield* Effect.fail(startFailure);
-      return refused as readonly RefusedPlugin[];
+      return { refused: refused as readonly RefusedPlugin[], replacements };
     });
 
     const disposeAll = Effect.fnUntraced(function* () {
       if (disposed) return;
       disposed = true;
+      for (const candidate of candidates.values()) yield* closeRun(candidate, "host was disposed");
+      candidates.clear();
       // Plugin by plugin rather than one scope close, so dependents still
       // unwind before their providers on the way down. Removing a plugin also
       // removes its dependents, and the live iterator simply skips those.
@@ -410,15 +427,62 @@ export function createPluginHost(
       yield* Scope.close(hostScope, Exit.void);
       desired.clear();
       activePlugins.clear();
+      failures.clear();
       kvStores.clear();
       yield* Queue.shutdown(errorQueue);
       yield* Queue.shutdown(serviceChangeQueue);
     });
 
+    // Disposal stops the fiber draining `operations`, so anything submitted
+    // after that point must run inline or it would wait on a queue nobody
+    // reads from again.
+    function submit<A, E>(operation: Effect.Effect<A, E>): Effect.Effect<A, E> {
+      return Effect.suspend(() => {
+        if (disposed) return operation;
+        return Effect.gen(function* () {
+          const result = yield* Deferred.make<A, E>();
+          yield* Queue.offer(
+            operations,
+            operation.pipe(
+              Effect.exit,
+              Effect.flatMap((exit) => Deferred.done(result, exit)),
+              Effect.asVoid,
+            ),
+          );
+          return yield* Deferred.await(result);
+        });
+      });
+    }
+
+    yield* Effect.forkScoped(Effect.forever(Queue.take(operations).pipe(Effect.flatten)));
+    yield* Effect.addFinalizer(() => submit(disposeAll()));
+
+    const configure = (
+      entries: () => readonly PluginDefinition[],
+      retry: (id: string) => boolean,
+    ) =>
+      submit(Effect.suspend(() => reconcile(entries(), retry))).pipe(
+        Effect.flatMap(({ refused, replacements }) =>
+          Effect.gen(function* () {
+            // Flush completion events from immediate activations before returning.
+            yield* submit(Effect.void);
+            for (const result of replacements) yield* Deferred.await(result);
+            return refused;
+          }),
+        ),
+      );
+
     return {
-      reconcile,
+      reconcile: (entries) =>
+        configure(
+          () => entries,
+          () => true,
+        ),
       add: (plugin) =>
-        reconcile([...[...desired.values()].filter((e) => e.id !== plugin.id), plugin]).pipe(
+        configure(
+          () => [...[...desired.values()].filter((e) => e.id !== plugin.id), plugin],
+          (id) => id === plugin.id,
+        ).pipe(
           Effect.flatMap((refused) => {
             const rejection = refused.find((r) => r.id === plugin.id);
             return rejection
@@ -429,7 +493,10 @@ export function createPluginHost(
           }),
         ),
       remove: (id) =>
-        reconcile([...desired.values()].filter((entry) => entry.id !== id)).pipe(Effect.asVoid),
+        configure(
+          () => [...desired.values()].filter((entry) => entry.id !== id),
+          () => false,
+        ).pipe(Effect.asVoid),
       onError: Stream.fromQueue(errorQueue),
       onServiceChange: Stream.fromQueue(serviceChangeQueue),
       get: services.get,
@@ -437,13 +504,23 @@ export function createPluginHost(
       clearInterception: services.clearInterception,
       status() {
         if (disposed) return [];
-        return [...activePlugins.entries()].map(([id, state]) => ({
-          id,
-          waitingFor: services.waitingOn(state.instance),
-        }));
+        return [...desired.keys()].map((id): PluginStatus => {
+          const state = activePlugins.get(id);
+          const candidate = candidates.get(id);
+          const failed = failures.get(id);
+          const status: Types.Mutable<PluginStatus> = {
+            id,
+            phase: state?.phase ?? "failed",
+            waitingFor: state ? services.waitingOn(state.instance) : [],
+          };
+          if (failed && !state) status.error = failed.error;
+          if (candidate) status.replacement = { phase: candidate.phase };
+          else if (failed && state) status.replacement = { phase: "failed", error: failed.error };
+          return status;
+        });
       },
       spawnProvider: (id) => Option.getOrUndefined(services.get(SpawnProvidersTag))?.get(id),
-      dispose: Effect.suspend(disposeAll),
+      dispose: Effect.suspend(() => submit(disposeAll())),
     };
   });
 }

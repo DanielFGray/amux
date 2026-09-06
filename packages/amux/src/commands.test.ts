@@ -9,6 +9,7 @@ import {
   command,
   decodeCommand,
   makeCommands,
+  isCoreCommandTag,
   runDetached,
   type CommandHandlerTable,
 } from "./commands.ts";
@@ -368,4 +369,49 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
     Effect.result(commands.run({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })),
   );
   expect(Result.isFailure(afterDispose)).toBe(true);
+});
+
+test("runtime core arguments are validated before reaching a handler", () => {
+  const { handlers, seen } = recording();
+  const commands = makeCommands(handlers);
+  const result = Effect.runSync(
+    Effect.result(commands.run({ _tag: "window.select", number: "invalid" })),
+  );
+  expect(Result.isFailure(result)).toBe(true);
+  expect(seen).toEqual([]);
+});
+
+test("a disposed command cannot remove its replacement and saved effects use the current owner", () => {
+  const commands = makeCommands(recording().handlers);
+  const meta = { desc: "test", group: "test", target: "view", exposure: "human" } as const;
+  const dispose = commands.registerFullCommand("custom.run", {}, meta, () => Effect.succeed("old"));
+  const saved = commands.run({ _tag: "custom.run" });
+  expect(Effect.runSync(saved)).toBe("old");
+  dispose();
+  const disposeReplacement = commands.registerFullCommand("custom.run", {}, meta, () =>
+    Effect.succeed("new"),
+  );
+  dispose();
+  expect(Effect.runSync(saved)).toBe("new");
+  expect(commands.list().filter((entry) => entry.name === "custom.run")).toHaveLength(1);
+  disposeReplacement();
+  expect(Result.isFailure(Effect.runSync(Effect.result(saved)))).toBe(true);
+});
+
+test("prototype property names are ordinary unregistered tags", () => {
+  const commands = makeCommands(recording().handlers);
+  expect(isCoreCommandTag("constructor")).toBe(false);
+  expect(isCoreCommandTag("pane.split")).toBe(true);
+  expect(commands.isWorkspaceCommand("constructor")).toBe(false);
+  expect(Result.isFailure(Effect.runSync(Effect.result(commands.run({ _tag: "toString" }))))).toBe(
+    true,
+  );
+  const dispose = commands.registerFullCommand(
+    "constructor",
+    {},
+    { desc: "test", group: "test", target: "view", exposure: "human" },
+    () => Effect.succeed("registered"),
+  );
+  expect(Effect.runSync(commands.run({ _tag: "constructor" }))).toBe("registered");
+  dispose();
 });
