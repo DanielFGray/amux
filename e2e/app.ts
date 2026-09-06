@@ -16,10 +16,11 @@
 import { spawnPty, readPty, type Pty } from "../packages/amux/src/pty.ts";
 import { Terminal } from "../packages/amux/src/ghostty.ts";
 import { captureVisible } from "../packages/amux/src/capture.ts";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { tempDir } from "../packages/amux/src/test-tmp.ts";
 
 const REPO = dirname(import.meta.dir);
 const KEY_GAP_MS = 50;
@@ -257,7 +258,7 @@ export async function launch(
   await rm(root, { recursive: true, force: true });
   await mkdir(state, { recursive: true });
 
-  const home = await mkdtemp(join(tmpdir(), `amux-${session}-`));
+  const home = tempDir(session);
   const configPath = join(home, "config", "amux", "config.json");
   await Bun.write(configPath, JSON.stringify(opts.config ?? defaultE2eConfig(), null, 2) + "\n");
   const env = {
