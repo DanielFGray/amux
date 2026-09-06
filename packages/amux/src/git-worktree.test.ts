@@ -1,7 +1,7 @@
 /** @effect-diagnostics *:skip-file -- a real OS boundary (daemon process, git subprocess, filesystem)
  * this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
-import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { expect, test } from "bun:test";
+import { mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,16 +20,13 @@ import {
   gitWorktreeRemove,
   worktreeDirname,
 } from "./git.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
 import type { WorkspaceCommandContext } from "./workspace.ts";
 
-const dirs: string[] = [];
-afterEach(async () => {
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
-});
+registerCleanup();
 
 async function env() {
-  const home = await mkdtemp(join(tmpdir(), "amux-wt-"));
-  dirs.push(home);
+  const home = tempDir("wt");
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
@@ -68,8 +65,7 @@ const git = async (args: string[], cwd: string): Promise<string> => {
 
 /** A scratch repository with one initial commit, so worktrees have a base. */
 async function initRepo(): Promise<string> {
-  const repo = await mkdtemp(join(tmpdir(), "amux-repo-"));
-  dirs.push(repo);
+  const repo = tempDir("repo");
   await git(["init", "-b", "main"], repo);
   await git(["config", "user.email", "t@t.org"], repo);
   await git(["config", "user.name", "T"], repo);
@@ -124,9 +120,7 @@ test("git status does not refresh the index, so it never takes index.lock", asyn
 
 test("gitWorktreeAdd creates a branch and worktree; remove tears it down", async () => {
   const repo = await initRepo();
-  const root = join(repo, "..", "wt-root");
-  await mkdir(root);
-  dirs.push(root);
+  const root = tempDir("wt-root");
   const dir = join(root, `abc-${worktreeDirname("feat/x")}`);
 
   await gitWorktreeAdd(repo, { branch: "feat/x" }, dir);
@@ -145,9 +139,7 @@ test("gitWorktreeAdd with a base branches from that commit, and the branch diver
   await git(["commit", "-m", "base commit"], repo);
   await git(["checkout", "main"], repo);
 
-  const root = join(repo, "..", "wt-root");
-  await mkdir(root);
-  dirs.push(root);
+  const root = tempDir("wt-root");
   const dir = join(root, `abc-${worktreeDirname("feat/from-base")}`);
 
   await gitWorktreeAdd(repo, { branch: "feat/from-base", base: "base" }, dir);
@@ -160,9 +152,7 @@ test("gitWorktreeAdd with a base branches from that commit, and the branch diver
 
 test("recreating a removed worktree advances its empty branch to the requested base", async () => {
   const repo = await initRepo();
-  const root = join(repo, "..", "wt-root");
-  await mkdir(root);
-  dirs.push(root);
+  const root = tempDir("wt-root");
   const dir = join(root, `abc-${worktreeDirname("feat/redo")}`);
 
   // First creation leaves branch 'feat/redo' at main's tip; removing the
@@ -199,9 +189,7 @@ test("gitWorktreeAdd checks out a divergent existing branch as-is, preserving it
   await git(["add", "trunk.txt"], repo);
   await git(["commit", "-m", "trunk advances"], repo);
 
-  const root = join(repo, "..", "wt-root");
-  await mkdir(root);
-  dirs.push(root);
+  const root = tempDir("wt-root");
   const dir = join(root, `abc-${worktreeDirname("feat/divergent")}`);
 
   await gitWorktreeAdd(repo, { branch: "feat/divergent", base: "main" }, dir);
@@ -218,9 +206,7 @@ test("gitWorktreeAdd checks out a divergent existing branch as-is, preserving it
 
 test("gitWorktreeRemove refuses a dirty worktree unless forced", async () => {
   const repo = await initRepo();
-  const root = join(repo, "..", "wt-root");
-  await mkdir(root);
-  dirs.push(root);
+  const root = tempDir("wt-root");
   const dir = join(root, `abc-${worktreeDirname("feat/dirty")}`);
 
   await gitWorktreeAdd(repo, { branch: "feat/dirty" }, dir);
