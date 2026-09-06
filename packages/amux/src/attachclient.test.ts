@@ -23,7 +23,6 @@ import {
 } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
-import { tmpdir } from "node:os";
 import { which } from "bun";
 import { SessionHandle, type SessionHandleOptions } from "./session-handle.ts";
 type SessionOptions = SessionHandleOptions;
@@ -43,27 +42,19 @@ import {
 } from "./effect/AttachProtocol.ts";
 import { command } from "./commands.ts";
 import { controlCall } from "./control-client.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { testEffect } from "./test-effect.ts";
 import { until } from "./test-wait.ts";
 
-const dirs: string[] = [];
+registerCleanup();
+
 const join = (...paths: string[]) =>
   Effect.runSync(
     Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
   );
-const basename = (value: string) =>
-  Effect.runSync(
-    Effect.map(Path.Path, (path) => path.basename(value)).pipe(Effect.provide(Path.layer)),
-  );
 const fsRun = <A>(
   effect: Effect.Effect<A, import("effect/PlatformError").PlatformError, FileSystem.FileSystem>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(BunFileSystem.layer)));
-const mkdtemp = (prefix: string) =>
-  fsRun(
-    Effect.flatMap(FileSystem.FileSystem, (fs) =>
-      fs.makeTempDirectory({ directory: tmpdir(), prefix: basename(prefix) }),
-    ),
-  );
 const rm = (path: string, _options?: { recursive?: boolean; force?: boolean }) =>
   fsRun(
     Effect.flatMap(FileSystem.FileSystem, (fs) =>
@@ -108,14 +99,11 @@ afterEach(() =>
       for (const scope of scopes.splice(0))
         yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
       for (const daemon of daemons.splice(0)) yield* daemon.stop.pipe(Effect.ignore);
-      for (const dir of dirs.splice(0))
-        yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
     }),
   ),
 );
 const startSession = Effect.fnUntraced(function* (id: string) {
-  const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-client-")));
-  dirs.push(home);
+  const home = tempDir("client");
   const env = {
     HOME: home,
     XDG_STATE_HOME: join(home, "state"),
@@ -506,8 +494,7 @@ testEffect("a process that ends reports its exit code through the stream", () =>
  * wrong shape for a fixture.
  */
 const fakeAgent = Effect.fnUntraced(function* (name: string) {
-  const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-daemon-agent-")));
-  dirs.push(dir);
+  const dir = tempDir("daemon-agent");
   const path = join(dir, name);
   const bash = which("bash");
   if (!bash) return yield* Effect.die(new Error("no bash on PATH to impersonate"));
@@ -739,8 +726,7 @@ testEffect("an unconsumed exit cannot poison a same-id replacement session", () 
 
 testEffect("rotates generations at exit without losing ordered frames in one chunk", () =>
   Effect.gen(function* () {
-    const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-generations-")));
-    dirs.push(home);
+    const home = tempDir("generations");
     const path = join(home, "attach.sock");
     let peer: Bun.Socket<undefined> | null = null;
     let buffer = "";
@@ -808,8 +794,7 @@ testEffect("rotates generations at exit without losing ordered frames in one chu
 
 testEffect("an unacquired stream does not retain a terminal generation", () =>
   Effect.gen(function* () {
-    const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-unacquired-")));
-    dirs.push(home);
+    const home = tempDir("unacquired");
     const path = join(home, "attach.sock");
     let peer: Bun.Socket<undefined> | null = null;
     let buffer = "";
@@ -872,8 +857,7 @@ testEffect("an unacquired stream does not retain a terminal generation", () =>
 
 testEffect("an unsubscribed session disconnects rather than silently dropping frames", () =>
   Effect.gen(function* () {
-    const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-overflow-")));
-    dirs.push(home);
+    const home = tempDir("overflow");
     const path = join(home, "attach.sock");
     let peer: Bun.Socket<undefined> | null = null;
     let buffer = "";
@@ -920,8 +904,7 @@ testEffect("an unsubscribed session disconnects rather than silently dropping fr
 
 testEffect("a delayed handshake closes its socket and rejects on timeout", () =>
   Effect.gen(function* () {
-    const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-handshake-timeout-")));
-    dirs.push(home);
+    const home = tempDir("handshake-timeout");
     const path = join(home, "attach.sock");
     let closed = 0;
     let latePongs = 0;
@@ -1001,8 +984,7 @@ testEffect("a delayed handshake closes its socket and rejects on timeout", () =>
 
 testEffect("the connection scope emits heartbeats and stops them when released", () =>
   Effect.gen(function* () {
-    const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-heartbeat-")));
-    dirs.push(home);
+    const home = tempDir("heartbeat");
     const path = join(home, "attach.sock");
     let buffer = "";
     let beats = 0;
@@ -1055,8 +1037,7 @@ testEffect("the connection scope emits heartbeats and stops them when released",
 
 testEffect("a handshake error closes the transport without leaving a client", () =>
   Effect.gen(function* () {
-    const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-handshake-error-")));
-    dirs.push(home);
+    const home = tempDir("handshake-error");
     const path = join(home, "attach.sock");
     let closed = 0;
     const listener = Bun.listen<undefined>({
@@ -1311,8 +1292,7 @@ testEffect("an alternate-screen app's view is replayed intact to a reattaching c
  */
 testEffect("a daemon started on demand keeps agents between two separate clients", () =>
   Effect.gen(function* () {
-    const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-autostart-")));
-    dirs.push(home);
+    const home = tempDir("autostart");
     // A real environment, plus a private state root: the daemon has to spawn
     // programs, and a PATH-less env would fail for reasons that have nothing to
     // do with what is under test.
