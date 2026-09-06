@@ -70,6 +70,15 @@ export interface Interface {
     session: string,
   ) => Effect.Effect<readonly PromptInboxEntry[], ProjectStoreError>;
   readonly promotePrompt: (id: string) => Effect.Effect<void, ProjectStoreError>;
+  /** Instruction file paths already surfaced to one session. */
+  readonly attachedInstructions: (
+    session: string,
+  ) => Effect.Effect<ReadonlySet<string>, ProjectStoreError>;
+  /** Record instruction files as surfaced. Re-attaching a path is a no-op. */
+  readonly attachInstructions: (
+    session: string,
+    paths: readonly string[],
+  ) => Effect.Effect<void, ProjectStoreError>;
 }
 
 export class Service extends Context.Service<Service, Interface>()("amux/ProjectStore") {}
@@ -139,6 +148,11 @@ const MIGRATIONS: readonly string[] = [
    CREATE INDEX prompt_inbox_pending ON prompt_inbox (session, promoted, admitted);`,
   `ALTER TABLE prompt_inbox ADD COLUMN turn TEXT;
    UPDATE prompt_inbox SET turn = 'turn-' || id WHERE turn IS NULL;`,
+  `CREATE TABLE instruction_attachment (
+      session TEXT NOT NULL,
+      path    TEXT NOT NULL,
+      PRIMARY KEY (session, path)
+    );`,
 ];
 
 const open = (
@@ -222,6 +236,12 @@ function queries(database: Database, root: string): Interface {
   const markPrompt = database.query(
     "UPDATE prompt_inbox SET promoted = ? WHERE id = ? AND promoted IS NULL",
   );
+  const selectAttached = database.query<{ path: string }, [string]>(
+    "SELECT path FROM instruction_attachment WHERE session = ?",
+  );
+  const insertAttached = database.query(
+    "INSERT OR IGNORE INTO instruction_attachment (session, path) VALUES (?, ?)",
+  );
   return {
     root,
     rules: attempt("rules", () => select.all()),
@@ -264,6 +284,17 @@ function queries(database: Database, root: string): Interface {
       attempt("pendingPrompts", () => selectPending.all(session).map(promptEntry)),
     promotePrompt: (id) =>
       attempt("promotePrompt", () => markPrompt.run(Effect.runSync(Clock.currentTimeMillis), id)),
+    attachedInstructions: (session) =>
+      attempt(
+        "attachedInstructions",
+        () => new Set(selectAttached.all(session).map((row) => row.path)),
+      ),
+    attachInstructions: (session, paths) =>
+      attempt("attachInstructions", () =>
+        database.transaction(() => {
+          for (const path of paths) insertAttached.run(session, path);
+        })(),
+      ),
   };
 }
 

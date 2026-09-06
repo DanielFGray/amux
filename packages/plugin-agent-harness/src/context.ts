@@ -2,7 +2,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { Config, DateTime, Effect, Option } from "effect";
 
-const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"];
+/** Checked in order; the first present, non-empty file in a directory wins —
+ *  an override always wins there over the plain files it lives alongside. */
+const INSTRUCTION_CANDIDATES = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
 
 /** Build the immutable system context for a newly created provider conversation. */
 export const initialContext = Effect.fnUntraced(function* (options: {
@@ -37,28 +39,33 @@ export const instructionFiles = Effect.fnUntraced(function* (options: {
   readonly workspace: string;
   readonly configDirectory?: string;
 }) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspace = path.resolve(options.workspace);
   const global = options.configDirectory ?? (yield* configDirectory);
-  const paths = [
-    ...INSTRUCTION_FILES.map((name) => path.join(global, name)),
-    ...(yield* ancestorDirectories(workspace)).flatMap((directory) =>
-      INSTRUCTION_FILES.map((name) => path.join(directory, name)),
-    ),
-  ];
+  const directories = [global, ...(yield* ancestorDirectories(workspace))];
   const seen = new Set<string>();
   const values: string[] = [];
-  for (const file of paths) {
-    const absolute = path.resolve(file);
-    if (seen.has(absolute)) continue;
-    seen.add(absolute);
+  for (const directory of directories) {
+    const found = yield* instructionFileForDirectory(directory);
+    if (!found || seen.has(found.path)) continue;
+    seen.add(found.path);
+    values.push(`Instructions from: ${found.path}\n${found.content}`);
+  }
+  return values;
+});
+
+/** The one instruction file a directory contributes, per `INSTRUCTION_CANDIDATES`. */
+const instructionFileForDirectory = Effect.fnUntraced(function* (directory: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const name of INSTRUCTION_CANDIDATES) {
+    const absolute = path.join(directory, name);
     const content = yield* fs
       .readFileString(absolute)
       .pipe(Effect.catchTag("PlatformError", () => Effect.void));
-    if (content?.trim()) values.push(`Instructions from: ${absolute}\n${content.trimEnd()}`);
+    if (content?.trim()) return { path: absolute, content: content.trimEnd() };
   }
-  return values;
+  return undefined;
 });
 
 const configDirectory = Effect.gen(function* () {
@@ -81,4 +88,47 @@ const ancestorDirectories = Effect.fnUntraced(function* (workspace: string) {
     if (parent === current) return paths;
     current = parent;
   }
+});
+
+/**
+ * Instructions for one subtree a tool call is about to enter, skipping files a
+ * session has already been shown.
+ *
+ * The workspace's own instructions are `initialContext`'s job; this only
+ * covers directories strictly below it, so a tool call that never leaves the
+ * workspace root finds nothing left to attach.
+ */
+export const nestedInstructions = Effect.fnUntraced(function* (options: {
+  readonly workspace: string;
+  readonly directory: string;
+  readonly attached: ReadonlySet<string>;
+}) {
+  const path = yield* Path.Path;
+  const directories = yield* directoriesBetween(
+    path.resolve(options.workspace),
+    path.resolve(options.directory),
+  );
+  const paths: string[] = [];
+  const values: string[] = [];
+  for (const directory of directories) {
+    const found = yield* instructionFileForDirectory(directory);
+    if (!found || options.attached.has(found.path)) continue;
+    paths.push(found.path);
+    values.push(`Instructions from: ${found.path}\n${found.content}`);
+  }
+  return { paths, content: values.join("\n\n") };
+});
+
+/** Directories strictly below `workspace`, shallow to deep, ending at `leaf`. */
+const directoriesBetween = Effect.fnUntraced(function* (workspace: string, leaf: string) {
+  const path = yield* Path.Path;
+  const chain: string[] = [];
+  let current = leaf;
+  while (current !== workspace) {
+    chain.unshift(current);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return chain;
 });

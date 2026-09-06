@@ -4,7 +4,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { Duration, Effect, Layer, Schema as S } from "effect";
 import { bashResources, pathResource, type PermissionGate } from "./permission.ts";
+import { nestedInstructions } from "./context.ts";
+import type { Interface as ProjectStoreInterface } from "@danielfgray/amux/project-store.ts";
 import type { JsonValue } from "@danielfgray/amux";
+
+/** What `agentToolkit` needs from a project store to attach nested instructions. */
+type InstructionStore = Pick<ProjectStoreInterface, "attachedInstructions" | "attachInstructions">;
 
 const DEFAULT_LIMIT = 2_000;
 const DEFAULT_TIMEOUT = 120_000;
@@ -76,7 +81,11 @@ const Bash = Tool.make("bash", {
  * here rather than derived from the call by a layer above: `read` on a directory
  * is still a read, and `bash` names shell segments, not files.
  */
-export const agentToolkit = Effect.fnUntraced(function* (workspace: string, gate: PermissionGate) {
+export const agentToolkit = Effect.fnUntraced(function* (
+  workspace: string,
+  gate: PermissionGate,
+  instructions: { readonly session: string; readonly store: InstructionStore },
+) {
   const toolkit = Toolkit.make(Read, Write, Glob, Grep, Bash);
   /** Clear the call, then run it. A refusal is the tool's failure text. */
   const gated = <E>(
@@ -97,6 +106,27 @@ export const agentToolkit = Effect.fnUntraced(function* (workspace: string, gate
     Effect.forEach(values, (value) =>
       pathResource(workspace, fromWorkspace(workspace, value)),
     ).pipe(Effect.provide(Path.layer));
+  /**
+   * Instructions for the subtree a tool call is about to enter, prefixed onto
+   * its result the first time — never inferred from the static system prompt,
+   * since that would repeat on every turn instead of once per session.
+   */
+  const attachNested = (directory: string) =>
+    Effect.gen(function* () {
+      const { session, store } = instructions;
+      const attached = yield* store.attachedInstructions(session);
+      const found = yield* nestedInstructions({ workspace, directory, attached });
+      if (found.paths.length > 0) yield* store.attachInstructions(session, found.paths);
+      return found.content;
+    }).pipe(
+      Effect.provide(Layer.mergeAll(BunFileSystem.layer, Path.layer)),
+      // Attachment is best-effort: a store hiccup should not fail the tool call.
+      Effect.orElseSucceed(() => ""),
+    );
+  const withNested = (directory: string, result: string) =>
+    attachNested(directory).pipe(
+      Effect.map((prefix) => (prefix ? `${prefix}\n\n${result}` : result)),
+    );
   const handlers = toolkit.of({
     read: (input) =>
       Effect.gen(function* () {
@@ -108,22 +138,30 @@ export const agentToolkit = Effect.fnUntraced(function* (workspace: string, gate
           input,
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
+            const pathApi = yield* Path.Path;
             const { path, offset, limit } = input;
             const target = fromWorkspace(workspace, path);
             const stat = yield* fs.stat(target);
+            const directory = stat.type === "Directory" ? target : pathApi.dirname(target);
             if (stat.type === "Directory") {
               const entries = yield* fs.readDirectory(target, { recursive: false });
-              return entries
-                .slice(offset ?? 0, (offset ?? 0) + (limit ?? DEFAULT_LIMIT))
-                .map((entry) => entry)
-                .join("\n");
+              return yield* withNested(
+                directory,
+                entries
+                  .slice(offset ?? 0, (offset ?? 0) + (limit ?? DEFAULT_LIMIT))
+                  .map((entry) => entry)
+                  .join("\n"),
+              );
             }
             const lines = (yield* fs.readFileString(target)).split("\n");
             const start = Math.max(0, (offset ?? 1) - 1);
-            return lines
-              .slice(start, start + (limit ?? DEFAULT_LIMIT))
-              .map((line, index) => `${start + index + 1}: ${line}`)
-              .join("\n");
+            return yield* withNested(
+              directory,
+              lines
+                .slice(start, start + (limit ?? DEFAULT_LIMIT))
+                .map((line, index) => `${start + index + 1}: ${line}`)
+                .join("\n"),
+            );
           }),
         );
       }),
@@ -139,9 +177,10 @@ export const agentToolkit = Effect.fnUntraced(function* (workspace: string, gate
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
             const target = fromWorkspace(workspace, input.path);
-            yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+            const directory = path.dirname(target);
+            yield* fs.makeDirectory(directory, { recursive: true });
             yield* fs.writeFileString(target, input.content);
-            return `Wrote ${target}`;
+            return yield* withNested(directory, `Wrote ${target}`);
           }),
         );
       }),
@@ -164,7 +203,7 @@ export const agentToolkit = Effect.fnUntraced(function* (workspace: string, gate
               matches.push(path.resolve(root, match));
               if (matches.length >= (input.limit ?? DEFAULT_LIMIT)) break;
             }
-            return matches.length ? matches.join("\n") : "No files found";
+            return yield* withNested(root, matches.length ? matches.join("\n") : "No files found");
           }),
         );
       }),
@@ -185,12 +224,13 @@ export const agentToolkit = Effect.fnUntraced(function* (workspace: string, gate
               String(input.limit ?? DEFAULT_LIMIT),
             ];
             if (input.include) args.push("--glob", input.include);
-            args.push("--", input.pattern, fromWorkspace(workspace, input.path ?? "."));
+            const directory = fromWorkspace(workspace, input.path ?? ".");
+            args.push("--", input.pattern, directory);
             const result = yield* run(args, workspace, DEFAULT_TIMEOUT);
-            if (result.exit === 1) return "No files found";
+            if (result.exit === 1) return yield* withNested(directory, "No files found");
             if (result.exit !== 0)
               throw new Error(result.output || `rg exited with code ${result.exit}`);
-            return result.output || "No files found";
+            return yield* withNested(directory, result.output || "No files found");
           }),
         );
       }),
@@ -203,12 +243,16 @@ export const agentToolkit = Effect.fnUntraced(function* (workspace: string, gate
         bashResources(input.command),
         input,
         Effect.gen(function* () {
+          const directory = fromWorkspace(workspace, input.workdir ?? ".");
           const result = yield* run(
             ["bash", "-lc", input.command],
-            fromWorkspace(workspace, input.workdir ?? "."),
+            directory,
             input.timeout ?? DEFAULT_TIMEOUT,
           );
-          return `${result.output}${result.output ? "\n\n" : ""}Command exited with code ${result.exit}.`;
+          return yield* withNested(
+            directory,
+            `${result.output}${result.output ? "\n\n" : ""}Command exited with code ${result.exit}.`,
+          );
         }),
       ),
   });

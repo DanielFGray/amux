@@ -1,10 +1,12 @@
-import { Chat } from "effect/unstable/ai";
+import { Chat, Prompt } from "effect/unstable/ai";
 import { BunFileSystem } from "@effect/platform-bun";
+import * as Path from "effect/Path";
 import { Effect, Layer, Match, Option, Schema as S, Stream } from "effect";
 import { Default as IntegrationDefault, Service as Integration } from "./integration.ts";
 import { loadConfig } from "@danielfgray/amux/config.ts";
 import { coerceOption } from "@danielfgray/amux";
 import { AGENT_HARNESS_OPTIONS, parseModelReference } from "./options.ts";
+import { initialContext } from "./context.ts";
 import {
   AttachFrame,
   encodeAttachFrame,
@@ -105,13 +107,20 @@ else {
         store,
         emit,
       });
-      const toolkit = agentToolkit(workspace, gate);
+      const toolkit = agentToolkit(workspace, gate, { session, store });
       // Chat owns the conversation: history, tool-call/result pairing and the
-      // provider message shape are all its job, not ours.
+      // provider message shape are all its job, not ours. A resumed chat keeps
+      // whatever system message it was created with; only a brand-new one needs
+      // one built, since initialContext bakes in a date and a resumed session's
+      // history must not silently drift to today's.
       const savedConversation = yield* store.conversation(session);
       const chat =
         savedConversation === undefined
-          ? yield* Chat.empty
+          ? yield* Chat.fromPrompt(
+              Prompt.make([
+                Prompt.makeMessage("system", { content: yield* initialContext({ workspace }) }),
+              ]),
+            )
           : yield* Chat.fromJson(savedConversation);
       // A daemon or client death can leave a persisted tool call without a
       // result. Repair it before the first provider request, never by replay.
@@ -200,7 +209,11 @@ else {
   Effect.runPromise(
     Effect.scoped(
       program.pipe(
-        Effect.provide(IntegrationDefault.pipe(Layer.provideMerge(BunFileSystem.layer))),
+        Effect.provide(
+          IntegrationDefault.pipe(
+            Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, Path.layer)),
+          ),
+        ),
       ),
     ),
     // @effect-diagnostics-next-line asyncFunction:off -- the outermost process-boundary catch; nothing above it to run this Effect in.

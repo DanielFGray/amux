@@ -222,14 +222,15 @@ testEffect("an approved write runs, is remembered on disk, and does not ask agai
     try {
       const written = yield* Effect.scoped(
         Effect.gen(function* () {
+          const store = yield* ProjectStore;
           const gate = yield* makePermissionGate({
             session: "agent-1",
             turn: Effect.succeed("turn-1"),
             rules: DEFAULT_RULES,
-            store: yield* ProjectStore,
+            store,
             emit: (frame) => Effect.sync(() => void frames.push(frame)),
           });
-          const toolkit = yield* agentToolkit(workspace, gate);
+          const toolkit = yield* agentToolkit(workspace, gate, { session: "agent-1", store });
           const first = yield* Effect.forkChild(
             handle(toolkit.handle("write", { path: "notes.md", content: "hello" })),
           );
@@ -273,7 +274,10 @@ testEffect("the second answer to a resolved request is dropped", () =>
     try {
       yield* Effect.gen(function* () {
         const gate = yield* world.gate;
-        const toolkit = yield* agentToolkit(workspace, gate);
+        const toolkit = yield* agentToolkit(workspace, gate, {
+          session: "agent-1",
+          store: world.store,
+        });
         const running = yield* Effect.forkChild(
           handle(toolkit.handle("write", { path: "answer.txt", content: "first" })),
         );
@@ -333,7 +337,10 @@ testEffect(
       try {
         const result = yield* Effect.gen(function* () {
           const gate = yield* world.gate;
-          const toolkit = yield* agentToolkit(workspace, gate);
+          const toolkit = yield* agentToolkit(workspace, gate, {
+            session: "agent-1",
+            store: world.store,
+          });
           const running = yield* Effect.forkChild(
             handle(toolkit.handle("write", { path: "rejected.txt", content: "must not exist" })),
           );
@@ -394,6 +401,8 @@ function harness(extra: readonly PermissionRule[] = []) {
     root: "/repo",
     rules: Effect.succeed(saved),
     addRules: (rules: readonly PermissionRule[]) => Effect.sync(() => void saved.push(...rules)),
+    attachedInstructions: () => Effect.succeed(new Set<string>()),
+    attachInstructions: () => Effect.void,
   };
   const gate = makePermissionGate({
     session: "agent-1",
@@ -402,7 +411,7 @@ function harness(extra: readonly PermissionRule[] = []) {
     store,
     emit: (frame) => Effect.sync(() => void frames.push(frame)),
   });
-  return { gate, emitted: () => frames, saved, awaitRequest: awaitRequest(frames) };
+  return { gate, emitted: () => frames, saved, awaitRequest: awaitRequest(frames), store };
 }
 
 /** The id of the request the agent is blocked on, once it has asked. */

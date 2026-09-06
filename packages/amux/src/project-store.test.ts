@@ -83,7 +83,7 @@ testEffect("a fresh database migrates, records its own root, and starts with no 
     );
     expect(
       database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
-    ).toBe(4);
+    ).toBe(5);
     database.close();
   }).pipe(Effect.provide(Path.layer)),
 );
@@ -200,6 +200,25 @@ testEffect("prompt admission survives reopening and caller ids are idempotent", 
     expect(yield* run("/tmp/project-inbox", (store) => store.pendingPrompts("agent-a"))).toEqual(
       [],
     );
+  }),
+);
+
+testEffect("attached instructions survive reopening and are isolated by session", () =>
+  Effect.gen(function* () {
+    yield* isolate();
+    yield* run("/tmp/project-instructions", (store) =>
+      store.attachInstructions("agent-a", ["/repo/src/AGENTS.md"]),
+    );
+    // Re-attaching the same path, or attaching it for another session, is a no-op.
+    yield* run("/tmp/project-instructions", (store) =>
+      store.attachInstructions("agent-a", ["/repo/src/AGENTS.md", "/repo/src/lib/CLAUDE.md"]),
+    );
+    expect(
+      yield* run("/tmp/project-instructions", (store) => store.attachedInstructions("agent-a")),
+    ).toEqual(new Set(["/repo/src/AGENTS.md", "/repo/src/lib/CLAUDE.md"]));
+    expect(
+      yield* run("/tmp/project-instructions", (store) => store.attachedInstructions("agent-b")),
+    ).toEqual(new Set());
   }),
 );
 

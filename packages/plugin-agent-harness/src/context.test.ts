@@ -3,7 +3,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { DateTime, Effect, Layer } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
-import { initialContext, instructionFiles } from "./context.ts";
+import { initialContext, instructionFiles, nestedInstructions } from "./context.ts";
 import { testEffect } from "@danielfgray/amux/testing";
 
 const it = testEffect(Layer.mergeAll(BunFileSystem.layer, Path.layer));
@@ -62,5 +62,60 @@ it.effect("ancestor instructions precede files nearer the active directory", () 
         `Instructions from: ${path.join(nested, "CLAUDE.md")}\nnested rules`,
       ]),
     );
+  }),
+);
+
+it.effect("an override file wins over AGENTS.md and CLAUDE.md in the same directory", () =>
+  Effect.gen(function* () {
+    const { fs, path, workspace, config } = yield* fixture;
+    yield* fs.writeFileString(path.join(workspace, "AGENTS.md"), "plain rules\n");
+    yield* fs.writeFileString(path.join(workspace, "CLAUDE.md"), "claude rules\n");
+    yield* fs.writeFileString(path.join(workspace, "AGENTS.override.md"), "override rules\n");
+    expect(yield* instructionFiles({ workspace, configDirectory: config })).toEqual([
+      `Instructions from: ${path.join(workspace, "AGENTS.override.md")}\noverride rules`,
+    ]);
+  }),
+);
+
+it.effect("nested instructions cover directories below the workspace, down to the target", () =>
+  Effect.gen(function* () {
+    const { fs, path, workspace } = yield* fixture;
+    yield* fs.writeFileString(path.join(workspace, "AGENTS.md"), "workspace rules\n");
+    yield* fs.writeFileString(path.join(workspace, "src", "AGENTS.md"), "src rules\n");
+    const found = yield* nestedInstructions({
+      workspace,
+      directory: path.join(workspace, "src"),
+      attached: new Set(),
+    });
+    // The workspace's own instructions are initialContext's job, not this call's.
+    expect(found.content).not.toContain("workspace rules");
+    expect(found.content).toContain("src rules");
+    expect(found.paths).toEqual([path.join(workspace, "src", "AGENTS.md")]);
+  }),
+);
+
+it.effect("a directory with no instruction files attaches nothing", () =>
+  Effect.gen(function* () {
+    const { path, workspace } = yield* fixture;
+    const found = yield* nestedInstructions({
+      workspace,
+      directory: path.join(workspace, "src"),
+      attached: new Set(),
+    });
+    expect(found).toEqual({ paths: [], content: "" });
+  }),
+);
+
+it.effect("an already-attached file is not surfaced again", () =>
+  Effect.gen(function* () {
+    const { fs, path, workspace } = yield* fixture;
+    const file = path.join(workspace, "src", "AGENTS.md");
+    yield* fs.writeFileString(file, "src rules\n");
+    const found = yield* nestedInstructions({
+      workspace,
+      directory: path.join(workspace, "src"),
+      attached: new Set([file]),
+    });
+    expect(found).toEqual({ paths: [], content: "" });
   }),
 );
