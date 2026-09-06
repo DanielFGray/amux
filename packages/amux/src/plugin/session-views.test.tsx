@@ -15,6 +15,20 @@ test("a pane type resolves once registered and stops resolving once disposed", (
   expect(views.has("native")).toBe(false);
 });
 
+test("a disposed pane type can be registered again immediately by the same plugin", () => {
+  const { contributions, owner } = testContributor();
+  const views = createSessionViews(contributions);
+  const dispose = views.register(owner, "native", () => <text>first</text>);
+
+  dispose();
+  const disposeReplacement = views.register(owner, "native", () => <text>second</text>);
+  dispose();
+  expect(views.has("native")).toBe(true);
+
+  disposeReplacement();
+  expect(views.has("native")).toBe(false);
+});
+
 test("a second plugin cannot take a pane type another one is showing", () => {
   const { contributions, owner } = testContributor("harness");
   const views = createSessionViews(contributions);

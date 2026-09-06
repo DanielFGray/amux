@@ -1,5 +1,5 @@
 import { BunServices } from "@effect/platform-bun";
-import { Effect, Path } from "effect";
+import { Effect, Path, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { pluginSpecKey, type Config, type PluginSpec } from "../config.ts";
@@ -158,23 +158,26 @@ function sourceOf(
 ): Effect.Effect<SourceResolution, never, FileSystem.FileSystem | Path.Path> {
   const found = (entry: string): SourceResolution => ({ _tag: "found", url: pathToFileURL(entry) });
   if (specPath.startsWith("file://")) {
-    try {
-      const filePath = fileURLToPath(specPath);
-      const entry = resolvePathEntry(filePath, entrypoint);
-      return Effect.succeed(entry ? found(entry) : { _tag: "missing" });
-    } catch {
-      return Effect.succeed({ _tag: "missing" });
-    }
+    return Effect.gen(function* () {
+      let filePath: string;
+      try {
+        filePath = fileURLToPath(specPath);
+      } catch {
+        return { _tag: "missing" as const };
+      }
+      const entry = yield* resolvePathEntry(filePath, entrypoint);
+      return entry ? found(entry) : { _tag: "missing" as const };
+    });
   }
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     if (path.isAbsolute(specPath)) {
-      const entry = resolvePathEntry(specPath, entrypoint);
+      const entry = yield* resolvePathEntry(specPath, entrypoint);
       return entry ? found(entry) : { _tag: "missing" as const };
     }
     const resolved = path.resolve(configDir, specPath);
-    const entry = resolvePathEntry(resolved, entrypoint, path.dirname(resolved));
+    const entry = yield* resolvePathEntry(resolved, entrypoint);
     if (!entry) return { _tag: "missing" as const };
     const realConfigDir = yield* fs.realPath(configDir).pipe(Effect.orElseSucceed(() => null));
     const realPath = yield* fs.realPath(entry).pipe(Effect.orElseSucceed(() => null));
@@ -185,15 +188,85 @@ function sourceOf(
   });
 }
 
+/** Conditional exports (`{import, require, ...}`) are out of scope: every
+ *  plugin here is loaded as ESM by one entrypoint string, never re-resolved
+ *  under a condition. A manifest using them fails this narrower shape and
+ *  falls back to the file-only resolution below. */
+const ManifestExports = S.Struct({
+  exports: S.optional(S.Record(S.String, S.String)),
+});
+
+/** `exports[entrypoint]`, with a single `"./*"`-style wildcard substitution
+ *  when no literal key matches — every shape this repo's own plugin
+ *  packages declare (see plugin-niri/package.json). */
+function resolveExportsSubpath(
+  exportsMap: Readonly<Record<string, string>>,
+  entrypoint: string,
+): string | undefined {
+  const direct = exportsMap[entrypoint];
+  if (direct !== undefined) return direct;
+  for (const [pattern, value] of Object.entries(exportsMap)) {
+    const star = pattern.indexOf("*");
+    if (star === -1) continue;
+    const prefix = pattern.slice(0, star);
+    const suffix = pattern.slice(star + 1);
+    if (entrypoint.startsWith(prefix) && entrypoint.endsWith(suffix)) {
+      return value.replace("*", entrypoint.slice(prefix.length, entrypoint.length - suffix.length));
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Where a plugin's entrypoint file actually is. A directory names the
+ * package itself, so its own package.json's `exports` map — the same
+ * resolution an installed package gets from `resolveInstalledEntry` —
+ * decides every variant, "." included. A file names the entry directly:
+ * only "." can mean the file itself, and any other variant falls back to
+ * the sibling-relative convention every in-repo plugin package already
+ * follows (`./daemon` sits beside `index.ts` in the same `src/`
+ * directory). Deliberately not resolved by walking up to some *enclosing*
+ * package.json: a bare dev-file plugin dropped inside another package's own
+ * source tree (as amux's own plugin loader tests do, and as a real
+ * `$configDir/plugins/*.ts` file might) must not inherit that package's
+ * unrelated exports map.
+ */
 function resolvePathEntry(
   filePath: string,
   entrypoint: string,
-  baseDir = filePath.slice(0, filePath.lastIndexOf("/")),
-): string | null {
-  if (entrypoint === ".") return filePath;
-  try {
-    return Bun.resolveSync(entrypoint, baseDir);
-  } catch {
-    return null;
-  }
+): Effect.Effect<string | null, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const stat = yield* fs.stat(filePath).pipe(Effect.orElseSucceed(() => null));
+    if (stat?.type === "Directory") {
+      const dir = filePath.replace(/\/$/, "");
+      const text = yield* fs
+        .readFileString(`${dir}/package.json`)
+        .pipe(Effect.orElseSucceed(() => null));
+      const parsed: unknown =
+        text === null
+          ? null
+          : yield* S.decodeEffect(S.fromJsonString(S.Unknown))(text).pipe(
+              Effect.orElseSucceed(() => null),
+            );
+      const manifest =
+        parsed === null
+          ? null
+          : yield* S.decodeUnknownEffect(ManifestExports)(parsed).pipe(
+              Effect.orElseSucceed(() => null),
+            );
+      const target =
+        manifest?.exports === undefined
+          ? undefined
+          : resolveExportsSubpath(manifest.exports, entrypoint);
+      if (target !== undefined) return `${dir}/${target.replace(/^\.\//, "")}`;
+      return entrypoint === "." ? filePath : null;
+    }
+    if (entrypoint === ".") return filePath;
+    try {
+      return Bun.resolveSync(entrypoint, filePath.slice(0, filePath.lastIndexOf("/")));
+    } catch {
+      return null;
+    }
+  });
 }

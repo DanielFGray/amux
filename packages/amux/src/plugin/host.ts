@@ -380,8 +380,8 @@ export function createPluginHost(
       let startFailure: string | undefined;
       for (const entry of admitted.values()) {
         if (desired.get(entry.id) === entry) continue;
-        desired.set(entry.id, entry);
         yield* addPlugin(entry).pipe(
+          Effect.tap(() => Effect.sync(() => void desired.set(entry.id, entry))),
           Effect.catch((error) => Effect.sync(() => void (startFailure ??= error))),
         );
       }

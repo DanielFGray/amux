@@ -171,6 +171,36 @@ testEffect("loads a path plugin's daemon entrypoint", () =>
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
+testEffect(
+  "a directory-style path plugin resolves entrypoints through its own package.json exports",
+  () =>
+    Effect.gen(function* () {
+      const dir = yield* tempDir;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(join(dir, "src"), { recursive: true });
+      yield* writePluginFile(dir, "src/index.ts", mkPluginSrc("client-plugin"));
+      yield* writePluginFile(dir, "src/daemon.ts", mkPluginSrc("daemon-plugin"));
+      yield* fs.writeFileString(
+        join(dir, "package.json"),
+        // Fixture JSON, not an encode of a typed manifest.
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.stringify({
+          name: "a-directory-plugin",
+          exports: { ".": "./src/index.ts", "./daemon": "./src/daemon.ts" },
+        }),
+      );
+
+      const config = baseConfig({ plugins: [spec(dir)] });
+      const { host: clientHost } = yield* makeHost();
+      yield* loadPluginsFromConfig(config, clientHost, dir);
+      expect(pluginStatuses(clientHost).map((status) => status.id)).toEqual(["client-plugin"]);
+
+      const { host: daemonHost } = yield* makeHost();
+      yield* loadDaemonPluginsFromConfig(config, daemonHost, dir);
+      expect(pluginStatuses(daemonHost).map((status) => status.id)).toEqual(["daemon-plugin"]);
+    }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
 testEffect("loads the worked external status bar example", () =>
   Effect.gen(function* () {
     const { host, slots } = yield* makeHost();

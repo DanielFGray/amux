@@ -1,5 +1,5 @@
 import { afterEach, expect } from "bun:test";
-import { Effect, Fiber, Queue, Scope, Schema as S, Stream } from "effect";
+import { Effect, Exit, Fiber, Queue, Scope, Schema as S, Stream } from "effect";
 import type { Slots } from "../ui/slots.ts";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
@@ -269,6 +269,37 @@ testEffect("add replaces a running plugin, taking its registrations with it", ()
     expect(host.status().filter((status) => status.id === "swap")).toEqual([
       { id: "swap", waitingFor: [] },
     ]);
+  }),
+);
+
+testEffect("a failed replacement can be retried with the same definition", () =>
+  Effect.gen(function* () {
+    const host = yield* createPluginHost({ contributions: createPluginContributions() });
+    let attempts = 0;
+    let oldClosed = false;
+    yield* host.add(
+      mkPlugin({
+        effect: () =>
+          Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              oldClosed = true;
+            }),
+          ),
+      }),
+    );
+    const replacement = mkPlugin({
+      effect: () =>
+        Effect.suspend(() => {
+          attempts += 1;
+          return attempts === 1 ? Effect.die("temporarily unavailable") : Effect.void;
+        }),
+    });
+
+    expect(Exit.isFailure(yield* host.add(replacement).pipe(Effect.exit))).toBe(true);
+    expect(oldClosed).toBe(false);
+    yield* host.add(replacement);
+    expect(attempts).toBe(2);
+    expect(oldClosed).toBe(true);
   }),
 );
 
