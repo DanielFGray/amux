@@ -244,11 +244,14 @@ test("the transcript rewraps when the pane it lives in is resized", async () => 
   await waitFrame(t, (frame) => frame.includes("the quick brown fox"), "the delta to render");
 
   // A split narrows the pane. The width reaches the transcript through Chat, so
-  // a break that only worked at the mounted size would show up here.
+  // a break that only worked at the mounted size would show up here: at the
+  // narrower width "fox" and "jumps" no longer fit on the same wrapped line.
   setWidth(20);
   await t.renderOnce();
-  expect(t.captureCharFrame()).toContain("the quick brown fox jumps");
-  expect(t.captureCharFrame()).toContain("over the lazy");
+  const frame = t.captureCharFrame();
+  expect(frame).not.toContain("the quick brown fox jumps");
+  expect(frame).toContain("the quick brown fox");
+  expect(frame).toContain("jumps over the lazy");
   t.renderer.destroy();
 });
 

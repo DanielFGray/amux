@@ -282,10 +282,15 @@ function ChatCard(props: {
   const isAssistant = props.block.kind === "assistant";
   const queued = props.block.kind === "user" && props.block.queued === true;
   const content = isUser || isAssistant ? (props.block as { text: string }).text : undefined;
-  const lines =
+  // Memoized, not computed once: on a restored session the block can land on
+  // the very first render, before yoga has run a frame — the pane's width is
+  // still its pre-layout placeholder then, and only a memo picks up the real
+  // value once layout settles a moment later.
+  const lines = createMemo(() =>
     content === undefined
       ? serializeTranscript([props.block], props.width())
-      : wrapText(content, isUser ? Math.max(1, Math.floor(props.width() * 0.85)) : props.width());
+      : wrapText(content, isUser ? Math.max(1, Math.floor(props.width() * 0.85)) : props.width()),
+  );
   return (
     <box
       style={{
@@ -296,7 +301,7 @@ function ChatCard(props: {
       onMouseOver={() => setHovered(true)}
       onMouseOut={() => setHovered(false)}
     >
-      <For each={lines}>
+      <For each={lines()}>
         {(line) => (
           <text
             style={{
