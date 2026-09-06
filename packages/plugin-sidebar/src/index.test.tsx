@@ -197,27 +197,31 @@ const setup = Effect.fnUntraced(function* (options?: {
             contributions,
             slots: registeredSlots,
           });
-          const host: PluginHost = runSync(
-            Scope.provide(
-              createPluginHost(environment).pipe(Effect.provideService(Scope.Scope, scope)),
-              scope,
-            ),
+          // PluginHost.reconcile funnels through an internal queue drained by a
+          // background-forked fiber (see host.ts's `submit`), so completing it
+          // is a cross-fiber handoff runSync cannot satisfy — it has to run
+          // under the same async-capable runtime the drain fiber does.
+          Effect.runFork(
+            Effect.gen(function* () {
+              const host: PluginHost = yield* Scope.provide(
+                createPluginHost(environment).pipe(Effect.provideService(Scope.Scope, scope)),
+                scope,
+              );
+              // The registries are entries too, so the sidebar and the providers it
+              // injects go in as one configuration rather than one plugin at a time.
+              yield* Scope.provide(
+                Effect.orDie(
+                  host.reconcile([
+                    ...environment.registryEntries,
+                    fakeAwarenessPlugin(() => spaces),
+                    sidebarPlugin,
+                  ]),
+                ),
+                scope,
+              );
+              yield* Deferred.succeed(initialized, void 0);
+            }),
           );
-          // The registries are entries too, so the sidebar and the providers it
-          // injects go in as one configuration rather than one plugin at a time.
-          runSync(
-            Scope.provide(
-              Effect.orDie(
-                host.reconcile([
-                  ...environment.registryEntries,
-                  fakeAwarenessPlugin(() => spaces),
-                  sidebarPlugin,
-                ]),
-              ),
-              scope,
-            ),
-          );
-          runSync(Deferred.succeed(initialized, void 0));
         });
 
         return (
