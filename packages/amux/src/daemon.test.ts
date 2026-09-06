@@ -1,8 +1,7 @@
 /** @effect-diagnostics *:skip-file -- a real OS boundary (sockets, subprocess) this suite deliberately
  * drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Scope, Stream } from "effect";
@@ -23,15 +22,19 @@ import { controlCall, type ControlClient } from "./control-client.ts";
 import { waitFor } from "./test-wait.ts";
 import type { PaneContent } from "./layout.ts";
 import { testEffect } from "./test-effect.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
 
-const dirs: string[] = [];
+registerCleanup();
+
+// A plugin fixture placed alongside this test file rather than under the OS
+// tmpdir (see below) — outside tempDir's reach, so it keeps its own cleanup.
+const repoDirs: string[] = [];
 afterEach(async () => {
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
+  for (const dir of repoDirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
 async function env() {
-  const home = await mkdtemp(join(tmpdir(), "amux-daemon-"));
-  dirs.push(home);
+  const home = tempDir("daemon");
   return { HOME: home, XDG_STATE_HOME: join(home, "state") };
 }
 
@@ -1401,7 +1404,7 @@ testEffect("a plugin's onSessionLive hook fires once ResumeAgent spawns the sess
     // fixture that imports "effect" needs Bun's node_modules resolution to
     // walk up from a path inside this package.
     const pluginDir = fileURLToPath(new URL("./.test-on-session-live", import.meta.url));
-    dirs.push(pluginDir);
+    repoDirs.push(pluginDir);
     yield* Effect.promise(() => mkdir(pluginDir, { recursive: true }));
     const apiPath = fileURLToPath(new URL("./api.ts", import.meta.url));
     yield* Effect.promise(() =>

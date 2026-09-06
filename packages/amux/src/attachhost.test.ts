@@ -11,7 +11,6 @@ import { ConfigProvider, Effect, Layer, Path } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { afterEach, expect } from "bun:test";
-import { tmpdir } from "node:os";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
 import {
@@ -22,30 +21,12 @@ import {
 import { SessionStore } from "./session.ts";
 import { testEffect } from "./test-effect.ts";
 import { until } from "./test-wait.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
 
-const dirs: string[] = [];
+registerCleanup();
 const join = (...paths: string[]) =>
   Effect.runSync(
     Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
-  );
-const basename = (value: string) =>
-  Effect.runSync(
-    Effect.map(Path.Path, (path) => path.basename(value)).pipe(Effect.provide(Path.layer)),
-  );
-const fsRun = <A>(
-  effect: Effect.Effect<A, import("effect/PlatformError").PlatformError, FileSystem.FileSystem>,
-) => Effect.runPromise(effect.pipe(Effect.provide(BunFileSystem.layer)));
-const mkdtemp = (prefix: string) =>
-  fsRun(
-    Effect.flatMap(FileSystem.FileSystem, (fs) =>
-      fs.makeTempDirectory({ directory: tmpdir(), prefix: basename(prefix) }),
-    ),
-  );
-const rm = (path: string, _options?: { recursive?: boolean; force?: boolean }) =>
-  fsRun(
-    Effect.flatMap(FileSystem.FileSystem, (fs) =>
-      fs.remove(path, { recursive: true, force: true }),
-    ),
   );
 const daemons: SessionDaemonService[] = [];
 const run = <A, E>(
@@ -62,16 +43,13 @@ afterEach(() =>
   Effect.runPromise(
     Effect.gen(function* () {
       for (const daemon of daemons.splice(0)) yield* daemon.stop.pipe(Effect.ignore);
-      for (const dir of dirs.splice(0))
-        yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
     }),
   ),
 );
 const envs = new Map<string, NodeJS.ProcessEnv>();
 
 const started = Effect.fnUntraced(function* (id: string) {
-  const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-attach-host-")));
-  dirs.push(home);
+  const home = tempDir("attach-host");
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") };
   const daemon = yield* Effect.promise(() => run(Effect.scoped(startDaemon(id)), env));
   daemons.push(daemon);
@@ -322,7 +300,7 @@ testEffect("closing a daemon persists that the preserved session is detached", (
     daemons.splice(daemons.indexOf(daemon), 1);
     attached.socket.end();
 
-    const home = dirs[dirs.length - 1]!;
+    const home = envs.get(daemon.id)!.HOME!;
     expect(
       (yield* Effect.promise(() =>
         run(

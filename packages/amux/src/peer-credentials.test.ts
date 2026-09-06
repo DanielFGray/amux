@@ -1,21 +1,15 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
-import { test, expect, afterEach } from "bun:test";
+import { test, expect } from "bun:test";
 import * as Net from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { admits, isSameUserPeer, peerCredentials, socketFd } from "./peer-credentials.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
 
-const dirs: string[] = [];
-
-afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+registerCleanup();
 
 /** A connected unix socket pair, handing back the server side's descriptor. */
 function connectedPair(): Promise<{ fd: number; close: () => void }> {
-  const dir = mkdtempSync(join(tmpdir(), "amux-peercred-"));
-  dirs.push(dir);
+  const dir = tempDir("peercred");
   const path = join(dir, "s.sock");
   return new Promise((resolve, reject) => {
     const server = Net.createServer((conn) => {
