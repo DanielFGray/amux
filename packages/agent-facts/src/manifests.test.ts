@@ -1,16 +1,15 @@
 import { expect } from "bun:test";
-import { tmpdir } from "node:os";
 import { testEffect } from "@danielfgray/amux/testing";
+import { registerCleanup, tempDir } from "@danielfgray/amux/test-tmp.ts";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { Effect, Layer } from "effect";
 import { AgentManifests, buildRegistry } from "./manifests.ts";
 
-const mkdtemp = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  return yield* fs.makeTempDirectory({ directory: tmpdir(), prefix: "amux-manifests-" });
-});
+registerCleanup();
+
+const mkdtemp = Effect.sync(() => tempDir("manifests"));
 
 interface ManifestFixture {
   readonly id: string;

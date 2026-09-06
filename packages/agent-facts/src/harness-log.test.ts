@@ -1,41 +1,25 @@
-import { afterEach, expect } from "bun:test";
+import { expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { tmpdir } from "node:os";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import { DateTime, Effect, Layer, Option, Path } from "effect";
 import { testEffect } from "@danielfgray/amux/testing";
+import { registerCleanup, tempDir } from "@danielfgray/amux/test-tmp.ts";
 import { readHarnessLog } from "./harness-log.ts";
+
+registerCleanup();
 
 const join = (...paths: string[]) =>
   Effect.runSync(
     Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
   );
 
-const mkdtemp = (prefix: string) =>
-  Effect.flatMap(FileSystem.FileSystem, (fs) =>
-    fs.makeTempDirectory({ directory: tmpdir(), prefix }),
-  );
 const mkdir = (path: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => fs.makeDirectory(path, { recursive: true }));
 const writeFile = (path: string, content: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => fs.writeFileString(path, content));
-const rm = (path: string) =>
-  Effect.flatMap(FileSystem.FileSystem, (fs) => fs.remove(path, { recursive: true, force: true }));
 
-const dirs: string[] = [];
-const mkHome = Effect.gen(function* () {
-  const dir = yield* mkdtemp("amux-harness-log-");
-  dirs.push(dir);
-  return dir;
-});
-afterEach(() =>
-  Effect.runPromise(
-    Effect.forEach(dirs.splice(0), (dir) => rm(dir), { discard: true }).pipe(
-      Effect.provide(BunFileSystem.layer),
-    ),
-  ),
-);
+const mkHome = Effect.sync(() => tempDir("harness-log"));
 
 const claudeProjectDir = (home: string, cwd: string) =>
   join(home, ".claude", "projects", cwd.replace(/[/.]/g, "-"));
