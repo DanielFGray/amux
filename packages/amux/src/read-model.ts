@@ -7,22 +7,63 @@
  * emits. Computed fields — placement, focus flags, geometry — are the only
  * ones defined here, because they are not in the model.
  *
- * The entry builders live in workspace.ts next to the model they project; this
- * module is the schema half so commands.ts can declare results without a
- * runtime cycle.
+ * The entry builders live in workspace.ts next to the model they project. The
+ * space and window shapes themselves live here instead, alongside the read
+ * schemas that project them: workspace.ts imports commands.ts (for
+ * isCoreCommand), and commands.ts imports this module for its result schemas,
+ * so a definition here that needed workspace.ts back would complete a cycle.
  */
 import { Schema as S } from "effect";
-import {
-  PersistedSessionSchema,
-  WorkspaceSpaceSchema,
-  WorkspaceWindowSchema,
-} from "./workspace.ts";
+import { PersistedSessionSchema } from "./session.ts";
+import { LayoutSchema } from "./layout.ts";
+import { MAX_SESSIONS, MAX_WINDOWS } from "./limits.ts";
+import { NonEmptyString, PositiveInt } from "./schema-primitives.ts";
 
 const RectSchema = S.Struct({
   x: S.Int,
   y: S.Int,
   cols: S.Int,
   rows: S.Int,
+});
+
+const WindowStateSchema = S.Struct({
+  focus: S.NullOr(NonEmptyString),
+  last: S.NullOr(NonEmptyString),
+  zoom: S.NullOr(S.Struct({ pane: NonEmptyString, from: LayoutSchema })),
+  sync: S.Boolean,
+  preset: S.NullOr(
+    S.Union([
+      S.Literals(["even-horizontal"]),
+      S.Literals(["even-vertical"]),
+      S.Literals(["main-horizontal"]),
+      S.Literals(["main-vertical"]),
+      S.Literals(["tiled"]),
+    ]),
+  ),
+});
+export const WorkspaceWindowSchema = S.Struct({
+  number: PositiveInt,
+  name: S.NullOr(S.String),
+  sessions: S.mutable(S.Array(PersistedSessionSchema)).pipe(S.check(S.isMaxLength(MAX_SESSIONS))),
+  layout: LayoutSchema,
+  state: WindowStateSchema,
+});
+/** The space and window shapes, exported for workspace.ts's own snapshot
+ *  schema and for the read surface's derived entries below: a read entry
+ *  names a model field by reference, so the documented shape cannot drift
+ *  from the emitted shape. */
+export const WorkspaceSpaceSchema = S.Struct({
+  id: NonEmptyString,
+  name: S.String,
+  dir: S.String,
+  windows: S.mutable(S.Array(WorkspaceWindowSchema)).pipe(S.check(S.isMaxLength(MAX_WINDOWS))),
+  state: S.Struct({
+    activeWindow: S.NullOr(PositiveInt),
+    lastWindow: S.NullOr(PositiveInt),
+    nextWindow: PositiveInt,
+    nextPane: PositiveInt,
+  }),
+  worktree: S.optional(S.Struct({ branch: S.String, repo: S.String, path: S.String })),
 });
 
 /** One space, as an agent reads it: identity, the window on screen, and how

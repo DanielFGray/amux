@@ -2,12 +2,13 @@ import { isCoreCommand, type Command, type RuntimeCommand } from "./commands.ts"
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 import type { CreationResult } from "./creation-result.ts";
 import type { PaneMoveResult } from "./commands.ts";
-import type {
-  AgentEntry as ReadAgentEntry,
-  PaneEntry as ReadPaneEntry,
-  PaneLayout as ReadPaneLayout,
-  SpaceEntry as ReadSpaceEntry,
-  WindowEntry as ReadWindowEntry,
+import {
+  WorkspaceSpaceSchema,
+  type AgentEntry as ReadAgentEntry,
+  type PaneEntry as ReadPaneEntry,
+  type PaneLayout as ReadPaneLayout,
+  type SpaceEntry as ReadSpaceEntry,
+  type WindowEntry as ReadWindowEntry,
 } from "./read-model.ts";
 import { randomUUID } from "node:crypto";
 import { Path } from "effect";
@@ -33,7 +34,6 @@ import {
   splitLayout,
   swapLayout,
   windowState,
-  LayoutSchema,
   LayoutFormatError,
   type Layout,
   type PaneContent,
@@ -42,7 +42,6 @@ import {
 } from "./layout.ts";
 import {
   parseSessionState,
-  PersistedSessionSchema,
   SessionStateError,
   SESSION_VERSION,
   type PersistedSession,
@@ -59,13 +58,7 @@ import {
   type SpaceSetState,
   type SpaceState,
 } from "./space-model.ts";
-import {
-  MAX_SESSIONS,
-  MAX_SPACES,
-  MAX_TERMINAL_CELLS,
-  MAX_TERMINAL_DIMENSION,
-  MAX_WINDOWS,
-} from "./limits.ts";
+import { MAX_SPACES, MAX_TERMINAL_CELLS, MAX_TERMINAL_DIMENSION } from "./limits.ts";
 import { NonEmptyString, PositiveInt } from "./schema-primitives.ts";
 import { Clock, Effect, Result, Schema as S } from "effect";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
@@ -174,47 +167,6 @@ const TerminalSize = S.Struct({
     }),
   ),
 );
-/** Re-exported so the machine-facing read surface can derive its agent
- *  entries from the model's own shape rather than restating it (ts-33067b). */
-export { PersistedSessionSchema };
-const WindowStateSchema = S.Struct({
-  focus: S.NullOr(NonEmptyString),
-  last: S.NullOr(NonEmptyString),
-  zoom: S.NullOr(S.Struct({ pane: NonEmptyString, from: LayoutSchema })),
-  sync: S.Boolean,
-  preset: S.NullOr(
-    S.Union([
-      S.Literals(["even-horizontal"]),
-      S.Literals(["even-vertical"]),
-      S.Literals(["main-horizontal"]),
-      S.Literals(["main-vertical"]),
-      S.Literals(["tiled"]),
-    ]),
-  ),
-});
-export const WorkspaceWindowSchema = S.Struct({
-  number: PositiveInt,
-  name: S.NullOr(S.String),
-  sessions: S.mutable(S.Array(PersistedSessionSchema)).pipe(S.check(S.isMaxLength(MAX_SESSIONS))),
-  layout: LayoutSchema,
-  state: WindowStateSchema,
-});
-/** The space and window shapes, exported for the read surface's derived
- *  entries: a read entry names a model field by reference, so the documented
- *  shape cannot drift from the emitted shape. */
-export const WorkspaceSpaceSchema = S.Struct({
-  id: NonEmptyString,
-  name: S.String,
-  dir: S.String,
-  windows: S.mutable(S.Array(WorkspaceWindowSchema)).pipe(S.check(S.isMaxLength(MAX_WINDOWS))),
-  state: S.Struct({
-    activeWindow: S.NullOr(PositiveInt),
-    lastWindow: S.NullOr(PositiveInt),
-    nextWindow: PositiveInt,
-    nextPane: PositiveInt,
-  }),
-  worktree: S.optional(S.Struct({ branch: S.String, repo: S.String, path: S.String })),
-});
 const WorkspaceSnapshotSchema = S.Struct({
   revision: S.Int.pipe(S.check(S.isGreaterThanOrEqualTo(0))),
   spaces: S.mutable(S.Array(WorkspaceSpaceSchema)).pipe(S.check(S.isMaxLength(MAX_SPACES))),
