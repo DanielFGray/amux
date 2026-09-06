@@ -9,12 +9,12 @@
  */
 
 import { afterEach, expect } from "bun:test";
-import { tmpdir } from "node:os";
-import { Cause, ConfigProvider, Effect, Layer, Path, SchemaIssue } from "effect";
-import * as FileSystem from "effect/FileSystem";
+import { join } from "node:path";
+import { Cause, ConfigProvider, Effect, Layer, SchemaIssue } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
@@ -24,47 +24,18 @@ import { SessionStore } from "./session.ts";
 import { testEffect } from "./test-effect.ts";
 import { until, waitFor } from "./test-wait.ts";
 
-const dirs: string[] = [];
-const join = (...paths: string[]) =>
-  Effect.runSync(
-    Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
-  );
-const basename = (value: string) =>
-  Effect.runSync(
-    Effect.map(Path.Path, (path) => path.basename(value)).pipe(Effect.provide(Path.layer)),
-  );
-const fsRun = <A>(
-  effect: Effect.Effect<
-    A,
-    import("effect/PlatformError").PlatformError,
-    import("effect/FileSystem").FileSystem
-  >,
-) => Effect.runPromise(effect.pipe(Effect.provide(BunFileSystem.layer)));
-const mkdtemp = (prefix: string) =>
-  fsRun(
-    Effect.flatMap(FileSystem.FileSystem, (fs) =>
-      fs.makeTempDirectory({ directory: tmpdir(), prefix: basename(prefix) }),
-    ),
-  );
-const rm = (path: string, _options?: { recursive?: boolean; force?: boolean }) =>
-  fsRun(
-    Effect.flatMap(FileSystem.FileSystem, (fs) =>
-      fs.remove(path, { recursive: true, force: true }),
-    ),
-  );
+registerCleanup();
+
 const daemons: SessionDaemonService[] = [];
 afterEach(() =>
   Effect.runPromise(
     Effect.gen(function* () {
       for (const daemon of daemons.splice(0)) yield* daemon.stop.pipe(Effect.ignore);
-      for (const dir of dirs.splice(0))
-        yield* Effect.promise(() => rm(dir, { recursive: true, force: true }));
     }),
   ),
 );
 const started = Effect.fnUntraced(function* (id: string) {
-  const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-buffers-")));
-  dirs.push(home);
+  const home = tempDir("buffers");
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") };
   const daemon = yield* Effect.scoped(startDaemon(id)).pipe(
     Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),

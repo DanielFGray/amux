@@ -1,5 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
-import { tmpdir } from "node:os";
+import { expect, test } from "bun:test";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -14,30 +13,15 @@ import {
 import { MAX_SPACES } from "./limits.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 import { testEffect } from "./test-effect.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
 
-const dirs: string[] = [];
+registerCleanup();
 const join = (...paths: string[]) =>
   Effect.runSync(
     Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
   );
-const basename = (value: string) =>
-  Effect.runSync(
-    Effect.map(Path.Path, (path) => path.basename(value)).pipe(Effect.provide(Path.layer)),
-  );
 const fsRun = <A>(effect: Effect.Effect<A, PlatformError, FileSystem.FileSystem>) =>
   Effect.runPromise(effect.pipe(Effect.provide(BunFileSystem.layer)));
-const mkdtemp = (prefix: string) =>
-  fsRun(
-    Effect.flatMap(FileSystem.FileSystem, (fs) =>
-      fs.makeTempDirectory({ directory: tmpdir(), prefix: basename(prefix) }),
-    ),
-  );
-const rm = (path: string, _options?: { recursive?: boolean; force?: boolean }) =>
-  fsRun(
-    Effect.flatMap(FileSystem.FileSystem, (fs) =>
-      fs.remove(path, { recursive: true, force: true }),
-    ),
-  );
 const mkdir = (path: string, options?: { recursive?: boolean; mode?: number }) =>
   fsRun(Effect.flatMap(FileSystem.FileSystem, (fs) => fs.makeDirectory(path, options)));
 const chmod = (path: string, mode: number) =>
@@ -45,26 +29,10 @@ const chmod = (path: string, mode: number) =>
 const stat = (path: string) => fsRun(Effect.flatMap(FileSystem.FileSystem, (fs) => fs.stat(path)));
 const readFile = (path: string, _encoding?: string) =>
   fsRun(Effect.flatMap(FileSystem.FileSystem, (fs) => fs.readFileString(path)));
-afterEach(() =>
-  Effect.runPromise(
-    Effect.forEach(
-      dirs.splice(0),
-      (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
-      {
-        discard: true,
-      },
-    ),
-  ),
-);
 
 function env() {
-  return Effect.runPromise(
-    Effect.gen(function* () {
-      const home = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "amux-session-")));
-      dirs.push(home);
-      return { HOME: home, XDG_STATE_HOME: join(home, "state") };
-    }),
-  );
+  const home = tempDir("session");
+  return Promise.resolve({ HOME: home, XDG_STATE_HOME: join(home, "state") });
 }
 
 const encodeJson = (value: JsonValue) => S.encodeEffect(S.fromJsonString(S.Unknown))(value);

@@ -10,8 +10,7 @@
  * drives unmocked. See the seam documented in packages/amux/src/harness.ts.
  */
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ConfigProvider, Deferred, Effect, Fiber, Option, Scope, Stream } from "effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,15 +21,16 @@ import { agentWatch, controlCall, connectControl, type ControlClient } from "./c
 import { command } from "./commands.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
 import { SessionStore, sessionPaths } from "./session.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { waitFor } from "./test-wait.ts";
 import { parseWorkspaceJson } from "./workspace.ts";
 import { testEffect } from "./test-effect.ts";
 
-const dirs: string[] = [];
+registerCleanup();
+
 const daemons: SessionDaemonService[] = [];
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
-  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
 const run = <A, E>(
@@ -46,8 +46,7 @@ const run = <A, E>(
   );
 
 async function started(id: string) {
-  const home = await mkdtemp(join(tmpdir(), "amux-control-"));
-  dirs.push(home);
+  const home = tempDir("control");
   const configHome = join(home, "config");
   const harness = new URL("../../plugin-agent-harness/src/index.tsx", import.meta.url).pathname;
   const pluginConfig = {
