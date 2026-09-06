@@ -1,3 +1,7 @@
+/** @effect-diagnostics *:skip-file -- deliberately plain and synchronous: this
+ * fixture is called from plain-async test files with no Effect runtime in scope,
+ * and its own crash-safety (see ensureSwept below) depends on running outside
+ * one. See the seam documented in packages/amux/src/harness.ts. */
 /**
  * A shared home for test-owned scratch directories under the OS tmpdir.
  *

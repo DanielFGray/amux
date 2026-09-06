@@ -1,3 +1,5 @@
+/** @effect-diagnostics *:skip-file -- exercises the fixture's own plain, synchronous
+ * filesystem calls directly. See packages/amux/src/test-tmp.ts. */
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { registerCleanup, sweepStaleDirs, tempDir } from "./test-tmp.ts";

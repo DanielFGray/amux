@@ -9,8 +9,7 @@
  */
 
 import { afterEach, expect } from "bun:test";
-import { join } from "node:path";
-import { Cause, ConfigProvider, Effect, Layer, SchemaIssue } from "effect";
+import { Cause, ConfigProvider, Effect, Layer, Path, SchemaIssue } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import { controlCall, type ControlClient } from "./control-client.ts";
@@ -26,6 +25,10 @@ import { until, waitFor } from "./test-wait.ts";
 
 registerCleanup();
 
+const join = (...paths: string[]) =>
+  Effect.runSync(
+    Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
+  );
 const daemons: SessionDaemonService[] = [];
 afterEach(() =>
   Effect.runPromise(
