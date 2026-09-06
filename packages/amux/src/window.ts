@@ -13,6 +13,7 @@ import {
 } from "./env.ts";
 import { rollUp } from "./space.ts";
 import { Divider, setWeight, setDirection, type JunctionFrame } from "./divider.ts";
+import { layoutKindRenderer } from "./layout-kinds.ts";
 import { runtime } from "./options.ts";
 
 import {
@@ -962,13 +963,9 @@ export class Window {
     const target = this.focused;
     if (!target) return this.mount(session);
 
-    // A focused pane the arrangement does not contain has no slot to split.
-    // The layout is what answers that — not whether the pane is mounted, which
-    // a zoom makes false for panes that do have slots.
     const layout = this.exportLayout();
     const at = this.#slotOf(layout, target);
     if (at === -1) return null;
-
     // The newcomer is named before it exists, so the layout can say which pane
     // to focus even when it shows a session this window is already showing. The
     // apply builds it under that id and focuses it, which is why nothing here
@@ -1243,6 +1240,21 @@ export class Window {
         const pane = panesById.get(node.id)!;
         tile(pane, node.weight);
         return pane;
+      }
+      if (node.type === "container") {
+        const renderer = layoutKindRenderer(node.kind);
+        const children = node.children.map((child, i) => build(child, [...path, i]));
+        // A container whose plugin is no longer loaded has no renderer to
+        // arrange its children — fall back to a plain flex box rather than
+        // refusing to mount the window (see the "missing kind" consequence
+        // in docs/adr/0004-arrangement-kind-is-an-open-registry.md).
+        if (!renderer) {
+          const box = new BoxRenderable(this.#ctx, { id: `container-${nextId++}` });
+          setWeight(box, node.weight);
+          children.forEach((child) => box.add(child));
+          return box;
+        }
+        return renderer.render(this.#ctx, node, children);
       }
       const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` });
       setDirection(box, node.direction);

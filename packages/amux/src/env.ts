@@ -60,7 +60,7 @@ export const PaneViews = Context.Reference<PaneView | null>("PaneViews", {
   defaultValue: (): PaneView | null => null,
 });
 
-/** Everything a workspace reads out of its context. Shell, Backend and
+/** Everything a workspace reads out of its context. Shell, Backend,
  *  PaneViews are References, not Services — they always resolve to a default
  *  and so carry no identity in the requirement channel; only the renderer is
  *  actually required. */
@@ -77,7 +77,11 @@ export type WorkspaceEnv = RenderCtx;
  */
 export const workspaceEnv = (
   ctx: RenderContext,
-  options: { shell?: string[]; backend?: SessionBackendFactory; paneContent?: PaneView } = {},
+  options: {
+    shell?: string[];
+    backend?: SessionBackendFactory;
+    paneContent?: PaneView;
+  } = {},
 ): Context.Context<WorkspaceEnv> => {
   let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>;
   if (options.shell) env = Context.add(env, Shell, options.shell);

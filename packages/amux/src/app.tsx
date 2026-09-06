@@ -64,6 +64,7 @@ import {
   applyOptions,
   clearOption,
   coerceOption,
+  optionNames,
   optionSpec,
   resolveOptions,
   writeOption,
@@ -92,6 +93,7 @@ import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import {
   BindingsTag,
   CommandsTag,
+  CurrentPlugin,
   OptionsTag,
   PanelTag,
   ProcessDisplayTag,
@@ -105,6 +107,7 @@ import {
   type BindingsService,
   type CommandRegistration,
   type CommandsService,
+  type EnumValueRegistration,
   type OptionsService,
   type ProcessDisplayService,
   type SlotsService,
@@ -698,19 +701,35 @@ function buildApp(
     );
 
   const [configState, setConfigState] = createSignal<Config>(config);
-  /** Every core option resolved against its declared default — what the app
-   *  reads for its own chrome. The config itself holds only what the user
-   *  changed. Plugin-registered options are not in here: they have no fixed
-   *  key set to iterate, so they are resolved on demand by name instead. */
-  const options = createMemo(() => resolveOptions(configState().options));
 
   /** Names a plugin has claimed through `registerOption`, section-sorted and
    *  rendered by the settings window the same way a core option is. */
   const optionContributions = contributions.table<OptionSpec>();
+  /** Values a plugin has contributed to an existing enum option's closed
+   *  choice, keyed by "option::value" so two plugins naming different values
+   *  for the same option never collide — only two plugins naming the *same*
+   *  value do, the same conflict a slot collision is. */
+  const enumValueContributions = contributions.table<EnumValueRegistration>();
   const optionsService = scopedRegistry(
     {
       get: (name: string) => optionContributions.get(name),
       all: () => optionContributions.all(),
+      registerEnumValue: (registration: EnumValueRegistration) =>
+        Effect.gen(function* () {
+          const owner = yield* CurrentPlugin;
+          const scope = yield* Scope.Scope;
+          const dispose = enumValueContributions.add(
+            owner,
+            `${registration.option}::${registration.value}`,
+            registration,
+          );
+          yield* Scope.addFinalizer(scope, Effect.sync(dispose));
+        }),
+      enumValues: (name: string) =>
+        enumValueContributions
+          .all()
+          .filter((entry) => entry.value.option === name)
+          .map((entry) => entry.value.value),
     },
     (owner, [name, spec]: readonly [string, OptionSpec]) => {
       if (optionSpec(name)) throw new Error(`option '${name}' is a built-in option`);
@@ -718,6 +737,20 @@ function buildApp(
     },
   );
   const optionsProvider = providerRef<OptionsService>(optionsService);
+
+  /** Every core option resolved against its declared default — what the app
+   *  reads for its own chrome. The config itself holds only what the user
+   *  changed. Plugin-registered options are not in here: they have no fixed
+   *  key set to iterate, so they are resolved on demand by name instead. An
+   *  enum option's plugin-contributed values (a tiling-algorithm plugin's own
+   *  id, say) extend its closed choice here the same way they do everywhere
+   *  else this app reads or cycles one. */
+  const options = createMemo(() =>
+    resolveOptions(
+      configState().options,
+      new Map(optionNames.map((name) => [name, optionsService.enumValues(name)])),
+    ),
+  );
 
   /** A core or plugin-registered option's declaration, by name. */
   function specFor(name: string): OptionSpec | undefined {
@@ -728,7 +761,10 @@ function buildApp(
    *  way the core `options` memo resolves one — default unless the config has
    *  a delta for it. */
   function optionValue(name: string, spec: OptionSpec): OptionValue {
-    return coerceOption(spec, configState().options[name]) ?? spec.default;
+    return (
+      coerceOption(spec, configState().options[name], optionsService.enumValues(name)) ??
+      spec.default
+    );
   }
 
   /**
@@ -754,7 +790,10 @@ function buildApp(
   function adjustOption(name: string, by: number) {
     const spec = specFor(name);
     if (!spec) return;
-    changeOption(name, adjustedValue(spec, optionValue(name, spec), by));
+    changeOption(
+      name,
+      adjustedValue(spec, optionValue(name, spec), by, optionsService.enumValues(name)),
+    );
   }
 
   /** Where every panel on screen is registered. See panelGroups below. */
@@ -1491,6 +1530,7 @@ function buildApp(
     "window.next-layout": runCommand,
     "window.select-layout": runCommand,
     "window.synchronize-panes": runCommand,
+    "workspace.rebuild-tiling": runCommand,
     "window.list": runCommand,
 
     notify: runCommand,
@@ -1514,7 +1554,7 @@ function buildApp(
     "config.set": ({ name, value }) =>
       Effect.gen(function* () {
         const { spec, option } = yield* knownOption(name);
-        const coerced = coerceOption(spec, value);
+        const coerced = coerceOption(spec, value, optionsService.enumValues(option));
         if (coerced === undefined) {
           return yield* new CommandError({
             // @effect-diagnostics-next-line preferSchemaOverJson:off -- this formats an already-validated command value for a UI error.
@@ -1987,12 +2027,12 @@ function buildApp(
     }
     if (event.name === "escape") {
       const original = editOriginal();
-      // A boolean autosaves on every flip (below), so undoing one has to write
-      // the reversion back too — otherwise disk keeps the last flip while the
-      // screen shows the one from before editing.
+      // A boolean or enum autosaves on every change (below), so undoing one has
+      // to write the reversion back too — otherwise disk keeps the last change
+      // while the screen shows the one from before editing.
       if (original !== null) {
         changeOption(option, original);
-        if (spec.kind === "boolean") saveOptions();
+        if (spec.kind === "boolean" || spec.kind === "enum") saveOptions();
       }
       setEditOriginal(null);
       setEditText(undefined);
@@ -2003,6 +2043,15 @@ function buildApp(
     if (event.name === "return" || event.name === "enter") {
       setEditOriginal(null);
       setSettingsFocus("items");
+      return true;
+    }
+    if (spec.kind === "enum") {
+      // An enum has a "which way": left/up steps back through the list,
+      // right/down steps forward.
+      if (event.name === "left" || event.name === "up") adjustOption(option, -1);
+      else if (event.name === "right" || event.name === "down") adjustOption(option, 1);
+      else return true;
+      saveOptions();
       return true;
     }
     // boolean: any of the four directions flips it — there is no "which way".

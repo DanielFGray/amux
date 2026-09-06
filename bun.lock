@@ -91,6 +91,20 @@
         "@danielfgray/amux": "workspace:*",
       },
     },
+    "packages/plugin-niri": {
+      "name": "@danielfgray/amux-plugin-niri",
+      "version": "0.1.0",
+      "dependencies": {
+        "@opentui/core": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+      "peerDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+    },
     "packages/plugin-notifications": {
       "name": "@danielfgray/amux-plugin-notifications",
       "version": "0.1.0",
@@ -218,6 +232,8 @@
     "@danielfgray/amux-editor": ["@danielfgray/amux-editor@workspace:packages/editor"],
 
     "@danielfgray/amux-plugin-agent-harness": ["@danielfgray/amux-plugin-agent-harness@workspace:packages/plugin-agent-harness"],
+
+    "@danielfgray/amux-plugin-niri": ["@danielfgray/amux-plugin-niri@workspace:packages/plugin-niri"],
 
     "@danielfgray/amux-plugin-notifications": ["@danielfgray/amux-plugin-notifications@workspace:packages/plugin-notifications"],
 

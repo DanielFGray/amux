@@ -10,7 +10,10 @@ import {
   workspaceFromSession,
   workspaceSession,
 } from "./workspace.ts";
-import { layoutPanes } from "./layout.ts";
+import { layoutPanes, makeLayout } from "./layout.ts";
+import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
+import type { TilingAlgorithm } from "./tiling-algorithm.ts";
+import { resolveTilingAlgorithm } from "./plugin/services.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 
@@ -66,6 +69,83 @@ const base = (layout: string): SessionState => ({
 });
 
 const context = { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" };
+
+test("daemon tiling election routes tiled commands and rebuild through the elected algorithm", () => {
+  const calls = { init: 0, split: 0, close: 0, swap: 0 };
+  const algorithm: TilingAlgorithm = {
+    ...defaultTilingAlgorithm,
+    init(panes, size) {
+      calls.init++;
+      return defaultTilingAlgorithm.init([...panes].reverse(), size);
+    },
+    split(layout, size, at, direction, pane) {
+      calls.split++;
+      return defaultTilingAlgorithm.split!(layout, size, at, direction, pane);
+    },
+    close(layout, size, paneId) {
+      calls.close++;
+      return defaultTilingAlgorithm.close(layout, size, paneId);
+    },
+    swap(layout, size, from, step) {
+      calls.swap++;
+      return defaultTilingAlgorithm.swap!(layout, size, from, step);
+    },
+  };
+  const registration = {
+    owner: { id: "test", generation: 0 },
+    name: algorithm.id,
+    value: {
+      priority: 0,
+      selector: (ctx: { selectedId: string }) => ctx.selectedId === "test",
+      algorithm,
+    },
+  };
+  const elected = resolveTilingAlgorithm([registration], {
+    width: 80,
+    height: 24,
+    selectedId: "test",
+  });
+  expect(elected).toBe(algorithm);
+  expect(
+    resolveTilingAlgorithm(
+      [{ ...registration, value: { ...registration.value, selector: () => false } }],
+      { width: 80, height: 24, selectedId: "test" },
+    ),
+  ).toBe(defaultTilingAlgorithm);
+
+  let workspace = run(workspaceFromSession(wideBase()));
+  workspace = applyWorkspaceCommand(
+    workspace,
+    command("pane.split", { axis: "row" }),
+    context,
+    undefined,
+    elected,
+  ).snapshot;
+  workspace = applyWorkspaceCommand(
+    workspace,
+    command("pane.swap", { to: "next" }),
+    context,
+    undefined,
+    elected,
+  ).snapshot;
+  workspace = applyWorkspaceCommand(
+    workspace,
+    command("pane.close"),
+    context,
+    undefined,
+    elected,
+  ).snapshot;
+  const rebuilt = applyWorkspaceCommand(
+    workspace,
+    command("workspace.rebuild-tiling"),
+    context,
+    undefined,
+    elected,
+  );
+
+  expect(calls).toEqual({ init: 2, split: 1, close: 1, swap: 1 });
+  expect(rebuilt.snapshot).toBeDefined();
+});
 
 test("pane.close kills and removes the backend when its last pane closes", () => {
   expect(runFailMessage(workspaceFromSession(base("not json")))).toContain("layout is not JSON");
@@ -700,6 +780,32 @@ test("a window with a float survives the trip to an attached client", () => {
   const floated = applyWorkspaceCommand(adopted, command("pane.float"), context).snapshot;
   const received = run(parseWorkspaceJson(JSON.stringify(floated)));
   expect(received.spaces[0]!.windows[0]!.layout).toEqual(floated.spaces[0]!.windows[0]!.layout);
+});
+
+// The wire schema is maintained by hand, separately from layout.ts's own
+// on-disk schema (see the comment on workspace.ts's LayoutNodeSchema), so a
+// node type layout.ts knows about can still be missing here. A container
+// root — the shape any plugin's own arrangement kind uses, niri's "scroll"
+// included — reaching a client is exactly the case that gap hid.
+test("a window with a container layout survives the trip to an attached client", () => {
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  const window = adopted.spaces[0]!.windows[0]!;
+  const [a, b] = layoutPanes(window.layout.root);
+  window.layout = makeLayout({
+    root: {
+      type: "container",
+      kind: "scroll",
+      weight: 1,
+      arrangement: { offset: 0, sizes: [40, 40] },
+      children: [
+        { ...a!, weight: 1 },
+        { ...b!, weight: 1 },
+      ],
+    },
+    focus: a!.id,
+  });
+  const received = run(parseWorkspaceJson(JSON.stringify(adopted)));
+  expect(received.spaces[0]!.windows[0]!.layout).toEqual(window.layout);
 });
 
 // The daemon saves after every command and reloads from that save, so a layout

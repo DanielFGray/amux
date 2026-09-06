@@ -84,6 +84,17 @@ test("a layout round-trips through encode and decode", () => {
   expect(run(parseLayout(JSON.parse(encodeLayout(original))))).toEqual(original);
 });
 
+test("the elected algorithm's id and version round-trip through encode and decode", () => {
+  const original: Layout = {
+    ...layout(pane("a")),
+    algorithmId: "niri",
+    algorithmVersion: 1,
+  };
+  const decoded = run(parseLayout(JSON.parse(encodeLayout(original))));
+  expect(decoded.algorithmId).toBe("niri");
+  expect(decoded.algorithmVersion).toBe(1);
+});
+
 test("encoding is stable, so equal layouts produce equal strings", () => {
   const a = layout(split("row", [pane("x"), pane("y")]));
   const b = layout(split("row", [pane("x"), pane("y")]));
@@ -139,9 +150,19 @@ test("pruning every pane leaves an empty layout rather than a husk", () => {
   expect(pruned.root).toBeNull();
 });
 
-test("pruning clears a focus whose agent did not survive", () => {
+test("pruning moves focus to a survivor when the focused pane's agent did not survive", () => {
   const pruned = prune(layout(split("row", [pane("a"), pane("b")]), "b"), (id) => id === "a");
-  expect(pruned.focus).toBeUndefined();
+  expect(pruned.focus).toBe("a");
+});
+
+test("pruning focuses the pane at the dead one's position, wrapping to the last", () => {
+  const middle = prune(
+    layout(split("row", [pane("a"), pane("b"), pane("c")]), "b"),
+    (id) => id === "a" || id === "c",
+  );
+  expect(middle.focus).toBe("c");
+  const last = prune(layout(split("row", [pane("a"), pane("b")]), "b"), (id) => id === "a");
+  expect(last.focus).toBe("a");
 });
 
 test("pruning keeps a focus that did survive", () => {
@@ -310,6 +331,8 @@ test("the error names where in the tree the problem is", () => {
 const fixture = (node: LayoutNode | null): Fixture => {
   if (!node) return null;
   if (node.type === "pane") return node.content.session ?? "";
+  if (node.type === "container")
+    throw new Error("fixture: container nodes unsupported in preset tests");
   return { [node.direction]: node.children.map(fixture) };
 };
 
@@ -377,6 +400,8 @@ test("every preset alternates axes, so the live tree can rebuild it", () => {
   // that could be exported but never built, so no preset may emit one.
   const check = (node: LayoutNode, parent?: "row" | "column") => {
     if (node.type === "pane") return;
+    if (node.type === "container")
+      throw new Error("check: container nodes unsupported in preset tests");
     expect(node.direction).not.toBe(parent);
     for (const child of node.children) check(child, node.direction);
   };

@@ -18,6 +18,8 @@ import type { SessionFactsService } from "../session-facts.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import type { PromptOptions } from "../effect/SessionRegistry.ts";
+import type { TilingAlgorithm } from "../tiling-algorithm.ts";
+import { defaultTilingAlgorithm } from "../tiling-algorithm-default.ts";
 import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
 import type { PersistedSession } from "../session.ts";
 import type { PluginActionRegistration, SessionOps } from "../effect/WorkspaceTransaction.ts";
@@ -62,9 +64,27 @@ export type BindingsService = Bindings & RegistryService<CommandSpec>;
 export interface SettingsService extends RegistryService<PluginSettingsSection> {
   readonly all: () => readonly PluginSettingsSection[];
 }
+/** A value a plugin contributes to an existing enum option's closed choice —
+ *  a tiling-algorithm plugin adding its own id to `behaviour.tilingAlgorithm`,
+ *  say — without core needing to name the plugin ahead of time. Extending an
+ *  option nobody declared, or one that isn't `kind: "enum"`, is a
+ *  registration bug and throws the same way an unintentional slot collision
+ *  does (`OptionsService.register` for a whole new option is the sibling
+ *  capability this complements). */
+export interface EnumValueRegistration {
+  readonly option: string;
+  readonly value: string;
+}
+
 export interface OptionsService extends RegistryService<readonly [string, OptionSpec]> {
   readonly get: (name: string) => OptionSpec | undefined;
   readonly all: () => readonly Contribution<OptionSpec>[];
+  readonly registerEnumValue: (
+    registration: EnumValueRegistration,
+  ) => Effect.Effect<void, never, CurrentPlugin | Scope.Scope>;
+  /** Every value a plugin has contributed to `name`'s enum, base values
+   *  excluded — callers append this to the declared spec's own `values`. */
+  readonly enumValues: (name: string) => readonly string[];
 }
 export interface SpawnProvidersService extends RegistryService<
   readonly [string, () => SpawnProvider]
@@ -128,6 +148,24 @@ export interface DaemonCommandsService extends RegistryService<DaemonCommandRegi
   readonly all: () => readonly Contribution<DaemonCommandRegistration>[];
 }
 
+export interface TilingAlgorithmContext {
+  readonly width: number;
+  readonly height: number;
+  readonly workspaceId?: string;
+  readonly sessionCount?: number;
+  readonly selectedId: string;
+}
+
+export interface TilingAlgorithmRegistration {
+  readonly priority: number;
+  readonly selector: (ctx: TilingAlgorithmContext) => boolean;
+  readonly algorithm: TilingAlgorithm;
+}
+
+export interface TilingAlgorithmsService extends RegistryService<TilingAlgorithmRegistration> {
+  readonly all: () => readonly Contribution<TilingAlgorithmRegistration>[];
+}
+
 /**
  * A subcommand a plugin contributes to the bare `amux` binary — a setup verb
  * like installing a hook file, not a second command system. `handler` gets
@@ -163,6 +201,10 @@ export class CliCommandsTag extends Context.Service<CliCommandsTag, CliCommandsS
 export class DaemonCommandsTag extends Context.Service<DaemonCommandsTag, DaemonCommandsService>()(
   "amux/DaemonCommands",
 ) {}
+export class TilingAlgorithmsTag extends Context.Service<
+  TilingAlgorithmsTag,
+  TilingAlgorithmsService
+>()("amux/TilingAlgorithms") {}
 export class SessionFactsTag extends Context.Service<SessionFactsTag, SessionFactsService>()(
   "amux/SessionFacts",
 ) {}
@@ -217,6 +259,31 @@ export const registerDaemonCommand = (
   registration: DaemonCommandRegistration,
 ): Effect.Effect<void, never, DaemonCommandsTag | CurrentPlugin | Scope.Scope> =>
   DaemonCommandsTag.pipe(Effect.flatMap((commands) => commands.register(registration)));
+
+/** Contribute a value to an existing enum option's closed choice — the
+ *  type-safe surface over `OptionsTag.registerEnumValue` a plugin actually
+ *  calls, mirroring `registerDaemonCommand`. */
+export const registerEnumValue = (
+  registration: EnumValueRegistration,
+): Effect.Effect<void, never, OptionsTag | CurrentPlugin | Scope.Scope> =>
+  OptionsTag.pipe(Effect.flatMap((options) => options.registerEnumValue(registration)));
+
+export const registerTilingAlgorithm = (
+  registration: TilingAlgorithmRegistration,
+): Effect.Effect<void, never, TilingAlgorithmsTag | CurrentPlugin | Scope.Scope> =>
+  TilingAlgorithmsTag.pipe(Effect.flatMap((algorithms) => algorithms.register(registration)));
+
+export function resolveTilingAlgorithm(
+  entries: readonly Contribution<TilingAlgorithmRegistration>[],
+  context: TilingAlgorithmContext,
+): TilingAlgorithm {
+  return (
+    [...entries]
+      .filter(({ value }) => value.selector(context))
+      .sort((left, right) => left.value.priority - right.value.priority)[0]?.value.algorithm ??
+    defaultTilingAlgorithm
+  );
+}
 
 export interface PluginService {
   readonly key: string;

@@ -552,6 +552,12 @@ const WindowSynchronize = define(
     exposure: "agent",
   },
 );
+const WorkspaceRebuildTiling = define("workspace.rebuild-tiling", Window, {
+  desc: "rebuild tiled arrangements with the elected algorithm",
+  group: "workspace",
+  target: "workspace",
+  exposure: "human",
+});
 const WindowList = define(
   "window.list",
   {},
@@ -878,6 +884,7 @@ export const COMMAND_DEFS = [
   WindowNextLayout,
   WindowSelectLayout,
   WindowSynchronize,
+  WorkspaceRebuildTiling,
   WindowList,
   Notify,
   SessionKill,
@@ -1276,6 +1283,7 @@ export const Commands = {
   WindowNextLayout,
   WindowSelectLayout,
   WindowSynchronize,
+  WorkspaceRebuildTiling,
   WindowList,
   Notify,
   SessionKill,

@@ -339,6 +339,12 @@ function geometry(layout: Layout, size: LayoutSize): Geometry {
       panes.set(node.id, rect);
       return;
     }
+    if (node.type === "container") {
+      // A container's own internal geometry (whatever its kind's arrangement
+      // means) is that kind's registered renderer's concern, not this
+      // split-tree walk's — see docs/adr/0004-arrangement-kind-is-an-open-registry.md.
+      return;
+    }
 
     const horizontal = node.direction === "row";
     const length = horizontal ? exact.width : exact.height;
@@ -399,6 +405,9 @@ function axisSize(rect: Rect | undefined, axis: SplitDirection): number {
 function panePath(node: LayoutNode | null, paneId: string, path: number[] = []): number[] | null {
   if (!node) return null;
   if (node.type === "pane") return node.id === paneId ? path : null;
+  // A path only indexes split children; a pane inside a container's own
+  // arrangement is not addressable this way (see docs/adr/0004).
+  if (node.type === "container") return null;
   for (let i = 0; i < node.children.length; i++) {
     const found = panePath(node.children[i]!, paneId, [...path, i]);
     if (found) return found;
@@ -449,7 +458,6 @@ function pathHasNeighbour(
 
 function containsPane(node: LayoutNode | undefined, paneId: string): boolean {
   if (!node) return false;
-  return node.type === "pane"
-    ? node.id === paneId
-    : node.children.some((child) => containsPane(child, paneId));
+  if (node.type === "pane") return node.id === paneId;
+  return node.children.some((child) => containsPane(child, paneId));
 }

@@ -12,16 +12,8 @@ import type {
 import { randomUUID } from "node:crypto";
 import { Path } from "effect";
 import { worktreeDirname } from "./git.ts";
+import { computeRects, moveFloat, resizeDivider, resizePane, type LayoutSize } from "./geometry.ts";
 import {
-  computeRects,
-  moveFloat,
-  paneInDirection,
-  resizeDivider,
-  resizePane,
-  type LayoutSize,
-} from "./geometry.ts";
-import {
-  closeLayout,
   decodeLayout,
   encodeLayout,
   appendPane,
@@ -41,7 +33,7 @@ import {
   splitLayout,
   swapLayout,
   windowState,
-  PaneContentSchema,
+  LayoutSchema,
   LayoutFormatError,
   type Layout,
   type PaneContent,
@@ -76,6 +68,8 @@ import {
 } from "./limits.ts";
 import { NonEmptyString, PositiveInt } from "./schema-primitives.ts";
 import { Clock, Effect, Result, Schema as S } from "effect";
+import type { TilingAlgorithm } from "./tiling-algorithm.ts";
+import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 
 const { basename, join, resolve } = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
 
@@ -183,60 +177,6 @@ const TerminalSize = S.Struct({
 /** Re-exported so the machine-facing read surface can derive its agent
  *  entries from the model's own shape rather than restating it (ts-33067b). */
 export { PersistedSessionSchema };
-const LayoutNodeSchema: S.Codec<any> = S.suspend(() =>
-  S.Union([
-    S.Struct({
-      type: S.Literals(["pane"]),
-      id: NonEmptyString,
-      content: PaneContentSchema,
-      weight: S.Finite.pipe(S.check(S.isGreaterThan(0))),
-    }),
-    S.Struct({
-      type: S.Literals(["split"]),
-      direction: S.Literals(["row", "column"]),
-      weight: S.Finite.pipe(S.check(S.isGreaterThan(0))),
-      children: S.Array(LayoutNodeSchema).pipe(S.check(S.isMinLength(2))),
-    }),
-  ]),
-) as S.Codec<any>;
-/** Fractions of the window. Bounds are parseLayout's, restated here because a
- *  schema that merely said "number" would strip nothing and admit anything. */
-const LayoutFloatSchema = S.Struct({
-  id: NonEmptyString,
-  content: PaneContentSchema,
-  x: S.Finite.pipe(S.check(S.isGreaterThanOrEqualTo(0)), S.check(S.isLessThan(1))),
-  y: S.Finite.pipe(S.check(S.isGreaterThanOrEqualTo(0)), S.check(S.isLessThan(1))),
-  width: S.Finite.pipe(S.check(S.isGreaterThan(0)), S.check(S.isLessThanOrEqualTo(1))),
-  height: S.Finite.pipe(S.check(S.isGreaterThan(0)), S.check(S.isLessThanOrEqualTo(1))),
-});
-const DockPaneSchema = S.Struct({ id: NonEmptyString, content: PaneContentSchema });
-const LayoutSchema = S.Struct({
-  version: S.Literals([1]),
-  root: S.NullOr(LayoutNodeSchema),
-  // Optional, because a snapshot written before floats existed has no such key
-  // and meant that nothing floats. Not optional in the Layout it decodes to:
-  // a schema field this one omits is a field silently DROPPED from every
-  // snapshot crossing the wire, which is how a float reached the daemon and
-  // never reached the client.
-  floats: S.optional(S.Array(LayoutFloatSchema)),
-  docks: S.optional(
-    S.Struct({
-      left: S.optional(S.Array(DockPaneSchema)),
-      right: S.optional(S.Array(DockPaneSchema)),
-      top: S.optional(S.Array(DockPaneSchema)),
-      bottom: S.optional(S.Array(DockPaneSchema)),
-    }),
-  ),
-  dockSizes: S.optional(
-    S.Struct({
-      left: S.optional(PositiveInt),
-      right: S.optional(PositiveInt),
-      top: S.optional(PositiveInt),
-      bottom: S.optional(PositiveInt),
-    }),
-  ),
-  focus: S.optional(NonEmptyString),
-});
 const WindowStateSchema = S.Struct({
   focus: S.NullOr(NonEmptyString),
   last: S.NullOr(NonEmptyString),
@@ -255,7 +195,7 @@ const WindowStateSchema = S.Struct({
 export const WorkspaceWindowSchema = S.Struct({
   number: PositiveInt,
   name: S.NullOr(S.String),
-  sessions: S.Array(PersistedSessionSchema).pipe(S.check(S.isMaxLength(MAX_SESSIONS))),
+  sessions: S.mutable(S.Array(PersistedSessionSchema)).pipe(S.check(S.isMaxLength(MAX_SESSIONS))),
   layout: LayoutSchema,
   state: WindowStateSchema,
 });
@@ -266,7 +206,7 @@ export const WorkspaceSpaceSchema = S.Struct({
   id: NonEmptyString,
   name: S.String,
   dir: S.String,
-  windows: S.Array(WorkspaceWindowSchema).pipe(S.check(S.isMaxLength(MAX_WINDOWS))),
+  windows: S.mutable(S.Array(WorkspaceWindowSchema)).pipe(S.check(S.isMaxLength(MAX_WINDOWS))),
   state: S.Struct({
     activeWindow: S.NullOr(PositiveInt),
     lastWindow: S.NullOr(PositiveInt),
@@ -277,7 +217,7 @@ export const WorkspaceSpaceSchema = S.Struct({
 });
 const WorkspaceSnapshotSchema = S.Struct({
   revision: S.Int.pipe(S.check(S.isGreaterThanOrEqualTo(0))),
-  spaces: S.Array(WorkspaceSpaceSchema).pipe(S.check(S.isMaxLength(MAX_SPACES))),
+  spaces: S.mutable(S.Array(WorkspaceSpaceSchema)).pipe(S.check(S.isMaxLength(MAX_SPACES))),
   state: S.Struct({
     activeSpace: S.NullOr(NonEmptyString),
     nextSpace: PositiveInt,
@@ -729,6 +669,7 @@ export function applyWorkspaceCommand(
   command: Command | RuntimeCommand,
   context: WorkspaceCommandContext,
   plugins?: { readonly reducers: ReadonlyMap<string, PluginWorkspaceReducer> },
+  algorithm: TilingAlgorithm = defaultTilingAlgorithm,
 ): WorkspaceMutation {
   const next = structuredClone(current);
   const agentIds = workspaceSessionIds(next);
@@ -933,7 +874,8 @@ export function applyWorkspaceCommand(
       window.layout =
         at === -1
           ? appendPane(window.layout, ref)
-          : splitLayout(window.layout, at, command.axis, ref);
+          : (algorithm.split?.(window.layout, context.size, target.pane.id, command.axis, ref) ??
+            splitLayout(window.layout, at, command.axis, ref));
       window.state.focus = ref.id;
       window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
       window.state.zoom = null;
@@ -973,7 +915,8 @@ export function applyWorkspaceCommand(
       }
       setFocus(
         window,
-        paneInDirection(window.layout, context.size, focus, command.direction) ?? undefined,
+        algorithm.focusInDirection(window.layout, context.size, focus, command.direction) ??
+          undefined,
       );
       break;
     }
@@ -988,7 +931,9 @@ export function applyWorkspaceCommand(
       const target = paneTarget();
       if (!target || target.window.window.state.zoom) break;
       const layout = target.window.window.layout;
-      const resized = resizePane(layout, context.size, target.pane.id, command.direction);
+      const resized =
+        algorithm.resizeFocus?.(layout, context.size, target.pane.id, command.direction, 1) ??
+        resizePane(layout, context.size, target.pane.id, command.direction);
       if (resized !== layout) {
         target.window.window.layout = resized;
         // A float is placed by its own rectangle, not by the tree, so resizing
@@ -1003,13 +948,14 @@ export function applyWorkspaceCommand(
     case "pane.resize-divider": {
       const target = activeWindow()?.window;
       if (!target || target.state.zoom) break;
-      const resized = resizeDivider(
-        target.layout,
-        context.size,
-        command.path,
-        command.index,
-        command.delta,
-      );
+      const resized =
+        algorithm.resizeDivider?.(
+          target.layout,
+          context.size,
+          command.path,
+          command.index,
+          command.delta,
+        ) ?? resizeDivider(target.layout, context.size, command.path, command.index, command.delta);
       if (resized !== target.layout) {
         target.layout = resized;
         target.state.preset = null;
@@ -1070,11 +1016,10 @@ export function applyWorkspaceCommand(
       const panes = layoutPanes(window.layout.root);
       const at = panes.findIndex((pane) => pane.id === target.pane.id);
       if (at !== -1 && panes.length > 1) {
-        window.layout = swapLayout(
-          window.layout,
-          at,
-          (at + (command.to === "next" ? 1 : -1) + panes.length) % panes.length,
-        );
+        const step = command.to === "next" ? 1 : -1;
+        window.layout =
+          algorithm.swap?.(window.layout, context.size, target.pane.id, step) ??
+          swapLayout(window.layout, at, (at + step + panes.length) % panes.length);
         window.state.zoom = null;
       }
       break;
@@ -1082,8 +1027,32 @@ export function applyWorkspaceCommand(
     case "pane.close": {
       const found = paneTarget();
       if (!found) break;
-      closePane(found.window.window, found.pane.id);
+      closePane(found.window.window, found.pane.id, context.size, algorithm);
       afterPaneRemoved(next, found.window.space, found.window.window, actions);
+      break;
+    }
+    case "workspace.rebuild-tiling": {
+      const targets =
+        command.window === undefined
+          ? [...workspaceWindows(next)].filter(
+              ({ space }) => command.space === undefined || space.id === command.space,
+            )
+          : (() => {
+              const target = findWindow(next, command);
+              return target ? [target] : [];
+            })();
+      for (const { window } of targets) {
+        const rebuilt = algorithm.init(layoutPanes(window.layout.root), context.size);
+        window.layout = makeLayout({
+          ...rebuilt,
+          floats: window.layout.floats,
+          docks: window.layout.docks,
+          dockSizes: window.layout.dockSizes,
+          focus: window.state.focus ?? rebuilt.focus,
+        });
+        window.state.zoom = null;
+        window.state.preset = null;
+      }
       break;
     }
     case "pane.break": {
@@ -1094,7 +1063,7 @@ export function applyWorkspaceCommand(
       const session = paneSession(slot.content);
       const agent = session ? window.sessions.find((item) => item.id === session) : undefined;
       if (!agent) break;
-      takeSession(window, agent.id);
+      takeSession(window, agent.id, context.size, algorithm);
       let number: number;
       [space.state, number] = claimWindowNumber(space.state);
       const created: WorkspaceWindow = {
@@ -1139,7 +1108,7 @@ export function applyWorkspaceCommand(
         : undefined;
       if (!agent) break;
 
-      takeSession(source.window, agent.id);
+      takeSession(source.window, agent.id, context.size, algorithm);
       destination.window.layout = appendPane(destination.window.layout, slot);
       destination.window.sessions.push(agent);
       destination.window.state.focus = slot.id;
@@ -1166,7 +1135,7 @@ export function applyWorkspaceCommand(
       // caller must be told — its handle no longer names the pane — and the old
       // id lets it re-anchor deterministically.
       const previousPaneId = slot.id;
-      takeSession(source.window.window, agent.id);
+      takeSession(source.window.window, agent.id, context.size, algorithm);
       const moved = { ...slot, id: newPaneId(destination) };
       target.layout = appendPane(target.layout, moved);
       target.sessions.push(agent);
@@ -1625,8 +1594,13 @@ export function workspacePaneOf(
   return null;
 }
 
-function closePane(window: WorkspaceWindow, id: string): void {
-  const closed = closeLayout(window.layout, id);
+function closePane(
+  window: WorkspaceWindow,
+  id: string,
+  size: LayoutSize,
+  algorithm: TilingAlgorithm,
+): void {
+  const closed = algorithm.close(window.layout, size, id);
   if (closed === window.layout) return;
   window.layout = closed;
   window.state.focus = window.layout.focus ?? null;
@@ -1641,9 +1615,14 @@ function closePane(window: WorkspaceWindow, id: string): void {
  * those views follows the same rule as process exit: the session goes away, so
  * its old viewports go away and the remaining layout takes their space.
  */
-function takeSession(window: WorkspaceWindow, agent: string): void {
+function takeSession(
+  window: WorkspaceWindow,
+  agent: string,
+  size: LayoutSize,
+  algorithm: TilingAlgorithm,
+): void {
   for (const pane of layoutRefs(window.layout)) {
-    if (paneSession(pane.content) === agent) closePane(window, pane.id);
+    if (paneSession(pane.content) === agent) closePane(window, pane.id, size, algorithm);
   }
   window.sessions = window.sessions.filter((item) => item.id !== agent);
 }

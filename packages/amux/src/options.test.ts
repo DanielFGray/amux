@@ -79,6 +79,17 @@ test("a relative edit clamps, and a boolean flips whichever way it is pushed", (
   expect(adjustedValue(OPTIONS["appearance.outerBorder"], true, 1)).toBe(false);
   expect(adjustedValue(OPTIONS["appearance.outerBorder"], true, -1)).toBe(false);
   expect(adjustedValue(OPTIONS["behaviour.shell"], "zsh", 1)).toBe("zsh");
+
+  // An enum cycles its closed list, wrapping in both directions.
+  const algorithm = OPTIONS["behaviour.tilingAlgorithm"];
+  expect(adjustedValue(algorithm, "default", 1)).toBe("default");
+  expect(adjustedValue(algorithm, "default", -1)).toBe("default");
+
+  // A plugin-contributed value (a tiling-algorithm plugin's own id) extends
+  // the cycle without core needing to know it ahead of time.
+  expect(adjustedValue(algorithm, "default", 1, ["niri"])).toBe("niri");
+  expect(adjustedValue(algorithm, "niri", 1, ["niri"])).toBe("default");
+  expect(adjustedValue(algorithm, "default", -1, ["niri"])).toBe("niri");
 });
 
 test("coerce refuses rather than inventing a value", () => {
@@ -88,6 +99,12 @@ test("coerce refuses rather than inventing a value", () => {
   expect(coerceOption(OPTIONS["behaviour.scrollRows"], 999)).toBe(
     OPTIONS["behaviour.scrollRows"].max,
   );
+  // A value outside the enum's closed list is refused, not accepted verbatim —
+  // a hand-edited file cannot select an algorithm that was never registered.
+  expect(coerceOption(OPTIONS["behaviour.tilingAlgorithm"], "nonesuch")).toBeUndefined();
+  expect(coerceOption(OPTIONS["behaviour.tilingAlgorithm"], "niri")).toBeUndefined();
+  // Once a plugin has contributed it, the same value is accepted.
+  expect(coerceOption(OPTIONS["behaviour.tilingAlgorithm"], "niri", ["niri"])).toBe("niri");
 });
 
 test("an unknown name has no declaration to act on", () => {

@@ -36,6 +36,7 @@ async function setup() {
 const fixture = (node: LayoutNode | null): Fixture => {
   if (!node) return null;
   if (node.type === "pane") return "pane";
+  if (node.type === "container") throw new Error("fixture: container nodes unsupported here");
   return { [node.direction]: node.children.map(fixture) };
 };
 

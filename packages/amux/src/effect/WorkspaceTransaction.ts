@@ -13,7 +13,15 @@ import {
   Scope,
   Option,
 } from "effect";
+import { BunFileSystem } from "@effect/platform-bun";
 import { DaemonModel } from "./DaemonModel.ts";
+import { loadConfig } from "../config.ts";
+import { resolveOptions } from "../options.ts";
+import {
+  resolveTilingAlgorithm,
+  TilingAlgorithmsTag,
+  type TilingAlgorithmContext,
+} from "../plugin/services.ts";
 import {
   applyWorkspaceCommand,
   isCoreWorkspaceAction,
@@ -22,6 +30,7 @@ import {
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
   type WorkspaceSpace,
+  workspaceWindows,
   type PluginWorkspaceAction,
   type PluginWorkspaceReducer,
 } from "../workspace.ts";
@@ -195,6 +204,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
       const events = yield* WorkspaceTransactionEvents;
       const lifecycle = yield* Effect.serviceOption(WorkspaceTransactionLifecycle);
       const plugins = yield* Effect.serviceOption(WorkspaceTransactionPlugins);
+      const tilingAlgorithms = yield* Effect.serviceOption(TilingAlgorithmsTag);
       const closeIfEmpty = lifecycle.pipe(
         Option.match({
           onNone: () => Effect.void,
@@ -248,11 +258,51 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                 });
               }
 
+              const config = yield* loadConfig().pipe(Effect.provide(BunFileSystem.layer));
+              // Every registered algorithm's own id is a legal choice for
+              // behaviour.tilingAlgorithm — the registry is the daemon-side
+              // source of truth for this option's live values, so a plugin
+              // algorithm never needs a second registration just to be
+              // selectable (see OptionsService.registerEnumValue for the
+              // client-side Settings UI's equivalent).
+              const registeredAlgorithmIds = Option.getOrElse(
+                Option.map(tilingAlgorithms, (service) =>
+                  service.all().map((entry) => entry.value.algorithm.id),
+                ),
+                (): readonly string[] => [],
+              );
+              const selectedId = resolveOptions(
+                config.options,
+                new Map([["behaviour.tilingAlgorithm", registeredAlgorithmIds]]),
+              )["behaviour.tilingAlgorithm"];
+              const target = value as { readonly space?: string; readonly window?: number };
+              const workspaceId = target.space ?? cur.workspace.state.activeSpace ?? undefined;
+              const targetWindow = [...workspaceWindows(cur.workspace)].find(
+                ({ space, window }) =>
+                  (target.space === undefined || space.id === target.space) &&
+                  (target.window === undefined || window.number === target.window),
+              );
+              const algorithmContext: TilingAlgorithmContext = {
+                width: context.size.cols,
+                height: context.size.rows,
+                workspaceId,
+                sessionCount: targetWindow?.window.sessions.length,
+                selectedId,
+              };
+              const algorithm = resolveTilingAlgorithm(
+                Option.getOrElse(
+                  Option.map(tilingAlgorithms, (service) => service.all()),
+                  () => [],
+                ),
+                algorithmContext,
+              );
+
               const mutation = applyWorkspaceCommand(
                 cur.workspace,
                 value,
                 context,
                 plugins.pipe(Option.getOrElse(() => ({ reducers: new Map() }))),
+                algorithm,
               );
               const candidate = workspaceSession(mutation.snapshot, cur.state);
               const worktrees = gitWorktreesFor(value, mutation.snapshot, cur.workspace);

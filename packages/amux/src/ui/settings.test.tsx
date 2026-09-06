@@ -184,6 +184,16 @@ test("the shell setting is displayed as intentionally read-only", () => {
   expect(shell.hint).toContain("new agents");
 });
 
+test("the tiling algorithm is a closed choice, not free text", () => {
+  const algorithm = settingsFields(resolveOptions({}), "behaviour").find(
+    (field) => field.name === "behaviour.tilingAlgorithm",
+  )!;
+
+  expect(algorithm.value).toBe("default");
+  expect(algorithm.kind).toBe("enum");
+  expect(algorithm.hint).toContain("cycles");
+});
+
 /** A plugin option contribution, the shape `optionContributions.all()` hands
  *  the settings window in the running app. */
 function pluginOption(name: string, spec: OptionSpec): Contribution<OptionSpec> {

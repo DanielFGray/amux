@@ -28,7 +28,7 @@ import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.t
 /** The format written into session.json and any exported string. */
 export const LAYOUT_VERSION = 1;
 
-export type LayoutNode = LayoutPane | LayoutSplit;
+export type LayoutNode = LayoutPane | LayoutSplit | LayoutContainer;
 
 /** A JSON value, the shape a plugin pane's descriptor is validated against. */
 export type JsonValue =
@@ -122,6 +122,30 @@ export interface LayoutSplit {
 }
 
 /**
+ * An arrangement core does not know the meaning of — a container whose
+ * sizing/positioning model is owned entirely by whichever plugin registered
+ * `kind` (see docs/adr/0004-arrangement-kind-is-an-open-registry.md). A
+ * niri-style scrolling column strip is one instance of this, defined and
+ * registered by plugin-niri; core has no scrolling/viewport/offset concept
+ * anywhere in this file.
+ *
+ * `weight` plays the same role it does on `LayoutPane`/`LayoutSplit`: this
+ * node's own share of space within *its* parent. `children` is a plain
+ * `LayoutNode` array — core's generic traversal (pane collection, node/depth
+ * budgets, collapse) walks it without needing to know what `kind` means.
+ * Anything the kind needs beyond plain children (niri's per-column size,
+ * its scroll offset) lives inside `arrangement`, an opaque JSON-shaped value
+ * only the owning plugin's registered schema and renderer interpret.
+ */
+export interface LayoutContainer {
+  type: "container";
+  kind: string;
+  weight: number;
+  children: readonly LayoutNode[];
+  arrangement: unknown;
+}
+
+/**
  * A pane placed over the tiled tree instead of inside it.
  *
  * Where a pane is placed is independent of what fills it: a terminal can float
@@ -169,6 +193,12 @@ export interface Layout {
   dockSizes?: Partial<Record<DockSide, number>>;
   /** PaneRef.id of the pane that had focus, if the layout still places it. */
   focus?: string;
+  /** The tiling algorithm that produced this layout (ts-b3df09), purely
+   *  informational: ADR 0003's tree shape already carries full arrangement
+   *  fidelity (including niri's "scroll" node), so nothing reads this to
+   *  decide how to interpret `root`. */
+  algorithmId?: string;
+  algorithmVersion?: number;
 }
 
 let nextPaneId = 0;
@@ -248,12 +278,16 @@ export function makeLayout({
   docks,
   dockSizes,
   focus,
+  algorithmId,
+  algorithmVersion,
 }: {
   root: LayoutNode | null;
   floats?: readonly LayoutFloat[];
   docks?: DockStrips;
   dockSizes?: Partial<Record<DockSide, number>>;
   focus?: string;
+  algorithmId?: string;
+  algorithmVersion?: number;
 }): Layout {
   const sourceDocks = docks ?? emptyDockStrips();
   const normalizedDocks = {
@@ -276,6 +310,8 @@ export function makeLayout({
         docks: docks ? normalizedDocks : undefined,
         dockSizes: dockSizes ? { ...dockSizes } : undefined,
         focus,
+        algorithmId,
+        algorithmVersion,
       }
     : {
         version: LAYOUT_VERSION,
@@ -283,6 +319,8 @@ export function makeLayout({
         floats,
         docks: docks ? normalizedDocks : undefined,
         dockSizes: dockSizes ? { ...dockSizes } : undefined,
+        algorithmId,
+        algorithmVersion,
       };
 }
 
@@ -311,11 +349,16 @@ export function collapse(node: LayoutNode | null): LayoutNode | null {
   // A child split along the same axis as its parent is flattened into it: the
   // live tree only nests when the axis alternates (see Window.split), so a
   // same-axis nesting is another shape that could never be rebuilt as written.
-  const flattened = children.flatMap((child) =>
-    child.type === "split" && child.direction === node.direction
-      ? redistribute(child.children, child.weight)
-      : [child],
-  );
+  // Only meaningful between two splits — a container's nesting is its owning
+  // kind's business, not core's to flatten.
+  const flattened =
+    node.type === "split"
+      ? children.flatMap((child) =>
+          child.type === "split" && child.direction === node.direction
+            ? redistribute(child.children, child.weight)
+            : [child],
+        )
+      : children;
 
   return { ...node, children: flattened };
 }
@@ -603,32 +646,41 @@ export function prune(layout: Layout, alive: (session: string) => boolean): Layo
   };
 
   const root = layout.root ? collapse(filter(layout.root)) : null;
-  return makeLayout({
-    ...layout,
-    root,
-    floats: layout.floats.filter((float) => {
-      const session = paneSession(float.content);
+  const floats = layout.floats.filter((float) => {
+    const session = paneSession(float.content);
+    return session === undefined || alive(session);
+  });
+  const docks: DockStrips = {
+    left: dockStrips.left.filter((pane) => {
+      const session = paneSession(pane.content);
       return session === undefined || alive(session);
     }),
-    docks: {
-      left: dockStrips.left.filter((pane) => {
-        const session = paneSession(pane.content);
-        return session === undefined || alive(session);
-      }),
-      right: dockStrips.right.filter((pane) => {
-        const session = paneSession(pane.content);
-        return session === undefined || alive(session);
-      }),
-      top: dockStrips.top.filter((pane) => {
-        const session = paneSession(pane.content);
-        return session === undefined || alive(session);
-      }),
-      bottom: dockStrips.bottom.filter((pane) => {
-        const session = paneSession(pane.content);
-        return session === undefined || alive(session);
-      }),
-    },
-  });
+    right: dockStrips.right.filter((pane) => {
+      const session = paneSession(pane.content);
+      return session === undefined || alive(session);
+    }),
+    top: dockStrips.top.filter((pane) => {
+      const session = paneSession(pane.content);
+      return session === undefined || alive(session);
+    }),
+    bottom: dockStrips.bottom.filter((pane) => {
+      const session = paneSession(pane.content);
+      return session === undefined || alive(session);
+    }),
+  };
+  // A session dying takes its pane with it, and that pane may be the focused
+  // one. Focus moves the way closeLayout moves it on a close: to the pane at
+  // the dead one's position, or to the last survivor — never left dangling,
+  // or the window comes back with nothing focused (natural exit, session.kill).
+  const before = layoutRefs(layout);
+  const focusIndex =
+    layout.focus === undefined ? -1 : before.findIndex((pane) => pane.id === layout.focus);
+  const after = [...layoutPanes(root), ...DOCK_SIDES.flatMap((side) => docks[side]), ...floats];
+  const focus =
+    layout.focus !== undefined && !after.some((pane) => pane.id === layout.focus)
+      ? (after[Math.min(focusIndex, after.length - 1)] ?? after.at(-1))?.id
+      : layout.focus;
+  return makeLayout({ ...layout, root, floats, docks, focus });
 }
 
 /**
@@ -854,6 +906,13 @@ const LayoutPaneSchema = S.Struct({
 // The recursive schema's array is readonly and its optional field encoding does
 // not match the mutable, defaulted public node model, so the boundary cast is
 // required to use the decoded value as LayoutNode.
+//
+// The "container" arm only checks the generic envelope — kind is some
+// non-empty string, children recurse as ordinary LayoutNodes, arrangement is
+// unknown. Per-kind validation of `arrangement` is a second pass a caller
+// runs against that kind's own registered schema (see
+// docs/adr/0004-arrangement-kind-is-an-open-registry.md); this schema alone
+// deliberately cannot express it, since which kinds exist is not known here.
 const LayoutNodeSchema = S.Union([
   LayoutPaneSchema,
   S.Struct({
@@ -866,9 +925,20 @@ const LayoutNodeSchema = S.Union([
       .pipe(S.check(S.isMinLength(1)))
       .annotate({ message: "split needs children" }),
   }),
+  S.Struct({
+    type: S.Literals(["container"]),
+    kind: S.String.pipe(S.check(S.isMinLength(1))).annotate({
+      message: "container needs a kind",
+    }),
+    weight: weight.pipe(S.withDecodingDefaultType(Effect.succeed(1))),
+    arrangement: S.Unknown,
+    children: S.Array(S.suspend((): S.Codec<LayoutNode> => LayoutNodeSchema))
+      .pipe(S.check(S.isMinLength(1)))
+      .annotate({ message: "container needs children" }),
+  }),
 ]) as S.Codec<LayoutNode>;
 
-const LayoutSchema = S.Struct({
+export const LayoutSchema = S.Struct({
   version: S.Finite,
   root: S.optional(S.NullOr(LayoutNodeSchema)),
   floats: S.optional(
@@ -930,6 +1000,8 @@ const LayoutSchema = S.Struct({
     }),
   ),
   focus: S.optional(paneId),
+  algorithmId: S.optional(S.String),
+  algorithmVersion: S.optional(S.Int),
 });
 
 /** Serialize for session.json or the wire. Stable key order, so two equal
@@ -969,6 +1041,15 @@ function order(node: LayoutNode | null): LayoutNode | null {
   if (!node) return null;
   if (node.type === "pane") {
     return { type: "pane", id: node.id, content: node.content, weight: node.weight };
+  }
+  if (node.type === "container") {
+    return {
+      type: "container",
+      kind: node.kind,
+      weight: node.weight,
+      arrangement: node.arrangement,
+      children: node.children.map(order) as LayoutNode[],
+    };
   }
   return {
     type: "split",
@@ -1036,10 +1117,11 @@ function validateDecodedLayout(
   decoded: S.Schema.Type<typeof LayoutSchema>,
 ): Effect.Effect<Layout, LayoutFormatError> {
   return Effect.gen(function* () {
-    if (decoded.version !== LAYOUT_VERSION)
+    if (decoded.version !== LAYOUT_VERSION) {
       return yield* new LayoutFormatError({
         message: `unsupported layout version ${String(decoded.version)}`,
       });
+    }
     let nodes = 0;
     const visit = (node: LayoutNode, depth: number): Effect.Effect<void, LayoutFormatError> => {
       if (depth > MAX_LAYOUT_DEPTH)
@@ -1052,10 +1134,11 @@ function validateDecodedLayout(
             message: `layout exceeds maximum node count ${MAX_LAYOUT_NODES}`,
           }),
         );
-      if (node.type === "pane") reservePaneId(node.id);
-      return node.type === "split"
-        ? Effect.forEach(node.children, (child) => visit(child, depth + 1)).pipe(Effect.asVoid)
-        : Effect.void;
+      if (node.type === "pane") {
+        reservePaneId(node.id);
+        return Effect.void;
+      }
+      return Effect.forEach(node.children, (child) => visit(child, depth + 1)).pipe(Effect.asVoid);
     };
     const root = decoded.root ?? null;
     if (root) yield* visit(root, 1);
@@ -1078,6 +1161,8 @@ function validateDecodedLayout(
       docks: decoded.docks !== undefined ? docks : undefined,
       dockSizes: decoded.dockSizes,
       focus: decoded.focus,
+      algorithmId: decoded.algorithmId,
+      algorithmVersion: decoded.algorithmVersion,
     });
   });
 }

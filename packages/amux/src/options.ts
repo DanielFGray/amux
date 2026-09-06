@@ -42,7 +42,19 @@ interface StringSpec {
   readonly editable?: boolean;
 }
 
-export type OptionSpec = NumberSpec | BooleanSpec | StringSpec;
+/** A closed choice among named values — a plugin picker, a tiling algorithm —
+ *  where a boolean's two options aren't enough but full free text is too
+ *  many: ←/→ cycles the list the same way it flips a boolean, and a
+ *  hand-edited file naming a value outside it is refused like any other bad
+ *  input. */
+interface EnumSpec {
+  readonly kind: "enum";
+  readonly default: string;
+  readonly values: readonly string[];
+  readonly desc: string;
+}
+
+export type OptionSpec = NumberSpec | BooleanSpec | StringSpec | EnumSpec;
 export type OptionValue = number | boolean | string;
 
 export const OPTIONS = {
@@ -100,6 +112,16 @@ export const OPTIONS = {
     default: "",
     desc: "shell for new agents · empty uses $SHELL",
   },
+  "behaviour.tilingAlgorithm": {
+    kind: "enum",
+    default: "default",
+    // Only the built-in algorithm is a base value: a tiling-algorithm plugin
+    // (niri, or any third party) contributes its own id at runtime via
+    // registerEnumValue, rather than core naming it ahead of time. See
+    // OptionsService.enumValues, which every caller reads this through.
+    values: ["default"],
+    desc: "which tiling algorithm arranges panes",
+  },
 } as const satisfies Record<string, OptionSpec>;
 
 export type OptionName = keyof typeof OPTIONS;
@@ -153,19 +175,26 @@ export function sectionOf(name: string): string {
  * back to the default, so a hand-edited file cannot put a value into the app
  * that the app would not have accepted from its own UI.
  */
-export function resolveOptions(stored: OptionDeltas): Options {
+export function resolveOptions(
+  stored: OptionDeltas,
+  enumExtensions: ReadonlyMap<string, readonly string[]> = new Map(),
+): Options {
   const resolved: Record<string, OptionValue> = {};
   for (const name of optionNames) {
     const spec = OPTIONS[name];
-    resolved[name] = coerceOption(spec, stored[name]) ?? spec.default;
+    resolved[name] = coerceOption(spec, stored[name], enumExtensions.get(name)) ?? spec.default;
   }
   return resolved as Options;
 }
 
-/** The value this option would take from `raw`, or undefined if it refuses it. */
+/** The value this option would take from `raw`, or undefined if it refuses it.
+ *  `extraValues` extends an enum spec's own `values` for this one call — a
+ *  plugin-contributed choice (see OptionsService.enumValues) that core's
+ *  static declaration doesn't and shouldn't know about ahead of time. */
 export function coerceOption(
   spec: OptionSpec,
   raw: JsonValue | undefined,
+  extraValues: readonly string[] = [],
 ): OptionValue | undefined {
   switch (spec.kind) {
     case "number":
@@ -177,6 +206,11 @@ export function coerceOption(
       return Option.getOrUndefined(S.decodeUnknownOption(S.Boolean)(raw));
     case "string":
       return Option.getOrUndefined(S.decodeUnknownOption(S.String)(raw));
+    case "enum": {
+      const value = Option.getOrUndefined(S.decodeUnknownOption(S.String)(raw));
+      const allowed = extraValues.length ? [...spec.values, ...extraValues] : spec.values;
+      return value !== undefined && allowed.includes(value) ? value : undefined;
+    }
   }
 }
 
@@ -216,7 +250,12 @@ export function clearOption(stored: OptionDeltas, name: string): OptionDeltas {
  * branching on the option's kind — knowing that is this table's job. A string
  * has no relative form and stays put.
  */
-export function adjustedValue(spec: OptionSpec, current: OptionValue, by: number): OptionValue {
+export function adjustedValue(
+  spec: OptionSpec,
+  current: OptionValue,
+  by: number,
+  extraValues: readonly string[] = [],
+): OptionValue {
   switch (spec.kind) {
     case "number":
       return clamp(spec, (current as number) + by);
@@ -224,6 +263,12 @@ export function adjustedValue(spec: OptionSpec, current: OptionValue, by: number
       return !(current as boolean);
     case "string":
       return current;
+    case "enum": {
+      const values = extraValues.length ? [...spec.values, ...extraValues] : spec.values;
+      const index = values.indexOf(current as string);
+      const wrapped = ((index === -1 ? 0 : index) + by) % values.length;
+      return values[(wrapped + values.length) % values.length]!;
+    }
   }
 }
 
@@ -243,6 +288,8 @@ export function editHint(spec: OptionSpec): string {
       return "←/→ toggles";
     case "string":
       return spec.editable ? "enter edits" : "read-only";
+    case "enum":
+      return "←/→ cycles";
   }
 }
 

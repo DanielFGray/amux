@@ -53,11 +53,15 @@ import { CONFIG_PATH, loadConfig, type Config } from "./config.ts";
 import { createPluginContributions } from "./plugin/contributions.ts";
 import { createPluginHost } from "./plugin/host.ts";
 import { loadDaemonPluginsFromConfig } from "./plugin/loader.ts";
+import type { PluginDefinition } from "./plugin/types.ts";
 import {
   DaemonCommandsTag,
+  TilingAlgorithmsTag,
   scopedRegistry,
   type DaemonCommandRegistration,
+  type TilingAlgorithmRegistration,
 } from "./plugin/services.ts";
+import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import type { PlatformError } from "effect/PlatformError";
 import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
@@ -378,17 +382,59 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     (owner, registration: DaemonCommandRegistration) =>
       daemonCommandTable.add(owner, registration.tag, registration),
   );
+  const tilingAlgorithmTable = pluginContributions.table<TilingAlgorithmRegistration>();
+  const tilingAlgorithms = scopedRegistry(
+    {
+      all: () => [
+        ...tilingAlgorithmTable.all(),
+        {
+          owner: { id: "amux.core", generation: 0 },
+          name: defaultTilingAlgorithm.id,
+          value: {
+            priority: Number.MAX_SAFE_INTEGER,
+            selector: () => true,
+            algorithm: defaultTilingAlgorithm,
+          },
+        },
+      ],
+    },
+    (owner, registration: TilingAlgorithmRegistration) =>
+      tilingAlgorithmTable.add(owner, registration.algorithm.id, registration),
+  );
   const pluginHost = yield* createPluginHost({ contributions: pluginContributions }).pipe(
     Effect.provideService(Scope.Scope, daemonScope),
   );
-  const daemonConfig = options.pluginConfig ?? (yield* loadConfig());
-  yield* loadDaemonPluginsFromConfig(daemonConfig, pluginHost, dirname(CONFIG_PATH), [
+  // Named so `plugin.reload` below can rerun the exact same load against
+  // fresh config, rather than only ever reconciling once at boot.
+  const daemonCoreEntries: readonly PluginDefinition[] = [
     {
       id: "amux.registry.daemon-commands",
       provide: [DaemonCommandsTag],
       activate: (ctx) => Effect.sync(() => void ctx.provide(DaemonCommandsTag, daemonCommands)),
     },
-  ]);
+    {
+      id: "amux.registry.tiling-algorithms",
+      provide: [TilingAlgorithmsTag],
+      activate: (ctx) => Effect.sync(() => void ctx.provide(TilingAlgorithmsTag, tilingAlgorithms)),
+    },
+  ];
+  const daemonConfig = options.pluginConfig ?? (yield* loadConfig());
+  yield* loadDaemonPluginsFromConfig(
+    daemonConfig,
+    pluginHost,
+    dirname(CONFIG_PATH),
+    daemonCoreEntries,
+  );
+  // `plugin.reload`'s daemon-side half: reconcile against config read fresh
+  // off disk, the same load boot just ran. Without this, enabling or
+  // editing a daemon-side plugin (a TilingAlgorithm registration, a daemon
+  // command) had no live effect — only the client's own `.` entrypoint ever
+  // reloaded, so picking up a daemon-side change meant killing the whole
+  // process, which drops every session it was hosting.
+  const reloadDaemonPlugins = Effect.gen(function* () {
+    const fresh = options.pluginConfig ?? (yield* loadConfig());
+    yield* loadDaemonPluginsFromConfig(fresh, pluginHost, dirname(CONFIG_PATH), daemonCoreEntries);
+  }).pipe(Effect.provide(BunFileSystem.layer));
 
   const activeSaveRef = {
     current: null as Fiber.Fiber<void, WorkspaceTransactionError> | null,
@@ -926,6 +972,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       Layer.provide(Layer.succeed(DaemonModel, model)),
       Layer.provide(Layer.succeed(WorkspaceTransactionPersistence, persistence)),
       Layer.provide(Layer.succeed(WorkspaceTransactionPlugins, transactionPlugins)),
+      Layer.provide(Layer.succeed(TilingAlgorithmsTag, tilingAlgorithms)),
       Layer.provide(Layer.succeed(WorkspaceTransactionSessionOps, sessionOps)),
       Layer.provide(makeWorktreeOps),
       Layer.provide(
@@ -947,6 +994,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           ),
         ),
       ),
+      Layer.provide(BunFileSystem.layer),
     ),
   ).pipe(Scope.provide(daemonScope));
   const transaction = Context.get(transactionContext, WorkspaceTransaction);
@@ -1167,10 +1215,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       return yield* controlFail(`buffer command '${command._tag}' is not implemented for batch`);
     }
     if (meta.target === "server") {
-      // The daemon runs no plugins; it only tells the clients that do.
       return yield* Match.value(command).pipe(
         Match.tag("plugin.reload", (command) =>
           Effect.gen(function* () {
+            // Reconcile the daemon's own plugin set first: a client that
+            // just enabled a daemon-side plugin and immediately relies on
+            // it must not race the event it's about to publish below.
+            yield* reloadDaemonPlugins;
             if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
             else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
             return {};

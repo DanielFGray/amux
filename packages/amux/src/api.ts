@@ -44,14 +44,21 @@ export {
   SessionStreamTag,
   CliCommandsTag,
   DaemonCommandsTag,
+  TilingAlgorithmsTag,
   intercept,
   registerCommand,
   registerDaemonCommand,
+  registerTilingAlgorithm,
+  registerEnumValue,
   type CommandRegistration,
   type CliCommandRegistration,
   type CliCommandsService,
   type DaemonCommandRegistration,
   type DaemonCommandsService,
+  type EnumValueRegistration,
+  type TilingAlgorithmContext,
+  type TilingAlgorithmRegistration,
+  type TilingAlgorithmsService,
   type DaemonSessionCommandContext,
   type RegistryService,
   type PluginService,
@@ -61,6 +68,7 @@ export {
   type ServiceInterception,
   type SessionStreamService,
 } from "./plugin/services.ts";
+export type { TilingAlgorithm } from "./tiling-algorithm.ts";
 export type { Meta } from "./commands.ts";
 export type { CoreWorkspaceAction, WorkspaceDraft, WorkspaceSnapshot } from "./workspace.ts";
 export type { PermissionAnswer } from "./effect/AttachProtocol.ts";
@@ -132,16 +140,44 @@ export {
 export { ProcessState, ProcessStateSchema, isProcessState } from "./process-state.ts";
 export { ProcessStateAuthority, type ProcessStateSource } from "./process-state-arbiter.ts";
 
-// The pieces of the layout a plugin reads or describes. The layout algebra
-// itself — splitting, collapsing, appending — stays in core.
+// The pieces of the layout a plugin reads or describes. Most of the layout
+// algebra — splitting, collapsing, appending — stays in core: a plugin
+// describes placement, it does not reimplement tree surgery. The exception is
+// what a TilingAlgorithm implementation needs to build and rewrite the tree
+// it owns (ts-e8fa74's proof that a tiling algorithm can genuinely live
+// out-of-tree, niri included) — `makeLayout`, `layoutPanes`, `collapse`, and
+// the handover fallback `closeLayout`, plus the tree/container node shapes
+// themselves.
 export {
   type JsonValue,
   type PaneContent,
   type PaneRef,
   type LayoutPane,
+  type Layout,
+  type LayoutNode,
+  type LayoutSplit,
+  type LayoutContainer,
   type Placement,
   type DockSide,
+  closeLayout,
+  collapse,
+  DOCK_SIDES,
+  emptyDockStrips,
+  layoutPanes,
+  makeLayout,
 } from "./layout.ts";
+export { type LayoutSize } from "./geometry.ts";
+export { type Direction, type SplitDirection } from "./window.ts";
+
+// A container node's `kind` is an open, plugin-registered fact rather than a
+// closed union member — see docs/adr/0004-arrangement-kind-is-an-open-registry.md.
+export {
+  type LayoutKindRenderer,
+  registerLayoutKindSchema,
+  registerLayoutKindRenderer,
+  layoutKindSchema,
+  layoutKindRenderer,
+} from "./layout-kinds.ts";
 
 // Drawing.
 export { theme } from "./ui/theme.ts";
