@@ -1,11 +1,13 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { waitFor } from "@danielfgray/amux/testing";
 import { decodeAttachFrames, type AttachFrame } from "@danielfgray/amux/protocol";
+import { registerCleanup, tempDir } from "@danielfgray/amux/test-tmp.ts";
 import { readDelta, readEvent, type HarnessDelta } from "./protocol.ts";
+
+registerCleanup();
 
 /**
  * The DoD's live-provider clause, run against a real model.
@@ -25,7 +27,7 @@ test("a native agent worker streams a real turn with no provider key in its envi
   const key = providerKey();
   if (!key) return;
 
-  const root = await mkdtemp(join(tmpdir(), "amux-live-worker-"));
+  const root = tempDir("live-worker");
   const state = join(root, "state");
   const config = join(root, "config");
   const storeDir = join(state, "amux");
@@ -150,7 +152,6 @@ test("a native agent worker streams a real turn with no provider key in its envi
     expect(ended.length).toBe(1);
   } finally {
     worker.kill();
-    await rm(root, { recursive: true, force: true });
   }
 }, 90_000);
 
