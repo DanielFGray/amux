@@ -16,9 +16,9 @@ test("commands use the pane session unless --session supplies a daemon", () => {
   const previous = process.env.AMUX_DAEMON_SESSION;
   process.env.AMUX_DAEMON_SESSION = "pane-session";
   try {
-    expect(resolveCommandSession("session", undefined, undefined)).toBe("pane-session");
-    expect(resolveCommandSession("session", "override", undefined)).toBe("override");
-    expect(resolveCommandSession("workspace", undefined, undefined)).toBe("pane-session");
+    expect(resolveCommandSession("session", undefined)).toBe("pane-session");
+    expect(resolveCommandSession("session", "override")).toBe("override");
+    expect(resolveCommandSession("workspace", undefined)).toBe("pane-session");
   } finally {
     if (previous === undefined) delete process.env.AMUX_DAEMON_SESSION;
     else process.env.AMUX_DAEMON_SESSION = previous;
@@ -29,17 +29,12 @@ test("ordinary commands retain the default session outside a managed pane", () =
   const previous = process.env.AMUX_DAEMON_SESSION;
   delete process.env.AMUX_DAEMON_SESSION;
   try {
-    expect(resolveCommandSession("workspace", undefined, undefined)).toBe("default");
-    expect(resolveCommandSession("session", undefined, undefined)).toBeNull();
+    expect(resolveCommandSession("workspace", undefined)).toBe("default");
+    expect(resolveCommandSession("session", undefined)).toBeNull();
   } finally {
     if (previous === undefined) delete process.env.AMUX_DAEMON_SESSION;
     else process.env.AMUX_DAEMON_SESSION = previous;
   }
-});
-
-test("an explicit --session wins over the legacy positional session", () => {
-  expect(resolveCommandSession("session", "flagged", "positional")).toBe("flagged");
-  expect(resolveCommandSession("workspace", undefined, "positional")).toBe("positional");
 });
 
 test("--session is accepted by commands whose schema has no session field", () => {

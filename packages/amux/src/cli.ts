@@ -94,17 +94,14 @@ export function splitCommandArgs(argv: readonly string[]): string[][] {
  * Resolve the daemon session id for a command invocation.
  *
  * `--session` is a CLI-level flag: it selects the daemon, never a command
- * argument. The legacy `amux <command> <session-id> <args>` form is the
- * positional fallback. Accepts the target string directly (not a CommandTag)
- * so this file avoids importing the full commands module.
+ * argument. Accepts the target string directly (not a CommandTag) so this
+ * file avoids importing the full commands module.
  */
 export function resolveCommandSession(
   target: string,
   sessionFlag: string | undefined,
-  positionalSession: string | undefined,
 ): string | null {
   if (sessionFlag) return sessionFlag;
-  if (positionalSession) return positionalSession;
   const fromPane = readEnv("AMUX_DAEMON_SESSION");
   if (fromPane) return fromPane;
   return target === "session" ? null : "default";
@@ -370,7 +367,6 @@ function main(): Effect.Effect<number> {
       | {
           tag: CommandTag;
           parsed: Record<string, import("./effect/AttachProtocol.ts").JsonValue>;
-          positionalSession?: string;
           sessionFlag?: string;
         }
       | { errors: string[] } {
@@ -387,36 +383,12 @@ function main(): Effect.Effect<number> {
         : daemonCommand
           ? parseFields(tag, daemonCommand.fields, stripped.rest)
           : parsePluginArgs(stripped.rest);
-      if (direct.parsed)
-        return {
-          tag,
-          parsed: fillCommandSession(tag, stripped.session, direct.parsed),
-          sessionFlag: stripped.session,
-        };
-
-      // The legacy `amux <command> <session-id> <args>` form. A token that looks
-      // like a flag is never a session id, or a typo'd flag would turn a syntax
-      // error into a refusal (exit 1) of a session the flag named.
-      const positionalSession = argv[1];
-      if (
-        positionalSession &&
-        !positionalSession.startsWith("--") &&
-        isSessionId(positionalSession)
-      ) {
-        const legacy = isCoreCommandTag(tag)
-          ? parseArgs(tag, stripped.rest.slice(1))
-          : daemonCommand
-            ? parseFields(tag, daemonCommand.fields, stripped.rest.slice(1))
-            : parsePluginArgs(stripped.rest.slice(1));
-        if (legacy.parsed)
-          return {
-            tag,
-            parsed: fillCommandSession(tag, stripped.session, legacy.parsed),
-            positionalSession,
-            sessionFlag: stripped.session,
-          };
-      }
-      return { errors: direct.errors };
+      if (!direct.parsed) return { errors: direct.errors };
+      return {
+        tag,
+        parsed: fillCommandSession(tag, stripped.session, direct.parsed),
+        sessionFlag: stripped.session,
+      };
     }
 
     // A plugin verb: no compile-time schema to chain, session-fill, or route by
@@ -434,7 +406,7 @@ function main(): Effect.Effect<number> {
         writeErr(`error: ${parsedArgs.errors.join("\n  ")}`);
         return 2;
       }
-      const targetId = resolveCommandSession("workspace", stripped.session, undefined);
+      const targetId = resolveCommandSession("workspace", stripped.session);
       if (!targetId) {
         writeErr(`error: '${sub}' requires a session id`);
         return 2;
@@ -488,7 +460,6 @@ function main(): Effect.Effect<number> {
             ? commandDefinition(parsed.tag).target
             : (daemonCommandByTag.get(parsed.tag)?.meta.target ?? "workspace"),
           parsed.sessionFlag,
-          parsed.positionalSession,
         );
         if (!targetId) {
           writeErr(`error: '${parsed.tag}' requires a session id or a managed pane`);
