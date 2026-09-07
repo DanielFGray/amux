@@ -175,7 +175,7 @@ export interface AttachHostService {
 
 export class AttachHost extends Context.Service<AttachHost, AttachHostService>()("AttachHost") {}
 
-const make = <
+export const makeAttachHost = <
   AttachError,
   DetachError,
   ActivityError,
@@ -479,7 +479,30 @@ export const layerAttachHost = <
     SessionStateError
   >,
 ): Layer.Layer<AttachHost | SessionSupervisor, AttachServerError, FileSystem.FileSystem> =>
-  Layer.effect(AttachHost, make(options)).pipe(
+  layerAttachServer(options).pipe(
     Layer.provideMerge(layerSessionSupervisor(options)),
     Layer.provide(AttachHub.layer),
   );
+
+/** The listener alone: kernel components provide the shared hub and supervisor. */
+export const layerAttachServer = <
+  AttachError,
+  DetachError,
+  ActivityError,
+  SyncError,
+  SessionExitError,
+  SessionStateError,
+>(
+  options: AttachHostOptions<
+    AttachError,
+    DetachError,
+    ActivityError,
+    SyncError,
+    SessionExitError,
+    SessionStateError
+  >,
+): Layer.Layer<
+  AttachHost,
+  AttachServerError,
+  AttachHub | SessionSupervisor | FileSystem.FileSystem
+> => Layer.effect(AttachHost, makeAttachHost(options));

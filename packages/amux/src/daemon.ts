@@ -10,7 +10,6 @@ import {
   Exit,
   Fiber,
   Layer,
-  ManagedRuntime,
   Match,
   Option,
   Ref,
@@ -30,8 +29,7 @@ import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import { isSameUserPeer, socketFd } from "./peer-credentials.ts";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { ControlError, ControlRpcs, ControlSerialization } from "./control.ts";
-import { AttachHost, layerAttachHost, type AttachHostService } from "./effect/AttachHost.ts";
-import { SessionSupervisor } from "./effect/SessionSupervisor.ts";
+import { type AttachHostService } from "./effect/AttachHost.ts";
 import type { AttachFrame, JsonValue } from "./effect/AttachProtocol.ts";
 import { makeAgentLog } from "./effect/AgentLog.ts";
 import { EventBus } from "./effect/EventBus.ts";
@@ -51,8 +49,8 @@ import {
 } from "./effect/WorkspaceTransaction.ts";
 import { CONFIG_PATH, loadConfig, type Config } from "./config.ts";
 import { createPluginContributions } from "./plugin/contributions.ts";
-import { createPluginHost } from "./plugin/host.ts";
-import { loadDaemonPluginsFromConfig } from "./plugin/loader.ts";
+import type { DaemonKernelPhase } from "./daemon-kernel.ts";
+import { startDaemonKernel } from "./daemon-kernel.ts";
 import type { PluginDefinition } from "./plugin/types.ts";
 import {
   DaemonCommandsTag,
@@ -63,7 +61,6 @@ import {
 } from "./plugin/services.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import type { PlatformError } from "effect/PlatformError";
-import type { AttachServerError } from "./effect/AttachServer.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import type {
   ManagedSession,
@@ -124,10 +121,6 @@ export class DaemonError extends S.TaggedError<DaemonError>()("DaemonError", {
   message: S.String,
 }) {}
 
-/** The data plane the daemon holds open: the attach host and the supervisor it
- *  is built over, which is a key of its own so a registry can reach it. */
-type HostRuntime = ManagedRuntime.ManagedRuntime<AttachHost | SessionSupervisor, AttachServerError>;
-
 /**
  * The daemon's lifecycle, as one tagged state.
  *
@@ -149,12 +142,12 @@ type DaemonPhase =
   | {
       readonly _tag: "starting";
       readonly host: AttachHostService;
-      readonly hostRuntime: HostRuntime;
+      readonly kernel: DaemonKernelPhase;
     }
   | {
       readonly _tag: "running";
       readonly host: AttachHostService;
-      readonly hostRuntime: HostRuntime;
+      readonly kernel: DaemonKernelPhase;
       readonly controlScope: Scope.Closeable;
       readonly heartbeatFiber: Fiber.Fiber<void, never>;
     }
@@ -170,10 +163,10 @@ const hostOf = (
   state: DaemonPhase,
 ): {
   host: AttachHostService;
-  hostRuntime: HostRuntime;
+  kernel: DaemonKernelPhase;
 } | null =>
   state._tag === "starting" || state._tag === "running"
-    ? { host: state.host, hostRuntime: state.hostRuntime }
+    ? { host: state.host, kernel: state.kernel }
     : null;
 
 /**
@@ -401,11 +394,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     (owner, registration: TilingAlgorithmRegistration) =>
       tilingAlgorithmTable.add(owner, registration.algorithm.id, registration),
   );
-  const pluginHost = yield* createPluginHost({ contributions: pluginContributions }).pipe(
-    Effect.provideService(Scope.Scope, daemonScope),
-  );
-  // Named so `plugin.reload` below can rerun the exact same load against
-  // fresh config, rather than only ever reconciling once at boot.
   const daemonCoreEntries: readonly PluginDefinition[] = [
     {
       id: "amux.registry.daemon-commands",
@@ -418,23 +406,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       activate: (ctx) => Effect.sync(() => void ctx.provide(TilingAlgorithmsTag, tilingAlgorithms)),
     },
   ];
-  const daemonConfig = options.pluginConfig ?? (yield* loadConfig());
-  yield* loadDaemonPluginsFromConfig(
-    daemonConfig,
-    pluginHost,
-    dirname(CONFIG_PATH),
-    daemonCoreEntries,
-  );
-  // `plugin.reload`'s daemon-side half: reconcile against config read fresh
-  // off disk, the same load boot just ran. Without this, enabling or
-  // editing a daemon-side plugin (a TilingAlgorithm registration, a daemon
-  // command) had no live effect — only the client's own `.` entrypoint ever
-  // reloaded, so picking up a daemon-side change meant killing the whole
-  // process, which drops every session it was hosting.
-  const reloadDaemonPlugins = Effect.gen(function* () {
-    const fresh = options.pluginConfig ?? (yield* loadConfig());
-    yield* loadDaemonPluginsFromConfig(fresh, pluginHost, dirname(CONFIG_PATH), daemonCoreEntries);
-  }).pipe(Effect.provide(BunFileSystem.layer));
 
   const activeSaveRef = {
     current: null as Fiber.Fiber<void, WorkspaceTransactionError> | null,
@@ -591,8 +562,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           ),
         );
 
-      const rt = ManagedRuntime.make(
-        layerAttachHost({
+      const config =
+        options.pluginConfig ?? (yield* loadConfig().pipe(Effect.provide(BunFileSystem.layer)));
+      const kernel = yield* startDaemonKernel({
+        scope: daemonScope,
+        contributions: pluginContributions,
+        config,
+        configDirectory: dirname(CONFIG_PATH),
+        coreEntries: daemonCoreEntries,
+        attach: {
           path: paths.attach,
           processStatePath: paths.processState,
           rpcPath: paths.socket,
@@ -604,22 +582,23 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           onSessionState: (sid, s) =>
             eventBus.publish({ _tag: "session.state", session: sid, state: s }),
           agentLog,
-        }).pipe(Layer.provide(BunFileSystem.layer)),
-      );
-      const host = yield* Effect.promise(() => rt.runPromise(AttachHost));
+        },
+        agentLog,
+      }).pipe(Effect.mapError((message) => new DaemonError({ message })));
+      const host = kernel.attachHost;
 
       // The host and its attach socket are committed here, in the
       // `starting` state: the rest of startup runs the workspace
       // transaction, which reads the host off the dispatch state, and
       // dispatch cannot serve itself.
-      return [void 0, { _tag: "starting", host, hostRuntime: rt }] as const;
+      return [void 0, { _tag: "starting", host, kernel }] as const;
     }).pipe(toDaemonError),
   );
 
   const runFinishStartup: Effect.Effect<void, DaemonError> = dispatch((state) =>
     Effect.gen(function* () {
       if (state._tag !== "starting") return [void 0, state] as const;
-      const { host, hostRuntime } = state;
+      const { host, kernel } = state;
 
       yield* Effect.gen(function* () {
         const cur = yield* model.get;
@@ -756,10 +735,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         daemonScope,
       );
 
-      return [
-        void 0,
-        { _tag: "running", host, hostRuntime, controlScope, heartbeatFiber },
-      ] as const;
+      return [void 0, { _tag: "running", host, kernel, controlScope, heartbeatFiber }] as const;
     }).pipe(toDaemonError),
   );
 
@@ -788,7 +764,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
         const live = hostOf(state);
         if (live) {
-          yield* Effect.promise(() => live.hostRuntime.dispose().catch(() => {}));
+          yield* live.kernel.close;
           yield* fs.remove(paths.attach).pipe(Effect.ignore);
         }
 
@@ -1221,7 +1197,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             // Reconcile the daemon's own plugin set first: a client that
             // just enabled a daemon-side plugin and immediately relies on
             // it must not race the event it's about to publish below.
-            yield* reloadDaemonPlugins;
+            const live = hostOf(yield* Ref.get(stateRef));
+            if (!live) return yield* controlFail("daemon not started");
+            const config =
+              options.pluginConfig ??
+              (yield* loadConfig().pipe(Effect.provide(BunFileSystem.layer)));
+            yield* live.kernel
+              .reload(config)
+              .pipe(Effect.mapError((message) => new DaemonError({ message })));
             if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
             else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
             return {};

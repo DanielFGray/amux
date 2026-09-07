@@ -12,6 +12,7 @@ import { Option } from "effect";
 import type { PluginContributions, PluginInstance } from "./contributions.ts";
 import type {
   PluginDefinition,
+  PluginConsumer,
   PluginErrorEvent,
   PluginHostContext,
   PluginKV,
@@ -21,6 +22,7 @@ import type {
 import { CurrentPlugin } from "./services.ts";
 
 export type {
+  PluginConsumer,
   PluginDefinition,
   PluginHostContext,
   PluginErrorEvent,
@@ -54,6 +56,8 @@ export interface PluginHost {
   readonly onError: Stream.Stream<PluginErrorEvent>;
   readonly onServiceChange: Stream.Stream<string>;
   readonly get: PluginServices["get"];
+  /** Wait for a committed provider without consuming the shared change stream. */
+  readonly await: PluginServices["await"];
   readonly intercept: <Id, Service, Metadata>(
     pluginId: string,
     tag: InterceptablePluginService<Id, Service, Metadata>,
@@ -109,6 +113,7 @@ interface FailedAttempt {
  */
 export interface PluginEnvironment {
   readonly contributions: PluginContributions;
+  readonly consumers?: readonly PluginConsumer[];
 }
 
 export function createPluginHost(
@@ -125,6 +130,13 @@ export function createPluginHost(
     const kvStores = new Map<string, PluginKV>();
     /** How many times each id has been started; the next run gets the next number. */
     const generations = new Map<string, number>();
+    const consumers = env.consumers ?? [];
+    const consumerIds = new Set(consumers.map((_, index) => `amux.consumer.${index}`));
+    const consumerEntries: readonly PluginDefinition[] = consumers.map((consumer, index) => ({
+      id: `amux.consumer.${index}`,
+      inject: consumer.inject,
+      activate: (_context, provided) => consumer.activate(provided),
+    }));
     const services = yield* createPluginServices(env.contributions, (key) => {
       Queue.offerUnsafe(serviceChangeQueue, key);
     });
@@ -337,7 +349,11 @@ export function createPluginHost(
       retry: (id: string) => boolean,
     ) {
       if (disposed) return yield* Effect.fail("Plugin host is disposed");
-      const admitted = new Map(entries.map((entry) => [entry.id, entry] as const));
+      if (entries.some((entry) => consumerIds.has(entry.id)))
+        return yield* Effect.fail("a plugin id collides with a host-owned consumer");
+      const admitted = new Map(
+        [...consumerEntries, ...entries].map((entry) => [entry.id, entry] as const),
+      );
       const refused: RefusedPlugin[] = [];
 
       // Dropping one entry can strand the next, so this settles rather than
@@ -364,6 +380,12 @@ export function createPluginHost(
             `cannot drop the provider of '${casualty.key}': plugin '${casualty.entry.id}' injects it`,
           );
 
+        const coreConsumer = stranded.find(({ entry }) => consumerIds.has(entry.id));
+        if (coreConsumer)
+          return yield* Effect.fail(
+            `cannot start ${consumers[Number(coreConsumer.entry.id.slice("amux.consumer.".length))]!.name}: no provider for '${coreConsumer.key}'`,
+          );
+
         for (const { entry, key } of stranded) {
           admitted.delete(entry.id);
           refused.push({ id: entry.id, key });
@@ -371,6 +393,7 @@ export function createPluginHost(
       }
 
       for (const id of [...desired.keys()]) {
+        if (consumerIds.has(id)) continue;
         if (admitted.has(id)) continue;
         desired.delete(id);
         failures.delete(id);
@@ -480,7 +503,10 @@ export function createPluginHost(
         ),
       add: (plugin) =>
         configure(
-          () => [...[...desired.values()].filter((e) => e.id !== plugin.id), plugin],
+          () => [
+            ...[...desired.values()].filter((e) => !consumerIds.has(e.id) && e.id !== plugin.id),
+            plugin,
+          ],
           (id) => id === plugin.id,
         ).pipe(
           Effect.flatMap((refused) => {
@@ -494,30 +520,34 @@ export function createPluginHost(
         ),
       remove: (id) =>
         configure(
-          () => [...desired.values()].filter((entry) => entry.id !== id),
+          () =>
+            [...desired.values()].filter((entry) => consumerIds.has(entry.id) || entry.id !== id),
           () => false,
         ).pipe(Effect.asVoid),
       onError: Stream.fromQueue(errorQueue),
       onServiceChange: Stream.fromQueue(serviceChangeQueue),
       get: services.get,
+      await: services.await,
       intercept: services.intercept,
       clearInterception: services.clearInterception,
       status() {
         if (disposed) return [];
-        return [...desired.keys()].map((id): PluginStatus => {
-          const state = activePlugins.get(id);
-          const candidate = candidates.get(id);
-          const failed = failures.get(id);
-          const status: Types.Mutable<PluginStatus> = {
-            id,
-            phase: state?.phase ?? "failed",
-            waitingFor: state ? services.waitingOn(state.instance) : [],
-          };
-          if (failed && !state) status.error = failed.error;
-          if (candidate) status.replacement = { phase: candidate.phase };
-          else if (failed && state) status.replacement = { phase: "failed", error: failed.error };
-          return status;
-        });
+        return [...desired.keys()]
+          .filter((id) => !consumerIds.has(id))
+          .map((id): PluginStatus => {
+            const state = activePlugins.get(id);
+            const candidate = candidates.get(id);
+            const failed = failures.get(id);
+            const status: Types.Mutable<PluginStatus> = {
+              id,
+              phase: state?.phase ?? "failed",
+              waitingFor: state ? services.waitingOn(state.instance) : [],
+            };
+            if (failed && !state) status.error = failed.error;
+            if (candidate) status.replacement = { phase: candidate.phase };
+            else if (failed && state) status.replacement = { phase: "failed", error: failed.error };
+            return status;
+          });
       },
       spawnProvider: (id) => Option.getOrUndefined(services.get(SpawnProvidersTag))?.get(id),
       dispose: Effect.suspend(() => submit(disposeAll())),

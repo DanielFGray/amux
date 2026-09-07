@@ -2,7 +2,12 @@ import { afterEach, expect } from "bun:test";
 import { Context, Deferred, Effect, Fiber, Option, Queue, Scope, Stream } from "effect";
 import { testEffect } from "../test-effect.ts";
 import { createPluginHost, type PluginHost } from "./host.ts";
-import { definePlugin, type PluginDefinition, type PluginErrorEvent } from "./types.ts";
+import {
+  defineConsumer,
+  definePlugin,
+  type PluginDefinition,
+  type PluginErrorEvent,
+} from "./types.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
 import {
@@ -97,6 +102,23 @@ testEffect("an unavailable first dependency stays missing when a later one arriv
     services.provide(next, NumberTag, 2);
     contributions.commit(next);
     expect(yield* Deferred.await(acquired)).toBe(2);
+  }),
+);
+
+testEffect("await observes a provider that commits after the wait begins", () =>
+  Effect.gen(function* () {
+    const contributions = createPluginContributions();
+    const services = yield* createPluginServices(contributions);
+    const provider = { id: "number", generation: 0 };
+    const result = yield* Deferred.make<number>();
+    yield* services.await(NumberTag).pipe(
+      Effect.flatMap((value) => Deferred.succeed(result, value)),
+      Effect.forkScoped,
+    );
+    yield* Effect.yieldNow;
+    services.provide(provider, NumberTag, 42);
+    contributions.commit(provider);
+    expect(yield* Deferred.await(result)).toBe(42);
   }),
 );
 
@@ -233,6 +255,92 @@ testEffect("a plugin whose injected service nothing can provide is refused", () 
     expect(refused).toEqual([{ id: "consumer", key: "test/Pool" }]);
     expect(host.status()).toEqual([]);
     expect(log).toEqual([]);
+  }),
+);
+
+testEffect("a host consumer starts from an injected provider and unwinds before it", () =>
+  Effect.gen(function* () {
+    const contributions = createPluginContributions();
+    const log: string[] = [];
+    const host = yield* createPluginHost({
+      contributions,
+      consumers: [
+        defineConsumer({
+          name: "core dispatch",
+          inject: [PoolTag],
+          effect: () =>
+            Effect.gen(function* () {
+              const pool = yield* PoolTag;
+              log.push(`core started on v${pool.version}`);
+              yield* Effect.addFinalizer(() =>
+                Effect.sync(() => log.push(`core released, pool open=${pool.open}`)),
+              );
+            }),
+        }),
+      ],
+    });
+    const provider = poolProvider(log);
+    yield* host.reconcile([provider.definition]);
+    yield* Effect.yieldNow;
+    expect(log).toEqual(["pool provided v1", "core started on v1"]);
+    yield* host.dispose;
+    expect(log).toEqual([
+      "pool provided v1",
+      "core started on v1",
+      "core released, pool open=true",
+      "pool closed pool",
+    ]);
+  }),
+);
+
+testEffect("a missing provider refuses configuration for a host consumer", () =>
+  Effect.gen(function* () {
+    const host = yield* createPluginHost({
+      contributions: createPluginContributions(),
+      consumers: [
+        defineConsumer({ name: "core dispatch", inject: [PoolTag], effect: () => Effect.void }),
+      ],
+    });
+    expect(yield* Effect.flip(host.reconcile([]))).toBe(
+      "cannot start core dispatch: no provider for 'test/Pool'",
+    );
+  }),
+);
+
+testEffect("a replaced provider reactivates its host consumer", () =>
+  Effect.gen(function* () {
+    const log: string[] = [];
+    const host = yield* createPluginHost({
+      contributions: createPluginContributions(),
+      consumers: [
+        defineConsumer({
+          name: "core dispatch",
+          inject: [PoolTag],
+          effect: () =>
+            PoolTag.pipe(
+              Effect.flatMap((pool) =>
+                Effect.acquireRelease(
+                  Effect.sync(() => log.push(`core started on v${pool.version}`)),
+                  () => Effect.sync(() => log.push(`core released from v${pool.version}`)),
+                ),
+              ),
+            ),
+        }),
+      ],
+    });
+    const first = poolProvider(log, { version: 1 });
+    yield* host.reconcile([first.definition]);
+    yield* Effect.yieldNow;
+    const second = poolProvider(log, { version: 2 });
+    yield* host.reconcile([second.definition]);
+    expect(log).toEqual([
+      "pool provided v1",
+      "core started on v1",
+      "pool provided v2",
+      "core released from v1",
+      "pool closed pool",
+      "core started on v2",
+    ]);
   }),
 );
 

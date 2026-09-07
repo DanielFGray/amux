@@ -331,6 +331,9 @@ export interface PluginServices {
   readonly withdraw: (owner: PluginInstance, tag: PluginService) => void;
   readonly withdrawAll: (owner: PluginInstance) => void;
   readonly get: <Id, S>(tag: Context.Service<Id, S>) => Option.Option<S>;
+  /** Wait until `tag` has a committed provider. Unlike a change stream, this
+   *  cannot miss the handoff between observing absence and subscribing. */
+  readonly await: <Id, S>(tag: Context.Service<Id, S>) => Effect.Effect<S>;
   readonly declare: (owner: PluginInstance, dependencies: readonly PluginDependency[]) => void;
   readonly intercept: <Id, Service, Metadata>(
     owner: string,
@@ -400,6 +403,20 @@ export const createPluginServices = Effect.fnUntraced(function* (
   const unsubscribe = contributions.onChange(update);
   yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
 
+  const awaitService = <Id, S>(tag: Context.Service<Id, S>) => {
+    const read = () =>
+      Option.fromNullishOr(slots.get(tag.key)?.provider).pipe(
+        Option.flatMap((provider) => Context.getOption(provider.context, tag)),
+      );
+    const wait: Effect.Effect<S> = Effect.suspend(() =>
+      Option.match(read(), {
+        onNone: () => Deferred.await(changed).pipe(Effect.andThen(wait)),
+        onSome: Effect.succeed,
+      }),
+    );
+    return wait;
+  };
+
   return {
     provide(owner, tag, service) {
       const slot = slotFor(tag.key);
@@ -430,6 +447,8 @@ export const createPluginServices = Effect.fnUntraced(function* (
       Option.fromNullishOr(slots.get(tag.key)?.provider).pipe(
         Option.flatMap((provider) => Context.getOption(provider.context, tag)),
       ),
+
+    await: awaitService,
 
     declare(owner, dependencies) {
       injects.set(instanceKey(owner), { owner, dependencies, committed: undefined });

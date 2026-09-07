@@ -119,7 +119,12 @@ import {
 import { makeSessionFacts } from "./session-facts.ts";
 import { createReloader } from "./plugin/reloader.ts";
 import type { PluginReloader } from "./plugin/reloader.ts";
-import { definePlugin, type PluginDefinition } from "./plugin/types.ts";
+import {
+  defineConsumer,
+  definePlugin,
+  type PluginConsumer,
+  type PluginDefinition,
+} from "./plugin/types.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { formatText } from "./format.ts";
 import { CommandPalette } from "./ui/CommandPalette.tsx";
@@ -208,6 +213,7 @@ interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly commands: CommandsService;
   readonly coreEntries: readonly PluginDefinition[];
   readonly registryEntries: readonly PluginDefinition[];
+  readonly consumers: readonly PluginConsumer[];
   readonly updateRegistry: (host: PluginHost, key: string) => void;
 }
 
@@ -367,9 +373,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       ),
       (app) => app.release,
     );
-    const pluginHost = yield* createPluginHost({
-      contributions,
-    });
+    const pluginHost = yield* createPluginHost({ contributions, consumers: app.consumers });
     runFiber(
       "plugin-service-changes",
       Stream.runForEach(pluginHost.onServiceChange, (key) =>
@@ -2969,12 +2973,24 @@ function buildApp(
         ),
     }),
   ] as const;
+  const consumers = [
+    defineConsumer({
+      name: "core dispatch",
+      inject: [BindingsTag, CommandsTag],
+      effect: () =>
+        Effect.gen(function* () {
+          bindingsProvider.set(yield* BindingsTag);
+          commandsProvider.set(yield* CommandsTag);
+        }),
+    }),
+  ] as const;
   return {
     View,
     panel,
     release,
     commands,
     registryEntries,
+    consumers,
     updateRegistry,
     coreEntries,
   };

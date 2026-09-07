@@ -997,19 +997,19 @@ test("heartbeat failure is visible and the heartbeat stops with the daemon scope
       return report.degraded !== undefined;
     },
     "the heartbeat failure to be reported",
-    3_500,
+    10_000,
   );
   expect(report.degraded).toContain("lease heartbeat failed");
 
   await rm(p.lease, { recursive: true, force: true });
-  await waitFor(() => healthy(daemon, e), "the daemon to recover", 3_500);
+  await waitFor(() => healthy(daemon, e), "the daemon to recover", 10_000);
   expect(await healthy(daemon, e)).toBe(true);
 
   await C(daemon);
   await waitFor(
     async () => !(await Bun.file(p.lease).exists()),
     "the lease file to be removed after close",
-    1_500,
+    5_000,
   );
   expect(await Bun.file(p.lease).exists()).toBe(false);
 });

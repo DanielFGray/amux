@@ -49,6 +49,14 @@ export interface PluginDefinition {
   ) => Effect.Effect<void, never, Scope.Scope | CurrentPlugin>;
 }
 
+/** A host-owned consumer. It has dependencies and a scope, but no plugin
+ * identity, configuration entry, KV store, or reload identity. */
+export interface PluginConsumer {
+  readonly name: string;
+  readonly inject: readonly PluginDependency[];
+  readonly activate: (provided: Context.Context<never>) => Effect.Effect<void, never, Scope.Scope>;
+}
+
 export type TagIdentifier<T> =
   T extends InterceptedDependency<infer Service, infer _Metadata>
     ? TagIdentifier<Service>
@@ -84,6 +92,25 @@ export const definePlugin = <
   activate: (context, provided) =>
     Effect.provide(
       definition.effect(context),
+      provided as Context.Context<TagIdentifier<Dependencies[number]>>,
+    ),
+});
+
+/** Define a core consumer whose requirements are checked against its inject list. */
+export const defineConsumer = <const Dependencies extends readonly PluginDependency[]>(definition: {
+  readonly name: string;
+  readonly inject: Dependencies;
+  readonly effect: () => Effect.Effect<
+    void,
+    never,
+    TagIdentifier<Dependencies[number]> | Scope.Scope
+  >;
+}): PluginConsumer => ({
+  name: definition.name,
+  inject: definition.inject,
+  activate: (provided) =>
+    Effect.provide(
+      definition.effect(),
       provided as Context.Context<TagIdentifier<Dependencies[number]>>,
     ),
 });
