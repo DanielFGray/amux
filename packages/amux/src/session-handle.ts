@@ -368,11 +368,6 @@ export class SessionHandle {
     };
   }
 
-  /** @deprecated use `state`. */
-  get status(): ProcessState {
-    return this.state;
-  }
-
   /** Command name of the foreground process, e.g. "vim" — "" when at a prompt.
    *  Cached: the sidebar reads this for every row on every tick, and a process
    *  starting is not a sub-second event. */

@@ -442,7 +442,7 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
   expect(() => Effect.runSync(parseSessionState(huge))).toThrow("invalid persisted session");
 });
 
-test("persisted state uses session vocabulary and migrates legacy agent keys", () => {
+test("persisted state uses session vocabulary", () => {
   const current: any = {
     ...state("session-vocabulary"),
     spaces: [
@@ -472,14 +472,8 @@ test("persisted state uses session vocabulary and migrates legacy agent keys", (
       },
     ],
   };
-  const legacy = structuredClone(current);
-  legacy.spaces[0].windows[0].agents = legacy.spaces[0].windows[0].sessions;
-  delete legacy.spaces[0].windows[0].sessions;
-  legacy.spaces[0].windows[0].agents[0].agent = legacy.spaces[0].windows[0].agents[0].declaredAgent;
-  delete legacy.spaces[0].windows[0].agents[0].declaredAgent;
 
   expect(Effect.runSync(parseSessionState(current))).toEqual(current);
-  expect(Effect.runSync(parseSessionState(legacy))).toEqual(current);
 });
 
 test("persisted layouts validate focus through the layout decoder", () => {
