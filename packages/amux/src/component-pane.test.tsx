@@ -295,6 +295,70 @@ test("an unbound key is bytes to a terminal leaf and untouched by a component on
   expect(written).toEqual(["h"]);
 });
 
+test("a registered captureKeys handler gets every key while its pane is focused", async () => {
+  const received: KeyEvent[] = [];
+  const editor: PaneView = (props) => {
+    props.captureKeys((event) => {
+      received.push(event);
+      return true;
+    });
+    return <text>editor</text>;
+  };
+  const { win } = await workspace(editor);
+  const chat = run(win.startSession(componentSession("chat")));
+  const shell = run(win.startSession({ name: "shell", cmd: ["true"], exited: { code: 0 } }));
+  const chatPane = win.mount(chat);
+  const shellPane = win.split("row", shell)!;
+
+  // Unfocused: the handler is not consulted — the focused terminal leaf takes
+  // the key instead, and nothing reaches the editor.
+  win.focus(shellPane);
+  expect(win.key(keystroke("h"))).toBe(true);
+  expect(received).toEqual([]);
+
+  // Focused: every unclaimed key reaches the handler.
+  win.focus(chatPane);
+  expect(win.key(keystroke("h"))).toBe(true);
+  expect(win.key(keystroke(":"))).toBe(true);
+  expect(win.key(keystroke("j"))).toBe(true);
+  expect(received.map((e) => e.sequence)).toEqual(["h", ":", "j"]);
+});
+
+test("a view without a captureKeys handler keeps OpenTUI focus routing", async () => {
+  const { win } = await workspace();
+  const chat = run(win.startSession(componentSession("chat")));
+  const chatPane = win.mount(chat);
+
+  win.focus(chatPane);
+  // No handler registered: an unbound key is untouched (returns false), the
+  // same answer an unfocused component leaf gives.
+  expect(win.key(keystroke("h"))).toBe(false);
+});
+
+test("captureKeys is dropped when the handler is deregistered", async () => {
+  const seen: KeyEvent[] = [];
+  let register: (handler: ((event: KeyEvent) => boolean) | null) => void = () => {};
+  const editor: PaneView = (props) => {
+    register = props.captureKeys;
+    return <text>editor</text>;
+  };
+  const { win } = await workspace(editor);
+  const chat = run(win.startSession(componentSession("chat")));
+  const chatPane = win.mount(chat);
+  win.focus(chatPane);
+
+  register((event) => {
+    seen.push(event);
+    return true;
+  });
+  expect(win.key(keystroke("h"))).toBe(true);
+  expect(seen).toHaveLength(1);
+
+  register(null);
+  expect(win.key(keystroke("h"))).toBe(false);
+  expect(seen).toHaveLength(1);
+});
+
 test("a component's view sees the frame move under it", async () => {
   let mounts = 0;
   const probe: PaneView = (props) => {

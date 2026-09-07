@@ -2,7 +2,7 @@
 import { RendererContext, _render } from "@opentui/solid";
 import type { JSX } from "@opentui/solid";
 import { createSignal, type Accessor, type Signal } from "solid-js";
-import { BoxRenderable, type CliRenderer, type RenderContext } from "@opentui/core";
+import { BoxRenderable, type CliRenderer, type KeyEvent, type RenderContext } from "@opentui/core";
 import { Pane } from "./pane.ts";
 import type { SessionHandle } from "./session-handle.ts";
 import type { JsonValue } from "./layout.ts";
@@ -32,6 +32,24 @@ export interface PaneViewProps {
    *  must gate its input's `focused` on this, or an unfocused pane's composer
    *  swallows the keys meant for whichever pane the user is actually in. */
   active: Accessor<boolean>;
+  /**
+   * Register a raw-key handler the pane consults while it is focused
+   * (ts-bb14fd).
+   *
+   * A view whose content is a full-screen modal — a vim editor — needs every
+   * key the keymap did not claim, which is precisely what OpenTUI's normal
+   * focus routing cannot hand it: the routing only reaches renderables, and a
+   * buffer renderer is not one. The view calls this once on mount with its
+   * handler, and with `null` on teardown; while registered and focused, the
+   * pane forwards each unclaimed key to it. A view without a handler keeps
+   * OpenTUI's routing untouched.
+   *
+   * The handler returns whether it consumed the key, the same contract as
+   * `Pane.handleKey`. Leader-prefixed and bound sequences are never consulted:
+   * this only runs for keys the keymap did not claim, so the leader always
+   * wins before any view sees a key.
+   */
+  captureKeys: (handler: ((event: KeyEvent) => boolean) | null) => void;
 }
 
 /**
@@ -66,6 +84,9 @@ export class ComponentPane extends Pane {
   // readable.
   #size: Signal<{ width: number; height: number }> = createSignal({ width: 1, height: 1 });
   #focus: Signal<boolean> = createSignal(false);
+  /** The view's raw-key handler, when it registered one. Consulted only while
+   *  this pane is the focused one; see PaneViewProps.captureKeys. */
+  #captureKeys: ((event: KeyEvent) => boolean) | null = null;
 
   constructor(
     ctx: RenderContext,
@@ -110,6 +131,9 @@ export class ComponentPane extends Pane {
         return this.content.height;
       },
       active: this.#focus[0],
+      captureKeys: (handler) => {
+        this.#captureKeys = handler;
+      },
     };
     this.#dispose = _render(
       () => <RendererContext.Provider value={renderer}>{view(props)}</RendererContext.Provider>,
@@ -118,15 +142,20 @@ export class ComponentPane extends Pane {
   }
 
   /**
-   * Not this pane's to consume.
+   * Hand the key to the view's registered raw-key handler — but only while
+   * this pane is the focused one.
    *
-   * OpenTUI already routes a keystroke to whichever renderable holds focus, and
-   * the composer inside this subtree is one. Claiming the key here would
-   * preventDefault it and that input would never see a character — the whole
-   * reason bindings.ts only prevents the default when the app really took it.
+   * The default (no handler, or not focused) is the old answer: return false
+   * and let OpenTUI route the key to whichever renderable inside the subtree
+   * holds focus, which is how a composer inside a chat view receives
+   * characters. A view that registered a handler and has focus gets every
+   * unclaimed key instead — the leader and bound sequences never reach here
+   * (the keymap claims them first), so the leader always wins before the view
+   * sees a key.
    */
-  override handleKey(): boolean {
-    return false;
+  override handleKey(event: KeyEvent): boolean {
+    if (!this.active) return false;
+    return this.#captureKeys?.(event) ?? false;
   }
 
   protected override onActiveChange(active: boolean): void {
