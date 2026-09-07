@@ -12,6 +12,8 @@ import { createSlots, type Slots } from "../ui/slots.ts";
 import { testPanelContext } from "../ui/test-panel.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
+import type { DaemonEventPayload } from "../effect/EventBus.ts";
+import type { ControlError } from "../control.ts";
 import {
   definePlugin,
   type PluginDefinition,
@@ -29,6 +31,7 @@ import {
   OptionsTag,
   PanelTag,
   ProcessDisplayTag,
+  RemoteEventsTag,
   SlotsTag,
   SessionViewsTag,
   SettingsTag,
@@ -64,6 +67,7 @@ type TestEnvironmentParts = Omit<Partial<PluginEnvironment>, "contributions"> & 
   readonly panel?: PanelContext;
   readonly frames?: (session: string) => Stream.Stream<AttachFrame, never>;
   readonly sync?: (session: string) => void;
+  readonly events?: Stream.Stream<DaemonEventPayload, ControlError>;
   readonly slots?: Slots;
   readonly sessionViews?: SessionViews;
   readonly processDisplay?: ProcessDisplay;
@@ -89,6 +93,7 @@ export function testPluginEnvironment(
     frames: parts.frames ?? (() => Stream.empty),
     sync: parts.sync ?? (() => {}),
   };
+  const remoteEvents = { events: parts.events ?? Stream.empty };
   const rawBindings = createBindings(renderer, [], { onUnhandled: () => false });
   const rawCommands = makeCommands({});
   const registries: RawTestRegistries = {
@@ -209,11 +214,12 @@ export function testPluginEnvironment(
     ),
     definePlugin({
       id: "amux.registry.client",
-      provide: [PanelTag, SessionStreamTag],
+      provide: [PanelTag, SessionStreamTag, RemoteEventsTag],
       effect: (ctx) =>
         Effect.sync(() => {
           ctx.provide(PanelTag, panel);
           ctx.provide(SessionStreamTag, sessionStream);
+          ctx.provide(RemoteEventsTag, remoteEvents);
         }),
     }),
   ];

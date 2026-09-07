@@ -97,6 +97,7 @@ import {
   OptionsTag,
   PanelTag,
   ProcessDisplayTag,
+  RemoteEventsTag,
   SessionViewsTag,
   SessionFactsTag,
   SessionStreamTag,
@@ -2908,7 +2909,7 @@ function buildApp(
     // handed a panel that draws nowhere.
     definePlugin({
       id: "amux.registry.client",
-      provide: [PanelTag, SessionStreamTag],
+      provide: [PanelTag, SessionStreamTag, RemoteEventsTag],
       effect: (ctx) =>
         Effect.sync(() => {
           ctx.provide(PanelTag, panel);
@@ -2916,6 +2917,7 @@ function buildApp(
             frames: (id) => session.attach.stream(id),
             sync: (id) => session.attach.sync(id),
           });
+          ctx.provide(RemoteEventsTag, { events: session.events });
         }),
     }),
   ];

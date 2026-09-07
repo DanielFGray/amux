@@ -23,6 +23,8 @@ import { defaultTilingAlgorithm } from "../tiling-algorithm-default.ts";
 import type { WorkspaceSnapshot, PluginWorkspaceReducer } from "../workspace.ts";
 import type { PersistedSession } from "../session.ts";
 import type { PluginActionRegistration, SessionOps } from "../effect/WorkspaceTransaction.ts";
+import type { DaemonEventPayload } from "../effect/EventBus.ts";
+import type { ControlError } from "../control.ts";
 
 /** @effect-leakable-service */
 export class CurrentPlugin extends Context.Service<CurrentPlugin, PluginInstance>()(
@@ -219,6 +221,24 @@ export interface SessionStreamService {
 }
 export class SessionStreamTag extends Context.Service<SessionStreamTag, SessionStreamService>()(
   "amux/SessionStream",
+) {}
+
+/**
+ * The daemon's event stream, brokered across the control socket to whichever
+ * client injects this key. Unlike every other tag in this file, the key is
+ * not a local capability with a withdrawal guarantee — it crosses a process
+ * boundary, and the ordering guarantee that makes a component's teardown safe
+ * (a provider waits for every dependent to unwind before it goes) cannot
+ * survive a dead peer that never reports it finished. The stream's error
+ * channel is therefore not decoration: `ControlError` is what a consumer sees
+ * when the daemon dies mid-subscription, and nothing here pretends that looks
+ * like a normal service withdrawal (ep-90ed58 point 4).
+ */
+export interface RemoteEventsService {
+  readonly events: Stream.Stream<DaemonEventPayload, ControlError>;
+}
+export class RemoteEventsTag extends Context.Service<RemoteEventsTag, RemoteEventsService>()(
+  "amux/RemoteEvents",
 ) {}
 
 export const scopedRegistry = <A extends object, Value>(

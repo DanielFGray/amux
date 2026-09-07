@@ -13,11 +13,13 @@ import { testPluginEnvironment } from "./test-environment.ts";
 import {
   createPluginServices,
   intercept,
+  RemoteEventsTag,
   SlotsTag,
   SpawnProvidersTag,
   type PluginService,
   type ServiceInterception,
 } from "./services.ts";
+import { ControlError } from "../control.ts";
 import { createPluginContributions } from "./contributions.ts";
 import type { DockOccupant } from "../ui/slots.ts";
 
@@ -889,4 +891,43 @@ testEffect("a provider that crashes takes its dependents back to waiting", () =>
       { id: "pool", phase: "failed", error: new Error("provider died"), waitingFor: [] },
     ]);
   }),
+);
+
+testEffect(
+  "RemoteEventsTag carries the daemon's events, and a broken connection reaches the consumer as ControlError rather than as a silent withdrawal",
+  () =>
+    Effect.gen(function* () {
+      const t = yield* Effect.promise(() => createTestRenderer({ width: 80, height: 24 }));
+      cleanupFns.push(() => t.renderer.destroy());
+      const queue =
+        yield* Queue.unbounded<Effect.Effect<{ readonly _tag: "events.ready" }, ControlError>>();
+      const events = Stream.fromQueue(queue).pipe(Stream.flattenEffect());
+      const environment = testPluginEnvironment(t.renderer, { events });
+      const host = yield* createPluginHost(environment);
+      const entry = environment.registryEntries.find((candidate) =>
+        candidate.provide?.some((provided) => provided.key === RemoteEventsTag.key),
+      );
+      yield* Effect.orDie(host.add(entry!));
+      const remote = yield* host.await(RemoteEventsTag);
+
+      const received: unknown[] = [];
+      const failure = yield* Deferred.make<ControlError>();
+      const fiber = yield* Stream.runForEach(remote.events, (event) =>
+        Effect.sync(() => received.push(event)),
+      ).pipe(
+        Effect.catch((error) => Deferred.succeed(failure, error)),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+
+      yield* Queue.offer(queue, Effect.succeed({ _tag: "events.ready" as const }));
+      yield* Effect.yieldNow;
+      expect(received).toEqual([{ _tag: "events.ready" }]);
+
+      yield* Queue.offer(queue, Effect.fail(new ControlError({ message: "daemon socket closed" })));
+      const error = yield* Deferred.await(failure);
+      expect(error).toEqual(new ControlError({ message: "daemon socket closed" }));
+
+      yield* Fiber.await(fiber);
+    }),
 );
