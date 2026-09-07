@@ -394,18 +394,6 @@ function main(): Effect.Effect<number> {
           sessionFlag: stripped.session,
         };
 
-      // A command whose schema *requires* a session can only satisfy it from the
-      // driving flag: the direct parse proved the args alone cannot. Re-parse
-      // with the flag as a field so parseArgs applies its own rules unchanged.
-      if (
-        isCoreCommandTag(tag) &&
-        stripped.session !== undefined &&
-        fieldNames(tag).some((field) => field.name === "session")
-      ) {
-        const refilled = parseArgs(tag, [...stripped.rest, `--session=${stripped.session}`]);
-        if (refilled.parsed) return { tag, parsed: refilled.parsed, sessionFlag: stripped.session };
-      }
-
       // The legacy `amux <command> <session-id> <args>` form. A token that looks
       // like a flag is never a session id, or a typo'd flag would turn a syntax
       // error into a refusal (exit 1) of a session the flag named.

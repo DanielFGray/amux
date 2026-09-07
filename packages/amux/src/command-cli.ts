@@ -146,6 +146,24 @@ function parseFieldSpecs(tag: string, fields: FieldSpec[], argv: string[]): Pars
     }
 
     if (positionalIdx >= requiredFields.length) {
+      // Every required field already has a positional slot by this point, so
+      // whatever remains unconsumed here is optional. A lone remaining
+      // optional field has nothing else a bare positional could mean, so it
+      // takes the value directly instead of erroring — this is what lets
+      // `session.kill <agent-id>` reach the command's own field rather than
+      // being swallowed by the legacy `<command> <session-id>` fallback.
+      const remaining = fields.filter((f) => !consumed.has(f.name));
+      if (remaining.length === 1 && !remaining[0]!.required) {
+        const field = remaining[0]!;
+        const coerced = coerce(arg, field);
+        if (coerced === undefined) {
+          errors.push(`invalid value for '${field.name}': ${JSON.stringify(arg)}`);
+          continue;
+        }
+        parsed[field.name] = coerced;
+        consumed.add(field.name);
+        continue;
+      }
       errors.push(`unexpected argument: ${arg}`);
       continue;
     }

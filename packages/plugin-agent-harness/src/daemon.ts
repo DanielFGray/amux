@@ -13,7 +13,7 @@ import {
 } from "@danielfgray/amux";
 import { PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
 
-const sessionTarget = { session: S.String };
+const sessionTarget = { target: S.String };
 const agentPluginMeta = (
   desc: string,
   target: "workspace" | "session",
@@ -109,11 +109,11 @@ const agentInterrupt = {
   fields: { ...sessionTarget, reason: S.optionalKey(S.String) },
   meta: agentPluginMeta("interrupt an agent turn", "workspace", "human"),
   reduce: (draft, command) => {
-    if (typeof command.session !== "string") return;
+    if (typeof command.target !== "string") return;
     if (typeof command.reason === "string") {
-      draft.pushAction({ _tag: "agent.interrupt", agent: command.session, reason: command.reason });
+      draft.pushAction({ _tag: "agent.interrupt", agent: command.target, reason: command.reason });
     } else {
-      draft.pushAction({ _tag: "agent.interrupt", agent: command.session });
+      draft.pushAction({ _tag: "agent.interrupt", agent: command.target });
     }
   },
   // Core knows only "deliver this opaque payload to a live session" —
@@ -144,7 +144,7 @@ const agentPermission = {
   meta: agentPluginMeta("answer an agent's permission request", "workspace", "human"),
   reduce: (draft, command) => {
     if (
-      typeof command.session === "string" &&
+      typeof command.target === "string" &&
       typeof command.request === "string" &&
       (command.decision === "once" ||
         command.decision === "always" ||
@@ -153,7 +153,7 @@ const agentPermission = {
       if (typeof command.feedback === "string") {
         draft.pushAction({
           _tag: "agent.permission",
-          agent: command.session,
+          agent: command.target,
           answer: {
             request: command.request,
             decision: command.decision,
@@ -163,7 +163,7 @@ const agentPermission = {
       } else {
         draft.pushAction({
           _tag: "agent.permission",
-          agent: command.session,
+          agent: command.target,
           answer: { request: command.request, decision: command.decision },
         });
       }

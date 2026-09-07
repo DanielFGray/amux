@@ -796,7 +796,7 @@ test("a destructive commit retries its single durable write after process comple
   // started by startDaemon;
   armed = true;
   const agent = ws(daemon).spaces[0]!.windows[0]!.sessions[0]!.id;
-  await rwc(daemon)(command("session.kill", { session: agent }), ws(daemon).revision, context);
+  await rwc(daemon)(command("session.kill", { target: agent }), ws(daemon).revision, context);
   expect(failed).toBe(true);
   expect(ws(daemon).spaces).toHaveLength(0);
   let lease: unknown;
@@ -848,7 +848,7 @@ testEffect("stop interrupts and joins a never-settling destructive persistence o
     armed = true;
     const agent = ws(daemon).spaces[0]!.windows[0]!.sessions[0]!.id;
     const mutation = rwc(daemon)(
-      command("session.kill", { session: agent }),
+      command("session.kill", { target: agent }),
       ws(daemon).revision,
       context,
     );
@@ -1204,7 +1204,7 @@ test("a failed destructive action leaves durable state untouched", async () => {
   const kill = daemon.killSession.bind(daemon);
   daemon.killSession = () => Effect.fail(new DaemonError({ message: "injected kill failure" }));
   await expect(
-    rwc(daemon)(command("session.kill", { session: agent }), before.revision, context),
+    rwc(daemon)(command("session.kill", { target: agent }), before.revision, context),
   ).rejects.toThrow("injected kill failure");
   expect(ws(daemon)).toEqual(before);
   expect(

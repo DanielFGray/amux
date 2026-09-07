@@ -1214,7 +1214,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "session.kill": {
-      const target = findSession(next, command.session);
+      const target = findSession(next, command.target);
       if (!target) break;
       actions.push({ _tag: "kill", agent: target.session.id });
       target.window.sessions = target.window.sessions.filter(
@@ -1229,7 +1229,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "session.restart": {
-      const target = findSession(next, command.session);
+      const target = findSession(next, command.target);
       if (!target || !target.session.exited) break;
       target.session.exited = false;
       target.session.exitCode = null;
@@ -1249,7 +1249,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "session.reveal": {
-      const target = findSession(next, command.session);
+      const target = findSession(next, command.target);
       if (!target || target.session.exited) break;
       next.state = activateSpaceState(
         next.state,

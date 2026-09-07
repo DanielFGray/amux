@@ -306,7 +306,7 @@ testEffect("--session also fills a command's session field, targeting the sessio
   }),
 );
 
-testEffect("--session satisfies a command's required session field", () =>
+testEffect("--session (which daemon) no longer satisfies session.reveal's own target field", () =>
   Effect.gen(function* () {
     const id = "reveal-flag";
     const { daemon, env } = yield* Effect.promise(() => started(id));
@@ -314,6 +314,9 @@ testEffect("--session satisfies a command's required session field", () =>
     const entry = new URL("./cli.ts", import.meta.url).pathname;
     const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
 
+    // session.reveal's own field is named "target", not "session": the two
+    // used to share a name, so --session (which only ever selects the daemon)
+    // could silently stand in for the agent a caller meant to reveal.
     const child = Bun.spawn({
       cmd: [process.execPath, entry, "session.reveal", `--session=${id}`],
       env: { ...clean, ...env },
@@ -323,10 +326,51 @@ testEffect("--session satisfies a command's required session field", () =>
     const [exitCode, stderr] = yield* Effect.promise(() =>
       Promise.all([child.exited, new Response(child.stderr).text()]),
     );
-    // Without the feed the required field errors as 'missing required argument:
-    // session'; reaching the daemon at all proves --session supplied it.
-    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("missing required argument: target");
   }),
+);
+
+testEffect(
+  "session.kill <agent-id> from inside a pane kills that agent, not the daemon connection",
+  () =>
+    Effect.gen(function* () {
+      const { daemon, env } = yield* Effect.promise(() => started("kill-by-id"));
+      const before = Effect.runSync(daemon.getWorkspace);
+      const pane = workspacePaneId(before);
+      const caller = before.spaces[0]!.windows[0]!.sessions[0]!.id;
+
+      const split = yield* daemon.runWorkspaceCommand(
+        command("pane.split", { axis: "row" }),
+        before.revision,
+        context,
+      );
+      const target = (split.result as { session: string }).session;
+
+      const entry = new URL("./cli.ts", import.meta.url).pathname;
+      const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+      // No --session: the daemon is resolved from AMUX_DAEMON_SESSION, exactly
+      // as it is for a real caller running from inside an agent pane. The bare
+      // positional names the agent to kill, not which daemon to talk to.
+      const child = Bun.spawn({
+        cmd: [process.execPath, entry, "session.kill", target],
+        env: {
+          ...clean,
+          ...env,
+          AMUX_DAEMON_SESSION: daemon.id,
+          AMUX_PANE_ID: pane,
+          AMUX_AGENT_ID: caller,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [exitCode, stderr] = yield* Effect.promise(() =>
+        Promise.all([child.exited, new Response(child.stderr).text()]),
+      );
+      expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+      const after = Effect.runSync(daemon.getWorkspace);
+      expect(JSON.stringify(after)).not.toContain(target);
+    }),
 );
 
 testEffect("a native agent can capture a live session through the command surface", () =>

@@ -115,7 +115,16 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
  */
 const Space = { space: S.optionalKey(S.String) };
 const Window = { ...Space, window: S.optionalKey(S.Int) };
-const SessionTarget = { session: S.optionalKey(S.String) };
+/** The session a notification addresses. Unlike AgentTarget below, this
+ *  field really is a session selector — a caller-facing name Notify has
+ *  always used — so it keeps the name "session" rather than "target". */
+const NotifyTarget = { session: S.optionalKey(S.String) };
+/** The agent a session.* command acts on, defaulting to the caller's own
+ *  pane when omitted. Named "target" (matching agent.get/agent.prompt/
+ *  agent.watch), not "session": the CLI's own `--session`/positional-session
+ *  syntax already claims that name for "which daemon", and a command field
+ *  sharing it collided with that resolution. */
+const AgentTarget = { target: S.optionalKey(S.String) };
 
 /**
  * Where a pane command acts: a named pane, the caller's own pane (resolved
@@ -571,7 +580,7 @@ const WindowList = define(
 );
 
 // Agents.
-const SessionKill = define("session.kill", SessionTarget, {
+const SessionKill = define("session.kill", AgentTarget, {
   desc: "stop a session",
   group: "sessions",
   target: "workspace",
@@ -591,7 +600,7 @@ const SessionMessage = define(
 );
 const Notify = define(
   "notify",
-  { title: S.String, body: S.String, ...SessionTarget },
+  { title: S.String, body: S.String, ...NotifyTarget },
   {
     desc: "send a notification to a session",
     group: "notifications",
@@ -599,7 +608,7 @@ const Notify = define(
     exposure: "agent",
   },
 );
-const SessionRestart = define("session.restart", SessionTarget, {
+const SessionRestart = define("session.restart", AgentTarget, {
   desc: "restart an exited session",
   group: "sessions",
   target: "workspace",
@@ -607,7 +616,7 @@ const SessionRestart = define("session.restart", SessionTarget, {
 });
 const SessionReveal = define(
   "session.reveal",
-  { session: S.String },
+  { target: S.String },
   {
     desc: "show and focus a session",
     group: "sessions",

@@ -1106,7 +1106,7 @@ test("agent.reveal does nothing for an agent adoption pruned", () => {
   const adopted = run(workspaceFromSession(s));
   const result = applyWorkspaceCommand(
     adopted,
-    command("session.reveal", { session: "agent-b" }),
+    command("session.reveal", { target: "agent-b" }),
     context,
   );
   expect(result.changed).toBe(false);
@@ -1116,7 +1116,7 @@ test("agent.reveal on an already revealed agent just focuses it", () => {
   const adopted = run(workspaceFromSession(twoPaneSession()));
   const result = applyWorkspaceCommand(
     adopted,
-    command("session.reveal", { session: "agent-b" }),
+    command("session.reveal", { target: "agent-b" }),
     context,
   );
   expect(result.changed).toBe(true);
@@ -1169,7 +1169,7 @@ test("session.kill removes the last backend once adoption pruned the detached on
   const adopted = run(workspaceFromSession(s));
   const result = applyWorkspaceCommand(
     adopted,
-    command("session.kill", { session: "agent-a" }),
+    command("session.kill", { target: "agent-a" }),
     context,
   );
   expect(result.changed).toBe(true);
@@ -1198,7 +1198,7 @@ test("agent.restart revives an exited agent without changing its identity or pan
   agent.exitCode = 17;
   const result = applyWorkspaceCommand(
     adopted,
-    command("session.restart", { session: "agent-b" }),
+    command("session.restart", { target: "agent-b" }),
     context,
   );
 
@@ -1259,7 +1259,7 @@ test("pane.resize-divider adjusts neighbour weights", () => {
 });
 
 /* The answer has to reach the session that asked, and only that one: a
- * permission command names its session, and a command that names none is a
+ * permission command names its target, and a command that names none is a
  * decision with nowhere to go rather than one applied to whatever is focused. */
 test("agent.permission carries the answer to the session that asked", () => {
   const current = run(workspaceFromSession(base(twoPaneLayout)));
@@ -1267,7 +1267,7 @@ test("agent.permission carries the answer to the session that asked", () => {
   const answered = applyWorkspaceCommand(
     current,
     command("agent.permission", {
-      session: "agent-7",
+      target: "agent-7",
       request: "req-1",
       decision: "reject",
       feedback: "not that file",

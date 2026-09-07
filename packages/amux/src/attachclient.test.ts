@@ -1079,7 +1079,7 @@ testEffect("killing through the daemon ends the agent here too", () =>
     );
 
     yield* run(
-      client.runWorkspace(command("session.kill", { session: session.id }), {
+      client.runWorkspace(command("session.kill", { target: session.id }), {
         size: { cols: 80, rows: 24 },
         shell: ["sh"],
         cwd: "/tmp",
