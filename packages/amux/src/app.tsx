@@ -1436,6 +1436,7 @@ function buildApp(
     "pane.last": runCommand,
     "pane.focus": runCommand,
     "pane.select": runCommand,
+    "pane.set-descriptor": runCommand,
     "pane.resize": runCommand,
     "pane.resize-divider": runCommand,
     "pane.zoom": runCommand,

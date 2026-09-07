@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { command } from "./commands.ts";
-import { Effect, Cause, Path } from "effect";
+import { Effect, Cause, Path, Schema as S } from "effect";
 import {
   applyWorkspaceCommand,
   markSessionExited,
@@ -10,7 +10,7 @@ import {
   workspaceFromSession,
   workspaceSession,
 } from "./workspace.ts";
-import { layoutPanes, makeLayout } from "./layout.ts";
+import { layoutPanes, makeLayout, DescriptorSchema } from "./layout.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
 import { resolveTilingAlgorithm } from "./plugin/services.ts";
@@ -542,6 +542,8 @@ test("space.new uses node path resolution and basename semantics", () => {
 
 // ── helpers for model-level command tests ──
 
+const singlePaneLayout =
+  '{"version":1,"root":{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},"focus":"pane-a"}';
 const twoPaneLayout =
   '{"version":1,"root":{"type":"split","direction":"row","weight":1,"children":[{"type":"pane","id":"pane-a","content":{"kind":"pty","session":"agent-a"},"weight":1},{"type":"pane","id":"pane-b","content":{"kind":"pty","session":"agent-b"},"weight":1}]},"focus":"pane-a"}';
 
@@ -863,6 +865,79 @@ test("a sessionless plugin pane survives the wire and the save round trip", () =
 
   const reloaded = run(workspaceFromSession(workspaceSession(withEditor, base("null"))));
   expect(reloaded.spaces[0]!.windows[0]!.layout).toEqual(expected);
+});
+
+test("pane.set-descriptor rewrites a plugin pane's descriptor and keeps placement", () => {
+  // Start from a single pane so the split adds exactly one more, then turn the
+  // newcomer into a sessionless plugin pane the way the editor would open one.
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const withEditor = applyWorkspaceCommand(
+    adopted,
+    command("pane.split", { axis: "row" }),
+    context,
+  ).snapshot;
+  const target = withEditor.spaces[0]!.windows[0]!;
+  const pane = layoutPanes(target.layout.root)[1]!;
+  const orphan = pane.content.session;
+  pane.content = { kind: "plugin", type: "amux.editor", descriptor: {} };
+  target.sessions = target.sessions.filter((agent) => agent.id !== orphan);
+  const focused = target.state.focus;
+
+  const updated = applyWorkspaceCommand(
+    withEditor,
+    command("pane.set-descriptor", {
+      pane: pane.id,
+      descriptor: { file: "/work/note.txt" },
+    }),
+    context,
+  ).snapshot;
+  const window = updated.spaces[0]!.windows[0]!;
+  const updatedPane = layoutPanes(window.layout.root)[1]!;
+  expect(updatedPane.content).toEqual({
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: { file: "/work/note.txt" },
+  });
+  // Placement, focus and the sibling pane are untouched.
+  expect(updatedPane.id).toBe(pane.id);
+  expect(window.state.focus).toBe(focused);
+  expect(layoutPanes(window.layout.root)).toHaveLength(2);
+});
+
+test("pane.set-descriptor targets the focused pane when no pane is named", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const withEditor = applyWorkspaceCommand(
+    adopted,
+    command("pane.split", { axis: "row" }),
+    context,
+  ).snapshot;
+  const target = withEditor.spaces[0]!.windows[0]!;
+  const pane = layoutPanes(target.layout.root)[1]!;
+  const orphan = pane.content.session;
+  pane.content = { kind: "plugin", type: "amux.editor", descriptor: {} };
+  target.sessions = target.sessions.filter((agent) => agent.id !== orphan);
+  // The split focuses the newcomer, so an unnamed target addresses it.
+  expect(target.state.focus).toBe(pane.id);
+
+  const updated = applyWorkspaceCommand(
+    withEditor,
+    command("pane.set-descriptor", { descriptor: { file: "focused.txt" } }),
+    context,
+  ).snapshot;
+  const updatedPane = layoutPanes(updated.spaces[0]!.windows[0]!.layout.root)[1]!;
+  expect(updatedPane.content).toEqual({
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: { file: "focused.txt" },
+  });
+});
+
+test("a descriptor larger than the bound is rejected by the wire schema", () => {
+  const big = { blob: "x".repeat(1024 * 64 + 1) };
+  const result = S.decodeUnknownOption(DescriptorSchema)(big);
+  expect(result._tag).toBe("None");
+  const ok = S.decodeUnknownOption(DescriptorSchema)({ blob: "x".repeat(1024 * 63) });
+  expect(ok._tag).toBe("Some");
 });
 
 // Cycling is the only way in and out of a float, since directional focus stays

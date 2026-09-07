@@ -4,6 +4,10 @@ export const MAX_TERMINAL_CELLS = 500_000;
 export const MAX_LAYOUT_DEPTH = 64;
 export const MAX_LAYOUT_NODES = 4_096;
 export const MAX_LAYOUT_BYTES = 1_048_576;
+/** A single plugin pane's descriptor (ts-a4e25e). Generous enough for a
+ *  remount contract — an open file path, a scroll position — and far under
+ *  the whole-layout budget, so one pane cannot hoard the wire. */
+export const MAX_DESCRIPTOR_BYTES = 64 * 1_024;
 export const MAX_SESSION_BYTES = 8 * 1_048_576;
 export const MAX_RPC_BYTES = 1_048_576;
 export const MAX_ATTACH_FRAME_BYTES = 8 * 1_048_576;

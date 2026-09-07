@@ -23,7 +23,12 @@
 
 import { Effect, Match, Schema as S, SchemaIssue } from "effect";
 import type { SplitDirection } from "./window.ts";
-import { MAX_LAYOUT_BYTES, MAX_LAYOUT_DEPTH, MAX_LAYOUT_NODES } from "./limits.ts";
+import {
+  MAX_DESCRIPTOR_BYTES,
+  MAX_LAYOUT_BYTES,
+  MAX_LAYOUT_DEPTH,
+  MAX_LAYOUT_NODES,
+} from "./limits.ts";
 
 /** The format written into session.json and any exported string. */
 export const LAYOUT_VERSION = 1;
@@ -578,6 +583,52 @@ export function undockPane(layout: Layout, paneId: string): Layout {
 }
 
 /**
+ * Rewrite one pane's content across every plane that places it.
+ *
+ * The descriptor-update command's transform (ts-a4e25e): a pane can sit
+ * tiled, floated or docked, and whichever it is, setting its descriptor
+ * rewrites the same content in place. The pane's id and placement never
+ * change, only the remount contract a plugin view reads back from the
+ * content. A pane the layout does not place is left alone.
+ */
+export function setPaneDescriptor(layout: Layout, paneId: string, descriptor: JsonValue): Layout {
+  const rewriteRef = (pane: PaneRef): PaneRef =>
+    pane.id !== paneId || pane.content.kind !== "plugin"
+      ? pane
+      : { ...pane, content: { ...pane.content, descriptor } };
+  const rewriteFloat = (float: LayoutFloat): LayoutFloat => {
+    const rewritten = rewriteRef(float);
+    return rewritten === float ? float : { ...float, content: rewritten.content };
+  };
+  const dockStrips = layout.docks ?? emptyDockStrips();
+  const root = rewriteTiled(layout.root, paneId, descriptor);
+  const floats = layout.floats.map(rewriteFloat);
+  const docks = {
+    left: dockStrips.left.map(rewriteRef),
+    right: dockStrips.right.map(rewriteRef),
+    top: dockStrips.top.map(rewriteRef),
+    bottom: dockStrips.bottom.map(rewriteRef),
+  } as DockStrips;
+  return makeLayout({ ...layout, root, floats, docks });
+}
+
+function rewriteTiled(
+  node: LayoutNode | null,
+  paneId: string,
+  descriptor: JsonValue,
+): LayoutNode | null {
+  if (!node) return null;
+  if (node.type === "pane") {
+    if (node.id !== paneId || node.content.kind !== "plugin") return node;
+    return { ...node, content: { ...node.content, descriptor } };
+  }
+  return {
+    ...node,
+    children: node.children.map((child) => rewriteTiled(child, paneId, descriptor)) as LayoutNode[],
+  };
+}
+
+/**
  * A new float's rectangle: centred, two thirds of the window each way.
  *
  * The default a pane is first floated with, when nothing has said where it
@@ -862,9 +913,34 @@ const paneId = S.String.pipe(S.check(S.isMinLength(1))).annotate({
 const sessionId = S.String.pipe(S.check(S.isMinLength(1))).annotate({
   message: "content needs a session id",
 });
-// A plugin pane's descriptor is opaque JSON the plugin validates; layout only
-// carries it. Bounded by ts-a4e25e, which also defines what a pane type may put
-// in it — here a value has to be JSON-shaped, and S.Unknown admits it.
+/**
+ * A plugin pane's descriptor: the remount contract between the pane type's
+ * view and the daemon that persists it. Opaque to core — the plugin validates
+ * it — but bounded (ts-a4e25e): it must be JSON-shaped and small enough that a
+ * single pane cannot hoard the wire or the save file. The size is checked on
+ * the serialized form, because that is what crosses every boundary; a
+ * descriptor that only fits in memory is a descriptor that cannot be
+ * persisted, so the schema rejects it rather than a later save failing.
+ */
+const descriptorBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
+export const DescriptorSchema: S.Codec<JsonValue> = S.suspend(() =>
+  S.Union([
+    S.Null,
+    S.String,
+    S.Boolean,
+    S.Finite,
+    S.Array(DescriptorSchema),
+    S.Record(S.String, DescriptorSchema),
+  ]).pipe(
+    S.check(
+      S.makeFilter(
+        (value) =>
+          descriptorBytes(value) <= MAX_DESCRIPTOR_BYTES ||
+          `descriptor exceeds the ${MAX_DESCRIPTOR_BYTES}-byte limit`,
+      ),
+    ),
+  ),
+) as S.Codec<JsonValue>;
 export const PaneContentSchema: S.Codec<PaneContent> = S.Union([
   S.Struct({
     kind: S.Literals(["pty"]),
@@ -876,7 +952,7 @@ export const PaneContentSchema: S.Codec<PaneContent> = S.Union([
       S.check(S.isMinLength(1)),
       S.annotateKey({ messageMissingKey: "plugin content needs a pane type" }),
     ),
-    descriptor: S.Unknown.pipe(
+    descriptor: DescriptorSchema.pipe(
       S.annotateKey({ messageMissingKey: "plugin content needs a descriptor" }),
     ),
     session: S.optional(sessionId),

@@ -2,7 +2,7 @@ import { Cause, Effect, Exit, JsonSchema, Schema as S, SchemaIssue } from "effec
 
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
-import { LAYOUT_PRESETS } from "./layout.ts";
+import { LAYOUT_PRESETS, DescriptorSchema } from "./layout.ts";
 import { creationResultSchema } from "./creation-result.ts";
 import {
   PaneCurrentResultSchema,
@@ -392,6 +392,16 @@ const PaneCopyMode = define(
     group: "panes",
     target: "view",
     exposure: "human",
+  },
+);
+const PaneSetDescriptor = define(
+  "pane.set-descriptor",
+  { descriptor: DescriptorSchema, ...PaneTarget },
+  {
+    desc: "set a plugin pane's descriptor (its remount contract)",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
   },
 );
 
@@ -877,6 +887,7 @@ export const COMMAND_DEFS = [
   PaneCurrent,
   PaneLayout,
   PaneCopyMode,
+  PaneSetDescriptor,
   BufferSet,
   BufferPaste,
   BufferList,
@@ -1275,6 +1286,7 @@ export const Commands = {
   PaneCurrent,
   PaneLayout,
   PaneCopyMode,
+  PaneSetDescriptor,
   BufferSet,
   BufferPaste,
   BufferList,

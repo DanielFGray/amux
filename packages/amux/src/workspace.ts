@@ -30,6 +30,7 @@ import {
   prune,
   setPlacement,
   setDock,
+  setPaneDescriptor,
   undockPane,
   splitLayout,
   swapLayout,
@@ -877,6 +878,15 @@ export function applyWorkspaceCommand(
       if (target && layoutRefs(target.layout).some((pane) => pane.id === command.pane)) {
         setFocus(target, command.pane);
       }
+      break;
+    }
+    case "pane.set-descriptor": {
+      const target = paneTarget();
+      if (!target) break;
+      const window = target.window.window;
+      const next = setPaneDescriptor(window.layout, target.pane.id, command.descriptor);
+      // A descriptor change only rewrites content; placement and focus hold.
+      window.layout = next;
       break;
     }
     case "pane.resize": {
