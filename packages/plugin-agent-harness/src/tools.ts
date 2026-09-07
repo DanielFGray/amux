@@ -11,6 +11,12 @@ import type { JsonValue } from "@danielfgray/amux";
 /** What `agentToolkit` needs from a project store to attach nested instructions. */
 type InstructionStore = Pick<ProjectStoreInterface, "attachedInstructions" | "attachInstructions">;
 
+export interface AgentSearch {
+  readonly find: (query: string, limit: number) => Effect.Effect<string, string>;
+  readonly glob: (pattern: string, limit: number) => Effect.Effect<string, string>;
+  readonly grep: (query: string, limit: number) => Effect.Effect<string, string>;
+}
+
 const DEFAULT_LIMIT = 2_000;
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_OUTPUT_BYTES = 1_000_000;
@@ -61,6 +67,15 @@ const Grep = Tool.make("grep", {
   failureMode: "return",
 });
 
+const Find = Tool.make("find", {
+  description:
+    "Find files by a typo-tolerant name query. Relative paths resolve from the workspace.",
+  parameters: S.Struct({ query: S.String, limit: S.optional(S.Finite) }),
+  success: S.String,
+  failure: S.String,
+  failureMode: "return",
+});
+
 const Bash = Tool.make("bash", {
   description:
     "Run a shell command in the workspace and return its combined output and exit status.",
@@ -85,8 +100,9 @@ export const agentToolkit = Effect.fnUntraced(function* (
   workspace: string,
   gate: PermissionGate,
   instructions: { readonly session: string; readonly store: InstructionStore },
+  options: { readonly search?: AgentSearch } = {},
 ) {
-  const toolkit = Toolkit.make(Read, Write, Glob, Grep, Bash);
+  const toolkit = Toolkit.make(Read, Write, Find, Glob, Grep, Bash);
   /** Clear the call, then run it. A refusal is the tool's failure text. */
   const gated = <E>(
     tool: string,
@@ -193,8 +209,13 @@ export const agentToolkit = Effect.fnUntraced(function* (
           resources,
           input,
           Effect.gen(function* () {
-            const path = yield* Path.Path;
             const root = fromWorkspace(workspace, input.path ?? ".");
+            if (options.search)
+              return yield* withNested(
+                root,
+                yield* options.search.glob(input.pattern, input.limit ?? DEFAULT_LIMIT),
+              );
+            const path = yield* Path.Path;
             const matches: string[] = [];
             for (const match of new Bun.Glob(input.pattern).scanSync({
               cwd: root,
@@ -207,6 +228,21 @@ export const agentToolkit = Effect.fnUntraced(function* (
           }),
         );
       }),
+    find: (input) =>
+      Effect.gen(function* () {
+        const resources = yield* paths(".");
+        return yield* gated(
+          "find",
+          "read",
+          resources,
+          input,
+          options.search
+            ? options.search
+                .find(input.query, input.limit ?? DEFAULT_LIMIT)
+                .pipe(Effect.flatMap((result) => withNested(workspace, result)))
+            : Effect.succeed("File search is unavailable; use glob instead."),
+        );
+      }),
     grep: (input) =>
       Effect.gen(function* () {
         const resources = yield* paths(input.path ?? ".");
@@ -216,6 +252,12 @@ export const agentToolkit = Effect.fnUntraced(function* (
           resources,
           input,
           Effect.gen(function* () {
+            const directory = fromWorkspace(workspace, input.path ?? ".");
+            if (options.search)
+              return yield* withNested(
+                directory,
+                yield* options.search.grep(input.pattern, input.limit ?? DEFAULT_LIMIT),
+              );
             const args = [
               "rg",
               "--line-number",
@@ -224,7 +266,6 @@ export const agentToolkit = Effect.fnUntraced(function* (
               String(input.limit ?? DEFAULT_LIMIT),
             ];
             if (input.include) args.push("--glob", input.include);
-            const directory = fromWorkspace(workspace, input.path ?? ".");
             args.push("--", input.pattern, directory);
             const result = yield* run(args, workspace, DEFAULT_TIMEOUT);
             if (result.exit === 1) return yield* withNested(directory, "No files found");

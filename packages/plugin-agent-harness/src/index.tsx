@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Option, Redacted } from "effect";
 import { For, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -52,7 +52,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
     SettingsTag,
     SpawnProvidersTag,
   ],
-  effect: () =>
+  effect: (ctx) =>
     Effect.gen(function* () {
       const bindings = yield* BindingsTag;
       const options = yield* OptionsTag;
@@ -189,7 +189,50 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
               Effect.runForkWith(runtime)(openModelPicker);
               return true;
             }}
-            slashCommands={[{ name: "model", description: "choose the agent model" }]}
+            completionSources={[
+              {
+                trigger: "/",
+                complete: (query) =>
+                  [
+                    {
+                      id: "model",
+                      label: "/model",
+                      detail: "choose the agent model",
+                      replacement: "/model",
+                      submit: true,
+                    },
+                  ].filter((completion) =>
+                    `${completion.label} ${completion.detail}`
+                      .toLowerCase()
+                      .includes(query.toLowerCase()),
+                  ),
+              },
+              {
+                trigger: "@",
+                complete: (query) =>
+                  Effect.runPromiseWith(runtime)(
+                    Effect.promise(() => import("@danielfgray/amux-plugin-search")).pipe(
+                      Effect.flatMap((searchPlugin) =>
+                        Option.match(ctx.get(searchPlugin.SearchService), {
+                          onNone: () => Effect.succeed([]),
+                          onSome: (search) =>
+                            search.searchFiles(query, { pageSize: 12 }).pipe(
+                              Effect.map((result) =>
+                                result.items.map((item) => ({
+                                  id: item.relativePath,
+                                  label: `@${item.relativePath}`,
+                                  detail: item.gitStatus,
+                                  replacement: `@${item.relativePath} `,
+                                })),
+                              ),
+                            ),
+                        }),
+                      ),
+                      Effect.orElseSucceed(() => []),
+                    ),
+                  ),
+              },
+            ]}
             frames={sessionStream.frames}
             sync={sessionStream.sync}
             onSubmit={(message) =>

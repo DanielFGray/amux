@@ -47,7 +47,7 @@ it.live("agent toolkit exposes coding tools rather than amux commands", () =>
       session: "agent-1",
       store: noInstructions(),
     });
-    expect(Object.keys(toolkit.tools)).toEqual(["read", "write", "glob", "grep", "bash"]);
+    expect(Object.keys(toolkit.tools)).toEqual(["read", "write", "find", "glob", "grep", "bash"]);
     for (const tool of Object.values(toolkit.tools)) {
       expect(Tool.getJsonSchema(tool as never)).toMatchObject({ type: "object" });
     }

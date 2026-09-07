@@ -107,7 +107,15 @@ else {
         store,
         emit,
       });
-      const toolkit = agentToolkit(workspace, gate, { session, store });
+      const searchPlugin = yield* Effect.promise(
+        () => import("@danielfgray/amux-plugin-search/agent"),
+      ).pipe(Effect.orElseSucceed(() => undefined));
+      const search = searchPlugin
+        ? yield* searchPlugin
+            .makeAgentSearch({ root: workspace, session })
+            .pipe(Effect.orElseSucceed(() => undefined))
+        : undefined;
+      const toolkit = agentToolkit(workspace, gate, { session, store }, { search });
       // Chat owns the conversation: history, tool-call/result pairing and the
       // provider message shape are all its job, not ours. A resumed chat keeps
       // whatever system message it was created with; only a brand-new one needs

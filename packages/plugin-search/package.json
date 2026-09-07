@@ -1,0 +1,34 @@
+{
+  "name": "@danielfgray/amux-plugin-search",
+  "version": "0.1.0",
+  "keywords": [
+    "amux-plugin"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/plugin-search"
+  },
+  "type": "module",
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./agent": "./src/agent.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@ff-labs/fff-bun": "^0.10.6",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "engines": {
+    "amux": "^0.1.0"
+  }
+}

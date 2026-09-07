@@ -28,10 +28,17 @@
     "solid-js": "catalog:"
   },
   "devDependencies": {
-    "@danielfgray/amux": "workspace:*"
+    "@danielfgray/amux": "workspace:*",
+    "@danielfgray/amux-plugin-search": "workspace:*"
   },
   "peerDependencies": {
-    "@danielfgray/amux": "workspace:*"
+    "@danielfgray/amux": "workspace:*",
+    "@danielfgray/amux-plugin-search": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@danielfgray/amux-plugin-search": {
+      "optional": true
+    }
   },
   "engines": {
     "amux": "^0.1.0"

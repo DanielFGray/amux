@@ -10,11 +10,18 @@ import { permissionSummary } from "./transcript.ts";
 import { theme } from "@danielfgray/amux";
 import { ProcessState } from "@danielfgray/amux";
 import type { PermissionDecision } from "@danielfgray/amux/permission.ts";
+import {
+  activeCompletion,
+  replaceCompletion,
+  type ComposerCompletion,
+  type ComposerCompletionSource,
+} from "./composer-completion.ts";
 
 export interface ChatProps extends PaneViewProps {
   model: string;
   onSlashCommand?: (command: string) => boolean;
   slashCommands?: readonly SlashCommand[];
+  completionSources?: readonly ComposerCompletionSource[];
   frames: (session: string) => Stream.Stream<AttachFrame, never>;
   sync: (session: string) => void;
   /** Send what the user typed to the agent. The command layer's business: a
@@ -46,7 +53,8 @@ export function Chat(props: ChatProps) {
   const [draft, setDraft] = createSignal("");
   const [editorLines, setEditorLines] = createSignal(1);
   const [status, setStatus] = createSignal<ProcessState | undefined>();
-  const [selectedCommand, setSelectedCommand] = createSignal(0);
+  const [selectedCompletion, setSelectedCompletion] = createSignal(0);
+  const [completions, setCompletions] = createSignal<readonly ComposerCompletion[]>([]);
   const [pending, setPending] = createSignal<PermissionBlock | undefined>();
   // The request whose refusal the user is typing a reason for. While it is set,
   // the composer is a composer again and Enter sends the rejection.
@@ -64,13 +72,46 @@ export function Chat(props: ChatProps) {
     if (request) props.onPermission(request.request, decision);
   };
 
-  const commands = createMemo(() => {
-    const query = draft().slice(1).trimStart().toLowerCase();
-    return (props.slashCommands ?? []).filter((command) =>
-      `${command.name} ${command.description}`.toLowerCase().includes(query),
-    );
+  const active = createMemo(() => activeCompletion(draft()));
+  const completionMenuVisible = () => active() !== undefined && completions().length > 0;
+  let completionRequest = 0;
+  createEffect(() => {
+    const token = active();
+    const source =
+      token &&
+      [
+        ...(props.slashCommands === undefined
+          ? []
+          : [
+              {
+                trigger: "/" as const,
+                complete: (query: string) =>
+                  props
+                    .slashCommands!.filter((command) =>
+                      `${command.name} ${command.description}`
+                        .toLowerCase()
+                        .includes(query.toLowerCase()),
+                    )
+                    .map((command) => ({
+                      id: command.name,
+                      label: `/${command.name}`,
+                      detail: command.description,
+                      replacement: `/${command.name}`,
+                      submit: true,
+                    })),
+              },
+            ]),
+        ...(props.completionSources ?? []),
+      ].find((candidate) => candidate.trigger === token.trigger);
+    if (!source) {
+      setCompletions([]);
+      return;
+    }
+    const request = ++completionRequest;
+    void Promise.resolve(source.complete(token.query)).then((items) => {
+      if (request === completionRequest) setCompletions(items);
+    });
   });
-  const commandMenuVisible = () => draft().startsWith("/") && commands().length > 0;
 
   const syncEditorHeight = () => setEditorLines(Math.max(1, editor?.virtualLineCount ?? 1));
   createEffect(() => {
@@ -103,14 +144,19 @@ export function Chat(props: ChatProps) {
     submit();
   };
 
-  const selectCommand = () => {
-    const command = commands()[selectedCommand()];
-    if (!command) return;
-    if (props.onSlashCommand?.(`/${command.name}`)) {
+  const selectCompletion = () => {
+    const completion = completions()[selectedCompletion()];
+    const token = active();
+    if (!completion || !token) return;
+    if (completion.submit && props.onSlashCommand?.(completion.replacement)) {
       editor?.clear();
       setDraft("");
-      setSelectedCommand(0);
+      setSelectedCompletion(0);
+      return;
     }
+    editor?.setText(replaceCompletion(draft(), token, completion.replacement));
+    setDraft(editor?.plainText ?? "");
+    setSelectedCompletion(0);
   };
 
   return (
@@ -138,12 +184,12 @@ export function Chat(props: ChatProps) {
           />
         )}
       </Show>
-      <Show when={commandMenuVisible()}>
-        <CommandPicker
-          commands={commands()}
-          selected={selectedCommand()}
-          onSelect={selectCommand}
-          onSelectedChange={setSelectedCommand}
+      <Show when={completionMenuVisible()}>
+        <CompletionPicker
+          completions={completions()}
+          selected={selectedCompletion()}
+          onSelect={selectCompletion}
+          onSelectedChange={setSelectedCompletion}
         />
       </Show>
       <textarea
@@ -158,7 +204,7 @@ export function Chat(props: ChatProps) {
         focused={props.active()}
         onContentChange={() => {
           setDraft(editor?.plainText ?? "");
-          setSelectedCommand(0);
+          setSelectedCompletion(0);
           syncEditorHeight();
         }}
         onKeyDown={(event) => {
@@ -182,15 +228,15 @@ export function Chat(props: ChatProps) {
             event.preventDefault();
             return;
           }
-          if (!commandMenuVisible()) return;
+          if (!completionMenuVisible()) return;
           if (event.name === "down") {
-            setSelectedCommand((value) => Math.min(commands().length - 1, value + 1));
+            setSelectedCompletion((value) => Math.min(completions().length - 1, value + 1));
             event.preventDefault();
           } else if (event.name === "up") {
-            setSelectedCommand((value) => Math.max(0, value - 1));
+            setSelectedCompletion((value) => Math.max(0, value - 1));
             event.preventDefault();
           } else if (event.name === "return" || event.name === "enter") {
-            selectCommand();
+            selectCompletion();
             event.preventDefault();
           }
         }}
@@ -262,8 +308,8 @@ function ApprovalBar(props: {
   );
 }
 
-function CommandPicker(props: {
-  commands: readonly SlashCommand[];
+function CompletionPicker(props: {
+  completions: readonly ComposerCompletion[];
   selected: number;
   onSelect: () => void;
   onSelectedChange: (selected: number) => void;
@@ -280,8 +326,8 @@ function CommandPicker(props: {
         flexShrink: 0,
       }}
     >
-      <For each={props.commands}>
-        {(command, index) => (
+      <For each={props.completions}>
+        {(completion, index) => (
           <box
             style={{
               height: 1,
@@ -294,8 +340,8 @@ function CommandPicker(props: {
               props.onSelect();
             }}
           >
-            <text style={{ width: 12, flexShrink: 0, fg: theme.mauve }}>{`/${command.name}`}</text>
-            <text style={{ flexGrow: 1, fg: theme.subtext0 }}>{command.description}</text>
+            <text style={{ width: 28, flexShrink: 0, fg: theme.mauve }}>{completion.label}</text>
+            <text style={{ flexGrow: 1, fg: theme.subtext0 }}>{completion.detail}</text>
           </box>
         )}
       </For>
