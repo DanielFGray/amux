@@ -152,6 +152,25 @@ const PaneSplit = define(
   },
   creationResultSchema("pane.split"),
 );
+/**
+ * Open a client-rendered plugin pane with no daemon backend — the editor's
+ * entry point (ts-96d6bf). Splits the focused pane like pane.split, but the
+ * newcomer names a registered pane type and a descriptor instead of a session:
+ * core places the pane and persists the descriptor; the plugin's view renders
+ * from it. `type` selects which registered view fills the pane, `descriptor`
+ * is the remount contract that pane type's view reads back.
+ */
+const PaneOpenPlugin = define(
+  "pane.open-plugin",
+  { type: S.String.pipe(S.check(S.isMinLength(1))), descriptor: DescriptorSchema, ...PaneTarget },
+  {
+    desc: "open a plugin-rendered pane (no backend session)",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
+  },
+  creationResultSchema("pane.open-plugin"),
+);
 const PaneNext = define(
   "pane.next",
   {},
@@ -863,6 +882,7 @@ const AppQuit = define(
 /** Every verb, in the order the surfaces list them. */
 export const COMMAND_DEFS = [
   PaneSplit,
+  PaneOpenPlugin,
   PaneNext,
   PaneLast,
   PaneFocus,
@@ -1267,6 +1287,7 @@ export function runDetached(
 
 export const Commands = {
   PaneSplit,
+  PaneOpenPlugin,
   PaneNext,
   PaneLast,
   PaneFocus,

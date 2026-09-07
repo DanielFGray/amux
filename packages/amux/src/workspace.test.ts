@@ -932,11 +932,44 @@ test("pane.set-descriptor targets the focused pane when no pane is named", () =>
   });
 });
 
+test("pane.open-plugin creates a sessionless plugin pane and reports its pane id", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const opened = applyWorkspaceCommand(
+    adopted,
+    command("pane.open-plugin", { type: "amux.editor", descriptor: { file: "/work/note.txt" } }),
+    context,
+  );
+  const window = opened.snapshot.spaces[0]!.windows[0]!;
+  const panes = layoutPanes(window.layout.root);
+  expect(panes).toHaveLength(2);
+  const editor = panes[1]!;
+  expect(editor.content).toEqual({
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: { file: "/work/note.txt" },
+  });
+  // No backend: no session is added, and the newcomer has focus.
+  expect(window.sessions).toHaveLength(1);
+  expect(window.state.focus).toBe(editor.id);
+  expect(opened.result).toEqual({ pane: editor.id });
+});
+
+test("pane.open-plugin creates no spawn action", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const opened = applyWorkspaceCommand(
+    adopted,
+    command("pane.open-plugin", { type: "amux.editor", descriptor: {} }),
+    context,
+  );
+  // A sessionless pane has nothing to spawn; any action would be a backend.
+  expect(opened.actions).toEqual([]);
+});
+
 test("a descriptor larger than the bound is rejected by the wire schema", () => {
   const big = { blob: "x".repeat(1024 * 64 + 1) };
-  const result = S.decodeUnknownOption(DescriptorSchema)(big);
+  const result = S.decodeOption(DescriptorSchema)(big);
   expect(result._tag).toBe("None");
-  const ok = S.decodeUnknownOption(DescriptorSchema)({ blob: "x".repeat(1024 * 63) });
+  const ok = S.decodeOption(DescriptorSchema)({ blob: "x".repeat(1024 * 63) });
   expect(ok._tag).toBe("Some");
 });
 

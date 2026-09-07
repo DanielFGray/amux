@@ -14,6 +14,7 @@ export const CREATION_ENTITIES = Object.keys(CREATION_ENTITY_SCHEMAS) as Creatio
 export const CREATION_RESULT_ENTITIES = {
   "agent.new": ["session", "pane"],
   "pane.split": ["session", "pane"],
+  "pane.open-plugin": ["pane"],
   "window.new": ["window", "pane", "session"],
   "space.new": ["space", "window", "pane", "session"],
 } as const satisfies Record<string, readonly CreationEntity[]>;

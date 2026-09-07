@@ -1432,6 +1432,7 @@ function buildApp(
     // Suspended rather than `sync`: the window has to be read when the command
     // runs, not when the table is built.
     "pane.split": runCommand,
+    "pane.open-plugin": runCommand,
     "pane.next": runCommand,
     "pane.last": runCommand,
     "pane.focus": runCommand,

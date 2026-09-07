@@ -836,6 +836,34 @@ export function applyWorkspaceCommand(
       result = { session: agent.id, pane: ref.id } satisfies CreationResult<"pane.split">;
       break;
     }
+    case "pane.open-plugin": {
+      const target = paneTarget();
+      if (!target) break;
+      const { space, window } = target.window;
+      // A client-only plugin pane has no backend: nothing is spawned, no
+      // session enters the roster, and the content IS the remount contract.
+      const panes = layoutPanes(window.layout.root);
+      const at = panes.findIndex((pane) => pane.id === target.pane.id);
+      const ref = {
+        id: newPaneId(space),
+        content: {
+          kind: "plugin",
+          type: command.type,
+          descriptor: command.descriptor,
+        } satisfies PaneContent,
+      };
+      window.layout =
+        at === -1
+          ? appendPane(window.layout, ref)
+          : (algorithm.split?.(window.layout, context.size, target.pane.id, "row", ref) ??
+            splitLayout(window.layout, at, "row", ref));
+      window.state.focus = ref.id;
+      window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
+      window.state.zoom = null;
+      window.state.preset = null;
+      result = { pane: ref.id } satisfies CreationResult<"pane.open-plugin">;
+      break;
+    }
     case "pane.next": {
       const target = activeWindow();
       if (!target) break;
