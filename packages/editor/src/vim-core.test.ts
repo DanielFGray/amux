@@ -303,3 +303,208 @@ test("a failed write leaves the buffer dirty with the error on the status line",
   expect(failed.dirty).toBe(true);
   expect(failed.message).toBe("permission denied");
 });
+
+test("w moves to the start of the next word", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three"],
+    cursor: { row: 0, col: 0 },
+  };
+  const moved = typeKeys(start, ["w"]);
+  expect(moved.cursor).toEqual({ row: 0, col: 4 });
+});
+
+test("b backs up to the start of the previous word", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three"],
+    cursor: { row: 0, col: 4 },
+  };
+  const moved = typeKeys(start, ["b"]);
+  expect(moved.cursor).toEqual({ row: 0, col: 0 });
+});
+
+test("e moves to the end of the current word", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three"],
+    cursor: { row: 0, col: 0 },
+  };
+  const moved = typeKeys(start, ["e"]);
+  expect(moved.cursor).toEqual({ row: 0, col: 2 });
+});
+
+test("gg jumps to the first non-blank of the first line", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one", "two", "three"],
+    cursor: { row: 2, col: 0 },
+  };
+  const moved = typeKeys(start, ["g", "g"]);
+  expect(moved.cursor).toEqual({ row: 0, col: 0 });
+});
+
+test("G jumps to the start of the last line", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one", "two", "three"],
+    cursor: { row: 0, col: 0 },
+  };
+  const moved = typeKeys(start, ["G"]);
+  expect(moved.cursor).toEqual({ row: 2, col: 0 });
+});
+
+test("counts repeat a motion", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three four five"],
+    cursor: { row: 0, col: 0 },
+  };
+  const moved = typeKeys(start, ["3", "w"]);
+  expect(moved.cursor.col).toBe(14);
+});
+
+test("2dw deletes two words with their trailing space", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three four"],
+    cursor: { row: 0, col: 0 },
+  };
+  const deleted = typeKeys(start, ["2", "d", "w"]);
+  expect(text(deleted)).toBe("three four");
+  expect(deleted.dirty).toBe(true);
+  expect(deleted.register.linewise).toBe(false);
+});
+
+test("dw deletes one word and leaves cursor at the gap", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three"],
+    cursor: { row: 0, col: 0 },
+  };
+  const deleted = typeKeys(start, ["d", "w"]);
+  expect(text(deleted)).toBe("two three");
+  expect(deleted.cursor).toEqual({ row: 0, col: 0 });
+});
+
+test("dd deletes the entire current line", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["alpha", "beta", "gamma"],
+    cursor: { row: 1, col: 1 },
+  };
+  const deleted = typeKeys(start, ["d", "d"]);
+  expect(text(deleted)).toBe("alpha\ngamma");
+  expect(deleted.cursor).toEqual({ row: 1, col: 0 });
+  expect(deleted.register.linewise).toBe(true);
+});
+
+test("cw changes the current word and enters insert mode", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three"],
+    cursor: { row: 0, col: 0 },
+  };
+  const changed = typeKeys(start, ["c", "w", "X", "escape"]);
+  expect(text(changed)).toBe("X two three");
+  expect(changed.mode).toBe("normal");
+  expect(changed.dirty).toBe(true);
+});
+
+test("y$ yanks to end of line and p pastes after the cursor", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["alpha beta"],
+    cursor: { row: 0, col: 6 },
+  };
+  const yanked = typeKeys(start, ["y", "$"]);
+  expect(yanked.register.linewise).toBe(false);
+  expect(yanked.register.text).toEqual(["beta"]);
+  const putted = typeKeys(yanked, ["p"]);
+  // Charwise put inserts at col+1, splitting the line right after the cursor.
+  expect(text(putted)).toBe("alpha bbetaeta");
+  expect(putted.dirty).toBe(true);
+});
+
+test("yy yanks the current line and p pastes a copy below", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["alpha", "beta"],
+    cursor: { row: 0, col: 0 },
+  };
+  const yanked = typeKeys(start, ["y", "y"]);
+  expect(yanked.register.linewise).toBe(true);
+  const putted = typeKeys(yanked, ["p"]);
+  expect(text(putted)).toBe("alpha\nalpha\nbeta");
+});
+
+test("diw deletes the word under the cursor", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three"],
+    cursor: { row: 0, col: 5 },
+  };
+  const deleted = typeKeys(start, ["d", "i", "w"]);
+  expect(text(deleted)).toBe("one  three");
+  expect(deleted.cursor).toEqual({ row: 0, col: 4 });
+});
+
+test("daw deletes the word and the trailing space", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["one two three"],
+    cursor: { row: 0, col: 0 },
+  };
+  const deleted = typeKeys(start, ["d", "a", "w"]);
+  expect(text(deleted)).toBe("two three");
+});
+
+test("dip deletes the current paragraph", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["para one", "still para", "", "next para"],
+    cursor: { row: 1, col: 0 },
+  };
+  const deleted = typeKeys(start, ["d", "i", "p"]);
+  expect(text(deleted)).toBe("next para");
+});
+
+test("di( deletes the contents of the surrounding parens", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["foo(bar baz)tail"],
+    cursor: { row: 0, col: 5 },
+  };
+  const deleted = typeKeys(start, ["d", "i", "("]);
+  expect(text(deleted)).toBe("foo()tail");
+});
+
+test("da( deletes the parens and their contents", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["foo(bar baz)tail"],
+    cursor: { row: 0, col: 5 },
+  };
+  const deleted = typeKeys(start, ["d", "a", "("]);
+  expect(text(deleted)).toBe("footail");
+});
+
+test("escape cancels a pending operator", () => {
+  const start: EditorState = {
+    ...initialEditor(),
+    lines: ["alpha"],
+    cursor: { row: 0, col: 0 },
+  };
+  const armed = typeKeys(start, ["d"]);
+  expect(armed.pending).not.toBeNull();
+  const cancelled = typeKeys(armed, ["escape"]);
+  expect(cancelled.pending).toBeNull();
+  expect(text(cancelled)).toBe("alpha");
+});
+
+test("escape cancels a typed count", () => {
+  const start: EditorState = { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 0 } };
+  const typed = typeKeys(start, ["1", "2", "escape"]);
+  expect(typed.count).toBe("");
+  expect(typed.cursor).toEqual({ row: 0, col: 0 });
+});
