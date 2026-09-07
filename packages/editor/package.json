@@ -8,12 +8,25 @@
     "directory": "packages/editor"
   },
   "type": "module",
-  "module": "src/vim-core.ts",
+  "module": "src/plugin.tsx",
   "exports": {
-    ".": "./src/vim-core.ts",
+    ".": "./src/plugin.tsx",
     "./*": "./src/*"
   },
+  "scripts": {
+    "bench:render": "bun test --cwd ../.. --timeout=30000 packages/editor/bench/render.bench.test.tsx"
+  },
   "dependencies": {
-    "@opentui/core": "catalog:"
+    "@effect/platform-bun": "catalog:",
+    "@opentui/core": "catalog:",
+    "@opentui/solid": "catalog:",
+    "effect": "catalog:",
+    "solid-js": "catalog:"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
   }
 }

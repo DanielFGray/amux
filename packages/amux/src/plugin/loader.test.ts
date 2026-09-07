@@ -156,6 +156,18 @@ testEffect("loads a valid plugin", () =>
   }).pipe(Effect.provide(BunFileSystem.layer)),
 );
 
+testEffect("loads the editor package through its configured package entrypoint", () =>
+  Effect.gen(function* () {
+    const { host } = yield* makeHost();
+    const editor = join(testDir, "../../../editor");
+    const config = baseConfig({ plugins: [spec(editor)] });
+
+    yield* loadPluginsFromConfig(config, host, testDir);
+
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["amux.editor"]);
+  }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
 testEffect("loads a path plugin's daemon entrypoint", () =>
   Effect.gen(function* () {
     const dir = yield* tempDir;

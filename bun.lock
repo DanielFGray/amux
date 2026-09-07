@@ -68,7 +68,17 @@
       "name": "@danielfgray/amux-editor",
       "version": "0.1.0",
       "dependencies": {
+        "@effect/platform-bun": "catalog:",
         "@opentui/core": "catalog:",
+        "@opentui/solid": "catalog:",
+        "effect": "catalog:",
+        "solid-js": "catalog:",
+      },
+      "devDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+      "peerDependencies": {
+        "@danielfgray/amux": "workspace:*",
       },
     },
     "packages/plugin-agent-harness": {
@@ -86,10 +96,15 @@
       },
       "devDependencies": {
         "@danielfgray/amux": "workspace:*",
+        "@danielfgray/amux-plugin-search": "workspace:*",
       },
       "peerDependencies": {
         "@danielfgray/amux": "workspace:*",
+        "@danielfgray/amux-plugin-search": "workspace:*",
       },
+      "optionalPeers": [
+        "@danielfgray/amux-plugin-search",
+      ],
     },
     "packages/plugin-niri": {
       "name": "@danielfgray/amux-plugin-niri",
@@ -124,6 +139,7 @@
       "name": "@danielfgray/amux-plugin-search",
       "version": "0.1.0",
       "dependencies": {
+        "@effect/platform-bun": "catalog:",
         "@ff-labs/fff-bun": "^0.10.6",
         "effect": "catalog:",
       },

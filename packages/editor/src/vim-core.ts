@@ -104,14 +104,16 @@ function onKey(state: EditorState, key: KeyEvent): EditorState {
 /**
  * The printable character a keypress carries, or null.
  *
- * Named keys (enter, space, backspace…) come back null so their callers switch
- * on `key.name` instead; the parser reports capitals as lowercase names plus a
- * shift flag, so the *character* has to come from `sequence`, which carries the
- * actual glyph. Releases and ctrl/meta combos are never text.
+ * Named control keys (enter, backspace…) come back null so their callers switch
+ * on `key.name` instead. OpenTUI calls printable space `space`, however, so it
+ * is the named-key exception. The parser reports capitals as lowercase names
+ * plus a shift flag, so the *character* has to come from `sequence`, which
+ * carries the actual glyph. Releases and ctrl/meta combos are never text.
  */
 export function charFromKey(key: KeyEvent): string | null {
   if (key.eventType === "release") return null;
   if (key.ctrl || key.meta || key.option) return null;
+  if (key.name === "space" && key.sequence === " ") return " ";
   const name = key.name;
   if (!name || name.length > 1) return null;
   const sequence = key.sequence;
@@ -241,17 +243,10 @@ function deleteCharAt(state: EditorState): EditorState {
 // ---------------------------------------------------------------------------
 
 function insertKey(state: EditorState, key: KeyEvent): EditorState {
+  if (key.ctrl && key.name === "c") return leaveInsert(state);
   switch (key.name) {
     case "escape":
-    case "ctrl+c":
-      return {
-        ...state,
-        mode: "normal",
-        // vim steps the cursor back one column when insert closes; it never
-        // walks off the front of a line.
-        cursor: { ...state.cursor, col: Math.max(0, state.cursor.col - 1) },
-        message: null,
-      };
+      return leaveInsert(state);
     case "backspace":
       return insertBackspace(state);
     case "return":
@@ -263,6 +258,17 @@ function insertKey(state: EditorState, key: KeyEvent): EditorState {
       return insertChar(state, char);
     }
   }
+}
+
+function leaveInsert(state: EditorState): EditorState {
+  return {
+    ...state,
+    mode: "normal",
+    // vim steps the cursor back one column when insert closes; it never walks
+    // off the front of a line.
+    cursor: { ...state.cursor, col: Math.max(0, state.cursor.col - 1) },
+    message: null,
+  };
 }
 
 function insertChar(state: EditorState, char: string): EditorState {

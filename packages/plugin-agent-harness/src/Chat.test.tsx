@@ -59,12 +59,14 @@ async function chat(
     () => (
       <Chat
         sessionId={session.id}
+        paneId="pane-native"
         paneType="test"
         descriptor={{}}
         model="openai/gpt-4o-mini"
         width={width}
         height={() => 8}
         active={focused}
+        captureKeys={() => {}}
         frames={frames}
         sync={() => {}}
         onSubmit={(message) => sent.push(message)}
@@ -309,12 +311,14 @@ test("a submitted message is answered by the agent in the transcript", async () 
     () => (
       <Chat
         sessionId="native"
+        paneId="pane-native"
         paneType="test"
         descriptor={{}}
         model="openai/gpt-4o-mini"
         width={() => 40}
         height={() => 20}
         active={() => true}
+        captureKeys={() => {}}
         frames={() =>
           Stream.callback<AttachFrame>((queue) => {
             push = (frame) => Queue.offerUnsafe(queue, frame);
@@ -391,12 +395,14 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
     () => (
       <Chat
         sessionId="native"
+        paneId="pane-native"
         paneType="test"
         descriptor={{}}
         model="openai/gpt-4o-mini"
         width={() => 40}
         height={() => 20}
         active={() => true}
+        captureKeys={() => {}}
         frames={() =>
           Stream.callback<AttachFrame>((queue) => {
             push = (frame) => Queue.offerUnsafe(queue, frame);

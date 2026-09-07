@@ -83,6 +83,12 @@ test("i inserts before the cursor and escape returns to normal", () => {
   expect(typed.dirty).toBe(true);
 });
 
+test("Ctrl-C leaves insert mode using OpenTUI's modifier event shape", () => {
+  const state = reduceEditor(initialEditor(), { type: "key", key: key("i") });
+  const exited = reduceEditor(state, { type: "key", key: key("c", { ctrl: true }) });
+  expect(exited.mode).toBe("normal");
+});
+
 test("a inserts after the cursor", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 1 } },
@@ -161,6 +167,21 @@ test("charFromKey reads the glyph a shift-modified press actually produced", () 
   // The parser reports a capital as a lowercase name plus a shift flag, so the
   // character has to come from `sequence`, not `name`.
   expect(charFromKey({ name: "a", shift: true, sequence: "A" } as KeyEvent)).toBe("A");
+});
+
+test("charFromKey accepts OpenTUI's named printable space", () => {
+  expect(charFromKey(key("space", { sequence: " " }))).toBe(" ");
+  const opened = typeKeys(initialEditor(), [
+    ":",
+    "e",
+    key("space", { sequence: " " }),
+    "n",
+    "o",
+    "t",
+    "e",
+    "return",
+  ]);
+  expect(opened.request).toEqual({ type: "open", path: "note" });
 });
 
 test("charFromKey ignores releases and modifier-only keys", () => {

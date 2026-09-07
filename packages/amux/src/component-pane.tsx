@@ -21,6 +21,11 @@ import type { JsonValue } from "./layout.ts";
 export interface PaneViewProps {
   /** The pane's session id, or empty when the content has no backend. */
   sessionId: string;
+  /** This pane's own id — how a view addresses itself, e.g. to close its
+   *  pane (:q) or update its own descriptor (:e). The session id names the
+   *  backend, which a client-only view has none of; the pane id names the
+   *  frame, which every view has. */
+  paneId: string;
   /** The pane type, which is what selected this view. */
   paneType: string;
   /** The content's descriptor — the plugin's own, opaque to the pane host. */
@@ -118,6 +123,9 @@ export class ComponentPane extends Pane {
     const renderer = ctx as CliRenderer;
     const props: PaneViewProps = {
       sessionId: this.session?.id ?? "",
+      // A pane addresses itself by its own id, not its session's — a
+      // client-only view (:q, :e) needs the frame, and has no session.
+      paneId: this.id,
       // A plugin pane is selected by its durable content, never by the
       // process a session happens to be running.
       paneType: options.paneType,

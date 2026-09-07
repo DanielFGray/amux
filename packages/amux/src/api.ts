@@ -42,6 +42,7 @@ export {
   SessionFactsTag,
   PanelTag,
   SessionStreamTag,
+  RemoteEventsTag,
   CliCommandsTag,
   DaemonCommandsTag,
   TilingAlgorithmsTag,
@@ -67,6 +68,7 @@ export {
   type InterceptablePluginService,
   type ServiceInterception,
   type SessionStreamService,
+  type RemoteEventsService,
 } from "./plugin/services.ts";
 export type { TilingAlgorithm } from "./tiling-algorithm.ts";
 export type { Meta } from "./commands.ts";
