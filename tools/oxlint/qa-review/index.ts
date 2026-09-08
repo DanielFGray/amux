@@ -4,6 +4,7 @@ import { noChainedTypeAssertionsRule } from "./rules/no-chained-type-assertions.
 import { noConditionalEmptyObjectSpreadRule } from "./rules/no-conditional-empty-object-spread.ts";
 import { noKnownValueWideningRule } from "./rules/no-known-value-widening.ts";
 import { noObjectParametersRule } from "./rules/no-object-parameters.ts";
+import { noUngovernedEffectRunRule } from "./rules/no-ungoverned-effect-run.ts";
 import { noRuntimeTypeofRule } from "./rules/no-runtime-typeof.ts";
 import { noForbiddenTermInSymbolNamesRule } from "./rules/no-shape-in-symbol-names.ts";
 import { noUnknownParametersRule } from "./rules/no-unknown-parameters.ts";
@@ -19,6 +20,7 @@ const antiSlopPlugin = definePlugin({
     "no-conditional-empty-object-spread": noConditionalEmptyObjectSpreadRule,
     "no-known-value-widening": noKnownValueWideningRule,
     "no-object-parameters": noObjectParametersRule,
+    "no-ungoverned-effect-run": noUngovernedEffectRunRule,
     "no-runtime-typeof": noRuntimeTypeofRule,
     "no-unsafe-dictionary-type": noUnsafeDictionaryTypeRule,
     "no-shape-in-symbol-names": noForbiddenTermInSymbolNamesRule,
