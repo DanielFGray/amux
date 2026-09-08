@@ -11,7 +11,7 @@
   "module": "src/plugin.tsx",
   "exports": {
     ".": "./src/plugin.tsx",
-    "./*": "./src/*"
+    "./daemon": "./src/daemon.ts"
   },
   "scripts": {
     "bench:render": "bun test --cwd ../.. --timeout=30000 packages/editor/bench/render.bench.test.tsx"

@@ -3,14 +3,40 @@
 import { expect, test } from "bun:test";
 import { Effect, Layer } from "effect";
 import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
+import { BunFileSystem, BunPath } from "@effect/platform-bun";
+import * as Path from "effect/Path";
 import { BoxRenderable, type CliRenderer, type KeyEvent } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { RendererContext, _render } from "@opentui/solid";
 import type { PaneViewProps } from "@danielfgray/amux";
 import { createPluginContributions } from "@danielfgray/amux/plugin/contributions.ts";
 import { testPluginEnvironment } from "@danielfgray/amux/testing";
-import { EditorPane } from "../src/EditorPane.tsx";
+import { EditorPane, type EditorController } from "../src/EditorPane.tsx";
+import { EditorIo, type EditorIoService } from "../src/io.ts";
+
+/** Build the same `EditorIo` shape the plugin installs in production, against
+ *  the platform filesystem. The bench's perf measurement must not exclude
+ *  the cost of resolving and decoding a file at mount. */
+const buildBenchIo: Effect.Effect<EditorIoService> = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return EditorIo.of({
+    read: (file, spaceDir) =>
+      Effect.gen(function* () {
+        const resolved = path.resolve(spaceDir, file);
+        const text = yield* fs.readFileString(resolved);
+        const lines = text.split("\n");
+        if (lines.at(-1) === "") return { file, lines: lines.slice(0, -1) };
+        return { file, lines };
+      }),
+    write: (file, lines, spaceDir) =>
+      Effect.gen(function* () {
+        const resolved = path.resolve(spaceDir, file);
+        yield* fs.writeFileString(resolved, lines.join("\n") + "\n");
+      }),
+    resolve: (spaceDir, p) => Effect.sync(() => path.resolve(spaceDir, p)),
+  });
+}).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)));
 
 const LINE_COUNTS = [100, 1_000, 10_000] as const;
 const WARMUP_KEYSTROKES = 40;
@@ -31,7 +57,7 @@ const key = (name: string): KeyEvent =>
 const percentile = (sorted: readonly number[], fraction: number): number =>
   sorted[Math.ceil(sorted.length * fraction) - 1]!;
 
-async function measure(file: string, lines: number): Promise<Measurement> {
+async function measure(file: string, lines: number, io: EditorIoService): Promise<Measurement> {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
   const content = new BoxRenderable(t.renderer, {
     id: "benchmark-content",
@@ -39,8 +65,12 @@ async function measure(file: string, lines: number): Promise<Measurement> {
     height: HEIGHT,
   });
   t.renderer.root.add(content);
-  let press: (event: KeyEvent) => boolean = () => {
+  let controller: EditorController | null = null;
+  const press = (event: KeyEvent) => {
+    if (controller === null) {
     throw new Error("EditorPane did not register its key handler");
+    }
+    controller.dispatch(event);
   };
   const renderer = t.renderer as CliRenderer;
   const props: PaneViewProps = {
@@ -51,15 +81,25 @@ async function measure(file: string, lines: number): Promise<Measurement> {
     width: () => WIDTH,
     height: () => HEIGHT,
     active: () => true,
-    captureKeys: (handler) => {
-      if (handler !== null) press = handler;
-    },
+    captureKeys: () => {},
   };
   const contributions = createPluginContributions();
   const views = testPluginEnvironment(t.renderer, { contributions }).registries.sessionViews;
   const owner = { id: "benchmark", generation: 1 };
   views.register(owner, "amux.editor", (viewProps) => (
-    <EditorPane {...viewProps} run={() => {}} spaceDir="/" lineNumbers={() => true} />
+    <EditorPane
+      {...viewProps}
+      run={() => {}}
+      spaceDir="/"
+      lineNumbers={() => true}
+      io={io}
+      registerController={(next) => {
+        controller = next;
+        return () => {
+          controller = null;
+        };
+      }}
+    />
   ));
   contributions.commit(owner);
   const dispose = _render(
@@ -73,11 +113,14 @@ async function measure(file: string, lines: number): Promise<Measurement> {
 
     press(key("i"));
     await t.renderOnce();
+    await Bun.sleep(20);
     press(key("x"));
     await t.renderOnce();
+    await Bun.sleep(20);
     expect(t.captureCharFrame()).toContain("xexport const line000000");
     press(key("backspace"));
     await t.renderOnce();
+    await Bun.sleep(20);
     expect(t.captureCharFrame()).toContain("export const line000000");
     expect(t.captureCharFrame()).not.toContain("xexport const line000000");
     for (let index = 0; index < WARMUP_KEYSTROKES; index++) {
@@ -118,6 +161,7 @@ const program = Effect.scoped(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "amux-editor-bench-" });
+    const io: EditorIoService = yield* buildBenchIo;
     const results: Measurement[] = [];
 
     for (const lines of LINE_COUNTS) {
@@ -128,7 +172,7 @@ const program = Effect.scoped(
           `export const line${String(index).padStart(6, "0")} = "line ${String(index).padStart(6, "0")} representative editor content";`,
       ).join("\n");
       yield* fs.writeFileString(file, `${source}\n`);
-      results.push(yield* Effect.promise(() => measure(file, lines)));
+      results.push(yield* Effect.promise(() => measure(file, lines, io)));
     }
 
     console.log("| Lines | Median ms/key | p95 ms/key | Mean ms/key |");

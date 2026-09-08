@@ -1,7 +1,8 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
-import { charFromKey, initialEditor, reduceEditor, type EditorState } from "./vim-core.ts";
+import { charFromKey, initialEditor, reduceEditor } from "./vim-core.ts";
+import type { EditorState } from "./schema.ts";
 
 function key(name: string, extra: Partial<KeyEvent> = {}): KeyEvent {
   return {
@@ -21,7 +22,7 @@ function typeKeys(state: EditorState, keys: Array<string | KeyEvent>): EditorSta
   let current = state;
   for (const entry of keys) {
     const event = typeof entry === "string" ? key(entry) : entry;
-    current = reduceEditor(current, { type: "key", key: event });
+    current = reduceEditor(current, { _tag: "key", key: event });
   }
   return current;
 }
@@ -46,7 +47,7 @@ test("hjkl move the cursor and clamp at the edges", () => {
       lines: ["abc", "defgh"],
       cursor: { row: 0, col: 1 },
     },
-    { type: "key", key: key("l") },
+    { _tag: "key", key: key("l") },
   );
   expect(state.cursor).toEqual({ row: 0, col: 2 });
 
@@ -60,18 +61,18 @@ test("hjkl move the cursor and clamp at the edges", () => {
 test("0 and $ jump to line start and end", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: ["abc", "defgh"], cursor: { row: 1, col: 2 } },
-    { type: "key", key: key("0") },
+    { _tag: "key", key: key("0") },
   );
   expect(state.cursor).toEqual({ row: 1, col: 0 });
 
-  const end = reduceEditor(state, { type: "key", key: key("$") });
+  const end = reduceEditor(state, { _tag: "key", key: key("$") });
   expect(end.cursor).toEqual({ row: 1, col: 5 });
 });
 
 test("i inserts before the cursor and escape returns to normal", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 1 } },
-    { type: "key", key: key("i") },
+    { _tag: "key", key: key("i") },
   );
   expect(state.mode).toBe("insert");
 
@@ -84,15 +85,15 @@ test("i inserts before the cursor and escape returns to normal", () => {
 });
 
 test("Ctrl-C leaves insert mode using OpenTUI's modifier event shape", () => {
-  const state = reduceEditor(initialEditor(), { type: "key", key: key("i") });
-  const exited = reduceEditor(state, { type: "key", key: key("c", { ctrl: true }) });
+  const state = reduceEditor(initialEditor(), { _tag: "key", key: key("i") });
+  const exited = reduceEditor(state, { _tag: "key", key: key("c", { ctrl: true }) });
   expect(exited.mode).toBe("normal");
 });
 
 test("a inserts after the cursor", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 1 } },
-    { type: "key", key: key("a") },
+    { _tag: "key", key: key("a") },
   );
   const typed = typeKeys(state, ["x", "escape"]);
   expect(text(typed)).toBe("abxc");
@@ -100,18 +101,18 @@ test("a inserts after the cursor", () => {
 
 test("A and I insert at line end and start", () => {
   const base = { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 1 } };
-  const atEnd = typeKeys(reduceEditor(base, { type: "key", key: key("A") }), ["y", "escape"]);
+  const atEnd = typeKeys(reduceEditor(base, { _tag: "key", key: key("A") }), ["y", "escape"]);
   expect(text(atEnd)).toBe("abcy");
-  const atStart = typeKeys(reduceEditor(base, { type: "key", key: key("I") }), ["z", "escape"]);
+  const atStart = typeKeys(reduceEditor(base, { _tag: "key", key: key("I") }), ["z", "escape"]);
   expect(text(atStart)).toBe("zabc");
 });
 
 test("o and O open lines below and above and enter insert", () => {
   const base = { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 1 } };
-  const below = typeKeys(reduceEditor(base, { type: "key", key: key("o") }), ["d", "escape"]);
+  const below = typeKeys(reduceEditor(base, { _tag: "key", key: key("o") }), ["d", "escape"]);
   expect(text(below)).toBe("abc\nd");
   expect(below.cursor).toEqual({ row: 1, col: 0 });
-  const above = typeKeys(reduceEditor(base, { type: "key", key: key("O") }), ["e", "escape"]);
+  const above = typeKeys(reduceEditor(base, { _tag: "key", key: key("O") }), ["e", "escape"]);
   expect(text(above)).toBe("e\nabc");
   expect(above.cursor).toEqual({ row: 0, col: 0 });
 });
@@ -119,7 +120,7 @@ test("o and O open lines below and above and enter insert", () => {
 test("enter splits a line at the cursor", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 1 } },
-    { type: "key", key: key("i") },
+    { _tag: "key", key: key("i") },
   );
   const split = typeKeys(state, ["return", "x", "escape"]);
   expect(text(split)).toBe("a\nxbc");
@@ -129,7 +130,7 @@ test("enter splits a line at the cursor", () => {
 test("backspace joins lines at column zero", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: ["abc", "def"], cursor: { row: 1, col: 0 } },
-    { type: "key", key: key("i") },
+    { _tag: "key", key: key("i") },
   );
   const joined = typeKeys(state, ["backspace", "escape"]);
   expect(text(joined)).toBe("abcdef");
@@ -139,7 +140,7 @@ test("backspace joins lines at column zero", () => {
 test("backspace removes the character before the cursor", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 2 } },
-    { type: "key", key: key("i") },
+    { _tag: "key", key: key("i") },
   );
   const deleted = typeKeys(state, ["backspace", "escape"]);
   expect(text(deleted)).toBe("ac");
@@ -148,7 +149,7 @@ test("backspace removes the character before the cursor", () => {
 test("x deletes the character under the cursor", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: ["abc"], cursor: { row: 0, col: 1 } },
-    { type: "key", key: key("x") },
+    { _tag: "key", key: key("x") },
   );
   expect(text(state)).toBe("ac");
   expect(state.dirty).toBe(true);
@@ -157,7 +158,7 @@ test("x deletes the character under the cursor", () => {
 test("shifted characters insert as their real glyph", () => {
   const state = reduceEditor(
     { ...initialEditor(), lines: [""], cursor: { row: 0, col: 0 } },
-    { type: "key", key: key("i") },
+    { _tag: "key", key: key("i") },
   );
   const typed = typeKeys(state, [key("a", { shift: true, sequence: "A" }), "escape"]);
   expect(text(typed)).toBe("A");
@@ -181,7 +182,7 @@ test("charFromKey accepts OpenTUI's named printable space", () => {
     "e",
     "return",
   ]);
-  expect(opened.request).toEqual({ type: "open", path: "note" });
+  expect(opened.request).toEqual({ _tag: "open", path: "note" });
 });
 
 test("charFromKey ignores releases and modifier-only keys", () => {
@@ -193,7 +194,7 @@ test("charFromKey ignores releases and modifier-only keys", () => {
 });
 
 test(": enters command mode and escape cancels it", () => {
-  const state = reduceEditor(initialEditor(), { type: "key", key: key(":") });
+  const state = reduceEditor(initialEditor(), { _tag: "key", key: key(":") });
   expect(state.mode).toBe("command");
   const typed = typeKeys(state, ["e", "x", "escape"]);
   expect(typed.mode).toBe("normal");
@@ -216,7 +217,7 @@ test(":e path asks the shell to open a file", () => {
     "return",
   ]);
   expect(state.mode).toBe("normal");
-  expect(state.request).toEqual({ type: "open", path: "src/a.ts" });
+  expect(state.request).toEqual({ _tag: "open", path: "src/a.ts" });
 });
 
 test(":w asks to write only once a file is open", () => {
@@ -225,20 +226,20 @@ test(":w asks to write only once a file is open", () => {
   expect(noFile.message).toContain("no file name");
 
   const loaded = reduceEditor(initialEditor(), {
-    type: "loaded",
+    _tag: "loaded",
     file: "/tmp/a.ts",
     lines: ["one", "two"],
   });
   const writing = typeKeys(loaded, [":", "w", "return"]);
-  expect(writing.request).toEqual({ type: "write" });
+  expect(writing.request).toEqual({ _tag: "write" });
 });
 
 test(":q closes when clean and refuses when dirty", () => {
   const clean = typeKeys(initialEditor(), [":", "q", "return"]);
-  expect(clean.request).toEqual({ type: "close" });
+  expect(clean.request).toEqual({ _tag: "close" });
 
   const loaded = reduceEditor(initialEditor(), {
-    type: "loaded",
+    _tag: "loaded",
     file: "/tmp/a.ts",
     lines: ["one"],
   });
@@ -248,17 +249,17 @@ test(":q closes when clean and refuses when dirty", () => {
   expect(refused.message).toContain("no write since last change");
 
   const forced = typeKeys(dirty, [":", "q", "!", "return"]);
-  expect(forced.request).toEqual({ type: "close" });
+  expect(forced.request).toEqual({ _tag: "close" });
 });
 
 test(":wq writes and closes", () => {
   const loaded = reduceEditor(initialEditor(), {
-    type: "loaded",
+    _tag: "loaded",
     file: "/tmp/a.ts",
     lines: ["one"],
   });
   const saved = typeKeys(loaded, [":", "w", "q", "return"]);
-  expect(saved.request).toEqual({ type: "write-close" });
+  expect(saved.request).toEqual({ _tag: "write-close" });
 });
 
 test("unknown commands surface on the status line", () => {
@@ -269,7 +270,7 @@ test("unknown commands surface on the status line", () => {
 
 test("loading a file resets the buffer and reports the line count", () => {
   const state = reduceEditor(initialEditor(), {
-    type: "loaded",
+    _tag: "loaded",
     file: "/tmp/a.ts",
     lines: ["one", "two", "three"],
   });
@@ -282,12 +283,12 @@ test("loading a file resets the buffer and reports the line count", () => {
 
 test("a successful write clears dirty", () => {
   const loaded = reduceEditor(initialEditor(), {
-    type: "loaded",
+    _tag: "loaded",
     file: "/tmp/a.ts",
     lines: ["one"],
   });
   const dirty = typeKeys(loaded, ["i", "x", "escape"]);
-  const written = reduceEditor(dirty, { type: "written" });
+  const written = reduceEditor(dirty, { _tag: "written" });
   expect(written.dirty).toBe(false);
   expect(written.request).toBeNull();
   expect(written.message).toContain("written");
@@ -295,11 +296,11 @@ test("a successful write clears dirty", () => {
 
 test("a failed write leaves the buffer dirty with the error on the status line", () => {
   const loaded = reduceEditor(initialEditor(), {
-    type: "loaded",
+    _tag: "loaded",
     file: "/tmp/a.ts",
     lines: ["one"],
   });
-  const failed = reduceEditor(loaded, { type: "write-error", message: "permission denied" });
+  const failed = reduceEditor(loaded, { _tag: "write-error", message: "permission denied" });
   expect(failed.dirty).toBe(true);
   expect(failed.message).toBe("permission denied");
 });

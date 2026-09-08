@@ -11,15 +11,17 @@
  * characters. A linewise motion (gg, G, the empty linewise `dd`) yields
  * `linewise: true`; everything else is character-wise.
  */
-import type { Cursor } from "./vim-core.ts";
+import { Schema as S } from "effect";
+import type { Cursor } from "./schema.ts";
 
-export interface MotionRange {
-  readonly from: Cursor;
-  readonly to: Cursor;
-  readonly linewise: boolean;
-}
+export const MotionRange = S.Struct({
+  from: S.Struct({ row: S.Int, col: S.Int }),
+  to: S.Struct({ row: S.Int, col: S.Int }),
+  linewise: S.Boolean,
+});
+export type MotionRange = S.Schema.Type<typeof MotionRange>;
 
-interface MotionContext {
+export interface MotionContext {
   readonly lines: readonly string[];
   readonly cursor: Cursor;
   readonly count: number;

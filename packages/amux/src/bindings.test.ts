@@ -18,7 +18,7 @@ import {
   type CommandSpec,
 } from "./bindings.ts";
 import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
-import { KeyInvocation, type KeyInvocationValue } from "./key-invocation.ts";
+import { createCountAccumulator, KeyInvocation, type KeyInvocationValue } from "./key-invocation.ts";
 
 /**
  * A binding whose key string the parser rejects is not an error anyone sees —
@@ -93,6 +93,46 @@ test("a command that declares KeyInvocation receives the keystroke that ran it",
 
     expect(seen?.event.name).toBe("e");
     expect(seen?.data).toEqual({});
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("a context pre-dispatch hook consumes count digits and publishes them to its command", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const count = createCountAccumulator();
+    let seen: KeyInvocationValue | undefined;
+    const normal: ContextSpec = {
+      ...testContext("editor.normal", CONTEXT_PRIORITY.PANE, () => true),
+      beforeDispatch: (input) => {
+        if (count.offer(input.event, (name) => name === "0")) {
+          input.consume({ preventDefault: true });
+          return;
+        }
+        if (count.digits() !== "") input.setData("count", count.count());
+      },
+    };
+    createBindings(
+      t.renderer,
+      [
+        contextCommand(normal, {
+          name: "delete",
+          key: "d",
+          desc: "delete",
+          group: "editor",
+          run: Effect.gen(function* () {
+            seen = yield* KeyInvocation;
+          }),
+        }),
+      ],
+      { onUnhandled: () => true },
+    );
+
+    t.mockInput.pressKey("2");
+    t.mockInput.pressKey("d");
+
+    expect(seen?.data).toEqual({ count: 2 });
   } finally {
     t.renderer.destroy();
   }

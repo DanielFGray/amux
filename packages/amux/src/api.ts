@@ -124,6 +124,8 @@ export {
 // — `CONTEXT_PRIORITY` names the bands core claims, so a plugin picks a
 // number between two of them rather than guessing at one.
 export { CONTEXT_PRIORITY, type ContextSpec, type ContextPriorityConflict } from "./key-context.ts";
+export { contextCommand, type CommandSpec } from "./bindings.ts";
+export { createCountAccumulator, KeyInvocation, type KeyInvocationValue } from "./key-invocation.ts";
 
 // What a panel is handed at render time.
 export { type PanelContext, type SidebarDisplay, type SidebarDisplayRow } from "./ui/panel.ts";

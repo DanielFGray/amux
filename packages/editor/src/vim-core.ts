@@ -8,73 +8,16 @@
  * Requests are how the shell learns what to do (read a file, write one, close
  * the panel); the shell fulfils them and reports back through the `loaded` /
  * `written` / `write-error` events, which are themselves transitions.
+ *
+ * The data model lives in `./schema.ts`; this file owns the reducer.
  */
 import type { KeyEvent } from "@opentui/core";
 import { allMotions, applyMotion, type Motion, type MotionRange } from "./motions.ts";
+import type { EditorEvent, EditorMode, EditorState, OperatorKind } from "./schema.ts";
 
-export type EditorMode = "normal" | "insert" | "command";
-
-export interface Cursor {
-  row: number;
-  col: number;
-}
-
-/** What the shell should do next. Consumed by the plugin, cleared by the
- *  event that reports the outcome. */
-export type EditorRequest =
-  | { readonly type: "open"; readonly path: string }
-  | { readonly type: "write" }
-  | { readonly type: "close" }
-  | { readonly type: "write-close" };
-
-/** Operators that can be armed while waiting for a motion or text object. */
-export type OperatorKind = "delete" | "change" | "yank";
-
-/** A yank register is the bare unnamed one for now. Charwise text deletes
- *  the copied range; linewise copies the whole lines including a trailing
- *  newline so put reconstructs a line. */
-export interface Register {
-  readonly text: string[];
-  readonly linewise: boolean;
-}
-
-export const emptyRegister: Register = { text: [], linewise: false };
-
-export interface EditorState {
-  mode: EditorMode;
-  /** Buffer contents, one string per line, no trailing newline. */
-  lines: string[];
-  cursor: Cursor;
-  /** The ex-command line being typed, without its leading colon. */
-  command: string;
-  /** Open path, for the status bar and as the write target. */
-  file: string | null;
-  dirty: boolean;
-  /** Transient status line: an error, or "N lines" after a load. */
-  message: string | null;
-  request: EditorRequest | null;
-  /** A prefix count being typed for the next command. Empty when none. */
-  count: string;
-  /** Whether we just typed `g` and are waiting for the second key. */
-  pendingG: boolean;
-  /** Operator waiting for a motion or text object. */
-  pending:
-    | { readonly kind: OperatorKind; readonly count: number }
-    | {
-        readonly kind: OperatorKind;
-        readonly count: number;
-        readonly textObject: "inner" | "outer";
-      }
-    | null;
-  /** Last yanked text for `p` / `P`. */
-  register: Register;
-}
-
-export type EditorEvent =
-  | { readonly type: "key"; readonly key: KeyEvent }
-  | { readonly type: "loaded"; readonly file: string; readonly lines: string[] }
-  | { readonly type: "written" }
-  | { readonly type: "write-error"; readonly message: string };
+// ---------------------------------------------------------------------------
+// Public state factory
+// ---------------------------------------------------------------------------
 
 /** An editor with no file: a scratch buffer rooted at the workspace. */
 export function initialEditor(): EditorState {
@@ -90,13 +33,17 @@ export function initialEditor(): EditorState {
     count: "",
     pendingG: false,
     pending: null,
-    register: emptyRegister,
+    register: { text: [], linewise: false },
   };
 }
 
+// ---------------------------------------------------------------------------
+// Reducer
+// ---------------------------------------------------------------------------
+
 /** Feed one event into the state machine and get the next state. */
 export function reduceEditor(state: EditorState, event: EditorEvent): EditorState {
-  switch (event.type) {
+  switch (event._tag) {
     case "key":
       return onKey(state, event.key);
     case "loaded":
@@ -830,25 +777,25 @@ function executeCommand(state: EditorState): EditorState {
 
   if (command === "w") {
     if (state.file === null) return { ...next, message: "no file name (open one with :e path)" };
-    return { ...next, request: { type: "write" } };
+    return { ...next, request: { _tag: "write" } };
   }
   if (command === "q") {
     if (state.dirty)
       return { ...next, message: "no write since last change (:wq to save and quit)" };
-    return { ...next, request: { type: "close" } };
+    return { ...next, request: { _tag: "close" } };
   }
   if (command === "q!") {
-    return { ...next, request: { type: "close" } };
+    return { ...next, request: { _tag: "close" } };
   }
   if (command === "wq" || command === "x") {
     if (state.file === null) return { ...next, message: "no file name (open one with :e path)" };
-    return { ...next, request: { type: "write-close" } };
+    return { ...next, request: { _tag: "write-close" } };
   }
   const open = command.match(/^e(?:\s+(.+))?$/);
   if (open) {
     const path = open[1]?.trim();
     if (!path) return { ...next, message: "usage: :e path" };
-    return { ...next, request: { type: "open", path } };
+    return { ...next, request: { _tag: "open", path } };
   }
   return { ...next, message: `not an editor command: ${command}` };
 }

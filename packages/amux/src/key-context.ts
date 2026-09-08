@@ -1,4 +1,14 @@
 import type { KeyEvent } from "@opentui/core";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
+
+/** The part of a keymap's pre-dispatch input available to a context. Kept
+ * narrow so a context can accumulate arguments without taking ownership of
+ * the keymap or inventing a second dispatch path. */
+export interface ContextKeyInput {
+  readonly event: KeyEvent;
+  readonly setData: (name: string, value: JsonValue) => void;
+  readonly consume: (options?: { preventDefault?: boolean; stopPropagation?: boolean }) => void;
+}
 
 /**
  * A key context: something that can claim keys while a reactive predicate
@@ -27,6 +37,11 @@ export interface ContextSpec {
    *  editor for remapping. False for a context whose keys are fixed by its
    *  owner rather than user configuration. */
   rebindable: boolean;
+
+  /** Observe a key before this context's bindings resolve. A context uses
+   * this for grammar state such as a Vim count, then publishes it through
+   * `setData` for the binding's `KeyInvocation`. */
+  beforeDispatch?: (input: ContextKeyInput) => void;
   /**
    * A catch-all for a context whose keys cannot be discrete named bindings —
    * a modal panel deciding what "j" or a typed character means from its own

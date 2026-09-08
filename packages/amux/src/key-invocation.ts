@@ -1,5 +1,6 @@
 import { Context } from "effect";
 import type { KeyEvent } from "@opentui/core";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
 
 /**
  * What the keymap captured for one command dispatch — the library's own
@@ -23,7 +24,7 @@ export interface KeyInvocationValue {
    * what it captures, and this module cannot enumerate every context's
    * vocabulary in advance.
    */
-  readonly data: Readonly<Record<string, unknown>>;
+  readonly data: Readonly<Record<string, JsonValue>>;
   readonly input: string;
   readonly payload: unknown;
 }

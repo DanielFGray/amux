@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Schema as S } from "effect";
 import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core";
 import { createOpenTuiKeymap } from "@opentui/keymap/opentui";
 import {
@@ -14,6 +14,7 @@ import type { KeyStroke } from "./keys.ts";
 import { runDetached, type CommandError } from "./commands.ts";
 import type { ContextSpec } from "./key-context.ts";
 import { KeyInvocation } from "./key-invocation.ts";
+import { JsonValueSchema } from "./effect/AttachProtocol.ts";
 
 export type AppKeymap = Keymap<Renderable, KeyEvent>;
 
@@ -344,6 +345,7 @@ export function createBindings(
   let currentKeys = opts.keys ?? { leader: DEFAULT_LEADER, bindings: {} };
   let conflicts: Conflict[] = [];
   let disposeLayers: (() => void)[] = [];
+  let disposeContextInterceptors: (() => void)[] = [];
   let disposeLeader: (() => void) | null = null;
   let capturing: ((event: KeyEvent, binding: string) => void) | null = null;
   let activeCommand: string | null = null;
@@ -394,12 +396,13 @@ export function createBindings(
           const previous = activeCommand;
           activeCommand = cmd.name;
           try {
+            const captured = S.decodeUnknownOption(S.Record(S.String, JsonValueSchema))(ctx.data);
             runDetached(
               cmd.name,
               cmd.run.pipe(
                 Effect.provideService(KeyInvocation, {
                   event: ctx.event,
-                  data: ctx.data,
+                  data: captured._tag === "Some" ? captured.value : {},
                   input: ctx.input,
                   payload: ctx.payload,
                 }),
@@ -419,6 +422,7 @@ export function createBindings(
     const requestedLeader = keys.leader || DEFAULT_LEADER;
     leader = parseable(requestedLeader, true) ? requestedLeader : DEFAULT_LEADER;
     for (const dispose of disposeLayers) dispose();
+    for (const dispose of disposeContextInterceptors) dispose();
     disposeLeader?.();
     // A half-typed sequence compiled against the old token means nothing now.
     keymap.clearPendingSequence();
@@ -442,6 +446,7 @@ export function createBindings(
     // Unchanged from before contexts existed: the global layer carries every
     // context-less binding and is always active.
     disposeLayers = [registerLayerChecked(keymap, layerContent(global, keys))];
+    disposeContextInterceptors = [];
     for (const [context, group] of byContext) {
       disposeLayers.push(
         registerLayerChecked(keymap, {
@@ -456,6 +461,17 @@ export function createBindings(
           ...layerContent(group, keys),
         }),
       );
+      if (context.beforeDispatch) {
+        disposeContextInterceptors.push(
+          keymap.intercept(
+            "key",
+            (input) => {
+              if (context.active()) context.beforeDispatch!(input);
+            },
+            { priority: context.priority },
+          ),
+        );
+      }
     }
 
     // A collision is only decidable within one context: two contexts binding
@@ -490,6 +506,8 @@ export function createBindings(
       capturing = null;
       for (const dispose of disposeLayers) dispose();
       disposeLayers = [];
+      for (const dispose of disposeContextInterceptors) dispose();
+      disposeContextInterceptors = [];
       disposeLeader?.();
       disposeLeader = null;
       disposeCapture();
