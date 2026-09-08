@@ -11,7 +11,7 @@
  * already import each other.
  */
 
-import { Context } from "effect";
+import { Context, Effect } from "effect";
 import type { RenderContext } from "@opentui/core";
 import { localPty, type SessionBackendFactory } from "./backend.ts";
 import type { PaneView } from "./component-pane.tsx";
@@ -74,10 +74,27 @@ export const OptionsRuntime = Context.Reference<Options>("OptionsRuntime", {
   defaultValue: (): Options => resolveOptions({}),
 });
 
+/**
+ * The ambient Effect context the process's root fiber runs in — whatever
+ * Layer main.tsx or daemon-main.ts provided at boot, captured once there and
+ * threaded down. Synchronous classes built outside any fiber (SessionHandle,
+ * a session's backend, ...) use it to run an Effect on the runtime the
+ * process actually booted instead of Effect's ambient default — see
+ * ep-6e69df Phase 5.
+ *
+ * Defaults to capturing whatever is ambient wherever nothing else was
+ * provided, which is the same default runtime every caller used implicitly
+ * before this Reference existed — a test or harness that does not care can
+ * still omit it.
+ */
+export const RootRuntime = Context.Reference<Context.Context<never>>("RootRuntime", {
+  defaultValue: (): Context.Context<never> => Effect.runSync(Effect.context<never>()),
+});
+
 /** Everything a workspace reads out of its context. Shell, Backend,
- *  PaneViews, OptionsRuntime are References, not Services — they always
- *  resolve to a default and so carry no identity in the requirement
- *  channel; only the renderer is actually required. */
+ *  PaneViews, OptionsRuntime, RootRuntime are References, not Services —
+ *  they always resolve to a default and so carry no identity in the
+ *  requirement channel; only the renderer is actually required. */
 export type WorkspaceEnv = RenderCtx;
 
 /**
@@ -96,6 +113,7 @@ export const workspaceEnv = (
     backend?: SessionBackendFactory;
     paneContent?: PaneView;
     options?: Options;
+    runtime?: Context.Context<never>;
   } = {},
 ): Context.Context<WorkspaceEnv> => {
   let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>;
@@ -103,5 +121,6 @@ export const workspaceEnv = (
   if (options.backend) env = Context.add(env, Backend, options.backend);
   if (options.paneContent) env = Context.add(env, PaneViews, options.paneContent);
   if (options.options) env = Context.add(env, OptionsRuntime, options.options);
+  if (options.runtime) env = Context.add(env, RootRuntime, options.runtime);
   return env;
 };

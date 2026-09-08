@@ -297,6 +297,11 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     optionsRuntime["behaviour.shell"] || process.env.SHELL || "bash",
   ];
   return Effect.gen(function* () {
+    // Captured here rather than threaded in through AppOptions: whatever
+    // Layer main.tsx provided is already ambient in this fiber, and this is
+    // the one place a workspace's Effect context is built from. See
+    // RootRuntime in env.ts.
+    const rootRuntime = yield* Effect.context<never>();
     const fiberScope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(fiberScope, Exit.void));
     const fibers = yield* Scope.provide(FiberMap.make<string>(), fiberScope);
@@ -327,6 +332,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         backend: options.session.backend(),
         paneContent: (props) => sessionViewsProvider.value.view(props),
         options: optionsRuntime,
+        runtime: rootRuntime,
       }),
       options.paneHost,
     );
@@ -370,6 +376,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
           pluginRuntime,
           processDisplayProvider.value,
           optionsRuntime,
+          rootRuntime,
           {
             slots: slotsProvider,
             sessionViews: sessionViewsProvider,
@@ -531,6 +538,7 @@ function buildApp(
   pluginRuntime: PluginRuntime,
   processDisplay: ProcessDisplayService,
   optionsRuntime: Options,
+  rootRuntime: Context.Context<never>,
   externalProviders: {
     readonly slots: ProviderRef<SlotsService>;
     readonly sessionViews: ProviderRef<SessionViewsService>;
@@ -552,7 +560,7 @@ function buildApp(
    * boot, and the prompt flows, which are `async` because they await an answer
    * from a Solid signal rather than from Effect.
    */
-  const run = <A,>(effect: Effect.Effect<A>): A => Effect.runSync(effect);
+  const run = <A,>(effect: Effect.Effect<A>): A => Effect.runSyncWith(rootRuntime)(effect);
 
   // Copy goes to the clipboard AND the server's buffer stack — tmux's model,
   // and what makes copy/paste work over ssh, between panes, and from a
@@ -561,7 +569,7 @@ function buildApp(
   // is still a rejection); the push is best-effort and fire-and-forget, the
   // same as the clipboard write itself.
   spaces.onCopy = (text) => {
-    void Effect.runPromise(session.setBuffer(undefined, text)).catch((error) =>
+    void Effect.runPromiseWith(rootRuntime)(session.setBuffer(undefined, text)).catch((error) =>
       // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
       console.error(`could not push paste buffer: ${String(error)}`),
     );
@@ -629,7 +637,7 @@ function buildApp(
     projection = projection
       .then(() => {
         if (model.revision <= projectedRevision) return;
-        return Effect.runPromise(projectWorkspace(spaces, model, session.backend()));
+        return Effect.runPromiseWith(rootRuntime)(projectWorkspace(spaces, model, session.backend()));
       })
       .then(() => {
         if (model.revision <= projectedRevision) return;
@@ -645,7 +653,7 @@ function buildApp(
         // where a still-unspawned component agent gets its worker started;
         // resumePending is idempotent per session id.
         return pluginRuntime.resumePending
-          ? Effect.runPromise(pluginRuntime.resumePending(model))
+          ? Effect.runPromiseWith(rootRuntime)(pluginRuntime.resumePending(model))
           : undefined;
       })
       .catch((error) =>
@@ -1337,15 +1345,19 @@ function buildApp(
       onPaste: (name) => {
         const pane = spaces.activeWindow?.focused;
         if (pane?.session) {
-          void Effect.runPromise(session.pasteBuffer(name, pane.session.id)).catch((error) =>
+          void Effect.runPromiseWith(rootRuntime)(
+            session.pasteBuffer(name, pane.session.id),
+          ).catch(
             // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
-            console.error(`could not paste buffer '${name}': ${String(error)}`),
+            (error) => console.error(`could not paste buffer '${name}': ${String(error)}`),
           );
         }
         setChooseView(null);
       },
       onDelete: (name) => {
-        void Effect.runPromise(session.deleteBuffer(name).pipe(Effect.andThen(session.listBuffers)))
+        void Effect.runPromiseWith(rootRuntime)(
+          session.deleteBuffer(name).pipe(Effect.andThen(session.listBuffers)),
+        )
           .then((buffers) => {
             setChooseView((view) =>
               view

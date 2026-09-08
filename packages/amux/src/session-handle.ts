@@ -1,4 +1,4 @@
-import { Clock, Effect, Exit, Fiber, Scope, Stream } from "effect";
+import { Clock, Context, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { RenderState, Terminal } from "./ghostty.ts";
 import {
   localPty,
@@ -42,6 +42,10 @@ export interface SessionHandleOptions {
   id?: string;
   /** Where the process comes from. Defaults to a PTY in this process. */
   backend?: SessionBackendFactory;
+  /** The process's root Effect context; see RootRuntime in env.ts. Defaults
+   *  to capturing whatever is ambient, for callers (mostly tests) that build
+   *  a SessionHandle with no process-level runtime to hand it. */
+  runtime?: Context.Context<never>;
   /**
    * Restore an agent whose process is already over.
    *
@@ -87,7 +91,7 @@ export class SessionHandle {
   readonly cmd: string[];
   readonly cwd: string | undefined;
   readonly term: Terminal;
-  readonly startedAt = Effect.runSync(Clock.currentTimeMillis);
+  readonly startedAt: number;
 
   #backend: SessionBackend;
   #exited = false;
@@ -116,6 +120,8 @@ export class SessionHandle {
    */
   #scope = Scope.makeUnsafe();
   #disposed = false;
+  /** The runtime #own and #pump run their Effects on; see RootRuntime in env.ts. */
+  readonly #runtime: Context.Context<never>;
 
   /** Bumped whenever output arrives, so views can invalidate caches. */
   onOutput?: (session: SessionHandle) => void;
@@ -125,6 +131,8 @@ export class SessionHandle {
   onScroll?: (session: SessionHandle) => void;
 
   constructor(opts: SessionHandleOptions) {
+    this.#runtime = opts.runtime ?? Effect.runSync(Effect.context<never>());
+    this.startedAt = Effect.runSyncWith(this.#runtime)(Clock.currentTimeMillis);
     this.id = opts.id ?? `agent-${nextAgentId++}`;
     this.kind = opts.kind ?? "pty";
     if (opts.id) reserveAgentId(opts.id);
@@ -174,7 +182,7 @@ export class SessionHandle {
    * ready to be one. The scope is what matters; how it is entered is not.
    */
   #own<A>(acquire: () => A, free: (handle: A) => void): A {
-    return Effect.runSync(
+    return Effect.runSyncWith(this.#runtime)(
       Scope.provide(
         Effect.acquireRelease(Effect.sync(acquire), (handle) => Effect.sync(() => free(handle))),
         this.#scope,
@@ -223,7 +231,7 @@ export class SessionHandle {
    * free second, instead of racing it.
    */
   #pump(): Fiber.Fiber<void> {
-    return Effect.runFork(
+    return Effect.runForkWith(this.#runtime)(
       Stream.runForEach(this.#backend.stream, (chunk) =>
         Effect.gen({ self: this }, function* () {
           this.term.write(chunk);
@@ -373,7 +381,7 @@ export class SessionHandle {
    *  starting is not a sub-second event. */
   get foregroundCommand(): string {
     if (this.#exited) return "";
-    const now = Effect.runSync(Clock.currentTimeMillis);
+    const now = Effect.runSyncWith(this.#runtime)(Clock.currentTimeMillis);
     if (now - this.#commAt >= AGENT_POLL_MS) {
       this.#commAt = now;
       const fg = this.#backend.foregroundPgid();
@@ -390,7 +398,7 @@ export class SessionHandle {
   get msSinceOutput() {
     return this.#lastOutputAt === 0
       ? Infinity
-      : Effect.runSync(Clock.currentTimeMillis) - this.#lastOutputAt;
+      : Effect.runSyncWith(this.#runtime)(Clock.currentTimeMillis) - this.#lastOutputAt;
   }
 
   /** Monotonic terminal-output revision for value-only projections. */
@@ -455,7 +463,7 @@ export class SessionHandle {
    * scope to hang them on.
    */
   dispose() {
-    Effect.runFork(this.release());
+    Effect.runForkWith(this.#runtime)(this.release());
   }
 
   [Symbol.dispose]() {

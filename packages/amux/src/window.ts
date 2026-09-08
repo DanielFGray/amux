@@ -9,6 +9,7 @@ import {
   Backend as BackendContext,
   PaneViews,
   OptionsRuntime,
+  RootRuntime,
   type WorkspaceEnv,
 } from "./env.ts";
 import { rollUp } from "./space.ts";
@@ -165,6 +166,10 @@ export class Window {
    *  env.ts. Passed on to every Pane and Divider this window creates. */
   #options: Options;
 
+  /** The process's root Effect context, passed on to every SessionHandle this
+   *  window starts; see RootRuntime in env.ts. */
+  #runtime: Context.Context<never>;
+
   /**
    * One scope per session, rather than one scope for the window.
    *
@@ -183,6 +188,7 @@ export class Window {
     this.#backend = Context.get(env, BackendContext);
     this.#paneContent = Context.get(env, PaneViews);
     this.#options = Context.get(env, OptionsRuntime);
+    this.#runtime = Context.get(env, RootRuntime);
     this.number = number;
     this.root = new BoxRenderable(this.#ctx, {
       id: `window-${number}-${nextId++}`,
@@ -318,9 +324,11 @@ export class Window {
       // The window's backend is a default, not an override: restore passes its
       // own per-session choice, and a tombstone must keep having no backend at all.
       // Spread order is what encodes that — opts wins where it says anything.
-      const session = yield* SessionHandle.make({ backend: this.#backend, ...opts }).pipe(
-        Scope.provide(scope),
-      );
+      const session = yield* SessionHandle.make({
+        backend: this.#backend,
+        runtime: this.#runtime,
+        ...opts,
+      }).pipe(Scope.provide(scope));
       this.#scopes.set(session, scope);
       this.#bind(session);
       this.#sessions.push(session);
@@ -1097,7 +1105,7 @@ export class Window {
       for (const child of box.getChildren().slice()) {
         box.remove(child);
         const divider = this.#dividerOwners.get(child);
-        if (divider) Effect.runSync(divider.release);
+        if (divider) Effect.runSyncWith(this.#runtime)(divider.release);
         else if (child instanceof BoxRenderable) {
           walk(child);
           child.destroy();

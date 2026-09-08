@@ -116,11 +116,17 @@ export function project(
     if (!options.host) t.renderer.root.add(host);
 
     const optionsRuntime = options.options ?? resolveOptions({});
+    // Captured here, in this fiber, rather than left to RootRuntime's own
+    // default: a test that provides its own services (TestClock, a custom
+    // Random seed) via Effect.provide upstream needs those to be what
+    // SessionHandle et al. see, not whatever is ambient outside this test.
+    const rootRuntime = yield* Effect.context<never>();
     const env = workspaceEnv(t.renderer, {
       shell: options.shell,
       backend: options.backend,
       paneContent: options.paneContent,
       options: optionsRuntime,
+      runtime: rootRuntime,
     });
 
     const spaces = yield* SpaceSet.make(env, host);

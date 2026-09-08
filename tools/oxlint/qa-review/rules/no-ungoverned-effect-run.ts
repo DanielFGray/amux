@@ -17,6 +17,7 @@ const ALLOWED_PATH_SUBSTRINGS = [
   "/src/bridge.ts",
   "/src/effect/SolidRuntime.ts",
   "/src/effect/node-path.ts",
+  "/src/env.ts",
   "/src/test-effect.ts",
   "/src/test-wait.ts",
 ];
