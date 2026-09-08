@@ -13,7 +13,6 @@ class SessionIdError extends S.TaggedError<SessionIdError>()("SessionIdError", {
 
 import { loadConfig } from "./config.ts";
 import { CONFIG_PATH } from "./config.ts";
-import { applyOptions, resolveOptions } from "./options.ts";
 import { SessionClient } from "./client.ts";
 import { isSessionId, optionalEnvVar, SessionStore } from "./session.ts";
 import { createApp } from "./app.tsx";
@@ -36,7 +35,6 @@ import { createApp } from "./app.tsx";
  */
 const program = Effect.gen(function* () {
   const config = yield* loadConfig();
-  applyOptions(resolveOptions(config.options));
 
   const renderer = yield* Effect.acquireRelease(
     Effect.promise(() =>

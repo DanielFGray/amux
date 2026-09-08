@@ -1,7 +1,7 @@
 /**
  * Branch mark, ahead/behind, and worktree operations for a space's directory.
  */
-import * as Path from "effect/Path";
+import { nodePath } from "./effect/node-path.ts";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -65,7 +65,7 @@ export const worktreeDirname = (branch: string): string => branch.replace(/\//g,
  * not in a repository is its own project, which keeps the notion total.
  */
 export function projectRoot(dir: string): Promise<string> {
-  const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
+  const path = nodePath;
   return Effect.runPromise(
     Effect.tryPromise(() =>
       git(["rev-parse", "--path-format=absolute", "--git-common-dir"], dir),

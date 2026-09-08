@@ -11,7 +11,7 @@ import {
   type WindowEntry as ReadWindowEntry,
 } from "./read-model.ts";
 import { randomUUID } from "node:crypto";
-import { Path } from "effect";
+import { nodePath } from "./effect/node-path.ts";
 import { worktreeDirname } from "./git.ts";
 import { computeRects, moveFloat, resizeDivider, resizePane, type LayoutSize } from "./geometry.ts";
 import {
@@ -65,7 +65,7 @@ import { Clock, Effect, Result, Schema as S } from "effect";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 
-const { basename, join, resolve } = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
+const { basename, join, resolve } = nodePath;
 
 export class WorkspaceParseError extends S.TaggedError<WorkspaceParseError>()(
   "WorkspaceParseError",

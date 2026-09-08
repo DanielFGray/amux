@@ -1,12 +1,12 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
-import { expect, afterEach } from "bun:test";
+import { expect } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { Effect, Layer } from "effect";
 import { project } from "./harness.ts";
 import type { TerminalPane } from "./pane.ts";
 import { makeLayout } from "./layout.ts";
-import { runtime } from "./options.ts";
+import { resolveOptions } from "./options.ts";
 import { testEffect } from "./test-effect.ts";
 
 const { live } = testEffect(Layer.empty);
@@ -14,11 +14,6 @@ const { live } = testEffect(Layer.empty);
 const paneLayout = makeLayout({
   root: { type: "pane", id: "pane-1", content: { kind: "pty", session: "s1" }, weight: 1 },
   focus: "pane-1",
-});
-
-const origGap = runtime["appearance.gap"];
-afterEach(() => {
-  runtime["appearance.gap"] = origGap;
 });
 
 live("scroll up scrolls the pane's scrollback for a plain shell", () =>
@@ -146,8 +141,11 @@ live("scroll events are forwarded to a mouse-reporting child", () =>
 
 live("renders an OSC title in the top border when gaps are enabled", () =>
   Effect.gen(function* () {
-    runtime["appearance.gap"] = true;
-    const scene = yield* project(paneLayout, { width: 40, height: 8 });
+    const scene = yield* project(paneLayout, {
+      width: 40,
+      height: 8,
+      options: resolveOptions({ "appearance.gap": true }),
+    });
     const pane = scene.window.panes[0]!;
     pane.session!.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"));
     yield* scene.renderOnce();
@@ -161,8 +159,11 @@ live("renders an OSC title in the top border when gaps are enabled", () =>
 
 live("labels the border with the command name when the child sets no OSC title", () =>
   Effect.gen(function* () {
-    runtime["appearance.gap"] = true;
-    const scene = yield* project(paneLayout, { width: 40, height: 8 });
+    const scene = yield* project(paneLayout, {
+      width: 40,
+      height: 8,
+      options: resolveOptions({ "appearance.gap": true }),
+    });
     const pane = scene.window.panes[0]!;
     yield* scene.renderOnce();
     yield* scene.renderOnce();
@@ -177,8 +178,11 @@ live("labels the border with the command name when the child sets no OSC title",
 
 live("no title in the border when gaps are disabled", () =>
   Effect.gen(function* () {
-    runtime["appearance.gap"] = false;
-    const scene = yield* project(paneLayout, { width: 40, height: 8 });
+    const scene = yield* project(paneLayout, {
+      width: 40,
+      height: 8,
+      options: resolveOptions({ "appearance.gap": false }),
+    });
     const pane = scene.window.panes[0]!;
     pane.session!.term.write(new TextEncoder().encode("\x1b]0;myservice\x07"));
     yield* scene.renderOnce();
@@ -192,8 +196,11 @@ live("no title in the border when gaps are disabled", () =>
 
 live("no title when pane is too narrow", () =>
   Effect.gen(function* () {
-    runtime["appearance.gap"] = true;
-    const scene = yield* project(paneLayout, { width: 13, height: 8 });
+    const scene = yield* project(paneLayout, {
+      width: 13,
+      height: 8,
+      options: resolveOptions({ "appearance.gap": true }),
+    });
     const pane = scene.window.panes[0]!;
     pane.session!.term.write(new TextEncoder().encode("\x1b]0;need14chars\x07"));
     yield* scene.renderOnce();

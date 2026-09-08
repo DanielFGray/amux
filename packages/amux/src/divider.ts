@@ -6,7 +6,7 @@ import {
   type RenderContext,
 } from "@opentui/core";
 import { Effect, Exit, Scope } from "effect";
-import { runtime } from "./options.ts";
+import type { Options } from "./options.ts";
 import { acquireRenderable, makeScope, runInScope, type RenderableParent } from "./bridge.ts";
 
 const IDLE = RGBA.fromInts(69, 71, 90, 255); // surface1
@@ -149,6 +149,7 @@ class DividerRenderable extends Renderable {
   constructor(
     ctx: RenderContext,
     options: { id: string; axis: "row" | "column"; onDrag?: (delta: number) => void },
+    optionsRuntime: Options,
   ) {
     super(ctx, {
       ...options,
@@ -158,7 +159,7 @@ class DividerRenderable extends Renderable {
     });
     this.axis = options.axis;
     this.onDrag = options.onDrag;
-    this.setPaneGap(runtime["appearance.gap"] ? 1 : 0);
+    this.setPaneGap(optionsRuntime["appearance.gap"] ? 1 : 0);
   }
 
   /** Update the target's width when the appearance setting changes. */
@@ -331,11 +332,12 @@ export class Divider {
     ctx: RenderContext,
     parent: RenderableParent | undefined,
     options: { id: string; axis: "row" | "column"; onDrag?: (delta: number) => void },
+    optionsRuntime: Options,
   ): Divider {
     const scope = makeScope();
     const divider = runInScope(
       scope,
-      acquireRenderable(() => new DividerRenderable(ctx, options), parent),
+      acquireRenderable(() => new DividerRenderable(ctx, options, optionsRuntime), parent),
     );
     return new Divider(divider, scope);
   }

@@ -39,6 +39,7 @@ import type { PersistedSession } from "./session.ts";
 import { commandName } from "./command-name.ts";
 import { spaceSetState, spaceState } from "./space-model.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
+import { resolveOptions, type Options } from "./options.ts";
 
 /** Everything a test needs once a window is on screen, plus one frame. */
 export interface Scene {
@@ -50,6 +51,11 @@ export interface Scene {
   /** The workspace backend, for a test that re-projects a later model revision
    *  through `projectWorkspace` — the same entry production uses on each change. */
   backend: SessionBackendFactory;
+  /** The live option values every pane, window and divider in this scene
+   *  reads at render/event time. A test that needs a non-default appearance
+   *  setting mutates this object directly, in place; see OptionsRuntime in
+   *  env.ts. */
+  options: Options;
 }
 
 /** A session the layout names, overridden from the tombstone default. Every
@@ -76,6 +82,9 @@ export interface ProjectOptions {
   host?: (t: TestRendererSetup) => BoxRenderable;
   /** Per-session overrides. An id not listed stays a tombstone. */
   sessions?: Record<string, SessionSpec>;
+  /** Initial option values; defaults if omitted. Mutate the returned Scene's
+   *  `options` afterward to change appearance settings mid-test. */
+  options?: Options;
 }
 
 /**
@@ -106,10 +115,12 @@ export function project(
       : new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1, flexDirection: "column" });
     if (!options.host) t.renderer.root.add(host);
 
+    const optionsRuntime = options.options ?? resolveOptions({});
     const env = workspaceEnv(t.renderer, {
       shell: options.shell,
       backend: options.backend,
       paneContent: options.paneContent,
+      options: optionsRuntime,
     });
 
     const spaces = yield* SpaceSet.make(env, host);
@@ -124,6 +135,7 @@ export function project(
       space,
       window,
       backend,
+      options: optionsRuntime,
       renderOnce: () => Effect.promise(() => t.renderOnce()),
     };
   });

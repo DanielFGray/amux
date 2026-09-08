@@ -17,6 +17,7 @@ import { RenderState, Terminal } from "./ghostty.ts";
 import { SpaceSet, projectWorkspace } from "./space.ts";
 import { makeLayout } from "./layout.ts";
 import { project, snapshotOf } from "./harness.ts";
+import { resolveOptions } from "./options.ts";
 import { testEffect } from "./test-effect.ts";
 
 const { live } = testEffect(Layer.empty);
@@ -34,7 +35,7 @@ async function makePane(vt: string) {
     cols: 40,
     rows: 10,
   });
-  const pane = TerminalPane.make(t.renderer, { id: "pane", session: session });
+  const pane = TerminalPane.make(t.renderer, { id: "pane", session: session }, resolveOptions({}));
   session.term.resize(40, 10);
   if (vt) session.term.write(bytes(vt));
   return {
@@ -782,7 +783,7 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
     cols: 40,
     rows: 10,
   });
-  const pane = TerminalPane.make(t.renderer, { id: "pane", session: session });
+  const pane = TerminalPane.make(t.renderer, { id: "pane", session: session }, resolveOptions({}));
   session.term.resize(40, 10);
   session.term.write(bytes("alpha beta\r\ngamma"));
   const mode = new CopyMode();

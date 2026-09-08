@@ -18,6 +18,7 @@ import { createHash, randomUUID } from "node:crypto";
 import * as FileSystem from "effect/FileSystem";
 import { Clock, Context, Effect, Layer, Schema as S, type Scope } from "effect";
 import * as Path from "effect/Path";
+import { nodePath } from "./effect/node-path.ts";
 import { PermissionEffectSchema, type PermissionRule } from "./permission.ts";
 import { stateRoot } from "./session.ts";
 import { errorMessage } from "./error-message.ts";
@@ -97,7 +98,7 @@ export const layer = (
  * different parents are different projects.
  */
 export function projectSlug(root: string): string {
-  const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
+  const path = nodePath;
   const absolute = path.resolve(root);
   const digest = createHash("sha256").update(absolute).digest("hex").slice(0, 8);
   return `${path.basename(absolute) || "root"}-${digest}`;

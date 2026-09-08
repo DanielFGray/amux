@@ -18,6 +18,7 @@ import { Effect, Schema as S } from "effect";
 import { Divider } from "../divider.ts";
 import type { PluginContributions, PluginInstance } from "../plugin/contributions.ts";
 import type { DockSide } from "../layout.ts";
+import { resolveOptions, type Options } from "../options.ts";
 import { App, type AppProps } from "./App.tsx";
 export type { DockSide } from "../layout.ts";
 
@@ -541,12 +542,18 @@ export function createSlotRegistry(
  * every plugin consumer are written against. This is the function
  * plugin/services.ts, app.tsx, testing.ts, and test-environment.ts import.
  */
-export function createSlots(renderer: CliRenderer, contributions: PluginContributions): Slots {
+export function createSlots(
+  renderer: CliRenderer,
+  contributions: PluginContributions,
+  optionsRuntime: Options = resolveOptions({}),
+): Slots {
   type Chrome = ChromeOccupant;
   const table = contributions.table<Chrome>();
   const registry = createSlotRegistry(renderer, contributions, {
     onPluginError(event) {
-      Effect.runFork(
+      // Effect.logError runs to completion synchronously against the default
+      // logger; forking a fiber to run it would only add ceremony.
+      Effect.runSync(
         Effect.logError(
           `panel ${event.pluginId} failed during ${event.phase}` +
             (event.slot ? ` in ${event.slot}` : "") +
@@ -616,15 +623,20 @@ export function createSlots(renderer: CliRenderer, contributions: PluginContribu
     const key = `${side}.${anchor}`;
     const current = dividers.get(key);
     if (current) return current;
-    const made = Divider.make(renderer, undefined, {
-      id: `region-divider-${key}`,
-      axis: side === "left" || side === "right" ? "row" : "column",
-      onDrag: (delta: number) => {
-        const grow = side === "left" || side === "top" ? delta : -delta;
-        for (const occupant of visibleDock(side, anchor))
-          if (occupant.resizable) occupant.onResize?.(grow);
+    const made = Divider.make(
+      renderer,
+      undefined,
+      {
+        id: `region-divider-${key}`,
+        axis: side === "left" || side === "right" ? "row" : "column",
+        onDrag: (delta: number) => {
+          const grow = side === "left" || side === "top" ? delta : -delta;
+          for (const occupant of visibleDock(side, anchor))
+            if (occupant.resizable) occupant.onResize?.(grow);
+        },
       },
-    });
+      optionsRuntime,
+    );
     made.hitboxOnly = true;
     made.position = "absolute";
     made.setPosition(INNER_EDGE[side]);

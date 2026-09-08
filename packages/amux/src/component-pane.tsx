@@ -7,6 +7,7 @@ import type * as Scope from "effect/Scope";
 import { Pane, PaneRenderable } from "./pane.ts";
 import type { SessionHandle } from "./session-handle.ts";
 import type { JsonValue } from "./layout.ts";
+import type { Options } from "./options.ts";
 import { acquireRenderable } from "./bridge.ts";
 
 /**
@@ -104,8 +105,9 @@ class ComponentPaneView extends PaneRenderable {
       descriptor?: JsonValue;
       view?: PaneView;
     },
+    optionsRuntime: Options,
   ) {
-    super(ctx, options);
+    super(ctx, options, optionsRuntime);
     this.#content = new BoxRenderable(ctx, {
       id: `${options.id}-content`,
       position: "absolute",
@@ -205,9 +207,13 @@ export class ComponentPane extends Pane {
       descriptor?: JsonValue;
       view?: PaneView;
     },
+    optionsRuntime: Options,
   ): ComponentPane {
     const scope = Pane.makeScope();
-    const view = Pane.acquire(scope, acquireRenderable(() => new ComponentPaneView(ctx, options)));
+    const view = Pane.acquire(
+      scope,
+      acquireRenderable(() => new ComponentPaneView(ctx, options, optionsRuntime)),
+    );
     return new ComponentPane(view, scope, options.id);
   }
 

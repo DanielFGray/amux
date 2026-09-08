@@ -300,12 +300,13 @@ function clamp(spec: NumberSpec, value: number): number {
 /**
  * Live option values that imperative code reads at the point of use.
  *
- * Kept in step by applyOptions(). Pane borders and wheel scrolling are read
- * from renderables and event handlers that have no path back to the app's
- * reactive graph; ts-6b5314 is where the global goes away.
+ * One mutable object per workspace (see env.ts's OptionsRuntime), rather than
+ * a module-level singleton: pane borders and wheel scrolling are read from
+ * renderables and event handlers with no path back to the app's reactive
+ * graph, so a single writer mutating shared fields in place is still the
+ * right shape — it just needs to be an instance a workspace owns, not a
+ * process-wide global every workspace and test would otherwise share.
  */
-export const runtime: { [K in OptionName]: ValueOf<(typeof OPTIONS)[K]> } = resolveOptions({});
-
-export function applyOptions(options: Options): void {
-  Object.assign(runtime, options);
+export function applyOptions(target: Options, options: Options): void {
+  Object.assign(target, options);
 }

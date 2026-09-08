@@ -8,12 +8,13 @@ import {
   RenderCtx,
   Backend as BackendContext,
   PaneViews,
+  OptionsRuntime,
   type WorkspaceEnv,
 } from "./env.ts";
 import { rollUp } from "./space.ts";
 import { Divider, setWeight, setDirection, type JunctionFrame } from "./divider.ts";
 import { layoutKindRenderer } from "./layout-kinds.ts";
-import { runtime } from "./options.ts";
+import type { Options } from "./options.ts";
 
 import {
   appendPane,
@@ -160,6 +161,10 @@ export class Window {
    *  registered none; see PaneViews in env.ts. */
   #paneContent: PaneView | null;
 
+  /** Live option values, one instance per workspace; see OptionsRuntime in
+   *  env.ts. Passed on to every Pane and Divider this window creates. */
+  #options: Options;
+
   /**
    * One scope per session, rather than one scope for the window.
    *
@@ -177,6 +182,7 @@ export class Window {
     this.#ctx = Context.get(env, RenderCtx);
     this.#backend = Context.get(env, BackendContext);
     this.#paneContent = Context.get(env, PaneViews);
+    this.#options = Context.get(env, OptionsRuntime);
     this.number = number;
     this.root = new BoxRenderable(this.#ctx, {
       id: `window-${number}-${nextId++}`,
@@ -465,11 +471,16 @@ export class Window {
 
   #makeDivider(parent: BoxRenderable, direction: SplitDirection, path: LayoutPath, index: number): void {
     const divider = this.#trackDivider(
-      Divider.make(this.#ctx, parent, {
-        id: `divider-${nextId++}`,
-        axis: direction,
-        onDrag: (delta: number) => this.onModelResizeDivider?.(path, index, delta),
-      }),
+      Divider.make(
+        this.#ctx,
+        parent,
+        {
+          id: `divider-${nextId++}`,
+          axis: direction,
+          onDrag: (delta: number) => this.onModelResizeDivider?.(path, index, delta),
+        },
+        this.#options,
+      ),
     );
     this.#dividerRefs.set(divider, { path, index });
     // It is a segment of the pane frame, so its ends finish as junctions.
@@ -501,15 +512,19 @@ export class Window {
   #makePane(content: PaneContent, session: SessionHandle | null, id = newPaneId()): Pane {
     const pane: Pane =
       content.kind === "plugin"
-        ? ComponentPane.make(this.#ctx, {
-            id,
-            session,
-            paneType: content.type,
-            descriptor: content.descriptor,
-            view: this.#paneContent ?? undefined,
-          })
+        ? ComponentPane.make(
+            this.#ctx,
+            {
+              id,
+              session,
+              paneType: content.type,
+              descriptor: content.descriptor,
+              view: this.#paneContent ?? undefined,
+            },
+            this.#options,
+          )
         : // pty content always names a session — the wire schema says so.
-          TerminalPane.make(this.#ctx, { id, session: session! });
+          TerminalPane.make(this.#ctx, { id, session: session! }, this.#options);
     this.#paneOwners.set(pane.view, pane);
     setWeight(pane.view, 1);
     pane.onFocusRequest = (p) => this.onModelFocus?.(p.id);
@@ -577,10 +592,10 @@ export class Window {
    * cell thick at every seam.
    */
   #refreshChrome() {
-    const gap = runtime["appearance.gap"];
+    const gap = this.#options["appearance.gap"];
     // Without a gap the pane frame is the only usable edge, so outerBorder is
     // intentionally ignored. It only changes the separated-border mode.
-    const showOuterBorder = runtime["appearance.outerBorder"];
+    const showOuterBorder = this.#options["appearance.outerBorder"];
     const edge = (pane: Pane, axis: SplitDirection, direction: -1 | 1) =>
       gap || (!this.#hasNeighbour(pane, axis, direction) && showOuterBorder);
     const focused = this.focused;
@@ -602,7 +617,7 @@ export class Window {
       };
     }
     for (const divider of this.#dividers()) {
-      divider.setPaneGap(runtime["appearance.gap"] ? 1 : 0);
+      divider.setPaneGap(this.#options["appearance.gap"] ? 1 : 0);
       // A divider's ends meet the window's outer border exactly where it has no
       // neighbour of its own across the perpendicular axis.
       const cross: SplitDirection = divider.axis === "row" ? "column" : "row";
@@ -940,10 +955,15 @@ export class Window {
         dockStrips[side].forEach((slot, index) => {
           if (index > 0) {
             this.#trackDivider(
-              Divider.make(this.#ctx, box, {
-                id: `dock-divider-${side}-${nextId++}`,
-                axis: side === "left" || side === "right" ? "column" : "row",
-              }),
+              Divider.make(
+                this.#ctx,
+                box,
+                {
+                  id: `dock-divider-${side}-${nextId++}`,
+                  axis: side === "left" || side === "right" ? "column" : "row",
+                },
+                this.#options,
+              ),
             );
           }
           const pane = panesById.get(slot.id);

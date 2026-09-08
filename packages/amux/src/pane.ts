@@ -20,7 +20,7 @@ import {
 import { NativeImage } from "@opentui/core";
 import { Effect, Exit, Scope } from "effect";
 import type { SessionHandle } from "./session-handle.ts";
-import { runtime } from "./options.ts";
+import type { Options } from "./options.ts";
 import { captureRange } from "./shim.ts";
 import { clearSelection, setSelection } from "./shim.ts";
 import { cellWidth } from "./copy.ts";
@@ -96,12 +96,17 @@ export abstract class PaneRenderable extends Renderable {
 
   #edges: Edges = { ...ALL_EDGES };
   #active = false;
+  /** Live option values this pane reads at render/event time; see
+   *  OptionsRuntime in env.ts. */
+  protected readonly optionsRuntime: Options;
 
   constructor(
     ctx: RenderContext,
     options: RenderableOptions & { id: string; session: SessionHandle | null },
+    optionsRuntime: Options,
   ) {
     super(ctx, options);
+    this.optionsRuntime = optionsRuntime;
     this.session = options.session;
     if (this.session) {
       // The session is sized here rather than through #applyEdges: a subclass's
@@ -276,7 +281,7 @@ export abstract class PaneRenderable extends Renderable {
       // border label, and `session.title` is the one place that knows both.
       const title = this.session?.title ?? "";
       const titleWidth = cellWidth(title);
-      if (title && runtime["appearance.gap"] && this.width >= titleWidth + 4) {
+      if (title && this.optionsRuntime["appearance.gap"] && this.width >= titleWidth + 4) {
         if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
         else buffer.setCell(x0, y0, "─", fg, DEFAULT_BG);
         buffer.drawText(` ${title} `, x0 + 1, y0, fg, DEFAULT_BG);
@@ -447,10 +452,11 @@ class TerminalPaneView extends PaneRenderable {
   constructor(
     ctx: RenderContext,
     options: RenderableOptions & { id: string; session: SessionHandle },
+    optionsRuntime: Options,
     state: RenderState,
     mouse: MouseEncoder,
   ) {
-    super(ctx, options);
+    super(ctx, options, optionsRuntime);
     this.state = state;
     this.mouse = mouse;
   }
@@ -553,7 +559,7 @@ class TerminalPaneView extends PaneRenderable {
     // Full-screen apps (vim, htop) want the wheel themselves. A plain shell
     // does not, and there the wheel should walk our scrollback instead.
     if (!seq && event.type === "scroll") {
-      const rows = runtime["behaviour.scrollRows"];
+      const rows = this.optionsRuntime["behaviour.scrollRows"];
       this.session.scrollBy(event.scroll?.direction === "up" ? -rows : rows);
       this.invalidate();
       event.stopPropagation();
@@ -754,6 +760,7 @@ export class TerminalPane extends Pane {
   static make(
     ctx: RenderContext,
     options: { id: string; session: SessionHandle },
+    optionsRuntime: Options,
   ): TerminalPane {
     const scope = Pane.makeScope();
     const state = Pane.acquire(
@@ -772,7 +779,7 @@ export class TerminalPane extends Pane {
     );
     const view = Pane.acquire(
       scope,
-      acquireRenderable(() => new TerminalPaneView(ctx, options, state, mouse)),
+      acquireRenderable(() => new TerminalPaneView(ctx, options, optionsRuntime, state, mouse)),
     );
     return new TerminalPane(view, scope, options.id);
   }

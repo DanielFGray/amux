@@ -288,9 +288,13 @@ export type Overlay = "none" | "settings" | "palette";
  * caller's, in one place, on every path including a signal.
  */
 export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, Scope.Scope> {
+  // The one mutable Options object this workspace's panes, windows and
+  // dividers all read at render/event time; see OptionsRuntime in env.ts.
+  // Kept in step by the reactive effect below via applyOptions.
+  const optionsRuntime = resolveOptions(options.config.options);
   const initialShell = [
     // @effect-diagnostics-next-line processEnv:off -- initial shell fallback is evaluated before the Effect program starts.
-    resolveOptions(options.config.options)["behaviour.shell"] || process.env.SHELL || "bash",
+    optionsRuntime["behaviour.shell"] || process.env.SHELL || "bash",
   ];
   return Effect.gen(function* () {
     const fiberScope = yield* Scope.make();
@@ -322,10 +326,11 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         shell: initialShell,
         backend: options.session.backend(),
         paneContent: (props) => sessionViewsProvider.value.view(props),
+        options: optionsRuntime,
       }),
       options.paneHost,
     );
-    const slots = createSlots(options.renderer, contributions);
+    const slots = createSlots(options.renderer, contributions, optionsRuntime);
     const slotsService = scopedRegistry(
       {
         Slot: slots.Slot,
@@ -364,6 +369,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
           contributions,
           pluginRuntime,
           processDisplayProvider.value,
+          optionsRuntime,
           {
             slots: slotsProvider,
             sessionViews: sessionViewsProvider,
@@ -524,6 +530,7 @@ function buildApp(
   contributions: PluginContributions,
   pluginRuntime: PluginRuntime,
   processDisplay: ProcessDisplayService,
+  optionsRuntime: Options,
   externalProviders: {
     readonly slots: ProviderRef<SlotsService>;
     readonly sessionViews: ProviderRef<SessionViewsService>;
@@ -2345,7 +2352,7 @@ function buildApp(
   createEffect(() => {
     // Before the redraw: pane borders and wheel scrolling read these values
     // imperatively, from renderables with no path back into this graph.
-    applyOptions(options());
+    applyOptions(optionsRuntime, options());
     syncPaneFrame();
   });
 

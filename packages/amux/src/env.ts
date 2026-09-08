@@ -15,6 +15,7 @@ import { Context } from "effect";
 import type { RenderContext } from "@opentui/core";
 import { localPty, type SessionBackendFactory } from "./backend.ts";
 import type { PaneView } from "./component-pane.tsx";
+import { resolveOptions, type Options } from "./options.ts";
 
 /** The renderer everything in a workspace draws into. No default: there is no
  *  sensible stand-in for a renderer, and a missing one should not be silently
@@ -60,10 +61,23 @@ export const PaneViews = Context.Reference<PaneView | null>("PaneViews", {
   defaultValue: (): PaneView | null => null,
 });
 
+/**
+ * Option values a pane, window or divider reads imperatively at the point of
+ * use — pane borders, wheel scrolling — with no path back to the app's
+ * reactive graph. One mutable object per workspace: whoever holds the
+ * reference sees every later write, because there is exactly one writer (the
+ * app's reactive effect) mutating it in place, and every reader (Pane,
+ * Window, Divider) captures the same instance rather than importing a
+ * process-wide global (see options.ts's applyOptions).
+ */
+export const OptionsRuntime = Context.Reference<Options>("OptionsRuntime", {
+  defaultValue: (): Options => resolveOptions({}),
+});
+
 /** Everything a workspace reads out of its context. Shell, Backend,
- *  PaneViews are References, not Services — they always resolve to a default
- *  and so carry no identity in the requirement channel; only the renderer is
- *  actually required. */
+ *  PaneViews, OptionsRuntime are References, not Services — they always
+ *  resolve to a default and so carry no identity in the requirement
+ *  channel; only the renderer is actually required. */
 export type WorkspaceEnv = RenderCtx;
 
 /**
@@ -81,11 +95,13 @@ export const workspaceEnv = (
     shell?: string[];
     backend?: SessionBackendFactory;
     paneContent?: PaneView;
+    options?: Options;
   } = {},
 ): Context.Context<WorkspaceEnv> => {
   let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>;
   if (options.shell) env = Context.add(env, Shell, options.shell);
   if (options.backend) env = Context.add(env, Backend, options.backend);
   if (options.paneContent) env = Context.add(env, PaneViews, options.paneContent);
+  if (options.options) env = Context.add(env, OptionsRuntime, options.options);
   return env;
 };
