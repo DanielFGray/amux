@@ -694,7 +694,8 @@ function orphanedEntries(bindings: Bindings, keys: Keys, known: ReadonlySet<stri
 }
 
 /**
- * What a half-typed sequence can still turn into.
+ * What a half-typed sequence can still turn into — or, with nothing typed
+ * yet, every top-level key the currently active contexts answer to.
  *
  * The premise of a which-key panel: after `^a` the app knows exactly which
  * commands remain reachable and which single key reaches each, so it can say so
@@ -709,19 +710,36 @@ function orphanedEntries(bindings: Bindings, keys: Keys, known: ReadonlySet<stri
  *
  * Hidden commands are omitted — they are the siblings covered by one entry,
  * the way `^a 1..9` is a single line rather than nine.
+ *
+ * Groups are ordered by the highest `priority` among the contexts that feed
+ * them (a context-less command sits beneath every real context, the same as
+ * its layer does at dispatch time) — the panel says what will actually fire
+ * first, making shadowing visible instead of mysterious rather than leaving
+ * it to alphabetical or registration order.
  */
 export function nextKeys(
   bindings: Bindings,
   commands: CommandSpec[],
+  contexts: readonly ContextSpec[],
   pending: readonly { display: string }[],
 ): HintGroup[] {
-  if (pending.length === 0) return [];
   const active = bindings.keymap.getCommandBindings({
     visibility: "active",
     commands: commands.map((c) => c.name),
   });
 
   const groups = new Map<string, { keys: string[]; desc: string }[]>();
+  const priorityOf = new Map<string, number>();
+  const bump = (group: string, priority: number) =>
+    priorityOf.set(group, Math.max(priorityOf.get(group) ?? -Infinity, priority));
+
+  // Every leader-bound command's compiled sequence starts with the same
+  // literal "<leader>" token (the leader is a keymap token, not a command —
+  // registerLeader, above). Before it is pressed, showing each of those
+  // commands individually would repeat the same one key once per command;
+  // one synthetic entry says the leader still reaches them, the way
+  // Settings.tsx's own "prefix" row reads the same token.
+  let leaderReachable = false;
   for (const cmd of commands) {
     if (cmd.hidden) continue;
     const keys: string[] = [];
@@ -730,6 +748,10 @@ export function nextKeys(
       // Longer than what has been typed, and typed so far in full.
       if (sequence.length <= pending.length) continue;
       if (pending.some((part, i) => sequence[i]!.display !== part.display)) continue;
+      if (pending.length === 0 && sequence[0]!.display === "<leader>") {
+        leaderReachable = true;
+        continue;
+      }
       const key = formatKey(sequence[pending.length]!.display, bindings.leader());
       if (!keys.includes(key)) keys.push(key);
     }
@@ -737,6 +759,33 @@ export function nextKeys(
     const entries = groups.get(cmd.group) ?? [];
     entries.push({ keys, desc: cmd.desc });
     groups.set(cmd.group, entries);
+    bump(cmd.group, cmd.context?.priority ?? -Infinity);
   }
-  return [...groups].map(([group, entries]) => ({ group, entries }));
+
+  // A context whose keys are a `handle` catch-all (key-context.ts) has no
+  // CommandSpec to read a binding back from — copy mode's v/y/n, decided by
+  // its own live state rather than a static map. `ContextSpec.hints` fills
+  // that gap for display the way `handle` fills it for dispatch, but only at
+  // the top of the tree: these are always single, unprefixed keys, so once a
+  // sequence is under way a typed prefix has already said more than this
+  // list can.
+  if (pending.length === 0) {
+    for (const context of contexts) {
+      if (!context.hints?.length || !context.active()) continue;
+      groups.set(context.id, [...context.hints]);
+      bump(context.id, context.priority);
+    }
+  }
+
+  const result = [...groups]
+    .map(([group, entries]) => ({ group, entries }))
+    .sort((a, b) => (priorityOf.get(b.group) ?? -Infinity) - (priorityOf.get(a.group) ?? -Infinity));
+
+  if (leaderReachable) {
+    result.push({
+      group: "",
+      entries: [{ keys: [formatKey("<leader>", bindings.leader())], desc: "more commands" }],
+    });
+  }
+  return result;
 }

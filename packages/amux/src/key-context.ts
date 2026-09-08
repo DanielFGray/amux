@@ -34,9 +34,30 @@ export interface ContextSpec {
    * before it moved here. Most contexts have none: their keys are `CommandSpec`s
    * (`contextCommand`, bindings.ts) compiled into the context's own keymap
    * layer, and the keymap has already tried those before a key ever reaches
-   * `activeHandler`.
+   * `resolveUnhandled`.
    */
   handle?: (event: KeyEvent) => boolean;
+  /**
+   * Open the which-key panel the moment this context becomes active, behind
+   * the same `appearance.whichKeyDelay` a half-typed sequence waits out.
+   * Copy mode wants this — v/y/n are undiscoverable otherwise — while most
+   * contexts don't: an editor's normal mode should not flash a panel on
+   * every mode change. False (the default) leaves the panel exactly as
+   * leader-triggered as it always was.
+   */
+  showOnEntry?: boolean;
+  /**
+   * The which-key panel's entry for this context, while it has no `handle`
+   * substitute: a context with `handle` (above) reads its own live state to
+   * decide what a key does, so there is no `CommandSpec` `nextKeys` could
+   * read a binding back from — the same gap `handle` fills for dispatch,
+   * filled here for display. Shown only at the top of the tree (nothing
+   * typed yet): these are always single, unprefixed keys, so once a
+   * sequence is under way a typed prefix has already said more than this
+   * list can. Grouped under the context's own id — the label the which-key
+   * panel renders alongside every `CommandSpec`-derived group.
+   */
+  hints?: readonly { keys: string[]; desc: string }[];
 }
 
 /**

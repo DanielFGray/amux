@@ -2296,9 +2296,9 @@ function buildApp(
   const bindings = bindingsProvider.value;
 
   // The contexts table: a plugin and core register into it exactly like
-  // bindings above. onUnhandled resolves the overlay tier against it
-  // (`activeHandler`, key-context.ts); copy mode and the pane fallback are
-  // still hand-rolled — that migration is ts-fd2a33.
+  // bindings above. onUnhandled resolves every tier against it
+  // (`resolveUnhandled`, key-context.ts) except the pane, which is the
+  // fallback beneath every context rather than one of them.
   const contextTable = contributions.table<ContextSpec>();
   const registerContext = (owner: PluginInstance, context: ContextSpec) =>
     contextTable.add(owner, context.id, context);
@@ -2309,11 +2309,22 @@ function buildApp(
   );
   const contextsProvider = providerRef<ContextsService>(contextsService);
 
-  function updateHintVisibility(sequence: readonly { display: string }[]) {
+  // Whether some active context wants the panel open the moment it was
+  // entered (key-context.ts's `showOnEntry`) — reactive both to a context
+  // registering/retiring and to its own `active()` signal, since `contexts()`
+  // reads the contribution table's signal and this calls `active()` on each.
+  const showOnEntryActive = createMemo(() =>
+    contexts().some((context) => context.showOnEntry === true && context.active()),
+  );
+
+  /** Arm or clear the panel's delay timer for one trigger going true/false.
+   *  Shared by the two independent reasons the panel opens — a half-typed
+   *  sequence and a `showOnEntry` context — so either one can win the single
+   *  "hint-delay" fiber slot without the other's state going stale. */
+  function armHintVisibility(triggered: boolean, stillTriggered: () => boolean) {
     runFiber("hint-delay", Effect.void);
-    setPendingParts(sequence);
     const visibility = hintVisibility(
-      sequence.length,
+      triggered,
       options()["appearance.whichKeyHints"],
       options()["appearance.whichKeyDelay"],
     );
@@ -2326,11 +2337,14 @@ function buildApp(
       return;
     }
     setHintsVisible(false);
-    scheduleHintVisibility(
-      runFiber,
-      visibility.delayMs,
-      () => pendingParts().length > 0,
-      () => setHintsVisible(true),
+    scheduleHintVisibility(runFiber, visibility.delayMs, stillTriggered, () => setHintsVisible(true));
+  }
+
+  function updateHintVisibility(sequence: readonly { display: string }[]) {
+    setPendingParts(sequence);
+    armHintVisibility(
+      sequence.length > 0,
+      () => pendingParts().length > 0 || showOnEntryActive(),
     );
   }
 
@@ -2338,6 +2352,25 @@ function buildApp(
   // keymap will actually do next, so a rebinding shows up in both without
   // touching this file.
   const disposePendingSequence = bindings.keymap.on("pendingSequence", updateHintVisibility);
+
+  // `on` with `defer: true` only fires on an actual flip of showOnEntryActive
+  // — false->true (arm, exactly like a keystroke arriving) or true->false
+  // (drop the panel, unless a sequence is independently in progress). Never
+  // on mount, so a context already active when the app starts doesn't pop
+  // the panel it never "entered".
+  createEffect(
+    on(
+      showOnEntryActive,
+      (active) => {
+        if (active) {
+          armHintVisibility(true, () => pendingParts().length > 0 || showOnEntryActive());
+        } else if (pendingParts().length === 0) {
+          setHintsVisible(false);
+        }
+      },
+      { defer: true },
+    ),
+  );
 
   /**
    * Put the options into effect.
@@ -2368,7 +2401,9 @@ function buildApp(
   const pending = createMemo(() =>
     pendingParts().length ? [formatSequence(pendingParts(), configState().keys.leader)] : [],
   );
-  const hints = createMemo(() => nextKeys(bindings, [...registeredBindings()], pendingParts()));
+  const hints = createMemo(() =>
+    nextKeys(bindings, [...registeredBindings()], contexts(), pendingParts()),
+  );
 
   // Recomputed whenever the keys change, since that is what the list is *for*:
   // the reference and the editor are the same rows, read back out of the keymap
@@ -2938,6 +2973,20 @@ function buildApp(
         priority: CONTEXT_PRIORITY.APP_MODE,
         rebindable: false,
         handle: (event) => copyMode.onKey(event),
+        // v/y/n are only discoverable through this panel — copy.ts's onKey
+        // decides what they mean from its own live state, so there is no
+        // CommandSpec for `nextKeys` to read them back from (key-context.ts's
+        // `hints`).
+        showOnEntry: true,
+        hints: [
+          { keys: ["v", "space"], desc: "start selection" },
+          { keys: ["y", "enter"], desc: "yank selection" },
+          { keys: ["/"], desc: "search forward" },
+          { keys: ["?"], desc: "search backward" },
+          { keys: ["n"], desc: "repeat search" },
+          { keys: ["N"], desc: "repeat search backward" },
+          { keys: ["q", "esc"], desc: "exit" },
+        ],
       },
       {
         id: "copy-mode.selection",

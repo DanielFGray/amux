@@ -13,9 +13,15 @@ interface Line {
   entries: { keys: string; desc: string }[];
 }
 
-/** Decide the visible/delayed state before the app arms its timer. */
-export function hintVisibility(sequenceLength: number, enabled: boolean, delaySeconds: number) {
-  if (sequenceLength === 0 || !enabled) return { visible: false, delayMs: 0 };
+/**
+ * Decide the visible/delayed state before the app arms its timer.
+ *
+ * `triggered` covers both reasons the panel might open — a half-typed
+ * sequence, or a context that declares `showOnEntry` going active — so this
+ * function only needs to know whether either one currently holds, not which.
+ */
+export function hintVisibility(triggered: boolean, enabled: boolean, delaySeconds: number) {
+  if (!triggered || !enabled) return { visible: false, delayMs: 0 };
   const delayMs = Math.max(0, delaySeconds) * 1000;
   return { visible: delayMs === 0, delayMs };
 }

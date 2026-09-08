@@ -887,11 +887,98 @@ test("nextKeys never surfaces a binding whose context is inactive", async () => 
     ];
     const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
 
-    expect(nextKeys(bindings, commands, [{ display: "<leader>" }])).toEqual([]);
+    expect(nextKeys(bindings, commands, [], [{ display: "<leader>" }])).toEqual([]);
 
     setCopyModeActive(true);
-    expect(nextKeys(bindings, commands, [{ display: "<leader>" }])).toEqual([
+    expect(nextKeys(bindings, commands, [], [{ display: "<leader>" }])).toEqual([
       { group: "copy", entries: [{ keys: ["y"], desc: "yank selection" }] },
+    ]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * Before anything is typed, every leader-bound command's compiled sequence
+ * starts with the same literal "<leader>" token — showing each individually
+ * would repeat that one key once per command. One collapsed entry says the
+ * leader still reaches them, so a user inside an unfamiliar context still
+ * sees it works (ts-20995a's decision: every active context, not just the
+ * innermost one).
+ */
+test("nextKeys collapses leader-bound commands to one entry before the leader is pressed", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const commands: CommandSpec[] = [
+      { name: "pane.split", key: "<leader>|", desc: "split", group: "panes", run: Effect.void },
+      { name: "pane.zoom", key: "<leader>z", desc: "zoom", group: "panes", run: Effect.void },
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+
+    expect(nextKeys(bindings, commands, [], [])).toEqual([
+      { group: "", entries: [{ keys: ["^a"], desc: "more commands" }] },
+    ]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * A context with only a `handle` catch-all (key-context.ts) has no
+ * CommandSpec to read a binding back from — copy mode's v/y/n, decided from
+ * its own live state. `ContextSpec.hints` fills that gap for display, but
+ * only before anything is typed: once a sequence is under way a typed prefix
+ * has already said more than this static list can.
+ */
+test("nextKeys surfaces a handle-only context's declared hints, only before anything is typed", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const bindings = createBindings(t.renderer, [], { onUnhandled: () => true });
+    const [active, setActive] = createSignal(false);
+    const copyMode: ContextSpec = {
+      id: "copy-mode",
+      active,
+      priority: CONTEXT_PRIORITY.APP_MODE,
+      rebindable: false,
+      handle: () => true,
+      hints: [{ keys: ["v"], desc: "start selection" }],
+    };
+
+    expect(nextKeys(bindings, [], [copyMode], [])).toEqual([]);
+
+    setActive(true);
+    expect(nextKeys(bindings, [], [copyMode], [])).toEqual([
+      { group: "copy-mode", entries: [{ keys: ["v"], desc: "start selection" }] },
+    ]);
+    // Gone the moment a sequence starts — a static list has nothing more to
+    // say about a half-typed prefix it knows nothing about.
+    expect(nextKeys(bindings, [], [copyMode], [{ display: "x" }])).toEqual([]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * Groups sort by the highest `priority` among the contexts feeding them — a
+ * context-less command sits beneath every real context, the same as its
+ * layer does at dispatch. The panel says what will actually fire first.
+ */
+test("nextKeys orders groups by context precedence, context-less last", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const pane = testContext("editor.normal", CONTEXT_PRIORITY.PANE, () => true);
+    const appMode = testContext("copy-mode", CONTEXT_PRIORITY.APP_MODE, () => true);
+    const commands: CommandSpec[] = [
+      { name: "app.quit", key: "q", desc: "quit", group: "global", run: Effect.void },
+      contextCommand(pane, { name: "d", key: "d", desc: "delete", group: "editor", run: Effect.void }),
+      contextCommand(appMode, { name: "y", key: "y", desc: "yank", group: "copy", run: Effect.void }),
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+
+    expect(nextKeys(bindings, commands, [], []).map((g) => g.group)).toEqual([
+      "copy",
+      "editor",
+      "global",
     ]);
   } finally {
     t.renderer.destroy();

@@ -46,7 +46,7 @@ const seq = (...displays: string[]) => displays.map((display) => ({ display }));
 
 test("nextKeys lists what a half-typed sequence can still become", async () => {
   const { keymap: km } = await keymap();
-  const groups = nextKeys(km, COMMANDS, seq("<leader>"));
+  const groups = nextKeys(km, COMMANDS, [], seq("<leader>"));
 
   expect(groups.map((g) => g.group)).toEqual(["panes", "windows", "global"]);
   expect(groups[0]!.entries).toEqual([
@@ -59,25 +59,31 @@ test("nextKeys lists what a half-typed sequence can still become", async () => {
   expect(groups[2]!.entries).toEqual([{ keys: ["g"], desc: "deep" }]);
 });
 
-test("nextKeys narrows as the sequence advances, and is empty before it starts", async () => {
+test("nextKeys narrows as the sequence advances, and collapses to the leader before it starts", async () => {
   const { keymap: km } = await keymap();
 
-  expect(nextKeys(km, COMMANDS, [])).toEqual([]);
+  // Every COMMANDS entry here is leader-bound, so before the leader is
+  // pressed there is nothing to say per-command — only that the leader
+  // itself still reaches all of them, one collapsed entry rather than one
+  // per command (bindings.ts's `leaderReachable`).
+  expect(nextKeys(km, COMMANDS, [], [])).toEqual([
+    { group: "", entries: [{ keys: ["^a"], desc: "more commands" }] },
+  ]);
   // One key in on a two-key binding: only that branch survives.
-  const deep = nextKeys(km, COMMANDS, seq("<leader>", "g"));
+  const deep = nextKeys(km, COMMANDS, [], seq("<leader>", "g"));
   expect(deep).toEqual([{ group: "global", entries: [{ keys: ["g"], desc: "deep" }] }]);
 });
 
-test("which-key visibility transitions are deterministic for empty, disabled, immediate and delayed states", () => {
-  expect(hintVisibility(0, true, 1)).toEqual({ visible: false, delayMs: 0 });
-  expect(hintVisibility(1, false, 1)).toEqual({ visible: false, delayMs: 0 });
-  expect(hintVisibility(1, true, 0)).toEqual({ visible: true, delayMs: 0 });
-  expect(hintVisibility(1, true, 0.5)).toEqual({ visible: false, delayMs: 500 });
+test("which-key visibility transitions are deterministic for untriggered, disabled, immediate and delayed states", () => {
+  expect(hintVisibility(false, true, 1)).toEqual({ visible: false, delayMs: 0 });
+  expect(hintVisibility(true, false, 1)).toEqual({ visible: false, delayMs: 0 });
+  expect(hintVisibility(true, true, 0)).toEqual({ visible: true, delayMs: 0 });
+  expect(hintVisibility(true, true, 0.5)).toEqual({ visible: false, delayMs: 500 });
 });
 
 test("the panel draws the reachable keys under the sequence so far", async () => {
   const { t, keymap: km } = await keymap();
-  const groups = nextKeys(km, COMMANDS, seq("<leader>"));
+  const groups = nextKeys(km, COMMANDS, [], seq("<leader>"));
 
   await render(
     () => <Hints groups={groups} pending="^a" left={0} width={80} height={20} />,
