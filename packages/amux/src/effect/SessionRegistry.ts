@@ -184,6 +184,11 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
   #ended = false;
   #failure: Error | undefined;
   #failed = false;
+  readonly #runtime: Context.Context<never>;
+
+  constructor(runtime: Context.Context<never>) {
+    this.#runtime = runtime;
+  }
 
   offer(value: A): void {
     const waiter = this.#waiters.shift();
@@ -216,7 +221,7 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
           ? Promise.reject(this.#failure)
           : Promise.resolve({ done: true, value: undefined as never });
       }
-      return Effect.runPromise(
+      return Effect.runPromiseWith(this.#runtime)(
         Effect.callback<IteratorResult<A>, never>((resume) => {
           this.#waiters.push((result) => resume(Effect.succeed(result)));
         }),
@@ -236,7 +241,7 @@ const STDERR_TAIL_CHARS = 8192;
 
 /** A component's content comes from a worker isolated from the daemon, speaking
  *  semantic frames on stdout instead of terminal bytes. */
-function componentBackend(spec: SessionSpec): Backend {
+function componentBackend(spec: SessionSpec, runtime: Context.Context<never>): Backend {
   if (!spec.cmd.length) throw new Error("component session requires a worker command");
   const env = {
     ...Object.fromEntries(
@@ -259,8 +264,8 @@ function componentBackend(spec: SessionSpec): Backend {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const output = new AsyncMailbox<Uint8Array>();
-  const events = new AsyncMailbox<AgentEventPayload | AgentDelta>();
+  const output = new AsyncMailbox<Uint8Array>(runtime);
+  const events = new AsyncMailbox<AgentEventPayload | AgentDelta>(runtime);
   let closed = false;
   let killed = false;
 
@@ -276,7 +281,7 @@ function componentBackend(spec: SessionSpec): Backend {
    */
   let stderrTail = "";
   let stderrDropped = false;
-  const stderrDrained = Effect.runPromise(
+  const stderrDrained = Effect.runPromiseWith(runtime)(
     Effect.callback<void, unknown>((resume) => {
       const decoder = new TextDecoder();
       const iterator = child.stderr[Symbol.asyncIterator]();
@@ -294,7 +299,7 @@ function componentBackend(spec: SessionSpec): Backend {
             }
             // Logged as it arrives, so a worker that complains and keeps running is
             // visible too — not only one that dies with something to say.
-            Effect.runFork(
+            Effect.runForkWith(runtime)(
               Effect.logWarning(`session '${spec.id}' worker stderr: ${text.trimEnd()}`),
             );
             stderrTail += text;
@@ -412,6 +417,11 @@ export class SessionRegistry extends Context.Service<SessionRegistry>()("Session
   // scoped, not effect: the command pumps are a FiberMap that has to be
   // finalized, and the scope that owns it is the registry's own lifetime.
   make: Effect.gen(function* () {
+    // Captured once here rather than at each spawn: whatever Layer
+    // daemon-main.ts provided is already ambient in this fiber, and every
+    // session this registry spawns runs on it. See RootRuntime in env.ts
+    // for the client-side counterpart.
+    const rootRuntime = yield* Effect.context<never>();
     // The token prevents a late exit from an old backend from releasing a reused id.
     const sessions = yield* Ref.make<ReadonlyMap<string, Reservation>>(new Map());
     const commandPumps = yield* FiberMap.make<string>();
@@ -450,7 +460,8 @@ export class SessionRegistry extends Context.Service<SessionRegistry>()("Session
         });
         const backend = yield* Effect.acquireRelease(
           Effect.try({
-            try: () => (kind === "component" ? componentBackend(spec) : ptyBackend(spec)),
+            try: () =>
+              kind === "component" ? componentBackend(spec, rootRuntime) : ptyBackend(spec),
             catch: (error) => asPtyError("spawn", String(error)),
           }).pipe(Effect.tapError(() => release)),
           (owned) =>
