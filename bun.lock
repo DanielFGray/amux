@@ -106,6 +106,21 @@
         "@danielfgray/amux-plugin-search",
       ],
     },
+    "packages/plugin-modal": {
+      "name": "@danielfgray/amux-plugin-modal",
+      "version": "0.1.0",
+      "dependencies": {
+        "effect": "catalog:",
+        "solid-js": "catalog:",
+      },
+      "devDependencies": {
+        "@danielfgray/amux": "workspace:*",
+        "@opentui/core": "catalog:",
+      },
+      "peerDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+    },
     "packages/plugin-niri": {
       "name": "@danielfgray/amux-plugin-niri",
       "version": "0.1.0",
@@ -262,6 +277,8 @@
     "@danielfgray/amux-editor": ["@danielfgray/amux-editor@workspace:packages/editor"],
 
     "@danielfgray/amux-plugin-agent-harness": ["@danielfgray/amux-plugin-agent-harness@workspace:packages/plugin-agent-harness"],
+
+    "@danielfgray/amux-plugin-modal": ["@danielfgray/amux-plugin-modal@workspace:packages/plugin-modal"],
 
     "@danielfgray/amux-plugin-niri": ["@danielfgray/amux-plugin-niri@workspace:packages/plugin-niri"],
 
