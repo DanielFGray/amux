@@ -2081,6 +2081,7 @@ function buildApp(
       setEditOriginal(null);
       setEditText(undefined);
       setSettingsFocus("items");
+      setOverlay("none");
       return true;
     }
     if (spec.kind === "string" || spec.kind === "number") return false;
