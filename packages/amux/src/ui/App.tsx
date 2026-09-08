@@ -114,7 +114,7 @@ function Dock(props: { slots: SlotReader; side: DockSide; anchor: Anchor }) {
           side={props.side}
           anchor={props.anchor}
         />
-        {props.slots.divider(props.side, props.anchor)}
+        {props.slots.divider(props.side, props.anchor)?.view}
       </box>
     </Show>
   );

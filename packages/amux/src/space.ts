@@ -128,22 +128,24 @@ export class Space {
       window.onCopy = this.onCopy;
       window.onCopyError = this.onCopyError;
       this.#windows.push(window);
-      this.selectWindow(window);
+      yield* this.selectWindow(window);
       return window;
     });
   }
 
-  selectWindow(window: Window) {
-    const next = selectWindowState(
-      this.#state,
-      this.#windows.map((candidate) => candidate.number),
-      window.number,
-    );
-    if (next === this.#state) return;
-    this.#state = next;
-    const pane = window.focused ?? window.panes[0];
-    if (pane) window.focus(pane);
-    this.onChange?.();
+  selectWindow(window: Window): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const next = selectWindowState(
+        this.#state,
+        this.#windows.map((candidate) => candidate.number),
+        window.number,
+      );
+      if (next === this.#state) return;
+      this.#state = next;
+      const pane = window.focused ?? window.panes[0];
+      if (pane) yield* window.focus(pane);
+      this.onChange?.();
+    });
   }
 
   /** Redraw every window's borders after the surrounding chrome changed. */
@@ -167,7 +169,7 @@ export class Space {
       // the window scope frees terminals that root could still render.
       const active = this.active;
       const pane = active?.focused ?? active?.panes[0];
-      if (active && pane) active.focus(pane);
+      if (active && pane) yield* active.focus(pane);
       else this.onChange?.();
       yield* this.#releaseWindow(window);
     });
@@ -287,27 +289,29 @@ export class SpaceSet {
       space.onCopy = this.onCopy;
       space.onCopyError = this.onCopyError;
       this.#spaces.push(space);
-      if (!this.active) this.activate(space);
+      if (!this.active) yield* this.activate(space);
       else this.onChange?.();
       return space;
     });
   }
 
-  activate(space: Space) {
-    const next = activateSpaceState(
-      this.#state,
-      this.#spaces.map((candidate) => candidate.id),
-      space.id,
-    );
-    if (next === this.#state) return;
-    this.#state = next;
-    this.#project();
-    // Re-focus so keystrokes land in this space's pane, not the old one's.
-    const window = space.active;
-    const pane = window?.focused ?? window?.panes[0];
-    if (window && pane) window.focus(pane);
-    this.onChange?.();
-    this.#ctx.requestRender();
+  activate(space: Space): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const next = activateSpaceState(
+        this.#state,
+        this.#spaces.map((candidate) => candidate.id),
+        space.id,
+      );
+      if (next === this.#state) return;
+      this.#state = next;
+      this.#project();
+      // Re-focus so keystrokes land in this space's pane, not the old one's.
+      const window = space.active;
+      const pane = window?.focused ?? window?.panes[0];
+      if (window && pane) yield* window.focus(pane);
+      this.onChange?.();
+      this.#ctx.requestRender();
+    });
   }
 
   /** Redraw every pane frame everywhere — an inactive space's windows too, so
@@ -416,8 +420,8 @@ export const projectWorkspace = Effect.fnUntraced(function* (
         const pane = current?.panes.find((candidate) => candidate.id === slot.id);
         if (!current || !pane || current === destination) continue;
         const owner = target.spaces.find((candidate) => candidate.windows.includes(current));
-        const handoff = owner && current.releasePane(pane);
-        if (handoff) destination.adopt(handoff.session, pane, handoff.scope);
+        const handoff = owner ? yield* current.releasePane(pane) : null;
+        if (handoff) yield* destination.adopt(handoff.session, pane, handoff.scope);
       }
     }
   }
@@ -476,5 +480,5 @@ const projectWindow = Effect.fnUntraced(function* (
         : { ...sessionWithProvider, backend },
     );
   }
-  window.project(source.layout, source.state);
+  yield* window.project(source.layout, source.state);
 });

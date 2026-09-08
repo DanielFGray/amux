@@ -96,12 +96,10 @@ export function project(
     const t: TestRendererSetup = yield* Effect.promise(() => createTestRenderer({ width, height }));
 
     // Registered first so it runs last: the renderer must not be destroyed until
-    // every session — and the render callbacks firing out of their terminals —
-    // has been released. Mirrors the ordering the old dispose() enforced, and
-    // stays until Phase 2 makes render-tree teardown awaitable.
-    yield* Effect.addFinalizer(() =>
-      Effect.andThen(Effect.promise(() => Bun.sleep(50)), Effect.sync(() => t.renderer.destroy())),
-    );
+    // every session's Scope-owned view and FFI handles have actually been
+    // freed, not merely fired-and-forgotten — which Window.release's own
+    // Scope.close now guarantees is true by the time this finalizer runs.
+    yield* Effect.addFinalizer(() => Effect.sync(() => t.renderer.destroy()));
 
     const host = options.host
       ? options.host(t)

@@ -3,9 +3,11 @@ import { RendererContext, _render } from "@opentui/solid";
 import type { JSX } from "@opentui/solid";
 import { createSignal, type Accessor, type Signal } from "solid-js";
 import { BoxRenderable, type CliRenderer, type KeyEvent, type RenderContext } from "@opentui/core";
-import { Pane } from "./pane.ts";
+import type * as Scope from "effect/Scope";
+import { Pane, PaneRenderable } from "./pane.ts";
 import type { SessionHandle } from "./session-handle.ts";
 import type { JsonValue } from "./layout.ts";
+import { acquireRenderable } from "./bridge.ts";
 
 /**
  * What a plugin pane's view is told about the frame it lives in.
@@ -69,19 +71,19 @@ export type PaneView = (props: PaneViewProps) => JSX.Element;
 /**
  * A pane whose content is a Solid subtree rather than a terminal grid.
  *
- * The other half of SessionHandle.kind: a pty session's bytes go through an emulator
- * to a grid, and a component session's semantic frames go through a Solid
- * component to renderables. Both are leaves of the same split tree — they tile,
- * split, focus, zoom and close identically, because all of that is the Pane
- * base and none of it asks what fills the frame.
+ * The other half of SessionHandle.kind: a pty session's bytes go through an
+ * emulator to a grid, and a component session's semantic frames go through a
+ * Solid component to renderables. Both are leaves of the same split tree —
+ * they tile, split, focus, zoom and close identically, because all of that is
+ * the Pane wrapper and none of it asks what fills the frame.
  *
- * The subtree is mounted into a content box this pane positions itself rather
- * than into the pane node, because the pane node has to stay a pure flex item:
- * see the note on Pane's inset. The box is absolutely placed and so takes no
- * part in the split's sizing, which is what keeps a component leaf the exact
- * rectangle geometry.ts says it is.
+ * The subtree is mounted into a content box this view positions itself rather
+ * than into the view node, because the view node has to stay a pure flex item:
+ * see the note on PaneView's inset. The box is absolutely placed and so takes
+ * no part in the split's sizing, which is what keeps a component leaf the
+ * exact rectangle geometry.ts says it is.
  */
-export class ComponentPane extends Pane {
+class ComponentPaneView extends PaneRenderable {
   #content: BoxRenderable;
   #dispose: (() => void) | null = null;
   // The frame, as the view sees it. Signals rather than fields because the
@@ -89,8 +91,8 @@ export class ComponentPane extends Pane {
   // readable.
   #size: Signal<{ width: number; height: number }> = createSignal({ width: 1, height: 1 });
   #focus: Signal<boolean> = createSignal(false);
-  /** The view's raw-key handler, when it registered one. Consulted only while
-   *  this pane is the focused one; see PaneViewProps.captureKeys. */
+  /** The plugin's raw-key handler, when it registered one. Consulted only
+   *  while this pane is the focused one; see PaneViewProps.captureKeys. */
   #captureKeys: ((event: KeyEvent) => boolean) | null = null;
 
   constructor(
@@ -125,7 +127,7 @@ export class ComponentPane extends Pane {
       sessionId: this.session?.id ?? "",
       // A pane addresses itself by its own id, not its session's — a
       // client-only view (:q, :e) needs the frame, and has no session.
-      paneId: this.id,
+      paneId: options.id,
       // A plugin pane is selected by its durable content, never by the
       // process a session happens to be running.
       paneType: options.paneType,
@@ -185,5 +187,31 @@ export class ComponentPane extends Pane {
     this.#dispose?.();
     this.#dispose = null;
     super.destroySelf();
+  }
+}
+
+export class ComponentPane extends Pane {
+  private constructor(view: ComponentPaneView, scope: Scope.Closeable, id: string) {
+    super(view, scope, id);
+  }
+
+  /** Constructed with no parent — see the note on TerminalPane.make. */
+  static make(
+    ctx: RenderContext,
+    options: {
+      id: string;
+      session: SessionHandle | null;
+      paneType: string;
+      descriptor?: JsonValue;
+      view?: PaneView;
+    },
+  ): ComponentPane {
+    const scope = Pane.makeScope();
+    const view = Pane.acquire(scope, acquireRenderable(() => new ComponentPaneView(ctx, options)));
+    return new ComponentPane(view, scope, options.id);
+  }
+
+  override handleKey(event: KeyEvent): boolean {
+    return (this.view as ComponentPaneView).handleKey(event);
   }
 }

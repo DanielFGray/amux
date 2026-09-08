@@ -155,7 +155,7 @@ live("closing one window releases its agents and leaves its siblings running", (
 
     const survivorWindow = yield* scene.space.newWindow();
     const survivor = yield* survivorWindow.startSession({ cmd: ["sleep", "30"] });
-    survivorWindow.project(
+    yield* survivorWindow.project(
       makeLayout({
         root: { type: "pane", id: "p-survivor", content: { kind: "pty", session: survivor.id }, weight: 1 },
         focus: "p-survivor",

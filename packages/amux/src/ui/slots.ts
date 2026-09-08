@@ -616,10 +616,10 @@ export function createSlots(renderer: CliRenderer, contributions: PluginContribu
     const key = `${side}.${anchor}`;
     const current = dividers.get(key);
     if (current) return current;
-    const made = new Divider(renderer, {
+    const made = Divider.make(renderer, undefined, {
       id: `region-divider-${key}`,
       axis: side === "left" || side === "right" ? "row" : "column",
-      onDrag: (delta) => {
+      onDrag: (delta: number) => {
         const grow = side === "left" || side === "top" ? delta : -delta;
         for (const occupant of visibleDock(side, anchor))
           if (occupant.resizable) occupant.onResize?.(grow);

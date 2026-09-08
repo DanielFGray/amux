@@ -5,7 +5,9 @@ import {
   type OptimizedBuffer,
   type RenderContext,
 } from "@opentui/core";
+import { Effect, Exit, Scope } from "effect";
 import { runtime } from "./options.ts";
+import { acquireRenderable, makeScope, runInScope, type RenderableParent } from "./bridge.ts";
 
 const IDLE = RGBA.fromInts(69, 71, 90, 255); // surface1
 const FOCUS = RGBA.fromInts(137, 180, 250, 255); // blue
@@ -97,18 +99,12 @@ function junctionGlyph(
 }
 
 /**
- * The draggable border between two panes.
- *
- * A real renderable rather than a hit-tested edge of a pane: OpenTUI resolves
- * the drag target from its own hit grid, so "am I on the divider" needs no rect
- * math of ours and cannot drift from what was drawn — the same property that
- * makes clicking panes reliable through arbitrary nesting.
- *
- * A divider reports drag deltas to its owner. Window applies those deltas to
- * its Layout first and then projects the resulting weights; the sidebar uses
- * the same gesture to update its explicit width.
+ * What draws the border between two panes — a Renderable owned by the Divider
+ * wrapper below, not a public type. See the note on PaneRenderable for why the
+ * split exists: the render tree is a rendering detail, the wrapper is the
+ * lifetime and identity.
  */
-export class Divider extends Renderable {
+class DividerRenderable extends Renderable {
   /** Axis of the parent split: "row" means a vertical bar between left/right
    *  neighbours, "column" a horizontal one between top/bottom. */
   readonly axis: "row" | "column";
@@ -297,5 +293,137 @@ export class Divider extends Renderable {
       const [x, y] = at(length);
       buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG);
     }
+  }
+}
+
+/**
+ * The draggable border between two panes.
+ *
+ * A real renderable rather than a hit-tested edge of a pane: OpenTUI resolves
+ * the drag target from its own hit grid, so "am I on the divider" needs no rect
+ * math of ours and cannot drift from what was drawn — the same property that
+ * makes clicking panes reliable through arbitrary nesting.
+ *
+ * A divider reports drag deltas to its owner. Window applies those deltas to
+ * its Layout first and then projects the resulting weights; the sidebar uses
+ * the same gesture to update its explicit width.
+ *
+ * Owns a `DividerRenderable` through a Scope rather than being one — see the
+ * note on Pane. A divider owns no FFI; it exists so the render tree gains no
+ * lifetime authority anywhere, not even in the one class here with nothing to
+ * free.
+ */
+export class Divider {
+  readonly view: Renderable;
+  #scope: Scope.Closeable;
+  #divider: DividerRenderable;
+
+  private constructor(divider: DividerRenderable, scope: Scope.Closeable) {
+    this.#divider = divider;
+    this.view = divider;
+    this.#scope = scope;
+  }
+
+  /** `parent` is omitted for a divider Solid mounts itself (the dock resize
+   *  handle, returned as JSX content) and passed for one Window mounts
+   *  directly into a split's box. */
+  static make(
+    ctx: RenderContext,
+    parent: RenderableParent | undefined,
+    options: { id: string; axis: "row" | "column"; onDrag?: (delta: number) => void },
+  ): Divider {
+    const scope = makeScope();
+    const divider = runInScope(
+      scope,
+      acquireRenderable(() => new DividerRenderable(ctx, options), parent),
+    );
+    return new Divider(divider, scope);
+  }
+
+  get axis(): "row" | "column" {
+    return this.#divider.axis;
+  }
+  get tees(): boolean {
+    return this.#divider.tees;
+  }
+  set tees(v: boolean) {
+    this.#divider.tees = v;
+  }
+  get capStart(): boolean {
+    return this.#divider.capStart;
+  }
+  set capStart(v: boolean) {
+    this.#divider.capStart = v;
+  }
+  get capEnd(): boolean {
+    return this.#divider.capEnd;
+  }
+  set capEnd(v: boolean) {
+    this.#divider.capEnd = v;
+  }
+  get outer(): boolean {
+    return this.#divider.outer;
+  }
+  set outer(v: boolean) {
+    this.#divider.outer = v;
+  }
+  get adjacentToFocus(): boolean {
+    return this.#divider.adjacentToFocus;
+  }
+  set adjacentToFocus(v: boolean) {
+    this.#divider.adjacentToFocus = v;
+  }
+  get hitboxOnly(): boolean {
+    return this.#divider.hitboxOnly;
+  }
+  set hitboxOnly(v: boolean) {
+    this.#divider.hitboxOnly = v;
+  }
+  get junction(): (() => JunctionFrame) | undefined {
+    return this.#divider.junction;
+  }
+  set junction(fn: (() => JunctionFrame) | undefined) {
+    this.#divider.junction = fn;
+  }
+  get onDrag(): ((delta: number) => void) | undefined {
+    return this.#divider.onDrag;
+  }
+  set onDrag(fn: ((delta: number) => void) | undefined) {
+    this.#divider.onDrag = fn;
+  }
+
+  get x(): number {
+    return this.#divider.x;
+  }
+  get y(): number {
+    return this.#divider.y;
+  }
+  get width(): number {
+    return this.#divider.width;
+  }
+  get height(): number {
+    return this.#divider.height;
+  }
+
+  setPaneGap(gap: number): void {
+    this.#divider.setPaneGap(gap);
+  }
+
+  get zIndex(): number {
+    return this.#divider.zIndex;
+  }
+  set zIndex(v: number) {
+    this.#divider.zIndex = v;
+  }
+  set position(positionType: "absolute" | "relative" | null | undefined) {
+    this.#divider.position = positionType;
+  }
+  setPosition(position: Parameters<DividerRenderable["setPosition"]>[0]): void {
+    this.#divider.setPosition(position);
+  }
+
+  /** Release this divider's view. Awaitable, same as Pane.release. */
+  get release(): Effect.Effect<void> {
+    return Scope.close(this.#scope, Exit.void);
   }
 }

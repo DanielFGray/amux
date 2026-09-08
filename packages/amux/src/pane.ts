@@ -25,6 +25,7 @@ import { captureRange } from "./shim.ts";
 import { clearSelection, setSelection } from "./shim.ts";
 import { cellWidth } from "./copy.ts";
 import { encodeKey } from "./keys.ts";
+import { acquireFfi, acquireRenderable } from "./bridge.ts";
 
 const DEFAULT_FG = RGBA.fromInts(205, 214, 244, 255);
 const DEFAULT_BG = RGBA.fromInts(30, 30, 46, 255);
@@ -80,27 +81,16 @@ function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
 }
 
 /**
- * A viewport onto a session: one leaf of a window's split tree.
- *
- * A pane is a frame around content plus the identity the layout addresses it
- * by. What fills the frame is the session's substrate (Session.kind) and is the
- * subclass's business: a pty draws a terminal grid, a component draws a Solid
- * subtree. Everything a window does to a leaf — place it, size it, focus it,
- * draw its share of the split frame, close it — is the same either way, and
- * lives here.
- *
- * Owns nothing about the process. Destroying a pane closes the view; the
- * session keeps running.
+ * What draws a pane's frame: a Renderable owned by the Pane wrapper below, not
+ * a public type. Everything about drawing, hit-testing and the content rect is
+ * here; everything about the pane's identity and lifetime is on the wrapper.
  */
-export abstract class Pane extends Renderable {
-  /** The session this pane views, or null for a client-rendered plugin pane
-   *  whose content declares no backend (see PaneContent in layout.ts). A pane
-   *  with no session has nothing to resize, write to or count viewers on, so
-   *  every use of the session is guarded rather than asserted. */
+export abstract class PaneRenderable extends Renderable {
   readonly session: SessionHandle | null;
 
   hovered = false;
-  onFocusRequest?: (pane: Pane) => void;
+  /** Bridged from the wrapper's own callback field at construction — see Pane. */
+  onFocusRequest?: () => void;
   onCopy?: (text: string) => boolean | void;
   onCopyError?: (error: Error) => void;
 
@@ -114,7 +104,6 @@ export abstract class Pane extends Renderable {
     super(ctx, options);
     this.session = options.session;
     if (this.session) {
-      this.session.addViewer();
       // The session is sized here rather than through #applyEdges: a subclass's
       // own fields do not exist yet, so nothing may call back into it.
       const { width, height } = this.content;
@@ -122,9 +111,6 @@ export abstract class Pane extends Renderable {
     }
   }
 
-  /** Whether this pane is the workspace's active viewport. Named `active`, not
-   *  `focused`: Renderable already exposes a read-only `focused` accessor for
-   *  OpenTUI's own keyboard-focus tree, and overriding it would break that. */
   get active(): boolean {
     return this.#active;
   }
@@ -211,7 +197,7 @@ export abstract class Pane extends Renderable {
    *  subclass is constructed, so an override may use its own fields. */
   protected onContentResize(): void {}
 
-  /** Called by the workspace when the session produces output. */
+  /** Called when the session produces output. */
   invalidate() {
     this.requestRender();
   }
@@ -243,7 +229,7 @@ export abstract class Pane extends Renderable {
         this.requestRender();
         return true;
     }
-    if (event.type === "down") this.onFocusRequest?.(this);
+    if (event.type === "down") this.onFocusRequest?.();
     return false;
   }
 
@@ -310,11 +296,119 @@ export abstract class Pane extends Renderable {
     if (bottom && right) buffer.setCell(x1, y1, "┘", fg, DEFAULT_BG);
     if (top && left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
   }
+}
 
-  protected override destroySelf(): void {
-    // Closes the view only; the session keeps running.
-    this.session?.removeViewer();
-    super.destroySelf();
+/**
+ * A viewport onto a session: one leaf of a window's split tree.
+ *
+ * A pane is a frame around content plus the identity the layout addresses it
+ * by. What fills the frame is the session's substrate (Session.kind) and is
+ * the subclass's business — a pty draws a terminal grid, a component draws a
+ * Solid subtree, both through a private `PaneRenderable`. Everything a window does
+ * to a leaf — place it, size it, focus it, close it — addresses this wrapper;
+ * the view is only its mount handle in the render tree.
+ *
+ * Owns nothing about the process. Destroying a pane closes the view; the
+ * session keeps running. Owns its own Scope: a pane MOVES between windows
+ * (break-pane/adopt), and Effect scopes cannot be re-parented, so a pane's
+ * renderable and FFI lifetime cannot be forked from any window's scope — only
+ * from a scope the pane itself holds start to finish.
+ */
+export abstract class Pane {
+  readonly id: string;
+  readonly session: SessionHandle | null;
+  /** The pane's mount handle in the render tree. Not part of this class's own
+   *  API — a window addresses tree structure through it, everything else
+   *  through the wrapper. */
+  readonly view: PaneRenderable;
+
+  onFocusRequest?: (pane: Pane) => void;
+  onCopy?: (text: string) => boolean | void;
+  onCopyError?: (error: Error) => void;
+
+  #scope: Scope.Closeable;
+
+  protected constructor(view: PaneRenderable, scope: Scope.Closeable, id: string) {
+    this.view = view;
+    this.session = view.session;
+    this.id = id;
+    this.#scope = scope;
+    this.view.onFocusRequest = () => this.onFocusRequest?.(this);
+    this.view.onCopy = (text) => this.onCopy?.(text);
+    this.view.onCopyError = (error) => this.onCopyError?.(error);
+    this.session?.addViewer();
+  }
+
+  /** Allocate a scope-owned resource for a pane under construction, before the
+   *  wrapper exists to own one itself. Every subclass constructor uses this
+   *  once for its view and, if it owns FFI, once more per handle — all into
+   *  the same scope, so one `release` frees the lot. */
+  protected static acquire<A>(scope: Scope.Closeable, effect: Effect.Effect<A, never, Scope.Scope>): A {
+    return Effect.runSync(Scope.provide(effect, scope));
+  }
+
+  protected static makeScope(): Scope.Closeable {
+    return Scope.makeUnsafe();
+  }
+
+  get active(): boolean {
+    return this.view.active;
+  }
+
+  set active(active: boolean) {
+    this.view.active = active;
+  }
+
+  get edges(): Edges {
+    return this.view.edges;
+  }
+
+  set edges(edges: Edges) {
+    this.view.edges = edges;
+  }
+
+  get x(): number {
+    return this.view.x;
+  }
+  get y(): number {
+    return this.view.y;
+  }
+  get width(): number {
+    return this.view.width;
+  }
+  get height(): number {
+    return this.view.height;
+  }
+
+  abstract handleKey(event: KeyEvent): boolean;
+
+  write(data: string | Uint8Array) {
+    this.session?.write(data);
+  }
+
+  invalidate() {
+    this.view.invalidate();
+  }
+
+  get isDestroyed(): boolean {
+    return this.view.isDestroyed;
+  }
+
+  /** Hand a string to the copy chain (OSC 52 to the host terminal). Forwards
+   *  to the view, which owns the try/catch around `onCopy`/`onCopyError` —
+   *  copy mode (copy.ts) calls this on a selection with no mouse involved, so
+   *  it addresses the pane, not the view directly. */
+  copyText(text: string) {
+    this.view.copyText(text);
+  }
+
+  /** Release this pane's view and FFI handles, and stop viewing its session.
+   *  Awaitable: the caller learns when the FFI is actually freed, rather than
+   *  firing a cleanup and hoping. */
+  get release(): Effect.Effect<void> {
+    return Effect.andThen(Scope.close(this.#scope, Exit.void), () =>
+      Effect.sync(() => this.session?.removeViewer()),
+    );
   }
 }
 
@@ -324,24 +418,14 @@ export abstract class Pane extends Renderable {
  * Owns the read side of the emulator (a RenderState), a mouse encoder, and a
  * cached display list — nothing about the process itself.
  */
-export class TerminalPane extends Pane {
-  /** A pty pane always views a session — TerminalPane is only ever built for
-   *  content that names one. Narrowing the base's nullable field keeps the
+class TerminalPaneView extends PaneRenderable {
+  /** A pty pane always views a session — TerminalPaneView is only ever built
+   *  for content that names one. Narrowing the base's nullable field keeps the
    *  emulator code free of null checks. */
   declare readonly session: SessionHandle;
 
-  /** Owns this pane's FFI handles, so closing it frees them all — see the note
-   *  on Agent's scope. A pane is destroyed from OpenTUI's tree rather than from
-   *  an Effect, so the scope is closed by destroySelf rather than by a parent. */
-  #scope = Scope.makeUnsafe();
-  #state = this.#own(
-    () => new RenderState(),
-    (state) => state.free(),
-  );
-  #mouse = this.#own(
-    () => new MouseEncoder(),
-    (mouse) => mouse.free(),
-  );
+  readonly state: RenderState;
+  readonly mouse: MouseEncoder;
 
   /** Fired when the mouse takes over the pane: a drag selection claims the
    *  terminal's selection slot, or a sequence routed to a mouse-reporting child
@@ -360,7 +444,18 @@ export class TerminalPane extends Pane {
     { image: NativeImage; width: number; height: number; pixels: Uint8Array }
   >();
 
-  /** Called by the workspace when the agent produces output. */
+  constructor(
+    ctx: RenderContext,
+    options: RenderableOptions & { id: string; session: SessionHandle },
+    state: RenderState,
+    mouse: MouseEncoder,
+  ) {
+    super(ctx, options);
+    this.state = state;
+    this.mouse = mouse;
+  }
+
+  /** Called when the agent produces output. */
   override invalidate() {
     this.#haveCache = false;
     this.requestRender();
@@ -417,7 +512,7 @@ export class TerminalPane extends Pane {
         : MouseButton.left;
     }
 
-    const seq = this.#mouse.encode(this.session.term, x, y, action, button, event.modifiers);
+    const seq = this.mouse.encode(this.session.term, x, y, action, button, event.modifiers);
 
     const point = this.#point(x, y);
     if (event.type === "down" && (event.modifiers.shift || !seq)) {
@@ -502,13 +597,13 @@ export class TerminalPane extends Pane {
     const { x: ox, y: oy } = this.content;
     super.renderSelf(buffer);
 
-    this.#state.update(this.session.term);
+    this.state.update(this.session.term);
 
     // Idle panes — most panes, most frames — replay the cached display list
     // instead of walking the grid over FFI again.
-    if (!this.#haveCache || this.#state.dirty() !== Dirty.none) {
+    if (!this.#haveCache || this.state.dirty() !== Dirty.none) {
       this.#rebuild();
-      this.#state.clearDirty();
+      this.state.clearDirty();
       this.#haveCache = true;
     }
 
@@ -575,7 +670,7 @@ export class TerminalPane extends Pane {
   #rebuild(): void {
     this.#rebuildCount++;
     const runs: Run[] = [];
-    const cur = this.#state.cursor();
+    const cur = this.state.cursor();
     this.#cachedCursor = cur;
     this.#cursorText = " ";
 
@@ -594,7 +689,7 @@ export class TerminalPane extends Pane {
 
     const maxY = this.height - this.padY;
     const maxX = this.width - this.padX;
-    this.#state.forEachCell((x, y, t, fg, bg, width, selected) => {
+    this.state.forEachCell((x, y, t, fg, bg, width, selected) => {
       if (y >= maxY || x >= maxX) return;
       if (cur && x === cur.x && y === cur.y) this.#cursorText = t;
 
@@ -636,21 +731,67 @@ export class TerminalPane extends Pane {
     }
   }
 
-  /** Allocate an FFI handle into this pane's scope. See Agent's #own. */
-  #own<A>(acquire: () => A, free: (handle: A) => void): A {
-    return Effect.runSync(
-      Scope.provide(
-        Effect.acquireRelease(Effect.sync(acquire), (handle) => Effect.sync(() => free(handle))),
-        this.#scope,
-      ),
-    );
-  }
-
   protected override destroySelf(): void {
     for (const { image } of this.#kittyImages.values()) image.dispose();
     this.#kittyImages.clear();
-    Effect.runFork(Scope.close(this.#scope, Exit.void));
     super.destroySelf();
+  }
+}
+
+export class TerminalPane extends Pane {
+  /** A pty pane always views a session — TerminalPane is only ever built for
+   *  content that names one. Narrowing the base's nullable field keeps
+   *  call sites free of null checks. */
+  declare readonly session: SessionHandle;
+
+  private constructor(view: TerminalPaneView, scope: Scope.Closeable, id: string) {
+    super(view, scope, id);
+  }
+
+  /** Constructed with no parent: mounting is ordinary tree bookkeeping the
+   *  window owns (a pane is reused and moved between boxes across rebuilds),
+   *  not something the scope should fix at acquire time — see acquireRenderable. */
+  static make(
+    ctx: RenderContext,
+    options: { id: string; session: SessionHandle },
+  ): TerminalPane {
+    const scope = Pane.makeScope();
+    const state = Pane.acquire(
+      scope,
+      acquireFfi(
+        () => new RenderState(),
+        (s) => s.free(),
+      ),
+    );
+    const mouse = Pane.acquire(
+      scope,
+      acquireFfi(
+        () => new MouseEncoder(),
+        (m) => m.free(),
+      ),
+    );
+    const view = Pane.acquire(
+      scope,
+      acquireRenderable(() => new TerminalPaneView(ctx, options, state, mouse)),
+    );
+    return new TerminalPane(view, scope, options.id);
+  }
+
+  override handleKey(event: KeyEvent): boolean {
+    return (this.view as TerminalPaneView).handleKey(event);
+  }
+
+  /** Number of display-list rebuilds, exposed for performance diagnostics. */
+  get rebuildCount(): number {
+    return (this.view as TerminalPaneView).rebuildCount;
+  }
+
+  /** Fired when the mouse takes over the pane; see TerminalPaneView. */
+  get onCopyModeInterrupt(): (() => void) | null | undefined {
+    return (this.view as TerminalPaneView).onCopyModeInterrupt;
+  }
+  set onCopyModeInterrupt(fn: (() => void) | null | undefined) {
+    (this.view as TerminalPaneView).onCopyModeInterrupt = fn;
   }
 }
 

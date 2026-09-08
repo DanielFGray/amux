@@ -77,14 +77,14 @@ let nextId = 0;
  * out of the split it was just put into.
  */
 function tile(pane: Pane, weight: number) {
-  pane.position = "relative";
+  pane.view.position = "relative";
   // "auto", not undefined: undefined leaves the edge as yoga last had it, so a
   // pane that had been floating would keep offsetting itself inside its slot.
-  pane.left = "auto";
-  pane.top = "auto";
-  pane.width = "auto";
-  pane.height = "auto";
-  setWeight(pane, weight);
+  pane.view.left = "auto";
+  pane.view.top = "auto";
+  pane.view.width = "auto";
+  pane.view.height = "auto";
+  setWeight(pane.view, weight);
 }
 
 /**
@@ -117,6 +117,15 @@ export class Window {
   /** The arrangement is authoritative here; renderables are only its projection. */
   #layout: Layout = makeLayout({ root: null });
   #dividerRefs = new WeakMap<Divider, { path: LayoutPath; index: number }>();
+  /**
+   * The render tree only ever holds each wrapper's `.view`, never the wrapper
+   * itself — see the note on PaneRenderable/Divider. These map a view back to
+   * its owner, so a tree walk (`#dividers`, `#dismantle`) can tell a divider
+   * from a pane's own internals from a plain layout box, the same distinction
+   * `instanceof Pane`/`instanceof Divider` made before the inversion.
+   */
+  #paneOwners = new WeakMap<Renderable, Pane>();
+  #dividerOwners = new WeakMap<Renderable, Divider>();
   /**
    * Everything about this window that is not its arrangement: focus,
    * last-pane, zoom, sync and preset, all as pane ids and flags.
@@ -246,21 +255,27 @@ export class Window {
     };
   }
 
-  /** Make this renderable window a projection of daemon state. */
-  project(layout: Layout, state: WindowState): void {
-    this.#state = structuredClone(state);
-    for (const evicted of this.#mount(layout, state.preset)) evicted.destroyRecursively();
-    this.#state = structuredClone(state);
-    this.#layout = makeLayout({ ...layout, focus: state.focus ?? undefined });
-    for (const pane of this.#panes) pane.active = pane.id === state.focus;
-    this.#refreshChrome();
-    this.#ctx.requestRender();
+  /** Make this renderable window a projection of daemon state. Awaitable: a
+   *  pane the new layout dropped is not merely unmounted, it is fully
+   *  released before this resolves, the same guarantee `close` makes. */
+  project(layout: Layout, state: WindowState): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      this.#state = structuredClone(state);
+      const evicted = this.#mount(layout, state.preset);
+      for (const pane of evicted) yield* pane.release;
+      this.#state = structuredClone(state);
+      this.#layout = makeLayout({ ...layout, focus: state.focus ?? undefined });
+      for (const pane of this.#panes) pane.active = pane.id === state.focus;
+      this.#refreshChrome();
+      this.#ctx.requestRender();
+    });
   }
 
   /** Drop a client projection after the daemon has removed its owner. */
   removeProjectedSession(session: SessionHandle): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      for (const pane of this.#panes.slice()) if (pane.session === session) this.close(pane);
+      for (const pane of this.#panes.slice())
+        if (pane.session === session) yield* this.close(pane);
       const at = this.#sessions.indexOf(session);
       if (at !== -1) this.#sessions.splice(at, 1);
       yield* this.#releaseSession(session);
@@ -314,29 +329,34 @@ export class Window {
    * All preconditions are checked before the layout or ownership maps change,
    * so callers cannot leave a pane detached when its lifetime is unavailable.
    */
-  releasePane(pane: Pane): { session: SessionHandle; scope: Scope.Closeable } | null {
-    const session = pane.session;
-    // A sessionless pane (client-rendered plugin) owns no session, so there is
-    // nothing to hand over.
-    if (!session) return null;
-    if (!this.#panes.includes(pane) || !this.#sessions.includes(session)) return null;
-    const scope = this.#scopes.get(session);
-    if (!scope) return null;
-    if (this.#slotOf(this.exportLayout(), pane) === -1) return null;
-    if (!this.detachPane(pane)) return null;
-    // Session ownership moves as one unit. Any other viewport onto this session
-    // belongs to the source window only while the session does, so close it
-    // before the callback and lifetime are handed to the destination. It runs
-    // after the detach, not before: closing a sibling re-projects the layout,
-    // and a detach that then failed would leave those views destroyed behind a
-    // null return that tells the caller nothing happened.
-    for (const sibling of this.#panes.slice()) {
-      if (sibling !== pane && sibling.session === session) this.close(sibling);
-    }
-    this.#sessions.splice(this.#sessions.indexOf(session), 1);
-    this.#scopes.delete(session);
-    this.onChange?.();
-    return { session, scope };
+  releasePane(
+    pane: Pane,
+  ): Effect.Effect<{ session: SessionHandle; scope: Scope.Closeable } | null> {
+    return Effect.gen({ self: this }, function* () {
+      const session = pane.session;
+      // A sessionless pane (client-rendered plugin) owns no session, so there
+      // is nothing to hand over.
+      if (!session) return null;
+      if (!this.#panes.includes(pane) || !this.#sessions.includes(session)) return null;
+      const scope = this.#scopes.get(session);
+      if (!scope) return null;
+      if (this.#slotOf(this.exportLayout(), pane) === -1) return null;
+      if (!this.detachPane(pane)) return null;
+      // Session ownership moves as one unit. Any other viewport onto this
+      // session belongs to the source window only while the session does, so
+      // close it before the callback and lifetime are handed to the
+      // destination. It runs after the detach, not before: closing a sibling
+      // re-projects the layout, and a detach that then failed would leave
+      // those views destroyed behind a null return that tells the caller
+      // nothing happened.
+      for (const sibling of this.#panes.slice()) {
+        if (sibling !== pane && sibling.session === session) yield* this.close(sibling);
+      }
+      this.#sessions.splice(this.#sessions.indexOf(session), 1);
+      this.#scopes.delete(session);
+      this.onChange?.();
+      return { session, scope };
+    });
   }
 
   /**
@@ -443,18 +463,24 @@ export class Window {
     return taken;
   }
 
-  #makeDivider(direction: SplitDirection, path: LayoutPath, index: number): Divider {
-    const divider = new Divider(this.#ctx, {
-      id: `divider-${nextId++}`,
-      axis: direction,
-      onDrag: (delta) => this.onModelResizeDivider?.(path, index, delta),
-    });
+  #makeDivider(parent: BoxRenderable, direction: SplitDirection, path: LayoutPath, index: number): void {
+    const divider = this.#trackDivider(
+      Divider.make(this.#ctx, parent, {
+        id: `divider-${nextId++}`,
+        axis: direction,
+        onDrag: (delta: number) => this.onModelResizeDivider?.(path, index, delta),
+      }),
+    );
     this.#dividerRefs.set(divider, { path, index });
     // It is a segment of the pane frame, so its ends finish as junctions.
     divider.tees = true;
     // Every cell it draws is merged against the frame's geometry, so a seam
     // meeting a seam at one cell draws a ┼ rather than the last tee to land.
     divider.junction = () => this.#junctionFrame();
+  }
+
+  #trackDivider(divider: Divider): Divider {
+    this.#dividerOwners.set(divider.view, divider);
     return divider;
   }
 
@@ -473,9 +499,9 @@ export class Window {
    * it does not (the editor).
    */
   #makePane(content: PaneContent, session: SessionHandle | null, id = newPaneId()): Pane {
-    const pane =
+    const pane: Pane =
       content.kind === "plugin"
-        ? new ComponentPane(this.#ctx, {
+        ? ComponentPane.make(this.#ctx, {
             id,
             session,
             paneType: content.type,
@@ -483,8 +509,9 @@ export class Window {
             view: this.#paneContent ?? undefined,
           })
         : // pty content always names a session — the wire schema says so.
-          new TerminalPane(this.#ctx, { id, session: session! });
-    setWeight(pane, 1);
+          TerminalPane.make(this.#ctx, { id, session: session! });
+    this.#paneOwners.set(pane.view, pane);
+    setWeight(pane.view, 1);
     pane.onFocusRequest = (p) => this.onModelFocus?.(p.id);
     pane.onCopy = this.onCopy;
     pane.onCopyError = this.onCopyError;
@@ -499,7 +526,14 @@ export class Window {
    * the next revision reinstates it. It records last-pane, clears a zoom the
    * selection leaves behind, and repaints the chrome that keys off focus.
    */
-  focus(pane: Pane) {
+  /** No lifetime of its own — state and render only — but Effect for
+   *  symmetry with the rest of the projection surface, and because callers
+   *  compose it with operations (adopt, project) that do have one. */
+  focus(pane: Pane): Effect.Effect<void> {
+    return Effect.sync(() => this.#focus(pane));
+  }
+
+  #focus(pane: Pane) {
     // Looking at another pane means you are done with the zoom, which is also
     // what tmux's select-pane does. Zoom survives switching *windows*, though:
     // that is navigation, not a change of mind about this layout.
@@ -587,8 +621,13 @@ export class Window {
 
   #dividers(root: Renderable = this.root, out: Divider[] = []): Divider[] {
     for (const child of root.getChildren()) {
-      if (child instanceof Divider) out.push(child);
-      else if (!(child instanceof Pane)) this.#dividers(child, out);
+      const divider = this.#dividerOwners.get(child);
+      if (divider) {
+        out.push(divider);
+        continue;
+      }
+      if (this.#paneOwners.has(child)) continue;
+      this.#dividers(child, out);
     }
     return out;
   }
@@ -682,33 +721,40 @@ export class Window {
    *  ownership moves, so the session's hooks are re-pointed here and an exit
    *  closes the pane in the window it now lives in. The caller detaches first,
    *  so the pane arrives unmounted and with no other owner. */
-  adopt(session: SessionHandle, pane: Pane, scope: Scope.Closeable) {
-    // The newcomer is hung straight off the root rather than projected, so the
-    // zoom has to come down first: a zoomed window has its other panes
-    // unmounted, and adding a second pane beside the zoomed one would leave
-    // them stranded there with no arrangement on screen to rejoin.
-    this.#unzoom();
-    this.#sessions.push(session);
-    // The scope comes from the window that relinquished it — see the note on
-    // #scopes for why it travels rather than being re-forked here. Required,
-    // not optional: a session in a window without a scope is one nothing will
-    // ever release, and making that unrepresentable is cheaper than detecting it.
-    this.#scopes.set(session, scope);
-    this.#bind(session);
-    this.#panes.push(pane);
-    pane.onFocusRequest = (p) => this.onModelFocus?.(p.id);
-    this.#mount(appendPane(this.#layout, { id: pane.id, content: contentFor(session) }), null);
+  adopt(session: SessionHandle, pane: Pane, scope: Scope.Closeable): Effect.Effect<void> {
+    return Effect.sync(() => {
+      // The newcomer is hung straight off the root rather than projected, so
+      // the zoom has to come down first: a zoomed window has its other panes
+      // unmounted, and adding a second pane beside the zoomed one would leave
+      // them stranded there with no arrangement on screen to rejoin.
+      this.#unzoom();
+      this.#sessions.push(session);
+      // The scope comes from the window that relinquished it — see the note
+      // on #scopes for why it travels rather than being re-forked here.
+      // Required, not optional: a session in a window without a scope is one
+      // nothing will ever release, and making that unrepresentable is cheaper
+      // than detecting it.
+      this.#scopes.set(session, scope);
+      this.#bind(session);
+      this.#panes.push(pane);
+      pane.onFocusRequest = (p) => this.onModelFocus?.(p.id);
+      this.#mount(appendPane(this.#layout, { id: pane.id, content: contentFor(session) }), null);
+    });
   }
 
-  /** Close a pane and destroy its view. The daemon owns stopping a backend when
-   * this was its last view; a pane projection never owns that decision. */
-  close(pane: Pane) {
-    if (!this.detachPane(pane)) return;
-    pane.destroyRecursively();
-    // #project refocused a survivor (which notified) or left the window
-    // empty — and an empty window needs the app told, so it can close it or
-    // decide what to show next.
-    if (this.#panes.length === 0) this.onChange?.();
+  /** Close a pane and destroy its view. Awaitable: the caller learns when the
+   *  view and any FFI it owned are actually freed. The daemon owns stopping a
+   *  backend when this was its last view; a pane projection never owns that
+   *  decision. */
+  close(pane: Pane): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if (!this.detachPane(pane)) return;
+      yield* pane.release;
+      // #project refocused a survivor (which notified) or left the window
+      // empty — and an empty window needs the app told, so it can close it or
+      // decide what to show next.
+      if (this.#panes.length === 0) this.onChange?.();
+    });
   }
 
   /**
@@ -836,7 +882,7 @@ export class Window {
       if (node.type === "pane") {
         const pane = panesById.get(node.id)!;
         tile(pane, node.weight);
-        return pane;
+        return pane.view;
       }
       if (node.type === "container") {
         const renderer = layoutKindRenderer(node.kind);
@@ -867,7 +913,7 @@ export class Window {
       path: LayoutPath,
     ) => {
       node.children.forEach((child, i) => {
-        if (i > 0) box.add(this.#makeDivider(node.direction, path, i - 1));
+        if (i > 0) this.#makeDivider(box, node.direction, path, i - 1);
         box.add(build(child, [...path, i]));
       });
     };
@@ -893,8 +939,8 @@ export class Window {
         setDirection(box, side === "left" || side === "right" ? "column" : "row");
         dockStrips[side].forEach((slot, index) => {
           if (index > 0) {
-            box.add(
-              new Divider(this.#ctx, {
+            this.#trackDivider(
+              Divider.make(this.#ctx, box, {
                 id: `dock-divider-${side}-${nextId++}`,
                 axis: side === "left" || side === "right" ? "column" : "row",
               }),
@@ -903,7 +949,7 @@ export class Window {
           const pane = panesById.get(slot.id);
           if (pane) {
             tile(pane, 1);
-            box.add(pane);
+            box.add(pane.view);
           }
         });
       };
@@ -983,12 +1029,12 @@ export class Window {
       const pane = panesById.get(float.id);
       // A float that IS the zoom target was already mounted filling the window.
       if (!pane || zoom?.pane === float.id) continue;
-      pane.position = "absolute";
-      pane.left = `${float.x * 100}%`;
-      pane.top = `${float.y * 100}%`;
-      pane.width = `${float.width * 100}%`;
-      pane.height = `${float.height * 100}%`;
-      this.root.add(pane);
+      pane.view.position = "absolute";
+      pane.view.left = `${float.x * 100}%`;
+      pane.view.top = `${float.y * 100}%`;
+      pane.view.width = `${float.width * 100}%`;
+      pane.view.height = `${float.height * 100}%`;
+      this.root.add(pane.view);
     }
 
     if (next) {
@@ -998,7 +1044,7 @@ export class Window {
       // window_set_active_pane does this bookkeeping after a split, a close or
       // an arrange too. The one exception is a rebuild that keeps the same pane
       // focused, which focus() sees as no change and leaves the pair alone.
-      this.focus(next);
+      this.#focus(next);
     } else {
       // An empty window has no focus and nothing for last-pane to toggle to.
       this.#state.focus = null;
@@ -1024,13 +1070,14 @@ export class Window {
    */
   #dismantle(): Pane[] {
     const panes = [...this.#panes];
-    for (const pane of panes) (pane.parent as BoxRenderable | null)?.remove(pane);
+    for (const pane of panes) (pane.view.parent as BoxRenderable | null)?.remove(pane.view);
     const walk = (box: BoxRenderable) => {
       // Children are copied before removal — removing while iterating the live
       // child list skips every other one.
       for (const child of box.getChildren().slice()) {
         box.remove(child);
-        if (child instanceof Divider) child.destroy();
+        const divider = this.#dividerOwners.get(child);
+        if (divider) Effect.runSync(divider.release);
         else if (child instanceof BoxRenderable) {
           walk(child);
           child.destroy();
@@ -1050,7 +1097,11 @@ export class Window {
    *  exception. */
   get release(): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      for (const pane of this.#panes.slice()) this.close(pane);
+      for (const pane of this.#panes.slice()) {
+        (pane.view.parent as BoxRenderable | null)?.remove(pane.view);
+        yield* pane.release;
+      }
+      this.#panes.length = 0;
       for (const session of this.#sessions.slice()) yield* this.#releaseSession(session);
       this.#sessions.length = 0;
     });

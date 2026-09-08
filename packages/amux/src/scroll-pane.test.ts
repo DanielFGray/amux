@@ -95,8 +95,8 @@ live("scroll wheel events reach the pane through nested boxes (App layout)", () 
     pane.session!.term.write(new TextEncoder().encode("line1\nline2\nline3\nline4\nline5\n"));
 
     let scrollReached = false;
-    const orig = (pane as any).onMouseEvent.bind(pane);
-    (pane as any).onMouseEvent = function (this: any, event: any) {
+    const orig = (pane.view as any).onMouseEvent.bind(pane.view);
+    (pane.view as any).onMouseEvent = function (this: any, event: any) {
       if (event.type === "scroll") scrollReached = true;
       orig(event);
     };

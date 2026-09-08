@@ -252,12 +252,12 @@ live("a component leaf splits, focuses and closes like any other pane", () =>
     expect(scene.window.panes).toHaveLength(2);
     expect(scene.window.focused).toBe(shellPane);
 
-    scene.window.focus(chatPane);
+    yield* scene.window.focus(chatPane);
     expect(scene.window.focused).toBe(chatPane);
     expect(chatPane.active).toBe(true);
     expect(shellPane.active).toBe(false);
 
-    scene.window.close(chatPane);
+    yield* scene.window.close(chatPane);
     expect(chatPane.isDestroyed).toBe(true);
     expect(scene.window.panes).toEqual([shellPane]);
   }),
@@ -320,7 +320,7 @@ live("closing a component leaf disposes its subtree", () =>
     expect(scene.t.captureCharFrame()).toContain("view:chat");
 
     const pane = scene.window.panes[0]!;
-    pane.destroyRecursively();
+    yield* pane.release;
     yield* draw(scene);
 
     expect(scene.t.captureCharFrame()).not.toContain("view:chat");
@@ -358,13 +358,13 @@ live("an unbound key is bytes to a terminal leaf and untouched by a component on
       written.push(typeof data === "string" ? data : new TextDecoder().decode(data));
     };
 
-    scene.window.focus(shellPane);
+    yield* scene.window.focus(shellPane);
     expect(scene.window.key(keystroke("h"))).toBe(true);
     expect(written).toEqual(["h"]);
 
     // False, and nothing written: the key belongs to whichever renderable inside
     // the subtree holds focus, and consuming it here would stop it ever arriving.
-    scene.window.focus(chatPane);
+    yield* scene.window.focus(chatPane);
     expect(scene.window.key(keystroke("h"))).toBe(false);
     expect(written).toEqual(["h"]);
   }),
@@ -398,12 +398,12 @@ live("a registered captureKeys handler gets every key while its pane is focused"
 
     // Unfocused: the handler is not consulted — the focused terminal leaf takes
     // the key instead, and nothing reaches the editor.
-    scene.window.focus(shellPane);
+    yield* scene.window.focus(shellPane);
     expect(scene.window.key(keystroke("h"))).toBe(true);
     expect(received).toEqual([]);
 
     // Focused: every unclaimed key reaches the handler.
-    scene.window.focus(chatPane);
+    yield* scene.window.focus(chatPane);
     expect(scene.window.key(keystroke("h"))).toBe(true);
     expect(scene.window.key(keystroke(":"))).toBe(true);
     expect(scene.window.key(keystroke("j"))).toBe(true);
@@ -416,7 +416,7 @@ live("a view without a captureKeys handler keeps OpenTUI focus routing", () =>
     const scene = yield* workspace();
     const chatPane = scene.window.panes[0]!;
 
-    scene.window.focus(chatPane);
+    yield* scene.window.focus(chatPane);
     // No handler registered: an unbound key is untouched (returns false), the
     // same answer an unfocused component leaf gives.
     expect(scene.window.key(keystroke("h"))).toBe(false);
@@ -433,7 +433,7 @@ live("captureKeys is dropped when the handler is deregistered", () =>
     };
     const scene = yield* workspace(editor);
     const chatPane = scene.window.panes[0]!;
-    scene.window.focus(chatPane);
+    yield* scene.window.focus(chatPane);
 
     register((event) => {
       seen.push(event);
