@@ -21,7 +21,8 @@
     "@opentui/core": "catalog:",
     "@opentui/solid": "catalog:",
     "effect": "catalog:",
-    "solid-js": "catalog:"
+    "solid-js": "catalog:",
+    "@danielfgray/amux-highlight": "workspace:*"
   },
   "devDependencies": {
     "@danielfgray/amux": "workspace:*"

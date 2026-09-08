@@ -68,6 +68,7 @@
       "name": "@danielfgray/amux-editor",
       "version": "0.1.0",
       "dependencies": {
+        "@danielfgray/amux-highlight": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@opentui/core": "catalog:",
         "@opentui/solid": "catalog:",
@@ -81,11 +82,26 @@
         "@danielfgray/amux": "workspace:*",
       },
     },
+    "packages/highlight": {
+      "name": "@danielfgray/amux-highlight",
+      "version": "0.1.0",
+      "dependencies": {
+        "@opentui/core": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+      "peerDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+    },
     "packages/plugin-agent-harness": {
       "name": "@danielfgray/amux-plugin-agent-harness",
       "version": "0.1.0",
       "dependencies": {
         "@danielfgray/amux-agent-awareness": "workspace:*",
+        "@danielfgray/amux-highlight": "workspace:*",
         "@effect/ai-anthropic": "catalog:",
         "@effect/ai-openai": "catalog:",
         "@effect/platform-bun": "catalog:",
@@ -275,6 +291,8 @@
     "@danielfgray/amux-agent-facts": ["@danielfgray/amux-agent-facts@workspace:packages/agent-facts"],
 
     "@danielfgray/amux-editor": ["@danielfgray/amux-editor@workspace:packages/editor"],
+
+    "@danielfgray/amux-highlight": ["@danielfgray/amux-highlight@workspace:packages/highlight"],
 
     "@danielfgray/amux-plugin-agent-harness": ["@danielfgray/amux-plugin-agent-harness@workspace:packages/plugin-agent-harness"],
 

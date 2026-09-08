@@ -23,6 +23,7 @@
 
 import { Effect, Match, Schema as S, SchemaIssue } from "effect";
 import type { SplitDirection } from "./window.ts";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
 import {
   MAX_DESCRIPTOR_BYTES,
   MAX_LAYOUT_BYTES,
@@ -35,14 +36,14 @@ export const LAYOUT_VERSION = 1;
 
 export type LayoutNode = LayoutPane | LayoutSplit | LayoutContainer;
 
-/** A JSON value, the shape a plugin pane's descriptor is validated against. */
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { readonly [key: string]: JsonValue };
+/**
+ * A JSON value, what a plugin pane's descriptor is validated against. Defined
+ * with the wire protocol (`effect/AttachProtocol.ts`) and re-exported here,
+ * because a descriptor and a protocol payload are the same value seen at two
+ * boundaries — two definitions drifted apart once already, over whether the
+ * array member is readonly.
+ */
+export type { JsonValue };
 
 /**
  * What fills a pane: a pty session, or a plugin view.
@@ -922,7 +923,7 @@ const sessionId = S.String.pipe(S.check(S.isMinLength(1))).annotate({
  * descriptor that only fits in memory is a descriptor that cannot be
  * persisted, so the schema rejects it rather than a later save failing.
  */
-const descriptorBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
+const descriptorBytes = (value: JsonValue): number => Buffer.byteLength(JSON.stringify(value));
 export const DescriptorSchema: S.Codec<JsonValue> = S.suspend(() =>
   S.Union([
     S.Null,

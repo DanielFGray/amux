@@ -37,6 +37,7 @@ function fakeDraft() {
       return added as never;
     },
     placeSessionPane: () => "pane-1",
+    placePluginPane: () => null,
     pushAction: () => {},
     setResult: () => {},
     listAgents: () => [],

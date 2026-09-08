@@ -36,6 +36,19 @@ export class SessionClientError extends S.TaggedError<SessionClientError>()("Ses
   message: S.String,
 }) {}
 
+/** Fold a Batch output that carries no workspace. The daemon omits the
+ *  snapshot when a command bypasses the model queue — the session, client,
+ *  buffer and plugin-verb paths, plus send-keys — so the model is unchanged
+ *  by construction, not missing by failure. The client keeps its snapshot
+ *  and passes any result on. */
+export const unchangedOutput = (
+  workspace: WorkspaceSnapshot,
+  result: unknown,
+): { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue } =>
+  result === undefined
+    ? { snapshot: structuredClone(workspace) }
+    : { snapshot: structuredClone(workspace), result: result as JsonValue };
+
 export interface SessionClientContract extends DaemonSession {
   readonly id: string;
   readonly session: SessionState | null;
@@ -181,11 +194,7 @@ const make = (
           context: request.context,
         });
         const next = outputs[0]?.workspace;
-        if (next === undefined) {
-          return yield* new SessionClientError({
-            message: "workspace command returned no workspace",
-          });
-        }
+        if (next === undefined) return unchangedOutput(workspace, outputs[0]?.result);
         const parsed = yield* parseWorkspaceJson(next);
         accept(parsed);
         const result = outputs[0]?.result;

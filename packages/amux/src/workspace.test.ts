@@ -16,6 +16,7 @@ import type { TilingAlgorithm } from "./tiling-algorithm.ts";
 import { resolveTilingAlgorithm } from "./plugin/services.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
+import { editorDaemonCommands } from "../../editor/src/daemon.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
@@ -28,6 +29,13 @@ const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
 const agentPlugins = {
   reducers: new Map(
     agentHarnessDaemonCommands.flatMap((registration) =>
+      registration.reduce ? [[registration.tag, registration.reduce] as const] : [],
+    ),
+  ),
+};
+const editorPlugins = {
+  reducers: new Map(
+    editorDaemonCommands.flatMap((registration) =>
       registration.reduce ? [[registration.tag, registration.reduce] as const] : [],
     ),
   ),
@@ -963,6 +971,17 @@ test("pane.open-plugin creates no spawn action", () => {
   );
   // A sessionless pane has nothing to spawn; any action would be a backend.
   expect(opened.actions).toEqual([]);
+});
+
+test("a daemon plugin can place a sessionless pane through the neutral capability", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const opened = applyWorkspaceCommand(adopted, command("editor.open"), context, editorPlugins);
+  const window = opened.snapshot.spaces[0]!.windows[0]!;
+  const editor = layoutPanes(window.layout.root)[1]!;
+  expect(editor.content).toEqual({ kind: "plugin", type: "amux.editor", descriptor: {} });
+  expect(window.sessions).toHaveLength(1);
+  expect(opened.actions).toEqual([]);
+  expect(opened.result).toEqual({ pane: editor.id });
 });
 
 test("a descriptor larger than the bound is rejected by the wire schema", () => {

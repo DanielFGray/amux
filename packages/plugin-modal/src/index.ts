@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { Effect } from "effect";
+import { Effect, Scope } from "effect";
 import {
   BindingsTag,
   command,
@@ -14,6 +14,7 @@ import {
 } from "@danielfgray/amux";
 
 export const MODAL_PLUGIN_ID = "amux.modal";
+const [active, setActive] = createSignal(false);
 
 export const modalPlugin: PluginDefinition = definePlugin({
   id: MODAL_PLUGIN_ID,
@@ -24,10 +25,7 @@ export const modalPlugin: PluginDefinition = definePlugin({
       const contexts = yield* ContextsTag;
       const options = yield* OptionsTag;
       const panel = yield* PanelTag;
-      const [active, setActive] = createSignal(false);
-      const leaveAfterAction = Effect.sync(() => {
-        if (panel.options()["modal.vimMode"] !== true) setActive(false);
-      });
+      const scope = yield* Scope.Scope;
       const amux: ContextSpec = {
         id: "modal.amux",
         active,
@@ -51,6 +49,10 @@ export const modalPlugin: PluginDefinition = definePlugin({
         "modal.vimMode",
         { kind: "boolean", default: false, desc: "keep amux mode active after a command" },
       ]);
+      const leaveAfterAction = Effect.sync(() => {
+        if (!panel.options()["modal.vimMode"]) setActive(false);
+      });
+      yield* Scope.addFinalizer(scope, Effect.sync(() => setActive(false)));
       yield* contexts.register(amux);
       yield* bindings.register({
         name: "modal.enter",

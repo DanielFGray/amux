@@ -6,6 +6,7 @@ import type { Stream } from "effect";
 import { AttachFrame } from "@danielfgray/amux/protocol";
 import type { PaneViewProps } from "@danielfgray/amux";
 import { Transcript, type PermissionBlock } from "./Transcript.tsx";
+import type { HighlightSnapshot } from "@danielfgray/amux-highlight";
 import { permissionSummary } from "./transcript.ts";
 import { theme } from "@danielfgray/amux";
 import { ProcessState } from "@danielfgray/amux";
@@ -32,6 +33,9 @@ export interface ChatProps extends PaneViewProps {
   /** Interrupt the active turn, including a tool currently awaiting completion. */
   onInterrupt: () => void;
   showThinking?: boolean;
+  /** Highlight fenced code blocks. Absent in tests that mount views without
+   *  a worker — fences then render plain. */
+  highlight?: HighlightSnapshot;
 }
 
 export interface SlashCommand {
@@ -169,6 +173,7 @@ export function Chat(props: ChatProps) {
         model={props.model}
         view={view()}
         showThinking={props.showThinking}
+        highlight={props.highlight}
         onStatus={setStatus}
         onPending={(request) => {
           setPending(request);

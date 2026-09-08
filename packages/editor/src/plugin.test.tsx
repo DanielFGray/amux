@@ -12,9 +12,11 @@ import {
 } from "@danielfgray/amux/testing";
 import { ContextsTag, OptionsTag, resolveOptions, SettingsTag } from "@danielfgray/amux";
 import type { Command, JsonValue, PaneViewProps } from "@danielfgray/amux";
+import { theme } from "@danielfgray/amux";
 import { createPluginHost, type PluginHost } from "@danielfgray/amux/plugin/host.ts";
 import { editorPlugin } from "./plugin.tsx";
 import { EditorPane, type EditorController } from "./EditorPane.tsx";
+import { makeHighlightProvider, type HighlightProviderService } from "@danielfgray/amux-highlight";
 import { makeTestEditorIo, type TestEditorIoState } from "./test/io.ts";
 
 const WIDTH = 60;
@@ -121,6 +123,7 @@ const mount = (
   descriptor: JsonValue,
   sent: SentCommand[],
   lineNumbers = true,
+  highlight?: HighlightProviderService,
 ) =>
   Effect.gen(function* () {
     const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
@@ -161,6 +164,7 @@ const mount = (
             spaceDir={ioState.spaceDir}
             lineNumbers={() => lineNumbers}
             io={makeTestEditorIo(ioState)}
+            highlight={highlight}
             registerController={(next) => {
               controller = next;
               return () => {
@@ -400,5 +404,57 @@ testEffect(
     );
     expect(ioState.files.get(file)).toEqual(["original"]);
     expect(sent).toEqual([]);
+  }),
+);
+
+testEffect(
+  "a typescript file renders tree-sitter colors through the real client",
+  Effect.gen(function* () {
+    const line = 'import x from "y";';
+    const ioState = makeIo("/workspace", { "main.ts": [line] });
+    const sent: SentCommand[] = [];
+    const { t } = yield* activate(sent);
+    const highlight = yield* makeHighlightProvider();
+    const { press } = yield* mount(t, ioState, { file: "main.ts" }, sent, true, highlight);
+
+    // The worker parses off-fiber, so wait for the mauve keyword span rather
+    // than the frame the open triggered. `from` is asserted instead of the
+    // line-leading `import`: the cursor overlay splits the char under the
+    // cursor into its own span.
+    const mauve = theme.mauve.toString();
+    yield* waitForFrame(
+      t,
+      () =>
+        t
+          .captureSpans()
+          .lines.some((row) =>
+            row.spans.some((span) => span.text === "from" && span.fg.toString() === mauve),
+          ),
+      "keyword highlight arrives",
+    );
+    // Styled chunks still read as the full line.
+    const rendered = t
+      .captureSpans()
+      .lines.map((row) => row.spans.map((span) => span.text).join(""))
+      .join("\n");
+    expect(rendered).toContain(line);
+
+    // Edits re-highlight: open a line below, type a keyword, and wait for
+    // its mauve span. This exercises the drainer update path end to end.
+    // `cons` is asserted instead of `const`: the cursor overlay splits the
+    // char under the cursor into its own span.
+    press(keystroke("o"));
+    for (const ch of "const") press(keystroke(ch));
+    press(keystroke("escape"));
+    yield* waitForFrame(
+      t,
+      () =>
+        t
+          .captureSpans()
+          .lines.some((row) =>
+            row.spans.some((span) => span.text === "cons" && span.fg.toString() === mauve),
+          ),
+      "edit re-highlights",
+    );
   }),
 );

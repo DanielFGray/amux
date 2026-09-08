@@ -37,6 +37,7 @@ import { command } from "@danielfgray/amux";
 import type { Command, PaneViewProps } from "@danielfgray/amux";
 import { theme } from "@danielfgray/amux";
 import type { KeyEvent } from "@opentui/core";
+import type { TextChunk } from "@opentui/core";
 import {
   EditorDescriptorOrNull,
   EditorIo,
@@ -45,6 +46,7 @@ import {
 } from "./io.ts";
 import { Phase, type EditorState } from "./schema.ts";
 import { initialEditor, reduceEditor } from "./vim-core.ts";
+import type { HighlightProviderService, LineChunks } from "@danielfgray/amux-highlight";
 
 export interface EditorViewProps extends PaneViewProps {
   /** Run a workspace command through the daemon's model queue. The editor is
@@ -63,6 +65,10 @@ export interface EditorViewProps extends PaneViewProps {
   readonly io: EditorIoService;
   /** Publish this pane's controller to the plugin's mode contexts. */
   readonly registerController?: (controller: EditorController) => () => void;
+  /** Tree-sitter highlight provider, built by the plugin activation. Absent
+   *  when tests mount the view directly without highlighting — the pane then
+   *  renders plain text. */
+  readonly highlight?: HighlightProviderService;
 }
 
 export interface EditorController {
@@ -72,7 +78,7 @@ export interface EditorController {
 }
 
 export function EditorPane(props: EditorViewProps) {
-  const { state } = createEditorBuffer(props);
+  const { state, chunks } = createEditorBuffer(props);
   const height = () => Math.max(1, props.height() - (state().mode === "command" ? 2 : 1));
   const visible = createMemo(() => {
     const s = state();
@@ -108,6 +114,7 @@ export function EditorPane(props: EditorViewProps) {
                   ? state().cursor.col
                   : -1
               }
+              chunks={chunks()?.get(visible().start + index())}
             />
           )}
         </For>
@@ -141,11 +148,63 @@ export function EditorPane(props: EditorViewProps) {
 function createEditorBuffer(props: EditorViewProps) {
   const io = props.io;
   const [snapshot, setSnapshot] = createSignal<EditorState>(initialEditor());
+  const [chunks, setChunks] = createSignal<LineChunks | null>(null);
+  // The file the provider currently highlights. Only the drainer's responses
+  // for this file reach the screen — a `:e` clears stale colors, and the
+  // provider itself drops stale versions.
+  let currentFile: string | null = null;
 
   const store: EditorStore = {
     get: Effect.sync(snapshot),
     update: (f) => Effect.sync(() => setSnapshot(f)),
   };
+
+  /** Mirror a state transition into the highlight provider: a new file opens
+   *  (or replaces) a tree-sitter buffer, changed lines push an update, and a
+   *  closed file forgets its colors. Reference equality on `lines` is the
+   *  change signal — the reducer allocates a new array only when text edits. */
+  const syncHighlight = (prev: EditorState, next: EditorState): Effect.Effect<void> => {
+    const highlight = props.highlight;
+    if (highlight === undefined) return Effect.void;
+    return Effect.gen(function* () {
+      if (next.file === null) {
+        if (currentFile !== null) yield* forgetFile();
+        return;
+      }
+      if (currentFile !== next.file) {
+        if (currentFile !== null) yield* highlight.close(currentFile);
+        currentFile = next.file;
+        yield* Effect.sync(() => setChunks(null));
+        yield* highlight.open(next.file, next.lines.join("\n"));
+        return;
+      }
+      if (next.lines !== prev.lines) {
+        yield* highlight.update(next.file, next.lines.join("\n"));
+      }
+    });
+  };
+
+  /** Close the provider buffer and clear the screen's colors. Used on `:q`,
+   *  `:wq`, and unmount. */
+  function forgetFile(): Effect.Effect<void> {
+    const highlight = props.highlight;
+    const file = currentFile;
+    currentFile = null;
+    return Effect.gen(function* () {
+      yield* Effect.sync(() => setChunks(null));
+      if (highlight !== undefined && file !== null) yield* highlight.close(file);
+    });
+  }
+
+  /** Every state write flows through here so the provider cannot miss a
+   *  transition the shell fulfils off the key path (`:e` loads, `:w` acks). */
+  const updateAndSync = (f: (state: EditorState) => EditorState): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const prev = yield* store.get;
+      yield* store.update(f);
+      const next = yield* store.get;
+      yield* syncHighlight(prev, next);
+    });
 
   // Pre-fork buffer: keystrokes that arrive before the program has
   // published its queue land here, and the handler drains them once the
@@ -154,6 +213,15 @@ function createEditorBuffer(props: EditorViewProps) {
   const preBuffer: EditorInput[] = [];
 
   const keysDeferred = Deferred.makeUnsafe<Queue.Queue<EditorInput>>();
+
+  const shellOf = (phaseRef: Ref.Ref<Phase>): EditorShell => ({
+    props,
+    io,
+    store,
+    phaseRef,
+    updateAndSync,
+    forgetFile,
+  });
 
   const program = Effect.scoped(
     Effect.gen(function* () {
@@ -167,18 +235,20 @@ function createEditorBuffer(props: EditorViewProps) {
             const input = yield* Queue.take(keys);
             if ((yield* Ref.get(phaseRef))._tag === "Closed") return;
             const current = yield* store.get;
-            const counted = input.count === undefined ? current : { ...current, count: String(input.count) };
+            const counted =
+              input.count === undefined ? current : { ...current, count: String(input.count) };
             const next = reduceEditor(counted, { _tag: "key", key: input.key });
-            yield* store.update(() => next);
+            yield* updateAndSync(() => next);
             const request = next.request;
             if (request === null) return;
             if (request._tag === "close") {
               yield* Ref.set(phaseRef, Phase.cases.Closed.make({}));
+              yield* forgetFile();
               props.run(command("pane.close", { pane: props.paneId }));
               return;
             }
             yield* Ref.set(phaseRef, Phase.cases.Io.make({}));
-            yield* fulfill({ props, io, store, phaseRef }, next, request);
+            yield* fulfill(shellOf(phaseRef), next, request);
           }),
         ),
       );
@@ -187,7 +257,7 @@ function createEditorBuffer(props: EditorViewProps) {
       // boundary, not behind a chain of `typeof` guards.
       const descriptor = S.decodeUnknownOption(EditorDescriptorOrNull)(props.descriptor);
       if (descriptor._tag === "Some" && descriptor.value !== null) {
-        yield* dispatchOpen({ props, io, store, phaseRef }, descriptor.value.file, false);
+        yield* dispatchOpen(shellOf(phaseRef), descriptor.value.file, false);
       }
 
       return yield* Effect.never;
@@ -195,6 +265,10 @@ function createEditorBuffer(props: EditorViewProps) {
   );
 
   const programFiber = Effect.runForkWith(Context.make(EditorIo, io))(program);
+
+  const unsubscribeHighlight = props.highlight?.subscribe((_file, _version, next) => {
+    if (_file === currentFile) setChunks(next);
+  });
 
   const enqueue = (key: KeyEvent, count?: number) => {
     const live = Effect.runSyncWith(Context.make(EditorIo, io))(
@@ -231,11 +305,20 @@ function createEditorBuffer(props: EditorViewProps) {
   });
 
   onCleanup(() => {
-    Effect.runForkWith(Context.make(EditorIo, io))(Fiber.interrupt(programFiber));
+    const runtime = Context.make(EditorIo, io);
+    Effect.runForkWith(runtime)(Fiber.interrupt(programFiber));
+    unsubscribeHighlight?.();
+    // The drainer is gone, so close the tree-sitter buffer directly: the
+    // provider never fails, and an orphan buffer would highlight nothing.
+    if (currentFile !== null && props.highlight !== undefined) {
+      const file = currentFile;
+      currentFile = null;
+      Effect.runForkWith(runtime)(props.highlight.close(file));
+    }
     unregister?.();
   });
 
-  return { state: snapshot };
+  return { state: snapshot, chunks };
 }
 
 /**
@@ -252,23 +335,26 @@ interface EditorStore {
 
 /** The drainer's shared shell: everything `dispatchOpen` and `fulfill`
  *  need besides their per-call arguments. Bundled so neither helper
- *  grows a six-parameter list. */
+ *  grows a six-parameter list. State writes go through `updateAndSync` so
+ *  the highlight provider mirrors `:e` loads, not just keystrokes. */
 interface EditorShell {
   readonly props: EditorViewProps;
   readonly io: EditorIoService;
   readonly store: EditorStore;
   readonly phaseRef: Ref.Ref<Phase>;
+  readonly updateAndSync: (f: (state: EditorState) => EditorState) => Effect.Effect<void>;
+  readonly forgetFile: () => Effect.Effect<void>;
 }
 /** Fulfill an `open` request: read the file, push the `loaded` event, then
  *  record the file in the pane descriptor if `recordDescriptor`. */
 const dispatchOpen = (shell: EditorShell, file: string, recordDescriptor: boolean) =>
   Effect.gen(function* () {
-    const { props, io, store, phaseRef } = shell;
+    const { props, io, phaseRef, updateAndSync } = shell;
     yield* Ref.set(phaseRef, Phase.cases.Io.make({}));
     const exit = yield* Effect.exit(io.read(file, props.spaceDir));
     if (Exit.isSuccess(exit)) {
       const result: EditorReadResult = exit.value;
-      yield* store.update((s) =>
+      yield* updateAndSync((s) =>
         reduceEditor(s, { _tag: "loaded", file: result.file, lines: result.lines }),
       );
       if (recordDescriptor) {
@@ -278,7 +364,7 @@ const dispatchOpen = (shell: EditorShell, file: string, recordDescriptor: boolea
       }
     } else {
       const message = Cause.squash(exit.cause);
-      yield* store.update((s) => ({
+      yield* updateAndSync((s) => ({
         ...s,
         request: null,
         message: `read failed: ${message instanceof Error ? message.message : String(message)}`,
@@ -294,13 +380,13 @@ const fulfill = (
   request: Extract<EditorState["request"], { _tag: "open" | "write" | "write-close" }>,
 ) =>
   Effect.gen(function* () {
-    const { props, io, store, phaseRef } = shell;
+    const { props, io, phaseRef, updateAndSync, forgetFile } = shell;
     if (request._tag === "open") {
       yield* dispatchOpen(shell, request.path, true);
       return;
     }
     if (state.file === null) {
-      yield* store.update((s) =>
+      yield* updateAndSync((s) =>
         reduceEditor(s, { _tag: "write-error", message: "no file name (open one with :e path)" }),
       );
       yield* Ref.set(phaseRef, Phase.cases.Ready.make({}));
@@ -308,14 +394,15 @@ const fulfill = (
     }
     const exit = yield* Effect.exit(io.write(state.file, state.lines, props.spaceDir));
     if (Exit.isSuccess(exit)) {
-      yield* store.update((s) => reduceEditor(s, { _tag: "written" }));
+      yield* updateAndSync((s) => reduceEditor(s, { _tag: "written" }));
       if (request._tag === "write-close") {
         yield* Ref.set(phaseRef, Phase.cases.Closed.make({}));
+        yield* forgetFile();
         props.run(command("pane.close", { pane: props.paneId }));
       }
     } else {
       const message = Cause.squash(exit.cause);
-      yield* store.update((s) =>
+      yield* updateAndSync((s) =>
         reduceEditor(s, {
           _tag: "write-error",
           message: message instanceof Error ? message.message : String(message),
@@ -325,13 +412,28 @@ const fulfill = (
     yield* Ref.set(phaseRef, Phase.cases.Ready.make({}));
   });
 
-function LineRow(props: { text: string; number: number | null; cursor: number }) {
+function LineRow(props: {
+  text: string;
+  number: number | null;
+  cursor: number;
+  chunks?: readonly TextChunk[];
+}) {
+  const styled = () => props.chunks !== undefined && props.chunks.length > 0;
   return (
     <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
       <Show when={props.number !== null}>
         <text style={{ width: 4, flexShrink: 0, fg: theme.overlay1 }}>{props.number}</text>
       </Show>
-      <text style={{ flexGrow: 1, fg: theme.text }}>{props.text}</text>
+      <Show
+        when={styled()}
+        fallback={<text style={{ flexGrow: 1, fg: theme.text }}>{props.text}</text>}
+      >
+        <For each={props.chunks!}>
+          {(chunk) => (
+            <text style={{ flexShrink: 0, fg: chunk.fg ?? theme.text }}>{chunk.text}</text>
+          )}
+        </For>
+      </Show>
       <Show when={props.cursor >= 0}>
         <text
           style={{

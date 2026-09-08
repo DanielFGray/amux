@@ -2,7 +2,7 @@
 import { Effect, Layer, Option, Redacted } from "effect";
 import { For, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
-import { BunFileSystem } from "@effect/platform-bun";
+import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import { command, runtimeCommand } from "@danielfgray/amux";
 import { Default as IntegrationDefault, integrations } from "./integration.ts";
 import { Default as ModelCatalogDefault } from "./model-catalog.ts";
@@ -19,6 +19,10 @@ import {
   SpawnProvidersTag,
 } from "@danielfgray/amux";
 import { Chat } from "./Chat.tsx";
+import {
+  discoverCachedParsers,
+  makeHighlightProvider,
+} from "@danielfgray/amux-highlight";
 import { registerModelPicker } from "./ModelPicker.tsx";
 import { agentPreflight } from "./preflight.ts";
 import { AGENT_HARNESS_OPTIONS } from "./options.ts";
@@ -179,6 +183,19 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             .pipe(Effect.catch((error) => Effect.sync(() => panel.reportError(error.message)))),
         );
 
+      // Scoped to the plugin: the worker spawns lazily on the first fence
+      // and unload closes buffers, never the shared worker. Cached grammars
+      // beyond the five bundled ones register first. Snapshots are the only
+      // surface chat needs — fences are static text, never edited buffers.
+      const highlight = yield* makeHighlightProvider(
+        undefined,
+        yield* discoverCachedParsers.pipe(
+          Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)),
+        ),
+      );
+      const snapshot = (content: string, filetype: string) =>
+        Effect.runPromiseWith(runtime)(highlight.snapshot(content, filetype));
+
       yield* sessionViews.register([
         "native",
         (props) => (
@@ -186,6 +203,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             {...props}
             model={panel.options()["agent.model"] as string}
             showThinking={panel.options()["agent.showThinking"] as boolean}
+            highlight={snapshot}
             onSlashCommand={(command) => {
               if (command !== "/model") return false;
               Effect.runForkWith(runtime)(openModelPicker);

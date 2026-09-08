@@ -5,6 +5,8 @@ import { expect, test } from "bun:test";
 import { createTestRenderer, createMockMouse } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Transcript } from "./Transcript.tsx";
+import { theme } from "@danielfgray/amux";
+import type { TextChunk } from "@danielfgray/amux-highlight";
 import { emit, delta, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
 import type { AgentFrame, JsonValue } from "@danielfgray/amux/protocol";
 
@@ -98,6 +100,59 @@ test("thinking traces are collapsed when enabled", async () => {
   await Bun.sleep(10);
   expect(target.captureCharFrame()).toContain("Thinking (click to expand)");
   expect(target.captureCharFrame()).not.toContain("checking files");
+  target.renderer.destroy();
+});
+
+test("assistant fences render highlighted code through the snapshot", async () => {
+  const target = await createTestRenderer({ width: 60, height: 20 });
+  const events = Stream.fromIterable([
+    wrap({
+      _tag: "text.delta" as const,
+      session: "native",
+      turn: "t1",
+      text: "try this:\n```ts\nconst x = 1;\n```\ndone",
+    }),
+  ]);
+  const highlight = async (
+    _content: string,
+    filetype: string,
+  ): Promise<Map<number, readonly TextChunk[]>> => {
+    expect(["typescript", "tsx"]).toContain(filetype);
+    return new Map([
+      [
+        0,
+        [
+          { __isChunk: true as const, text: "const", fg: theme.mauve },
+          { __isChunk: true as const, text: " x = 1;" },
+        ],
+      ],
+    ]);
+  };
+  await render(
+    () => (
+      <Transcript
+        sessionId="native"
+        frames={() => events}
+        sync={() => {}}
+        width={60}
+        highlight={highlight}
+      />
+    ),
+    target.renderer,
+  );
+  await target.renderOnce();
+  // The code block debounces its fetch; let it resolve, then draw twice so
+  // the resource value reaches the frame.
+  await Bun.sleep(500);
+  await target.renderOnce();
+  await target.renderOnce();
+  const spans = target.captureSpans().lines.flatMap((row) => row.spans);
+  expect(
+    spans.some((span) => span.text === "const" && span.fg.toString() === theme.mauve.toString()),
+  ).toBe(true);
+  // Prose around the fence still renders.
+  expect(target.captureCharFrame()).toContain("try this:");
+  expect(target.captureCharFrame()).toContain("done");
   target.renderer.destroy();
 });
 

@@ -18,6 +18,9 @@ import { AgentFrame, type AttachFrame } from "@danielfgray/amux/protocol";
 import { ProcessState } from "@danielfgray/amux";
 import { agentStateFromTopic } from "./state-topic.ts";
 import { theme } from "@danielfgray/amux";
+import type { HighlightSnapshot } from "@danielfgray/amux-highlight";
+import { splitFences } from "./fences.ts";
+import { CodeBlock } from "./CodeBlock.tsx";
 
 export interface TranscriptProps {
   sessionId: string;
@@ -32,6 +35,9 @@ export interface TranscriptProps {
   /** Chat is a compact presentation. Raw retains every semantic event. */
   view?: "chat" | "raw";
   showThinking?: boolean;
+  /** Highlight fenced code blocks. Absent in tests that mount views without
+   *  a worker — fences then render plain. */
+  highlight?: HighlightSnapshot;
 }
 
 export type PermissionBlock = Extract<TranscriptBlock, { kind: "permission" }>;
@@ -102,6 +108,7 @@ export function Transcript(props: TranscriptProps) {
                   permission={block.kind === "tool" ? toolPermission(blocks(), block) : undefined}
                   width={() => Math.max(1, width())}
                   model={props.model}
+                  highlight={props.highlight}
                   expanded={block.kind === "tool" && expandedTools().has(block.call)}
                   onToggle={
                     block.kind === "tool"
@@ -160,6 +167,7 @@ function ChatCard(props: {
   permission?: PermissionBlock;
   width: Accessor<number>;
   model?: string;
+  highlight?: HighlightSnapshot;
   expanded: boolean;
   onToggle?: () => void;
   thinkingExpanded: boolean;
@@ -275,6 +283,8 @@ function ChatCard(props: {
   const isAssistant = props.block.kind === "assistant";
   const queued = props.block.kind === "user" && props.block.queued === true;
   const content = isUser || isAssistant ? (props.block as { text: string }).text : undefined;
+  const textWidth = () =>
+    isUser ? Math.max(1, Math.floor(props.width() * 0.85)) : props.width();
   // Memoized, not computed once: on a restored session the block can land on
   // the very first render, before yoga has run a frame — the pane's width is
   // still its pre-layout placeholder then, and only a memo picks up the real
@@ -282,8 +292,15 @@ function ChatCard(props: {
   const lines = createMemo(() =>
     content === undefined
       ? serializeTranscript([props.block], props.width())
-      : wrapText(content, isUser ? Math.max(1, Math.floor(props.width() * 0.85)) : props.width()),
+      : wrapText(content, textWidth()),
   );
+  // Fenced code splits user and assistant text into prose and code segments.
+  // Plain messages (no code segment) render exactly as before.
+  const fenced = createMemo(() => {
+    if (content === undefined || (!isUser && !isAssistant)) return undefined;
+    const parts = splitFences(content);
+    return parts.some((part) => part.kind === "code") ? parts : undefined;
+  });
   return (
     <box
       style={{
@@ -294,18 +311,48 @@ function ChatCard(props: {
       onMouseOver={() => setHovered(true)}
       onMouseOut={() => setHovered(false)}
     >
-      <For each={lines()}>
-        {(line) => (
-          <text
-            style={{
-              width: "100%",
-              fg: theme.text,
-            }}
-          >
-            {isUser ? line.padStart(props.width()) : line}
-          </text>
-        )}
-      </For>
+      <Show
+        when={fenced() !== undefined}
+        fallback={
+          <For each={lines()}>
+            {(line) => (
+              <text
+                style={{
+                  width: "100%",
+                  fg: theme.text,
+                }}
+              >
+                {isUser ? line.padStart(props.width()) : line}
+              </text>
+            )}
+          </For>
+        }
+      >
+        <For each={fenced() ?? []}>
+          {(segment) =>
+            segment.kind === "code" ? (
+              <CodeBlock
+                code={segment.code}
+                language={segment.language}
+                highlight={props.highlight}
+              />
+            ) : (
+              <For each={wrapText(segment.text, textWidth())}>
+                {(line) => (
+                  <text
+                    style={{
+                      width: "100%",
+                      fg: theme.text,
+                    }}
+                  >
+                    {isUser ? line.padStart(props.width()) : line}
+                  </text>
+                )}
+              </For>
+            )
+          }
+        </For>
+      </Show>
       <Show when={isUser}>
         <text style={{ height: 1, fg: theme.overlay1 }}>
           {(queued ? "queued" : "user").padStart(props.width())}

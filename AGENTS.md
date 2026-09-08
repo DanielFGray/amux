@@ -62,6 +62,8 @@ prog ready -p amux    # unblocked tasks
 prog prime | head -130
 ```
 
+Decide a choice yourself when one option clearly dominates; ask only when the trade-off is genuinely close. Log every decision with `prog log <id>`: the choice, the options rejected and their drawbacks, and the evidence behind it — the audit needs the road not taken. Mark who decided, agent or user; a self-made call must never read later as something the user approved.
+
 ## Gotchas
 
 - `Effect.gen`'s `try/catch` does NOT catch typed Effect failures. Use `Effect.catchAll` or `Effect.catchTags`.
@@ -79,4 +81,8 @@ prog prime | head -130
 - ../opentui/ - opentui source including examples with solidjs
 - ../effect/ - source for effect-ts [v3, see also ../effect-v4]
 
-Remember there should be no hard architecture choices in this app, we're borrowing from and standing on the shoulders of these aforementioned giants
+## Borrowing over inventing
+
+This app makes no original architecture choices. Every design decision comes from somewhere: the projects above, a library already in the tree, or a concept amux implements elsewhere. Find that source before designing anything — the answer is usually already written, in this repo or a dependency's `.d.ts`.
+
+Cite it in the decision: `file:line` for a local precedent, project and mechanism for an external one. A decision that cites nothing is an invention — mark it as one and record what it rejected, so a later reader can tell borrowing from invention without re-deriving either.

@@ -1,5 +1,8 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveCommandSession, splitCommandArgs } from "./cli.ts";
 
 test("escaped shell semicolons divide command argument groups", () => {
@@ -153,4 +156,29 @@ test("--help prints the derived help, not a stale static copy", async () => {
   const stdout = Buffer.from(result.stdout).toString();
   expect(result.exitCode).toBe(0);
   expect(stdout).toBe(generateHelp(await daemonCommandRegistrations()) + "\n");
+});
+
+test("configured editor contributes editor.open to CLI help without a missing daemon warning", () => {
+  const configHome = mkdtempSync(join(tmpdir(), "amux-editor-help-"));
+  try {
+    const configDir = join(configHome, "amux");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, "config.json"),
+      JSON.stringify({
+        options: {},
+        keys: { leader: "ctrl+a", bindings: {} },
+        plugins: [{ path: join(import.meta.dir, "../../editor"), enabled: true }],
+        permissions: [],
+      }),
+    );
+    const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"], {
+      env: { ...process.env, XDG_CONFIG_HOME: configHome },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(Buffer.from(result.stdout).toString()).toContain("editor.open");
+    expect(Buffer.from(result.stderr).toString()).not.toContain("src/daemon");
+  } finally {
+    rmSync(configHome, { recursive: true, force: true });
+  }
 });

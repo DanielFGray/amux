@@ -159,7 +159,9 @@ const setup = Effect.fnUntraced(function* (options?: {
   let slots!: ReturnType<typeof createSlots>;
   let scope!: Scope.Closeable;
   const initialized = yield* Deferred.make<void>();
-  const runSync = Effect.runSyncWith(yield* Effect.context());
+  const context = yield* Effect.context();
+  const runSync = Effect.runSyncWith(context);
+  const runFork = Effect.runForkWith(context);
 
   const t = yield* Effect.tryPromise(() =>
     testRender(
@@ -176,7 +178,10 @@ const setup = Effect.fnUntraced(function* (options?: {
           );
           space = runSync(spaces.create("proj", process.cwd()));
           win = runSync(space.newWindow());
-          runSync(win!.init("shell"));
+          // A window with one shell session. `init` is gone: the client no longer
+          // spawns-and-mounts in one step, so the fixture starts the session the
+          // way the reconciler does and lets the sidebar read it from `window.sessions`.
+          runSync(win!.startSession({ name: "shell", cmd: shell }));
           const [displaySignal, setDisplaySignal] = createSignal(computeDisplay(spaces));
           spaces.onChange = () => setDisplaySignal(computeDisplay(spaces));
           const panelCtx = testPanelContext({
@@ -200,8 +205,9 @@ const setup = Effect.fnUntraced(function* (options?: {
           // PluginHost.reconcile funnels through an internal queue drained by a
           // background-forked fiber (see host.ts's `submit`), so completing it
           // is a cross-fiber handoff runSync cannot satisfy — it has to run
-          // under the same async-capable runtime the drain fiber does.
-          Effect.runFork(
+          // under the same async-capable runtime the drain fiber does, and
+          // under the test's own services, which is what `runFork` carries.
+          runFork(
             Effect.gen(function* () {
               const host: PluginHost = yield* Scope.provide(
                 createPluginHost(environment).pipe(Effect.provideService(Scope.Scope, scope)),
@@ -242,7 +248,7 @@ const setup = Effect.fnUntraced(function* (options?: {
                 side="left"
                 anchor="app"
               />
-              {registeredSlots.divider("left", "app")}
+              {registeredSlots.divider("left", "app")?.view}
             </box>
             {paneHost}
           </box>
@@ -446,7 +452,7 @@ testEffect("the footer counts what the tree shows", () =>
     const frame = s.t.captureCharFrame();
     expect(frame).toContain("1 space · 1 agent");
     const second = yield* s.space.newWindow();
-    yield* second.init("shell");
+    yield* second.startSession({ name: "shell", cmd: ["bash", "--norc", "--noprofile"] });
     refreshDisplay(s.spaces);
     yield* Effect.promise(() => s.t.renderOnce());
     expect(s.t.captureCharFrame()).toContain("1 space · 2 agents");

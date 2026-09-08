@@ -23,6 +23,11 @@ import { command } from "@danielfgray/amux";
 import type { OptionSpec } from "@danielfgray/amux";
 import { EditorPane, type EditorController } from "./EditorPane.tsx";
 import { EditorIo, type EditorIoService } from "./io.ts";
+import {
+  discoverCachedParsers,
+  HighlightProvider,
+  makeHighlightProvider,
+} from "@danielfgray/amux-highlight";
 
 export const EDITOR_PLUGIN_ID = "amux.editor";
 
@@ -88,7 +93,7 @@ const buildEditorIo: Effect.Effect<EditorIoService> = Effect.gen(function* () {
 export const editorPlugin: PluginDefinition = definePlugin({
   id: EDITOR_PLUGIN_ID,
   inject: [SessionViewsTag, SettingsTag, BindingsTag, ContextsTag, OptionsTag, PanelTag],
-  provide: [EditorIo],
+  provide: [EditorIo, HighlightProvider],
   effect: (ctx) =>
     Effect.gen(function* () {
       const sessionViews = yield* SessionViewsTag;
@@ -100,6 +105,18 @@ export const editorPlugin: PluginDefinition = definePlugin({
       const io: EditorIoService = yield* buildEditorIo;
 
       ctx.provide(EditorIo, io);
+
+      // Scoped to the plugin: the worker spawns lazily on the first known
+      // filetype; unload closes buffers, never the shared worker. Cached
+      // grammars beyond the five bundled ones register before the first
+      // buffer opens.
+      const highlight = yield* makeHighlightProvider(
+        undefined,
+        yield* discoverCachedParsers.pipe(
+          Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)),
+        ),
+      );
+      ctx.provide(HighlightProvider, highlight);
 
       yield* Effect.all(
         Object.entries(EDITOR_SETTINGS).map(([name, spec]) => options.register([name, spec])),
@@ -247,6 +264,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
             spaceDir={spaceDirOf(panel)}
             lineNumbers={() => settingValue(panel, "editor.number")}
             io={io}
+            highlight={highlight}
             registerController={registerController}
           />
         ),
