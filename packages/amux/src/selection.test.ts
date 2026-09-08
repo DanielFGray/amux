@@ -1,20 +1,14 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
-import { run, scopedSpaceSet } from "./harness.ts";
 import { test, expect } from "bun:test";
-import { afterEach } from "bun:test";
-import { BoxRenderable } from "@opentui/core";
-import { createTestRenderer } from "@opentui/core/testing";
+import { Effect, Layer } from "effect";
 import { RenderState, Terminal } from "./ghostty.ts";
 import { captureRange } from "./shim.ts";
 import { clearSelection, setSelection } from "./shim.ts";
-import { workspaceEnv } from "./env.ts";
+import { project } from "./harness.ts";
+import { makeLayout } from "./layout.ts";
+import { testEffect } from "./test-effect.ts";
 
 const bytes = (value: string) => new TextEncoder().encode(value);
-const cleanup: (() => void)[] = [];
-
-afterEach(() => {
-  for (const dispose of cleanup.splice(0)) dispose();
-});
 
 test("selection uses screen coordinates through scrollback", () => {
   const term = new Terminal(10, 3, 100);
@@ -69,31 +63,25 @@ test("empty selection is cleared instead of copied", () => {
   term.free();
 });
 
-test("drag selection copies through the pane and survives pane borders", async () => {
-  const t = await createTestRenderer({ width: 30, height: 8 });
-  const host = new BoxRenderable(t.renderer, { id: "host", flexGrow: 1 });
-  t.renderer.root.add(host);
-  // A bash prompt arriving mid-test lands in the copied range, making the
-  // selection "drag\nbash" on a cold filesystem. Run a process that emits
-  // nothing so the terminal holds exactly the bytes the test wrote.
-  const { spaces, dispose: disposeSpaces } = scopedSpaceSet(
-    workspaceEnv(t.renderer, { shell: ["sh", "-c", "sleep 60"] }),
-    host,
-  );
-  const copied: string[] = [];
-  spaces.onCopy = (text) => {
-    copied.push(text);
-    return true;
-  };
-  const space = run(spaces.create("test", process.cwd()));
-  const window = run(space.newWindow());
-  const pane = run(window.init());
-  pane.session!.term.write(bytes("drag"));
-  await t.renderOnce();
-  await t.mockMouse.drag(pane.x + 1, pane.y + 1, pane.x + 4, pane.y + 1);
-  expect(copied).toEqual(["drag"]);
-  cleanup.push(async () => {
-    await disposeSpaces();
-    t.renderer.destroy();
-  });
-});
+testEffect(Layer.empty).live(
+  "drag selection copies through the pane and survives pane borders",
+  Effect.gen(function* () {
+    const scene = yield* project(
+      makeLayout({
+        root: { type: "pane", id: "pane-1", content: { kind: "pty", session: "s1" }, weight: 1 },
+        focus: "pane-1",
+      }),
+      { width: 30, height: 8 },
+    );
+    const pane = scene.window.panes[0]!;
+    const copied: string[] = [];
+    pane.onCopy = (text) => {
+      copied.push(text);
+      return true;
+    };
+    pane.session!.term.write(bytes("drag"));
+    yield* scene.renderOnce();
+    yield* Effect.promise(() => scene.t.mockMouse.drag(pane.x + 1, pane.y + 1, pane.x + 4, pane.y + 1));
+    expect(copied).toEqual(["drag"]);
+  }),
+);

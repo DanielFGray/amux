@@ -1,178 +1,182 @@
 /**
- * The renderer/space/window scaffold the domain tests share.
+ * The projection scaffold the workspace tests share: one scoped Effect that
+ * feeds a Layout through the production reconciler.
  *
  * Test-only, but not a `.test.ts` file: bun would collect it as a suite with no
  * tests in it.
  *
- * Six suites had built this by hand, two of them byte-identical down to the
- * comments. That is the kind of duplication that quietly drifts — the settle
- * delay below existed in two copies and not in the other four, so half the
- * suites tore a renderer down while PTY pumps were still reading from it.
+ * A test that wants a window calls `project(layout)` — the same path production
+ * runs at boot (app.tsx projects a snapshot through `projectWorkspace`, which
+ * ends in `Window.project`). There is no second route into a window, so a
+ * projection bug fails a pane test instead of hiding behind a private setup.
  *
- * These harnesses run real PTYs and a real ghostty VT behind a real renderer.
- * Nothing is mocked, because what they assert is the domain: split trees,
- * agent lifecycle, and geometry that only exists once yoga has run a frame.
+ * The fixture is an Effect scoped to the caller's Scope (the one `testEffect`
+ * hands each test). Closing that scope releases the workspace, then drains the
+ * render callbacks, then destroys the renderer — in that order, because the
+ * finalizers run last-registered-first and the renderer finalizer is registered
+ * first of all.
+ *
+ * Sessions a layout names default to tombstones (a process that already ended):
+ * the panes get a real ghostty terminal, but nothing runs, so a layout meant to
+ * stage geometry starts no processes and cannot race a shell prompt into the
+ * frame mid-test. `opts.sessions` overrides a session spec by id — a lifetime
+ * test that needs to observe a kill passes a live spec and a spy backend.
  *
  * @effect-diagnostics *:skip-file -- this file constructs the render-tree/PTY seam it documents above.
  */
 
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
-import { Context, Effect, Exit, Scope } from "effect";
-import { SpaceSet, type Space } from "./space.ts";
+import { Context, Effect } from "effect";
+import type * as Scope from "effect/Scope";
+import { Backend, workspaceEnv } from "./env.ts";
+import { projectWorkspace, SpaceSet, type Space } from "./space.ts";
 import type { Window } from "./window.ts";
-import { workspaceEnv, type WorkspaceEnv } from "./env.ts";
+import type { SessionBackendFactory } from "./backend.ts";
+import type { PaneView } from "./component-pane.tsx";
+import { layoutSessions, windowState, type Layout } from "./layout.ts";
+import type { PersistedSession } from "./session.ts";
+import { commandName } from "./command-name.ts";
+import { spaceSetState, spaceState } from "./space-model.ts";
+import type { WorkspaceSnapshot } from "./workspace.ts";
 
-/**
- * Run one of the workspace's Effect-returning methods and hand back its value.
- *
- * Everything that starts or stops a process is an Effect now; everything that
- * moves rectangles around is still a plain call. This is the seam between the
- * two, and it is synchronous on purpose — a suite asserting on geometry reads
- * the same as it did before, with `run(...)` marking exactly the calls that
- * have a lifetime attached.
- *
- * Exported standalone as well as on the harness so a suite can adopt it with
- * one import rather than threading it through every destructuring.
- */
-export const run = <A>(effect: Effect.Effect<A>): A => Effect.runSync(effect);
-
-/**
- * Run a releasing method, which cannot be synchronous.
- *
- * Acquisition is sync — building an agent is a constructor and a scope entry.
- * RELEASE is not, and cannot be made so: `Agent.release` interrupts the pump
- * fiber before freeing the terminal under it, and interrupting a running fiber
- * means waiting for it to finish unwinding. That await is the entire point of
- * Phase 3 having made the pump a fiber; without it, teardown races a writer
- * that is mid-write into an FFI handle being freed.
- *
- * So `killAgent`, `closeWindow`, `remove`, `breakPane` and scope close are
- * awaited, and everything else stays a plain call.
- *
- * Scope close joins all fibers but does not guarantee ghostty's render
- * callbacks have retired — a pane renders straight out of its agent's terminal,
- * so the renderer must not be destroyed until those callbacks drain.
- */
-export const runAsync = <A>(effect: Effect.Effect<A>): Promise<A> => Effect.runPromise(effect);
-
-/**
- * A SpaceSet and the call that ends it, for suites that mount their own
- * renderer rather than taking the whole harness.
- *
- * They used to write `new SpaceSet(...)` and remember `disposeAll()` in a
- * cleanup hook. The scope is what remembers now; this keeps the two-line shape
- * those suites had.
- */
-export function scopedSpaceSet(env: Context.Context<WorkspaceEnv>, host: BoxRenderable) {
-  const scope = Scope.makeUnsafe();
-  const spaces = Effect.runSync(Scope.provide(SpaceSet.make(env, host), scope));
-  return { spaces, dispose: () => runAsync(Scope.close(scope, Exit.void)) };
-}
-
-export interface Harness {
+/** Everything a test needs once a window is on screen, plus one frame. */
+export interface Scene {
   t: TestRendererSetup;
   spaces: SpaceSet;
   space: Space;
   window: Window;
-  /**
-   * Run one frame.
-   *
-   * Geometry comes from yoga, which only runs on a frame — so directional
-   * focus, divider placement, and anything else positional means nothing until
-   * this has been awaited at least once.
-   */
-  layout: () => Promise<void>;
-  /** The module-level `run`, on the harness for convenience. */
-  run: <A>(effect: Effect.Effect<A>) => A;
-  /**
-   * Replace the mounted workspace with a fresh, empty one and return it.
-   *
-   * For restore: the new set takes over the screen the old one had, so
-   * rebuilt windows get the same geometry as the originals rather than sharing
-   * the frame with them. The old set is left intact but unmounted, so a
-   * snapshot taken before the swap is still comparable against it — and both
-   * are disposed together, on one renderer instead of two.
-   */
-  takeOver: () => SpaceSet;
-  /** Kill the agents, let their pumps settle, then drop the renderer. */
-  dispose: () => Promise<void>;
+  renderOnce: () => Effect.Effect<void>;
+  /** The workspace backend, for a test that re-projects a later model revision
+   *  through `projectWorkspace` — the same entry production uses on each change. */
+  backend: SessionBackendFactory;
 }
 
-export interface HarnessOptions {
+/** A session the layout names, overridden from the tombstone default. Every
+ *  field is optional; whatever is omitted falls back to the default a plain pty
+ *  tombstone would have. Set `exited: false` to hold a live session backed by
+ *  the workspace backend. */
+export type SessionSpec = Partial<
+  Pick<
+    PersistedSession,
+    "name" | "cmd" | "kind" | "declaredAgent" | "provider" | "cwd" | "exited" | "exitCode"
+  >
+>;
+
+export interface ProjectOptions {
   width?: number;
   height?: number;
   shell?: string[];
-  /**
-   * Whether to seed the window with an agent. `false` leaves it empty; a string
-   * names the first agent, which is how a test asserts on a name it chose.
-   */
-  init?: boolean | string;
-  /**
-   * Flex direction of the host box. Left unset by default because yoga's own
-   * default is what most suites were written against, and forcing an axis here
-   * silently moves every pane in them.
-   */
-  hostDirection?: "row" | "column";
+  backend?: SessionBackendFactory;
+  paneContent?: PaneView;
+  /** Build the host the workspace mounts into, instead of the harness adding a
+   *  full-size one. The builder receives the renderer setup, attaches its boxes
+   *  to the renderer root, and returns the leaf host — how a test reproduces the
+   *  app's own node nesting around the pane area. */
+  host?: (t: TestRendererSetup) => BoxRenderable;
+  /** Per-session overrides. An id not listed stays a tombstone. */
+  sessions?: Record<string, SessionSpec>;
 }
 
-export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
-  const t = await createTestRenderer({
-    width: options.width ?? 80,
-    height: options.height ?? 24,
-  });
-  const host = new BoxRenderable(t.renderer, {
-    id: "pane-host",
-    flexGrow: 1,
-    flexDirection: options.hostDirection,
-  });
-  t.renderer.root.add(host);
+/**
+ * Feed a layout through `Window.project` inside a scoped workspace, and return
+ * the reconstructed scene.
+ *
+ * One space (named "proj", cwd the process dir) and one window (number 1) are
+ * always built; the layout's pane refs name the sessions, each defaulting to a
+ * tombstone unless `opts.sessions` says otherwise.
+ */
+export function project(
+  layout: Layout,
+  options: ProjectOptions = {},
+): Effect.Effect<Scene, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const width = options.width ?? 80;
+    const height = options.height ?? 24;
+    const t: TestRendererSetup = yield* Effect.promise(() => createTestRenderer({ width, height }));
 
-  const shell = options.shell ?? ["bash"];
-
-  // One scope over the whole harness. Every SpaceSet it hands out is built in
-  // here, so `dispose` closing it is what ends the PTYs — the suites no longer
-  // reach for disposeAll, and a suite that forgets to dispose leaks nothing it
-  // did not already leak through the renderer.
-  const scope = Scope.makeUnsafe();
-  const build = () =>
-    Effect.runSync(
-      Scope.provide(SpaceSet.make(workspaceEnv(t.renderer, { shell }), mounted), scope),
+    // Registered first so it runs last: the renderer must not be destroyed until
+    // every session — and the render callbacks firing out of their terminals —
+    // has been released. Mirrors the ordering the old dispose() enforced, and
+    // stays until Phase 2 makes render-tree teardown awaitable.
+    yield* Effect.addFinalizer(() =>
+      Effect.andThen(Effect.promise(() => Bun.sleep(50)), Effect.sync(() => t.renderer.destroy())),
     );
 
-  let mounted: BoxRenderable = host;
-  let hosts = 0;
-  const spaces = build();
-  const space = run(spaces.create("proj", process.cwd()));
-  const window = run(space.newWindow());
-  if (options.init !== false) {
-    run(window.init(typeof options.init === "string" ? options.init : undefined));
-  }
+    const host = options.host
+      ? options.host(t)
+      : new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1, flexDirection: "column" });
+    if (!options.host) t.renderer.root.add(host);
 
+    const env = workspaceEnv(t.renderer, {
+      shell: options.shell,
+      backend: options.backend,
+      paneContent: options.paneContent,
+    });
+
+    const spaces = yield* SpaceSet.make(env, host);
+    const backend = Context.get(env, Backend);
+    yield* projectWorkspace(spaces, snapshotOf(layout, options.sessions, width, height), backend);
+
+    const space = spaces.active!;
+    const window = space.active!;
+    return {
+      t,
+      spaces,
+      space,
+      window,
+      backend,
+      renderOnce: () => Effect.promise(() => t.renderOnce()),
+    };
+  });
+}
+
+/**
+ * Assemble the renderer-free value the reconciler owns, from one layout.
+ *
+ * Exported so a test that simulates a later model revision can feed the new
+ * layout through the public `projectWorkspace`, exactly as production replays
+ * each revision — rather than mutating the window through a path that no
+ * longer exists in a client projection.
+ */
+export function snapshotOf(
+  layout: Layout,
+  sessions?: Record<string, SessionSpec>,
+  cols = 80,
+  rows = 24,
+): WorkspaceSnapshot {
+  const spec = (id: string): PersistedSession => {
+    const cmd = sessions?.[id]?.cmd ?? ["true"];
+    return {
+      id,
+      name: commandName(cmd),
+      cmd,
+      cols,
+      rows,
+      exited: true,
+      exitCode: 0,
+      ...sessions?.[id],
+    };
+  };
   return {
-    t,
-    spaces,
-    space,
-    window,
-    run,
-    layout: () => t.renderOnce(),
-    takeOver() {
-      t.renderer.root.remove(mounted);
-      mounted = new BoxRenderable(t.renderer, {
-        id: `pane-host-${++hosts}`,
-        flexGrow: 1,
-        flexDirection: options.hostDirection,
-      });
-      t.renderer.root.add(mounted);
-      return build();
-    },
-    async dispose() {
-      await runAsync(Scope.close(scope, Exit.void));
-      // Scope close joins all fibers, but ghostty's render callbacks are not
-      // gated by fiber lifetime — a pane draws from the terminal the pump was
-      // reading. 50ms is enough for any in-flight render callback to retire.
-      await Bun.sleep(50);
-      t.renderer.destroy();
-    },
+    revision: 1,
+    state: { ...spaceSetState(), activeSpace: "space-proj" },
+    spaces: [
+      {
+        id: "space-proj",
+        name: "proj",
+        dir: process.cwd(),
+        state: { ...spaceState(), activeWindow: 1 },
+        windows: [
+          {
+            number: 1,
+            name: null,
+            state: { ...windowState(), focus: layout.focus ?? null },
+            layout,
+            sessions: layoutSessions(layout).map(spec),
+          },
+        ],
+      },
+    ],
   };
 }

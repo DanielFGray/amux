@@ -1,11 +1,15 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { expect, test } from "bun:test";
-import { Effect, Exit, FiberMap, Scope, Stream } from "effect";
+import { Effect, Exit, FiberMap, Layer, Scope, Stream } from "effect";
 import { runModelProjections, scheduleHintVisibility } from "../app.tsx";
-import { createHarness } from "../harness.ts";
+import { project } from "../harness.ts";
+import { makeLayout } from "../layout.ts";
+import { testEffect } from "../test-effect.ts";
 import { scheduledPoll } from "../effect/timer.ts";
 import { createAppState, POLL_MS } from "./state.ts";
 import { waitFor } from "../test-wait.ts";
+
+const { live } = testEffect(Layer.empty);
 
 function scopedRunner() {
   const scope = Scope.makeUnsafe();
@@ -59,20 +63,18 @@ test("closing the app fiber scope stops the UI poll", async () => {
   expect(polls).toBe(stopped);
 });
 
-test("output does not advance the polled tick, so a busy pane cannot storm the tree", async () => {
-  // Structural changes bump the revision; the tick belongs to the poll alone.
-  // Advancing it here would repaint every view that displays polled state once
-  // per output chunk rather than once per cadence.
-  const harness = await createHarness({ init: false });
-  try {
-    const app = createAppState(harness.spaces);
+live("output does not advance the polled tick, so a busy pane cannot storm the tree", () =>
+  Effect.gen(function* () {
+    // Structural changes bump the revision; the tick belongs to the poll alone.
+    // Advancing it here would repaint every view that displays polled state once
+    // per output chunk rather than once per cadence.
+    const scene = yield* project(makeLayout({ root: null }));
+    const app = createAppState(scene.spaces);
     const before = app.tick();
-    for (let i = 0; i < 100; i++) harness.spaces.onChange?.();
+    for (let i = 0; i < 100; i++) scene.spaces.onChange?.();
     expect(app.tick()).toBe(before);
-  } finally {
-    await harness.dispose();
-  }
-});
+  }),
+);
 
 test("git refresh is keyed, so a slow scan is replaced rather than queued", async () => {
   const fibers = scopedRunner();

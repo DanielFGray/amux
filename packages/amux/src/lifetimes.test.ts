@@ -15,17 +15,20 @@
 import { test, expect } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
-import { Effect, Exit, Scope, Stream } from "effect";
-import { SpaceSet } from "./space.ts";
-import { workspaceEnv } from "./env.ts";
-import type { SessionBackendFactory } from "./backend.ts";
-import { run, runAsync } from "./harness.ts";
+import { Effect, Exit, Layer, Scope, Stream } from "effect";
 import { createApp } from "./app.tsx";
 import { DEFAULT_CONFIG } from "./config.ts";
-import { makeLayout, windowState } from "./layout.ts";
+import { project, type SessionSpec } from "./harness.ts";
+import { makeLayout, windowState, type Layout } from "./layout.ts";
 import { spaceSetState, spaceState } from "./space-model.ts";
+import type { SessionBackendFactory } from "./backend.ts";
 import type { SessionClientContract } from "./client.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
+import type { PersistedSession } from "./session.ts";
+import { projectWorkspace } from "./space.ts";
+import { testEffect } from "./test-effect.ts";
+
+const { live } = testEffect(Layer.empty);
 
 /**
  * A backend that starts nothing and remembers WHICH agents were killed.
@@ -72,108 +75,186 @@ function spyBackend(): SpyBackend {
   return { backend, killed: () => killed };
 }
 
-async function fixture() {
-  const t = await createTestRenderer({ width: 60, height: 20 });
-  const host = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
-  t.renderer.root.add(host);
-  const spy = spyBackend();
-  const scope = Scope.makeUnsafe();
-  const spaces = run(
-    Scope.provide(SpaceSet.make(workspaceEnv(t.renderer, { backend: spy.backend }), host), scope),
-  );
-  return {
-    spaces,
-    killed: spy.killed,
-    closeTop: () => runAsync(Scope.close(scope, Exit.void)),
-    async cleanup() {
-      await runAsync(Scope.close(scope, Exit.void));
-      await Bun.sleep(20);
-      t.renderer.destroy();
+/** A live, never-exiting session, backed by whatever the workspace env holds. */
+const liveSpec = (): SessionSpec => ({ exited: false, cmd: ["sleep", "30"] });
+
+const pane = (id: string, session: string) =>
+  ({ type: "pane" as const, id, content: { kind: "pty" as const, session }, weight: 1 });
+
+const liveSession = (id: string): PersistedSession => ({
+  id,
+  name: id,
+  cmd: ["sleep", "30"],
+  cols: 80,
+  rows: 24,
+  exited: false,
+  exitCode: null,
+});
+
+/** A whole workspace as one space holding the given windows, for replaying a
+ *  later model revision through `projectWorkspace` — which is how the daemon's
+ *  next generation reaches the client. `pane` ids are what the reconcile uses to
+ *  carry a pane (and its session scope) between windows. */
+const revision = (
+  ...windows: Array<{ number: number; layout: Layout; sessions: string[] }>
+): WorkspaceSnapshot => ({
+  revision: 1,
+  state: { ...spaceSetState(), activeSpace: "space-proj" },
+  spaces: [
+    {
+      id: "space-proj",
+      name: "proj",
+      dir: process.cwd(),
+      state: { ...spaceState(), activeWindow: 1 },
+      windows: windows.map((w) => ({
+        number: w.number,
+        name: null,
+        state: { ...windowState(), focus: w.layout.focus ?? null },
+        layout: w.layout,
+        sessions: w.sessions.map(liveSession),
+      })),
     },
-  };
-}
+  ],
+});
 
-test("closing the top scope kills agents three levels down", async () => {
-  const f = await fixture();
-  try {
-    const space = run(f.spaces.create("proj", process.cwd()));
-    const window = run(space.newWindow());
-    const first = run(window.init()).session!;
-    const second = run(window.spawn("second"));
-    expect(f.killed()).toEqual([]);
+live("closing the top scope kills agents three levels down", () =>
+  Effect.gen(function* () {
+    const spy = spyBackend();
+    const scope = yield* Scope.make();
+    const scene = yield* Scope.provide(
+      project(
+        makeLayout({
+          root: { type: "split", direction: "row", weight: 1, children: [pane("p-first", "first"), pane("p-second", "second")] },
+        }),
+        { backend: spy.backend, sessions: { first: liveSpec(), second: liveSpec() } },
+      ),
+      scope,
+    );
+    const first = scene.window.panes[0]!.session!;
+    const second = scene.window.panes[1]!.session!;
+    expect(spy.killed()).toEqual([]);
 
-    await f.closeTop();
+    yield* Scope.close(scope, Exit.void);
     // Both agents, reached through SpaceSet -> Space -> Window without anyone
     // calling a dispose method by hand.
-    expect(f.killed().sort()).toEqual([first.id, second.id].sort());
-  } finally {
-    await f.cleanup();
-  }
-});
+    expect(spy.killed().sort()).toEqual([first.id, second.id].sort());
+  }),
+);
 
-test("closing one window releases its agents and leaves its siblings running", async () => {
-  const f = await fixture();
-  try {
-    const space = run(f.spaces.create("proj", process.cwd()));
-    const doomed = run(space.newWindow());
-    const doomedAgent = run(doomed.init()).session!;
-    const survivor = run(space.newWindow());
-    const survivorAgent = run(survivor.init()).session!;
+live("closing one window releases its agents and leaves its siblings running", () =>
+  Effect.gen(function* () {
+    const spy = spyBackend();
+    const scene = yield* project(
+      makeLayout({
+        root: { type: "pane", id: "p-doomed", content: { kind: "pty", session: "doomed" }, weight: 1 },
+        focus: "p-doomed",
+      }),
+      { backend: spy.backend, sessions: { doomed: liveSpec() } },
+    );
+    const doomed = scene.window.sessions[0]!;
 
-    await runAsync(space.closeWindow(doomed));
-    expect(f.killed()).toEqual([doomedAgent.id]);
+    const survivorWindow = yield* scene.space.newWindow();
+    const survivor = yield* survivorWindow.startSession({ cmd: ["sleep", "30"] });
+    survivorWindow.project(
+      makeLayout({
+        root: { type: "pane", id: "p-survivor", content: { kind: "pty", session: survivor.id }, weight: 1 },
+        focus: "p-survivor",
+      }),
+      { ...windowState(), focus: "p-survivor" },
+    );
+
+    yield* scene.space.closeWindow(scene.window);
+    expect(spy.killed()).toEqual([doomed.id]);
 
     // The survivor is still live: closing the top scope is what ends it.
-    await f.closeTop();
-    expect(f.killed()).toEqual([doomedAgent.id, survivorAgent.id]);
-  } finally {
-    await f.cleanup();
-  }
-});
+    yield* scene.space.closeWindow(survivorWindow);
+    expect(spy.killed()).toEqual([doomed.id, survivor.id]);
+  }),
+);
 
-test("killSession releases the session it was given and no other", async () => {
-  const f = await fixture();
-  try {
-    const space = run(f.spaces.create("proj", process.cwd()));
-    const window = run(space.newWindow());
-    const bystander = run(window.init()).session!;
-    const second = run(window.spawn("second"));
+live("dropping a session from the model releases it and no other", () =>
+  Effect.gen(function* () {
+    const spy = spyBackend();
+    const scene = yield* project(
+      makeLayout({
+        root: {
+          type: "split",
+          direction: "row",
+          weight: 1,
+          children: [pane("p-bystander", "bystander"), pane("p-second", "second")],
+        },
+        focus: "p-bystander",
+      }),
+      { backend: spy.backend, sessions: { bystander: liveSpec(), second: liveSpec() } },
+    );
+    const window = scene.window;
+    const bystander = window.sessions.find((s) => s.id === "bystander")!;
+    const second = window.sessions.find((s) => s.id === "second")!;
 
-    await runAsync(window.killSession(second));
-    // By id: the target, not merely "one of them". killSession splices its target
-    // out of #agents before releasing, so a release loop over the survivors
-    // would kill the bystander and still leave the count at one.
-    expect(f.killed()).toEqual([second.id]);
+    // The client never kills: the daemon removes the session from the model, and
+    // the projection drops the pane that viewed it and releases its scope.
+    yield* window.removeProjectedSession(second);
+
+    // By id: the target, not merely "one of them". The splice happens before the
+    // release, so a release loop over the survivors would kill the bystander and
+    // still leave the count at one.
+    expect(spy.killed()).toEqual([second.id]);
     expect(window.sessions).toContain(bystander);
-  } finally {
-    await f.cleanup();
-  }
-});
+  }),
+);
 
-test("a broken-out pane survives its source window closing", async () => {
-  const f = await fixture();
-  try {
-    const space = run(f.spaces.create("proj", process.cwd()));
-    const source = run(space.newWindow());
-    const pane = run(source.init());
-    const moved = pane.session!;
+// The lifetime property `space.breakPane` guaranteed: a pane moved to another
+// window carries its session SCOPE with it, so closing the source window
+// afterwards does not release the session. `breakPane` is gone, but the
+// reconcile still must honour it — a pane id that reappears in a different
+// window travels through releasePane/adopt, which is what moves the scope.
+live("a pane moved to another window survives its source window closing", () =>
+  Effect.gen(function* () {
+    const spy = spyBackend();
 
-    // breakPane moves the agent AND its scope. The source window is emptied and
-    // closed by the break itself, so if the scope had stayed behind — or been
-    // forked from the source window's — this would kill the process that just
-    // moved out.
-    const broken = await runAsync(space.breakPane(pane));
-    expect(broken).not.toBeNull();
-    expect(f.killed()).toEqual([]);
+    // Revision 1: one window holding "moved" beside "control".
+    const scene = yield* project(
+      makeLayout({
+        root: {
+          type: "split",
+          direction: "row",
+          weight: 1,
+          children: [pane("p-moved", "moved"), pane("p-control", "control")],
+        },
+        focus: "p-control",
+      }),
+      { backend: spy.backend, sessions: { moved: liveSpec(), control: liveSpec() } },
+    );
+    expect(spy.killed()).toEqual([]);
 
-    // And it is genuinely owned by its new window, not merely un-killed: the
-    // scope travelled, so the destination is what closes it.
-    await runAsync(space.closeWindow(broken!));
-    expect(f.killed()).toEqual([moved.id]);
-  } finally {
-    await f.cleanup();
-  }
-});
+    // Revision 2: break-pane in model terms — the same pane id now lives in a
+    // second window. The handoff must carry its session scope.
+    yield* projectWorkspace(
+      scene.spaces,
+      revision(
+        { number: 1, layout: makeLayout({ root: pane("p-control", "control"), focus: "p-control" }), sessions: ["control"] },
+        { number: 2, layout: makeLayout({ root: pane("p-moved", "moved"), focus: "p-moved" }), sessions: ["moved"] },
+      ),
+      scene.backend,
+    );
+    expect(spy.killed()).toEqual([]);
+
+    // Revision 3: the source window is gone. Its control session is released;
+    // the moved session's scope already travelled, so it stays live.
+    yield* projectWorkspace(
+      scene.spaces,
+      revision({ number: 2, layout: makeLayout({ root: pane("p-moved", "moved"), focus: "p-moved" }), sessions: ["moved"] }),
+      scene.backend,
+    );
+    expect(spy.killed()).toEqual(["control"]);
+
+    // And it is genuinely owned by its new window: closing that window is what
+    // finally ends it.
+    const survivor = scene.spaces.active!.windows.find((w) => w.number === 2)!;
+    yield* scene.space.closeWindow(survivor);
+    expect(spy.killed()).toEqual(["control", "moved"]);
+  }),
+);
 
 test("scoped app release detaches daemon projections and terminates local owners", async () => {
   for (const ownership of ["daemon", "local"] as const) {
@@ -217,7 +298,7 @@ test("scoped app release detaches daemon projections and terminates local owners
 
     try {
       // Starting the app reads its plugins off disk, so this is not synchronous.
-      await runAsync(
+      await Effect.runPromise(
         Scope.provide(
           createApp({
             renderer: t.renderer,
@@ -234,7 +315,7 @@ test("scoped app release detaches daemon projections and terminates local owners
       );
       expect(host.getChildren()).toHaveLength(1);
 
-      await runAsync(Scope.close(scope, Exit.void));
+      await Effect.runPromise(Scope.close(scope, Exit.void));
 
       expect(closed).toEqual([`agent-${ownership}`]);
       expect(killed).toEqual(ownership === "local" ? [`agent-${ownership}`] : []);
@@ -243,7 +324,7 @@ test("scoped app release detaches daemon projections and terminates local owners
       expect(host.getChildren()).toHaveLength(0);
       await t.renderOnce();
     } finally {
-      await runAsync(Scope.close(scope, Exit.void));
+      await Effect.runPromise(Scope.close(scope, Exit.void));
       t.renderer.destroy();
     }
   }

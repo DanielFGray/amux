@@ -1,8 +1,7 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
-import { run, runAsync, scopedSpaceSet } from "./harness.ts";
 import { test, expect, afterEach } from "bun:test";
-import { Effect } from "effect";
-import { MouseEvent, BoxRenderable } from "@opentui/core";
+import { Effect, Layer } from "effect";
+import { MouseEvent } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { SessionHandle } from "./session-handle.ts";
 import { TerminalPane, type Pane } from "./pane.ts";
@@ -15,9 +14,12 @@ import {
 } from "./copy.ts";
 import { createBindings, type CommandSpec } from "./bindings.ts";
 import { RenderState, Terminal } from "./ghostty.ts";
-import { SpaceSet } from "./space.ts";
+import { SpaceSet, projectWorkspace } from "./space.ts";
 import { makeLayout } from "./layout.ts";
-import { workspaceEnv } from "./env.ts";
+import { project, snapshotOf } from "./harness.ts";
+import { testEffect } from "./test-effect.ts";
+
+const { live } = testEffect(Layer.empty);
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 
@@ -840,35 +842,32 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
  * cannot reach.
  * ------------------------------------------------------------------ */
 
-/** A real window with `count` tombstone agents on real ghostty terminals.
- *  `split` leaves the last-created pane focused and every earlier one parked. */
-async function makeWindow(count: number) {
-  const t = await createTestRenderer({ width: 80, height: 24 });
-  const paneHost = new BoxRenderable(t.renderer, {
-    id: "pane-host",
-    flexGrow: 1,
-  });
-  const { spaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
-  const space = run(spaces.create("proj", process.cwd()));
-  const win = run(space.newWindow());
-  const sessions = Array.from({ length: count }, () =>
-    run(
-      win.startSession({
-        cmd: ["true"],
-        exited: { code: 0 },
-        cols: 40,
-        rows: 10,
+/** A real window with `count` tombstone agents on real ghostty terminals,
+ *  staged through the production projection. The last pane is focused, which
+ *  leaves the earliest ones parked — the same shape `split` produced. */
+function makeWindow(count: number) {
+  const slots = Array.from({ length: count }, (_, i) => ({
+    type: "pane" as const,
+    id: `pane-${i}`,
+    content: { kind: "pty" as const, session: `s-${i}` },
+    weight: 1,
+  }));
+  return Effect.gen(function* () {
+    const scene = yield* project(
+      makeLayout({
+        root: { type: "split", direction: "column", weight: 1, children: slots },
+        focus: `pane-${count - 1}`,
       }),
-    ),
-  );
-  // Narrowed rather than cast: copy mode walks a grid, so a test about it is
-  // only meaningful on terminal panes, and these sessions are all ptys.
-  const panes = sessions.map((session, i) => {
-    const pane = win.split(i === 0 ? "row" : "column", session)!;
-    if (!(pane instanceof TerminalPane)) throw new Error("expected a terminal pane");
-    return pane;
+      { width: 80, height: 24 },
+    );
+    // Narrowed rather than cast: copy mode walks a grid, so a test about it is
+    // only meaningful on terminal panes, and these sessions are all ptys.
+    const panes = scene.window.panes.map((pane) => {
+      if (!(pane instanceof TerminalPane)) throw new Error("expected a terminal pane");
+      return pane;
+    });
+    return { ...scene, panes };
   });
-  return { t, spaces, space, win, sessions, panes };
 }
 
 /** The same orphan guard main.tsx wires: it reacts to a pane leaving the tree. */
@@ -895,74 +894,67 @@ function trackInvalidateAfterDestroy(pane: Pane) {
   return { get: () => afterDestroy };
 }
 
-test("closing a window ends copy mode after its pane view is destroyed", async () => {
-  const { t, spaces, space, win, panes } = await makeWindow(2);
-  cleanup.push(() => {
-    t.renderer.destroy();
-  });
-  const paneA = panes[0]!;
-  // The copy-mode pane is unfocused, so closing the window destroys its view.
-  // Its terminal remains daemon-owned while the orphan guard clears selection.
-  expect(win.focused).not.toBe(paneA);
+live("closing a window ends copy mode after its pane view is destroyed", () =>
+  Effect.gen(function* () {
+    const { spaces, space, window: win, panes } = yield* makeWindow(2);
+    const paneA = panes[0]!;
+    // The copy-mode pane is unfocused, so closing the window destroys its view.
+    // Its terminal remains daemon-owned while the orphan guard clears selection.
+    expect(win.focused).not.toBe(paneA);
 
-  const mode = new CopyMode();
-  wireCopyModeTeardown(spaces, mode);
-  mode.enter(paneA);
-  expect(mode.active).toBe(true);
+    const mode = new CopyMode();
+    wireCopyModeTeardown(spaces, mode);
+    mode.enter(paneA);
+    expect(mode.active).toBe(true);
 
-  const invalidateAfterDestroy = trackInvalidateAfterDestroy(paneA);
+    const invalidateAfterDestroy = trackInvalidateAfterDestroy(paneA);
 
-  await runAsync(space.closeWindow(win));
+    yield* space.closeWindow(win);
 
-  expect(paneA.isDestroyed).toBe(true);
-  expect(mode.active).toBe(false);
-  expect(invalidateAfterDestroy.get()).toBe(false);
-});
+    expect(paneA.isDestroyed).toBe(true);
+    expect(mode.active).toBe(false);
+    expect(invalidateAfterDestroy.get()).toBe(false);
+  }),
+);
 
-test("replacing the layout ends copy mode before leftover panes are destroyed", async () => {
-  const { t, spaces, win, panes, sessions } = await makeWindow(3);
-  cleanup.push(() => {
-    t.renderer.destroy();
-  });
-  const paneA = panes[0]!;
-  const sessionB = sessions[1]!;
-  const sessionC = sessions[2]!;
+live("projecting a layout that drops the pane ends copy mode before it is destroyed", () =>
+  Effect.gen(function* () {
+    const { spaces, panes, backend } = yield* makeWindow(3);
+    const paneA = panes[0]!;
 
-  const mode = new CopyMode();
-  wireCopyModeTeardown(spaces, mode);
-  mode.enter(paneA);
-  expect(mode.active).toBe(true);
+    const mode = new CopyMode();
+    wireCopyModeTeardown(spaces, mode);
+    mode.enter(paneA);
+    expect(mode.active).toBe(true);
 
-  const invalidateAfterDestroy = trackInvalidateAfterDestroy(paneA);
+    const invalidateAfterDestroy = trackInvalidateAfterDestroy(paneA);
 
-  // A layout with no slot for agent A: applying it destroys pane A as a
-  // leftover, then the onChange guard ends copy mode.
-  win.applyLayout(
-    makeLayout({
-      root: {
-        type: "split",
-        direction: "column",
-        weight: 1,
-        children: [
-          {
-            type: "pane",
-            id: panes[1]!.id,
-            content: { kind: "pty", session: sessionB.id },
+    // The next model revision has no slot for pane A: reconciling it drops the
+    // pane as a leftover, then the onChange guard ends copy mode.
+    yield* projectWorkspace(
+      spaces,
+      snapshotOf(
+        makeLayout({
+          root: {
+            type: "split",
+            direction: "column",
             weight: 1,
+            children: [
+              { type: "pane", id: "pane-1", content: { kind: "pty", session: "s-1" }, weight: 1 },
+              { type: "pane", id: "pane-2", content: { kind: "pty", session: "s-2" }, weight: 1 },
+            ],
           },
-          {
-            type: "pane",
-            id: panes[2]!.id,
-            content: { kind: "pty", session: sessionC.id },
-            weight: 1,
-          },
-        ],
-      },
-      focus: panes[1]!.id,
-    }),
-  );
+          focus: "pane-1",
+        }),
+        undefined,
+        80,
+        24,
+      ),
+      backend,
+    );
 
-  expect(paneA.isDestroyed).toBe(true);
-  expect(mode.active).toBe(false);
-  expect(invalidateAfterDestroy.get()).toBe(false);
-});
+    expect(paneA.isDestroyed).toBe(true);
+    expect(mode.active).toBe(false);
+    expect(invalidateAfterDestroy.get()).toBe(false);
+  }),
+);

@@ -1,13 +1,14 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
-import { afterEach, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
+import { Effect, Layer } from "effect";
 import { computeRects, moveFloat, paneInDirection, resizeDivider, resizePane } from "./geometry.ts";
-import { createHarness, run } from "./harness.ts";
+import { project, snapshotOf } from "./harness.ts";
+import { projectWorkspace } from "./space.ts";
+import type { Window } from "./window.ts";
 import { LAYOUT_VERSION, makeLayout, type Layout, type LayoutNode } from "./layout.ts";
+import { testEffect } from "./test-effect.ts";
 
-const cleanup: (() => Promise<void>)[] = [];
-afterEach(async () => {
-  for (const dispose of cleanup.splice(0)) await dispose();
-});
+const { live } = testEffect(Layer.empty);
 
 const pane = (id: string, weight = 1): LayoutNode => ({
   type: "pane",
@@ -59,170 +60,129 @@ test("borders stay inside pane rectangles and nested axes use their parent's exa
   });
 });
 
-test("pure rectangles are a fixed point of OpenTUI flex layout", async () => {
-  const harness = await createHarness({ width: 37, height: 17 });
-  cleanup.push(harness.dispose);
-  const { window } = harness;
-  const left = window.panes[0]!;
-  const top = run(window.splitSpawn("row"))!;
-  const bottom = run(window.splitSpawn("column"))!;
-
-  window.applyLayout(
-    makeLayout({
-      root: split("row", [
-        {
-          type: "pane",
-          id: left.id,
-          content: { kind: "pty", session: left.session!.id },
-          weight: 3,
-        },
-        split(
-          "column",
-          [
-            {
-              type: "pane",
-              id: top.id,
-              content: { kind: "pty", session: top.session!.id },
-              weight: 2,
-            },
-            {
-              type: "pane",
-              id: bottom.id,
-              content: { kind: "pty", session: bottom.session!.id },
-              weight: 1,
-            },
-          ],
-          5,
-        ),
-      ]),
-    }),
-  );
-  await harness.layout();
-
-  const expected = computeRects(window.exportLayout(), {
-    cols: window.root.width,
-    rows: window.root.height,
-  });
-  expect(window.panes).toHaveLength(3);
-  for (const pane of window.panes) {
+/** Project `layout`, run a frame, and assert every pane lands where the model's
+ *  own rect arithmetic says — the fixed-point every geometry test holds the
+ *  renderer to. */
+function assertFixedPoint(scene: { window: Window }, layout: Layout) {
+  const w = scene.window;
+  const expected = computeRects(layout, { cols: w.root.width, rows: w.root.height });
+  for (const pane of w.panes) {
     expect(expected.get(pane.id)).toEqual({
-      x: pane.x - window.root.x,
-      y: pane.y - window.root.y,
+      x: pane.x - w.root.x,
+      y: pane.y - w.root.y,
       width: pane.width,
       height: pane.height,
     });
   }
-});
+}
+
+live("pure rectangles are a fixed point of OpenTUI flex layout", () =>
+  Effect.gen(function* () {
+    const layout = makeLayout({
+      root: split("row", [
+        { type: "pane", id: "a", content: { kind: "pty", session: "sa" }, weight: 3 },
+        split(
+          "column",
+          [
+            { type: "pane", id: "b", content: { kind: "pty", session: "sb" }, weight: 2 },
+            { type: "pane", id: "c", content: { kind: "pty", session: "sc" }, weight: 1 },
+          ],
+          5,
+        ),
+      ]),
+    });
+    const scene = yield* project(layout, { width: 37, height: 17 });
+    yield* scene.renderOnce();
+    expect(scene.window.panes).toHaveLength(3);
+    assertFixedPoint(scene, layout);
+  }),
+);
 
 // The float's fractions and the percentages yoga is handed are the same
 // numbers, so this is the test that they round to the same cells. Everything
 // downstream of a rect — click routing, directional focus, the copy overlay —
 // reads computeRects rather than the renderable, so a disagreement here would
 // show up as a pane that is not where the model thinks it is.
-test("a rendered float is the exact rectangle computeRects gives it", async () => {
-  const harness = await createHarness({ width: 37, height: 17 });
-  cleanup.push(harness.dispose);
-  const { window } = harness;
-  const tiled = window.panes[0]!;
-  const floated = run(window.splitSpawn("row"))!;
-
-  window.applyLayout(
-    makeLayout({
-      root: {
-        type: "pane",
-        id: tiled.id,
-        content: { kind: "pty", session: tiled.session!.id },
-        weight: 1,
-      },
+live("a rendered float is the exact rectangle computeRects gives it", () =>
+  Effect.gen(function* () {
+    const layout = makeLayout({
+      root: { type: "pane", id: "tiled", content: { kind: "pty", session: "st" }, weight: 1 },
       floats: [
         {
-          id: floated.id,
-          content: { kind: "pty", session: floated.session!.id },
+          id: "floated",
+          content: { kind: "pty", session: "sf" },
           x: 0.25,
           y: 0.1,
           width: 0.5,
           height: 0.75,
         },
       ],
-      focus: floated.id,
-    }),
-  );
-  await harness.layout();
+      focus: "floated",
+    });
+    const scene = yield* project(layout, { width: 37, height: 17 });
+    yield* scene.renderOnce();
+    const w = scene.window;
+    const floated = w.panes.find((p) => p.id === "floated")!;
 
-  const expected = computeRects(window.exportLayout(), {
-    cols: window.root.width,
-    rows: window.root.height,
-  });
-  expect(expected.get(floated.id)).toEqual({
-    x: floated.x - window.root.x,
-    y: floated.y - window.root.y,
-    width: floated.width,
-    height: floated.height,
-  });
-  // The tiled pane still has the whole window: a float overlaps rather than
-  // taking space, which is the entire difference between the two planes.
-  expect(expected.get(tiled.id)).toEqual({
-    x: 0,
-    y: 0,
-    width: window.root.width,
-    height: window.root.height,
-  });
-  // Nothing draws a float's edges but the float, so it draws all four.
-  expect(floated.edges).toEqual({ top: true, right: true, bottom: true, left: true });
-});
+    const expected = computeRects(layout, { cols: w.root.width, rows: w.root.height });
+    expect(expected.get("floated")).toEqual({
+      x: floated.x - w.root.x,
+      y: floated.y - w.root.y,
+      width: floated.width,
+      height: floated.height,
+    });
+    // The tiled pane still has the whole window: a float overlaps rather than
+    // taking space, which is the entire difference between the two planes.
+    expect(expected.get("tiled")).toEqual({
+      x: 0,
+      y: 0,
+      width: w.root.width,
+      height: w.root.height,
+    });
+    // Nothing draws a float's edges but the float, so it draws all four.
+    expect(floated.edges).toEqual({ top: true, right: true, bottom: true, left: true });
+  }),
+);
 
 // Panes are reused across rebuilds, so the absolute placement a float is given
 // outlives the float unless the tiled path takes it back off. A pane still
 // carrying it would be lifted straight out of the split it was just put into.
-test("a pane that was floating is sized by the split again once tiled", async () => {
-  const harness = await createHarness({ width: 40, height: 12 });
-  cleanup.push(harness.dispose);
-  const { window } = harness;
-  const first = window.panes[0]!;
-  const second = run(window.splitSpawn("row"))!;
-  const both = window.exportLayout();
-
-  window.applyLayout(
-    makeLayout({
-      root: {
-        type: "pane",
-        id: first.id,
-        content: { kind: "pty", session: first.session!.id },
-        weight: 1,
-      },
+live("a pane that was floating is sized by the split again once tiled", () =>
+  Effect.gen(function* () {
+    const floated = makeLayout({
+      root: { type: "pane", id: "first", content: { kind: "pty", session: "s1" }, weight: 1 },
       floats: [
         {
-          id: second.id,
-          content: { kind: "pty", session: second.session!.id },
+          id: "second",
+          content: { kind: "pty", session: "s2" },
           x: 0.25,
           y: 0.25,
           width: 0.5,
           height: 0.5,
         },
       ],
-    }),
-  );
-  await harness.layout();
-  window.applyLayout(both);
-  await harness.layout();
-
-  const rects = computeRects(window.exportLayout(), {
-    cols: window.root.width,
-    rows: window.root.height,
-  });
-  expect(window.panes).toHaveLength(2);
-  for (const pane of window.panes) {
-    expect(rects.get(pane.id)).toEqual({
-      x: pane.x - window.root.x,
-      y: pane.y - window.root.y,
-      width: pane.width,
-      height: pane.height,
     });
-  }
-  // Side by side, sharing the window between them rather than one of them
-  // still hovering at a quarter of it.
-  expect(first.width + second.width).toBe(window.root.width - 1);
-});
+    const tiled = makeLayout({
+      root: split("row", [
+        { type: "pane", id: "first", content: { kind: "pty", session: "s1" }, weight: 1 },
+        { type: "pane", id: "second", content: { kind: "pty", session: "s2" }, weight: 1 },
+      ]),
+    });
+    const scene = yield* project(floated, { width: 40, height: 12 });
+    yield* scene.renderOnce();
+    // The next revision tiles the two panes beside each other. Same pane ids, so
+    // the same pane objects are re-slotted rather than rebuilt.
+    yield* projectWorkspace(scene.spaces, snapshotOf(tiled, undefined, 40, 12), scene.backend);
+    yield* scene.renderOnce();
+
+    const w = scene.window;
+    expect(w.panes).toHaveLength(2);
+    assertFixedPoint(scene, tiled);
+    // Side by side, sharing the window between them rather than one of them
+    // still hovering at a quarter of it.
+    expect(w.panes[0]!.width + w.panes[1]!.width).toBe(w.root.width - 1);
+  }),
+);
 
 // "The pane to the right" means the one across a shared edge. A float shares no
 // edge with what it covers, so there is no direction between the planes.
@@ -408,81 +368,74 @@ test("dock resize changes its fixed strip without touching the tiled tree", () =
   });
 });
 
-test("window projection keeps the geometry gap between same-side dock panes", async () => {
-  const harness = await createHarness({ width: 40, height: 20 });
-  cleanup.push(harness.dispose);
-  const { window } = harness;
-  const first = window.panes[0]!;
-  const second = run(window.splitSpawn("row"))!;
-  window.applyLayout(
-    makeLayout({
+live("window projection keeps the geometry gap between same-side dock panes", () =>
+  Effect.gen(function* () {
+    const layout = makeLayout({
       root: null,
       docks: {
         left: [
-          { id: first.id, content: { kind: "pty", session: first.session!.id } },
-          { id: second.id, content: { kind: "pty", session: second.session!.id } },
+          { id: "first", content: { kind: "pty", session: "s1" } },
+          { id: "second", content: { kind: "pty", session: "s2" } },
         ],
         right: [],
         top: [],
         bottom: [],
       },
-    }),
-  );
-  await harness.layout();
-  expect(second.y - first.y).toBeGreaterThan(first.height);
-  expect(second.y).toBe(first.y + first.height + 1);
-});
+    });
+    const scene = yield* project(layout, { width: 40, height: 20 });
+    yield* scene.renderOnce();
+    const first = scene.window.panes.find((p) => p.id === "first")!;
+    const second = scene.window.panes.find((p) => p.id === "second")!;
+    expect(second.y - first.y).toBeGreaterThan(first.height);
+    expect(second.y).toBe(first.y + first.height + 1);
+  }),
+);
 
-test("window projection clamps a dock to half a narrow viewport", async () => {
-  const harness = await createHarness({ width: 40, height: 20 });
-  cleanup.push(harness.dispose);
-  const { window } = harness;
-  const pane = window.panes[0]!;
-  window.applyLayout(
-    makeLayout({
+live("window projection clamps a dock to half a narrow viewport", () =>
+  Effect.gen(function* () {
+    const layout = makeLayout({
       root: null,
       docks: {
-        left: [{ id: pane.id, content: { kind: "pty", session: pane.session!.id } }],
+        left: [{ id: "dock", content: { kind: "pty", session: "s1" } }],
         right: [],
         top: [],
         bottom: [],
       },
-    }),
-  );
-  await harness.layout();
+    });
+    const scene = yield* project(layout, { width: 40, height: 20 });
+    yield* scene.renderOnce();
+    const pane = scene.window.panes.find((p) => p.id === "dock")!;
 
-  expect(computeRects(window.exportLayout(), { cols: 40, rows: 20 }).get(pane.id)).toEqual({
-    x: 0,
-    y: 0,
-    width: pane.width,
-    height: pane.height,
-  });
-});
+    expect(computeRects(layout, { cols: 40, rows: 20 }).get("dock")).toEqual({
+      x: 0,
+      y: 0,
+      width: pane.width,
+      height: pane.height,
+    });
+  }),
+);
 
-test("window projection places a top dock between side docks", async () => {
-  const harness = await createHarness({ width: 100, height: 50 });
-  cleanup.push(harness.dispose);
-  const { window } = harness;
-  const left = window.panes[0]!;
-  const top = run(window.splitSpawn("row"))!;
-  window.applyLayout(
-    makeLayout({
+live("window projection places a top dock between side docks", () =>
+  Effect.gen(function* () {
+    const layout = makeLayout({
       root: null,
       docks: {
-        left: [{ id: left.id, content: { kind: "pty", session: left.session!.id } }],
+        left: [{ id: "left", content: { kind: "pty", session: "sl" } }],
         right: [],
-        top: [{ id: top.id, content: { kind: "pty", session: top.session!.id } }],
+        top: [{ id: "top", content: { kind: "pty", session: "st" } }],
         bottom: [],
       },
-    }),
-  );
-  await harness.layout();
+    });
+    const scene = yield* project(layout, { width: 100, height: 50 });
+    yield* scene.renderOnce();
+    const top = scene.window.panes.find((p) => p.id === "top")!;
 
-  const expected = computeRects(window.exportLayout(), { cols: 100, rows: 50 });
-  expect(expected.get(top.id)).toEqual({
-    x: top.x,
-    y: top.y,
-    width: top.width,
-    height: top.height,
-  });
-});
+    const expected = computeRects(layout, { cols: 100, rows: 50 });
+    expect(expected.get("top")).toEqual({
+      x: top.x,
+      y: top.y,
+      width: top.width,
+      height: top.height,
+    });
+  }),
+);

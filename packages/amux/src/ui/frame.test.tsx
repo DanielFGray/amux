@@ -1,14 +1,16 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: this suite drives the SolidJS/opentui render tree; see the seam documented in packages/amux/src/harness.ts. */
 /** @jsxImportSource @opentui/solid */
-import { scopedSpaceSet } from "../harness.ts";
-import { Effect } from "effect";
+import { Effect, Exit, Scope } from "effect";
+import { Context } from "effect";
 import { test, expect, afterEach } from "bun:test";
 import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { createSignal } from "solid-js";
-import type { Space } from "../space.ts";
-import { frame } from "../window.ts";
+import { SpaceSet, projectWorkspace } from "../space.ts";
+import { workspaceEnv, Backend } from "../env.ts";
+import { snapshotOf } from "../harness.ts";
+import { makeLayout, type Layout } from "../layout.ts";
 import { resolveOptions, type Options, type OptionValue } from "../options.ts";
 import { formatText } from "../format.ts";
 import { createAppState } from "./state.ts";
@@ -20,7 +22,6 @@ import { createPluginContributions } from "../plugin/contributions.ts";
 import { Settings } from "./Settings.tsx";
 import { Hints } from "./Hints.tsx";
 import type { HintGroup } from "../bindings.ts";
-import { workspaceEnv } from "../env.ts";
 
 const WIDTH = 60;
 const HEIGHT = 14;
@@ -40,13 +41,61 @@ const sidebar = (open: boolean) =>
 const cleanup: (() => void)[] = [];
 afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
-  frame.externalLeft = false;
 });
+
+const pty = (id: string, session: string) =>
+  ({ type: "pane" as const, id, content: { kind: "pty" as const, session }, weight: 1 });
+
+/** A shell session whose tab shows "bash", the same as `init()` seeded. */
+const bash = { cmd: ["bash"] };
+
+/** One session filling one window. */
+const single = (): Layout => makeLayout({ root: pty("p1", "s1"), focus: "p1" });
+
+/** A horizontal split. */
+const verticalSplit = (): Layout =>
+  makeLayout({
+    root: {
+      type: "split",
+      direction: "column",
+      weight: 1,
+      children: [pty("p1", "s1"), pty("p2", "s2")],
+    },
+    focus: "p2",
+  });
+
+/** Both halves of a row split broken vertically, at the same height — the 2x2
+ *  grid `cross()` used to build, so the two horizontal seams land on one row
+ *  and both meet the vertical seam. */
+const cross = (): Layout =>
+  makeLayout({
+    root: {
+      type: "split",
+      direction: "row",
+      weight: 1,
+      children: [
+        { type: "split", direction: "column", weight: 1, children: [pty("p1", "s1"), pty("p2", "s2")] },
+        { type: "split", direction: "column", weight: 1, children: [pty("p3", "s3"), pty("p4", "s4")] },
+      ],
+    },
+    focus: "p4",
+  });
+
+const sessionsFor = (layout: Layout) => {
+  const ids = new Set<string>();
+  const walk = (node: NonNullable<Layout["root"]>): void => {
+    if (node.type === "pane") {
+      if (node.content.kind === "pty") ids.add(node.content.session);
+    } else for (const child of node.children) walk(child);
+  };
+  if (layout.root) walk(layout.root);
+  return Object.fromEntries([...ids].map((id) => [id, bash]));
+};
 
 /** Mount the real App around a real split tree and return the drawn frame. */
 async function screen(
   open: boolean,
-  build: (win: Space) => void,
+  layoutFn: () => Layout,
   extra: Partial<{
     hints: HintGroup[];
     hintsVisible: boolean;
@@ -59,17 +108,27 @@ async function screen(
 ) {
   const t = await createTestRenderer({ width: WIDTH, height: HEIGHT });
   const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
-  const { spaces } = scopedSpaceSet(workspaceEnv(t.renderer), paneHost);
+  t.renderer.root.add(paneHost);
+  const env = workspaceEnv(t.renderer);
+  const scope = Scope.makeUnsafe();
+  const spaces = Effect.runSync(Scope.provide(SpaceSet.make(env, paneHost), scope));
+  Effect.runSync(
+    Scope.provide(
+      projectWorkspace(
+        spaces,
+        snapshotOf(layoutFn(), sessionsFor(layoutFn())),
+        Context.get(env, Backend),
+      ),
+      scope,
+    ),
+  );
   const app = createAppState(spaces);
   cleanup.push(() => {
+    void Effect.runPromise(Scope.close(scope, Exit.void));
     t.renderer.destroy();
   });
 
-  frame.externalLeft = false;
   const [options, setOptions] = createSignal(sidebar(open));
-  const space = Effect.runSync(spaces.create("proj", process.cwd()));
-  build(space);
-  spaces.refreshChrome();
 
   // The same panels the app registers, minus the ones no check here draws.
   const { slots, owner } = testSlots(t.renderer);
@@ -168,9 +227,7 @@ async function screen(
 }
 
 test("the sidebar seam is a single line that is also the pane frame's left border", async () => {
-  const rows = await screen(true, (space) => {
-    Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
-  });
+  const rows = await screen(true, single);
 
   // Row 0 is the window tab bar; the frame starts under it.
   const top = rows[1]!;
@@ -186,49 +243,27 @@ test("the sidebar seam is a single line that is also the pane frame's left borde
 });
 
 test("window tabs render the configured format", async () => {
-  const rows = await screen(
-    false,
-    (space) => {
-      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
-    },
-    { format: "tab-#{window_number}-#{window_name}", spaceIndex: 0 },
-  );
+  const rows = await screen(false, single, { format: "tab-#{window_number}-#{window_name}", spaceIndex: 0 });
 
   expect(rows[0]).toContain("tab-1-bash");
   expect(rows[0]).not.toContain("○");
 });
 
 test("window tabs render the state glyph and space index when requested", async () => {
-  const rows = await screen(
-    false,
-    (space) => {
-      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
-    },
-    { format: "#{agent_state_glyph} space-#{space_index}", spaceIndex: 0 },
-  );
+  const rows = await screen(false, single, { format: "#{agent_state_glyph} space-#{space_index}", spaceIndex: 0 });
 
   expect(rows[0]).toContain("· space-0");
 });
 
 test("window tabs render the configured status format", async () => {
   const statusFormat = resolveOptions({ "status.format": "status-#{space_name}" })["status.format"];
-  const rows = await screen(
-    false,
-    (space) => {
-      Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
-    },
-    { status: formatText(statusFormat, { space_name: "proj" }) },
-  );
+  const rows = await screen(false, single, { status: formatText(statusFormat, { space_name: "proj" }) });
 
   expect(rows[0]).toContain("status-proj");
 });
 
 test("a horizontal split tees into the sidebar seam instead of stopping short", async () => {
-  const rows = await screen(true, (space) => {
-    const win = Effect.runSync(space.newWindow());
-    Effect.runSync(win.init());
-    Effect.runSync(win.splitSpawn("column"));
-  });
+  const rows = await screen(true, verticalSplit);
 
   const seam = rows.map((row) => row[SIDEBAR]);
   expect(seam).toContain("├");
@@ -238,39 +273,19 @@ test("a horizontal split tees into the sidebar seam instead of stopping short", 
 });
 
 test("closing the sidebar hands the left border back to the panes", async () => {
-  const rows = await screen(false, (space) => {
-    Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init()));
-  });
+  const rows = await screen(false, single);
 
   expect(rows[1]![0]).toBe("┌");
   expect(rows[HEIGHT - 1]![0]).toBe("└");
 });
 
 test("re-enabling the sidebar keeps the pane frame behind its handle", async () => {
-  const rows = await screen(
-    true,
-    (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())),
-    { reopen: true },
-  );
+  const rows = await screen(true, single, { reopen: true });
 
   expect(rows[1]![SIDEBAR]).toBe("┌");
   expect(rows[Math.floor(HEIGHT / 2)]![SIDEBAR]).toBe("│");
   expect(rows[HEIGHT - 1]![SIDEBAR]).toBe("└");
 });
-
-/** Split both halves of a row split vertically at the same height, so the two
- *  horizontal seams land on the same row and both meet the vertical seam. */
-function cross(space: Space) {
-  const win = Effect.runSync(space.newWindow());
-  Effect.runSync(win.init());
-  Effect.runSync(win.splitSpawn("row"));
-  const left = win.panes[0]!;
-  const right = win.panes[1]!;
-  win.focus(left);
-  Effect.runSync(win.splitSpawn("column"));
-  win.focus(right);
-  Effect.runSync(win.splitSpawn("column"));
-}
 
 test("a seam crossing the pane frame's seam draws a ┼, not the last tee", async () => {
   const rows = await screen(false, cross);
@@ -302,11 +317,7 @@ test("the ┼ also lands on the sidebar seam when the sidebar is open", async ()
 const HINTS: HintGroup[] = [{ group: "panes", entries: [{ keys: ["z"], desc: "zoom" }] }];
 
 test("the hint panel starts at the pane area, not over the sidebar tree", async () => {
-  const rows = await screen(
-    true,
-    (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())),
-    { hints: HINTS },
-  );
+  const rows = await screen(true, single, { hints: HINTS });
 
   // The panel's own top border replaces the frame's, one row below the tabs.
   expect(rows[1]!.slice(0, SIDEBAR)).not.toContain("┌");
@@ -317,25 +328,14 @@ test("the hint panel starts at the pane area, not over the sidebar tree", async 
 });
 
 test("the hint panel stays out of the way of an open overlay", async () => {
-  const rows = await screen(
-    true,
-    (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())),
-    {
-      hints: HINTS,
-      overlay: true,
-    },
-  );
+  const rows = await screen(true, single, { hints: HINTS, overlay: true });
 
   expect(rows.join("\n")).not.toContain("z zoom");
   expect(rows.join("\n")).toContain("settings");
 });
 
 test("the hint panel can be hidden while the prefix remains active", async () => {
-  const rows = await screen(
-    true,
-    (space) => Effect.runSync(Effect.flatMap(space.newWindow(), (w) => w.init())),
-    { hints: HINTS, hintsVisible: false },
-  );
+  const rows = await screen(true, single, { hints: HINTS, hintsVisible: false });
 
   expect(rows.join("\n")).not.toContain("z zoom");
 });

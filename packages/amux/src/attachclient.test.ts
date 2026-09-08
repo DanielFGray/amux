@@ -26,7 +26,7 @@ import { BunFileSystem } from "@effect/platform-bun";
 import { which } from "bun";
 import { SessionHandle, type SessionHandleOptions } from "./session-handle.ts";
 type SessionOptions = SessionHandleOptions;
-import { snapshotSessionEntry } from "./snapshot.ts";
+import type { PersistedSession } from "./session.ts";
 import { AttachClient } from "./attach.ts";
 import { SessionClient, type SessionClientContract } from "./client.ts";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
@@ -47,6 +47,27 @@ import { testEffect } from "./test-effect.ts";
 import { until } from "./test-wait.ts";
 
 registerCleanup();
+
+/** A live `SessionHandle` as the persisted entry an attach frame carries. The
+ *  client no longer serializes workspaces itself — the daemon owns that — but
+ *  the exited flag must survive the round trip, so an attached agent that is
+ *  still running never reads back as a tombstone. */
+function snapshotSessionEntry(session: SessionHandle): PersistedSession {
+  const entry: PersistedSession = {
+    id: session.id,
+    name: session.name,
+    cols: session.term.cols,
+    rows: session.term.rows,
+    exited: session.exited,
+    exitCode: session.exitCode,
+  };
+  if (session.kind === "component") Object.assign(entry, { kind: "component" as const });
+  if (session.declaredAgent) Object.assign(entry, { declaredAgent: session.declaredAgent });
+  if (session.cmd.length > 0) Object.assign(entry, { cmd: [...session.cmd] });
+  if (session.provider) Object.assign(entry, { provider: session.provider });
+  if (session.cwd) Object.assign(entry, { cwd: session.cwd });
+  return entry;
+}
 
 const join = (...paths: string[]) =>
   Effect.runSync(

@@ -3,7 +3,6 @@ import { Context, Effect, Exit, Scope } from "effect";
 import { Window } from "./window.ts";
 import type { SessionHandle, SessionHandleOptions } from "./session-handle.ts";
 import { ProcessState } from "./process-state.ts";
-import type { Pane } from "./pane.ts";
 import { RenderCtx, type WorkspaceEnv } from "./env.ts";
 import {
   activateSpaceState,
@@ -53,8 +52,8 @@ export class Space {
   #env: Context.Context<WorkspaceEnv>;
   #windows: Window[] = [];
   /** One scope per window, for the same reason Window keeps one per session:
-   *  closeWindow must end exactly one window, and a window will eventually be
-   *  movable between spaces (ts-e10c3a), which a forked child scope forbids. */
+   *  closeWindow must end exactly one window, and a window can be moved between
+   *  spaces (ts-e10c3a), which a forked child scope forbids. */
   #scopes = new Map<Window, Scope.Closeable>();
   #state: SpaceState = spaceState();
 
@@ -101,8 +100,8 @@ export class Space {
   /**
    * The space's state icon is the most urgent state among its sessions: a session
    * waiting on you matters more than one that is merely busy, which matters
-   * more than an idle prompt. "done" is last, so a space with one live idle session and one
-   * finished session reads as idle, not finished.
+   * more than an idle prompt. "done" is last, so a space with one finished
+   * session and one idle one reads idle, not finished.
    */
   get state(): ProcessState {
     return rollUp(this.sessions);
@@ -121,7 +120,7 @@ export class Space {
       let claimed: number;
       [this.#state, claimed] = claimWindowNumber(this.#state, number);
       const scope = yield* Scope.make();
-      const window = yield* Window.make(this.#env, this.dir, claimed).pipe(Scope.provide(scope));
+      const window = yield* Window.make(this.#env, claimed).pipe(Scope.provide(scope));
       this.#scopes.set(window, scope);
       if (name) window.customName = name;
       window.onChange = () => this.onChange?.();
@@ -147,106 +146,7 @@ export class Space {
     this.onChange?.();
   }
 
-  /**
-   * Select the previously active window — tmux's last-window.
-   *
-   * Repeated presses toggle between the two most recent windows, the way
-   * last-pane toggles between panes. A window closed since it was last is
-   * skipped rather than selected: closeWindow() clears it, and this check
-   * keeps the promise even if something else left a stale reference behind.
-   */
-  selectLastWindow() {
-    const last = this.#windows.find((window) => window.number === this.#state.lastWindow);
-    if (!last) return;
-    this.selectWindow(last);
-  }
-
-  /** Select by 1-based number, the way `^a 1..9` does. */
-  selectNumber(number: number): boolean {
-    const window = this.#windows.find((w) => w.number === number);
-    if (!window) return false;
-    this.selectWindow(window);
-    return true;
-  }
-
-  cycleWindow(step = 1) {
-    if (this.#windows.length < 2) return;
-    const active = this.active;
-    const i = active ? this.#windows.indexOf(active) : -1;
-    this.selectWindow(this.#windows[(i + step + this.#windows.length) % this.#windows.length]!);
-  }
-
-  /**
-   * Break a pane out of its window into a new one — tmux's break-pane.
-   *
-   * The pane and its session are MOVED, not restarted: the process keeps its
-   * PTY, its terminal, its scrollback and its title. Only ownership changes,
-   * which is why the session's lifecycle hooks are re-pointed at the destination
-   * window — an exit must close the pane in the window it now lives in and
-   * fire that window's onSessionExit, or the app-level cascade would act on
-   * stale ownership.
-   *
-   * The source window collapses to its remaining panes (the same tree surgery
-   * close() does, minus the destruction). A window left with no panes is
-   * closed, the way tmux closes a window it just emptied — unless it still
-   * holds running sessions, which are never discarded silently (the rule
-   * afterAgentExit uses).
-   *
-   * The destination window takes the next number and becomes active, which is
-   * tmux's session_select after a break. Returns the new window, or null when
-   * the pane is not in this space.
-   */
-  breakPane(pane: Pane): Effect.Effect<Window | null> {
-    return Effect.gen({ self: this }, function* () {
-      const source = this.#windows.find((w) => w.panes.includes(pane));
-      if (!source) return null;
-      // Ownership is checked BEFORE anything is mutated. The session's scope has
-      // to travel with it — the source window may be closed below, and closing
-      // it must not end a process that now lives elsewhere — so a break that
-      // could not hand the scope over has to be refused while it is still a
-      // no-op, rather than half-done with a detached pane nothing will release.
-      const handoff = source.releasePane(pane);
-      if (!handoff) return null;
-
-      const window = yield* this.newWindow();
-      window.adopt(handoff.session, pane, handoff.scope);
-
-      if (
-        source.panes.length === 0 &&
-        !source.sessions.some((a) => a.state !== ProcessState.Done)
-      ) {
-        yield* this.closeWindow(source);
-      }
-      return window;
-    });
-  }
-
-  /** Move a pane into the active window, preserving its session and lifetime. */
-  joinPane(pane: Pane, sourceNumber?: number): Effect.Effect<Window | null> {
-    return Effect.gen({ self: this }, function* () {
-      const destination = this.active;
-      const source = this.#windows.find(
-        (window) =>
-          window !== destination &&
-          (sourceNumber === undefined || window.number === sourceNumber) &&
-          window.panes.includes(pane),
-      );
-      if (!destination || !source) return null;
-      const handoff = source.releasePane(pane);
-      if (!handoff) return null;
-      destination.adopt(handoff.session, pane, handoff.scope);
-      if (
-        source.panes.length === 0 &&
-        !source.sessions.some((session) => session.state !== ProcessState.Done)
-      ) {
-        yield* this.closeWindow(source);
-      }
-      this.selectWindow(destination);
-      return destination;
-    });
-  }
-
-  /** Redraw every window's borders after `frame.externalLeft` changed. */
+  /** Redraw every window's borders after the surrounding chrome changed. */
   refreshChrome() {
     for (const w of this.#windows) w.refreshChrome();
   }
@@ -316,31 +216,6 @@ export function rollUp(sessions: readonly SessionHandle[]): ProcessState {
     if (RANK[s] > RANK[best]) best = s;
   }
   return best;
-}
-
-/**
- * The next blocked session after `from` in a stable order, or the first one when
- * nothing is focused — scanning forward and wrapping around.
- *
- * Starting *after* `from` is what makes repeated presses walk the set: the
- * session you are looking at is already on screen, so it is not the one the next
- * press is looking for. The full wrap keeps a lone blocked session reachable,
- * where landing on it again is a no-op rather than a jump.
- *
- * Returns null when no session is blocked.
- */
-export function nextBlockedAfter(
-  order: readonly SessionHandle[],
-  from: SessionHandle | null,
-): SessionHandle | null {
-  const n = order.length;
-  if (!n) return null;
-  const start = from ? order.indexOf(from) + 1 : 0;
-  for (let step = 0; step < n; step++) {
-    const session = order[(start + step) % n]!;
-    if (session.state === ProcessState.Blocked) return session;
-  }
-  return null;
 }
 
 /**
@@ -441,41 +316,8 @@ export class SpaceSet {
     for (const s of this.#spaces) s.refreshChrome();
   }
 
-  cycle(step = 1) {
-    if (this.#spaces.length < 2) return;
-    const active = this.active;
-    const i = active ? this.#spaces.indexOf(active) : -1;
-    this.activate(this.#spaces[(i + step + this.#spaces.length) % this.#spaces.length]!);
-  }
-
   find(session: SessionHandle): Space | null {
     return this.#spaces.find((s) => s.sessions.includes(session)) ?? null;
-  }
-
-  /**
-   * Jump to the next blocked session and bring it on screen — the herding loop.
-   *
-   * The session worth your attention is the one waiting on a human, so a single
-   * press walks the blocked set across every space instead of tabbing through
-   * panes. Order is stable: spaces in creation order, then windows, then spawn
-   * order within a window, so repeated presses advance rather than bouncing
-   * between two. Navigation is the same as clicking the sidebar row — the
-   * session's space is activated, its window selected, and it is revealed (or
-   * focused) even when no pane shows it. Returns the session, or null when
-   * nothing is blocked.
-   */
-  nextBlocked(
-    from: SessionHandle | null = this.activeWindow?.focused?.session ?? null,
-  ): SessionHandle | null {
-    const target = nextBlockedAfter(this.allSessions, from);
-    if (!target) return null;
-    const space = this.find(target);
-    const window = space?.windows.find((w) => w.sessions.includes(target));
-    if (!space || !window) return null;
-    this.activate(space);
-    space.selectWindow(window);
-    window.reveal(target);
-    return target;
   }
 
   remove(space: Space): Effect.Effect<void> {
