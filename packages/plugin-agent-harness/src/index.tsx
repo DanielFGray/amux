@@ -9,6 +9,7 @@ import { Default as ModelCatalogDefault } from "./model-catalog.ts";
 import { definePlugin, type PluginDefinition } from "@danielfgray/amux";
 import {
   BindingsTag,
+  ContextsTag,
   OptionsTag,
   PanelTag,
   SlotsTag,
@@ -44,6 +45,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
   id: AGENT_HARNESS_PLUGIN_ID,
   inject: [
     BindingsTag,
+    ContextsTag,
     OptionsTag,
     PanelTag,
     SlotsTag,

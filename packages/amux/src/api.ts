@@ -119,6 +119,12 @@ export {
   type FloatSlotProps,
 } from "./ui/slots.ts";
 
+// A key context: what a plugin registers through `ContextsTag` so its own
+// modal (an overlay, a pane's own mode) claims keys the same way core's does
+// — `CONTEXT_PRIORITY` names the bands core claims, so a plugin picks a
+// number between two of them rather than guessing at one.
+export { CONTEXT_PRIORITY, type ContextSpec, type ContextPriorityConflict } from "./key-context.ts";
+
 // What a panel is handed at render time.
 export { type PanelContext, type SidebarDisplay, type SidebarDisplayRow } from "./ui/panel.ts";
 

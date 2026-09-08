@@ -12,7 +12,7 @@
  * this shape as-is.
  */
 import { Show, createComponent, type JSX } from "solid-js";
-import type { BoxRenderable, CliRenderer, KeyEvent } from "@opentui/core";
+import type { BoxRenderable, CliRenderer } from "@opentui/core";
 import { createSlot, createSolidSlotRegistry, type SolidPlugin } from "@opentui/solid";
 import { Effect, Schema as S } from "effect";
 import { Divider } from "../divider.ts";
@@ -77,9 +77,11 @@ export interface DockOccupant extends ChromeOccupantBase {
   component: (props: DockSlotProps) => JSX.Element;
 }
 
-/** Registers into the "overlay" slot (kind: "list"; stacking order = priority). */
+/** Registers into the "overlay" slot (kind: "list"; stacking order = priority).
+ *  Key handling used to live here (`keys?`) but moved to a `ContextSpec`
+ *  (key-context.ts) registered beside the occupant, so a plugin's overlay
+ *  claims keys the same way any other context does — see ts-480690. */
 export interface OverlayOccupant extends ChromeOccupantBase {
-  keys?: (event: KeyEvent) => boolean;
   component: (props: OverlaySlotProps) => JSX.Element;
 }
 

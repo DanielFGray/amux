@@ -117,7 +117,12 @@ import {
   type SettingsService,
   type SpawnProvidersService,
 } from "./plugin/services.ts";
-import { findContextPriorityConflicts, type ContextSpec } from "./key-context.ts";
+import {
+  activeHandler,
+  CONTEXT_PRIORITY,
+  findContextPriorityConflicts,
+  type ContextSpec,
+} from "./key-context.ts";
 import { makeSessionFacts } from "./session-facts.ts";
 import { createReloader } from "./plugin/reloader.ts";
 import type { PluginReloader } from "./plugin/reloader.ts";
@@ -1950,12 +1955,11 @@ function buildApp(
    * note on preventDefault in bindings.ts.
    */
   function onUnhandled(event: KeyEvent): boolean {
-    // Whatever modal is on top owns the keys the keymap did not claim. Each
-    // overlay panel carries its own key handling, so there is no chain here and
-    // no priority order written twice: the panel drawn last is the panel asked
-    // first, both from its `order`.
-    const modal = slots.topOverlay();
-    if (modal) return modal.keys?.(event) ?? true;
+    // Whatever overlay is on top owns the keys the keymap did not claim — its
+    // context outranks every other context's priority band (CONTEXT_PRIORITY,
+    // key-context.ts), so it always wins `activeHandler` over anything below.
+    const overlay = activeHandler(contextsProvider.value.all());
+    if (overlay) return overlay.handle!(event);
     // Copy mode owns the focused pane's unhandled keys. Bound keys never reach
     // here, so the leader and every ^a sequence keep their normal meaning — and
     // a pane that is not in copy mode still gets its child's keystrokes, which
@@ -2293,9 +2297,9 @@ function buildApp(
   const bindings = bindingsProvider.value;
 
   // The contexts table: a plugin and core register into it exactly like
-  // bindings above. Nothing resolves a keypress against it yet — onUnhandled
-  // still hand-rolls the overlay/copy-mode/pane precedence it always has —
-  // that migration is a later ticket in ep-227150.
+  // bindings above. onUnhandled resolves the overlay tier against it
+  // (`activeHandler`, key-context.ts); copy mode and the pane fallback are
+  // still hand-rolled — that migration is ts-fd2a33.
   const contextTable = contributions.table<ContextSpec>();
   const registerContext = (owner: PluginInstance, context: ContextSpec) =>
     contextTable.add(owner, context.id, context);
@@ -2514,7 +2518,6 @@ function buildApp(
     id: "amux.settings",
     title: "settings",
     visible: () => overlay() === "settings",
-    keys: (event) => settingsKey(event),
     component: (props) => (
       <Settings
         options={allOptions()}
@@ -2565,7 +2568,6 @@ function buildApp(
     id: "amux.keybind-picker",
     title: "keybind picker",
     visible: () => keybindPicker() !== null,
-    keys: keybindPickerKey,
     component: (props) => (
       <Show when={keybindPicker()}>
         {() => (
@@ -2595,19 +2597,20 @@ function buildApp(
     ),
   });
 
+  function paletteOverlayKeys(event: KeyEvent): boolean {
+    if (event.name === "escape") {
+      setOverlay("none");
+      return true;
+    }
+    return paletteKey(event);
+  }
+
   const palettePanel = (): OverlayOccupant => ({
     id: "amux.palette",
     // Same rung as settings: one signal holds both, so they cannot be up at
     // the same time.
     title: "commands",
     visible: () => overlay() === "palette",
-    keys: (event) => {
-      if (event.name === "escape") {
-        setOverlay("none");
-        return true;
-      }
-      return paletteKey(event);
-    },
     component: (props) => (
       <CommandPalette
         entries={filteredPalette()}
@@ -2623,50 +2626,51 @@ function buildApp(
     ),
   });
 
+  // ↑↓ picks, enter pastes the selection into the focused pane, d deletes
+  // it, escape closes. With no buffers there is nothing to pick, so only
+  // escape does anything.
+  function buffersOverlayKeys(event: KeyEvent): boolean {
+    const view = chooseView();
+    if (!view) return true;
+    const count = view.buffers.length;
+    if (event.name === "j" || event.name === "down") {
+      setChooseView((v) =>
+        v
+          ? {
+              ...v,
+              selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 1),
+            }
+          : v,
+      );
+    } else if (event.name === "k" || event.name === "up") {
+      setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v));
+    } else if (event.name === "pagedown") {
+      setChooseView((v) =>
+        v
+          ? {
+              ...v,
+              selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 10),
+            }
+          : v,
+      );
+    } else if (event.name === "pageup") {
+      setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v));
+    } else if (event.name === "return" || event.name === "enter") {
+      const name = view.buffers[view.selected]?.name;
+      if (name) view.onPaste(name);
+    } else if (event.name === "d") {
+      const name = view.buffers[view.selected]?.name;
+      if (name) view.onDelete(name);
+    } else if (event.name === "escape") {
+      view.onClose();
+    }
+    return true;
+  }
+
   const buffersPanel = (): OverlayOccupant => ({
     id: "amux.buffers",
     title: "buffers",
     visible: () => chooseView() !== null,
-    // ↑↓ picks, enter pastes the selection into the focused pane, d deletes
-    // it, escape closes. With no buffers there is nothing to pick, so only
-    // escape does anything.
-    keys: (event) => {
-      const view = chooseView();
-      if (!view) return true;
-      const count = view.buffers.length;
-      if (event.name === "j" || event.name === "down") {
-        setChooseView((v) =>
-          v
-            ? {
-                ...v,
-                selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 1),
-              }
-            : v,
-        );
-      } else if (event.name === "k" || event.name === "up") {
-        setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 1) } : v));
-      } else if (event.name === "pagedown") {
-        setChooseView((v) =>
-          v
-            ? {
-                ...v,
-                selected: count === 0 ? 0 : Math.min(count - 1, v.selected + 10),
-              }
-            : v,
-        );
-      } else if (event.name === "pageup") {
-        setChooseView((v) => (v ? { ...v, selected: Math.max(0, v.selected - 10) } : v));
-      } else if (event.name === "return" || event.name === "enter") {
-        const name = view.buffers[view.selected]?.name;
-        if (name) view.onPaste(name);
-      } else if (event.name === "d") {
-        const name = view.buffers[view.selected]?.name;
-        if (name) view.onDelete(name);
-      } else if (event.name === "escape") {
-        view.onClose();
-      }
-      return true;
-    },
     component: (props) => (
       <Show when={chooseView()} keyed>
         {(view: BufferChooseView) => (
@@ -2676,26 +2680,47 @@ function buildApp(
     ),
   });
 
+  // s writes the file, f re-captures the other span, escape backs out
+  // without saving. Everything else stays with the popup.
+  function captureOverlayKeys(event: KeyEvent): boolean {
+    const view = captureView();
+    if (!view) return true;
+    if (event.name === "s") view.onSave();
+    else if (event.name === "f") view.onToggleSpan();
+    else if (event.name === "escape") view.onClose();
+    return true;
+  }
+
   const capturePanel = (): OverlayOccupant => ({
     id: "amux.capture",
     title: "capture",
     visible: () => captureView() !== null,
-    // s writes the file, f re-captures the other span, escape backs out
-    // without saving. Everything else stays with the popup.
-    keys: (event) => {
-      const view = captureView();
-      if (!view) return true;
-      if (event.name === "s") view.onSave();
-      else if (event.name === "f") view.onToggleSpan();
-      else if (event.name === "escape") view.onClose();
-      return true;
-    },
     component: (props) => (
       <Show when={captureView()} keyed>
         {(view: CaptureView) => <Capture view={view} width={props.width} height={props.height} />}
       </Show>
     ),
   });
+
+  function promptOverlayKeys(event: KeyEvent): boolean {
+    const request = promptRequest();
+    if (!request) return true;
+    // A notice is a message, not a form: nothing is focused to hand the
+    // key to, so every key is consumed here and enter/escape dismiss it.
+    if (request.notice) {
+      if (event.name === "escape" || event.name === "return" || event.name === "enter") {
+        request.resolve(null);
+      }
+      return true;
+    }
+    // Escape cancels; everything else belongs to the focused input, so
+    // leave the event alone and let focus routing deliver it.
+    if (event.name === "escape") {
+      request.resolve(null);
+      return true;
+    }
+    return false;
+  }
 
   const promptPanel = (): OverlayOccupant => ({
     id: "amux.prompt",
@@ -2704,25 +2729,6 @@ function buildApp(
     // while it is up.
     title: "prompt",
     visible: () => promptRequest() !== null,
-    keys: (event) => {
-      const request = promptRequest();
-      if (!request) return true;
-      // A notice is a message, not a form: nothing is focused to hand the
-      // key to, so every key is consumed here and enter/escape dismiss it.
-      if (request.notice) {
-        if (event.name === "escape" || event.name === "return" || event.name === "enter") {
-          request.resolve(null);
-        }
-        return true;
-      }
-      // Escape cancels; everything else belongs to the focused input, so
-      // leave the event alone and let focus routing deliver it.
-      if (event.name === "escape") {
-        request.resolve(null);
-        return true;
-      }
-      return false;
-    },
     component: (props) => (
       <Show when={promptRequest()} keyed>
         {(request: PromptRequest) => (
@@ -2750,14 +2756,15 @@ function buildApp(
     ),
   });
 
+  function disconnectedOverlayKeys(event: KeyEvent): boolean {
+    if (event.name === "escape" || event.name === "q") shutdown();
+    return true;
+  }
+
   const disconnectedPanel = (): OverlayOccupant => ({
     id: "amux.disconnected",
     title: "disconnected",
     visible: () => daemonDisconnected(),
-    keys: (event) => {
-      if (event.name === "escape" || event.name === "q") shutdown();
-      return true;
-    },
     component: (props) => (
       <box
         style={{
@@ -2784,17 +2791,18 @@ function buildApp(
     ),
   });
 
+  // Only Escape dismisses: swallowing every key would eat the very next
+  // command a user types after seeing an error, not just the error itself.
+  function errorOverlayKeys(event: KeyEvent): boolean {
+    if (event.name !== "escape") return false;
+    setCommandError(null);
+    return true;
+  }
+
   const errorPanel = (): OverlayOccupant => ({
     id: "amux.error",
     title: "error",
     visible: () => commandError() !== null,
-    // Only Escape dismisses: swallowing every key would eat the very next
-    // command a user types after seeing an error, not just the error itself.
-    keys: (event) => {
-      if (event.name !== "escape") return false;
-      setCommandError(null);
-      return true;
-    },
     component: () => (
       <box
         style={{
@@ -2838,6 +2846,82 @@ function buildApp(
       { slot: "overlay", occupant: buffersPanel(), priority: 20 },
       { slot: "overlay", occupant: capturePanel(), priority: 30 },
       { slot: "overlay", occupant: disconnectedPanel(), priority: 50 },
+    ],
+  } as const;
+
+  // Each overlay's context, beside its occupant for the same reason: the
+  // slot's `priority` is drawing/stacking order (topOverlay, ui/slots.ts) and
+  // this is key-resolution order (activeHandler, key-context.ts) — the two
+  // happen to agree here (both trace back to "the panel drawn on top owns the
+  // keys"), so each context reuses its occupant's number, shifted into the
+  // OVERLAY band. `handle` is the panel's old `OverlayOccupant.keys`: none of
+  // these are expressible as discrete keymap bindings, since each reads
+  // dynamic UI state (a list selection, an edit focus) no static key sequence
+  // can capture — see ts-480690's log for why that stays a catch-all instead
+  // of forcing them into named commands. `rebindable: false` because there is
+  // nothing here a keybind editor could show or remap.
+  const contextGroups = {
+    "amux.settings": (): readonly ContextSpec[] => [
+      {
+        id: "amux.settings",
+        active: () => overlay() === "settings",
+        priority: CONTEXT_PRIORITY.OVERLAY + 10,
+        rebindable: false,
+        handle: settingsKey,
+      },
+      {
+        id: "amux.keybind-picker",
+        active: () => keybindPicker() !== null,
+        priority: CONTEXT_PRIORITY.OVERLAY + 15,
+        rebindable: false,
+        handle: keybindPickerKey,
+      },
+    ],
+    "amux.commands": (): readonly ContextSpec[] => [
+      {
+        id: "amux.palette",
+        active: () => overlay() === "palette",
+        priority: CONTEXT_PRIORITY.OVERLAY + 10,
+        rebindable: false,
+        handle: paletteOverlayKeys,
+      },
+      {
+        id: "amux.prompt",
+        active: () => promptRequest() !== null,
+        priority: CONTEXT_PRIORITY.OVERLAY + 40,
+        rebindable: false,
+        handle: promptOverlayKeys,
+      },
+      {
+        id: "amux.error",
+        active: () => commandError() !== null,
+        priority: CONTEXT_PRIORITY.OVERLAY + 55,
+        rebindable: false,
+        handle: errorOverlayKeys,
+      },
+    ],
+    "amux.sessions": (): readonly ContextSpec[] => [
+      {
+        id: "amux.buffers",
+        active: () => chooseView() !== null,
+        priority: CONTEXT_PRIORITY.OVERLAY + 20,
+        rebindable: false,
+        handle: buffersOverlayKeys,
+      },
+      {
+        id: "amux.capture",
+        active: () => captureView() !== null,
+        priority: CONTEXT_PRIORITY.OVERLAY + 30,
+        rebindable: false,
+        handle: captureOverlayKeys,
+      },
+      {
+        id: "amux.disconnected",
+        active: () => daemonDisconnected(),
+        priority: CONTEXT_PRIORITY.OVERLAY + 50,
+        rebindable: false,
+        handle: disconnectedOverlayKeys,
+      },
     ],
   } as const;
 
@@ -2983,34 +3067,44 @@ function buildApp(
     }),
     definePlugin({
       id: "amux.settings",
-      inject: [SlotsTag],
+      inject: [SlotsTag, ContextsTag],
       effect: () =>
-        SlotsTag.pipe(
-          Effect.flatMap((slots) =>
-            Effect.forEach(panelGroups["amux.settings"](), (entry) => slots.register(entry)),
-          ),
-        ),
+        Effect.gen(function* () {
+          const slots = yield* SlotsTag;
+          const contexts = yield* ContextsTag;
+          yield* Effect.forEach(panelGroups["amux.settings"](), (entry) => slots.register(entry));
+          yield* Effect.forEach(contextGroups["amux.settings"](), (context) =>
+            contexts.register(context),
+          );
+        }),
     }),
     definePlugin({
       id: "amux.commands",
-      inject: [SlotsTag, BindingsTag],
+      inject: [SlotsTag, BindingsTag, ContextsTag],
       effect: () =>
         Effect.gen(function* () {
           const slots = yield* SlotsTag;
           const bindings = yield* BindingsTag;
+          const contexts = yield* ContextsTag;
           yield* Effect.forEach(panelGroups["amux.commands"](), (entry) => slots.register(entry));
           yield* Effect.forEach(COMMANDS, (binding) => bindings.register(binding));
+          yield* Effect.forEach(contextGroups["amux.commands"](), (context) =>
+            contexts.register(context),
+          );
         }),
     }),
     definePlugin({
       id: "amux.sessions",
-      inject: [SlotsTag],
+      inject: [SlotsTag, ContextsTag],
       effect: () =>
-        SlotsTag.pipe(
-          Effect.flatMap((slots) =>
-            Effect.forEach(panelGroups["amux.sessions"](), (entry) => slots.register(entry)),
-          ),
-        ),
+        Effect.gen(function* () {
+          const slots = yield* SlotsTag;
+          const contexts = yield* ContextsTag;
+          yield* Effect.forEach(panelGroups["amux.sessions"](), (entry) => slots.register(entry));
+          yield* Effect.forEach(contextGroups["amux.sessions"](), (context) =>
+            contexts.register(context),
+          );
+        }),
     }),
   ] as const;
   const consumers = [

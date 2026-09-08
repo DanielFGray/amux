@@ -1,13 +1,16 @@
+import type { KeyEvent } from "@opentui/core";
+
 /**
  * A key context: something that can claim keys while a reactive predicate
  * holds. Peer to `CommandSpec` (bindings.ts) — both arrive through a
  * `contributions.table`, owner-scoped and retiring with the instance that
  * registered them (contributions.ts).
  *
- * This is the registry only. Nothing here resolves a keypress; onUnhandled
- * (app.tsx) and OverlayOccupant.keys (ui/slots.ts) keep working exactly as
- * they do today until a later ticket in ep-227150 migrates them onto this
- * model.
+ * This is the registry. `apply` (bindings.ts) resolves a context's
+ * `CommandSpec`s into a keymap layer; `activeHandler` below resolves its
+ * catch-all for what the keymap left unclaimed. `onUnhandled` (app.tsx) still
+ * hand-rolls copy mode's tier — that migration is a later ticket in
+ * ep-227150.
  */
 export interface ContextSpec {
   /** Dotted name, e.g. "copy-mode" or "app.prefix". Unique per owner, the
@@ -26,6 +29,33 @@ export interface ContextSpec {
    *  editor for remapping. False for a context whose keys are fixed by its
    *  owner rather than user configuration. */
   rebindable: boolean;
+  /**
+   * A catch-all for a context whose keys cannot be discrete named bindings —
+   * a modal panel deciding what "j" or a typed character means from its own
+   * live focus state, the way `OverlayOccupant.keys` (ui/slots.ts) used to
+   * before it moved here. Most contexts have none: their keys are `CommandSpec`s
+   * (`contextCommand`, bindings.ts) compiled into the context's own keymap
+   * layer, and the keymap has already tried those before a key ever reaches
+   * `activeHandler`.
+   */
+  handle?: (event: KeyEvent) => boolean;
+}
+
+/**
+ * The active context an unclaimed key belongs to: highest `priority` wins, a
+ * tie going to whichever registered later — the ordering `@opentui/keymap`
+ * layers use (bindings.ts's `apply`), kept consistent so one precedence rule
+ * governs both a context's bindings and its catch-all. Only a context
+ * declaring `handle` is a candidate; a context with only bindings has
+ * nothing left to claim once the keymap already tried them.
+ */
+export function activeHandler(contexts: readonly ContextSpec[]): ContextSpec | null {
+  let winner: ContextSpec | null = null;
+  for (const context of contexts) {
+    if (!context.handle || !context.active()) continue;
+    if (!winner || context.priority >= winner.priority) winner = context;
+  }
+  return winner;
 }
 
 /**

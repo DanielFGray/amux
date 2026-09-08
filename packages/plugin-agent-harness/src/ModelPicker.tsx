@@ -6,7 +6,15 @@ import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core";
 import { theme } from "@danielfgray/amux";
 import { Service as Integration } from "./integration.ts";
 import { Service as ModelCatalog, type Provider } from "./model-catalog.ts";
-import { CurrentPlugin, PanelTag, SlotsTag, type OverlayOccupant } from "@danielfgray/amux";
+import {
+  CONTEXT_PRIORITY,
+  ContextsTag,
+  CurrentPlugin,
+  PanelTag,
+  SlotsTag,
+  type ContextSpec,
+  type OverlayOccupant,
+} from "@danielfgray/amux";
 
 export interface ModelPickerEntry {
   readonly value: string;
@@ -34,7 +42,7 @@ export interface ModelPickerView {
 export const registerModelPicker: Effect.Effect<
   Effect.Effect<void, never, Integration | ModelCatalog>,
   never,
-  SlotsTag | PanelTag | CurrentPlugin | Scope.Scope
+  SlotsTag | ContextsTag | PanelTag | CurrentPlugin | Scope.Scope
 > = Effect.gen(function* () {
   const panel = yield* PanelTag;
   const [view, setView] = createSignal<ModelPickerView | null>(null);
@@ -48,32 +56,37 @@ export const registerModelPicker: Effect.Effect<
     panel.saveOptions();
   };
 
+  // Not a discrete binding: every key here reads the live selection, which
+  // no static keymap sequence can express. See amux's own overlays
+  // (app.tsx's `*OverlayKeys` functions) for the same shape.
+  function keys(event: KeyEvent): boolean {
+    if (!view()) return true;
+    switch (event.name) {
+      case "escape":
+        setView(null);
+        return true;
+      case "j":
+      case "down":
+        setView((v) => v && { ...v, selected: Math.min(v.entries.length - 1, v.selected + 1) });
+        return true;
+      case "k":
+      case "up":
+        setView((v) => v && { ...v, selected: Math.max(0, v.selected - 1) });
+        return true;
+      case "return":
+      case "enter":
+        choose();
+        return true;
+    }
+    return false;
+  }
+
   const slots = yield* SlotsTag;
+  const contexts = yield* ContextsTag;
   const occupant: OverlayOccupant = {
     id: "amux.agent-harness.model-picker",
     title: "model picker",
     visible: () => view() !== null,
-    keys: (event: KeyEvent) => {
-      if (!view()) return true;
-      switch (event.name) {
-        case "escape":
-          setView(null);
-          return true;
-        case "j":
-        case "down":
-          setView((v) => v && { ...v, selected: Math.min(v.entries.length - 1, v.selected + 1) });
-          return true;
-        case "k":
-        case "up":
-          setView((v) => v && { ...v, selected: Math.max(0, v.selected - 1) });
-          return true;
-        case "return":
-        case "enter":
-          choose();
-          return true;
-      }
-      return false;
-    },
     component: (props) => (
       <Show when={view()}>
         {(current: () => ModelPickerView) => (
@@ -94,6 +107,16 @@ export const registerModelPicker: Effect.Effect<
     // ways here and the settings stay up behind the picker.
     priority: 15,
   });
+  const context: ContextSpec = {
+    id: "amux.agent-harness.model-picker",
+    active: () => view() !== null,
+    // Same rung as the slot priority above, shifted into the OVERLAY band —
+    // see amux's own overlay contexts (app.tsx) for the same convention.
+    priority: CONTEXT_PRIORITY.OVERLAY + 15,
+    rebindable: false,
+    handle: keys,
+  };
+  yield* contexts.register(context);
 
   return yield* Effect.succeed(
     Effect.gen(function* () {

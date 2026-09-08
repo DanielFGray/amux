@@ -1,7 +1,7 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 /** @jsxImportSource @opentui/solid */
 import { afterEach, expect, test } from "bun:test";
-import { BoxRenderable, type KeyEvent } from "@opentui/core";
+import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { createSignal } from "solid-js";
@@ -154,20 +154,14 @@ test("a dock is as thick as its thickest visible panel", async () => {
   expect(grown[1]!.slice(0, LEFT * 2)).toBe("W".repeat(LEFT * 2));
 });
 
-test("the topmost overlay owns the keys the keymap did not claim", async () => {
+test("the topmost overlay draws over an overlay opened earlier", async () => {
   const { slots } = await mount();
-  const seen: string[] = [];
   const [prompt, setPrompt] = createSignal(false);
-  const record = (id: string) => (event: KeyEvent) => {
-    seen.push(`${id}:${event.name}`);
-    return true;
-  };
 
   slots.register({
     id: "test.settings",
     region: "overlay",
     order: 10,
-    keys: record("settings"),
     component: filled("S"),
   });
   slots.register({
@@ -175,26 +169,23 @@ test("the topmost overlay owns the keys the keymap did not claim", async () => {
     region: "overlay",
     order: 40,
     visible: prompt,
-    keys: record("prompt"),
     component: filled("P"),
   });
 
-  const key = { name: "escape" } as KeyEvent;
-  slots.topOverlay()?.keys?.(key);
+  expect(slots.topOverlay()?.id).toBe("test.settings");
   setPrompt(true);
-  // Opened last and ordered highest, so it takes the keystroke off the settings
-  // window without either of them knowing the other exists.
-  slots.topOverlay()?.keys?.(key);
-  expect(seen).toEqual(["settings:escape", "prompt:escape"]);
+  // Opened last and ordered highest, so it draws over the settings window —
+  // key resolution now lives in the contexts model (key-context.test.ts),
+  // not here.
+  expect(slots.topOverlay()?.id).toBe("test.prompt");
 });
 
-test("an overlay that is not up is not asked about anything", async () => {
+test("an overlay that is not up is not the top overlay", async () => {
   const { slots } = await mount();
   slots.register({
     id: "test.closed",
     region: "overlay",
     visible: () => false,
-    keys: () => true,
     component: filled("C"),
   });
 
