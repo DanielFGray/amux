@@ -145,7 +145,9 @@ export interface WorkspaceCommandContext {
   noFocus?: boolean;
   /** Client-observed attention state, used only by session.next-blocked. */
   blockedAgents?: readonly string[];
-  /** Compiled bytes for pane.send-keys; the command remains the vocabulary. */
+  /** A pre-processed payload for a workspace command that wants one, alongside
+   *  `PanelContext.run`. `pane.send-keys` used to be its only caller; it now
+   *  writes to its session directly (or routes to a client) instead. */
   input?: string;
   /** Root directory for space worktrees. Daemon authority: derived from the
    *  session env, never the client. Required only when a command creates a
@@ -277,6 +279,9 @@ export interface WorkspaceDraft {
   /** Show a session in its window, splitting or appending as needed, and
    *  focus it. Returns the new pane id. */
   readonly placeSessionPane: (target: WindowEntry, agent: PersistedSession) => string;
+  /** Place a sessionless plugin pane in the current window, splitting the
+   *  focused pane in a row. Returns its id, or null when there is no target. */
+  readonly placePluginPane: (type: string, descriptor: JsonValue) => string | null;
   readonly pushAction: (action: WorkspaceAction) => void;
   readonly setResult: (result: JsonValue) => void;
   /** Every agent in the draft, as the machine-facing read surface shapes them. */
@@ -768,11 +773,33 @@ export function applyWorkspaceCommand(
     entry.window.state.focus = pane.id;
     return pane.id;
   };
+  const placePluginPane = (type: string, descriptor: JsonValue): string | null => {
+    const target = paneTarget();
+    if (!target) return null;
+    const { space, window } = target.window;
+    const panes = layoutPanes(window.layout.root);
+    const at = panes.findIndex((pane) => pane.id === target.pane.id);
+    const ref = {
+      id: newPaneId(space),
+      content: { kind: "plugin", type, descriptor } satisfies PaneContent,
+    };
+    window.layout =
+      at === -1
+        ? appendPane(window.layout, ref)
+        : (algorithm.split?.(window.layout, context.size, target.pane.id, "row", ref) ??
+          splitLayout(window.layout, at, "row", ref));
+    window.state.focus = ref.id;
+    window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
+    window.state.zoom = null;
+    window.state.preset = null;
+    return ref.id;
+  };
   const draft: WorkspaceDraft = {
     activeWindow: () => activeWindow(),
     findSession: (id) => findSession(next, id),
     addSession,
     placeSessionPane,
+    placePluginPane,
     pushAction: (action) => void actions.push(action),
     setResult: (value) => {
       result = value;
@@ -837,31 +864,8 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.open-plugin": {
-      const target = paneTarget();
-      if (!target) break;
-      const { space, window } = target.window;
-      // A client-only plugin pane has no backend: nothing is spawned, no
-      // session enters the roster, and the content IS the remount contract.
-      const panes = layoutPanes(window.layout.root);
-      const at = panes.findIndex((pane) => pane.id === target.pane.id);
-      const ref = {
-        id: newPaneId(space),
-        content: {
-          kind: "plugin",
-          type: command.type,
-          descriptor: command.descriptor,
-        } satisfies PaneContent,
-      };
-      window.layout =
-        at === -1
-          ? appendPane(window.layout, ref)
-          : (algorithm.split?.(window.layout, context.size, target.pane.id, "row", ref) ??
-            splitLayout(window.layout, at, "row", ref));
-      window.state.focus = ref.id;
-      window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
-      window.state.zoom = null;
-      window.state.preset = null;
-      result = { pane: ref.id } satisfies CreationResult<"pane.open-plugin">;
+      const pane = draft.placePluginPane(command.type, command.descriptor);
+      if (pane !== null) result = { pane } satisfies CreationResult<"pane.open-plugin">;
       break;
     }
     case "pane.next": {
@@ -1144,32 +1148,6 @@ export function applyWorkspaceCommand(
         destination.id,
       );
       result = { pane: moved.id, previous_pane_id: previousPaneId } satisfies PaneMoveResult;
-      break;
-    }
-    case "pane.send-keys": {
-      const target = paneTarget();
-      if (!target) break;
-      const { window } = target.window;
-      const sessions = layoutRefs(window.layout)
-        .map((pane) => paneSession(pane.content))
-        .filter((session): session is string => session !== undefined);
-      if (window.state.sync) {
-        for (const agent of new Set(sessions)) {
-          actions.push({
-            _tag: "input",
-            agent,
-            data: context.input ?? command.keys,
-          });
-        }
-      } else {
-        const session = paneSession(target.pane.content);
-        if (session)
-          actions.push({
-            _tag: "input",
-            agent: session,
-            data: context.input ?? command.keys,
-          });
-      }
       break;
     }
     case "window.new": {
@@ -1537,7 +1515,12 @@ function findSpace(workspace: WorkspaceSnapshot, id?: string): WorkspaceSpace | 
   return workspace.spaces.find((space) => space.id === wanted) ?? null;
 }
 
-function findWindow(
+/** The window a bare `{space?, window?}` target names: the given space and
+ *  window number, or the active ones when either is omitted. Shared with
+ *  callers outside the reducer — the daemon's send-keys resolver, notably —
+ *  that need "the active window" read-only, off a snapshot rather than the
+ *  reducer's mutable draft. */
+export function findWindow(
   workspace: WorkspaceSnapshot,
   target: { space?: string; window?: number },
 ): WindowEntry | null {

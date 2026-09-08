@@ -1,13 +1,14 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
+import type { KeyEvent } from "@opentui/core";
 import { createBindings, parseKeyStrokes } from "./bindings.ts";
 import { encodeStroke } from "./keys.ts";
 import {
   tokenizeSendKeys,
-  encodeSendKeys,
+  parseSendKeys,
   sendKeys,
-  pickSendTarget,
+  createKeyDispatcher,
   SendKeysError,
   type SendKeyParser,
   type SendTarget,
@@ -27,13 +28,19 @@ const fakeParse: SendKeyParser = (token: string) => {
   }
 };
 
-function target(bytes: string[] = []): SendTarget & { bytes: string[] } {
+function target(events: KeyEvent[] = []): SendTarget & { events: KeyEvent[] } {
   return {
-    bytes,
-    write: (b: string) => bytes.push(b),
+    events,
+    key: (event) => {
+      events.push(event);
+      return true;
+    },
     describe: () => "test pane",
   };
 }
+
+const encoded = (input: string, parser: SendKeyParser = fakeParse): string =>
+  parseSendKeys(input, parser).map((event) => event.raw).join("");
 
 test("tokenizing splits on whitespace and strips quotes", () => {
   expect(tokenizeSendKeys("ls -la Enter")).toEqual([
@@ -61,74 +68,64 @@ test("an unterminated quote is an error", () => {
 });
 
 test("consecutive literal tokens join with a single space", () => {
-  expect(encodeSendKeys("hello world", fakeParse)).toBe("hello world");
-  expect(encodeSendKeys("hello   world", fakeParse)).toBe("hello world");
+  expect(encoded("hello world")).toBe("hello world");
+  expect(encoded("hello   world")).toBe("hello world");
 });
 
 test("quoted tokens keep their inner spacing", () => {
-  expect(encodeSendKeys("'ls  -la' Enter", fakeParse)).toBe("ls  -la\r");
+  expect(encoded("'ls  -la' Enter")).toBe("ls  -la\r");
 });
 
 test("a key token is sent without padding, so 'ls -la Enter' stays ls -la", () => {
   // tmux semantics: a quoted string carries its spaces verbatim, and literal
   // tokens join with a single space — only key tokens are emitted bare.
-  expect(encodeSendKeys("ls -la Enter", fakeParse)).toBe("ls -la\r");
+  expect(encoded("ls -la Enter")).toBe("ls -la\r");
 });
 
 test("named keys encode, including the prefix and ctrl", () => {
-  expect(encodeSendKeys("Enter", fakeParse)).toBe("\r");
-  expect(encodeSendKeys("ctrl+a", fakeParse)).toBe("\x01");
-  expect(encodeSendKeys("space", fakeParse)).toBe(" ");
+  expect(encoded("Enter")).toBe("\r");
+  expect(encoded("ctrl+a")).toBe("\x01");
+  expect(encoded("space")).toBe(" ");
 });
 
 test("keys and text mix; a trailing key still lands last", () => {
-  expect(encodeSendKeys("'ls -la' Enter", fakeParse)).toBe("ls -la\r");
-  expect(encodeSendKeys("Enter 'yes'", fakeParse)).toBe("\ryes");
+  expect(encoded("'ls -la' Enter")).toBe("ls -la\r");
+  expect(encoded("Enter 'yes'")).toBe("\ryes");
 });
 
 test("empty input and an unterminated quote are the two explicit errors", () => {
-  expect(() => encodeSendKeys("", fakeParse)).toThrow("nothing to send");
-  expect(() => encodeSendKeys("   ", fakeParse)).toThrow("nothing to send");
-  expect(() => encodeSendKeys("'", fakeParse)).toThrow("unterminated quote");
+  expect(() => parseSendKeys("", fakeParse)).toThrow("nothing to send");
+  expect(() => parseSendKeys("   ", fakeParse)).toThrow("nothing to send");
+  expect(() => parseSendKeys("'", fakeParse)).toThrow("unterminated quote");
 });
 
 test("unknown tokens pass through as the text they are", () => {
   // "C-a" reads as three letters, not ctrl+a — quoting makes it text, and so
   // does an all-plain token, which is text either way.
-  expect(encodeSendKeys("'C-a'", fakeParse)).toBe("C-a");
-  expect(encodeSendKeys("C-a", fakeParse)).toBe("C-a");
+  expect(encoded("'C-a'")).toBe("C-a");
+  expect(encoded("C-a")).toBe("C-a");
 });
 
 test("sendKeys writes to the target and returns null on success", () => {
   const t = target();
   expect(sendKeys(t, "'ls -la' Enter", fakeParse)).toBeNull();
-  expect(t.bytes).toEqual(["ls -la\r"]);
+  expect(t.events.map((event) => event.raw).join("")).toBe("ls -la\r");
 });
 
 test("sendKeys reports compile errors instead of throwing", () => {
   const t = target();
   const error = sendKeys(t, "''", fakeParse);
   expect(error).toBeInstanceOf(SendKeysError);
-  expect(t.bytes).toEqual([]);
+  expect(t.events).toEqual([]);
 });
 
-test("pickSendTarget prefers the focused pane", () => {
-  const focused = target();
-  const selected = target();
-  const revealed: string[] = [];
-  expect(pickSendTarget(focused, selected, (s) => revealed.push(s.describe()))).toBe(focused);
-  expect(revealed).toEqual([]);
-});
-
-test("pickSendTarget falls back to the selection and reveals it", () => {
-  const selected = target();
-  const revealed: string[] = [];
-  expect(pickSendTarget(null, selected, (s) => revealed.push(s.describe()))).toBe(selected);
-  expect(revealed).toEqual(["test pane"]);
-});
-
-test("pickSendTarget reports an explicit miss", () => {
-  expect(pickSendTarget(null, null, () => {})).toBeNull();
+test("dispatched keys stop recursive mappings and name the active binding", () => {
+  const direct = target();
+  let dispatched!: SendTarget;
+  const dispatch = createKeyDispatcher((event) => dispatched.key(event), () => "loop", 3);
+  dispatched = dispatch(direct);
+  const error = sendKeys(dispatched, "x", fakeParse);
+  expect(error?.message).toBe("mapping depth exceeded at binding 'loop'");
 });
 
 /** The send-keys grammar through the real keymap parser: the same strings that
@@ -142,16 +139,16 @@ test("the app's own key strings drive encodeSendKeys end to end", async () => {
     // createBindings arms the leader under the default prefix, so <leader> is
     // meaningful right away — exactly as it is for the command bindings.
     const viaKeymap: SendKeyParser = (token) => parseKeyStrokes(bindings.keymap, token);
-    expect(encodeSendKeys("'ls -la' Enter", viaKeymap)).toBe("ls -la\r");
-    expect(encodeSendKeys("ctrl+a", viaKeymap)).toBe("\x01");
-    expect(encodeSendKeys("<leader>:", viaKeymap)).toBe("\x01:");
-    expect(encodeSendKeys("<leader>", viaKeymap)).toBe("\x01");
+    expect(encoded("'ls -la' Enter", viaKeymap)).toBe("ls -la\r");
+    expect(encoded("ctrl+a", viaKeymap)).toBe("\x01");
+    expect(encoded("<leader>:", viaKeymap)).toBe("\x01:");
+    expect(encoded("<leader>", viaKeymap)).toBe("\x01");
     // Text that is not a key name passes through unquoted.
-    expect(encodeSendKeys("whoami", viaKeymap)).toBe("whoami");
+    expect(encoded("whoami", viaKeymap)).toBe("whoami");
     // A capital reads as lowercase to the parser, so the original text is
     // what gets sent, not a normalization of it.
-    expect(encodeSendKeys("S", viaKeymap)).toBe("S");
-    expect(encodeSendKeys("Shift+s", viaKeymap)).toBe("S");
+    expect(encoded("S", viaKeymap)).toBe("S");
+    expect(encoded("Shift+s", viaKeymap)).toBe("S");
   } finally {
     t.renderer.destroy();
   }
@@ -164,9 +161,9 @@ test("a token holding a key among plain letters encodes the whole sequence", asy
       onUnhandled: () => true,
     });
     const viaKeymap: SendKeyParser = (token) => parseKeyStrokes(bindings.keymap, token);
-    expect(encodeSendKeys("<leader> q", viaKeymap)).toBe("\x01q");
-    expect(encodeSendKeys("'cd /tmp' Enter", viaKeymap)).toBe("cd /tmp\r");
-    expect(encodeSendKeys("cd /tmp Enter", viaKeymap)).toBe("cd /tmp\r");
+    expect(encoded("<leader> q", viaKeymap)).toBe("\x01q");
+    expect(encoded("'cd /tmp' Enter", viaKeymap)).toBe("cd /tmp\r");
+    expect(encoded("cd /tmp Enter", viaKeymap)).toBe("cd /tmp\r");
   } finally {
     t.renderer.destroy();
   }

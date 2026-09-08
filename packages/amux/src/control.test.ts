@@ -1107,6 +1107,28 @@ test("the CLI splits, sends keys to, captures and closes a named pane without mo
   expect(captured).toContain("from-the-cli");
 }, 30000);
 
+/**
+ * `--dispatch` needs a live keymap's binding resolution, which only exists
+ * in an attached client — there is no daemon-side equivalent, unlike the
+ * direct session write a plain send-keys uses. This has no client attached,
+ * so the only correct outcome is the same "no client attached" refusal a
+ * client-only pane would get; anything else means the dispatch flag stopped
+ * skipping the direct-write shortcut.
+ */
+test("send-keys --dispatch requires an attached client even for a session-backed pane", async () => {
+  const { daemon, env } = await started("cli-send-keys-dispatch");
+  const workspace = Effect.runSync(daemon.getWorkspace);
+  const pane = workspacePaneId(workspace);
+
+  const error = await ctl(daemon.id, env, (c) =>
+    Effect.flip(
+      c.Batch({ values: [command("pane.send-keys", { pane, keys: "x", dispatch: true })] }),
+    ),
+  );
+  expect(error._tag).toBe("ControlError");
+  expect(error.message).toContain("no client attached");
+});
+
 /** The first pane id the default space's window places. */
 function workspacePaneId(workspace: {
   spaces: Array<{ windows: Array<{ layout: { root: unknown } }> }>;

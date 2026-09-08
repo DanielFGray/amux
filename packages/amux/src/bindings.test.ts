@@ -1,19 +1,22 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
 import { Effect } from "effect";
+import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
 import type { KeyEvent } from "@opentui/core";
 import {
+  contextCommand,
   createBindings,
   formatKey,
   helpGroups,
   keyToBinding,
   keysFor,
-  leaderBytes,
   filterPaletteEntries,
   paletteEntries,
+  registerLayerChecked,
   type CommandSpec,
 } from "./bindings.ts";
+import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
 
 /**
  * A binding whose key string the parser rejects is not an error anyone sees —
@@ -572,12 +575,6 @@ test("a keystroke reads back as the string that binds it", () => {
   expect(key({ eventType: "release" })).toBeNull();
 });
 
-test("the prefix passthrough sends the bytes of whatever prefix is set", () => {
-  expect(leaderBytes("ctrl+a")).toBe("\x01");
-  expect(leaderBytes("ctrl+b")).toBe("\x02");
-  expect(leaderBytes("`")).toBe("`");
-});
-
 test("invalid leaders fall back without disabling the keymap", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
@@ -731,6 +728,133 @@ test("agent.interrupt compiles its shifted-letter binding", async () => {
     t.mockInput.pressKey("I", { shift: true });
     expect(fired).toEqual(["agent.interrupt"]);
     expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^a I");
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+function testContext(id: string, priority: number, active: () => boolean): ContextSpec {
+  return { id, priority, active, rebindable: true };
+}
+
+test("a context-scoped binding only fires while its context is active", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    // A real Solid signal, not a plain closure over a mutable variable: the
+    // layer's `enabled` field has to observe the change, which only a
+    // reactive accessor can notify it of.
+    const [insertMode, setInsertMode] = createSignal(false);
+    const insert = testContext("editor.insert", CONTEXT_PRIORITY.PANE, insertMode);
+    const commands: CommandSpec[] = [
+      contextCommand(insert, {
+        name: "delete-word",
+        key: "d",
+        desc: "delete word",
+        group: "editor",
+        run: Effect.sync(() => fired.push("delete-word")),
+      }),
+    ];
+    createBindings(t.renderer, commands, { onUnhandled: () => true });
+
+    expect(commands[0]!.name).toBe("editor.insert.delete-word");
+
+    t.mockInput.pressKey("d");
+    expect(fired).toEqual([]);
+
+    setInsertMode(true);
+    t.mockInput.pressKey("d");
+    expect(fired).toEqual(["delete-word"]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("two contexts binding the same key are not a conflict; the global layer is unaffected", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const normal = testContext("editor.normal", CONTEXT_PRIORITY.PANE, () => true);
+    const visual = testContext("editor.visual", CONTEXT_PRIORITY.PANE, () => true);
+    const commands: CommandSpec[] = [
+      {
+        name: "pane.up",
+        key: "<leader>k",
+        desc: "focus up",
+        group: "t",
+        run: Effect.void,
+      },
+      contextCommand(normal, {
+        name: "delete",
+        key: "d",
+        desc: "delete",
+        group: "editor",
+        run: Effect.void,
+      }),
+      contextCommand(visual, {
+        name: "delete",
+        key: "d",
+        desc: "delete selection",
+        group: "editor",
+        run: Effect.void,
+      }),
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+
+    expect(bindings.conflicts()).toEqual([]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("a same-key collision within one context is still reported", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const normal = testContext("editor.normal", CONTEXT_PRIORITY.PANE, () => true);
+    const commands: CommandSpec[] = [
+      contextCommand(normal, {
+        name: "delete-word",
+        key: "d",
+        desc: "delete word",
+        group: "editor",
+        run: Effect.void,
+      }),
+      contextCommand(normal, {
+        name: "duplicate-line",
+        key: "d",
+        desc: "duplicate line",
+        group: "editor",
+        run: Effect.void,
+      }),
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+
+    expect(bindings.conflicts()).toEqual([
+      { sequence: "d", commands: ["editor.normal.delete-word", "editor.normal.duplicate-line"] },
+    ]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * The keymap library only warns on an unknown layer field and registers the
+ * layer anyway, active in every context. Nothing here writes a layer field
+ * from user input, so the warning can only be this file's own typo — it must
+ * fail loudly rather than stand as a silent global binding.
+ */
+test("a misspelled layer field fails loudly instead of silently going global", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const bindings = createBindings(t.renderer, [], { onUnhandled: () => true });
+    expect(() =>
+      registerLayerChecked(bindings.keymap, {
+        // Deliberately misspelled to exercise the guard: layer field names
+        // are open-ended, so nothing here is a type error.
+        enabld: () => true,
+        bindings: [],
+        commands: [],
+      }),
+    ).toThrow();
   } finally {
     t.renderer.destroy();
   }

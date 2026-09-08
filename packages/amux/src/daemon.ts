@@ -97,6 +97,7 @@ import {
 } from "./commands.ts";
 import {
   findPaneBySession,
+  findWindow,
   markSessionExited,
   markSessionUnavailable,
   parseWorkspaceCommandContext,
@@ -108,7 +109,9 @@ import {
   type WorkspaceSnapshot,
 } from "./workspace.ts";
 import { gitWorktreeExists } from "./git.ts";
-import { paneSession } from "./layout.ts";
+import { layoutRefs, paneSession } from "./layout.ts";
+import { createHeadlessKeyParser, parseSendKeys } from "./send.ts";
+import { encodeKey } from "./keys.ts";
 import { errorMessage } from "./error-message.ts";
 
 const describe = errorMessage;
@@ -1108,6 +1111,48 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       });
     });
 
+  /**
+   * Which session `pane.send-keys` writes to, when it can be resolved
+   * without a client at all: the pane named directly, the caller's own pane
+   * for `--current`, or the focused pane of the active window — the same
+   * order `paneTarget()` uses in the workspace reducer for every other pane
+   * command, read here off a snapshot since resolving this must not itself
+   * depend on a live client.
+   *
+   * Null means "no session for this pane" — a client-only pane with no pty,
+   * or a target this couldn't place — not a resolution failure: the caller
+   * falls back to routing the command to an attached client, the only place
+   * a client-only pane's keys mean anything.
+   */
+  const resolveSendKeysTarget = (
+    value: Extract<Command, { _tag: "pane.send-keys" }>,
+    context: WorkspaceCommandRequestContext | undefined,
+    workspace: WorkspaceSnapshot,
+  ): Effect.Effect<string | null, ControlError> =>
+    Effect.gen(function* () {
+      if (value.pane) {
+        const found = workspacePaneOf(workspace, value.pane);
+        return found ? (paneSession(found.pane.content) ?? null) : null;
+      }
+      if (value.current) {
+        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, workspace).pipe(
+          Effect.mapError((e) => new ControlError({ message: e.message })),
+        );
+        if (ctx.agent) return ctx.agent;
+        if (ctx.pane) {
+          const found = workspacePaneOf(workspace, ctx.pane);
+          return found ? (paneSession(found.pane.content) ?? null) : null;
+        }
+        return null;
+      }
+      const active = findWindow(workspace, {});
+      if (!active) return null;
+      const pane = layoutRefs(active.window.layout).find(
+        (item) => item.id === active.window.state.focus,
+      );
+      return pane ? (paneSession(pane.content) ?? null) : null;
+    });
+
   const runRemote = Effect.fnUntraced(function* (
     value: Command | RuntimeCommand,
     expectedRevision?: number,
@@ -1161,10 +1206,54 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     }
     if (!isCoreCommand(value)) return yield* controlFail(`unknown command: ${value._tag}`);
     const command = value;
+    // A session-backed pane needs no client at all: the daemon owns the pty
+    // directly and can encode the same way TerminalPane.handleKey does at
+    // its own boundary (keys.ts's encodeKey), just without a mounted
+    // Renderable in between. Falls through to the generic "client" target
+    // below for a client-only pane (no session to write to) or an explicit
+    // `--dispatch`, which needs a live keymap's binding resolution and has
+    // no daemon-side equivalent.
+    if (command._tag === "pane.send-keys" && command.dispatch !== true) {
+      const cur = yield* model.get;
+      const session = yield* resolveSendKeysTarget(command, context, cur.workspace);
+      if (session) {
+        const config =
+          options.pluginConfig ?? (yield* loadConfig().pipe(Effect.provide(BunFileSystem.layer)));
+        const events = yield* Effect.try({
+          try: () => parseSendKeys(command.keys, createHeadlessKeyParser(config.keys.leader)),
+          catch: (error) => new ControlError({ message: describe(error) }),
+        });
+        const host = yield* requireHost;
+        for (const event of events) {
+          const bytes = encodeKey(event);
+          if (bytes !== null)
+            yield* host
+              .write(session, bytes)
+              .pipe(Effect.mapError((error) => new ControlError({ message: describe(error) })));
+        }
+        return {};
+      }
+    }
     if (meta.target === "view")
       return yield* controlFail(
         `command '${command._tag}' is a view command, not remotely invocable`,
       );
+    if (meta.target === "client") {
+      const connections = yield* model.attachedConnections;
+      const first = connections[0];
+      if (!first) return yield* controlFail(`no client attached, cannot run '${command._tag}'`);
+      let routed: JsonValue = command as JsonValue;
+      if ("current" in command && command.current) {
+        const cur = yield* model.get;
+        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+        if (!ctx.pane)
+          return yield* controlFail(`command '${command._tag}' --current needs a managed pane`);
+        routed = { ...command, current: false, pane: ctx.pane } as JsonValue;
+      }
+      const host = yield* requireHost;
+      const result = yield* host.runOnClient(first.client, first.connection, routed);
+      return result === undefined ? {} : { result };
+    }
     if (meta.target === "workspace") {
       const cur = yield* model.get;
       const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);

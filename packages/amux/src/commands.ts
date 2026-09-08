@@ -31,7 +31,7 @@ import {
  */
 
 /** What a command acts ON — the authority that owns the state it mutates. */
-export const COMMAND_TARGETS = ["workspace", "session", "buffers", "server", "view"] as const;
+export const COMMAND_TARGETS = ["workspace", "session", "buffers", "server", "client", "view"] as const;
 export type CommandTarget = (typeof COMMAND_TARGETS)[number];
 
 /** Who the command is exposed TO — a human or an agent. Exposure is the tool
@@ -40,8 +40,8 @@ export type CommandTarget = (typeof COMMAND_TARGETS)[number];
 export type CommandExposure = "human" | "agent";
 
 /** Derived from target: commands whose state is daemon-owned are remotely
- * invocable. workspace, session, buffers, and server are in the daemon; view
- * is client-only UI state (options, overlays). */
+ * invocable. A client command runs in one attached client because it targets
+ * projection-local state; view is local-only UI state. */
 export const isRemoteCommand = (target: CommandTarget): boolean => target !== "view";
 
 /** Derived from target: workspace-targeted commands go through the daemon's
@@ -344,13 +344,19 @@ const PaneMove = define(
   },
   PaneMoveResult,
 );
+// "client" is the fallback the daemon reaches for a client-only pane (no
+// session to write to) or an explicit --dispatch (needs a live keymap's
+// binding resolution). A session-backed pane's default delivery never gets
+// there: the daemon encodes and writes to its own pty directly, the same way
+// TerminalPane.handleKey does at its boundary, so this needs no client
+// attached at all — see daemon.ts's runRemote.
 const PaneSendKeys = define(
   "pane.send-keys",
-  { keys: S.String, ...PaneTarget },
+  { keys: S.String, dispatch: S.optionalKey(S.Boolean), ...PaneTarget },
   {
     desc: "send keys to the focused pane",
     group: "panes",
-    target: "workspace",
+    target: "client",
     exposure: "agent",
   },
 );

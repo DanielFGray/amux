@@ -3,13 +3,16 @@ import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core";
 import { createOpenTuiKeymap } from "@opentui/keymap/opentui";
 import {
   registerDefaultKeys,
+  registerEnabledFields,
   registerLeader,
   registerMetadataFields,
   registerEscapeClearsPendingSequence,
 } from "@opentui/keymap/addons";
 import type { Keymap } from "@opentui/keymap";
+import { reactiveMatcherFromSignal } from "@opentui/keymap/solid";
 import type { KeyStroke } from "./keys.ts";
 import { runDetached, type CommandError } from "./commands.ts";
+import type { ContextSpec } from "./key-context.ts";
 
 export type AppKeymap = Keymap<Renderable, KeyEvent>;
 
@@ -106,9 +109,17 @@ export function keyToBinding(event: KeyEvent): string | null {
  * command prompt as they do in the keybind editor. Returns the whole sequence,
  * not just a single key: `<leader>:` is the prefix then a colon. Returns null
  * for anything the parser rejects outright.
+ *
+ * Takes anything with `parseKeySequence`, not just `AppKeymap`: the daemon's
+ * headless parser (send.ts) is a bare `Keymap` with no renderer behind it,
+ * and parsing is the one piece of the interactive keymap it still needs.
  */
-export function parseKeyStrokes(keymap: AppKeymap, token: string): KeyStroke[] | null {
-  let parts: ReturnType<AppKeymap["parseKeySequence"]>;
+export interface KeySequenceSource {
+  parseKeySequence(token: string): readonly { stroke?: KeyStroke }[];
+}
+
+export function parseKeyStrokes(keymap: KeySequenceSource, token: string): KeyStroke[] | null {
+  let parts: readonly { stroke?: KeyStroke }[];
   try {
     parts = keymap.parseKeySequence(token);
   } catch {
@@ -128,24 +139,6 @@ export function parseKeyStrokes(keymap: AppKeymap, token: string): KeyStroke[] |
     });
   }
   return strokes;
-}
-
-/**
- * The bytes a prefix key sends when passed through to the child.
- *
- * `^a a` has to deliver a literal ctrl+a, and that stays true when the prefix
- * moves: rebinding to ctrl+b must send 0x02, not the 0x01 this used to
- * hardcode.
- */
-export function leaderBytes(leader: string): string {
-  const ctrl = leader.match(/^ctrl\+([a-z@[\]\\^_])$/i);
-  if (ctrl) {
-    const c = ctrl[1]!.toLowerCase();
-    return String.fromCharCode(c === "@" ? 0 : c.charCodeAt(0) & 0x1f);
-  }
-  // A plain-character prefix sends itself; anything else has no sensible
-  // literal form, so send nothing rather than send garbage.
-  return leader.length === 1 ? leader : "";
 }
 
 /**
@@ -180,6 +173,16 @@ export interface CommandSpec {
    *  sequence is the prefix twice, and rebinding it separately is nonsense. */
   fixed?: boolean;
   /**
+   * The context this binding is scoped to, if any. Omitted means global — the
+   * binding compiles into the layer that is always active, unchanged from
+   * before contexts existed.
+   *
+   * Set this by calling `contextCommand`, not by hand: the structural
+   * reference is what lets `apply` group commands into one keymap layer per
+   * context and drive that layer's `enabled` from `context.active`.
+   */
+  context?: ContextSpec;
+  /**
    * What pressing the keys does, as a value rather than a callback.
    *
    * Almost always `commands.run(command(...))` — the binding names a verb and
@@ -199,6 +202,19 @@ export interface CommandSpec {
    * exactly that).
    */
   run: Effect.Effect<any, CommandError>;
+}
+
+/**
+ * Register a command through a context: `name` is DERIVED as
+ * `${context.id}.${local.name}`, never hand-written and never parsed back
+ * apart. The context reference travels on `CommandSpec.context` so `apply`
+ * can compile it onto that context's own keymap layer.
+ */
+export function contextCommand(
+  context: ContextSpec,
+  local: Omit<CommandSpec, "context">,
+): CommandSpec {
+  return { ...local, name: `${context.id}.${local.name}`, context };
 }
 
 /** The sequences a command answers to right now: the user's, or its own. */
@@ -228,6 +244,8 @@ export interface Bindings {
   keymap: AppKeymap;
   /** Execute a registered command through the keymap's command dispatcher. */
   dispatch: (name: string) => boolean;
+  /** Command whose binding is synchronously producing another key, if any. */
+  activeCommand: () => string | null;
   /** The prefix in effect. Display code needs it to render `<leader>`. */
   leader(): string;
   /** Sequences claimed by more than one command as of the last apply. */
@@ -243,6 +261,42 @@ export interface Bindings {
   capture(onKey: (event: KeyEvent, binding: string) => void): () => void;
   /** Remove every layer and interceptor installed on the renderer. */
   dispose(): void;
+}
+
+/**
+ * `keymap.registerLayer`, but a misspelled field cannot pass unnoticed.
+ *
+ * The library only warns on an unknown layer/binding/command field, then
+ * registers the layer anyway — active in every context, since a field it
+ * never compiled contributes no `activeWhen`. It also catches any error a
+ * field compiler throws and downgrades it to the same kind of warning
+ * (`register-layer-failed`), so throwing from inside a `keymap.on("warning",
+ * ...)` listener never reaches the caller. Every field name this file passes
+ * to a layer is its own, never user config, so the warning can only be this
+ * file's own typo: watch for it and throw from outside the call that
+ * swallows it.
+ */
+export function registerLayerChecked(
+  keymap: AppKeymap,
+  layer: Parameters<AppKeymap["registerLayer"]>[0],
+): () => void {
+  let badField: string | null = null;
+  const stopWatching = keymap.on("warning", ({ code, message }) => {
+    if (
+      code === "unknown-layer-field" ||
+      code === "unknown-binding-field" ||
+      code === "unknown-command-field"
+    ) {
+      badField = message;
+    }
+  });
+  const dispose = keymap.registerLayer(layer);
+  stopWatching();
+  if (badField) {
+    dispose();
+    throw new Error(badField);
+  }
+  return dispose;
 }
 
 /**
@@ -272,6 +326,9 @@ export function createBindings(
   // `desc` and `group` become queryable attrs, which is what the keybind list
   // groups and labels itself from.
   registerMetadataFields(keymap);
+  // Lets a layer carry an `enabled` field that compiles to `activeWhen` —
+  // what turns a context's `active()` predicate into the layer's condition.
+  registerEnabledFields(keymap);
   // Escape backs out of a half-typed sequence instead of stranding the prefix.
   registerEscapeClearsPendingSequence(keymap);
 
@@ -279,9 +336,10 @@ export function createBindings(
   let commands = [...initialCommands];
   let currentKeys = opts.keys ?? { leader: DEFAULT_LEADER, bindings: {} };
   let conflicts: Conflict[] = [];
-  let disposeLayer: (() => void) | null = null;
+  let disposeLayers: (() => void)[] = [];
   let disposeLeader: (() => void) | null = null;
   let capturing: ((event: KeyEvent, binding: string) => void) | null = null;
+  let activeCommand: string | null = null;
 
   // Ahead of dispatch, so recording a binding can record keys that are
   // themselves bound — including the prefix, which would otherwise arm a
@@ -314,31 +372,80 @@ export function createBindings(
     ctx.event.preventDefault();
   });
 
+  function layerContent(group: readonly CommandSpec[], keys: Keys) {
+    return {
+      bindings: group.flatMap((cmd) =>
+        keysFor(cmd, keys)
+          .filter((key) => parseable(key))
+          .map((key) => ({ key, cmd: cmd.name })),
+      ),
+      commands: group.map((cmd) => ({
+        name: cmd.name,
+        desc: cmd.desc,
+        group: cmd.group,
+        run: () => {
+          const previous = activeCommand;
+          activeCommand = cmd.name;
+          try {
+            runDetached(cmd.name, cmd.run, opts.onError);
+          } finally {
+            activeCommand = previous;
+          }
+        },
+      })),
+    };
+  }
+
   function apply(keys: Keys): Conflict[] {
     currentKeys = keys;
     const requestedLeader = keys.leader || DEFAULT_LEADER;
     leader = parseable(requestedLeader, true) ? requestedLeader : DEFAULT_LEADER;
-    disposeLayer?.();
+    for (const dispose of disposeLayers) dispose();
     disposeLeader?.();
     // A half-typed sequence compiled against the old token means nothing now.
     keymap.clearPendingSequence();
 
     disposeLeader = registerLeader(keymap, { trigger: leader });
-    disposeLayer = keymap.registerLayer({
-      bindings: commands.flatMap((cmd) =>
-        keysFor(cmd, keys)
-          .filter((key) => parseable(key))
-          .map((key) => ({ key, cmd: cmd.name })),
-      ),
-      commands: commands.map((cmd) => ({
-        name: cmd.name,
-        desc: cmd.desc,
-        group: cmd.group,
-        run: () => runDetached(cmd.name, cmd.run, opts.onError),
-      })),
-    });
 
-    conflicts = findConflicts(keymap, commands, leader);
+    const global: CommandSpec[] = [];
+    // Insertion order, so a same-priority tie between two contexts still
+    // resolves the way registration order resolves any other tie.
+    const byContext = new Map<ContextSpec, CommandSpec[]>();
+    for (const cmd of commands) {
+      if (!cmd.context) {
+        global.push(cmd);
+        continue;
+      }
+      const group = byContext.get(cmd.context);
+      if (group) group.push(cmd);
+      else byContext.set(cmd.context, [cmd]);
+    }
+
+    // Unchanged from before contexts existed: the global layer carries every
+    // context-less binding and is always active.
+    disposeLayers = [registerLayerChecked(keymap, layerContent(global, keys))];
+    for (const [context, group] of byContext) {
+      disposeLayers.push(
+        registerLayerChecked(keymap, {
+          priority: context.priority,
+          // `active` is a plain Solid accessor, not the keymap's own
+          // `{get,subscribe}` reactive-matcher shape — passed raw it would
+          // only be re-read when something else invalidates the keymap's
+          // active-layers cache (a focus change, say), not when the
+          // predicate's own value flips. Adapting it is what
+          // `@opentui/keymap/solid` exists for.
+          enabled: reactiveMatcherFromSignal(context.active),
+          ...layerContent(group, keys),
+        }),
+      );
+    }
+
+    // A collision is only decidable within one context: two contexts binding
+    // the same physical key are mutually exclusive by their own predicates,
+    // not a conflict, so each group is checked on its own.
+    conflicts = [global, ...byContext.values()].flatMap((group) =>
+      findConflicts(keymap, group, leader),
+    );
     return conflicts;
   }
 
@@ -347,6 +454,7 @@ export function createBindings(
     dispatch(name) {
       return keymap.dispatchCommand(name).ok;
     },
+    activeCommand: () => activeCommand,
     leader: () => leader,
     conflicts: () => conflicts,
     apply,
@@ -362,8 +470,8 @@ export function createBindings(
     },
     dispose() {
       capturing = null;
-      disposeLayer?.();
-      disposeLayer = null;
+      for (const dispose of disposeLayers) dispose();
+      disposeLayers = [];
       disposeLeader?.();
       disposeLeader = null;
       disposeCapture();

@@ -18,18 +18,16 @@ import { writeFile } from "node:fs/promises";
 import { ProcessState } from "./process-state.ts";
 
 import { projectWorkspace, SpaceSet } from "./space.ts";
-import { frame } from "./window.ts";
 import { LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts";
 import { TerminalPane } from "./pane.ts";
 import { readGit } from "./git.ts";
-import { sendKeys, type SendTarget } from "./send.ts";
+import { createKeyDispatcher, sendKeys, type SendTarget } from "./send.ts";
 import {
   createBindings,
   helpGroups,
   nextKeys,
   formatSequence,
   formatKey,
-  leaderBytes,
   parseKeyStrokes,
   keysFor,
   DEFAULT_LEADER,
@@ -93,6 +91,7 @@ import { loadPluginsFromConfig } from "./plugin/loader.ts";
 import {
   BindingsTag,
   CommandsTag,
+  ContextsTag,
   CurrentPlugin,
   OptionsTag,
   PanelTag,
@@ -108,6 +107,7 @@ import {
   type BindingsService,
   type CommandRegistration,
   type CommandsService,
+  type ContextsService,
   type EnumValueRegistration,
   type OptionsService,
   type ProcessDisplayService,
@@ -117,6 +117,7 @@ import {
   type SettingsService,
   type SpawnProvidersService,
 } from "./plugin/services.ts";
+import { findContextPriorityConflicts, type ContextSpec } from "./key-context.ts";
 import { makeSessionFacts } from "./session-facts.ts";
 import { createReloader } from "./plugin/reloader.ts";
 import type { PluginReloader } from "./plugin/reloader.ts";
@@ -531,8 +532,6 @@ function buildApp(
     readonly spawnProviders: SpawnProvidersService;
   },
 ): ManagedAppHandle {
-  const initialFrameExternalLeft = frame.externalLeft;
-
   /**
    * Run one of the workspace's Effect-returning methods here and now.
    *
@@ -1061,7 +1060,6 @@ function buildApp(
    * their borders whatever is docked beside them.
    */
   function syncPaneFrame() {
-    frame.externalLeft = false;
     spaces.refreshChrome();
   }
 
@@ -1361,11 +1359,38 @@ function buildApp(
    * agent when nothing is focused. Selected agents are revealed first — a row is
    * only a "selected pane" once it has a viewport keystrokes can land in.
    */
-  function sendKeysTarget(): SendTarget | null {
-    const focused = spaces.activeWindow?.focused ?? null;
-    if (focused) return { write() {}, describe: () => focused.session?.title || "pane" };
+  function sendKeysTarget(paneId?: string, dispatch = false): SendTarget | null {
+    let targetWindow = spaces.activeWindow;
+    let target = targetWindow?.focused ?? null;
+    if (paneId !== undefined) {
+      target = null;
+      for (const space of spaces.spaces) {
+        for (const window of space.windows) {
+          const pane = window.panes.find((candidate) => candidate.id === paneId);
+          if (!pane) continue;
+          targetWindow = window;
+          target = pane;
+          break;
+        }
+        if (target) break;
+      }
+    }
+    if (target) {
+      const direct: SendTarget = {
+        key: (event) => targetWindow?.sync ? targetWindow.key(event) : target.handleKey(event),
+        describe: () => target.session?.title || "pane",
+      };
+      dispatchTarget ??= createKeyDispatcher(dispatchSentKey, bindings.activeCommand);
+      return dispatch ? dispatchTarget(direct) : direct;
+    }
     return null;
   }
+
+  function dispatchSentKey(event: KeyEvent): boolean {
+    renderer.keyInput.emit("keypress", event);
+    return event.defaultPrevented;
+  }
+  let dispatchTarget: ((target: SendTarget) => SendTarget) | null = null;
 
   /**
    * ^a : — tmux's command prompt, for tmux's send-keys.
@@ -1452,22 +1477,18 @@ function buildApp(
     "pane.break": runCommand,
     "pane.join": runCommand,
     "pane.move": runCommand,
-    "pane.send-keys": ({ keys }) =>
+    "pane.send-keys": ({ keys, pane, dispatch }) =>
       Effect.suspend(() => {
-        let input = "";
+        const target = sendKeysTarget(pane, dispatch === true);
+        if (!target) return Effect.fail(new CommandError({ message: "no pane to send to" }));
         const error = sendKeys(
-          {
-            write: (bytes) => {
-              input += bytes;
-            },
-            describe: () => "pane",
-          },
+          target,
           keys,
           parseKeyStrokes.bind(null, bindings.keymap),
         );
         return error
           ? Effect.fail(new CommandError({ message: error.message }))
-          : runPanelCommand(command("pane.send-keys", { keys }), input);
+          : Effect.void;
       }),
     "pane.capture": () =>
       Effect.sync(() => {
@@ -1624,8 +1645,9 @@ function buildApp(
       }),
     "app.send-prefix": () =>
       Effect.sync(() => {
-        const bytes = leaderBytes(bindings.leader());
-        if (bytes) activeWin()?.write(bytes);
+        const strokes = parseKeyStrokes(bindings.keymap, "<leader>");
+        if (!strokes) return;
+        sendKeys(sendKeysTarget()!, "<leader>", () => strokes);
       }),
     // Through the daemon and back, so that every client attached to this
     // workspace reloads — including the one the agent is not looking at.
@@ -2270,6 +2292,20 @@ function buildApp(
   const bindingsProvider = providerRef<BindingsService>(bindingsService);
   const bindings = bindingsProvider.value;
 
+  // The contexts table: a plugin and core register into it exactly like
+  // bindings above. Nothing resolves a keypress against it yet — onUnhandled
+  // still hand-rolls the overlay/copy-mode/pane precedence it always has —
+  // that migration is a later ticket in ep-227150.
+  const contextTable = contributions.table<ContextSpec>();
+  const registerContext = (owner: PluginInstance, context: ContextSpec) =>
+    contextTable.add(owner, context.id, context);
+  const contexts = () => contextTable.all().map((entry) => entry.value);
+  const contextsService = scopedRegistry(
+    { all: contexts, conflicts: () => findContextPriorityConflicts(contexts()) },
+    registerContext,
+  );
+  const contextsProvider = providerRef<ContextsService>(contextsService);
+
   function updateHintVisibility(sequence: readonly { display: string }[]) {
     runFiber("hint-delay", Effect.void);
     setPendingParts(sequence);
@@ -2845,7 +2881,6 @@ function buildApp(
     // While the pane is still alive: the mode's exit clears the selection
     // through the pane's terminal, and a freed terminal cannot be caught.
     if (copyMode.active) copyMode.exit();
-    frame.externalLeft = initialFrameExternalLeft;
     spaces.refreshChrome();
     disposePendingSequence();
     rawBindings.dispose();
@@ -2891,6 +2926,7 @@ function buildApp(
       externalDefaults.processDisplay,
     ),
     registry("bindings", BindingsTag, bindingsProvider, bindingsService),
+    registry("contexts", ContextsTag, contextsProvider, contextsService),
     registry("settings", SettingsTag, settingsProvider, settingsService),
     registry("options", OptionsTag, optionsProvider, optionsService),
     registry(

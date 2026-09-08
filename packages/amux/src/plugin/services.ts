@@ -10,6 +10,7 @@ import type {
 import type { SessionViews } from "./session-views.tsx";
 import type { PaneView } from "../component-pane.tsx";
 import type { Bindings, CommandSpec } from "../bindings.ts";
+import type { ContextPriorityConflict, ContextSpec } from "../key-context.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
 import type { OptionSpec } from "../options.ts";
 import type { ProcessDisplay, ProcessDisplayProvider } from "./process-display.ts";
@@ -64,6 +65,10 @@ export type SessionViewsService = Omit<SessionViews, "register"> &
 export type ProcessDisplayService = Omit<ProcessDisplay, "register"> &
   RegistryService<ProcessDisplayProvider>;
 export type BindingsService = Bindings & RegistryService<CommandSpec>;
+export interface ContextsService extends RegistryService<ContextSpec> {
+  readonly all: () => readonly ContextSpec[];
+  readonly conflicts: () => readonly ContextPriorityConflict[];
+}
 export interface SettingsService extends RegistryService<PluginSettingsSection> {
   readonly all: () => readonly PluginSettingsSection[];
 }
@@ -192,6 +197,7 @@ export class ProcessDisplayTag extends Context.Service<ProcessDisplayTag, Proces
   "amux/ProcessDisplay",
 ) {}
 export class BindingsTag extends Context.Service<BindingsTag, BindingsService>()("amux/Bindings") {}
+export class ContextsTag extends Context.Service<ContextsTag, ContextsService>()("amux/Contexts") {}
 export class SettingsTag extends Context.Service<SettingsTag, SettingsService>()("amux/Settings") {}
 export class OptionsTag extends Context.Service<OptionsTag, OptionsService>()("amux/Options") {}
 export class SpawnProvidersTag extends Context.Service<SpawnProvidersTag, SpawnProvidersService>()(

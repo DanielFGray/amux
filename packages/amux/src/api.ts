@@ -35,6 +35,7 @@ export {
   SessionViewsTag,
   ProcessDisplayTag,
   BindingsTag,
+  ContextsTag,
   SettingsTag,
   OptionsTag,
   SpawnProvidersTag,

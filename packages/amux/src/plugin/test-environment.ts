@@ -22,11 +22,13 @@ import {
 } from "./types.ts";
 import type { OptionSpec } from "../options.ts";
 import { createBindings, type CommandSpec } from "../bindings.ts";
+import { findContextPriorityConflicts, type ContextSpec } from "../key-context.ts";
 import { makeCommands } from "../commands.ts";
 import type { PaneView } from "../component-pane.tsx";
 import {
   BindingsTag,
   CommandsTag,
+  ContextsTag,
   CurrentPlugin,
   OptionsTag,
   PanelTag,
@@ -47,6 +49,7 @@ interface RawTestRegistries {
   readonly sessionViews: SessionViews;
   readonly processDisplay: ProcessDisplay;
   readonly bindings: (owner: PluginInstance, binding: CommandSpec) => () => void;
+  readonly contexts: (owner: PluginInstance, context: ContextSpec) => () => void;
   readonly settings: (owner: PluginInstance, section: PluginSettingsSection) => () => void;
   readonly options: (owner: PluginInstance, name: string, spec: OptionSpec) => () => void;
   readonly spawnProviders: (
@@ -84,6 +87,7 @@ export function testPluginEnvironment(
   const sessionViews = parts.sessionViews ?? createSessionViews(contributions);
   const processDisplay = parts.processDisplay ?? createProcessDisplay(contributions);
   const bindingTable = contributions.table<CommandSpec>();
+  const contextTable = contributions.table<ContextSpec>();
   const settingsTable = contributions.table<PluginSettingsSection>();
   const optionsTable = contributions.table<OptionSpec>();
   const spawnProviders = contributions.table<() => SpawnProvider>();
@@ -101,6 +105,7 @@ export function testPluginEnvironment(
     sessionViews,
     processDisplay,
     bindings: (owner, binding) => bindingTable.add(owner, binding.name, binding),
+    contexts: (owner, context) => contextTable.add(owner, context.id, context),
     settings: (owner, section) => settingsTable.add(owner, section.id, section),
     options: (owner, name, spec) => optionsTable.add(owner, name, spec),
     spawnProviders: (owner, id, provider) => spawnProviders.add(owner, id, provider),
@@ -143,6 +148,14 @@ export function testPluginEnvironment(
         registries.processDisplay.register(owner, provider),
     ),
     bindings: scopedRegistry(rawBindings, registries.bindings),
+    contexts: scopedRegistry(
+      {
+        all: () => contextTable.all().map((entry) => entry.value),
+        conflicts: () =>
+          findContextPriorityConflicts(contextTable.all().map((entry) => entry.value)),
+      },
+      registries.contexts,
+    ),
     settings: scopedRegistry(
       { all: () => settingsTable.all().map((entry) => entry.value) },
       registries.settings,
@@ -191,6 +204,11 @@ export function testPluginEnvironment(
       "amux.registry.bindings",
       BindingsTag,
       (ctx) => void ctx.provide(BindingsTag, services.bindings),
+    ),
+    provider(
+      "amux.registry.contexts",
+      ContextsTag,
+      (ctx) => void ctx.provide(ContextsTag, services.contexts),
     ),
     provider(
       "amux.registry.settings",

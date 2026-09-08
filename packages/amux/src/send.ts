@@ -1,6 +1,10 @@
+import { KeyEvent } from "@opentui/core";
+import { Keymap, type KeymapHost } from "@opentui/keymap";
+import { registerDefaultKeys, registerLeader } from "@opentui/keymap/addons";
 import { Schema as S } from "effect";
 import { encodeStroke, type KeyStroke } from "./keys.ts";
 import { errorMessage } from "./error-message.ts";
+import { parseKeyStrokes } from "./bindings.ts";
 
 /** A send-keys input that cannot be compiled. The message is what the prompt
  *  shows; the two structural failures are "nothing to send" (empty input) and
@@ -20,13 +24,83 @@ export class SendKeysError extends S.TaggedError<SendKeysError>()("SendKeysError
  *  (`hello`, `C-a`) is not a key sequence, it is text. */
 export type SendKeyParser = (token: string) => readonly KeyStroke[] | null;
 
-/** A pane that can receive injected input. The `write` path is deliberately
- *  the pane's own: bytes go straight to the child's pty, past the app keymap,
- *  so an injected `^a q` can never quit amux — which is the whole point. */
+/**
+ * A `SendKeyParser` for a process with no renderer — the daemon, running
+ * `pane.send-keys` against a session it owns directly, with no client
+ * attached to ask.
+ *
+ * `@opentui/keymap`'s parser lives on a `Keymap` instance, and a `Keymap`
+ * needs a host — but the host contract (docs: "Core keymap") is small and
+ * host-agnostic on purpose, precisely so a consumer that only wants parsing
+ * can satisfy it without a real target tree. Nothing here ever registers a
+ * layer, dispatches a key, or moves focus, so every host method past
+ * `isDestroyed: false` is unreachable: parsing never calls back into the
+ * host.
+ */
+export function createHeadlessKeyParser(leader: string): SendKeyParser {
+  const host: KeymapHost<Record<string, never>> = {
+    metadata: { platform: "unknown", primaryModifier: "ctrl", modifiers: {} as never },
+    rootTarget: {},
+    isDestroyed: false,
+    getFocusedTarget: () => null,
+    getParentTarget: () => null,
+    isTargetDestroyed: () => false,
+    onKeyPress: () => () => {},
+    onKeyRelease: () => () => {},
+    onFocusChange: () => () => {},
+    onTargetDestroy: () => () => {},
+    createCommandEvent: () =>
+      new KeyEvent({
+        name: "command",
+        ctrl: false,
+        meta: false,
+        shift: false,
+        option: false,
+        sequence: "",
+        number: false,
+        raw: "",
+        eventType: "press",
+        source: "raw",
+      }),
+  };
+  const keymap = new Keymap(host);
+  registerDefaultKeys(keymap);
+  registerLeader(keymap, { trigger: leader });
+  return (token) => parseKeyStrokes(keymap, token);
+}
+
+/** A pane that can receive injected input. Direct delivery calls the pane's
+ * own key boundary, past the app keymap. */
 export interface SendTarget {
-  write(bytes: string): void;
+  key(event: KeyEvent): boolean;
   /** A human name for the target, for the prompt's title. */
   describe(): string;
+}
+
+/** Route a target's injected keys back through binding resolution. The depth
+ * belongs to the synthetic dispatch chain, not to a pane or command fiber. */
+export function createKeyDispatcher(
+  dispatch: (event: KeyEvent) => boolean,
+  activeBinding: () => string | null,
+  maxDepth = 1000,
+): (target: SendTarget) => SendTarget {
+  let depth = 0;
+  return (target) => ({
+    describe: target.describe,
+    key(event) {
+      if (depth >= maxDepth) {
+        throw new SendKeysError({
+          message: `mapping depth exceeded at binding '${activeBinding() ?? "unknown"}'`,
+        });
+      }
+      depth += 1;
+      try {
+        return dispatch(event);
+      } finally {
+        depth -= 1;
+      }
+    },
+  });
 }
 
 interface RawToken {
@@ -80,7 +154,7 @@ export function tokenizeSendKeys(input: string): RawToken[] {
 }
 
 /**
- * Compile a send-keys input to the bytes a terminal child expects.
+ * Compile a send-keys input to the key events a pane receives.
  *
  * Tokens are tmux send-keys arguments:
  *
@@ -96,25 +170,25 @@ export function tokenizeSendKeys(input: string): RawToken[] {
  * would otherwise read as a key name (`'Enter'`) is quoted. Throws
  * SendKeysError for empty input or an unterminated quote.
  */
-export function encodeSendKeys(input: string, parseKey: SendKeyParser): string {
+export function parseSendKeys(input: string, parseKey: SendKeyParser): KeyEvent[] {
   const tokens = tokenizeSendKeys(input);
-  let out = "";
+  const out: KeyEvent[] = [];
   let lastWasLiteral = false;
   let produced = false;
   for (const token of tokens) {
     if (token.quoted) {
       if (token.text === "") continue;
-      if (lastWasLiteral) out += " ";
-      out += token.text;
+      if (lastWasLiteral) out.push(...textEvents(" "));
+      out.push(...textEvents(token.text));
       lastWasLiteral = true;
       produced = true;
       continue;
     }
     const strokes = parseKey(token.text);
     if (strokes && strokes.some((stroke) => !isPlainStroke(stroke))) {
-      const bytes = strokes.map(encodeStroke).join("");
-      if (bytes !== "") {
-        out += bytes;
+      const events = strokes.map(strokeEvent).filter((event) => event.raw !== "");
+      if (events.length > 0) {
+        out.push(...events);
         lastWasLiteral = false;
         produced = true;
         continue;
@@ -122,14 +196,45 @@ export function encodeSendKeys(input: string, parseKey: SendKeyParser): string {
     }
     // Not a key send-keys can encode ("C-a" reads as three letters, "kp1" has
     // no terminal sequence): it goes through as the text it is.
-    if (lastWasLiteral) out += " ";
-    out += token.text;
+    if (lastWasLiteral) out.push(...textEvents(" "));
+    out.push(...textEvents(token.text));
     lastWasLiteral = true;
     produced = true;
   }
   if (!produced) throw new SendKeysError({ message: "nothing to send" });
   return out;
 }
+
+const textEvents = (text: string): KeyEvent[] => [...text].map((char) =>
+  new KeyEvent({
+    name: char === " " ? "space" : char,
+    ctrl: false,
+    meta: false,
+    shift: false,
+    option: false,
+    sequence: char,
+    number: false,
+    raw: char,
+    eventType: "press",
+    source: "raw",
+  }));
+
+const strokeEvent = (stroke: KeyStroke): KeyEvent => {
+  const raw = encodeStroke(stroke);
+  return new KeyEvent({
+    name: stroke.name,
+    ctrl: stroke.ctrl,
+    meta: stroke.meta,
+    shift: stroke.shift,
+    option: stroke.meta,
+    super: stroke.super,
+    sequence: raw,
+    number: false,
+    raw,
+    eventType: "press",
+    source: "raw",
+  });
+};
 
 /** A stroke whose encoding is just the character it is — a bare printable
  *  with no modifiers. A token made only of these is text: "hello" stays
@@ -152,32 +257,11 @@ export function sendKeys(
   input: string,
   parseKey: SendKeyParser,
 ): SendKeysError | null {
-  let bytes: string;
   try {
-    bytes = encodeSendKeys(input, parseKey);
+    const events = parseSendKeys(input, parseKey);
+    for (const event of events) target.key(event);
   } catch (error) {
     return S.is(SendKeysError)(error) ? error : new SendKeysError({ message: errorMessage(error) });
-  }
-  if (bytes === "") return new SendKeysError({ message: "nothing to send" });
-  target.write(bytes);
-  return null;
-}
-
-/**
- * Pick the pane a send-keys command targets: the focused pane if there is one,
- * else the sidebar's selected agent (revealed first, so it is a place
- * keystrokes land), else nothing — an explicit miss the caller must report.
- * Returning the miss rather than guessing keeps the error honest.
- */
-export function pickSendTarget(
-  focused: SendTarget | null,
-  selected: SendTarget | null,
-  reveal: (selected: SendTarget) => void,
-): SendTarget | null {
-  if (focused) return focused;
-  if (selected) {
-    reveal(selected);
-    return selected;
   }
   return null;
 }

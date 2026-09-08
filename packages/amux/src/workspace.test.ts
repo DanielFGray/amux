@@ -1663,30 +1663,6 @@ test("pane.layout reports the pane's geometry and its window", () => {
   expect(layout!.panes[0]!.rows).toBe(24);
 });
 
-test("pane.send-keys --pane names the target even when it is not focused", () => {
-  const adopted = run(workspaceFromSession(wideBase()));
-  const mutation = applyWorkspaceCommand(
-    adopted,
-    command("pane.send-keys", { keys: "x", pane: "pane-b1" }),
-    context,
-  );
-  expect(mutation.actions).toEqual([{ _tag: "input", agent: "agent-b1", data: "x" }]);
-  // Without a target the keys go to the workspace's focused pane (space-a's),
-  // which is exactly why a caller in a managed pane must say --current/--pane.
-  const focused = applyWorkspaceCommand(adopted, command("pane.send-keys", { keys: "y" }), context);
-  expect(focused.actions).toEqual([{ _tag: "input", agent: "agent-a", data: "y" }]);
-});
-
-test("pane.send-keys --current targets the caller's own pane", () => {
-  const adopted = run(workspaceFromSession(wideBase()));
-  const mutation = applyWorkspaceCommand(
-    adopted,
-    command("pane.send-keys", { keys: "x", current: true }),
-    wideContext,
-  );
-  expect(mutation.actions).toEqual([{ _tag: "input", agent: "agent-b1", data: "x" }]);
-});
-
 test("pane.split --pane splits the named pane wherever it lives", () => {
   const adopted = run(workspaceFromSession(wideBase()));
   const mutation = applyWorkspaceCommand(
