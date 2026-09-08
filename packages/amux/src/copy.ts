@@ -229,6 +229,23 @@ export class CopyMode {
     return this.#pane;
   }
 
+  /** Whether a selection is in progress — `v`/Space started one and it has
+   *  not been cleared or yanked. The escape-layering context (app.tsx) reads
+   *  this to decide whether it, rather than copy mode's own handler, owns
+   *  the next Escape. */
+  get hasSelection(): boolean {
+    return this.#anchor !== null;
+  }
+
+  /** Drop the in-progress selection without leaving the mode — the first
+   *  stage of Escape's layering, called by the context that claims Escape
+   *  ahead of copy mode's own handler while a selection is active. */
+  clearSelection() {
+    this.#anchor = null;
+    this.#paint();
+    this.#refresh();
+  }
+
   /** The cursor, in scrollback coordinates. Read-only, for chrome and tests. */
   get cursor() {
     return { ...this.#cursor };
@@ -378,14 +395,15 @@ export class CopyMode {
     pane.copyText(text);
   }
 
-  /** Escape backs out of the mode one layer at a time: drop an active
-   *  selection first, then forget an active search, and only then leave. */
+  /** Escape backs out of the mode one layer at a time. Dropping an active
+   *  selection is the outermost layer, but it is no longer this method's
+   *  concern: the escape-layering context (app.tsx) claims Escape ahead of
+   *  copy mode's own handler whenever `hasSelection` is true, and calls
+   *  `clearSelection` directly, so onKey never sees that Escape at all. What
+   *  is left here is the layer beneath it — forget an active search, and
+   *  only then leave. */
   #escape() {
-    if (this.#anchor) {
-      this.#anchor = null;
-      this.#paint();
-      this.#refresh();
-    } else if (this.#search) {
+    if (this.#search) {
       this.#search = null;
     } else {
       this.exit();

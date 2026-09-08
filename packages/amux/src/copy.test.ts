@@ -34,7 +34,7 @@ async function makePane(vt: string) {
     cols: 40,
     rows: 10,
   });
-  const pane = new TerminalPane(t.renderer, { id: "pane", session: session });
+  const pane = TerminalPane.make(t.renderer, { id: "pane", session: session });
   session.term.resize(40, 10);
   if (vt) session.term.write(bytes(vt));
   return {
@@ -42,7 +42,7 @@ async function makePane(vt: string) {
     session,
     pane,
     dispose: () => {
-      pane.destroyRecursively();
+      Effect.runSync(pane.release);
       session.dispose();
       t.renderer.destroy();
     },
@@ -180,14 +180,14 @@ test("y without a selection just leaves", async () => {
  *  origin is the renderer's (0,0) and its default edges add one column and one
  *  row of border padding: terminal cell (x, y) sits at event (x + 1, y + 1). */
 function mouseDown(pane: TerminalPane, x: number, y: number, opts: { shift?: boolean } = {}) {
-  const event = new MouseEvent(pane, {
+  const event = new MouseEvent(pane.view, {
     type: "down",
     button: 0,
     x: x + 1,
     y: y + 1,
     modifiers: { shift: !!opts.shift, alt: false, ctrl: false },
   });
-  pane.processMouseEvent(event);
+  pane.view.processMouseEvent(event);
 }
 
 test("a real mouse-down starts the selection path and interrupts copy mode", async () => {
@@ -399,11 +399,18 @@ test("escape drops the selection first, then quits", async () => {
   expect(mode.cursor).toEqual({ x: 0, y: 2 });
   // A selection crossing rows highlights every intermediate row in full.
   expect(selected(session.term)).toEqual(["0,1", "1,1", "2,1", "3,1"]);
-  mode.onKey({ name: "escape" });
+  // Escape's first layer is app.tsx's higher-priority "selection" context
+  // (ts-fd2a33): it claims Escape ahead of the mode's own handler and calls
+  // `clearSelection` directly, so `onKey` never sees an Escape while a
+  // selection is active — this is what that context does, exercised here
+  // without app.tsx's keymap plumbing.
+  expect(mode.hasSelection).toBe(true);
+  mode.clearSelection();
   expect(mode.active).toBe(true);
   // Selection dropped to a cursor-only highlight; the cursor did not move.
   expect(mode.cursor).toEqual({ x: 0, y: 2 });
   expect(selected(session.term)).toEqual([]);
+  expect(mode.hasSelection).toBe(false);
   mode.onKey({ name: "escape" });
   expect(mode.active).toBe(false);
 });
@@ -775,7 +782,7 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
     cols: 40,
     rows: 10,
   });
-  const pane = new TerminalPane(t.renderer, { id: "pane", session: session });
+  const pane = TerminalPane.make(t.renderer, { id: "pane", session: session });
   session.term.resize(40, 10);
   session.term.write(bytes("alpha beta\r\ngamma"));
   const mode = new CopyMode();
@@ -828,7 +835,7 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
   expect(mode.active).toBe(true);
   expect(mode.cursor).toEqual({ x: 0, y: 0 });
 
-  pane.destroyRecursively();
+  Effect.runSync(pane.release);
   session.dispose();
   t.renderer.destroy();
 });

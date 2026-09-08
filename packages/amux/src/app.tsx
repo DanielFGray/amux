@@ -118,9 +118,9 @@ import {
   type SpawnProvidersService,
 } from "./plugin/services.ts";
 import {
-  activeHandler,
   CONTEXT_PRIORITY,
   findContextPriorityConflicts,
+  resolveUnhandled,
   type ContextSpec,
 } from "./key-context.ts";
 import { makeSessionFacts } from "./session-facts.ts";
@@ -1955,21 +1955,13 @@ function buildApp(
    * note on preventDefault in bindings.ts.
    */
   function onUnhandled(event: KeyEvent): boolean {
-    // Whatever overlay is on top owns the keys the keymap did not claim — its
-    // context outranks every other context's priority band (CONTEXT_PRIORITY,
-    // key-context.ts), so it always wins `activeHandler` over anything below.
-    const overlay = activeHandler(contextsProvider.value.all());
-    if (overlay) return overlay.handle!(event);
-    // Copy mode owns the focused pane's unhandled keys. Bound keys never reach
-    // here, so the leader and every ^a sequence keep their normal meaning — and
-    // a pane that is not in copy mode still gets its child's keystrokes, which
-    // is how copy mode survives a ^a pane-focus away from it.
-    if (copyMode.active && copyMode.pane === spaces.activeWindow?.focused) {
-      return copyMode.onKey(event);
-    }
-    // The pane decides what an unbound key means, because that depends on what
-    // fills it: a terminal wants the bytes a child would have read, a component
-    // wants the event left alone for the renderable holding focus inside it.
+    // Every registered context gets a shot, highest priority band first
+    // (overlay, then app-mode — copy mode today — CONTEXT_PRIORITY in
+    // key-context.ts). The pane is the fallback below every context, not one
+    // of them: it decides what an unbound key means, because that depends on
+    // what fills it — a terminal wants the bytes a child would have read, a
+    // component wants the event left alone for the renderable holding focus.
+    if (resolveUnhandled(contextsProvider.value.all(), event)) return true;
     return activeWin()?.key(event) ?? false;
   }
 
@@ -2923,6 +2915,38 @@ function buildApp(
         handle: disconnectedOverlayKeys,
       },
     ],
+    // Copy mode: the predicate is app.tsx:1941's old onUnhandled guard,
+    // moved unchanged (ts-72f921's log: pane-pinning is state living in
+    // copy.ts, expressed as a predicate rather than special-cased — the
+    // mode outlives focus moving away because this simply goes false, not
+    // because anything here holds onto it). The selection layer sits one
+    // band above copy mode itself and claims only Escape, returning false
+    // for everything else so `resolveUnhandled` falls through to copy
+    // mode's own handler underneath it (ts-72f921's escape-layering: "a
+    // selection exists" is a second context, not a switch inside one).
+    "amux.copy-mode": (): readonly ContextSpec[] => [
+      {
+        id: "copy-mode",
+        active: () => copyMode.active && copyMode.pane === spaces.activeWindow?.focused,
+        priority: CONTEXT_PRIORITY.APP_MODE,
+        rebindable: false,
+        handle: (event) => copyMode.onKey(event),
+      },
+      {
+        id: "copy-mode.selection",
+        active: () =>
+          copyMode.active &&
+          copyMode.hasSelection &&
+          copyMode.pane === spaces.activeWindow?.focused,
+        priority: CONTEXT_PRIORITY.APP_MODE + 1,
+        rebindable: false,
+        handle: (event) => {
+          if (event.name !== "escape") return false;
+          copyMode.clearSelection();
+          return true;
+        },
+      },
+    ],
   } as const;
 
   // Before the first window exists, so its panes are built with the right edges.
@@ -3062,6 +3086,18 @@ function buildApp(
         SlotsTag.pipe(
           Effect.flatMap((slots) =>
             Effect.forEach(panelGroups["amux.windows"](), (entry) => slots.register(entry)),
+          ),
+        ),
+    }),
+    definePlugin({
+      id: "amux.copy-mode",
+      inject: [ContextsTag],
+      effect: () =>
+        ContextsTag.pipe(
+          Effect.flatMap((contexts) =>
+            Effect.forEach(contextGroups["amux.copy-mode"](), (context) =>
+              contexts.register(context),
+            ),
           ),
         ),
     }),

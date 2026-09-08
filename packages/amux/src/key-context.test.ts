@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import {
-  activeHandler,
   CONTEXT_PRIORITY,
   findContextPriorityConflicts,
+  resolveUnhandled,
   type ContextSpec,
 } from "./key-context.ts";
 import { createPluginContributions, type PluginInstance } from "./plugin/contributions.ts";
@@ -50,7 +50,7 @@ test("a plugin and core can both register a context; retiring the owner retires 
   expect(contexts.all().map((entry) => entry.name)).toEqual(["app.prefix"]);
 });
 
-test("activeHandler picks the highest-priority active context with a catch-all", () => {
+test("resolveUnhandled offers the key to the highest-priority active context first", () => {
   const seen: string[] = [];
   const record = (id: string) => () => {
     seen.push(id);
@@ -72,13 +72,12 @@ test("activeHandler picks the highest-priority active context with a catch-all",
   };
   // Opened last and ranked higher, so it takes the keystroke off settings
   // without either one knowing the other exists.
-  const winner = activeHandler([settings, prompt]);
-  expect(winner?.id).toBe("prompt");
-  winner?.handle?.({ name: "escape" } as never);
+  const key = { name: "escape" } as never;
+  expect(resolveUnhandled([settings, prompt], key)).toBe(true);
   expect(seen).toEqual(["prompt"]);
 });
 
-test("activeHandler skips an active context with no catch-all and an inactive one with higher priority", () => {
+test("resolveUnhandled skips a context with no catch-all and an inactive one with higher priority", () => {
   const bindingsOnly: ContextSpec = {
     id: "pane-normal",
     active: () => true,
@@ -92,12 +91,53 @@ test("activeHandler skips an active context with no catch-all and an inactive on
     rebindable: false,
     handle: () => true,
   };
+  const seen: string[] = [];
   const fallback: ContextSpec = {
     id: "copy-mode",
     active: () => true,
     priority: CONTEXT_PRIORITY.APP_MODE,
     rebindable: false,
-    handle: () => true,
+    handle: () => {
+      seen.push("copy-mode");
+      return true;
+    },
   };
-  expect(activeHandler([bindingsOnly, closedOverlay, fallback])?.id).toBe("copy-mode");
+  const key = { name: "x" } as never;
+  expect(resolveUnhandled([bindingsOnly, closedOverlay, fallback], key)).toBe(true);
+  expect(seen).toEqual(["copy-mode"]);
+});
+
+test("resolveUnhandled falls through a context that declines the key to the one beneath it", () => {
+  const seen: string[] = [];
+  // Copy mode's escape-layering: a higher-priority context claims only
+  // Escape (returning false for everything else), so every other key still
+  // reaches the base context underneath it.
+  const selection: ContextSpec = {
+    id: "copy-mode.selection",
+    active: () => true,
+    priority: CONTEXT_PRIORITY.APP_MODE + 1,
+    rebindable: false,
+    handle: (event) => {
+      if ((event as { name: string }).name !== "escape") return false;
+      seen.push("selection:escape");
+      return true;
+    },
+  };
+  const base: ContextSpec = {
+    id: "copy-mode",
+    active: () => true,
+    priority: CONTEXT_PRIORITY.APP_MODE,
+    rebindable: false,
+    handle: (event) => {
+      seen.push(`copy-mode:${(event as { name: string }).name}`);
+      return true;
+    },
+  };
+  expect(resolveUnhandled([base, selection], { name: "escape" } as never)).toBe(true);
+  expect(resolveUnhandled([base, selection], { name: "w" } as never)).toBe(true);
+  expect(seen).toEqual(["selection:escape", "copy-mode:w"]);
+});
+
+test("resolveUnhandled returns false when nothing active claims the key", () => {
+  expect(resolveUnhandled([], { name: "x" } as never)).toBe(false);
 });

@@ -7,10 +7,8 @@ import type { KeyEvent } from "@opentui/core";
  * registered them (contributions.ts).
  *
  * This is the registry. `apply` (bindings.ts) resolves a context's
- * `CommandSpec`s into a keymap layer; `activeHandler` below resolves its
- * catch-all for what the keymap left unclaimed. `onUnhandled` (app.tsx) still
- * hand-rolls copy mode's tier — that migration is a later ticket in
- * ep-227150.
+ * `CommandSpec`s into a keymap layer; `resolveUnhandled` below resolves its
+ * catch-all for what the keymap left unclaimed.
  */
 export interface ContextSpec {
   /** Dotted name, e.g. "copy-mode" or "app.prefix". Unique per owner, the
@@ -42,20 +40,29 @@ export interface ContextSpec {
 }
 
 /**
- * The active context an unclaimed key belongs to: highest `priority` wins, a
- * tie going to whichever registered later — the ordering `@opentui/keymap`
- * layers use (bindings.ts's `apply`), kept consistent so one precedence rule
- * governs both a context's bindings and its catch-all. Only a context
- * declaring `handle` is a candidate; a context with only bindings has
- * nothing left to claim once the keymap already tried them.
+ * Offer an unclaimed key to every active context that declares `handle`,
+ * highest `priority` first (a tie going to whichever registered later — the
+ * ordering `@opentui/keymap` layers use, bindings.ts's `apply`, kept
+ * consistent so one precedence rule governs both a context's bindings and
+ * its catch-all). Stops at the first `handle` that returns true.
+ *
+ * A `false` does not fall all the way through to the caller's own fallback —
+ * it falls to the NEXT active context, same as an unclaimed key falls from
+ * one keymap layer to the layer below it. This is what lets a
+ * higher-priority context claim only one key and leave everything else to a
+ * context beneath it: copy mode's escape-layering registers "a selection is
+ * active" one band above copy mode itself, claiming only Escape, so every
+ * other copy-mode key still reaches copy mode's own handler undisturbed.
  */
-export function activeHandler(contexts: readonly ContextSpec[]): ContextSpec | null {
-  let winner: ContextSpec | null = null;
-  for (const context of contexts) {
-    if (!context.handle || !context.active()) continue;
-    if (!winner || context.priority >= winner.priority) winner = context;
+export function resolveUnhandled(contexts: readonly ContextSpec[], event: KeyEvent): boolean {
+  const candidates = contexts
+    .map((context, order) => ({ context, order }))
+    .filter(({ context }) => context.handle && context.active())
+    .sort((a, b) => b.context.priority - a.context.priority || b.order - a.order);
+  for (const { context } of candidates) {
+    if (context.handle!(event)) return true;
   }
-  return winner;
+  return false;
 }
 
 /**
