@@ -192,8 +192,8 @@ class AttachClientConnection {
     this._runtime = runtime;
     this._handshake = handshake;
     this._closedSignal = Deferred.makeUnsafe<void>();
-    this._workspaceQ = Effect.runSync(Queue.sliding<WorkspaceSnapshot>(1));
-    this._commandQ = Effect.runSync(
+    this._workspaceQ = Effect.runSyncWith(runtime)(Queue.sliding<WorkspaceSnapshot>(1));
+    this._commandQ = Effect.runSyncWith(runtime)(
       Queue.unbounded<{ readonly id: string; readonly command: JsonValue }>(),
     );
     this._writer = createSocketWriter(socket, () => {
@@ -286,11 +286,11 @@ class AttachClientConnection {
 
   ping(timeoutMs = 5_000): Promise<boolean> {
     if (this._closed) return Promise.resolve(false);
-    const nonce = `ping-${Effect.runSync(Random.next).toString(36)}`;
+    const nonce = `ping-${Effect.runSyncWith(this._runtime)(Random.next).toString(36)}`;
     const pong = Deferred.makeUnsafe<boolean>();
     this._pongs.set(nonce, pong);
     this._send({ _tag: "ping", nonce });
-    return Effect.runPromise(
+    return Effect.runPromiseWith(this._runtime)(
       Deferred.await(pong).pipe(
         Effect.timeout(timeoutMs),
         Effect.orElseSucceed(() => false),
@@ -360,8 +360,9 @@ class AttachClientConnection {
     this._releaseScope = null;
     this._handshake = null;
     this._writer.close();
-    Effect.runSync(Deferred.succeed(this._closedSignal, undefined));
-    for (const pong of this._pongs.values()) Effect.runSync(Deferred.succeed(pong, false));
+    Effect.runSyncWith(this._runtime)(Deferred.succeed(this._closedSignal, undefined));
+    for (const pong of this._pongs.values())
+      Effect.runSyncWith(this._runtime)(Deferred.succeed(pong, false));
     this._pongs.clear();
     for (const { queues } of this._queued.values())
       for (const queue of queues) this._shutdownQueue(queue);
@@ -386,7 +387,7 @@ class AttachClientConnection {
           return;
         }
         const pong = this._pongs.get(frame.nonce);
-        if (pong) Effect.runSync(Deferred.succeed(pong, true));
+        if (pong) Effect.runSyncWith(this._runtime)(Deferred.succeed(pong, true));
         this._pongs.delete(frame.nonce);
       }),
       Match.tag("error", (frame) => {
@@ -397,7 +398,7 @@ class AttachClientConnection {
       }),
       Match.tag("workspace", (frame) => {
         try {
-          const workspace = Effect.runSync(parseWorkspaceJson(frame.state));
+          const workspace = Effect.runSyncWith(this._runtime)(parseWorkspaceJson(frame.state));
           if (workspace.revision !== frame.revision)
             throw new AttachError({ message: "workspace revision does not match frame" });
           Queue.offerUnsafe(this._workspaceQ, workspace);
