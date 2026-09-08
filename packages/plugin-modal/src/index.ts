@@ -14,7 +14,6 @@ import {
 } from "@danielfgray/amux";
 
 export const MODAL_PLUGIN_ID = "amux.modal";
-const [active, setActive] = createSignal(false);
 
 export const modalPlugin: PluginDefinition = definePlugin({
   id: MODAL_PLUGIN_ID,
@@ -26,6 +25,15 @@ export const modalPlugin: PluginDefinition = definePlugin({
       const options = yield* OptionsTag;
       const panel = yield* PanelTag;
       const scope = yield* Scope.Scope;
+      const [active, setActive] = createSignal(false);
+      const enter = () => setActive(true);
+      const leave = () => setActive(false);
+      const entry: ContextSpec = {
+        id: "modal.entry",
+        active: () => !active(),
+        priority: CONTEXT_PRIORITY.APP_MODE + 2,
+        rebindable: false,
+      };
       const amux: ContextSpec = {
         id: "modal.amux",
         active,
@@ -33,7 +41,7 @@ export const modalPlugin: PluginDefinition = definePlugin({
         rebindable: false,
         showOnEntry: true,
         handle: () => {
-          setActive(false);
+          leave();
           return true;
         },
       };
@@ -50,17 +58,20 @@ export const modalPlugin: PluginDefinition = definePlugin({
         { kind: "boolean", default: false, desc: "keep amux mode active after a command" },
       ]);
       const leaveAfterAction = Effect.sync(() => {
-        if (!panel.options()["modal.vimMode"]) setActive(false);
+        if (!panel.options()["modal.vimMode"]) leave();
       });
-      yield* Scope.addFinalizer(scope, Effect.sync(() => setActive(false)));
+      yield* Scope.addFinalizer(scope, Effect.sync(leave));
+      yield* contexts.register(entry);
       yield* contexts.register(amux);
-      yield* bindings.register({
-        name: "modal.enter",
-        key: "<leader>",
-        desc: "enter amux mode",
-        group: "amux",
-        run: Effect.sync(() => setActive(true)),
-      });
+      yield* bindings.register(
+        contextCommand(entry, {
+          name: "enter",
+          key: "<leader>",
+          desc: "enter amux mode",
+          group: "amux",
+          run: Effect.sync(enter),
+        }),
+      );
       yield* Effect.forEach(["escape", "i"], (key) =>
         bindings.register(
           contextCommand(amux, {
@@ -68,7 +79,7 @@ export const modalPlugin: PluginDefinition = definePlugin({
             key,
             desc: "leave amux mode",
             group: "amux",
-            run: Effect.sync(() => setActive(false)),
+            run: Effect.sync(leave),
           }),
         ),
       );

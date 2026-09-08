@@ -58,26 +58,39 @@ test("enters with the configured leader, retires one-shot commands, and consumes
             yield* Effect.orDie(host.add(provider));
           }
           yield* Effect.orDie(host.add(modalPlugin));
-          const amux = contexts[0]!;
+          const [entry, amux] = contexts;
           let paneKeys = 0;
-          createBindings(t.renderer, bindings, {
-            keys: { leader: "ctrl+b", bindings: {} },
-            onUnhandled: (event) => {
-              if (resolveUnhandled([amux], event)) return true;
-              paneKeys++;
-              return true;
+          createBindings(
+            t.renderer,
+            [
+              {
+                name: "pane.focus-left",
+                key: "<leader>h",
+                desc: "focus pane left",
+                group: "panes",
+                run: Effect.sync(() => runs.push("pane.focus-left")),
+              },
+              ...bindings,
+            ],
+            {
+              keys: { leader: "ctrl+b", bindings: {} },
+              onUnhandled: (event) => {
+                if (resolveUnhandled([entry!, amux!], event)) return true;
+                paneKeys++;
+                return true;
+              },
             },
-          });
+          );
 
           t.mockInput.pressKey("b", { ctrl: true });
-          expect(amux.active()).toBe(true);
+          expect(amux!.active()).toBe(true);
           t.mockInput.pressKey("h");
           expect(runs).toEqual(["pane.resize"]);
-          expect(amux.active()).toBe(false);
+          expect(amux!.active()).toBe(false);
 
           t.mockInput.pressKey("b", { ctrl: true });
           t.mockInput.pressKey("x");
-          expect(amux.active()).toBe(false);
+          expect(amux!.active()).toBe(false);
           expect(paneKeys).toBe(0);
           t.mockInput.pressKey("x");
           expect(paneKeys).toBe(1);
@@ -85,9 +98,9 @@ test("enters with the configured leader, retires one-shot commands, and consumes
           setOptions((current) => ({ ...current, "modal.vimMode": true }));
           t.mockInput.pressKey("b", { ctrl: true });
           t.mockInput.pressKey("h");
-          expect(amux.active()).toBe(true);
+          expect(amux!.active()).toBe(true);
           t.mockInput.pressKey("i");
-          expect(amux.active()).toBe(false);
+          expect(amux!.active()).toBe(false);
 
           yield* host.remove(modalPlugin.id);
           expect(bindings).toEqual([]);
