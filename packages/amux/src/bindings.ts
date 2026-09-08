@@ -1,4 +1,4 @@
-import type { Effect } from "effect";
+import { Effect } from "effect";
 import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core";
 import { createOpenTuiKeymap } from "@opentui/keymap/opentui";
 import {
@@ -8,11 +8,12 @@ import {
   registerMetadataFields,
   registerEscapeClearsPendingSequence,
 } from "@opentui/keymap/addons";
-import type { Keymap } from "@opentui/keymap";
+import type { CommandContext, Keymap } from "@opentui/keymap";
 import { reactiveMatcherFromSignal } from "@opentui/keymap/solid";
 import type { KeyStroke } from "./keys.ts";
 import { runDetached, type CommandError } from "./commands.ts";
 import type { ContextSpec } from "./key-context.ts";
+import { KeyInvocation } from "./key-invocation.ts";
 
 export type AppKeymap = Keymap<Renderable, KeyEvent>;
 
@@ -200,8 +201,14 @@ export interface CommandSpec {
    * Effect-returning methods, so a forgotten step is a type error instead of a
    * statement that quietly does nothing (ts-456094, where eight commands did
    * exactly that).
+   *
+   * `KeyInvocation` in the requirement channel is what a command declares to
+   * read the keystroke that ran it — the event, and whatever the dispatching
+   * context captured ahead of it (a count, a register, a text object). Most
+   * commands need none of that and stay `Effect<any, CommandError>`: `never`
+   * satisfies any declared requirement, so nothing else changes for them.
    */
-  run: Effect.Effect<any, CommandError>;
+  run: Effect.Effect<any, CommandError, KeyInvocation>;
 }
 
 /**
@@ -383,11 +390,22 @@ export function createBindings(
         name: cmd.name,
         desc: cmd.desc,
         group: cmd.group,
-        run: () => {
+        run: (ctx: CommandContext<Renderable, KeyEvent>) => {
           const previous = activeCommand;
           activeCommand = cmd.name;
           try {
-            runDetached(cmd.name, cmd.run, opts.onError);
+            runDetached(
+              cmd.name,
+              cmd.run.pipe(
+                Effect.provideService(KeyInvocation, {
+                  event: ctx.event,
+                  data: ctx.data,
+                  input: ctx.input,
+                  payload: ctx.payload,
+                }),
+              ),
+              opts.onError,
+            );
           } finally {
             activeCommand = previous;
           }

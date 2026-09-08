@@ -18,6 +18,7 @@ import {
   type CommandSpec,
 } from "./bindings.ts";
 import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
+import { KeyInvocation, type KeyInvocationValue } from "./key-invocation.ts";
 
 /**
  * A binding whose key string the parser rejects is not an error anyone sees —
@@ -57,6 +58,41 @@ test("every declared sequence compiles, including multi-char key names", async (
     const entries = helpGroups(bindings, commands)[0]!.entries;
 
     expect(entries.map((e) => e.keys)).toEqual(["^a h", "^a left", "^a { / ^a }"]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * The keymap's own CommandContext (event/data/input/payload) used to be
+ * thrown away at dispatch — `apply()` registered every command as a nullary
+ * `run: () => runDetached(...)`. A command that declares `KeyInvocation` in
+ * its requirement now receives it for real, read off the live keystroke that
+ * fired it, and a command that declares nothing (most of them) is dispatched
+ * exactly as before.
+ */
+test("a command that declares KeyInvocation receives the keystroke that ran it", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    let seen: KeyInvocationValue | undefined;
+    const commands: CommandSpec[] = [
+      {
+        name: "t.echo",
+        key: "<leader>e",
+        desc: "echo",
+        group: "t",
+        run: Effect.gen(function* () {
+          seen = yield* KeyInvocation;
+        }),
+      },
+    ];
+    createBindings(t.renderer, commands, { onUnhandled: () => true });
+
+    t.mockInput.pressKey("a", { ctrl: true });
+    t.mockInput.pressKey("e");
+
+    expect(seen?.event.name).toBe("e");
+    expect(seen?.data).toEqual({});
   } finally {
     t.renderer.destroy();
   }
