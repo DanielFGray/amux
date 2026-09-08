@@ -31,6 +31,7 @@ const GROUPS: HelpGroup[] = [
         custom: false,
         fixed: false,
         orphaned: false,
+        context: "",
       },
       {
         name: "pane.close",
@@ -39,6 +40,7 @@ const GROUPS: HelpGroup[] = [
         custom: true,
         fixed: false,
         orphaned: false,
+        context: "",
       },
       {
         name: "pane.send-keys",
@@ -47,6 +49,7 @@ const GROUPS: HelpGroup[] = [
         custom: false,
         fixed: false,
         orphaned: false,
+        context: "",
       },
     ],
   },
@@ -60,6 +63,7 @@ const GROUPS: HelpGroup[] = [
         custom: false,
         fixed: false,
         orphaned: false,
+        context: "",
       },
       // Not rebindable, so it takes no selection index of its own.
       {
@@ -69,6 +73,7 @@ const GROUPS: HelpGroup[] = [
         custom: false,
         fixed: true,
         orphaned: false,
+        context: "",
       },
     ],
   },
@@ -82,6 +87,7 @@ const GROUPS: HelpGroup[] = [
         custom: true,
         fixed: false,
         orphaned: true,
+        context: "",
       },
     ],
   },
@@ -135,6 +141,7 @@ test("an orphaned binding is shown, not editable, and labelled as unknown", () =
       desc: "unknown command",
       custom: true,
       orphaned: true,
+      context: "",
     },
   ]);
 });

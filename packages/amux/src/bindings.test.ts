@@ -12,6 +12,7 @@ import {
   keyToBinding,
   keysFor,
   filterPaletteEntries,
+  nextKeys,
   paletteEntries,
   registerLayerChecked,
   type CommandSpec,
@@ -300,6 +301,7 @@ test("a command hidden from help still dispatches", async () => {
         custom: false,
         fixed: false,
         orphaned: false,
+        context: "",
       },
     ]);
   } finally {
@@ -374,12 +376,14 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
         group: "panes",
         keys: "^a |",
         desc: "split left/right",
+        available: true,
       },
       {
         name: "window.select-layout.tiled",
         group: "windows",
         keys: "unbound",
         desc: "arrange panes",
+        available: true,
       },
     ]);
     expect(
@@ -445,6 +449,7 @@ test("a binding for a command nothing registers is surfaced as orphaned, not dro
         custom: true,
         fixed: false,
         orphaned: true,
+        context: "",
       },
     ]);
   } finally {
@@ -855,6 +860,39 @@ test("a misspelled layer field fails loudly instead of silently going global", a
         commands: [],
       }),
     ).toThrow();
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * `nextKeys` reads `visibility: "active"`, not "registered" — "registered"
+ * walks raw layers and evaluates no conditions, so a binding scoped to an
+ * inactive context would read back as reachable and do nothing when pressed.
+ * A hint that shows must be able to fire.
+ */
+test("nextKeys never surfaces a binding whose context is inactive", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const [copyModeActive, setCopyModeActive] = createSignal(false);
+    const copyMode = testContext("copy-mode", CONTEXT_PRIORITY.APP_MODE, copyModeActive);
+    const commands: CommandSpec[] = [
+      contextCommand(copyMode, {
+        name: "yank",
+        key: "<leader>y",
+        desc: "yank selection",
+        group: "copy",
+        run: Effect.void,
+      }),
+    ];
+    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+
+    expect(nextKeys(bindings, commands, [{ display: "<leader>" }])).toEqual([]);
+
+    setCopyModeActive(true);
+    expect(nextKeys(bindings, commands, [{ display: "<leader>" }])).toEqual([
+      { group: "copy", entries: [{ keys: ["y"], desc: "yank selection" }] },
+    ]);
   } finally {
     t.renderer.destroy();
   }

@@ -111,6 +111,10 @@ export interface KeybindRow {
   /** See `HelpEntry.orphaned` — shown dimmed and unselectable, same as a
    *  fixed row, but for the opposite reason: nothing currently runs it. */
   orphaned: boolean;
+  /** Id of the owning context, or "" for global — see `HelpEntry.context`.
+   *  Rendered so a row whose key does nothing right now says why: it belongs
+   *  to a context that is not active, not that it is broken. */
+  context: string;
 }
 
 export interface KeybindGroup {
@@ -143,6 +147,7 @@ export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup
     desc: entry.desc,
     custom: entry.custom,
     orphaned: entry.orphaned,
+    context: entry.context,
   });
   return [
     {
@@ -155,6 +160,7 @@ export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup
           desc: "prefix, pressed before every binding",
           custom: false,
           orphaned: false,
+          context: "",
         },
       ],
     },
@@ -316,6 +322,11 @@ export function Settings(props: {
                           >
                             {entry.desc + (entry.custom ? " *" : "")}
                           </text>
+                          <Show when={entry.context}>
+                            <text style={{ fg: theme.overlay1, width: 14, flexShrink: 0 }}>
+                              {entry.context}
+                            </text>
+                          </Show>
                         </box>
                       );
                     }}

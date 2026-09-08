@@ -14,10 +14,10 @@ afterEach(() => {
 
 test("sorts unbound actions first without changing their relative order", () => {
   const entries: PaletteEntry[] = [
-    { name: "bound.first", group: "test", keys: "^a a", desc: "bound" },
-    { name: "free.first", group: "test", keys: "unbound", desc: "free" },
-    { name: "free.second", group: "test", keys: "unbound", desc: "free" },
-    { name: "bound.second", group: "test", keys: "^a b", desc: "bound" },
+    { name: "bound.first", group: "test", keys: "^a a", desc: "bound", available: true },
+    { name: "free.first", group: "test", keys: "unbound", desc: "free", available: true },
+    { name: "free.second", group: "test", keys: "unbound", desc: "free", available: true },
+    { name: "bound.second", group: "test", keys: "^a b", desc: "bound", available: true },
   ];
 
   expect(sortKeybindEntries(entries).map((entry) => entry.name)).toEqual([
@@ -36,6 +36,7 @@ test("selection keeps the action picker row visible", async () => {
     group: "test",
     keys: index === 0 ? "^a x" : "unbound",
     desc: `description-${index}`,
+    available: true,
   }));
   const [view, setView] = createSignal<KeybindPickerView>({
     entries,

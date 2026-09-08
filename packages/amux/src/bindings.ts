@@ -547,6 +547,11 @@ export interface HelpEntry {
    *  whose plugin is disabled or missing. The keys stay in config either way;
    *  the command just won't dispatch until something registers it again. */
   orphaned: boolean;
+  /** Id of the context this row's command is scoped to, or "" for global.
+   *  Read with visibility "registered", so an inactive context's rows still
+   *  appear for rebinding — the editor must say which context each row
+   *  belongs to, or it lies by omission about why a key does nothing today. */
+  context: string;
 }
 
 export interface HelpGroup {
@@ -559,6 +564,11 @@ export interface PaletteEntry {
   group: string;
   keys: string;
   desc: string;
+  /** False while this command's context is inactive. The palette runs
+   *  commands directly rather than through the keymap, so an inactive
+   *  command still needs to be visible — this only says its keys won't fire
+   *  right now, without hiding the only way left to reach it. */
+  available: boolean;
 }
 
 /** All registered commands, including commands intentionally hidden from help. */
@@ -575,6 +585,7 @@ export function paletteEntries(bindings: Bindings, commands: CommandSpec[]): Pal
         .map((binding) => formatSequence(binding.sequence, bindings.leader()))
         .join(" / ") || "unbound",
     desc: cmd.desc,
+    available: cmd.context ? cmd.context.active() : true,
   }));
 }
 
@@ -642,6 +653,7 @@ export function helpGroups(
       custom: cmd.name in keys.bindings,
       fixed: cmd.fixed === true,
       orphaned: false,
+      context: cmd.context?.id ?? "",
     });
     groups.set(cmd.group, entries);
   }
@@ -674,6 +686,8 @@ function orphanedEntries(bindings: Bindings, keys: Keys, known: ReadonlySet<stri
       custom: true,
       fixed: false,
       orphaned: true,
+      // Nothing registers this command right now, so no context claims it.
+      context: "",
     });
   }
   return entries;
@@ -688,6 +702,11 @@ function orphanedEntries(bindings: Bindings, keys: Keys, known: ReadonlySet<stri
  * as dispatch and the keybind list, so a binding cannot appear here and then
  * not fire.
  *
+ * Read with `visibility: "active"`, not "registered": "registered" walks raw
+ * layers and evaluates no conditions, so a binding scoped to an inactive
+ * context would read back as reachable here and do nothing when pressed. A
+ * hint that shows must be able to fire.
+ *
  * Hidden commands are omitted — they are the siblings covered by one entry,
  * the way `^a 1..9` is a single line rather than nine.
  */
@@ -698,7 +717,7 @@ export function nextKeys(
 ): HintGroup[] {
   if (pending.length === 0) return [];
   const active = bindings.keymap.getCommandBindings({
-    visibility: "registered",
+    visibility: "active",
     commands: commands.map((c) => c.name),
   });
 
