@@ -30,6 +30,7 @@
     "./format.ts": "./src/format.ts",
     "./shim.ts": "./src/shim.ts",
     "./effect/EventBus.ts": "./src/effect/EventBus.ts",
+    "./effect/SolidRuntime.ts": "./src/effect/SolidRuntime.ts",
     "./effect/timer.ts": "./src/effect/timer.ts",
     "./plugin/host.ts": "./src/plugin/host.ts",
     "./plugin/contributions.ts": "./src/plugin/contributions.ts"

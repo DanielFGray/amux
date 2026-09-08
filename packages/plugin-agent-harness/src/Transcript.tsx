@@ -1,8 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 /** @effect-diagnostics *:skip-file -- Solid render-tree event handlers and lifecycle control flow belong to OpenTUI/Solid, not the service Effect graph. */
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { Accessor } from "solid-js";
-import { Effect, Fiber, Schema as S, Stream, type Stream as StreamType } from "effect";
+import { Schema as S, type Stream as StreamType } from "effect";
+import { fromStream } from "@danielfgray/amux/effect/SolidRuntime.ts";
 import {
   pendingPermission,
   serializeTranscript,
@@ -47,10 +48,24 @@ export type PermissionBlock = Extract<TranscriptBlock, { kind: "permission" }>;
  */
 export function Transcript(props: TranscriptProps) {
   const transcript = new TranscriptModel();
-  const [revision, setRevision] = createSignal(0);
   const [expandedTools, setExpandedTools] = createSignal<ReadonlySet<string>>(new Set());
   const [expandedThinking, setExpandedThinking] = createSignal<ReadonlySet<string>>(new Set());
   const width = () => (typeof props.width === "function" ? props.width() : props.width);
+
+  // Asking for the history before the stream is subscribed is safe: the
+  // attach client creates a session's queue when a frame ARRIVES, not when the
+  // stream is subscribed, and stream() then adopts that queue. So the replay
+  // waits in it rather than being dropped on the floor.
+  props.sync(props.sessionId);
+  const revision = fromStream(props.frames(props.sessionId), 0, (rev, event) => {
+    if (!S.is(AgentFrame)(event)) return rev;
+    if (event._tag === "topic") {
+      const state = agentStateFromTopic(event);
+      if (state !== undefined) props.onStatus?.(state);
+    }
+    transcript.append(event);
+    return rev + 1;
+  });
   const blocks = createMemo(() => {
     revision();
     width();
@@ -59,28 +74,6 @@ export function Transcript(props: TranscriptProps) {
   // The pending question is a fact about the transcript, not a second stream to
   // keep in step with it: the pane above is told what the blocks already say.
   createEffect(() => props.onPending?.(pendingPermission(blocks())));
-
-  // Asking for the history before the stream fiber is running is safe: the
-  // attach client creates a session's queue when a frame ARRIVES, not when the
-  // stream is subscribed, and stream() then adopts that queue. So the replay
-  // waits in it rather than being dropped on the floor.
-  props.sync(props.sessionId);
-  const fiber = Effect.runFork(
-    props.frames(props.sessionId).pipe(
-      Stream.runForEach((event) =>
-        Effect.sync(() => {
-          if (!S.is(AgentFrame)(event)) return;
-          if (event._tag === "topic") {
-            const state = agentStateFromTopic(event);
-            if (state !== undefined) props.onStatus?.(state);
-          }
-          transcript.append(event);
-          setRevision((value) => value + 1);
-        }),
-      ),
-    ),
-  );
-  onCleanup(() => void Effect.runFork(Fiber.interrupt(fiber)));
 
   return (
     <scrollbox
