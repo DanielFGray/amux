@@ -28,6 +28,9 @@ export const modalPlugin: PluginDefinition = definePlugin({
       const [active, setActive] = createSignal(false);
       const enter = () => setActive(true);
       const leave = () => setActive(false);
+      const afterAction = () => {
+        if (!panel.options()["modal.vimMode"]) leave();
+      };
       const entry: ContextSpec = {
         id: "modal.entry",
         active: () => !active(),
@@ -39,6 +42,7 @@ export const modalPlugin: PluginDefinition = definePlugin({
         active,
         priority: CONTEXT_PRIORITY.APP_MODE + 2,
         rebindable: false,
+        globalLeaderAliases: { afterCommand: afterAction },
         showOnEntry: true,
         handle: () => {
           leave();
@@ -57,9 +61,7 @@ export const modalPlugin: PluginDefinition = definePlugin({
         "modal.vimMode",
         { kind: "boolean", default: false, desc: "keep amux mode active after a command" },
       ]);
-      const leaveAfterAction = Effect.sync(() => {
-        if (!panel.options()["modal.vimMode"]) leave();
-      });
+      const leaveAfterAction = Effect.sync(afterAction);
       yield* Scope.addFinalizer(scope, Effect.sync(leave));
       yield* contexts.register(entry);
       yield* contexts.register(amux);
@@ -84,8 +86,8 @@ export const modalPlugin: PluginDefinition = definePlugin({
         ),
       );
       yield* Effect.forEach([
-        action("h", "resize left", "left"), action("j", "resize down", "down"),
-        action("k", "resize up", "up"), action("l", "resize right", "right"),
+        action("alt+h", "resize left", "left"), action("alt+j", "resize down", "down"),
+        action("alt+k", "resize up", "up"), action("alt+l", "resize right", "right"),
       ], (binding) => bindings.register(binding));
     }),
 });

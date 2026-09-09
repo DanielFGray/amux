@@ -258,6 +258,8 @@ export interface Bindings {
   leader(): string;
   /** Sequences claimed by more than one command as of the last apply. */
   conflicts(): Conflict[];
+  /** Commands currently compiled into layers, including context projections. */
+  commands(): readonly CommandSpec[];
   /** Rebuild under `keys`, returning whatever collided. */
   apply(keys: Keys): Conflict[];
   /** Replace the active command list and rebuild under the current keys. */
@@ -344,6 +346,7 @@ export function createBindings(
   let commands = [...initialCommands];
   let currentKeys = opts.keys ?? { leader: DEFAULT_LEADER, bindings: {} };
   let conflicts: Conflict[] = [];
+  let compiledCommands: readonly CommandSpec[] = [];
   let disposeLayers: (() => void)[] = [];
   let disposeContextInterceptors: (() => void)[] = [];
   let disposeLeader: (() => void) | null = null;
@@ -445,9 +448,14 @@ export function createBindings(
 
     // Unchanged from before contexts existed: the global layer carries every
     // context-less binding and is always active.
+    const projected: CommandSpec[] = [];
     disposeLayers = [registerLayerChecked(keymap, layerContent(global, keys))];
     disposeContextInterceptors = [];
     for (const [context, group] of byContext) {
+      const aliases = context.globalLeaderAliases
+        ? global.flatMap((source) => globalLeaderAlias(context, source, keys))
+        : [];
+      projected.push(...aliases);
       disposeLayers.push(
         registerLayerChecked(keymap, {
           priority: context.priority,
@@ -458,7 +466,7 @@ export function createBindings(
           // predicate's own value flips. Adapting it is what
           // `@opentui/keymap/solid` exists for.
           enabled: reactiveMatcherFromSignal(context.active),
-          ...layerContent(group, keys),
+          ...layerContent([...group, ...aliases], keys),
         }),
       );
       if (context.beforeDispatch) {
@@ -480,6 +488,7 @@ export function createBindings(
     conflicts = [global, ...byContext.values()].flatMap((group) =>
       findConflicts(keymap, group, leader),
     );
+    compiledCommands = [...global, ...Array.from(byContext.values()).flat(), ...projected];
     return conflicts;
   }
 
@@ -491,6 +500,7 @@ export function createBindings(
     activeCommand: () => activeCommand,
     leader: () => leader,
     conflicts: () => conflicts,
+    commands: () => compiledCommands,
     apply,
     setCommands(next) {
       commands = [...next];
@@ -525,6 +535,26 @@ export function createBindings(
     } catch {
       return false;
     }
+  }
+
+  function globalLeaderAlias(context: ContextSpec, source: CommandSpec, keys: Keys): CommandSpec[] {
+    const aliases = keysFor(source, keys)
+      .filter((key) => key.startsWith("<leader>") && key.length > "<leader>".length)
+      .map((key) => key.slice("<leader>".length));
+    if (!aliases.length) return [];
+    return [
+      contextCommand(context, {
+        name: `alias.${source.name}`,
+        key: aliases,
+        desc: source.desc,
+        group: source.group,
+        hidden: source.hidden,
+        fixed: true,
+        run: source.run.pipe(
+          Effect.ensuring(Effect.sync(context.globalLeaderAliases?.afterCommand ?? (() => {}))),
+        ),
+      }),
+    ];
   }
 }
 
@@ -755,7 +785,7 @@ function orphanedEntries(bindings: Bindings, keys: Keys, known: ReadonlySet<stri
  */
 export function nextKeys(
   bindings: Bindings,
-  commands: CommandSpec[],
+  commands: readonly CommandSpec[],
   contexts: readonly ContextSpec[],
   pending: readonly { display: string }[],
 ): HintGroup[] {
@@ -765,6 +795,9 @@ export function nextKeys(
   });
 
   const groups = new Map<string, { keys: string[]; desc: string }[]>();
+  const aliasesGlobalLeader = contexts.some(
+    (context) => context.active() && context.globalLeaderAliases !== undefined,
+  );
   const priorityOf = new Map<string, number>();
   const bump = (group: string, priority: number) =>
     priorityOf.set(group, Math.max(priorityOf.get(group) ?? -Infinity, priority));
@@ -785,7 +818,7 @@ export function nextKeys(
       if (sequence.length <= pending.length) continue;
       if (pending.some((part, i) => sequence[i]!.display !== part.display)) continue;
       if (pending.length === 0 && sequence[0]!.display === "<leader>") {
-        leaderReachable = true;
+        if (!aliasesGlobalLeader) leaderReachable = true;
         continue;
       }
       const key = formatKey(sequence[pending.length]!.display, bindings.leader());

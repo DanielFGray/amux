@@ -38,6 +38,17 @@ export interface ContextSpec {
    *  owner rather than user configuration. */
   rebindable: boolean;
 
+  /**
+   * Re-expose every global binding beginning with `<leader>` without that
+   * first token while this context is active. The bindings compiler derives
+   * the aliases from the effective user keymap, so contexts do not copy the
+   * command table or drift from later rebindings.
+   */
+  globalLeaderAliases?: {
+    /** Runs after a projected global command, including when it fails. */
+    afterCommand?: () => void;
+  };
+
   /** Observe a key before this context's bindings resolve. A context uses
    * this for grammar state such as a Vim count, then publishes it through
    * `setData` for the binding's `KeyInvocation`. */

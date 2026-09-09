@@ -1060,3 +1060,75 @@ test("nextKeys orders groups by context precedence, context-less last", async ()
     t.renderer.destroy();
   }
 });
+
+test("a context projects leader bindings as bare keys without hiding rebindings or multi-key tails", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const [active, setActive] = createSignal(false);
+    const mode: ContextSpec = {
+      id: "mode",
+      active,
+      priority: CONTEXT_PRIORITY.APP_MODE,
+      rebindable: false,
+      globalLeaderAliases: {},
+    };
+    const commands: CommandSpec[] = [
+      {
+        name: "pane.focus-left",
+        key: "<leader>h",
+        desc: "focus left",
+        group: "panes",
+        run: Effect.sync(() => fired.push("focus-left")),
+      },
+      {
+        name: "window.goto",
+        key: "<leader>gg",
+        desc: "go to window",
+        group: "windows",
+        run: Effect.sync(() => fired.push("goto-window")),
+      },
+      contextCommand(mode, {
+        name: "exit",
+        key: "i",
+        desc: "leave mode",
+        group: "mode",
+        run: Effect.sync(() => setActive(false)),
+      }),
+    ];
+    const bindings = createBindings(t.renderer, commands, {
+      keys: { leader: "ctrl+b", bindings: { "pane.focus-left": ["<leader>x"] } },
+      onUnhandled: () => true,
+    });
+
+    t.mockInput.pressKey("b", { ctrl: true });
+    t.mockInput.pressKey("x");
+    expect(fired).toEqual(["focus-left"]);
+
+    setActive(true);
+    expect(
+      bindings.keymap
+        .getCommandBindings({ visibility: "active", commands: ["mode.alias.window.goto"] })
+        .get("mode.alias.window.goto")
+        ?.map((binding) => binding.sequence.map((part) => part.display)),
+    ).toEqual([["g", "g"]]);
+    t.mockInput.pressKey("x");
+    t.mockInput.pressKey("g");
+    t.mockInput.pressKey("g");
+    expect(fired).toEqual(["focus-left", "focus-left", "goto-window"]);
+    expect(nextKeys(bindings, bindings.commands(), [mode], []).flatMap((group) => group.entries)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ keys: ["x"], desc: "focus left" }),
+        expect.objectContaining({ keys: ["g"], desc: "go to window" }),
+      ]),
+    );
+    expect(nextKeys(bindings, bindings.commands(), [mode], []).flatMap((group) => group.entries)).not.toContainEqual(
+      expect.objectContaining({ desc: "more commands" }),
+    );
+
+    t.mockInput.pressKey("i");
+    expect(active()).toBe(false);
+  } finally {
+    t.renderer.destroy();
+  }
+});

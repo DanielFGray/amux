@@ -2415,7 +2415,7 @@ function buildApp(
     pendingParts().length ? [formatSequence(pendingParts(), configState().keys.leader)] : [],
   );
   const hints = createMemo(() =>
-    nextKeys(bindings, [...registeredBindings()], contexts(), pendingParts()),
+    nextKeys(bindings, bindings.commands(), contexts(), pendingParts()),
   );
 
   // Recomputed whenever the keys change, since that is what the list is *for*:

@@ -85,7 +85,7 @@ test("enters with the configured leader, retires one-shot commands, and consumes
           t.mockInput.pressKey("b", { ctrl: true });
           expect(amux!.active()).toBe(true);
           t.mockInput.pressKey("h");
-          expect(runs).toEqual(["pane.resize"]);
+          expect(runs).toEqual(["pane.focus-left"]);
           expect(amux!.active()).toBe(false);
 
           t.mockInput.pressKey("b", { ctrl: true });
@@ -98,6 +98,10 @@ test("enters with the configured leader, retires one-shot commands, and consumes
           setOptions((current) => ({ ...current, "modal.vimMode": true }));
           t.mockInput.pressKey("b", { ctrl: true });
           t.mockInput.pressKey("h");
+          expect(amux!.active()).toBe(true);
+          expect(runs).toEqual(["pane.focus-left", "pane.focus-left"]);
+          t.mockInput.pressKey("h", { meta: true });
+          expect(runs).toEqual(["pane.focus-left", "pane.focus-left", "pane.resize"]);
           expect(amux!.active()).toBe(true);
           t.mockInput.pressKey("i");
           expect(amux!.active()).toBe(false);
