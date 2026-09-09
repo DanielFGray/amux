@@ -73,6 +73,12 @@ export interface ContextSpec {
    */
   showOnEntry?: boolean;
   /**
+   * After a handled key, hide an entry-triggered hint panel and begin its
+   * normal delay again. Persistent command modes use this so the panel helps
+   * after a pause without covering the result of every command.
+   */
+  rearmHintsOnKey?: boolean;
+  /**
    * The which-key panel's entry for this context, while it has no `handle`
    * substitute: a context with `handle` (above) reads its own live state to
    * decide what a key does, so there is no `CommandSpec` `nextKeys` could

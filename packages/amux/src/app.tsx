@@ -2329,6 +2329,8 @@ function buildApp(
   const showOnEntryActive = createMemo(() =>
     contexts().some((context) => context.showOnEntry === true && context.active()),
   );
+  const rearmHintsOnKeyActive = () =>
+    contexts().some((context) => context.rearmHintsOnKey === true && context.active());
 
   /** Arm or clear the panel's delay timer for one trigger going true/false.
    *  Shared by the two independent reasons the panel opens — a half-typed
@@ -2365,6 +2367,10 @@ function buildApp(
   // keymap will actually do next, so a rebinding shows up in both without
   // touching this file.
   const disposePendingSequence = bindings.keymap.on("pendingSequence", updateHintVisibility);
+  const disposeHintRearm = bindings.keymap.intercept("key:after", (input) => {
+    if (!input.handled || !rearmHintsOnKeyActive()) return;
+    armHintVisibility(true, () => pendingParts().length > 0 || showOnEntryActive());
+  });
 
   // `on` with `defer: true` only fires on an actual flip of showOnEntryActive
   // — false->true (arm, exactly like a keystroke arriving) or true->false
@@ -3060,6 +3066,7 @@ function buildApp(
     if (copyMode.active) copyMode.exit();
     spaces.refreshChrome();
     disposePendingSequence();
+    disposeHintRearm();
     rawBindings.dispose();
     renderer.removeListener("resize", onResize);
   });

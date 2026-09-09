@@ -59,6 +59,8 @@ test("enters with the configured leader, retires one-shot commands, and consumes
           }
           yield* Effect.orDie(host.add(modalPlugin));
           const [entry, amux] = contexts;
+          expect(amux!.showOnEntry).toBe(true);
+          expect(amux!.rearmHintsOnKey).toBe(true);
           let paneKeys = 0;
           createBindings(
             t.renderer,

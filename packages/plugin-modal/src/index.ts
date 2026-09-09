@@ -44,6 +44,7 @@ export const modalPlugin: PluginDefinition = definePlugin({
         rebindable: false,
         globalLeaderAliases: { afterCommand: afterAction },
         showOnEntry: true,
+        rearmHintsOnKey: true,
         handle: () => {
           leave();
           return true;
