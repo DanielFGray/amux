@@ -7,8 +7,10 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Chat } from "./Chat.tsx";
 import { AttachFrame, type JsonValue } from "@danielfgray/amux/protocol";
+import { ProcessState } from "@danielfgray/amux";
 import { waitFor } from "@danielfgray/amux/testing";
 import { emit, delta, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
+import { agentStateTopic } from "./state-topic.ts";
 
 /** Wrap a harness event/fragment the way core actually delivers it — this
  *  test used to push the harness tags directly onto the wire, which the
@@ -48,11 +50,16 @@ async function chat(
   active = true,
   frames: () => Stream.Stream<AttachFrame, never> = () => Stream.empty,
   onSlashCommand?: (command: string) => boolean,
+  kittyKeyboard = false,
+  height = 8,
+  slashCommands: { name: string; description: string }[] = [
+    { name: "model", description: "choose the agent model" },
+  ],
 ) {
-  const t = await createTestRenderer({ width: 40, height: 8 });
+  const t = await createTestRenderer({ width: 40, height, kittyKeyboard });
   const [focused, setFocused] = createSignal(active);
   const [width, setWidth] = createSignal(40);
-  const sent: string[] = [];
+  const sent: { text: string; options?: { delivery?: string; replace?: string } }[] = [];
   const answered: { request: string; decision: string; feedback?: string }[] = [];
   const interrupted: string[] = [];
   await render(
@@ -64,18 +71,21 @@ async function chat(
         descriptor={{}}
         model="openai/gpt-4o-mini"
         width={width}
-        height={() => 8}
+        height={() => height}
         active={focused}
         captureKeys={() => {}}
+        copyText={() => {}}
         frames={frames}
         sync={() => {}}
-        onSubmit={(message) => sent.push(message)}
+        onSubmit={(message, options) =>
+          sent.push(options ? { text: message, options } : { text: message })
+        }
         onPermission={(request, decision, feedback) =>
           answered.push(feedback ? { request, decision, feedback } : { request, decision })
         }
         onInterrupt={() => interrupted.push(session.id)}
         onSlashCommand={onSlashCommand}
-        slashCommands={[{ name: "model", description: "choose the agent model" }]}
+        slashCommands={slashCommands}
       />
     ),
     t.renderer,
@@ -107,6 +117,80 @@ const waitUi = (t: Renderer, condition: () => boolean, what: string) =>
 
 const waitFrame = (t: Renderer, condition: (frame: string) => boolean, label = "condition") =>
   waitUi(t, () => condition(t.captureCharFrame()), label);
+
+/** Mid-turn composer: queue on Enter, steer on empty Enter, Up edits the queue. */
+async function runningChat() {
+  let push: (frame: AttachFrame) => void = () => {};
+  const world = await chat(true, () =>
+    Stream.callback<AttachFrame>((queue) => {
+      push = (frame) => Queue.offerUnsafe(queue, frame);
+      return Effect.void;
+    }),
+  );
+  push(
+    wrap({
+      session: "native",
+      sequence: 1,
+      ...agentStateTopic(ProcessState.Running),
+    }),
+  );
+  await waitUi(world.t, () => world.t.captureCharFrame().includes("queue"), "running placeholder");
+  return { ...world, push: (frame: AttachFrame) => push(frame) };
+}
+
+test("Enter while the agent is running queues the message", async () => {
+  const { t, sent } = await runningChat();
+  await t.mockInput.typeText("wait for tools");
+  t.mockInput.pressEnter();
+  await waitUi(t, () => sent.length > 0, "queued submit");
+  expect(sent).toEqual([{ text: "wait for tools", options: { delivery: "queue" } }]);
+  t.renderer.destroy();
+});
+
+test("empty Enter while queued steers the latest queued message", async () => {
+  const { t, sent, push } = await runningChat();
+  push(
+    wrap({
+      _tag: "turn.queued",
+      session: "native",
+      sequence: 2,
+      turn: "turn-q1",
+      prompt: "go left instead",
+      delivery: "queue",
+    }),
+  );
+  await waitFrame(t, (frame) => frame.includes("go left instead"), "queued visible");
+  t.mockInput.pressEnter();
+  await waitUi(t, () => sent.length > 0, "steer submit");
+  expect(sent).toEqual([
+    { text: "go left instead", options: { delivery: "steer", replace: "turn-q1" } },
+  ]);
+  t.renderer.destroy();
+});
+
+test("Up recalls a queued message into the composer for editing", async () => {
+  const { t, sent, push } = await runningChat();
+  push(
+    wrap({
+      _tag: "turn.queued",
+      session: "native",
+      sequence: 2,
+      turn: "turn-q1",
+      prompt: "original queue",
+      delivery: "queue",
+    }),
+  );
+  await waitFrame(t, (frame) => frame.includes("original queue"), "queued visible");
+  t.mockInput.pressArrow("up");
+  await waitFrame(t, (frame) => frame.includes("original queue"), "composer has queued text");
+  await t.mockInput.typeText(" edited");
+  t.mockInput.pressEnter();
+  await waitUi(t, () => sent.length > 0, "edited queue submit");
+  expect(sent).toEqual([
+    { text: "original queue edited", options: { delivery: "queue", replace: "turn-q1" } },
+  ]);
+  t.renderer.destroy();
+});
 
 /** A chat pane sitting on one unanswered permission request. */
 async function blocked() {
@@ -143,29 +227,35 @@ test("a pending request shows the rule that always would write", async () => {
   t.renderer.destroy();
 });
 
-test("a key answers the question instead of typing into the composer", async () => {
-  const { t, sent, answered, push } = await blocked();
-  await t.mockInput.typeText("a");
-  await t.renderOnce();
-  expect(answered).toEqual([{ request: "req-1", decision: "always" }]);
-  expect(sent).toEqual([]);
+for (const [key, decision] of [
+  ["o", "once"],
+  ["a", "always"],
+  ["d", "reject"],
+] as const) {
+  test(`${key} answers the question instead of typing into the composer`, async () => {
+    const { t, sent, answered, push } = await blocked();
+    await t.mockInput.typeText(key);
+    await t.renderOnce();
+    expect(answered).toEqual([{ request: "req-1", decision }]);
+    expect(sent).toEqual([]);
 
-  // The bar stands until the agent says what it did: the answer the pane sent
-  // is a request, and with several panes on one session it may not be the one
-  // that won.
-  expect(t.captureCharFrame()).toContain("[o]");
-  push(
-    wrap({
-      _tag: "permission.response",
-      session: "native",
-      sequence: 2,
-      request: "req-1",
-      decision: "always",
-    }),
-  );
-  await waitFrame(t, (frame) => !frame.includes("[o]"), "the bar to clear");
-  t.renderer.destroy();
-});
+    // The bar stands until the agent says what it did: the answer the pane sent
+    // is a request, and with several panes on one session it may not be the one
+    // that won.
+    expect(t.captureCharFrame()).toContain("[o]");
+    push(
+      wrap({
+        _tag: "permission.response",
+        session: "native",
+        sequence: 2,
+        request: "req-1",
+        decision,
+      }),
+    );
+    await waitFrame(t, (frame) => !frame.includes("[o]"), "the bar to clear");
+    t.renderer.destroy();
+  });
+}
 
 test("deny with a reason returns the composer, and enter sends the refusal", async () => {
   const { t, sent, answered } = await blocked();
@@ -193,6 +283,20 @@ test("the /model slash command opens the model picker without sending", async ()
   t.renderer.destroy();
 });
 
+test("the /thinking slash command opens the thinking picker without sending", async () => {
+  const { t, sent } = await chat(
+    true,
+    () => Stream.never,
+    (command) => command === "/thinking",
+  );
+  await t.mockInput.typeText("/thinking");
+  t.mockInput.pressEnter();
+  await Bun.sleep(10);
+  await t.renderOnce();
+  expect(sent).toEqual([]);
+  t.renderer.destroy();
+});
+
 test("slash autocomplete filters and selects a command without sending", async () => {
   const { t, sent } = await chat(
     true,
@@ -210,6 +314,22 @@ test("slash autocomplete filters and selects a command without sending", async (
   t.renderer.destroy();
 });
 
+test("slash autocomplete lists /thinking", async () => {
+  const { t, sent } = await chat(
+    true,
+    () => Stream.never,
+    () => true,
+    false,
+    8,
+    [{ name: "thinking", description: "choose thinking effort" }],
+  );
+  await t.mockInput.typeText("/th");
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("/thinking");
+  expect(sent).toEqual([]);
+  t.renderer.destroy();
+});
+
 test("the composer sends what was typed and clears itself", async () => {
   const { t, sent } = await chat();
 
@@ -220,7 +340,7 @@ test("the composer sends what was typed and clears itself", async () => {
   t.mockInput.pressEnter();
   await waitUi(t, () => sent.length > 0, "the message to be sent");
 
-  expect(sent).toEqual(["find the bug"]);
+  expect(sent).toEqual([{ text: "find the bug" }]);
   // Cleared, or the next enter sends the same message a second time.
   expect(t.captureCharFrame()).not.toContain("find the bug");
   t.renderer.destroy();
@@ -238,22 +358,119 @@ test("whitespace alone is not a message", async () => {
   t.renderer.destroy();
 });
 
+test("shift+enter inserts a newline instead of submitting", async () => {
+  // Kitty keyboard: with the legacy transport Shift+Return arrives
+  // indistinct from Return (production runs with Kitty keyboard disabled),
+  // so the shifted chord is only exercisable with the protocol on.
+  const { t, sent } = await chat(true, () => Stream.empty, undefined, true);
+
+  await t.mockInput.typeText("line one");
+  t.mockInput.pressEnter({ shift: true });
+  await t.renderOnce();
+  await t.mockInput.typeText("line two");
+  await t.renderOnce();
+
+  // No submit yet: the draft holds both lines.
+  expect(sent).toEqual([]);
+  const frame = t.captureCharFrame();
+  expect(frame).toContain("line one");
+  expect(frame).toContain("line two");
+
+  t.mockInput.pressEnter();
+  await waitUi(t, () => sent.length > 0, "the multiline message to be sent");
+  expect(sent).toEqual([{ text: "line one\nline two" }]);
+  t.renderer.destroy();
+});
+
+test("alt+enter inserts a newline on the legacy transport", async () => {
+  // No Kitty keyboard, like production: Alt+Return survives as ESC CR while
+  // Shift+Return would not.
+  const { t, sent } = await chat();
+
+  await t.mockInput.typeText("line one");
+  t.mockInput.pressEnter({ meta: true });
+  await t.renderOnce();
+  await t.mockInput.typeText("line two");
+  await t.renderOnce();
+
+  expect(sent).toEqual([]);
+  expect(t.captureCharFrame()).toContain("line two");
+
+  t.mockInput.pressEnter();
+  await waitUi(t, () => sent.length > 0, "the multiline message to be sent");
+  expect(sent).toEqual([{ text: "line one\nline two" }]);
+  t.renderer.destroy();
+});
+
+test("a long line wraps and grows the composer instead of scrolling sideways", async () => {
+  const { t } = await chat();
+  const words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
+  await t.mockInput.typeText(words.join(" "));
+
+  // Wrapped across at least two frame rows at width 40; a sideways-scrolling
+  // single row would hold the text on exactly one row. Polled, not single
+  // render: the height signal updates on an effect after the content lands.
+  await waitFrame(
+    t,
+    (frame) =>
+      frame.split("\n").filter((row) => /alpha|beta|gamma|delta|epsilon|zeta|eta|theta/.test(row))
+        .length > 1,
+    "the composer to wrap",
+  );
+  const frame = t.captureCharFrame();
+  expect(frame).toContain("alpha");
+  expect(frame).toContain("theta");
+  t.renderer.destroy();
+});
+
+test("the composer caps at half the pane height", async () => {
+  // Kitty keyboard so every shifted Enter is a real newline, never a submit.
+  const { t, sent } = await chat(true, () => Stream.empty, undefined, true);
+  for (let line = 0; line < 12; line++) {
+    await t.mockInput.typeText(`line ${line}`);
+    t.mockInput.pressEnter({ shift: true });
+    await t.renderOnce();
+  }
+  expect(sent).toEqual([]);
+  const frame = t.captureCharFrame();
+  // The transcript chrome survives a 12-line draft in a height-8 pane: the
+  // composer caps at 4 rows instead of pushing everything else out. The
+  // placeholder hides while the draft is non-empty, so the draft's tail and
+  // the status bar are what must stay on screen.
+  expect(frame).toContain("openai/gpt-4o-mini");
+  expect(frame).toContain("line 11");
+
+  t.mockInput.pressEnter();
+  await waitUi(t, () => sent.length > 0, "the capped draft to be sent");
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.text.split("\n")).toHaveLength(12);
+  t.renderer.destroy();
+});
+
 test("the transcript rewraps when the pane it lives in is resized", async () => {
   const line = "the quick brown fox jumps over the lazy dog and keeps going";
-  const { t, setWidth } = await chat(true, () =>
-    Stream.make(wrap({ _tag: "text.delta", session: "native", turn: "t1", text: line })),
+  // Height 10: the composer now floors at 2 rows, and the old height-8
+  // geometry left the transcript exactly one row short of showing the break.
+  const { t, setWidth } = await chat(
+    true,
+    () => Stream.make(wrap({ _tag: "text.delta", session: "native", turn: "t1", text: line })),
+    undefined,
+    false,
+    10,
   );
   await waitFrame(t, (frame) => frame.includes("the quick brown fox"), "the delta to render");
 
   // A split narrows the pane. The width reaches the transcript through Chat, so
   // a break that only worked at the mounted size would show up here: at the
-  // narrower width "fox" and "jumps" no longer fit on the same wrapped line.
+  // narrower width the OpenTUI <markdown> wrap no longer keeps "fox" on the
+  // same line as "the quick brown".
   setWidth(20);
   await t.renderOnce();
   const frame = t.captureCharFrame();
   expect(frame).not.toContain("the quick brown fox jumps");
-  expect(frame).toContain("the quick brown fox");
-  expect(frame).toContain("jumps over the lazy");
+  expect(frame).toContain("the quick brown");
+  expect(frame).toContain("fox jumps");
+  expect(frame).toContain("lazy dog");
   t.renderer.destroy();
 });
 
@@ -291,7 +508,126 @@ test("the composer only takes keys while its own pane is focused", async () => {
   t.mockInput.pressEnter();
   await waitUi(t, () => sent.length > 0, "the focused composer to send");
 
-  expect(sent).toEqual(["mine"]);
+  expect(sent).toEqual([{ text: "mine" }]);
+  t.renderer.destroy();
+});
+
+test("clicking the transcript does not steal composer focus", async () => {
+  const { t, sent } = await chat(true, undefined, undefined, false, 16);
+  await t.renderOnce();
+  // Top of the transcript area (above the composer).
+  await t.mockMouse.click(5, 2);
+  await t.renderOnce();
+  await t.mockInput.typeText("still here");
+  t.mockInput.pressEnter();
+  await waitUi(t, () => sent.length > 0, "composer to keep focus after transcript click");
+  expect(sent).toEqual([{ text: "still here" }]);
+  t.renderer.destroy();
+});
+
+test("composer reclaim does not steal focus released by another component pane", async () => {
+  const t = await createTestRenderer({ width: 80, height: 12 });
+  const sent: string[] = [];
+  let foreign: { focus(): void; blur(): void } | undefined;
+  await render(
+    () => (
+      <box style={{ width: "100%", height: "100%", flexDirection: "row" }}>
+        <box id="chat-pane" style={{ width: 40, height: "100%" }}>
+          <box id="chat-pane-content" style={{ width: "100%", height: "100%" }}>
+            <Chat
+              sessionId="native"
+              paneId="chat-pane"
+              paneType="test"
+              descriptor={{}}
+              model="openai/gpt-4o-mini"
+              width={() => 40}
+              height={() => 12}
+              active={() => true}
+              captureKeys={() => {}}
+              copyText={() => {}}
+              frames={() => Stream.empty}
+              sync={() => {}}
+              onSubmit={(message) => sent.push(message)}
+              onPermission={() => {}}
+              onInterrupt={() => {}}
+            />
+          </box>
+        </box>
+        <box id="other-pane" style={{ width: 40, height: "100%" }}>
+          <box id="other-pane-content" style={{ width: "100%", height: "100%" }}>
+            <textarea
+              ref={(value) => (foreign = value)}
+              style={{ width: "100%", height: 2 }}
+            />
+          </box>
+        </box>
+      </box>
+    ),
+    t.renderer,
+  );
+  await t.renderOnce();
+  // Another leaf took OpenTUI focus then released it — the race while
+  // pane.select is in flight and this chat still reads as active.
+  foreign?.focus();
+  await t.renderOnce();
+  foreign?.blur();
+  await t.renderOnce();
+  await Promise.resolve();
+  await t.renderOnce();
+  await t.mockInput.typeText("not yours");
+  t.mockInput.pressEnter();
+  await t.renderOnce();
+  expect(sent).toEqual([]);
+  t.renderer.destroy();
+});
+
+test("composer reclaim still takes focus back after a non-pane overlay releases it", async () => {
+  const t = await createTestRenderer({ width: 40, height: 12 });
+  const sent: string[] = [];
+  let overlay: { focus(): void; blur(): void } | undefined;
+  await render(
+    () => (
+      <box style={{ width: "100%", height: "100%", flexDirection: "column" }}>
+        <box id="chat-pane" style={{ width: "100%", height: 10 }}>
+          <box id="chat-pane-content" style={{ width: "100%", height: "100%" }}>
+            <Chat
+              sessionId="native"
+              paneId="chat-pane"
+              paneType="test"
+              descriptor={{}}
+              model="openai/gpt-4o-mini"
+              width={() => 40}
+              height={() => 10}
+              active={() => true}
+              captureKeys={() => {}}
+              copyText={() => {}}
+              frames={() => Stream.empty}
+              sync={() => {}}
+              onSubmit={(message) => sent.push(message)}
+              onPermission={() => {}}
+              onInterrupt={() => {}}
+            />
+          </box>
+        </box>
+        <textarea
+          ref={(value) => (overlay = value)}
+          style={{ width: "100%", height: 2 }}
+        />
+      </box>
+    ),
+    t.renderer,
+  );
+  await t.renderOnce();
+  overlay?.focus();
+  await t.renderOnce();
+  overlay?.blur();
+  await t.renderOnce();
+  await Promise.resolve();
+  await t.renderOnce();
+  await t.mockInput.typeText("mine again");
+  t.mockInput.pressEnter();
+  await waitUi(t, () => sent.length > 0, "composer to reclaim after overlay blur");
+  expect(sent).toEqual(["mine again"]);
   t.renderer.destroy();
 });
 
@@ -319,6 +655,7 @@ test("a submitted message is answered by the agent in the transcript", async () 
         height={() => 20}
         active={() => true}
         captureKeys={() => {}}
+        copyText={() => {}}
         frames={() =>
           Stream.callback<AttachFrame>((queue) => {
             push = (frame) => Queue.offerUnsafe(queue, frame);
@@ -403,6 +740,7 @@ test("a tool call streams through the pane as about-to-run, then revealed", asyn
         height={() => 20}
         active={() => true}
         captureKeys={() => {}}
+        copyText={() => {}}
         frames={() =>
           Stream.callback<AttachFrame>((queue) => {
             push = (frame) => Queue.offerUnsafe(queue, frame);

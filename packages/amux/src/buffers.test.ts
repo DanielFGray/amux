@@ -41,7 +41,9 @@ const started = Effect.fnUntraced(function* (id: string) {
   const home = tempDir("buffers");
   const env = { HOME: home, XDG_STATE_HOME: join(home, "state") };
   const daemon = yield* Effect.scoped(startDaemon(id)).pipe(
-    Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
+    Effect.provide(
+      SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
+    ),
     Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
   );
   daemons.push(daemon);
@@ -104,7 +106,13 @@ const output = (frames: AttachFrame[]) =>
  */
 const untilOutput = (frames: AttachFrame[], text: string) =>
   Effect.promise(() =>
-    waitFor(() => output(frames).includes(text), `'${text}' in the pane's output`),
+    waitFor(
+      () => output(frames).includes(text),
+      `'${text}' in the pane's output`,
+      // Real PTY + attach round-trip routinely exceeds the 5s default under
+      // full-suite load (bracketed-paste timed out at ~5.5s once in 1543).
+      15_000,
+    ),
   );
 
 testEffect("a copy pushed onto the stack pastes into a real pane's PTY", () =>
@@ -202,9 +210,13 @@ testEffect("a paste into a bracketed-paste-enabled child arrives wrapped", () =>
     // Echo and canonical mode are off: echo would rewrite the ESC bytes as ^[
     // (ECHOCTL), and canonical mode would hold back the \x1b[201~ tail because
     // it ends without a newline.
+    //
+    // `ready` is printed after the DECSET so the daemon's screen model has
+    // processed 2004 before we paste — racing that under load pastes unwrapped
+    // and untilOutput never sees the brackets (15s timeout once in 1549).
     yield* daemon.spawnSession({
       id: "pane",
-      cmd: ["sh", "-c", "printf '\\x1b[?2004h'; stty -echo -icanon; cat"],
+      cmd: ["sh", "-c", "printf '\\x1b[?2004hready\\n'; stty -echo -icanon; cat"],
       cols: 80,
       rows: 24,
     });
@@ -213,6 +225,7 @@ testEffect("a paste into a bracketed-paste-enabled child arrives wrapped", () =>
       () => Effect.map(daemon.getAttachedClients, (c) => c.includes("watcher")),
       "the viewer to attach",
     );
+    yield* untilOutput(viewer.frames, "ready");
 
     yield* rpc(daemon.id, (c) => c.SetBuffer({ data: "bracketed\n" }), env);
     yield* rpc(daemon.id, (c) => c.PasteBuffer({ target: "pane" }), env);

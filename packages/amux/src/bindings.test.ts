@@ -1,6 +1,6 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
-import { Effect } from "effect";
+import { Duration, Effect } from "effect";
 import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
 import type { KeyEvent } from "@opentui/core";
@@ -12,13 +12,18 @@ import {
   keyToBinding,
   keysFor,
   filterPaletteEntries,
+  mayDispatchPaletteEntry,
   nextKeys,
   paletteEntries,
   registerLayerChecked,
   type CommandSpec,
 } from "./bindings.ts";
 import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
-import { createCountAccumulator, KeyInvocation, type KeyInvocationValue } from "./key-invocation.ts";
+import {
+  createCountAccumulator,
+  KeyInvocation,
+  type KeyInvocationValue,
+} from "./key-invocation.ts";
 
 /**
  * A binding whose key string the parser rejects is not an error anyone sees —
@@ -32,27 +37,27 @@ test("every declared sequence compiles, including multi-char key names", async (
     const commands: CommandSpec[] = [
       {
         name: "t.letter",
-        key: "<leader>h",
+        key: "<prefix>h",
         desc: "letter",
         group: "t",
         run: Effect.void,
       },
       {
         name: "t.arrow",
-        key: "<leader>left",
+        key: "<prefix>left",
         desc: "arrow",
         group: "t",
         run: Effect.void,
       },
       {
         name: "t.brace",
-        key: ["<leader>{", "<leader>}"],
+        key: ["<prefix>{", "<prefix>}"],
         desc: "brace",
         group: "t",
         run: Effect.void,
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
     const entries = helpGroups(bindings, commands)[0]!.entries;
@@ -78,7 +83,7 @@ test("a command that declares KeyInvocation receives the keystroke that ran it",
     const commands: CommandSpec[] = [
       {
         name: "t.echo",
-        key: "<leader>e",
+        key: "<prefix>e",
         desc: "echo",
         group: "t",
         run: Effect.gen(function* () {
@@ -86,7 +91,7 @@ test("a command that declares KeyInvocation receives the keystroke that ran it",
         }),
       },
     ];
-    createBindings(t.renderer, commands, { onUnhandled: () => true });
+    createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
 
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("e");
@@ -152,20 +157,20 @@ test("a sequence claimed by two commands is reported as a conflict", async () =>
     const commands: CommandSpec[] = [
       {
         name: "pane.up",
-        key: "<leader>k",
+        key: "<prefix>k",
         desc: "focus up",
         group: "t",
         run: Effect.void,
       },
       {
         name: "agent.kill",
-        key: "<leader>k",
+        key: "<prefix>k",
         desc: "kill agent",
         group: "t",
         run: Effect.void,
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
 
@@ -174,11 +179,62 @@ test("a sequence claimed by two commands is reported as a conflict", async () =>
     ]);
     // Moving one of them off the shared key clears it.
     expect(
-      bindings.apply({
-        leader: "ctrl+a",
-        bindings: { "agent.kill": ["<leader>shift+k"] },
+      bindings.apply({ prefix: "ctrl+a", leader: "space", bindings: { "agent.kill": ["<prefix>shift+k"] },
       }),
     ).toEqual([]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * Pane focus owns hjkl. window.last used to sit on `<prefix>l` alone while
+ * focus-right had no letter — not a `findConflicts` hit (only one claimer),
+ * just a dead-looking key. Binding both to `l` must report; defaults keep
+ * last-window on `<prefix>shift+l` (bare "L" compiles as lowercase — see
+ * app.settings's shift+s) so the detector can catch a regression.
+ */
+test("pane focus hjkl and window.last on shift+l do not conflict; sharing l does", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const focus = (direction: string, letter: string): CommandSpec => ({
+      name: `pane.focus-${direction}`,
+      key: [`<prefix>${letter}`, `<prefix>${direction}`],
+      desc: `focus ${direction}`,
+      group: "t",
+      run: Effect.sync(() => fired.push(direction)),
+    });
+    const commands: CommandSpec[] = [
+      focus("left", "h"),
+      focus("down", "j"),
+      focus("up", "k"),
+      focus("right", "l"),
+      {
+        name: "window.last",
+        key: "<prefix>shift+l",
+        desc: "last window",
+        group: "t",
+        run: Effect.sync(() => fired.push("window.last")),
+      },
+    ];
+    const bindings = createBindings(t.renderer, commands, {
+      keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
+      onUnhandled: () => true,
+    });
+    expect(bindings.conflicts()).toEqual([]);
+
+    t.mockInput.pressKey("s", { ctrl: true });
+    t.mockInput.pressKey("l");
+    expect(fired).toEqual(["right"]);
+
+    expect(
+      bindings.apply({
+        prefix: "ctrl+s",
+        leader: "space",
+        bindings: { "window.last": ["<prefix>l"] },
+      }),
+    ).toEqual([{ sequence: "^s l", commands: ["pane.focus-right", "window.last"] }]);
   } finally {
     t.renderer.destroy();
   }
@@ -198,20 +254,20 @@ test("shift+letter is a distinct binding from the bare letter", async () => {
     const commands: CommandSpec[] = [
       {
         name: "t.lower",
-        key: "<leader>s",
+        key: "<prefix>s",
         desc: "lower",
         group: "t",
         run: Effect.sync(() => fired.push("s")),
       },
       {
         name: "t.upper",
-        key: "<leader>shift+s",
+        key: "<prefix>shift+s",
         desc: "upper",
         group: "t",
         run: Effect.sync(() => fired.push("S")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
 
@@ -235,13 +291,13 @@ test("pane move uses the encodable shifted-letter binding", async () => {
     const commands: CommandSpec[] = [
       {
         name: "pane.move",
-        key: "<leader>shift+m",
+        key: "<prefix>shift+m",
         desc: "move pane",
         group: "panes",
         run: Effect.sync(() => fired.push("move")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
     t.mockInput.pressKey("a", { ctrl: true });
@@ -267,41 +323,41 @@ test("ctrl+arrow is a distinct binding from the bare arrow", async () => {
     const commands: CommandSpec[] = [
       {
         name: "pane.focus-left",
-        key: "<leader>left",
+        key: "<prefix>left",
         desc: "focus pane left",
         group: "panes",
         run: Effect.sync(() => fired.push("focus")),
       },
       {
         name: "pane.resize-left",
-        key: "<leader>ctrl+left",
+        key: "<prefix>ctrl+left",
         desc: "resize pane left",
         group: "panes",
         run: Effect.sync(() => fired.push("resize")),
       },
       {
         name: "pane.resize-right",
-        key: "<leader>ctrl+right",
+        key: "<prefix>ctrl+right",
         desc: "resize pane right",
         group: "panes",
         run: Effect.sync(() => fired.push("resize-right")),
       },
       {
         name: "pane.resize-up",
-        key: "<leader>ctrl+up",
+        key: "<prefix>ctrl+up",
         desc: "resize pane up",
         group: "panes",
         run: Effect.sync(() => fired.push("resize-up")),
       },
       {
         name: "pane.resize-down",
-        key: "<leader>ctrl+down",
+        key: "<prefix>ctrl+down",
         desc: "resize pane down",
         group: "panes",
         run: Effect.sync(() => fired.push("resize-down")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
 
@@ -344,21 +400,21 @@ test("a command hidden from help still dispatches", async () => {
     const commands: CommandSpec[] = [
       {
         name: "t.shown",
-        key: "<leader>1",
+        key: "<prefix>1",
         desc: "select 1..9",
         group: "t",
         run: Effect.sync(() => fired.push("1")),
       },
       {
         name: "t.hidden",
-        key: "<leader>2",
+        key: "<prefix>2",
         desc: "select 2",
         hidden: true,
         group: "t",
         run: Effect.sync(() => fired.push("2")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
 
@@ -399,16 +455,16 @@ test("an override replaces a command's default sequences", async () => {
     const commands: CommandSpec[] = [
       {
         name: "t.zoom",
-        key: "<leader>z",
+        key: "<prefix>z",
         desc: "zoom",
         group: "t",
         run: Effect.sync(() => fired.push("z")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
-    bindings.apply({ leader: "ctrl+a", bindings: { "t.zoom": ["<leader>f"] } });
+    bindings.apply({ prefix: "ctrl+a", leader: "space", bindings: { "t.zoom": ["<prefix>f"] } });
 
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("z");
@@ -430,7 +486,7 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
     const commands: CommandSpec[] = [
       {
         name: "pane.split-row",
-        key: "<leader>|",
+        key: "<prefix>|",
         desc: "split left/right",
         group: "panes",
         run: Effect.sync(() => fired.push("split")),
@@ -443,7 +499,7 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
         run: Effect.void,
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
     expect(paletteEntries(bindings, commands)).toEqual([
@@ -453,6 +509,8 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
         keys: "^a |",
         desc: "split left/right",
         available: true,
+        contextual: false,
+    hidden: false,
       },
       {
         name: "window.select-layout.tiled",
@@ -460,6 +518,8 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
         keys: "unbound",
         desc: "arrange panes",
         available: true,
+        contextual: false,
+    hidden: false,
       },
     ]);
     expect(
@@ -467,6 +527,197 @@ test("palette entries read live bindings and fuzzy-match metadata", async () => 
     ).toEqual(["pane.split-row"]);
     expect(bindings.dispatch("pane.split-row")).toBe(true);
     expect(fired).toEqual(["split"]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("palette ranks available contextual commands above globals", () => {
+  const entries = [
+    {
+      name: "pane.split",
+      group: "panes",
+      keys: "^a |",
+      desc: "split",
+      available: true,
+      contextual: false,
+    hidden: false,
+    },
+    {
+      name: "editor.surround",
+      group: "editor",
+      keys: "unbound",
+      desc: "surround selection",
+      available: true,
+      contextual: true,
+    hidden: false,
+    },
+    {
+      name: "copy.yank",
+      group: "copy",
+      keys: "y",
+      desc: "yank",
+      available: false,
+      contextual: false,
+    hidden: false,
+    },
+  ];
+  expect(filterPaletteEntries(entries, "").map((e) => e.name)).toEqual([
+    "editor.surround",
+    "pane.split",
+    "copy.yank",
+  ]);
+});
+
+test("palette query score applies within available/contextual bands", () => {
+  const entries = [
+    {
+      name: "zzz.global",
+      group: "global",
+      keys: "unbound",
+      desc: "split panes globally",
+      available: true,
+      contextual: false,
+    hidden: false,
+    },
+    {
+      name: "editor.split-selection",
+      group: "editor",
+      keys: "unbound",
+      desc: "other",
+      available: true,
+      contextual: true,
+    hidden: false,
+    },
+    {
+      name: "pane.split-row",
+      group: "panes",
+      keys: "^a |",
+      desc: "split left/right",
+      available: true,
+      contextual: false,
+    hidden: false,
+    },
+  ];
+  // Contextual still wins over a tighter global subsequence match.
+  expect(filterPaletteEntries(entries, "split").map((e) => e.name)).toEqual([
+    "editor.split-selection",
+    "pane.split-row",
+    "zzz.global",
+  ]);
+});
+
+test("paletteEntries stamps contextual from a live non-global context", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    let editorActive = true;
+    const editorCtx: ContextSpec = {
+      id: "editor.focused",
+      active: () => editorActive,
+      priority: CONTEXT_PRIORITY.PANE,
+      rebindable: false,
+    };
+    const commands: CommandSpec[] = [
+      {
+        name: "pane.split-row",
+        key: "<prefix>|",
+        desc: "split",
+        group: "panes",
+        run: Effect.void,
+      },
+      contextCommand(editorCtx, {
+        name: "surround",
+        key: "",
+        desc: "surround",
+        group: "editor",
+        run: Effect.void,
+      }),
+    ];
+    const bindings = createBindings(t.renderer, commands, {
+      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
+      onUnhandled: () => true,
+    });
+    expect(
+      paletteEntries(bindings, commands).map((e) => [e.name, e.available, e.contextual, e.hidden]),
+    ).toEqual([
+      ["pane.split-row", true, false, false],
+      ["editor.focused.surround", true, true, false],
+    ]);
+    expect(filterPaletteEntries(paletteEntries(bindings, commands), "").map((e) => e.name)).toEqual([
+      "editor.focused.surround",
+      "pane.split-row",
+    ]);
+
+    editorActive = false;
+    expect(
+      paletteEntries(bindings, commands).map((e) => [e.name, e.available, e.contextual, e.hidden]),
+    ).toEqual([
+      ["pane.split-row", true, false, false],
+      ["editor.focused.surround", false, false, true],
+    ]);
+    // Runnable palette hides inactive PANE-band verbs.
+    expect(filterPaletteEntries(paletteEntries(bindings, commands), "").map((e) => e.name)).toEqual([
+      "pane.split-row",
+    ]);
+    // Keybind picker keeps them for remap.
+    expect(
+      filterPaletteEntries(paletteEntries(bindings, commands), "", { includeHidden: true }).map(
+        (e) => e.name,
+      ),
+    ).toEqual(["pane.split-row", "editor.focused.surround"]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("palette dims inactive APP_MODE verbs but does not hide them", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    let copyActive = false;
+    const copyMode: ContextSpec = {
+      id: "copy-mode",
+      active: () => copyActive,
+      priority: CONTEXT_PRIORITY.APP_MODE,
+      rebindable: false,
+    };
+    const commands: CommandSpec[] = [
+      {
+        name: "pane.split-row",
+        key: "<prefix>|",
+        desc: "split",
+        group: "panes",
+        run: Effect.void,
+      },
+      contextCommand(copyMode, {
+        name: "yank",
+        key: "y",
+        desc: "yank selection",
+        group: "copy",
+        run: Effect.void,
+      }),
+    ];
+    const bindings = createBindings(t.renderer, commands, {
+      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
+      onUnhandled: () => true,
+    });
+    const inactive = paletteEntries(bindings, commands);
+    expect(inactive.map((e) => [e.name, e.available, e.hidden])).toEqual([
+      ["pane.split-row", true, false],
+      ["copy-mode.yank", false, false],
+    ]);
+    expect(filterPaletteEntries(inactive, "").map((e) => e.name)).toEqual([
+      "pane.split-row",
+      "copy-mode.yank",
+    ]);
+    expect(mayDispatchPaletteEntry(inactive[1]!)).toBe(false);
+
+    copyActive = true;
+    const active = paletteEntries(bindings, commands);
+    expect(active.map((e) => [e.name, e.available, e.contextual, e.hidden])).toEqual([
+      ["pane.split-row", true, false, false],
+      ["copy-mode.yank", true, true, false],
+    ]);
+    expect(mayDispatchPaletteEntry(active[1]!)).toBe(true);
   } finally {
     t.renderer.destroy();
   }
@@ -480,16 +731,16 @@ test("an empty override unbinds the command", async () => {
     const commands: CommandSpec[] = [
       {
         name: "t.quit",
-        key: "<leader>q",
+        key: "<prefix>q",
         desc: "quit",
         group: "t",
         run: Effect.sync(() => fired.push("q")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
-    bindings.apply({ leader: "ctrl+a", bindings: { "t.quit": [] } });
+    bindings.apply({ prefix: "ctrl+a", leader: "space", bindings: { "t.quit": [] } });
 
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("q");
@@ -504,14 +755,12 @@ test("a binding for a command nothing registers is surfaced as orphaned, not dro
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const commands: CommandSpec[] = [
-      { name: "t.quit", key: "<leader>q", desc: "quit", group: "t", run: Effect.void },
+      { name: "t.quit", key: "<prefix>q", desc: "quit", group: "t", run: Effect.void },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
-    const keys = {
-      leader: "ctrl+a",
-      bindings: { "t.quit": ["<leader>q"], "plugin.disabled-verb": ["<leader>z"] },
+    const keys = { prefix: "ctrl+a", leader: "space", bindings: { "t.quit": ["<prefix>q"], "plugin.disabled-verb": ["<prefix>z"] },
     };
     bindings.apply(keys);
 
@@ -537,10 +786,10 @@ test("an unbound orphaned entry reads back as unbound, same as any other command
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const commands: CommandSpec[] = [];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
-    const keys = { leader: "ctrl+a", bindings: { "plugin.disabled-verb": [] } };
+    const keys = { prefix: "ctrl+a", leader: "space", bindings: { "plugin.disabled-verb": [] } };
     bindings.apply(keys);
 
     expect(helpGroups(bindings, commands, keys)[0]!.entries[0]!.keys).toBe("unbound");
@@ -563,16 +812,16 @@ test("rebinding the prefix moves every binding and how they read", async () => {
     const commands: CommandSpec[] = [
       {
         name: "t.new",
-        key: "<leader>c",
+        key: "<prefix>c",
         desc: "new",
         group: "t",
         run: Effect.sync(() => fired.push("c")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
-    bindings.apply({ leader: "ctrl+b", bindings: {} });
+    bindings.apply({ prefix: "ctrl+b", leader: "space", bindings: {} });
 
     t.mockInput.pressKey("a", { ctrl: true });
     t.mockInput.pressKey("c");
@@ -581,7 +830,7 @@ test("rebinding the prefix moves every binding and how they read", async () => {
     t.mockInput.pressKey("b", { ctrl: true });
     t.mockInput.pressKey("c");
     expect(fired).toEqual(["c"]);
-    expect(bindings.leader()).toBe("ctrl+b");
+    expect(bindings.prefix()).toBe("ctrl+b");
     expect(helpGroups(bindings, commands)[0]!.entries[0]!.keys).toBe("^b c");
   } finally {
     t.renderer.destroy();
@@ -602,13 +851,13 @@ test("capture takes the next keystroke, bound or not, and skips modifiers", asyn
     const commands: CommandSpec[] = [
       {
         name: "t.new",
-        key: "<leader>c",
+        key: "<prefix>c",
         desc: "new",
         group: "t",
         run: Effect.sync(() => fired.push("c")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
 
@@ -663,19 +912,19 @@ test("invalid leaders fall back without disabling the keymap", async () => {
     const commands: CommandSpec[] = [
       {
         name: "t.quit",
-        key: "<leader>q",
+        key: "<prefix>q",
         desc: "quit",
         group: "t",
         run: Effect.sync(() => fired.push("q")),
       },
     ];
     const bindings = createBindings(t.renderer, commands, {
-      keys: { leader: "not-a-key", bindings: {} },
+      keys: { prefix: "not-a-key", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
 
-    expect(bindings.leader()).toBe("ctrl+a");
-    t.mockInput.pressKey("a", { ctrl: true });
+    expect(bindings.prefix()).toBe("ctrl+s");
+    t.mockInput.pressKey("s", { ctrl: true });
     t.mockInput.pressKey("q");
     expect(fired).toEqual(["q"]);
   } finally {
@@ -684,22 +933,28 @@ test("invalid leaders fall back without disabling the keymap", async () => {
 });
 
 test("formatting a leader token never recurses", () => {
-  expect(formatKey("<leader>", "<leader>")).toBe("<leader>");
+  expect(formatKey("<prefix>", "<prefix>")).toBe("<prefix>");
+  expect(formatKey("<leader>", { leader: "<leader>" })).toBe("<leader>");
+});
+
+test("formatKey expands leader independently of mux prefix", () => {
+  expect(formatKey("<leader>", { prefix: "ctrl+s", leader: "space" })).toBe("SPC");
+  expect(formatKey("<prefix>", { prefix: "ctrl+s", leader: "space" })).toBe("^s");
 });
 
 test("keysFor prefers the override, including an empty one", () => {
   const cmd: CommandSpec = {
     name: "t.a",
-    key: ["<leader>a", "<leader>b"],
+    key: ["<prefix>a", "<prefix>b"],
     desc: "a",
     group: "t",
     run: Effect.void,
   };
-  expect(keysFor(cmd, { leader: "ctrl+a", bindings: {} })).toEqual(["<leader>a", "<leader>b"]);
-  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": ["<leader>z"] } })).toEqual([
-    "<leader>z",
+  expect(keysFor(cmd, { prefix: "ctrl+a", leader: "space", bindings: {} })).toEqual(["<prefix>a", "<prefix>b"]);
+  expect(keysFor(cmd, { prefix: "ctrl+a", leader: "space", bindings: { "t.a": ["<prefix>z"] } })).toEqual([
+    "<prefix>z",
   ]);
-  expect(keysFor(cmd, { leader: "ctrl+a", bindings: { "t.a": [] } })).toEqual([]);
+  expect(keysFor(cmd, { prefix: "ctrl+a", leader: "space", bindings: { "t.a": [] } })).toEqual([]);
 });
 
 test("agent.new compiles its shifted-letter binding", async () => {
@@ -709,13 +964,13 @@ test("agent.new compiles its shifted-letter binding", async () => {
     const commands: CommandSpec[] = [
       {
         name: "agent.new",
-        key: "<leader>shift+n",
+        key: "<prefix>shift+n",
         desc: "start a native coding agent",
         group: "agents",
         run: Effect.sync(() => fired.push("agent.new")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
     t.mockInput.pressKey("a", { ctrl: true });
@@ -732,33 +987,26 @@ test("a user override replaces a plugin default instead of adding to it", async 
   const commands: CommandSpec[] = [
     {
       name: "plugin.agent.new",
-      key: "<leader>n",
+      key: "<prefix>n",
       desc: "new agent",
       group: "agents",
       run: Effect.void,
     },
   ];
   const bindings = createBindings(t.renderer, commands, {
-    keys: {
-      leader: "ctrl+a",
-      bindings: { "plugin.agent.new": ["<leader>g"] },
+    keys: { prefix: "ctrl+a", leader: "space", bindings: { "plugin.agent.new": ["<prefix>g"] },
     },
     onUnhandled: () => false,
   });
 
   expect(
-    helpGroups(bindings, commands, {
-      leader: "ctrl+a",
-      bindings: { "plugin.agent.new": ["<leader>g"] },
+    helpGroups(bindings, commands, { prefix: "ctrl+a", leader: "space", bindings: { "plugin.agent.new": ["<prefix>g"] },
     })[0]!.entries[0],
   ).toMatchObject({ keys: "^a g", custom: true });
   expect(
-    bindings.keymap
-      .getCommandBindings({
-        visibility: "registered",
-        commands: ["plugin.agent.new"],
-      })
-      .get("plugin.agent.new"),
+    bindings.chords
+      .activeBindings()
+      .filter((binding) => binding.id.startsWith("cmd:plugin.agent.new:")),
   ).toHaveLength(1);
   bindings.dispose();
   t.renderer.destroy();
@@ -771,13 +1019,13 @@ test("agent.prompt compiles its shifted-letter binding", async () => {
     const commands: CommandSpec[] = [
       {
         name: "agent.prompt",
-        key: "<leader>shift+e",
+        key: "<prefix>shift+e",
         desc: "prompt the focused native agent",
         group: "agents",
         run: Effect.sync(() => fired.push("agent.prompt")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
     t.mockInput.pressKey("a", { ctrl: true });
@@ -796,13 +1044,13 @@ test("agent.interrupt compiles its shifted-letter binding", async () => {
     const commands: CommandSpec[] = [
       {
         name: "agent.interrupt",
-        key: "<leader>shift+i",
+        key: "<prefix>shift+i",
         desc: "interrupt the focused native agent",
         group: "agents",
         run: Effect.sync(() => fired.push("agent.interrupt")),
       },
     ];
-    const bindings = createBindings(t.renderer, commands, {
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
     t.mockInput.pressKey("a", { ctrl: true });
@@ -836,7 +1084,7 @@ test("a context-scoped binding only fires while its context is active", async ()
         run: Effect.sync(() => fired.push("delete-word")),
       }),
     ];
-    createBindings(t.renderer, commands, { onUnhandled: () => true });
+    createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
 
     expect(commands[0]!.name).toBe("editor.insert.delete-word");
 
@@ -859,7 +1107,7 @@ test("two contexts binding the same key are not a conflict; the global layer is 
     const commands: CommandSpec[] = [
       {
         name: "pane.up",
-        key: "<leader>k",
+        key: "<prefix>k",
         desc: "focus up",
         group: "t",
         run: Effect.void,
@@ -879,7 +1127,7 @@ test("two contexts binding the same key are not a conflict; the global layer is 
         run: Effect.void,
       }),
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
 
     expect(bindings.conflicts()).toEqual([]);
   } finally {
@@ -907,7 +1155,7 @@ test("a same-key collision within one context is still reported", async () => {
         run: Effect.void,
       }),
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
 
     expect(bindings.conflicts()).toEqual([
       { sequence: "d", commands: ["editor.normal.delete-word", "editor.normal.duplicate-line"] },
@@ -926,7 +1174,7 @@ test("a same-key collision within one context is still reported", async () => {
 test("a misspelled layer field fails loudly instead of silently going global", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
-    const bindings = createBindings(t.renderer, [], { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, [], { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
     expect(() =>
       registerLayerChecked(bindings.keymap, {
         // Deliberately misspelled to exercise the guard: layer field names
@@ -955,18 +1203,18 @@ test("nextKeys never surfaces a binding whose context is inactive", async () => 
     const commands: CommandSpec[] = [
       contextCommand(copyMode, {
         name: "yank",
-        key: "<leader>y",
+        key: "<prefix>y",
         desc: "yank selection",
         group: "copy",
         run: Effect.void,
       }),
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
 
-    expect(nextKeys(bindings, commands, [], [{ display: "<leader>" }])).toEqual([]);
+    expect(nextKeys(bindings, commands, [], [{ display: "<prefix>" }])).toEqual([]);
 
     setCopyModeActive(true);
-    expect(nextKeys(bindings, commands, [], [{ display: "<leader>" }])).toEqual([
+    expect(nextKeys(bindings, commands, [], [{ display: "<prefix>" }])).toEqual([
       { group: "copy", entries: [{ keys: ["y"], desc: "yank selection" }] },
     ]);
   } finally {
@@ -976,7 +1224,7 @@ test("nextKeys never surfaces a binding whose context is inactive", async () => 
 
 /**
  * Before anything is typed, every leader-bound command's compiled sequence
- * starts with the same literal "<leader>" token — showing each individually
+ * starts with the same literal "<prefix>" token — showing each individually
  * would repeat that one key once per command. One collapsed entry says the
  * leader still reaches them, so a user inside an unfamiliar context still
  * sees it works (ts-20995a's decision: every active context, not just the
@@ -986,13 +1234,13 @@ test("nextKeys collapses leader-bound commands to one entry before the leader is
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const commands: CommandSpec[] = [
-      { name: "pane.split", key: "<leader>|", desc: "split", group: "panes", run: Effect.void },
-      { name: "pane.zoom", key: "<leader>z", desc: "zoom", group: "panes", run: Effect.void },
+      { name: "pane.split", key: "<prefix>|", desc: "split", group: "panes", run: Effect.void },
+      { name: "pane.zoom", key: "<prefix>z", desc: "zoom", group: "panes", run: Effect.void },
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
 
     expect(nextKeys(bindings, commands, [], [])).toEqual([
-      { group: "", entries: [{ keys: ["^a"], desc: "more commands" }] },
+      { group: "", entries: [{ keys: ["^a"], desc: "mux prefix" }] },
     ]);
   } finally {
     t.renderer.destroy();
@@ -1009,7 +1257,7 @@ test("nextKeys collapses leader-bound commands to one entry before the leader is
 test("nextKeys surfaces a handle-only context's declared hints, only before anything is typed", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
-    const bindings = createBindings(t.renderer, [], { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, [], { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
     const [active, setActive] = createSignal(false);
     const copyMode: ContextSpec = {
       id: "copy-mode",
@@ -1046,10 +1294,22 @@ test("nextKeys orders groups by context precedence, context-less last", async ()
     const appMode = testContext("copy-mode", CONTEXT_PRIORITY.APP_MODE, () => true);
     const commands: CommandSpec[] = [
       { name: "app.quit", key: "q", desc: "quit", group: "global", run: Effect.void },
-      contextCommand(pane, { name: "d", key: "d", desc: "delete", group: "editor", run: Effect.void }),
-      contextCommand(appMode, { name: "y", key: "y", desc: "yank", group: "copy", run: Effect.void }),
+      contextCommand(pane, {
+        name: "d",
+        key: "d",
+        desc: "delete",
+        group: "editor",
+        run: Effect.void,
+      }),
+      contextCommand(appMode, {
+        name: "y",
+        key: "y",
+        desc: "yank",
+        group: "copy",
+        run: Effect.void,
+      }),
     ];
-    const bindings = createBindings(t.renderer, commands, { onUnhandled: () => true });
+    const bindings = createBindings(t.renderer, commands, { keys: { prefix: "ctrl+a", leader: "space", bindings: {} }, onUnhandled: () => true });
 
     expect(nextKeys(bindings, commands, [], []).map((g) => g.group)).toEqual([
       "copy",
@@ -1076,14 +1336,14 @@ test("a context projects leader bindings as bare keys without hiding rebindings 
     const commands: CommandSpec[] = [
       {
         name: "pane.focus-left",
-        key: "<leader>h",
+        key: "<prefix>h",
         desc: "focus left",
         group: "panes",
         run: Effect.sync(() => fired.push("focus-left")),
       },
       {
         name: "window.goto",
-        key: "<leader>gg",
+        key: "<prefix>gg",
         desc: "go to window",
         group: "windows",
         run: Effect.sync(() => fired.push("goto-window")),
@@ -1097,7 +1357,7 @@ test("a context projects leader bindings as bare keys without hiding rebindings 
       }),
     ];
     const bindings = createBindings(t.renderer, commands, {
-      keys: { leader: "ctrl+b", bindings: { "pane.focus-left": ["<leader>x"] } },
+      keys: { prefix: "ctrl+b", leader: "space", bindings: { "pane.focus-left": ["<prefix>x"] } },
       onUnhandled: () => true,
     });
 
@@ -1107,27 +1367,275 @@ test("a context projects leader bindings as bare keys without hiding rebindings 
 
     setActive(true);
     expect(
-      bindings.keymap
-        .getCommandBindings({ visibility: "active", commands: ["mode.alias.window.goto"] })
-        .get("mode.alias.window.goto")
-        ?.map((binding) => binding.sequence.map((part) => part.display)),
+      bindings.chords
+        .activeBindings()
+        .filter((binding) => binding.id.includes("mode.alias.window.goto"))
+        .map((binding) => [...binding.strokes]),
     ).toEqual([["g", "g"]]);
     t.mockInput.pressKey("x");
     t.mockInput.pressKey("g");
     t.mockInput.pressKey("g");
     expect(fired).toEqual(["focus-left", "focus-left", "goto-window"]);
-    expect(nextKeys(bindings, bindings.commands(), [mode], []).flatMap((group) => group.entries)).toEqual(
+    expect(
+      nextKeys(bindings, bindings.commands(), [mode], []).flatMap((group) => group.entries),
+    ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ keys: ["x"], desc: "focus left" }),
         expect.objectContaining({ keys: ["g"], desc: "go to window" }),
       ]),
     );
-    expect(nextKeys(bindings, bindings.commands(), [mode], []).flatMap((group) => group.entries)).not.toContainEqual(
-      expect.objectContaining({ desc: "more commands" }),
-    );
+    expect(
+      nextKeys(bindings, bindings.commands(), [mode], []).flatMap((group) => group.entries),
+    ).not.toContainEqual(expect.objectContaining({ desc: "more commands" }));
 
     t.mockInput.pressKey("i");
     expect(active()).toBe(false);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * Arbitrary-length chords without intermediate ContextSpecs. Cite: neovim
+ * `'timeoutlen'` / handle_mapping; OpenTUI registerNeovimDisambiguation wired
+ * in createBindings.
+ */
+test("a long <leader> chord fires from one registration", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const normal: ContextSpec = {
+      id: "editor.normal",
+      active: () => true,
+      priority: CONTEXT_PRIORITY.PANE,
+      rebindable: false,
+    };
+    const bindings = createBindings(
+      t.renderer,
+      [
+        contextCommand(normal, {
+          name: "long",
+          key: "<leader>asdf",
+          desc: "long chord",
+          group: "test",
+          run: Effect.sync(() => fired.push("long")),
+        }),
+        contextCommand(normal, {
+          name: "key.a",
+          key: "a",
+          desc: "append",
+          group: "test",
+          run: Effect.sync(() => fired.push("a")),
+        }),
+      ],
+      {
+        keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
+        onUnhandled: () => true,
+        timeoutlenMs: 40,
+      },
+    );
+
+    t.mockInput.pressKey(" ");
+    for (const ch of "asdf") t.mockInput.pressKey(ch);
+    await Bun.sleep(20);
+    expect(fired).toEqual(["long"]);
+
+    // Bare `a` still works when not mid-leader.
+    t.mockInput.pressKey("a");
+    expect(fired).toEqual(["long", "a"]);
+    expect(bindings.keymap.getPendingSequence()).toEqual([]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("timeoutlen prefers the longer chord, else the exact shorter binding", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const normal: ContextSpec = {
+      id: "editor.normal",
+      active: () => true,
+      priority: CONTEXT_PRIORITY.PANE,
+      rebindable: false,
+    };
+    createBindings(
+      t.renderer,
+      [
+        contextCommand(normal, {
+          name: "g",
+          key: "g",
+          desc: "g-prefix",
+          group: "test",
+          run: Effect.sync(() => fired.push("g")),
+        }),
+        contextCommand(normal, {
+          name: "gg",
+          key: "gg",
+          desc: "first line",
+          group: "test",
+          run: Effect.sync(() => fired.push("gg")),
+        }),
+        contextCommand(normal, {
+          name: "grr",
+          key: "grr",
+          desc: "references",
+          group: "test",
+          run: Effect.sync(() => fired.push("grr")),
+        }),
+      ],
+      {
+        keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
+        onUnhandled: () => true,
+        timeoutlenMs: 40,
+      },
+    );
+
+    t.mockInput.pressKey("g");
+    t.mockInput.pressKey("g");
+    await Bun.sleep(20);
+    expect(fired).toEqual(["gg"]);
+
+    fired.length = 0;
+    t.mockInput.pressKey("g");
+    t.mockInput.pressKey("r");
+    t.mockInput.pressKey("r");
+    await Bun.sleep(20);
+    expect(fired).toEqual(["grr"]);
+
+    fired.length = 0;
+    t.mockInput.pressKey("g");
+    await Bun.sleep(60);
+    expect(fired).toEqual(["g"]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("createBindings exposes a ChordMatcher with the same timeoutlen", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const bindings = createBindings(t.renderer, [], {
+      keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
+      onUnhandled: () => true,
+      timeoutlenMs: 40,
+    });
+    expect(bindings.chords.timeoutlen()).toEqual(Duration.millis(40));
+    bindings.chords.register({
+      id: "ab",
+      strokes: ["a", "b"],
+      run: () => fired.push("ab"),
+    });
+    expect(bindings.chords.push("a")._tag).toBe("pending");
+    expect(bindings.chords.push("b")).toEqual({ _tag: "matched", id: "ab" });
+    expect(fired).toEqual(["ab"]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * ChordMatcher map-fail: abandoned `<leader>` then unbound `j` retries `j`
+ * (neovim handle_mapping). createBindings syncs `<leader>*` CommandSpecs onto
+ * chords and feeds them from the global chord intercept.
+ */
+test("space then unbound j retries j via ChordMatcher (neovim map-fail)", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const fired: string[] = [];
+    const normal: ContextSpec = {
+      id: "editor.normal",
+      active: () => true,
+      priority: CONTEXT_PRIORITY.PANE,
+      rebindable: false,
+    };
+    const bindings = createBindings(
+      t.renderer,
+      [
+        contextCommand(normal, {
+          name: "open",
+          key: "<leader>e",
+          desc: "open",
+          group: "editor",
+          run: Effect.sync(() => fired.push("open")),
+        }),
+        contextCommand(normal, {
+          name: "key.j",
+          key: "j",
+          desc: "down",
+          group: "editor",
+          run: Effect.sync(() => fired.push("j")),
+        }),
+      ],
+      {
+        keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
+        onUnhandled: () => true,
+        timeoutlenMs: 40,
+      },
+    );
+
+    t.mockInput.pressKey(" ");
+    t.mockInput.pressKey("j");
+    await Bun.sleep(10);
+    expect(fired).toEqual(["j"]);
+    expect(bindings.chords.pending()).toEqual([]);
+
+    t.mockInput.pressKey(" ");
+    t.mockInput.pressKey("e");
+    await Bun.sleep(10);
+    expect(fired).toEqual(["j", "open"]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("which-key lists leader continuations from ChordMatcher pending", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const normal: ContextSpec = {
+      id: "editor.normal",
+      active: () => true,
+      priority: CONTEXT_PRIORITY.PANE,
+      rebindable: false,
+    };
+    const bindings = createBindings(
+      t.renderer,
+      [
+        contextCommand(normal, {
+          name: "open",
+          key: "<leader>e",
+          desc: "open an editor pane",
+          group: "editor",
+          run: Effect.void,
+        }),
+        contextCommand(normal, {
+          name: "find-file",
+          key: "<leader>/",
+          desc: "find file in project",
+          group: "editor",
+          run: Effect.void,
+        }),
+      ],
+      {
+        keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
+        onUnhandled: () => true,
+        timeoutlenMs: 5000,
+      },
+    );
+
+    t.mockInput.pressKey(" ");
+    await Bun.sleep(10);
+    expect(bindings.chords.pending()).toEqual(["<leader>"]);
+    expect(nextKeys(bindings, bindings.commands(), [normal], [{ display: "<leader>" }])).toEqual([
+      {
+        group: "editor",
+        entries: [
+          { keys: ["e"], desc: "open an editor pane" },
+          { keys: ["/"], desc: "find file in project" },
+        ],
+      },
+    ]);
   } finally {
     t.renderer.destroy();
   }

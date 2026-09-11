@@ -16,6 +16,11 @@ import { integrations, openAiCompatible } from "./index.ts";
 test("every registered integration is named as the model catalog names it", () => {
   expect(integrations.map((integration) => integration.id)).toEqual([
     "openai",
+    // ChatGPT subscription OAuth — not models.dev's "openai" API-key row.
+    // Upstream catalog rows still live under openai/; the catalog read path
+    // projects an allowlisted, zero-cost openai-codex provider for this id.
+    "openai-codex",
+    "github-copilot",
     "anthropic",
     // models.dev calls OpenCode Zen simply "opencode". Not "opencode-zen".
     // OpenCode Go is folded in as an alias — same key, separate catalog id.
@@ -25,6 +30,12 @@ test("every registered integration is named as the model catalog names it", () =
   expect(integrations.find((integration) => integration.id === "opencode")?.aliases).toEqual([
     "opencode-go",
   ]);
+  expect(integrations.find((integration) => integration.id === "openai-codex")?.aliases).toEqual([
+    "chatgpt",
+  ]);
+  expect(
+    integrations.find((integration) => integration.id === "github-copilot")?.methods[0]?.type,
+  ).toBe("oauth");
 });
 
 test("every integration offers a way to connect", () => {

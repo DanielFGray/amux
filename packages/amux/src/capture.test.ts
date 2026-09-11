@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { OptimizedBuffer, RGBA } from "@opentui/core";
 import { Terminal } from "./ghostty.ts";
 import {
   captureRows,
@@ -6,6 +7,7 @@ import {
   captureScrollback,
   captureRowsAround,
   captureSpan,
+  captureFrameRect,
   pickCaptureTarget,
   visibleRows,
   scrollbackRows,
@@ -175,4 +177,22 @@ test("a selected agent is captured without a viewport and without moving it", ()
   expect(captureVisible(target!.term)).toBe("l0\nl1\nl2\nl3");
   expect(captureScrollback(target!.term)).toBe("l0\nl1\nl2\nl3");
   expect(target!.term.scrollbar).toEqual(before);
+});
+
+test("captureFrameRect crops an OpenTUI buffer to a screen rectangle", () => {
+  const buffer = OptimizedBuffer.create(10, 4, "unicode", { id: "capture-crop" });
+  const fg = RGBA.fromInts(255, 255, 255);
+  const bg = RGBA.fromInts(0, 0, 0);
+  try {
+    // Fill a 3x2 island at (2,1): "ab" / "cd"
+    buffer.setCell(2, 1, "a", fg, bg);
+    buffer.setCell(3, 1, "b", fg, bg);
+    buffer.setCell(2, 2, "c", fg, bg);
+    buffer.setCell(3, 2, "d", fg, bg);
+    expect(captureFrameRect(buffer, { x: 2, y: 1, width: 2, height: 2 })).toBe("ab\ncd");
+    // Trailing blank rows of the crop are dropped.
+    expect(captureFrameRect(buffer, { x: 2, y: 1, width: 2, height: 3 })).toBe("ab\ncd");
+  } finally {
+    buffer.destroy();
+  }
 });

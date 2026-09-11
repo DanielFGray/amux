@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, JsonSchema, Schema as S, SchemaIssue } from "effect";
+import { Cause, Context, Effect, Exit, JsonSchema, Schema as S, SchemaIssue } from "effect";
 
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
@@ -11,6 +11,7 @@ import {
   SpaceListResultSchema,
   WindowListResultSchema,
 } from "./read-model.ts";
+import type { RootRuntimeContext } from "./env.ts";
 
 /**
  * The commands, as values.
@@ -31,7 +32,14 @@ import {
  */
 
 /** What a command acts ON — the authority that owns the state it mutates. */
-export const COMMAND_TARGETS = ["workspace", "session", "buffers", "server", "client", "view"] as const;
+export const COMMAND_TARGETS = [
+  "workspace",
+  "session",
+  "buffers",
+  "server",
+  "client",
+  "view",
+] as const;
 export type CommandTarget = (typeof COMMAND_TARGETS)[number];
 
 /** Who the command is exposed TO — a human or an agent. Exposure is the tool
@@ -171,6 +179,56 @@ const PaneOpenPlugin = define(
   },
   creationResultSchema("pane.open-plugin"),
 );
+/**
+ * Open an out-of-process plugin pane by linked plugin id + entrypoint id.
+ * The daemon resolves the manifest (argv/env/cwd/title) and fills workspace
+ * context before applying; callers never send raw command/env.
+ * Cordis panes stay on pane.open-plugin.
+ */
+const ProcessPluginPaneOpen = define(
+  "process-plugin.pane.open",
+  {
+    plugin: S.String.pipe(S.check(S.isMinLength(1))),
+    entrypoint: S.String.pipe(S.check(S.isMinLength(1))),
+    /** Filled by the daemon after manifest resolve; omit on the wire. */
+    command: S.optionalKey(
+      S.Array(S.String.pipe(S.check(S.isMinLength(1)))).pipe(S.check(S.isMinLength(1))),
+    ),
+    env: S.optionalKey(S.Record(S.String, S.String)),
+    cwd: S.optionalKey(S.String),
+    title: S.optionalKey(S.String),
+    axis: S.optionalKey(Axis),
+    /** Amux Placement; filled from the manifest (default tiled). */
+    placement: S.optionalKey(S.Literals(["tiled", "floating", "left", "right", "top", "bottom"])),
+    /** Restore prior focus when the session exits. */
+    transient: S.optionalKey(S.Boolean),
+    ...PaneTarget,
+  },
+  {
+    desc: "open an out-of-process plugin pane",
+    group: "process-plugin",
+    target: "workspace",
+    exposure: "agent",
+  },
+  creationResultSchema("process-plugin.pane.open"),
+);
+/**
+ * Run a linked process-plugin action on the daemon (fire-and-forget).
+ * Keybinds and the control socket use this; the CLI `action invoke` waits locally.
+ */
+const ProcessPluginActionInvoke = define(
+  "process-plugin.action.invoke",
+  {
+    plugin: S.String.pipe(S.check(S.isMinLength(1))),
+    action: S.String.pipe(S.check(S.isMinLength(1))),
+  },
+  {
+    desc: "run an out-of-process plugin action",
+    group: "process-plugin",
+    target: "server",
+    exposure: "agent",
+  },
+);
 const PaneNext = define(
   "pane.next",
   {},
@@ -229,6 +287,21 @@ const PaneResizeDivider = define(
     group: "panes",
     target: "workspace",
     exposure: "human",
+  },
+);
+const PaneSetSize = define(
+  "pane.set-size",
+  {
+    axis: S.Literals(["cols", "rows"]),
+    /** Omit to maximize on that axis (vim `CTRL-W_|` with no count). */
+    cells: S.optionalKey(S.Int),
+    ...PaneTarget,
+  },
+  {
+    desc: "set the focused pane's width or height in cells",
+    group: "panes",
+    target: "workspace",
+    exposure: "agent",
   },
 );
 const PaneZoom = define(
@@ -360,15 +433,18 @@ const PaneSendKeys = define(
     exposure: "agent",
   },
 );
-// Capture and copy mode open a local overlay. The remote way to read a pane is
-// a daemon-side terminal capture: pane.capture's result is the text.
+// Capture opens a local overlay when unbound from a target (human keybind).
+// Remotely, a session-backed pane is captured by the daemon (pty grid); a
+// client-only plugin pane falls through to the attached client, which crops
+// the live OpenTUI frame — the same client-fallback send-keys uses when the
+// pane has no session. See daemon.ts runRemote.
 const PaneCapture = define(
   "pane.capture",
   { session: S.optionalKey(S.String), ...PaneTarget },
   {
     desc: "capture the focused pane",
     group: "panes",
-    target: "session",
+    target: "client",
     exposure: "agent",
   },
   S.String,
@@ -805,9 +881,9 @@ const ConfigReset = define(
  */
 const PluginReload = define(
   "plugin.reload",
-  { plugin: S.optionalKey(S.String) },
+  { plugin: S.optionalKey(S.String), disk: S.optionalKey(S.Boolean) },
   {
-    desc: "load a plugin's source again; all of them if none is named",
+    desc: "load plugin source again; pass disk to retry a quarantined edit",
     group: "plugins",
     target: "server",
     exposure: "agent",
@@ -889,12 +965,15 @@ const AppQuit = define(
 export const COMMAND_DEFS = [
   PaneSplit,
   PaneOpenPlugin,
+  ProcessPluginPaneOpen,
+  ProcessPluginActionInvoke,
   PaneNext,
   PaneLast,
   PaneFocus,
   PaneSelect,
   PaneResize,
   PaneResizeDivider,
+  PaneSetSize,
   PaneZoom,
   PaneFloat,
   PaneDockLeft,
@@ -1277,16 +1356,22 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
  * A failure in a forked fiber goes unnoticed unless somebody observes it. This
  * observes it. Interruption is not a failure worth reporting: it is what
  * shutting down looks like from in here.
+ *
+ * Prefer passing `runtime` (the workspace RootRuntime / `Effect.context()`)
+ * so logging and any services the command needs stay ambient — bare
+ * `Effect.runFork` drops the DI bag at the Solid/keymap boundary.
  */
 export function runDetached(
   label: string,
   effect: Effect.Effect<any, CommandError>,
   onError?: (message: string) => void,
+  runtime?: RootRuntimeContext,
 ): void {
-  Effect.runFork(Effect.asVoid(effect)).addObserver((exit) => {
+  const fork = runtime !== undefined ? Effect.runForkWith(runtime) : Effect.runFork;
+  fork(Effect.asVoid(effect)).addObserver((exit) => {
     if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
     const message = `command ${label} failed: ${Cause.pretty(exit.cause)}`;
-    Effect.runFork(Effect.logError(message));
+    fork(Effect.logError(message));
     onError?.(message);
   });
 }
@@ -1300,6 +1385,7 @@ export const Commands = {
   PaneSelect,
   PaneResize,
   PaneResizeDivider,
+  PaneSetSize,
   PaneZoom,
   PaneFloat,
   PaneSwap,

@@ -14,6 +14,7 @@ import { createPluginHost, type PluginEnvironment } from "@danielfgray/amux/plug
 import { resolvePresence } from "./presence.ts";
 import { AgentAwarenessTag } from "./presence.ts";
 import agentAwarenessPlugin from "./index.ts";
+import { bundledRegistry } from "@danielfgray/amux-agent-facts/manifests.ts";
 
 function fact(overrides: Partial<SessionFact> = {}): SessionFact {
   return {
@@ -62,6 +63,7 @@ test("agentAwarenessPlugin publishes presence matching resolvePresence for the s
     yield* Effect.orDie(host.reconcile([noopHostServices, agentAwarenessPlugin]));
     const awareness = Option.getOrThrow(host.get(AgentAwarenessTag));
     const expected = resolvePresence(
+      bundledRegistry(),
       "s1",
       fact({ declaredAgent: "claude", processState: ProcessState.Running }),
       undefined,

@@ -13,8 +13,22 @@ afterEach(() => {
 });
 
 const entries: PaletteEntry[] = [
-  { name: "pane.split-row", group: "panes", keys: "^a |", desc: "split left/right", available: true },
-  { name: "app.help", group: "global", keys: "^a ?", desc: "keybinds", available: true },
+  {
+    name: "pane.split-row",
+    group: "panes",
+    keys: "^a |",
+    desc: "split left/right",
+    available: true,
+    contextual: false,
+  },
+  {
+    name: "app.help",
+    group: "global",
+    keys: "^a ?",
+    desc: "keybinds",
+    available: true,
+    contextual: false,
+  },
 ];
 
 test("palette renders the query, groups, sequences and descriptions", async () => {
@@ -112,6 +126,7 @@ test("selection keeps the command palette row visible while moving down", async 
     keys: `^a ${index}`,
     desc: `description-${index}`,
     available: true,
+    contextual: false,
   }));
   await render(
     () => (

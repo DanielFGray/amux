@@ -1,5 +1,9 @@
 // AMUX_AGENT_STATE_PLUGIN=1
 // Installed by `amux agent-hook opencode install`; remove with the matching uninstall command.
+// managed by amux; reinstalling or updating the integration overwrites this file.
+// add custom hooks/plugins beside this file instead of editing it.
+// AMUX_INTEGRATION_ID=opencode
+// AMUX_INTEGRATION_VERSION=1
 //
 // This file runs inside the user's opencode, not inside amux. It therefore may
 // not hang, throw, or slow the agent down under any circumstance: every socket
@@ -11,17 +15,13 @@ import net from "node:net";
 /** Longest an opencode event handler may be delayed by a report. */
 const TIMEOUT_MS = 500;
 
+const SOURCE = "amux:opencode";
+const AGENT_KIND = "opencode";
+
 // Exported so amux's own tests can check these values against the one schema
 // that defines them. This file cannot import that schema: it is loaded by
 // opencode, not by amux, and may not reach into a codebase that is not there.
-//
-// This is awareness's own vocabulary (matches AwarenessReportedState in
-// presence.ts, independent of core's ProcessState) — it drives `process.state`
-// below via `coreProcessState`. The identity topic carries only which agent
-// this is; state rides core's own process.state/SESSION_STATE_TOPIC channel,
-// same as the native harness, so awareness never keeps a second copy of it.
 export const STATE_BY_EVENT = new Map([
-  // OpenCode is actively making progress during these events.
   ["session.status:active", "working"],
   ["session.status:busy", "working"],
   ["session.status:pending", "working"],
@@ -29,9 +29,7 @@ export const STATE_BY_EVENT = new Map([
   ["session.status:running", "working"],
   ["session.status:streaming", "working"],
   ["session.status:working", "working"],
-  // Idle means the turn ended and OpenCode is ready for another prompt.
   ["session.status:idle", "idle"],
-  // These events stop the turn for a user decision, so they are blocked.
   ["permission.asked", "blocked"],
   ["question.asked", "blocked"],
   ["session.error", "failed"],
@@ -50,14 +48,7 @@ export function coreProcessState(state) {
   return state;
 }
 
-/**
- * The topic amux's agent-awareness plugin owns for identity reports.
- * Exported so amux's own tests can check this literal against the one schema
- * that defines it; this file cannot import that schema (see note above).
- */
 export const AGENT_AWARENESS_IDENTITY_TOPIC = "amux.agent-awareness/identity-state";
-
-const AGENT_KIND = "opencode";
 
 function stateFor(event) {
   if (event.type === "session.status") {
@@ -70,6 +61,12 @@ function stateFor(event) {
       : undefined;
   }
   return STATE_BY_EVENT.get(event.type);
+}
+
+function sessionIDFromProperties(properties) {
+  return typeof properties?.sessionID === "string" && properties.sessionID
+    ? properties.sessionID
+    : undefined;
 }
 
 /**
@@ -113,25 +110,103 @@ function send(socketPath, method, params) {
 
 export const AmuxAgentStatePlugin = async () => {
   const socketPath = process.env.AMUX_PROCESS_STATE_SOCKET;
-  // The agent identity is the session, not the pane: a pane id can change when
-  // the pane moves, but the session id is stable for the life of the process.
   const agent = process.env.AMUX_AGENT_ID;
+  const paneId = process.env.AMUX_PANE_ID;
   // Not running in an amux pane: contribute nothing rather than guess a path.
   if (!socketPath || !agent) return {};
+
+  // Track child sessions so their events cannot replace the pane's root session.
+  const childSessions = new Map();
+  let reportedRootSessionID;
+  let reportSeq = Date.now() * 1000;
+  const nextSeq = () => {
+    reportSeq += 1;
+    return reportSeq;
+  };
 
   // Transitions are strictly ordered and never concurrent with each other:
   // two transitions racing could deliver working-then-idle out of order and
   // leave a finished agent showing a spinner, so each transition waits for
   // the previous one to settle before starting. Within one transition, the
-  // two channels it reports on go out concurrently — sequential sends would
+  // channels it reports on go out concurrently — sequential sends would
   // double the wait past this hook's one-timeout handler-delay contract.
   let queue = Promise.resolve();
   let last;
+
+  const reportSession = (sessionID, startSource) => {
+    if (!paneId || !sessionID) return Promise.resolve();
+    const params = {
+      paneId,
+      source: SOURCE,
+      agent: AGENT_KIND,
+      seq: nextSeq(),
+      agentSessionId: sessionID,
+    };
+    if (startSource) params.sessionStartSource = startSource;
+    return send(socketPath, "pane.report_agent_session", params);
+  };
+
+  const maybeReportRoot = (sessionID) => {
+    if (!sessionID || childSessions.has(sessionID)) return Promise.resolve();
+    if (sessionID === reportedRootSessionID) return Promise.resolve();
+    const startSource = reportedRootSessionID === undefined ? undefined : "new";
+    reportedRootSessionID = sessionID;
+    return reportSession(sessionID, startSource);
+  };
+
   return {
     event: async ({ event }) => {
+      const type = event?.type;
+      const properties = event?.properties ?? {};
+      const sessionID = sessionIDFromProperties(properties);
+      const info = properties.info;
+      if (info?.id && info.parentID) {
+        childSessions.set(info.id, info.parentID);
+      }
+
+      if (sessionID && childSessions.has(sessionID)) {
+        // Child events may still project process state via the root, but never
+        // attach the child's session id to the pane.
+        const state = stateFor(event);
+        if (!state || state === last) return;
+        last = state;
+        let rootSessionID = sessionID;
+        while (childSessions.has(rootSessionID)) {
+          rootSessionID = childSessions.get(rootSessionID);
+        }
+        queue = queue.then(() =>
+          Promise.all([
+            send(socketPath, "process.state", {
+              session: agent,
+              state: coreProcessState(state),
+            }),
+            send(socketPath, "topic.publish", {
+              session: agent,
+              topic: AGENT_AWARENESS_IDENTITY_TOPIC,
+              payload: { agent: AGENT_KIND },
+            }),
+            maybeReportRoot(rootSessionID),
+          ]),
+        );
+        await queue;
+        return;
+      }
+
+      if (
+        type === "session.created" ||
+        type === "session.updated" ||
+        type === "session.status" ||
+        type === "session.idle"
+      ) {
+        queue = queue.then(() => maybeReportRoot(sessionID));
+      }
+
       const state = stateFor(event);
       // Streaming fires continuously; only transitions are worth a syscall.
-      if (!state || state === last) return;
+      if (!state || state === last) {
+        await queue;
+        return;
+      }
       last = state;
       queue = queue.then(() =>
         Promise.all([
@@ -141,9 +216,12 @@ export const AmuxAgentStatePlugin = async () => {
             topic: AGENT_AWARENESS_IDENTITY_TOPIC,
             payload: { agent: AGENT_KIND },
           }),
+          maybeReportRoot(sessionID),
         ]),
       );
       await queue;
     },
   };
 };
+
+export default AmuxAgentStatePlugin;

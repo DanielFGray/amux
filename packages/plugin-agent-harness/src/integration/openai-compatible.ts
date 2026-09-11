@@ -6,6 +6,7 @@ import { Layer, Redacted } from "effect";
 import type { Credential } from "../credential.ts";
 import * as OpenAiChat from "./openai-chat.ts";
 import type { Integration, Method } from "./types.ts";
+import { anthropicThinkingConfig, openAiReasoningConfig } from "./thinking.ts";
 
 /**
  * A provider that speaks OpenAI's API.
@@ -37,24 +38,30 @@ export const openAiCompatible = (spec: {
   methods: spec.methods ?? [{ type: "key", label: "API key" }],
   env: [spec.env],
   aliases: spec.aliases,
-  model: ({ model, transformClient, apiUrl, npm }) => {
+  model: ({ model, transformClient, apiUrl, npm, thinking, thinkingBudget }) => {
     const client = { transformClient, apiUrl };
-    if (npm === RESPONSES)
-      return OpenAiLanguageModel.layer({ model }).pipe(
-        Layer.provide(OpenAiClient.layer(client)),
-        Layer.provide(FetchHttpClient.layer),
-      );
-    if (npm === MESSAGES)
-      return AnthropicLanguageModel.layer({ model }).pipe(
-        Layer.provide(AnthropicClient.layer(client)),
-        Layer.provide(FetchHttpClient.layer),
-      );
+    if (npm === RESPONSES) {
+      const config = openAiReasoningConfig(thinking);
+      return (
+        config !== undefined
+          ? OpenAiLanguageModel.layer({ model, config })
+          : OpenAiLanguageModel.layer({ model })
+      ).pipe(Layer.provide(OpenAiClient.layer(client)), Layer.provide(FetchHttpClient.layer));
+    }
+    if (npm === MESSAGES) {
+      const config = anthropicThinkingConfig(thinking, thinkingBudget);
+      return (
+        config !== undefined
+          ? AnthropicLanguageModel.layer({ model, config: config as never })
+          : AnthropicLanguageModel.layer({ model })
+      ).pipe(Layer.provide(AnthropicClient.layer(client)), Layer.provide(FetchHttpClient.layer));
+    }
     // Every other npm value — undefined, the generic `@ai-sdk/openai-compatible`,
     // or a gateway's own SDK package name such as OpenRouter's
     // `@openrouter/ai-sdk-provider` — still means Chat Completions on the wire.
     // Responses and Messages are the only two protocols this factory speaks
     // besides it, so they are the only ones worth telling apart.
-    return OpenAiChat.layer({ model, ...client });
+    return OpenAiChat.layer({ model, ...client, thinking });
   },
   authorize: (credential, request) =>
     HttpClientRequest.setHeader(

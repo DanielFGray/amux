@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { Effect, Layer, Option, Redacted } from "effect";
-import { For, createSignal } from "solid-js";
+import { Deferred, Effect, Fiber, Layer, Option, Redacted } from "effect";
+import { For, Show, createSignal } from "solid-js";
 import type { KeyEvent } from "@opentui/core";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import { command, runtimeCommand } from "@danielfgray/amux";
@@ -19,16 +19,17 @@ import {
   SpawnProvidersTag,
 } from "@danielfgray/amux";
 import { Chat } from "./Chat.tsx";
-import {
-  discoverCachedParsers,
-  makeHighlightProvider,
-} from "@danielfgray/amux-highlight";
+import { discoverCachedParsers, makeHighlightProvider } from "@danielfgray/amux-highlight";
 import { registerModelPicker } from "./ModelPicker.tsx";
+import { registerThinkingPicker } from "./ThinkingPicker.tsx";
+import { registerSessionPicker } from "./SessionPicker.tsx";
 import { agentPreflight } from "./preflight.ts";
 import { AGENT_HARNESS_OPTIONS } from "./options.ts";
 import { theme } from "@danielfgray/amux";
 import { Service as Integration, type Info as IntegrationInfo } from "./integration.ts";
+import type { Method } from "./integration/types.ts";
 import { Credential } from "./credential.ts";
+import { OAuthCancelled, type OAuthError, type OAuthFlowController } from "./oauth/types.ts";
 
 export const AGENT_HARNESS_PLUGIN_ID = "amux.agent-harness";
 
@@ -72,34 +73,161 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         Object.entries(AGENT_HARNESS_OPTIONS).map(([name, spec]) => options.register([name, spec])),
       );
       const openModelPicker = (yield* registerModelPicker).pipe(Effect.provide(llmServices));
+      const openThinkingPicker = (yield* registerThinkingPicker).pipe(Effect.provide(llmServices));
+      const openSessionPicker = yield* registerSessionPicker;
       const [providers, setProviders] = createSignal<readonly IntegrationInfo[]>([]);
-      // The API-key input only takes keyboard focus in this mode, and while it
-      // does this section's `keys` returns `false` so the settings window
-      // stops preventDefaulting and the keystroke actually reaches the input.
-      const [editing, setEditing] = createSignal(false);
+      // Auth tab focus: key paste, oauth mode pick, or oauth in-flight (incl. paste code).
+      const [authPhase, setAuthPhase] = createSignal<AuthPhase>({ _tag: "idle" });
+      let oauthFiber: Fiber.Fiber<void, unknown> | undefined;
+      let pasteDeferred: Deferred.Deferred<string, OAuthCancelled> | undefined;
+
       const refreshProviders = Effect.gen(function* () {
         const integrations = yield* Integration;
         setProviders(yield* integrations.list);
       }).pipe(Effect.provide(llmServices));
       yield* Effect.forkScoped(refreshProviders);
+
+      const cancelOAuth = () => {
+        const fiber = oauthFiber;
+        const deferred = pasteDeferred;
+        oauthFiber = undefined;
+        pasteDeferred = undefined;
+        setAuthPhase({ _tag: "idle" });
+        if (fiber) Effect.runForkWith(runtime)(Fiber.interrupt(fiber));
+        if (deferred)
+          Effect.runForkWith(runtime)(
+            Deferred.fail(deferred, new OAuthCancelled({ message: "OAuth cancelled" })),
+          );
+      };
+
       yield* settings.register({
         id: "auth",
         label: "auth",
         rows: () => providers().length,
         keys: (event: KeyEvent, selected: number) => {
-          if (editing()) {
-            // Escape backs out of editing rather than closing the whole
-            // settings window, so it doesn't need to double as "cancel" and
-            // "quit" — every other key, "q" included, is a plain character
-            // for the input to receive.
+          const phase = authPhase();
+
+          if (phase._tag === "key-edit" || (phase._tag === "oauth-run" && phase.waitingPaste)) {
             if (event.name === "escape") {
-              setEditing(false);
+              if (phase._tag === "oauth-run") cancelOAuth();
+              else setAuthPhase({ _tag: "idle" });
               return true;
             }
             return false;
           }
+
+          if (phase._tag === "oauth-run") {
+            if (event.name === "escape") {
+              cancelOAuth();
+              return true;
+            }
+            return true;
+          }
+
+          if (phase._tag === "oauth-mode") {
+            if (event.name === "escape") {
+              setAuthPhase({ _tag: "idle" });
+              return true;
+            }
+            if (event.name === "j" || event.name === "down") {
+              setAuthPhase({
+                ...phase,
+                modeIndex: Math.min(phase.modes.length - 1, phase.modeIndex + 1),
+              });
+              return true;
+            }
+            if (event.name === "k" || event.name === "up") {
+              setAuthPhase({
+                ...phase,
+                modeIndex: Math.max(0, phase.modeIndex - 1),
+              });
+              return true;
+            }
+            if (event.name === "return" || event.name === "enter") {
+              const provider = providers().find((row) => row.id === phase.providerId);
+              const method = provider?.methods.find(
+                (entry): entry is Extract<Method, { type: "oauth" }> => entry.type === "oauth",
+              );
+              const mode = phase.modes[phase.modeIndex]?.value ?? "auto";
+              if (provider && method) {
+                setAuthPhase({
+                  _tag: "oauth-run",
+                  mode,
+                  status: mode === "paste" ? "Open the URL, then paste the code…" : "Starting…",
+                  waitingPaste: false,
+                });
+                oauthFiber = Effect.runForkWith(runtime)(
+                  connectOAuth(provider, method.login, { mode }).pipe(
+                    Effect.tap(() => refreshProviders),
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        oauthFiber = undefined;
+                        pasteDeferred = undefined;
+                        setAuthPhase({ _tag: "idle" });
+                      }),
+                    ),
+                    Effect.catch((error: OAuthError) =>
+                      Effect.logError("oauth login failed").pipe(
+                        Effect.annotateLogs({ error: String(error) }),
+                      ),
+                    ),
+                  ),
+                );
+              }
+              return true;
+            }
+            return true;
+          }
+
+          // idle
           if (event.name === "return" || event.name === "enter") {
-            setEditing(true);
+            const provider = providers()[selected];
+            if (!provider) return true;
+            const oauth = provider.methods.find(
+              (entry): entry is Extract<Method, { type: "oauth" }> => entry.type === "oauth",
+            );
+            const keyOnly = !oauth && provider.methods.some((entry) => entry.type === "key");
+            if (oauth) {
+              const modes = oauthModeOptions(oauth);
+              // No `mode` select → device-code / single-path OAuth: start immediately.
+              if (modes.length === 0) {
+                setAuthPhase({
+                  _tag: "oauth-run",
+                  mode: "auto",
+                  status: "Starting…",
+                  waitingPaste: false,
+                });
+                oauthFiber = Effect.runForkWith(runtime)(
+                  connectOAuth(provider, oauth.login, {}).pipe(
+                    Effect.tap(() => refreshProviders),
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        oauthFiber = undefined;
+                        pasteDeferred = undefined;
+                        setAuthPhase({ _tag: "idle" });
+                      }),
+                    ),
+                    Effect.catch((error: OAuthError) =>
+                      Effect.logError("oauth login failed").pipe(
+                        Effect.annotateLogs({ error: String(error) }),
+                      ),
+                    ),
+                  ),
+                );
+                return true;
+              }
+              setAuthPhase({
+                _tag: "oauth-mode",
+                providerId: provider.id,
+                modeIndex: 0,
+                modes,
+              });
+              return true;
+            }
+            if (keyOnly) {
+              setAuthPhase({ _tag: "key-edit" });
+              return true;
+            }
             return true;
           }
           if (event.name === "d") {
@@ -112,16 +240,27 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
                   Effect.tap(() => refreshProviders),
                 ),
               );
+            return true;
           }
         },
         component: (props) => (
           <AuthSettings
             providers={providers()}
             selected={props.selected}
-            editing={editing()}
-            onSubmit={(key) => {
-              connect(providers()[props.selected], key);
-              setEditing(false);
+            phase={authPhase()}
+            onSubmit={(value) => {
+              const phase = authPhase();
+              if (phase._tag === "oauth-run" && phase.waitingPaste && pasteDeferred) {
+                const deferred = pasteDeferred;
+                pasteDeferred = undefined;
+                Effect.runForkWith(runtime)(Deferred.succeed(deferred, value));
+                setAuthPhase({ ...phase, waitingPaste: false, status: "Exchanging…" });
+                return;
+              }
+              if (phase._tag === "key-edit") {
+                connect(providers()[props.selected], value);
+                setAuthPhase({ _tag: "idle" });
+              }
             }}
           />
         ),
@@ -151,7 +290,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
 
       yield* bindings.register({
         name: "agent.new",
-        key: "<leader>shift+n",
+        key: "<prefix>shift+n",
         desc: "open a chat pane with a new native agent",
         group: "agents",
         run: start,
@@ -159,7 +298,7 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
 
       yield* bindings.register({
         name: "session.next-blocked",
-        key: "<leader>a",
+        key: "<prefix>a",
         desc: "jump to the next blocked agent",
         group: "sessions",
         run: panel.run(command("session.next-blocked")).pipe(Effect.asVoid),
@@ -174,6 +313,20 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
         desc: "choose the model the native agent uses",
         group: "agents",
         run: openModelPicker,
+      });
+
+      yield* bindings.register({
+        name: "agent.thinking",
+        desc: "choose the thinking effort the native agent uses",
+        group: "agents",
+        run: openThinkingPicker,
+      });
+
+      yield* bindings.register({
+        name: "agent.sessions",
+        desc: "resume a previous native agent session",
+        group: "agents",
+        run: openSessionPicker,
       });
 
       const run = (value: Parameters<typeof panel.run>[0]) =>
@@ -205,9 +358,31 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             showThinking={panel.options()["agent.showThinking"] as boolean}
             highlight={snapshot}
             onSlashCommand={(command) => {
-              if (command !== "/model") return false;
-              Effect.runForkWith(runtime)(openModelPicker);
-              return true;
+              if (command === "/model") {
+                Effect.runForkWith(runtime)(openModelPicker);
+                return true;
+              }
+              if (command === "/thinking") {
+                Effect.runForkWith(runtime)(openThinkingPicker);
+                return true;
+              }
+              if (command === "/sessions") {
+                Effect.runForkWith(runtime)(openSessionPicker);
+                return true;
+              }
+              if (command === "/compact" || command.startsWith("/compact ")) {
+                const instructions = command === "/compact" ? undefined : command.slice("/compact ".length).trim();
+                run(
+                  runtimeCommand("agent.compact", {
+                    target: props.sessionId,
+                    ...(instructions !== undefined && instructions !== ""
+                      ? { instructions }
+                      : {}),
+                  }),
+                );
+                return true;
+              }
+              return false;
             }}
             completionSources={[
               {
@@ -219,6 +394,27 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
                       label: "/model",
                       detail: "choose the agent model",
                       replacement: "/model",
+                      submit: true,
+                    },
+                    {
+                      id: "thinking",
+                      label: "/thinking",
+                      detail: "choose thinking effort",
+                      replacement: "/thinking",
+                      submit: true,
+                    },
+                    {
+                      id: "sessions",
+                      label: "/sessions",
+                      detail: "resume a previous native agent session",
+                      replacement: "/sessions",
+                      submit: true,
+                    },
+                    {
+                      id: "compact",
+                      label: "/compact",
+                      detail: "summarize older context to free the model window",
+                      replacement: "/compact",
                       submit: true,
                     },
                   ].filter((completion) =>
@@ -255,25 +451,53 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
             ]}
             frames={sessionStream.frames}
             sync={sessionStream.sync}
-            onSubmit={(message) =>
-              run(
+            onSubmit={(message, options) => {
+              if (options?.delivery !== undefined && options.replace !== undefined) {
+                return run(
+                  runtimeCommand("agent.prompt", {
+                    target: props.sessionId,
+                    text: message,
+                    delivery: options.delivery,
+                    replace: options.replace,
+                  }),
+                );
+              }
+              if (options?.delivery !== undefined) {
+                return run(
+                  runtimeCommand("agent.prompt", {
+                    target: props.sessionId,
+                    text: message,
+                    delivery: options.delivery,
+                  }),
+                );
+              }
+              if (options?.replace !== undefined) {
+                return run(
+                  runtimeCommand("agent.prompt", {
+                    target: props.sessionId,
+                    text: message,
+                    replace: options.replace,
+                  }),
+                );
+              }
+              return run(
                 runtimeCommand("agent.prompt", {
                   target: props.sessionId,
                   text: message,
                 }),
-              )
-            }
+              );
+            }}
             onPermission={(request, decision, feedback) =>
               run(
                 runtimeCommand(
                   "agent.permission",
                   feedback
-                    ? { session: props.sessionId, request, decision, feedback }
-                    : { session: props.sessionId, request, decision },
+                    ? { target: props.sessionId, request, decision, feedback }
+                    : { target: props.sessionId, request, decision },
                 ),
               )
             }
-            onInterrupt={() => run(runtimeCommand("agent.interrupt", { session: props.sessionId }))}
+            onInterrupt={() => run(runtimeCommand("agent.interrupt", { target: props.sessionId }))}
           />
         ),
       ]);
@@ -281,6 +505,68 @@ export const agentHarnessPlugin: PluginDefinition = definePlugin({
       function yieldCredential() {
         return Credential.Service;
       }
+      const connectOAuth = (
+        provider: IntegrationInfo,
+        login: (
+          ctl: OAuthFlowController,
+          answers?: Readonly<Record<string, string>>,
+        ) => Effect.Effect<Credential.OAuth, OAuthError>,
+        answers: Readonly<Record<string, string>>,
+      ) =>
+        Effect.gen(function* () {
+          const credentials = yield* yieldCredential();
+          const ctl: OAuthFlowController = {
+            onAuth: (info) =>
+              Effect.sync(() => {
+                Bun.spawn(["xdg-open", info.launchUrl ?? info.url], {
+                  stdout: "ignore",
+                  stderr: "ignore",
+                  stdin: "ignore",
+                });
+                setAuthPhase((phase) =>
+                  phase._tag === "oauth-run"
+                    ? {
+                        ...phase,
+                        status:
+                          info.instructions ??
+                          (phase.mode === "paste"
+                            ? "Paste the redirect URL or code…"
+                            : "Waiting for browser…"),
+                      }
+                    : phase,
+                );
+              }),
+            onProgress: (message) =>
+              Effect.sync(() => {
+                setAuthPhase((phase) =>
+                  phase._tag === "oauth-run" ? { ...phase, status: message } : phase,
+                );
+              }),
+            onManualCodeInput: Effect.gen(function* () {
+              const deferred = yield* Deferred.make<string, OAuthCancelled>();
+              pasteDeferred = deferred;
+              setAuthPhase((phase) =>
+                phase._tag === "oauth-run"
+                  ? { ...phase, waitingPaste: true, status: "Paste redirect URL or code…" }
+                  : phase,
+              );
+              return yield* Deferred.await(deferred);
+            }),
+          };
+          const value = yield* login(ctl, answers);
+          if (provider.connections[0]) {
+            yield* credentials.update(provider.connections[0].id, { value });
+          } else {
+            yield* credentials.create({
+              integrationID: provider.id,
+              value,
+              label: provider.label,
+            });
+          }
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(Credential.Default.pipe(Layer.provideMerge(BunFileSystem.layer))),
+        );
       const connect = (provider: IntegrationInfo | undefined, key: string) => {
         if (!provider || !key) return;
         Effect.runForkWith(runtime)(
@@ -315,13 +601,65 @@ const llmServices = Layer.mergeAll(IntegrationDefault, ModelCatalogDefault).pipe
   Layer.provide(BunFileSystem.layer),
 );
 
+type OAuthModeOption = {
+  readonly label: string;
+  readonly value: "auto" | "paste" | "device";
+};
+
+type AuthPhase =
+  | { readonly _tag: "idle" }
+  | { readonly _tag: "key-edit" }
+  | {
+      readonly _tag: "oauth-mode";
+      readonly providerId: string;
+      readonly modeIndex: number;
+      readonly modes: readonly OAuthModeOption[];
+    }
+  | {
+      readonly _tag: "oauth-run";
+      readonly mode: "auto" | "paste" | "device";
+      readonly status: string;
+      readonly waitingPaste: boolean;
+    };
+
+/** Mode choices from an oauth method's `mode` select, or empty when the method
+ *  has no mode prompt (device-code starts without a picker). */
+export const oauthModeOptions = (
+  method: Extract<Method, { type: "oauth" }>,
+): readonly OAuthModeOption[] => {
+  const select = method.prompts?.find(
+    (prompt) => prompt.type === "select" && prompt.key === "mode",
+  );
+  if (select && select.type === "select") {
+    return select.options.flatMap((option) =>
+      option.value === "auto" || option.value === "paste" || option.value === "device"
+        ? [{ label: option.label, value: option.value }]
+        : [],
+    );
+  }
+  return [];
+};
+
 export function AuthSettings(props: {
   readonly providers: readonly IntegrationInfo[];
   readonly selected: number;
-  readonly editing: boolean;
-  readonly onSubmit: (key: string) => void;
+  readonly phase: AuthPhase;
+  readonly onSubmit: (value: string) => void;
 }) {
   const [key, setKey] = createSignal("");
+  const inputFocused = () =>
+    props.phase._tag === "key-edit" ||
+    (props.phase._tag === "oauth-run" && props.phase.waitingPaste);
+  const placeholder = () => {
+    const phase = props.phase;
+    if (phase._tag === "key-edit") return "API key, then enter";
+    if (phase._tag === "oauth-run" && phase.waitingPaste)
+      return "Paste redirect URL or code, then enter";
+    if (phase._tag === "oauth-mode") return "j/k mode · enter start · esc cancel";
+    if (phase._tag === "oauth-run") return `${phase.status} · esc cancel`;
+    return "j/k select · d remove · enter connect";
+  };
+
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <For each={props.providers}>
@@ -346,12 +684,35 @@ export function AuthSettings(props: {
           </box>
         )}
       </For>
+      <Show when={props.phase._tag === "oauth-mode" ? props.phase : false}>
+        {(phase: () => Extract<AuthPhase, { _tag: "oauth-mode" }>) => (
+          <box style={{ flexDirection: "column", marginTop: 1 }}>
+            <text style={{ fg: theme.overlay1, height: 1 }}>OAuth mode</text>
+            <For each={phase().modes}>
+              {(mode, index) => (
+                <text
+                  style={{
+                    fg: index() === phase().modeIndex ? theme.text : theme.overlay1,
+                    height: 1,
+                  }}
+                >
+                  {index() === phase().modeIndex ? "› " : "  "}
+                  {mode.label}
+                </text>
+              )}
+            </For>
+          </box>
+        )}
+      </Show>
+      <Show when={props.phase._tag === "oauth-run" ? props.phase.status : false}>
+        {(status: () => string) => (
+          <text style={{ fg: theme.overlay1, height: 1, marginTop: 1 }}>{status()}</text>
+        )}
+      </Show>
       <input
-        placeholder={
-          props.editing ? "API key, then enter" : "j/k select · d remove · enter to set key"
-        }
+        placeholder={placeholder()}
         value={key()}
-        focused={props.editing}
+        focused={inputFocused()}
         onInput={(value: string) => setKey(value)}
         onSubmit={() => {
           props.onSubmit(key());

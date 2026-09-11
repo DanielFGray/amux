@@ -1,4 +1,5 @@
-import { Effect, Stream } from "effect";
+import { Effect, Layer, Option, Stream } from "effect";
+import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import {
   definePlugin,
   ProcessStateAuthority,
@@ -8,9 +9,17 @@ import {
   type PluginDefinition,
 } from "@danielfgray/amux";
 import { deriveProcessDisplay } from "./display-state.ts";
-import { DETECTOR_REGIONS, evaluateAgent } from "./detector.ts";
+import { detectorRegions, evaluateAgent } from "./detector.ts";
+import {
+  AgentManifestRegistry,
+  configHome,
+  loadRegistry,
+  type AgentManifestRegistryService,
+} from "@danielfgray/amux-agent-facts/manifests.ts";
 import { splitActivity } from "@danielfgray/amux-agent-facts/identify.ts";
 export { identifyAgent } from "@danielfgray/amux-agent-facts/identify.ts";
+export { AgentManifestRegistry } from "@danielfgray/amux-agent-facts/manifests.ts";
+export { configHome, loadRegistry } from "@danielfgray/amux-agent-facts/manifests.ts";
 export { readHarnessLog } from "@danielfgray/amux-agent-facts/harness-log.ts";
 import {
   AgentAwarenessTag,
@@ -28,17 +37,21 @@ import {
 export const agentAwarenessPlugin: PluginDefinition = definePlugin({
   id: "amux.agent-awareness",
   inject: [ProcessDisplayTag, SessionFactsTag, SessionStreamTag],
-  provide: [AgentAwarenessTag],
+  provide: [AgentAwarenessTag, AgentManifestRegistry],
   effect: (ctx) =>
     Effect.gen(function* () {
+      const registry: AgentManifestRegistryService = yield* loadRegistry(
+        yield* configHome.pipe(Effect.orDie),
+      ).pipe(Effect.provide(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.layer))));
+      ctx.provide(AgentManifestRegistry, registry);
       const processDisplay = yield* ProcessDisplayTag;
       const facts = yield* SessionFactsTag;
       const sessionStream = yield* SessionStreamTag;
-      const observation = yield* facts.observe(DETECTOR_REGIONS);
+      const observation = yield* facts.observe(detectorRegions(registry));
       const hookAgents = new Map<string, string>();
       const presenceOf = (session: string): AgentPresence | undefined => {
         const fact = observation.current()[session];
-        return fact ? resolvePresence(session, fact, hookAgents.get(session)) : undefined;
+        return fact ? resolvePresence(registry, session, fact, hookAgents.get(session)) : undefined;
       };
       ctx.provide(AgentAwarenessTag, { presence: presenceOf });
 
@@ -56,10 +69,13 @@ export const agentAwarenessPlugin: PluginDefinition = definePlugin({
           state: () => {
             const fact = observation.current()[session];
             if (!fact) return "unknown";
-            const agent = resolveAgentId(fact, hookAgents.get(session));
-            if (!agent) return "unknown";
-            const result = evaluateAgent(agent, fact.regions);
-            return result.skipStateUpdate ? "unknown" : result.state;
+            return Option.match(resolveAgentId(registry, fact, hookAgents.get(session)), {
+              onNone: () => "unknown",
+              onSome: (agent) => {
+                const result = evaluateAgent(registry, agent, fact.regions);
+                return result.skipStateUpdate ? "unknown" : result.state;
+              },
+            });
           },
         });
       });

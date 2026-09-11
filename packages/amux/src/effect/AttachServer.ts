@@ -165,8 +165,8 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
     const attach = Effect.fnUntraced(function* (socket: Bun.Socket<ClientState>, client: string) {
       const child = yield* Scope.make();
       const subscribed = yield* Scope.provide(
-        hub.subscribe(client, socket.data.connection, () => {
-          requestClose(socket);
+        hub.subscribe(client, socket.data.connection, (reason) => {
+          terminate(socket, { _tag: "error", message: reason });
         }),
         child,
       ).pipe(Effect.exit);
@@ -380,24 +380,22 @@ export const startAttachServer = <FrameError, SyncError, ActivityError, AttachEr
       );
 
     const ownConnection = (socket: Bun.Socket<ClientState>) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const state = socket.data;
-          const fibers = yield* FiberMap.make<string>();
-          state.run = yield* FiberMap.runtime(fibers)<never>();
-          // Registered after FiberMap.make, so this runs first when the owner
-          // scope closes. Concurrent host finalizers may publish session exits;
-          // mark the connection closed before output fibers can forward them.
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              state.closed = true;
-            }),
-          );
-          resetIdleDeadline(socket);
-          for (const data of state.pending.splice(0)) processData(socket, data);
-          if (!state.closed) return yield* Effect.never;
-        }),
-      ).pipe(Effect.ensuring(closeClient(socket)));
+      Effect.gen(function* () {
+        const state = socket.data;
+        const fibers = yield* FiberMap.make<string>();
+        state.run = yield* FiberMap.runtime(fibers)<never>();
+        // Registered after FiberMap.make, so this runs first when the owner
+        // scope closes. Concurrent host finalizers may publish session exits;
+        // mark the connection closed before output fibers can forward them.
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            state.closed = true;
+          }),
+        );
+        resetIdleDeadline(socket);
+        for (const data of state.pending.splice(0)) processData(socket, data);
+        if (!state.closed) return yield* Effect.never;
+      }).pipe(Effect.scoped, Effect.ensuring(closeClient(socket)));
 
     const listener = yield* Effect.acquireRelease(
       Effect.try({

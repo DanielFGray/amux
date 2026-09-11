@@ -54,7 +54,15 @@ class ProcessStateError extends S.TaggedError<ProcessStateError>()("ProcessState
   message: S.String,
 }) {}
 
-const encodeJson = S.encodeSync(S.fromJsonString(S.Unknown));
+const ProcessStateRequestSchema = S.Struct({
+  id: S.String,
+  method: S.Literal("process.state"),
+  params: S.Struct({
+    session: S.String,
+    state: ProcessStateSchema,
+  }),
+});
+const encodeRequest = S.encodeSync(S.fromJsonString(ProcessStateRequestSchema));
 
 /**
  * Write one self-report to a session's process-state socket.
@@ -71,7 +79,7 @@ export function reportProcessState(
   return Effect.runPromise(
     Effect.callback<void, ProcessStateError>((resume) => {
       const socket = net.createConnection(socketPath);
-      const request = encodeJson({
+      const request = encodeRequest({
         id: `amux:process-state:${Effect.runSync(Clock.currentTimeMillis)}`,
         method: "process.state",
         params: { session, state },

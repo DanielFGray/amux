@@ -391,7 +391,8 @@ const toolBlock = (overrides: Partial<Extract<TranscriptBlock, { kind: "tool" }>
 /**
  * The opencode-style reveal: while params stream the pane shows a placeholder
  * ("Writing command..." / "Preparing write..."), and once the input resolves it
- * shows the actual command or path instead of raw partial JSON.
+ * shows the actual command or path instead of raw partial JSON. Chat never
+ * appends `-> output` — that belongs to raw `transcriptLine`.
  */
 test("a streaming bash tool renders the writing placeholder, then the command", () => {
   expect(toolSummary(toolBlock({ name: "bash", streaming: true, input: "" }))).toBe(
@@ -404,7 +405,7 @@ test("a streaming bash tool renders the writing placeholder, then the command", 
     toolSummary(
       toolBlock({ name: "bash", input: { command: "bun test" }, output: "ok", isError: false }),
     ),
-  ).toBe("$ bun test -> ok");
+  ).toBe("$ bun test");
 });
 
 test("write and read tools reveal their paths, grep its pattern", () => {
@@ -412,19 +413,19 @@ test("write and read tools reveal their paths, grep its pattern", () => {
     "~ Preparing write...",
   );
   expect(toolSummary(toolBlock({ name: "write", input: { path: "src/a.ts", content: "x" } }))).toBe(
-    "\u2190 src/a.ts",
+    "write src/a.ts",
   );
   expect(toolSummary(toolBlock({ name: "read", input: { path: "ARCHITECTURE.md" } }))).toBe(
-    "ARCHITECTURE.md",
+    "read ARCHITECTURE.md",
   );
   expect(toolSummary(toolBlock({ name: "grep", input: { pattern: "createSignal" } }))).toBe(
-    "createSignal",
+    "grep createSignal",
   );
 });
 
 test("a resolved string input is not mistaken for streaming", () => {
   expect(toolSummary(toolBlock({ name: "grep", input: "src", output: "12 matches" }))).toBe(
-    "src -> 12 matches",
+    "grep src",
   );
 });
 
@@ -492,6 +493,45 @@ test("a permission joins the tool it gates without removing either raw event", (
     'tool> bash {"command":"ls"}',
     "permission> bash: $ ls",
   ]);
+});
+
+test("permissions with a call id join that tool even when inputs collide", () => {
+  let blocks: readonly TranscriptBlock[] = [];
+  for (const [call, command, request] of [
+    ["c1", "ls", "r1"],
+    ["c2", "ls", "r2"],
+  ] as const) {
+    blocks = appendTranscriptFrame(
+      blocks,
+      frame({
+        _tag: "tool.start",
+        turn: "t1",
+        call,
+        tool: "bash",
+        input: { command },
+      }),
+    );
+    blocks = appendTranscriptFrame(
+      blocks,
+      frame({
+        _tag: "permission.request",
+        turn: "t1",
+        request,
+        call,
+        tool: "bash",
+        action: "bash",
+        resources: [command],
+        save: [],
+        input: { command },
+      }),
+    );
+  }
+  const tools = blocks.filter(
+    (block): block is Extract<TranscriptBlock, { kind: "tool" }> => block.kind === "tool",
+  );
+  expect(toolPermission(blocks, tools[0]!)?.request).toBe("r1");
+  expect(toolPermission(blocks, tools[1]!)?.request).toBe("r2");
+  expect(pendingPermission(blocks)?.request).toBe("r1");
 });
 
 test("wrapText preserves newlines as hard breaks and wraps each hard line", () => {

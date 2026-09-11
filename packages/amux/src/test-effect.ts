@@ -102,10 +102,10 @@ export function testEffect<A, E, R>(
   opts?: number | TestOptions,
 ): void;
 export function testEffect(
-  nameOrLayer: string | Layer.Layer<any, any, Scope.Scope>,
-  effect?: Body<unknown, unknown, any>,
+  nameOrLayer: string | Layer.Layer<unknown, unknown, Scope.Scope>,
+  effect?: Body<unknown, unknown, unknown>,
   opts?: number | TestOptions,
-): TestEffectSet<any> | void {
+): TestEffectSet<unknown> | void {
   if (typeof nameOrLayer === "string") {
     test(
       nameOrLayer,
@@ -114,5 +114,9 @@ export function testEffect(
     );
     return;
   }
+  // This overload's whole point is binding a caller-supplied layer of whatever error
+  // type it declares; the exported overloads above carry the real <R, E>, this is only
+  // the untyped dispatch body.
+  // @effect-diagnostics-next-line anyUnknownInErrorContext:off
   return make(Layer.provideMerge(nameOrLayer, testEnv), Layer.provideMerge(nameOrLayer, liveEnv));
 }

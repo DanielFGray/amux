@@ -94,41 +94,39 @@ interface GitResult {
 }
 
 const runGit = (args: string[], cwd: string, timeoutMs: number) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const process = yield* spawner.spawn(
-        pipe(
-          ChildProcess.make("git", args, { stdout: "pipe", stderr: "pipe" }),
-          ChildProcess.setCwd(cwd),
-          // amux observes a repository it does not own. `git status` would
-          // otherwise take .git/index.lock to refresh the index, so a poll
-          // landing between the user's own `git add` and `git commit` makes
-          // their command fail — and a poll killed mid-refresh leaves the
-          // lock behind. This disables only the locks git takes for its own
-          // convenience; the ones an operation requires are unaffected.
-          ChildProcess.setEnv({ GIT_OPTIONAL_LOCKS: "0" }),
-        ),
-      );
-      const stdout = yield* Effect.forkChild(
-        Stream.decodeText()(process.stdout).pipe(Stream.runCollect),
-      );
-      const stderr = yield* Effect.forkChild(
-        Stream.decodeText()(process.stderr).pipe(Stream.runCollect),
-      );
-      const code = yield* Effect.timeoutOrElse(process.exitCode, {
-        duration: `${timeoutMs} millis`,
-        orElse: () => new GitError({ message: `git ${args[0]} timed out after ${timeoutMs}ms` }),
-      });
-      const out = yield* Fiber.join(stdout);
-      const err = yield* Fiber.join(stderr);
-      return {
-        code,
-        out: out.join("").trim(),
-        err: err.join("").trim(),
-      };
-    }),
-  ).pipe(Effect.provide(BunServices.layer));
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const process = yield* spawner.spawn(
+      pipe(
+        ChildProcess.make("git", args, { stdout: "pipe", stderr: "pipe" }),
+        ChildProcess.setCwd(cwd),
+        // amux observes a repository it does not own. `git status` would
+        // otherwise take .git/index.lock to refresh the index, so a poll
+        // landing between the user's own `git add` and `git commit` makes
+        // their command fail — and a poll killed mid-refresh leaves the
+        // lock behind. This disables only the locks git takes for its own
+        // convenience; the ones an operation requires are unaffected.
+        ChildProcess.setEnv({ GIT_OPTIONAL_LOCKS: "0" }),
+      ),
+    );
+    const stdout = yield* Effect.forkChild(
+      Stream.decodeText()(process.stdout).pipe(Stream.runCollect),
+    );
+    const stderr = yield* Effect.forkChild(
+      Stream.decodeText()(process.stderr).pipe(Stream.runCollect),
+    );
+    const code = yield* Effect.timeoutOrElse(process.exitCode, {
+      duration: `${timeoutMs} millis`,
+      orElse: () => new GitError({ message: `git ${args[0]} timed out after ${timeoutMs}ms` }),
+    });
+    const out = yield* Fiber.join(stdout);
+    const err = yield* Fiber.join(stderr);
+    return {
+      code,
+      out: out.join("").trim(),
+      err: err.join("").trim(),
+    };
+  }).pipe(Effect.scoped, Effect.provide(BunServices.layer));
 
 function runGitResult(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
   return Effect.runPromiseExit(runGit(args, cwd, timeoutMs)).then((result) =>

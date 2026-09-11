@@ -1,11 +1,14 @@
 /** @jsxImportSource @opentui/solid */
 /** @effect-diagnostics *:skip-file -- Solid render-tree event handlers and lifecycle control flow belong to OpenTUI/Solid, not the service Effect graph. */
-import { createEffect, createSignal, For, Show } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import { Effect, Scope } from "effect";
-import type { KeyEvent, ScrollBoxRenderable } from "@opentui/core";
-import { theme } from "@danielfgray/amux";
+import type { KeyEvent } from "@opentui/core";
 import { Service as Integration } from "./integration.ts";
-import { Service as ModelCatalog, type Provider } from "./model-catalog.ts";
+import {
+  availableThinkingLevels,
+  Service as ModelCatalog,
+  type Provider,
+} from "./model-catalog.ts";
 import {
   CONTEXT_PRIORITY,
   ContextsTag,
@@ -15,12 +18,18 @@ import {
   type ContextSpec,
   type OverlayOccupant,
 } from "@danielfgray/amux";
+import {
+  filterEntries as filterPickerEntries,
+  ModalPicker,
+  type CompletionItem,
+} from "@danielfgray/amux-plugin-completion";
 
 export interface ModelPickerEntry {
   readonly value: string;
   readonly provider: string;
   readonly name: string;
   readonly description: string;
+  readonly thinkingLevels: readonly string[] | undefined;
 }
 
 export interface ModelPickerView {
@@ -52,6 +61,15 @@ export const registerModelPicker: Effect.Effect<
     const entry = current?.entries[current.selected];
     if (!entry) return;
     panel.setOption("agent.model", entry.value);
+    // Clamp (or clear) thinking so a previous model's effort does not linger
+    // on a model that does not advertise it.
+    const levels = entry.thinkingLevels;
+    const thinking = panel.options()["agent.thinking"] as string;
+    if (levels === undefined || levels.length === 0) {
+      if (thinking !== "") panel.setOption("agent.thinking", "");
+    } else if (thinking !== "" && !levels.includes(thinking)) {
+      panel.setOption("agent.thinking", levels[0]!);
+    }
     setView(null);
     panel.saveOptions();
   };
@@ -83,6 +101,7 @@ export const registerModelPicker: Effect.Effect<
 
   const slots = yield* SlotsTag;
   const contexts = yield* ContextsTag;
+  const runtime = yield* Effect.context();
   const occupant: OverlayOccupant = {
     id: "amux.agent-harness.model-picker",
     title: "model picker",
@@ -90,23 +109,35 @@ export const registerModelPicker: Effect.Effect<
     component: (props) => (
       <Show when={view()}>
         {(current: () => ModelPickerView) => (
-          <ModelPicker
-            view={current()}
+          <ModalPicker
+            view={modelPickerView(current())}
             width={props.width}
+            title=" choose native agent model "
+            filterPlaceholder="filter models"
             onInput={(query) => setView((v) => v && filterEntries(v, query))}
+            onPick={(selected) => {
+              setView((v) => v && { ...v, selected });
+              choose();
+            }}
             onSubmit={choose}
           />
         )}
       </Show>
     ),
   };
-  yield* slots.register({
-    slot: "overlay",
-    occupant,
-    // Above the settings window, because the option row in it is one of the two
-    // ways here and the settings stay up behind the picker.
-    priority: 15,
-  });
+  // Overlay slot deferred until open — OpenTUI hasInitialOutput trap (see file-ui).
+  let overlayReady = false;
+  const ensureOverlay = () => {
+    if (overlayReady) return;
+    overlayReady = true;
+    Effect.runForkWith(runtime)(
+      slots.register({
+        slot: "overlay",
+        occupant,
+        priority: 15,
+      }),
+    );
+  };
   const context: ContextSpec = {
     id: "amux.agent-harness.model-picker",
     active: () => view() !== null,
@@ -131,6 +162,7 @@ export const registerModelPicker: Effect.Effect<
       const entries = modelEntries(providers, connected);
       const selected = entries.findIndex((entry) => entry.value === panel.options()["agent.model"]);
       setView({ allEntries: entries, entries, query: "", selected: Math.max(0, selected) });
+      ensureOverlay();
     }),
   );
 });
@@ -154,96 +186,29 @@ export function modelEntries(
           provider: provider.name,
           name: model.name,
           description: model.family ?? model.id,
+          thinkingLevels: availableThinkingLevels(model),
         })),
     )
     .sort((a, b) => a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name));
 }
 
 export function filterEntries(view: ModelPickerView, query: string): ModelPickerView {
-  const needle = query.trim().toLowerCase();
-  const entries = view.allEntries.filter((entry) =>
-    `${entry.value} ${entry.provider} ${entry.name} ${entry.description}`
-      .toLowerCase()
-      .includes(needle),
-  );
-  return { ...view, entries, query, selected: 0 };
-}
-
-function ModelPicker(props: {
-  readonly view: ModelPickerView;
-  readonly width: number;
-  readonly onInput: (query: string) => void;
-  readonly onSubmit: () => void;
-}) {
-  let list: ScrollBoxRenderable | undefined;
-
-  createEffect(() => {
-    const box = list;
-    if (!box) return;
-    const selected = props.view.selected;
-    const height = box.viewport?.height ?? box.height;
-    if (selected < box.scrollTop) box.scrollTop = selected;
-    else if (selected >= box.scrollTop + height) box.scrollTop = selected - height + 1;
-  });
-
-  return (
-    <box
-      style={{
-        position: "absolute",
-        left: Math.max(0, Math.floor((props.width - 78) / 2)),
-        top: 1,
-        width: 78,
-        maxHeight: 18,
-        flexDirection: "column",
-        backgroundColor: theme.base,
-        border: true,
-        borderColor: theme.blue,
-        padding: 1,
-        zIndex: 250,
-      }}
-      title=" choose native agent model "
-      onMouseDown={(event) => event.stopPropagation()}
-    >
-      <input
-        value={props.view.query}
-        placeholder="filter models"
-        focused={true}
-        style={{
-          backgroundColor: theme.surface1,
-          textColor: theme.text,
-          focusedTextColor: theme.text,
-        }}
-        onInput={props.onInput}
-        onSubmit={props.onSubmit}
-      />
-      <Show
-        when={props.view.entries.length > 0}
-        fallback={
-          <text style={{ fg: theme.overlay1, height: 1 }}>No catalog models available.</text>
-        }
-      >
-        <scrollbox ref={(value) => (list = value)} style={{ flexGrow: 1, flexShrink: 1 }}>
-          <For each={props.view.entries}>
-            {(entry, index) => (
-              <box
-                style={{
-                  flexDirection: "row",
-                  height: 1,
-                  flexShrink: 0,
-                  backgroundColor: index() === props.view.selected ? theme.surface1 : theme.base,
-                }}
-              >
-                <text style={{ fg: theme.mauve, width: 18, flexShrink: 0 }}>{entry.provider}</text>
-                <text style={{ fg: theme.text, width: 28, flexShrink: 0 }}>{entry.name}</text>
-                <text style={{ fg: theme.subtext0, flexGrow: 1 }}>{entry.description}</text>
-              </box>
-            )}
-          </For>
-        </scrollbox>
-      </Show>
-      <text style={{ fg: theme.overlay1, height: 1, flexShrink: 0 }}>
-        ↑↓ select · enter choose · esc close
-      </text>
-    </box>
+  return filterPickerEntries(
+    view,
+    query,
+    (entry) => `${entry.value} ${entry.provider} ${entry.name} ${entry.description}`,
   );
 }
+
+const modelPickerView = (view: ModelPickerView) => ({
+  ...view,
+  allEntries: view.allEntries.map(modelPickerItem),
+  entries: view.entries.map(modelPickerItem),
+});
+
+const modelPickerItem = (entry: ModelPickerEntry): CompletionItem => ({
+  id: entry.value,
+  label: `${entry.provider} · ${entry.name}`,
+  detail: entry.description,
+  replacement: entry.value,
+});

@@ -59,7 +59,7 @@ export class Space {
 
   onChange?: () => void;
   onSessionExit?: (session: SessionHandle, window: Window, space: Space) => void;
-  onCopy?: (text: string) => boolean | void;
+  onCopy?: (text: string, target?: "clipboard" | "primary") => boolean | void;
   onCopyError?: (error: Error) => void;
 
   constructor(
@@ -236,7 +236,7 @@ export class SpaceSet {
   #mounted: Window | null = null;
   onChange?: () => void;
   onSessionExit?: (session: SessionHandle, window: Window, space: Space) => void;
-  onCopy?: (text: string) => boolean | void;
+  onCopy?: (text: string, target?: "clipboard" | "primary") => boolean | void;
   onCopyError?: (error: Error) => void;
 
   constructor(env: Context.Context<WorkspaceEnv>, host: BoxRenderable) {

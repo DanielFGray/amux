@@ -148,11 +148,13 @@ function parseFieldSpecs(tag: string, fields: FieldSpec[], argv: string[]): Pars
     if (positionalIdx >= requiredFields.length) {
       // Every required field already has a positional slot by this point, so
       // whatever remains unconsumed here is optional. A lone remaining
-      // optional field has nothing else a bare positional could mean, so it
-      // takes the value directly instead of erroring — this is what lets
-      // `session.kill <agent-id>` reach the command's own field rather than
-      // being swallowed by the legacy `<command> <session-id>` fallback.
-      const remaining = fields.filter((f) => !consumed.has(f.name));
+      // optional *value* field has nothing else a bare positional could mean,
+      // so it takes the value directly instead of erroring — this is what lets
+      // `session.kill <agent-id>` and `editor.open <file>` reach the command's
+      // own field rather than being swallowed by the legacy
+      // `<command> <session-id>` fallback. Boolean optionals are flag-only
+      // (`--split`); they do not compete for the positional slot.
+      const remaining = fields.filter((f) => !consumed.has(f.name) && f.kind !== "boolean");
       if (remaining.length === 1 && !remaining[0]!.required) {
         const field = remaining[0]!;
         const coerced = coerce(arg, field);
@@ -301,6 +303,15 @@ export function generateHelp(daemonCommands: readonly DaemonCommandSpec[] = []):
   lines.push("  amux new <session-id>   create a session (or resume a stopped one) and attach");
   lines.push("  amux <session-id>       attach to an existing session");
   lines.push("  amux                    attach to the 'default' session, creating it if needed");
+  lines.push("");
+  lines.push("Options:");
+  lines.push("  --help, -h           Show this help");
+  lines.push("  --skill              Print the agent skill file and exit");
+  lines.push("");
+  lines.push("Are you an AI? Use these resources ONLY IF your task specifically asks you to:");
+  lines.push("  Control amux spaces, windows, panes, sessions, or agents:");
+  lines.push("    SKIP if an amux skill is already in your context. Otherwise run: amux --skill");
+  lines.push("    From an amux checkout with no `amux` on PATH: bun run cli --skill");
   return lines.join("\n");
 }
 

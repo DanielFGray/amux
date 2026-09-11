@@ -1,8 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { createMemo } from "solid-js";
 import { Effect } from "effect";
-import { definePlugin, type PluginDefinition } from "../packages/amux/src/plugin/types.ts";
-import { PanelTag, SlotsTag } from "../packages/amux/src/plugin/services.ts";
+import { definePlugin, PanelTag, SlotsTag, type PluginDefinition } from "amux";
 
 /** A minimal user plugin driven only by the public panel context. */
 const statusBar: PluginDefinition = definePlugin({

@@ -16,25 +16,27 @@ import { DaemonCommandsTag, scopedRegistry, type DaemonCommandRegistration } fro
  */
 export const daemonCommandRegistrations = (): Promise<readonly DaemonCommandRegistration[]> =>
   Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const config = yield* loadConfig();
-        const contributions = createPluginContributions();
-        const table = contributions.table<DaemonCommandRegistration>();
-        const commands = scopedRegistry(
-          { all: table.all },
-          (owner, registration: DaemonCommandRegistration) =>
-            table.add(owner, registration.tag, registration),
-        );
-        const host = yield* createPluginHost({ contributions });
-        yield* loadDaemonPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
-          definePlugin({
-            id: "amux.registry.daemon-commands",
-            provide: [DaemonCommandsTag],
-            effect: (ctx) => Effect.sync(() => void ctx.provide(DaemonCommandsTag, commands)),
-          }),
-        ]);
-        return table.all().map(({ value }) => value);
-      }),
-    ).pipe(Effect.provide(BunFileSystem.layer), Effect.provideService(Logger.LogToStderr, true)),
+    Effect.gen(function* () {
+      const config = yield* loadConfig();
+      const contributions = createPluginContributions();
+      const table = contributions.table<DaemonCommandRegistration>();
+      const commands = scopedRegistry(
+        { all: table.all },
+        (owner, registration: DaemonCommandRegistration) =>
+          table.add(owner, registration.tag, registration),
+      );
+      const host = yield* createPluginHost({ contributions });
+      yield* loadDaemonPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
+        definePlugin({
+          id: "amux.registry.daemon-commands",
+          provide: [DaemonCommandsTag],
+          effect: (ctx) => Effect.sync(() => void ctx.provide(DaemonCommandsTag, commands)),
+        }),
+      ]);
+      return table.all().map(({ value }) => value);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(BunFileSystem.layer),
+      Effect.provideService(Logger.LogToStderr, true),
+    ),
   );

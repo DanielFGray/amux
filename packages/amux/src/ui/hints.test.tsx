@@ -15,24 +15,24 @@ afterEach(() => {
 const COMMANDS: CommandSpec[] = [
   {
     name: "pane.split",
-    key: ["<leader>|", "<leader>\\"],
+    key: ["<prefix>|", "<prefix>\\"],
     desc: "split",
     group: "panes",
     run: Effect.void,
   },
-  { name: "pane.zoom", key: "<leader>z", desc: "zoom", group: "panes", run: Effect.void },
-  { name: "window.new", key: "<leader>c", desc: "new window", group: "windows", run: Effect.void },
+  { name: "pane.zoom", key: "<prefix>z", desc: "zoom", group: "panes", run: Effect.void },
+  { name: "window.new", key: "<prefix>c", desc: "new window", group: "windows", run: Effect.void },
   // A sibling covered by another entry: hidden, so no hint of its own.
   {
     name: "window.two",
-    key: "<leader>2",
+    key: "<prefix>2",
     desc: "select 2",
     hidden: true,
     group: "windows",
     run: Effect.void,
   },
   // Two keys deep, so it must not show up until the leader has been pressed.
-  { name: "app.deep", key: "<leader>gg", desc: "deep", group: "global", run: Effect.void },
+  { name: "app.deep", key: "<prefix>gg", desc: "deep", group: "global", run: Effect.void },
 ];
 
 async function keymap() {
@@ -46,7 +46,7 @@ const seq = (...displays: string[]) => displays.map((display) => ({ display }));
 
 test("nextKeys lists what a half-typed sequence can still become", async () => {
   const { keymap: km } = await keymap();
-  const groups = nextKeys(km, COMMANDS, [], seq("<leader>"));
+  const groups = nextKeys(km, COMMANDS, [], seq("<prefix>"));
 
   expect(groups.map((g) => g.group)).toEqual(["panes", "windows", "global"]);
   expect(groups[0]!.entries).toEqual([
@@ -62,15 +62,15 @@ test("nextKeys lists what a half-typed sequence can still become", async () => {
 test("nextKeys narrows as the sequence advances, and collapses to the leader before it starts", async () => {
   const { keymap: km } = await keymap();
 
-  // Every COMMANDS entry here is leader-bound, so before the leader is
-  // pressed there is nothing to say per-command — only that the leader
+  // Every COMMANDS entry here is prefix-bound, so before the prefix is
+  // pressed there is nothing to say per-command — only that the prefix
   // itself still reaches all of them, one collapsed entry rather than one
-  // per command (bindings.ts's `leaderReachable`).
+  // per command (bindings.ts's `prefixReachable`).
   expect(nextKeys(km, COMMANDS, [], [])).toEqual([
-    { group: "", entries: [{ keys: ["^a"], desc: "more commands" }] },
+    { group: "", entries: [{ keys: ["^s"], desc: "mux prefix" }] },
   ]);
   // One key in on a two-key binding: only that branch survives.
-  const deep = nextKeys(km, COMMANDS, [], seq("<leader>", "g"));
+  const deep = nextKeys(km, COMMANDS, [], seq("<prefix>", "g"));
   expect(deep).toEqual([{ group: "global", entries: [{ keys: ["g"], desc: "deep" }] }]);
 });
 
@@ -79,11 +79,16 @@ test("which-key visibility transitions are deterministic for untriggered, disabl
   expect(hintVisibility(true, false, 1)).toEqual({ visible: false, delayMs: 0 });
   expect(hintVisibility(true, true, 0)).toEqual({ visible: true, delayMs: 0 });
   expect(hintVisibility(true, true, 0.5)).toEqual({ visible: false, delayMs: 500 });
+  // Delay ≥ timeoutlen → show immediately (panel would only flash otherwise).
+  expect(hintVisibility(true, true, 2, 1000)).toEqual({ visible: true, delayMs: 0 });
+  // Shorter delay keeps a reading margin before timeoutlen.
+  expect(hintVisibility(true, true, 0.3, 1000)).toEqual({ visible: false, delayMs: 300 });
+  expect(hintVisibility(true, true, 0.8, 1000)).toEqual({ visible: false, delayMs: 600 });
 });
 
 test("the panel draws the reachable keys under the sequence so far", async () => {
   const { t, keymap: km } = await keymap();
-  const groups = nextKeys(km, COMMANDS, [], seq("<leader>"));
+  const groups = nextKeys(km, COMMANDS, [], seq("<prefix>"));
 
   await render(
     () => <Hints groups={groups} pending="^a" left={0} width={80} height={20} />,

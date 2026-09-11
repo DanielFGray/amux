@@ -9,11 +9,7 @@ import {
   type HighlightProviderService,
   type LineChunks,
 } from "./highlight.ts";
-import type {
-  FiletypeParserOptions,
-  HighlightResponse,
-  SimpleHighlight,
-} from "@opentui/core";
+import type { FiletypeParserOptions, HighlightResponse, SimpleHighlight } from "@opentui/core";
 
 type ResponseListener = (
   bufferId: number,
@@ -115,7 +111,9 @@ testEffect(
     const line = 'import x from "y";';
     yield* provider.open("/w/foo.ts", line);
     expect(client.buffers.size).toBe(1);
-    client.emit(onlyBuffer(client), 1, [response(0, [{ startCol: 0, endCol: 6, group: "keyword.import" }])]);
+    client.emit(onlyBuffer(client), 1, [
+      response(0, [{ startCol: 0, endCol: 6, group: "keyword.import" }]),
+    ]);
 
     expect(seen.length).toBe(1);
     expect(seen[0]!.file).toBe("/w/foo.ts");

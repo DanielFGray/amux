@@ -1,6 +1,5 @@
 import {
   Renderable,
-  RGBA,
   type MouseEvent,
   type OptimizedBuffer,
   type RenderContext,
@@ -8,11 +7,7 @@ import {
 import { Effect, Exit, Scope } from "effect";
 import type { Options } from "./options.ts";
 import { acquireRenderable, makeScope, runInScope, type RenderableParent } from "./bridge.ts";
-
-const IDLE = RGBA.fromInts(69, 71, 90, 255); // surface1
-const FOCUS = RGBA.fromInts(137, 180, 250, 255); // blue
-const HOVER = RGBA.fromInts(203, 166, 247, 255); // mauve
-const BG = RGBA.fromInts(30, 30, 46, 255); // base
+import { theme } from "./ui/theme.ts";
 
 type FlexRenderable = Renderable;
 
@@ -134,6 +129,12 @@ class DividerRenderable extends Renderable {
   #dragging = false;
   #paneGap = 0;
   #spaced = false;
+  /** Cells of hitbox overhang into each neighbour's border when there is a
+   *  real gutter to sit between. */
+  #hitInset = 0;
+  /** Compressed column seam (gap=1): panes draw └/┌ on adjacent rows; this
+   *  divider only owns the hit target. */
+  #seamHitOnly = false;
   #dragSentPos = 0;
 
   /**
@@ -145,10 +146,17 @@ class DividerRenderable extends Renderable {
    * handling, which is the part that is actually fiddly.
    */
   onDrag?: (delta: number) => void;
+  /** Fired once when the pointer is released after a drag that started here. */
+  onDragEnd?: () => void;
 
   constructor(
     ctx: RenderContext,
-    options: { id: string; axis: "row" | "column"; onDrag?: (delta: number) => void },
+    options: {
+      id: string;
+      axis: "row" | "column";
+      onDrag?: (delta: number) => void;
+      onDragEnd?: () => void;
+    },
     optionsRuntime: Options,
   ) {
     super(ctx, {
@@ -159,6 +167,7 @@ class DividerRenderable extends Renderable {
     });
     this.axis = options.axis;
     this.onDrag = options.onDrag;
+    this.onDragEnd = options.onDragEnd;
     this.setPaneGap(optionsRuntime["appearance.gap"] ? 1 : 0);
   }
 
@@ -166,19 +175,49 @@ class DividerRenderable extends Renderable {
   setPaneGap(gap: number): void {
     // Terminal cells are taller than they are wide. At the first gap level a
     // column is enough to separate side-by-side panes, while a whole blank row
-    // makes top/bottom panes look disproportionately far apart. Larger levels
-    // retain the same visual correction.
+    // makes top/bottom panes look disproportionately far apart — so column
+    // gutters are requested−1 (0 at gap=1). That seam is two adjacent pane
+    // frames (└ above ┌), not a shared divider line.
     const requested = Math.max(0, Math.floor(gap));
     this.#spaced = requested > 0;
     this.#paneGap = this.axis === "column" ? Math.max(0, requested - 1) : requested;
-    if (this.axis === "row") this.width = this.#spaced ? this.#paneGap : 1;
-    else {
-      // OpenTUI keeps renderables at least one cell high. Reclaim that
-      // implementation floor with a negative trailing margin when the visual
-      // gap is zero, so the divider remains draggable without adding a row.
-      this.height = Math.max(1, this.#paneGap);
-      this.marginBottom = this.#spaced && this.#paneGap === 0 ? -1 : 0;
+    this.#seamHitOnly = this.#spaced && this.axis === "column" && this.#paneGap === 0;
+    // Real gutter: overhang into each neighbour so border glyphs are handles.
+    // Compressed seam: cover both adjacent border rows with an invisible hitbox.
+    const hasGutter = this.#spaced && this.#paneGap > 0;
+    this.#hitInset = hasGutter ? 1 : 0;
+    const pad = this.#hitInset;
+    if (this.axis === "row") {
+      this.width = (this.#spaced ? this.#paneGap : 1) + 2 * pad;
+      this.marginLeft = -pad;
+      this.marginRight = -pad;
+      this.marginTop = 0;
+      this.marginBottom = 0;
+    } else if (this.#seamHitOnly) {
+      // Net-zero flex slot: one cell of hit target pulled into the upper pane's
+      // └. height=2 with mt=mb=-1 looked symmetric but Yoga still reserved the
+      // border-box, overflowing the column — the lower pane laid out below the
+      // clip and looked empty / "covered" by the top.
+      this.height = 1;
+      this.marginLeft = 0;
+      this.marginRight = 0;
+      this.marginTop = -1;
+      this.marginBottom = 0;
+    } else {
+      this.height = (this.#spaced ? this.#paneGap : 1) + 2 * pad;
+      this.height = Math.max(1, this.height);
+      this.marginLeft = 0;
+      this.marginRight = 0;
+      this.marginTop = -pad;
+      this.marginBottom = -pad;
     }
+  }
+
+  /** How many cells of this divider's box on each side are border overhang
+   *  (not the gutter). Junction queries and painting use the inset so they
+   *  leave pane-owned border glyphs alone. */
+  get hitInset(): number {
+    return this.#hitInset;
   }
 
   protected override onMouseEvent(event: MouseEvent): void {
@@ -193,7 +232,11 @@ class DividerRenderable extends Renderable {
         return;
       case "down":
         this.#dragging = true;
-        this.#dragSentPos = this.axis === "row" ? this.x : this.y;
+        // Pointer position, not `this.x`/`this.y`: Yoga may not have laid the
+        // divider out yet (stale 0), and a remount mid-gesture can place a
+        // fresh instance under a still-captured drag stream. Anchoring to the
+        // event keeps the first delta zero and every later one incremental.
+        this.#dragSentPos = this.axis === "row" ? event.x : event.y;
         // Claim the pointer now, rather than letting OpenTUI decide on the
         // first drag event. It captures whatever the pointer is over at that
         // moment, and a divider is one cell wide — move quickly and the first
@@ -208,17 +251,24 @@ class DividerRenderable extends Renderable {
         return;
       case "up":
       case "drag-end":
-        this.#dragging = false;
+        if (this.#dragging) {
+          this.#dragging = false;
+          this.onDragEnd?.();
+        }
         event.stopPropagation();
         return;
       case "drag": {
+        // Remounts destroy this instance and build another. A drag event that
+        // lands on the replacement without a matching down would see
+        // `#dragSentPos === 0` and treat screen-x as the delta — instant
+        // collapse / rubber-band. Only the press-holder may emit.
+        if (!this.#dragging) return;
         // Local echo: compute the delta from the position we last sent, not
         // from the divider's current rendered position. In projection mode
         // (daemon), `this.x` stalls until the daemon round-trip lands, so
         // `event.x - this.x` would send a cumulative delta that grows with
         // each unconfirmed event — quadratic overshoot. Advancing
-        // `#dragSentPos` by the delta we send keeps each event incremental
-        // and converges to `this.x` when the daemon generation arrives.
+        // `#dragSentPos` by the delta we send keeps each event incremental.
         const axisVal = this.axis === "row" ? event.x : event.y;
         const delta = axisVal - this.#dragSentPos;
         if (delta !== 0) {
@@ -255,16 +305,35 @@ class DividerRenderable extends Renderable {
    * cells, so it keeps the simple path.
    */
   protected override renderSelf(buffer: OptimizedBuffer): void {
-    if (this.hitboxOnly) return;
-    if (this.#spaced) {
-      for (let y = this.y; y < this.y + this.height; y++) {
-        for (let x = this.x; x < this.x + this.width; x++) {
-          buffer.setCell(x, y, " ", IDLE, BG);
+    if (this.hitboxOnly || this.#seamHitOnly) return;
+    // Read live theme each paint so a settings change reaches dividers without
+    // a second hardcoded palette (the old Catppuccin constants here).
+    const idle = theme.surface1;
+    const focus = theme.blue;
+    const hover = theme.mauve;
+    const bg = theme.base;
+    if (this.#spaced && this.#paneGap > 0) {
+      // Only clear the gutter. The ±hitInset overhang cells are the panes'
+      // own border glyphs — painting them would blank the handles.
+      const inset = this.#hitInset;
+      if (this.axis === "row") {
+        const x0 = this.x + inset;
+        const x1 = this.x + this.width - inset;
+        for (let y = this.y; y < this.y + this.height; y++) {
+          for (let x = x0; x < x1; x++) buffer.setCell(x, y, " ", idle, bg);
+        }
+      } else {
+        const y0 = this.y + inset;
+        const y1 = this.y + this.height - inset;
+        for (let y = y0; y < y1; y++) {
+          for (let x = this.x; x < this.x + this.width; x++) {
+            buffer.setCell(x, y, " ", idle, bg);
+          }
         }
       }
       return;
     }
-    const fg = this.#hovered || this.#dragging ? HOVER : this.adjacentToFocus ? FOCUS : IDLE;
+    const fg = this.#hovered || this.#dragging ? hover : this.adjacentToFocus ? focus : idle;
     const vertical = this.axis === "row";
     const length = vertical ? this.height : this.width;
     const at = (i: number) =>
@@ -272,27 +341,27 @@ class DividerRenderable extends Renderable {
 
     const frame = this.junction?.();
     if (!frame || this.outer) {
-      for (let i = 0; i < length; i++) buffer.setCell(...at(i), vertical ? "│" : "─", fg, BG);
+      for (let i = 0; i < length; i++) buffer.setCell(...at(i), vertical ? "│" : "─", fg, bg);
       if (!this.tees) return;
       const [sx, sy] = at(this.capStart ? 0 : -1);
-      buffer.setCell(sx, sy, this.outer ? "┌" : vertical ? "┬" : "├", fg, BG);
+      buffer.setCell(sx, sy, this.outer ? "┌" : vertical ? "┬" : "├", fg, bg);
       const [ex, ey] = at(this.capEnd ? length - 1 : length);
-      buffer.setCell(ex, ey, this.outer ? (vertical ? "└" : "┐") : vertical ? "┴" : "┤", fg, BG);
+      buffer.setCell(ex, ey, this.outer ? (vertical ? "└" : "┐") : vertical ? "┴" : "┤", fg, bg);
       return;
     }
 
     for (let i = 0; i < length; i++) {
       const [x, y] = at(i);
-      buffer.setCell(x, y, junctionGlyph(vertical, i, length, frame, x, y), fg, BG);
+      buffer.setCell(x, y, junctionGlyph(vertical, i, length, frame, x, y), fg, bg);
     }
     if (!this.tees) return;
     if (!this.capStart) {
       const [x, y] = at(-1);
-      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG);
+      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, bg);
     }
     if (!this.capEnd) {
       const [x, y] = at(length);
-      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, BG);
+      buffer.setCell(x, y, junctionGlyph(vertical, null, length, frame, x, y), fg, bg);
     }
   }
 }
@@ -331,7 +400,12 @@ export class Divider {
   static make(
     ctx: RenderContext,
     parent: RenderableParent | undefined,
-    options: { id: string; axis: "row" | "column"; onDrag?: (delta: number) => void },
+    options: {
+      id: string;
+      axis: "row" | "column";
+      onDrag?: (delta: number) => void;
+      onDragEnd?: () => void;
+    },
     optionsRuntime: Options,
   ): Divider {
     const scope = makeScope();
@@ -393,6 +467,12 @@ export class Divider {
   set onDrag(fn: ((delta: number) => void) | undefined) {
     this.#divider.onDrag = fn;
   }
+  get onDragEnd(): (() => void) | undefined {
+    return this.#divider.onDragEnd;
+  }
+  set onDragEnd(fn: (() => void) | undefined) {
+    this.#divider.onDragEnd = fn;
+  }
 
   get x(): number {
     return this.#divider.x;
@@ -409,6 +489,10 @@ export class Divider {
 
   setPaneGap(gap: number): void {
     this.#divider.setPaneGap(gap);
+  }
+
+  get hitInset(): number {
+    return this.#divider.hitInset;
   }
 
   get zIndex(): number {

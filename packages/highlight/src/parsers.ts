@@ -52,7 +52,8 @@ export const parsersFromFileNames = (
     if (BUNDLED.has(filetype)) continue;
     const query = queries.find(
       (name) =>
-        name.endsWith(".scm") && normalize(name.slice(0, name.lastIndexOf("-"))) === normalize(filetype),
+        name.endsWith(".scm") &&
+        normalize(name.slice(0, name.lastIndexOf("-"))) === normalize(filetype),
     );
     if (query === undefined) continue;
     out.push({

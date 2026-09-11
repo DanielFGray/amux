@@ -1,4 +1,4 @@
-import { Effect, Fiber, Queue, Schedule, Scope, Stream } from "effect";
+import { Context, Effect, Fiber, Queue, Schedule, Scope, Stream } from "effect";
 import type { ProcessState } from "./process-state.ts";
 import type { ProcessStateSource } from "./process-state-arbiter.ts";
 import type { ScreenRegion } from "./screen-regions.ts";
@@ -46,6 +46,10 @@ export interface SessionFactsService {
     source: ProcessStateSource,
   ) => Effect.Effect<void, never, Scope.Scope>;
 }
+
+export class SessionFactsTag extends Context.Service<SessionFactsTag, SessionFactsService>()(
+  "amux/SessionFacts",
+) {}
 
 interface SessionFactSource {
   readonly id: string;

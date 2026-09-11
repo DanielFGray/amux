@@ -18,7 +18,7 @@ import {
   type KittyPlacement,
 } from "./ghostty.ts";
 import { NativeImage } from "@opentui/core";
-import { Effect, Exit, Scope } from "effect";
+import { Effect, Exit, Match, Scope } from "effect";
 import type { SessionHandle } from "./session-handle.ts";
 import type { Options } from "./options.ts";
 import { captureRange } from "./shim.ts";
@@ -26,14 +26,10 @@ import { clearSelection, setSelection } from "./shim.ts";
 import { cellWidth } from "./copy.ts";
 import { encodeKey } from "./keys.ts";
 import { acquireFfi, acquireRenderable } from "./bridge.ts";
+import { theme } from "./ui/theme.ts";
 
-const DEFAULT_FG = RGBA.fromInts(205, 214, 244, 255);
-const DEFAULT_BG = RGBA.fromInts(30, 30, 46, 255);
-const BORDER_FOCUS = RGBA.fromInts(137, 180, 250, 255); // blue
-const BORDER_HOVER = RGBA.fromInts(203, 166, 247, 255); // mauve
-const BORDER_IDLE = RGBA.fromInts(69, 71, 90, 255); // surface1
-const CURSOR_ON = RGBA.fromInts(249, 226, 175, 255);
-const CURSOR_IDLE = RGBA.fromInts(108, 112, 134, 255);
+// Selection colors stay packed ints for the ghostty selection API; chrome
+// borders and fallback cell colors read the live theme each paint.
 const SELECTION_FG = 0x1e1e2e;
 const SELECTION_BG = 0x89b4fa;
 
@@ -91,7 +87,7 @@ export abstract class PaneRenderable extends Renderable {
   hovered = false;
   /** Bridged from the wrapper's own callback field at construction — see Pane. */
   onFocusRequest?: () => void;
-  onCopy?: (text: string) => boolean | void;
+  onCopy?: (text: string, target?: "clipboard" | "primary") => boolean | void;
   onCopyError?: (error: Error) => void;
 
   #edges: Edges = { ...ALL_EDGES };
@@ -181,6 +177,11 @@ export abstract class PaneRenderable extends Renderable {
     };
   }
 
+  /** Public content rect for `pane.capture` of plugin panes (OpenTUI crop). */
+  get contentRect(): { x: number; y: number; width: number; height: number } {
+    return this.content;
+  }
+
   /**
    * Told to the session, and told to whatever the subclass draws with.
    *
@@ -244,18 +245,20 @@ export abstract class PaneRenderable extends Renderable {
 
   /** Hand a string to the copy chain (OSC 52 to the host terminal). The one
    *  path both mouse-drag selection and keyboard copy mode use, so a rejected
-   *  write reports the same way from either. */
-  copyText(text: string) {
+   *  write reports the same way from either. `target` selects clipboard vs
+   *  primary (vim `"+` / `"*`). */
+  copyText(text: string, target: "clipboard" | "primary" = "clipboard") {
     if (!text || !this.onCopy) return;
     try {
-      if (this.onCopy(text) === false) this.onCopyError?.(new Error("clipboard rejected OSC 52"));
+      if (this.onCopy(text, target) === false)
+        this.onCopyError?.(new Error("clipboard rejected OSC 52"));
     } catch (error) {
       this.onCopyError?.(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
   protected override renderSelf(buffer: OptimizedBuffer): void {
-    buffer.fillRect(this.x, this.y, this.width, this.height, DEFAULT_BG);
+    buffer.fillRect(this.x, this.y, this.width, this.height, theme.base);
     this.drawBorder(buffer);
   }
 
@@ -268,7 +271,8 @@ export abstract class PaneRenderable extends Renderable {
    * continuous frame rather than two boxes pushed together.
    */
   protected drawBorder(buffer: OptimizedBuffer): void {
-    const fg = this.active ? BORDER_FOCUS : this.hovered ? BORDER_HOVER : BORDER_IDLE;
+    const fg = this.active ? theme.blue : this.hovered ? theme.mauve : theme.surface1;
+    const bg = theme.base;
     const { top, right, bottom, left } = this.#edges;
     const x0 = this.x;
     const y0 = this.y;
@@ -282,24 +286,24 @@ export abstract class PaneRenderable extends Renderable {
       const title = this.session?.title ?? "";
       const titleWidth = cellWidth(title);
       if (title && this.optionsRuntime["appearance.gap"] && this.width >= titleWidth + 4) {
-        if (left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
-        else buffer.setCell(x0, y0, "─", fg, DEFAULT_BG);
-        buffer.drawText(` ${title} `, x0 + 1, y0, fg, DEFAULT_BG);
+        if (left) buffer.setCell(x0, y0, "┌", fg, bg);
+        else buffer.setCell(x0, y0, "─", fg, bg);
+        buffer.drawText(` ${title} `, x0 + 1, y0, fg, bg);
         const dashStart = x0 + 3 + titleWidth;
         const dashEnd = right ? x1 - 1 : x1;
-        for (let x = dashStart; x <= dashEnd; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG);
+        for (let x = dashStart; x <= dashEnd; x++) buffer.setCell(x, y0, "─", fg, bg);
       } else {
-        for (let x = x0; x <= x1; x++) buffer.setCell(x, y0, "─", fg, DEFAULT_BG);
+        for (let x = x0; x <= x1; x++) buffer.setCell(x, y0, "─", fg, bg);
       }
     }
-    if (bottom) for (let x = x0; x <= x1; x++) buffer.setCell(x, y1, "─", fg, DEFAULT_BG);
-    if (left) for (let y = y0; y <= y1; y++) buffer.setCell(x0, y, "│", fg, DEFAULT_BG);
-    if (right) for (let y = y0; y <= y1; y++) buffer.setCell(x1, y, "│", fg, DEFAULT_BG);
+    if (bottom) for (let x = x0; x <= x1; x++) buffer.setCell(x, y1, "─", fg, bg);
+    if (left) for (let y = y0; y <= y1; y++) buffer.setCell(x0, y, "│", fg, bg);
+    if (right) for (let y = y0; y <= y1; y++) buffer.setCell(x1, y, "│", fg, bg);
 
-    if (top && right) buffer.setCell(x1, y0, "┐", fg, DEFAULT_BG);
-    if (bottom && left) buffer.setCell(x0, y1, "└", fg, DEFAULT_BG);
-    if (bottom && right) buffer.setCell(x1, y1, "┘", fg, DEFAULT_BG);
-    if (top && left) buffer.setCell(x0, y0, "┌", fg, DEFAULT_BG);
+    if (top && right) buffer.setCell(x1, y0, "┐", fg, bg);
+    if (bottom && left) buffer.setCell(x0, y1, "└", fg, bg);
+    if (bottom && right) buffer.setCell(x1, y1, "┘", fg, bg);
+    if (top && left) buffer.setCell(x0, y0, "┌", fg, bg);
   }
 }
 
@@ -328,7 +332,7 @@ export abstract class Pane {
   readonly view: PaneRenderable;
 
   onFocusRequest?: (pane: Pane) => void;
-  onCopy?: (text: string) => boolean | void;
+  onCopy?: (text: string, target?: "clipboard" | "primary") => boolean | void;
   onCopyError?: (error: Error) => void;
 
   #scope: Scope.Closeable;
@@ -339,7 +343,7 @@ export abstract class Pane {
     this.id = id;
     this.#scope = scope;
     this.view.onFocusRequest = () => this.onFocusRequest?.(this);
-    this.view.onCopy = (text) => this.onCopy?.(text);
+    this.view.onCopy = (text, target) => this.onCopy?.(text, target);
     this.view.onCopyError = (error) => this.onCopyError?.(error);
     this.session?.addViewer();
   }
@@ -348,7 +352,10 @@ export abstract class Pane {
    *  wrapper exists to own one itself. Every subclass constructor uses this
    *  once for its view and, if it owns FFI, once more per handle — all into
    *  the same scope, so one `release` frees the lot. */
-  protected static acquire<A>(scope: Scope.Closeable, effect: Effect.Effect<A, never, Scope.Scope>): A {
+  protected static acquire<A>(
+    scope: Scope.Closeable,
+    effect: Effect.Effect<A, never, Scope.Scope>,
+  ): A {
     return Effect.runSync(Scope.provide(effect, scope));
   }
 
@@ -403,8 +410,8 @@ export abstract class Pane {
    *  to the view, which owns the try/catch around `onCopy`/`onCopyError` —
    *  copy mode (copy.ts) calls this on a selection with no mouse involved, so
    *  it addresses the pane, not the view directly. */
-  copyText(text: string) {
-    this.view.copyText(text);
+  copyText(text: string, target: "clipboard" | "primary" = "clipboard") {
+    this.view.copyText(text, target);
   }
 
   /** Release this pane's view and FFI handles, and stop viewing its session.
@@ -509,14 +516,17 @@ class TerminalPaneView extends PaneRenderable {
           ? MouseAction.release
           : MouseAction.motion;
 
-    let button: number | null = null;
-    if (event.type === "scroll") {
-      button = event.scroll?.direction === "up" ? MouseButton.wheelUp : MouseButton.wheelDown;
-    } else if (event.type === "down" || event.type === "up" || event.type === "drag") {
-      button = hasOwn(OPENTUI_TO_GHOSTTY_BUTTON, event.button)
-        ? OPENTUI_TO_GHOSTTY_BUTTON[event.button]
-        : MouseButton.left;
-    }
+    const button = Match.value(event.type).pipe(
+      Match.when("scroll", () =>
+        event.scroll?.direction === "up" ? MouseButton.wheelUp : MouseButton.wheelDown,
+      ),
+      Match.whenOr("down", "up", "drag", () =>
+        hasOwn(OPENTUI_TO_GHOSTTY_BUTTON, event.button)
+          ? OPENTUI_TO_GHOSTTY_BUTTON[event.button]
+          : MouseButton.left,
+      ),
+      Match.orElse((): number | null => null),
+    );
 
     const seq = this.mouse.encode(this.session.term, x, y, action, button, event.modifiers);
 
@@ -680,17 +690,36 @@ class TerminalPaneView extends PaneRenderable {
     this.#cachedCursor = cur;
     this.#cursorText = " ";
 
-    let text = "";
-    let rx = 0;
-    let ry = 0;
-    let rFg: number | null = null;
-    let rBg: number | null = null;
-    let nextX = -1;
+    type RunAcc =
+      | { readonly _tag: "empty" }
+      | {
+          readonly _tag: "run";
+          text: string;
+          rx: number;
+          ry: number;
+          fg: number | null;
+          bg: number | null;
+          nextX: number;
+        };
 
-    const flush = () => {
-      if (!text) return;
-      runs.push({ text, x: rx, y: ry, fg: color(rFg, DEFAULT_FG), bg: color(rBg, DEFAULT_BG) });
-      text = "";
+    let acc: RunAcc = { _tag: "empty" };
+
+    const flush = (): void => {
+      acc = Match.valueTags(acc, {
+        empty: () => acc,
+        run: (run) => {
+          if (run.text) {
+            runs.push({
+              text: run.text,
+              x: run.rx,
+              y: run.ry,
+              fg: color(run.fg, theme.text),
+              bg: color(run.bg, theme.base),
+            });
+          }
+          return { _tag: "empty" as const };
+        },
+      });
     };
 
     const maxY = this.height - this.padY;
@@ -701,15 +730,17 @@ class TerminalPaneView extends PaneRenderable {
 
       const runFg = selected ? SELECTION_FG : fg;
       const runBg = selected ? SELECTION_BG : bg;
-      if (text && (y !== ry || x !== nextX || runFg !== rFg || runBg !== rBg)) flush();
-      if (!text) {
-        rx = x;
-        ry = y;
-        rFg = runFg;
-        rBg = runBg;
+      Match.valueTags(acc, {
+        empty: () => undefined,
+        run: (run) => {
+          if (y !== run.ry || x !== run.nextX || runFg !== run.fg || runBg !== run.bg) flush();
+        },
+      });
+      if (acc._tag === "empty") {
+        acc = { _tag: "run", text: t, rx: x, ry: y, fg: runFg, bg: runBg, nextX: x + width };
+      } else {
+        acc = { ...acc, text: acc.text + t, nextX: x + width };
       }
-      text += t;
-      nextX = x + width;
     });
     flush();
     this.#runs = runs;
@@ -718,22 +749,25 @@ class TerminalPaneView extends PaneRenderable {
   /** Focused panes get a solid cursor; unfocused ones a dim outline, so a
    *  glance tells you which pane keystrokes land in. */
   #drawCursor(buffer: OptimizedBuffer, x: number, y: number, style: number, text: string): void {
+    const bg = theme.base;
+    const cursorOn = theme.yellow;
+    const cursorIdle = theme.overlay0;
     if (!this.active) {
-      buffer.setCell(x, y, text === " " ? "█" : text, CURSOR_IDLE, DEFAULT_BG);
+      buffer.setCell(x, y, text === " " ? "█" : text, cursorIdle, bg);
       return;
     }
     switch (style) {
       case CursorStyle.bar:
-        buffer.setCell(x, y, "▏", CURSOR_ON, DEFAULT_BG);
+        buffer.setCell(x, y, "▏", cursorOn, bg);
         break;
       case CursorStyle.underline:
-        buffer.setCell(x, y, "▁", CURSOR_ON, DEFAULT_BG);
+        buffer.setCell(x, y, "▁", cursorOn, bg);
         break;
       case CursorStyle.blockHollow:
-        buffer.setCell(x, y, "░", CURSOR_ON, DEFAULT_BG);
+        buffer.setCell(x, y, "░", cursorOn, bg);
         break;
       default:
-        buffer.setCell(x, y, text, DEFAULT_BG, CURSOR_ON);
+        buffer.setCell(x, y, text, bg, cursorOn);
     }
   }
 

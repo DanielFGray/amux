@@ -15,6 +15,7 @@ export const CREATION_RESULT_ENTITIES = {
   "agent.new": ["session", "pane"],
   "pane.split": ["session", "pane"],
   "pane.open-plugin": ["pane"],
+  "process-plugin.pane.open": ["session", "pane"],
   "window.new": ["window", "pane", "session"],
   "space.new": ["space", "window", "pane", "session"],
 } as const satisfies Record<string, readonly CreationEntity[]>;

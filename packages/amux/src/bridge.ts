@@ -67,6 +67,9 @@ export function makeScope(): Scope.Closeable {
 }
 
 /** Run one acquire effect synchronously into a scope made by `makeScope`. */
-export function runInScope<A>(scope: Scope.Closeable, effect: Effect.Effect<A, never, Scope.Scope>): A {
+export function runInScope<A>(
+  scope: Scope.Closeable,
+  effect: Effect.Effect<A, never, Scope.Scope>,
+): A {
   return Effect.runSync(Scope.provide(effect, scope));
 }

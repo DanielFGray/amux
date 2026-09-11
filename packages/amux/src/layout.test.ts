@@ -20,6 +20,7 @@ import {
   placementOf,
   setPlacement,
   layoutRefs,
+  setPaneAgentSession,
   type Layout,
   type LayoutFloat,
   type LayoutNode,
@@ -84,6 +85,39 @@ test("a layout round-trips through encode and decode", () => {
   expect(run(parseLayout(JSON.parse(encodeLayout(original))))).toEqual(original);
 });
 
+test("agentSession on a pane round-trips and a bogus snapshot entry is stripped", () => {
+  const trusted = setPaneAgentSession(layout(pane("a")), "a", {
+    source: "amux:claude",
+    agent: "claude",
+    kind: "id",
+    value: "conv-1",
+  });
+  expect(run(parseLayout(JSON.parse(encodeLayout(trusted))))).toEqual(trusted);
+
+  const raw = JSON.parse(encodeLayout(layout(pane("a")))) as {
+    root: { type: "pane"; id: string; content: unknown; weight: number; agentSession?: unknown };
+  };
+  raw.root.agentSession = {
+    source: "evil:claude",
+    agent: "claude",
+    kind: "id",
+    value: "attacker",
+  };
+  const decoded = run(parseLayout(raw));
+  expect(decoded.root).toMatchObject({ type: "pane", id: "a" });
+  expect((decoded.root as { agentSession?: unknown }).agentSession).toBeUndefined();
+
+  raw.root.agentSession = {
+    source: "amux:pi",
+    agent: "pi",
+    kind: "path",
+    value: "relative/transcript.jsonl",
+  };
+  expect(
+    (run(parseLayout(raw)).root as { agentSession?: unknown }).agentSession,
+  ).toBeUndefined();
+});
+
 test("the elected algorithm's id and version round-trip through encode and decode", () => {
   const original: Layout = {
     ...layout(pane("a")),
@@ -106,6 +140,17 @@ test("encoding is stable, so equal layouts produce equal strings", () => {
 // a fixed point. This is the case that closing a pane produces.
 test("a split with one child collapses to that child and inherits its weight", () => {
   expect(collapse(split("row", [pane("only")], 7))).toEqual(pane("only", 7));
+});
+
+test("a one-child container keeps its kind instead of collapsing to the child", () => {
+  const lone: LayoutNode = {
+    type: "container",
+    kind: "scroll",
+    weight: 1,
+    arrangement: { offset: 0, sizes: [40] },
+    children: [pane("a")],
+  };
+  expect(collapse(lone)).toEqual(lone);
 });
 
 test("collapsing is recursive, so nested husks all disappear", () => {
@@ -143,6 +188,43 @@ test("pruning drops panes whose agent is gone and keeps the survivors' shape", (
   // The column had two panes; losing one collapses it into the row.
   expect(layoutSessions(pruned)).toEqual(["a", "c"]);
   expect(pruned.root).toEqual(split("row", [pane("a"), pane("c")]));
+});
+
+test("layoutSessions includes a replace-host's displaced session", () => {
+  const withDisplaced = layout({
+    type: "pane",
+    id: "p1",
+    weight: 1,
+    content: {
+      kind: "plugin",
+      type: "amux.editor",
+      descriptor: {},
+      displaced: "shell",
+    },
+  });
+  expect(layoutSessions(withDisplaced)).toEqual(["shell"]);
+});
+
+test("pruning clears a dead displaced keepalive without dropping the plugin pane", () => {
+  const withDisplaced = layout({
+    type: "pane",
+    id: "p1",
+    weight: 1,
+    content: {
+      kind: "plugin",
+      type: "amux.editor",
+      descriptor: {},
+      displaced: "shell",
+    },
+  });
+  const pruned = prune(withDisplaced, () => false);
+  expect(layoutPanes(pruned.root)).toHaveLength(1);
+  expect(layoutPanes(pruned.root)[0]!.content).toEqual({
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: {},
+  });
+  expect(layoutSessions(pruned)).toEqual([]);
 });
 
 test("pruning every pane leaves an empty layout rather than a husk", () => {

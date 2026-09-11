@@ -1,5 +1,6 @@
 import { Terminal } from "./ghostty.ts";
 import { captureRange } from "./shim.ts";
+import type { OptimizedBuffer } from "@opentui/core";
 
 /** Row range in the terminal's scrollback space: row 0 is the oldest row the
  *  terminal still holds, and rows increase downward through the active screen. */
@@ -8,8 +9,53 @@ export interface RowRange {
   end: number;
 }
 
+/** A screen-cell rectangle — plugin-pane capture crops the live OpenTUI frame. */
+export interface ScreenRect {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
 /** The SCREEN point tag: every coordinate is in the uniform scrollback space. */
 const SCREEN = 2;
+
+/** Continuation placeholder for a wide grapheme's second cell (OpenTUI buffer). */
+const CHAR_FLAG_CONTINUATION = 0xc0000000;
+const CHAR_FLAG_MASK = 0xc0000000;
+
+/**
+ * Crop plain text from an OpenTUI render buffer. Wide-character continuation
+ * cells are skipped (same rule as OptimizedBuffer.getSpanLines). Trailing
+ * whitespace per row and trailing blank rows are dropped — matching
+ * captureRows for pty panes.
+ *
+ * Cite: opentui Box.test getCellChar; transcript-rendering CapturedFrame crop.
+ */
+export function captureFrameRect(buffer: OptimizedBuffer, rect: ScreenRect): string {
+  const { char } = buffer.buffers;
+  const frameWidth = buffer.width;
+  const frameHeight = buffer.height;
+  const x0 = Math.max(0, Math.floor(rect.x));
+  const y0 = Math.max(0, Math.floor(rect.y));
+  const x1 = Math.min(frameWidth, x0 + Math.max(0, Math.floor(rect.width)));
+  const y1 = Math.min(frameHeight, y0 + Math.max(0, Math.floor(rect.height)));
+  if (x0 >= x1 || y0 >= y1) return "";
+
+  const lines: string[] = [];
+  for (let y = y0; y < y1; y++) {
+    let line = "";
+    for (let x = x0; x < x1; x++) {
+      const cp = char[y * frameWidth + x] ?? 0;
+      if ((cp & CHAR_FLAG_MASK) === CHAR_FLAG_CONTINUATION) continue;
+      // Empty / unset cells read as U+0000 in the native buffer.
+      line += cp === 0 ? " " : String.fromCodePoint(cp);
+    }
+    lines.push(line.replace(/\s+$/u, ""));
+  }
+  while (lines.length > 0 && lines.at(-1) === "") lines.pop();
+  return lines.join("\n");
+}
 
 /** The rows currently visible in the pane's viewport. */
 export function visibleRows(term: Terminal): RowRange {

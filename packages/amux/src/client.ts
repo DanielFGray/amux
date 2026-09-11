@@ -4,6 +4,7 @@ import { AttachClient } from "./attach.ts";
 import { daemonBackend, type DaemonSession, type SessionBackendFactory } from "./backend.ts";
 import { connectControl, controlCall, toControlError } from "./control-client.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
+import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
 import type { Command, RuntimeCommand } from "./commands.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
 import {
@@ -43,11 +44,11 @@ export class SessionClientError extends S.TaggedError<SessionClientError>()("Ses
  *  and passes any result on. */
 export const unchangedOutput = (
   workspace: WorkspaceSnapshot,
-  result: unknown,
+  result: JsonValue | undefined,
 ): { readonly snapshot: WorkspaceSnapshot; readonly result?: JsonValue } =>
   result === undefined
     ? { snapshot: structuredClone(workspace) }
-    : { snapshot: structuredClone(workspace), result: result as JsonValue };
+    : { snapshot: structuredClone(workspace), result };
 
 export interface SessionClientContract extends DaemonSession {
   readonly id: string;
@@ -98,6 +99,33 @@ export interface SessionClientContract extends DaemonSession {
   readonly listBuffers: Effect.Effect<readonly BufferEntry[], ControlError, never>;
   readonly deleteBuffer: (name: string | undefined) => Effect.Effect<void, ControlError, never>;
   readonly showBuffer: (name: string | undefined) => Effect.Effect<string, ControlError, never>;
+  /** Daemon-owned open documents — editor and agents share one sequenced store. */
+  readonly documentOpen: (
+    uri: string,
+    text?: string,
+  ) => Effect.Effect<DocumentMeta, ControlError, never>;
+  readonly documentApply: (
+    uri: string,
+    baseGeneration: number,
+    edits: readonly TextEdit[],
+  ) => Effect.Effect<DocumentMeta, ControlError, never>;
+  readonly documentWrite: (
+    uri: string,
+    baseGeneration: number,
+    text: string,
+  ) => Effect.Effect<DocumentMeta, ControlError, never>;
+  readonly documentSnapshot: (uri: string) => Effect.Effect<DocumentSnapshot, ControlError, never>;
+  readonly documentSlice: (
+    uri: string,
+    start: number,
+    end: number,
+  ) => Effect.Effect<readonly string[], ControlError, never>;
+  readonly documentSave: (uri: string) => Effect.Effect<DocumentMeta, ControlError, never>;
+  readonly documentClose: (
+    uri: string,
+    force?: boolean,
+  ) => Effect.Effect<void, ControlError, never>;
+  readonly documentList: Effect.Effect<readonly DocumentMeta[], ControlError, never>;
 }
 
 /** The control connection lives for the returned client's scope: closing the
@@ -126,21 +154,20 @@ const make = (
   Effect.gen(function* () {
     if (options.autostart !== false) yield* ensureDaemon(id);
     const paths = yield* sessionPaths(id);
-    const attach = yield* Effect.tryPromise({
-      try: () =>
-        AttachClient.connect({
-          path: paths.attach,
-          client: options.client ?? `pid-${process.pid}`,
-        }),
-      catch: (error) => new SessionClientError({ message: errorMessage(error) }),
+    const attach = yield* AttachClient.make({
+      path: paths.attach,
+      client: options.client ?? `pid-${process.pid}`,
     }).pipe(
+      Effect.mapError((error) => new SessionClientError({ message: errorMessage(error) })),
       Effect.retry({
         schedule: Schedule.spaced("200 millis").pipe(Schedule.upTo({ duration: "5000 millis" })),
         while: (error) =>
           S.is(SessionClientError)(error) && error.message.includes("already attached"),
       }),
     );
-    yield* Effect.addFinalizer(() => Effect.sync(() => attach.close()));
+    // Scope teardown closes the socket via makeScoped's acquireRelease — do not
+    // add a second finalizer that calls attach.close() (that was the Promise
+    // adapter's lifecycle, not this one).
 
     // One connection for the client's whole lifetime: the protocol layer is
     // built into this scope, so every later call reuses the same socket.
@@ -194,7 +221,8 @@ const make = (
           context: request.context,
         });
         const next = outputs[0]?.workspace;
-        if (next === undefined) return unchangedOutput(workspace, outputs[0]?.result);
+        if (next === undefined)
+          return unchangedOutput(workspace, outputs[0]?.result as JsonValue | undefined);
         const parsed = yield* parseWorkspaceJson(next);
         accept(parsed);
         const result = outputs[0]?.result;
@@ -269,6 +297,7 @@ const make = (
           Effect.flatMap((resumeInput) => control.ResumeAgent(resumeInput)),
           Effect.mapError(toControlError),
         ),
+      // service.live is kept in sync by accept() on every workspace snapshot.
       backend: () => daemonBackend(service, service.live),
       setBuffer: (name, data) =>
         control.SetBuffer({ name, data }).pipe(Effect.mapError(toControlError)),
@@ -277,6 +306,22 @@ const make = (
       listBuffers: control.ListBuffers().pipe(Effect.mapError(toControlError)),
       deleteBuffer: (name) => control.DeleteBuffer({ name }).pipe(Effect.mapError(toControlError)),
       showBuffer: (name) => control.ShowBuffer({ name }).pipe(Effect.mapError(toControlError)),
+      documentOpen: (uri, text) =>
+        control.DocumentOpen({ uri, text }).pipe(Effect.mapError(toControlError)),
+      documentApply: (uri, baseGeneration, edits) =>
+        control
+          .DocumentApply({ uri, baseGeneration, edits: [...edits] })
+          .pipe(Effect.mapError(toControlError)),
+      documentWrite: (uri, baseGeneration, text) =>
+        control.DocumentWrite({ uri, baseGeneration, text }).pipe(Effect.mapError(toControlError)),
+      documentSnapshot: (uri) =>
+        control.DocumentSnapshot({ uri }).pipe(Effect.mapError(toControlError)),
+      documentSlice: (uri, start, end) =>
+        control.DocumentSlice({ uri, start, end }).pipe(Effect.mapError(toControlError)),
+      documentSave: (uri) => control.DocumentSave({ uri }).pipe(Effect.mapError(toControlError)),
+      documentClose: (uri, force = false) =>
+        control.DocumentClose({ uri, force }).pipe(Effect.mapError(toControlError)),
+      documentList: control.DocumentList().pipe(Effect.mapError(toControlError)),
       close: () => attach.close(),
       // A daemon that dies mid-response is a successful stop, so transport
       // failures here are expected rather than reported.

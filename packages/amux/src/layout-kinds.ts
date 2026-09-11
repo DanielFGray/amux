@@ -27,9 +27,38 @@ import type { LayoutContainer } from "./layout.ts";
 const schemas = new Map<string, S.Schema<unknown>>();
 const renderers = new Map<string, LayoutKindRenderer>();
 
+/** Chrome helpers Window passes into a kind renderer — drag handles between
+ *  that container's children, so a scroll strip can host the same divider
+ *  targets a split tree gets from `fill()`. */
+export interface LayoutKindChrome {
+  /** Divider between children `index` and `index + 1` of this container. */
+  makeDivider(index: number): Renderable;
+}
+
 export interface LayoutKindRenderer {
-  /** `children` are already materialized — this only arranges them. */
-  render(ctx: RenderContext, node: LayoutContainer, children: readonly Renderable[]): Renderable;
+  /** `children` are already materialized — this only arranges them. `chrome`
+   *  is optional so a kind that needs no drag handles can ignore it. */
+  render(
+    ctx: RenderContext,
+    node: LayoutContainer,
+    children: readonly Renderable[],
+    chrome?: LayoutKindChrome,
+  ): Renderable;
+  /** Whether a pane inside this container has a neighbour on `side` along
+   *  `axis` — Window chrome asks so gap=false mode can leave internal seams
+   *  bare. Omit when the kind has no neighbour geometry of its own. */
+  hasNeighbour?(
+    node: LayoutContainer,
+    paneId: string,
+    axis: "row" | "column",
+    side: -1 | 1,
+  ): boolean;
+  /** Live-echo a divider drag onto the last-rendered strip without remounting. */
+  patchDivider?(node: LayoutContainer, index: number, delta: number): boolean;
+  /** Apply a new scroll arrangement onto the live strip (sizes/offset) without
+   *  tearing down dividers — Window.project uses this so a resize-divider
+   *  command does not destroy the captured drag target mid-gesture. */
+  applyArrangement?(node: LayoutContainer): boolean;
 }
 
 /** Register `kind`'s arrangement schema — decoded against raw `unknown` input

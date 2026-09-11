@@ -1,9 +1,19 @@
 import { test, expect } from "bun:test";
-import { parseArgs, fieldNames, generateGroupHelp, generateHelp } from "./command-cli.ts";
+import { Schema as S } from "effect";
+import {
+  parseArgs,
+  parseFields,
+  fieldNames,
+  generateGroupHelp,
+  generateHelp,
+} from "./command-cli.ts";
 
 test("parseArgs handles commands with no arguments", () => {
   expect(parseArgs("pane.zoom", [])).toEqual({ parsed: {}, errors: [] });
-  expect(parseArgs("pane.zoom", ["extra"]).parsed).toBeNull();
+  // pane.zoom has an optional string `pane` plus a boolean flag — a bare
+  // positional lands on `pane` (same rule as `editor.open <file>`).
+  expect(parseArgs("pane.zoom", ["extra"]).parsed).toEqual({ pane: "extra" });
+  expect(parseArgs("pane.next", ["extra"]).parsed).toBeNull();
 });
 
 test("parseArgs handles required positional arguments", () => {
@@ -158,4 +168,20 @@ test("the read surface is exposed to agents with derived fields", () => {
   expect(generateGroupHelp("panes")).toContain("pane.list");
   expect(generateGroupHelp("spaces")).toContain("space.list");
   expect(generateGroupHelp("windows")).toContain("window.list");
+});
+
+test("a lone optional string absorbs a positional even when a boolean flag remains", () => {
+  const fields = {
+    file: S.optionalKey(S.String),
+    split: S.optionalKey(S.Boolean),
+  };
+  expect(parseFields("editor.open", fields, ["src/a.ts"]).parsed).toEqual({ file: "src/a.ts" });
+  expect(parseFields("editor.open", fields, ["src/a.ts", "--split"]).parsed).toEqual({
+    file: "src/a.ts",
+    split: true,
+  });
+  expect(parseFields("editor.open", fields, ["--split", "src/a.ts"]).parsed).toEqual({
+    split: true,
+    file: "src/a.ts",
+  });
 });

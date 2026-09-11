@@ -1,11 +1,14 @@
-import { Chat, Prompt } from "effect/unstable/ai";
+import { Chat, LanguageModel, Prompt } from "effect/unstable/ai";
 import { BunFileSystem } from "@effect/platform-bun";
+import * as BunServices from "@effect/platform-bun/BunServices";
 import * as Path from "effect/Path";
-import { Effect, Layer, Match, Option, Schema as S, Stream } from "effect";
+import { Effect, Layer, Match, Option, Ref, Schema as S, Stream } from "effect";
 import { Default as IntegrationDefault, Service as Integration } from "./integration.ts";
-import { loadConfig } from "@danielfgray/amux/config.ts";
+import * as ModelCatalog from "./model-catalog.ts";
+import { CONFIG_DIR, loadConfig } from "@danielfgray/amux/config.ts";
 import { coerceOption } from "@danielfgray/amux";
-import { AGENT_HARNESS_OPTIONS, parseModelReference } from "./options.ts";
+import { AGENT_HARNESS_OPTIONS, parseModelReference, type ApprovalMode } from "./options.ts";
+import { resolveCompactionStrategy } from "./compaction-strategies.ts";
 import { initialContext } from "./context.ts";
 import {
   AttachFrame,
@@ -15,7 +18,7 @@ import {
 } from "@danielfgray/amux/protocol";
 import { emit as toAgentMessage, type HarnessEvent } from "./protocol.ts";
 import { agentToolkit } from "./tools.ts";
-import { makePermissionGate } from "./permission.ts";
+import { makePermissionGate, PermissionGateTag } from "./permission.ts";
 import { DEFAULT_RULES, PermissionDecisionSchema } from "@danielfgray/amux/permission.ts";
 import { projectRoot } from "@danielfgray/amux/git.ts";
 import {
@@ -28,6 +31,16 @@ import {
   makeAgentWorker,
   sanitizeAgentError,
 } from "./worker.ts";
+import {
+  DocumentService,
+  LspService,
+  catalogWithOverrides,
+  loadCatalogOverrides,
+  makeDocumentService,
+} from "@danielfgray/amux-plugin-lsp";
+import { PREWALK_HANDOFF_TOPIC, decidePrewalkHandoff, planPrewalk } from "./prewalk.ts";
+import { switchableLanguageModel } from "./switchable-model.ts";
+import { makeHarnessHooks } from "./hooks.ts";
 
 // --- Process entry point ---
 
@@ -42,12 +55,16 @@ const NativeControl = S.Union([
     id: S.optional(S.String),
     delivery: S.optional(S.Literals(["steer", "queue"])),
     resume: S.optional(S.Boolean),
+    replace: S.optional(S.String),
   }),
   S.TaggedStruct("agent.interrupt", { reason: S.optional(S.String) }),
   S.TaggedStruct("agent.permission", {
     request: S.String,
     decision: PermissionDecisionSchema,
     feedback: S.optional(S.String),
+  }),
+  S.TaggedStruct("agent.compact", {
+    instructions: S.optional(S.String),
   }),
 ]);
 type NativeControl = typeof NativeControl.Type;
@@ -86,18 +103,104 @@ else {
     const model = parseModelReference(modelReference);
     if (!model)
       return yield* Effect.fail(`invalid agent.model '${modelReference}', expected provider/model`);
-    const { providerID, modelID: modelName } = model;
-    const modelLayer = yield* Integration.pipe(
-      Effect.flatMap((integration) => integration.model(providerID, modelName)),
-      Effect.flatMap((layer) =>
-        layer ? Effect.succeed(layer) : Effect.fail(`credential missing for ${providerID}`),
-      ),
+    const { providerID } = model;
+    const approvalModeSpec = AGENT_HARNESS_OPTIONS["agent.approvalMode"];
+    const approvalMode = (coerceOption(approvalModeSpec, config.options["agent.approvalMode"]) ??
+      approvalModeSpec.default) as ApprovalMode;
+    const bashInterceptorSpec = AGENT_HARNESS_OPTIONS["agent.bashInterceptor"];
+    const bashInterceptor = (coerceOption(
+      bashInterceptorSpec,
+      config.options["agent.bashInterceptor"],
+    ) ?? bashInterceptorSpec.default) as boolean;
+    const thinkingSpec = AGENT_HARNESS_OPTIONS["agent.thinking"];
+    const thinking = (coerceOption(thinkingSpec, config.options["agent.thinking"]) ??
+      thinkingSpec.default) as string;
+    const thinkingBudgetSpec = AGENT_HARNESS_OPTIONS["agent.thinkingBudget"];
+    const thinkingBudget = (coerceOption(
+      thinkingBudgetSpec,
+      config.options["agent.thinkingBudget"],
+    ) ?? thinkingBudgetSpec.default) as number;
+
+    const autoCompact = (coerceOption(
+      AGENT_HARNESS_OPTIONS["agent.autoCompact"],
+      config.options["agent.autoCompact"],
+    ) ?? AGENT_HARNESS_OPTIONS["agent.autoCompact"].default) as boolean;
+    const autoCompactAt = (coerceOption(
+      AGENT_HARNESS_OPTIONS["agent.autoCompactAt"],
+      config.options["agent.autoCompactAt"],
+    ) ?? AGENT_HARNESS_OPTIONS["agent.autoCompactAt"].default) as number;
+    const compactKeepRecent = (coerceOption(
+      AGENT_HARNESS_OPTIONS["agent.compactKeepRecent"],
+      config.options["agent.compactKeepRecent"],
+    ) ?? AGENT_HARNESS_OPTIONS["agent.compactKeepRecent"].default) as number;
+    const compactStrategy = (coerceOption(
+      AGENT_HARNESS_OPTIONS["agent.compactStrategy"],
+      config.options["agent.compactStrategy"],
+    ) ?? AGENT_HARNESS_OPTIONS["agent.compactStrategy"].default) as string;
+
+    const integration = yield* Integration;
+    const resolveModelService = Effect.fnUntraced(function* (reference: string) {
+      const parsed = parseModelReference(reference);
+      if (!parsed) return undefined;
+      const layer = yield* integration.model(
+        parsed.providerID,
+        parsed.modelID,
+        thinking,
+        thinkingBudget,
+      );
+      if (!layer) return undefined;
+      return yield* LanguageModel.LanguageModel.pipe(Effect.provide(layer));
+    });
+
+    const strongService = yield* resolveModelService(modelReference);
+    if (!strongService) return yield* Effect.fail(`credential missing for ${providerID}`);
+
+    const prewalkSpec = AGENT_HARNESS_OPTIONS["agent.prewalk"];
+    const prewalkEnabled = (coerceOption(prewalkSpec, config.options["agent.prewalk"]) ??
+      prewalkSpec.default) as boolean;
+    const prewalkModelSpec = AGENT_HARNESS_OPTIONS["agent.prewalkModel"];
+    const prewalkModelReference = (coerceOption(
+      prewalkModelSpec,
+      config.options["agent.prewalkModel"],
+    ) ?? prewalkModelSpec.default) as string;
+
+    let exploreService = strongService;
+    let exploreAvailable = false;
+    if (prewalkEnabled && prewalkModelReference !== modelReference) {
+      const explore = yield* resolveModelService(prewalkModelReference);
+      if (explore) {
+        exploreService = explore;
+        exploreAvailable = true;
+      } else {
+        yield* Effect.logWarning(
+          `prewalk skipped: could not resolve agent.prewalkModel '${prewalkModelReference}'`,
+        );
+      }
+    }
+
+    const plan = planPrewalk({
+      enabled: prewalkEnabled,
+      strongModel: modelReference,
+      prewalkModel: prewalkModelReference,
+      exploreAvailable,
+    });
+    const activeModel = yield* Ref.make(plan.armed ? exploreService : strongService);
+    const handedOff = yield* Ref.make(false);
+    const modelLayer = Layer.succeed(
+      LanguageModel.LanguageModel,
+      switchableLanguageModel(activeModel),
     );
     // Approvals belong to the repository, not to this worktree or this pane, so
     // the store is opened on the project root that every worktree shares.
     const root = yield* Effect.promise(() => projectRoot(workspace));
     yield* Effect.gen(function* () {
       const store = yield* ProjectStore;
+      const hooks = makeHarnessHooks();
+      yield* hooks.emit({
+        _tag: "before_agent_start",
+        session,
+        model: modelReference,
+      });
       const gate = yield* makePermissionGate({
         session,
         turn: Effect.sync(() => turn),
@@ -106,6 +209,8 @@ else {
         rules: [...DEFAULT_RULES, ...config.permissions, ...(yield* store.rules)],
         store,
         emit,
+        mode: approvalMode,
+        hooks,
       });
       const searchPlugin = yield* Effect.promise(
         () => import("@danielfgray/amux-plugin-search/agent"),
@@ -115,7 +220,28 @@ else {
             .makeAgentSearch({ root: workspace, session })
             .pipe(Effect.orElseSucceed(() => undefined))
         : undefined;
-      const toolkit = agentToolkit(workspace, gate, { session, store }, { search });
+      // LSP lives in this worker, not the client plugin host: the host is
+      // client-only. Same LspService type the editor consumes.
+      const lsp = yield* Effect.gen(function* () {
+        const documents = yield* makeDocumentService({ session }).pipe(
+          Effect.provide(BunServices.layer),
+        );
+        const overrides = yield* loadCatalogOverrides(`${CONFIG_DIR}/amux`).pipe(
+          Effect.provide(BunServices.layer),
+          Effect.orElseSucceed(() => ({ languages: {} })),
+        );
+        const catalog = catalogWithOverrides(overrides);
+        const service = yield* LspService.make({ catalog }).pipe(
+          Effect.provideService(DocumentService, documents),
+          Effect.provide(BunServices.layer),
+        );
+        return { service, catalog };
+      }).pipe(Effect.orElseSucceed(() => undefined));
+      const toolkit = agentToolkit(
+        workspace,
+        { session, store },
+        { search, lsp, bashInterceptor },
+      ).pipe(Effect.provideService(PermissionGateTag, gate));
       // Chat owns the conversation: history, tool-call/result pairing and the
       // provider message shape are all its job, not ours. A resumed chat keeps
       // whatever system message it was created with; only a brand-new one needs
@@ -139,6 +265,17 @@ else {
         emit,
         toolkit,
         inbox: store,
+        compaction: {
+          auto: autoCompact,
+          atPercent: autoCompactAt,
+          keepRecentTokens: compactKeepRecent,
+          strategy: resolveCompactionStrategy(compactStrategy),
+          contextLimit: yield* Effect.gen(function* () {
+            const catalog = yield* ModelCatalog.Service;
+            const entry = yield* catalog.model(model.providerID, model.modelID);
+            return entry?.limit.context;
+          }).pipe(Effect.orElseSucceed(() => undefined)),
+        },
         persist: chat.exportJson.pipe(
           Effect.flatMap((conversation) => store.saveConversation(session, conversation)),
           Effect.ignore,
@@ -146,6 +283,35 @@ else {
         onTurnStart: (turnId) =>
           Effect.sync(() => {
             turn = turnId;
+          }),
+        onToolResult: (tool, succeeded) =>
+          Effect.gen(function* () {
+            if (!plan.armed) return;
+            const already = yield* Ref.get(handedOff);
+            const decision = decidePrewalkHandoff({
+              armed: true,
+              handedOff: already,
+              tool,
+              toolSucceeded: succeeded,
+              exploreModel: plan.exploreModel,
+              strongModel: plan.strongModel,
+            });
+            if (decision.kind !== "handoff") return;
+            yield* Ref.set(handedOff, true);
+            yield* Ref.set(activeModel, strongService);
+            yield* emit({
+              _tag: "topic",
+              session,
+              topic: PREWALK_HANDOFF_TOPIC,
+              payload: {
+                from: decision.from,
+                to: decision.to,
+                tool: decision.tool,
+              },
+            } as AgentEventPayload);
+            yield* Effect.logInfo(
+              `prewalk handoff ${decision.from} -> ${decision.to} after ${decision.tool}`,
+            );
           }),
       });
       // Re-admit work that was recorded before the worker or client went away.
@@ -187,21 +353,24 @@ else {
                 new AgentWorkerError({ message: "invalid native harness control message" }),
               onSome: (control: NativeControl) =>
                 Match.value(control).pipe(
-                  Match.tag("agent.prompt", (prompt) =>
-                    worker.prompt(
-                      prompt.text,
-                      prompt.id === undefined
-                        ? { delivery: prompt.delivery ?? "queue", resume: prompt.resume }
-                        : {
-                            id: prompt.id,
-                            delivery: prompt.delivery ?? "queue",
-                            resume: prompt.resume,
-                          },
-                    ),
-                  ),
+                  Match.tag("agent.prompt", (prompt) => {
+                    const options = {
+                      delivery: prompt.delivery ?? ("queue" as const),
+                      resume: prompt.resume,
+                      id: prompt.id,
+                      replace: prompt.replace,
+                    };
+                    return worker.prompt(prompt.text, options);
+                  }),
                   Match.tag("agent.interrupt", (interrupt) => worker.interrupt(interrupt.reason)),
                   Match.tag("agent.permission", (permission) =>
                     gate.resolve(permission.request, permission.decision, permission.feedback),
+                  ),
+                  Match.tag("agent.compact", (compact) =>
+                    worker.compact({
+                      instructions: compact.instructions,
+                      force: true,
+                    }).pipe(Effect.asVoid),
                   ),
                   Match.exhaustive,
                 ),
@@ -218,7 +387,7 @@ else {
     Effect.scoped(
       program.pipe(
         Effect.provide(
-          IntegrationDefault.pipe(
+          Layer.mergeAll(IntegrationDefault, ModelCatalog.Default).pipe(
             Layer.provideMerge(Layer.mergeAll(BunFileSystem.layer, Path.layer)),
           ),
         ),

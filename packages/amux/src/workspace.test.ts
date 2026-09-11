@@ -17,6 +17,7 @@ import { resolveTilingAlgorithm } from "./plugin/services.ts";
 import type { SessionState } from "./session.ts";
 import { agentHarnessDaemonCommands } from "../../plugin-agent-harness/src/daemon.ts";
 import { editorDaemonCommands } from "../../editor/src/daemon.ts";
+import { niriTilingAlgorithm } from "../../plugin-niri/src/niri.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
 const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
@@ -255,7 +256,7 @@ test("workspace and command context parsers reject malformed nested state and re
   expect(runFailMessage(parseWorkspace(badFocus))).toContain("invalid pane");
   const badRelation = structuredClone(valid);
   (badRelation.spaces[0]!.windows[0]!.layout.root as any).content.session = "missing-agent";
-  expect(runFailMessage(parseWorkspace(badRelation))).toContain("absent or exited session");
+  expect(runFailMessage(parseWorkspace(badRelation))).toContain("missing or has already exited");
 
   expect(
     runFailMessage(
@@ -313,7 +314,7 @@ test("parseWorkspace rejects a float naming a session the window does not own", 
     focus: "float-a",
   };
   window.state.focus = "float-a";
-  expect(runFailMessage(parseWorkspace(adopted))).toContain("does not have live");
+  expect(runFailMessage(parseWorkspace(adopted))).toContain("does not own");
 });
 
 test("parseWorkspace rejects a pane naming an agent another window owns", () => {
@@ -355,7 +356,7 @@ test("parseWorkspace rejects a pane naming an agent another window owns", () => 
     focus: "float-x",
   };
   foreign.state.focus = "float-x";
-  expect(runFailMessage(parseWorkspace(adopted))).toContain("does not have live");
+  expect(runFailMessage(parseWorkspace(adopted))).toContain("does not own");
 });
 
 test("parseWorkspace rejects a live agent that no pane references", () => {
@@ -375,7 +376,7 @@ test("parseWorkspace rejects a live agent that no pane references", () => {
     exited: false,
     exitCode: null,
   });
-  expect(runFailMessage(parseWorkspace(adopted))).toContain("has no pane");
+  expect(runFailMessage(parseWorkspace(adopted))).toContain("no pane retains it");
 });
 
 // Two panes showing one agent is the feature the non-tree edge exists for, and
@@ -984,6 +985,192 @@ test("a daemon plugin can place a sessionless pane through the neutral capabilit
   expect(opened.result).toEqual({ pane: editor.id });
 });
 
+test("editor.open from a calling pane replaces it and keeps the displaced PTY alive", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const shellId = "agent-a";
+  const opened = applyWorkspaceCommand(
+    adopted,
+    command("editor.open"),
+    { ...context, pane: "pane-a" },
+    editorPlugins,
+  );
+  const window = opened.snapshot.spaces[0]!.windows[0]!;
+  const panes = layoutPanes(window.layout.root);
+  expect(panes).toHaveLength(1);
+  expect(panes[0]!.id).toBe("pane-a");
+  expect(panes[0]!.content).toEqual({
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: {},
+    displaced: shellId,
+  });
+  expect(window.sessions).toHaveLength(1);
+  expect(window.sessions[0]!.id).toBe(shellId);
+  expect(window.sessions[0]!.exited).toBe(false);
+  expect(opened.actions).toEqual([]);
+  expect(opened.result).toEqual({ pane: "pane-a" });
+});
+
+test("exiting a displaced session clears the keepalive instead of poisoning the layout", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const opened = applyWorkspaceCommand(
+    adopted,
+    command("editor.open"),
+    { ...context, pane: "pane-a" },
+    editorPlugins,
+  ).snapshot;
+  const exited = markSessionExited(opened, "agent-a", 0);
+  const window = exited.spaces[0]!.windows[0]!;
+  expect(layoutPanes(window.layout.root)[0]!.content).toEqual({
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: {},
+  });
+  expect(window.sessions[0]!.exited).toBe(true);
+  expect(run(parseWorkspace(exited))).toEqual(exited);
+});
+
+test("reloading a workspace keeps a live displaced PTY on the roster", () => {
+  // workspaceFromSession used to prune by viewport sessions only, which
+  // dropped a replace-host's displaced shell on every daemon restart.
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const opened = applyWorkspaceCommand(
+    adopted,
+    command("editor.open"),
+    { ...context, pane: "pane-a" },
+    editorPlugins,
+  ).snapshot;
+  const window = opened.spaces[0]!.windows[0]!;
+  const again = run(
+    workspaceFromSession({
+      ...base(JSON.stringify(window.layout)),
+      spaces: [
+        {
+          ...base(JSON.stringify(window.layout)).spaces[0]!,
+          windows: [
+            {
+              number: 1,
+              name: null,
+              sessions: window.sessions,
+              layout: JSON.stringify(window.layout),
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  expect(again.spaces[0]!.windows[0]!.sessions.map((s) => s.id)).toEqual(["agent-a"]);
+  expect(again.spaces[0]!.windows[0]!.sessions[0]!.exited).toBe(false);
+  expect(layoutPanes(again.spaces[0]!.windows[0]!.layout.root)[0]!.content).toEqual({
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: {},
+    displaced: "agent-a",
+  });
+});
+
+test("pane.close restores a displaced PTY instead of killing it", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const opened = applyWorkspaceCommand(
+    adopted,
+    command("editor.open"),
+    { ...context, pane: "pane-a" },
+    editorPlugins,
+  ).snapshot;
+  const closed = applyWorkspaceCommand(opened, command("pane.close"), {
+    ...context,
+    pane: "pane-a",
+  });
+  const window = closed.snapshot.spaces[0]!.windows[0]!;
+  const panes = layoutPanes(window.layout.root);
+  expect(panes).toHaveLength(1);
+  expect(panes[0]!.content).toEqual({ kind: "pty", session: "agent-a" });
+  expect(window.sessions).toHaveLength(1);
+  expect(closed.actions).toEqual([]);
+});
+
+test("pane.close after agent.new kills the agent and restores the displaced PTY", () => {
+  const current = run(workspaceFromSession(base(singlePaneLayout)));
+  const opened = applyWorkspaceCommand(
+    current,
+    command("agent.new", { provider: "test", here: true }),
+    { ...context, pane: "pane-a" },
+    agentPlugins,
+  ).snapshot;
+  const agent = opened.spaces[0]!.windows[0]!.sessions.find(
+    (session) => session.kind === "component",
+  )!;
+  const closed = applyWorkspaceCommand(opened, command("pane.close"), {
+    ...context,
+    pane: "pane-a",
+  });
+  const window = closed.snapshot.spaces[0]!.windows[0]!;
+  const panes = layoutPanes(window.layout.root);
+  expect(panes).toHaveLength(1);
+  expect(panes[0]!.content).toEqual({ kind: "pty", session: "agent-a" });
+  expect(window.sessions.map((session) => session.id)).toEqual(["agent-a"]);
+  expect(closed.actions).toEqual([{ _tag: "kill", agent: agent.id }]);
+});
+
+test("session.reveal restores into the leaf that displaced it", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  const opened = applyWorkspaceCommand(
+    adopted,
+    command("editor.open"),
+    { ...context, pane: "pane-a" },
+    editorPlugins,
+  ).snapshot;
+  const revealed = applyWorkspaceCommand(
+    opened,
+    command("session.reveal", { target: "agent-a" }),
+    context,
+  );
+  const window = revealed.snapshot.spaces[0]!.windows[0]!;
+  expect(layoutPanes(window.layout.root)).toHaveLength(1);
+  expect(layoutPanes(window.layout.root)[0]!.content).toEqual({
+    kind: "pty",
+    session: "agent-a",
+  });
+  expect(window.state.focus).toBe("pane-a");
+  expect(revealed.actions).toEqual([]);
+});
+
+test("closing a sibling pane does not kill a displaced PTY", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  // Split first so there is a sibling, then replace the original shell leaf.
+  const split = applyWorkspaceCommand(
+    adopted,
+    command("pane.split", { axis: "row" }),
+    context,
+  ).snapshot;
+  const shellPane = layoutPanes(split.spaces[0]!.windows[0]!.layout.root).find(
+    (pane) => pane.content.kind === "pty" && pane.content.session === "agent-a",
+  )!;
+  const sibling = layoutPanes(split.spaces[0]!.windows[0]!.layout.root).find(
+    (pane) => pane.id !== shellPane.id,
+  )!;
+  const opened = applyWorkspaceCommand(
+    split,
+    command("editor.open"),
+    { ...context, pane: shellPane.id },
+    editorPlugins,
+  ).snapshot;
+  const closed = applyWorkspaceCommand(
+    opened,
+    command("pane.close", { pane: sibling.id }),
+    context,
+  );
+  const window = closed.snapshot.spaces[0]!.windows[0]!;
+  expect(window.sessions.some((session) => session.id === "agent-a" && !session.exited)).toBe(true);
+  expect(closed.actions).not.toContainEqual({ _tag: "kill", agent: "agent-a" });
+  const editor = layoutPanes(window.layout.root).find((pane) => pane.id === shellPane.id)!;
+  expect(editor.content).toMatchObject({
+    kind: "plugin",
+    type: "amux.editor",
+    displaced: "agent-a",
+  });
+});
+
 test("a descriptor larger than the bound is rejected by the wire schema", () => {
   const big = { blob: "x".repeat(1024 * 64 + 1) };
   const result = S.decodeOption(DescriptorSchema)(big);
@@ -1044,6 +1231,65 @@ test("pane.focus from a tiled pane still focuses directionally", () => {
   );
   expect(result.changed).toBe(true);
   expect(result.snapshot.spaces[0]!.windows[0]!.state.focus).toBe("pane-b");
+});
+
+test("pane.focus asks the tiling algorithm to bring the new focus into view", () => {
+  let ensured: string | undefined;
+  const algorithm: TilingAlgorithm = {
+    ...defaultTilingAlgorithm,
+    ensureVisible(layout, _size, paneId) {
+      ensured = paneId;
+      return layout;
+    },
+  };
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  applyWorkspaceCommand(
+    adopted,
+    command("pane.focus", { direction: "right" }),
+    context,
+    undefined,
+    algorithm,
+  );
+  expect(ensured).toBe("pane-b");
+});
+
+test("pane.focus under niri scrolls an offscreen column into view", () => {
+  const adopted = run(workspaceFromSession(threePaneSession()));
+  // Hand the window a niri strip: three half-width columns, only a+b fit.
+  const window = adopted.spaces[0]!.windows[0]!;
+  const panes = layoutPanes(window.layout.root);
+  window.layout = niriTilingAlgorithm.init(
+    panes.map((pane) => ({ id: pane.id, content: pane.content })),
+    context.size,
+  );
+  window.state.focus = window.layout.focus ?? panes[0]!.id;
+  expect(
+    (window.layout.root as { arrangement?: { offset: number } } | null)?.arrangement?.offset,
+  ).toBe(0);
+
+  // Focus right twice: a → b → c. c starts offscreen; ensureVisible must scroll.
+  let snapshot = adopted;
+  snapshot = applyWorkspaceCommand(
+    snapshot,
+    command("pane.focus", { direction: "right" }),
+    context,
+    undefined,
+    niriTilingAlgorithm,
+  ).snapshot;
+  snapshot = applyWorkspaceCommand(
+    snapshot,
+    command("pane.focus", { direction: "right" }),
+    context,
+    undefined,
+    niriTilingAlgorithm,
+  ).snapshot;
+
+  const focused = snapshot.spaces[0]!.windows[0]!;
+  expect(focused.state.focus).toBe("pane-c");
+  const arrangement = (
+    focused.layout.root as { arrangement: { offset: number } } | null
+  )?.arrangement;
+  expect(arrangement?.offset).toBeGreaterThan(0);
 });
 
 test("pane.resize resizes a focused float and leaves the preset intact", () => {
@@ -1477,6 +1723,85 @@ test("agent.new without a prompt starts the session and opens no turn", () => {
     expect.objectContaining({ _tag: "spawn", agent, pane: expect.any(String) }),
   );
   expect(mutation.actions.some((action) => action._tag === "prompt")).toBe(false);
+});
+
+test("agent.new from a calling pane replaces it and keeps the displaced PTY", () => {
+  const current = run(workspaceFromSession(base(singlePaneLayout)));
+  const mutation = applyWorkspaceCommand(
+    current,
+    command("agent.new", { provider: "test", here: true }),
+    { ...context, pane: "pane-a" },
+    agentPlugins,
+  );
+  const window = mutation.snapshot.spaces[0]!.windows[0]!;
+  const panes = layoutPanes(window.layout.root);
+  expect(panes).toHaveLength(1);
+  expect(panes[0]!.id).toBe("pane-a");
+  const agent = window.sessions.find((session) => session.kind === "component")!;
+  expect(panes[0]!.content).toEqual({
+    kind: "plugin",
+    type: "test",
+    descriptor: {},
+    session: agent.id,
+    displaced: "agent-a",
+  });
+  expect(window.sessions.some((session) => session.id === "agent-a" && !session.exited)).toBe(true);
+  expect(mutation.result).toEqual({ session: agent.id, pane: "pane-a" });
+  expect(mutation.actions).toEqual([{ _tag: "spawn", agent, pane: "pane-a" }]);
+});
+
+test("chained agent.new --here keeps the original shell and reaps the middle agent", () => {
+  // A second replace used to set displaced to the middle agent and leave the
+  // shell live with no retainer — daemon reload then failed the workspace
+  // invariant ("live but no pane retains it").
+  const first = applyWorkspaceCommand(
+    run(workspaceFromSession(base(singlePaneLayout))),
+    command("agent.new", { provider: "test", here: true }),
+    { ...context, pane: "pane-a" },
+    agentPlugins,
+  );
+  const middle = first.snapshot.spaces[0]!.windows[0]!.sessions.find(
+    (session) => session.kind === "component",
+  )!;
+  const second = applyWorkspaceCommand(
+    first.snapshot,
+    command("agent.new", { provider: "test", here: true }),
+    { ...context, pane: "pane-a" },
+    agentPlugins,
+  );
+  const window = second.snapshot.spaces[0]!.windows[0]!;
+  const panes = layoutPanes(window.layout.root);
+  const latest = window.sessions.find((session) => session.kind === "component")!;
+  expect(panes).toHaveLength(1);
+  expect(panes[0]!.content).toEqual({
+    kind: "plugin",
+    type: "test",
+    descriptor: {},
+    session: latest.id,
+    displaced: "agent-a",
+  });
+  expect(window.sessions.map((session) => session.id).sort()).toEqual(
+    ["agent-a", latest.id].sort(),
+  );
+  expect(window.sessions.some((session) => session.id === middle.id)).toBe(false);
+  expect(second.actions).toContainEqual({ _tag: "kill", agent: middle.id });
+  expect(run(parseWorkspace(second.snapshot))).toEqual(second.snapshot);
+});
+
+test("agent.new --split forces a sibling even from a calling pane", () => {
+  const current = run(workspaceFromSession(base(singlePaneLayout)));
+  const mutation = applyWorkspaceCommand(
+    current,
+    command("agent.new", { provider: "test", split: true }),
+    { ...context, pane: "pane-a" },
+    agentPlugins,
+  );
+  const window = mutation.snapshot.spaces[0]!.windows[0]!;
+  const panes = layoutPanes(window.layout.root);
+  expect(panes).toHaveLength(2);
+  expect(panes.some((pane) => pane.id === "pane-a")).toBe(true);
+  expect(panes.some((pane) => pane.id !== "pane-a")).toBe(true);
+  expect(window.sessions.some((session) => session.id === "agent-a" && !session.exited)).toBe(true);
 });
 
 // ---------------------------------------------------------------------------

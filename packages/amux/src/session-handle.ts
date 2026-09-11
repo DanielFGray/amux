@@ -11,6 +11,7 @@ import { commandName } from "./command-name.ts";
 import { ProcessState } from "./process-state.ts";
 import { ProcessStateArbiter, ProcessStateAuthority } from "./process-state-arbiter.ts";
 import { extractScreenRegion, type ScreenRegion, type ScreenSnapshot } from "./screen-regions.ts";
+import { defaultRootRuntime, type RootRuntimeContext } from "./env.ts";
 
 /** How often the foreground process is re-checked for an agent CLI. Reading
  *  /proc on every sidebar row on every tick would be gratuitous, and starting an
@@ -45,7 +46,7 @@ export interface SessionHandleOptions {
   /** The process's root Effect context; see RootRuntime in env.ts. Defaults
    *  to capturing whatever is ambient, for callers (mostly tests) that build
    *  a SessionHandle with no process-level runtime to hand it. */
-  runtime?: Context.Context<never>;
+  runtime?: RootRuntimeContext;
   /**
    * Restore an agent whose process is already over.
    *
@@ -121,7 +122,7 @@ export class SessionHandle {
   #scope = Scope.makeUnsafe();
   #disposed = false;
   /** The runtime #own and #pump run their Effects on; see RootRuntime in env.ts. */
-  readonly #runtime: Context.Context<never>;
+  readonly #runtime: RootRuntimeContext;
 
   /** Bumped whenever output arrives, so views can invalidate caches. */
   onOutput?: (session: SessionHandle) => void;
@@ -131,7 +132,7 @@ export class SessionHandle {
   onScroll?: (session: SessionHandle) => void;
 
   constructor(opts: SessionHandleOptions) {
-    this.#runtime = opts.runtime ?? Effect.runSync(Effect.context<never>());
+    this.#runtime = opts.runtime ?? defaultRootRuntime();
     this.startedAt = Effect.runSyncWith(this.#runtime)(Clock.currentTimeMillis);
     this.id = opts.id ?? `agent-${nextAgentId++}`;
     this.kind = opts.kind ?? "pty";
@@ -165,6 +166,7 @@ export class SessionHandle {
       cwd: opts.cwd,
       cols,
       rows,
+      runtime: this.#runtime,
     });
     this.#pumpFiber = this.#pump();
     this.#state.register({

@@ -45,7 +45,7 @@
     "typecheck:fzf": "./tools/typecheck-fzf",
     "format": "bunx oxfmt --write packages e2e",
     "format:check": "bunx oxfmt --check packages e2e",
-    "test": "run-s typecheck lint ultracite sg-scan test:unit",
+    "test": "run-s typecheck lint ultracite sg-scan test:unit e2e",
     "test:unit": "bun test --timeout=30000 packages",
     "ultracite": "ultracite check packages e2e",
     "sg-scan": "ast-grep scan packages --globs '**/*.ts' --globs '**/*.tsx' --report-style medium",

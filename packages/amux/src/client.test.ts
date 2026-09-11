@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { unchangedOutput } from "./client.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
+import { spaceSetState } from "./space-model.ts";
 
-const workspace = { revision: 7, spaces: [] } as unknown as WorkspaceSnapshot;
+const workspace: WorkspaceSnapshot = { revision: 7, spaces: [], state: spaceSetState() };
 
 describe("unchangedOutput", () => {
   it("resolves a workspace-less output to the current snapshot", () => {

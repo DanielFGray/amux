@@ -39,7 +39,7 @@ export interface ContextSpec {
   rebindable: boolean;
 
   /**
-   * Re-expose every global binding beginning with `<leader>` without that
+   * Re-expose every global binding beginning with `<prefix>` without that
    * first token while this context is active. The bindings compiler derives
    * the aliases from the effective user keymap, so contexts do not copy the
    * command table or drift from later rebindings.
@@ -132,6 +132,18 @@ export const CONTEXT_PRIORITY = {
   APP_MODE: 200,
   OVERLAY: 300,
 } as const;
+
+/**
+ * An overlay-band context that declines a key (`handle` → false) is yielding
+ * to a focused OpenTUI input — palette filter, prompt field, settings edit —
+ * not to the pane. `onUnhandled` must not fall through to a PTY in that case:
+ * the pane would claim the key and `preventDefault` it, starving the input.
+ */
+export function overlayBlocksPane(contexts: readonly ContextSpec[]): boolean {
+  return contexts.some(
+    (context) => context.active() && context.priority >= CONTEXT_PRIORITY.OVERLAY,
+  );
+}
 
 /** Two or more contexts claiming the same `priority`. Registration order
  *  (the order they arrived in the input) breaks the tie meanwhile. */

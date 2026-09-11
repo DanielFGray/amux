@@ -791,14 +791,14 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
   const commands: CommandSpec[] = [
     {
       name: "pane.copy-mode",
-      key: "<leader>[",
+      key: "<prefix>[",
       desc: "copy mode",
       group: "panes",
       run: Effect.sync(() => mode.enter(pane)),
     },
     {
       name: "pane.focus-left",
-      key: "<leader>h",
+      key: "<prefix>h",
       desc: "focus left",
       group: "panes",
       run: Effect.sync(() => focusLeft++),

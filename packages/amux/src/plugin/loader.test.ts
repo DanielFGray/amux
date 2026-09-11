@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { Effect, Scope } from "effect";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { Effect, Layer, Path, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -18,6 +18,7 @@ import { decodeConfig, loadConfig } from "../config.ts";
 import { testEffect } from "../test-effect.ts";
 import type { Slots } from "../ui/slots.ts";
 import { createTestRenderer } from "@opentui/core/testing";
+import { makeLastGoodStore } from "./last-good.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
 
@@ -85,7 +86,7 @@ const loadPluginsFromConfig = (
 function baseConfig(overrides: Partial<Config> = {}): Config {
   return {
     options: {},
-    keys: { leader: "ctrl+a", bindings: {} },
+    keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
     plugins: [],
     permissions: [],
     ...overrides,
@@ -154,6 +155,27 @@ testEffect("loads a valid plugin", () =>
     expect(pluginStatuses(host).length).toBe(1);
     expect(pluginStatuses(host)[0]!.id).toBe("my-plugin");
   }).pipe(Effect.provide(BunFileSystem.layer)),
+);
+
+testEffect("a quarantined last-good archive is loaded instead of a broken disk edit", () =>
+  Effect.gen(function* () {
+    const dir = yield* tempDir;
+    const entry = yield* writePluginFile(dir, "saved.ts", "this is broken disk source");
+    const source = pathToFileURL(entry);
+    const store = yield* makeLastGoodStore(join(dir, ".amux", "plugin-last-good.json"));
+    yield* store.write({
+      version: 1,
+      entries: [source.href],
+      modules: [{ url: source.href, text: mkPluginSrc("saved") }],
+      quarantined: true,
+    });
+    const { host } = yield* makeHost();
+
+    const loaded = yield* loadPluginsFromConfig(baseConfig({ plugins: [spec(entry)] }), host, dir);
+
+    expect(loaded.recovered).toBe(true);
+    expect(pluginStatuses(host).map((status) => status.id)).toEqual(["saved"]);
+  }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, Path.layer))),
 );
 
 testEffect("loads the editor package through its configured package entrypoint", () =>

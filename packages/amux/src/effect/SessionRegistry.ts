@@ -23,6 +23,7 @@ import {
   type JsonValue,
   type PermissionAnswer,
 } from "./AttachProtocol.ts";
+import { captureRootRuntime, type RootRuntimeContext } from "../env.ts";
 
 export class PtyError extends S.TaggedError<PtyError>()("PtyError", {
   operation: S.String,
@@ -98,6 +99,7 @@ export type PromptOptions = {
   readonly id?: string;
   readonly delivery?: "steer" | "queue";
   readonly resume?: boolean;
+  readonly replace?: string;
 };
 
 /** The foreground of a session's tty, as the owner sees it. A session with no
@@ -184,9 +186,9 @@ class AsyncMailbox<A> implements AsyncIterable<A> {
   #ended = false;
   #failure: Error | undefined;
   #failed = false;
-  readonly #runtime: Context.Context<never>;
+  readonly #runtime: RootRuntimeContext;
 
-  constructor(runtime: Context.Context<never>) {
+  constructor(runtime: RootRuntimeContext) {
     this.#runtime = runtime;
   }
 
@@ -241,7 +243,7 @@ const STDERR_TAIL_CHARS = 8192;
 
 /** A component's content comes from a worker isolated from the daemon, speaking
  *  semantic frames on stdout instead of terminal bytes. */
-function componentBackend(spec: SessionSpec, runtime: Context.Context<never>): Backend {
+function componentBackend(spec: SessionSpec, runtime: RootRuntimeContext): Backend {
   if (!spec.cmd.length) throw new Error("component session requires a worker command");
   const env = {
     ...Object.fromEntries(
@@ -282,7 +284,7 @@ function componentBackend(spec: SessionSpec, runtime: Context.Context<never>): B
   let stderrTail = "";
   let stderrDropped = false;
   const stderrDrained = Effect.runPromiseWith(runtime)(
-    Effect.callback<void, unknown>((resume) => {
+    Effect.callback<void, string>((resume) => {
       const decoder = new TextDecoder();
       const iterator = child.stderr[Symbol.asyncIterator]();
       const read = (): void => {
@@ -309,7 +311,7 @@ function componentBackend(spec: SessionSpec, runtime: Context.Context<never>): B
             }
             read();
           },
-          (error) => resume(Effect.fail(error)),
+          (error) => resume(Effect.fail(String(error))),
         );
       };
       read();
@@ -421,7 +423,7 @@ export class SessionRegistry extends Context.Service<SessionRegistry>()("Session
     // daemon-main.ts provided is already ambient in this fiber, and every
     // session this registry spawns runs on it. See RootRuntime in env.ts
     // for the client-side counterpart.
-    const rootRuntime = yield* Effect.context<never>();
+    const rootRuntime = yield* captureRootRuntime;
     // The token prevents a late exit from an old backend from releasing a reused id.
     const sessions = yield* Ref.make<ReadonlyMap<string, Reservation>>(new Map());
     const commandPumps = yield* FiberMap.make<string>();

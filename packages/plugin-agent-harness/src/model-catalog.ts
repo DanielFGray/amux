@@ -3,6 +3,7 @@ import * as Path from "effect/Path";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
+import * as SchemaGetter from "effect/SchemaGetter";
 import { Clock, Context, Duration, Effect, Layer, Option, Schedule, Schema as S } from "effect";
 import { stateRoot } from "@danielfgray/amux/session.ts";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
@@ -23,6 +24,35 @@ const Cost = S.Struct({
   cache_write: S.optional(S.Finite),
 });
 
+/** Catalog `reasoning_options` shapes from models.opencode.ai. Unknown `type`
+ *  values are dropped so one future variant cannot fail the whole model. */
+export const ReasoningOption = S.Union([
+  S.Struct({ type: S.Literal("effort"), values: S.Array(S.String) }),
+  S.Struct({ type: S.Literal("toggle") }),
+  S.Struct({
+    type: S.Literal("budget_tokens"),
+    min: S.optional(S.Finite),
+    max: S.optional(S.Finite),
+  }),
+]);
+export type ReasoningOption = typeof ReasoningOption.Type;
+
+const ReasoningOptions = S.Array(S.Json).pipe(
+  S.decodeTo(S.Array(ReasoningOption), {
+    decode: SchemaGetter.transform((items: readonly S.Json[]) =>
+      items.flatMap((item) =>
+        Option.match(S.decodeUnknownOption(ReasoningOption)(item), {
+          onNone: () => [],
+          onSome: (option) => [option],
+        }),
+      ),
+    ),
+    encode: SchemaGetter.transform(
+      (items: readonly ReasoningOption[]) => items as readonly S.Json[],
+    ),
+  }),
+);
+
 export const Model = S.Struct({
   id: S.String,
   name: S.String,
@@ -37,8 +67,57 @@ export const Model = S.Struct({
   modalities: S.optional(S.Struct({ input: S.Array(S.String), output: S.Array(S.String) })),
   status: S.optional(CatalogModelStatus),
   provider: S.optional(S.Struct({ npm: S.optional(S.String), api: S.optional(S.String) })),
+  reasoning_options: S.optional(ReasoningOptions),
 });
 export type Model = S.Schema.Type<typeof Model>;
+
+/**
+ * Controllable thinking levels for a model, or `undefined` when the picker
+ * should stay closed (no reasoning, or only budget_tokens / empty options).
+ *
+ * Prefer catalog effort values over inventing a fixed ladder (Pi contrast).
+ */
+export const availableThinkingLevels = (model: Model): readonly string[] | undefined => {
+  if (!model.reasoning) return undefined;
+  const options = model.reasoning_options ?? [];
+  const effort = options.find((option) => option.type === "effort");
+  if (effort !== undefined && effort.type === "effort") return effort.values;
+  if (options.some((option) => option.type === "toggle")) return ["off", "on"];
+  return undefined;
+};
+
+/** Empty `level` means provider default — omit the field. Unknown levels snap
+ *  to the first catalog value when the model exposes a controllable set. */
+export const clampThinkingLevel = (model: Model, level: string): string | undefined => {
+  const levels = availableThinkingLevels(model);
+  if (levels === undefined || levels.length === 0) return undefined;
+  if (level === "") return undefined;
+  if (levels.includes(level)) return level;
+  return levels[0];
+};
+
+/** Catalog `budget_tokens` row when the model advertises one; else undefined. */
+export const budgetTokensOption = (
+  model: Model,
+): Extract<ReasoningOption, { readonly type: "budget_tokens" }> | undefined => {
+  if (!model.reasoning) return undefined;
+  const option = (model.reasoning_options ?? []).find((entry) => entry.type === "budget_tokens");
+  return option !== undefined && option.type === "budget_tokens" ? option : undefined;
+};
+
+/**
+ * Clamp a user/config token budget onto the catalog's min/max, or omit when
+ * the model has no budget_tokens option / the value is ≤0 (provider default).
+ */
+export const clampThinkingBudget = (model: Model, budget: number): number | undefined => {
+  const option = budgetTokensOption(model);
+  if (option === undefined) return undefined;
+  if (!Number.isFinite(budget) || budget <= 0) return undefined;
+  let value = budget;
+  if (option.min !== undefined) value = Math.max(value, option.min);
+  if (option.max !== undefined) value = Math.min(value, option.max);
+  return value;
+};
 
 export const Provider = S.Struct({
   api: S.optional(S.String),
@@ -68,7 +147,7 @@ export class Service extends Context.Service<Service, Interface>()("amux/ModelCa
 
 const CACHE_TTL = Duration.minutes(5);
 const SOURCE = "https://models.opencode.ai/api.json";
-const RawCatalog = S.fromJsonString(S.Record(S.String, S.Unknown));
+const RawCatalog = S.fromJsonString(S.Record(S.String, S.Json));
 
 const httpFetcher = Layer.effect(
   Fetcher,
@@ -129,24 +208,22 @@ export const makeLayer = (fetcher: Layer.Layer<Fetcher, never, never>) =>
         return now - info.mtime.value.getTime() < Duration.toMillis(CACHE_TTL);
       });
       const writeDisk = (value: Readonly<Record<string, Provider>>) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
-            yield* fs.chmod(directory, 0o700);
-            const now = yield* Clock.currentTimeMillis;
-            const temp = `${file}.${process.pid}.${now}.tmp`;
-            const handle = yield* fs.open(temp, { flag: "wx", mode: 0o600 });
-            const encoded = yield* S.encodeEffect(S.fromJsonString(S.Record(S.String, S.Unknown)))(
-              value,
-            );
-            yield* handle.writeAll(new TextEncoder().encode(encoded + "\n"));
-            yield* handle.sync;
-            yield* fs.chmod(temp, 0o600);
-            yield* fs.rename(temp, file);
-            const directoryHandle = yield* fs.open(directory, { flag: "r" });
-            yield* directoryHandle.sync;
-          }),
-        );
+        Effect.gen(function* () {
+          yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+          yield* fs.chmod(directory, 0o700);
+          const now = yield* Clock.currentTimeMillis;
+          const temp = `${file}.${process.pid}.${now}.tmp`;
+          const handle = yield* fs.open(temp, { flag: "wx", mode: 0o600 });
+          const encoded = yield* S.encodeEffect(S.fromJsonString(S.Record(S.String, Provider)))(
+            value,
+          );
+          yield* handle.writeAll(new TextEncoder().encode(encoded + "\n"));
+          yield* handle.sync;
+          yield* fs.chmod(temp, 0o600);
+          yield* fs.rename(temp, file);
+          const directoryHandle = yield* fs.open(directory, { flag: "r" });
+          yield* directoryHandle.sync;
+        }).pipe(Effect.scoped);
       const populate = Effect.gen(function* () {
         const disk = yield* readDisk.pipe(Effect.orDie);
         if (disk && (yield* fresh.pipe(Effect.orDie))) return disk;

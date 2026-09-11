@@ -16,6 +16,7 @@
  * the wrong thing impossible to write rather than merely discouraged.
  */
 
+import { captureRootRuntime } from "../env.ts";
 import { Context, Deferred, Effect, Exit, Layer, Match, Schema as S, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { createServer, type Server } from "node:net";
@@ -33,6 +34,7 @@ import { MAX_ATTACH_FRAME_BYTES } from "../limits.ts";
 import { AgentLog, AgentLogDefault, type AgentLogError, type AgentLogService } from "./AgentLog.ts";
 import { AttachServerError, startAttachServer } from "./AttachServer.ts";
 import { PasteBuffers } from "./BufferStore.ts";
+import { OpenDocumentStore } from "@danielfgray/amux-text-buffer";
 import {
   SessionObserverError,
   SessionExitObserver,
@@ -43,6 +45,13 @@ import {
 import type { ManagedSession, PromptOptions, PtyError, SessionSpec } from "./SessionRegistry.ts";
 import { errorMessage } from "../error-message.ts";
 import { isSameUserPeer, socketFd } from "../peer-credentials.ts";
+import {
+  AgentLifecycleSchema,
+  AgentSessionTable,
+  type AgentSessionRecord,
+} from "../agent-session.ts";
+import { layoutRefs } from "../layout.ts";
+import type { WorkspaceSnapshot } from "../workspace.ts";
 
 /**
  * Requests a process may send over its daemon-private self-report socket.
@@ -53,6 +62,11 @@ import { isSameUserPeer, socketFd } from "../peer-credentials.ts";
  * plugin can own a report's meaning without core naming it. Both resolve to
  * one call into the supervisor's topic-generic `report` — there is no second
  * ingestion path, only a second way to name the topic.
+ *
+ * `pane.report_agent_session` is the foreign-agent continuity verb: a hook
+ * reports which conversation this pane is in. Validation (allowlist, seq,
+ * subagent gate) lives in `agent-session.ts` because a stored ref becomes
+ * restore argv — rejected reports never reach the table.
  */
 const ProcessStateEnvelope = S.Struct({
   id: S.optional(S.String),
@@ -64,11 +78,32 @@ const TopicPublishEnvelope = S.Struct({
   method: S.Literals(["topic.publish"]),
   params: S.Struct({ session: S.String, topic: S.String, payload: JsonValueSchema }),
 });
+const ReportAgentSessionEnvelope = S.Struct({
+  id: S.optional(S.String),
+  method: S.Literals(["pane.report_agent_session"]),
+  params: S.Struct({
+    paneId: S.String,
+    source: S.String,
+    agent: S.String,
+    seq: S.Finite,
+    agentSessionId: S.optional(S.String),
+    agentSessionPath: S.optional(S.String),
+    agentId: S.optional(S.String),
+    sessionStartSource: S.optional(S.String),
+    lifecycle: S.optional(AgentLifecycleSchema),
+    pid: S.optional(S.Int),
+  }),
+});
 const PingEnvelope = S.Struct({
   id: S.optional(S.String),
   method: S.Literals(["ping"]),
 });
-const ProcessSocketRequest = S.Union([ProcessStateEnvelope, TopicPublishEnvelope, PingEnvelope]);
+const ProcessSocketRequest = S.Union([
+  ProcessStateEnvelope,
+  TopicPublishEnvelope,
+  ReportAgentSessionEnvelope,
+  PingEnvelope,
+]);
 
 export interface AttachHostOptions<
   AttachError = never,
@@ -108,6 +143,23 @@ export interface AttachHostOptions<
     session: string,
     state: string,
   ) => Effect.Effect<void, SessionStateError>;
+  /**
+   * A trusted foreign-agent session ref was accepted. The daemon persists it
+   * onto the pane in the layout snapshot; AttachHost only owns the live table.
+   */
+  readonly onAgentSession?: (
+    record: AgentSessionRecord,
+  ) => Effect.Effect<void, never>;
+  /**
+   * A resize named a session that is not live yet. Foreign-agent restore parks
+   * the resume plan until the first client size arrives — return true if this
+   * resize started that pending resume (herdr geometry settle).
+   */
+  readonly onDeferredResume?: (
+    session: string,
+    cols: number,
+    rows: number,
+  ) => Effect.Effect<boolean, never>;
   readonly agentLog?: AgentLogService;
 }
 
@@ -171,6 +223,20 @@ export interface AttachHostService {
    * buffers die with the server.
    */
   readonly buffers: PasteBuffers;
+  /**
+   * Open text documents shared by the editor and agent tools. Same lifetime
+   * as paste buffers: daemon-scoped, not persisted across restart. Clients
+   * reach this over RPC; the store itself is the sequenced authority.
+   */
+  readonly documents: OpenDocumentStore;
+  /**
+   * Trusted foreign-agent conversation refs reported over the process-state
+   * socket. Keyed by pane id (conversation follows the pane). Seeded from the
+   * layout snapshot on restore; updated when a hook reports.
+   */
+  readonly agentSession: (paneId: string) => AgentSessionRecord | undefined;
+  /** Re-load trusted refs from a workspace snapshot (decode already re-validated). */
+  readonly hydrateAgentSessions: (workspace: WorkspaceSnapshot) => void;
 }
 
 export class AttachHost extends Context.Service<AttachHost, AttachHostService>()("AttachHost") {}
@@ -201,6 +267,7 @@ export const makeAttachHost = <
     const supervisor = yield* SessionSupervisor;
     const fs = yield* FileSystem.FileSystem;
     const host = yield* Effect.scope;
+    const agentSessions = new AgentSessionTable();
     // Keyed by request id rather than by client: nothing else needs to find a
     // pending command by who it was asked of, only by which answer just came back.
     const pendingCommands = new Map<string, Deferred.Deferred<JsonValue | undefined, string>>();
@@ -215,7 +282,7 @@ export const makeAttachHost = <
       // way the attach server's callbacks do. Without a runtime to run it in,
       // `onSessionState` would only ever be *constructed* here and discarded —
       // an Effect that is never run reports nothing.
-      const runtime = yield* Effect.context<never>();
+      const runtime = yield* captureRootRuntime;
       yield* Effect.acquireRelease(
         Effect.callback<Server, AttachServerError>((resume) => {
           const value = createServer((socket) => {
@@ -243,6 +310,23 @@ export const makeAttachHost = <
                 const request = decoded.value;
                 if (request.method === "ping") {
                   socket.write(JSON.stringify({ id: request.id, ok: true }) + "\n");
+                  continue;
+                }
+                if (request.method === "pane.report_agent_session") {
+                  // Allowlist / seq / subagent gate — a rejected report must
+                  // not become restore argv. Reply shape matches process.state:
+                  // ok when accepted, rejected when the table refused it.
+                  const result = agentSessions.report(request.params);
+                  socket.write(
+                    JSON.stringify(
+                      result._tag === "accepted"
+                        ? { id: request.id, ok: true }
+                        : { id: request.id, ok: false, error: result.reason },
+                    ) + "\n",
+                  );
+                  if (result._tag === "accepted" && options.onAgentSession) {
+                    Effect.runForkWith(runtime)(options.onAgentSession(result.record));
+                  }
                   continue;
                 }
                 // Built, not run: an Effect is a description, so this costs
@@ -321,6 +405,26 @@ export const makeAttachHost = <
               ? Deferred.fail(pending, frame.error)
               : Deferred.succeed(pending, frame.result);
           }),
+          Match.tag("resize", (resize) =>
+            Effect.gen(function* () {
+              if (options.onDeferredResume) {
+                const live = yield* supervisor.live;
+                if (!live.includes(resize.session)) {
+                  const started = yield* options.onDeferredResume(
+                    resize.session,
+                    resize.cols,
+                    resize.rows,
+                  );
+                  if (started) return;
+                }
+              }
+              yield* supervisor.handle(resize).pipe(
+                Effect.catchTag("PtyError", (error) =>
+                  Effect.logDebug(`attach frame ignored: ${error.operation}: ${error.message}`),
+                ),
+              );
+            }),
+          ),
           Match.orElse((frame) =>
             supervisor
               .handle(frame)
@@ -403,6 +507,17 @@ export const makeAttachHost = <
       runOnClient,
       // One stack per daemon, living as long as the attach plane does.
       buffers: new PasteBuffers(),
+      documents: new OpenDocumentStore(),
+      agentSession: (paneId) => agentSessions.get(paneId),
+      hydrateAgentSessions: (workspace) => {
+        for (const space of workspace.spaces) {
+          for (const window of space.windows) {
+            for (const pane of layoutRefs(window.layout)) {
+              if (pane.agentSession) agentSessions.load(pane.id, pane.agentSession);
+            }
+          }
+        }
+      },
     };
   });
 

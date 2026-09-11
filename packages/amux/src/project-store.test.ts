@@ -45,6 +45,7 @@ const run = <A>(root: string, body: (store: Interface) => Effect.Effect<A, Proje
       Effect.provide(
         layer(root).pipe(
           Layer.provide(BunFileSystem.layer),
+          Layer.provide(Path.layer),
           Layer.provide(Layer.succeed(ConfigProvider.ConfigProvider, testConfigProvider)),
         ),
       ),
@@ -130,6 +131,7 @@ testEffect("two open handles on one project both land their writes", () =>
     const store = (root: string) =>
       layer(root).pipe(
         Layer.provide(BunFileSystem.layer),
+        Layer.provide(Path.layer),
         Layer.provide(Layer.succeed(ConfigProvider.ConfigProvider, testConfigProvider)),
       );
     const rules = yield* Effect.scoped(
@@ -168,6 +170,26 @@ testEffect("a conversation survives reopening and is isolated by daemon session"
   }),
 );
 
+testEffect("listConversations and copyConversation cover resume picker storage", () =>
+  Effect.gen(function* () {
+    yield* isolate();
+    yield* run("/tmp/project-list", (store) =>
+      store.saveConversation("source", '{"messages":[{"role":"user","content":"b"}]}'),
+    );
+    const listed = yield* run("/tmp/project-list", (store) => store.listConversations);
+    expect(listed.map((row) => row.session)).toContain("source");
+    expect(
+      yield* run("/tmp/project-list", (store) => store.copyConversation("source", "clone")),
+    ).toBe(true);
+    expect(yield* run("/tmp/project-list", (store) => store.conversation("clone"))).toBe(
+      '{"messages":[{"role":"user","content":"b"}]}',
+    );
+    expect(
+      yield* run("/tmp/project-list", (store) => store.copyConversation("missing", "nowhere")),
+    ).toBe(false);
+  }),
+);
+
 testEffect("prompt admission survives reopening and caller ids are idempotent", () =>
   Effect.gen(function* () {
     yield* isolate();
@@ -200,6 +222,35 @@ testEffect("prompt admission survives reopening and caller ids are idempotent", 
     expect(yield* run("/tmp/project-inbox", (store) => store.pendingPrompts("agent-a"))).toEqual(
       [],
     );
+  }),
+);
+
+testEffect("updatePendingPrompt rewrites text and delivery of an unpromoted row", () =>
+  Effect.gen(function* () {
+    yield* isolate();
+    const first = yield* run("/tmp/project-inbox-update", (store) =>
+      store.admitPrompt("agent-a", "inspect", "queue", true, "request-1"),
+    );
+    const updated = yield* run("/tmp/project-inbox-update", (store) =>
+      store.updatePendingPrompt(first.id, { prompt: "steer now", delivery: "steer" }),
+    );
+    expect(updated).toMatchObject({
+      id: first.id,
+      turn: first.turn,
+      prompt: "steer now",
+      delivery: "steer",
+    });
+    expect(
+      yield* run("/tmp/project-inbox-update", (store) => store.pendingPrompts("agent-a")),
+    ).toEqual([updated]);
+    yield* run("/tmp/project-inbox-update", (store) => store.promotePrompt(first.id));
+    expect(
+      yield* refusal(
+        run("/tmp/project-inbox-update", (store) =>
+          store.updatePendingPrompt(first.id, { delivery: "queue" }),
+        ),
+      ),
+    ).toContain("not a pending admission");
   }),
 );
 

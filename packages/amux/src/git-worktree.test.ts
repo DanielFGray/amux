@@ -5,7 +5,7 @@ import { mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigProvider, Effect } from "effect";
+import { ConfigProvider, Effect, Layer, Path } from "effect";
 import { waitFor } from "./test-wait.ts";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -31,13 +31,14 @@ async function env() {
 }
 
 const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path>,
   e: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     effect.pipe(
-      Effect.provide(SessionStore.layer),
-      Effect.provide(BunFileSystem.layer),
+      Effect.provide(
+        SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
+      ),
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(e)),
     ),
   );

@@ -23,8 +23,7 @@ export function CodeBlock(props: {
   language: string;
   highlight?: HighlightSnapshot;
 }) {
-  const filetype = () =>
-    props.language === "" ? undefined : filetypeForInfo(props.language);
+  const filetype = () => (props.language === "" ? undefined : filetypeForInfo(props.language));
   const highlight = () => props.highlight;
 
   const [request, setRequest] = createSignal<{ code: string; filetype: string } | null>(null);
@@ -76,9 +75,7 @@ export function CodeBlock(props: {
               <box style={{ flexDirection: "row", flexShrink: 0 }}>
                 <For each={row()!}>
                   {(chunk) => (
-                    <text style={{ flexShrink: 0, fg: chunk.fg ?? theme.text }}>
-                      {chunk.text}
-                    </text>
+                    <text style={{ flexShrink: 0, fg: chunk.fg ?? theme.text }}>{chunk.text}</text>
                   )}
                 </For>
               </box>

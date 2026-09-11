@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   CONTEXT_PRIORITY,
   findContextPriorityConflicts,
+  overlayBlocksPane,
   resolveUnhandled,
   type ContextSpec,
 } from "./key-context.ts";
@@ -140,4 +141,24 @@ test("resolveUnhandled falls through a context that declines the key to the one 
 
 test("resolveUnhandled returns false when nothing active claims the key", () => {
   expect(resolveUnhandled([], { name: "x" } as never)).toBe(false);
+});
+
+test("overlayBlocksPane is true while an overlay-band context is active", () => {
+  const palette: ContextSpec = {
+    id: "amux.palette",
+    active: () => true,
+    priority: CONTEXT_PRIORITY.OVERLAY + 10,
+    rebindable: false,
+    handle: () => false,
+  };
+  const copyMode: ContextSpec = {
+    id: "copy-mode",
+    active: () => true,
+    priority: CONTEXT_PRIORITY.APP_MODE,
+    rebindable: false,
+    handle: () => true,
+  };
+  expect(overlayBlocksPane([palette, copyMode])).toBe(true);
+  expect(overlayBlocksPane([copyMode])).toBe(false);
+  expect(overlayBlocksPane([{ ...palette, active: () => false }])).toBe(false);
 });

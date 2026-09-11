@@ -5,6 +5,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type * as HttpClientError from "effect/unstable/http/HttpClientError";
 import { Effect, Layer, Match, Schedule, Schema as S, Stream } from "effect";
+import { chatReasoningEffort } from "./thinking.ts";
 
 /**
  * A `LanguageModel` that speaks OpenAI's Chat Completions API.
@@ -31,6 +32,8 @@ export type Options = {
   /** Root of the provider's API, without `/chat/completions`. */
   readonly apiUrl?: string;
   readonly transformClient?: (client: HttpClient.HttpClient) => HttpClient.HttpClient;
+  /** Clamped catalog thinking level; becomes `reasoning_effort` when set. */
+  readonly thinking?: string;
 };
 
 const DEFAULT_API_URL = "https://api.openai.com/v1";
@@ -44,7 +47,7 @@ export const make = Effect.fnUntraced(function* (options: Options) {
   const url = `${(options.apiUrl ?? DEFAULT_API_URL).replace(/\/+$/, "")}/chat/completions`;
 
   const send = (provider: LanguageModel.ProviderOptions) =>
-    body(options.model, provider).pipe(
+    body(options.model, provider, options.thinking).pipe(
       Effect.map((payload) =>
         request(
           client.execute(HttpClientRequest.post(url, { body: HttpBody.jsonUnsafe(payload) })),
@@ -79,7 +82,11 @@ export const make = Effect.fnUntraced(function* (options: Options) {
 // The only place that knows how `@effect/ai`'s prompt maps onto the Chat
 // Completions wire format. Provider quirks belong here, not in the caller.
 
-const body = Effect.fnUntraced(function* (model: string, options: LanguageModel.ProviderOptions) {
+const body = Effect.fnUntraced(function* (
+  model: string,
+  options: LanguageModel.ProviderOptions,
+  thinking?: string,
+) {
   const choice = toolChoice(options.toolChoice);
   // A `oneOf` choice restricts which tools the model may see. OpenAI's wire
   // format has no such field, so the restriction is applied by omitting the
@@ -106,6 +113,8 @@ const body = Effect.fnUntraced(function* (model: string, options: LanguageModel.
   if (choice.value !== undefined && tools.length > 0) result.tool_choice = choice.value;
   if (options.responseFormat.type === "json")
     result.response_format = { type: "json_object" as const };
+  const effort = chatReasoningEffort(thinking);
+  if (effort !== undefined) result.reasoning_effort = effort;
   return result;
 });
 
@@ -125,6 +134,7 @@ type RequestBody = {
   }>;
   tool_choice?: ToolChoice["value"];
   response_format?: { type: "json_object" };
+  reasoning_effort?: string;
 };
 
 const toolChoice = (choice: LanguageModel.ToolChoice<string>): ToolChoice => {
@@ -332,6 +342,12 @@ const request = <A>(effect: Effect.Effect<A, HttpClientError.HttpClientError>) =
   );
 
 const retryableHttpError = (error: HttpClientError.HttpClientError): boolean => {
+  // `mapRequestEffect` can inject non-Http failures (e.g. authorize's
+  // "credential missing") into this channel via an `as never` cast upstream.
+  // Treating those as non-retryable keeps them as typed failures instead of a
+  // TypeError defect when `.reason` is absent.
+  if (error == null || typeof error !== "object" || !("reason" in error) || error.reason == null)
+    return false;
   switch (error.reason._tag) {
     case "TransportError":
     case "EncodeError":
@@ -358,6 +374,15 @@ const toAiError = (method: string, error: HttpClientError.HttpClientError): AiEr
       method,
       reason: AiError.NetworkError.fromRequestError(reason),
     });
+  // Same cast hole as `retryableHttpError`: authorize can fail with a bare
+  // string. Keep that text for sanitizeAgentError instead of dying on Match.
+  if (error == null || typeof error !== "object" || !("reason" in error) || error.reason == null) {
+    return AiError.make({
+      module: MODULE,
+      method,
+      reason: new AiError.UnknownError({ description: String(error) }),
+    });
+  }
   return Match.value(error.reason).pipe(
     Match.tag("StatusCodeError", (reason) =>
       AiError.make({

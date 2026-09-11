@@ -1,3 +1,5 @@
+import { Option } from "effect";
+
 export interface ComposerCompletion {
   readonly id: string;
   readonly label: string;
@@ -20,16 +22,16 @@ export interface ActiveCompletion {
 }
 
 /** The composer currently completes only the token immediately before its cursor. */
-export const activeCompletion = (draft: string): ActiveCompletion | undefined => {
+export const activeCompletion = (draft: string): Option.Option<ActiveCompletion> => {
   const match = /(^|\s)([/@])([^\s]*)$/.exec(draft);
-  if (!match) return;
+  if (!match) return Option.none();
   const trigger = match[2];
-  if (trigger !== "/" && trigger !== "@") return;
-  return {
+  if (trigger !== "/" && trigger !== "@") return Option.none();
+  return Option.some({
     trigger,
     query: match[3] ?? "",
-    start: draft.length - (match[2]?.length ?? 0) - (match[3]?.length ?? 0),
-  };
+    start: draft.length - trigger.length - (match[3]?.length ?? 0),
+  });
 };
 
 export const replaceCompletion = (draft: string, active: ActiveCompletion, replacement: string) =>

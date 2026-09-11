@@ -21,9 +21,14 @@
  * either, and a headless window is the two of them together.
  */
 
-import { Effect, Match, Schema as S, SchemaIssue } from "effect";
+import { Effect, Match, Option, Schema as S, SchemaIssue } from "effect";
 import type { SplitDirection } from "./window.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
+import {
+  PaneAgentSessionSnapshotSchema,
+  persistedAgentSessionFromSnapshot,
+  type PaneAgentSessionSnapshot,
+} from "./agent-session.ts";
 import {
   MAX_DESCRIPTOR_BYTES,
   MAX_LAYOUT_BYTES,
@@ -63,11 +68,32 @@ export type PaneContent =
       readonly type: string;
       readonly descriptor: JsonValue;
       readonly session?: string;
+      /**
+       * Session that occupied this leaf before a replace-in-place open.
+       * Keeps that backend alive while the plugin view owns the pane; closing
+       * the plugin (or session.reveal) restores it. Not a viewport — see
+       * `paneSession`.
+       */
+      readonly displaced?: string;
     };
 
 /** The session a pane's content views, if its content has one. */
 export function paneSession(content: PaneContent): string | undefined {
   return content.kind === "pty" ? content.session : content.session;
+}
+
+/**
+ * Sessions this pane keeps alive: the one it views, plus a displaced
+ * backend held off-layout by a replace-in-place plugin open.
+ */
+export function paneRetainedSessions(content: PaneContent): readonly string[] {
+  const session = paneSession(content);
+  const displaced = content.kind === "plugin" ? content.displaced : undefined;
+  if (session !== undefined && displaced !== undefined && session !== displaced)
+    return [session, displaced];
+  if (session !== undefined) return [session];
+  if (displaced !== undefined) return [displaced];
+  return [];
 }
 
 /**
@@ -111,6 +137,11 @@ export function withSession(content: PaneContent, session: string | undefined): 
 export interface PaneRef {
   id: string;
   content: PaneContent;
+  /**
+   * Trusted foreign-agent conversation ref for crash resume (ep-c96a99).
+   * Follows the pane across windows/spaces; re-validated on decode.
+   */
+  agentSession?: PaneAgentSessionSnapshot;
 }
 
 export interface LayoutPane extends PaneRef {
@@ -253,13 +284,21 @@ export function layoutRefs(layout: Layout): PaneRef[] {
   ];
 }
 
-/** Session ids the layout expects to exist, in pane order, dropping panes whose
- *  content has no session (a client-only plugin pane names none). */
+/** Session ids the layout needs to keep alive, in pane order.
+ *
+ * Includes a replace-host's displaced backend: that session has no viewport
+ * but must survive reload the same way `afterPaneRemoved` keeps it. */
 export function layoutSessions(layout: Layout): string[] {
-  return layoutRefs(layout).flatMap((pane) => {
-    const session = paneSession(pane.content);
-    return session === undefined ? [] : [session];
-  });
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const pane of layoutRefs(layout)) {
+    for (const session of paneRetainedSessions(pane.content)) {
+      if (seen.has(session)) continue;
+      seen.add(session);
+      ids.push(session);
+    }
+  }
+  return ids;
 }
 
 /**
@@ -350,7 +389,14 @@ export function collapse(node: LayoutNode | null): LayoutNode | null {
     .map(collapse)
     .filter((child): child is LayoutNode => child !== null);
   if (children.length === 0) return null;
-  if (children.length === 1) return { ...children[0]!, weight: node.weight };
+  if (children.length === 1) {
+    // A one-child split is that child. A one-child container is not: its kind's
+    // arrangement (niri column width + scroll offset) stays meaningful for a
+    // lone column, and collapsing it to a bare pane/stack is what made a
+    // single-column niri window reappear as a vertical split after reattach.
+    if (node.type === "container") return { ...node, children };
+    return { ...children[0]!, weight: node.weight };
+  }
 
   // A child split along the same axis as its parent is flattened into it: the
   // live tree only nests when the axis alternates (see Window.split), so a
@@ -584,25 +630,20 @@ export function undockPane(layout: Layout, paneId: string): Layout {
 }
 
 /**
- * Rewrite one pane's content across every plane that places it.
+ * Rewrite one pane's full content across every plane that places it.
  *
- * The descriptor-update command's transform (ts-a4e25e): a pane can sit
- * tiled, floated or docked, and whichever it is, setting its descriptor
- * rewrites the same content in place. The pane's id and placement never
- * change, only the remount contract a plugin view reads back from the
- * content. A pane the layout does not place is left alone.
+ * Used for replace-in-place opens (plugin/editor into the calling leaf) and
+ * for restoring a displaced session. The pane's id and placement never
+ * change. A pane the layout does not place is left alone.
  */
-export function setPaneDescriptor(layout: Layout, paneId: string, descriptor: JsonValue): Layout {
-  const rewriteRef = (pane: PaneRef): PaneRef =>
-    pane.id !== paneId || pane.content.kind !== "plugin"
-      ? pane
-      : { ...pane, content: { ...pane.content, descriptor } };
+export function setPaneContent(layout: Layout, paneId: string, content: PaneContent): Layout {
+  const rewriteRef = (pane: PaneRef): PaneRef => (pane.id !== paneId ? pane : { ...pane, content });
   const rewriteFloat = (float: LayoutFloat): LayoutFloat => {
     const rewritten = rewriteRef(float);
     return rewritten === float ? float : { ...float, content: rewritten.content };
   };
   const dockStrips = layout.docks ?? emptyDockStrips();
-  const root = rewriteTiled(layout.root, paneId, descriptor);
+  const root = rewriteTiledContent(layout.root, paneId, content);
   const floats = layout.floats.map(rewriteFloat);
   const docks = {
     left: dockStrips.left.map(rewriteRef),
@@ -613,19 +654,98 @@ export function setPaneDescriptor(layout: Layout, paneId: string, descriptor: Js
   return makeLayout({ ...layout, root, floats, docks });
 }
 
-function rewriteTiled(
+/**
+ * Rewrite one pane's descriptor across every plane that places it.
+ *
+ * The descriptor-update command's transform (ts-a4e25e). Only the remount
+ * contract a plugin view reads back changes. A non-plugin pane, or a pane
+ * the layout does not place, is left alone.
+ */
+export function setPaneDescriptor(layout: Layout, paneId: string, descriptor: JsonValue): Layout {
+  const pane = layoutRefs(layout).find((item) => item.id === paneId);
+  if (!pane || pane.content.kind !== "plugin") return layout;
+  return setPaneContent(layout, paneId, { ...pane.content, descriptor });
+}
+
+const sameAgentSession = (
+  left: PaneAgentSessionSnapshot | undefined,
+  right: PaneAgentSessionSnapshot | undefined,
+): boolean =>
+  left === right ||
+  (left !== undefined &&
+    right !== undefined &&
+    left.source === right.source &&
+    left.agent === right.agent &&
+    left.kind === right.kind &&
+    left.value === right.value);
+
+/**
+ * Attach or clear a pane's persisted agent conversation ref across every plane.
+ * Conversation follows the pane (herdr PaneSnapshot.agent_session).
+ */
+export function setPaneAgentSession(
+  layout: Layout,
+  paneId: string,
+  agentSession: PaneAgentSessionSnapshot | undefined,
+): Layout {
+  const pane = layoutRefs(layout).find((item) => item.id === paneId);
+  if (!pane || sameAgentSession(pane.agentSession, agentSession)) return layout;
+
+  const withSession = (ref: PaneRef): PaneRef => {
+    if (ref.id !== paneId) return ref;
+    if (agentSession === undefined) {
+      if (ref.agentSession === undefined) return ref;
+      const { agentSession: _drop, ...rest } = ref;
+      return rest;
+    }
+    return { ...ref, agentSession };
+  };
+
+  const rewriteTiled = (node: LayoutNode | null): LayoutNode | null => {
+    if (!node) return null;
+    if (node.type === "pane") {
+      const next = withSession(node);
+      return next === node ? node : { ...node, ...next, type: "pane", weight: node.weight };
+    }
+    return {
+      ...node,
+      children: node.children.map(rewriteTiled) as LayoutNode[],
+    };
+  };
+  const rewriteFloat = (float: LayoutFloat): LayoutFloat => {
+    const next = withSession(float);
+    return next === float ? float : { ...float, ...next };
+  };
+  const dockStrips = layout.docks ?? emptyDockStrips();
+  const docks = {
+    left: dockStrips.left.map(withSession),
+    right: dockStrips.right.map(withSession),
+    top: dockStrips.top.map(withSession),
+    bottom: dockStrips.bottom.map(withSession),
+  } as DockStrips;
+  return makeLayout({
+    ...layout,
+    root: rewriteTiled(layout.root),
+    floats: layout.floats.map(rewriteFloat),
+    docks,
+  });
+}
+
+function rewriteTiledContent(
   node: LayoutNode | null,
   paneId: string,
-  descriptor: JsonValue,
+  content: PaneContent,
 ): LayoutNode | null {
   if (!node) return null;
   if (node.type === "pane") {
-    if (node.id !== paneId || node.content.kind !== "plugin") return node;
-    return { ...node, content: { ...node.content, descriptor } };
+    if (node.id !== paneId) return node;
+    return { ...node, content };
   }
   return {
     ...node,
-    children: node.children.map((child) => rewriteTiled(child, paneId, descriptor)) as LayoutNode[],
+    children: node.children.map((child) =>
+      rewriteTiledContent(child, paneId, content),
+    ) as LayoutNode[],
   };
 }
 
@@ -675,22 +795,36 @@ export function setPlacement(layout: Layout, paneId: string, placement: Placemen
 }
 
 /**
- * Remove panes whose agent is gone, keeping the rest of the shape.
+ * Remove panes whose session is gone, keeping the rest of the shape.
  *
  * Restore has to cope with a layout outliving its processes: a session saved
  * with four agents may come back with two that still exist. Dropping the dead
  * leaves and collapsing what is left preserves the arrangement of the
  * survivors, which is much closer to what the user had than starting over.
+ *
+ * A replace-host's `displaced` keepalive is cleared the same way: once that
+ * backend is gone there is nothing to restore, and leaving the stale id makes
+ * the workspace fail reference checks.
  */
 export function prune(layout: Layout, alive: (session: string) => boolean): Layout {
   const dockStrips = layout.docks ?? emptyDockStrips();
+  const keepContent = (content: PaneContent): PaneContent => {
+    if (content.kind !== "plugin" || content.displaced === undefined) return content;
+    if (alive(content.displaced)) return content;
+    const { displaced: _dead, ...rest } = content;
+    return rest;
+  };
+  const keepPane = <P extends PaneRef>(pane: P): P | null => {
+    const session = paneSession(pane.content);
+    // A sessionless pane (client-only plugin) has nothing to outlive and is
+    // never pruned: it does not depend on a process to exist. Its displaced
+    // keepalive may still be stripped when that backend dies.
+    if (session !== undefined && !alive(session)) return null;
+    const content = keepContent(pane.content);
+    return content === pane.content ? pane : { ...pane, content };
+  };
   const filter = (node: LayoutNode): LayoutNode | null => {
-    if (node.type === "pane") {
-      const session = paneSession(node.content);
-      // A sessionless pane (client-only plugin) has nothing to outlive and is
-      // never pruned: it does not depend on a process to exist.
-      return session === undefined || alive(session) ? node : null;
-    }
+    if (node.type === "pane") return keepPane(node);
     const children = node.children
       .map(filter)
       .filter((child): child is LayoutNode => child !== null);
@@ -698,26 +832,26 @@ export function prune(layout: Layout, alive: (session: string) => boolean): Layo
   };
 
   const root = layout.root ? collapse(filter(layout.root)) : null;
-  const floats = layout.floats.filter((float) => {
-    const session = paneSession(float.content);
-    return session === undefined || alive(session);
+  const floats = layout.floats.flatMap((float) => {
+    const kept = keepPane(float);
+    return kept ? [{ ...float, content: kept.content }] : [];
   });
   const docks: DockStrips = {
-    left: dockStrips.left.filter((pane) => {
-      const session = paneSession(pane.content);
-      return session === undefined || alive(session);
+    left: dockStrips.left.flatMap((pane) => {
+      const kept = keepPane(pane);
+      return kept ? [kept] : [];
     }),
-    right: dockStrips.right.filter((pane) => {
-      const session = paneSession(pane.content);
-      return session === undefined || alive(session);
+    right: dockStrips.right.flatMap((pane) => {
+      const kept = keepPane(pane);
+      return kept ? [kept] : [];
     }),
-    top: dockStrips.top.filter((pane) => {
-      const session = paneSession(pane.content);
-      return session === undefined || alive(session);
+    top: dockStrips.top.flatMap((pane) => {
+      const kept = keepPane(pane);
+      return kept ? [kept] : [];
     }),
-    bottom: dockStrips.bottom.filter((pane) => {
-      const session = paneSession(pane.content);
-      return session === undefined || alive(session);
+    bottom: dockStrips.bottom.flatMap((pane) => {
+      const kept = keepPane(pane);
+      return kept ? [kept] : [];
     }),
   };
   // A session dying takes its pane with it, and that pane may be the focused
@@ -957,6 +1091,7 @@ export const PaneContentSchema: S.Codec<PaneContent> = S.Union([
       S.annotateKey({ messageMissingKey: "plugin content needs a descriptor" }),
     ),
     session: S.optional(sessionId),
+    displaced: S.optional(sessionId),
   }),
 ]) as S.Codec<PaneContent>;
 const weight = S.Finite.pipe(
@@ -978,6 +1113,7 @@ const LayoutPaneSchema = S.Struct({
   content: PaneContentSchema.pipe(S.annotateKey({ messageMissingKey: "pane needs content" })),
   id: paneId.pipe(S.annotateKey({ messageMissingKey: "pane needs a pane id" })),
   weight: weight.pipe(S.withDecodingDefaultType(Effect.succeed(1))),
+  agentSession: S.optional(PaneAgentSessionSnapshotSchema),
 });
 
 // The recursive schema's array is readonly and its optional field encoding does
@@ -1025,6 +1161,7 @@ export const LayoutSchema = S.Struct({
         content: PaneContentSchema.pipe(
           S.annotateKey({ messageMissingKey: "float needs content" }),
         ),
+        agentSession: S.optional(PaneAgentSessionSnapshotSchema),
         x: origin,
         y: origin,
         width: size,
@@ -1039,6 +1176,7 @@ export const LayoutSchema = S.Struct({
           S.Struct({
             id: paneId,
             content: PaneContentSchema,
+            agentSession: S.optional(PaneAgentSessionSnapshotSchema),
           }),
         ),
       ),
@@ -1047,6 +1185,7 @@ export const LayoutSchema = S.Struct({
           S.Struct({
             id: paneId,
             content: PaneContentSchema,
+            agentSession: S.optional(PaneAgentSessionSnapshotSchema),
           }),
         ),
       ),
@@ -1055,6 +1194,7 @@ export const LayoutSchema = S.Struct({
           S.Struct({
             id: paneId,
             content: PaneContentSchema,
+            agentSession: S.optional(PaneAgentSessionSnapshotSchema),
           }),
         ),
       ),
@@ -1063,6 +1203,7 @@ export const LayoutSchema = S.Struct({
           S.Struct({
             id: paneId,
             content: PaneContentSchema,
+            agentSession: S.optional(PaneAgentSessionSnapshotSchema),
           }),
         ),
       ),
@@ -1087,10 +1228,7 @@ export function encodeLayout(layout: Layout): string {
   const normalized = makeLayout({ ...layout, root: collapse(layout.root) });
   const docks = normalized.docks ?? emptyDockStrips();
   const encodedDocks = Object.fromEntries(
-    DOCK_SIDES.map((side) => [
-      side,
-      docks[side].map((pane) => ({ id: pane.id, content: pane.content })),
-    ]),
+    DOCK_SIDES.map((side) => [side, docks[side].map(encodePaneRef)]),
   );
   const encoded = {
     ...normalized,
@@ -1103,8 +1241,18 @@ export function encodeLayout(layout: Layout): string {
   return JSON.stringify(encoded);
 }
 
+function encodePaneRef(pane: PaneRef): {
+  id: string;
+  content: PaneContent;
+  agentSession?: PaneAgentSessionSnapshot;
+} {
+  return pane.agentSession === undefined
+    ? { id: pane.id, content: pane.content }
+    : { id: pane.id, content: pane.content, agentSession: pane.agentSession };
+}
+
 function orderFloat(float: LayoutFloat): LayoutFloat {
-  return {
+  const base = {
     id: float.id,
     content: float.content,
     x: float.x,
@@ -1112,12 +1260,14 @@ function orderFloat(float: LayoutFloat): LayoutFloat {
     width: float.width,
     height: float.height,
   };
+  return float.agentSession === undefined ? base : { ...base, agentSession: float.agentSession };
 }
 
 function order(node: LayoutNode | null): LayoutNode | null {
   if (!node) return null;
   if (node.type === "pane") {
-    return { type: "pane", id: node.id, content: node.content, weight: node.weight };
+    const base = { type: "pane" as const, id: node.id, content: node.content, weight: node.weight };
+    return node.agentSession === undefined ? base : { ...base, agentSession: node.agentSession };
   }
   if (node.type === "container") {
     return {
@@ -1232,10 +1382,28 @@ function validateDecodedLayout(
       DOCK_SIDES.map((side) => [side, rawDocks[side] ?? []]),
     ) as DockStrips;
     for (const side of DOCK_SIDES) for (const pane of docks[side]) reservePaneId(pane.id);
+    const sanitizeRef = <T extends PaneRef>(pane: T): T => {
+      if (pane.agentSession === undefined) return pane;
+      if (Option.isSome(persistedAgentSessionFromSnapshot(pane.agentSession))) return pane;
+      const { agentSession: _drop, ...rest } = pane;
+      return rest as T;
+    };
+    const sanitizeNode = (node: LayoutNode | null): LayoutNode | null => {
+      if (!node) return null;
+      if (node.type === "pane") return sanitizeRef(node);
+      return { ...node, children: node.children.map(sanitizeNode) as LayoutNode[] };
+    };
     return makeLayout({
-      root: collapse(root),
-      floats,
-      docks: decoded.docks !== undefined ? docks : undefined,
+      root: collapse(sanitizeNode(root)),
+      floats: floats.map(sanitizeRef),
+      docks: decoded.docks !== undefined
+        ? ({
+            left: docks.left.map(sanitizeRef),
+            right: docks.right.map(sanitizeRef),
+            top: docks.top.map(sanitizeRef),
+            bottom: docks.bottom.map(sanitizeRef),
+          } as DockStrips)
+        : undefined,
       dockSizes: decoded.dockSizes,
       focus: decoded.focus,
       algorithmId: decoded.algorithmId,

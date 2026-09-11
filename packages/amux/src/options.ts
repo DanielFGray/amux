@@ -72,6 +72,14 @@ export const OPTIONS = {
     editable: true,
   },
 
+  "appearance.theme": {
+    kind: "enum",
+    default: "ansi",
+    // Built-in themes only; a later release can grow this the same way
+    // tiling algorithms do (registerEnumValue) if plugins ship palettes.
+    values: ["ansi", "catppuccin-mocha"],
+    desc: "chrome colors · ansi uses the terminal palette",
+  },
   "appearance.gap": {
     kind: "boolean",
     default: false,
@@ -97,7 +105,7 @@ export const OPTIONS = {
     default: 0,
     min: 0,
     max: 5,
-    desc: "seconds before the which-key panel appears",
+    desc: "seconds before which-key appears (capped just under timeoutlen)",
   },
 
   "behaviour.scrollRows": {

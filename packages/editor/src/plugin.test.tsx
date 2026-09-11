@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { expect } from "bun:test";
-import { Data, Effect, Option, Schedule } from "effect";
+import { expect, test } from "bun:test";
+import { Data, Duration, Effect, Option, Schedule } from "effect";
 import { createTestRenderer } from "@opentui/core/testing";
 import { BoxRenderable, type CliRenderer, type KeyEvent } from "@opentui/core";
 import { RendererContext, _render } from "@opentui/solid";
@@ -10,14 +10,16 @@ import {
   testPluginEnvironment,
   waitFor,
 } from "@danielfgray/amux/testing";
-import { ContextsTag, OptionsTag, resolveOptions, SettingsTag } from "@danielfgray/amux";
+import { BindingsTag, ContextsTag, OptionsTag, resolveOptions, SettingsTag } from "@danielfgray/amux";
 import type { Command, JsonValue, PaneViewProps } from "@danielfgray/amux";
 import { theme } from "@danielfgray/amux";
 import { createPluginHost, type PluginHost } from "@danielfgray/amux/plugin/host.ts";
-import { editorPlugin } from "./plugin.tsx";
+import { editorPlugin, Editor, handleCommandPickerKey } from "./plugin.tsx";
+import { createEditor } from "./api.ts";
 import { EditorPane, type EditorController } from "./EditorPane.tsx";
 import { makeHighlightProvider, type HighlightProviderService } from "@danielfgray/amux-highlight";
 import { makeTestEditorIo, type TestEditorIoState } from "./test/io.ts";
+import type { EditorService } from "./api.ts";
 
 const WIDTH = 60;
 const HEIGHT = 16;
@@ -124,6 +126,7 @@ const mount = (
   sent: SentCommand[],
   lineNumbers = true,
   highlight?: HighlightProviderService,
+  editor?: EditorService,
 ) =>
   Effect.gen(function* () {
     const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
@@ -145,6 +148,7 @@ const mount = (
       width: () => WIDTH - 2,
       height: () => HEIGHT - 2,
       active: () => true,
+      copyText: () => {},
       captureKeys: (handler) => {
         capture = handler;
       },
@@ -163,7 +167,9 @@ const mount = (
             run={run}
             spaceDir={ioState.spaceDir}
             lineNumbers={() => lineNumbers}
+            keyProfile={() => "vim"}
             io={makeTestEditorIo(ioState)}
+            editor={editor}
             highlight={highlight}
             registerController={(next) => {
               controller = next;
@@ -180,8 +186,16 @@ const mount = (
     return {
       content,
       capture: () => capture,
+      controller: () => controller,
       press: (event: KeyEvent) => {
         if (controller === null) throw new Error("editor controller was not registered");
+        // Same path as the plugin's editor.command context — direct dispatch
+        // alone would miss the picker-Enter contract.
+        const handled = handleCommandPickerKey(controller, event, (next) => {
+          controller!.dispatch(next);
+          return true;
+        });
+        if (handled !== null) return;
         controller.dispatch(event);
       },
     };
@@ -204,20 +218,74 @@ testEffect(
     const settings = Option.getOrThrow(host.get(SettingsTag)).all();
     expect(settings.some((section) => section.id === "amux.editor")).toBe(true);
     const options = Option.getOrThrow(host.get(OptionsTag));
-    expect(options.all().map((entry) => entry.name)).toEqual(["editor.number"]);
-    expect(seenBindings).toContain("editor.open");
-    expect(seenBindings).toContain("editor.normal.key.d");
+    expect(options.all().map((entry) => entry.name)).toEqual([
+      "editor.number",
+      "editor.keyProfile",
+    ]);
+    expect(seenBindings).toContain("editor.normal.open");
+    expect(seenBindings).toContain("editor.normal.find-file");
+    expect(seenBindings).toContain("editor.normal.find-sibling");
+    expect(seenBindings).toContain("editor.focused.surround");
+    expect(seenBindings).toContain("editor.focused.search");
+    expect(seenBindings).toContain("editor.focused.substitute");
+    // `gg` / `grr` live on Bindings.chords now (inactive until a pane focuses).
+    expect(seenBindings).not.toContain("editor.normal.lsp.references");
+    expect(seenBindings).not.toContain("editor.normal.key.gg");
+    expect(Duration.toMillis(Option.getOrThrow(host.get(BindingsTag)).chords.timeoutlen())).toBeGreaterThan(
+      0,
+    );
     expect(seenBindings).toContain("editor.operator.key.w");
     expect(seenBindings).toContain("editor.insert.key.escape");
-    expect(Option.getOrThrow(host.get(ContextsTag)).all().map((context) => context.id)).toEqual([
+    expect(
+      Option.getOrThrow(host.get(ContextsTag))
+        .all()
+        .map((context) => context.id),
+    ).toEqual([
+      "amux.editor.lsp-ui",
+      "amux.editor.file-ui",
       "editor.normal",
-      "editor.g-prefix",
+      "editor.map",
       "editor.operator",
       "editor.text-object",
+      "editor.surround",
+      "editor.find",
+      "editor.indent",
+      "editor.register",
+      "editor.visual",
       "editor.insert",
       "editor.command",
+      "editor.search",
+      "editor.hover",
+      "editor.focused",
     ]);
+    expect(Option.isSome(host.get(Editor))).toBe(true);
+    expect(Option.getOrThrow(host.get(Editor)).command.list().map((c) => c.name)).toContain(
+      "Surround",
+    );
     expect(sent).toEqual([]);
+  }),
+);
+
+testEffect(
+  "a user :command registered on Editor runs through the pane",
+  Effect.gen(function* () {
+    const ioState = makeIo("/workspace");
+    const sent: SentCommand[] = [];
+    const { t } = yield* activate(sent);
+    const editor = createEditor();
+    const seen: string[] = [];
+    editor.command.add("Echo", {
+      nargs: "1",
+      run: ({ arg }) => {
+        seen.push(arg);
+      },
+    });
+    const pane = yield* mount(t, ioState, null, sent, true, undefined, editor);
+    for (const name of [":", "E", "c", "h", "o", " ", "h", "i", "return"]) {
+      pane.press(keystroke(name));
+    }
+    yield* waitForFrame(t, () => seen.length === 1, "user command invoke");
+    expect(seen).toEqual(["hi"]);
   }),
 );
 
@@ -234,6 +302,71 @@ testEffect(
       "buffer loads the file",
     );
     expect(t.captureCharFrame()).not.toContain("   1contents");
+  }),
+);
+
+testEffect(
+  "editor.keyProfile cua shows a CUA status indicator",
+  Effect.gen(function* () {
+    const ioState = makeIo("/workspace", { "note.txt": ["hi"] });
+    const sent: SentCommand[] = [];
+    const { t } = yield* activate(sent);
+    const paneHost = new BoxRenderable(t.renderer, { id: "pane-host", flexGrow: 1 });
+    t.renderer.root.add(paneHost);
+    const content = new BoxRenderable(t.renderer, {
+      id: "pane-cua-content",
+      position: "absolute",
+      width: WIDTH - 2,
+      height: HEIGHT - 2,
+    });
+    paneHost.add(content);
+    const props: PaneViewProps = {
+      sessionId: "",
+      paneId: "pane-cua",
+      paneType: "amux.editor",
+      descriptor: { file: "note.txt" },
+      width: () => WIDTH - 2,
+      height: () => HEIGHT - 2,
+      active: () => true,
+      copyText: () => {},
+      captureKeys: () => {},
+    };
+    const renderer = t.renderer as CliRenderer;
+    const dispose = _render(
+      () => (
+        <RendererContext.Provider value={renderer}>
+          <EditorPane
+            {...props}
+            run={() => {}}
+            spaceDir={ioState.spaceDir}
+            lineNumbers={() => true}
+            keyProfile={() => "cua"}
+            io={makeTestEditorIo(ioState)}
+          />
+        </RendererContext.Provider>
+      ),
+      content,
+    );
+    yield* Effect.addFinalizer(() => Effect.sync(dispose));
+    yield* waitForFrame(
+      t,
+      () => t.captureCharFrame().includes("-- CUA --"),
+      "CUA status indicator",
+    );
+  }),
+);
+
+testEffect(
+  "normal-mode colon opens the shared command picker",
+  Effect.gen(function* () {
+    const sent: SentCommand[] = [];
+    const { t } = yield* activate(sent);
+    const { press } = yield* mount(t, makeIo("/workspace"), {}, sent);
+    press(keystroke(":"));
+    yield* waitForFrame(t, () => t.captureCharFrame().includes(":edit"), "command picker");
+    const frame = t.captureCharFrame();
+    expect(frame).toContain(":write");
+    expect(frame).toContain(":quit!");
   }),
 );
 
@@ -299,12 +432,18 @@ testEffect(
   Effect.gen(function* () {
     const sent: SentCommand[] = [];
     const { t } = yield* activate(sent);
-    const { press } = yield* mount(t, makeIo("/workspace"), {}, sent);
+    const { press, controller } = yield* mount(t, makeIo("/workspace"), {}, sent);
     yield* Effect.promise(() => t.renderOnce());
     const handler = press;
 
     handler(keystroke(":"));
     handler(keystroke("q"));
+    // Picker is up for `:q` — Enter must expand + execute, not stall.
+    yield* waitForFrame(
+      t,
+      () => controller()?.completionVisible() === true,
+      "command picker visible for :q",
+    );
     handler(keystroke("return"));
     yield* Effect.promise(() =>
       waitFor(() => tagged(sent, "pane.close").length > 0, "pane.close after :q"),
@@ -312,6 +451,61 @@ testEffect(
     expect(tagged(sent, "pane.close")).toHaveLength(1);
   }),
 );
+
+test("command picker Enter expands the match then dispatches", () => {
+  const calls: string[] = [];
+  const controller = {
+    completionVisible: () => true,
+    moveCompletion: () => {},
+    chooseCompletion: () => {
+      calls.push("choose");
+    },
+    requestFileCompletion: () => false,
+  };
+  const handled = handleCommandPickerKey(controller, keystroke("return"), () => {
+    calls.push("dispatch");
+    return true;
+  });
+  expect(handled).toBe(true);
+  expect(calls).toEqual(["choose", "dispatch"]);
+});
+
+test("command picker Tab arms file completion when the line is a file arg", () => {
+  let armed = false;
+  const handled = handleCommandPickerKey(
+    {
+      completionVisible: () => false,
+      moveCompletion: () => {},
+      chooseCompletion: () => {},
+      requestFileCompletion: () => {
+        armed = true;
+        return true;
+      },
+    },
+    keystroke("tab"),
+    () => false,
+  );
+  expect(handled).toBe(true);
+  expect(armed).toBe(true);
+});
+
+test("command picker is a no-op when hidden", () => {
+  const handled = handleCommandPickerKey(
+    {
+      completionVisible: () => false,
+      moveCompletion: () => {},
+      chooseCompletion: () => {
+        throw new Error("must not choose");
+      },
+      requestFileCompletion: () => false,
+    },
+    keystroke("return"),
+    () => {
+      throw new Error("must not dispatch via picker");
+    },
+  );
+  expect(handled).toBeNull();
+});
 
 testEffect(
   ":w writes the buffer back to the open file",

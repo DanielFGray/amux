@@ -71,6 +71,23 @@ export {
   type SessionStreamService,
   type RemoteEventsService,
 } from "./plugin/services.ts";
+export {
+  ForeignHarnessAdaptersTag,
+  ForeignHarnessAdapterTable,
+  ForeignHarnessHookError,
+  makeForeignHarnessAdapters,
+  registerForeignHarnessAdapter,
+  type ForeignHarnessAdapter,
+  type ForeignHarnessAdapterLookup,
+  type ForeignHarnessAdaptersService,
+} from "./foreign-harness.ts";
+export {
+  planResumeWithForm,
+  agentResumeDedupeKey,
+  type AgentResumePlan,
+  type ResumeArgvForm,
+} from "./agent-resume.ts";
+export type { AgentSessionRef, AgentSessionRefKind, OfficialAgentSource } from "./agent-session.ts";
 export type { TilingAlgorithm } from "./tiling-algorithm.ts";
 export type { Meta } from "./commands.ts";
 export type { CoreWorkspaceAction, WorkspaceDraft, WorkspaceSnapshot } from "./workspace.ts";
@@ -124,8 +141,26 @@ export {
 // — `CONTEXT_PRIORITY` names the bands core claims, so a plugin picks a
 // number between two of them rather than guessing at one.
 export { CONTEXT_PRIORITY, type ContextSpec, type ContextPriorityConflict } from "./key-context.ts";
-export { contextCommand, type CommandSpec } from "./bindings.ts";
-export { createCountAccumulator, KeyInvocation, type KeyInvocationValue } from "./key-invocation.ts";
+// overlayBlocksPane stays internal to amux core (onUnhandled); pane plugins
+// must not call it from their own `active()` — that recurses through every
+// context including the caller.
+export { contextCommand, keyToBinding, type CommandSpec } from "./bindings.ts";
+export {
+  createChordMatcher,
+  DEFAULT_CHORD_TIMEOUTLEN,
+  DEFAULT_CHORD_TIMEOUTLEN_MS,
+  type ChordBinding,
+  type ChordFork,
+  type ChordMatcher,
+  type ChordMode,
+  type ChordPushResult,
+  type ChordStroke,
+} from "./chord-matcher.ts";
+export {
+  createCountAccumulator,
+  KeyInvocation,
+  type KeyInvocationValue,
+} from "./key-invocation.ts";
 
 // What a panel is handed at render time.
 export { type PanelContext, type SidebarDisplay, type SidebarDisplayRow } from "./ui/panel.ts";
@@ -184,6 +219,7 @@ export { type Direction, type SplitDirection } from "./window.ts";
 // closed union member — see docs/adr/0004-arrangement-kind-is-an-open-registry.md.
 export {
   type LayoutKindRenderer,
+  type LayoutKindChrome,
   registerLayoutKindSchema,
   registerLayoutKindRenderer,
   layoutKindSchema,
@@ -191,5 +227,18 @@ export {
 } from "./layout-kinds.ts";
 
 // Drawing.
-export { theme } from "./ui/theme.ts";
+export {
+  theme,
+  themeName,
+  setTheme,
+  hasTheme,
+  onThemeChange,
+  THEME_NAMES,
+  DEFAULT_THEME_NAME,
+  type ThemeColors,
+  type ThemeName,
+} from "./ui/theme.ts";
 export { POLL_MS } from "./ui/state.ts";
+
+// Host overlay shared by settings / command palette (stable across reload).
+export { OverlayTag, type OverlayKind, type OverlayService } from "./plugin/overlay.ts";

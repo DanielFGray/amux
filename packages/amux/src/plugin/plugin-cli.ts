@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { BunServices } from "@effect/platform-bun";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -155,8 +155,10 @@ const addPlugin = (
       });
       return `added ${resolved}`;
     }
-    const ref = parsePackageSpec(spec);
-    if (!ref) return yield* Effect.fail(`not a plugin path or package spec: '${spec}'`);
+    const parsed = parsePackageSpec(spec);
+    if (Option.isNone(parsed))
+      return yield* Effect.fail(`not a plugin path or package spec: '${spec}'`);
+    const ref = parsed.value;
     const installed = yield* installPackage(ref, storeDir);
     const privileged = yield* installedHasDaemonExport(ref.name, storeDir);
     if (privileged) {
@@ -175,10 +177,10 @@ const addPlugin = (
       }
     }
     const config = yield* loadConfig(configPath);
-    const entry: PluginSpec =
-      ref.version === undefined
-        ? { package: ref.name, enabled: true }
-        : { package: ref.name, version: ref.version, enabled: true };
+    const entry: PluginSpec = Option.match(ref.version, {
+      onNone: () => ({ package: ref.name, enabled: true }) as const,
+      onSome: (version) => ({ package: ref.name, version, enabled: true }) as const,
+    });
     yield* persist(configPath, { ...config, plugins: upsertSpec(config, entry) });
     return `added ${ref.name}@${installed.version}`;
   });
@@ -236,8 +238,8 @@ const upgradePlugin = (
   storeDir: string,
 ): Effect.Effect<string, string, Fs> =>
   Effect.gen(function* () {
-    const ref = parsePackageSpec(name);
-    if (!ref || ref.version !== undefined)
+    const parsed = parsePackageSpec(name);
+    if (Option.isNone(parsed) || Option.isSome(parsed.value.version))
       return yield* Effect.fail(`upgrade takes a package name, not a version: '${name}'`);
     const config = yield* loadConfig(configPath);
     const entry = config.plugins.find((spec) => "package" in spec && spec.package === name);
@@ -246,7 +248,7 @@ const upgradePlugin = (
     );
     if (!entry && !installedBefore)
       return yield* Effect.fail(`no configured plugin or installed package named '${name}'`);
-    const installed = yield* installPackage({ name }, storeDir);
+    const installed = yield* installPackage({ name, version: Option.none() }, storeDir);
     // A pin stays a pin, refreshed to what was just installed; an unpinned
     // entry keeps tracking whatever the store holds.
     const next =

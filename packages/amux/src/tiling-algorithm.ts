@@ -113,10 +113,10 @@ export interface TilingAlgorithm {
    * moving focus onto a pane outside the current viewport requires changing
    * that position too. `focusInDirection` cannot carry that change itself:
    * its return type is only the focused pane's id, with no channel back to a
-   * revised `Layout`. Window calls `ensureVisible` right after any operation
-   * that moves focus (`focusInDirection`, `close`, `swap`, …), passing the
-   * pane that ended up focused; an algorithm with no viewport concept omits
-   * it, which Window treats as "already visible."
+   * revised `Layout`. `applyWorkspaceCommand`'s `setFocus` (and `closePane`)
+   * call `ensureVisible` right after any operation that moves focus, passing
+   * the pane that ended up focused; an algorithm with no viewport concept
+   * omits it, which is treated as "already visible."
    */
   ensureVisible?(layout: Layout, size: LayoutSize, paneId: string): Layout;
 }

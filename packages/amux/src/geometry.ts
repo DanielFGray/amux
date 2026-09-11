@@ -1,3 +1,4 @@
+import { Option } from "effect";
 import type { Direction, SplitDirection } from "./window.ts";
 import {
   layoutPanes,
@@ -70,23 +71,29 @@ export function paneInDirection(
   const crossStart = (rect: Rect) => (horizontal ? rect.y : rect.x);
   const crossEnd = (rect: Rect) => crossStart(rect) + (horizontal ? rect.height : rect.width);
 
-  let best: string | null = null;
-  let bestGap = Infinity;
-  let bestOverlap = 0;
-  for (const [id, rect] of rects) {
-    if (id === fromId || !tiled.has(id)) continue;
-    const gap = backwards ? start(from) - end(rect) : start(rect) - end(from);
-    if (gap < 0 || gap > bestGap) continue;
-    const overlap =
-      Math.min(crossEnd(from), crossEnd(rect)) - Math.max(crossStart(from), crossStart(rect));
-    if (overlap <= 0) continue;
-    if (gap < bestGap || overlap > bestOverlap) {
-      best = id;
-      bestGap = gap;
-      bestOverlap = overlap;
-    }
-  }
-  return best;
+  type Candidate = { readonly id: string; readonly gap: number; readonly overlap: number };
+  const best = [...rects].reduce(
+    (acc: Option.Option<Candidate>, [id, rect]): Option.Option<Candidate> => {
+      if (id === fromId || !tiled.has(id)) return acc;
+      const gap = backwards ? start(from) - end(rect) : start(rect) - end(from);
+      if (gap < 0) return acc;
+      const overlap =
+        Math.min(crossEnd(from), crossEnd(rect)) - Math.max(crossStart(from), crossStart(rect));
+      if (overlap <= 0) return acc;
+      return Option.match(acc, {
+        onNone: () => Option.some({ id, gap, overlap }),
+        onSome: (current) => {
+          if (gap > current.gap) return acc;
+          if (gap < current.gap || overlap > current.overlap) {
+            return Option.some({ id, gap, overlap });
+          }
+          return acc;
+        },
+      });
+    },
+    Option.none(),
+  );
+  return Option.getOrNull(Option.map(best, (candidate) => candidate.id));
 }
 
 /** Resize a pane in a screen direction: a tiled pane moves the divider on
@@ -192,6 +199,65 @@ export function moveFloat(
   if (clamped === origin) return layout;
   const rect: LayoutFloat = horizontal ? { ...float, x: clamped } : { ...float, y: clamped };
   return replaceFloat(layout, rect);
+}
+
+/**
+ * Set a pane's size on one axis to `cells`, or maximize when `cells` is null.
+ *
+ * Tiled: rewrite the adjacent divider's weights so the pane's span becomes
+ * `cells` (not {@link resizePane} — that cannot shrink the first child "left").
+ * Float: rewrite the fraction so the rendered span is `cells` (tmux
+ * `resize-pane -x` / vim `CTRL-W_|`).
+ */
+export function setPaneSize(
+  layout: Layout,
+  size: LayoutSize,
+  paneId: string,
+  axis: "cols" | "rows",
+  cells: number | null,
+): Layout {
+  const horizontal = axis === "cols";
+  const axisSpan = horizontal ? size.cols : size.rows;
+  if (axisSpan <= 0) return layout;
+
+  const float = layout.floats.find((entry) => entry.id === paneId);
+  if (float) {
+    const target =
+      cells === null ? axisSpan : Math.max(MIN_CELLS, Math.min(axisSpan, Math.floor(cells)));
+    const fraction = target / axisSpan;
+    const origin = horizontal ? float.x : float.y;
+    const clampedOrigin = Math.min(origin, 1 - fraction);
+    const rect: LayoutFloat = horizontal
+      ? { ...float, x: Math.max(0, clampedOrigin), width: fraction }
+      : { ...float, y: Math.max(0, clampedOrigin), height: fraction };
+    return replaceFloat(layout, rect);
+  }
+
+  const splitAxis: SplitDirection = horizontal ? "row" : "column";
+  const path = panePath(layout.root, paneId);
+  if (!path) return layout;
+  const geo = geometry(layout, size);
+  const rect = geo.panes.get(paneId);
+  if (!rect) return layout;
+  const current = horizontal ? rect.width : rect.height;
+  const target =
+    cells === null ? axisSpan : Math.max(MIN_CELLS, Math.min(axisSpan, Math.floor(cells)));
+  const delta = target - current;
+  if (delta === 0) return layout;
+
+  for (let depth = path.length - 1; depth >= 0; depth--) {
+    const splitPath = path.slice(0, depth);
+    const split = nodeAt(layout.root, splitPath);
+    const child = path[depth]!;
+    if (split?.type !== "split" || split.direction !== splitAxis) continue;
+    if (child < split.children.length - 1) {
+      return resizeDivider(layout, size, splitPath, child, delta);
+    }
+    if (child > 0) {
+      return resizeDivider(layout, size, splitPath, child - 1, -delta);
+    }
+  }
+  return layout;
 }
 
 /** Grow or shrink a float's rectangle by `cells` in a screen direction. */

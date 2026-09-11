@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "@opentui/core": "catalog:",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "web-tree-sitter": "0.25.10"
   },
   "devDependencies": {
     "@danielfgray/amux": "workspace:*"

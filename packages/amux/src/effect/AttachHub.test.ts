@@ -2,6 +2,7 @@ import { Effect, Fiber, Stream } from "effect";
 import { expect } from "bun:test";
 import { AttachHub } from "./AttachHub.ts";
 import { testEffect } from "../test-effect.ts";
+import { MAX_PENDING_BYTES } from "../limits.ts";
 
 const it = testEffect(AttachHub.layer);
 
@@ -74,31 +75,44 @@ it.effect("concurrent sync barriers keep every replay ahead of live output", () 
   }),
 );
 
-it.effect("a replay that cannot fit the bounded queue evicts the client", () =>
+it.effect("a replay of many small frames does not overflow the unbounded queue", () =>
   Effect.gen(function* () {
+    // A resumed agent's replayed history is routinely more than 256 small
+    // frames, comfortably under the byte budget — this must not evict.
     let overflow = 0;
     const hub = yield* AttachHub;
-    yield* hub.subscribe("slow", "connection", () => {
+    const subscription = yield* hub.subscribe("slow", "connection", () => {
       overflow += 1;
     });
-    for (let index = 0; index < 256; index++) {
-      yield* hub.publish({
+    for (let index = 0; index < 1000; index++) {
+      const result = yield* hub.publishTo("slow", "connection", {
         _tag: "output",
         session: "s",
-        data: new Uint8Array([index]),
+        data: new Uint8Array([index % 256]),
       });
+      expect(result).toBeUndefined();
     }
-    yield* hub.publishTo("slow", "connection", {
-      _tag: "output",
-      session: "s",
-      data: new Uint8Array([255]),
+    expect(overflow).toBe(0);
+    const frames = yield* Stream.runCollect(subscription.frames.pipe(Stream.take(1000)));
+    expect(frames.length).toBe(1000);
+  }),
+);
+
+it.effect("a replay that exceeds the pending byte budget evicts the client", () =>
+  Effect.gen(function* () {
+    const overflow: string[] = [];
+    const hub = yield* AttachHub;
+    yield* hub.subscribe("slow", "connection", (reason) => {
+      overflow.push(reason);
     });
+    const big = new Uint8Array(MAX_PENDING_BYTES);
+    yield* hub.publishTo("slow", "connection", { _tag: "output", session: "s", data: big });
     const result = yield* hub.publishTo("slow", "connection", {
       _tag: "output",
       session: "s",
-      data: new Uint8Array([254]),
+      data: new Uint8Array([0]),
     });
     expect(result).toBeUndefined();
-    expect(overflow).toBe(1);
+    expect(overflow[0]).toContain("pending bytes");
   }),
 );

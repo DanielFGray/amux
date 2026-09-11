@@ -57,6 +57,11 @@ const PermissionRequest = S.TaggedStruct("permission.request", {
   resources: S.Array(S.String),
   save: S.Array(PermissionRuleSchema),
   input: JsonValueSchema,
+  // Joins this ask to the tool.start that spawned it. Optional so older
+  // durable events still decode; the pane falls back to input equality.
+  call: S.optional(S.String),
+  /** Unified diff preview for write/edit/apply_patch asks (OpenTUI `<diff>`). */
+  diff: S.optional(S.String),
 });
 
 const PermissionResponse = S.TaggedStruct("permission.response", {

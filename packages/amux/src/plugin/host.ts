@@ -51,9 +51,13 @@ export interface PluginHost {
   ) => Effect.Effect<readonly RefusedPlugin[], string>;
   /** Add a plugin to the configuration, replacing any entry under its id. */
   readonly add: (plugin: PluginDefinition) => Effect.Effect<void, string>;
+  /** Replace active entries as one commit-or-rollback generation. */
+  readonly replace: (plugins: readonly PluginDefinition[]) => Effect.Effect<void, string>;
   /** Drop a plugin from the configuration. Fails if something still injects it. */
   readonly remove: (id: string) => Effect.Effect<void, string>;
   readonly onError: Stream.Stream<PluginErrorEvent>;
+  /** Receive a renderer failure while preserving the instance that registered it. */
+  readonly reportError: (event: Omit<PluginErrorEvent, "source" | "timestamp">) => void;
   readonly onServiceChange: Stream.Stream<string>;
   readonly get: PluginServices["get"];
   /** Wait for a committed provider without consuming the shared change stream. */
@@ -65,6 +69,8 @@ export interface PluginHost {
   ) => void;
   readonly clearInterception: (pluginId: string, tag: PluginService) => void;
   readonly status: () => readonly PluginStatus[];
+  /** The committed instance number, used to reject stale renderer errors. */
+  readonly generation: (id: string) => number | undefined;
   readonly spawnProvider: (id: string) => SpawnProvider | undefined;
   readonly dispose: Effect.Effect<void>;
 }
@@ -79,6 +85,7 @@ export interface RefusedPlugin {
  *  each of them has to say its own type rather than infer it from the others. */
 type Add = (
   plugin: PluginDefinition,
+  batch?: ReplacementBatch,
 ) => Effect.Effect<Deferred.Deferred<void, string> | undefined, string>;
 type ById = (id: string) => Effect.Effect<void>;
 
@@ -92,6 +99,11 @@ interface PluginState {
   readonly definition: PluginDefinition;
   phase: "waiting" | "starting" | "active" | "stopping";
   readonly result: Deferred.Deferred<void, string>;
+  readonly batch?: ReplacementBatch;
+}
+
+interface ReplacementBatch {
+  readonly ids: ReadonlySet<string>;
 }
 
 interface FailedAttempt {
@@ -186,7 +198,10 @@ export function createPluginHost(
       };
     }
 
-    const addPlugin: Add = Effect.fnUntraced(function* (plugin: PluginDefinition) {
+    const addPlugin: Add = Effect.fnUntraced(function* (
+      plugin: PluginDefinition,
+      batch?: ReplacementBatch,
+    ) {
       if (disposed) return yield* Effect.fail("Plugin host is disposed");
       const pending = candidates.get(plugin.id);
       if (pending) {
@@ -232,6 +247,7 @@ export function createPluginHost(
         definition: plugin,
         result,
         phase: "waiting",
+        batch,
         reactivate: Effect.suspend(() => addPlugin(plugin)).pipe(Effect.asVoid),
       };
       if (previous) candidates.set(plugin.id, state);
@@ -264,6 +280,11 @@ export function createPluginHost(
           : new Error(String(defect))
         : undefined;
       if (!error && candidate) {
+        if (candidate.batch) {
+          candidate.phase = "active";
+          yield* Deferred.succeed(candidate.result, undefined);
+          return;
+        }
         const conflicts = env.contributions.commit(instance);
         if (conflicts.length > 0)
           error = new Error(
@@ -273,6 +294,7 @@ export function createPluginHost(
       if (error) {
         emitError({
           pluginId: instance.id,
+          generation: instance.generation,
           phase: "activate",
           source: "plugin",
           error,
@@ -427,6 +449,7 @@ export function createPluginHost(
       for (const { id, key } of refused)
         emitError({
           pluginId: id,
+          generation: generations.get(id) ?? 0,
           phase: "activate",
           source: "host",
           error: new Error(
@@ -495,6 +518,54 @@ export function createPluginHost(
         ),
       );
 
+    const replace = (plugins: readonly PluginDefinition[]) =>
+      Effect.gen(function* () {
+        const ids = new Set(plugins.map((plugin) => plugin.id));
+        if (ids.size !== plugins.length)
+          return yield* Effect.fail("replacement contains duplicate plugin ids");
+        if ([...ids].some((id) => !activePlugins.has(id)))
+          return yield* Effect.fail("replacement names a plugin that is not active");
+        const batch: ReplacementBatch = { ids };
+        const results = yield* submit(
+          Effect.forEach(plugins, (plugin) => addPlugin(plugin, batch)).pipe(
+            Effect.map((values) =>
+              values.filter((value): value is Deferred.Deferred<void, string> => !!value),
+            ),
+          ),
+        );
+        yield* submit(Effect.void);
+        const settled = yield* Effect.exit(Effect.all(results.map(Deferred.await)));
+        if (Exit.isFailure(settled)) {
+          yield* submit(
+            Effect.forEach(ids, (id) => {
+              const candidate = candidates.get(id);
+              if (!candidate) return Effect.void;
+              candidates.delete(id);
+              return closeRun(
+                candidate,
+                "batch replacement failed; kept the version that was running",
+              );
+            }),
+          );
+          return yield* Effect.fail(String(Cause.squash(settled.cause)));
+        }
+        yield* submit(
+          Effect.gen(function* () {
+            const next = [...ids].map((id) => candidates.get(id)!);
+            const conflicts = env.contributions.commitAll(next.map((state) => state.instance));
+            if (conflicts.length > 0)
+              return yield* Effect.fail(`replacement conflicts: ${conflicts.join(", ")}`);
+            for (const state of next) {
+              const previous = activePlugins.get(state.instance.id)!;
+              candidates.delete(state.instance.id);
+              activePlugins.set(state.instance.id, state);
+              desired.set(state.instance.id, state.definition);
+              yield* closeRun(previous, "was replaced");
+            }
+          }),
+        );
+      });
+
     return {
       reconcile: (entries) =>
         configure(
@@ -518,6 +589,7 @@ export function createPluginHost(
               : Effect.void;
           }),
         ),
+      replace,
       remove: (id) =>
         configure(
           () =>
@@ -525,6 +597,14 @@ export function createPluginHost(
           () => false,
         ).pipe(Effect.asVoid),
       onError: Stream.fromQueue(errorQueue),
+      reportError: (event) =>
+        Effect.runForkWith(rt)(
+          Clock.currentTimeMillis.pipe(
+            Effect.flatMap((timestamp) =>
+              Queue.offer(errorQueue, { ...event, source: "plugin" as const, timestamp }),
+            ),
+          ),
+        ),
       onServiceChange: Stream.fromQueue(serviceChangeQueue),
       get: services.get,
       await: services.await,
@@ -549,6 +629,7 @@ export function createPluginHost(
             return status;
           });
       },
+      generation: (id) => activePlugins.get(id)?.instance.generation,
       spawnProvider: (id) => Option.getOrUndefined(services.get(SpawnProvidersTag))?.get(id),
       dispose: Effect.suspend(() => submit(disposeAll())),
     };

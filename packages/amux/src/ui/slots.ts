@@ -14,6 +14,7 @@
 import { Show, createComponent, type JSX } from "solid-js";
 import type { BoxRenderable, CliRenderer } from "@opentui/core";
 import { createSlot, createSolidSlotRegistry, type SolidPlugin } from "@opentui/solid";
+import { jsx } from "@opentui/solid/jsx-runtime";
 import { Effect, Schema as S } from "effect";
 import { Divider } from "../divider.ts";
 import type { PluginContributions, PluginInstance } from "../plugin/contributions.ts";
@@ -232,7 +233,7 @@ export interface Slots {
   Slot: unknown;
   declared: (side: DockSide, anchor: Anchor) => boolean;
   thickness: (side: DockSide, anchor: Anchor) => number;
-  divider: (side: DockSide, anchor: Anchor) => import("../divider.ts").Divider | null;
+  divider: (side: DockSide, anchor: Anchor) => Divider | null;
   topOverlay: () => OverlayOccupant | null;
 }
 
@@ -592,11 +593,21 @@ export function createSlots(
     const dispose = registry.register(owner, {
       slot,
       priority,
+      // OpenTUI Slot (`@opentui/solid` renderEntry) drops an entry whose first
+      // paint has no nodes (`hasInitialOutput`). A bare `Show` is empty while
+      // `visible` is false, so the reactive tree was discarded and a later flip
+      // never painted — file-finder looked like a no-op while `topOverlay()`
+      // still named it. Keep a zero-size stub as `fallback` so Show stays mounted.
       content: (_ctx: NativeSlotContext, props: NativeSlotProps) =>
         createComponent(Show, {
           keyed: true,
           get when() {
             return table.get(occupant.id) === occupant && showing(occupant);
+          },
+          get fallback() {
+            return jsx("box", {
+              style: { position: "absolute", width: 0, height: 0 },
+            });
           },
           get children() {
             const component: (props: NativeSlotProps) => JSX.Element = occupant.component as never;
@@ -638,9 +649,16 @@ export function createSlots(
       optionsRuntime,
     );
     made.hitboxOnly = true;
+    // Not a pane gutter: appearance.gap would widen this into the dock and
+    // steal clicks from the sidebar tree. Fixed 2-cell hitbox covers the
+    // dock's inner edge and the adjacent pane-frame cell, so the visible
+    // border is a handle without dropping the dock-side target.
+    made.setPaneGap(0);
+    if (side === "left" || side === "right") made.view.width = 2;
+    else made.view.height = 2;
     made.position = "absolute";
-    made.setPosition(INNER_EDGE[side]);
-    made.zIndex = 1;
+    made.setPosition(SEAM_HITBOX[side]);
+    made.zIndex = 10;
     dividers.set(key, made);
     return made;
   };
@@ -685,11 +703,15 @@ export function createSlots(
   return api;
 }
 
-const INNER_EDGE = {
-  left: { top: 0, right: 0, bottom: 0 },
-  right: { top: 0, left: 0, bottom: 0 },
-  top: { left: 0, right: 0, bottom: 0 },
-  bottom: { left: 0, right: 0, top: 0 },
+/** Absolute pin for a dock resize handle: one cell on the dock's inner edge
+ *  plus one cell overhanging onto the pane frame (right: -1 for a left dock),
+ *  so the visible border works as a handle without giving up the dock-side
+ *  target that sits inside the sidebar. */
+const SEAM_HITBOX = {
+  left: { top: 0, right: -1, bottom: 0 },
+  right: { top: 0, left: -1, bottom: 0 },
+  top: { left: 0, right: 0, bottom: -1 },
+  bottom: { left: 0, right: 0, top: -1 },
 } as const satisfies Record<
   DockSide,
   { top?: number; right?: number; bottom?: number; left?: number }

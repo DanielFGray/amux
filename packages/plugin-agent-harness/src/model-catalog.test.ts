@@ -1,11 +1,137 @@
-import { expect } from "bun:test";
+import { expect, test } from "bun:test";
+import type { JsonValue } from "@danielfgray/amux";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { ConfigProvider, Effect, Layer, Stream } from "effect";
+import { ConfigProvider, Effect, Layer, Option, Schema as S, Stream } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
-import { ModelCatalog } from "./model-catalog.ts";
+import {
+  availableThinkingLevels,
+  clampThinkingBudget,
+  clampThinkingLevel,
+  Model,
+  ModelCatalog,
+  type Model as ModelRow,
+} from "./model-catalog.ts";
 import { testEffect } from "@danielfgray/amux/testing";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
+
+const baseModel = {
+  id: "gpt-test",
+  name: "GPT Test",
+  release_date: "2026-01-01",
+  attachment: false,
+  reasoning: true,
+  temperature: true,
+  tool_call: true,
+  limit: { context: 1000, output: 500 },
+} as const;
+
+const decodeModel = (raw: Record<string, JsonValue>) =>
+  Option.getOrThrow(S.decodeUnknownOption(Model)(raw));
+
+test("availableThinkingLevels prefers catalog effort values in order", () => {
+  const model = decodeModel({
+    ...baseModel,
+    reasoning_options: [
+      { type: "effort", values: ["minimal", "low", "medium", "high"] },
+      { type: "budget_tokens", min: 1024 },
+    ],
+  });
+  expect(availableThinkingLevels(model)).toEqual(["minimal", "low", "medium", "high"]);
+});
+
+test("availableThinkingLevels keeps none/off when the catalog lists them", () => {
+  const model = decodeModel({
+    ...baseModel,
+    reasoning_options: [{ type: "effort", values: ["none", "high", "max"] }],
+  });
+  expect(availableThinkingLevels(model)).toEqual(["none", "high", "max"]);
+});
+
+test("availableThinkingLevels maps toggle-only to off/on", () => {
+  const model = decodeModel({
+    ...baseModel,
+    reasoning_options: [{ type: "toggle" }, { type: "budget_tokens" }],
+  });
+  expect(availableThinkingLevels(model)).toEqual(["off", "on"]);
+});
+
+test("availableThinkingLevels is undefined without controllable effort", () => {
+  expect(availableThinkingLevels(decodeModel({ ...baseModel, reasoning: false }))).toBeUndefined();
+  expect(
+    availableThinkingLevels(
+      decodeModel({ ...baseModel, reasoning_options: [{ type: "budget_tokens", min: 1024 }] }),
+    ),
+  ).toBeUndefined();
+  expect(
+    availableThinkingLevels(decodeModel({ ...baseModel, reasoning_options: [] })),
+  ).toBeUndefined();
+});
+
+test("unknown reasoning_options variants do not drop the model", () => {
+  const model = decodeModel({
+    ...baseModel,
+    reasoning_options: [
+      { type: "future_knob", magnitude: 3 },
+      { type: "effort", values: ["low", "high"] },
+      { type: "toggle" },
+    ],
+  });
+  expect(model.reasoning_options).toEqual([
+    { type: "effort", values: ["low", "high"] },
+    { type: "toggle" },
+  ]);
+  expect(availableThinkingLevels(model)).toEqual(["low", "high"]);
+});
+
+test("clampThinkingLevel snaps unknown levels and treats empty as provider default", () => {
+  const model = decodeModel({
+    ...baseModel,
+    reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+  }) satisfies ModelRow;
+  expect(clampThinkingLevel(model, "")).toBeUndefined();
+  expect(clampThinkingLevel(model, "high")).toBe("high");
+  expect(clampThinkingLevel(model, "medium")).toBe("low");
+  expect(
+    clampThinkingLevel(decodeModel({ ...baseModel, reasoning: false }), "high"),
+  ).toBeUndefined();
+});
+
+test("clampThinkingBudget omits when absent or zero and clamps to catalog min/max", () => {
+  const withBudget = decodeModel({
+    ...baseModel,
+    reasoning_options: [{ type: "budget_tokens", min: 1024, max: 81920 }],
+  });
+  expect(clampThinkingBudget(withBudget, 0)).toBeUndefined();
+  expect(clampThinkingBudget(withBudget, -1)).toBeUndefined();
+  expect(clampThinkingBudget(withBudget, 512)).toBe(1024);
+  expect(clampThinkingBudget(withBudget, 4096)).toBe(4096);
+  expect(clampThinkingBudget(withBudget, 100_000)).toBe(81920);
+  expect(
+    clampThinkingBudget(
+      decodeModel({ ...baseModel, reasoning_options: [{ type: "effort", values: ["high"] }] }),
+      4096,
+    ),
+  ).toBeUndefined();
+  expect(
+    clampThinkingBudget(
+      decodeModel({
+        ...baseModel,
+        reasoning: false,
+        reasoning_options: [{ type: "budget_tokens", min: 1024 }],
+      }),
+      4096,
+    ),
+  ).toBeUndefined();
+});
+
+test("budget_tokens max is decoded from the catalog", () => {
+  const model = decodeModel({
+    ...baseModel,
+    reasoning_options: [{ type: "budget_tokens", min: 1024, max: 81920 }],
+  });
+  expect(model.reasoning_options).toEqual([{ type: "budget_tokens", min: 1024, max: 81920 }]);
+});
 
 const catalog = {
   openai: {

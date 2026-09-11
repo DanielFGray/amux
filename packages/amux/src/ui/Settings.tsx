@@ -14,9 +14,12 @@ import {
   type OptionSpec,
   type OptionValue,
 } from "../options.ts";
-import { formatKey, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts";
+import { formatKey, DEFAULT_LEADER, type Conflict, type HelpEntry, type HelpGroup } from "../bindings.ts";
 import type { PluginSettingsSection } from "../plugin/types.ts";
 import type { Contribution } from "../plugin/contributions.ts";
+
+/** Sentinel target for the editor-leader row in the keybind list. */
+export const LEADER_TARGET = "$leader";
 
 /** The option sections, plus the keybinds tab — which is not a section of the
  *  options table because a binding is not an option. */
@@ -126,20 +129,28 @@ export interface KeybindGroup {
 /**
  * Every row the keybind editor can land on, in display order.
  *
- * The one enumeration both the renderer and the key handler count from, so a
- * selection index cannot mean one row on screen and another when acted on.
+ * Index 0 is the mux prefix; index 1 is the editor leader; the rest are
+ * rebindable commands. The one enumeration both the renderer and the key
+ * handler count from, so a selection index cannot mean one row on screen and
+ * another when acted on.
  */
 export function keybindTargets(groups: HelpGroup[]): (string | null)[] {
   return [
     null,
+    LEADER_TARGET,
     ...groups.flatMap((g) =>
       g.entries.filter((e) => e.keys !== "unbound" && !e.fixed && !e.orphaned).map((e) => e.name),
     ),
   ];
 }
 
-export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup[] {
+export function keybindGroups(
+  groups: HelpGroup[],
+  prefix: string,
+  leader: string = DEFAULT_LEADER,
+): KeybindGroup[] {
   const targets = keybindTargets(groups);
+  const display = { prefix, leader };
   const row = (entry: HelpEntry) => ({
     index: entry.fixed || entry.orphaned ? null : targets.indexOf(entry.name),
     name: entry.name,
@@ -156,8 +167,17 @@ export function keybindGroups(groups: HelpGroup[], leader: string): KeybindGroup
         {
           index: 0,
           name: null,
-          keys: formatKey(leader, leader),
-          desc: "prefix, pressed before every binding",
+          keys: formatKey("<prefix>", display),
+          desc: "mux prefix — pressed before every amux binding",
+          custom: false,
+          orphaned: false,
+          context: "",
+        },
+        {
+          index: 1,
+          name: LEADER_TARGET,
+          keys: formatKey("<leader>", display),
+          desc: "editor leader — find-file and editor chords",
           custom: false,
           orphaned: false,
           context: "",
@@ -201,11 +221,29 @@ export function keybindLine(groups: HelpGroup[], index: number): number {
  * since the list is generated from the live keymap, the reference and the
  * editor are necessarily the same screen.
  */
+/**
+ * Host for a plugin settings section. Passes this component's reactive props
+ * proxy into `section.component` so `selected` updates re-paint the highlight.
+ * Calling `section.component({ selected: n })` from Settings' body would
+ * snapshot the number once — Solid does not re-run that body on prop changes.
+ */
+function PluginSettingsView(props: {
+  section: PluginSettingsSection;
+  width: number;
+  height: number;
+  selected: number;
+}) {
+  return <>{props.section.component(props)}</>;
+}
+
 export function Settings(props: {
   options: Options & Record<string, OptionValue>;
   section: SettingsSection;
   selected: number;
   groups: HelpGroup[];
+  /** Mux `<prefix>` key. */
+  prefix: string;
+  /** Editor `<leader>` key. */
   leader: string;
   /** Sequences claimed by two commands. Reported, never fatal. */
   conflicts: Conflict[];
@@ -237,7 +275,7 @@ export function Settings(props: {
   const fields = createMemo(() =>
     settingsFields(props.options, props.section, props.registeredOptions ?? []),
   );
-  const rows = createMemo(() => keybindGroups(props.groups, props.leader));
+  const rows = createMemo(() => keybindGroups(props.groups, props.prefix, props.leader));
 
   return (
     <box
@@ -285,13 +323,14 @@ export function Settings(props: {
       </box>
       <box style={{ flexDirection: "column", flexGrow: 1, marginLeft: 1 }}>
         <Show when={plugin()}>
-          {(entry: () => PluginSettingsSection) =>
-            entry().component({
-              width: props.width,
-              height: props.height,
-              selected: props.selected,
-            })
-          }
+          {(entry: () => PluginSettingsSection) => (
+            <PluginSettingsView
+              section={entry()}
+              width={props.width}
+              height={props.height}
+              selected={props.selected}
+            />
+          )}
         </Show>
         <Show when={props.section === "keybinds"}>
           <scrollbox style={{ flexGrow: 1 }} ref={props.onKeybindList}>

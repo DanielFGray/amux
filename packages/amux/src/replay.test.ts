@@ -14,7 +14,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { MODE_ALT_SCREEN, MODE_BRACKETED_PASTE, Terminal } from "./ghostty.ts";
 import { formatScreen } from "./shim.ts";
-import { captureVisible } from "./capture.ts";
+import { captureScrollback, captureVisible } from "./capture.ts";
 
 const terminals: Terminal[] = [];
 
@@ -67,13 +67,28 @@ test("formatScreen replays modes a byte suffix cannot", () => {
   expect(target.mode(MODE_BRACKETED_PASTE)).toBe(true);
 });
 
-test("the replay is the current screen, not the scrollback", () => {
+test("formatScreen restores scrollback when the source retained it", () => {
+  const cols = 40;
+  const rows = 4;
+  const source = new Terminal(cols, rows);
+  const target = new Terminal(cols, rows);
+  try {
+    source.write(new TextEncoder().encode("EARLY\r\n" + "later\r\n".repeat(20)));
+    target.write(formatScreen(source.handle));
+    expect(captureScrollback(source)).toContain("EARLY");
+    expect(captureScrollback(target)).toContain("EARLY");
+  } finally {
+    source.free();
+    target.free();
+  }
+});
+
+test("the visible replay matches when the source keeps no scrollback", () => {
   const cols = 40;
   const rows = 4;
   const { source, target } = roundTrip("one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix", cols, rows);
-  // Six lines on a four-row screen: the first two scrolled away. A replay that
-  // restored history would be a compatibility lie; the current screen is all
-  // the daemon keeps (the replay terminal is created with scrollback 0).
+  // Six lines on a four-row screen: the first two scrolled away. With scrollback
+  // disabled on the source, formatScreen only has the active screen to emit.
   const visible = captureVisible(source);
   expect(visible).not.toContain("one");
   expect(visible).toContain("five");

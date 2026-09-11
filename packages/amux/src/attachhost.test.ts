@@ -30,12 +30,14 @@ const join = (...paths: string[]) =>
   );
 const daemons: SessionDaemonService[] = [];
 const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.runPromise(
     Effect.scoped(effect).pipe(
-      Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
+      Effect.provide(
+        SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
+      ),
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
     ),
   );

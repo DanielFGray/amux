@@ -13,7 +13,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { nodePath } from "./effect/node-path.ts";
 import { worktreeDirname } from "./git.ts";
-import { computeRects, moveFloat, resizeDivider, resizePane, type LayoutSize } from "./geometry.ts";
+import { computeRects, moveFloat, resizeDivider, resizePane, setPaneSize, type LayoutSize } from "./geometry.ts";
 import {
   decodeLayout,
   encodeLayout,
@@ -24,13 +24,16 @@ import {
   layoutSessions,
   makeLayout,
   nextPreset,
+  paneRetainedSessions,
   paneSession,
   placementOf,
   presetLayout,
   prune,
   setPlacement,
   setDock,
+  setPaneContent,
   setPaneDescriptor,
+  setPaneAgentSession,
   undockPane,
   splitLayout,
   swapLayout,
@@ -61,7 +64,8 @@ import {
 } from "./space-model.ts";
 import { MAX_SPACES, MAX_TERMINAL_CELLS, MAX_TERMINAL_DIMENSION } from "./limits.ts";
 import { NonEmptyString, PositiveInt } from "./schema-primitives.ts";
-import { Clock, Effect, Result, Schema as S } from "effect";
+import type { PaneAgentSessionSnapshot } from "./agent-session.ts";
+import { Clock, Effect, Option, Result, Schema as S } from "effect";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 
@@ -139,6 +143,9 @@ export interface WorkspaceCommandContext {
   agent?: string;
   /** The pane the caller runs in, when the call came from inside one. */
   pane?: string;
+  /** The daemon-owned session that caused a command from its process. This is
+   * only attribution for durable feedback, never a workspace target. */
+  originSession?: string;
   /** True when a background caller asked for no focus to move. The mutation
    *  applies its structure but leaves the workspace's focus and activation
    *  state exactly as it found it. */
@@ -213,6 +220,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
   cwd: NonEmptyString,
   agent: S.optional(NonEmptyString),
   pane: S.optional(NonEmptyString),
+  originSession: S.optional(NonEmptyString),
   noFocus: S.optional(S.Boolean),
   blockedAgents: S.optional(S.Array(NonEmptyString)),
   input: S.optional(S.String),
@@ -274,14 +282,29 @@ export interface WorkspaceDraft {
   readonly addSession: (
     target: WorkspaceWindow,
     dir: string,
-    opts?: { readonly provider?: string },
+    opts?: {
+      readonly provider?: string;
+      /** Reuse a prior session id (resume a stored conversation + AgentLog). */
+      readonly id?: string;
+    },
   ) => PersistedSession;
-  /** Show a session in its window, splitting or appending as needed, and
-   *  focus it. Returns the new pane id. */
-  readonly placeSessionPane: (target: WindowEntry, agent: PersistedSession) => string;
-  /** Place a sessionless plugin pane in the current window, splitting the
-   *  focused pane in a row. Returns its id, or null when there is no target. */
-  readonly placePluginPane: (type: string, descriptor: JsonValue) => string | null;
+  /** Show a session in its window. Default splits/appends; `mode: "replace"`
+   *  rewrites the calling (or focused) leaf in place and keeps any displaced
+   *  session alive via `PaneContent.displaced`. Returns the pane id. */
+  readonly placeSessionPane: (
+    target: WindowEntry,
+    agent: PersistedSession,
+    opts?: { readonly mode?: "split" | "replace" },
+  ) => string;
+  /** Place a sessionless plugin pane. Default splits the focused pane in a
+   *  row; `mode: "replace"` rewrites the calling (or focused) leaf and keeps
+   *  the previous session alive off-layout. Returns its id, or null when
+   *  there is no target. */
+  readonly placePluginPane: (
+    type: string,
+    descriptor: JsonValue,
+    opts?: { readonly mode?: "split" | "replace" },
+  ) => string | null;
   readonly pushAction: (action: WorkspaceAction) => void;
   readonly setResult: (result: JsonValue) => void;
   /** Every agent in the draft, as the machine-facing read surface shapes them. */
@@ -343,23 +366,35 @@ export function workspaceFromSession(
               const live = new Set(
                 window.sessions.filter((agent) => !agent.exited).map((agent) => agent.id),
               );
-              let layout: Layout | null = null;
-              if (window.layout) {
-                const result = yield* Effect.result(decodeLayout(window.layout));
-                if (Result.isSuccess(result)) {
-                  layout = prune(result.success, (agent) => live.has(agent));
-                }
-              }
-              if (!layout?.root && live.size > 0) {
-                const panes = window.sessions
-                  .filter((agent) => !agent.exited)
-                  .map((agent) => ({
-                    id: paneId(),
-                    content: paneContentFor(agent),
-                  }));
-                layout = presetLayout(panes, "tiled", panes[0]?.id);
-              }
-              layout ??= makeLayout({ root: null });
+              const fromDisk = window.layout
+                ? yield* Effect.result(decodeLayout(window.layout)).pipe(
+                    Effect.map((result) =>
+                      Result.match(result, {
+                        onSuccess: (decoded) =>
+                          Option.some(prune(decoded, (agent) => live.has(agent))),
+                        onFailure: () => Option.none<Layout>(),
+                      }),
+                    ),
+                  )
+                : Option.none<Layout>();
+              let layout = Option.match(
+                Option.filter(fromDisk, (candidate) => candidate.root != null),
+                {
+                  onSome: (candidate) => candidate,
+                  onNone: () => {
+                    if (live.size > 0) {
+                      const panes = window.sessions
+                        .filter((agent) => !agent.exited)
+                        .map((agent) => ({
+                          id: paneId(),
+                          content: paneContentFor(agent),
+                        }));
+                      return presetLayout(panes, "tiled", panes[0]?.id);
+                    }
+                    return Option.getOrElse(fromDisk, () => makeLayout({ root: null }));
+                  },
+                },
+              );
               for (const pane of layoutRefs(layout)) {
                 const counter = paneCounter(pane.id);
                 if (counter !== null) livePaneCounters.push(counter);
@@ -553,31 +588,37 @@ export function parseWorkspace(
   });
 }
 
-/** Validate the pane->agent edge, the model's only non-tree relationship.
+/** Validate the pane↔session edge, the model's only non-tree relationship.
  *
- * A window owns two sibling collections — agents and a layout of panes — joined
- * by the pane's session id. Schema decodes structure, not references, so this
- * pass asserts every pane names a live agent its own window owns, and every
- * live agent is visible in at least one pane. The one legal unreferenced agent
- * is an exited one: it keeps its record as a restart target after its viewport
- * is pruned. */
+ * A window owns two sibling collections — sessions and a layout of panes —
+ * joined by the pane's session id (viewport) and optional `displaced`
+ * (keepalive for a replace-in-place open). Schema decodes structure, not
+ * references, so this pass asserts every retained id is a live session the
+ * window owns, and every live session is retained by at least one pane. The
+ * one legal unreferenced session is an exited one: it keeps its record as a
+ * restart target after its viewport is pruned.
+ */
 function checkWorkspaceReferences(workspace: WorkspaceSnapshot): WorkspaceParseError | null {
   for (const { window } of workspaceWindows(workspace)) {
     const referenced = new Set<string>();
     for (const pane of layoutRefs(window.layout)) {
-      const session = paneSession(pane.content);
-      if (session === undefined) continue;
-      referenced.add(session);
-      const agent = window.sessions.find((item) => item.id === session);
-      if (!agent || agent.exited)
-        return new WorkspaceParseError({
-          message: `workspace pane '${pane.id}' names an agent this window does not have live`,
-        });
+      for (const session of paneRetainedSessions(pane.content)) {
+        referenced.add(session);
+        const owned = window.sessions.find((item) => item.id === session);
+        if (!owned)
+          return new WorkspaceParseError({
+            message: `workspace pane '${pane.id}' references session '${session}', which this window does not own`,
+          });
+        if (owned.exited)
+          return new WorkspaceParseError({
+            message: `workspace pane '${pane.id}' references session '${session}', which has already exited`,
+          });
+      }
     }
-    for (const agent of window.sessions) {
-      if (!agent.exited && !referenced.has(agent.id))
+    for (const session of window.sessions) {
+      if (!session.exited && !referenced.has(session.id))
         return new WorkspaceParseError({
-          message: `workspace agent '${agent.id}' has no pane`,
+          message: `workspace session '${session.id}' is live but no pane retains it`,
         });
     }
   }
@@ -727,21 +768,69 @@ export function applyWorkspaceCommand(
     );
   };
   const setFocus = (target: WorkspaceWindow, id: string | undefined) => {
-    if (!id || target.state.focus === id) return;
-    target.state.zoom = target.state.zoom?.pane === id ? target.state.zoom : null;
-    target.state.last = target.state.focus;
-    target.state.focus = id;
-    target.layout = makeLayout({ ...target.layout, focus: id });
+    if (!id) return;
+    if (target.state.focus !== id) {
+      target.state.zoom = target.state.zoom?.pane === id ? target.state.zoom : null;
+      target.state.last = target.state.focus;
+      target.state.focus = id;
+      target.layout = makeLayout({ ...target.layout, focus: id });
+    }
+    // Viewport algorithms (niri) keep a scroll offset the focus move must
+    // update — see TilingAlgorithm.ensureVisible. Split-tree algorithms omit
+    // it and this is a no-op.
+    const shown = algorithm.ensureVisible?.(target.layout, context.size, id);
+    if (shown && shown !== target.layout) target.layout = shown;
+  };
+  /** Focus a session's viewport, restore into its displace-host, or place a new pane. */
+  const revealSession = (target: SessionEntry): void => {
+    const pane = layoutRefs(target.window.layout).find(
+      (candidate) => paneSession(candidate.content) === target.session.id,
+    );
+    if (pane) {
+      setFocus(target.window, pane.id);
+      return;
+    }
+    const holder = layoutRefs(target.window.layout).find(
+      (candidate) =>
+        candidate.content.kind === "plugin" && candidate.content.displaced === target.session.id,
+    );
+    if (holder) {
+      target.window.layout = setPaneContent(
+        target.window.layout,
+        holder.id,
+        paneContentFor(target.session),
+      );
+      setFocus(target.window, holder.id);
+      return;
+    }
+    const placed = { id: newPaneId(target.space), content: paneContentFor(target.session) };
+    target.window.layout = target.window.layout.root
+      ? splitLayout(target.window.layout, 0, "row", placed)
+      : appendPane(target.window.layout, placed);
+    target.window.state.focus = placed.id;
   };
   const addSession = (
     target: WorkspaceWindow,
     dir: string,
-    opts?: { readonly provider?: string },
+    opts?: {
+      readonly provider?: string;
+      readonly cmd?: readonly string[];
+      readonly env?: Readonly<Record<string, string>>;
+      readonly name?: string;
+      readonly transient?: boolean;
+      readonly id?: string;
+    },
   ): PersistedSession => {
     const component = opts?.provider !== undefined;
+    const shellCmd = opts?.cmd ?? context.shell;
+    const id =
+      opts?.id !== undefined && opts.id.length > 0 && !agentIds.has(opts.id)
+        ? opts.id
+        : newAgentId();
+    agentIds.add(id);
     const agent = {
-      id: newAgentId(),
-      name: component ? `${opts.provider}-agent` : commandName(context.shell),
+      id,
+      name: opts?.name ?? (component ? `${opts.provider}-agent` : commandName(shellCmd)),
       cwd: dir,
       // Both axes: the worker's content is frames a component draws, and it is
       // an agent. A shell pane is neither, even when the user starts an agent
@@ -751,7 +840,11 @@ export function applyWorkspaceCommand(
       exited: false,
       exitCode: null,
     };
-    if (!component) Object.assign(agent, { cmd: [...context.shell] });
+    if (!component) Object.assign(agent, { cmd: [...shellCmd] });
+    if (opts?.env !== undefined && Object.keys(opts.env).length > 0) {
+      Object.assign(agent, { env: { ...opts.env } });
+    }
+    if (opts?.transient === true) Object.assign(agent, { transient: true });
     if (component) {
       Object.assign(agent, {
         kind: "component" as const,
@@ -765,15 +858,65 @@ export function applyWorkspaceCommand(
     actions.push({ _tag: "spawn", agent });
     return agent;
   };
-  const placeSessionPane = (entry: WindowEntry, agent: PersistedSession): string => {
-    const pane = { id: newPaneId(entry.space), content: paneContentFor(agent) };
+  const placeSessionPane = (
+    entry: WindowEntry,
+    agent: PersistedSession,
+    opts?: { readonly mode?: "split" | "replace" },
+  ): string => {
+    const content = paneContentFor(agent);
+    if (opts?.mode === "replace") {
+      const target = callingPane() ?? paneTarget();
+      if (target && target.window.window === entry.window) {
+        return replacePaneContent(target, content);
+      }
+    }
+    const pane = { id: newPaneId(entry.space), content };
     entry.window.layout = entry.window.layout.root
       ? splitLayout(entry.window.layout, 0, "row", pane)
       : appendPane(entry.window.layout, pane);
     entry.window.state.focus = pane.id;
     return pane.id;
   };
-  const placePluginPane = (type: string, descriptor: JsonValue): string | null => {
+  const replacePaneContent = (
+    target: { window: WindowEntry; pane: PaneRef },
+    content: PaneContent,
+  ): string => {
+    const { window, space } = target.window;
+    const previous = target.pane.content;
+    // Depth-1 keepalive: the original shell stays displaced across chained
+    // replaces. Prefer an existing displaced id; otherwise keep the session
+    // this leaf was viewing. The session that drops out of retention is
+    // reaped below — otherwise it stays live with no pane and the next
+    // attach fails the workspace invariant (same trap as pane.close).
+    const displaced =
+      (previous.kind === "plugin" ? previous.displaced : undefined) ?? paneSession(previous);
+    const nextContent: PaneContent =
+      content.kind === "plugin"
+        ? displaced !== undefined
+          ? { ...content, displaced }
+          : content
+        : content;
+    window.layout = setPaneContent(window.layout, target.pane.id, nextContent);
+    window.state.focus = target.pane.id;
+    window.state.zoom = null;
+    window.state.preset = null;
+    afterPaneRemoved(next, space, window, actions);
+    return target.pane.id;
+  };
+  const placePluginPane = (
+    type: string,
+    descriptor: JsonValue,
+    opts?: { readonly mode?: "split" | "replace" },
+  ): string | null => {
+    if (opts?.mode === "replace") {
+      const target = callingPane() ?? paneTarget();
+      if (!target) return null;
+      return replacePaneContent(target, {
+        kind: "plugin",
+        type,
+        descriptor,
+      });
+    }
     const target = paneTarget();
     if (!target) return null;
     const { space, window } = target.window;
@@ -835,6 +978,26 @@ export function applyWorkspaceCommand(
     created.state.focus = pane;
     return created;
   };
+  const splitAtTarget = (
+    axis: "row" | "column",
+    agent: PersistedSession,
+    target: { window: WindowEntry; pane: PaneRef },
+  ): string => {
+    const { space, window } = target.window;
+    const panes = layoutPanes(window.layout.root);
+    const at = panes.findIndex((pane) => pane.id === target.pane.id);
+    const ref = { id: newPaneId(space), content: paneContentFor(agent) };
+    window.layout =
+      at === -1
+        ? appendPane(window.layout, ref)
+        : (algorithm.split?.(window.layout, context.size, target.pane.id, axis, ref) ??
+          splitLayout(window.layout, at, axis, ref));
+    window.state.focus = ref.id;
+    window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
+    window.state.zoom = null;
+    window.state.preset = null;
+    return ref.id;
+  };
   if (!isCoreCommand(command)) {
     plugins?.reducers.get(command._tag)?.(draft, command, context);
     return finish();
@@ -843,29 +1006,53 @@ export function applyWorkspaceCommand(
     case "pane.split": {
       const target = paneTarget();
       if (!target) break;
-      const { space, window } = target.window;
       // A split inherits the caller's directory, not the space's: an agent
       // delegating from a worktree pane must not land the sibling in the repo
       // root. The flag overrides that default.
-      const agent = addSession(window, resolve(context.cwd, command.cwd?.trim() || "."));
-      const panes = layoutPanes(window.layout.root);
-      const at = panes.findIndex((pane) => pane.id === target.pane.id);
-      const ref = { id: newPaneId(space), content: paneContentFor(agent) };
-      window.layout =
-        at === -1
-          ? appendPane(window.layout, ref)
-          : (algorithm.split?.(window.layout, context.size, target.pane.id, command.axis, ref) ??
-            splitLayout(window.layout, at, command.axis, ref));
-      window.state.focus = ref.id;
-      window.state.last = at === -1 ? null : (panes[at]?.id ?? null);
-      window.state.zoom = null;
-      window.state.preset = null;
-      result = { session: agent.id, pane: ref.id } satisfies CreationResult<"pane.split">;
+      const agent = addSession(
+        target.window.window,
+        resolve(context.cwd, command.cwd?.trim() || "."),
+      );
+      result = {
+        session: agent.id,
+        pane: splitAtTarget(command.axis, agent, target),
+      } satisfies CreationResult<"pane.split">;
       break;
     }
     case "pane.open-plugin": {
       const pane = draft.placePluginPane(command.type, command.descriptor);
       if (pane !== null) result = { pane } satisfies CreationResult<"pane.open-plugin">;
+      break;
+    }
+    case "process-plugin.pane.open": {
+      const target = paneTarget();
+      if (!target) break;
+      // Daemon must resolve argv/env before apply; an unresolved open is a no-op.
+      if (command.command === undefined || command.command.length === 0) break;
+      const agent = addSession(target.window.window, resolve(context.cwd, command.cwd?.trim() || "."), {
+        cmd: command.command,
+        ...(command.env !== undefined ? { env: command.env } : {}),
+        ...(command.title !== undefined ? { name: command.title } : {}),
+        ...(command.transient === true ? { transient: true } : {}),
+      });
+      const paneId = splitAtTarget(command.axis ?? "row", agent, target);
+      const placement = command.placement ?? "tiled";
+      // Amux Placement only — floating uses setPlacement; docks use setDock.
+      // Not herdr overlay/popup/tab (ep-4d545c).
+      if (placement === "floating") {
+        target.window.window.layout = setPlacement(
+          target.window.window.layout,
+          paneId,
+          "floating",
+        );
+      } else if (placement !== "tiled") {
+        target.window.window.layout = setDock(target.window.window.layout, paneId, placement);
+      }
+      target.window.window.state.focus = paneId;
+      result = {
+        session: agent.id,
+        pane: paneId,
+      } satisfies CreationResult<"process-plugin.pane.open">;
       break;
     }
     case "pane.next": {
@@ -956,6 +1143,20 @@ export function applyWorkspaceCommand(
       }
       break;
     }
+    case "pane.set-size": {
+      const target = paneTarget();
+      if (!target || target.window.window.state.zoom) break;
+      const layout = target.window.window.layout;
+      const cells = command.cells === undefined ? null : command.cells;
+      const resized = setPaneSize(layout, context.size, target.pane.id, command.axis, cells);
+      if (resized !== layout) {
+        target.window.window.layout = resized;
+        if (placementOf(layout, target.pane.id) !== "floating") {
+          target.window.window.state.preset = null;
+        }
+      }
+      break;
+    }
     case "pane.zoom": {
       const target = paneTarget();
       if (!target || layoutRefs(target.window.window.layout).length < 2) break;
@@ -1021,6 +1222,14 @@ export function applyWorkspaceCommand(
     case "pane.close": {
       const found = paneTarget();
       if (!found) break;
+      // Restoring a displace-keepalive puts the previous session back in the
+      // leaf. The plugin/component that was the viewport is then unreferenced
+      // and must go through afterPaneRemoved — otherwise it stays live with
+      // no pane and the next attach fails the workspace invariant.
+      if (restoreDisplacedContent(found.window.window, found.pane)) {
+        afterPaneRemoved(next, found.window.space, found.window.window, actions);
+        break;
+      }
       closePane(found.window.window, found.pane.id, context.size, algorithm);
       afterPaneRemoved(next, found.window.space, found.window.window, actions);
       break;
@@ -1277,11 +1486,10 @@ export function applyWorkspaceCommand(
         target.space.windows.map((window) => window.number),
         target.window.number,
       );
-      // A live agent always holds a pane, so revealing it is a focus move.
-      const pane = layoutRefs(target.window.layout).find(
-        (candidate) => paneSession(candidate.content) === target.session.id,
-      );
-      if (pane) setFocus(target.window, pane.id);
+      revealSession(target);
+      // Revealing into a replace-host drops that host's viewport session from
+      // the layout the same way pane.close's restore path does.
+      afterPaneRemoved(next, target.space, target.window, actions);
       break;
     }
     case "session.next-blocked": {
@@ -1480,10 +1688,17 @@ export function markSessionExited(
   const next = structuredClone(current);
   const found = findSession(next, id);
   if (!found) return current;
+  const restoreLast = found.session.transient === true ? found.window.state.last : null;
   found.session.exited = true;
   found.session.exitCode = code;
   found.window.layout = prune(found.window.layout, (agent) => agent !== id);
-  found.window.state.focus = found.window.layout.focus ?? null;
+  const panes = new Set(layoutRefs(found.window.layout).map((pane) => pane.id));
+  if (restoreLast !== null && panes.has(restoreLast)) {
+    found.window.layout = makeLayout({ ...found.window.layout, focus: restoreLast });
+    found.window.state.focus = restoreLast;
+  } else {
+    found.window.state.focus = found.window.layout.focus ?? null;
+  }
   // Every non-exited agent still holds a pane, so an empty layout means every
   // agent has exited and the window has nothing left to show.
   if (layoutRefs(found.window.layout).length === 0) {
@@ -1567,6 +1782,25 @@ export function workspacePaneOf(
   return null;
 }
 
+/**
+ * Write a trusted agent conversation ref onto the pane that owns it.
+ * Returns null when the pane is missing or the ref is already stored.
+ */
+export function applyPaneAgentSession(
+  workspace: WorkspaceSnapshot,
+  paneId: string,
+  agentSession: PaneAgentSessionSnapshot | undefined,
+): WorkspaceSnapshot | null {
+  if (!workspacePaneOf(workspace, paneId)) return null;
+  const next = structuredClone(workspace);
+  const target = workspacePaneOf(next, paneId);
+  if (!target) return null;
+  const nextLayout = setPaneAgentSession(target.window.layout, paneId, agentSession);
+  if (nextLayout === target.window.layout) return null;
+  target.window.layout = nextLayout;
+  return { ...next, revision: workspace.revision + 1 };
+}
+
 function closePane(
   window: WorkspaceWindow,
   id: string,
@@ -1579,6 +1813,31 @@ function closePane(
   window.state.focus = window.layout.focus ?? null;
   window.state.zoom = null;
   window.state.preset = null;
+  const focus = window.state.focus;
+  if (!focus) return;
+  const shown = algorithm.ensureVisible?.(window.layout, size, focus);
+  if (shown && shown !== window.layout) window.layout = shown;
+}
+
+/**
+ * If `pane` is a replace-host holding a live displaced session, restore that
+ * session into the same leaf and return true. Otherwise leave the layout alone.
+ */
+function restoreDisplacedContent(window: WorkspaceWindow, pane: PaneRef): boolean {
+  const content = pane.content;
+  if (content.kind !== "plugin" || content.displaced === undefined) return false;
+  const displaced = window.sessions.find(
+    (session) => session.id === content.displaced && !session.exited,
+  );
+  const stillPlaced = layoutRefs(window.layout).some(
+    (item) => paneSession(item.content) === content.displaced,
+  );
+  if (!displaced || stillPlaced) return false;
+  window.layout = setPaneContent(window.layout, pane.id, paneContentFor(displaced));
+  window.state.focus = pane.id;
+  window.state.zoom = null;
+  window.state.preset = null;
+  return true;
 }
 
 /** Remove a session and every source view of it before ownership moves.
@@ -1602,10 +1861,10 @@ function takeSession(
 
 /** Keep the model honest when a pane leaves its window.
  *
- * A backend has a viewport or it is gone. There is no detached backend state:
- * closing the last pane that names one stops it and removes it from the model.
- * Move and break operations transfer the pane before this runs, so their
- * backends remain referenced and survive normally.
+ * A backend has a viewport, or a displace-keepalive on a replace-host pane, or
+ * it is gone. Closing the last pane that retains one stops it and removes it
+ * from the model. Move and break operations transfer the pane before this
+ * runs, so their backends remain referenced and survive normally.
  */
 function afterPaneRemoved(
   workspace: WorkspaceSnapshot,
@@ -1614,9 +1873,7 @@ function afterPaneRemoved(
   actions: WorkspaceAction[],
 ): void {
   const referenced = new Set(
-    layoutRefs(window.layout)
-      .map((pane) => paneSession(pane.content))
-      .filter((session): session is string => session !== undefined),
+    layoutRefs(window.layout).flatMap((pane) => [...paneRetainedSessions(pane.content)]),
   );
   const removed = window.sessions.filter((agent) => !referenced.has(agent.id));
   for (const agent of removed) {

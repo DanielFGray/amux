@@ -10,6 +10,7 @@ import {
   PaneViews,
   OptionsRuntime,
   RootRuntime,
+  type RootRuntimeContext,
   type WorkspaceEnv,
 } from "./env.ts";
 import { rollUp } from "./space.ts";
@@ -34,6 +35,7 @@ import {
   DOCK_SIDES,
   type DockSide,
   type Layout,
+  type LayoutContainer,
   type LayoutFloat,
   type LayoutNode,
   type LayoutPreset,
@@ -66,6 +68,19 @@ function contentFor(session: SessionHandle): PaneContent {
         session: session.id,
       }
     : { kind: "pty", session: session.id };
+}
+
+/**
+ * Whether an existing leaf can fill a slot after a rebuild.
+ *
+ * Pane ids stay stable across replace-in-place opens (shell → editor in the
+ * same leaf). Claiming by id alone would keep a TerminalPane for plugin
+ * content and never remount the Solid view — the daemon layout looks right
+ * while the client still shows the shell. Kind (and plugin type) must match.
+ */
+function paneFitsContent(pane: Pane, content: PaneContent): boolean {
+  if (content.kind === "pty") return pane instanceof TerminalPane;
+  return pane instanceof ComponentPane && pane.paneType === content.type;
 }
 
 let nextId = 0;
@@ -142,7 +157,7 @@ export class Window {
    *  app uses it to decide what to show next; it is deliberately not the same
    *  as "a pane closed", because closing a view by hand is a detach, not an end. */
   onSessionExit?: (session: SessionHandle) => void;
-  onCopy?: (text: string) => boolean | void;
+  onCopy?: (text: string, target?: "clipboard" | "primary") => boolean | void;
   onCopyError?: (error: Error) => void;
   onModelFocus?: (pane: string) => void;
   onModelResizeDivider?: (path: LayoutPath, index: number, delta: number) => void;
@@ -168,7 +183,7 @@ export class Window {
 
   /** The process's root Effect context, passed on to every SessionHandle this
    *  window starts; see RootRuntime in env.ts. */
-  #runtime: Context.Context<never>;
+  #runtime: RootRuntimeContext;
 
   /**
    * One scope per session, rather than one scope for the window.
@@ -273,6 +288,15 @@ export class Window {
   project(layout: Layout, state: WindowState): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       this.#state = structuredClone(state);
+      // Size/offset-only scroll updates must not #mount: dismantling destroys
+      // the divider under an in-progress drag (and every other renderable).
+      if (this.#patchScrollArrangement(layout)) {
+        this.#layout = makeLayout({ ...layout, focus: state.focus ?? undefined });
+        for (const pane of this.#panes) pane.active = pane.id === state.focus;
+        this.#refreshChrome();
+        this.#ctx.requestRender();
+        return;
+      }
       const evicted = this.#mount(layout, state.preset);
       for (const pane of evicted) yield* pane.release;
       this.#state = structuredClone(state);
@@ -283,11 +307,19 @@ export class Window {
     });
   }
 
+  /** When the daemon only moved scroll column sizes/offset, paint onto the
+   *  live strip instead of tearing the tree down. */
+  #patchScrollArrangement(next: Layout): boolean {
+    if (!scrollArrangementPatchable(this.#layout, next)) return false;
+    const root = next.root;
+    if (!root || root.type !== "container") return false;
+    return layoutKindRenderer(root.kind)?.applyArrangement?.(root) === true;
+  }
+
   /** Drop a client projection after the daemon has removed its owner. */
   removeProjectedSession(session: SessionHandle): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      for (const pane of this.#panes.slice())
-        if (pane.session === session) yield* this.close(pane);
+      for (const pane of this.#panes.slice()) if (pane.session === session) yield* this.close(pane);
       const at = this.#sessions.indexOf(session);
       if (at !== -1) this.#sessions.splice(at, 1);
       yield* this.#releaseSession(session);
@@ -477,7 +509,12 @@ export class Window {
     return taken;
   }
 
-  #makeDivider(parent: BoxRenderable, direction: SplitDirection, path: LayoutPath, index: number): void {
+  #makeDivider(
+    parent: BoxRenderable,
+    direction: SplitDirection,
+    path: LayoutPath,
+    index: number,
+  ): void {
     const divider = this.#trackDivider(
       Divider.make(
         this.#ctx,
@@ -586,10 +623,39 @@ export class Window {
   /** Model-derived neighbour query shared by pane borders and divider caps. */
   #hasNeighbour(node: Pane | Divider, axis: SplitDirection, direction: -1 | 1): boolean {
     if (node instanceof Pane) {
+      const container = this.#containerHolding(node.id);
+      if (container) {
+        const fromKind = layoutKindRenderer(container.kind)?.hasNeighbour?.(
+          container,
+          node.id,
+          axis,
+          direction,
+        );
+        if (fromKind !== undefined) return fromKind;
+      }
       return paneHasNeighbour(this.#layout, node.id, axis, direction);
     }
     const ref = this.#dividerRefs.get(node);
     return ref ? dividerHasNeighbour(this.#layout, ref.path, axis, direction) : false;
+  }
+
+  /** The innermost registered container that owns `paneId`, if any — scroll
+   *  roots and future kinds. Split trees have no container, so chrome falls
+   *  back to geometry.ts's path walk. */
+  #containerHolding(paneId: string): LayoutContainer | null {
+    const walk = (node: LayoutNode | null): LayoutContainer | null => {
+      if (!node) return null;
+      if (node.type === "pane") return null;
+      if (node.type === "container") {
+        return layoutPanes(node).some((pane) => pane.id === paneId) ? node : null;
+      }
+      for (const child of node.children) {
+        const found = walk(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(this.#layout.root);
   }
 
   /**
@@ -604,6 +670,10 @@ export class Window {
     // Without a gap the pane frame is the only usable edge, so outerBorder is
     // intentionally ignored. It only changes the separated-border mode.
     const showOuterBorder = this.#options["appearance.outerBorder"];
+    // Gap mode: every pane draws a full frame. Row seams sit beside a blank
+    // gutter; column seams (gap=1) put └ above ┌ on adjacent rows with no
+    // blank between — the divider there is hit-only so it does not paint a
+    // shared ├── over those corners.
     const edge = (pane: Pane, axis: SplitDirection, direction: -1 | 1) =>
       gap || (!this.#hasNeighbour(pane, axis, direction) && showOuterBorder);
     const focused = this.focused;
@@ -626,6 +696,9 @@ export class Window {
     }
     for (const divider of this.#dividers()) {
       divider.setPaneGap(this.#options["appearance.gap"] ? 1 : 0);
+      // Spaced seams overhang into pane border cells; sit above the panes so
+      // those glyphs resolve to the divider in the hit grid.
+      divider.zIndex = gap ? 10 : 0;
       // A divider's ends meet the window's outer border exactly where it has no
       // neighbour of its own across the perpendicular axis.
       const cross: SplitDirection = divider.axis === "row" ? "column" : "row";
@@ -679,9 +752,16 @@ export class Window {
     const vertical = (x: number, y: number): boolean => {
       for (const d of dividers) {
         if (d.axis !== "row") continue;
-        if (d.x === x && y >= d.y && y < d.y + d.height) return true;
-        if (d.tees && !d.capStart && d.x === x && y === d.y - 1) return true;
-        if (d.tees && !d.capEnd && d.x === x && y === d.y + d.height) return true;
+        // Spaced dividers overhang into pane borders for hit-testing; only the
+        // gutter counts as this divider's own frame line.
+        const inset = d.hitInset;
+        const x0 = d.x + inset;
+        const x1 = d.x + d.width - inset;
+        if (x >= x0 && x < x1 && y >= d.y && y < d.y + d.height) return true;
+        if (x1 > x0) {
+          if (d.tees && !d.capStart && x === x0 && y === d.y - 1) return true;
+          if (d.tees && !d.capEnd && x === x0 && y === d.y + d.height) return true;
+        }
       }
       for (const p of panes) {
         if (p.edges.left && p.x === x && y >= p.y && y < p.y + p.height) return true;
@@ -693,9 +773,14 @@ export class Window {
     const horizontal = (x: number, y: number): boolean => {
       for (const d of dividers) {
         if (d.axis !== "column") continue;
-        if (d.y === y && x >= d.x && x < d.x + d.width) return true;
-        if (d.tees && !d.capStart && d.y === y && x === d.x - 1) return true;
-        if (d.tees && !d.capEnd && d.y === y && x === d.x + d.width) return true;
+        const inset = d.hitInset;
+        const y0 = d.y + inset;
+        const y1 = d.y + d.height - inset;
+        if (y >= y0 && y < y1 && x >= d.x && x < d.x + d.width) return true;
+        if (y1 > y0) {
+          if (d.tees && !d.capStart && d.y + inset === y && x === d.x - 1) return true;
+          if (d.tees && !d.capEnd && d.y + inset === y && x === d.x + d.width) return true;
+        }
       }
       for (const p of panes) {
         if (p.edges.top && p.y === y && x >= p.x && x < p.x + p.width) return true;
@@ -840,13 +925,19 @@ export class Window {
     // where that slot is placed, and a pane that floats after a rebuild may
     // well be the same one that was tiled before it.
     const slots = layoutRefs(wanted);
-    for (const slot of slots) claim(slot, (pane) => pane.id === slot.id);
+    for (const slot of slots)
+      claim(slot, (pane) => pane.id === slot.id && paneFitsContent(pane, slot.content));
     for (const slot of slots)
       claim(slot, (pane) => {
         const session = paneSession(slot.content);
         // A sessionless spare pane (client-rendered plugin) has no session to
         // match a session-backed slot by.
-        return session !== undefined && pane.session !== null && pane.session.id === session;
+        return (
+          session !== undefined &&
+          pane.session !== null &&
+          pane.session.id === session &&
+          paneFitsContent(pane, slot.content)
+        );
       });
 
     // PASS ONE — which panes exist. Every slot ends up with a pane, reused or
@@ -899,6 +990,8 @@ export class Window {
       },
       dockSizes: wanted.dockSizes,
       focus: next?.id,
+      algorithmId: wanted.algorithmId,
+      algorithmVersion: wanted.algorithmVersion,
     });
 
     const build = (node: LayoutNode, path: LayoutPath): Renderable => {
@@ -912,14 +1005,48 @@ export class Window {
         const children = node.children.map((child, i) => build(child, [...path, i]));
         // A container whose plugin is no longer loaded has no renderer to
         // arrange its children — fall back to a plain flex box rather than
-        // refusing to mount the window.
+        // refusing to mount the window. Default Yoga direction is column
+        // (stacked = "rows"); prefer row so a late-loading scroll renderer
+        // (niri columns) does not flash as a vertical stack on first paint.
         if (!renderer) {
-          const box = new BoxRenderable(this.#ctx, { id: `container-${nextId++}` });
+          const box = new BoxRenderable(this.#ctx, {
+            id: `container-${nextId++}`,
+            flexDirection: "row",
+          });
           setWeight(box, node.weight);
           children.forEach((child) => box.add(child));
           return box;
         }
-        return renderer.render(this.#ctx, node, children);
+        return renderer.render(this.#ctx, node, children, {
+          // Same divider bookkeeping as fill() for splits: path names this
+          // container, index is the child immediately before the handle.
+          // Live-echo onto the strip, then send the daemon command. project()
+          // patches sizes in place when only the arrangement changed, so the
+          // captured divider survives the round-trip.
+          makeDivider: (index) => {
+            const divider = this.#trackDivider(
+              Divider.make(
+                this.#ctx,
+                undefined,
+                {
+                  id: `divider-${nextId++}`,
+                  axis: "row",
+                  onDrag: (delta: number) => {
+                    renderer.patchDivider?.(node, index, delta);
+                    this.onModelResizeDivider?.(path, index, delta);
+                  },
+                },
+                this.#options,
+              ),
+            );
+            this.#dividerRefs.set(divider, { path, index });
+            divider.tees = true;
+            // Above column panes so the one-cell seam wins the hit grid.
+            divider.zIndex = 10;
+            divider.junction = () => this.#junctionFrame();
+            return divider.view;
+          },
+        });
       }
       const box = new BoxRenderable(this.#ctx, { id: `split-${nextId++}` });
       setDirection(box, node.direction);
@@ -1134,4 +1261,44 @@ export class Window {
       this.#sessions.length = 0;
     });
   }
+}
+
+/** True when `next` only changes a scroll root's arrangement (sizes/offset/
+ *  active/basisCols/focus) — same panes, weights, and no floats/docks. */
+function scrollArrangementPatchable(prev: Layout, next: Layout): boolean {
+  if (prev.floats.length > 0 || next.floats.length > 0) return false;
+  const prevDocks = prev.docks ?? emptyDockStrips();
+  const nextDocks = next.docks ?? emptyDockStrips();
+  for (const side of DOCK_SIDES) {
+    if (prevDocks[side].length > 0 || nextDocks[side].length > 0) return false;
+  }
+  const a = prev.root;
+  const b = next.root;
+  if (!a || !b || a.type !== "container" || b.type !== "container") return false;
+  if (a.kind !== "scroll" || b.kind !== "scroll") return false;
+  return sameWeightedTree(a, b);
+}
+
+function sameWeightedTree(a: LayoutNode, b: LayoutNode): boolean {
+  if (a.type !== b.type) return false;
+  if (a.type === "pane" && b.type === "pane") {
+    return a.id === b.id && a.weight === b.weight;
+  }
+  if (a.type === "split" && b.type === "split") {
+    return (
+      a.direction === b.direction &&
+      a.weight === b.weight &&
+      a.children.length === b.children.length &&
+      a.children.every((child, i) => sameWeightedTree(child, b.children[i]!))
+    );
+  }
+  if (a.type === "container" && b.type === "container") {
+    return (
+      a.kind === b.kind &&
+      a.weight === b.weight &&
+      a.children.length === b.children.length &&
+      a.children.every((child, i) => sameWeightedTree(child, b.children[i]!))
+    );
+  }
+  return false;
 }

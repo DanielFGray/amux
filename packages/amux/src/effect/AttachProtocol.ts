@@ -1,4 +1,4 @@
-import { Schema as S, SchemaAST as AST } from "effect";
+import { Result, Schema as S, SchemaAST as AST } from "effect";
 import { PermissionDecisionSchema } from "../permission.ts";
 import { errorMessage } from "../error-message.ts";
 
@@ -240,6 +240,8 @@ const Pong = S.TaggedStruct("pong", {
 const CommandRequest = S.TaggedStruct("command.request", {
   id: S.String,
   command: JsonValueSchema,
+  /** Session whose process caused this request, when there is one. */
+  originSession: S.optional(S.String),
 });
 
 /** The client's answer to a `command.request`, correlated by `id`. */
@@ -327,8 +329,12 @@ export class AttachFrameAccumulator {
 }
 
 /** Encode one frame. Newline is the framing boundary, not part of the payload. */
+const AttachFrameJson = S.fromJsonString(AttachFrame);
+const encodeAttachFrameJson = S.encodeSync(AttachFrameJson);
+const decodeAttachFrameJson = S.decodeResult(AttachFrameJson);
+
 export function encodeAttachFrame(frame: AttachFrame): string {
-  return `${JSON.stringify(S.encodeSync(AttachFrame)(frame))}\n`;
+  return `${encodeAttachFrameJson(frame)}\n`;
 }
 
 export function encodeAttachFrameBytes(frame: AttachFrame): Uint8Array {
@@ -346,11 +352,15 @@ export function decodeAttachFrames(input: string) {
 
   for (const line of lines) {
     if (!line) continue;
-    try {
-      frames.push(S.decodeSync(S.fromJsonString(AttachFrame))(line));
-    } catch (error) {
-      throw new AttachProtocolError({ message: errorMessage(error) });
-    }
+    frames.push(
+      Result.match(decodeAttachFrameJson(line), {
+        onFailure: (error) => {
+          // Sync wire boundary: callers (socket loops) expect a thrown protocol error.
+          throw new AttachProtocolError({ message: errorMessage(error) });
+        },
+        onSuccess: (frame) => frame,
+      }),
+    );
   }
 
   return { frames, rest };

@@ -5,13 +5,17 @@
  * move into plugins without taking the facts the daemon needs with it.
  */
 export {
-  AgentManifests,
+  AgentManifestRegistry,
+  bundledRegistry,
   buildRegistry,
+  configHome,
+  layer,
+  loadRegistry,
   MANIFEST_ENGINE_VERSION,
   type Adapter,
   type AdapterRule,
   type AgentManifest,
-  type AgentManifestRegistry,
+  type AgentManifestRegistryService,
   type RegexPattern,
   type RuleGate,
 } from "./manifests.ts";

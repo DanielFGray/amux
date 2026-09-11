@@ -9,46 +9,62 @@ afterAll(async () => {
   await app?.stop();
 });
 
-async function layout() {
+/** The active window's focused pane id — same decode as e2e/close-focus.test.ts. */
+async function focusedPane(): Promise<string | null> {
   const session = await app.session();
-  return session?.spaces[0]?.windows[0]?.layout;
+  const window = session?.spaces?.[0]?.windows[0];
+  if (typeof window?.layout !== "string") return null;
+  const layout = JSON.parse(window.layout) as { focus?: string };
+  return layout.focus ?? null;
+}
+
+/** Enter amux mode, then run a leader-alias key. The modal plugin consumes the
+ *  leader as "enter mode"; the follow-up only aliases once that context is
+ *  active, so the two strokes must not share a single press() burst. */
+async function amux(key: string): Promise<void> {
+  await app.press("\x13");
+  await Bun.sleep(300);
+  await app.press(key);
 }
 
 test(
-  "vim mode retains amux mode after a resize",
+  "vim mode retains amux mode after a command",
   async () => {
+    // modal.vimMode is set in config. While amux mode is active, global
+    // <prefix> bindings are re-exposed without the leader. A column split
+    // (`-`, not `|` — the pipe alias does not fire from a PTY `|` byte)
+    // makes j/k move focus between panes; vimMode keeps amux mode so the
+    // second focus needs no new leader.
     app = await launch("e2e-modal", {
       config: {
         options: { "modal.vimMode": true },
-        keys: { leader: "ctrl+s", bindings: {} },
+        keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
         plugins: [
           ...defaultE2ePlugins(),
           { path: join(process.cwd(), "packages/plugin-modal/src/index.ts"), enabled: true },
         ],
       },
     });
-    await app.press("\x13S");
-    await app.until(() => app.screen().includes(" settings "), "the settings window");
-    await app.press("\t");
-    for (let attempt = 0; attempt < 8 && !app.screen().includes("vimMode"); attempt++)
-      await app.press("j");
-    expect(app.screen()).toContain("vimMode");
-    expect(app.screen()).toContain("yes");
-    await app.press("\x1b");
-    await app.until(() => !app.screen().includes(" settings "), "settings to close");
 
-    await app.press("\x13|");
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if ((await app.workspaceSummary()) === "1sp 1win 2ag") break;
+      await amux("-");
+      await Bun.sleep(400);
+    }
     await app.until(async () => (await app.workspaceSummary()) === "1sp 1win 2ag", "the split");
-    await Bun.sleep(500);
 
-    const before = await layout();
-    await app.press("\x13h");
-    await app.until(async () => (await layout()) !== before, "the first resize");
-    const first = await layout();
+    // Enter mode and focus up with a leader. vimMode must keep mode so the
+    // following bare `j` can focus down without another leader.
+    await amux("k");
+    const afterFirst = await focusedPane();
+    expect(afterFirst).not.toBeNull();
 
-    await app.press("l");
-    await app.until(async () => (await layout()) !== first, "the second resize without a prefix");
-    expect(await layout()).not.toBe(before);
+    await app.press("j");
+    await app.until(
+      async () => (await focusedPane()) !== afterFirst,
+      "focus without a second leader",
+    );
+    expect(await focusedPane()).not.toBe(afterFirst);
   },
   E2E_TIMEOUT,
 );

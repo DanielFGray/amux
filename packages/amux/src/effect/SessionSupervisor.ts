@@ -10,7 +10,7 @@ import {
   Schema as S,
   Stream,
 } from "effect";
-import { MODE_BRACKETED_PASTE, Terminal } from "../ghostty.ts";
+import { MODE_BRACKETED_PASTE, DEFAULT_SCROLLBACK_LINES, Terminal } from "../ghostty.ts";
 import { formatScreen } from "../shim.ts";
 import { AttachHub } from "./AttachHub.ts";
 import {
@@ -151,9 +151,10 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
     // The daemon-side screen model per session. A reattaching client has none
     // of an adopted session's history, so its pane would be blank until the
     // program next redraws; this terminal is what lets the daemon answer an
-    // adoption with the session's current screen. scrollback 0: only the
-    // active screen is ever needed, and an emulator per session is cost enough
-    // without history.
+    // adoption with the session's current screen — and with the same bounded
+    // scrollback the live client kept, so a long build is still reachable after
+    // detach. Only this terminal installs WRITE_PTY: it alone answers queries
+    // into the owning PTY.
     const replays = yield* Ref.make<ReadonlyMap<string, Terminal>>(new Map());
     /** Per-session entry point for a fact a process reports about itself, under
      *  a topic name the reporter names — `SESSION_STATE_TOPIC` for the generic
@@ -274,7 +275,18 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
       const session = yield* registry
         .spawn(spec)
         .pipe(Effect.tapError(() => releaseReservation(spec.id)));
-      const screen = yield* Effect.sync(() => new Terminal(spec.cols, spec.rows, 0));
+      // Responses libghostty wants written back to the PTY (DSR/DECRQM). Queued
+      // during screen.write and drained afterward — herdr's ordered-response
+      // pattern — so the FFI callback never reenters vt_write or crosses an
+      // Effect boundary mid-call.
+      const pendingPtyResponses: Uint8Array[] = [];
+      const screen = yield* Effect.sync(() => {
+        const term = new Terminal(spec.cols, spec.rows, DEFAULT_SCROLLBACK_LINES);
+        term.setWritePty((bytes) => {
+          pendingPtyResponses.push(bytes);
+        });
+        return term;
+      });
       const completion = yield* Deferred.make<void>();
       const termination = yield* Deferred.make<number | null>();
       const disposition = yield* Deferred.make<"active" | "aborted">();
@@ -354,6 +366,9 @@ export class SessionSupervisor extends Context.Service<SessionSupervisor>()("Ses
                 // The replay terminal is the private output buffer. Only bytes
                 // arriving while activation drains that replay need a side queue.
                 screen.write(chunk);
+                for (const response of pendingPtyResponses.splice(0)) {
+                  yield* session.write(response);
+                }
                 yield* Deferred.succeed(firstOutput, void 0);
                 if (phase === "active") {
                   yield* hub.publish({

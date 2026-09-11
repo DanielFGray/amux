@@ -7,7 +7,7 @@ import { ScrollTo, captureRange, clearSelection, scrollViewport, setSelection } 
 
 /**
  * Keyboard copy mode: a tmux-style modal over a pane's terminal, entered with
- * `<leader>[`.
+ * `<prefix>[`.
  *
  * The mode is a pure read layer — a cursor plus an optional selection drawn in
  * the uniform scrollback space via the existing setSelection/clearSelection

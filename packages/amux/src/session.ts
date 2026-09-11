@@ -4,7 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { Clock, Config, Context, Effect, Exit, Layer, Option, Result, Schema as S } from "effect";
 import { layoutPanes, parseLayout } from "./layout.ts";
-import { JsonValueSchema } from "./effect/AttachProtocol.ts";
+import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import {
   MAX_SESSIONS,
   MAX_LAYOUT_BYTES,
@@ -97,6 +97,12 @@ export interface PersistedSession {
    *  is detected, not declared, and leaves this absent. */
   declaredAgent?: string;
   cmd?: string[];
+  /**
+   * Extra env for the PTY child. Used by process-plugin panes so plugin identity
+   * vars (AMUX_PLUGIN_*) survive prepare→spawn; host vars like AMUX_PANE_ID are
+   * still applied by SessionRegistry on top.
+   */
+  env?: Record<string, string>;
   /** Identity of the plugin that supplies this component session's process. */
   provider?: string;
   cwd?: string;
@@ -104,6 +110,11 @@ export interface PersistedSession {
   rows: number;
   exited: boolean;
   exitCode: number | null;
+  /**
+   * Process-plugin transient panes: on exit, restore focus to `window.state.last`
+   * instead of prune's index heuristic (herdr overlay teardown).
+   */
+  transient?: boolean;
 }
 
 export interface PersistedWindow {
@@ -196,12 +207,14 @@ export const PersistedSessionSchema = S.Struct({
   kind: S.optional(S.Literals(["pty", "component"])),
   declaredAgent: S.optional(NonEmptyString),
   cmd: S.optional(S.Array(NonEmptyString).pipe(S.check(S.isMinLength(1)))),
+  env: S.optional(S.Record(S.String, S.String)),
   provider: S.optional(NonEmptyString),
   cwd: S.optional(S.String),
   cols: TerminalDimension,
   rows: TerminalDimension,
   exited: S.Boolean,
   exitCode: S.NullOr(S.Int),
+  transient: S.optional(S.Boolean),
 }).pipe(
   S.check(
     S.makeFilter(({ cols, rows }) => cols * rows <= MAX_TERMINAL_CELLS, {
@@ -297,14 +310,18 @@ export interface SessionPaths {
 
 export const stateRoot = Effect.fnUntraced(function* () {
   const xdgStateHome = yield* optionalEnvVar("XDG_STATE_HOME");
-  if (Option.isSome(xdgStateHome)) return xdgStateHome.value;
-  const home = yield* optionalEnvVar("HOME");
-  const path = yield* Path.Path;
-  return path.join(
-    Option.getOrElse(home, () => homedir()),
-    ".local",
-    "state",
-  );
+  return yield* Option.match(xdgStateHome, {
+    onNone: Effect.fnUntraced(function* () {
+      const home = yield* optionalEnvVar("HOME");
+      const path = yield* Path.Path;
+      return path.join(
+        Option.getOrElse(home, () => homedir()),
+        ".local",
+        "state",
+      );
+    }),
+    onSome: Effect.succeed,
+  });
 });
 
 export const sessionRoot: Effect.Effect<string> = Effect.gen(function* () {
@@ -354,7 +371,7 @@ export const optionalEnvVar = (name: string) =>
   );
 
 export function parseSessionState(
-  value: SessionState | import("./effect/AttachProtocol.ts").JsonValue,
+  value: SessionState | JsonValue,
   expectedId?: string,
 ): Effect.Effect<SessionState, SessionStateError> {
   return Effect.gen(function* () {
@@ -463,7 +480,7 @@ const duplicatePane = (id: string) =>
   new SessionStateError({ message: `duplicate pane id '${id}'` });
 const absentSession = (id: string) =>
   new SessionStateError({
-    message: `pane '${id}' names an absent or exited session`,
+    message: `pane '${id}' references a session that is missing or has already exited`,
   });
 
 function schemaError(error: S.SchemaError): SessionStateError {

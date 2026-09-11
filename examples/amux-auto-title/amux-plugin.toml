@@ -1,0 +1,8 @@
+id = "examples.auto-title"
+name = "Auto Title"
+version = "0.1.0"
+description = "Dogfood process-plugin [[startup]]: poll windows and keep titles in step with the focused session"
+
+# Long-lived poll loop. Daemon launches once after restore + control socket ready.
+[[startup]]
+command = ["bun", "./auto-title.ts"]

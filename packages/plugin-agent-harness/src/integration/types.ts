@@ -1,9 +1,10 @@
 import type { LanguageModel } from "effect/unstable/ai";
 import type * as HttpClient from "effect/unstable/http/HttpClient";
 import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
-import type { Layer } from "effect";
+import type { Effect, Layer } from "effect";
 import type { Credential } from "../credential.ts";
 import type { OAuthRefreshError } from "../credential.ts";
+import type { OAuthError, OAuthFlowController } from "../oauth/types.ts";
 
 export type When = { readonly key: string; readonly op: "eq" | "neq"; readonly value: string };
 export type Prompt =
@@ -33,6 +34,15 @@ export type Method =
       readonly id: string;
       readonly label: string;
       readonly prompts?: readonly Prompt[];
+      /**
+       * Run the provider's OAuth dance. Auth tab / CLI supply the controller;
+       * cancel is Scope interrupt (closes any loopback socket via finalizer).
+       * `answers` carries values from `prompts` (e.g. mode=auto|paste).
+       */
+      readonly login: (
+        ctl: OAuthFlowController,
+        answers?: Readonly<Record<string, string>>,
+      ) => Effect.Effect<Credential.OAuth, OAuthError>;
     };
 
 export type Connection = {
@@ -67,6 +77,16 @@ export type ModelRequest = {
    * silently — the frames simply do not decode.
    */
   readonly npm?: string;
+  /**
+   * Clamped thinking level from `agent.thinking`, or absent when the model has
+   * no controllable effort / the option is empty (provider default).
+   */
+  readonly thinking?: string;
+  /**
+   * Clamped token budget from `agent.thinkingBudget` when the catalog lists
+   * `budget_tokens`. Absent when 0 / model has no budget option.
+   */
+  readonly thinkingBudget?: number;
 };
 
 export type Integration = {
@@ -96,7 +116,7 @@ export type Integration = {
   readonly aliases?: readonly string[];
   readonly refresh?: (
     credential: Credential.OAuth,
-  ) => import("effect").Effect.Effect<Credential.OAuth, OAuthRefreshError>;
+  ) => Effect.Effect<Credential.OAuth, OAuthRefreshError>;
   readonly model: (request: ModelRequest) => Layer.Layer<LanguageModel.LanguageModel, never, never>;
   readonly authorize: (
     credential: Credential.Value,

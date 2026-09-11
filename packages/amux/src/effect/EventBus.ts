@@ -13,10 +13,9 @@ const Notification = S.TaggedStruct("notification", {
 });
 const EventsReady = S.TaggedStruct("events.ready", {});
 const CredentialChanged = S.TaggedStruct("credential.changed", { integration: S.String });
-/** Somebody edited a plugin's source. Each client runs its own plugins from its
- *  own config, so the daemon only carries the request; the reload is local. */
-const PluginsReload = S.TaggedStruct("plugins.reload", { plugin: S.optional(S.String) });
 const ModelsRefreshed = S.TaggedStruct("models.refreshed", {});
+/** A daemon-side plugin reconciliation the daemon just ran; each client reloads its own. */
+const PluginsReloaded = S.TaggedStruct("plugins.reload", { plugin: S.optionalKey(S.String) });
 
 /**
  * Facts a client cannot learn from anything it already receives.
@@ -33,7 +32,7 @@ const EventPayload = S.Union([
   EventsReady,
   CredentialChanged,
   ModelsRefreshed,
-  PluginsReload,
+  PluginsReloaded,
 ]);
 export const DaemonEvent = S.Struct({
   sequence: S.Int.check(S.isGreaterThanOrEqualTo(0)),

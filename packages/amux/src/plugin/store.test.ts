@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
-import { join } from "node:path";
-import { Effect, Scope } from "effect";
+import { join } from "path";
+import { Effect, Option, Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
@@ -24,27 +24,29 @@ test("the store lives under the XDG data dir", () => {
 });
 
 test("parsePackageSpec splits names and pins, scoped included", () => {
-  expect(parsePackageSpec("example-plugin")).toEqual({ name: "example-plugin" });
-  expect(parsePackageSpec("example-plugin@1.2.3")).toEqual({
-    name: "example-plugin",
-    version: "1.2.3",
-  });
-  expect(parsePackageSpec("@scope/example-plugin")).toEqual({ name: "@scope/example-plugin" });
-  expect(parsePackageSpec("@scope/example-plugin@^1.2.0")).toEqual({
-    name: "@scope/example-plugin",
-    version: "^1.2.0",
-  });
+  expect(parsePackageSpec("example-plugin")).toEqual(
+    Option.some({ name: "example-plugin", version: Option.none() }),
+  );
+  expect(parsePackageSpec("example-plugin@1.2.3")).toEqual(
+    Option.some({ name: "example-plugin", version: Option.some("1.2.3") }),
+  );
+  expect(parsePackageSpec("@scope/example-plugin")).toEqual(
+    Option.some({ name: "@scope/example-plugin", version: Option.none() }),
+  );
+  expect(parsePackageSpec("@scope/example-plugin@^1.2.0")).toEqual(
+    Option.some({ name: "@scope/example-plugin", version: Option.some("^1.2.0") }),
+  );
 });
 
 test("parsePackageSpec rejects paths and malformed specs", () => {
-  expect(parsePackageSpec("./relative.ts")).toBeNull();
-  expect(parsePackageSpec("/absolute/path.ts")).toBeNull();
-  expect(parsePackageSpec("")).toBeNull();
-  expect(parsePackageSpec("   ")).toBeNull();
-  expect(parsePackageSpec("has spaces")).toBeNull();
-  expect(parsePackageSpec("name@")).toBeNull();
-  expect(parsePackageSpec("@scope")).toBeNull();
-  expect(parsePackageSpec("!!!")).toBeNull();
+  expect(parsePackageSpec("./relative.ts")).toEqual(Option.none());
+  expect(parsePackageSpec("/absolute/path.ts")).toEqual(Option.none());
+  expect(parsePackageSpec("")).toEqual(Option.none());
+  expect(parsePackageSpec("   ")).toEqual(Option.none());
+  expect(parsePackageSpec("has spaces")).toEqual(Option.none());
+  expect(parsePackageSpec("name@")).toEqual(Option.none());
+  expect(parsePackageSpec("@scope")).toEqual(Option.none());
+  expect(parsePackageSpec("!!!")).toEqual(Option.none());
 });
 
 test("pluginDirFor flattens scoped names and stays inside the store", () => {

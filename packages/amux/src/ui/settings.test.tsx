@@ -94,14 +94,20 @@ const GROUPS: HelpGroup[] = [
 ];
 
 /**
- * The prefix is a row like any other, and a fixed command is not.
+ * The mux prefix and editor leader are rows like any other, and a fixed
+ * command is not.
  *
- * Row 0 being the prefix is what lets one list teach the whole keymap: the key
- * every other binding starts with is edited in the same place as the bindings
- * themselves.
+ * Rows 0/1 being the two prefixes is what lets one list teach the whole
+ * keymap: both prefixes are edited in the same place as the bindings.
  */
-test("the editor enumerates the prefix and every rebindable command", () => {
-  expect(keybindTargets(GROUPS)).toEqual([null, "pane.zoom", "pane.close", "app.quit"]);
+test("the editor enumerates the prefixes and every rebindable command", () => {
+  expect(keybindTargets(GROUPS)).toEqual([
+    null,
+    "$leader",
+    "pane.zoom",
+    "pane.close",
+    "app.quit",
+  ]);
 });
 
 test("the editor hides unbound actions from the keybind list", () => {
@@ -114,13 +120,18 @@ test("the editor hides unbound actions from the keybind list", () => {
 /** The index the key handler acts on and the row drawn on screen are the same
  *  row — which only holds if both count from one enumeration. */
 test("rows carry the selection index they are drawn at", () => {
-  const rows = keybindGroups(GROUPS, "ctrl+a");
+  const rows = keybindGroups(GROUPS, "ctrl+a", "space");
 
   expect(rows.map((g) => g.group)).toEqual(["prefix", "panes", "global", "orphaned"]);
   expect(rows[0]!.entries[0]).toMatchObject({ index: 0, keys: "^a", name: null });
-  expect(rows[1]!.entries.map((e) => e.index)).toEqual([1, 2]);
+  expect(rows[0]!.entries[1]).toMatchObject({
+    index: 1,
+    keys: "SPC",
+    name: "$leader",
+  });
+  expect(rows[1]!.entries.map((e) => e.index)).toEqual([2, 3]);
   // The fixed row is drawn but cannot be landed on.
-  expect(rows[2]!.entries.map((e) => e.index)).toEqual([3, null]);
+  expect(rows[2]!.entries.map((e) => e.index)).toEqual([4, null]);
 });
 
 /**
@@ -152,15 +163,24 @@ test("an orphaned binding is shown, not editable, and labelled as unknown", () =
  * headings and the blank line between groups both count.
  */
 test("a selection index maps to its line in the scrolled list", () => {
-  // prefix heading, prefix row, blank, panes heading, zoom, close, blank...
+  // prefix heading, mux prefix, editor leader, blank, panes heading, zoom, close, blank...
   expect(keybindLine(GROUPS, 0)).toBe(1);
-  expect(keybindLine(GROUPS, 1)).toBe(4);
+  expect(keybindLine(GROUPS, 1)).toBe(2);
   expect(keybindLine(GROUPS, 2)).toBe(5);
-  expect(keybindLine(GROUPS, 3)).toBe(8);
+  expect(keybindLine(GROUPS, 3)).toBe(6);
+  expect(keybindLine(GROUPS, 4)).toBe(9);
+});
+
+test("theme setting explains terminal palette default", () => {
+  const field = settingsFields(resolveOptions({}), "appearance")[0]!;
+  expect(field.name).toBe("appearance.theme");
+  expect(field.hint).toContain("ansi uses the terminal palette");
 });
 
 test("gap setting explains separated borders", () => {
-  const field = settingsFields(resolveOptions({}), "appearance")[0]!;
+  const field = settingsFields(resolveOptions({}), "appearance").find(
+    (entry) => entry.name === "appearance.gap",
+  )!;
   expect(field.hint).toContain("separate pane borders");
 });
 
@@ -174,13 +194,14 @@ test("a section's rows are its options, named as config.set takes them", () => {
   );
   expect(fields.map((field) => field.name)).toEqual(optionsIn("appearance"));
   expect(fields.map((field) => field.label)).toEqual([
+    "theme",
     "gap",
     "outerBorder",
     "padding",
     "whichKeyHints",
     "whichKeyDelay",
   ]);
-  expect(fields.map((field) => field.value)).toEqual(["no", "yes", "no", "no", "1"]);
+  expect(fields.map((field) => field.value)).toEqual(["ansi", "no", "yes", "no", "no", "1"]);
 });
 
 test("the shell setting is displayed as intentionally read-only", () => {
@@ -272,7 +293,8 @@ async function draw(over: Partial<Parameters<typeof Settings>[0]> = {}) {
         section="keybinds"
         selected={0}
         groups={GROUPS}
-        leader="ctrl+a"
+        prefix="ctrl+a"
+        leader="space"
         conflicts={[]}
         capturing={false}
         width={80}
@@ -301,7 +323,7 @@ test("the keybinds tab lists the prefix alongside the commands it prefixes", asy
 });
 
 test("a rebound prefix is what the whole list reads as", async () => {
-  const frame = await draw({ leader: "ctrl+b" });
+  const frame = await draw({ prefix: "ctrl+b" });
 
   // The prefix row shows the new key; the commands keep whatever the keymap
   // handed back, which is the same list re-read after the rebuild.
@@ -337,4 +359,58 @@ test("a failed settings save is visible while the dirty marker remains", async (
   expect(frame).toContain("could not save settings");
   expect(frame).toContain("permission denied");
   expect(frame).toContain("unsaved");
+});
+
+/**
+ * Plugin sections used to receive `{ selected: props.selected }` as a plain
+ * snapshot from Settings' one-shot body, so ↑↓ updated the index but the
+ * highlight never moved. The host must pass a reactive props proxy.
+ */
+test("a plugin section's selection highlight follows selected", async () => {
+  const { createSignal } = await import("solid-js");
+  const t = await createTestRenderer({ width: 80, height: 12 });
+  cleanup.push(() => t.renderer.destroy());
+  const [selected, setSelected] = createSignal(0);
+  await render(
+    () => (
+      <Settings
+        options={resolveOptions({})}
+        section="auth"
+        selected={selected()}
+        groups={[]}
+        prefix="ctrl+a"
+        leader="space"
+        conflicts={[]}
+        capturing={false}
+        width={80}
+        height={12}
+        dirty={false}
+        focus="items"
+        onEditInput={() => {}}
+        onEditSubmit={() => {}}
+        pluginSections={[
+          {
+            id: "auth",
+            label: "auth",
+            rows: () => 2,
+            component: (props) => (
+              <box style={{ flexDirection: "column" }}>
+                <text>{props.selected === 0 ? "> one" : "  one"}</text>
+                <text>{props.selected === 1 ? "> two" : "  two"}</text>
+              </box>
+            ),
+          },
+        ]}
+      />
+    ),
+    t.renderer,
+  );
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("> one");
+  expect(t.captureCharFrame()).toContain("  two");
+
+  setSelected(1);
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("  one");
+  expect(t.captureCharFrame()).toContain("> two");
 });

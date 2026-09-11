@@ -79,6 +79,48 @@ ast-grep run \
 Do not use `from "bun:test"` as the pattern. It is a source fragment made of
 multiple AST nodes, not one replaceable node, and ast-grep rejects it.
 
+## Adding An Effect Service Argument
+
+For a mechanical caller migration, match the complete call shape and dry-run
+against the named file before applying it:
+
+```bash
+ast-grep run \
+  --lang ts \
+  --pattern 'evaluateAgent($AGENT, $REGIONS)' \
+  --rewrite 'evaluateAgent(bundledRegistry(), $AGENT, $REGIONS)' \
+  packages/agent-awareness/src/detector.test.ts \
+  --report-style medium
+```
+
+The rewrite is safe when every match is a test call that should use the same
+fixture service. Add the fixture import separately with `apply_patch`; keeping
+imports out of the rewrite makes the transformation easier to inspect.
+
+## No Dynamic Import In Type Positions
+
+`no-dynamic-import-in-types.yml` errors on `import('mod').Name` used as a type
+(parameter annotations, return types, aliases, generics, `as`/`satisfies`,
+class heritage, and similar). It does not match value-level `import()` calls
+or `typeof import('mod')`. Prefer a static `import type` and reference the
+binding.
+
+```bash
+ast-grep scan \
+  --rule tools/ast-grep/rules/no-dynamic-import-in-types.yml \
+  tools/ast-grep/tests/no-dynamic-import-in-types.ts \
+  --report-style medium
+```
+
+Gotcha: tree-sitter-typescript sometimes fails to parse `import('mod').T` in
+an `interface … extends` clause, so that shape can be a silent miss. Function
+signatures, aliases, and annotations are reliable.
+
+Gotcha: `satisfies` / `as` with `stopBy: end` would also match value-level
+`import('m').then(...)` nested under the expression. The rule excludes any
+match that sits inside a `call_expression` so lazy-load `.then` chains stay
+legal (see WorkspaceTransaction worktree ops).
+
 ## Diagnostic-Only Rules
 
 Use a rule without `fix` when the match needs semantic review. This finds
@@ -249,6 +291,44 @@ ast-grep scan \
 Gotcha: a ternary pattern's `$A === $X ? $B : $A === $Y ? $D : $E` must be
 single-quoted in YAML — the unquoted plain scalar parses the `: ` sequences as
 nested mappings and the rule file fails to load.
+
+## Effect.scoped Around Effect.gen
+
+Flip the wrapper form to the pipeable operator when the argument is a bare
+`Effect.gen(...)` call. Dry-run first:
+
+```bash
+ast-grep run --lang ts \
+  --pattern 'Effect.scoped(Effect.gen($A))' \
+  --rewrite 'Effect.gen($A).pipe(Effect.scoped)' \
+  packages --globs '**/*.{ts,tsx}'
+```
+
+`$A` is enough here: every match in this tree is a single generator-function
+argument. Use `$$$A` if you also need `Effect.gen(this, function* () { ... })`.
+The rewrite leaves a double `.pipe` when the original already chained one
+(e.g. `.pipe(Effect.provide(...))`); collapse that separately if you want a
+single pipe:
+
+```bash
+ast-grep run --lang ts \
+  --pattern '$E.pipe(Effect.scoped).pipe($$$REST)' \
+  --rewrite '$E.pipe(Effect.scoped, $$$REST)' \
+  packages --globs '**/*.{ts,tsx}'
+```
+
+Use `$$$REST`, not `$NEXT`: a single metavariable misses a multi-arg second
+pipe (e.g. `.pipe(Effect.provide(...), Effect.provideService(...))`).
+
+Apply only after inspecting the preview:
+
+```bash
+ast-grep run --lang ts \
+  --pattern 'Effect.scoped(Effect.gen($A))' \
+  --rewrite 'Effect.gen($A).pipe(Effect.scoped)' \
+  packages --globs '**/*.{ts,tsx}' \
+  --update-all
+```
 
 ## Applying A Reviewed Rule
 

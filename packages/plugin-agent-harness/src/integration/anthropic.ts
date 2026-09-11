@@ -4,6 +4,7 @@ import { Layer, Redacted } from "effect";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type { Credential } from "../credential.ts";
 import type { Integration } from "./types.ts";
+import { anthropicThinkingConfig } from "./thinking.ts";
 
 const key = (credential: Credential.Value) =>
   credential.type === "key" ? credential.key : credential.access;
@@ -13,11 +14,18 @@ export const anthropic: Integration = {
   label: "Anthropic",
   methods: [{ type: "key", label: "API key" }],
   env: ["ANTHROPIC_API_KEY"],
-  model: ({ model, transformClient }) =>
-    AnthropicLanguageModel.layer({ model }).pipe(
-      Layer.provide(AnthropicClient.layer({ transformClient })),
-      Layer.provide(FetchHttpClient.layer),
-    ),
+  model: ({ model, transformClient, thinking, thinkingBudget }) => {
+    const config = anthropicThinkingConfig(thinking, thinkingBudget);
+    return config !== undefined
+      ? AnthropicLanguageModel.layer({ model, config: config as never }).pipe(
+          Layer.provide(AnthropicClient.layer({ transformClient })),
+          Layer.provide(FetchHttpClient.layer),
+        )
+      : AnthropicLanguageModel.layer({ model }).pipe(
+          Layer.provide(AnthropicClient.layer({ transformClient })),
+          Layer.provide(FetchHttpClient.layer),
+        );
+  },
   authorize: (credential, request) =>
     HttpClientRequest.setHeader("x-api-key", Redacted.value(key(credential)))(request),
 };

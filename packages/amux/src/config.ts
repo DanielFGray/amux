@@ -3,7 +3,7 @@
 // not something to half-apply in one file.
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { dirname, join } from "node:path";
-import { DEFAULT_LEADER, type Keys } from "./bindings.ts";
+import { DEFAULT_LEADER, DEFAULT_PREFIX, type Keys } from "./bindings.ts";
 import { type OptionDeltas } from "./options.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import { Config as EffectConfig, Effect, Option, Schema as S } from "effect";
@@ -56,7 +56,7 @@ export interface Config {
 
 export const DEFAULT_CONFIG: Config = {
   options: {},
-  keys: { leader: DEFAULT_LEADER, bindings: {} },
+  keys: { prefix: DEFAULT_PREFIX, leader: DEFAULT_LEADER, bindings: {} },
   // Bare amux is tmux with nothing extra loaded: no plugin is active until
   // the user names one, by path or by installed package.
   plugins: [],
@@ -79,7 +79,11 @@ export const CONFIG_DIR = Effect.runSync(
 export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json");
 
 const KeysSchema = S.Struct({
+  // Optional so a pre-rename file ({ leader: mux-chord }) still decodes;
+  // {@link decodeConfig} migrates it into prefix + leader.
+  prefix: S.optional(JsonValueSchema),
   leader: JsonValueSchema.pipe(S.withDecodingDefaultType(Effect.succeed(DEFAULT_LEADER))),
+  localleader: S.optional(JsonValueSchema),
   bindings: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),
 });
 
@@ -98,7 +102,13 @@ const DEFAULT_PLUGINS_JSON: readonly JsonValue[] = [];
 const ConfigSchema = S.Struct({
   options: S.Record(S.String, JsonValueSchema).pipe(S.withDecodingDefaultType(Effect.succeed({}))),
   keys: KeysSchema.pipe(
-    S.withDecodingDefaultType(Effect.succeed({ leader: DEFAULT_LEADER, bindings: {} })),
+    S.withDecodingDefaultType(
+      Effect.succeed({
+        prefix: DEFAULT_PREFIX,
+        leader: DEFAULT_LEADER,
+        bindings: {},
+      }),
+    ),
   ),
   plugins: S.Array(JsonValueSchema).pipe(
     S.withDecodingDefaultType(Effect.succeed(DEFAULT_PLUGINS_JSON)),
@@ -119,12 +129,27 @@ export function decodeConfig(loaded: JsonValue): Config {
     S.decodeSync(ConfigSchema)({}),
   );
   const keys = decoded.keys;
-  const leader = Option.getOrElse(
-    S.decodeUnknownOption(S.String.pipe(S.check(S.makeFilter((value) => value.trim().length > 0))))(
-      keys.leader,
-    ),
-    () => DEFAULT_LEADER,
-  );
+  const nonEmpty = S.String.pipe(S.check(S.makeFilter((value) => value.trim().length > 0)));
+  const readString = (value: JsonValue | undefined, fallback: string) =>
+    Option.getOrElse(
+      Option.flatMap(Option.fromNullishOr(value), (v) => S.decodeUnknownOption(nonEmpty)(v)),
+      () => fallback,
+    );
+
+  // Pre-rename configs stored the mux chord under `keys.leader` and (briefly)
+  // the editor chord under `keys.localleader`. New shape: `prefix` + `leader`.
+  const legacy = keys.prefix === undefined;
+  const prefix = legacy
+    ? readString(keys.leader, DEFAULT_PREFIX)
+    : readString(keys.prefix, DEFAULT_PREFIX);
+  const leader = legacy
+    ? readString(keys.localleader, DEFAULT_LEADER)
+    : readString(keys.leader, DEFAULT_LEADER);
+
+  const rewriteToken = (key: string): string => {
+    if (!legacy) return key;
+    return key.replaceAll("<leader>", "<prefix>").replaceAll("<localleader>", "<leader>");
+  };
   const bindings = Object.fromEntries(
     Object.entries(keys.bindings).flatMap(([name, value]) => {
       const entries = S.decodeUnknownOption(S.Array(JsonValueSchema))(value);
@@ -134,7 +159,7 @@ export function decodeConfig(loaded: JsonValue): Config {
           name,
           entries.value.flatMap((key) => {
             const decoded = S.decodeUnknownOption(S.String.pipe(S.check(S.isMinLength(1))))(key);
-            return Option.isSome(decoded) ? [decoded.value] : [];
+            return Option.isSome(decoded) ? [rewriteToken(decoded.value)] : [];
           }),
         ],
       ];
@@ -151,7 +176,7 @@ export function decodeConfig(loaded: JsonValue): Config {
   });
   return {
     options: { ...decoded.options },
-    keys: { leader, bindings },
+    keys: { prefix, leader, bindings },
     plugins,
     permissions,
   };

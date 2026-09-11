@@ -12,6 +12,7 @@ import {
   Layer,
   Match,
   Option,
+  Queue,
   Ref,
   Result,
   Schedule,
@@ -21,7 +22,8 @@ import {
   Stream,
 } from "effect";
 import * as FileSystem from "effect/FileSystem";
-import { BunFileSystem } from "@effect/platform-bun";
+import { BunFileSystem, BunServices } from "@effect/platform-bun";
+import { captureRootRuntime, provideRootServices } from "./env.ts";
 import * as SocketServer from "effect/unstable/socket/SocketServer";
 import * as Socket from "effect/unstable/socket/Socket";
 import * as NodeSocketServer from "@effect/platform-node-shared/NodeSocketServer";
@@ -62,6 +64,8 @@ import {
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import type { PlatformError } from "effect/PlatformError";
 import type { BufferEntry } from "./effect/BufferStore.ts";
+import type { DocumentMeta, DocumentSnapshot, TextEdit } from "@danielfgray/amux-text-buffer";
+import { pathFromDocumentUri } from "./document-uri.ts";
 import type {
   ManagedSession,
   PromptOptions,
@@ -101,6 +105,7 @@ import {
   markSessionExited,
   markSessionUnavailable,
   parseWorkspaceCommandContext,
+  applyPaneAgentSession,
   workspaceFromSession,
   workspacePaneOf,
   workspaceSession,
@@ -108,11 +113,35 @@ import {
   type WorkspaceCommandContext,
   type WorkspaceSnapshot,
 } from "./workspace.ts";
+import { paneAgentSessionSnapshot, type AgentSessionRecord } from "./agent-session.ts";
+import {
+  AgentResumeClaimsLive,
+  AgentResumeClaimsTag,
+} from "./agent-resume.ts";
+import {
+  paneRestoreStartup,
+  PendingAgentResumesLive,
+  PendingAgentResumesTag,
+} from "./agent-restore.ts";
+import {
+  ForeignHarnessAdaptersTag,
+  ForeignHarnessAdapterTable,
+  makeForeignHarnessAdapters,
+} from "./foreign-harness.ts";
 import { gitWorktreeExists } from "./git.ts";
 import { layoutRefs, paneSession } from "./layout.ts";
 import { createHeadlessKeyParser, parseSendKeys } from "./send.ts";
 import { encodeKey } from "./keys.ts";
 import { errorMessage } from "./error-message.ts";
+import {
+  enrichProcessPluginPaneEnv,
+  processPluginInvocationContextFromWorkspace,
+  resolveProcessPluginAction,
+  resolveProcessPluginPane,
+  runProcessPluginStartups,
+  spawnProcessPluginActionDetached,
+} from "./process-plugin/index.ts";
+import { fileURLToPath } from "node:url";
 
 const describe = errorMessage;
 
@@ -223,10 +252,42 @@ export interface SessionDaemonService {
   readonly listBuffers: Effect.Effect<readonly BufferEntry[], DaemonError>;
   readonly deleteBuffer: (n: string | undefined) => Effect.Effect<void, DaemonError>;
   readonly showBuffer: (n: string | undefined) => Effect.Effect<string, DaemonError>;
+  readonly documentOpen: (uri: string, text?: string) => Effect.Effect<DocumentMeta, DaemonError>;
+  readonly documentApply: (
+    uri: string,
+    baseGeneration: number,
+    edits: readonly TextEdit[],
+  ) => Effect.Effect<DocumentMeta, DaemonError>;
+  readonly documentWrite: (
+    uri: string,
+    baseGeneration: number,
+    text: string,
+  ) => Effect.Effect<DocumentMeta, DaemonError>;
+  readonly documentSnapshot: (uri: string) => Effect.Effect<DocumentSnapshot, DaemonError>;
+  readonly documentSlice: (
+    uri: string,
+    start: number,
+    end: number,
+  ) => Effect.Effect<readonly string[], DaemonError>;
+  readonly documentSave: (uri: string) => Effect.Effect<DocumentMeta, DaemonError>;
+  readonly documentClose: (uri: string, force?: boolean) => Effect.Effect<void, DaemonError>;
+  readonly documentList: Effect.Effect<readonly DocumentMeta[], DaemonError>;
   readonly getState: Effect.Effect<SessionState, never>;
   readonly getWorkspace: Effect.Effect<WorkspaceSnapshot, never>;
   readonly getAttachedClients: Effect.Effect<string[], never>;
   readonly getAttachedClient: Effect.Effect<string | null, never>;
+  /**
+   * Start a deferred foreign-agent resume once geometry has settled. Used by
+   * tests and by the attach resize path (`onDeferredResume`).
+   */
+  readonly flushPendingAgentResume: (
+    sessionId: string,
+    cols: number,
+    rows: number,
+    dirty?: boolean,
+  ) => Effect.Effect<boolean, DaemonError>;
+  /** Session ids still waiting on a settled size before native agent resume. */
+  readonly pendingAgentResumeSessions: () => readonly string[];
 }
 
 export const SessionDaemon = Context.Service<SessionDaemonService>("@amux/SessionDaemon");
@@ -249,6 +310,10 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const closed = yield* Deferred.make<void>();
   const fs = yield* FileSystem.FileSystem;
   const agentLog = yield* makeAgentLog(paths.root);
+  /** Foreign-agent resume: claim once per conversation; defer spawn until size settles. */
+  const resumeClaims = yield* AgentResumeClaimsTag;
+  const pendingResumes = yield* PendingAgentResumesTag;
+  const harnessAdapters = new ForeignHarnessAdapterTable();
 
   yield* ensurePrivateDirectory(paths.root);
 
@@ -397,6 +462,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     (owner, registration: TilingAlgorithmRegistration) =>
       tilingAlgorithmTable.add(owner, registration.algorithm.id, registration),
   );
+  const foreignHarnessAdapters = makeForeignHarnessAdapters(harnessAdapters, (_owner, adapter) =>
+    harnessAdapters.register(adapter),
+  );
   const daemonCoreEntries: readonly PluginDefinition[] = [
     {
       id: "amux.registry.daemon-commands",
@@ -407,6 +475,12 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       id: "amux.registry.tiling-algorithms",
       provide: [TilingAlgorithmsTag],
       activate: (ctx) => Effect.sync(() => void ctx.provide(TilingAlgorithmsTag, tilingAlgorithms)),
+    },
+    {
+      id: "amux.registry.foreign-harness-adapters",
+      provide: [ForeignHarnessAdaptersTag],
+      activate: (ctx) =>
+        Effect.sync(() => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters)),
     },
   ];
 
@@ -463,6 +537,28 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       );
 
   /**
+   * Persist a trusted agent session ref onto the pane in session.json shortly
+   * after the report arrives. Immediate (no debounce): a hard kill after the
+   * atomic rename is the failure mode this exists for, and the daemon — not
+   * the client — owns the write (herdr snapshot.rs / session.save).
+   */
+  const persistAgentSession = (record: AgentSessionRecord) =>
+    enqueue(
+      Effect.gen(function* () {
+        const cur = yield* model.get;
+        const next = applyPaneAgentSession(
+          cur.workspace,
+          record.paneId,
+          paneAgentSessionSnapshot(record),
+        );
+        if (!next) return;
+        const candidate = workspaceSession(next, cur.state);
+        yield* persist(candidate);
+        yield* model.commitWorkspace(next, candidate);
+      }),
+    );
+
+  /**
    * Spawn a session against a specific host. The one place the injected
    * `options.spawnSession` override is honored, so both the lifecycle Start
    * handler (resuming persisted sessions) and the `spawn` procedure (the
@@ -475,6 +571,49 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     (options.spawnSession ? options.spawnSession(spec) : host.spawn(spec)).pipe(
       Effect.mapError((e) => new DaemonError({ message: describe(e) })),
     );
+
+  /**
+   * Start a deferred foreign-agent resume once geometry has settled. Returns
+   * true when a pending plan was taken and spawned at (cols, rows).
+   */
+  const flushPendingAgentResume = (
+    sessionId: string,
+    cols: number,
+    rows: number,
+    dirty = false,
+  ): Effect.Effect<boolean, DaemonError> =>
+    Effect.gen(function* () {
+      const phase = yield* Ref.get(stateRef);
+      const live = hostOf(phase);
+      if (!live) return false;
+      const ready = pendingResumes.takeReady(sessionId, { cols, rows, dirty });
+      if (Option.isNone(ready)) return false;
+      const entry = ready.value;
+      const spec = {
+        kind: entry.extras?.kind ?? "pty",
+        id: entry.sessionId,
+        cmd: [...entry.plan.argv],
+        cwd: entry.cwd,
+        rpcPath: entry.extras?.rpcPath ?? paths.socket,
+        daemonSession: entry.extras?.daemonSession ?? id,
+        cols: entry.cols,
+        rows: entry.rows,
+      };
+      const withPane =
+        entry.paneId === undefined ? spec : { ...spec, paneId: entry.paneId };
+      const withAgent =
+        entry.extras?.declaredAgent === undefined
+          ? withPane
+          : { ...withPane, agent: entry.extras.declaredAgent };
+      yield* rawSpawn(withAgent, live.host).pipe(
+        Effect.catch((error) => {
+          pendingResumes.requeue(entry);
+          resumeClaims.release(entry.plan.dedupeKey);
+          return Effect.fail(error);
+        }),
+      );
+      return true;
+    });
 
   /** Lift a synchronous host call (buffers throw on a missing target) into
    *  the daemon's typed error channel. */
@@ -566,7 +705,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         );
 
       const config =
-        options.pluginConfig ?? (yield* loadConfig().pipe(Effect.provide(BunFileSystem.layer)));
+        options.pluginConfig ?? (yield* provideRootServices(loadConfig()));
       const kernel = yield* startDaemonKernel({
         scope: daemonScope,
         contributions: pluginContributions,
@@ -584,6 +723,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           onSessionExit: (sid, code) => sessionExitEffect(sid, code).pipe(Effect.ignore),
           onSessionState: (sid, s) =>
             eventBus.publish({ _tag: "session.state", session: sid, state: s }),
+          onAgentSession: (record) => persistAgentSession(record).pipe(Effect.ignore),
+          onDeferredResume: (sessionId, cols, rows) =>
+            flushPendingAgentResume(sessionId, cols, rows).pipe(Effect.orElseSucceed(() => false)),
           agentLog,
         },
         agentLog,
@@ -625,7 +767,33 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             for (const a of w.sessions) {
               if (a.exited || a.kind === "component") continue;
               const pane = findPaneBySession(next, a.id);
-              const spec: SessionSpec = {
+              // Native agent resume: park the plan until a client resize
+              // settles geometry. Spawning at persisted cols/rows now would
+              // lay the transcript out at the wrong width (herdr's gate).
+              const startup = paneRestoreStartup(pane?.agentSession, undefined, {
+                resumeEnabled: true,
+                claims: resumeClaims,
+                adapters: foreignHarnessAdapters,
+              });
+              if (Option.isSome(startup.restorePlan)) {
+                pendingResumes.enqueue({
+                  sessionId: a.id,
+                  paneId: pane?.id,
+                  cwd: a.cwd,
+                  plan: startup.restorePlan.value,
+                  extras:
+                    a.declaredAgent === undefined
+                      ? { kind: "pty" as const, rpcPath: paths.socket, daemonSession: id }
+                      : {
+                          kind: "pty" as const,
+                          rpcPath: paths.socket,
+                          daemonSession: id,
+                          declaredAgent: a.declaredAgent,
+                        },
+                });
+                continue;
+              }
+              const spec = {
                 kind: a.kind,
                 id: a.id,
                 cmd: a.cmd ?? [],
@@ -635,8 +803,9 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 cols: a.cols,
                 rows: a.rows,
               };
+              const withEnv = a.env === undefined ? spec : { ...spec, env: a.env };
               const withAgent =
-                a.declaredAgent === undefined ? spec : { ...spec, agent: a.declaredAgent };
+                a.declaredAgent === undefined ? withEnv : { ...withEnv, agent: a.declaredAgent };
               const finalSpec = pane === null ? withAgent : { ...withAgent, paneId: pane.id };
               yield* rawSpawn(finalSpec, host).pipe(
                 Effect.catch((error) => {
@@ -651,6 +820,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         const newState = workspaceSession(next, cur.state);
         if (changed) yield* persist(newState);
         yield* model.commitWorkspace(next, newState);
+        host.hydrateAgentSessions(next);
       }).pipe(enqueue);
 
       const curSpace = yield* model.workspace;
@@ -738,6 +908,21 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         daemonScope,
       );
 
+      // herdr: startup hooks after restore + socket ready. Scoped into
+      // daemonScope so shutdown kills long-lived plugin processes.
+      // Scope.provide satisfies the startups' forkScoped children; forkIn
+      // alone only hosts the outer fiber and does not inject Scope.
+      const amuxCli = fileURLToPath(new URL("./cli.ts", import.meta.url));
+      yield* Effect.forkIn(
+        runProcessPluginStartups({
+          daemonSession: id,
+          controlSocket: paths.socket,
+          processStateSocket: paths.processState,
+          binPath: amuxCli,
+        }).pipe(Effect.provide(BunServices.layer), Scope.provide(daemonScope)),
+        daemonScope,
+      );
+
       return [void 0, { _tag: "running", host, kernel, controlScope, heartbeatFiber }] as const;
     }).pipe(toDaemonError),
   );
@@ -746,7 +931,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     dispatch((state) =>
       Effect.gen(function* () {
         if (state._tag === "closed") return [void 0, state] as const;
-        let finalFailure: string | null = null;
         if (state._tag === "running") {
           yield* Fiber.interrupt(state.heartbeatFiber);
           yield* Scope.close(state.controlScope, Exit.void);
@@ -771,33 +955,40 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           yield* fs.remove(paths.attach).pipe(Effect.ignore);
         }
 
+        const finalFailure =
+          mode === "stop"
+            ? Option.none<string>()
+            : yield* enqueue(
+                Effect.gen(function* () {
+                  const cur = yield* model.get;
+                  const newState = {
+                    ...cur.state,
+                    attached: false,
+                    updatedAt: yield* Clock.currentTimeMillis,
+                  };
+                  const result = yield* Effect.exit(
+                    persist(newState).pipe(Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`)),
+                  );
+                  yield* model.updateState(newState);
+                  yield* model.setAttachments(new Map());
+                  yield* model.commitWorkspace(cur.workspace, newState);
+                  return Exit.isFailure(result)
+                    ? Option.some(describe(Cause.squash(result.cause)))
+                    : Option.none<string>();
+                }),
+              );
+
         if (mode === "stop") {
           yield* session.remove(id);
-        } else {
-          yield* enqueue(
-            Effect.gen(function* () {
-              const cur = yield* model.get;
-              const newState = {
-                ...cur.state,
-                attached: false,
-                updatedAt: yield* Clock.currentTimeMillis,
-              };
-              const result = yield* Effect.exit(
-                persist(newState).pipe(Effect.timeout(`${SHUTDOWN_SAVE_TIMEOUT_MS} millis`)),
-              );
-              if (Exit.isFailure(result)) finalFailure = describe(Cause.squash(result.cause));
-              yield* model.updateState(newState);
-              yield* model.setAttachments(new Map());
-              yield* model.commitWorkspace(cur.workspace, newState);
-            }),
-          );
         }
 
         yield* fs.remove(paths.socket).pipe(Effect.ignore);
         yield* fs.remove(paths.lease).pipe(Effect.ignore);
         yield* Scope.close(lockScope, Exit.void);
-        if (finalFailure !== null) return yield* new DaemonError({ message: finalFailure });
-        return [void 0, { _tag: "closed" }] as const;
+        return yield* Option.match(finalFailure, {
+          onSome: (message) => Effect.fail(new DaemonError({ message })),
+          onNone: () => Effect.succeed([void 0, { _tag: "closed" }] as const),
+        });
       }).pipe(toDaemonError),
     );
 
@@ -889,6 +1080,114 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         ? bufferOp(() => new TextDecoder().decode(live.host.buffers.show(name))).pipe(
             Effect.map((text) => [text, state] as const),
           )
+        : Effect.fail(new DaemonError({ message: "daemon not started" }));
+    });
+
+  const documentResult = <A>(
+    result: Result.Result<A, { readonly message: string }>,
+  ): Effect.Effect<A, DaemonError> =>
+    Result.match(result, {
+      onSuccess: (value) => Effect.succeed(value),
+      onFailure: (error) => Effect.fail(new DaemonError({ message: error.message })),
+    });
+
+  const documentOpenEvent = (
+    uri: string,
+    text: string | undefined,
+  ): Effect.Effect<DocumentMeta, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      if (!live) return Effect.fail(new DaemonError({ message: "daemon not started" }));
+      return Effect.gen(function* () {
+        let content = text;
+        if (content === undefined) {
+          const path = yield* pathFromDocumentUri(uri).pipe(toDaemonError);
+          const exists = yield* fs.exists(path).pipe(toDaemonError);
+          content = exists ? yield* fs.readFileString(path).pipe(toDaemonError) : "";
+        }
+        return [live.host.documents.open(uri, content), state] as const;
+      });
+    });
+
+  const documentApplyEvent = (
+    uri: string,
+    baseGeneration: number,
+    edits: readonly TextEdit[],
+  ): Effect.Effect<DocumentMeta, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      if (!live) return Effect.fail(new DaemonError({ message: "daemon not started" }));
+      return documentResult(live.host.documents.apply(uri, baseGeneration, edits)).pipe(
+        Effect.map((meta) => [meta, state] as const),
+      );
+    });
+
+  const documentWriteEvent = (
+    uri: string,
+    baseGeneration: number,
+    text: string,
+  ): Effect.Effect<DocumentMeta, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      if (!live) return Effect.fail(new DaemonError({ message: "daemon not started" }));
+      return documentResult(live.host.documents.write(uri, baseGeneration, text)).pipe(
+        Effect.map((meta) => [meta, state] as const),
+      );
+    });
+
+  const documentSnapshotEvent = (uri: string): Effect.Effect<DocumentSnapshot, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      if (!live) return Effect.fail(new DaemonError({ message: "daemon not started" }));
+      return Option.match(live.host.documents.snapshot(uri), {
+        onNone: () => Effect.fail(new DaemonError({ message: `document '${uri}' is not open` })),
+        onSome: (snap) => Effect.succeed([snap, state] as const),
+      });
+    });
+
+  const documentSliceEvent = (
+    uri: string,
+    start: number,
+    end: number,
+  ): Effect.Effect<readonly string[], DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      if (!live) return Effect.fail(new DaemonError({ message: "daemon not started" }));
+      return Option.match(live.host.documents.sliceLines(uri, start, end), {
+        onNone: () => Effect.fail(new DaemonError({ message: `document '${uri}' is not open` })),
+        onSome: (lines) => Effect.succeed([lines, state] as const),
+      });
+    });
+
+  const documentSaveEvent = (uri: string): Effect.Effect<DocumentMeta, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      if (!live) return Effect.fail(new DaemonError({ message: "daemon not started" }));
+      return Effect.gen(function* () {
+        const text = yield* Option.match(live.host.documents.textForSave(uri), {
+          onNone: () => Effect.fail(new DaemonError({ message: `document '${uri}' is not open` })),
+          onSome: (value) => Effect.succeed(value),
+        });
+        const path = yield* pathFromDocumentUri(uri).pipe(toDaemonError);
+        yield* fs.writeFileString(path, text).pipe(toDaemonError);
+        return [yield* documentResult(live.host.documents.markSaved(uri)), state] as const;
+      });
+    });
+
+  const documentCloseEvent = (uri: string, force: boolean): Effect.Effect<void, DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      if (!live) return Effect.fail(new DaemonError({ message: "daemon not started" }));
+      return documentResult(live.host.documents.close(uri, { force })).pipe(
+        Effect.map(() => [void 0, state] as const),
+      );
+    });
+
+  const documentListEvent = (): Effect.Effect<readonly DocumentMeta[], DaemonError> =>
+    dispatch((state) => {
+      const live = hostOf(state);
+      return live
+        ? Effect.succeed([live.host.documents.list(), state] as const)
         : Effect.fail(new DaemonError({ message: "daemon not started" }));
     });
 
@@ -1014,7 +1313,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     function* (mode: "stop" | "close") {
       if (terminationShared) return;
       yield* model.markClosing;
-      const context = yield* Effect.context<never>();
+      const context = yield* captureRootRuntime;
       // The teardown runs detached: it must survive even when the caller is a
       // fiber the daemon scope owns (the last-pane stop is forked from inside
       // the model queue), because closing the daemon scope interrupts exactly
@@ -1072,25 +1371,23 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
 
   /**
-   * Which session `pane.capture` reads: the one named directly, or the one a
-   * named pane shows, or — for `--current` — the one the calling pane shows.
-   * Resolved here, on the daemon, never substituted by the CLI. The context is
-   * consulted only when the target is the caller, so a capture named by
-   * session id needs no workspace command context at all.
+   * Which session `pane.capture` reads when the daemon can answer alone: the
+   * one named directly, or the one a named / calling pane shows. Null means
+   * the pane is client-only (plugin view, no pty) — not a resolution failure:
+   * the caller falls through to `runOnClient`, the only place a Solid pane's
+   * pixels exist. Cite: resolveSendKeysTarget's sessionless fallthrough.
    */
   const resolveCaptureSession = (
     value: Extract<Command, { _tag: "pane.capture" }>,
     context: WorkspaceCommandRequestContext | undefined,
     workspace: WorkspaceSnapshot,
-  ): Effect.Effect<string, ControlError> =>
+  ): Effect.Effect<string | null, ControlError> =>
     Effect.gen(function* () {
       if (value.session) return value.session;
       if (value.pane) {
         const found = workspacePaneOf(workspace, value.pane);
-        const session = found ? paneSession(found.pane.content) : null;
-        if (!session)
-          return yield* new ControlError({ message: `pane '${value.pane}' has no session` });
-        return session;
+        if (!found) return yield* new ControlError({ message: `pane '${value.pane}' not found` });
+        return paneSession(found.pane.content) ?? null;
       }
       if (value.current) {
         const ctx = yield* parseWorkspaceCommandContext(context ?? {}, workspace).pipe(
@@ -1099,16 +1396,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         if (ctx.agent) return ctx.agent;
         if (ctx.pane) {
           const found = workspacePaneOf(workspace, ctx.pane);
-          const session = found ? paneSession(found.pane.content) : null;
-          if (session) return session;
+          return found ? (paneSession(found.pane.content) ?? null) : null;
         }
         return yield* new ControlError({
           message: "pane.capture --current needs a managed pane",
         });
       }
-      return yield* new ControlError({
-        message: "pane.capture requires a session id or a pane",
-      });
+      // No target at all: human keybind opens the overlay on the client.
+      return null;
     });
 
   /**
@@ -1218,9 +1513,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       const session = yield* resolveSendKeysTarget(command, context, cur.workspace);
       if (session) {
         const config =
-          options.pluginConfig ?? (yield* loadConfig().pipe(Effect.provide(BunFileSystem.layer)));
+          options.pluginConfig ?? (yield* provideRootServices(loadConfig()));
         const events = yield* Effect.try({
-          try: () => parseSendKeys(command.keys, createHeadlessKeyParser(config.keys.leader)),
+          try: () =>
+            parseSendKeys(
+              command.keys,
+              createHeadlessKeyParser(config.keys.prefix, config.keys.leader),
+            ),
           catch: (error) => new ControlError({ message: describe(error) }),
         });
         const host = yield* requireHost;
@@ -1232,6 +1531,19 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               .pipe(Effect.mapError((error) => new ControlError({ message: describe(error) })));
         }
         return {};
+      }
+    }
+    // Session-backed capture stays on the daemon (pty grid). A plugin pane
+    // has no session — fall through to the client, which crops the live
+    // OpenTUI frame. A bare `pane.capture` (human keybind) also falls through
+    // so the client can open its overlay.
+    if (command._tag === "pane.capture") {
+      const cur = yield* model.get;
+      const session = yield* resolveCaptureSession(command, context, cur.workspace);
+      if (session) {
+        return {
+          result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))),
+        };
       }
     }
     if (meta.target === "view")
@@ -1257,8 +1569,41 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     if (meta.target === "workspace") {
       const cur = yield* model.get;
       const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+      let workspaceCommand: Command | RuntimeCommand = command;
+      if (command._tag === "process-plugin.pane.open") {
+        const pluginContext = processPluginInvocationContextFromWorkspace({
+          workspace: cur.workspace,
+          commandContext: ctx,
+          invocationSource: "daemon",
+          correlationId: "process-plugin-pane",
+        });
+        const resolved = yield* resolveProcessPluginPane(command.plugin, command.entrypoint, {
+          binPath: fileURLToPath(new URL("./cli.ts", import.meta.url)),
+          controlSocket: paths.socket,
+          processStateSocket: paths.processState,
+          daemonSession: id,
+          context: pluginContext,
+        }).pipe(
+          Effect.provide(BunServices.layer),
+          Effect.mapError((message) => new ControlError({ message })),
+        );
+        workspaceCommand = {
+          ...command,
+          command: [...resolved.argv],
+          env: enrichProcessPluginPaneEnv(resolved.env, {
+            context: pluginContext,
+            controlSocket: paths.socket,
+            processStateSocket: paths.processState,
+            binPath: fileURLToPath(new URL("./cli.ts", import.meta.url)),
+          }),
+          cwd: resolved.cwd,
+          title: resolved.title,
+          placement: resolved.placement,
+          transient: resolved.transient,
+        };
+      }
       const output = yield* runWorkspaceCommand(
-        command,
+        workspaceCommand,
         expectedRevision ?? cur.workspace.revision,
         ctx,
       );
@@ -1289,14 +1634,38 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             const live = hostOf(yield* Ref.get(stateRef));
             if (!live) return yield* controlFail("daemon not started");
             const config =
-              options.pluginConfig ??
-              (yield* loadConfig().pipe(Effect.provide(BunFileSystem.layer)));
+              options.pluginConfig ?? (yield* provideRootServices(loadConfig()));
             yield* live.kernel
               .reload(config)
               .pipe(Effect.mapError((message) => new DaemonError({ message })));
             if (command.plugin === undefined) yield* eventBus.publish({ _tag: "plugins.reload" });
             else yield* eventBus.publish({ _tag: "plugins.reload", plugin: command.plugin });
             return {};
+          }),
+        ),
+        Match.tag("process-plugin.action.invoke", (invoke) =>
+          Effect.gen(function* () {
+            const cur = yield* model.get;
+            const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+            const resolved = yield* resolveProcessPluginAction(invoke.plugin, invoke.action, {
+              binPath: fileURLToPath(new URL("./cli.ts", import.meta.url)),
+              controlSocket: paths.socket,
+              processStateSocket: paths.processState,
+              daemonSession: id,
+              context: processPluginInvocationContextFromWorkspace({
+                workspace: cur.workspace,
+                commandContext: ctx,
+                invocationSource: "daemon",
+                correlationId: "process-plugin-action",
+              }),
+            }).pipe(
+              Effect.provide(BunServices.layer),
+              Effect.mapError((message) => new ControlError({ message })),
+            );
+            const { pid } = yield* spawnProcessPluginActionDetached(resolved).pipe(
+              Effect.mapError((message) => new ControlError({ message })),
+            );
+            return { result: { pid } };
           }),
         ),
         Match.orElse((command) =>
@@ -1311,15 +1680,6 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             Effect.flatMap((h) => h.message(command.target, command.message)),
             Effect.as({}),
           ),
-        ),
-        Match.tag("pane.capture", (command) =>
-          // The capture target is a session: named directly, or a named or
-          // calling pane resolved server-side to the session it shows.
-          Effect.gen(function* () {
-            const cur = yield* model.get;
-            const session = yield* resolveCaptureSession(command, context, cur.workspace);
-            return { result: yield* requireHost.pipe(Effect.flatMap((h) => h.capture(session))) };
-          }),
         ),
         Match.tag("notify", (command) =>
           eventBus
@@ -1479,6 +1839,44 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
     ShowBuffer: ({ name }) => guard(showBuffer(name)),
 
+    DocumentOpen: ({ uri, text }) => guard(documentOpen(uri, text)),
+    DocumentApply: ({ uri, baseGeneration, edits }) =>
+      guard(documentApply(uri, baseGeneration, edits)),
+    DocumentWrite: ({ uri, baseGeneration, text }) =>
+      guard(documentWrite(uri, baseGeneration, text)),
+    DocumentSnapshot: ({ uri }) => guard(documentSnapshot(uri)),
+    DocumentSlice: ({ uri, start, end }) => guard(documentSlice(uri, start, end)),
+    DocumentSave: ({ uri }) => guard(documentSave(uri)),
+    DocumentClose: ({ uri, force }) => guard(documentClose(uri, force === true)),
+    DocumentList: () => guard(documentList),
+
+    DocumentWatch: ({ uri }) =>
+      Stream.unwrap(
+        requireHost.pipe(
+          Effect.map((host) =>
+            Stream.callback<DocumentSnapshot>((queue) =>
+              Effect.gen(function* () {
+                const seed =
+                  uri === undefined
+                    ? host.documents
+                        .list()
+                        .flatMap((meta) => Option.toArray(host.documents.snapshot(meta.uri)))
+                    : Option.toArray(host.documents.snapshot(uri));
+                for (const snap of seed) {
+                  Queue.offerUnsafe(queue, snap);
+                }
+                const unsub = host.documents.subscribe((snap) => {
+                  if (uri !== undefined && snap.uri !== uri) return;
+                  Queue.offerUnsafe(queue, snap);
+                });
+                yield* Effect.addFinalizer(() => Effect.sync(unsub));
+              }),
+            ),
+          ),
+          Effect.orElseSucceed(() => Stream.empty as Stream.Stream<DocumentSnapshot>),
+        ),
+      ),
+
     Events: () =>
       Stream.concat(
         Stream.succeed({
@@ -1521,6 +1919,31 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   const showBuffer = (n: string | undefined): Effect.Effect<string, DaemonError> =>
     showBufferEvent(n);
 
+  const documentOpen = (uri: string, text?: string): Effect.Effect<DocumentMeta, DaemonError> =>
+    documentOpenEvent(uri, text);
+  const documentApply = (
+    uri: string,
+    baseGeneration: number,
+    edits: readonly TextEdit[],
+  ): Effect.Effect<DocumentMeta, DaemonError> => documentApplyEvent(uri, baseGeneration, edits);
+  const documentWrite = (
+    uri: string,
+    baseGeneration: number,
+    text: string,
+  ): Effect.Effect<DocumentMeta, DaemonError> => documentWriteEvent(uri, baseGeneration, text);
+  const documentSnapshot = (uri: string): Effect.Effect<DocumentSnapshot, DaemonError> =>
+    documentSnapshotEvent(uri);
+  const documentSlice = (
+    uri: string,
+    start: number,
+    end: number,
+  ): Effect.Effect<readonly string[], DaemonError> => documentSliceEvent(uri, start, end);
+  const documentSave = (uri: string): Effect.Effect<DocumentMeta, DaemonError> =>
+    documentSaveEvent(uri);
+  const documentClose = (uri: string, force = false): Effect.Effect<void, DaemonError> =>
+    documentCloseEvent(uri, force);
+  const documentList = documentListEvent();
+
   const service: SessionDaemonService = {
     id,
     paths,
@@ -1542,13 +1965,23 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     listBuffers,
     deleteBuffer,
     showBuffer,
+    documentOpen,
+    documentApply,
+    documentWrite,
+    documentSnapshot,
+    documentSlice,
+    documentSave,
+    documentClose,
+    documentList,
     getState: model.state,
     getWorkspace: model.workspace,
     getAttachedClients: model.attachedClients,
     getAttachedClient: model.attachedClients.pipe(Effect.map((clients) => clients[0] ?? null)),
+    flushPendingAgentResume,
+    pendingAgentResumeSessions: () => pendingResumes.sessionIds(),
   };
   return service;
-});
+}, Effect.provide(Layer.mergeAll(AgentResumeClaimsLive, PendingAgentResumesLive)));
 
 export const startDaemon = Effect.fnUntraced(function* (
   id = randomUUID(),

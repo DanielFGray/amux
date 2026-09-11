@@ -7,6 +7,7 @@ import {
   definePlugin,
   type PluginDefinition,
   type PluginErrorEvent,
+  type PluginRequirements,
 } from "./types.ts";
 import { createTestRenderer } from "@opentui/core/testing";
 import { testPluginEnvironment } from "./test-environment.ts";
@@ -158,11 +159,7 @@ const ItemsService = Object.assign(Context.Service<ItemsId, FilteredItems>()("te
 
 type AssertFalse<T extends false> = T;
 type UndeclaredRequirement =
-  Effect.Effect<void, never, NumberTag> extends Effect.Effect<
-    void,
-    never,
-    import("./types.ts").PluginRequirements<[]>
-  >
+  Effect.Effect<void, never, NumberTag> extends Effect.Effect<void, never, PluginRequirements<[]>>
     ? true
     : false;
 export type UndeclaredRequirementIsRejected = AssertFalse<UndeclaredRequirement>;

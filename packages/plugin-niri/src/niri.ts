@@ -18,10 +18,10 @@
  * Only `close` and `focusInDirection` are required by `TilingAlgorithm`, plus
  * `init` to build the first arrangement, plus `resizeFocus` as the one resize
  * with a clean niri-native meaning (column width for left/right, the column's
- * own vertical weight split for up/down). `swap`, `applyPreset`,
- * `resizeDivider` and `hasNeighbour` are deliberately omitted: a scroll strip
- * has no divider paths to name and no preset vocabulary, which the interface
- * anticipates — omitting an optional capability is a valid outcome, not a gap.
+ * own vertical weight split for up/down). `swap` and `applyPreset` are
+ * deliberately omitted (no preset vocabulary). `resizeDivider` moves the seam
+ * between adjacent columns — the drag target the scroll renderer inserts.
+ * `hasNeighbour` and `ensureVisible` keep chrome and focus-scroll honest.
  *
  * The `split` method dispatches to the niri-native column operations:
  * "row" (side-by-side) inserts a new column via `insertColumn`, and "column"
@@ -59,12 +59,27 @@ const MIN_COLUMN_WIDTH = 20;
  *  below it is refused rather than clamped into an unusable sliver. */
 const MIN_CELL_HEIGHT = 3;
 
+/** Cells of empty space between adjacent columns — niri's layout gaps, sized
+ *  to match amux's one-cell split dividers so a strip reads as panes with
+ *  gutters rather than a fused wall of terminals. Exported for the scroll
+ *  renderer, which draws the same gap via Yoga. */
+export const COLUMN_GAP = 1;
+
 /** The `"scroll"` kind's private arrangement shape — offset plus a size list
- *  index-aligned with the container's `children`. Never seen outside this
- *  module and the registered schema/renderer in daemon.ts/index.ts. */
+ *  index-aligned with the container's `children`, plus the last-focused pane
+ *  in each column (niri's `active_tile_idx`, keyed by pane id). Never seen
+ *  outside this module and the registered schema/renderer in daemon.ts/
+ *  index.ts. */
 export interface NiriArrangement {
   readonly offset: number;
   readonly sizes: readonly number[];
+  /** Last-focused pane id per column, index-aligned with `children`/`sizes`. */
+  readonly active: readonly string[];
+  /** Viewport cols the `sizes` were last resolved against. When the pane host
+   *  shrinks (sidebar open, terminal resize), ensureVisible scales sizes by
+   *  `size.cols / basisCols` so two half-width columns still fit — niri's
+   *  proportion widths reflow the same way against working_area. */
+  readonly basisCols?: number;
 }
 
 function isScrollRoot(node: LayoutNode | null): node is LayoutContainer & { kind: "scroll" } {
@@ -72,26 +87,68 @@ function isScrollRoot(node: LayoutNode | null): node is LayoutContainer & { kind
 }
 
 function arrangementOf(root: LayoutContainer): NiriArrangement {
-  return root.arrangement as NiriArrangement;
+  const raw = root.arrangement as NiriArrangement;
+  // Older saved strips (and hand-built fixtures) may omit `active` — fill from
+  // each column's top pane so every reader sees a complete arrangement.
+  const active =
+    raw.active && raw.active.length === root.children.length
+      ? raw.active
+      : root.children.map((child, i) => raw.active?.[i] ?? layoutPanes(child)[0]?.id ?? "");
+  return {
+    offset: raw.offset,
+    sizes: raw.sizes,
+    active,
+    basisCols: raw.basisCols,
+  };
 }
 
 function scrollRoot(
   children: readonly LayoutNode[],
   sizes: readonly number[],
   offset = 0,
+  active?: readonly string[],
+  basisCols?: number,
 ): LayoutContainer {
+  const resolved =
+    active && active.length === children.length
+      ? [...active]
+      : children.map((child) => layoutPanes(child)[0]?.id ?? "");
   return {
     type: "container",
     kind: "scroll",
     weight: 1,
-    arrangement: { offset, sizes: [...sizes] },
+    arrangement: {
+      offset,
+      sizes: [...sizes],
+      active: resolved,
+      ...(basisCols !== undefined && basisCols > 0 ? { basisCols } : {}),
+    },
     children: [...children],
   };
 }
 
 function defaultColumnWidth(size: LayoutSize): number {
   if (!(size.cols > 0)) return 40;
-  return Math.min(size.cols, Math.max(MIN_COLUMN_WIDTH, Math.floor(size.cols / 2)));
+  // Subtract one gap so two fresh columns plus the gutter between them fit
+  // the viewport exactly — otherwise half+half+gap overflows by one cell and
+  // ensureVisible nudges the strip on every focus, which feels like jank.
+  const pair = Math.max(0, size.cols - COLUMN_GAP);
+  return Math.min(size.cols, Math.max(MIN_COLUMN_WIDTH, Math.floor(pair / 2)));
+}
+
+/**
+ * A lone column fills the viewport. niri opens at half-width so a second
+ * column can slide in beside it; in a terminal mux that leaves an empty half
+ * of the screen whenever you start with one pane or close down to one.
+ * Borrowed from niri's `expand_column_to_available_width` when only the active
+ * column is on screen (toggle full-width) — here it's the standing policy for
+ * a sole column, not a user gesture.
+ */
+function fillSoleColumn(sizes: readonly number[], viewportCols: number): number[] {
+  if (sizes.length !== 1) return [...sizes];
+  const cols = Math.max(0, Math.floor(viewportCols));
+  if (!(cols > 0)) return [...sizes];
+  return [Math.max(MIN_COLUMN_WIDTH, cols)];
 }
 
 function columnNode(panes: readonly PaneRef[]): LayoutNode {
@@ -111,7 +168,18 @@ function columnNode(panes: readonly PaneRef[]): LayoutNode {
 }
 
 function contentWidth(sizes: readonly number[]): number {
-  return sizes.reduce((sum, s) => sum + s, 0);
+  if (sizes.length === 0) return 0;
+  return sizes.reduce((sum, s) => sum + s, 0) + COLUMN_GAP * (sizes.length - 1);
+}
+
+/** Absolute x of column `index` along the strip, including the gaps that
+ *  separate preceding columns — niri's `column_x`. */
+function columnStart(sizes: readonly number[], index: number): number {
+  let x = 0;
+  for (let i = 0; i < index; i++) {
+    x += (sizes[i] ?? 0) + COLUMN_GAP;
+  }
+  return x;
 }
 
 /** Keep the viewport inside the content: `[0, content - viewport]`, or 0 when
@@ -121,6 +189,34 @@ function contentWidth(sizes: readonly number[]): number {
 function clampOffset(offset: number, sizes: readonly number[], viewportCols: number): number {
   const max = Math.max(0, contentWidth(sizes) - Math.max(0, viewportCols));
   return Math.min(Math.max(0, offset), max);
+}
+
+/**
+ * Absolute viewport offset that brings `newColX`..`+newColWidth` into view.
+ *
+ * Borrowed from niri's `compute_new_view_offset` (`../niri/src/layout/scrolling.rs`):
+ * leave the view alone when the column is already fully visible (with gap
+ * padding), otherwise pick the left or right alignment that moves less. A
+ * column wider than the viewport always left-aligns.
+ */
+function computeNewViewOffset(
+  curX: number,
+  viewWidth: number,
+  newColX: number,
+  newColWidth: number,
+  gaps: number,
+): number {
+  if (viewWidth <= newColWidth) return newColX;
+
+  const padding = Math.min(gaps, Math.max(0, (viewWidth - newColWidth) / 2));
+  const newX = newColX - padding;
+  const newRightX = newColX + newColWidth + padding;
+
+  if (curX <= newX && newRightX <= curX + viewWidth) return curX;
+
+  const distToLeft = Math.abs(curX - newX);
+  const distToRight = Math.abs(curX + viewWidth - newRightX);
+  return distToLeft <= distToRight ? newX : newRightX - viewWidth;
 }
 
 /** Which column holds `paneId`, and where the pane sits in that column's own
@@ -143,8 +239,9 @@ function columnsOf(root: LayoutContainer): string[][] {
 }
 
 /** The pane tmux-style directional focus reaches from `from`, without moving
- *  anything. Left/right cross to the adjacent column — holding the same row
- *  position, or the column's first pane when the target column is shorter —
+ *  anything. Left/right cross to the adjacent column — restoring that column's
+ *  last-focused pane (niri's per-column `active_tile_idx`), falling back to
+ *  the same row index or the column's first pane when the target is shorter —
  *  while up/down walk the current column's vertical stack. Null at either
  *  edge. This is the algorithm's own geometry: columns are sized, not
  *  weighed, so nothing in geometry.ts (which only understands split trees)
@@ -155,49 +252,112 @@ function neighbour(root: LayoutNode | null, from: string, direction: Direction):
   const at = locate(root, from);
   if (!at) return null;
   if (direction === "left" || direction === "right") {
-    const ids = columns[at.column + (direction === "right" ? 1 : -1)];
+    const target = at.column + (direction === "right" ? 1 : -1);
+    const ids = columns[target];
     if (!ids || ids.length === 0) return null;
+    const remembered = arrangementOf(root).active[target];
+    if (remembered && ids.includes(remembered)) return remembered;
     return ids[at.row] ?? ids[0] ?? null;
   }
   const ids = columns[at.column] ?? [];
   return ids[at.row + (direction === "down" ? 1 : -1)] ?? null;
 }
 
-/** The offset that brings `paneId`'s column fully into view with the minimum
- *  move: untouched when the column is already fully visible, shifted to the
- *  column's near edge when it hangs off the left, and to its far edge minus
- *  the viewport when it hangs off the right. Spans come from summing
- *  preceding columns' sizes against the running offset. */
-function scrollOffset(root: LayoutContainer, viewportCols: number, paneId: string): number {
-  const { offset, sizes } = arrangementOf(root);
-  const viewport = Math.max(0, viewportCols);
-  let start = 0;
-  for (let i = 0; i < root.children.length; i++) {
-    const columnSize = sizes[i] ?? 0;
-    const end = start + columnSize;
-    if (layoutPanes(root.children[i]!).some((pane) => pane.id === paneId)) {
-      if (start < offset) return clampOffset(start, sizes, viewport);
-      if (end > offset + viewport) return clampOffset(end - viewport, sizes, viewport);
-      return offset;
-    }
-    start = end;
+/** Whether `paneId` has a neighbour on `side` along `axis` inside the scroll
+ *  strip — columns for row, stack siblings for column. Used by Window chrome
+ *  (via the kind renderer) so gap=false mode can leave internal seams bare. */
+function columnHasNeighbour(
+  root: LayoutContainer,
+  paneId: string,
+  axis: "row" | "column",
+  side: -1 | 1,
+): boolean {
+  const at = locate(root, paneId);
+  if (!at) return false;
+  if (axis === "row") {
+    return side < 0 ? at.column > 0 : at.column < root.children.length - 1;
   }
-  return offset;
+  return side < 0 ? at.row > 0 : at.row < at.ids.length - 1;
 }
 
-/** Bring `paneId`'s column fully into view with the minimum offset move, as a
- *  pure transform: a fresh Layout when the offset changes, the same Layout
- *  back when the column is already fully visible (or unknown), so callers can
- *  rely on reference equality to skip re-rendering. */
-function scrollIntoView(layout: Layout, size: LayoutSize, paneId: string): Layout {
+/**
+ * Rescale column widths when the pane-host viewport changed since sizes were
+ * last written (sidebar toggle, terminal resize). Preserves relative layout the
+ * way niri proportion widths reflow against working_area; stamps `basisCols`
+ * so a no-op size is reference-equal after the first stamp. A sole column is
+ * always expanded to the viewport (see {@link fillSoleColumn}).
+ */
+function adaptViewport(layout: Layout, size: LayoutSize): Layout {
   const root = layout.root;
   if (!isScrollRoot(root)) return layout;
-  const next = scrollOffset(root, size.cols, paneId);
   const arrangement = arrangementOf(root);
-  if (next === arrangement.offset) return layout;
+  const cols = Math.max(0, Math.floor(size.cols));
+  if (!(cols > 0)) return layout;
+  const basis = arrangement.basisCols ?? cols;
+  const scaled =
+    basis === cols
+      ? [...arrangement.sizes]
+      : arrangement.sizes.map((s) => Math.max(MIN_COLUMN_WIDTH, Math.round(s * (cols / basis))));
+  const sizes = fillSoleColumn(scaled, cols);
+  const sameSizes =
+    sizes.length === arrangement.sizes.length &&
+    sizes.every((s, i) => s === arrangement.sizes[i]);
+  if (basis === cols && arrangement.basisCols === cols && sameSizes) return layout;
+  const offset = clampOffset(
+    basis === cols ? arrangement.offset : Math.round(arrangement.offset * (cols / basis)),
+    sizes,
+    cols,
+  );
   return makeLayout({
     ...layout,
-    root: { ...root, arrangement: { ...arrangement, offset: next } },
+    root: scrollRoot(root.children, sizes, offset, arrangement.active, cols),
+  });
+}
+
+/** The offset that brings `paneId`'s column into view the way niri does —
+ *  untouched when already fully visible (with gap padding), otherwise the
+ *  left/right alignment that moves the viewport less. */
+function scrollOffset(root: LayoutContainer, viewportCols: number, paneId: string): number {
+  const { offset, sizes } = arrangementOf(root);
+  const at = locate(root, paneId);
+  if (!at) return offset;
+  const next = computeNewViewOffset(
+    offset,
+    Math.max(0, viewportCols),
+    columnStart(sizes, at.column),
+    sizes[at.column] ?? 0,
+    COLUMN_GAP,
+  );
+  return clampOffset(next, sizes, viewportCols);
+}
+
+/** Bring `paneId`'s column into view and remember it as that column's active
+ *  pane. Also adapts column widths when the viewport's cell count drifted
+ *  from `basisCols` (sidebar / terminal resize). Returns the same Layout when
+ *  nothing changes, so callers can rely on reference equality to skip
+ *  re-rendering. */
+function scrollIntoView(layout: Layout, size: LayoutSize, paneId: string): Layout {
+  const adapted = adaptViewport(layout, size);
+  const root = adapted.root;
+  if (!isScrollRoot(root)) return adapted;
+  const arrangement = arrangementOf(root);
+  const nextOffset = scrollOffset(root, size.cols, paneId);
+  const at = locate(root, paneId);
+  const nextActive =
+    at && arrangement.active[at.column] !== paneId
+      ? arrangement.active.map((id, i) => (i === at.column ? paneId : id))
+      : arrangement.active;
+  if (nextOffset === arrangement.offset && nextActive === arrangement.active) return adapted;
+  return makeLayout({
+    ...adapted,
+    root: {
+      ...root,
+      arrangement: {
+        ...arrangement,
+        offset: nextOffset,
+        active: nextActive === arrangement.active ? arrangement.active : [...nextActive],
+      },
+    },
   });
 }
 
@@ -228,6 +388,68 @@ function excise(node: LayoutNode, paneId: string): LayoutNode | null {
   return children.length > 0 ? { ...node, children } : null;
 }
 
+/** Drop `paneId` from the scroll strip. Returns the surviving root (or null)
+ *  and the pane that should inherit focus when the closed pane held it —
+ *  stack survivor in the same column, else the previous column's active pane
+ *  (niri's activate_prev_column_on_removal default). */
+function removePaneFromStrip(
+  root: LayoutContainer,
+  paneId: string,
+  size: LayoutSize,
+  columnHint: number,
+): { next: LayoutNode | null; heir: string | undefined } {
+  const arrangement = arrangementOf(root);
+  const children: LayoutNode[] = [];
+  const kept: number[] = [];
+  const active: string[] = [];
+  let heir: string | undefined;
+
+  const keep = (child: LayoutNode, sizeIdx: number, pick?: string) => {
+    children.push(child);
+    kept.push(arrangement.sizes[sizeIdx] ?? MIN_COLUMN_WIDTH);
+    active.push(pick ?? arrangement.active[sizeIdx] ?? layoutPanes(child)[0]?.id ?? "");
+  };
+
+  for (let i = 0; i < root.children.length; i++) {
+    const child = root.children[i]!;
+    if (!layoutPanes(child).some((pane) => pane.id === paneId)) {
+      keep(child, i);
+      continue;
+    }
+    const pruned = collapse(excise(child, paneId));
+    if (pruned) {
+      const ids = layoutPanes(pruned).map((pane) => pane.id);
+      const remembered = arrangement.active[i];
+      const pick =
+        remembered && remembered !== paneId && ids.includes(remembered)
+          ? remembered
+          : (ids[0] ?? "");
+      keep(pruned, i, pick);
+      heir = pick || undefined;
+      continue;
+    }
+    const prev = children.length - 1;
+    if (prev >= 0) heir = active[prev] || layoutPanes(children[prev]!)[0]?.id;
+  }
+
+  if (children.length === 0) return { next: null, heir: undefined };
+  if (heir === undefined) {
+    const idx = Math.min(columnHint, children.length - 1);
+    heir = active[idx] || layoutPanes(children[idx]!)[0]?.id;
+  }
+  const sizes = fillSoleColumn(kept, size.cols);
+  return {
+    next: scrollRoot(
+      children,
+      sizes,
+      clampOffset(arrangement.offset, sizes, size.cols),
+      active,
+      size.cols,
+    ),
+    heir,
+  };
+}
+
 function closeScroll(
   layout: Layout,
   size: LayoutSize,
@@ -235,8 +457,6 @@ function closeScroll(
   paneId: string,
 ): Layout {
   const dockStrips = layout.docks ?? emptyDockStrips();
-  const panes = layoutPanes(root);
-  const index = panes.findIndex((pane) => pane.id === paneId);
   const floats = layout.floats.filter((float) => float.id !== paneId);
   const docks = {
     left: dockStrips.left.filter((pane) => pane.id !== paneId),
@@ -245,42 +465,15 @@ function closeScroll(
     bottom: dockStrips.bottom.filter((pane) => pane.id !== paneId),
   } as typeof dockStrips;
   const dockChanged = DOCK_SIDES.some((side) => docks[side].length !== dockStrips[side].length);
-  if (index === -1 && floats.length === layout.floats.length && !dockChanged) return layout;
+  const at = locate(root, paneId);
+  if (!at && floats.length === layout.floats.length && !dockChanged) return layout;
 
-  // The tiled half mirrors closeLayout's removal, minus its collapse: a scroll
-  // with one column left is still a scroll strip (it keeps its offset), and
-  // only the column's own inner split collapses via collapse(). Zero columns
-  // is the empty layout, the same real state closeLayout produces.
-  let next: LayoutNode | null = root;
-  if (index !== -1) {
-    const sizes = arrangementOf(root).sizes;
-    const children: LayoutNode[] = [];
-    const kept: number[] = [];
-    root.children.forEach((child, i) => {
-      if (!layoutPanes(child).some((pane) => pane.id === paneId)) {
-        children.push(child);
-        kept.push(sizes[i] ?? MIN_COLUMN_WIDTH);
-        return;
-      }
-      const pruned = collapse(excise(child, paneId));
-      if (pruned) {
-        children.push(pruned);
-        kept.push(sizes[i] ?? MIN_COLUMN_WIDTH);
-      }
-    });
-    if (children.length === 0) {
-      next = null;
-    } else {
-      next = scrollRoot(children, kept, clampOffset(arrangementOf(root).offset, kept, size.cols));
-    }
-  }
-  // Focus handoff is closeLayout's rule: the tiled pane that took the closed
-  // pane's place, or the last one when it was at the end — falling back to
-  // whatever the layout still places, topmost last.
+  const removed = at ? removePaneFromStrip(root, paneId, size, at.column) : null;
+  const next = removed ? removed.next : root;
   const survivors = layoutPanes(next);
-  const heir = index === -1 ? undefined : survivors[Math.min(index, survivors.length - 1)];
   const remaining = [...survivors, ...DOCK_SIDES.flatMap((side) => docks[side]), ...floats];
-  const focus = layout.focus === paneId ? (heir ?? remaining.at(-1))?.id : layout.focus;
+  const focus =
+    layout.focus === paneId ? (removed?.heir ?? remaining.at(-1)?.id) : layout.focus;
   return makeLayout({ ...layout, root: next, floats, docks, focus });
 }
 
@@ -296,6 +489,9 @@ function resizeColumnWidths(
   if (!at) return layout;
   const arrangement = arrangementOf(root);
   if (direction === "left" || direction === "right") {
+    // A sole column always fills the viewport (fillSoleColumn); shrinking it
+    // would only invent empty space that ensureVisible immediately reclaims.
+    if (arrangement.sizes.length === 1) return layout;
     // A free strip has no neighbour to steal cells from, so left/right resize
     // the column itself: rightward widens, leftward narrows (a tmux-style
     // grow-toward would widen either way, which leaves no way to shrink).
@@ -308,7 +504,15 @@ function resizeColumnWidths(
       ...layout,
       root: {
         ...root,
-        arrangement: { offset: clampOffset(arrangement.offset, sizes, size.cols), sizes },
+        arrangement: {
+          offset: clampOffset(arrangement.offset, sizes, size.cols),
+          sizes,
+          active: arrangement.active,
+          // User-chosen widths are absolute for this viewport — stamp basis so
+          // the next sidebar toggle scales from here rather than undoing the
+          // resize against a stale basis.
+          basisCols: Math.max(0, Math.floor(size.cols)),
+        },
       },
     });
   }
@@ -358,6 +562,76 @@ function resizeColumnWidths(
   });
 }
 
+/** Move `delta` rows between adjacent panes of the stack in column `colIdx`. */
+function resizeStackDivider(
+  layout: Layout,
+  size: LayoutSize,
+  root: LayoutContainer,
+  colIdx: number,
+  index: number,
+  delta: number,
+): Layout {
+  const column = root.children[colIdx];
+  if (!column || column.type !== "split" || column.direction !== "column") return layout;
+  if (index < 0 || index >= column.children.length - 1) return layout;
+  if (!(size.rows > 0)) return layout;
+  const available = Math.max(0, size.rows - (column.children.length - 1));
+  const totalWeight = column.children.reduce((sum, child) => sum + child.weight, 0);
+  if (!(totalWeight > 0) || available <= 0) return layout;
+  const sizes = column.children.map((child) => (available * child.weight) / totalWeight);
+  const left = sizes[index]!;
+  const right = sizes[index + 1]!;
+  const pair = left + right;
+  if (pair < MIN_CELL_HEIGHT * 2) return layout;
+  const nextLeft = Math.max(
+    MIN_CELL_HEIGHT,
+    Math.min(pair - MIN_CELL_HEIGHT, left + delta),
+  );
+  if (nextLeft === left) return layout;
+  sizes[index] = nextLeft;
+  sizes[index + 1] = pair - nextLeft;
+  return makeLayout({
+    ...layout,
+    root: {
+      ...root,
+      children: root.children.map((child, i) =>
+        i === colIdx
+          ? {
+              ...column,
+              children: column.children.map((entry, j) => ({
+                ...entry,
+                weight: Math.max(0.0001, sizes[j]!),
+              })),
+            }
+          : child,
+      ),
+    },
+  });
+}
+
+/** Move `delta` cells from column `index+1` onto `index` (or the reverse when
+ *  negative), clamping so neither side drops below `MIN_COLUMN_WIDTH`. Shared
+ *  by the daemon transform and the client's live drag echo. */
+export function transferColumnCells(
+  sizes: readonly number[],
+  index: number,
+  delta: number,
+): number[] | null {
+  if (delta === 0 || index < 0 || index >= sizes.length - 1) return null;
+  const left = sizes[index]!;
+  const right = sizes[index + 1]!;
+  const total = left + right;
+  if (total < MIN_COLUMN_WIDTH * 2) return null;
+  const nextLeft = Math.max(
+    MIN_COLUMN_WIDTH,
+    Math.min(total - MIN_COLUMN_WIDTH, left + delta),
+  );
+  if (nextLeft === left) return null;
+  return sizes.map((s, i) =>
+    i === index ? nextLeft : i === index + 1 ? total - nextLeft : s,
+  );
+}
+
 export const niriTilingAlgorithm: TilingAlgorithm = {
   id: "niri",
   version: 1,
@@ -365,10 +639,19 @@ export const niriTilingAlgorithm: TilingAlgorithm = {
   init(panes, size) {
     if (panes.length === 0) return makeLayout({ root: null });
     // A niri window opens a new column by default: one pane per column.
-    const width = defaultColumnWidth(size);
+    // A sole column fills the viewport (see fillSoleColumn); two or more open
+    // at half-width so a neighbour can sit beside without overflowing.
+    const width =
+      panes.length === 1 && size.cols > 0 ? Math.floor(size.cols) : defaultColumnWidth(size);
     const children = panes.map((ref) => columnNode([ref]));
-    const sizes = panes.map(() => width);
-    return makeLayout({ root: scrollRoot(children, sizes), focus: panes[0]!.id });
+    const sizes = fillSoleColumn(
+      panes.map(() => width),
+      size.cols,
+    );
+    return makeLayout({
+      root: scrollRoot(children, sizes, 0, undefined, size.cols),
+      focus: panes[0]!.id,
+    });
   },
 
   close(layout, size, paneId) {
@@ -383,8 +666,8 @@ export const niriTilingAlgorithm: TilingAlgorithm = {
   focusInDirection(layout, size, from, direction) {
     // A pure query: the interface returns only the focused pane's id, with no
     // channel back to a revised Layout, so any scroll-position change travels
-    // separately via `ensureVisible` below (which Window calls right after any
-    // focus move). Nothing here is mutated.
+    // separately via `ensureVisible` below (which setFocus calls right after
+    // any focus move). Nothing here is mutated.
     return neighbour(layout.root, from, direction);
   },
 
@@ -395,15 +678,86 @@ export const niriTilingAlgorithm: TilingAlgorithm = {
   },
 
   resizeFocus(layout, size, paneId, direction, delta) {
+    const adapted = adaptViewport(layout, size);
+    const root = adapted.root;
+    if (!isScrollRoot(root)) return adapted;
+    return resizeColumnWidths(adapted, size, root, paneId, direction, delta);
+  },
+
+  // Drag handle between columns (path []) or between stacked panes inside a
+  // column (path [columnIndex]). geometry.ts cannot see into a scroll
+  // container, so both seams live here — returning unchanged for a nested
+  // path used to swallow the drag (in-column borders looked dead).
+  resizeDivider(layout, size, path, index, delta) {
+    if (delta === 0) return layout;
     const root = layout.root;
     if (!isScrollRoot(root)) return layout;
-    return resizeColumnWidths(layout, size, root, paneId, direction, delta);
+    if (path.length === 0) {
+      const arrangement = arrangementOf(root);
+      const sizes = transferColumnCells(arrangement.sizes, index, delta);
+      if (!sizes) return layout;
+      return makeLayout({
+        ...layout,
+        root: {
+          ...root,
+          arrangement: {
+            ...arrangement,
+            sizes,
+            offset: clampOffset(arrangement.offset, sizes, size.cols),
+            basisCols: Math.max(0, Math.floor(size.cols)),
+          },
+        },
+      });
+    }
+    if (path.length !== 1) return layout;
+    return resizeStackDivider(layout, size, root, path[0]!, index, delta);
+  },
+
+  hasNeighbour(layout, _size, paneId, axis, side) {
+    const root = layout.root;
+    if (!isScrollRoot(root)) return false;
+    return columnHasNeighbour(root, paneId, axis, side);
   },
 
   // The scroll-into-view half of a focus move: the pure transform above, which
-  // Window calls right after any operation that moves focus.
+  // setFocus calls right after any operation that moves focus. Also the hook
+  // that rescales column widths when the pane host's cell count changed.
   ensureVisible: scrollIntoView,
 };
+
+/** Insert `pane` into an existing column node (a lone pane or a vertical
+ *  split), before/after `atPaneId`. Null when the column isn't a stackable
+ *  shape (e.g. a nested scroll). */
+function stackIntoColumn(
+  column: LayoutNode,
+  atPaneId: string,
+  pane: PaneRef,
+  position: "before" | "after",
+): LayoutNode | null {
+  const leaf: LayoutNode = { type: "pane", ...pane, weight: 1 };
+  if (column.type === "pane") {
+    return {
+      type: "split",
+      direction: "column",
+      weight: column.weight,
+      children:
+        position === "after"
+          ? [{ ...column, weight: 1 }, leaf]
+          : [leaf, { ...column, weight: 1 }],
+    };
+  }
+  if (column.type !== "split") return null;
+  const index = column.children.findIndex(
+    (child) => child.type === "pane" && child.id === atPaneId,
+  );
+  const children = [...column.children];
+  children.splice(
+    index === -1 ? children.length : index + (position === "after" ? 1 : 0),
+    0,
+    leaf,
+  );
+  return { ...column, children };
+}
 
 /**
  * Niri-native inserts: opening beside (a new column) versus opening below
@@ -419,8 +773,8 @@ export const niriColumns = {
     return defaultColumnWidth(size);
   },
 
-  /** Bring `paneId`'s column fully into view with the minimum offset move.
-   *  The same pure transform the algorithm's own `ensureVisible` runs. */
+  /** Bring `paneId`'s column into view (and stamp it as that column's active
+   *  pane). The same pure transform the algorithm's own `ensureVisible` runs. */
   scrollIntoView(layout: Layout, size: LayoutSize, paneId: string): Layout {
     return scrollIntoView(layout, size, paneId);
   },
@@ -436,23 +790,25 @@ export const niriColumns = {
       const panes = [...layoutPanes(root), pane];
       const children = panes.map((ref) => (ref.id === pane.id ? newChild : columnNode([ref])));
       const sizes = panes.map(() => width);
-      return makeLayout({ ...layout, root: scrollRoot(children, sizes), focus: pane.id });
+      return makeLayout({
+        ...layout,
+        root: scrollRoot(children, sizes, 0, undefined, size.cols),
+        focus: pane.id,
+      });
     }
     const anchor = afterPaneId ?? layout.focus;
     const at = anchor ? locate(root, anchor)?.column : undefined;
     const insertAt = at === undefined ? root.children.length : at + 1;
+    const arrangement = arrangementOf(root);
     const children = [...root.children];
     children.splice(insertAt, 0, newChild);
-    const sizes = [...arrangementOf(root).sizes];
+    const sizes = [...arrangement.sizes];
     sizes.splice(insertAt, 0, width);
-    const clamped = clampOffset(arrangementOf(root).offset, sizes, size.cols);
-    const fresh = scrollRoot(children, sizes, clamped);
-    const shown = scrollOffset(fresh, size.cols, pane.id);
-    return makeLayout({
-      ...layout,
-      root: { ...fresh, arrangement: { ...arrangementOf(fresh), offset: shown } },
-      focus: pane.id,
-    });
+    const active = [...arrangement.active];
+    active.splice(insertAt, 0, pane.id);
+    const clamped = clampOffset(arrangement.offset, sizes, size.cols);
+    const fresh = scrollRoot(children, sizes, clamped, active, size.cols);
+    return scrollIntoView(makeLayout({ ...layout, root: fresh, focus: pane.id }), size, pane.id);
   },
 
   /** Open `pane` inside the column holding `atPaneId` — after it by default —
@@ -474,55 +830,33 @@ export const niriColumns = {
       const panes = layoutPanes(root);
       if (!panes.some((candidate) => candidate.id === atPaneId)) return layout;
       const width = defaultColumnWidth(size);
-      const leaf: LayoutNode = { type: "pane", ...pane, weight: 1 };
-      const children: LayoutNode[] = panes.map((ref) => {
-        if (ref.id !== atPaneId) return columnNode([ref]);
-        const existing: LayoutNode = { ...ref, weight: 1 };
-        return {
-          type: "split",
-          direction: "column",
-          weight: 1,
-          children: position === "after" ? [existing, leaf] : [leaf, existing],
-        };
-      });
+      const children = panes.map((ref) =>
+        ref.id === atPaneId
+          ? stackIntoColumn({ ...ref, weight: 1 }, atPaneId, pane, position)!
+          : columnNode([ref]),
+      );
       const sizes = panes.map(() => width);
-      return makeLayout({ ...layout, root: scrollRoot(children, sizes), focus: pane.id });
+      const active = panes.map((ref) => (ref.id === atPaneId ? pane.id : ref.id));
+      return makeLayout({
+        ...layout,
+        root: scrollRoot(children, sizes, 0, active, size.cols),
+        focus: pane.id,
+      });
     }
     const at = locate(root, atPaneId);
     if (!at) return layout;
     const column = root.children[at.column];
     if (!column) return layout;
-    const leaf: LayoutNode = { type: "pane", ...pane, weight: 1 };
-    let node: LayoutNode;
-    if (column.type === "pane") {
-      node = {
-        type: "split",
-        direction: "column",
-        weight: column.weight,
-        children:
-          position === "after"
-            ? [{ ...column, weight: 1 }, leaf]
-            : [leaf, { ...column, weight: 1 }],
-      };
-    } else if (column.type === "split") {
-      const index = column.children.findIndex(
-        (child) => child.type === "pane" && child.id === atPaneId,
-      );
-      const children = [...column.children];
-      children.splice(
-        index === -1 ? children.length : index + (position === "after" ? 1 : 0),
-        0,
-        leaf,
-      );
-      node = { ...column, children };
-    } else {
-      return layout;
-    }
+    const node = stackIntoColumn(column, atPaneId, pane, position);
+    if (!node) return layout;
+    const arrangement = arrangementOf(root);
+    const active = arrangement.active.map((id, i) => (i === at.column ? pane.id : id));
     return makeLayout({
       ...layout,
       root: {
         ...root,
         children: root.children.map((child, i) => (i === at.column ? node : child)),
+        arrangement: { ...arrangement, active },
       },
       focus: pane.id,
     });

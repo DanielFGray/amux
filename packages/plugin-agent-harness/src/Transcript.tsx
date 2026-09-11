@@ -8,9 +8,7 @@ import {
   pendingPermission,
   serializeTranscript,
   Transcript as TranscriptModel,
-  toolOutput,
   toolPermission,
-  toolSummary,
   wrapText,
   type TranscriptBlock,
 } from "./transcript.ts";
@@ -18,9 +16,40 @@ import { AgentFrame, type AttachFrame } from "@danielfgray/amux/protocol";
 import { ProcessState } from "@danielfgray/amux";
 import { agentStateFromTopic } from "./state-topic.ts";
 import { theme } from "@danielfgray/amux";
-import type { HighlightSnapshot } from "@danielfgray/amux-highlight";
+import { codeSyntaxStyle, type HighlightSnapshot } from "@danielfgray/amux-highlight";
+import type { PermissionDecision } from "@danielfgray/amux/permission.ts";
 import { splitFences } from "./fences.ts";
 import { CodeBlock } from "./CodeBlock.tsx";
+import { ApprovalChoices, ToolCard } from "./ToolCards.tsx";
+
+/**
+ * Stable list identity for Solid `<For>`.
+ *
+ * Every `text.delta` allocates a new assistant block object; For keys by
+ * reference, so an unkeyed list destroyed+recreated the markdown card on each
+ * character (blank frame between glyphs). Key by turn/call/request instead —
+ * string primitives compare equal across snapshots, so the card stays mounted
+ * and only `content` updates. Cite: solid-js mapArray referential equality;
+ * opencode keeps part identity via createStore+reconcile.
+ */
+export function chatBlockKey(block: TranscriptBlock): string {
+  switch (block.kind) {
+    case "assistant":
+      return `assistant:${block.turn}`;
+    case "user":
+      return `user:${block.turn}:${block.queued === true ? (block.delivery ?? "queue") : "done"}`;
+    case "reasoning":
+      return `reasoning:${block.turn}`;
+    case "tool":
+      return `tool:${block.turn}:${block.call}`;
+    case "permission":
+      return `permission:${block.request}`;
+    case "error":
+      return `error:${block.turn ?? "none"}`;
+    case "status":
+      return `status:${block.state}`;
+  }
+}
 
 export interface TranscriptProps {
   sessionId: string;
@@ -28,19 +57,32 @@ export interface TranscriptProps {
   sync: (session: string) => void;
   /** Columns to wrap at. Reactive: the pane it lives in is resizable. */
   width: number | Accessor<number>;
-  model?: string;
   onStatus?: (state: ProcessState) => void;
   /** The question the agent is blocked on, or undefined once it is answered. */
   onPending?: (request: PermissionBlock | undefined) => void;
+  /** Answer a permission ask from the tool card that owns it. */
+  onPermission?: (request: string, decision: PermissionDecision, feedback?: string) => void;
+  /** Switch the composer into "deny with a reason" for this request id. */
+  onExplainPermission?: (request: string) => void;
+  /** Durably admitted prompts that have not yet been promoted. */
+  onQueued?: (entries: readonly QueuedPrompt[]) => void;
   /** Chat is a compact presentation. Raw retains every semantic event. */
   view?: "chat" | "raw";
   showThinking?: boolean;
   /** Highlight fenced code blocks. Absent in tests that mount views without
    *  a worker — fences then render plain. */
   highlight?: HighlightSnapshot;
+  /** While set, hide the interactive choices for this request (composer owns it). */
+  explaining?: string;
 }
 
 export type PermissionBlock = Extract<TranscriptBlock, { kind: "permission" }>;
+
+export type QueuedPrompt = {
+  readonly turn: string;
+  readonly text: string;
+  readonly delivery: "steer" | "queue";
+};
 
 /**
  * The retained source for both views of one agent conversation.
@@ -77,66 +119,154 @@ export function Transcript(props: TranscriptProps) {
     width();
     return transcript.snapshot();
   });
+  const chatBlocks = createMemo(() =>
+    blocks().filter((block) => {
+      if (block.kind === "status") return false;
+      if (block.kind === "reasoning" && !props.showThinking) return false;
+      // Joined permissions render inside their tool card; only orphans
+      // (no matching tool yet / matching failed) stay as their own row.
+      if (block.kind === "permission") {
+        if (block.decision !== undefined) return false;
+        return !blocks().some(
+          (candidate) =>
+            candidate.kind === "tool" &&
+            toolPermission(blocks(), candidate)?.request === block.request,
+        );
+      }
+      return true;
+    }),
+  );
+  // Key strings, not block objects — see chatBlockKey.
+  const chatKeys = createMemo(() => chatBlocks().map(chatBlockKey));
   // The pending question is a fact about the transcript, not a second stream to
   // keep in step with it: the pane above is told what the blocks already say.
   createEffect(() => props.onPending?.(pendingPermission(blocks())));
+  createEffect(() =>
+    props.onQueued?.(
+      blocks()
+        .filter(
+          (block): block is Extract<TranscriptBlock, { kind: "user" }> =>
+            block.kind === "user" && block.queued === true,
+        )
+        .map((block) => ({
+          turn: block.turn,
+          text: block.text,
+          delivery: block.delivery ?? "queue",
+        })),
+    ),
+  );
 
+  // Scrollboxes are focusable by default; keep keyboard focus on the composer.
+  // paddingRight: 1 — OpenTUI's vertical scrollbar overlays the content's
+  // right column (../opentui ScrollBox); keep a gutter so wrapped text and
+  // markdown aren't covered. Cite: opentui keymap-demo contentOptions.
   return (
     <scrollbox
       stickyScroll
       stickyStart="bottom"
+      focusable={false}
+      contentOptions={{ paddingRight: 1 }}
       style={{ height: 0, flexGrow: 1, flexShrink: 1, backgroundColor: theme.base }}
     >
       <Show
         when={blocks().length > 0}
-        fallback={<text style={{ fg: theme.overlay1 }}>waiting for agent events...</text>}
+        fallback={<text style={{ fg: theme.overlay1 }}>…</text>}
       >
         <Show
           when={props.view === "raw"}
           fallback={
-            <For
-              each={blocks().filter(
-                (block) =>
-                  block.kind !== "status" &&
-                  block.kind !== "permission" &&
-                  (props.showThinking || block.kind !== "reasoning"),
-              )}
-            >
-              {(block) => (
-                <ChatCard
-                  block={block}
-                  permission={block.kind === "tool" ? toolPermission(blocks(), block) : undefined}
-                  width={() => Math.max(1, width())}
-                  model={props.model}
-                  highlight={props.highlight}
-                  expanded={block.kind === "tool" && expandedTools().has(block.call)}
-                  onToggle={
-                    block.kind === "tool"
-                      ? () =>
-                          setExpandedTools((previous) => {
-                            const next = new Set(previous);
-                            if (next.has(block.call)) next.delete(block.call);
-                            else next.add(block.call);
-                            return next;
-                          })
-                      : undefined
-                  }
-                  thinkingExpanded={
-                    block.kind === "reasoning" && expandedThinking().has(block.turn)
-                  }
-                  onThinkingToggle={
-                    block.kind === "reasoning"
-                      ? () =>
-                          setExpandedThinking((previous) => {
-                            const next = new Set(previous);
-                            if (next.has(block.turn)) next.delete(block.turn);
-                            else next.add(block.turn);
-                            return next;
-                          })
-                      : undefined
-                  }
-                />
-              )}
+            <For each={chatKeys()}>
+              {(key) => {
+                const block = () => chatBlocks().find((row) => chatBlockKey(row) === key)!;
+                const tool = () => {
+                  const row = block();
+                  return row.kind === "tool" ? row : undefined;
+                };
+                const reasoning = () => {
+                  const row = block();
+                  return row.kind === "reasoning" ? row : undefined;
+                };
+                const permission = () => {
+                  const row = block();
+                  return row.kind === "permission" ? row : undefined;
+                };
+                return (
+                  <Show
+                    when={block().kind !== "permission"}
+                    fallback={
+                      <PermissionCard
+                        permission={permission()!}
+                        explaining={props.explaining === permission()!.request}
+                        width={() => Math.max(1, width())}
+                        onDecide={(decision) =>
+                          props.onPermission?.(permission()!.request, decision)
+                        }
+                        onExplain={() => props.onExplainPermission?.(permission()!.request)}
+                      />
+                    }
+                  >
+                    <ChatCard
+                      block={block()}
+                      permission={
+                        tool() !== undefined ? toolPermission(blocks(), tool()!) : undefined
+                      }
+                      explaining={
+                        tool() !== undefined
+                          ? props.explaining === toolPermission(blocks(), tool()!)?.request
+                          : false
+                      }
+                      onDecide={
+                        tool() !== undefined
+                          ? (decision) => {
+                              const ask = toolPermission(blocks(), tool()!);
+                              if (ask) props.onPermission?.(ask.request, decision);
+                            }
+                          : undefined
+                      }
+                      onExplain={
+                        tool() !== undefined
+                          ? () => {
+                              const ask = toolPermission(blocks(), tool()!);
+                              if (ask) props.onExplainPermission?.(ask.request);
+                            }
+                          : undefined
+                      }
+                      width={() => Math.max(1, width())}
+                      highlight={props.highlight}
+                      expanded={tool() !== undefined && expandedTools().has(tool()!.call)}
+                      onToggle={
+                        tool() !== undefined
+                          ? () => {
+                              const call = tool()!.call;
+                              setExpandedTools((previous) => {
+                                const next = new Set(previous);
+                                if (next.has(call)) next.delete(call);
+                                else next.add(call);
+                                return next;
+                              });
+                            }
+                          : undefined
+                      }
+                      thinkingExpanded={
+                        reasoning() !== undefined && expandedThinking().has(reasoning()!.turn)
+                      }
+                      onThinkingToggle={
+                        reasoning() !== undefined
+                          ? () => {
+                              const turn = reasoning()!.turn;
+                              setExpandedThinking((previous) => {
+                                const next = new Set(previous);
+                                if (next.has(turn)) next.delete(turn);
+                                else next.add(turn);
+                                return next;
+                              });
+                            }
+                          : undefined
+                      }
+                    />
+                  </Show>
+                );
+              }}
             </For>
           }
         >
@@ -165,8 +295,10 @@ function RawTranscriptLine(props: { block: TranscriptBlock; width: Accessor<numb
 function ChatCard(props: {
   block: TranscriptBlock;
   permission?: PermissionBlock;
+  explaining?: boolean;
+  onDecide?: (decision: PermissionDecision) => void;
+  onExplain?: () => void;
   width: Accessor<number>;
-  model?: string;
   highlight?: HighlightSnapshot;
   expanded: boolean;
   onToggle?: () => void;
@@ -174,86 +306,20 @@ function ChatCard(props: {
   onThinkingToggle?: () => void;
 }) {
   const [hovered, setHovered] = createSignal(false);
-  const cardStyle = {
-    width: "100%" as const,
-    flexShrink: 0,
-    flexDirection: "column" as const,
-    marginTop: 1,
-    marginBottom: 1,
-  };
 
+  // Tools: per-name cards (opencode ToolPart Switch / pi renderers/*).
   if (props.block.kind === "tool") {
-    const block = props.block;
-    const output = () => (block.name === "bash" ? toolOutput(block)?.trim() : undefined);
-    const collapsedOutput = createMemo(() => collapseOutput(output() ?? "", 10));
-    // Memoized, not computed once: the expand toggle and the pane resize must
-    // both re-wrap and re-slice this card's lines.
-    const lines = createMemo(() =>
-      wrapText(
-        output() === undefined ? toolSummary(block) : toolSummary({ ...block, output: undefined }),
-        Math.max(1, props.width() - 2),
-      ),
-    );
-    const overflow = createMemo(() => lines().length > 10);
-    const visible = createMemo(() =>
-      props.expanded || !overflow() ? lines() : lines().slice(0, 10),
-    );
-    const expandable = createMemo(() => overflow() || collapsedOutput().overflow);
-    const visibleOutput = createMemo(() =>
-      props.expanded || !collapsedOutput().overflow ? output() : collapsedOutput().text,
-    );
     return (
-      <box
-        style={{ ...cardStyle, backgroundColor: hovered() ? undefined : theme.surface0 }}
-        onMouseOver={() => setHovered(true)}
-        onMouseOut={() => setHovered(false)}
-        onMouseUp={expandable() ? props.onToggle : undefined}
-      >
-        <text style={{ height: 1, fg: theme.text }}>{`tool> ${block.name}`}</text>
-        <For each={visible()}>
-          {(line) => (
-            <text
-              style={{
-                wrapMode: "word",
-                width: "100%",
-                fg: block.streaming ? theme.overlay1 : theme.subtext0,
-              }}
-            >
-              {line}
-            </text>
-          )}
-        </For>
-        <Show when={output()}>
-          <text
-            style={{
-              wrapMode: "word",
-              width: "100%",
-              fg: block.isError ? theme.red : theme.subtext0,
-            }}
-          >
-            {visibleOutput()}
-          </text>
-        </Show>
-        <Show when={props.permission}>
-          {(permission: () => PermissionBlock) => (
-            <text
-              style={{
-                height: 1,
-                fg: permission().decision === undefined ? theme.yellow : theme.overlay1,
-              }}
-            >
-              {permission().decision === undefined
-                ? "awaiting approval"
-                : `approved ${permission().decision}`}
-            </text>
-          )}
-        </Show>
-        <Show when={expandable()}>
-          <text style={{ height: 1, fg: theme.overlay1 }}>
-            {props.expanded ? "click to collapse" : "click to expand"}
-          </text>
-        </Show>
-      </box>
+      <ToolCard
+        block={props.block}
+        permission={props.permission}
+        explaining={props.explaining}
+        onDecide={props.onDecide}
+        onExplain={props.onExplain}
+        width={props.width}
+        expanded={props.expanded}
+        onToggle={props.onToggle}
+      />
     );
   }
 
@@ -262,11 +328,11 @@ function ChatCard(props: {
     const lines = createMemo(() => wrapText(block.text, Math.max(1, props.width() - 2)));
     return (
       <box
-        style={{ ...cardStyle, backgroundColor: theme.surface0 }}
+        style={{ width: "100%", flexShrink: 0, flexDirection: "column", marginTop: 1 }}
         onMouseUp={props.onThinkingToggle}
       >
         <text style={{ height: 1, fg: theme.overlay1 }}>
-          {props.thinkingExpanded ? "Thinking" : "Thinking (click to expand)"}
+          {props.thinkingExpanded ? "Thinking" : "Thinking..."}
         </text>
         <Show when={props.thinkingExpanded}>
           <For each={lines()}>
@@ -279,34 +345,92 @@ function ChatCard(props: {
     );
   }
 
+  if (props.block.kind === "error") {
+    const text = props.block.text;
+    const lines = createMemo(() => wrapText(text, Math.max(1, props.width())));
+    return (
+      <box style={{ width: "100%", flexShrink: 0, flexDirection: "column", marginTop: 1 }}>
+        <For each={lines()}>
+          {(line) => (
+            <text style={{ wrapMode: "word", width: "100%", fg: theme.red }}>{line}</text>
+          )}
+        </For>
+      </box>
+    );
+  }
+
   const isUser = props.block.kind === "user";
   const isAssistant = props.block.kind === "assistant";
   const queued = props.block.kind === "user" && props.block.queued === true;
+  const queuedLabel =
+    props.block.kind === "user" && props.block.delivery === "steer" ? "steer" : "queued";
   const content = isUser || isAssistant ? (props.block as { text: string }).text : undefined;
-  const textWidth = () =>
-    isUser ? Math.max(1, Math.floor(props.width() * 0.85)) : props.width();
+
+  // Assistant: OpenTUI <markdown> (opencode TextPart / ../opentui MarkdownRenderable).
+  // Prose structure + fenced highlighting live in one renderable; plain-text
+  // capture still goes through serializeTranscript, not this view.
+  // Explicit width follows the pane signal (not yoga's terminal box): Chat
+  // resizes the logical wrap width before the test renderer can change cols.
+  // Minus one for the scrollbox scrollbar gutter (see contentOptions above).
+  // Keyed remount on wrap width: MarkdownRenderable rebuilds blocks from
+  // content/streaming, not from width alone (../opentui Markdown.ts).
+  // Read `props.block.text` in JSX (not a frozen const): the card stays mounted
+  // across deltas via chatBlockKey, and content must update in place.
+  if (isAssistant) {
+    const wrapWidth = createMemo(() => Math.max(1, props.width() - 1));
+    const text = () => (props.block as Extract<TranscriptBlock, { kind: "assistant" }>).text;
+    return (
+      <box style={{ width: "100%", flexShrink: 0, flexDirection: "column", marginTop: 1 }}>
+        <Show when={text().trim() !== "" ? wrapWidth() : false} keyed>
+          {(w: number) => (
+            <markdown
+              content={text()}
+              syntaxStyle={codeSyntaxStyle()}
+              streaming={true}
+              conceal={true}
+              fg={theme.text}
+              width={w}
+              style={{ width: w, flexShrink: 0 }}
+            />
+          )}
+        </Show>
+      </box>
+    );
+  }
+
+  // Content column is pane width minus the scrollbar gutter.
+  const column = () => Math.max(1, props.width() - 1);
+  const textWidth = () => (isUser ? Math.max(1, Math.floor(column() * 0.85)) : column());
   // Memoized, not computed once: on a restored session the block can land on
   // the very first render, before yoga has run a frame — the pane's width is
   // still its pre-layout placeholder then, and only a memo picks up the real
   // value once layout settles a moment later.
   const lines = createMemo(() =>
     content === undefined
-      ? serializeTranscript([props.block], props.width())
+      ? serializeTranscript([props.block], column())
       : wrapText(content, textWidth()),
   );
-  // Fenced code splits user and assistant text into prose and code segments.
-  // Plain messages (no code segment) render exactly as before.
+  // User messages keep the fence split + CodeBlock path (HighlightSnapshot).
+  // Assistant no longer shares it — <markdown> owns fences there.
   const fenced = createMemo(() => {
-    if (content === undefined || (!isUser && !isAssistant)) return undefined;
+    if (content === undefined || !isUser) return undefined;
     const parts = splitFences(content);
     return parts.some((part) => part.kind === "code") ? parts : undefined;
   });
+  // Role by treatment (pi): user keeps a tinted band; assistant sits on the
+  // pane base with no card chrome and no "assistant>" / model footer noise.
+  // Queued/steer keep a caption — those are delivery state, not a role label.
+  // padStart uses `column`, not full pane width: padding a line to the
+  // scrollbar column and laying it into the padded content box re-wraps mid-phrase.
   return (
     <box
       style={{
-        ...cardStyle,
+        width: "100%",
+        flexShrink: 0,
+        flexDirection: "column",
+        marginTop: 1,
         alignItems: isUser ? "flex-end" : "flex-start",
-        backgroundColor: hovered() ? undefined : theme.surface0,
+        backgroundColor: isUser && !hovered() ? theme.surface0 : undefined,
       }}
       onMouseOver={() => setHovered(true)}
       onMouseOut={() => setHovered(false)}
@@ -322,7 +446,7 @@ function ChatCard(props: {
                   fg: theme.text,
                 }}
               >
-                {isUser ? line.padStart(props.width()) : line}
+                {isUser ? line.padStart(column()) : line}
               </text>
             )}
           </For>
@@ -345,7 +469,7 @@ function ChatCard(props: {
                       fg: theme.text,
                     }}
                   >
-                    {isUser ? line.padStart(props.width()) : line}
+                    {isUser ? line.padStart(column()) : line}
                   </text>
                 )}
               </For>
@@ -353,22 +477,43 @@ function ChatCard(props: {
           }
         </For>
       </Show>
-      <Show when={isUser}>
-        <text style={{ height: 1, fg: theme.overlay1 }}>
-          {(queued ? "queued" : "user").padStart(props.width())}
-        </text>
-      </Show>
-      <Show when={isAssistant && props.model}>
-        <text style={{ height: 1, fg: theme.overlay1 }}>{props.model}</text>
+      <Show when={queued}>
+        <text style={{ height: 1, fg: theme.overlay1 }}>{queuedLabel.padStart(column())}</text>
       </Show>
     </box>
   );
 }
 
-type CollapsedOutput = { readonly text: string; readonly overflow: boolean };
-
-function collapseOutput(output: string, maxLines: number): CollapsedOutput {
-  const lines = output.split("\n");
-  if (lines.length <= maxLines) return { text: output, overflow: false };
-  return { text: `${lines.slice(0, maxLines).join("\n")}\n...`, overflow: true };
+/** A permission ask that never joined a tool card — still answerable in-place. */
+function PermissionCard(props: {
+  permission: PermissionBlock;
+  explaining: boolean;
+  width: Accessor<number>;
+  onDecide: (decision: PermissionDecision) => void;
+  onExplain: () => void;
+}) {
+  return (
+    <box
+      style={{
+        width: "100%",
+        flexShrink: 0,
+        flexDirection: "column",
+        marginTop: 1,
+        marginBottom: 1,
+        backgroundColor: theme.surface0,
+      }}
+    >
+      <Show
+        when={!props.explaining}
+        fallback={<text style={{ height: 1, fg: theme.yellow }}>awaiting approval</text>}
+      >
+        <ApprovalChoices
+          request={props.permission}
+          width={props.width}
+          onDecide={props.onDecide}
+          onExplain={props.onExplain}
+        />
+      </Show>
+    </box>
+  );
 }

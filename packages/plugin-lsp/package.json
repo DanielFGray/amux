@@ -1,0 +1,37 @@
+{
+  "name": "@danielfgray/amux-plugin-lsp",
+  "version": "0.1.0",
+  "keywords": [
+    "amux-plugin"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/plugin-lsp"
+  },
+  "type": "module",
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./catalog": "./src/catalog.ts",
+    "./document": "./src/document.ts",
+    "./service": "./src/service.ts",
+    "./semantic-tokens": "./src/semantic-tokens.ts",
+    "./transport": "./src/transport.ts"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*",
+    "@danielfgray/amux-highlight": "workspace:*"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "engines": {
+    "amux": "^0.1.0"
+  }
+}

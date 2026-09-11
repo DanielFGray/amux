@@ -27,6 +27,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@danielfgray/amux-agent-facts": "workspace:*",
+        "@effect/platform-bun": "catalog:",
         "effect": "catalog:",
       },
       "devDependencies": {
@@ -55,6 +56,7 @@
       },
       "dependencies": {
         "@danielfgray/amux-agent-facts": "workspace:*",
+        "@danielfgray/amux-text-buffer": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@effect/platform-node-shared": "catalog:",
         "@opentui/core": "catalog:",
@@ -69,6 +71,9 @@
       "version": "0.1.0",
       "dependencies": {
         "@danielfgray/amux-highlight": "workspace:*",
+        "@danielfgray/amux-plugin-completion": "workspace:*",
+        "@danielfgray/amux-plugin-lsp": "workspace:*",
+        "@danielfgray/amux-plugin-search": "workspace:*",
         "@effect/platform-bun": "catalog:",
         "@opentui/core": "catalog:",
         "@opentui/solid": "catalog:",
@@ -88,9 +93,25 @@
       "dependencies": {
         "@opentui/core": "catalog:",
         "effect": "catalog:",
+        "web-tree-sitter": "0.25.10",
       },
       "devDependencies": {
         "@danielfgray/amux": "workspace:*",
+      },
+      "peerDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+    },
+    "packages/plugin-agent-continuity": {
+      "name": "@danielfgray/amux-plugin-agent-continuity",
+      "version": "0.1.0",
+      "dependencies": {
+        "@effect/platform-bun": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@danielfgray/amux": "workspace:*",
+        "@danielfgray/amux-agent-awareness": "workspace:*",
       },
       "peerDependencies": {
         "@danielfgray/amux": "workspace:*",
@@ -102,6 +123,8 @@
       "dependencies": {
         "@danielfgray/amux-agent-awareness": "workspace:*",
         "@danielfgray/amux-highlight": "workspace:*",
+        "@danielfgray/amux-plugin-completion": "workspace:*",
+        "@danielfgray/amux-plugin-lsp": "workspace:*",
         "@effect/ai-anthropic": "catalog:",
         "@effect/ai-openai": "catalog:",
         "@effect/platform-bun": "catalog:",
@@ -121,6 +144,37 @@
       "optionalPeers": [
         "@danielfgray/amux-plugin-search",
       ],
+    },
+    "packages/plugin-completion": {
+      "name": "@danielfgray/amux-plugin-completion",
+      "version": "0.1.0",
+      "dependencies": {
+        "@opentui/core": "catalog:",
+        "@opentui/solid": "catalog:",
+        "effect": "catalog:",
+        "solid-js": "catalog:",
+      },
+      "devDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+      "peerDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
+    },
+    "packages/plugin-lsp": {
+      "name": "@danielfgray/amux-plugin-lsp",
+      "version": "0.1.0",
+      "dependencies": {
+        "@effect/platform-bun": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@danielfgray/amux": "workspace:*",
+        "@danielfgray/amux-highlight": "workspace:*",
+      },
+      "peerDependencies": {
+        "@danielfgray/amux": "workspace:*",
+      },
     },
     "packages/plugin-modal": {
       "name": "@danielfgray/amux-plugin-modal",
@@ -196,6 +250,16 @@
       },
       "peerDependencies": {
         "@danielfgray/amux": "workspace:*",
+      },
+    },
+    "packages/text-buffer": {
+      "name": "@danielfgray/amux-text-buffer",
+      "version": "0.1.0",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
       },
     },
   },
@@ -294,7 +358,13 @@
 
     "@danielfgray/amux-highlight": ["@danielfgray/amux-highlight@workspace:packages/highlight"],
 
+    "@danielfgray/amux-plugin-agent-continuity": ["@danielfgray/amux-plugin-agent-continuity@workspace:packages/plugin-agent-continuity"],
+
     "@danielfgray/amux-plugin-agent-harness": ["@danielfgray/amux-plugin-agent-harness@workspace:packages/plugin-agent-harness"],
+
+    "@danielfgray/amux-plugin-completion": ["@danielfgray/amux-plugin-completion@workspace:packages/plugin-completion"],
+
+    "@danielfgray/amux-plugin-lsp": ["@danielfgray/amux-plugin-lsp@workspace:packages/plugin-lsp"],
 
     "@danielfgray/amux-plugin-modal": ["@danielfgray/amux-plugin-modal@workspace:packages/plugin-modal"],
 
@@ -305,6 +375,8 @@
     "@danielfgray/amux-plugin-search": ["@danielfgray/amux-plugin-search@workspace:packages/plugin-search"],
 
     "@danielfgray/amux-plugin-sidebar": ["@danielfgray/amux-plugin-sidebar@workspace:packages/plugin-sidebar"],
+
+    "@danielfgray/amux-text-buffer": ["@danielfgray/amux-text-buffer@workspace:packages/text-buffer"],
 
     "@effect/ai-anthropic": ["@effect/ai-anthropic@4.0.0-rc.112", "", { "peerDependencies": { "effect": "^4.0.0-rc.112" } }, "sha512-2GQKD3IzfCJuS3DgeuBwUjEYk5iyOqgK5etQkYZ3Ho8IuL8BtGR9d8G5AIiRV0xkNy5DD4vGnDGSHxKWsW2TRg=="],
 
@@ -1256,6 +1328,8 @@
 
     "zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
 
+    "@danielfgray/amux-text-buffer/@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
+
     "@opentui/core/string-width": ["string-width@7.2.0", "", { "dependencies": { "emoji-regex": "^10.3.0", "get-east-asian-width": "^1.0.0", "strip-ansi": "^7.1.0" } }, "sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ=="],
 
     "babel-plugin-jsx-dom-expressions/@babel/helper-module-imports": ["@babel/helper-module-imports@7.18.6", "", { "dependencies": { "@babel/types": "^7.18.6" } }, "sha512-0NFvs3VkuSYbFi1x2Vd6tKrywq+z/cLeYC/RJNFrIX/30Bf5aiGYbtvGXolEktzJH8o5E5KJ3tT+nkxuuZFVlA=="],
@@ -1287,6 +1361,8 @@
     "vitest/tinypool": ["tinypool@1.1.1", "", {}, "sha512-Zba82s87IFq9A9XmjiX5uZA/ARWDrB03OHlq+Vw1fSdt0I+4/Kutwy8BP4Y/y/aORMo61FQ0vIb5j44vSo5Pkg=="],
 
     "wrap-ansi/ansi-styles": ["ansi-styles@6.2.3", "", {}, "sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg=="],
+
+    "@danielfgray/amux-text-buffer/@types/bun/bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
 
     "glob/minimatch/brace-expansion": ["brace-expansion@2.1.4", "", { "dependencies": { "balanced-match": "^1.0.0" } }, "sha512-hGfVzPxthbf3+2yjg/RBs60cB0FhqBS/zvdV/4wn4/BmN0bNMMHPc4V/BbFieqf1TKAGGAHnY4eSjajCl0f2Xg=="],
   }

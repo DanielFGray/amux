@@ -49,33 +49,28 @@ const mtimeOf = (file: string): FsEffect<number> =>
     return Option.match(info.mtime, { onNone: () => -1, onSome: (d) => d.getTime() });
   }).pipe(Effect.orElseSucceed(() => -1));
 
-function parseJsonLines(content: string): unknown[] {
-  const parsed: unknown[] = [];
+const decodeJson = S.decodeUnknownOption(S.fromJsonString(S.Json));
+
+function parseJsonLines(content: string): S.Json[] {
+  const parsed: S.Json[] = [];
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
-    try {
-      parsed.push(JSON.parse(line));
-    } catch {
-      // skip corrupt line
-    }
+    Option.match(decodeJson(line), {
+      onNone: () => undefined,
+      onSome: (value) => parsed.push(value),
+    });
   }
   return parsed;
 }
 
-const readJsonLines = (file: string): FsEffect<unknown[]> =>
+const readJsonLines = (file: string): FsEffect<S.Json[]> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const content = yield* fs.readFileString(file);
     return parseJsonLines(content);
-  }).pipe(Effect.orElseSucceed((): unknown[] => []));
+  }).pipe(Effect.orElseSucceed((): S.Json[] => []));
 
-function tryParseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
+const tryParseJson = (text: string): Option.Option<S.Json> => decodeJson(text);
 
 // The one content shape shared by every harness: plain text, or a list of
 // blocks (tool calls, tool results, text) where only the text ones matter.
@@ -135,13 +130,15 @@ const CLAUDE_CODE: HarnessLogAdapter = {
       if (!best) return [];
       const messages: HarnessLogMessage[] = [];
       for (const raw of yield* readJsonLines(best)) {
-        const decoded = decodeClaudeLine(raw);
-        if (Option.isNone(decoded)) continue;
-        const line = decoded.value;
-        if (line.isSidechain === true) continue;
-        const text = textOfContent(line.message.content);
-        if (!text) continue;
-        messages.push({ role: line.message.role, text, timestamp: line.timestamp });
+        Option.match(decodeClaudeLine(raw), {
+          onNone: () => undefined,
+          onSome: (line) => {
+            if (line.isSidechain === true) return;
+            const text = textOfContent(line.message.content);
+            if (!text) return;
+            messages.push({ role: line.message.role, text, timestamp: line.timestamp });
+          },
+        });
       }
       messages.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
       return messages.slice(-limit);
@@ -191,21 +188,24 @@ function readOpencodeLast(dbFiles: string[], cwd: string, limit: number): Harnes
     const partStmt = db.query("SELECT data FROM part WHERE message_id = ? ORDER BY id");
     const messages: HarnessLogMessage[] = [];
     for (const row of rows.reverse()) {
-      const decoded = decodeOpencodeMessage(tryParseJson(row.data));
-      if (Option.isNone(decoded)) continue;
-      const parts = partStmt.all(row.id) as { data: string }[];
-      const text = parts
-        .map((p) =>
-          Option.getOrElse(
-            Option.map(decodeContentBlock(tryParseJson(p.data)), (block) => block.text ?? ""),
-            () => "",
-          ),
-        )
-        .filter(Boolean)
-        .join("\n\n")
-        .trim();
-      if (!text) continue;
-      messages.push({ role: decoded.value.role, text, timestamp: isoOf(row.time_created) });
+      Option.match(Option.flatMap(tryParseJson(row.data), decodeOpencodeMessage), {
+        onNone: () => undefined,
+        onSome: (message) => {
+          const parts = partStmt.all(row.id) as { data: string }[];
+          const text = parts
+            .map((p) =>
+              Option.match(Option.flatMap(tryParseJson(p.data), decodeContentBlock), {
+                onNone: () => "",
+                onSome: (block) => block.text ?? "",
+              }),
+            )
+            .filter(Boolean)
+            .join("\n\n")
+            .trim();
+          if (!text) return;
+          messages.push({ role: message.role, text, timestamp: isoOf(row.time_created) });
+        },
+      });
     }
     return messages;
   } finally {
@@ -223,19 +223,28 @@ const CODEX: HarnessLogAdapter = {
       let best: string | undefined;
       for (const file of files) {
         const lines = yield* readJsonLines(file);
-        const meta = lines.map((l) => decodeCodexMeta(l)).find(Option.isSome);
-        if (!meta || meta.value.payload.cwd !== cwd) continue;
+        const meta = lines.reduce<Option.Option<S.Schema.Type<typeof CodexMetaSchema>>>(
+          (found, line) => Option.orElse(found, () => decodeCodexMeta(line)),
+          Option.none(),
+        );
+        const matchesCwd = Option.match(meta, {
+          onNone: () => false,
+          onSome: (value) => value.payload.cwd === cwd,
+        });
+        if (!matchesCwd) continue;
         if (!best || (yield* mtimeOf(file)) > (yield* mtimeOf(best))) best = file;
       }
       if (!best) return [];
       const messages: HarnessLogMessage[] = [];
       for (const raw of yield* readJsonLines(best)) {
-        const decoded = decodeCodexMessage(raw);
-        if (Option.isNone(decoded)) continue;
-        const line = decoded.value;
-        const text = textOfContent(line.payload.content);
-        if (!text) continue;
-        messages.push({ role: line.payload.role, text, timestamp: line.timestamp });
+        Option.match(decodeCodexMessage(raw), {
+          onNone: () => undefined,
+          onSome: (line) => {
+            const text = textOfContent(line.payload.content);
+            if (!text) return;
+            messages.push({ role: line.payload.role, text, timestamp: line.timestamp });
+          },
+        });
       }
       return messages.slice(-limit);
     }),

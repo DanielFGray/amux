@@ -40,7 +40,9 @@ function target(events: KeyEvent[] = []): SendTarget & { events: KeyEvent[] } {
 }
 
 const encoded = (input: string, parser: SendKeyParser = fakeParse): string =>
-  parseSendKeys(input, parser).map((event) => event.raw).join("");
+  parseSendKeys(input, parser)
+    .map((event) => event.raw)
+    .join("");
 
 test("tokenizing splits on whitespace and strips quotes", () => {
   expect(tokenizeSendKeys("ls -la Enter")).toEqual([
@@ -122,7 +124,11 @@ test("sendKeys reports compile errors instead of throwing", () => {
 test("dispatched keys stop recursive mappings and name the active binding", () => {
   const direct = target();
   let dispatched!: SendTarget;
-  const dispatch = createKeyDispatcher((event) => dispatched.key(event), () => "loop", 3);
+  const dispatch = createKeyDispatcher(
+    (event) => dispatched.key(event),
+    () => "loop",
+    3,
+  );
   dispatched = dispatch(direct);
   const error = sendKeys(dispatched, "x", fakeParse);
   expect(error?.message).toBe("mapping depth exceeded at binding 'loop'");
@@ -134,15 +140,16 @@ test("the app's own key strings drive encodeSendKeys end to end", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const bindings = createBindings(t.renderer, [], {
+      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
-    // createBindings arms the leader under the default prefix, so <leader> is
-    // meaningful right away — exactly as it is for the command bindings.
+    // createBindings arms the mux prefix token, so <prefix> is meaningful
+    // right away — exactly as it is for the command bindings.
     const viaKeymap: SendKeyParser = (token) => parseKeyStrokes(bindings.keymap, token);
     expect(encoded("'ls -la' Enter", viaKeymap)).toBe("ls -la\r");
     expect(encoded("ctrl+a", viaKeymap)).toBe("\x01");
-    expect(encoded("<leader>:", viaKeymap)).toBe("\x01:");
-    expect(encoded("<leader>", viaKeymap)).toBe("\x01");
+    expect(encoded("<prefix>:", viaKeymap)).toBe("\x01:");
+    expect(encoded("<prefix>", viaKeymap)).toBe("\x01");
     // Text that is not a key name passes through unquoted.
     expect(encoded("whoami", viaKeymap)).toBe("whoami");
     // A capital reads as lowercase to the parser, so the original text is
@@ -158,10 +165,11 @@ test("a token holding a key among plain letters encodes the whole sequence", asy
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const bindings = createBindings(t.renderer, [], {
+      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
     });
     const viaKeymap: SendKeyParser = (token) => parseKeyStrokes(bindings.keymap, token);
-    expect(encoded("<leader> q", viaKeymap)).toBe("\x01q");
+    expect(encoded("<prefix> q", viaKeymap)).toBe("\x01q");
     expect(encoded("'cd /tmp' Enter", viaKeymap)).toBe("cd /tmp\r");
     expect(encoded("cd /tmp Enter", viaKeymap)).toBe("cd /tmp\r");
   } finally {

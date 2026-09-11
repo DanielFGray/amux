@@ -1,10 +1,13 @@
 /**
  * Shared tree-sitter highlighting for the editor and the agent harness.
- * Neither consumer parses: OpenTUI owns the worker, the queries and the
- * style engine, and this package owns the scoped wrapper both plugins use.
+ * Highlighting still goes through OpenTUI's worker; structural parse
+ * (`ensureStructure` / `parseStructure`) is an in-process second path for
+ * tag surround and textobjects that need the AST on the main thread.
  */
 export {
+  codeSyntaxStyle,
   filetypeForInfo,
+  filetypeForPath,
   HighlightProvider,
   makeHighlightProvider,
   type HighlightClient,
@@ -14,4 +17,15 @@ export {
   type LineChunks,
 } from "./highlight.ts";
 export { discoverCachedParsers, parsersFromFileNames } from "./parsers.ts";
+export {
+  ensureGrammar,
+  ensureStructure,
+  grammarForFiletype,
+  nodeAt,
+  parseStructure,
+  structureReady,
+  type StructureNode,
+  type StructurePoint,
+  type StructureTree,
+} from "./structure.ts";
 export type { FiletypeParserOptions, TextChunk } from "@opentui/core";

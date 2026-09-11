@@ -6,7 +6,7 @@ import { testEffect } from "../test-effect.ts";
 
 testEffect(
   "runtime finalizer runs when its scope closes, not before",
-  Effect.callback<void, unknown>((resume) => {
+  Effect.callback<void, string>((resume) => {
     let finalized = false;
     const layer = Layer.effectDiscard(
       Effect.addFinalizer(() => Effect.sync(() => (finalized = true))),
@@ -37,7 +37,7 @@ testEffect(
           expect(finalized).toBe(true);
           resume(Effect.void);
         } catch (error) {
-          resume(Effect.fail(error));
+          resume(Effect.fail(String(error)));
         }
       });
     });
@@ -46,7 +46,7 @@ testEffect(
 
 testEffect(
   "nested runtime sharing a parent's MemoMap builds a common layer once",
-  Effect.callback<void, unknown>((resume) => {
+  Effect.callback<void, string>((resume) => {
     let builds = 0;
     class Shared extends Context.Service<Shared, { readonly n: number }>()(
       "amux/effect/SolidRuntime.test/Shared",
@@ -76,7 +76,7 @@ testEffect(
         expect(builds).toBe(1);
         resume(Effect.void);
       } catch (error) {
-        resume(Effect.fail(error));
+        resume(Effect.fail(String(error)));
       }
     });
   }),

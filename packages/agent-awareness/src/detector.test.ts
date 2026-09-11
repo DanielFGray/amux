@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { bundledRegistry } from "@danielfgray/amux-agent-facts/manifests.ts";
 import { evaluateAdapter, evaluateAgent, type Adapter } from "./detector.ts";
 
 test("rules compose over named fact regions and highest priority wins", () => {
@@ -28,37 +29,43 @@ test("rules compose over named fact regions and highest priority wins", () => {
 
 test("bundled adapters preserve picker suppression and prompt detection", () => {
   expect(
-    evaluateAgent("claude", {
+    evaluateAgent(bundledRegistry(), "claude", {
       whole_recent: "Select model\nEnter to set as default\nEsc to cancel\n❯ 1. Yes",
     }),
   ).toEqual({ state: "unknown", rule: "model_picker_menu", skipStateUpdate: true });
   expect(
-    evaluateAgent("opencode", { whole_recent: "△ Permission required\nesc dismiss" }),
+    evaluateAgent(bundledRegistry(), "opencode", {
+      whole_recent: "△ Permission required\nesc dismiss",
+    }),
   ).toMatchObject({ state: "blocked" });
-  expect(evaluateAgent("claude", { osc_title: "⠋ thinking" })).toMatchObject({ state: "running" });
+  expect(evaluateAgent(bundledRegistry(), "claude", { osc_title: "⠋ thinking" })).toMatchObject({
+    state: "running",
+  });
 });
 
 test("claude's working spinner and idle marker are distinct osc_title rules", () => {
-  expect(evaluateAgent("claude", { osc_title: "⠋ thinking" })).toMatchObject({
+  expect(evaluateAgent(bundledRegistry(), "claude", { osc_title: "⠋ thinking" })).toMatchObject({
     state: "running",
     rule: "osc_title_working",
   });
-  expect(evaluateAgent("claude", { osc_title: "✳ done" })).toMatchObject({
+  expect(evaluateAgent(bundledRegistry(), "claude", { osc_title: "✳ done" })).toMatchObject({
     state: "idle",
     rule: "osc_title_idle",
   });
 });
 
 test("codex distinguishes action-required, spinner, and plain idle titles", () => {
-  expect(evaluateAgent("codex", { osc_title: "Action Required" })).toMatchObject({
-    state: "blocked",
-    rule: "osc_title_blocked",
-  });
-  expect(evaluateAgent("codex", { osc_title: "⠋ working" })).toMatchObject({
+  expect(evaluateAgent(bundledRegistry(), "codex", { osc_title: "Action Required" })).toMatchObject(
+    {
+      state: "blocked",
+      rule: "osc_title_blocked",
+    },
+  );
+  expect(evaluateAgent(bundledRegistry(), "codex", { osc_title: "⠋ working" })).toMatchObject({
     state: "running",
     rule: "osc_title_working",
   });
-  expect(evaluateAgent("codex", { osc_title: "my-project" })).toMatchObject({
+  expect(evaluateAgent(bundledRegistry(), "codex", { osc_title: "my-project" })).toMatchObject({
     state: "idle",
     rule: "osc_title_idle",
   });
@@ -66,9 +73,13 @@ test("codex distinguishes action-required, spinner, and plain idle titles", () =
 
 test("copilot detects a cancel-hinted working state and a selection blocker", () => {
   expect(
-    evaluateAgent("copilot", { whole_recent: "Generating suggestion...\nesc to cancel" }),
+    evaluateAgent(bundledRegistry(), "copilot", {
+      whole_recent: "Generating suggestion...\nesc to cancel",
+    }),
   ).toMatchObject({ state: "running", rule: "working_cancel_hint" });
   expect(
-    evaluateAgent("copilot", { whole_recent: "Pick a suggestion\nenter to select\nesc to cancel" }),
+    evaluateAgent(bundledRegistry(), "copilot", {
+      whole_recent: "Pick a suggestion\nenter to select\nesc to cancel",
+    }),
   ).toMatchObject({ state: "blocked", rule: "selection_blocker" });
 });

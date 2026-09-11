@@ -1,16 +1,21 @@
 import { BunServices } from "@effect/platform-bun";
-import { Effect, Path, Schema as S } from "effect";
+import { Effect, Option, Path, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { pluginSpecKey, type Config, type PluginSpec } from "../config.ts";
 import type { PluginDefinition } from "./types.ts";
 import type { PluginHost, RefusedPlugin } from "./host.ts";
-import { hotImport } from "./hot.ts";
+import { hotImport, resolveExportsSubpath } from "./hot.ts";
 import { checkPluginCompat } from "./compat.ts";
 import { PLUGIN_STORE_DIR, resolveInstalledEntry } from "./store.ts";
+import { lastGoodStoreLayer, LastGoodStoreTag, restoreLastGood } from "./last-good.ts";
 
-/** A plugin whose source amux can see, and can therefore load again. */
-export interface HotPlugin {
+/**
+ * A loader-owned plugin: Cordis entry with `url` (Def. 81). The host activates
+ * `definition`; the reloader re-imports `source`. There is no separate "hot"
+ * plugin kind — reloadability is having an entry.
+ */
+export interface PluginEntry {
   readonly id: string;
   readonly path?: string;
   readonly source: URL;
@@ -18,7 +23,9 @@ export interface HotPlugin {
 }
 
 export interface LoadedPlugins {
-  readonly hot: readonly HotPlugin[];
+  readonly entries: readonly PluginEntry[];
+  /** Startup imported archived source instead of the current disk files. */
+  readonly recovered: boolean;
   /** Entries the host's configuration could not satisfy — see `RefusedPlugin`. */
   readonly refused: readonly RefusedPlugin[];
 }
@@ -51,8 +58,26 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
   storeDir: string = PLUGIN_STORE_DIR,
   entrypoint: string = ".",
 ) {
-  const hot: HotPlugin[] = [];
+  const entries: PluginEntry[] = [];
   const enabled: PluginDefinition[] = [];
+  const path = yield* Path.Path;
+  const recovery = yield* LastGoodStoreTag.pipe(
+    Effect.provide(lastGoodStoreLayer(path.join(configDir, ".amux", "plugin-last-good.json"))),
+  );
+  const saved = yield* recovery.read.pipe(Effect.orElseSucceed(() => Option.none()));
+  const restored = yield* Option.match(saved, {
+    onNone: () => Effect.succeed(new Map<string, URL>()),
+    onSome: (archive) =>
+      archive.quarantined
+        ? restoreLastGood(archive, path.join(configDir, ".amux", "plugin-last-good")).pipe(
+            Effect.orElseSucceed(() => new Map<string, URL>()),
+          )
+        : Effect.succeed(new Map<string, URL>()),
+  });
+  if (restored.size > 0)
+    yield* Effect.logWarning(
+      "plugins are running the last-known-good archived source; run 'amux plugin.reload --disk' to retry files on disk",
+    );
 
   const configured = new Map(config.plugins.map((spec) => [pluginSpecKey(spec), spec]));
   const specs: readonly PluginSpec[] = [
@@ -82,7 +107,8 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
       yield* Effect.logWarning(`Ignoring plugin outside config directory: ${spec.path}`);
     if (source._tag !== "found") continue;
 
-    const loaded = yield* hotImport(source.url).pipe(
+    const imported = restored.get(source.url.href) ?? source.url;
+    const loaded = yield* hotImport(imported).pipe(
       Effect.tapError((error) => Effect.logWarning(`Could not load plugin '${key}': ${error}`)),
       Effect.orElseSucceed(() => null),
     );
@@ -96,7 +122,7 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
     if (!compatible) continue;
 
     if (spec.enabled) enabled.push(loaded);
-    hot.push({ id: loaded.id, path: key, source: source.url, definition: loaded });
+    entries.push({ id: loaded.id, path: key, source: source.url, definition: loaded });
   }
 
   // One configuration, not a plugin at a time: whether an injected key has any
@@ -106,7 +132,7 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
     .reconcile([...coreEntries, ...enabled])
     .pipe(Effect.catchCause(() => Effect.succeed([] as readonly RefusedPlugin[])));
 
-  return { hot, refused } as LoadedPlugins;
+  return { entries, recovered: restored.size > 0, refused } as LoadedPlugins;
 });
 
 export const loadPluginsFromConfig = (...args: Parameters<typeof loadPluginsFromConfigEffect>) =>
@@ -160,11 +186,21 @@ function sourceOf(
   if (specPath.startsWith("file://")) {
     return Effect.gen(function* () {
       const filePath = yield* Effect.try(() => fileURLToPath(specPath)).pipe(
-        Effect.orElseSucceed(() => null),
+        Effect.map(Option.some),
+        Effect.orElseSucceed(() => Option.none<string>()),
       );
-      if (filePath === null) return { _tag: "missing" as const };
-      const entry = yield* resolvePathEntry(filePath, entrypoint);
-      return entry ? found(entry) : { _tag: "missing" as const };
+      return yield* Option.match(filePath, {
+        onNone: () => Effect.succeed({ _tag: "missing" as const }),
+        onSome: (resolvedPath) =>
+          resolvePathEntry(resolvedPath, entrypoint).pipe(
+            Effect.map((entry) =>
+              Option.match(entry, {
+                onNone: () => ({ _tag: "missing" as const }),
+                onSome: found,
+              }),
+            ),
+          ),
+      });
     });
   }
   return Effect.gen(function* () {
@@ -172,17 +208,38 @@ function sourceOf(
     const path = yield* Path.Path;
     if (path.isAbsolute(specPath)) {
       const entry = yield* resolvePathEntry(specPath, entrypoint);
-      return entry ? found(entry) : { _tag: "missing" as const };
+      return Option.match(entry, {
+        onNone: () => ({ _tag: "missing" as const }),
+        onSome: found,
+      });
     }
     const resolved = path.resolve(configDir, specPath);
     const entry = yield* resolvePathEntry(resolved, entrypoint);
-    if (!entry) return { _tag: "missing" as const };
-    const realConfigDir = yield* fs.realPath(configDir).pipe(Effect.orElseSucceed(() => null));
-    const realPath = yield* fs.realPath(entry).pipe(Effect.orElseSucceed(() => null));
-    if (!realConfigDir || !realPath) return { _tag: "outside-config" as const };
-    if (!realPath.startsWith(realConfigDir + path.sep) && realPath !== realConfigDir)
-      return { _tag: "outside-config" as const };
-    return found(entry);
+    return yield* Option.match(entry, {
+      onNone: () => Effect.succeed({ _tag: "missing" as const }),
+      onSome: (entryPath) =>
+        Effect.gen(function* () {
+          const realConfigDir = yield* fs.realPath(configDir).pipe(
+            Effect.map(Option.some),
+            Effect.orElseSucceed(() => Option.none<string>()),
+          );
+          const realPath = yield* fs.realPath(entryPath).pipe(
+            Effect.map(Option.some),
+            Effect.orElseSucceed(() => Option.none<string>()),
+          );
+          return Option.match(realConfigDir, {
+            onNone: () => ({ _tag: "outside-config" as const }),
+            onSome: (configPath) =>
+              Option.match(realPath, {
+                onNone: () => ({ _tag: "outside-config" as const }),
+                onSome: (resolvedPath) =>
+                  !resolvedPath.startsWith(configPath + path.sep) && resolvedPath !== configPath
+                    ? { _tag: "outside-config" as const }
+                    : found(entryPath),
+              }),
+          });
+        }),
+    });
   });
 }
 
@@ -193,27 +250,6 @@ function sourceOf(
 const ManifestExports = S.Struct({
   exports: S.optional(S.Record(S.String, S.String)),
 });
-
-/** `exports[entrypoint]`, with a single `"./*"`-style wildcard substitution
- *  when no literal key matches — every shape this repo's own plugin
- *  packages declare (see plugin-niri/package.json). */
-function resolveExportsSubpath(
-  exportsMap: Readonly<Record<string, string>>,
-  entrypoint: string,
-): string | undefined {
-  const direct = exportsMap[entrypoint];
-  if (direct !== undefined) return direct;
-  for (const [pattern, value] of Object.entries(exportsMap)) {
-    const star = pattern.indexOf("*");
-    if (star === -1) continue;
-    const prefix = pattern.slice(0, star);
-    const suffix = pattern.slice(star + 1);
-    if (entrypoint.startsWith(prefix) && entrypoint.endsWith(suffix)) {
-      return value.replace("*", entrypoint.slice(prefix.length, entrypoint.length - suffix.length));
-    }
-  }
-  return undefined;
-}
 
 /**
  * Where a plugin's entrypoint file actually is. A directory names the
@@ -232,37 +268,55 @@ function resolveExportsSubpath(
 function resolvePathEntry(
   filePath: string,
   entrypoint: string,
-): Effect.Effect<string | null, never, FileSystem.FileSystem> {
+): Effect.Effect<Option.Option<string>, never, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const stat = yield* fs.stat(filePath).pipe(Effect.orElseSucceed(() => null));
-    if (stat?.type === "Directory") {
-      const dir = filePath.replace(/\/$/, "");
-      const text = yield* fs
-        .readFileString(`${dir}/package.json`)
-        .pipe(Effect.orElseSucceed(() => null));
-      const parsed: unknown =
-        text === null
-          ? null
-          : yield* S.decodeEffect(S.fromJsonString(S.Unknown))(text).pipe(
-              Effect.orElseSucceed(() => null),
-            );
-      const manifest =
-        parsed === null
-          ? null
-          : yield* S.decodeUnknownEffect(ManifestExports)(parsed).pipe(
-              Effect.orElseSucceed(() => null),
-            );
-      const target =
-        manifest?.exports === undefined
-          ? undefined
-          : resolveExportsSubpath(manifest.exports, entrypoint);
-      if (target !== undefined) return `${dir}/${target.replace(/^\.\//, "")}`;
-      return entrypoint === "." ? filePath : null;
-    }
-    if (entrypoint === ".") return filePath;
-    return yield* Effect.try(() =>
-      Bun.resolveSync(entrypoint, filePath.slice(0, filePath.lastIndexOf("/"))),
-    ).pipe(Effect.orElseSucceed(() => null));
+    const path = yield* Path.Path;
+    const resolveFile = () =>
+      entrypoint === "."
+        ? Effect.succeed(Option.some(filePath))
+        : Effect.try(() =>
+            Bun.resolveSync(entrypoint, filePath.slice(0, filePath.lastIndexOf("/"))),
+          ).pipe(
+            Effect.map(Option.some),
+            Effect.orElseSucceed(() => Option.none<string>()),
+          );
+    const resolveDirectory = () =>
+      Effect.gen(function* () {
+        const dir = filePath.replace(/\/$/, "");
+        const text = yield* fs.readFileString(path.join(dir, "package.json")).pipe(
+          Effect.map(Option.some),
+          Effect.orElseSucceed(() => Option.none<string>()),
+        );
+        const manifest = yield* Option.match(text, {
+          onNone: () => Effect.succeed(Option.none<S.Schema.Type<typeof ManifestExports>>()),
+          onSome: (contents) =>
+            S.decodeEffect(S.fromJsonString(ManifestExports))(contents).pipe(
+              Effect.map(Option.some),
+              Effect.orElseSucceed(() => Option.none<S.Schema.Type<typeof ManifestExports>>()),
+            ),
+        });
+        const target = yield* Option.match(manifest, {
+          onNone: () => Effect.succeed(Option.none<string>()),
+          onSome: (value) =>
+            Option.match(Option.fromUndefinedOr(value.exports), {
+              onNone: () => Effect.succeed(Option.none<string>()),
+              onSome: (exports) =>
+                Effect.succeed(Option.fromUndefinedOr(resolveExportsSubpath(exports, entrypoint))),
+            }),
+        });
+        return Option.match(target, {
+          onNone: () => (entrypoint === "." ? Option.some(filePath) : Option.none()),
+          onSome: (targetPath) => Option.some(path.join(dir, targetPath.replace(/^\.\//, ""))),
+        });
+      });
+    const stat = yield* fs.stat(filePath).pipe(
+      Effect.map(Option.some),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    return yield* Option.match(stat, {
+      onNone: resolveFile,
+      onSome: (info) => (info.type === "Directory" ? resolveDirectory() : resolveFile()),
+    });
   });
 }

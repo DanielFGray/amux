@@ -86,25 +86,23 @@ Waiting is for a provider that is coming, never for one that cannot. The host ta
 
 #### Reload boundary
 
-The reload boundary is the plugin's directory, rooted at its entry file. The HMR
-loader carries a generation token through imports inside that directory. Imports
-outside it keep the host's module instance, including the Effect and OpenTUI
-instances shared with the rest of the client.
+The loader records resolved import edges, including bare workspace-package
+imports. A normal plugin reload carries one generation token through the
+plugin's local reload root. When a shared dependency changes, it uses
+`Effect.Graph` incoming DFS to select every active entry that imports it;
+cyclic changed modules are declined rather than partially invalidated.
 
-The alternative is import-graph classification: repeatedly accept a changed
-module when an import accepts it, decline it when all imports decline it, and
-decline cycles by default. That can reload a smaller set of files, but it adds a
-graph cache, invalidation and stale-entry rules, and difficult ownership cases
-for dynamic imports and shared state. It does not improve amux's required
-guarantee: plugin code may be replaced without duplicating host state. A
-directory is an explicit, stable ownership boundary and is also easy to explain
-to plugin authors. We therefore keep the directory-rooted boundary.
+Every selected entry imports under the same fresh generation token, so a shared
+module has one fresh Bun cache key and every consumer receives the same exports
+object. Host modules outside the selected roots — including `effect`,
+`solid-js`, and OpenTUI — retain their singleton instances.
 
-This classification decision is independent of reload transactionality. The
-reload lifecycle must use the two-scope, commit-or-rollback design: start the
-new generation beside the old one, publish it only after activation succeeds,
-then unload the old generation. A failed activation closes the new scope and
-leaves the old generation visible.
+Reload is a transaction: candidates activate beside the current generation,
+then the host commits all contributions together. If an import, compatibility
+check, or activation fails, every candidate scope closes and every previous
+plugin remains active. This is the scoped-effect form of Cordis's HMR
+transaction (Algorithms 8–10): `Graph` supplies stale-entry selection and the
+plugin host supplies the commit-or-rollback lifecycle.
 
 A plugin's reloadable unit is its entry file plus the directory named after it: `agent-harness.tsx` reloads together with everything in `agent-harness/`. Modules outside that directory — amux itself, `effect`, `solid-js` — stay the single instance the whole client shares, so a plugin never ends up talking to its own private copy of a registry.
 

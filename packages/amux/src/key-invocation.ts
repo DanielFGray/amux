@@ -35,15 +35,11 @@ export class KeyInvocation extends Context.Service<KeyInvocation, KeyInvocationV
 
 /**
  * A count accumulator implementing the claim rule which-key, helix and
- * kakoune all share: a digit is a count only where the calling context has
- * not bound it to something else itself. That rule is what lets "0" work as
- * both a motion (bound, count empty) and a count digit (once a count is
- * already under way, "0" extends it instead of firing whatever it's bound
- * to) — the same behavior the editor already has in vim-core.ts
- * (`isCountDigit`/`parsedCount`), generalized here rather than copied: that
- * version is wired to vim's own `pending`/`pendingG` state, so this one
- * takes "is this key claimed here" as a parameter instead, letting any
- * context supply its own answer.
+ * kakoune all share: a digit starts a count only where the calling context
+ * has not bound that digit. That lets `"0"` stay a motion and `"1"` stay
+ * tmux-style `^a 1` window-select when bound, while unbound digits under a
+ * map prefix (`^S ^W 80|`) accumulate. Once a count is under way, every
+ * digit extends it even where that glyph is also bound.
  *
  * A context wanting counts calls `offer` on every key ahead of its own
  * dispatch; `true` means the key was consumed into the count and the
@@ -72,10 +68,7 @@ export function createCountAccumulator(): CountAccumulator {
     offer(key, isBoundHere) {
       if (key.ctrl || key.meta || key.option) return false;
       if (key.name.length !== 1 || !/[0-9]/.test(key.name)) return false;
-      // A leading zero is a motion, not a count start — vim-core.ts's own
-      // rule (isCountDigit), generalized: it only wins over the count if
-      // this context actually bound it to something.
-      if (key.name === "0" && digits === "" && isBoundHere("0")) return false;
+      if (digits === "" && isBoundHere(key.name)) return false;
       digits += key.name;
       return true;
     },

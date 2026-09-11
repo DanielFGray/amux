@@ -4,7 +4,6 @@ import type { PermissionDecision, PermissionRule } from "@danielfgray/amux/permi
 import { ProcessState } from "@danielfgray/amux";
 import { agentStateFromTopic } from "./state-topic.ts";
 import { readDelta, readEvent, type HarnessDelta, type SequencedHarnessEvent } from "./protocol.ts";
-
 export type TranscriptBlock =
   | { readonly kind: "reasoning"; readonly turn: string; readonly text: string }
   | {
@@ -12,6 +11,7 @@ export type TranscriptBlock =
       readonly turn: string;
       readonly text: string;
       readonly queued?: boolean;
+      readonly delivery?: "steer" | "queue";
     }
   | { readonly kind: "assistant"; readonly turn: string; readonly text: string }
   | {
@@ -36,6 +36,10 @@ export type TranscriptBlock =
       /** What "always" would record, so the human approves a rule they can read. */
       readonly save: readonly PermissionRule[];
       readonly input: JsonValue;
+      /** Provider tool-call id when the gate was told which call this is. */
+      readonly call?: string;
+      /** Unified diff preview when the tool computed one before asking. */
+      readonly diff?: string;
       /** Absent while the request is still pending — the pane's cue to ask. */
       readonly decision?: PermissionDecision;
       readonly feedback?: string;
@@ -68,16 +72,21 @@ type PermissionBlock = Extract<TranscriptBlock, { kind: "permission" }>;
 
 const permissionBlock = (
   frame: Extract<SequencedHarnessEvent, { _tag: "permission.request" }>,
-): PermissionBlock => ({
-  kind: "permission",
-  turn: frame.turn,
-  request: frame.request,
-  tool: frame.tool,
-  action: frame.action,
-  resources: frame.resources,
-  save: frame.save,
-  input: frame.input,
-});
+): PermissionBlock => {
+  const block: PermissionBlock = {
+    kind: "permission",
+    turn: frame.turn,
+    request: frame.request,
+    tool: frame.tool,
+    action: frame.action,
+    resources: frame.resources,
+    save: frame.save,
+    input: frame.input,
+  };
+  if (frame.call !== undefined) Object.assign(block, { call: frame.call });
+  if (frame.diff !== undefined) Object.assign(block, { diff: frame.diff });
+  return block;
+};
 
 const decided = (
   block: PermissionBlock,
@@ -88,15 +97,18 @@ const decided = (
     : { ...block, decision: frame.decision, feedback: frame.feedback };
 
 /**
- * The request the pane must answer before the agent can continue, if any.
+ * The request the pane's keyboard shortcuts answer, if any.
  *
- * A pending request is one with no decision. Only the last matters: the agent
- * blocks on one question at a time, so an earlier undecided block can only be
- * a request whose answer was lost with the session that asked it.
+ * Prefer the earliest undecided ask: when two tools block in the same turn the
+ * first one is what the user sees first in the transcript, and answering the
+ * last one while leaving the earlier gate stuck is how a back-to-back bash pair
+ * used to look unapprovable.
  */
 export function pendingPermission(blocks: readonly TranscriptBlock[]): PermissionBlock | undefined {
-  const last = blocks.findLast((block) => block.kind === "permission");
-  return last?.kind === "permission" && last.decision === undefined ? last : undefined;
+  return blocks.find(
+    (block): block is PermissionBlock =>
+      block.kind === "permission" && block.decision === undefined,
+  );
 }
 
 /** The permission that gates this tool call, if the call needed human approval. */
@@ -104,11 +116,21 @@ export function toolPermission(
   blocks: readonly TranscriptBlock[],
   tool: Extract<TranscriptBlock, { kind: "tool" }>,
 ): PermissionBlock | undefined {
+  const byCall = blocks.find(
+    (block): block is PermissionBlock =>
+      block.kind === "permission" &&
+      block.turn === tool.turn &&
+      block.call !== undefined &&
+      block.call === tool.call,
+  );
+  if (byCall) return byCall;
+  // Older events (and any gate that never saw a call id) join on tool+input.
   return blocks.find(
     (block): block is PermissionBlock =>
       block.kind === "permission" &&
       block.turn === tool.turn &&
       block.tool === tool.name &&
+      block.call === undefined &&
       sameJson(block.input, tool.input),
   );
 }
@@ -150,8 +172,19 @@ function appendHarnessEvent(
   frame: SequencedHarnessEvent,
 ): readonly TranscriptBlock[] {
   switch (frame._tag) {
-    case "turn.queued":
-      return [...blocks, { kind: "user", turn: frame.turn, text: frame.prompt, queued: true }];
+    case "turn.queued": {
+      const block = {
+        kind: "user" as const,
+        turn: frame.turn,
+        text: frame.prompt,
+        queued: true as const,
+        delivery: frame.delivery,
+      };
+      const index = blocks.findIndex((entry) => entry.kind === "user" && entry.turn === frame.turn);
+      return index < 0
+        ? [...blocks, block]
+        : [...blocks.slice(0, index), block, ...blocks.slice(index + 1)];
+    }
     case "turn.start": {
       const queued = blocks.some((block) => block.kind === "user" && block.turn === frame.turn);
       return queued
@@ -329,8 +362,11 @@ export function toolOutput(block: Extract<TranscriptBlock, { kind: "tool" }>): s
 
 /**
  * One tool's "about to act" placeholder and how to reveal the resolved call,
- * mirroring opencode's pending=/complete= split: while params stream, the pane
- * shows what the agent is about to run; once they resolve, it shows the call.
+ * mirroring opencode's pending=/complete= split (InlineTool): while params
+ * stream, the pane shows what the agent is about to run; once they resolve, it
+ * shows the call. Titles borrow pi's verb+arg form (`read path`, `$ cmd`) so
+ * chat reads as actions, not as `tool> name` transcript lines. Raw view still
+ * serializes through `transcriptLine`.
  */
 type ToolFace = {
   readonly pending: string;
@@ -344,17 +380,31 @@ const toolFaces = new Map<string, ToolFace>([
   ],
   [
     "write",
-    { pending: "Preparing write...", reveal: (input) => `\u2190 ${stringField(input, "path")}` },
+    { pending: "Preparing write...", reveal: (input) => `write ${stringField(input, "path")}` },
   ],
-  ["read", { pending: "Reading file...", reveal: (input) => stringField(input, "path") }],
-  ["glob", { pending: "Finding files...", reveal: (input) => stringField(input, "pattern") }],
-  ["grep", { pending: "Searching content...", reveal: (input) => stringField(input, "pattern") }],
+  [
+    "edit",
+    { pending: "Preparing edit...", reveal: (input) => `edit ${stringField(input, "path")}` },
+  ],
+  ["apply_patch", { pending: "Preparing patch...", reveal: () => "patch" }],
+  ["read", { pending: "Reading file...", reveal: (input) => `read ${stringField(input, "path")}` }],
+  [
+    "glob",
+    { pending: "Finding files...", reveal: (input) => `glob ${stringField(input, "pattern")}` },
+  ],
+  [
+    "grep",
+    {
+      pending: "Searching content...",
+      reveal: (input) => `grep ${stringField(input, "pattern")}`,
+    },
+  ],
 ]);
 
+/** Chat headline for a tool — face only, never `-> output` (that is raw). */
 export function toolSummary(block: Extract<TranscriptBlock, { kind: "tool" }>): string {
   if (block.streaming) return `~ ${toolFaces.get(block.name)?.pending ?? "Running..."}`;
-  const detail = describeCall(block.name, block.input);
-  return block.output === undefined ? detail : `${detail} -> ${json(block.output)}`;
+  return describeCall(block.name, block.input);
 }
 
 /**
@@ -368,7 +418,14 @@ export function permissionSummary(block: PermissionBlock): string {
 
 function describeCall(tool: string, input: JsonValue): string {
   const face = toolFaces.get(tool);
-  return isJsonObject(input) && face ? face.reveal(input) || json(input) : json(input);
+  if (isJsonObject(input) && face) {
+    const revealed = face.reveal(input);
+    if (revealed) return revealed;
+  }
+  const rendered = json(input);
+  // Named tools without a structured reveal still lead with the verb so chat
+  // does not show a bare fragment the way raw `tool> …` lines do.
+  return face ? `${tool} ${rendered}` : rendered;
 }
 
 function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {

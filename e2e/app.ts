@@ -121,8 +121,8 @@ function onInterrupt() {
 process.on("SIGINT", onInterrupt);
 process.on("SIGTERM", onInterrupt);
 
-/** ctrl+a, the default prefix. */
-export const LEADER = "\x01";
+/** ctrl+s, matching packages/amux DEFAULT_PREFIX. */
+export const LEADER = "\x13";
 
 export interface App {
   /** Everything the app has drawn since launch, escape codes and all. */

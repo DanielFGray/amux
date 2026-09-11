@@ -1,13 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 /** @effect-diagnostics *:skip-file -- Solid render-tree event and timer control flow belongs to OpenTUI/Solid's lifecycle, not the service Effect graph. */
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
-import type { TextareaRenderable } from "@opentui/core";
-import type { Stream } from "effect";
+import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import type { Renderable, TextareaRenderable } from "@opentui/core";
+import { Option, type Stream } from "effect";
 import { AttachFrame } from "@danielfgray/amux/protocol";
 import type { PaneViewProps } from "@danielfgray/amux";
-import { Transcript, type PermissionBlock } from "./Transcript.tsx";
+import { Transcript, type PermissionBlock, type QueuedPrompt } from "./Transcript.tsx";
 import type { HighlightSnapshot } from "@danielfgray/amux-highlight";
-import { permissionSummary } from "./transcript.ts";
 import { theme } from "@danielfgray/amux";
 import { ProcessState } from "@danielfgray/amux";
 import type { PermissionDecision } from "@danielfgray/amux/permission.ts";
@@ -17,6 +16,7 @@ import {
   type ComposerCompletion,
   type ComposerCompletionSource,
 } from "./composer-completion.ts";
+import { InlinePicker } from "@danielfgray/amux-plugin-completion";
 
 export interface ChatProps extends PaneViewProps {
   model: string;
@@ -27,7 +27,7 @@ export interface ChatProps extends PaneViewProps {
   sync: (session: string) => void;
   /** Send what the user typed to the agent. The command layer's business: a
    *  view does not know whether the session is local or on a daemon. */
-  onSubmit: (message: string) => void;
+  onSubmit: (message: string, options?: PromptSubmitOptions) => void;
   /** Answer the question the agent is blocked on. */
   onPermission: (request: string, decision: PermissionDecision, feedback?: string) => void;
   /** Interrupt the active turn, including a tool currently awaiting completion. */
@@ -37,6 +37,12 @@ export interface ChatProps extends PaneViewProps {
    *  a worker — fences then render plain. */
   highlight?: HighlightSnapshot;
 }
+
+export type PromptSubmitOptions = {
+  readonly delivery?: "steer" | "queue";
+  /** Rewrite this queued turn in place (edit text or flip queue→steer). */
+  readonly replace?: string;
+};
 
 export interface SlashCommand {
   readonly name: string;
@@ -49,22 +55,73 @@ export interface SlashCommand {
  * The transcript takes what is left after the composer, so the composer sits on
  * the last row of the pane at every size — a chat window's shape, not a panel's.
  *
- * The composer only holds OpenTUI's keyboard focus while its own pane is the
- * focused one. Focus is renderer-wide, so an input left focused in a background
- * pane would eat the keystrokes meant for whatever pane the user moved to.
+ * While this pane is focused, the composer keeps OpenTUI keyboard focus: the
+ * transcript is not focusable, clicks reclaim the input, and when an overlay
+ * (model picker) releases focus the composer takes it back. Focus is still
+ * gated on `active` — a background pane must not eat keys meant for another —
+ * and reclaim ignores a null that follows focus held by a different component
+ * leaf (click-to-focus races `pane.select`).
  */
 export function Chat(props: ChatProps) {
   const [draft, setDraft] = createSignal("");
-  const [editorLines, setEditorLines] = createSignal(1);
+  const [editorLines, setEditorLines] = createSignal(2);
   const [status, setStatus] = createSignal<ProcessState | undefined>();
   const [selectedCompletion, setSelectedCompletion] = createSignal(0);
   const [completions, setCompletions] = createSignal<readonly ComposerCompletion[]>([]);
   const [pending, setPending] = createSignal<PermissionBlock | undefined>();
+  const [queued, setQueued] = createSignal<readonly QueuedPrompt[]>([]);
+  const [editingTurn, setEditingTurn] = createSignal<string | undefined>();
+  const [queueCursor, setQueueCursor] = createSignal(-1);
   // The request whose refusal the user is typing a reason for. While it is set,
   // the composer is a composer again and Enter sends the rejection.
   const [explaining, setExplaining] = createSignal<string | undefined>();
   const [view, setView] = createSignal<"chat" | "raw">("chat");
   let editor: TextareaRenderable | undefined;
+
+  createEffect(() => {
+    if (!props.active()) return;
+    // `focused={true}` only re-runs on a prop transition; overlays that steal
+    // focus leave it true, so reclaim when the renderer has no focused target.
+    // Gate that reclaim: another component pane's leaf may take OpenTUI focus
+    // (autoFocus on click) and then release it again while `pane.select` is
+    // still in flight and this pane still reads as active — reclaiming then
+    // steals the keyboard from the pane the user just clicked.
+    queueMicrotask(() => editor?.focus());
+    const ctx = editor?.ctx;
+    if (!ctx) return;
+    // ComponentPaneView mounts Solid into a box id `${paneId}-content`. A
+    // focused renderable under a different `*-content` box belongs to another
+    // leaf; an overlay sits outside every such box.
+    const paneViewOf = (node: Renderable | null): Renderable | null => {
+      let current: Renderable | null = node;
+      while (current) {
+        if (typeof current.id === "string" && current.id.endsWith("-content")) {
+          return current.parent;
+        }
+        current = current.parent;
+      }
+      return null;
+    };
+    let suppressNullReclaim = false;
+    const reclaim = (current: Renderable | null) => {
+      if (!props.active()) return;
+      if (current !== null) {
+        const foreign = paneViewOf(current);
+        const ours = paneViewOf(editor ?? null);
+        suppressNullReclaim = foreign !== null && foreign !== ours;
+        return;
+      }
+      if (suppressNullReclaim) {
+        suppressNullReclaim = false;
+        return;
+      }
+      queueMicrotask(() => {
+        if (props.active()) editor?.focus();
+      });
+    };
+    ctx.on("focused_renderable", reclaim);
+    onCleanup(() => ctx.off("focused_renderable", reclaim));
+  });
 
   const awaiting = () => {
     const request = pending();
@@ -77,57 +134,124 @@ export function Chat(props: ChatProps) {
   };
 
   const active = createMemo(() => activeCompletion(draft()));
-  const completionMenuVisible = () => active() !== undefined && completions().length > 0;
+  const completionMenuVisible = () =>
+    Option.match(active(), {
+      onNone: () => false,
+      onSome: () => completions().length > 0,
+    });
   let completionRequest = 0;
   createEffect(() => {
-    const token = active();
-    const source =
-      token &&
-      [
-        ...(props.slashCommands === undefined
-          ? []
-          : [
-              {
-                trigger: "/" as const,
-                complete: (query: string) =>
-                  props
-                    .slashCommands!.filter((command) =>
-                      `${command.name} ${command.description}`
-                        .toLowerCase()
-                        .includes(query.toLowerCase()),
-                    )
-                    .map((command) => ({
-                      id: command.name,
-                      label: `/${command.name}`,
-                      detail: command.description,
-                      replacement: `/${command.name}`,
-                      submit: true,
-                    })),
-              },
-            ]),
-        ...(props.completionSources ?? []),
-      ].find((candidate) => candidate.trigger === token.trigger);
-    if (!source) {
-      setCompletions([]);
-      return;
-    }
-    const request = ++completionRequest;
-    void Promise.resolve(source.complete(token.query)).then((items) => {
-      if (request === completionRequest) setCompletions(items);
+    Option.match(active(), {
+      onNone: () => setCompletions([]),
+      onSome: (token) => {
+        const source = [
+          ...(props.slashCommands === undefined
+            ? []
+            : [
+                {
+                  trigger: "/" as const,
+                  complete: (query: string) =>
+                    props
+                      .slashCommands!.filter((command) =>
+                        `${command.name} ${command.description}`
+                          .toLowerCase()
+                          .includes(query.toLowerCase()),
+                      )
+                      .map((command) => ({
+                        id: command.name,
+                        label: `/${command.name}`,
+                        detail: command.description,
+                        replacement: `/${command.name}`,
+                        submit: true,
+                      })),
+                },
+              ]),
+          ...(props.completionSources ?? []),
+        ].find((candidate) => candidate.trigger === token.trigger);
+        if (!source) {
+          setCompletions([]);
+          return;
+        }
+        const request = ++completionRequest;
+        void Promise.resolve(source.complete(token.query)).then((items) => {
+          if (request === completionRequest) setCompletions(items);
+        });
+      },
     });
   });
 
-  const syncEditorHeight = () => setEditorLines(Math.max(1, editor?.virtualLineCount ?? 1));
+  const syncEditorHeight = () => {
+    const paneHeight = props.height();
+    const cap = Math.max(2, Math.floor(paneHeight / 2));
+    // Floor of 2, not 1: a height-1 EditorView viewport never word-wraps
+    // (virtualLineCount sticks at 1 and long input scrolls sideways), so a
+    // one-row composer could never grow out of itself. Verified against
+    // heights 1..5; heights >= 2 wrap. The numeric height wins over the
+    // maxHeight yoga hint, so the signal itself carries the 50% cap —
+    // otherwise a long paste would collapse the transcript entirely.
+    setEditorLines(Math.min(cap, Math.max(2, editor?.virtualLineCount ?? 2)));
+  };
   createEffect(() => {
     props.width();
+    props.height();
     syncEditorHeight();
   });
 
   const submit = () => {
     const text = editor?.plainText.trim() ?? "";
+    const working = status() === ProcessState.Running;
+    const pendingQueue = queued();
+    const editing = editingTurn();
+
+    // Empty Enter while a turn is running promotes the latest queued prompt to
+    // steer — inject at the next tool/provider boundary (Pi deliverAs:steer).
+    if (!text) {
+      if (!working || pendingQueue.length === 0) return;
+      const last = pendingQueue[pendingQueue.length - 1]!;
+      props.onSubmit(last.text, { delivery: "steer", replace: last.turn });
+      setEditingTurn(undefined);
+      setQueueCursor(-1);
+      return;
+    }
+
     editor?.clear();
     setDraft("");
-    if (text) props.onSubmit(text);
+    syncEditorHeight();
+    if (editing) {
+      props.onSubmit(text, { delivery: "queue", replace: editing });
+    } else if (working) {
+      props.onSubmit(text, { delivery: "queue" });
+    } else {
+      props.onSubmit(text);
+    }
+    setEditingTurn(undefined);
+    setQueueCursor(-1);
+  };
+
+  /** Cycle a durable queued admission into the composer for edit+resubmit. */
+  const recallQueued = (direction: "up" | "down"): boolean => {
+    const pendingQueue = queued();
+    if (pendingQueue.length === 0) return false;
+    const draftEmpty = !editor?.plainText.trim();
+    if (!draftEmpty && queueCursor() < 0) return false;
+    const current = queueCursor();
+    const next =
+      direction === "up"
+        ? current < 0
+          ? pendingQueue.length - 1
+          : Math.max(0, current - 1)
+        : current < 0
+          ? 0
+          : Math.min(pendingQueue.length - 1, current + 1);
+    const item = pendingQueue[next];
+    if (!item) return false;
+    editor?.setText(item.text);
+    if (editor) editor.cursorOffset = item.text.length;
+    setDraft(item.text);
+    setEditingTurn(item.turn);
+    setQueueCursor(next);
+    syncEditorHeight();
+    return true;
   };
 
   const submitEditor = () => {
@@ -136,6 +260,7 @@ export function Chat(props: ChatProps) {
     if (explained !== undefined) {
       editor?.clear();
       setDraft("");
+      syncEditorHeight();
       setExplaining(undefined);
       props.onPermission(explained, "reject", text || undefined);
       return;
@@ -143,6 +268,7 @@ export function Chat(props: ChatProps) {
     if (text.startsWith("/") && props.onSlashCommand?.(text)) {
       editor?.clear();
       setDraft("");
+      syncEditorHeight();
       return;
     }
     submit();
@@ -150,48 +276,57 @@ export function Chat(props: ChatProps) {
 
   const selectCompletion = () => {
     const completion = completions()[selectedCompletion()];
-    const token = active();
-    if (!completion || !token) return;
-    if (completion.submit && props.onSlashCommand?.(completion.replacement)) {
-      editor?.clear();
-      setDraft("");
-      setSelectedCompletion(0);
-      return;
-    }
-    editor?.setText(replaceCompletion(draft(), token, completion.replacement));
-    setDraft(editor?.plainText ?? "");
-    setSelectedCompletion(0);
+    Option.match(active(), {
+      onNone: () => {},
+      onSome: (token) => {
+        if (!completion) return;
+        if (completion.submit && props.onSlashCommand?.(completion.replacement)) {
+          editor?.clear();
+          setDraft("");
+          setSelectedCompletion(0);
+          syncEditorHeight();
+          return;
+        }
+        editor?.setText(replaceCompletion(draft(), token, completion.replacement));
+        setDraft(editor?.plainText ?? "");
+        setSelectedCompletion(0);
+      },
+    });
+    syncEditorHeight();
   };
 
   return (
-    <box style={{ width: "100%", height: "100%", flexDirection: "column" }}>
+    <box
+      style={{ width: "100%", height: "100%", flexDirection: "column" }}
+      onMouseDown={(event) => {
+        if (!props.active()) return;
+        // Stop autoFocus from handing keyboard focus to anything else in this
+        // pane (scrollbox, cards); the composer is the only typing surface.
+        event.preventDefault();
+        editor?.focus();
+      }}
+    >
       <Transcript
         sessionId={props.sessionId}
         frames={props.frames}
         sync={props.sync}
         width={props.width}
-        model={props.model}
         view={view()}
         showThinking={props.showThinking}
         highlight={props.highlight}
         onStatus={setStatus}
+        onQueued={setQueued}
+        explaining={explaining()}
         onPending={(request) => {
           setPending(request);
           if (!request) setExplaining(undefined);
         }}
+        onPermission={props.onPermission}
+        onExplainPermission={(request) => setExplaining(request)}
       />
-      <Show when={awaiting()}>
-        {(request: () => PermissionBlock) => (
-          <ApprovalBar
-            request={request()}
-            onDecide={decide}
-            onExplain={() => setExplaining(request().request)}
-          />
-        )}
-      </Show>
       <Show when={completionMenuVisible()}>
-        <CompletionPicker
-          completions={completions()}
+        <InlinePicker
+          items={completions()}
           selected={selectedCompletion()}
           onSelect={selectCompletion}
           onSelectedChange={setSelectedCompletion}
@@ -204,7 +339,11 @@ export function Chat(props: ChatProps) {
             ? "o once · a always · d deny · e deny with a reason"
             : explaining()
               ? "why not? enter sends the refusal"
-              : "message the agent"
+              : status() === ProcessState.Running
+                ? queued().length > 0
+                  ? "↵ queue · empty ↵ steer · ↑ edit queue · ⌃C stop"
+                  : "↵ queue · ⌃C stop"
+                : "message the agent · ⇧↵/⌥↵ newline"
         }
         focused={props.active()}
         onContentChange={() => {
@@ -233,21 +372,61 @@ export function Chat(props: ChatProps) {
             event.preventDefault();
             return;
           }
-          if (!completionMenuVisible()) return;
+          if (!completionMenuVisible()) {
+            // Empty Enter while running with a visible queue promotes to steer.
+            // OpenTUI's submit action may skip an empty composer, so handle it here.
+            if (
+              (event.name === "return" || event.name === "enter") &&
+              !event.shift &&
+              !event.meta &&
+              !editor?.plainText.trim() &&
+              status() === ProcessState.Running &&
+              queued().length > 0
+            ) {
+              submit();
+              event.preventDefault();
+              return;
+            }
+            if ((event.name === "up" || event.name === "down") && recallQueued(event.name)) {
+              event.preventDefault();
+            }
+            return;
+          }
           if (event.name === "down") {
             setSelectedCompletion((value) => Math.min(completions().length - 1, value + 1));
             event.preventDefault();
           } else if (event.name === "up") {
             setSelectedCompletion((value) => Math.max(0, value - 1));
             event.preventDefault();
-          } else if (event.name === "return" || event.name === "enter") {
+            // A modified Enter is a newline (see keyBindings), never a
+            // completion pick — even with the menu open.
+          } else if (
+            (event.name === "return" || event.name === "enter") &&
+            !event.shift &&
+            !event.meta
+          ) {
             selectCompletion();
             event.preventDefault();
           }
         }}
-        keyBindings={[{ name: "return", action: "submit" }]}
+        keyBindings={[
+          { name: "return", action: "submit" },
+          // Enter submits; Shift+Enter and Alt+Enter insert a newline. Both
+          // chords are needed: the client runs with Kitty keyboard disabled
+          // (main.tsx), where Shift+Return arrives indistinct from Return and
+          // only the Alt chord survives the transport.
+          { name: "return", shift: true, action: "newline" },
+          { name: "return", meta: true, action: "newline" },
+          { name: "kpenter", action: "submit" },
+          { name: "kpenter", shift: true, action: "newline" },
+          { name: "kpenter", meta: true, action: "newline" },
+          { name: "linefeed", shift: true, action: "newline" },
+          { name: "linefeed", meta: true, action: "newline" },
+        ]}
         onSubmit={submitEditor}
+        wrapMode="word"
         style={{
+          width: "100%",
           height: editorLines(),
           maxHeight: "50%",
           flexShrink: 0,
@@ -257,99 +436,6 @@ export function Chat(props: ChatProps) {
         }}
       />
       <StatusBar model={props.model} working={status() === ProcessState.Running} view={view()} />
-    </box>
-  );
-}
-
-/**
- * The question, the rule that answering "always" would write, and the four ways
- * to answer it. The rule is shown rather than described: "always" is a choice
- * about a pattern, and a pattern the user cannot read is not a choice.
- */
-function ApprovalBar(props: {
-  request: PermissionBlock;
-  onDecide: (decision: PermissionDecision) => void;
-  onExplain: () => void;
-}) {
-  const choices = [
-    { key: "o", label: "once", color: theme.green, run: () => props.onDecide("once") },
-    ...(props.request.save.length > 0
-      ? [
-          {
-            key: "a",
-            label: `always (${props.request.save.map((rule) => `${rule.action} ${rule.resource}`).join(", ")})`,
-            color: theme.green,
-            run: () => props.onDecide("always"),
-          },
-        ]
-      : []),
-    { key: "d", label: "deny", color: theme.red, run: () => props.onDecide("reject") },
-    { key: "e", label: "deny with a reason", color: theme.red, run: props.onExplain },
-  ];
-
-  return (
-    <box
-      style={{
-        width: "100%",
-        flexDirection: "column",
-        flexShrink: 0,
-        backgroundColor: theme.mantle,
-        border: true,
-        borderColor: theme.yellow,
-      }}
-    >
-      <text style={{ wrapMode: "word", width: "100%", fg: theme.text }}>
-        {permissionSummary(props.request)}
-      </text>
-      <For each={choices}>
-        {(choice) => (
-          <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }} onMouseUp={choice.run}>
-            <text style={{ width: 4, flexShrink: 0, fg: theme.mauve }}>{`[${choice.key}]`}</text>
-            <text style={{ flexGrow: 1, fg: choice.color }}>{choice.label}</text>
-          </box>
-        )}
-      </For>
-    </box>
-  );
-}
-
-function CompletionPicker(props: {
-  completions: readonly ComposerCompletion[];
-  selected: number;
-  onSelect: () => void;
-  onSelectedChange: (selected: number) => void;
-}) {
-  return (
-    <box
-      style={{
-        width: "100%",
-        maxHeight: 8,
-        flexDirection: "column",
-        backgroundColor: theme.mantle,
-        border: true,
-        borderColor: theme.surface1,
-        flexShrink: 0,
-      }}
-    >
-      <For each={props.completions}>
-        {(completion, index) => (
-          <box
-            style={{
-              height: 1,
-              flexShrink: 0,
-              flexDirection: "row",
-              backgroundColor: index() === props.selected ? theme.surface1 : theme.mantle,
-            }}
-            onMouseUp={() => {
-              props.onSelectedChange(index());
-              props.onSelect();
-            }}
-          >
-            <text style={{ width: 28, flexShrink: 0, fg: theme.mauve }}>{completion.label}</text>
-            <text style={{ flexGrow: 1, fg: theme.subtext0 }}>{completion.detail}</text>
-          </box>
-        )}
-      </For>
     </box>
   );
 }

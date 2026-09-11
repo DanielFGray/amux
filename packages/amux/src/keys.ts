@@ -8,14 +8,35 @@ const FORWARDABLE = new Set(["press", "repeat"]);
 /**
  * Turn a parsed key event back into the bytes a terminal child expects.
  *
- * A multiplexer is a pass-through: whatever byte sequence the outer terminal
- * produced is, by definition, what a terminal application wants to receive.
- * `raw` preserves it exactly — including things a parsed representation loses,
- * like the ESC prefix on alt-modified keys. `sequence` is a normalized form and
- * drops those, which silently breaks readline bindings such as alt+b/alt+f.
+ * Children speak classic xterm (`TERM=xterm-256color`); they have not enabled
+ * the kitty keyboard protocol. When the *outer* terminal (herdr, kitty, …)
+ * delivers a key as CSI-u, `raw` is that protocol form — forwarding it leaves
+ * ^C/^D as no-ops in zsh/bash. Re-encode kitty-sourced events through the same
+ * stroke table `pane.send-keys` already uses.
+ *
+ * For legacy raw input, pass `raw` through: it preserves what a parsed form
+ * drops (the ESC prefix on alt-modified keys), which readline bindings such as
+ * alt+b/alt+f need.
  */
 export function encodeKey(key: KeyEvent): string | null {
   if (key.eventType && !FORWARDABLE.has(key.eventType)) return null;
+
+  if (key.source === "kitty") {
+    const name =
+      key.name ||
+      (typeof key.baseCode === "number" && key.baseCode > 0
+        ? String.fromCharCode(key.baseCode)
+        : "");
+    if (!name) return null;
+    const encoded = encodeStroke({
+      name,
+      ctrl: key.ctrl,
+      shift: key.shift,
+      meta: key.meta || key.option,
+      super: key.super,
+    });
+    return encoded === "" ? null : encoded;
+  }
 
   const raw = key.raw;
   if (raw) return raw;

@@ -12,13 +12,60 @@
  */
 import { Effect, Layer } from "effect";
 import { systemError } from "effect/PlatformError";
+import type { DirEntry } from "../command-completion.ts";
 import { EditorIo, type EditorIoService } from "../io.ts";
 
 export interface TestEditorIoState {
   readonly files: Map<string, string[]>;
   readonly failReads: ReadonlySet<string>;
   readonly spaceDir: string;
+  /** Explicit directories so empty dirs still appear in `:e` completion. */
+  readonly directories?: ReadonlySet<string>;
+  /** Optional canned `:r!` outputs keyed by exact cmd string. */
+  readonly shell?: Readonly<
+    Record<
+      string,
+      { readonly lines: readonly string[]; readonly exitCode?: number; readonly stderr?: string }
+    >
+  >;
+  /**
+   * Optional gate before a successful read returns. Used to prove mount-time
+   * loads serialize with the key queue (ts-d3ce27): hold the gate, type keys,
+   * then release — edits must apply after the load, not be wiped by it.
+   */
+  readonly beforeRead?: () => Effect.Effect<void>;
 }
+
+const resolvePath = (spaceDir: string, p: string): string =>
+  p === "" || p === "." ? spaceDir : p.startsWith("/") ? p : `${spaceDir}/${p}`;
+
+/** Derive directory entries from seeded file keys (+ optional empty dirs). */
+const entriesUnder = (state: TestEditorIoState, dir: string): readonly DirEntry[] => {
+  const resolved = resolvePath(state.spaceDir, dir);
+  const prefix = resolved.endsWith("/") ? resolved : `${resolved}/`;
+  const names = new Map<string, DirEntry["kind"]>();
+  for (const key of state.files.keys()) {
+    const absolute = key.startsWith("/") ? key : resolvePath(state.spaceDir, key);
+    if (!absolute.startsWith(prefix)) continue;
+    const rest = absolute.slice(prefix.length);
+    if (rest.length === 0) continue;
+    const slash = rest.indexOf("/");
+    if (slash < 0) names.set(rest, "file");
+    else names.set(rest.slice(0, slash), "directory");
+  }
+  for (const directory of state.directories ?? []) {
+    const absolute = directory.startsWith("/") ? directory : resolvePath(state.spaceDir, directory);
+    if (!absolute.startsWith(prefix)) continue;
+    const rest = absolute.slice(prefix.length);
+    if (rest.length === 0) continue;
+    const slash = rest.indexOf("/");
+    const name = slash < 0 ? rest : rest.slice(0, slash);
+    if (name.length > 0) names.set(name, "directory");
+  }
+  return [...names.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, kind]) => ({ name, kind }));
+};
 
 export const makeTestEditorIo = (state: TestEditorIoState): EditorIoService => ({
   read: (file, spaceDir) => {
@@ -48,7 +95,8 @@ export const makeTestEditorIo = (state: TestEditorIoState): EditorIoService => (
         }),
       );
     }
-    return Effect.succeed({ file: resolved, lines: [...lines] });
+    const succeed = Effect.succeed({ file: resolved, lines: [...lines] });
+    return state.beforeRead === undefined ? succeed : state.beforeRead().pipe(Effect.andThen(succeed));
   },
   write: (file, lines, spaceDir) => {
     const resolved = file.startsWith("/") ? file : `${spaceDir}/${file}`;
@@ -59,7 +107,20 @@ export const makeTestEditorIo = (state: TestEditorIoState): EditorIoService => (
       state.files.set(basename, [...lines]);
     });
   },
-  resolve: (spaceDir, p) => Effect.sync(() => (p.startsWith("/") ? p : `${spaceDir}/${p}`)),
+  resolve: (spaceDir, p) => Effect.sync(() => resolvePath(spaceDir, p)),
+  listEntries: (dir, _spaceDir) => Effect.sync(() => entriesUnder(state, dir === "" ? "." : dir)),
+  shell: (cmd, _spaceDir) => {
+    const canned = state.shell?.[cmd];
+    if (canned !== undefined) {
+      return Effect.succeed({
+        lines: [...canned.lines],
+        exitCode: canned.exitCode ?? 0,
+        stderr: canned.stderr ?? "",
+      });
+    }
+    // Default: echo the cmd so unit tests can assert without seeding.
+    return Effect.succeed({ lines: [cmd], exitCode: 0, stderr: "" });
+  },
 });
 
 export const TestEditorIo = (initial: TestEditorIoState): Layer.Layer<EditorIo> =>

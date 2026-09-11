@@ -1,7 +1,9 @@
 {
   "name": "@danielfgray/amux-plugin-modal",
   "version": "0.1.0",
-  "keywords": ["amux-plugin"],
+  "keywords": [
+    "amux-plugin"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -10,9 +12,22 @@
   },
   "type": "module",
   "module": "src/index.ts",
-  "exports": { ".": "./src/index.ts", "./*": "./src/*" },
-  "dependencies": { "effect": "catalog:", "solid-js": "catalog:" },
-  "devDependencies": { "@danielfgray/amux": "workspace:*", "@opentui/core": "catalog:" },
-  "peerDependencies": { "@danielfgray/amux": "workspace:*" },
-  "engines": { "amux": "^0.1.0" }
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "effect": "catalog:",
+    "solid-js": "catalog:"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*",
+    "@opentui/core": "catalog:"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "engines": {
+    "amux": "^0.1.0"
+  }
 }

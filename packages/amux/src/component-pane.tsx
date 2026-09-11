@@ -41,6 +41,12 @@ export interface PaneViewProps {
    *  swallows the keys meant for whichever pane the user is actually in. */
   active: Accessor<boolean>;
   /**
+   * Hand text to the host clipboard via OSC 52 (same path as mouse selection
+   * and keyboard copy mode). Optional `target` maps vim `"+` → clipboard and
+   * `"*` → primary. No-op when the pane has no copy handler (tests/headless).
+   */
+  copyText: (text: string, target?: "clipboard" | "primary") => void;
+  /**
    * Register a raw-key handler the pane consults while it is focused
    * (ts-bb14fd).
    *
@@ -95,6 +101,8 @@ class ComponentPaneView extends PaneRenderable {
   /** The plugin's raw-key handler, when it registered one. Consulted only
    *  while this pane is the focused one; see PaneViewProps.captureKeys. */
   #captureKeys: ((event: KeyEvent) => boolean) | null = null;
+  /** Durable content type this leaf was built for — see ComponentPane.paneType. */
+  readonly paneType: string;
 
   constructor(
     ctx: RenderContext,
@@ -108,6 +116,7 @@ class ComponentPaneView extends PaneRenderable {
     optionsRuntime: Options,
   ) {
     super(ctx, options, optionsRuntime);
+    this.paneType = options.paneType;
     this.#content = new BoxRenderable(ctx, {
       id: `${options.id}-content`,
       position: "absolute",
@@ -143,6 +152,9 @@ class ComponentPaneView extends PaneRenderable {
         return this.content.height;
       },
       active: this.#focus[0],
+      copyText: (text, target) => {
+        this.copyText(text, target);
+      },
       captureKeys: (handler) => {
         this.#captureKeys = handler;
       },
@@ -195,6 +207,11 @@ class ComponentPaneView extends PaneRenderable {
 export class ComponentPane extends Pane {
   private constructor(view: ComponentPaneView, scope: Scope.Closeable, id: string) {
     super(view, scope, id);
+  }
+
+  /** The content.type this leaf was mounted for. Remount when it changes. */
+  get paneType(): string {
+    return (this.view as ComponentPaneView).paneType;
   }
 
   /** Constructed with no parent — see the note on TerminalPane.make. */

@@ -22,6 +22,19 @@ test -n "\${AMUX_DAEMON_SESSION:-}" && test -n "\${AMUX_PANE_ID:-}"
 
 If this check fails, state that the process is not in an amux-managed pane and stop. Do not control the default or focused session from outside amux.
 
+## Invoke the CLI
+
+Prefer \`amux\` when it is on PATH. From an amux checkout with no global install, use the workspace entry instead — same binary, no PATH needed:
+
+\`\`\`bash
+bun run cli --help
+bun run cli --skill
+# equivalent:
+bun packages/amux/src/cli.ts --help
+\`\`\`
+
+In the rest of this skill, \`amux <subcommand>\` means whichever of those invocations is available. Print this skill again with \`amux --skill\` (or \`bun run cli --skill\`) whenever the installed CLI may have changed.
+
 ## Discover commands
 
 The installed binary is the authority for syntax. Run a command group without a nested command to print its complete current syntax:
@@ -73,11 +86,11 @@ amux pane.close --pane s1:p3
 
 \`pane.send-keys\` types bytes; it does not submit. Send the terminating key yourself, and send it as carriage return (\`$'\\r'\`), not newline. A shell prompt accepts either, so a wrong newline works until the target is a full-screen program — where it inserts a line break into the input instead of running anything.
 
-\`pane.capture\` returns the pane's raw output, escape sequences included, not stripped text. Match on a literal substring you expect, or strip the sequences before matching; a pattern anchored to line starts or spacing will silently never fire against cursor-addressed output. Wait on that output rather than on elapsed time. A pane moved to another space gets a new space-qualified id; the move reports both the new id and \`previous_pane_id\`, so re-anchor from the result rather than the stale handle. A closed id is never reissued, so a stale handle no-ops instead of reaching the wrong pane.
+\`pane.capture\` returns the pane's visible text. For a PTY pane that is the terminal grid (escape sequences may still appear in some modes); for a plugin pane (editor, native agent chat, …) it is the live OpenTUI frame cropped to that pane — plain characters, no VT stream. Match on a literal substring you expect. Wait on that output rather than on elapsed time. A pane moved to another space gets a new space-qualified id; the move reports both the new id and \`previous_pane_id\`, so re-anchor from the result rather than the stale handle. A closed id is never reissued, so a stale handle no-ops instead of reaching the wrong pane.
 
 ## Delegate work to another agent
 
-Start a sibling coding agent with \`agent.new\`, which reports the \`session\` and \`pane\` it created. Address the child by that session id: focus belongs to whoever drives the UI, and it moves.
+Start a coding agent with \`agent.new\`, which reports the \`session\` and \`pane\` it created. From a pane (\`AMUX_PANE_ID\`), it replaces that leaf and keeps the displaced session alive — same as \`editor.open\`. Pass \`--split\` to open a sibling instead. Address the child by that session id: focus belongs to whoever drives the UI, and it moves.
 
 Send work with \`agent.prompt <target> <text>\`:
 

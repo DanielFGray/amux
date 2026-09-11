@@ -1,7 +1,11 @@
-import { AgentManifests } from "./manifests.ts";
+import { Option } from "effect";
+import type { AgentManifestRegistryService } from "./manifests.ts";
 
-export function identifyAgent(command: string | readonly string[]): string | null {
-  return AgentManifests.identifyAgent(command);
+export function identifyAgent(
+  registry: AgentManifestRegistryService,
+  command: string | readonly string[],
+): Option.Option<string> {
+  return registry.identifyAgent(command);
 }
 
 const CLAUDE_ACTIVITY_GLYPHS = "·✢✳✶✻✽";

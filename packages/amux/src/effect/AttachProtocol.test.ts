@@ -76,6 +76,23 @@ test("heartbeat frames round-trip without special client state", () => {
   expect(decodeAttachFrames(encoded).frames).toEqual([{ _tag: "ping", nonce: "17" }]);
 });
 
+test("a forwarded command retains the session that caused it", () => {
+  const encoded = encodeAttachFrame({
+    _tag: "command.request",
+    id: "reload-1",
+    command: { _tag: "plugin.reload" },
+    originSession: "agent-1",
+  });
+  expect(decodeAttachFrames(encoded).frames).toEqual([
+    {
+      _tag: "command.request",
+      id: "reload-1",
+      command: { _tag: "plugin.reload" },
+      originSession: "agent-1",
+    },
+  ]);
+});
+
 test("foreground frames carry a negative pgid and sid across the wire", () => {
   const encoded = encodeAttachFrame({
     _tag: "foreground",

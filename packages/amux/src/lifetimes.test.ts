@@ -78,8 +78,12 @@ function spyBackend(): SpyBackend {
 /** A live, never-exiting session, backed by whatever the workspace env holds. */
 const liveSpec = (): SessionSpec => ({ exited: false, cmd: ["sleep", "30"] });
 
-const pane = (id: string, session: string) =>
-  ({ type: "pane" as const, id, content: { kind: "pty" as const, session }, weight: 1 });
+const pane = (id: string, session: string) => ({
+  type: "pane" as const,
+  id,
+  content: { kind: "pty" as const, session },
+  weight: 1,
+});
 
 const liveSession = (id: string): PersistedSession => ({
   id,
@@ -124,7 +128,12 @@ live("closing the top scope kills agents three levels down", () =>
     const scene = yield* Scope.provide(
       project(
         makeLayout({
-          root: { type: "split", direction: "row", weight: 1, children: [pane("p-first", "first"), pane("p-second", "second")] },
+          root: {
+            type: "split",
+            direction: "row",
+            weight: 1,
+            children: [pane("p-first", "first"), pane("p-second", "second")],
+          },
         }),
         { backend: spy.backend, sessions: { first: liveSpec(), second: liveSpec() } },
       ),
@@ -146,7 +155,12 @@ live("closing one window releases its agents and leaves its siblings running", (
     const spy = spyBackend();
     const scene = yield* project(
       makeLayout({
-        root: { type: "pane", id: "p-doomed", content: { kind: "pty", session: "doomed" }, weight: 1 },
+        root: {
+          type: "pane",
+          id: "p-doomed",
+          content: { kind: "pty", session: "doomed" },
+          weight: 1,
+        },
         focus: "p-doomed",
       }),
       { backend: spy.backend, sessions: { doomed: liveSpec() } },
@@ -157,7 +171,12 @@ live("closing one window releases its agents and leaves its siblings running", (
     const survivor = yield* survivorWindow.startSession({ cmd: ["sleep", "30"] });
     yield* survivorWindow.project(
       makeLayout({
-        root: { type: "pane", id: "p-survivor", content: { kind: "pty", session: survivor.id }, weight: 1 },
+        root: {
+          type: "pane",
+          id: "p-survivor",
+          content: { kind: "pty", session: survivor.id },
+          weight: 1,
+        },
         focus: "p-survivor",
       }),
       { ...windowState(), focus: "p-survivor" },
@@ -232,8 +251,16 @@ live("a pane moved to another window survives its source window closing", () =>
     yield* projectWorkspace(
       scene.spaces,
       revision(
-        { number: 1, layout: makeLayout({ root: pane("p-control", "control"), focus: "p-control" }), sessions: ["control"] },
-        { number: 2, layout: makeLayout({ root: pane("p-moved", "moved"), focus: "p-moved" }), sessions: ["moved"] },
+        {
+          number: 1,
+          layout: makeLayout({ root: pane("p-control", "control"), focus: "p-control" }),
+          sessions: ["control"],
+        },
+        {
+          number: 2,
+          layout: makeLayout({ root: pane("p-moved", "moved"), focus: "p-moved" }),
+          sessions: ["moved"],
+        },
       ),
       scene.backend,
     );
@@ -243,7 +270,11 @@ live("a pane moved to another window survives its source window closing", () =>
     // the moved session's scope already travelled, so it stays live.
     yield* projectWorkspace(
       scene.spaces,
-      revision({ number: 2, layout: makeLayout({ root: pane("p-moved", "moved"), focus: "p-moved" }), sessions: ["moved"] }),
+      revision({
+        number: 2,
+        layout: makeLayout({ root: pane("p-moved", "moved"), focus: "p-moved" }),
+        sessions: ["moved"],
+      }),
       scene.backend,
     );
     expect(spy.killed()).toEqual(["control"]);
@@ -397,6 +428,60 @@ function lifecycleSession(
     listBuffers: Effect.succeed([]),
     deleteBuffer: () => Effect.void,
     showBuffer: () => Effect.succeed(""),
+    documentOpen: () =>
+      Effect.succeed({
+        uri: "",
+        generation: 1,
+        dirty: false,
+        lineCount: 1,
+        byteLength: 0,
+        charCount: 0,
+        refs: 1,
+      }),
+    documentApply: () =>
+      Effect.succeed({
+        uri: "",
+        generation: 2,
+        dirty: true,
+        lineCount: 1,
+        byteLength: 0,
+        charCount: 0,
+        refs: 1,
+      }),
+    documentWrite: () =>
+      Effect.succeed({
+        uri: "",
+        generation: 2,
+        dirty: true,
+        lineCount: 1,
+        byteLength: 0,
+        charCount: 0,
+        refs: 1,
+      }),
+    documentSnapshot: () =>
+      Effect.succeed({
+        uri: "",
+        generation: 1,
+        dirty: false,
+        lineCount: 1,
+        byteLength: 0,
+        charCount: 0,
+        refs: 1,
+        text: "",
+      }),
+    documentSlice: () => Effect.succeed([]),
+    documentSave: () =>
+      Effect.succeed({
+        uri: "",
+        generation: 1,
+        dirty: false,
+        lineCount: 1,
+        byteLength: 0,
+        charCount: 0,
+        refs: 1,
+      }),
+    documentClose: () => Effect.void,
+    documentList: Effect.succeed([]),
     attach: {} as SessionClientContract["attach"],
   };
 }

@@ -103,6 +103,7 @@ test("skill output teaches managed discovery and safety", () => {
   expect(stdout).toContain("name: amux");
   expect(stdout).toContain('test -n "${AMUX_DAEMON_SESSION:-}"');
   expect(stdout).toContain("amux panes");
+  expect(stdout).toContain("bun run cli --skill");
   expect(stdout).toContain("Do not close spaces, windows, panes, or sessions");
 });
 
@@ -118,6 +119,14 @@ test("skill output documents the delegate loop against the real contract", () =>
   expect(stdout).toContain("permission.request");
   expect(stdout).toContain("agent.permission");
   expect(stdout).toContain("agent.interrupt");
+});
+
+test("--help advertises --skill the way herdr does", async () => {
+  const { generateHelp } = await import("./command-cli.ts");
+  const help = generateHelp();
+  expect(help).toContain("--skill");
+  expect(help).toContain("bun run cli --skill");
+  expect(help).toContain("Are you an AI?");
 });
 
 test("a bare command group prints its derived syntax", () => {
@@ -167,7 +176,7 @@ test("configured editor contributes editor.open to CLI help without a missing da
       join(configDir, "config.json"),
       JSON.stringify({
         options: {},
-        keys: { leader: "ctrl+a", bindings: {} },
+        keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
         plugins: [{ path: join(import.meta.dir, "../../editor"), enabled: true }],
         permissions: [],
       }),

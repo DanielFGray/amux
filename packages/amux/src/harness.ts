@@ -29,7 +29,7 @@ import { BoxRenderable } from "@opentui/core";
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing";
 import { Context, Effect } from "effect";
 import type * as Scope from "effect/Scope";
-import { Backend, workspaceEnv } from "./env.ts";
+import { Backend, captureRootRuntime, workspaceEnv } from "./env.ts";
 import { projectWorkspace, SpaceSet, type Space } from "./space.ts";
 import type { Window } from "./window.ts";
 import type { SessionBackendFactory } from "./backend.ts";
@@ -120,7 +120,7 @@ export function project(
     // default: a test that provides its own services (TestClock, a custom
     // Random seed) via Effect.provide upstream needs those to be what
     // SessionHandle et al. see, not whatever is ambient outside this test.
-    const rootRuntime = yield* Effect.context<never>();
+    const rootRuntime = yield* captureRootRuntime;
     const env = workspaceEnv(t.renderer, {
       shell: options.shell,
       backend: options.backend,

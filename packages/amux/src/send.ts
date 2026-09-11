@@ -1,7 +1,7 @@
 import { KeyEvent } from "@opentui/core";
 import { Keymap, type KeymapHost } from "@opentui/keymap";
 import { registerDefaultKeys, registerLeader } from "@opentui/keymap/addons";
-import { Schema as S } from "effect";
+import { Match, Schema as S } from "effect";
 import { encodeStroke, type KeyStroke } from "./keys.ts";
 import { errorMessage } from "./error-message.ts";
 import { parseKeyStrokes } from "./bindings.ts";
@@ -18,9 +18,9 @@ export class SendKeysError extends S.TaggedError<SendKeysError>()("SendKeysError
 /** Turns one unquoted token into the key strokes that would produce it, or
  *  null when the token is not a key sequence at all. The live keymap's parser
  *  is the source of truth: the same strings that bind a command (`ctrl+a`,
- *  `Enter`, `<leader>`) name a key here, which is why `parseKeyStrokes` backs
+ *  `Enter`, `<prefix>`) name a key here, which is why `parseKeyStrokes` backs
  *  this in the app. A token is a single key (`Enter`) or a run containing one
- *  (`<leader>:` is the prefix then a colon); a token of only plain characters
+ *  (`<prefix>:` is the prefix then a colon); a token of only plain characters
  *  (`hello`, `C-a`) is not a key sequence, it is text. */
 export type SendKeyParser = (token: string) => readonly KeyStroke[] | null;
 
@@ -37,7 +37,7 @@ export type SendKeyParser = (token: string) => readonly KeyStroke[] | null;
  * `isDestroyed: false` is unreachable: parsing never calls back into the
  * host.
  */
-export function createHeadlessKeyParser(leader: string): SendKeyParser {
+export function createHeadlessKeyParser(prefix: string, leader?: string): SendKeyParser {
   const host: KeymapHost<Record<string, never>> = {
     metadata: { platform: "unknown", primaryModifier: "ctrl", modifiers: {} as never },
     rootTarget: {},
@@ -65,7 +65,8 @@ export function createHeadlessKeyParser(leader: string): SendKeyParser {
   };
   const keymap = new Keymap(host);
   registerDefaultKeys(keymap);
-  registerLeader(keymap, { trigger: leader });
+  registerLeader(keymap, { name: "prefix", trigger: prefix });
+  registerLeader(keymap, { name: "leader", trigger: leader ?? "space" });
   return (token) => parseKeyStrokes(keymap, token);
 }
 
@@ -109,6 +110,11 @@ interface RawToken {
   text: string;
 }
 
+/** Tokenizer cursor: between tokens, or accumulating an unquoted one. */
+type Acc =
+  | { readonly _tag: "idle" }
+  | { readonly _tag: "token"; readonly text: string };
+
 /**
  * Split a send-keys input into tokens, honouring the quoting rules.
  *
@@ -119,37 +125,40 @@ interface RawToken {
  */
 export function tokenizeSendKeys(input: string): RawToken[] {
   const tokens: RawToken[] = [];
-  let current: RawToken | null = null;
-  const flush = () => {
-    if (current) {
-      tokens.push(current);
-      current = null;
-    }
-  };
-
+  let acc: Acc = { _tag: "idle" };
   let i = 0;
+
   while (i < input.length) {
     const ch = input[i]!;
-    if (ch === "'" || ch === '"') {
-      if (current === null) {
-        const close = input.indexOf(ch, i + 1);
-        if (close === -1) throw new SendKeysError({ message: "unterminated quote" });
-        tokens.push({ quoted: true, text: input.slice(i + 1, close) });
-        i = close + 1;
-      } else {
-        current.text += ch;
-        i++;
-      }
-    } else if (/\s/.test(ch)) {
-      flush();
-      i++;
-    } else {
-      current ??= { quoted: false, text: "" };
-      current.text += ch;
-      i++;
-    }
+    const step: { readonly acc: Acc; readonly next: number } = Match.valueTags(acc, {
+      idle: () => {
+        if (ch === "'" || ch === '"') {
+          const close = input.indexOf(ch, i + 1);
+          if (close === -1) throw new SendKeysError({ message: "unterminated quote" });
+          tokens.push({ quoted: true, text: input.slice(i + 1, close) });
+          return { acc: { _tag: "idle" as const }, next: close + 1 };
+        }
+        if (/\s/.test(ch)) return { acc: { _tag: "idle" as const }, next: i + 1 };
+        return { acc: { _tag: "token" as const, text: ch }, next: i + 1 };
+      },
+      token: ({ text }) => {
+        if (/\s/.test(ch)) {
+          tokens.push({ quoted: false, text });
+          return { acc: { _tag: "idle" as const }, next: i + 1 };
+        }
+        return { acc: { _tag: "token" as const, text: text + ch }, next: i + 1 };
+      },
+    });
+    acc = step.acc;
+    i = step.next;
   }
-  flush();
+
+  Match.valueTags(acc, {
+    idle: () => undefined,
+    token: ({ text }) => {
+      tokens.push({ quoted: false, text });
+    },
+  });
   return tokens;
 }
 
@@ -160,7 +169,7 @@ export function tokenizeSendKeys(input: string): RawToken[] {
  *
  * - A quoted token (`'ls -la'`) is literal text, spaces and all.
  * - An unquoted token that contains a real key (`Enter`, `ctrl+a`, `space`,
- *   `<leader>`, even `<leader>:`) is encoded as those keys via the app's own
+ *   `<prefix>`, even `<prefix>:`) is encoded as those keys via the app's own
  *   key parser and encoder, so the prefix works too.
  * - Everything else is literal text.
  *
@@ -205,19 +214,22 @@ export function parseSendKeys(input: string, parseKey: SendKeyParser): KeyEvent[
   return out;
 }
 
-const textEvents = (text: string): KeyEvent[] => [...text].map((char) =>
-  new KeyEvent({
-    name: char === " " ? "space" : char,
-    ctrl: false,
-    meta: false,
-    shift: false,
-    option: false,
-    sequence: char,
-    number: false,
-    raw: char,
-    eventType: "press",
-    source: "raw",
-  }));
+const textEvents = (text: string): KeyEvent[] =>
+  [...text].map(
+    (char) =>
+      new KeyEvent({
+        name: char === " " ? "space" : char,
+        ctrl: false,
+        meta: false,
+        shift: false,
+        option: false,
+        sequence: char,
+        number: false,
+        raw: char,
+        eventType: "press",
+        source: "raw",
+      }),
+  );
 
 const strokeEvent = (stroke: KeyStroke): KeyEvent => {
   const raw = encodeStroke(stroke);
@@ -240,7 +252,7 @@ const strokeEvent = (stroke: KeyStroke): KeyEvent => {
  *  with no modifiers. A token made only of these is text: "hello" stays
  *  "hello" (and "S" stays "S", because the parser normalizes capitals to
  *  lowercase), and only a token that actually names a key — named, modified,
- *  or the `<leader>` token — turns into encoded bytes. */
+ *  or the `<prefix>` token — turns into encoded bytes. */
 function isPlainStroke(stroke: KeyStroke): boolean {
   return (
     !stroke.ctrl && !stroke.shift && !stroke.meta && !stroke.super && [...stroke.name].length === 1

@@ -19,10 +19,27 @@ interface Line {
  * `triggered` covers both reasons the panel might open — a half-typed
  * sequence, or a context that declares `showOnEntry` going active — so this
  * function only needs to know whether either one currently holds, not which.
+ *
+ * `maxDelayMs` is `'timeoutlen'`: pending clears then, so a configured delay
+ * that would meet or exceed it shows immediately (and the caller should
+ * re-arm timeoutlen when the panel opens — see {@link ChordMatcher.rearmTimeout}).
  */
-export function hintVisibility(triggered: boolean, enabled: boolean, delaySeconds: number) {
+export function hintVisibility(
+  triggered: boolean,
+  enabled: boolean,
+  delaySeconds: number,
+  maxDelayMs?: number,
+) {
   if (!triggered || !enabled) return { visible: false, delayMs: 0 };
-  const delayMs = Math.max(0, delaySeconds) * 1000;
+  let delayMs = Math.max(0, delaySeconds) * 1000;
+  if (maxDelayMs !== undefined && maxDelayMs > 0) {
+    if (delayMs >= maxDelayMs) {
+      return { visible: true, delayMs: 0 };
+    }
+    // Leave a reading window before timeoutlen clears pending.
+    const margin = Math.min(400, Math.floor(maxDelayMs / 2));
+    delayMs = Math.min(delayMs, Math.max(0, maxDelayMs - margin));
+  }
   return { visible: delayMs === 0, delayMs };
 }
 

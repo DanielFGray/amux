@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 /** @effect-diagnostics *:skip-file -- this benchmark measures the Promise-based OpenTUI render boundary itself. */
 import { expect, test } from "bun:test";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import * as Path from "effect/Path";
@@ -11,8 +11,9 @@ import { RendererContext, _render } from "@opentui/solid";
 import type { PaneViewProps } from "@danielfgray/amux";
 import { createPluginContributions } from "@danielfgray/amux/plugin/contributions.ts";
 import { testPluginEnvironment } from "@danielfgray/amux/testing";
+import { optionalEnvVar } from "@danielfgray/amux/session.ts";
 import { EditorPane, type EditorController } from "../src/EditorPane.tsx";
-import { EditorIo, type EditorIoService } from "../src/io.ts";
+import { EditorIo, listEntriesWith, runShellCommand, type EditorIoService } from "../src/io.ts";
 
 /** Build the same `EditorIo` shape the plugin installs in production, against
  *  the platform filesystem. The bench's perf measurement must not exclude
@@ -20,6 +21,7 @@ import { EditorIo, type EditorIoService } from "../src/io.ts";
 const buildBenchIo: Effect.Effect<EditorIoService> = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const shellBin = Option.getOrElse(yield* optionalEnvVar("SHELL"), () => "sh");
   return EditorIo.of({
     read: (file, spaceDir) =>
       Effect.gen(function* () {
@@ -35,6 +37,8 @@ const buildBenchIo: Effect.Effect<EditorIoService> = Effect.gen(function* () {
         yield* fs.writeFileString(resolved, lines.join("\n") + "\n");
       }),
     resolve: (spaceDir, p) => Effect.sync(() => path.resolve(spaceDir, p)),
+    listEntries: listEntriesWith(fs, path),
+    shell: (cmd, spaceDir) => runShellCommand(shellBin, cmd, spaceDir),
   });
 }).pipe(Effect.provide(Layer.mergeAll(BunFileSystem.layer, BunPath.layer)));
 
@@ -68,7 +72,7 @@ async function measure(file: string, lines: number, io: EditorIoService): Promis
   let controller: EditorController | null = null;
   const press = (event: KeyEvent) => {
     if (controller === null) {
-    throw new Error("EditorPane did not register its key handler");
+      throw new Error("EditorPane did not register its key handler");
     }
     controller.dispatch(event);
   };
@@ -81,6 +85,7 @@ async function measure(file: string, lines: number, io: EditorIoService): Promis
     width: () => WIDTH,
     height: () => HEIGHT,
     active: () => true,
+    copyText: () => {},
     captureKeys: () => {},
   };
   const contributions = createPluginContributions();
@@ -92,6 +97,7 @@ async function measure(file: string, lines: number, io: EditorIoService): Promis
       run={() => {}}
       spaceDir="/"
       lineNumbers={() => true}
+      keyProfile={() => "vim"}
       io={io}
       registerController={(next) => {
         controller = next;

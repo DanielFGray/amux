@@ -140,6 +140,142 @@ testEffect("an integration is told the API host the catalog names for it", () =>
   }).pipe(withFileServices),
 );
 
+testEffect("thinking is clamped to catalog levels before the integration sees it", () =>
+  Effect.gen(function* () {
+    const { fs, variables } = yield* environment;
+    const root = variables.HOME!;
+    yield* Effect.addFinalizer(() => fs.remove(root, { recursive: true }).pipe(Effect.ignore));
+    const catalog = {
+      openai: {
+        id: "openai",
+        name: "OpenAI",
+        env: [],
+        models: {
+          "gpt-test": {
+            id: "gpt-test",
+            name: "GPT Test",
+            release_date: "2026-01-01",
+            attachment: false,
+            reasoning: true,
+            temperature: true,
+            tool_call: true,
+            limit: { context: 1000, output: 500 },
+            reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+          },
+        },
+      },
+    };
+    const asked: ModelRequest[] = [];
+    const spy: Integration = {
+      id: "openai",
+      label: "OpenAI",
+      methods: [{ type: "key", label: "API key" }],
+      env: [],
+      model: (request) => {
+        asked.push(request);
+        return Layer.empty as never;
+      },
+      authorize: (_credential, request) => request,
+    };
+    const registry = makeLayer(
+      [spy],
+      ModelCatalog.testLayer(
+        S.encodeEffect(S.fromJsonString(S.Unknown))(catalog).pipe(Effect.orDie),
+      ).pipe(Layer.provide(EventBus.layer)),
+    );
+    const build = (thinking?: string) =>
+      Service.pipe(
+        Effect.flatMap((integration) => integration.model("openai", "gpt-test", thinking)),
+        Effect.provide(
+          registry.pipe(
+            Layer.provide(Credential.Default),
+            Layer.provide(BunFileSystem.layer),
+            Layer.provide(
+              Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+            ),
+          ),
+        ),
+      );
+    yield* build("medium");
+    yield* build("high");
+    yield* build("");
+    expect(asked.map((request) => request.thinking)).toEqual(["low", "high", undefined]);
+  }).pipe(withFileServices),
+);
+
+testEffect(
+  "thinkingBudget is clamped to catalog budget_tokens before the integration sees it",
+  () =>
+    Effect.gen(function* () {
+      const { fs, variables } = yield* environment;
+      const root = variables.HOME!;
+      yield* Effect.addFinalizer(() => fs.remove(root, { recursive: true }).pipe(Effect.ignore));
+      const catalog = {
+        anthropic: {
+          id: "anthropic",
+          name: "Anthropic",
+          env: [],
+          models: {
+            "claude-test": {
+              id: "claude-test",
+              name: "Claude Test",
+              release_date: "2026-01-01",
+              attachment: false,
+              reasoning: true,
+              temperature: true,
+              tool_call: true,
+              limit: { context: 1000, output: 500 },
+              reasoning_options: [{ type: "budget_tokens", min: 1024, max: 81920 }],
+            },
+          },
+        },
+      };
+      const asked: ModelRequest[] = [];
+      const spy: Integration = {
+        id: "anthropic",
+        label: "Anthropic",
+        methods: [{ type: "key", label: "API key" }],
+        env: [],
+        model: (request) => {
+          asked.push(request);
+          return Layer.empty as never;
+        },
+        authorize: (_credential, request) => request,
+      };
+      const registry = makeLayer(
+        [spy],
+        ModelCatalog.testLayer(
+          S.encodeEffect(S.fromJsonString(S.Unknown))(catalog).pipe(Effect.orDie),
+        ).pipe(Layer.provide(EventBus.layer)),
+      );
+      const build = (thinkingBudget?: number) =>
+        Service.pipe(
+          Effect.flatMap((integration) =>
+            integration.model("anthropic", "claude-test", undefined, thinkingBudget),
+          ),
+          Effect.provide(
+            registry.pipe(
+              Layer.provide(Credential.Default),
+              Layer.provide(BunFileSystem.layer),
+              Layer.provide(
+                Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(variables)),
+              ),
+            ),
+          ),
+        );
+      yield* build(512);
+      yield* build(4096);
+      yield* build(0);
+      yield* build(100_000);
+      expect(asked.map((request) => request.thinkingBudget)).toEqual([
+        1024,
+        4096,
+        undefined,
+        81920,
+      ]);
+    }).pipe(withFileServices),
+);
+
 testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
   Effect.gen(function* () {
     const { fs, variables } = yield* environment;
@@ -149,7 +285,14 @@ testEffect("refreshes OAuth credentials at the five-minute boundary", () =>
     const definition: Integration = {
       id: "fake",
       label: "Fake",
-      methods: [{ type: "oauth", id: "fake-oauth", label: "Fake OAuth" }],
+      methods: [
+        {
+          type: "oauth",
+          id: "fake-oauth",
+          label: "Fake OAuth",
+          login: () => Effect.die("login unused in refresh test"),
+        },
+      ],
       env: [],
       refresh: (credential) =>
         Effect.sync(() => {
@@ -304,6 +447,21 @@ testEffect("a model built from the registry stamps its credential on every reque
     yield* generate(modelLayer).pipe(layers);
     // The request actually reached a gateway, and it carried the stored key.
     expect(gw.authorization).toEqual(["Bearer stored-key"]);
+  }).pipe(withFileServices),
+);
+
+testEffect("missing credentials fail the turn as AiError, not a TypeError defect", () =>
+  Effect.gen(function* () {
+    const { fs, variables } = yield* environment;
+    const root = variables.HOME!;
+    yield* Effect.addFinalizer(() => fs.remove(root, { recursive: true }).pipe(Effect.ignore));
+    const layers = adapterLayers(variables);
+    const modelLayer = yield* buildModelLayer("http://127.0.0.1:9/v1").pipe(layers);
+    const failure = yield* generate(modelLayer).pipe(layers, Effect.flip);
+    expect(failure).toMatchObject({
+      _tag: "AiError",
+      reason: { _tag: "UnknownError", description: "credential missing" },
+    });
   }).pipe(withFileServices),
 );
 

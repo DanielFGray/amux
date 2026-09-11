@@ -21,6 +21,8 @@
     "./protocol": "./src/effect/AttachProtocol.ts",
     "./permission.ts": "./src/permission.ts",
     "./project-store.ts": "./src/project-store.ts",
+    "./document-client.ts": "./src/document-client.ts",
+    "./document-uri.ts": "./src/document-uri.ts",
     "./session.ts": "./src/session.ts",
     "./test-tmp.ts": "./src/test-tmp.ts",
     "./config.ts": "./src/config.ts",
@@ -44,6 +46,7 @@
   },
   "dependencies": {
     "@danielfgray/amux-agent-facts": "workspace:*",
+    "@danielfgray/amux-text-buffer": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@effect/platform-node-shared": "catalog:",
     "@opentui/core": "catalog:",

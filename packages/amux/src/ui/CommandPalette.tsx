@@ -75,12 +75,20 @@ export function CommandPalette(props: {
               >
                 <text style={{ fg: theme.mauve, width: 11, flexShrink: 0 }}>{entry.group}</text>
                 <text
-                  style={{ fg: entry.available ? theme.yellow : theme.overlay1, width: 18, flexShrink: 0 }}
+                  style={{
+                    fg: entry.available ? theme.yellow : theme.overlay1,
+                    width: 18,
+                    flexShrink: 0,
+                  }}
                 >
                   {entry.keys}
                 </text>
                 <text
-                  style={{ fg: entry.available ? theme.text : theme.overlay1, width: 25, flexShrink: 0 }}
+                  style={{
+                    fg: entry.available ? theme.text : theme.overlay1,
+                    width: 25,
+                    flexShrink: 0,
+                  }}
                 >
                   {entry.name}
                 </text>

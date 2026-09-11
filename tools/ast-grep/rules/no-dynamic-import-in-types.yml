@@ -1,0 +1,31 @@
+id: no-dynamic-import-in-types
+language: TypeScript
+severity: error
+message: Prefer a static type import over import('…').T in a type position
+rule:
+  # Member form only: import('mod').Name. Bare import('mod') value calls and
+  # typeof import('mod') are intentionally out of scope.
+  # Exclude call_expression descendants so `import('m').then(...)` inside a
+  # `satisfies` / `as` value expression is not treated as a type position
+  # (stopBy:end would otherwise walk into those).
+  all:
+    - pattern: import($MOD).$NAME
+    - inside:
+        any:
+          - kind: type_annotation
+          - kind: type_alias_declaration
+          - kind: type_arguments
+          - kind: function_type
+          - kind: as_expression
+          - kind: satisfies_expression
+          - kind: constraint
+          - kind: default_type
+          - kind: class_heritage
+          - kind: implements_clause
+          - kind: mapped_type_clause
+          - kind: type_predicate
+        stopBy: end
+    - not:
+        inside:
+          kind: call_expression
+          stopBy: end

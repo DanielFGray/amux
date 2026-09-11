@@ -9,7 +9,8 @@
  * - `amux new <session-id>` — create (or resume) a session and attach
  * - `amux daemon [id]` — run the daemon foreground
  * - `amux status|stop|list [id]` — one-shot lifecycle commands
- * - `amux plugin add|rm|ls|upgrade` — manage the plugin store and config
+ * - `amux plugin add|rm|ls|upgrade` — manage Cordis (in-process) plugins
+ * - `amux process-plugin …` — link/run out-of-process argv plugins
  * - `amux <command> [args]` — invoke a remote command via the daemon RPC
  * - `amux help` — show usage
  *
@@ -30,12 +31,17 @@ import {
   Config,
   ConfigProvider,
   Effect,
+  Exit,
   Layer,
   Logger,
   Option,
+  Runtime,
   Schema,
   Stream,
 } from "effect";
+import { BunRuntime } from "@effect/platform-bun";
+import type { RuntimeCommand } from "./commands.ts";
+import type { JsonValue } from "./effect/AttachProtocol.ts";
 
 const writeOut = (text: string) => process.stdout.write(text + "\n");
 const writeErr = (text: string) => process.stderr.write(text + "\n");
@@ -265,6 +271,13 @@ function main(): Effect.Effect<number> {
       return yield* Effect.promise(() => runPluginCli(argv.slice(1)));
     }
 
+    if (sub === "process-plugin") {
+      const { runProcessPluginCli } = yield* Effect.promise(
+        () => import("./process-plugin/cli.ts"),
+      );
+      return yield* Effect.promise(() => runProcessPluginCli(argv.slice(1)));
+    }
+
     // Command dispatch — needs Effect, control-client, commands, etc.
     const [
       { SessionStore, isSessionId },
@@ -314,26 +327,25 @@ function main(): Effect.Effect<number> {
       cwd: string;
       agent?: string;
       pane?: string;
+      originSession?: string;
       noFocus?: boolean;
     };
-    type PromptCommand = import("./commands.ts").RuntimeCommand & {
+    type PromptCommand = RuntimeCommand & {
       readonly _tag: "agent.prompt";
       readonly target: string;
       readonly wait?: boolean;
       readonly until?: string;
       readonly timeout?: number;
     };
-    type WatchCommand = import("./commands.ts").RuntimeCommand & {
+    type WatchCommand = RuntimeCommand & {
       readonly _tag: "agent.watch";
       readonly target: string;
       readonly after?: number;
     };
-    const isPromptCommand = (
-      value: typeof Command.Type | import("./commands.ts").RuntimeCommand,
-    ): value is PromptCommand => value._tag === "agent.prompt" && typeof value.target === "string";
-    const isWatchCommand = (
-      value: typeof Command.Type | import("./commands.ts").RuntimeCommand,
-    ): value is WatchCommand => value._tag === "agent.watch" && typeof value.target === "string";
+    const isPromptCommand = (value: typeof Command.Type | RuntimeCommand): value is PromptCommand =>
+      value._tag === "agent.prompt" && typeof value.target === "string";
+    const isWatchCommand = (value: typeof Command.Type | RuntimeCommand): value is WatchCommand =>
+      value._tag === "agent.watch" && typeof value.target === "string";
 
     function isCommandTag(s: string): s is CommandTag {
       return s in COMMAND_META || daemonCommandByTag.has(s) || s.startsWith("plugin.");
@@ -356,7 +368,7 @@ function main(): Effect.Effect<number> {
     function fillCommandSession(
       tag: CommandTag,
       session: string | undefined,
-      parsed: Record<string, import("./effect/AttachProtocol.ts").JsonValue>,
+      parsed: Record<string, JsonValue>,
     ) {
       if (session === undefined || "session" in parsed || !isCoreCommandTag(tag)) return parsed;
       if (!fieldNames(tag).some((field) => field.name === "session")) return parsed;
@@ -366,7 +378,7 @@ function main(): Effect.Effect<number> {
     function parseCommandGroup(argv: string[]):
       | {
           tag: CommandTag;
-          parsed: Record<string, import("./effect/AttachProtocol.ts").JsonValue>;
+          parsed: Record<string, JsonValue>;
           sessionFlag?: string;
         }
       | { errors: string[] } {
@@ -437,7 +449,7 @@ function main(): Effect.Effect<number> {
 
     if (isCommandTag(sub)) {
       const groups = splitCommandArgs(argv);
-      const cmds: Array<typeof Command.Type | import("./commands.ts").RuntimeCommand> = [];
+      const cmds: Array<typeof Command.Type | RuntimeCommand> = [];
       let id: string | undefined;
       // --no-focus is a batch-level context flag, not a command field: it says
       // "this whole invocation is background work, do not move the human's focus".
@@ -526,6 +538,7 @@ function main(): Effect.Effect<number> {
         };
         if (readEnv("AMUX_AGENT_ID")) context.agent = readEnv("AMUX_AGENT_ID");
         if (readEnv("AMUX_PANE_ID")) context.pane = readEnv("AMUX_PANE_ID");
+        if (readEnv("AMUX_SESSION")) context.originSession = readEnv("AMUX_SESSION");
         if (noFocus) context.noFocus = true;
         if (!prompt || (prompt.wait !== true && prompt.until === undefined))
           return control.Batch({ values: [...cmds], context });
@@ -644,7 +657,14 @@ function main(): Effect.Effect<number> {
 if (import.meta.main) {
   // stdout is protocol output — command results, --help text, JSON — so
   // logs (plugin-load warnings, etc.) must not interleave with it.
-  Effect.runPromise(main().pipe(Effect.provideService(Logger.LogToStderr, true))).then(
-    (code) => (process.exitCode = code),
-  );
+  // BunRuntime.runMain: signal handling + teardown like main.tsx / daemon-main;
+  // success value is the CLI exit code.
+  BunRuntime.runMain(main().pipe(Effect.provideService(Logger.LogToStderr, true)), {
+    teardown: (exit, onExit) => {
+      // Teardown's Exit params are swapped vs Effect's (`Exit<E, A>` here means
+      // success=E); narrow the CLI exit code explicitly.
+      if (Exit.isSuccess(exit) && typeof exit.value === "number") onExit(exit.value);
+      else Runtime.defaultTeardown(exit, onExit);
+    },
+  });
 }

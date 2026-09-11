@@ -1,4 +1,4 @@
-import { Effect, Schema as S } from "effect";
+import { Context, Duration, Effect, Schema as S } from "effect";
 import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core";
 import { createOpenTuiKeymap } from "@opentui/keymap/opentui";
 import {
@@ -7,58 +7,119 @@ import {
   registerLeader,
   registerMetadataFields,
   registerEscapeClearsPendingSequence,
+  registerNeovimDisambiguation,
 } from "@opentui/keymap/addons";
 import type { CommandContext, Keymap } from "@opentui/keymap";
 import { reactiveMatcherFromSignal } from "@opentui/keymap/solid";
 import type { KeyStroke } from "./keys.ts";
 import { runDetached, type CommandError } from "./commands.ts";
-import type { ContextSpec } from "./key-context.ts";
-import { KeyInvocation } from "./key-invocation.ts";
-import { JsonValueSchema } from "./effect/AttachProtocol.ts";
+import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
+import { createCountAccumulator, KeyInvocation } from "./key-invocation.ts";
+import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
+import {
+  createChordMatcher,
+  DEFAULT_CHORD_TIMEOUTLEN_MS,
+  type ChordBinding,
+  type ChordMatcher,
+  type ChordMode,
+  type ChordStroke,
+} from "./chord-matcher.ts";
+import type { RootRuntimeContext } from "./env.ts";
+
+export type { ChordBinding, ChordStroke, ChordMode };
 
 export type AppKeymap = Keymap<Renderable, KeyEvent>;
 
-/** The tmux-style prefix. Bindings write it as `<leader>` for readability. */
-export const DEFAULT_LEADER = "ctrl+a";
+/**
+ * Mux prefix (`<prefix>`). Defaults to ctrl+s — a non-typing chord so shell
+ * input is never eaten. Rebindable via `keys.prefix` / settings. Not a
+ * "leader": that word is reserved for the editor mapleader.
+ */
+export const DEFAULT_PREFIX = "ctrl+s";
 
-/** What the user has changed: the prefix, and per-command sequences. */
+/**
+ * Editor mapleader (`<leader>`). Defaults to space — vim-style, only
+ * meaningful while an editor context is active. Rebindable via `keys.leader`
+ * / settings. Must stay separate from the mux prefix: space-as-`<prefix>`
+ * steals every space typed into a PTY.
+ */
+export const DEFAULT_LEADER = "space";
+
+/**
+ * Ambiguous exact-vs-prefix wait, in ms. Cite: neovim `'timeoutlen'`
+ * (input.c / handle_mapping). Owned by {@link createChordMatcher}; OpenTUI
+ * `registerNeovimDisambiguation` keeps the same value for any leftover
+ * single-layer ambiguity. Multi-key wait (mux `<prefix>*`, editor
+ * `<leader>*` / `g*`) is ChordMatcher only.
+ */
+export const DEFAULT_TIMEOUTLEN_MS = DEFAULT_CHORD_TIMEOUTLEN_MS;
+
+/** What the user has changed: the mux prefix, editor leader, and per-command sequences. */
 export interface Keys {
+  /** Mux chord prefix (`<prefix>`). */
+  prefix: string;
+  /** Editor mapleader (`<leader>`). */
   leader: string;
   /** Command name -> sequences. Absent means the command's own default; an
    *  empty array means deliberately unbound. */
   bindings: Record<string, string[]>;
 }
 
-export const DEFAULT_KEYS: Keys = { leader: DEFAULT_LEADER, bindings: {} };
+export const DEFAULT_KEYS: Keys = {
+  prefix: DEFAULT_PREFIX,
+  leader: DEFAULT_LEADER,
+  bindings: {},
+};
+
+/** Display helpers: which physical keys the two prefix tokens currently map to. */
+export interface LeaderDisplay {
+  readonly prefix?: string;
+  readonly leader?: string;
+}
 
 /**
  * How one compiled key reads on screen.
  *
- * The leader stays a keymap *token* rather than being expanded into a raw
- * `ctrl+a` press — the token is what makes the prefix rebindable in one place,
- * and expanding it by hand breaks dispatch. So the substitution happens at
- * display time instead: `<leader> x` reads as `^a x`.
+ * Prefix tokens stay keymap *tokens* rather than being expanded into raw
+ * strokes — that is what makes them rebindable in one place. Substitution
+ * happens at display time: `<prefix> x` reads as `^s x`, `<leader> /`
+ * as `SPC /`.
  */
-export function formatKey(display: string, leader = DEFAULT_LEADER): string {
+export function formatKey(
+  display: string,
+  leaderOrDisplay: string | LeaderDisplay = DEFAULT_PREFIX,
+): string {
+  const leaders: LeaderDisplay =
+    typeof leaderOrDisplay === "string"
+      ? { prefix: leaderOrDisplay, leader: DEFAULT_LEADER }
+      : {
+          prefix: leaderOrDisplay.prefix ?? DEFAULT_PREFIX,
+          leader: leaderOrDisplay.leader ?? DEFAULT_LEADER,
+        };
+  if (display === "<prefix>") {
+    const prefix = leaders.prefix!;
+    if (prefix === "<prefix>") return "<prefix>";
+    return formatKey(prefix, leaders);
+  }
   if (display === "<leader>") {
-    // A malformed hand-edited config must not recurse forever while rendering
-    // the settings screen.
+    const leader = leaders.leader!;
     if (leader === "<leader>") return "<leader>";
-    return formatKey(leader, leader);
+    return formatKey(leader, leaders);
   }
   // `shift+s` is how a capital has to be *written* — a bare "S" compiles to the
   // same sequence as "s" — but "S" is how it is pressed and read.
   const shifted = display.match(/^shift\+([a-z])$/);
   if (shifted) return shifted[1]!.toUpperCase();
+  if (display === "space") return "SPC";
   return display.replace(/^ctrl\+/, "^").replace(/^alt\+/, "M-");
 }
 
 /** Turn a compiled sequence into something worth showing a human. */
 export function formatSequence(
   parts: readonly { display: string }[],
-  leader = DEFAULT_LEADER,
+  leaderOrDisplay: string | LeaderDisplay = DEFAULT_PREFIX,
 ): string {
-  return parts.map((p) => formatKey(p.display, leader)).join(" ");
+  return parts.map((p) => formatKey(p.display, leaderOrDisplay)).join(" ");
 }
 
 /**
@@ -250,16 +311,36 @@ export interface Conflict {
  */
 export interface Bindings {
   keymap: AppKeymap;
+  /**
+   * Shared mapping-chord matcher (pending / timeoutlen / showcmd / which-key).
+   * Multi-key CommandSpecs sync here on {@link Bindings.apply}; plugins may
+   * also {@link ChordMatcher.register} directly (editor `g*` / LSP).
+   */
+  chords: ChordMatcher;
+  /**
+   * Digits accumulated while a chord is pending (`^S ^W 80`). Empty when idle.
+   * showcmd appends these; which-key still keys off {@link ChordMatcher.pending}
+   * alone — counts are not trie strokes. Cite: key-invocation.ts; neovim count.
+   */
+  countDigits(): string;
+  /** Fires when {@link Bindings.countDigits} changes (pending chord counts). */
+  subscribeCount(listener: () => void): () => void;
   /** Execute a registered command through the keymap's command dispatcher. */
   dispatch: (name: string) => boolean;
   /** Command whose binding is synchronously producing another key, if any. */
   activeCommand: () => string | null;
-  /** The prefix in effect. Display code needs it to render `<leader>`. */
+  /** Mux prefix in effect. Display code needs it to render `<prefix>`. */
+  prefix(): string;
+  /** Editor leader in effect. Display code needs it to render `<leader>`. */
   leader(): string;
+  /** Both tokens, for {@link formatKey} / {@link formatSequence}. */
+  leaders(): LeaderDisplay;
   /** Sequences claimed by more than one command as of the last apply. */
   conflicts(): Conflict[];
   /** Commands currently compiled into layers, including context projections. */
   commands(): readonly CommandSpec[];
+  /** Keys last passed to {@link Bindings.apply} (rebinds included). */
+  keys(): Keys;
   /** Rebuild under `keys`, returning whatever collided. */
   apply(keys: Keys): Conflict[];
   /** Replace the active command list and rebuild under the current keys. */
@@ -329,6 +410,10 @@ export function createBindings(
     /** User-visible command failure sink. Plugins use the same dispatch path as
      * core bindings, so failures must not disappear into stderr. */
     onError?: (message: string) => void;
+    /** Workspace RootRuntime so detached command fibers keep ambient services. */
+    runtime?: RootRuntimeContext;
+    /** Ambiguous exact/prefix wait (neovim `'timeoutlen'`). */
+    timeoutlenMs?: number;
   },
 ): Bindings {
   const keymap = createOpenTuiKeymap(renderer);
@@ -341,17 +426,67 @@ export function createBindings(
   registerEnabledFields(keymap);
   // Escape backs out of a half-typed sequence instead of stranding the prefix.
   registerEscapeClearsPendingSequence(keymap);
+  // Neovim-style timeoutlen: when `g` is both an exact binding and a prefix of
+  // `grr`, wait for a continuation; on timeout run the exact binding. Without
+  // this, longer chords need hand-rolled prefix ContextSpecs (pendingGr & co).
+  // Cite: neovim/src/nvim/input.c handle_mapping + KEYLEN_PART_MAP;
+  // @opentui/keymap/addons registerNeovimDisambiguation.
+  registerNeovimDisambiguation(keymap, {
+    timeoutMs: opts.timeoutlenMs ?? DEFAULT_TIMEOUTLEN_MS,
+  });
 
+  const chords = createChordMatcher({
+    timeoutlen: Duration.millis(opts.timeoutlenMs ?? DEFAULT_TIMEOUTLEN_MS),
+  });
+
+  let prefix = opts.keys?.prefix ?? DEFAULT_PREFIX;
   let leader = opts.keys?.leader ?? DEFAULT_LEADER;
   let commands = [...initialCommands];
-  let currentKeys = opts.keys ?? { leader: DEFAULT_LEADER, bindings: {} };
+  let currentKeys = opts.keys ?? DEFAULT_KEYS;
   let conflicts: Conflict[] = [];
   let compiledCommands: readonly CommandSpec[] = [];
   let disposeLayers: (() => void)[] = [];
   let disposeContextInterceptors: (() => void)[] = [];
+  let disposeAutoChords: (() => void)[] = [];
+  let disposePrefix: (() => void) | null = null;
   let disposeLeader: (() => void) | null = null;
   let capturing: ((event: KeyEvent, binding: string) => void) | null = null;
   let activeCommand: string | null = null;
+  /** Keystroke that armed the chord match — for KeyInvocation on chord dispatch. */
+  let chordEvent: KeyEvent | null = null;
+  let chordData: Readonly<Record<string, JsonValue>> = {};
+  /** Mux/editor map counts while ChordMatcher pending — not OpenTUI getData. */
+  const chordCount = createCountAccumulator();
+  const countListeners = new Set<() => void>();
+  const notifyCount = () => {
+    for (const listener of countListeners) listener();
+  };
+  const resetChordCount = () => {
+    if (chordCount.digits() === "") return;
+    chordCount.reset();
+    notifyCount();
+  };
+  // timeoutlen / clear abandons pending without going through the feed — drop
+  // a stranded count so showcmd cannot show `^S 80` with no chord left.
+  chords.subscribe((strokes) => {
+    if (strokes.length === 0) resetChordCount();
+  });
+
+  /** Compile a binding token to ChordMatcher strokes (`<prefix>`, `z`, …). */
+  const strokesOf = (token: string): ChordStroke[] | null => {
+    try {
+      const parts = keymap.parseKeySequence(token);
+      if (parts.length === 0) return null;
+      return parts.map((part) => part.display);
+    } catch {
+      return null;
+    }
+  };
+
+  const jsonData = (value: unknown): JsonValue | undefined => {
+    const decoded = S.decodeUnknownOption(JsonValueSchema)(value);
+    return decoded._tag === "Some" ? decoded.value : undefined;
+  };
 
   // Ahead of dispatch, so recording a binding can record keys that are
   // themselves bound — including the prefix, which would otherwise arm a
@@ -371,6 +506,74 @@ export function createBindings(
     { priority: 1000 },
   );
 
+  /**
+   * Single multi-key feed: physical prefix/leader → tokens, then ChordMatcher.
+   * Digits while pending are a count (vim `{count}` after a map prefix), not
+   * trie strokes — so `^S ^W 80|` binds as `<prefix>ctrl+w|` + count 80.
+   * Misses fall through to OpenTUI single-key bindings / the PTY.
+   */
+  const disposeChordFeed = keymap.intercept(
+    "key",
+    (input) => {
+      if (input.event.defaultPrevented) return;
+      const stroke = keyToBinding(input.event);
+      if (stroke === null) return;
+      // OpenTUI / mockInput may spell the name "escape" or "Escape".
+      if (stroke.toLowerCase() === "escape") {
+        if (chords.pending().length === 0 && chordCount.digits() === "") return;
+        chords.clear();
+        resetChordCount();
+        input.consume({ preventDefault: true });
+        input.event.preventDefault();
+        return;
+      }
+
+      const pending = chords.pending();
+      if (pending.length > 0) {
+        const boundAtPending = (name: string) =>
+          chords.activeBindings().some((binding) => {
+            if (binding.strokes.length !== pending.length + 1) return false;
+            if (pending.some((part, i) => binding.strokes[i] !== part)) return false;
+            return binding.strokes[pending.length] === name;
+          });
+        if (chordCount.offer(input.event, boundAtPending)) {
+          chords.rearmTimeout();
+          notifyCount();
+          input.consume({ preventDefault: true });
+          input.event.preventDefault();
+          return;
+        }
+      }
+
+      const chordStroke =
+        stroke === prefix ? "<prefix>" : stroke === leader ? "<leader>" : stroke;
+      chordEvent = input.event;
+      const editorCount = jsonData(input.getData("count"));
+      chordData =
+        chordCount.digits() !== ""
+          ? { count: chordCount.count() }
+          : editorCount === undefined
+            ? {}
+            : { count: editorCount };
+      const result = chords.push(chordStroke);
+      if (result._tag === "matched") {
+        resetChordCount();
+        input.consume({ preventDefault: true });
+        input.event.preventDefault();
+        return;
+      }
+      if (result._tag === "pending") {
+        input.consume({ preventDefault: true });
+        input.event.preventDefault();
+        return;
+      }
+      // Miss: matcher cleared any abandoned pending; drop a stranded count.
+      if (pending.length > 0) resetChordCount();
+    },
+    // Below PANE beforeDispatch (editor counts); above GLOBAL unhandled.
+    { priority: CONTEXT_PRIORITY.PANE - 1 },
+  );
+
   // A multiplexer is a pass-through: anything not claimed by a binding belongs
   // to the child. This fires after dispatch, so bound keys and keys that are
   // mid-sequence are already accounted for and never reach a shell.
@@ -386,10 +589,16 @@ export function createBindings(
 
   function layerContent(group: readonly CommandSpec[], keys: Keys) {
     return {
+      // Multi-key sequences live on ChordMatcher (synced in apply). OpenTUI
+      // keeps single-key rows only — modal prefix-stripped aliases included.
       bindings: group.flatMap((cmd) =>
         keysFor(cmd, keys)
           .filter((key) => parseable(key))
-          .map((key) => ({ key, cmd: cmd.name })),
+          .flatMap((key) => {
+            const strokes = strokesOf(key);
+            if (strokes === null || strokes.length !== 1) return [];
+            return [{ key, cmd: cmd.name }];
+          }),
       ),
       commands: group.map((cmd) => ({
         name: cmd.name,
@@ -411,6 +620,7 @@ export function createBindings(
                 }),
               ),
               opts.onError,
+              opts.runtime,
             );
           } finally {
             activeCommand = previous;
@@ -420,17 +630,76 @@ export function createBindings(
     };
   }
 
+  /** Mirror CommandSpec keys onto chords so wait/showcmd/which-key share one trie. */
+  function syncCommandChords(groups: readonly (readonly CommandSpec[])[], keys: Keys) {
+    for (const dispose of disposeAutoChords) dispose();
+    disposeAutoChords = [];
+    for (const group of groups) {
+      for (const cmd of group) {
+        for (const key of keysFor(cmd, keys)) {
+          const strokes = strokesOf(key);
+          if (strokes === null || strokes.length === 0) continue;
+          const name = cmd.name;
+          const command = cmd;
+          disposeAutoChords.push(
+            chords.register({
+              id: `cmd:${name}:${key}`,
+              strokes,
+              active: command.context?.active,
+              desc: command.desc,
+              group: command.group,
+              hidden: command.hidden,
+              priority: command.context?.priority ?? CONTEXT_PRIORITY.GLOBAL,
+              run: () => {
+                const event = chordEvent;
+                if (event === null) {
+                  keymap.dispatchCommand(name);
+                  return;
+                }
+                const previous = activeCommand;
+                activeCommand = name;
+                try {
+                  runDetached(
+                    name,
+                    command.run.pipe(
+                      Effect.provideService(KeyInvocation, {
+                        event,
+                        data: chordData,
+                        input: "",
+                        payload: undefined,
+                      }),
+                    ),
+                    opts.onError,
+                    opts.runtime,
+                  );
+                } finally {
+                  activeCommand = previous;
+                }
+              },
+            }),
+          );
+        }
+      }
+    }
+  }
+
   function apply(keys: Keys): Conflict[] {
     currentKeys = keys;
+    const requestedPrefix = keys.prefix || DEFAULT_PREFIX;
+    prefix = parseable(requestedPrefix, true) ? requestedPrefix : DEFAULT_PREFIX;
     const requestedLeader = keys.leader || DEFAULT_LEADER;
     leader = parseable(requestedLeader, true) ? requestedLeader : DEFAULT_LEADER;
     for (const dispose of disposeLayers) dispose();
     for (const dispose of disposeContextInterceptors) dispose();
+    disposePrefix?.();
     disposeLeader?.();
     // A half-typed sequence compiled against the old token means nothing now.
     keymap.clearPendingSequence();
+    chords.clear();
+    resetChordCount();
 
-    disposeLeader = registerLeader(keymap, { trigger: leader });
+    disposePrefix = registerLeader(keymap, { name: "prefix", trigger: prefix });
+    disposeLeader = registerLeader(keymap, { name: "leader", trigger: leader });
 
     const global: CommandSpec[] = [];
     // Insertion order, so a same-priority tie between two contexts still
@@ -451,11 +720,14 @@ export function createBindings(
     const projected: CommandSpec[] = [];
     disposeLayers = [registerLayerChecked(keymap, layerContent(global, keys))];
     disposeContextInterceptors = [];
+    const contextGroups: CommandSpec[][] = [];
     for (const [context, group] of byContext) {
       const aliases = context.globalLeaderAliases
         ? global.flatMap((source) => globalLeaderAlias(context, source, keys))
         : [];
       projected.push(...aliases);
+      const layerCommands = [...group, ...aliases];
+      contextGroups.push(layerCommands);
       disposeLayers.push(
         registerLayerChecked(keymap, {
           priority: context.priority,
@@ -466,7 +738,7 @@ export function createBindings(
           // predicate's own value flips. Adapting it is what
           // `@opentui/keymap/solid` exists for.
           enabled: reactiveMatcherFromSignal(context.active),
-          ...layerContent([...group, ...aliases], keys),
+          ...layerContent(layerCommands, keys),
         }),
       );
       if (context.beforeDispatch) {
@@ -482,11 +754,13 @@ export function createBindings(
       }
     }
 
+    syncCommandChords([global, ...contextGroups], keys);
+
     // A collision is only decidable within one context: two contexts binding
     // the same physical key are mutually exclusive by their own predicates,
     // not a conflict, so each group is checked on its own.
     conflicts = [global, ...byContext.values()].flatMap((group) =>
-      findConflicts(keymap, group, leader),
+      findConflicts(keymap, group, { prefix, leader }, keys),
     );
     compiledCommands = [...global, ...Array.from(byContext.values()).flat(), ...projected];
     return conflicts;
@@ -494,13 +768,24 @@ export function createBindings(
 
   const bindings: Bindings = {
     keymap,
+    chords,
+    countDigits: () => chordCount.digits(),
+    subscribeCount(listener) {
+      countListeners.add(listener);
+      return () => {
+        countListeners.delete(listener);
+      };
+    },
     dispatch(name) {
       return keymap.dispatchCommand(name).ok;
     },
     activeCommand: () => activeCommand,
+    prefix: () => prefix,
     leader: () => leader,
+    leaders: () => ({ prefix, leader }),
     conflicts: () => conflicts,
     commands: () => compiledCommands,
+    keys: () => currentKeys,
     apply,
     setCommands(next) {
       commands = [...next];
@@ -514,12 +799,20 @@ export function createBindings(
     },
     dispose() {
       capturing = null;
+      for (const dispose of disposeAutoChords) dispose();
+      disposeAutoChords = [];
+      chords.dispose();
+      resetChordCount();
+      countListeners.clear();
       for (const dispose of disposeLayers) dispose();
       disposeLayers = [];
       for (const dispose of disposeContextInterceptors) dispose();
       disposeContextInterceptors = [];
+      disposePrefix?.();
+      disposePrefix = null;
       disposeLeader?.();
       disposeLeader = null;
+      disposeChordFeed();
       disposeCapture();
       disposeUnhandled();
     },
@@ -539,8 +832,8 @@ export function createBindings(
 
   function globalLeaderAlias(context: ContextSpec, source: CommandSpec, keys: Keys): CommandSpec[] {
     const aliases = keysFor(source, keys)
-      .filter((key) => key.startsWith("<leader>") && key.length > "<leader>".length)
-      .map((key) => key.slice("<leader>".length));
+      .filter((key) => key.startsWith("<prefix>") && key.length > "<prefix>".length)
+      .map((key) => key.slice("<prefix>".length));
     if (!aliases.length) return [];
     return [
       contextCommand(context, {
@@ -566,9 +859,9 @@ export function createBindings(
  * and still shows up in the which-key panel. `^a S` and `^a k` were both dead
  * this way.
  *
- * Checked on the *compiled* sequences, not the key strings that produced them,
- * because that is exactly where the surprises live — "S" and "s" are different
- * strings that compile to the same press.
+ * Checked on the *compiled* sequences from {@link keysFor}, not OpenTUI's
+ * binding table — multi-key maps live on ChordMatcher and never appear as
+ * OpenTUI sequences.
  *
  * Reported rather than thrown. This used to throw, which was right while the
  * table was static and a collision could only be our own mistake; now that a
@@ -578,20 +871,23 @@ export function createBindings(
 export function findConflicts(
   keymap: AppKeymap,
   commands: CommandSpec[],
-  leader: string,
+  leaders: string | LeaderDisplay,
+  keys: Keys = DEFAULT_KEYS,
 ): Conflict[] {
-  const bindings = keymap.getCommandBindings({
-    visibility: "registered",
-    commands: commands.map((c) => c.name),
-  });
-
   const owners = new Map<string, string[]>();
-  for (const [name, list] of bindings) {
-    for (const binding of list) {
-      const sequence = formatSequence(binding.sequence, leader);
+  for (const cmd of commands) {
+    for (const token of keysFor(cmd, keys)) {
+      let sequence: string;
+      try {
+        const parts = keymap.parseKeySequence(token);
+        if (parts.length === 0) continue;
+        sequence = formatSequence(parts, leaders);
+      } catch {
+        continue;
+      }
       const existing = owners.get(sequence);
-      if (existing) existing.push(name);
-      else owners.set(sequence, [name]);
+      if (existing) existing.push(cmd.name);
+      else owners.set(sequence, [cmd.name]);
     }
   }
 
@@ -630,52 +926,115 @@ export interface PaletteEntry {
   group: string;
   keys: string;
   desc: string;
-  /** False while this command's context is inactive. The palette runs
-   *  commands directly rather than through the keymap, so an inactive
-   *  command still needs to be visible — this only says its keys won't fire
-   *  right now, without hiding the only way left to reach it. */
+  /**
+   * False while this command's context is inactive. Dimmed in the UI as
+   * `(inactive)`. Enter never dispatches an unavailable row — see
+   * {@link mayDispatchPaletteEntry}.
+   *
+   * Inactive PANE-band commands are also {@link PaletteEntry.hidden} so the
+   * runnable palette omits editor verbs when a PTY (or other pane) owns focus.
+   * APP_MODE / OVERLAY inactive rows stay visible and dimmed (copy-mode
+   * discoverability / rebind). Cite: ep-f9d55b / ts-55d4fe.
+   */
   available: boolean;
+  /**
+   * True when the command is gated on a live non-global context (pane editor,
+   * overlay, …). Empty-query ranking lifts these above always-on mux globals.
+   * Cite: ep-f9d55b; sortKeybindEntries "useful first".
+   */
+  contextual: boolean;
+  /**
+   * True for inactive PANE-band commands. {@link filterPaletteEntries} drops
+   * these by default; the keybind picker passes `includeHidden` so remaps stay
+   * reachable without an editor focused.
+   */
+  hidden: boolean;
+}
+
+/** PANE ≤ priority < APP_MODE: editor / pane contexts. Inactive → hide. */
+export function isPaneBandPriority(priority: number): boolean {
+  return priority >= CONTEXT_PRIORITY.PANE && priority < CONTEXT_PRIORITY.APP_MODE;
+}
+
+/** Enter may run this palette row. Unavailable (dimmed) rows never dispatch. */
+export function mayDispatchPaletteEntry(entry: PaletteEntry): boolean {
+  return entry.available;
 }
 
 /** All registered commands, including commands intentionally hidden from help. */
 export function paletteEntries(bindings: Bindings, commands: CommandSpec[]): PaletteEntry[] {
-  const active = bindings.keymap.getCommandBindings({
-    visibility: "registered",
-    commands: commands.map((c) => c.name),
+  const keys = bindings.keys();
+  return commands.map((cmd) => {
+    const sequences = keysFor(cmd, keys).flatMap((token) => {
+      try {
+        const parts = bindings.keymap.parseKeySequence(token);
+        return parts.length > 0 ? [formatSequence(parts, bindings.leaders())] : [];
+      } catch {
+        return [];
+      }
+    });
+    const context = cmd.context;
+    const priority = context?.priority ?? CONTEXT_PRIORITY.GLOBAL;
+    const available = context ? context.active() : true;
+    // Non-global context + currently active → weigh above mux globals in the palette.
+    const contextual = context !== undefined && available && priority > CONTEXT_PRIORITY.GLOBAL;
+    // Inactive editor/pane verbs: omit from the runnable palette (still listed
+    // for keybind remap via filterPaletteEntries includeHidden).
+    const hidden = !available && isPaneBandPriority(priority);
+    return {
+      name: cmd.name,
+      group: cmd.group,
+      keys: sequences.join(" / ") || "unbound",
+      desc: cmd.desc,
+      available,
+      contextual,
+      hidden,
+    };
   });
-  return commands.map((cmd) => ({
-    name: cmd.name,
-    group: cmd.group,
-    keys:
-      (active.get(cmd.name) ?? [])
-        .map((binding) => formatSequence(binding.sequence, bindings.leader()))
-        .join(" / ") || "unbound",
-    desc: cmd.desc,
-    available: cmd.context ? cmd.context.active() : true,
-  }));
 }
 
-/** Case-insensitive subsequence matching with stable relevance ordering. */
-export function filterPaletteEntries(entries: PaletteEntry[], query: string): PaletteEntry[] {
+/**
+ * Subsequence filter + palette ranker.
+ *
+ * Sort bands (high → low): available → contextual → query match → registration
+ * index. Empty query still ranks (not registration order). Frecency is a later
+ * band (ep-f9d55b / ts-a8599b).
+ *
+ * By default drops {@link PaletteEntry.hidden} rows (inactive PANE-band). Pass
+ * `includeHidden: true` for the keybind picker.
+ */
+export function filterPaletteEntries(
+  entries: PaletteEntry[],
+  query: string,
+  options?: { includeHidden?: boolean },
+): PaletteEntry[] {
+  const includeHidden = options?.includeHidden === true;
+  const visible = includeHidden ? entries : entries.filter((entry) => !entry.hidden);
   const needle = query.trim().toLowerCase();
-  if (!needle) return entries;
-  return entries
-    .map((entry, index) => {
-      const text = `${entry.name} ${entry.desc} ${entry.group}`.toLowerCase();
-      let cursor = 0;
-      let score = 0;
-      for (const char of needle) {
-        const found = text.indexOf(char, cursor);
-        if (found === -1) return null;
-        score += found - cursor;
-        cursor = found + 1;
-      }
-      return { entry, score, index };
-    })
+  const ranked = visible.map((entry, index) => {
+    if (!needle) return { entry, score: 0, index };
+    const text = `${entry.name} ${entry.desc} ${entry.group}`.toLowerCase();
+    let cursor = 0;
+    let score = 0;
+    for (const char of needle) {
+      const found = text.indexOf(char, cursor);
+      if (found === -1) return null;
+      score += found - cursor;
+      cursor = found + 1;
+    }
+    return { entry, score, index };
+  });
+  return ranked
     .filter(
       (match): match is { entry: PaletteEntry; score: number; index: number } => match !== null,
     )
-    .sort((a, b) => a.score - b.score || a.index - b.index)
+    .sort(
+      (a, b) =>
+        Number(b.entry.available) - Number(a.entry.available) ||
+        Number(b.entry.contextual) - Number(a.entry.contextual) ||
+        a.score - b.score ||
+        a.index - b.index,
+    )
     .map((match) => match.entry);
 }
 
@@ -688,29 +1047,26 @@ export interface HintGroup {
 /**
  * Commands grouped for display, each with the key sequences that run it.
  *
- * Read back out of the keymap rather than off the CommandSpec list, so what the
- * list shows is what the keymap will actually dispatch — including any
- * rebinding.
+ * Sequences come from {@link keysFor} + the keymap parser (including user
+ * rebinds), not OpenTUI's binding table — multi-key maps are ChordMatcher-only.
  */
 export function helpGroups(
   bindings: Bindings,
   commands: CommandSpec[],
-  keys: Keys = DEFAULT_KEYS,
+  keys: Keys = bindings.keys(),
 ): HelpGroup[] {
-  const active = bindings.keymap.getCommandBindings({
-    visibility: "registered",
-    commands: commands.map((c) => c.name),
-  });
-
   const groups = new Map<string, HelpEntry[]>();
   const known = new Set(commands.map((cmd) => cmd.name));
   for (const cmd of commands) {
     if (cmd.hidden) continue;
-    // Render the compiled sequence, not the source string, so a binding
-    // displays as the keys the user actually presses.
-    const sequences = (active.get(cmd.name) ?? []).map((b) =>
-      formatSequence(b.sequence, bindings.leader()),
-    );
+    const sequences = keysFor(cmd, keys).flatMap((token) => {
+      try {
+        const parts = bindings.keymap.parseKeySequence(token);
+        return parts.length > 0 ? [formatSequence(parts, bindings.leaders())] : [];
+      } catch {
+        return [];
+      }
+    });
     const entries = groups.get(cmd.group) ?? [];
     entries.push({
       name: cmd.name,
@@ -740,7 +1096,7 @@ function orphanedEntries(bindings: Bindings, keys: Keys, known: ReadonlySet<stri
     const sequences = tokens.flatMap((token) => {
       try {
         const parts = bindings.keymap.parseKeySequence(token);
-        return parts.length > 0 ? [formatSequence(parts, bindings.leader())] : [];
+        return parts.length > 0 ? [formatSequence(parts, bindings.leaders())] : [];
       } catch {
         return [];
       }
@@ -765,80 +1121,63 @@ function orphanedEntries(bindings: Bindings, keys: Keys, known: ReadonlySet<stri
  *
  * The premise of a which-key panel: after `^a` the app knows exactly which
  * commands remain reachable and which single key reaches each, so it can say so
- * rather than leaving the user to remember. Derived from the same registration
- * as dispatch and the keybind list, so a binding cannot appear here and then
- * not fire.
+ * rather than leaving the user to remember. Derived from {@link Bindings.chords}
+ * (the same trie that owns multi-key wait and showcmd), so a binding cannot
+ * appear here and then not fire.
  *
- * Read with `visibility: "active"`, not "registered": "registered" walks raw
- * layers and evaluates no conditions, so a binding scoped to an inactive
- * context would read back as reachable here and do nothing when pressed. A
- * hint that shows must be able to fire.
+ * Hidden bindings are omitted — siblings covered by one entry, the way
+ * `^a 1..9` is a single line rather than nine.
  *
- * Hidden commands are omitted — they are the siblings covered by one entry,
- * the way `^a 1..9` is a single line rather than nine.
- *
- * Groups are ordered by the highest `priority` among the contexts that feed
- * them (a context-less command sits beneath every real context, the same as
- * its layer does at dispatch time) — the panel says what will actually fire
- * first, making shadowing visible instead of mysterious rather than leaving
- * it to alphabetical or registration order.
+ * Groups are ordered by chord `priority` (context priority for CommandSpec
+ * sync rows) — the panel says what will actually fire first.
  */
 export function nextKeys(
   bindings: Bindings,
-  commands: readonly CommandSpec[],
+  _commands: readonly CommandSpec[],
   contexts: readonly ContextSpec[],
   pending: readonly { display: string }[],
 ): HintGroup[] {
-  const active = bindings.keymap.getCommandBindings({
-    visibility: "active",
-    commands: commands.map((c) => c.name),
-  });
-
-  const groups = new Map<string, { keys: string[]; desc: string }[]>();
+  const pendingStrokes = pending.map((part) => part.display);
   const aliasesGlobalLeader = contexts.some(
     (context) => context.active() && context.globalLeaderAliases !== undefined,
   );
+  const groups = new Map<string, { keys: string[]; desc: string }[]>();
   const priorityOf = new Map<string, number>();
   const bump = (group: string, priority: number) =>
     priorityOf.set(group, Math.max(priorityOf.get(group) ?? -Infinity, priority));
 
-  // Every leader-bound command's compiled sequence starts with the same
-  // literal "<leader>" token (the leader is a keymap token, not a command —
-  // registerLeader, above). Before it is pressed, showing each of those
-  // commands individually would repeat the same one key once per command;
-  // one synthetic entry says the leader still reaches them, the way
-  // Settings.tsx's own "prefix" row reads the same token.
+  let prefixReachable = false;
   let leaderReachable = false;
-  for (const cmd of commands) {
-    if (cmd.hidden) continue;
-    const keys: string[] = [];
-    for (const binding of active.get(cmd.name) ?? []) {
-      const sequence = binding.sequence;
-      // Longer than what has been typed, and typed so far in full.
-      if (sequence.length <= pending.length) continue;
-      if (pending.some((part, i) => sequence[i]!.display !== part.display)) continue;
-      if (pending.length === 0 && sequence[0]!.display === "<leader>") {
-        if (!aliasesGlobalLeader) leaderReachable = true;
-        continue;
-      }
-      const key = formatKey(sequence[pending.length]!.display, bindings.leader());
-      if (!keys.includes(key)) keys.push(key);
+
+  for (const binding of bindings.chords.activeBindings()) {
+    if (binding.hidden || binding.desc === undefined) continue;
+    const sequence = binding.strokes;
+    if (sequence.length <= pendingStrokes.length) continue;
+    if (pendingStrokes.some((stroke, i) => sequence[i] !== stroke)) continue;
+    if (pendingStrokes.length === 0 && sequence[0] === "<prefix>") {
+      if (!aliasesGlobalLeader) prefixReachable = true;
+      continue;
     }
-    if (!keys.length) continue;
-    const entries = groups.get(cmd.group) ?? [];
-    entries.push({ keys, desc: cmd.desc });
-    groups.set(cmd.group, entries);
-    bump(cmd.group, cmd.context?.priority ?? -Infinity);
+    if (pendingStrokes.length === 0 && sequence[0] === "<leader>") {
+      leaderReachable = true;
+      continue;
+    }
+    const group = binding.group ?? "chords";
+    const key = formatKey(sequence[pendingStrokes.length]!, bindings.leaders());
+    const entries = groups.get(group) ?? [];
+    const existing = entries.find((entry) => entry.desc === binding.desc);
+    if (existing) {
+      if (!existing.keys.includes(key)) existing.keys.push(key);
+    } else {
+      entries.push({ keys: [key], desc: binding.desc });
+    }
+    groups.set(group, entries);
+    bump(group, binding.priority ?? CONTEXT_PRIORITY.GLOBAL);
   }
 
   // A context whose keys are a `handle` catch-all (key-context.ts) has no
-  // CommandSpec to read a binding back from — copy mode's v/y/n, decided by
-  // its own live state rather than a static map. `ContextSpec.hints` fills
-  // that gap for display the way `handle` fills it for dispatch, but only at
-  // the top of the tree: these are always single, unprefixed keys, so once a
-  // sequence is under way a typed prefix has already said more than this
-  // list can.
-  if (pending.length === 0) {
+  // ChordBinding to read a binding back from — copy mode's v/y/n.
+  if (pendingStrokes.length === 0) {
     for (const context of contexts) {
       if (!context.hints?.length || !context.active()) continue;
       groups.set(context.id, [...context.hints]);
@@ -848,12 +1187,20 @@ export function nextKeys(
 
   const result = [...groups]
     .map(([group, entries]) => ({ group, entries }))
-    .sort((a, b) => (priorityOf.get(b.group) ?? -Infinity) - (priorityOf.get(a.group) ?? -Infinity));
+    .sort(
+      (a, b) => (priorityOf.get(b.group) ?? -Infinity) - (priorityOf.get(a.group) ?? -Infinity),
+    );
 
+  if (prefixReachable) {
+    result.push({
+      group: "",
+      entries: [{ keys: [formatKey("<prefix>", bindings.leaders())], desc: "mux prefix" }],
+    });
+  }
   if (leaderReachable) {
     result.push({
       group: "",
-      entries: [{ keys: [formatKey("<leader>", bindings.leader())], desc: "more commands" }],
+      entries: [{ keys: [formatKey("<leader>", bindings.leaders())], desc: "editor leader" }],
     });
   }
   return result;

@@ -1,7 +1,8 @@
-import { Context } from "effect";
+import { Context, Option } from "effect";
 import { ProcessState, type SessionFact } from "@danielfgray/amux";
 import type { AttachFrame, Topic } from "@danielfgray/amux/protocol";
 import { evaluateAgent } from "./detector.ts";
+import type { AgentManifestRegistryService } from "@danielfgray/amux-agent-facts/manifests.ts";
 import { identifyAgent } from "@danielfgray/amux-agent-facts/identify.ts";
 import { agentIdentityFromTopic } from "./identity-state.ts";
 
@@ -43,13 +44,17 @@ export interface AgentPresence {
  * a session's manifest evaluation and its displayed identity never disagree
  * about which agent they are looking at.
  */
-export function resolveAgentId(fact: SessionFact, hookAgent: string | undefined): string | null {
-  return (
-    fact.declaredAgent ??
-    hookAgent ??
-    identifyAgent(fact.command) ??
-    identifyAgent(fact.foreground?.argv ?? []) ??
-    null
+export function resolveAgentId(
+  registry: AgentManifestRegistryService,
+  fact: SessionFact,
+  hookAgent: string | undefined,
+): Option.Option<string> {
+  return Option.orElse(Option.fromNullishOr(fact.declaredAgent), () =>
+    Option.orElse(Option.fromUndefinedOr(hookAgent), () =>
+      Option.orElse(identifyAgent(registry, fact.command), () =>
+        identifyAgent(registry, fact.foreground?.argv ?? []),
+      ),
+    ),
   );
 }
 
@@ -60,28 +65,32 @@ export function resolveAgentId(fact: SessionFact, hookAgent: string | undefined)
  * source's confidence in what it is reporting decreases.
  */
 export function resolvePresence(
+  registry: AgentManifestRegistryService,
   session: string,
   fact: SessionFact,
   hookAgent: string | undefined,
 ): AgentPresence {
   const state: AwarenessReportedState | "unknown" =
     fact.processState === null ? "unknown" : DETECTOR_TO_AWARENESS[fact.processState];
-  const agent = resolveAgentId(fact, hookAgent);
-  if (!agent) return { session, agent: null, state: "unknown", source: "unknown", evidence: null };
-  if (fact.declaredAgent) {
-    return { session, agent, state, source: "harness", evidence: `declaredAgent:${agent}` };
-  }
-  if (hookAgent) {
-    return { session, agent, state, source: "hook", evidence: `hook:${agent}` };
-  }
-  const rule = evaluateAgent(agent, fact.regions).rule;
-  return {
-    session,
-    agent,
-    state,
-    source: "manifest",
-    evidence: rule ? `manifest-rule:${rule}` : `manifest:${agent}`,
-  };
+  return Option.match(resolveAgentId(registry, fact, hookAgent), {
+    onNone: () => ({ session, agent: null, state: "unknown", source: "unknown", evidence: null }),
+    onSome: (agent) => {
+      if (fact.declaredAgent) {
+        return { session, agent, state, source: "harness", evidence: `declaredAgent:${agent}` };
+      }
+      if (hookAgent) {
+        return { session, agent, state, source: "hook", evidence: `hook:${agent}` };
+      }
+      const rule = evaluateAgent(registry, agent, fact.regions).rule;
+      return {
+        session,
+        agent,
+        state,
+        source: "manifest",
+        evidence: rule ? `manifest-rule:${rule}` : `manifest:${agent}`,
+      };
+    },
+  });
 }
 
 /** Extracts a hook's identity claim from a raw wire frame, for callers

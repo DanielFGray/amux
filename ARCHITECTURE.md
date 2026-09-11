@@ -144,6 +144,10 @@ its UI fibers only. Agent workers, conversation persistence, and the daemon's
 semantic event log belong to the session supervisor. Reloading may remount a
 pane view, but the replacement view synchronizes from that log before showing
 the conversation, so an in-progress turn continues while the UI code changes.
+For a shared plugin dependency, the client records resolved module imports,
+selects every stale active entry with `Effect.Graph`, imports them under one
+fresh generation, and commits their scopes together; an unsuccessful candidate
+leaves the prior generation visible.
 
 Vocabulary. A _session_ is a daemon-owned backend instance — a supervised PTY
 today, an LLM coding-agent session later — and every attach-frame field named
@@ -174,6 +178,19 @@ control server scope and heartbeat fiber live together in the machine's state,
 never as independently-nullable fields, and the seven host verbs (spawn, kill,
 live, buffers) are mailbox procedures that read their resources off the
 committed state and reject with "daemon not started" outside the live states.
+
+Open text documents follow the same ownership rule as paste buffers: the attach
+host holds one `OpenDocumentStore` (`@danielfgray/amux-text-buffer`) for the
+daemon lifetime. Document bodies are a Zed-shaped B+ SumTree of UTF-8-sized
+text chunks (`TREE_BASE` fanout, `CHUNK_BASE` leaf items) with a `TextSummary`
+of UTF-8 bytes, UTF-16 chars, and newlines. Generation-checked `apply`/`write` and
+the `DocumentWatch` stream are the shared authority: the editor coalesces
+keystrokes into `DocumentWrite` (no disk) and projects remote snapshots into
+local `lines[]`; `:w` and the harness `write` / `edit` / `apply_patch` tools
+persist via `DocumentSave` (with a filesystem fallback when no daemon is
+reachable). Dirty open docs are in-memory only — like paste buffers, they are
+not written into `session.json`. `DocumentMeta.byteLength` is UTF-8 of
+serialized text; `charCount` is UTF-16 — both O(1) from the root summary.
 Startup is split in two on purpose: the host commits in `starting` before
 restore and the default space run, because those run the workspace transaction,
 which reads the host off the machine state and the mailbox cannot serve its own

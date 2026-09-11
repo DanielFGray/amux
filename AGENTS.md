@@ -6,7 +6,7 @@
 - All workspace mutations go through ordered commands via the daemon's model queue. A client-side mutation will diverge from the daemon's generation.
 - Newline-framed JSON over Unix sockets. Terminal bytes (input/output) are base64-encoded within frames. Workspace frames embed full JSON snapshots.
 - State persistence is write-temp-then-rename (atomic against process crash). Durability obligations in the daemon treat a completed write as discharged. `ARCHITECTURE.md` documents the transaction ordering in detail.
-- **Core's agent surface stops at neutral process facts.** Which executables count as agents, what their states mean, and anything that runs a turn belong to plugins — including ours. Keep providers, models, credentials, prompts, and turn loops in plugin code. See `ARCHITECTURE.md`'s policy-versus-algebra rule. Four pieces of agent policy remain in core and are tracked for migration: `detect.ts`, `detector-evaluator.ts`, the `agent-hook` subcommand, and the turn/tool/permission vocabulary in `AttachProtocol.ts`.
+- **Core's agent surface stops at neutral process facts.** Which executables count as agents, what their states mean, and anything that runs a turn belong to plugins — including ours. Keep providers, models, credentials, prompts, and turn loops in plugin code. See `ARCHITECTURE.md`'s policy-versus-algebra rule. Three pieces of agent policy remain in core and are tracked for migration: `detect.ts`, `detector-evaluator.ts`, and the turn/tool/permission vocabulary in `AttachProtocol.ts`. Foreign PTY resume adapters and `amux agent-hook` live in `plugin-agent-continuity`.
 
 These rules must not be violated — the dead "second authority" in the client exists because they were once broken
 
@@ -40,7 +40,7 @@ bunx tsc --noEmit     # typecheck
 bun run typecheck:fzf # pick typecheck diagnostics with fzf, open in nvim (needs fzf)
 bun run start         # client (same as `bun packages/amux/src/cli.ts <session>`)
 bun run daemon        # daemon (same as `bun packages/amux/src/cli.ts daemon <session>`)
-bun run cli           # unified `amux` CLI entry
+bun run cli           # unified `amux` CLI entry (`bun run cli --skill` prints the agent control skill)
 ```
 
 `amux` is a Bun workspace: `packages/amux` is the app, `packages/plugin-*` and

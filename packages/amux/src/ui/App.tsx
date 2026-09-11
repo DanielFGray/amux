@@ -28,9 +28,10 @@ export interface AppProps {
  * the top of the pane area next to the sidebar, and why a dock declares an
  * anchor rather than only a side.
  *
- * A dock's resize handle is an invisible hitbox over the dock's own inner edge,
- * so the panes keep drawing all four of their own borders and resizing a dock
- * costs the pane area no cell.
+ * A dock's resize handle is an invisible 2-cell hitbox: one cell on the dock's
+ * own inner edge, plus one cell overhanging onto the pane frame, so dragging
+ * the visible border resizes the dock without costing the pane area a layout
+ * cell (and without hiding the dock-side target).
  */
 export function App(props: AppProps) {
   /** Where the pane area starts, so transient chrome lines up with it rather

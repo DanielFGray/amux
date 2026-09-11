@@ -15,7 +15,7 @@ import type { PluginSettingsSection, SpawnProvider } from "./types.ts";
 import type { OptionSpec } from "../options.ts";
 import type { ProcessDisplay, ProcessDisplayProvider } from "./process-display.ts";
 import type { CommandError, Commands, Meta, RuntimeCommand } from "../commands.ts";
-import type { SessionFactsService } from "../session-facts.ts";
+export { SessionFactsTag } from "../session-facts.ts";
 import type { PanelContext } from "../ui/panel.ts";
 import type { AttachFrame } from "../effect/AttachProtocol.ts";
 import type { PromptOptions } from "../effect/SessionRegistry.ts";
@@ -214,9 +214,6 @@ export class TilingAlgorithmsTag extends Context.Service<
   TilingAlgorithmsTag,
   TilingAlgorithmsService
 >()("amux/TilingAlgorithms") {}
-export class SessionFactsTag extends Context.Service<SessionFactsTag, SessionFactsService>()(
-  "amux/SessionFacts",
-) {}
 export class PanelTag extends Context.Service<PanelTag, PanelContext>()("amux/Panel") {}
 /** One service rather than two keys: reading a session's frames and asking for
  *  a replay are the same capability seen from both ends, and a plugin holding

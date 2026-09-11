@@ -1,0 +1,32 @@
+{
+  "name": "@danielfgray/amux-plugin-agent-continuity",
+  "version": "0.1.0",
+  "keywords": ["amux-plugin"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielfgray/amux",
+    "directory": "packages/plugin-agent-continuity"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts",
+    "./daemon": "./src/daemon.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@danielfgray/amux": "workspace:*",
+    "@danielfgray/amux-agent-awareness": "workspace:*"
+  },
+  "peerDependencies": {
+    "@danielfgray/amux": "workspace:*"
+  },
+  "engines": {
+    "amux": "^0.1.0"
+  }
+}

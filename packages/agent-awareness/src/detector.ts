@@ -1,7 +1,7 @@
 import { ProcessState, type ScreenRegion } from "@danielfgray/amux";
 import {
-  AgentManifests,
   type Adapter,
+  type AgentManifestRegistryService,
   type AdapterRule,
   type RegexPattern,
   type RuleGate,
@@ -28,20 +28,21 @@ interface CompiledRule {
   readonly matches: (text: string) => boolean;
 }
 
-export const DETECTOR_REGIONS: readonly ScreenRegion[] = Object.freeze([
-  ...new Set(
-    // Safe by construction: manifest decode rejects any region outside the
-    // ScreenRegion set (see isScreenRegion in agent-facts/manifests.ts).
-    AgentManifests.manifests.flatMap((manifest) =>
-      manifest.rules.map((rule) => rule.region as ScreenRegion),
+export const detectorRegions = (registry: AgentManifestRegistryService): readonly ScreenRegion[] =>
+  Object.freeze([
+    ...new Set(
+      // Safe by construction: manifest decode rejects any region outside the
+      // ScreenRegion set (see isScreenRegion in agent-facts/manifests.ts).
+      registry.manifests.flatMap((manifest) =>
+        manifest.rules.map((rule) => rule.region as ScreenRegion),
+      ),
     ),
-  ),
-]);
+  ]);
 
 const compiledAdapters = new Map<string, CompiledAdapter>();
 
-function adapterFor(agent: string): CompiledAdapter {
-  const adapter = AgentManifests.adapterFor(agent);
+function adapterFor(registry: AgentManifestRegistryService, agent: string): CompiledAdapter {
+  const adapter = registry.adapterFor(agent);
   const cached = compiledAdapters.get(adapter.id);
   if (cached) return cached;
   const compiled = compileAdapter(adapter);
@@ -85,10 +86,11 @@ export function evaluateAdapter(
   return evaluateCompiledAdapter(compileAdapter(adapter), regions);
 }
 export function evaluateAgent(
+  registry: AgentManifestRegistryService,
   agent: string,
   regions: Readonly<Record<string, string>>,
 ): DetectorResult {
-  return evaluateCompiledAdapter(adapterFor(agent), regions);
+  return evaluateCompiledAdapter(adapterFor(registry, agent), regions);
 }
 function evaluateCompiledAdapter(
   adapter: CompiledAdapter,

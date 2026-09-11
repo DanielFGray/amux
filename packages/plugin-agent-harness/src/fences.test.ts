@@ -6,7 +6,7 @@ test("prose without fences is one text segment", () => {
 });
 
 test("a fenced block splits into text, code, text", () => {
-  expect(splitFences('before\n```ts\nconst x = 1;\n```\nafter')).toEqual([
+  expect(splitFences("before\n```ts\nconst x = 1;\n```\nafter")).toEqual([
     { kind: "text", text: "before" },
     { kind: "code", language: "ts", code: "const x = 1;" },
     { kind: "text", text: "after" },

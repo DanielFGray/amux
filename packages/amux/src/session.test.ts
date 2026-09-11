@@ -432,7 +432,7 @@ test("nested persisted state rejects duplicate identities and invalid layout rel
     version: 1,
     root: { type: "pane", id: "pane-a", content: { kind: "pty", session: "missing" }, weight: 1 },
   });
-  expect(() => Effect.runSync(parseSessionState(missing))).toThrow("absent or exited session");
+  expect(() => Effect.runSync(parseSessionState(missing))).toThrow("missing or has already exited");
   const malformed = structuredClone(value);
   malformed.spaces[0].windows[0].sessions[0].rows = -1;
   expect(() => Effect.runSync(parseSessionState(malformed))).toThrow("invalid persisted session");

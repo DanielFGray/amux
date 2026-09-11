@@ -43,8 +43,12 @@ afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
 
-const pty = (id: string, session: string) =>
-  ({ type: "pane" as const, id, content: { kind: "pty" as const, session }, weight: 1 });
+const pty = (id: string, session: string) => ({
+  type: "pane" as const,
+  id,
+  content: { kind: "pty" as const, session },
+  weight: 1,
+});
 
 /** A shell session whose tab shows "bash", the same as `init()` seeded. */
 const bash = { cmd: ["bash"] };
@@ -74,8 +78,18 @@ const cross = (): Layout =>
       direction: "row",
       weight: 1,
       children: [
-        { type: "split", direction: "column", weight: 1, children: [pty("p1", "s1"), pty("p2", "s2")] },
-        { type: "split", direction: "column", weight: 1, children: [pty("p3", "s3"), pty("p4", "s4")] },
+        {
+          type: "split",
+          direction: "column",
+          weight: 1,
+          children: [pty("p1", "s1"), pty("p2", "s2")],
+        },
+        {
+          type: "split",
+          direction: "column",
+          weight: 1,
+          children: [pty("p3", "s3"), pty("p4", "s4")],
+        },
       ],
     },
     focus: "p4",
@@ -176,7 +190,8 @@ async function screen(
           section="sidebar"
           selected={0}
           groups={[]}
-          leader="ctrl+a"
+          prefix="ctrl+a"
+          leader="space"
           conflicts={[]}
           capturing={false}
           width={props.width}
@@ -243,21 +258,29 @@ test("the sidebar seam is a single line that is also the pane frame's left borde
 });
 
 test("window tabs render the configured format", async () => {
-  const rows = await screen(false, single, { format: "tab-#{window_number}-#{window_name}", spaceIndex: 0 });
+  const rows = await screen(false, single, {
+    format: "tab-#{window_number}-#{window_name}",
+    spaceIndex: 0,
+  });
 
   expect(rows[0]).toContain("tab-1-bash");
   expect(rows[0]).not.toContain("○");
 });
 
 test("window tabs render the state glyph and space index when requested", async () => {
-  const rows = await screen(false, single, { format: "#{agent_state_glyph} space-#{space_index}", spaceIndex: 0 });
+  const rows = await screen(false, single, {
+    format: "#{agent_state_glyph} space-#{space_index}",
+    spaceIndex: 0,
+  });
 
   expect(rows[0]).toContain("· space-0");
 });
 
 test("window tabs render the configured status format", async () => {
   const statusFormat = resolveOptions({ "status.format": "status-#{space_name}" })["status.format"];
-  const rows = await screen(false, single, { status: formatText(statusFormat, { space_name: "proj" }) });
+  const rows = await screen(false, single, {
+    status: formatText(statusFormat, { space_name: "proj" }),
+  });
 
   expect(rows[0]).toContain("status-proj");
 });

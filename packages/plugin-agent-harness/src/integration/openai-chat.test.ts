@@ -465,6 +465,24 @@ testEffect("the request is a streaming chat completion that asks for its usage",
       stream_options: { include_usage: true },
       messages: [{ role: "user", content: "hello" }],
     });
+    expect(sent[0]?.reasoning_effort).toBeUndefined();
+  }),
+);
+
+testEffect("clamped thinking becomes reasoning_effort on the request", () =>
+  Effect.gen(function* () {
+    const stub = gateway({
+      body: sse(`{"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`),
+    });
+    const model = yield* OpenAiChat.make({
+      model: "deepseek-v4-flash-free",
+      apiUrl: API,
+      thinking: "high",
+    }).pipe(Effect.provide(stub.layer));
+    yield* parts(model).pipe(
+      Effect.provide(Layer.mergeAll(Layer.succeed(LanguageModel.LanguageModel, model), stub.layer)),
+    );
+    expect(stub.sent[0]?.reasoning_effort).toBe("high");
   }),
 );
 

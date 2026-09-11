@@ -5,8 +5,6 @@ import { expect, test } from "bun:test";
 import { createTestRenderer, createMockMouse } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { Transcript } from "./Transcript.tsx";
-import { theme } from "@danielfgray/amux";
-import type { TextChunk } from "@danielfgray/amux-highlight";
 import { emit, delta, type HarnessDelta, type HarnessEvent } from "./protocol.ts";
 import type { AgentFrame, JsonValue } from "@danielfgray/amux/protocol";
 
@@ -68,8 +66,9 @@ test("native transcript renders semantic text and tool results", async () => {
   await target.renderOnce();
   await Bun.sleep(10);
   expect(target.captureCharFrame()).toContain("I found it.");
-  expect(target.captureCharFrame()).toContain("tool> grep");
-  expect(target.captureCharFrame()).toContain("src -> 12 matches");
+  expect(target.captureCharFrame()).toContain("grep src");
+  expect(target.captureCharFrame()).not.toContain("tool> grep");
+  expect(target.captureCharFrame()).not.toContain("src -> 12 matches");
   target.renderer.destroy();
 });
 
@@ -98,12 +97,12 @@ test("thinking traces are collapsed when enabled", async () => {
   );
   await target.renderOnce();
   await Bun.sleep(10);
-  expect(target.captureCharFrame()).toContain("Thinking (click to expand)");
+  expect(target.captureCharFrame()).toContain("Thinking...");
   expect(target.captureCharFrame()).not.toContain("checking files");
   target.renderer.destroy();
 });
 
-test("assistant fences render highlighted code through the snapshot", async () => {
+test("assistant markdown renders prose and fenced code without fence markers", async () => {
   const target = await createTestRenderer({ width: 60, height: 20 });
   const events = Stream.fromIterable([
     wrap({
@@ -113,46 +112,48 @@ test("assistant fences render highlighted code through the snapshot", async () =
       text: "try this:\n```ts\nconst x = 1;\n```\ndone",
     }),
   ]);
-  const highlight = async (
-    _content: string,
-    filetype: string,
-  ): Promise<Map<number, readonly TextChunk[]>> => {
-    expect(["typescript", "tsx"]).toContain(filetype);
-    return new Map([
-      [
-        0,
-        [
-          { __isChunk: true as const, text: "const", fg: theme.mauve },
-          { __isChunk: true as const, text: " x = 1;" },
-        ],
-      ],
-    ]);
-  };
   await render(
     () => (
-      <Transcript
-        sessionId="native"
-        frames={() => events}
-        sync={() => {}}
-        width={60}
-        highlight={highlight}
-      />
+      <Transcript sessionId="native" frames={() => events} sync={() => {}} width={60} />
     ),
     target.renderer,
   );
   await target.renderOnce();
-  // The code block debounces its fetch; let it resolve, then draw twice so
-  // the resource value reaches the frame.
+  // Tree-sitter highlight settles asynchronously inside MarkdownRenderable.
   await Bun.sleep(500);
   await target.renderOnce();
   await target.renderOnce();
-  const spans = target.captureSpans().lines.flatMap((row) => row.spans);
-  expect(
-    spans.some((span) => span.text === "const" && span.fg.toString() === theme.mauve.toString()),
-  ).toBe(true);
-  // Prose around the fence still renders.
-  expect(target.captureCharFrame()).toContain("try this:");
-  expect(target.captureCharFrame()).toContain("done");
+  const frame = target.captureCharFrame();
+  expect(frame).toContain("try this:");
+  expect(frame).toContain("const x = 1;");
+  expect(frame).toContain("done");
+  // conceal=true hides the fence markers (opentui MarkdownOptions).
+  expect(frame).not.toContain("```");
+  target.renderer.destroy();
+});
+
+test("assistant markdown conceals emphasis markers", async () => {
+  const target = await createTestRenderer({ width: 40, height: 10 });
+  const events = Stream.fromIterable([
+    wrap({
+      _tag: "text.delta" as const,
+      session: "native",
+      turn: "t1",
+      text: "use **bold** and a list:\n- one\n- two",
+    }),
+  ]);
+  await render(
+    () => <Transcript sessionId="native" frames={() => events} sync={() => {}} width={40} />,
+    target.renderer,
+  );
+  await target.renderOnce();
+  await Bun.sleep(200);
+  await target.renderOnce();
+  const frame = target.captureCharFrame();
+  expect(frame).toContain("bold");
+  expect(frame).not.toContain("**");
+  expect(frame).toContain("one");
+  expect(frame).toContain("two");
   target.renderer.destroy();
 });
 
@@ -280,31 +281,76 @@ test("clicking a collapsed bash card expands its full output", async () => {
   target.renderer.destroy();
 });
 
-test("a tool whose params are still streaming shows the about-to-run placeholder", async () => {
-  const target = await createTestRenderer({ width: 42, height: 12 });
+test("read tool card is headline-only (no output body dump)", async () => {
+  const target = await createTestRenderer({ width: 48, height: 12 });
   const events = Stream.fromIterable([
     wrap({
-      _tag: "tool.params-start" as const,
+      _tag: "tool.start" as const,
       session: "native",
+      sequence: 1,
       turn: "t1",
       call: "c1",
-      tool: "bash",
+      tool: "read",
+      input: { path: "ARCHITECTURE.md" },
     }),
     wrap({
-      _tag: "tool.params-delta" as const,
+      _tag: "tool.result" as const,
       session: "native",
+      sequence: 2,
       turn: "t1",
       call: "c1",
-      delta: '{"command": "bun tes',
+      output: "# Architecture\n\nLots of prose the chat must not dump.",
+      isError: false,
     }),
   ]);
   await render(
-    () => <Transcript sessionId="native" frames={() => events} sync={() => {}} width={42} />,
+    () => <Transcript sessionId="native" frames={() => events} sync={() => {}} width={48} />,
     target.renderer,
   );
   await target.renderOnce();
   await Bun.sleep(10);
-  expect(target.captureCharFrame()).toContain("~ Writing command...");
-  expect(target.captureCharFrame()).not.toContain('{"command"');
+  const frame = target.captureCharFrame();
+  expect(frame).toContain("read ARCHITECTURE.md");
+  expect(frame).not.toContain("Lots of prose");
+  expect(frame).not.toContain("tool> read");
+  target.renderer.destroy();
+});
+
+test("edit tool card shows path title and diff body", async () => {
+  const { conciseDiff } = await import("./edit-core.ts");
+  const diff = conciseDiff("src/foo.ts", "old\n", "new\n");
+  const target = await createTestRenderer({ width: 60, height: 24 });
+  const events = Stream.fromIterable([
+    wrap({
+      _tag: "tool.start" as const,
+      session: "native",
+      sequence: 1,
+      turn: "t1",
+      call: "c1",
+      tool: "edit",
+      input: { path: "src/foo.ts" },
+    }),
+    wrap({
+      _tag: "tool.result" as const,
+      session: "native",
+      sequence: 2,
+      turn: "t1",
+      call: "c1",
+      output: `Successfully replaced 1 block(s) in src/foo.ts.\n\n${diff}`,
+      isError: false,
+    }),
+  ]);
+  await render(
+    () => <Transcript sessionId="native" frames={() => events} sync={() => {}} width={60} />,
+    target.renderer,
+  );
+  await target.renderOnce();
+  await Bun.sleep(10);
+  const frame = target.captureCharFrame();
+  expect(frame).toContain("edit src/foo.ts");
+  expect(frame).toContain("foo.ts");
+  expect(frame).not.toContain("tool> edit");
+  // Prose summary stays out of the chat body — diffs only.
+  expect(frame).not.toContain("Successfully replaced");
   target.renderer.destroy();
 });

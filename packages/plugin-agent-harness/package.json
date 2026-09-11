@@ -19,14 +19,16 @@
   },
   "dependencies": {
     "@danielfgray/amux-agent-awareness": "workspace:*",
+    "@danielfgray/amux-highlight": "workspace:*",
+    "@danielfgray/amux-plugin-completion": "workspace:*",
+    "@danielfgray/amux-plugin-lsp": "workspace:*",
     "@effect/ai-anthropic": "catalog:",
     "@effect/ai-openai": "catalog:",
     "@effect/platform-bun": "catalog:",
     "@opentui/core": "catalog:",
     "@opentui/solid": "catalog:",
     "effect": "catalog:",
-    "solid-js": "catalog:",
-    "@danielfgray/amux-highlight": "workspace:*"
+    "solid-js": "catalog:"
   },
   "devDependencies": {
     "@danielfgray/amux": "workspace:*",

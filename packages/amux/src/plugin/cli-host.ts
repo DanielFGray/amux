@@ -8,6 +8,11 @@ import { createPluginHost, type RefusedPlugin } from "./host.ts";
 import { loadCliPluginsFromConfig } from "./loader.ts";
 import { definePlugin } from "./types.ts";
 import { CliCommandsTag, scopedRegistry, type CliCommandRegistration } from "./services.ts";
+import {
+  ForeignHarnessAdaptersTag,
+  ForeignHarnessAdapterTable,
+  makeForeignHarnessAdapters,
+} from "../foreign-harness.ts";
 
 export interface CliCommandFound {
   readonly code: number;
@@ -34,27 +39,36 @@ export const dispatchCliCommand = (
   argv: readonly string[],
 ): Promise<CliCommandFound | CliCommandMissing> =>
   Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const config = yield* loadConfig();
-        const contributions = createPluginContributions();
-        const table = contributions.table<CliCommandRegistration>();
-        const cliCommands = scopedRegistry(
-          { all: table.all },
-          (owner, registration: CliCommandRegistration) =>
-            table.add(owner, registration.name, registration),
-        );
-        const host = yield* createPluginHost({ contributions });
-        const { refused } = yield* loadCliPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
-          definePlugin({
-            id: "amux.registry.cli-commands",
-            provide: [CliCommandsTag],
-            effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
-          }),
-        ]);
-        const match = table.all().find((entry) => entry.value.name === name);
-        if (!match) return { refused };
-        return { code: yield* match.value.handler(argv) };
-      }),
-    ).pipe(Effect.provide(BunFileSystem.layer)),
+    Effect.gen(function* () {
+      const config = yield* loadConfig();
+      const contributions = createPluginContributions();
+      const table = contributions.table<CliCommandRegistration>();
+      const cliCommands = scopedRegistry(
+        { all: table.all },
+        (owner, registration: CliCommandRegistration) =>
+          table.add(owner, registration.name, registration),
+      );
+      const harnessAdapters = new ForeignHarnessAdapterTable();
+      const foreignHarnessAdapters = makeForeignHarnessAdapters(
+        harnessAdapters,
+        (_owner, adapter) => harnessAdapters.register(adapter),
+      );
+      const host = yield* createPluginHost({ contributions });
+      const { refused } = yield* loadCliPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
+        definePlugin({
+          id: "amux.registry.cli-commands",
+          provide: [CliCommandsTag],
+          effect: (ctx) => Effect.sync(() => void ctx.provide(CliCommandsTag, cliCommands)),
+        }),
+        definePlugin({
+          id: "amux.registry.foreign-harness-adapters",
+          provide: [ForeignHarnessAdaptersTag],
+          effect: (ctx) =>
+            Effect.sync(() => void ctx.provide(ForeignHarnessAdaptersTag, foreignHarnessAdapters)),
+        }),
+      ]);
+      const match = table.all().find((entry) => entry.value.name === name);
+      if (!match) return { refused };
+      return { code: yield* match.value.handler(argv) };
+    }).pipe(Effect.scoped, Effect.provide(BunFileSystem.layer)),
   );

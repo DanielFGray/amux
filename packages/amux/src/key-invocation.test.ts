@@ -32,10 +32,17 @@ test("a leading zero starts a count when the context has not bound it", () => {
   expect(acc.digits()).toBe("0");
 });
 
+test("a leading digit that is bound here is the binding, not a count start", () => {
+  const acc = createCountAccumulator();
+  // Mux `^a 1` window-select: "1" is bound under the prefix, so it must not
+  // start a count. Same rule as leading zero-as-motion.
+  expect(acc.offer(key("1"), boundHere(["1"]))).toBe(false);
+  expect(acc.digits()).toBe("");
+});
+
 test("once a count is under way, zero extends it even where the digit is bound", () => {
   const acc = createCountAccumulator();
   expect(acc.offer(key("1"), boundHere(["0"]))).toBe(true);
-  // "10" — the bound-elsewhere check only applies to a leading zero.
   expect(acc.offer(key("0"), boundHere(["0"]))).toBe(true);
   expect(acc.digits()).toBe("10");
   expect(acc.count()).toBe(10);

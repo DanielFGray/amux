@@ -6,6 +6,7 @@ import type { LanguageModel } from "effect/unstable/ai";
 import { Credential } from "./credential.ts";
 import { EventBus } from "@danielfgray/amux/effect/EventBus.ts";
 import * as ModelCatalog from "./model-catalog.ts";
+import { clampThinkingBudget, clampThinkingLevel } from "./model-catalog.ts";
 import { integrations, type Connection, type Integration } from "./integration/index.ts";
 
 export type { Connection, Integration } from "./integration/index.ts";
@@ -26,6 +27,8 @@ export interface Interface {
   readonly model: (
     integrationID: string,
     model: string,
+    thinking?: string,
+    thinkingBudget?: number,
   ) => Effect.Effect<Layer.Layer<LanguageModel.LanguageModel, never, never> | undefined>;
 }
 
@@ -137,7 +140,7 @@ export const makeLayer = (
             const integration = find(credential.integrationID);
             return integration ? yield* refresh(integration, credential) : undefined;
           }),
-        model: (integrationID, model) =>
+        model: (integrationID, model, thinking, thinkingBudget) =>
           Effect.gen(function* () {
             const integration = find(integrationID);
             if (!integration) return undefined;
@@ -166,14 +169,24 @@ export const makeLayer = (
             const entry = yield* catalog.model(integrationID, model);
             const apiUrl = entry?.provider?.api ?? provider?.api;
             const npm = entry?.provider?.npm ?? provider?.npm;
-            const request = {
+            const clamped =
+              entry === undefined || thinking === undefined
+                ? undefined
+                : clampThinkingLevel(entry, thinking);
+            const clampedBudget =
+              entry === undefined || thinkingBudget === undefined
+                ? undefined
+                : clampThinkingBudget(entry, thinkingBudget);
+            const transformClient = (client: HttpClient.HttpClient) =>
+              HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient;
+            return integration.model({
               model,
-              transformClient: (client: HttpClient.HttpClient) =>
-                HttpClient.mapRequestEffect(client, authorize as never) as HttpClient.HttpClient,
+              transformClient,
               apiUrl,
               npm,
-            };
-            return integration.model(request);
+              thinking: clamped,
+              thinkingBudget: clampedBudget,
+            });
           }),
       } satisfies Interface;
     }),

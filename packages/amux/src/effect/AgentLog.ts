@@ -80,10 +80,10 @@ export const AgentLogDefault = Layer.sync(AgentLog, memoryLog);
 /** Durable history for one daemon session's native agent panes. */
 export function makeAgentLog(
   root: string,
-): Effect.Effect<AgentLogService, never, FileSystem.FileSystem> {
+): Effect.Effect<AgentLogService, never, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path.pipe(Effect.provide(Path.layer));
+    const path = yield* Path.Path;
     const entries = new Map<string, Entry[]>();
     const feeds = new Map<string, PubSub.PubSub<AgentEvent>>();
     const feed = Effect.fnUntraced(function* (session: string) {

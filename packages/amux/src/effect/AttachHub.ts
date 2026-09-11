@@ -50,7 +50,7 @@ export class AttachHub extends Context.Service<AttachHub>()("AttachHub", {
           deferred: QueuedFrame[];
           deferredBytes: number;
           replayWatermarks: Map<string, number>;
-          onOverflow?: () => void;
+          onOverflow?: (reason: string) => void;
         }
       >
     >(new Map());
@@ -58,10 +58,16 @@ export class AttachHub extends Context.Service<AttachHub>()("AttachHub", {
     const subscribe = (
       client: string,
       connection = "",
-      onOverflow?: () => void,
+      onOverflow?: (reason: string) => void,
     ): Effect.Effect<AttachSubscription, AttachHubError, Scope.Scope> =>
       Effect.gen(function* () {
-        const queue = yield* Queue.bounded<QueuedFrame>(256);
+        // Unbounded by frame count deliberately: `pendingBytes`/`MAX_PENDING_BYTES`
+        // is the real backpressure signal below. A fixed slot count (256) is
+        // stricter than that byte budget and evicts a freshly (re)attached
+        // client mid-replay — a resumed agent's history alone is routinely
+        // more than 256 small frames — well before it is anywhere near the
+        // byte cap that was supposed to be the actual limit.
+        const queue = yield* Queue.unbounded<QueuedFrame>();
         const replayLock = yield* Semaphore.make(1);
         const registered = yield* Ref.modify(clients, (current) => {
           if (current.has(client)) {
@@ -116,7 +122,8 @@ export class AttachHub extends Context.Service<AttachHub>()("AttachHub", {
 
     const evict = (
       client: string,
-      target: { queue: Queue.Queue<QueuedFrame>; onOverflow?: () => void },
+      target: { queue: Queue.Queue<QueuedFrame>; onOverflow?: (reason: string) => void },
+      reason: string,
     ): Effect.Effect<void> =>
       Queue.shutdown(target.queue).pipe(
         Effect.andThen(
@@ -126,7 +133,7 @@ export class AttachHub extends Context.Service<AttachHub>()("AttachHub", {
             return next;
           }),
         ),
-        Effect.tap(() => Effect.sync(() => target.onOverflow?.())),
+        Effect.tap(() => Effect.sync(() => target.onOverflow?.(reason))),
       );
 
     const publish = Effect.fnUntraced(function* (frame: AttachFrame) {
@@ -148,7 +155,17 @@ export class AttachHub extends Context.Service<AttachHub>()("AttachHub", {
           target.pendingBytes += size;
           continue;
         }
-        yield* evict(client, target);
+        // A client this far behind cannot be caught up incrementally, so the
+        // eviction reason names the pressure that tripped it — pending byte
+        // cap or the bounded queue itself — rather than leaving the client to
+        // guess from a bare socket close.
+        yield* evict(
+          client,
+          target,
+          target.pendingBytes + size > MAX_PENDING_BYTES
+            ? `attach queue exceeded ${MAX_PENDING_BYTES} pending bytes`
+            : "attach queue is full",
+        );
       }
     });
 
@@ -179,7 +196,7 @@ export class AttachHub extends Context.Service<AttachHub>()("AttachHub", {
         target.pendingBytes + size > MAX_PENDING_BYTES ||
         !Queue.offerUnsafe(target.queue, item)
       ) {
-        yield* evict(client, target);
+        yield* evict(client, target, `attach queue exceeded ${MAX_PENDING_BYTES} pending bytes`);
       } else target.pendingBytes += size;
     });
 
@@ -214,7 +231,7 @@ export class AttachHub extends Context.Service<AttachHub>()("AttachHub", {
         target.pendingBytes + size > MAX_PENDING_BYTES ||
         !frames.every((item) => Queue.offerUnsafe(target.queue, item))
       ) {
-        yield* evict(client, target);
+        yield* evict(client, target, `attach queue exceeded ${MAX_PENDING_BYTES} pending bytes`);
       } else target.pendingBytes += size;
       yield* target.replayLock.release(1);
     });

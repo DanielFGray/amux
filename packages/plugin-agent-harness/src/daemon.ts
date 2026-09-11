@@ -1,6 +1,11 @@
-import { Effect, Layer, Schema as S } from "effect";
+import { Effect, Layer, Option, Schema as S } from "effect";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
-import { identifyAgent, readHarnessLog } from "@danielfgray/amux-agent-awareness";
+import {
+  configHome,
+  identifyAgent,
+  loadRegistry,
+  readHarnessLog,
+} from "@danielfgray/amux-agent-awareness";
 import {
   DaemonCommandsTag,
   CommandError,
@@ -28,6 +33,7 @@ interface PromptOptionsDraft {
   id?: string;
   delivery?: "steer" | "queue";
   resume?: boolean;
+  replace?: string;
 }
 
 // A session named here has an initial prompt to deliver once its backend
@@ -42,6 +48,12 @@ const agentNew = {
   fields: {
     provider: S.optionalKey(S.String),
     prompt: S.optionalKey(S.String),
+    // Replace the calling pane instead of splitting a sibling. Default stays
+    // split so agent scripting keeps the "sibling" meaning in skill.md.
+    here: S.optionalKey(S.Boolean),
+    /** Resume this prior agent id: recreate it in the workspace so its
+     *  conversation + AgentLog (UI transcript) both come back. */
+    resumeFrom: S.optionalKey(S.String),
   },
   meta: agentPluginMeta("start a coding agent", "workspace", "agent"),
   reduce: (draft, command) => {
@@ -52,9 +64,22 @@ const agentNew = {
     // choice callers outside the palette (the CLI, an agent script) have any
     // way to make correctly, since providers are a client-local registry.
     const provider = typeof command.provider === "string" ? command.provider : "native";
-    const agent = draft.addSession(target.window, target.space.dir, { provider });
+    const resumeFrom =
+      typeof command.resumeFrom === "string" && command.resumeFrom.length > 0
+        ? command.resumeFrom
+        : undefined;
+    // Same id → same AgentLog + project-store conversation. Copying onto a
+    // fresh id left the chat pane blank (transcript is the durable log).
+    if (resumeFrom !== undefined && draft.findSession(resumeFrom)) {
+      return;
+    }
+    const agent = draft.addSession(target.window, target.space.dir, {
+      provider,
+      ...(resumeFrom !== undefined ? { id: resumeFrom } : {}),
+    });
     if (typeof command.prompt === "string") pendingPrompts.set(agent.id, command.prompt);
-    const pane = draft.placeSessionPane(target, agent);
+    const mode = command.here === true ? "replace" : "split";
+    const pane = draft.placeSessionPane(target, agent, { mode });
     draft.setResult({ session: agent.id, pane });
   },
   onSessionLive: (session, sessionOps) => {
@@ -75,6 +100,7 @@ const agentPrompt = {
     id: S.optionalKey(S.String),
     delivery: S.optionalKey(S.Literals(["steer", "queue"])),
     resume: S.optionalKey(S.Boolean),
+    replace: S.optionalKey(S.String),
     wait: S.optionalKey(S.Boolean),
     until: S.optionalKey(ProcessStateSchema),
     timeout: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
@@ -88,6 +114,7 @@ const agentPrompt = {
     if (command.delivery === "steer" || command.delivery === "queue")
       options.delivery = command.delivery;
     if (typeof command.resume === "boolean") options.resume = command.resume;
+    if (typeof command.replace === "string") options.replace = command.replace;
     return context.prompt(command.target, command.text, options);
   },
 } satisfies DaemonCommandRegistration;
@@ -128,6 +155,43 @@ const agentInterrupt = {
           action.reason === undefined
             ? { _tag: "agent.interrupt" }
             : { _tag: "agent.interrupt", reason: action.reason },
+        ),
+    },
+  ],
+} satisfies DaemonCommandRegistration;
+
+const agentCompact = {
+  tag: "agent.compact",
+  fields: {
+    ...sessionTarget,
+    instructions: S.optionalKey(S.String),
+  },
+  meta: agentPluginMeta(
+    "compact the native agent conversation to free context",
+    "workspace",
+    "human",
+  ),
+  reduce: (draft, command) => {
+    if (typeof command.target !== "string") return;
+    if (typeof command.instructions === "string") {
+      draft.pushAction({
+        _tag: "agent.compact",
+        agent: command.target,
+        instructions: command.instructions,
+      });
+    } else {
+      draft.pushAction({ _tag: "agent.compact", agent: command.target });
+    }
+  },
+  actions: [
+    {
+      tag: "agent.compact",
+      execute: (action, sessionOps) =>
+        sessionOps.message(
+          action.agent as string,
+          action.instructions === undefined
+            ? { _tag: "agent.compact" }
+            : { _tag: "agent.compact", instructions: action.instructions as string },
         ),
     },
   ],
@@ -222,9 +286,24 @@ const agentLogs = {
     // provider name and this cwd. Only a pty session's declaredAgent (set by
     // detecting its actual argv) names a process this reader can trust.
     if (found.session.kind === "component") return Effect.succeed([]);
-    const harness = found.session.declaredAgent ?? identifyAgent(found.session.cmd ?? []);
-    return readHarnessLog(harness ?? undefined, found.session.cwd, lines).pipe(
+    return configHome.pipe(
+      Effect.orDie,
+      Effect.flatMap(loadRegistry),
       Effect.provide(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.layer))),
+      Effect.flatMap((registry) =>
+        Option.match(
+          Option.orElse(Option.fromNullishOr(found.session.declaredAgent), () =>
+            identifyAgent(registry, found.session.cmd ?? []),
+          ),
+          {
+            onNone: () => Effect.succeed([]),
+            onSome: (harness) =>
+              readHarnessLog(harness, found.session.cwd, lines).pipe(
+                Effect.provide(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.layer))),
+              ),
+          },
+        ),
+      ),
     );
   },
 } satisfies DaemonCommandRegistration;
@@ -234,6 +313,7 @@ export const agentHarnessDaemonCommands: readonly DaemonCommandRegistration[] = 
   agentPrompt,
   agentWatch,
   agentInterrupt,
+  agentCompact,
   agentPermission,
   agentList,
   agentGet,

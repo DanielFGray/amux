@@ -8,7 +8,7 @@ import { SESSION_STATE_TOPIC, type AttachFrame } from "./AttachProtocol.ts";
 import { AgentLog, AgentLogDefault, makeAgentLog } from "./AgentLog.ts";
 import { ProcessState } from "../process-state.ts";
 import { SessionSupervisor } from "./SessionSupervisor.ts";
-import { BunFileSystem } from "@effect/platform-bun";
+import { BunFileSystem, BunPath } from "@effect/platform-bun";
 
 /**
  * Frames up to and including the session's exit.
@@ -186,7 +186,7 @@ testEffect("a file-backed agent log survives rebuilding the supervisor", () =>
     expect(yield* log.read("persisted-agent")).toHaveLength(1);
     const rebuilt = yield* makeAgentLog(root);
     expect(yield* rebuilt.read("persisted-agent")).toHaveLength(1);
-  }).pipe(Effect.provide(BunFileSystem.layer)),
+  }).pipe(Effect.provide(Layer.merge(BunFileSystem.layer, BunPath.layer))),
 );
 
 testEffect("sync replays a pending component transcript before respawn", () =>

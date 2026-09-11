@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@danielfgray/amux-agent-facts": "workspace:*",
+    "@effect/platform-bun": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {

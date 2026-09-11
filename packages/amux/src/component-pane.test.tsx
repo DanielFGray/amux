@@ -8,7 +8,13 @@ import { createSessionViews } from "./plugin/session-views.tsx";
 import { testContributor } from "./plugin/test-contributor.ts";
 import { TerminalPane, type Pane } from "./pane.ts";
 import { makeLayout, type PaneContent, type Layout } from "./layout.ts";
-import { project, snapshotOf, type Scene, type ProjectOptions, type SessionSpec } from "./harness.ts";
+import {
+  project,
+  snapshotOf,
+  type Scene,
+  type ProjectOptions,
+  type SessionSpec,
+} from "./harness.ts";
 import { projectWorkspace } from "./space.ts";
 import { testEffect } from "./test-effect.ts";
 import type { KeyEvent } from "@opentui/core";
@@ -77,18 +83,22 @@ function workspace(
 
 live("a component session gets a component leaf and a pty session gets a terminal one", () =>
   Effect.gen(function* () {
-    const scene = yield* workspace(label, makeLayout({
-      root: {
-        type: "split",
-        direction: "row",
-        weight: 1,
-        children: [
-          { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
-          { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
-        ],
-      },
-      focus: "shell-pane",
-    }), { shell: {} });
+    const scene = yield* workspace(
+      label,
+      makeLayout({
+        root: {
+          type: "split",
+          direction: "row",
+          weight: 1,
+          children: [
+            { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
+            { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
+          ],
+        },
+        focus: "shell-pane",
+      }),
+      { shell: {} },
+    );
 
     expect(scene.window.panes.find((p) => p.id === "chat-pane")).toBeInstanceOf(ComponentPane);
     expect(scene.window.panes.find((p) => p.id === "shell-pane")).toBeInstanceOf(TerminalPane);
@@ -121,18 +131,26 @@ live("a workspace that registered no view draws the frame and nothing in it", ()
 
 live("a sessionless plugin pane mounts the registered view from its descriptor", () =>
   Effect.gen(function* () {
-    const scene = yield* workspace((props) => (
-      <text>
-        session:{props.sessionId}|file:{JSON.stringify(props.descriptor)}
-      </text>
-    ), makeLayout({
-      root: { type: "pane", id: "editor-pane", content: {
-          kind: "plugin",
-          type: "amux.editor",
-          descriptor: { file: "/note.txt" },
-        }, weight: 1 },
-      focus: "editor-pane",
-    }));
+    const scene = yield* workspace(
+      (props) => (
+        <text>
+          session:{props.sessionId}|file:{JSON.stringify(props.descriptor)}
+        </text>
+      ),
+      makeLayout({
+        root: {
+          type: "pane",
+          id: "editor-pane",
+          content: {
+            kind: "plugin",
+            type: "amux.editor",
+            descriptor: { file: "/note.txt" },
+          },
+          weight: 1,
+        },
+        focus: "editor-pane",
+      }),
+    );
 
     const pane = scene.window.panes.find((candidate) => candidate.id === "editor-pane")!;
     // A backend-less view: a component leaf, owning no session to resize or write
@@ -232,18 +250,22 @@ live("a component leaf tiles as the exact rectangle the layout model says", () =
 
 live("a component leaf splits, focuses and closes like any other pane", () =>
   Effect.gen(function* () {
-    const scene = yield* workspace(label, makeLayout({
-      root: {
-        type: "split",
-        direction: "row",
-        weight: 1,
-        children: [
-          { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
-          { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
-        ],
-      },
-      focus: "shell-pane",
-    }), { shell: {} });
+    const scene = yield* workspace(
+      label,
+      makeLayout({
+        root: {
+          type: "split",
+          direction: "row",
+          weight: 1,
+          children: [
+            { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
+            { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
+          ],
+        },
+        focus: "shell-pane",
+      }),
+      { shell: {} },
+    );
     yield* draw(scene);
 
     const chatPane = scene.window.panes.find((p) => p.id === "chat-pane")!;
@@ -265,18 +287,22 @@ live("a component leaf splits, focuses and closes like any other pane", () =>
 
 live("a component leaf survives a rebuild rather than being remounted", () =>
   Effect.gen(function* () {
-    const scene = yield* workspace(label, makeLayout({
-      root: {
-        type: "split",
-        direction: "row",
-        weight: 1,
-        children: [
-          { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
-          { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
-        ],
-      },
-      focus: "chat-pane",
-    }), { shell: {} });
+    const scene = yield* workspace(
+      label,
+      makeLayout({
+        root: {
+          type: "split",
+          direction: "row",
+          weight: 1,
+          children: [
+            { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
+            { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
+          ],
+        },
+        focus: "chat-pane",
+      }),
+      { shell: {} },
+    );
     yield* draw(scene);
 
     const chatPane = scene.window.panes.find((p) => p.id === "chat-pane")!;
@@ -313,6 +339,58 @@ live("a component leaf survives a rebuild rather than being remounted", () =>
   }),
 );
 
+live("replacing a leaf's content kind remounts that pane rather than reclaiming by id", () =>
+  Effect.gen(function* () {
+    // editor.open / agent.new keep the calling pane id and only swap
+    // PaneContent. The projection must not keep a TerminalPane for plugin
+    // content (or the reverse): same id, wrong kind is a remount.
+    const scene = yield* workspace(
+      label,
+      makeLayout({
+        root: { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
+        focus: "shell-pane",
+      }),
+      { shell: {} },
+    );
+    yield* draw(scene);
+
+    const shellPane = scene.window.panes.find((p) => p.id === "shell-pane")!;
+    expect(shellPane).toBeInstanceOf(TerminalPane);
+
+    yield* projectWorkspace(
+      scene.spaces,
+      snapshotOf(
+        makeLayout({
+          root: {
+            type: "pane",
+            id: "shell-pane",
+            content: {
+              kind: "plugin",
+              type: "native",
+              descriptor: {},
+              displaced: "shell",
+            },
+            weight: 1,
+          },
+          focus: "shell-pane",
+        }),
+        { shell: {} },
+        WIDTH,
+        HEIGHT,
+      ),
+      scene.backend,
+    );
+    yield* draw(scene);
+
+    const editorPane = scene.window.panes.find((p) => p.id === "shell-pane")!;
+    expect(editorPane).toBeInstanceOf(ComponentPane);
+    expect(editorPane).not.toBe(shellPane);
+    expect(shellPane.isDestroyed).toBe(true);
+    expect(editorPane.session).toBeNull();
+    expect(scene.t.captureCharFrame()).toContain("view:");
+  }),
+);
+
 live("closing a component leaf disposes its subtree", () =>
   Effect.gen(function* () {
     const scene = yield* workspace();
@@ -337,18 +415,22 @@ const inner = (pane: Pane) => pane.width - (pane.edges.left ? 1 : 0) - (pane.edg
 
 live("an unbound key is bytes to a terminal leaf and untouched by a component one", () =>
   Effect.gen(function* () {
-    const scene = yield* workspace(label, makeLayout({
-      root: {
-        type: "split",
-        direction: "row",
-        weight: 1,
-        children: [
-          { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
-          { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
-        ],
-      },
-      focus: "shell-pane",
-    }), { shell: {} });
+    const scene = yield* workspace(
+      label,
+      makeLayout({
+        root: {
+          type: "split",
+          direction: "row",
+          weight: 1,
+          children: [
+            { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
+            { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
+          ],
+        },
+        focus: "shell-pane",
+      }),
+      { shell: {} },
+    );
 
     const chatPane = scene.window.panes.find((p) => p.id === "chat-pane")!;
     const shellPane = scene.window.panes.find((p) => p.id === "shell-pane")!;
@@ -380,18 +462,22 @@ live("a registered captureKeys handler gets every key while its pane is focused"
       });
       return <text>editor</text>;
     };
-    const scene = yield* workspace(editor, makeLayout({
-      root: {
-        type: "split",
-        direction: "row",
-        weight: 1,
-        children: [
-          { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
-          { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
-        ],
-      },
-      focus: "shell-pane",
-    }), { shell: {} });
+    const scene = yield* workspace(
+      editor,
+      makeLayout({
+        root: {
+          type: "split",
+          direction: "row",
+          weight: 1,
+          children: [
+            { type: "pane", id: "chat-pane", content: pluginContent("chat"), weight: 1 },
+            { type: "pane", id: "shell-pane", content: ptyContent("shell"), weight: 1 },
+          ],
+        },
+        focus: "shell-pane",
+      }),
+      { shell: {} },
+    );
 
     const chatPane = scene.window.panes.find((p) => p.id === "chat-pane")!;
     const shellPane = scene.window.panes.find((p) => p.id === "shell-pane")!;

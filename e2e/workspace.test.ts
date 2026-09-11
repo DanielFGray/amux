@@ -80,7 +80,7 @@ test(
     );
     expect(app.screen()).not.toContain("what should the agent do?");
     expect(await app.workspaceSummary()).toBe("1sp 1win 1ag");
-    // The error banner no longer auto-hides (a message worth reading is worth
+    // The error snack no longer auto-hides (a message worth reading is worth
     // copying); dismiss it explicitly so it doesn't cover the sidebar footer
     // the steps below assert against.
     app.send("\x1b");

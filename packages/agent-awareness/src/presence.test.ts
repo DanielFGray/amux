@@ -3,6 +3,9 @@ import { ProcessState, type SessionFact } from "@danielfgray/amux";
 import type { AttachFrame } from "@danielfgray/amux/protocol";
 import { hookAgentFromFrame, resolvePresence } from "./presence.ts";
 import { AGENT_AWARENESS_IDENTITY_TOPIC } from "./identity-state.ts";
+import { bundledRegistry } from "@danielfgray/amux-agent-facts/manifests.ts";
+
+const registry = bundledRegistry();
 
 function fact(overrides: Partial<SessionFact> = {}): SessionFact {
   return {
@@ -23,6 +26,7 @@ function fact(overrides: Partial<SessionFact> = {}): SessionFact {
 
 test("a declared agent wins identity, but state still reads the arbiter's own resolution", () => {
   const presence = resolvePresence(
+    registry,
     "s1",
     fact({ declaredAgent: "claude", processState: ProcessState.Running }),
     "native",
@@ -37,6 +41,7 @@ test("a declared agent wins identity, but state still reads the arbiter's own re
 
 test("with no declared agent, a hook's identity claim outranks the manifest heuristic", () => {
   const presence = resolvePresence(
+    registry,
     "s1",
     fact({ command: ["claude"], processState: ProcessState.Blocked }),
     "native",
@@ -52,6 +57,7 @@ test("with no declared agent, a hook's identity claim outranks the manifest heur
 
 test("with neither declared agent nor hook, a manifest rule match wins identity", () => {
   const presence = resolvePresence(
+    registry,
     "s1",
     fact({
       command: ["claude"],
@@ -70,7 +76,7 @@ test("with neither declared agent nor hook, a manifest rule match wins identity"
 });
 
 test("nothing resolves to an unknown, evidence-free presence", () => {
-  const presence = resolvePresence("s1", fact(), undefined);
+  const presence = resolvePresence(registry, "s1", fact(), undefined);
   expect(presence).toEqual({
     session: "s1",
     agent: null,

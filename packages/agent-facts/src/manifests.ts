@@ -58,15 +58,12 @@
  * `evaluateAgent`/`evaluateAdapter` calls in `detector.test.ts` — feed it a
  * region string directly and assert on the returned `state`/`rule`.
  *
- * A plugin's `effect` cannot require `FileSystem.FileSystem` (see the doc
- * comment on `loadLocalOverrides` below), so manifest loading is plain
- * synchronous Node I/O at module scope, not an Effect service.
+ * The owning plugin provides the filesystem and path services when it starts
+ * this registry. No manifest is read during module initialization.
  */
-// @effect-diagnostics-next-line nodeBuiltinImport:off
-import path from "node:path";
-// @effect-diagnostics-next-line nodeBuiltinImport:off
-import { readdirSync, readFileSync } from "node:fs";
-import { Config, Effect, Schema as S } from "effect";
+import { Config, Context, Effect, Layer, Option, Schema as S } from "effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import bundledData from "./manifests.json" with { type: "json" };
 
 export const MANIFEST_ENGINE_VERSION = 1;
@@ -113,11 +110,16 @@ export interface AgentManifest extends Adapter {
   readonly executables: readonly string[];
 }
 
-export interface AgentManifestRegistry {
-  readonly identifyAgent: (command: string | readonly string[]) => string | null;
+export interface AgentManifestRegistryService {
+  readonly identifyAgent: (command: string | readonly string[]) => Option.Option<string>;
   readonly adapterFor: (agent: string) => Adapter;
   readonly manifests: readonly AgentManifest[];
 }
+
+export class AgentManifestRegistry extends Context.Service<
+  AgentManifestRegistry,
+  AgentManifestRegistryService
+>()("amux.agent-facts/ManifestRegistry") {}
 
 interface RegexPatternData {
   readonly pattern: string;
@@ -259,36 +261,34 @@ function decodeBundled(): readonly AgentManifest[] {
 /** `${XDG_CONFIG_HOME:-~/.config}/amux/agent-detection/<id>.json` replaces a
  *  bundled manifest wholesale when its filename matches the manifest's own
  *  `id`; anything unreadable or mismatched is skipped rather than failing
- *  plugin load. Read synchronously at module load, once: a plugin's `effect`
- *  can only require services declared in `plugin/services.ts`, and
- *  `FileSystem.FileSystem` is not one of them, so there is no Effect-service
- *  path available to a plugin for this read. */
-function loadLocalOverrides(configHome: string): readonly AgentManifest[] {
-  const directory = path.join(configHome, "amux", "agent-detection");
-  let names: readonly string[];
-  try {
-    names = readdirSync(directory);
-  } catch {
-    return [];
-  }
-  const overrides: AgentManifest[] = [];
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    try {
-      const text = readFileSync(path.join(directory, name), "utf8");
-      const parsed: unknown = JSON.parse(text);
-      const manifest = S.decodeUnknownOption(Manifest, { onExcessProperty: "error" })(parsed);
-      if (manifest._tag !== "Some") continue;
-      if (path.basename(name, ".json") !== manifest.value.id) continue;
-      overrides.push(toManifest(manifest.value));
-    } catch {
-      continue;
-    }
-  }
-  return overrides;
-}
+ *  plugin load. The directory is read through the caller-provided Effect
+ *  filesystem and path services. */
+const loadLocalOverrides = (
+  configHome: string,
+): Effect.Effect<readonly AgentManifest[], never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = path.join(configHome, "amux", "agent-detection");
+    const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => []));
+    const manifests = yield* Effect.forEach(
+      names.filter((name) => name.endsWith(".json")),
+      (name) =>
+        Effect.gen(function* () {
+          const text = yield* fs.readFileString(path.join(directory, name));
+          return Option.filter(
+            S.decodeOption(S.fromJsonString(Manifest), { onExcessProperty: "error" })(text),
+            (manifest) => path.basename(name, ".json") === manifest.id,
+          );
+        }).pipe(Effect.orElseSucceed(() => Option.none<typeof Manifest.Type>())),
+      { concurrency: "unbounded" },
+    );
+    return manifests.flatMap((manifest) =>
+      Option.match(manifest, { onNone: () => [], onSome: (value) => [toManifest(value)] }),
+    );
+  });
 
-function makeRegistry(manifests: readonly AgentManifest[]): AgentManifestRegistry {
+function makeRegistry(manifests: readonly AgentManifest[]): AgentManifestRegistryService {
   const fallback = manifests.find((manifest) => manifest.id === "default")!;
   const byName = new Map<string, AgentManifest>();
   const byExecutable = new Map<string, string>();
@@ -311,43 +311,45 @@ function makeRegistry(manifests: readonly AgentManifest[]): AgentManifestRegistr
 function identifyFromExecutables(
   executables: ReadonlyMap<string, string>,
   command: string | readonly string[],
-): string | null {
+): Option.Option<string> {
   const tokens =
     typeof command === "string" ? command.trim().split(/\s+/).filter(Boolean) : command;
-  const first = tokens[0];
-  if (!first) return null;
-  const base = executableName(first);
-  const direct = executables.get(base);
-  if (direct) return direct;
-  if (!INTERPRETERS.has(base) || !tokens[1]) return null;
-  return executables.get(executableName(tokens[1])) ?? null;
+  return Option.flatMap(Option.fromUndefinedOr(tokens[0]), (first) => {
+    const base = executableName(first);
+    return Option.orElse(Option.fromUndefinedOr(executables.get(base)), () =>
+      !INTERPRETERS.has(base)
+        ? Option.none()
+        : Option.flatMap(Option.fromUndefinedOr(tokens[1]), (interpreterTarget) =>
+            Option.fromUndefinedOr(executables.get(executableName(interpreterTarget))),
+          ),
+    );
+  });
 }
 
-function loadRegistry(configHome: string): AgentManifestRegistry {
-  const bundled = decodeBundled();
-  const overrides = new Map(bundled.map((manifest) => [manifest.id, manifest]));
-  for (const manifest of loadLocalOverrides(configHome)) overrides.set(manifest.id, manifest);
-  return makeRegistry([...overrides.values()]);
-}
+export const loadRegistry = (
+  configHome: string,
+): Effect.Effect<AgentManifestRegistryService, never, FileSystem.FileSystem | Path.Path> =>
+  Effect.gen(function* () {
+    const overrides = new Map(decodeBundled().map((manifest) => [manifest.id, manifest]));
+    for (const manifest of yield* loadLocalOverrides(configHome))
+      overrides.set(manifest.id, manifest);
+    return makeRegistry([...overrides.values()]);
+  });
 
-/** Loaded once at module import: bundled manifests plus whatever local
- *  overrides were present in XDG config at that moment. Every consumer
- *  shares this one instance rather than re-reading the filesystem per call.
- *
- *  The XDG resolution mirrors amux's own config dir rather than importing
- *  it: this package is a support library core and plugins both depend on,
- *  so it cannot import either of them back. */
-const FACTS_CONFIG_DIR = Effect.runSync(
-  Config.string("XDG_CONFIG_HOME").pipe(
-    Config.orElse(() =>
-      Config.string("HOME").pipe(Config.map((home) => path.join(home, ".config"))),
-    ),
-    Config.withDefault(path.join(".", ".config")),
-  ),
+export const bundledRegistry = (): AgentManifestRegistryService => makeRegistry(decodeBundled());
+
+export const layer = (
+  configHome: string,
+): Layer.Layer<AgentManifestRegistry, never, FileSystem.FileSystem | Path.Path> =>
+  Layer.effect(AgentManifestRegistry, loadRegistry(configHome));
+
+export const configHome = Config.string("XDG_CONFIG_HOME").pipe(
+  Config.orElse(() => Config.string("HOME").pipe(Config.map((home) => `${home}/.config`))),
+  Config.withDefault(".config"),
 );
-export const AgentManifests: AgentManifestRegistry = loadRegistry(FACTS_CONFIG_DIR);
+
+/** The registry is loaded by the owning plugin layer, never during import. */
 
 /** Exposed for tests, which need a registry built against a temp XDG dir
  *  rather than the process's real one. */
-export const buildRegistry = (configHome: string): AgentManifestRegistry =>
-  loadRegistry(configHome);
+export const buildRegistry = loadRegistry;

@@ -84,6 +84,7 @@ testEffect("a source that will not import leaves the running version alone", () 
     const failure = yield* Effect.result(world.reloader.reload("broken"));
 
     expect(failure._tag).toBe("Failure");
+    expect(failure._tag === "Failure" && failure.failure).toContain("import:");
     expect(world.activations()).toEqual(["1"]);
     expect(pluginStatuses(world.host).map((status) => status.id)).toEqual(["broken"]);
   }),
@@ -138,9 +139,7 @@ testEffect("a failed candidate never becomes visible", () =>
     release();
     const failure = yield* Effect.result(Fiber.join(reloading));
 
-    expect(failure._tag === "Failure" && failure.failure).toContain(
-      "kept the version that was running",
-    );
+    expect(failure._tag === "Failure" && failure.failure).toContain("activate:");
     // The version that worked stayed running while the candidate was closed.
     expect(world.activations()).toEqual(["1", "candidate registered"]);
     expect(world.panelVisible()).toBe(true);
@@ -155,6 +154,54 @@ testEffect("a plugin amux cannot see is not reloadable", () =>
     expect(world.reloader.reloadable()).toEqual(["named"]);
     const failure = yield* Effect.result(world.reloader.reload("someone-else"));
     expect(failure._tag === "Failure" && failure.failure).toContain("no reloadable plugin");
+  }),
+);
+
+testEffect("three render faults roll a probationary generation back as one replacement", () =>
+  Effect.gen(function* () {
+    const world = yield* start("rollback", version("rollback", 1));
+    yield* Effect.promise(() => writeFile(world.entry, version("rollback", 2)));
+    yield* world.reloader.reload("rollback");
+    const generation = world.host.generation("rollback");
+    if (generation === undefined) return yield* Effect.die("missing active generation");
+
+    for (const timestamp of [1_000, 1_500, 2_000])
+      yield* world.reloader.observeError({
+        pluginId: "rollback",
+        generation,
+        phase: "render",
+        source: "plugin",
+        error: new Error("render failed"),
+        timestamp,
+      });
+
+    expect(world.activations()).toEqual(["1", "2", "1"]);
+    const blocked = yield* Effect.result(world.reloader.reload("rollback"));
+    expect(blocked._tag === "Failure" && blocked.failure).toContain("quarantined");
+    yield* world.reloader.reload("rollback", { disk: true });
+    expect(world.activations()).toEqual(["1", "2", "1", "2"]);
+  }),
+);
+
+testEffect("a render error from a retired generation cannot roll back the current plugin", () =>
+  Effect.gen(function* () {
+    const world = yield* start("stale-render", version("stale-render", 1));
+    const retired = world.host.generation("stale-render");
+    yield* Effect.promise(() => writeFile(world.entry, version("stale-render", 2)));
+    yield* world.reloader.reload("stale-render");
+    if (retired === undefined) return yield* Effect.die("missing retired generation");
+
+    for (const timestamp of [1_000, 1_500, 2_000])
+      yield* world.reloader.observeError({
+        pluginId: "stale-render",
+        generation: retired,
+        phase: "render",
+        source: "plugin",
+        error: new Error("late render failure"),
+        timestamp,
+      });
+
+    expect(world.activations()).toEqual(["1", "2"]);
   }),
 );
 

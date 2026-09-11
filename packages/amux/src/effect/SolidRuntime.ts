@@ -38,6 +38,11 @@ export function scopedSignal<A>(
   return Effect.sync(() => createSignal(initial));
 }
 
+/** Empty context for Solid↔Effect bridge exits (`Scope.close` is `R = never`). */
+const bridgeRuntime = Effect.runSync(Effect.context<never>());
+const runBridgeFork = Effect.runForkWith(bridgeRuntime);
+const runBridgeSync = Effect.runSyncWith(bridgeRuntime);
+
 /**
  * Run `effect` in a freshly acquired Scope that closes on the calling
  * component's Solid cleanup. The one place in this module where an
@@ -47,8 +52,8 @@ export function scopedSignal<A>(
  */
 function runScoped<A>(effect: Effect.Effect<A, never, Scope.Scope>): A {
   const scope = Scope.makeUnsafe();
-  const result = Effect.runSync(Effect.provideService(effect, Scope.Scope, scope));
-  onCleanup(() => void Effect.runFork(Scope.close(scope, Exit.void)));
+  const result = runBridgeSync(Scope.provide(effect, scope));
+  onCleanup(() => void runBridgeFork(Scope.close(scope, Exit.void)));
   return result;
 }
 

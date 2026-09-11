@@ -22,10 +22,10 @@ function fakeDraft() {
   let added: LiveSession | undefined;
   const draft: WorkspaceDraft = {
     activeWindow: () => ({ window: {} as never, space: { dir: "/tmp" } as never }),
-    findSession: () => Effect.die("not used") as never,
+    findSession: () => null,
     addSession: (_target, dir, opts) => {
       added = {
-        id: "component-session",
+        id: opts?.id ?? "component-session",
         provider: opts?.provider,
         name: "test-agent",
         cwd: dir,
@@ -98,5 +98,17 @@ testEffect("agent.new's onSessionLive is a no-op for a session with no queued pr
 
     yield* agentNew.onSessionLive!(session, sessionOps);
     expect(calls).toEqual([]);
+  }),
+);
+
+testEffect("agent.new resumeFrom recreates the prior session id (keeps AgentLog)", () =>
+  Effect.gen(function* () {
+    const { draft, added } = fakeDraft();
+    agentNew.reduce!(
+      draft,
+      { _tag: "agent.new", provider: "native", here: true, resumeFrom: "agent-prior" },
+      context,
+    );
+    expect(added()?.id).toBe("agent-prior");
   }),
 );

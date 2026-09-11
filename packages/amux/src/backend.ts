@@ -18,6 +18,7 @@ import { Cause, Clock, Effect, Fiber, Match, Queue, Stream } from "effect";
 import type { AttachClientContract } from "./attach.ts";
 import { isProcessState, type ProcessState } from "./process-state.ts";
 import { SESSION_STATE_TOPIC } from "./effect/AttachProtocol.ts";
+import { defaultRootRuntime, type RootRuntimeContext } from "./env.ts";
 
 export interface SessionBackend {
   /** True once the stream is over: the process exited, or the attachment was
@@ -64,6 +65,8 @@ export interface BackendOptions {
   cwd?: string;
   cols: number;
   rows: number;
+  /** Workspace RootRuntime — governs Queue/Clock/fiber exits at this boundary. */
+  runtime?: RootRuntimeContext;
 }
 
 /**
@@ -97,6 +100,8 @@ export const SELF_REPORT_TTL_MS = 60_000;
 /** A PTY in this process — what every agent used before there was a choice. */
 export const localPty: SessionBackendFactory = (opts) => {
   const pty = spawnPty(opts.cmd, opts);
+  const runtime = opts.runtime ?? defaultRootRuntime();
+  const runPromise = Effect.runPromiseWith(runtime);
   return {
     get closed() {
       return pty.closed;
@@ -115,7 +120,7 @@ export const localPty: SessionBackendFactory = (opts) => {
       // live PTY failure must not disappear silently. Interruption during
       // close/kill is expected; all other failures are actionable diagnostics.
       void pty.write(data).catch((error) => {
-        if (!pty.closed) void Effect.runPromise(Effect.logError("local PTY write failed", error));
+        if (!pty.closed) void runPromise(Effect.logError("local PTY write failed", error));
       });
     },
     resize: (cols, rows) => pty.resize(cols, rows),
@@ -167,6 +172,9 @@ export function daemonBackend(
   live: ReadonlySet<string> = new Set(),
 ): SessionBackendFactory {
   return (opts) => {
+    const runtime = opts.runtime ?? defaultRootRuntime();
+    const runFork = Effect.runForkWith(runtime);
+    const runSync = Effect.runSyncWith(runtime);
     let closed = false;
     let detached = false;
     let exitCode: number | null = null;
@@ -196,16 +204,16 @@ export function daemonBackend(
      * without discarding the backlog. Bounded, so a UI that stalls cannot
      * grow this without limit — which the array it replaces could, and did.
      */
-    const output = Effect.runSync(Queue.make<Uint8Array, Cause.Done>({ capacity: OUTPUT_LIMIT }));
+    const output = runSync(Queue.make<Uint8Array, Cause.Done>({ capacity: OUTPUT_LIMIT }));
 
     const end = (code: number | null) => {
       if (closed) return;
       closed = true;
       exitCode = code;
-      Effect.runFork(Queue.end(output));
+      runFork(Queue.end(output));
     };
 
-    const streamFiber = Effect.runFork(
+    const streamFiber = runFork(
       Stream.runForEach(session.attach.stream(opts.id), (frame) =>
         Match.value(frame).pipe(
           Match.tag("output", (frame) => Queue.offer(output, frame.data)),
@@ -221,7 +229,7 @@ export function daemonBackend(
             Effect.sync(() => {
               if (frame.topic === SESSION_STATE_TOPIC && isProcessState(frame.payload)) {
                 processState = frame.payload;
-                processStateAt = Effect.runSync(Clock.currentTimeMillis);
+                processStateAt = runSync(Clock.currentTimeMillis);
               }
             }),
           ),
@@ -252,7 +260,7 @@ export function daemonBackend(
       // Restored component sessions are pending plans. The client resolves
       // their provider after plugins load and starts them through the daemon.
     } else {
-      Effect.runFork(
+      runFork(
         Queue.offer(
           output,
           new TextEncoder().encode(`\r\n[daemon] modeled session '${opts.id}' is not live\r\n`),
@@ -265,7 +273,7 @@ export function daemonBackend(
       if (closed) return;
       detached = true;
       end(null);
-      Effect.runFork(Fiber.interrupt(streamFiber));
+      runFork(Fiber.interrupt(streamFiber));
     };
 
     return {
@@ -299,8 +307,7 @@ export function daemonBackend(
       sessionId: () => foregroundSid,
       foregroundArgv: () => foregroundArgv,
       processState: () =>
-        processState !== null &&
-        Effect.runSync(Clock.currentTimeMillis) - processStateAt <= SELF_REPORT_TTL_MS
+        processState !== null && runSync(Clock.currentTimeMillis) - processStateAt <= SELF_REPORT_TTL_MS
           ? processState
           : null,
     };

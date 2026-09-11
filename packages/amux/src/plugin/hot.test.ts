@@ -1,9 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Effect, Path } from "effect";
+import * as Graph from "effect/Graph";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
-import { hotImport, pluginRoot } from "./hot.ts";
+import { hotImport, hotModuleClosure, importGraph, pluginRoot } from "./hot.ts";
+import { hotImportBatch } from "./hot.ts";
+import { createPluginHost } from "./host.ts";
+import { testPluginEnvironment } from "./test-environment.ts";
+import { createTestRenderer } from "@opentui/core/testing";
 import { dependencyService } from "./services.ts";
 import { testEffect } from "../test-effect.ts";
 
@@ -11,6 +16,9 @@ const testDir = fileURLToPath(new URL(".", import.meta.url));
 const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
 
 const temporary: string[] = [];
+declare global {
+  var AMUX_HOT_BATCH_VALUES: object[] | undefined;
+}
 afterEach(() => {
   const paths = temporary.splice(0);
   return Effect.runPromise(
@@ -26,6 +34,23 @@ test("a plugin's reloadable half is the directory named after its entry", () => 
   expect(pluginRoot(new URL("file:///a/b/agent-harness.tsx"))).toBe("/a/b/agent-harness/");
   expect(pluginRoot(new URL("file:///a/b/sidebar.ts"))).toBe("/a/b/sidebar/");
 });
+
+testEffect("an external plugin resolves the host's public API without node_modules", () =>
+  Effect.gen(function* () {
+    const dir = yield* scratch;
+    const entry = path.join(dir, "outside.ts");
+    yield* write(
+      entry,
+      `import { Effect } from "effect";
+       import { definePlugin } from "amux";
+       export default definePlugin({ id: "external-api", effect: () => Effect.void });`,
+    );
+
+    const source = pathToFileURL(entry);
+    expect((yield* hotImport(source)).id).toBe("external-api");
+    expect(hotModuleClosure([source]).map((module) => module.href)).toEqual([source.href]);
+  }),
+);
 
 testEffect("importing again picks up an edit inside the plugin's own directory", () =>
   Effect.gen(function* () {
@@ -75,6 +100,76 @@ testEffect("a module outside the plugin's directory is the same instance after a
 
     expect(first).not.toBe(second);
     expect(first.id).toBe(second.id);
+  }),
+);
+
+testEffect("one batch generation gives every consumer one fresh shared module instance", () =>
+  Effect.gen(function* () {
+    const dir = yield* scratch;
+    yield* write(path.join(dir, "shared.ts"), `export const value = {};`);
+    for (const id of ["one", "two"]) {
+      yield* write(
+        path.join(dir, `${id}/index.ts`),
+        `import { Effect } from "effect";
+         import { definePlugin } from "../../types.ts";
+         import { value } from "../shared.ts";
+         export default definePlugin({ id: "${id}", effect: () => Effect.sync(() => {
+           (globalThis.AMUX_HOT_BATCH_VALUES ??= []).push(value);
+         }) });`,
+      );
+    }
+    const renderer = yield* Effect.promise(() => createTestRenderer({ width: 80, height: 24 }));
+    yield* Effect.addFinalizer(() => Effect.sync(() => renderer.renderer.destroy()));
+    const host = yield* createPluginHost(testPluginEnvironment(renderer.renderer));
+    globalThis.AMUX_HOT_BATCH_VALUES = [];
+    const definitions = yield* hotImportBatch(
+      ["one", "two"].map((id) => pathToFileURL(path.join(dir, `${id}/index.ts`))),
+      [pathToFileURL(path.join(dir, "shared.ts"))],
+    );
+    yield* Effect.forEach(definitions, (definition) => host.add(definition));
+
+    expect(globalThis.AMUX_HOT_BATCH_VALUES).toHaveLength(2);
+    expect(globalThis.AMUX_HOT_BATCH_VALUES![0]).toBe(globalThis.AMUX_HOT_BATCH_VALUES![1]);
+  }),
+);
+
+testEffect("a changed shared workspace module identifies every dependent plugin", () =>
+  Effect.gen(function* () {
+    yield* hotImport(pathToFileURL(path.join(testDir, "../../../plugin-sidebar/src/index.tsx")));
+    const harnessDir = yield* FileSystem.FileSystem.pipe(
+      Effect.flatMap((fs) =>
+        fs.makeTempDirectory({
+          directory: path.join(testDir, "../../../plugin-agent-harness/src"),
+          prefix: ".test-hot-",
+        }),
+      ),
+      Effect.provide(BunFileSystem.layer),
+    );
+    temporary.push(harnessDir);
+    yield* write(
+      path.join(harnessDir, "index.ts"),
+      `import { Effect } from "effect";
+       import { AgentAwarenessTag } from "@danielfgray/amux-agent-awareness/presence.ts";
+       import { definePlugin } from "@danielfgray/amux";
+       export default definePlugin({ id: AgentAwarenessTag.key ? "harness" : "missing",
+         effect: () => Effect.void });`,
+    );
+    yield* hotImport(pathToFileURL(path.join(harnessDir, "index.ts")));
+
+    const snapshot = Graph.toSnapshot(importGraph());
+    const urls = new Map(snapshot.nodes.map(({ index, data }) => [index, data]));
+    const imports = (target: string) =>
+      snapshot.edges
+        .filter(({ target: edgeTarget }) => urls.get(edgeTarget) === target)
+        .map(({ source }) => urls.get(source));
+    const sidebar = pathToFileURL(path.join(testDir, "../../../plugin-sidebar/src/index.tsx")).href;
+    const harness = pathToFileURL(path.join(harnessDir, "index.ts")).href;
+
+    const changed = pathToFileURL(
+      path.join(testDir, "../../../agent-awareness/src/presence.ts"),
+    ).href;
+    expect(imports(changed)).toContain(sidebar);
+    expect(imports(changed)).toContain(harness);
   }),
 );
 

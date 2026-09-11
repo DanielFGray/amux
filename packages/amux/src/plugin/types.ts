@@ -151,6 +151,8 @@ export type PluginErrorPhase = "activate" | "deactivate" | "render";
 
 export interface PluginErrorEvent {
   readonly pluginId: string;
+  /** The exact run that failed; stale render callbacks cannot affect a newer run. */
+  readonly generation: number;
   readonly slot?: string;
   readonly phase: PluginErrorPhase;
   readonly source: "host" | "plugin";

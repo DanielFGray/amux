@@ -2,7 +2,7 @@
 // not something to half-apply in one file.
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { join } from "node:path";
-import { Config as EffectConfig, Effect, Schema as S } from "effect";
+import { Config as EffectConfig, Effect, Option, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 
 /**
@@ -36,27 +36,27 @@ export function pluginDirFor(packageName: string, storeDir: string = PLUGIN_STOR
 
 export interface PackageRef {
   readonly name: string;
-  readonly version?: string;
+  readonly version: Option.Option<string>;
 }
 
 /**
  * Split `name` or `name@version` (scoped names included) into its parts.
- * Null when the text is not shaped like an npm package spec — a filesystem
+ * None when the text is not shaped like an npm package spec — a filesystem
  * path is never one of these, so `plugin add` tries the filesystem first.
  */
-export function parsePackageSpec(spec: string): PackageRef | null {
+export function parsePackageSpec(spec: string): Option.Option<PackageRef> {
   const text = spec.trim();
-  if (!text || /\s/.test(text)) return null;
+  if (!text || /\s/.test(text)) return Option.none();
   let name = text;
   let version: string | undefined;
   const at = text.startsWith("@") ? text.indexOf("@", 1) : text.indexOf("@");
   if (at > 0) {
     name = text.slice(0, at);
     version = text.slice(at + 1) || undefined;
-    if (!version) return null;
+    if (!version) return Option.none();
   }
-  if (!/^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(name)) return null;
-  return version === undefined ? { name } : { name, version };
+  if (!/^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(name)) return Option.none();
+  return Option.some({ name, version: Option.fromUndefinedOr(version) });
 }
 
 const InstalledManifest = S.Struct({
@@ -177,7 +177,10 @@ export const installPackage = (
         )
         .pipe(Effect.mapError((error) => `cannot write ${descriptor}: ${String(error)}`));
     }
-    const target = ref.version === undefined ? ref.name : `${ref.name}@${ref.version}`;
+    const target = Option.match(ref.version, {
+      onNone: () => ref.name,
+      onSome: (version) => `${ref.name}@${version}`,
+    });
     const exitCode = yield* Effect.tryPromise({
       try: () => {
         const child = Bun.spawn([process.execPath, "add", target], {

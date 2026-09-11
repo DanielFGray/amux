@@ -11,18 +11,23 @@
   "module": "src/plugin.tsx",
   "exports": {
     ".": "./src/plugin.tsx",
+    "./api": "./src/api.ts",
     "./daemon": "./src/daemon.ts"
   },
   "scripts": {
-    "bench:render": "bun test --cwd ../.. --timeout=30000 packages/editor/bench/render.bench.test.tsx"
+    "bench:render": "bun test --cwd ../.. --timeout=30000 packages/editor/bench/render.bench.test.tsx",
+    "bench:motion-lsp": "bun test --cwd ../.. --timeout=60000 packages/editor/bench/motion-lsp.bench.test.tsx"
   },
   "dependencies": {
+    "@danielfgray/amux-highlight": "workspace:*",
+    "@danielfgray/amux-plugin-completion": "workspace:*",
+    "@danielfgray/amux-plugin-lsp": "workspace:*",
+    "@danielfgray/amux-plugin-search": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@opentui/core": "catalog:",
     "@opentui/solid": "catalog:",
     "effect": "catalog:",
-    "solid-js": "catalog:",
-    "@danielfgray/amux-highlight": "workspace:*"
+    "solid-js": "catalog:"
   },
   "devDependencies": {
     "@danielfgray/amux": "workspace:*"

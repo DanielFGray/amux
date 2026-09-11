@@ -37,6 +37,7 @@ import {
 } from "effect";
 import { createSocketWriter, type SocketWriter } from "./attach-write.ts";
 import { parseWorkspaceJson, type WorkspaceSnapshot } from "./workspace.ts";
+import { captureRootRuntime, type RootRuntimeContext, defaultRootRuntime } from "./env.ts";
 
 /**
  * Seconds between heartbeats.
@@ -111,7 +112,7 @@ export interface AttachClientContract {
   readonly workspace: Stream.Stream<WorkspaceSnapshot, never, never>;
   /** Plugin verbs the daemon is asking this client to run — see `respondCommand`. */
   readonly commandRequests: Stream.Stream<
-    { readonly id: string; readonly command: JsonValue },
+    { readonly id: string; readonly command: JsonValue; readonly originSession?: string },
     never,
     never
   >;
@@ -147,7 +148,7 @@ class AttachClientConnection {
 
   private _closed = false;
   private readonly _recvBuffer = new AttachFrameAccumulator();
-  private readonly _runtime: Context.Context<never>;
+  private readonly _runtime: RootRuntimeContext;
   private _handshake: { nonce: string; accept: () => void } | null;
   private readonly _closedSignal: Deferred.Deferred<void>;
   private _releaseScope: (() => void) | null = null;
@@ -174,7 +175,11 @@ class AttachClientConnection {
     }
   >();
   private readonly _workspaceQ: Queue.Queue<WorkspaceSnapshot>;
-  private readonly _commandQ: Queue.Queue<{ readonly id: string; readonly command: JsonValue }>;
+  private readonly _commandQ: Queue.Queue<{
+    readonly id: string;
+    readonly command: JsonValue;
+    readonly originSession?: string;
+  }>;
   private _onClose: ((error: Error | null) => void) | undefined;
   private _onError: ((message: string) => void) | undefined;
   private readonly _socket: Bun.Socket<undefined>;
@@ -184,7 +189,7 @@ class AttachClientConnection {
   constructor(
     client: string,
     socket: Bun.Socket<undefined>,
-    runtime: Context.Context<never>,
+    runtime: RootRuntimeContext,
     handshake: { nonce: string; accept: () => void },
   ) {
     this.client = client;
@@ -194,7 +199,11 @@ class AttachClientConnection {
     this._closedSignal = Deferred.makeUnsafe<void>();
     this._workspaceQ = Effect.runSyncWith(runtime)(Queue.sliding<WorkspaceSnapshot>(1));
     this._commandQ = Effect.runSyncWith(runtime)(
-      Queue.unbounded<{ readonly id: string; readonly command: JsonValue }>(),
+      Queue.unbounded<{
+        readonly id: string;
+        readonly command: JsonValue;
+        readonly originSession?: string;
+      }>(),
     );
     this._writer = createSocketWriter(socket, () => {
       this._finish(new AttachError({ message: "attach client is too slow" }));
@@ -252,7 +261,7 @@ class AttachClientConnection {
   /** Commands the daemon is asking this client to run — a plugin verb the
    *  daemon cannot execute itself. Each one wants a matching {@link respondCommand}. */
   get commandRequests(): Stream.Stream<
-    { readonly id: string; readonly command: JsonValue },
+    { readonly id: string; readonly command: JsonValue; readonly originSession?: string },
     never,
     never
   > {
@@ -333,6 +342,19 @@ class AttachClientConnection {
   _setScopeRelease(release: () => void): void {
     if (this._closed) release();
     else this._releaseScope = release;
+  }
+
+  /**
+   * The raw socket ended or errored without this connection asking it to.
+   *
+   * Distinct from the public `close()`, which a deliberate local release
+   * (detach, scope teardown) calls with no error to report. Conflating the
+   * two — as calling `close()` here once did — reports every unsolicited
+   * daemon-side hangup as an unexplained, error-free disconnect: the app has
+   * no way to tell "the user left" from "the transport broke" apart.
+   */
+  _remoteClosed(error?: Error): void {
+    this._finish(error ?? new AttachError({ message: "the daemon closed the attachment socket" }));
   }
 
   _receive(chunk: Buffer, onProtocolError: (error: Error) => void): void {
@@ -458,7 +480,7 @@ const makeScoped = (
   return Effect.gen(function* () {
     const n = yield* Random.next;
     const nonce = `hello-${n.toString(36).slice(2)}`;
-    return yield* Effect.context<never>().pipe(
+    return yield* captureRootRuntime.pipe(
       Effect.flatMap((runtime) => {
         const acquire = Effect.callback<AttachClientConnection, AttachError>((resume) => {
           let attached: AttachClientConnection | null = null;
@@ -467,7 +489,7 @@ const makeScoped = (
           const fail = (error: Error) => {
             if (settled) return;
             settled = true;
-            if (attached) attached.close();
+            attached?.close();
             socketRef?.end();
             resume(
               Effect.fail(
@@ -488,16 +510,17 @@ const makeScoped = (
                   socket.end();
                   return;
                 }
-                attached = new AttachClientConnection(options.client, socket, runtime, {
+                const client = new AttachClientConnection(options.client, socket, runtime, {
                   nonce,
                   accept: () => {
                     if (settled) return;
                     settled = true;
-                    resume(Effect.succeed(attached!));
+                    resume(Effect.succeed(client));
                   },
                 });
+                attached = client;
                 if (
-                  !attached._writer.send(
+                  !client._writer.send(
                     new Uint8Array([
                       ...encodeAttachFrameBytes({ _tag: "hello", client: options.client }),
                       ...encodeAttachFrameBytes({ _tag: "ping", nonce }),
@@ -507,7 +530,7 @@ const makeScoped = (
                   fail(new AttachError({ message: "attach handshake could not write" }));
               },
               data(_socket, data) {
-                if (attached) attached._receive(data, fail);
+                attached?._receive(data, fail);
               },
               close() {
                 if (!settled)
@@ -516,14 +539,14 @@ const makeScoped = (
                       message: "daemon closed the attachment before accepting it",
                     }),
                   );
-                else if (attached) attached.close();
+                else attached?._remoteClosed();
               },
               error(_socket, error) {
                 if (!settled) fail(error);
-                else if (attached) attached.close();
+                else attached?._remoteClosed(error);
               },
               drain() {
-                if (attached) attached._writer.drain();
+                attached?._writer.drain();
               },
             },
           }).catch(fail);
@@ -531,7 +554,7 @@ const makeScoped = (
           return Effect.sync(() => {
             if (settled) return;
             settled = true;
-            if (attached) attached.close();
+            attached?.close();
             socketRef?.end();
           });
         }).pipe(
@@ -542,16 +565,10 @@ const makeScoped = (
           }),
         );
 
-        let acquired: AttachClientConnection | null = null;
+        // Release receives the acquired client — no fill-later slot needed.
         return Effect.acquireRelease(
-          acquire.pipe(
-            Effect.tap((client) =>
-              Effect.sync(() => {
-                acquired = client;
-              }),
-            ),
-          ),
-          () => Effect.sync(() => acquired?.close()),
+          acquire,
+          (client) => Effect.sync(() => client.close()),
           { interruptible: true },
         ).pipe(
           Effect.tap((client) =>
@@ -574,8 +591,9 @@ export class AttachClient extends Context.Service<AttachClient>()("AttachClient"
     return Layer.effect(AttachClient, makeScoped(options));
   }
 
-  /** Promise adapter used by the SessionClient constructor. New callers should
-   *  provide `AttachClient.layer` over the whole use span. */
+  /** Promise adapter for tests and remaining sync callers. Owns an orphaned
+   *  scope released when the connection closes — prefer `AttachClient.make` /
+   *  `AttachClient.layer` inside an Effect `Scope` (see SessionClient). */
   static connect(options: AttachClientOptions): Promise<AttachClientContract> {
     return Effect.runPromise(
       Effect.gen(function* () {
@@ -584,7 +602,7 @@ export class AttachClient extends Context.Service<AttachClient>()("AttachClient"
           Effect.provideService(Scope.Scope, scope),
           Effect.tapError(() => Scope.close(scope, Exit.void)),
         );
-        const runtime = yield* Effect.context<never>();
+        const runtime = defaultRootRuntime();
         client._setScopeRelease(() => {
           void Effect.runPromiseWith(runtime)(Scope.close(scope, Exit.void));
         });

@@ -12,6 +12,8 @@
  */
 
 import { Context, Effect } from "effect";
+import type { FileSystem } from "effect/FileSystem";
+import { BunFileSystem } from "@effect/platform-bun";
 import type { RenderContext } from "@opentui/core";
 import { localPty, type SessionBackendFactory } from "./backend.ts";
 import type { PaneView } from "./component-pane.tsx";
@@ -75,6 +77,18 @@ export const OptionsRuntime = Context.Reference<Options>("OptionsRuntime", {
 });
 
 /**
+ * Services the process root is typed to carry for governed `run*With` exits.
+ *
+ * Client `main.tsx` provides `BunFileSystem`; daemon main merges Path as well.
+ * FileSystem is the floor so config saves and similar boundary crossings do
+ * not re-`provide` the same layer at every call site.
+ */
+export type RootServices = FileSystem;
+
+/** The ambient Effect context bag captured at process boot for `run*With`. */
+export type RootRuntimeContext = Context.Context<RootServices>;
+
+/**
  * The ambient Effect context the process's root fiber runs in — whatever
  * Layer main.tsx or daemon-main.ts provided at boot, captured once there and
  * threaded down. Synchronous classes built outside any fiber (SessionHandle,
@@ -82,14 +96,39 @@ export const OptionsRuntime = Context.Reference<Options>("OptionsRuntime", {
  * process actually booted instead of Effect's ambient default — see
  * ep-6e69df Phase 5.
  *
- * Defaults to capturing whatever is ambient wherever nothing else was
- * provided, which is the same default runtime every caller used implicitly
- * before this Reference existed — a test or harness that does not care can
- * still omit it.
+ * Defaults to a Bun FileSystem context when nothing else was provided, so a
+ * test or harness that omits an explicit runtime still has a real FS for
+ * governed saves rather than an empty bag.
  */
-export const RootRuntime = Context.Reference<Context.Context<never>>("RootRuntime", {
-  defaultValue: (): Context.Context<never> => Effect.runSync(Effect.context<never>()),
+export const RootRuntime = Context.Reference<RootRuntimeContext>("RootRuntime", {
+  defaultValue: (): RootRuntimeContext => defaultRootRuntime(),
 });
+
+/** Standalone default for callers that build outside a fiber (SessionHandle, backends). */
+export const defaultRootRuntime = (): RootRuntimeContext =>
+  Effect.runSync(Effect.context<RootServices>().pipe(Effect.provide(BunFileSystem.layer)));
+
+/**
+ * Capture the ambient bag for `run*With` without putting `FileSystem` (or any
+ * other RootService) into this Effect's requirement channel.
+ *
+ * `Effect.context<RootServices>()` both returns and *requires* those services,
+ * which would force every daemon/attach/command surface to list FileSystem in
+ * R. The runtime Context map still holds whatever the process root provided;
+ * we merge the Bun FS default underneath so a test fiber with an empty bag
+ * still has a real FileSystem for governed saves.
+ */
+export const captureRootRuntime: Effect.Effect<RootRuntimeContext> = Effect.map(
+  Effect.context<never>(),
+  (ambient) => Context.merge(defaultRootRuntime(), ambient as RootRuntimeContext),
+);
+
+/** Run an effect with RootServices from {@link captureRootRuntime} — drops
+ *  per-call `Effect.provide(BunFileSystem.layer)` at config/save sites. */
+export const provideRootServices = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, Exclude<R, RootServices>> =>
+  Effect.flatMap(captureRootRuntime, (runtime) => Effect.provideContext(effect, runtime));
 
 /** Everything a workspace reads out of its context. Shell, Backend,
  *  PaneViews, OptionsRuntime, RootRuntime are References, not Services —
@@ -113,7 +152,7 @@ export const workspaceEnv = (
     backend?: SessionBackendFactory;
     paneContent?: PaneView;
     options?: Options;
-    runtime?: Context.Context<never>;
+    runtime?: RootRuntimeContext;
   } = {},
 ): Context.Context<WorkspaceEnv> => {
   let env = Context.make(RenderCtx, ctx) as Context.Context<WorkspaceEnv>;

@@ -1,0 +1,22 @@
+{
+  "id": "examples.smoke",
+  "name": "Smoke",
+  "version": "0.1.0",
+  "description": "Minimal out-of-process plugin fixture (JSON manifest)",
+  "actions": [
+    {
+      "id": "ping",
+      "title": "Ping",
+      "command": ["sh", "-c", "echo \"ping from $AMUX_PLUGIN_ID\"; echo \"bin=$AMUX_BIN_PATH\""]
+    }
+  ],
+  "panes": [
+    {
+      "id": "board",
+      "title": "Smoke board",
+      "placement": "floating",
+      "transient": true,
+      "command": ["sh", "-c", "echo \"pane $AMUX_PLUGIN_ENTRYPOINT_ID placement=floating\"; echo \"context=$AMUX_PLUGIN_CONTEXT_JSON\"; exec sleep infinity"]
+    }
+  ]
+}

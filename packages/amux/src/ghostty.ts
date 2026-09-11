@@ -1,9 +1,14 @@
-import { dlopen, FFIType as T, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
+import { dlopen, FFIType as T, JSCallback, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
 import { LIB } from "./ghostty-library.ts";
 import { terminalNew } from "./shim.ts";
 import { assertTerminalSize } from "./limits.ts";
 
 export { LIB_DIR } from "./ghostty-library.ts";
+
+/** Default history lines for a Terminal. The daemon replay screen and the
+ *  attached client both use this so a reattach can restore the same reach of
+ *  output the live client still had. */
+export const DEFAULT_SCROLLBACK_LINES = 10_000;
 
 const P = T.ptr,
   I = T.i32,
@@ -81,6 +86,10 @@ const TERMINAL_DATA_TITLE = 12;
 const TERMINAL_DATA_PWD = 13;
 const TERMINAL_DATA_KITTY_GRAPHICS = 30;
 const TERMINAL_DATA_MODE = 37;
+/** Query responses (DSR, DECRQM, …) written back to the pty. Without this
+ *  option libghostty silently ignores those sequences — see
+ *  vendor/libghostty-vt/include/ghostty/vt/terminal.h WRITE_PTY. */
+const TERMINAL_OPT_WRITE_PTY = 1;
 const TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT = 15;
 const TERMINAL_OPT_SCROLLBACK_MAX_LINES = 28;
 const KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR = 1;
@@ -130,8 +139,11 @@ export class Terminal {
   #scroll = new BigUint64Array(3);
   /** GhosttyTerminalModeConfig {u16 mode, bool value}, filled in place. */
   #mode = new Uint8Array(4);
+  /** Kept alive for the terminal's lifetime: Bun GC would otherwise reclaim the
+   *  native trampoline while libghostty still holds its pointer. */
+  #writePty: JSCallback | null = null;
 
-  constructor(cols: number, rows: number, scrollback = 10_000) {
+  constructor(cols: number, rows: number, scrollback = DEFAULT_SCROLLBACK_LINES) {
     assertTerminalSize(cols, rows);
     const out = handle();
     check("terminal_new", terminalNew(out, cols, rows));
@@ -156,6 +168,42 @@ export class Terminal {
         ptr(storageLimit),
       ),
     );
+  }
+
+  /**
+   * Install the dependency's WRITE_PTY callback, or clear it with null.
+   *
+   * Only the daemon's per-session screen should set this: it is the singular
+   * authority that answers terminal queries into the owning PTY. Client-side
+   * terminals leave it unset so they do not double-answer the same query.
+   * The handler runs synchronously inside `write()`; it must not call `write`
+   * on this terminal (no reentrancy — libghostty's contract).
+   */
+  setWritePty(handler: ((bytes: Uint8Array) => void) | null): void {
+    if (this.#freed) return;
+    if (this.#writePty) {
+      g.ghostty_terminal_set(asPtr(this.#h), TERMINAL_OPT_WRITE_PTY, null);
+      this.#writePty.close();
+      this.#writePty = null;
+    }
+    if (!handler) return;
+    const cb = new JSCallback(
+      (_terminal: Pointer, _userdata: Pointer, data: Pointer, len: number | bigint) => {
+        const n = Number(len);
+        if (!data || n === 0) {
+          handler(new Uint8Array(0));
+          return;
+        }
+        // Bytes are only valid for the duration of the call; copy immediately.
+        handler(new Uint8Array(toArrayBuffer(data, 0, n)).slice());
+      },
+      { returns: "void", args: ["ptr", "ptr", "ptr", "usize"] },
+    );
+    check(
+      "terminal_set write_pty",
+      g.ghostty_terminal_set(asPtr(this.#h), TERMINAL_OPT_WRITE_PTY, cb.ptr as Pointer),
+    );
+    this.#writePty = cb;
   }
 
   get handle() {
@@ -362,6 +410,11 @@ export class Terminal {
   free() {
     if (this.#freed) return;
     this.#freed = true;
+    if (this.#writePty) {
+      g.ghostty_terminal_set(asPtr(this.#h), TERMINAL_OPT_WRITE_PTY, null);
+      this.#writePty.close();
+      this.#writePty = null;
+    }
     g.ghostty_terminal_free(asPtr(this.#h));
   }
 }
@@ -652,19 +705,14 @@ export class RenderState {
             if (utf8Len > 0) {
               let text = new TextDecoder().decode(this.#cps.subarray(0, utf8Len));
               // HAS_STYLING lets us skip two FFI calls for the common plain cell
-              let fg: number | null = null;
-              let bg: number | null = null;
-              if (
+              const hasStyling =
                 g.ghostty_render_state_row_cells_get(
                   asPtr(cells),
                   CELL_HAS_STYLING,
                   ptr(this.#styled),
-                ) === OK &&
-                this.#styled[0]
-              ) {
-                fg = this.#color(CELL_FG_COLOR);
-                bg = this.#color(CELL_BG_COLOR);
-              }
+                ) === OK && this.#styled[0];
+              const fg = hasStyling ? this.#color(CELL_FG_COLOR) : null;
+              const bg = hasStyling ? this.#color(CELL_BG_COLOR) : null;
               // Spacer tails carry no text so they never reach here; we only
               // need the wide flag to know how far the run advances. ASCII is
               // always narrow, so skip two FFI calls on the common path.

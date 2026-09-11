@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import {
   BoxRenderable,
+  ClipboardTarget,
   type CliRenderer,
   type KeyEvent,
   type ScrollBoxRenderable,
@@ -9,8 +10,8 @@ import type { JSX } from "@opentui/solid";
 import { Show, createSignal, createMemo, createEffect, on } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { ValidComponent } from "solid-js";
-import { Context, Effect, Exit, FiberMap, Option, Scope, Stream } from "effect";
-import { theme } from "./ui/theme.ts";
+import { Context, Duration, Effect, Exit, FiberMap, Layer, Option, Path, Scope, Stream } from "effect";
+import { theme, setTheme } from "./ui/theme.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- path access is part of the plain render-tree boundary.
 import { basename, dirname, join } from "node:path";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- file output is part of the plain render-tree boundary.
@@ -30,13 +31,16 @@ import {
   formatKey,
   parseKeyStrokes,
   keysFor,
+  DEFAULT_PREFIX,
   DEFAULT_LEADER,
   type CommandSpec,
   type Conflict,
   type Keys,
   filterPaletteEntries,
+  mayDispatchPaletteEntry,
   paletteEntries,
 } from "./bindings.ts";
+import { KeyInvocation } from "./key-invocation.ts";
 import {
   COMMAND_META,
   CommandError,
@@ -74,12 +78,7 @@ import type { SessionClientContract } from "./client.ts";
 import { workspaceSessions, type WorkspaceSnapshot } from "./workspace.ts";
 import { createAppState, POLL_MS } from "./ui/state.ts";
 import { createPanelContext, type PanelContext } from "./ui/panel.ts";
-import {
-  createSlots,
-  type DockOccupant,
-  type FloatOccupant,
-  type OverlayOccupant,
-} from "./ui/slots.ts";
+import { createSlots, type DockOccupant, type OverlayOccupant } from "./ui/slots.ts";
 import {
   createPluginContributions,
   type PluginContributions,
@@ -87,7 +86,16 @@ import {
 } from "./plugin/contributions.ts";
 
 import { createPluginHost, type PluginHost } from "./plugin/host.ts";
-import { loadPluginsFromConfig } from "./plugin/loader.ts";
+import { loadPluginsFromConfig, type PluginEntry } from "./plugin/loader.ts";
+import { makeOverlay, OverlayTag, type OverlayKind } from "./plugin/overlay.ts";
+import {
+  CommandsChromeTag,
+  SettingsChromeTag,
+  type CommandsChrome,
+  type SettingsChrome,
+} from "./plugin/chrome.ts";
+import settingsPlugin from "./plugins/settings.tsx";
+import commandsPlugin from "./plugins/commands.tsx";
 import {
   BindingsTag,
   CommandsTag,
@@ -120,12 +128,14 @@ import {
 import {
   CONTEXT_PRIORITY,
   findContextPriorityConflicts,
+  overlayBlocksPane,
   resolveUnhandled,
   type ContextSpec,
 } from "./key-context.ts";
 import { makeSessionFacts } from "./session-facts.ts";
 import { createReloader } from "./plugin/reloader.ts";
 import type { PluginReloader } from "./plugin/reloader.ts";
+import { lastGoodStoreLayer, LastGoodStoreTag } from "./plugin/last-good.ts";
 import {
   defineConsumer,
   definePlugin,
@@ -134,39 +144,36 @@ import {
 } from "./plugin/types.ts";
 import { WindowTabs } from "./ui/WindowTabs.tsx";
 import { formatText } from "./format.ts";
-import { CommandPalette } from "./ui/CommandPalette.tsx";
-import { Prompt, type PromptRequest } from "./ui/Prompt.tsx";
-import { Hints, hintVisibility } from "./ui/Hints.tsx";
+import { type PromptRequest } from "./ui/Prompt.tsx";
+import { hintVisibility } from "./ui/Hints.tsx";
+import { settingsFields, keybindTargets, LEADER_TARGET, type SettingsSection } from "./ui/Settings.tsx";
 import {
-  Settings,
-  settingsSections,
-  settingsFields,
-  keybindTargets,
-  keybindLine,
-  type SettingsSection,
-} from "./ui/Settings.tsx";
-import { captureSpan, pickCaptureTarget, type CaptureSpan, type CaptureTarget } from "./capture.ts";
+  captureFrameRect,
+  captureSpan,
+  pickCaptureTarget,
+  type CaptureSpan,
+  type CaptureTarget,
+} from "./capture.ts";
 import { Capture, type CaptureView } from "./ui/Capture.tsx";
 import { BufferChoose, type BufferChooseView } from "./ui/BufferChoose.tsx";
-import { KeybindPicker, sortKeybindEntries, type KeybindPickerView } from "./ui/KeybindPicker.tsx";
+import { sortKeybindEntries, type KeybindPickerView } from "./ui/KeybindPicker.tsx";
 import { CopyMode } from "./copy.ts";
 import type { BufferEntry } from "./effect/BufferStore.ts";
 import { scheduledPoll } from "./effect/timer.ts";
-import { workspaceEnv } from "./env.ts";
+import { captureRootRuntime, workspaceEnv, type RootRuntimeContext } from "./env.ts";
 import type { SidebarDisplayRow, SidebarDisplay } from "./ui/panel.ts";
 import type { PluginSettingsSection, SpawnProvider } from "./plugin/types.ts";
 import { createSessionViews } from "./plugin/session-views.tsx";
 import { createProcessDisplay, type ProcessDisplayProvider } from "./plugin/process-display.ts";
 import type { PaneView } from "./component-pane.tsx";
+import { ComponentPane } from "./component-pane.tsx";
 import { errorMessage } from "./error-message.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
+import type { Pane } from "./pane.ts";
 
 /** app.tsx sits on the render/plain-async side of the seam (see harness.ts): it
- *  crosses into the Effect service layer here, the same way cli.ts provides
- *  BunFileSystem.layer at each boundary crossing. */
-const saveConfig = (config: Config): Promise<void> =>
-  Effect.runPromise(saveConfigEffect(config).pipe(Effect.provide(BunFileSystem.layer)));
-
+ *  crosses into the Effect service layer via the workspace RootRuntime captured
+ *  in createApp / buildApp (`runPromiseWith` / `runDetached(..., rootRuntime)`). */
 export interface AppOptions {
   readonly renderer: CliRenderer;
   /** The imperative half of the tree, created by the caller because the
@@ -185,6 +192,13 @@ export interface PluginRuntime {
   reloader?: PluginReloader;
   pathFor?: (id: string) => string | undefined;
   resumePending?: (workspace: WorkspaceSnapshot) => Effect.Effect<void>;
+  /**
+   * Remount every window from the current workspace snapshot. Used after
+   * plugins finish loading so layout-kind renderers (niri's `scroll`, …)
+   * that were missing on the initial project take effect — without a later
+   * daemon revision, the fallback flex box would stick forever.
+   */
+  remountLayouts?: () => Promise<void>;
 }
 
 function setPluginEnabled(config: Config, key: string, enabled: boolean): Config {
@@ -219,6 +233,7 @@ interface ManagedAppHandle extends Omit<AppHandle, "pluginHost"> {
   readonly release: Effect.Effect<void>;
   readonly commands: CommandsService;
   readonly coreEntries: readonly PluginDefinition[];
+  readonly pluginEntries: readonly PluginEntry[];
   readonly registryEntries: readonly PluginDefinition[];
   readonly consumers: readonly PluginConsumer[];
   readonly updateRegistry: (host: PluginHost, key: string) => void;
@@ -275,7 +290,7 @@ export type AppFiberRunner = (key: string, effect: Effect.Effect<void>) => void;
 
 /** The two modals that share one slot, because opening either closes the
  *  other: they are the same window in the user's head. */
-export type Overlay = "none" | "settings" | "palette";
+export type Overlay = OverlayKind;
 
 /**
  * Everything above the renderer: the workspace, the key bindings, the overlays
@@ -287,11 +302,16 @@ export type Overlay = "none" | "settings" | "palette";
  * is a callback: exiting is a request, and the teardown that follows is the
  * caller's, in one place, on every path including a signal.
  */
-export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, Scope.Scope> {
+export function createApp(
+  options: AppOptions,
+): Effect.Effect<AppHandle, never, Scope.Scope> {
   // The one mutable Options object this workspace's panes, windows and
   // dividers all read at render/event time; see OptionsRuntime in env.ts.
   // Kept in step by the reactive effect below via applyOptions.
   const optionsRuntime = resolveOptions(options.config.options);
+  // Theme is process-wide chrome (Solid + highlight share one table). Apply
+  // before the first paint so the default ansi palette is live from frame 0.
+  setTheme(optionsRuntime["appearance.theme"]);
   const initialShell = [
     // @effect-diagnostics-next-line processEnv:off -- initial shell fallback is evaluated before the Effect program starts.
     optionsRuntime["behaviour.shell"] || process.env.SHELL || "bash",
@@ -301,7 +321,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
     // Layer main.tsx provided is already ambient in this fiber, and this is
     // the one place a workspace's Effect context is built from. See
     // RootRuntime in env.ts.
-    const rootRuntime = yield* Effect.context<never>();
+    const rootRuntime = yield* captureRootRuntime;
     const fiberScope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(fiberScope, Exit.void));
     const fibers = yield* Scope.provide(FiberMap.make<string>(), fiberScope);
@@ -336,6 +356,7 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       }),
       options.paneHost,
     );
+    let pluginHost: PluginHost | undefined;
     const slots = createSlots(options.renderer, contributions, optionsRuntime);
     const slotsService = scopedRegistry(
       {
@@ -393,21 +414,17 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       ),
       (app) => app.release,
     );
-    const pluginHost = yield* createPluginHost({ contributions, consumers: app.consumers });
+    pluginHost = yield* createPluginHost({ contributions, consumers: app.consumers });
     runFiber(
       "plugin-service-changes",
       Stream.runForEach(pluginHost.onServiceChange, (key) =>
         Effect.sync(() => app.updateRegistry(pluginHost, key)),
       ),
     );
-    const { hot: hotPlugins } = yield* loadPluginsFromConfig(
-      options.config,
-      pluginHost,
-      options.configDir ?? dirname(CONFIG_PATH),
-      [...app.registryEntries, ...app.coreEntries],
-    );
+    let reloader: PluginReloader | undefined;
+    let pluginEntries: readonly PluginEntry[] = [];
     const resumedPending = new Set<string>();
-    pluginRuntime.resumePending = (workspace) =>
+    const resumePending = (workspace: WorkspaceSnapshot) =>
       Effect.forEach(
         [...workspaceSessions(workspace)].filter(
           ({ session }) =>
@@ -437,34 +454,59 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
         },
         { discard: true },
       );
-    yield* pluginRuntime.resumePending(options.session.workspace());
+    pluginRuntime.resumePending = resumePending;
+    runFiber(
+      "plugin-load",
+      Effect.gen(function* () {
+        const loaded = yield* loadPluginsFromConfig(
+          options.config,
+          pluginHost,
+          options.configDir ?? dirname(CONFIG_PATH),
+          [...app.registryEntries, ...app.coreEntries],
+        );
+        pluginEntries = [...app.pluginEntries, ...loaded.entries];
+        yield* resumePending(options.session.workspace());
+        // Initial project ran before this fiber finished; containers whose
+        // kind renderer landed here would still be the Yoga-column fallback
+        // (niri columns look like rows). Remount once plugins are live.
+        if (pluginRuntime.remountLayouts) {
+          yield* Effect.promise(() => pluginRuntime.remountLayouts!());
+        }
+        const configDir = options.configDir ?? dirname(CONFIG_PATH);
+        const lastGood = yield* LastGoodStoreTag.pipe(
+          Effect.provide(
+            lastGoodStoreLayer(join(configDir, ".amux", "plugin-last-good.json")).pipe(
+              Layer.provide(Layer.merge(BunFileSystem.layer, Path.layer)),
+            ),
+          ),
+        );
+        reloader = createReloader(pluginHost, pluginEntries, Option.fromUndefinedOr(lastGood));
+        if (!loaded.recovered)
+          runFiber(
+            "plugin-last-good-checkpoint",
+            Effect.sleep("5 seconds").pipe(
+              Effect.andThen(reloader.checkpoint),
+              Effect.catch((error) => Effect.logWarning(`Could not checkpoint plugins: ${error}`)),
+            ),
+          );
+        pluginRuntime.reloader = reloader;
+        pluginRuntime.pathFor = (id) => pluginEntries.find((plugin) => plugin.id === id)?.path;
+      }),
+    );
+    // A last-good archive is crash-safe once it lands, but creating it must
+    // never contend with the initial renderer/session handoff. A detached
+    // fiber starts immediately, before Solid mounts; give the first frame and
+    // shell a small idle window before its file and directory syncs. The prior
+    // archive remains the recovery floor until this baseline completes.
     // A plugin that dies on activation used to be silent outside the tests.
     runFiber(
       "plugin-errors",
       Stream.runForEach(pluginHost.onError, (event) =>
-        Effect.sync(() => app.panel.reportError(`${event.pluginId}: ${event.error.message}`)),
-      ),
-    );
-    // `plugin.reload` goes out through the daemon and comes back here, so a
-    // client reloads whether the request was typed into it or into another one.
-    const reloader = createReloader(pluginHost, hotPlugins);
-    pluginRuntime.reloader = reloader;
-    pluginRuntime.pathFor = (id) => hotPlugins.find((plugin) => plugin.id === id)?.path;
-    runFiber(
-      "plugin-reload",
-      Stream.runForEach(options.session.events, (event) =>
-        event._tag !== "plugins.reload"
-          ? Effect.void
-          : Effect.forEach(
-              event.plugin === undefined ? reloader.reloadable() : [event.plugin],
-              (id) =>
-                reloader
-                  .reload(id)
-                  .pipe(
-                    Effect.catch((message) => Effect.sync(() => app.panel.reportError(message))),
-                  ),
-              { discard: true },
-            ),
+        (reloader?.observeError(event) ?? Effect.void).pipe(
+          Effect.andThen(
+            Effect.sync(() => app.panel.reportError(`${event.pluginId}: ${event.error.message}`)),
+          ),
+        ),
       ),
     );
     // A CLI invocation of a plugin command has no registry of its own to run
@@ -475,6 +517,30 @@ export function createApp(options: AppOptions): Effect.Effect<AppHandle, never, 
       "command-requests",
       Stream.runForEach(options.session.commandRequests, ({ id, command: raw }) => {
         const tag = (raw as RuntimeCommand)._tag;
+        if (tag === "plugin.reload") {
+          const command = raw as {
+            readonly _tag: "plugin.reload";
+            readonly plugin?: string;
+            readonly disk?: boolean;
+          };
+          if (!reloader)
+            return Effect.sync(() =>
+              options.session.respondCommand(id, undefined, "plugin runtime is still starting"),
+            );
+          const ids = command.plugin === undefined ? reloader.reloadable() : [command.plugin];
+          return Effect.forEach(ids, (plugin) =>
+            reloader!.reload(plugin, { disk: command.disk }),
+          ).pipe(
+            Effect.map(() => options.session.respondCommand(id, { reloaded: [...ids] })),
+            Effect.catch((error) =>
+              Effect.sync(() => {
+                const message = errorMessage(error);
+                app.panel.reportError(message);
+                options.session.respondCommand(id, undefined, message);
+              }),
+            ),
+          );
+        }
         // The daemon cannot know a plugin verb's `target` — it holds no
         // registry of its own — so a request reaching a client is where
         // "view commands never run remotely" actually gets enforced, using
@@ -538,7 +604,7 @@ function buildApp(
   pluginRuntime: PluginRuntime,
   processDisplay: ProcessDisplayService,
   optionsRuntime: Options,
-  rootRuntime: Context.Context<never>,
+  rootRuntime: RootRuntimeContext,
   externalProviders: {
     readonly slots: ProviderRef<SlotsService>;
     readonly sessionViews: ProviderRef<SessionViewsService>;
@@ -561,25 +627,43 @@ function buildApp(
    * from a Solid signal rather than from Effect.
    */
   const run = <A,>(effect: Effect.Effect<A>): A => Effect.runSyncWith(rootRuntime)(effect);
+  const saveConfig = (config: Config): Promise<void> =>
+    Effect.runPromiseWith(rootRuntime)(saveConfigEffect(config));
 
   // Copy goes to the clipboard AND the server's buffer stack — tmux's model,
   // and what makes copy/paste work over ssh, between panes, and from a
   // script: the stack lives beside the daemon's PTYs, so paste needs no
   // attached client. The clipboard keeps its old verdict (a rejected OSC 52
   // is still a rejection); the push is best-effort and fire-and-forget, the
-  // same as the clipboard write itself.
-  spaces.onCopy = (text) => {
+  // same as the clipboard write itself. `target` is vim `"+` (clipboard) vs
+  // `"*` (primary selection on X11).
+  spaces.onCopy = (text, target = "clipboard") => {
     void Effect.runPromiseWith(rootRuntime)(session.setBuffer(undefined, text)).catch((error) =>
       // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
       console.error(`could not push paste buffer: ${String(error)}`),
     );
-    return renderer.copyToClipboardOSC52(text);
+    return renderer.copyToClipboardOSC52(
+      text,
+      target === "primary" ? ClipboardTarget.Primary : ClipboardTarget.Clipboard,
+    );
   };
   // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
   spaces.onCopyError = (error) => console.error(error.message);
   const app = createAppState(spaces);
   const [snapshot, setSnapshot] = createSignal<WorkspaceSnapshot>(session.workspace());
-  session.attach.onClose = () => setDaemonDisconnected(true);
+  session.attach.onClose = (error) => {
+    // A close carries its own reason in two independent ways: a server-sent
+    // protocol error frame (onError, below) or a client-detected transport
+    // failure — a bad frame, an unmatched workspace revision, a write that
+    // failed — surfaced only here, as `error`. Prefer whichever fires; both
+    // beat the generic fallback the panel shows when neither does.
+    if (error) setDisconnectReason(error.message);
+    setDaemonDisconnected(true);
+  };
+  // The transport's own explanation for a close, when it has one (an
+  // AttachHub eviction sends this before hanging up); onClose still fires
+  // right after, since the socket does close either way.
+  session.attach.onError = (message) => setDisconnectReason(message);
 
   /**
    * Keyboard copy mode: the pane's read-only review layer. One instance for the
@@ -637,7 +721,9 @@ function buildApp(
     projection = projection
       .then(() => {
         if (model.revision <= projectedRevision) return;
-        return Effect.runPromiseWith(rootRuntime)(projectWorkspace(spaces, model, session.backend()));
+        return Effect.runPromiseWith(rootRuntime)(
+          projectWorkspace(spaces, model, session.backend()),
+        );
       })
       .then(() => {
         if (model.revision <= projectedRevision) return;
@@ -659,6 +745,33 @@ function buildApp(
       .catch((error) =>
         // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
         console.error(`could not project workspace revision ${model.revision}: ${String(error)}`),
+      );
+    return projection;
+  };
+  // Same as project, but ignores the revision gate — plugins that register
+  // layout-kind renderers after the first paint need a remount without a
+  // daemon generation bump.
+  pluginRuntime.remountLayouts = () => {
+    if (disposed) return Promise.resolve();
+    const model = session.workspace();
+    // Chain behind any in-flight projection so we don't race two mounts, then
+    // remount regardless of revision — the point is the kind renderer map
+    // changed, not the workspace.
+    projection = projection
+      .then(() =>
+        Effect.runPromiseWith(rootRuntime)(
+          projectWorkspace(spaces, model, session.backend()),
+        ),
+      )
+      .then(() => {
+        projectedRevision = Math.max(projectedRevision, model.revision);
+        setSnapshot(structuredClone(model));
+        installModelCallbacks();
+        app.refresh();
+      })
+      .catch((error) =>
+        // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
+        console.error(`could not remount layouts after plugin load: ${String(error)}`),
       );
     return projection;
   };
@@ -707,6 +820,16 @@ function buildApp(
           Effect.map((result) => result as CommandResult<T>),
         ),
     );
+
+  /** Push the live pane-host size through ensureVisible so niri column widths
+   *  rescale after a sidebar toggle or terminal resize (basisCols). */
+  function syncScrollViewport() {
+    const pane = spaces.activeWindow?.focused;
+    if (!pane) return;
+    void Effect.runPromise(
+      runCommand(command("pane.select", { pane: pane.id })).pipe(Effect.catch(() => Effect.void)),
+    );
+  }
 
   // A plugin verb's daemon-side registration can target "workspace" (needs
   // size/shell/cwd to mutate the model, e.g. spawning an agent's pane) or
@@ -827,6 +950,7 @@ function buildApp(
   // match them against every binding's sequence to work out what is still
   // reachable, and a display string cannot be matched back.
   const [pendingParts, setPendingParts] = createSignal<readonly { display: string }[]>([]);
+  const [countDigits, setCountDigits] = createSignal("");
   const [hintsVisible, setHintsVisible] = createSignal(false);
   const [promptRequest, setPromptRequest] = createSignal<PromptRequest | null>(null);
   /** Compile error from the send-keys prompt's last submit. Kept separate from
@@ -865,13 +989,24 @@ function buildApp(
    *  longer than the window. */
   let keybindList: ScrollBoxRenderable | null = null;
   const [commandError, setCommandError] = createSignal<string | null>(null);
-  // Stays up until dismissed (errorPanel's own key handler clears it on any
-  // keypress) rather than on a timer: a message worth reading is worth
-  // copying, and a fixed auto-hide can outrun both.
+  // Logs into OpenTUI's console capture and shows a compact snack. The snack
+  // stays until dismissed (Escape / close / show more) rather than on a timer:
+  // a message worth reading is worth copying, and a fixed auto-hide can outrun both.
   function showCommandError(message: string) {
+    // @effect-diagnostics-next-line globalConsole:off -- feeds the OpenTUI console overlay.
+    console.error(message);
     setCommandError(message);
   }
+  function showCommandConsole() {
+    setCommandError(null);
+    renderer.consoleMode = "console-overlay";
+    renderer.console.show();
+  }
   const [daemonDisconnected, setDaemonDisconnected] = createSignal(false);
+  // Set only when the attach transport itself explained why it closed (e.g.
+  // AttachHub evicting a slow/overflowing client) — distinct from the daemon
+  // process actually dying, which this client cannot observe directly.
+  const [disconnectReason, setDisconnectReason] = createSignal<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null);
   const [size, setSize] = createSignal({
     width: renderer.width,
@@ -964,7 +1099,12 @@ function buildApp(
       spaceCount: spaces.spaces.length,
     };
   });
-  const onResize = (width: number, height: number) => setSize({ width, height });
+  const onResize = (width: number, height: number) => {
+    setSize({ width, height });
+    // paneHost's Yoga size updates with the terminal; nudge the scroll strip
+    // so basisCols tracks the new cell count.
+    queueMicrotask(() => syncScrollViewport());
+  };
   renderer.on("resize", onResize);
 
   const activeWin = () => spaces.activeWindow;
@@ -1142,7 +1282,7 @@ function buildApp(
     });
     const used = new Set(
       [...active.values()].flatMap((list) =>
-        list.map((binding) => formatSequence(binding.sequence, bindings.leader())),
+        list.map((binding) => formatSequence(binding.sequence, bindings.leaders())),
       ),
     );
     return [
@@ -1154,12 +1294,15 @@ function buildApp(
       "down",
       "up",
       "right",
-    ].filter((key) => !used.has(`${formatKey(bindings.leader())} ${key}`));
+    ].filter((key) => !used.has(`${formatKey(bindings.prefix())} ${key}`));
   }
 
   function openKeybindPicker(add: boolean) {
     const target = keybindTarget();
-    const entries = sortKeybindEntries(filterPaletteEntries(allPaletteEntries(), ""));
+    // Remap surface: include inactive PANE-band verbs the runnable palette hides.
+    const entries = sortKeybindEntries(
+      filterPaletteEntries(allPaletteEntries(), "", { includeHidden: true }),
+    );
     const found = target ? entries.findIndex((entry) => entry.name === target) : 0;
     setKeybindPicker({
       entries,
@@ -1173,6 +1316,14 @@ function buildApp(
   }
 
   function capturePrefix() {
+    setCapturing(true);
+    bindings.capture((event, key) => {
+      setCapturing(false);
+      if (event.name !== "escape") setKeys({ ...configState().keys, prefix: key });
+    });
+  }
+
+  function captureLeader() {
     setCapturing(true);
     bindings.capture((event, key) => {
       setCapturing(false);
@@ -1195,15 +1346,17 @@ function buildApp(
       const keys = configState().keys;
       const spec = registeredBindings().find((candidate) => candidate.name === command);
       if (!spec) return;
-      const next = `<leader>${key}`;
+      const defaults = keysFor(spec, { prefix: DEFAULT_PREFIX, leader: DEFAULT_LEADER, bindings: {} });
+      const token = defaults.some((binding) => binding.startsWith("<leader>")) ? "<leader>" : "<prefix>";
+      const next = `${token}${key}`;
       const compiled = bindings.keymap.parseKeySequence(next);
-      const display = formatSequence(compiled, bindings.leader());
+      const display = formatSequence(compiled, bindings.leaders());
       const active = bindings.keymap.getCommandBindings({
         visibility: "registered",
         commands: registeredBindings().map((candidate) => candidate.name),
       });
       const owner = [...active].find(([, list]) =>
-        list.some((binding) => formatSequence(binding.sequence, bindings.leader()) === display),
+        list.some((binding) => formatSequence(binding.sequence, bindings.leaders()) === display),
       )?.[0];
       if (owner && (add || owner !== command)) {
         setKeybindPicker((view) =>
@@ -1236,6 +1389,10 @@ function buildApp(
     if (command === undefined) return;
     if (command === null) {
       if (unbind) return; // The app is unreachable without a prefix.
+      return setKeys({ ...keys, prefix: DEFAULT_PREFIX });
+    }
+    if (command === LEADER_TARGET) {
+      if (unbind) return;
       return setKeys({ ...keys, leader: DEFAULT_LEADER });
     }
     const next = { ...keys.bindings };
@@ -1272,6 +1429,30 @@ function buildApp(
       focused ? { term: focused.term, describe: () => focused.title || "pane" } : null,
       null,
     );
+  }
+
+  /**
+   * Find a live pane by id across every space/window. Used by remote
+   * `pane.capture` / `pane.send-keys` when the daemon routed a client-only
+   * target here.
+   */
+  function findPane(paneId: string): Pane | null {
+    for (const space of spaces.spaces) {
+      for (const window of space.windows) {
+        const pane = window.panes.find((candidate) => candidate.id === paneId);
+        if (pane) return pane;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Serialize a plugin pane's current OpenTUI content as plain text. The
+   * daemon cannot see Solid pixels — only this client has the frame.
+   */
+  function capturePluginPane(pane: Pane): string {
+    const rect = pane.view.contentRect;
+    return captureFrameRect(renderer.currentRenderBuffer, rect);
   }
 
   /**
@@ -1345,9 +1526,7 @@ function buildApp(
       onPaste: (name) => {
         const pane = spaces.activeWindow?.focused;
         if (pane?.session) {
-          void Effect.runPromiseWith(rootRuntime)(
-            session.pasteBuffer(name, pane.session.id),
-          ).catch(
+          void Effect.runPromiseWith(rootRuntime)(session.pasteBuffer(name, pane.session.id)).catch(
             // @effect-diagnostics-next-line globalConsole:off -- plain render-tree error reporting.
             (error) => console.error(`could not paste buffer '${name}': ${String(error)}`),
           );
@@ -1401,7 +1580,7 @@ function buildApp(
     }
     if (target) {
       const direct: SendTarget = {
-        key: (event) => targetWindow?.sync ? targetWindow.key(event) : target.handleKey(event),
+        key: (event) => (targetWindow?.sync ? targetWindow.key(event) : target.handleKey(event)),
         describe: () => target.session?.title || "pane",
       };
       dispatchTarget ??= createKeyDispatcher(dispatchSentKey, bindings.activeCommand);
@@ -1452,6 +1631,7 @@ function buildApp(
           "pane.send-keys",
           commands.run(command("pane.send-keys", { keys: values[0] ?? "" })),
           showCommandError,
+          rootRuntime,
         );
         setPromptRequest(null);
       },
@@ -1482,6 +1662,12 @@ function buildApp(
     // runs, not when the table is built.
     "pane.split": runCommand,
     "pane.open-plugin": runCommand,
+    "process-plugin.pane.open": runCommand,
+    "process-plugin.action.invoke": (value) =>
+      session.run(value).pipe(
+        Effect.asVoid,
+        Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
+      ),
     "pane.next": runCommand,
     "pane.last": runCommand,
     "pane.focus": runCommand,
@@ -1489,6 +1675,7 @@ function buildApp(
     "pane.set-descriptor": runCommand,
     "pane.resize": runCommand,
     "pane.resize-divider": runCommand,
+    "pane.set-size": runCommand,
     "pane.zoom": runCommand,
     "pane.float": runCommand,
     "pane.dock-left": runCommand,
@@ -1505,19 +1692,31 @@ function buildApp(
       Effect.suspend(() => {
         const target = sendKeysTarget(pane, dispatch === true);
         if (!target) return Effect.fail(new CommandError({ message: "no pane to send to" }));
-        const error = sendKeys(
-          target,
-          keys,
-          parseKeyStrokes.bind(null, bindings.keymap),
-        );
-        return error
-          ? Effect.fail(new CommandError({ message: error.message }))
-          : Effect.void;
+        const error = sendKeys(target, keys, parseKeyStrokes.bind(null, bindings.keymap));
+        return error ? Effect.fail(new CommandError({ message: error.message })) : Effect.void;
       }),
-    "pane.capture": () =>
-      Effect.sync(() => {
-        openCapture();
-        return "";
+    "pane.capture": ({ session, pane, current }) =>
+      Effect.suspend(() => {
+        // Human keybind: no target → open the capture overlay (pty panes;
+        // plugin panes use the CLI / remote path below).
+        if (session === undefined && pane === undefined && current !== true) {
+          openCapture();
+          return Effect.succeed("");
+        }
+        // Daemon already answered session-backed panes and rewrote `--current`
+        // to an explicit pane id. Anything still here is a sessionless leaf.
+        const id = pane ?? spaces.activeWindow?.focused?.id;
+        if (id === undefined)
+          return Effect.fail(new CommandError({ message: "no pane to capture" }));
+        const target = findPane(id);
+        if (!target) return Effect.fail(new CommandError({ message: `pane '${id}' not found` }));
+        if (target.session !== null)
+          return Effect.succeed(captureSpan(target.session.term, "visible"));
+        if (!(target instanceof ComponentPane))
+          return Effect.fail(
+            new CommandError({ message: `pane '${id}' has no capturable content` }),
+          );
+        return Effect.succeed(capturePluginPane(target));
       }),
     "pane.list": runCommand,
     "pane.current": runCommand,
@@ -1624,6 +1823,13 @@ function buildApp(
           });
         }
         changeOption(option, !optionValue(option, spec));
+        if (option === "sidebar.open") {
+          // Sidebar width changes paneHost via Yoga after this turn; wait one
+          // frame so workspaceContext.size matches the new host before we ask
+          // niri to rescale column widths.
+          yield* Effect.sleep("16 millis");
+          syncScrollViewport();
+        }
       }),
     "config.adjust": ({ name, by }) =>
       Effect.gen(function* () {
@@ -1669,9 +1875,9 @@ function buildApp(
       }),
     "app.send-prefix": () =>
       Effect.sync(() => {
-        const strokes = parseKeyStrokes(bindings.keymap, "<leader>");
+        const strokes = parseKeyStrokes(bindings.keymap, "<prefix>");
         if (!strokes) return;
-        sendKeys(sendKeysTarget()!, "<leader>", () => strokes);
+        sendKeys(sendKeysTarget()!, "<prefix>", () => strokes);
       }),
     // Through the daemon and back, so that every client attached to this
     // workspace reloads — including the one the agent is not looking at.
@@ -1686,11 +1892,11 @@ function buildApp(
           pluginRuntime.reloader?.enable(plugin) ?? Effect.fail("plugin runtime is unavailable"),
       ).pipe(
         Effect.tap(() =>
-          Effect.promise(() => {
+          Effect.gen(function* () {
             const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
             const next = setPluginEnabled(configState(), path, true);
             setConfigState(next);
-            return saveConfig(next);
+            yield* saveConfigEffect(next).pipe(Effect.provideContext(rootRuntime));
           }),
         ),
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
@@ -1701,11 +1907,11 @@ function buildApp(
           pluginRuntime.reloader?.disable(plugin) ?? Effect.fail("plugin runtime is unavailable"),
       ).pipe(
         Effect.tap(() =>
-          Effect.promise(() => {
+          Effect.gen(function* () {
             const path = pluginRuntime.pathFor?.(plugin) ?? plugin;
             const next = setPluginEnabled(configState(), path, false);
             setConfigState(next);
-            return saveConfig(next);
+            yield* saveConfigEffect(next).pipe(Effect.provideContext(rootRuntime));
           }),
         ),
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
@@ -1732,7 +1938,8 @@ function buildApp(
   );
   const commandsProvider = providerRef<CommandsService>(commandsService);
   const commands = commandsProvider.value;
-  runProjectedCommand = (value) => runDetached(value._tag, commands.run(value), showCommandError);
+  runProjectedCommand = (value) =>
+    runDetached(value._tag, commands.run(value), showCommandError, rootRuntime);
 
   /**
    * One keybinding: a name, the keys that reach it, and the command it invokes
@@ -1789,32 +1996,31 @@ function buildApp(
 
   const COMMANDS: CommandSpec[] = [
     // Panes — splits keep the tmux-ish | and -, which read better than " and %.
-    bind("pane.split-row", ["<leader>|", "<leader>\\"], command("pane.split", { axis: "row" }), {
+    bind("pane.split-row", ["<prefix>|", "<prefix>\\"], command("pane.split", { axis: "row" }), {
       desc: "split left/right",
     }),
-    bind("pane.split-column", "<leader>-", command("pane.split", { axis: "column" }), {
+    bind("pane.split-column", "<prefix>-", command("pane.split", { axis: "column" }), {
       desc: "split top/bottom",
     }),
-    bind("pane.next", "<leader>o", command("pane.next"), { desc: "next pane" }),
+    bind("pane.next", "<prefix>o", command("pane.next"), { desc: "next pane" }),
     // tmux's last-pane: toggle to the pane you were just on.
-    bind("pane.last", "<leader>;", command("pane.last"), {
+    bind("pane.last", "<prefix>;", command("pane.last"), {
       desc: "toggle to the last-focused pane",
     }),
-    // Directional focus, tmux's select-pane. One command with a direction, four
-    // bindings that supply one each: two sequences per direction read better in
-    // the help as four rows than as one row listing eight keys. right has no
-    // letter because ^a l is tmux's last-window, which took the spot.
+    // Directional focus, tmux's select-pane — but with vim hjkl letters so the
+    // four directions stay symmetric. (tmux itself keeps ^a l for last-window;
+    // we put that on <prefix>L below so pane navigation can own the letter.)
     ...(
       [
         ["left", "h"],
         ["down", "j"],
         ["up", "k"],
-        ["right", null],
+        ["right", "l"],
       ] as const
     ).map(([direction, letter]) =>
       bind(
         `pane.focus-${direction}`,
-        letter === null ? `<leader>${direction}` : [`<leader>${letter}`, `<leader>${direction}`],
+        [`<prefix>${letter}`, `<prefix>${direction}`],
         command("pane.focus", { direction }),
         { desc: `focus pane ${direction}` },
       ),
@@ -1829,14 +2035,105 @@ function buildApp(
         ["right", "ctrl+right"],
       ] as const
     ).map(([direction, key]) =>
-      bind(`pane.resize-${direction}`, `<leader>${key}`, command("pane.resize", { direction }), {
+      bind(`pane.resize-${direction}`, `<prefix>${key}`, command("pane.resize", { direction }), {
         desc: `resize pane ${direction}`,
       }),
     ),
-    bind("pane.zoom", "<leader>z", command("pane.zoom"), {
+    // Vim CTRL-W window table under the mux prefix. Counts while pending
+    // (`^S ^W 80|`) are ChordMatcher grammar, not separate bindings.
+    // Cite: neovim window_commands; chord-matcher + key-invocation counts.
+    ...(
+      [
+        ["left", "h"],
+        ["down", "j"],
+        ["up", "k"],
+        ["right", "l"],
+      ] as const
+    ).map(([direction, letter]) =>
+      bind(
+        `pane.window-focus-${direction}`,
+        `<prefix>ctrl+w${letter}`,
+        command("pane.focus", { direction }),
+        { desc: `window: focus ${direction}`, group: "window" },
+      ),
+    ),
+    bind("pane.window-next", "<prefix>ctrl+ww", command("pane.next"), {
+      desc: "window: next pane",
+      group: "window",
+    }),
+    bind("pane.window-prev", "<prefix>ctrl+wshift+w", command("pane.last"), {
+      desc: "window: last pane",
+      group: "window",
+    }),
+    bind("pane.window-close", "<prefix>ctrl+wc", command("pane.close"), {
+      desc: "window: close pane",
+      group: "window",
+    }),
+    bind("pane.window-close-q", "<prefix>ctrl+wq", command("pane.close"), {
+      desc: "window: close pane",
+      group: "window",
+      hidden: true,
+    }),
+    bind("pane.window-split-row", "<prefix>ctrl+wv", command("pane.split", { axis: "row" }), {
+      desc: "window: split left/right",
+      group: "window",
+    }),
+    bind("pane.window-split-column", "<prefix>ctrl+ws", command("pane.split", { axis: "column" }), {
+      desc: "window: split top/bottom",
+      group: "window",
+    }),
+    bind("pane.window-zoom", "<prefix>ctrl+wo", command("pane.zoom"), {
+      desc: "window: zoom pane",
+      group: "window",
+    }),
+    bind("pane.window-break", "<prefix>ctrl+wshift+t", command("pane.break"), {
+      desc: "window: break to new window",
+      group: "window",
+    }),
+    bind(
+      "pane.window-balance",
+      "<prefix>ctrl+w=",
+      command("window.select-layout", { preset: "tiled" }),
+      { desc: "window: balance panes", group: "window" },
+    ),
+    {
+      name: "pane.window-width",
+      key: "<prefix>ctrl+w|",
+      desc: "window: set width (count = columns)",
+      group: "window",
+      run: Effect.gen(function* () {
+        const inv = yield* KeyInvocation;
+        const raw = inv.data.count;
+        const cells = typeof raw === "number" ? raw : undefined;
+        yield* commands.run(
+          command(
+            "pane.set-size",
+            cells === undefined ? { axis: "cols" } : { axis: "cols", cells },
+          ),
+        );
+      }),
+    },
+    {
+      name: "pane.window-height",
+      key: "<prefix>ctrl+w_",
+      desc: "window: set height (count = rows)",
+      group: "window",
+      run: Effect.gen(function* () {
+        const inv = yield* KeyInvocation;
+        const raw = inv.data.count;
+        const cells = typeof raw === "number" ? raw : undefined;
+        yield* commands.run(
+          command(
+            "pane.set-size",
+            cells === undefined ? { axis: "rows" } : { axis: "rows", cells },
+          ),
+        );
+      }),
+    },
+    bind("pane.zoom", "<prefix>z", command("pane.zoom"), {
       desc: "zoom the focused pane (Z in the tab)",
     }),
-    bind("pane.float", "<leader>f", command("pane.float"), {
+    bind("pane.float", "<prefix>f", command("pane.float"), {
       desc: "float the focused pane over the others, or put it back",
     }),
     bind("pane.dock-left", undefined, command("pane.dock-left")),
@@ -1844,28 +2141,28 @@ function buildApp(
     bind("pane.dock-top", undefined, command("pane.dock-top")),
     bind("pane.dock-bottom", undefined, command("pane.dock-bottom")),
     bind("pane.undock", undefined, command("pane.undock")),
-    bind("pane.swap-previous", "<leader>{", command("pane.swap", { to: "previous" }), {
+    bind("pane.swap-previous", "<prefix>{", command("pane.swap", { to: "previous" }), {
       desc: "swap pane with the previous one",
     }),
-    bind("pane.swap-next", "<leader>}", command("pane.swap", { to: "next" }), {
+    bind("pane.swap-next", "<prefix>}", command("pane.swap", { to: "next" }), {
       desc: "swap pane with the next one",
     }),
-    bind("pane.close", "<leader>x", command("pane.close"), {
+    bind("pane.close", "<prefix>x", command("pane.close"), {
       desc: "close pane (stops its backend if it has no other view)",
     }),
     // shift+c: plain ^a c is new window, and this is near pane.close's ^a x.
-    bind("pane.capture", "<leader>shift+c", command("pane.capture"), {
+    bind("pane.capture", "<prefix>shift+c", command("pane.capture"), {
       desc: "capture the focused pane (s saves)",
     }),
-    bind("pane.copy-mode", "<leader>[", command("pane.copy-mode"), {
+    bind("pane.copy-mode", "<prefix>[", command("pane.copy-mode"), {
       desc: "copy mode: review pane history (v selects, y copies)",
     }),
     // tmux's own paste-buffer and choose-buffer bindings: ^a ] pastes the top
     // of the server-side stack into the focused pane, ^a = picks one.
-    bind("buffer.paste", "<leader>]", command("buffer.paste"), {
+    bind("buffer.paste", "<prefix>]", command("buffer.paste"), {
       desc: "paste the top paste buffer into the focused pane",
     }),
-    bind("buffer.choose", "<leader>=", command("buffer.choose"), {
+    bind("buffer.choose", "<prefix>=", command("buffer.choose"), {
       desc: "choose a paste buffer (enter pastes, d deletes)",
     }),
     // Available from the palette; prefix+colon opens it.
@@ -1876,24 +2173,24 @@ function buildApp(
       "send keys to the focused pane (tmux send-keys)",
     ),
     // The binding tmux itself gives break-pane.
-    bind("pane.break", "<leader>!", command("pane.break")),
-    bindPrompt("pane.move", "<leader>shift+m", promptMovePane, "move pane to another space"),
+    bind("pane.break", "<prefix>!", command("pane.break")),
+    bindPrompt("pane.move", "<prefix>shift+m", promptMovePane, "move pane to another space"),
 
     // Windows.
-    bind("window.new", "<leader>c", command("window.new")),
-    bind("window.next", "<leader>n", command("window.next")),
-    bind("window.previous", "<leader>p", command("window.previous")),
-    // tmux's last-window, on tmux's own binding — which is also why focus-right
-    // no longer answers to ^a l.
-    bind("window.last", "<leader>l", command("window.last"), {
+    bind("window.new", "<prefix>c", command("window.new")),
+    bind("window.next", "<prefix>n", command("window.next")),
+    bind("window.previous", "<prefix>p", command("window.previous")),
+    // tmux's last-window. shift+l (not bare "L": capitals compile as the
+    // lowercase letter) so pane focus can keep hjkl.
+    bind("window.last", "<prefix>shift+l", command("window.last"), {
       desc: "toggle to the last window",
     }),
-    bindPrompt("window.rename", "<leader>,", promptRenameWindow, "rename window"),
-    bind("window.close", "<leader>&", command("window.close"), {
+    bindPrompt("window.rename", "<prefix>,", promptRenameWindow, "rename window"),
+    bind("window.close", "<prefix>&", command("window.close"), {
       desc: "kill window and its agents",
     }),
     // tmux's next-layout, on tmux's own binding.
-    bind("window.next-layout", "<leader>space", command("window.next-layout")),
+    bind("window.next-layout", "<prefix>space", command("window.next-layout")),
     // Each preset is addressable on its own, so a keymap can bind one directly —
     // tmux's select-layout <name>. One command, five bindings.
     ...LAYOUT_PRESETS.map((preset: LayoutPreset, i) =>
@@ -1904,14 +2201,14 @@ function buildApp(
         i === 0 ? {} : { desc: `arrange panes: ${preset}`, hidden: true },
       ),
     ),
-    bind("window.synchronize-panes", "<leader>y", command("window.synchronize-panes")),
+    bind("window.synchronize-panes", "<prefix>y", command("window.synchronize-panes")),
     // 1..9 select by the window's own number, which is why that number is stable
     // rather than a position in the list. Nine bindings supplying an argument to
     // one command, which is exactly tmux's `bind-key 1 select-window -t 1`.
     ...Array.from({ length: 9 }, (_, i) =>
       bind(
         `window.select-${i + 1}`,
-        `<leader>${i + 1}`,
+        `<prefix>${i + 1}`,
         command("window.select", { number: i + 1 }),
         {
           desc: i === 0 ? "select window 1..9" : `select window ${i + 1}`,
@@ -1926,25 +2223,25 @@ function buildApp(
     // each harness plugin through the scoped binding registry.
     // shift+k: plain ^a k is directional pane focus, and killing an agent is not
     // something to put one keystroke away from "move up" anyway.
-    bind("session.kill", "<leader>shift+k", command("session.kill"), {
+    bind("session.kill", "<prefix>shift+k", command("session.kill"), {
       desc: "stop the focused agent",
     }),
-    bind("session.restart", "<leader>shift+r", command("session.restart"), {
+    bind("session.restart", "<prefix>shift+r", command("session.restart"), {
       desc: "restart the focused agent",
     }),
 
     // Spaces.
-    bindPrompt("space.new", "<leader>s", promptNewSpace),
-    bindPrompt("space.rename", "<leader>r", promptRenameSpace, "rename space"),
-    bind("space.next", "<leader>)", command("space.next")),
-    bind("space.previous", "<leader>(", command("space.previous")),
+    bindPrompt("space.new", "<prefix>s", promptNewSpace),
+    bindPrompt("space.rename", "<prefix>r", promptRenameSpace, "rename space"),
+    bind("space.next", "<prefix>)", command("space.next")),
+    bind("space.previous", "<prefix>(", command("space.previous")),
     bind("space.close", undefined, command("space.close")),
 
     // App.
     // A binding names the option; there is no `sidebar.toggle` verb behind it.
     // The name is still the binding's identity, so the keybind editor and the
     // palette read exactly as they did when it was a command of its own.
-    bind("sidebar.toggle", "<leader>b", command("config.toggle", { name: "sidebar.open" }), {
+    bind("sidebar.toggle", "<prefix>b", command("config.toggle", { name: "sidebar.open" }), {
       desc: "toggle sidebar",
       group: "global",
     }),
@@ -1954,18 +2251,19 @@ function buildApp(
       command("config.toggle", { name: "sidebar.agentsOnly" }),
       { desc: "show only panes running agent CLIs", group: "global" },
     ),
-    bind("app.help", ["<leader>?", "<leader>/"], command("app.help")),
-    bind("app.command-palette", "<leader>:", command("app.command-palette")),
+    // `<prefix>/` is reserved for editor.find-file (project picker). Keep help on `?` only.
+    bind("app.help", "<prefix>?", command("app.help")),
+    bind("app.command-palette", "<prefix>:", command("app.command-palette")),
     // shift+s, not "S": a bare capital compiles to the same sequence as the
     // lowercase one, so this was silently shadowed by space.new's ^a s.
-    bind("app.settings", "<leader>shift+s", command("app.settings")),
+    bind("app.settings", "<prefix>shift+s", command("app.settings")),
     // The prefix twice, written as the token so it follows a rebind — and sent
     // as whatever bytes that prefix actually produces. Not offered in the
     // editor: its sequence is the prefix, and the prefix row already edits that.
-    bind("app.send-prefix", "<leader><leader>", command("app.send-prefix"), {
+    bind("app.send-prefix", "<prefix><prefix>", command("app.send-prefix"), {
       fixed: true,
     }),
-    bind("app.quit", "<leader>q", command("app.quit")),
+    bind("app.quit", "<prefix>q", command("app.quit")),
   ];
 
   /**
@@ -1980,281 +2278,12 @@ function buildApp(
     // of them: it decides what an unbound key means, because that depends on
     // what fills it — a terminal wants the bytes a child would have read, a
     // component wants the event left alone for the renderable holding focus.
-    if (resolveUnhandled(contextsProvider.value.all(), event)) return true;
+    const contexts = contextsProvider.value.all();
+    if (resolveUnhandled(contexts, event)) return true;
+    // Overlay `handle` returning false means "leave it for the focused
+    // input", not "try the PTY next" — see overlayBlocksPane.
+    if (overlayBlocksPane(contexts)) return false;
     return activeWin()?.key(event) ?? false;
-  }
-
-  function paletteKey(event: KeyEvent) {
-    const count = filteredPalette().length;
-    switch (event.name) {
-      case "up":
-        if (count) setPaletteSelected((s) => Math.max(0, s - 1));
-        return true;
-      case "down":
-        if (count) setPaletteSelected((s) => Math.min(count - 1, s + 1));
-        return true;
-      case "pageup":
-        if (count) setPaletteSelected((s) => Math.max(0, s - 10));
-        return true;
-      case "pagedown":
-        if (count) setPaletteSelected((s) => Math.min(count - 1, s + 10));
-        return true;
-    }
-    // Let text and Enter reach the focused input renderable.
-    return false;
-  }
-
-  function cycleSettingsSection(step: 1 | -1) {
-    const sections = settingsSections(pluginSettings(), optionsProvider.value.all());
-    const i = sections.indexOf(settingsSection());
-    setSettingsSection(sections[(i + step + sections.length) % sections.length]!);
-    setSettingsSelected(0);
-  }
-
-  /** Move the keybind selection and keep it on screen. */
-  function moveKeybind(delta: number) {
-    const count = keybindTargets(groups()).length;
-    const index = Math.max(0, Math.min(count - 1, settingsSelected() + delta));
-    setSettingsSelected(index);
-    const box = keybindList;
-    if (!box) return;
-    // The list is several screens long, so follow the selection rather than
-    // leaving it to be moved off the top of a window it cannot scroll itself.
-    const line = keybindLine(groups(), index);
-    const height = box.viewport?.height ?? box.height;
-    if (line < box.scrollTop) box.scrollTop = line;
-    else if (line >= box.scrollTop + height) box.scrollTop = line - height + 1;
-  }
-
-  function keybindsKey(event: KeyEvent) {
-    switch (event.name) {
-      case "j":
-      case "down":
-        return moveKeybind(1);
-      case "k":
-      case "up":
-        return moveKeybind(-1);
-      case "pagedown":
-        return moveKeybind(10);
-      case "pageup":
-        return moveKeybind(-10);
-      case "return":
-      case "enter":
-        return keybindTarget() === null ? capturePrefix() : openKeybindPicker(false);
-      case "a":
-        return keybindTarget() === null ? capturePrefix() : openKeybindPicker(true);
-      case "u":
-        return resetBinding(false);
-      case "d":
-        return resetBinding(true);
-      case "s":
-        void saveSettings();
-        return;
-    }
-  }
-
-  /**
-   * Keys while an item is being edited (focus === "editing").
-   *
-   * Escape is the only key this owns for a string or number: cursor movement,
-   * typing, backspace and Enter all belong to the row's own focused `<input>`,
-   * so everything else returns `false` and falls through to it. A boolean has
-   * no input to fall through to — there is nothing to type, only a value to
-   * flip — so this claims the four directions for it directly.
-   */
-  function settingsEditKey(event: KeyEvent): boolean {
-    const option = selectedOption();
-    const spec = option ? specFor(option) : undefined;
-    if (!option || !spec) {
-      setSettingsFocus("items");
-      return true;
-    }
-    if (event.name === "escape") {
-      const original = editOriginal();
-      // A boolean or enum autosaves on every change (below), so undoing one has
-      // to write the reversion back too — otherwise disk keeps the last change
-      // while the screen shows the one from before editing.
-      if (original !== null) {
-        changeOption(option, original);
-        if (spec.kind === "boolean" || spec.kind === "enum") saveOptions();
-      }
-      setEditOriginal(null);
-      setEditText(undefined);
-      setSettingsFocus("items");
-      setOverlay("none");
-      return true;
-    }
-    if (spec.kind === "string" || spec.kind === "number") return false;
-    if (event.name === "return" || event.name === "enter") {
-      setEditOriginal(null);
-      setSettingsFocus("items");
-      return true;
-    }
-    if (spec.kind === "enum") {
-      // An enum has a "which way": left/up steps back through the list,
-      // right/down steps forward.
-      if (event.name === "left" || event.name === "up") adjustOption(option, -1);
-      else if (event.name === "right" || event.name === "down") adjustOption(option, 1);
-      else return true;
-      saveOptions();
-      return true;
-    }
-    // boolean: any of the four directions flips it — there is no "which way".
-    if (["left", "right", "up", "down"].includes(event.name ?? "")) {
-      adjustOption(option, 1);
-      saveOptions();
-    }
-    return true;
-  }
-
-  /**
-   * Whether the key was consumed here. `false` means a focused control (a
-   * plugin section's own input, or the edit row's `<input>`) should receive
-   * it instead — the caller must not preventDefault, or that control never
-   * sees a character.
-   *
-   * Escape/`q` close the window from either list, but only as a default: a
-   * plugin section that explicitly claims a key (returning `true`, as the
-   * auth tab does to cancel out of editing rather than close) settles it
-   * right there. Checking for that claim ahead of the close shortcut is what
-   * keeps "cancel editing" from also closing the whole window on the same
-   * keystroke. Escape from "editing" is different again — see
-   * `settingsEditKey` — it undoes the value in progress rather than closing.
-   */
-  function settingsKey(event: KeyEvent): boolean {
-    if (settingsFocus() === "editing") return settingsEditKey(event);
-
-    if (settingsFocus() === "sections") {
-      switch (event.name) {
-        case "escape":
-        case "q":
-          setOverlay("none");
-          return true;
-        case "j":
-        case "down":
-          cycleSettingsSection(1);
-          return true;
-        case "k":
-        case "up":
-          cycleSettingsSection(-1);
-          return true;
-        case "tab":
-        case "right":
-        case "return":
-        case "enter":
-          setSettingsFocus("items");
-          return true;
-      }
-      return true;
-    }
-
-    // settingsFocus() === "items"
-    const pluginSection = pluginSettings().find((section) => section.id === settingsSection());
-    if (pluginSection) {
-      const handled = pluginSection.keys?.(event, settingsSelected());
-      if (handled === false) return false;
-      if (handled === true) return true;
-      if (event.name === "escape" || event.name === "q") {
-        setOverlay("none");
-        return true;
-      }
-      if (event.name === "tab" || event.name === "left") {
-        setSettingsFocus("sections");
-        return true;
-      }
-      if (event.name === "j" || event.name === "down")
-        setSettingsSelected((s) => Math.min(Math.max(0, pluginSection.rows() - 1), s + 1));
-      if (event.name === "k" || event.name === "up") setSettingsSelected((s) => Math.max(0, s - 1));
-      return true;
-    }
-    if (event.name === "escape" || event.name === "q") {
-      setOverlay("none");
-      return true;
-    }
-    if (event.name === "tab" || event.name === "left") {
-      setSettingsFocus("sections");
-      return true;
-    }
-    // The keybind tab edits sequences rather than values, so it has its own keys.
-    if (settingsSection() === "keybinds") {
-      keybindsKey(event);
-      return true;
-    }
-    const fields = settingsFields(allOptions(), settingsSection(), optionsProvider.value.all());
-    switch (event.name) {
-      case "j":
-      case "down":
-        setSettingsSelected((s) => Math.min(Math.max(0, fields.length - 1), s + 1));
-        return true;
-      case "k":
-      case "up":
-        setSettingsSelected((s) => Math.max(0, s - 1));
-        return true;
-      case "right":
-      case "return":
-      case "enter": {
-        const option = selectedOption();
-        if (!option) return true;
-        // An option whose value is chosen from a list cannot be edited in
-        // place, so the row belongs to the command of the same name and
-        // whoever owns the option registers it. `agent.model` is the
-        // harness's; core knows only that a command with the option's name
-        // exists.
-        if (registeredBindings().some((binding) => binding.name === option)) {
-          bindings.dispatch(option);
-          return true;
-        }
-        const spec = specFor(option);
-        if (!spec || (spec.kind === "string" && !spec.editable)) return true;
-        const value = optionValue(option, spec);
-        setEditOriginal(value);
-        setEditText(spec.kind === "number" ? String(value) : undefined);
-        setSettingsFocus("editing");
-        return true;
-      }
-      case "s":
-        void saveSettings();
-        return true;
-    }
-    return true;
-  }
-
-  function keybindPickerKey(event: KeyEvent) {
-    const view = keybindPicker();
-    if (!view) return true;
-    if (event.name === "escape") {
-      if (view.capturing) {
-        setCapturing(false);
-        setKeybindPicker((current) => (current ? { ...current, capturing: false } : current));
-      } else {
-        setKeybindPicker(null);
-      }
-      return true;
-    }
-    if (view.capturing) return true;
-    if (event.name === "j" || event.name === "down") {
-      setKeybindPicker((current) =>
-        current
-          ? {
-              ...current,
-              selected: Math.min(current.entries.length - 1, current.selected + 1),
-            }
-          : current,
-      );
-      return true;
-    }
-    if (event.name === "k" || event.name === "up") {
-      setKeybindPicker((current) =>
-        current ? { ...current, selected: Math.max(0, current.selected - 1) } : current,
-      );
-      return true;
-    }
-    if (event.name === "return" || event.name === "enter") {
-      const command = view.entries[view.selected]?.name;
-      if (command) captureBinding(command, view.add);
-      return true;
-    }
-    return false;
   }
 
   /** Write the config file. Answers with the failure message, because the two
@@ -2286,6 +2315,15 @@ function buildApp(
     keys: config.keys,
     onUnhandled,
     onError: showCommandError,
+    runtime: rootRuntime,
+  });
+  // Sticky minimode: after `^S ^W`, bare h/j/|/… keep firing window maps until
+  // Escape. Same ChordMatcher API the editor uses for a future sticky `g`.
+  // Cite: chord-matcher.ts ChordMode; hydra.nvim.
+  rawBindings.chords.registerMode({
+    id: "amux.window",
+    strokes: ["<prefix>", "ctrl+w"],
+    desc: "window",
   });
   setConflicts(rawBindings.conflicts());
   const bindingTable = contributions.table<CommandSpec>();
@@ -2338,35 +2376,44 @@ function buildApp(
    *  "hint-delay" fiber slot without the other's state going stale. */
   function armHintVisibility(triggered: boolean, stillTriggered: () => boolean) {
     runFiber("hint-delay", Effect.void);
+    const timeoutMs = Duration.toMillis(bindings.chords.timeoutlen());
     const visibility = hintVisibility(
       triggered,
       options()["appearance.whichKeyHints"],
       options()["appearance.whichKeyDelay"],
+      timeoutMs,
     );
     if (!visibility.visible && visibility.delayMs === 0) {
       setHintsVisible(false);
       return;
     }
-    if (visibility.visible) {
+    const show = () => {
       setHintsVisible(true);
+      // Full timeoutlen from when the panel appears — otherwise a long
+      // whichKeyDelay races the chord wait and the panel only flashes.
+      bindings.chords.rearmTimeout();
+    };
+    if (visibility.visible) {
+      show();
       return;
     }
     setHintsVisible(false);
-    scheduleHintVisibility(runFiber, visibility.delayMs, stillTriggered, () => setHintsVisible(true));
+    scheduleHintVisibility(runFiber, visibility.delayMs, stillTriggered, show);
   }
 
   function updateHintVisibility(sequence: readonly { display: string }[]) {
     setPendingParts(sequence);
-    armHintVisibility(
-      sequence.length > 0,
-      () => pendingParts().length > 0 || showOnEntryActive(),
-    );
+    armHintVisibility(sequence.length > 0, () => pendingParts().length > 0 || showOnEntryActive());
   }
 
-  // Only source of truth for the hint line and the which-key panel: what the
-  // keymap will actually do next, so a rebinding shows up in both without
-  // touching this file.
-  const disposePendingSequence = bindings.keymap.on("pendingSequence", updateHintVisibility);
+  // showcmd + which-key pending: ChordMatcher is the only multi-key authority.
+  // Count digits (`^S ^W 80`) refresh showcmd but do not enter which-key's trie.
+  const disposeChordPending = bindings.chords.subscribe((strokes) => {
+    updateHintVisibility(strokes.map((display) => ({ display })));
+  });
+  const disposeChordCount = bindings.subscribeCount(() => {
+    setCountDigits(bindings.countDigits());
+  });
   const disposeHintRearm = bindings.keymap.intercept("key:after", (input) => {
     if (!input.handled || !rearmHintsOnKeyActive()) return;
     armHintVisibility(true, () => pendingParts().length > 0 || showOnEntryActive());
@@ -2405,6 +2452,7 @@ function buildApp(
     // Before the redraw: pane borders and wheel scrolling read these values
     // imperatively, from renderables with no path back into this graph.
     applyOptions(optionsRuntime, options());
+    setTheme(options()["appearance.theme"]);
     syncPaneFrame();
   });
 
@@ -2417,9 +2465,12 @@ function buildApp(
     ),
   );
 
-  const pending = createMemo(() =>
-    pendingParts().length ? [formatSequence(pendingParts(), configState().keys.leader)] : [],
-  );
+  const pending = createMemo(() => {
+    if (pendingParts().length === 0) return [];
+    const sequence = formatSequence(pendingParts(), bindings.leaders());
+    const digits = countDigits();
+    return [digits === "" ? sequence : `${sequence} ${digits}`];
+  });
   const hints = createMemo(() =>
     nextKeys(bindings, bindings.commands(), contexts(), pendingParts()),
   );
@@ -2437,7 +2488,7 @@ function buildApp(
 
   function submitPalette() {
     const entry = filteredPalette()[paletteSelected()];
-    if (!entry) return;
+    if (!entry || !mayDispatchPaletteEntry(entry)) return;
     setOverlay("none");
     bindings.dispatch(entry.name);
   }
@@ -2567,118 +2618,6 @@ function buildApp(
     ),
   });
 
-  const settingsPanel = (): OverlayOccupant => ({
-    id: "amux.settings",
-    title: "settings",
-    visible: () => overlay() === "settings",
-    component: (props) => (
-      <Settings
-        options={allOptions()}
-        section={settingsSection()}
-        selected={settingsSelected()}
-        groups={groups()}
-        leader={configState().keys.leader}
-        conflicts={conflicts()}
-        capturing={capturing()}
-        width={props.width}
-        height={props.height}
-        dirty={settingsDirty()}
-        error={settingsError()}
-        onKeybindList={(box) => {
-          keybindList = box;
-        }}
-        pluginSections={pluginSettings()}
-        registeredOptions={optionsProvider.value.all()}
-        focus={settingsFocus()}
-        editText={editText()}
-        onEditInput={(value) => {
-          const option = selectedOption();
-          const spec = option ? specFor(option) : undefined;
-          if (!option || !spec) return;
-          if (spec.kind === "number") {
-            setEditText(value);
-            const parsed = Number(value);
-            if (!Number.isFinite(parsed)) return;
-            const coerced = coerceOption(spec, parsed);
-            if (coerced === undefined) return;
-            changeOption(option, coerced);
-            saveOptions();
-            return;
-          }
-          changeOption(option, value);
-        }}
-        onEditSubmit={() => {
-          setEditOriginal(null);
-          setEditText(undefined);
-          setSettingsFocus("items");
-          saveOptions();
-        }}
-      />
-    ),
-  });
-
-  const keybindPickerPanel = (): OverlayOccupant => ({
-    id: "amux.keybind-picker",
-    title: "keybind picker",
-    visible: () => keybindPicker() !== null,
-    component: (props) => (
-      <Show when={keybindPicker()}>
-        {() => (
-          <KeybindPicker
-            view={keybindPicker()!}
-            width={props.width}
-            onSubmit={() => {
-              const current = keybindPicker();
-              const command = current?.entries[current.selected]?.name;
-              if (command && current) captureBinding(command, current.add);
-            }}
-            onInput={(query) =>
-              setKeybindPicker((current) =>
-                current
-                  ? {
-                      ...current,
-                      query,
-                      selected: 0,
-                      entries: sortKeybindEntries(filterPaletteEntries(allPaletteEntries(), query)),
-                    }
-                  : current,
-              )
-            }
-          />
-        )}
-      </Show>
-    ),
-  });
-
-  function paletteOverlayKeys(event: KeyEvent): boolean {
-    if (event.name === "escape") {
-      setOverlay("none");
-      return true;
-    }
-    return paletteKey(event);
-  }
-
-  const palettePanel = (): OverlayOccupant => ({
-    id: "amux.palette",
-    // Same rung as settings: one signal holds both, so they cannot be up at
-    // the same time.
-    title: "commands",
-    visible: () => overlay() === "palette",
-    component: (props) => (
-      <CommandPalette
-        entries={filteredPalette()}
-        query={paletteQuery()}
-        selected={paletteSelected()}
-        width={props.width}
-        onInput={(value) => {
-          setPaletteQuery(value);
-          setPaletteSelected(0);
-        }}
-        onSubmit={submitPalette}
-      />
-    ),
-  });
-
   // ↑↓ picks, enter pastes the selection into the focused pane, d deletes
   // it, escape closes. With no buffers there is nothing to pick, so only
   // escape does anything.
@@ -2755,60 +2694,6 @@ function buildApp(
     ),
   });
 
-  function promptOverlayKeys(event: KeyEvent): boolean {
-    const request = promptRequest();
-    if (!request) return true;
-    // A notice is a message, not a form: nothing is focused to hand the
-    // key to, so every key is consumed here and enter/escape dismiss it.
-    if (request.notice) {
-      if (event.name === "escape" || event.name === "return" || event.name === "enter") {
-        request.resolve(null);
-      }
-      return true;
-    }
-    // Escape cancels; everything else belongs to the focused input, so
-    // leave the event alone and let focus routing deliver it.
-    if (event.name === "escape") {
-      request.resolve(null);
-      return true;
-    }
-    return false;
-  }
-
-  const promptPanel = (): OverlayOccupant => ({
-    id: "amux.prompt",
-    // Top of the stack: a prompt is opened *by* the overlays below it, and
-    // the answer it is waiting for is the only thing the keyboard is for
-    // while it is up.
-    title: "prompt",
-    visible: () => promptRequest() !== null,
-    component: (props) => (
-      <Show when={promptRequest()} keyed>
-        {(request: PromptRequest) => (
-          <Prompt request={request} width={props.width} error={promptError()} />
-        )}
-      </Show>
-    ),
-  });
-
-  const hintsPanel = (): FloatOccupant => ({
-    id: "amux.hints",
-    title: "which-key",
-    // Only while a sequence is half-typed, and never over a modal — an
-    // overlay that is already answering "what now?" does not need a second
-    // one on top of it.
-    visible: () => hintsVisible() && hints().length > 0 && slots.topOverlay() === null,
-    component: (props) => (
-      <Hints
-        groups={hints()}
-        pending={pending().join(" ")}
-        left={props.left}
-        width={props.width}
-        height={props.height}
-      />
-    ),
-  });
-
   function disconnectedOverlayKeys(event: KeyEvent): boolean {
     if (event.name === "escape" || event.name === "q") shutdown();
     return true;
@@ -2835,8 +2720,14 @@ function buildApp(
         }}
         title=" daemon disconnected "
       >
-        <text style={{ fg: theme.red, height: 1 }}>The daemon has stopped.</text>
-        <text style={{ height: 1 }}>Session is gone; every command</text>
+        <text style={{ fg: theme.red, height: 1 }}>
+          {disconnectReason() ? "Disconnected: " + disconnectReason() : "The daemon has stopped."}
+        </text>
+        <text style={{ height: 1 }}>
+          {disconnectReason()
+            ? "The daemon may still be running; reattach to resume."
+            : "Session is gone; every command"}
+        </text>
         <text style={{ fg: theme.overlay1, height: 1, marginTop: 1 }}>
           ^a q / q / escape — exit
         </text>
@@ -2844,56 +2735,13 @@ function buildApp(
     ),
   });
 
-  // Only Escape dismisses: swallowing every key would eat the very next
-  // command a user types after seeing an error, not just the error itself.
-  function errorOverlayKeys(event: KeyEvent): boolean {
-    if (event.name !== "escape") return false;
-    setCommandError(null);
-    return true;
-  }
-
-  const errorPanel = (): OverlayOccupant => ({
-    id: "amux.error",
-    title: "error",
-    visible: () => commandError() !== null,
-    component: () => (
-      <box
-        style={{
-          position: "absolute",
-          width: "100%",
-          // Border rows are part of the box, so a bordered banner holding
-          // one line of text is three rows tall. Asking for one row put the
-          // message on the bottom border — below the screen, where nothing
-          // reported a command failure at all.
-          height: 3,
-          backgroundColor: theme.base,
-          border: true,
-          borderColor: theme.red,
-          zIndex: 500,
-          left: 0,
-          bottom: 0,
-        }}
-      >
-        <text style={{ fg: theme.red, height: 1 }}>{commandError() ?? ""}</text>
-      </box>
-    ),
-  });
-
   // Slot placement lives here, beside the occupant, as the register call's
   //  discriminant — never embedded in the occupant itself.
+  // Settings and command-palette chrome register from file-backed PluginEntries
+  // (`plugins/settings.tsx`, `plugins/commands.tsx`).
   const panelGroups = {
     "amux.windows": (): readonly SlotsRegisterValue[] => [
       { slot: "top.center", occupant: windowsPanel() },
-    ],
-    "amux.settings": (): readonly SlotsRegisterValue[] => [
-      { slot: "overlay", occupant: settingsPanel(), priority: 10 },
-      { slot: "overlay", occupant: keybindPickerPanel(), priority: 15 },
-    ],
-    "amux.commands": (): readonly SlotsRegisterValue[] => [
-      { slot: "overlay", occupant: palettePanel(), priority: 10 },
-      { slot: "overlay", occupant: promptPanel(), priority: 40 },
-      { slot: "float", occupant: hintsPanel() },
-      { slot: "overlay", occupant: errorPanel(), priority: 55 },
     ],
     "amux.sessions": (): readonly SlotsRegisterValue[] => [
       { slot: "overlay", occupant: buffersPanel(), priority: 20 },
@@ -2914,45 +2762,6 @@ function buildApp(
   // of forcing them into named commands. `rebindable: false` because there is
   // nothing here a keybind editor could show or remap.
   const contextGroups = {
-    "amux.settings": (): readonly ContextSpec[] => [
-      {
-        id: "amux.settings",
-        active: () => overlay() === "settings",
-        priority: CONTEXT_PRIORITY.OVERLAY + 10,
-        rebindable: false,
-        handle: settingsKey,
-      },
-      {
-        id: "amux.keybind-picker",
-        active: () => keybindPicker() !== null,
-        priority: CONTEXT_PRIORITY.OVERLAY + 15,
-        rebindable: false,
-        handle: keybindPickerKey,
-      },
-    ],
-    "amux.commands": (): readonly ContextSpec[] => [
-      {
-        id: "amux.palette",
-        active: () => overlay() === "palette",
-        priority: CONTEXT_PRIORITY.OVERLAY + 10,
-        rebindable: false,
-        handle: paletteOverlayKeys,
-      },
-      {
-        id: "amux.prompt",
-        active: () => promptRequest() !== null,
-        priority: CONTEXT_PRIORITY.OVERLAY + 40,
-        rebindable: false,
-        handle: promptOverlayKeys,
-      },
-      {
-        id: "amux.error",
-        active: () => commandError() !== null,
-        priority: CONTEXT_PRIORITY.OVERLAY + 55,
-        rebindable: false,
-        handle: errorOverlayKeys,
-      },
-    ],
     "amux.sessions": (): readonly ContextSpec[] => [
       {
         id: "amux.buffers",
@@ -3065,7 +2874,8 @@ function buildApp(
     // through the pane's terminal, and a freed terminal cannot be caught.
     if (copyMode.active) copyMode.exit();
     spaces.refreshChrome();
-    disposePendingSequence();
+    disposeChordPending();
+    disposeChordCount();
     disposeHintRearm();
     rawBindings.dispose();
     renderer.removeListener("resize", onResize);
@@ -3078,6 +2888,111 @@ function buildApp(
     for (const entry of optionsProvider.value.all())
       merged[entry.name] = optionValue(entry.name, entry.value);
     return merged as Options & Record<string, OptionValue>;
+  };
+
+  const overlayService = makeOverlay(overlay, setOverlay);
+
+  const settingsChrome: SettingsChrome = {
+    section: settingsSection,
+    setSection: setSettingsSection,
+    selected: settingsSelected,
+    setSelected: setSettingsSelected,
+    focus: settingsFocus,
+    setFocus: setSettingsFocus,
+    editText,
+    setEditText,
+    editOriginal,
+    setEditOriginal,
+    dirty: settingsDirty,
+    error: settingsError,
+    capturing,
+    setCapturing,
+    conflicts,
+    prefix: () => configState().keys.prefix,
+    leader: () => configState().keys.leader,
+    groups,
+    allOptions,
+    pluginSections: pluginSettings,
+    registeredOptions: () => optionsProvider.value.all(),
+    registeredBindings,
+    keybindPicker,
+    setKeybindPicker,
+    setKeybindList: (box) => {
+      keybindList = box;
+    },
+    keybindList: () => keybindList,
+    changeOption,
+    adjustOption,
+    saveOptions,
+    saveSettings: () => {
+      void saveSettings();
+    },
+    specFor,
+    selectedOption,
+    optionValue,
+    openKeybindPicker,
+    capturePrefix,
+    captureLeader,
+    resetBinding,
+    captureBinding,
+    dispatchBinding: (name) => {
+      bindings.dispatch(name);
+    },
+    hasBinding: (name) => registeredBindings().some((binding) => binding.name === name),
+    onEditInput: (value) => {
+      const option = selectedOption();
+      const spec = option ? specFor(option) : undefined;
+      if (!option || !spec) return;
+      if (spec.kind === "number") {
+        setEditText(value);
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) return;
+        const coerced = coerceOption(spec, parsed);
+        if (coerced === undefined) return;
+        changeOption(option, coerced);
+        saveOptions();
+        return;
+      }
+      changeOption(option, value);
+    },
+    onEditSubmit: () => {
+      setEditOriginal(null);
+      setEditText(undefined);
+      setSettingsFocus("items");
+      saveOptions();
+    },
+    onKeybindPickerInput: (query) =>
+      setKeybindPicker((current) =>
+        current
+          ? {
+              ...current,
+              query,
+              selected: 0,
+              entries: sortKeybindEntries(
+                filterPaletteEntries(allPaletteEntries(), query, { includeHidden: true }),
+              ),
+            }
+          : current,
+      ),
+  };
+
+  const commandsChrome: CommandsChrome = {
+    query: paletteQuery,
+    setQuery: setPaletteQuery,
+    selected: paletteSelected,
+    setSelected: setPaletteSelected,
+    entries: filteredPalette,
+    submit: submitPalette,
+    prompt: promptRequest,
+    promptError,
+    setPromptError,
+    commandError,
+    clearCommandError: () => setCommandError(null),
+    showCommandConsole,
+    pending: () => pending().join(" "),
+    hintsVisible,
+    hints,
+    coreBindings: () => COMMANDS,
   };
 
   const panel = createPanelContext({
@@ -3131,7 +3046,14 @@ function buildApp(
     // handed a panel that draws nowhere.
     definePlugin({
       id: "amux.registry.client",
-      provide: [PanelTag, SessionStreamTag, RemoteEventsTag],
+      provide: [
+        PanelTag,
+        SessionStreamTag,
+        RemoteEventsTag,
+        OverlayTag,
+        SettingsChromeTag,
+        CommandsChromeTag,
+      ],
       effect: (ctx) =>
         Effect.sync(() => {
           ctx.provide(PanelTag, panel);
@@ -3140,6 +3062,9 @@ function buildApp(
             sync: (id) => session.attach.sync(id),
           });
           ctx.provide(RemoteEventsTag, { events: session.events });
+          ctx.provide(OverlayTag, overlayService);
+          ctx.provide(SettingsChromeTag, settingsChrome);
+          ctx.provide(CommandsChromeTag, commandsChrome);
         }),
     }),
   ];
@@ -3178,34 +3103,6 @@ function buildApp(
         ),
     }),
     definePlugin({
-      id: "amux.settings",
-      inject: [SlotsTag, ContextsTag],
-      effect: () =>
-        Effect.gen(function* () {
-          const slots = yield* SlotsTag;
-          const contexts = yield* ContextsTag;
-          yield* Effect.forEach(panelGroups["amux.settings"](), (entry) => slots.register(entry));
-          yield* Effect.forEach(contextGroups["amux.settings"](), (context) =>
-            contexts.register(context),
-          );
-        }),
-    }),
-    definePlugin({
-      id: "amux.commands",
-      inject: [SlotsTag, BindingsTag, ContextsTag],
-      effect: () =>
-        Effect.gen(function* () {
-          const slots = yield* SlotsTag;
-          const bindings = yield* BindingsTag;
-          const contexts = yield* ContextsTag;
-          yield* Effect.forEach(panelGroups["amux.commands"](), (entry) => slots.register(entry));
-          yield* Effect.forEach(COMMANDS, (binding) => bindings.register(binding));
-          yield* Effect.forEach(contextGroups["amux.commands"](), (context) =>
-            contexts.register(context),
-          );
-        }),
-    }),
-    definePlugin({
       id: "amux.sessions",
       inject: [SlotsTag, ContextsTag],
       effect: () =>
@@ -3230,6 +3127,19 @@ function buildApp(
         }),
     }),
   ] as const;
+  const pluginEntries: readonly PluginEntry[] = [
+    {
+      id: "amux.settings",
+      source: new URL("./plugins/settings.tsx", import.meta.url),
+      definition: settingsPlugin,
+    },
+    {
+      id: "amux.commands",
+      source: new URL("./plugins/commands.tsx", import.meta.url),
+      definition: commandsPlugin,
+    },
+  ];
+
   return {
     View,
     panel,
@@ -3238,6 +3148,7 @@ function buildApp(
     registryEntries,
     consumers,
     updateRegistry,
-    coreEntries,
+    coreEntries: [...coreEntries, ...pluginEntries.map((entry) => entry.definition)],
+    pluginEntries,
   };
 }

@@ -20,6 +20,10 @@ const ALLOWED_PATH_SUBSTRINGS = [
   "/src/env.ts",
   "/src/test-effect.ts",
   "/src/test-wait.ts",
+  "/src/plugin/plugin-cli.ts",
+  "/src/plugin/store.ts",
+  "/plugin-agent-harness/src/native-worker.ts",
+  "/src/backend.ts",
 ];
 
 function isAllowed(filename: string): boolean {

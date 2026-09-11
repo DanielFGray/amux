@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { AiError, Chat, LanguageModel, Prompt, Response, Tool, Toolkit } from "effect/unstable/ai";
 import { Deferred, Effect, Match, Ref, Schema as S, Stream } from "effect";
 import { makeAgentWorker, sanitizeAgentError } from "./worker.ts";
+import { eraseInstalledToolkit, type AgentToolkit } from "./tools.ts";
 import { testEffect } from "@danielfgray/amux/testing";
 import type { AgentDelta, AgentEventPayload } from "@danielfgray/amux/protocol";
 import { readDelta, readEvent, type HarnessDelta, type SequencedHarnessEvent } from "./protocol.ts";
@@ -73,6 +74,7 @@ const runWorker = <A>(
           readonly id?: string;
           readonly delivery?: "steer" | "queue";
           readonly resume?: boolean;
+          readonly replace?: string;
         },
       ) => Effect.Effect<void>;
       readonly interrupt: (reason?: string) => Effect.Effect<void>;
@@ -82,7 +84,8 @@ const runWorker = <A>(
   ) => Effect.Effect<A>,
   options?: {
     readonly emit?: (frame: WorkerFrame) => Effect.Effect<void>;
-    readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Record<string, Tool.Any>>>;
+    readonly toolkit?: Effect.Effect<AgentToolkit>;
+    readonly onToolResult?: (tool: string, succeeded: boolean) => Effect.Effect<void>;
   },
 ) =>
   Effect.scoped(
@@ -93,13 +96,10 @@ const runWorker = <A>(
         chat,
         emit: options?.emit ?? (() => Effect.void),
         toolkit: options?.toolkit,
+        onToolResult: options?.onToolResult,
       });
       return yield* body(worker, chat);
-      // `toolkit` above is typed as `Toolkit.WithHandler<Record<string, Tool.Any>>`, and
-      // `Tool.Any`'s requirements resolve to `any`, so `makeAgentWorker`'s inferred
-      // context is `any` here even though every call site provides the toolkit's
-      // real handlers via `Effect.provide` before it ever reaches `runWorker`.
-    }).pipe(Effect.provideServiceEffect(LanguageModel.LanguageModel, model)) as Effect.Effect<A>,
+    }).pipe(Effect.provideServiceEffect(LanguageModel.LanguageModel, model)),
   );
 
 const roles = (prompt: Prompt.Prompt) => prompt.content.map((message) => message.role);
@@ -194,7 +194,7 @@ testEffect("a tool call is resolved by the toolkit and reported as a result fram
       (worker) => worker.prompt("capture it").pipe(Effect.andThen(awaitFrame(frames, "turn.end"))),
       {
         emit: (frame) => Effect.sync(() => void frames.push(frame)),
-        toolkit: resolved as never,
+        toolkit: eraseInstalledToolkit(resolved),
       },
     );
 
@@ -214,6 +214,49 @@ testEffect("a tool call is resolved by the toolkit and reported as a result fram
     expect(events.find((event) => event?._tag === "turn.end")).toMatchObject({
       text: "done",
     });
+  }),
+);
+
+testEffect("onToolResult fires with the tool name after each tool.result", () =>
+  Effect.gen(function* () {
+    const frames: WorkerFrame[] = [];
+    const seen: Array<{ tool: string; succeeded: boolean }> = [];
+    const write = Tool.make("write", {
+      description: "write a file",
+      parameters: S.Struct({ path: S.String }),
+      success: S.String,
+    });
+    const toolkit = Toolkit.make(write);
+    const handlers = toolkit.of({
+      write: () => Effect.succeed("ok"),
+    } as never);
+
+    yield* runWorker(
+      scriptedModel((call) =>
+        call === 0
+          ? [
+              {
+                type: "tool-call",
+                id: "call-1",
+                name: "write",
+                params: { path: "a.ts" },
+                providerExecuted: false,
+              },
+            ]
+          : [{ type: "text-delta", id: "t1", delta: "done" }],
+      ),
+      (worker) => worker.prompt("write it").pipe(Effect.andThen(awaitFrame(frames, "turn.end"))),
+      {
+        emit: (frame) => Effect.sync(() => void frames.push(frame)),
+        toolkit: eraseInstalledToolkit(toolkit.pipe(Effect.provide(toolkit.toLayer(handlers)))),
+        onToolResult: (tool, succeeded) =>
+          Effect.sync(() => {
+            seen.push({ tool, succeeded });
+          }),
+      },
+    );
+
+    expect(seen).toEqual([{ tool: "write", succeeded: true }]);
   }),
 );
 
@@ -247,7 +290,7 @@ testEffect("continues through successive tool calls before ending the turn", () 
       (worker) => worker.prompt("look twice").pipe(Effect.andThen(awaitFrame(frames, "turn.end"))),
       {
         emit: (frame) => Effect.sync(() => void frames.push(frame)),
-        toolkit: toolkit.pipe(Effect.provide(toolkit.toLayer(handlers))) as never,
+        toolkit: eraseInstalledToolkit(toolkit.pipe(Effect.provide(toolkit.toLayer(handlers)))),
       },
     );
 
@@ -301,7 +344,7 @@ testEffect("a steer at a tool continuation boundary replaces the empty continuat
         }),
       {
         emit: (frame) => Effect.sync(() => void frames.push(frame)),
-        toolkit: toolkit.pipe(Effect.provide(toolkit.toLayer(handlers))) as never,
+        toolkit: eraseInstalledToolkit(toolkit.pipe(Effect.provide(toolkit.toLayer(handlers)))),
       },
     );
 
@@ -323,6 +366,77 @@ testEffect("a steer at a tool continuation boundary replaces the empty continuat
         )
         .map((event) => event.turn),
     ).toEqual(["turn-2", "turn-1"]);
+  }),
+);
+
+testEffect("replace flips a queued admission to steer without a second turn id", () =>
+  Effect.gen(function* () {
+    const frames: WorkerFrame[] = [];
+    const toolFinished = yield* Deferred.make<void>();
+    const lookup = Tool.make("lookup", {
+      description: "look up a value",
+      parameters: S.Struct({}),
+      success: S.String,
+    });
+    const toolkit = Toolkit.make(lookup);
+    const handlers = toolkit.of({
+      lookup: () => Deferred.await(toolFinished).pipe(Effect.as("found")),
+    } as never);
+
+    yield* runWorker(
+      scriptedModel((call) =>
+        call === 0
+          ? [
+              {
+                type: "tool-call",
+                id: "call-1",
+                name: "lookup",
+                params: {},
+                providerExecuted: false,
+              },
+            ]
+          : [{ type: "text-delta", id: "t1", delta: "redirected" }],
+      ),
+      (worker) =>
+        Effect.gen(function* () {
+          yield* worker.prompt("first");
+          yield* awaitFrame(frames, "tool.start");
+          yield* worker.prompt("later", { delivery: "queue" });
+          const queued = frames
+            .map(unwrap)
+            .find(
+              (event): event is Extract<SequencedHarnessEvent, { _tag: "turn.queued" }> =>
+                event?._tag === "turn.queued" && event.prompt === "later",
+            );
+          expect(queued?.delivery).toBe("queue");
+          yield* worker.prompt("later", {
+            delivery: "steer",
+            replace: queued!.turn,
+          });
+          yield* Deferred.succeed(toolFinished, undefined);
+          yield* awaitFrame(frames, "turn.end", 2);
+        }),
+      {
+        emit: (frame) => Effect.sync(() => void frames.push(frame)),
+        toolkit: eraseInstalledToolkit(toolkit.pipe(Effect.provide(toolkit.toLayer(handlers)))),
+      },
+    );
+
+    const events = frames.map(unwrap);
+    const queuedEvents = events.filter(
+      (event): event is Extract<SequencedHarnessEvent, { _tag: "turn.queued" }> =>
+        event?._tag === "turn.queued" && event.prompt === "later",
+    );
+    expect(queuedEvents.map((event) => event.delivery)).toEqual(["queue", "steer"]);
+    expect(queuedEvents[0]!.turn).toBe(queuedEvents[1]!.turn);
+    expect(
+      events
+        .filter(
+          (event): event is Extract<SequencedHarnessEvent, { _tag: "turn.start" }> =>
+            event?._tag === "turn.start",
+        )
+        .map((event) => event.prompt),
+    ).toContain("later");
   }),
 );
 
@@ -518,6 +632,9 @@ test("sanitizes provider failure categories without exposing diagnostics", () =>
   expect(sanitizeAgentError(new Error("401 invalid api key sk-secret"))).toBe(
     "Provider authentication failed. Check Settings > auth.",
   );
+  expect(sanitizeAgentError(new Error("credential missing for opencode"))).toBe(
+    "No credential for opencode. Check Settings > auth.",
+  );
   expect(sanitizeAgentError(new Error("fetch failed: connection reset"))).toBe(
     "Provider is unavailable. Check your network and try again.",
   );
@@ -591,7 +708,7 @@ testEffect("a turn interrupted mid-tool-call leaves no unpaired tool call in his
         }),
       {
         emit: (frame) => Effect.sync(() => void frames.push(frame)),
-        toolkit: toolkit.pipe(Effect.provide(toolkit.toLayer(handlers))) as never,
+        toolkit: eraseInstalledToolkit(toolkit.pipe(Effect.provide(toolkit.toLayer(handlers)))),
       },
     );
 

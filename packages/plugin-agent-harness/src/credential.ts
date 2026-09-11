@@ -171,11 +171,16 @@ const unredact = (value: Value): Persisted["value"] =>
 const present = (row: Persisted): Info => ({ ...row, id: row.id as ID, value: redact(row.value) });
 
 const decodeText = (text: string) => {
-  const parsed = S.decodeOption(S.fromJsonString(S.Array(S.Unknown)))(text);
-  if (Option.isNone(parsed)) return { valid: false, rows: [] };
+  const parsed = S.decodeOption(S.fromJsonString(S.Array(S.Json)))(text);
+  if (Option.isNone(parsed)) return { valid: false, rows: [] as Persisted[] };
   return {
     valid: true,
-    rows: parsed.value.filter((row): row is Persisted => S.is(PersistedInfo)(row)),
+    rows: parsed.value.flatMap((row) =>
+      Option.match(S.decodeUnknownOption(PersistedInfo)(row), {
+        onNone: () => [],
+        onSome: (decoded) => [decoded],
+      }),
+    ),
   };
 };
 
@@ -264,7 +269,7 @@ const implementation = Effect.gen(function* () {
         file
           .writeAll(
             new TextEncoder().encode(
-              S.encodeSync(S.fromJsonString(S.Array(S.Unknown)))(rows) + "\n",
+              S.encodeSync(S.fromJsonString(S.Array(PersistedInfo)))(rows) + "\n",
             ),
           )
           .pipe(Effect.andThen(file.sync)),

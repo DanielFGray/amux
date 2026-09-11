@@ -1,8 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { For, createMemo } from "solid-js";
 import { Effect } from "effect";
-import { definePlugin, type PluginDefinition } from "../packages/amux/src/plugin/types.ts";
-import { PanelTag, SlotsTag } from "../packages/amux/src/plugin/services.ts";
+import { definePlugin, PanelTag, SlotsTag, type PluginDefinition } from "amux";
 import { AgentAwarenessTag } from "../packages/agent-awareness/src/presence.ts";
 
 type TriageAgent = {

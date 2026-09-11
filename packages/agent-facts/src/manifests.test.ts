@@ -4,8 +4,8 @@ import { registerCleanup, tempDir } from "@danielfgray/amux/test-tmp.ts";
 import { BunFileSystem, BunPath } from "@effect/platform-bun";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { Effect, Layer } from "effect";
-import { AgentManifests, buildRegistry } from "./manifests.ts";
+import { Effect, Layer, Option } from "effect";
+import { buildRegistry, bundledRegistry } from "./manifests.ts";
 
 registerCleanup();
 
@@ -36,9 +36,10 @@ const { live } = testEffect(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.
 
 live("bundled manifests cover the known agent executables", () =>
   Effect.sync(() => {
-    expect(AgentManifests.identifyAgent("claude")).toBe("claude");
-    expect(AgentManifests.identifyAgent("codex")).toBe("codex");
-    expect(AgentManifests.identifyAgent("nvim")).toBe(null);
+    const registry = bundledRegistry();
+    expect(registry.identifyAgent("claude")).toEqual(Option.some("claude"));
+    expect(registry.identifyAgent("codex")).toEqual(Option.some("codex"));
+    expect(registry.identifyAgent("nvim")).toEqual(Option.none());
   }),
 );
 
@@ -52,8 +53,8 @@ live("a local file replaces a bundled manifest wholesale, by filename === id", (
       executables: ["claude", "claude-code", "claude-custom"],
       rules: [],
     });
-    const registry = buildRegistry(configHome);
-    expect(registry.identifyAgent("claude-custom")).toBe("claude");
+    const registry = yield* buildRegistry(configHome);
+    expect(registry.identifyAgent("claude-custom")).toEqual(Option.some("claude"));
     // The replacement's rules are empty, so evaluation must fall back to the
     // "default" manifest's rules rather than keep the bundled claude rules.
     expect(registry.adapterFor("claude").id).toBe("default");
@@ -70,15 +71,16 @@ live("a local file can add a new agent the bundle does not know", () =>
       executables: ["acme-cli"],
       rules: [],
     });
-    const registry = buildRegistry(configHome);
-    expect(registry.identifyAgent("acme-cli")).toBe("acme");
+    const registry = yield* buildRegistry(configHome);
+    expect(registry.identifyAgent("acme-cli")).toEqual(Option.some("acme"));
   }),
 );
 
 live("an agent with no custom rules falls back to the default adapter's rules", () =>
   Effect.sync(() => {
-    expect(AgentManifests.adapterFor("gemini").id).toBe("default");
-    expect(AgentManifests.adapterFor("claude").id).toBe("claude");
+    const registry = bundledRegistry();
+    expect(registry.adapterFor("gemini").id).toBe("default");
+    expect(registry.adapterFor("claude").id).toBe("claude");
   }),
 );
 
@@ -97,8 +99,8 @@ live("a malformed or mismatched-id local file is ignored, bundled data wins", ()
       executables: [],
       rules: [],
     });
-    const registry = buildRegistry(configHome);
-    expect(registry.identifyAgent("claude")).toBe("claude");
-    expect(registry.identifyAgent("codex")).toBe("codex");
+    const registry = yield* buildRegistry(configHome);
+    expect(registry.identifyAgent("claude")).toEqual(Option.some("claude"));
+    expect(registry.identifyAgent("codex")).toEqual(Option.some("codex"));
   }),
 );

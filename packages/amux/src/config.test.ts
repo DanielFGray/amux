@@ -41,13 +41,30 @@ test("malformed key bindings cannot break keymap compilation", () => {
   });
 
   expect(config.keys).toEqual({
+    prefix: DEFAULT_CONFIG.keys.prefix,
     leader: DEFAULT_CONFIG.keys.leader,
     bindings: { safe: ["ctrl+x"], __proto__: ["ctrl+p"] },
   });
 });
 
-test("a whitespace-only leader uses the default", () => {
+test("a whitespace-only mux chord in a legacy leader field uses the default prefix", () => {
+  expect(decodeConfig({ keys: { leader: "   " } }).keys.prefix).toBe(DEFAULT_CONFIG.keys.prefix);
   expect(decodeConfig({ keys: { leader: "   " } }).keys.leader).toBe(DEFAULT_CONFIG.keys.leader);
+});
+
+test("legacy keys.leader migrates to keys.prefix; localleader becomes leader", () => {
+  const config = decodeConfig({
+    keys: {
+      leader: "ctrl+b",
+      localleader: ",",
+      bindings: { "pane.zoom": ["<leader>z"], "editor.find": ["<localleader>/"] },
+    },
+  });
+  expect(config.keys).toEqual({
+    prefix: "ctrl+b",
+    leader: ",",
+    bindings: { "pane.zoom": ["<prefix>z"], "editor.find": ["<leader>/"] },
+  });
 });
 
 test("a non-object config uses defaults", () => {
@@ -112,7 +129,7 @@ testEffect("a changed config survives save and load", () =>
         "appearance.gap": true,
         "clock.format": "%H:%M",
       },
-      keys: { leader: "ctrl+b", bindings: { "app.quit": ["<leader>q"] } },
+      keys: { prefix: "ctrl+b", leader: "space", bindings: { "app.quit": ["<leader>q"] } },
     });
 
     yield* saveConfig(config, path);

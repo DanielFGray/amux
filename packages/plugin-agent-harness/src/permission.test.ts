@@ -8,15 +8,22 @@ import {
   layer as projectStoreLayer,
   Service as ProjectStore,
 } from "@danielfgray/amux/project-store.ts";
-import {
+import { 
   bashResources,
+  checkBashInterception,
   isOpaque,
   makePermissionGate,
+  modeAllows,
   pathResource,
+  resolvePermission,
   savedRules,
   type Assertion,
+  type ApprovalTier,
+  type PermissionGate,
+  PermissionGateTag,
 } from "./permission.ts";
 import { DEFAULT_RULES, type PermissionRule } from "@danielfgray/amux/permission.ts";
+import type { ApprovalMode } from "./options.ts";
 import {
   decodeAttachFrames,
   encodeAttachFrame,
@@ -25,6 +32,9 @@ import {
 } from "@danielfgray/amux/protocol";
 import { readEvent, type SequencedHarnessEvent } from "./protocol.ts";
 import { testEffect } from "@danielfgray/amux/testing";
+
+const withGate = <A, E, R>(gate: PermissionGate, effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.provideService(PermissionGateTag, gate));
 
 /** Recover the harness event a test's recorded frame carries, the same way a
  *  real consumer would via `readEvent` — a `topic` frame has no harness event
@@ -61,6 +71,58 @@ test("a command whose text is not what runs is opaque", () => {
   expect(isOpaque("echo evaluate")).toBe(false);
 });
 
+test("approval modes auto-allow by tier (OMP approval-mode.md matrix)", () => {
+  const modes: ApprovalMode[] = ["always-ask", "write", "yolo"];
+  const tiers: ApprovalTier[] = ["read", "write", "exec"];
+  const expected = {
+    "always-ask": { read: true, write: false, exec: false },
+    write: { read: true, write: true, exec: false },
+    yolo: { read: true, write: true, exec: true },
+  } satisfies Record<ApprovalMode, Record<ApprovalTier, boolean>>;
+  for (const mode of modes) {
+    for (const tier of tiers) {
+      expect(modeAllows(mode, tier)).toBe(expected[mode][tier]);
+    }
+  }
+});
+
+test("resolvePermission: resource deny wins; mode fills ask; overrides force allow|deny|prompt", () => {
+  expect(resolvePermission("deny", "read", "yolo", undefined)).toBe("deny");
+  expect(resolvePermission("allow", "exec", "always-ask", "deny")).toBe("deny");
+  expect(resolvePermission("ask", "write", "always-ask", undefined)).toBe("ask");
+  expect(resolvePermission("ask", "write", "write", undefined)).toBe("allow");
+  expect(resolvePermission("ask", "exec", "yolo", undefined)).toBe("allow");
+  expect(resolvePermission("ask", "exec", "yolo", "prompt")).toBe("ask");
+  expect(resolvePermission("ask", "read", "always-ask", "deny")).toBe("deny");
+  expect(resolvePermission("ask", "exec", "always-ask", "allow")).toBe("allow");
+  expect(resolvePermission("allow", "write", "always-ask", undefined)).toBe("allow");
+});
+
+test("bash interceptor blocks dedicated-tool misuse only when that tool exists", () => {
+  const withTools = ["read", "grep", "glob", "edit", "write", "bash"];
+  expect(checkBashInterception("cat src/a.ts", withTools)).toMatchObject({
+    _tag: "Some",
+    value: { tool: "read" },
+  });
+  expect(checkBashInterception("grep -n foo src", withTools)).toMatchObject({
+    _tag: "Some",
+    value: { tool: "grep" },
+  });
+  expect(checkBashInterception("find . -name '*.ts'", withTools)).toMatchObject({
+    _tag: "Some",
+    value: { tool: "glob" },
+  });
+  expect(checkBashInterception("sed -i 's/a/b/' x.ts", withTools)).toMatchObject({
+    _tag: "Some",
+    value: { tool: "edit" },
+  });
+  // Suggested tool missing → do not block.
+  expect(checkBashInterception("cat src/a.ts", ["bash", "write"])).toMatchObject({ _tag: "None" });
+  // Unmatched commands pass.
+  expect(checkBashInterception("git status", withTools)).toMatchObject({ _tag: "None" });
+  expect(checkBashInterception("ls -la", withTools)).toMatchObject({ _tag: "None" });
+});
+
 test("always proposes a rule the user can read, and nothing for an opaque command", () => {
   expect(savedRules(assertion("bash", ["git status --porcelain"]))).toEqual([
     { action: "bash", resource: "git status *", effect: "allow" },
@@ -83,10 +145,91 @@ testEffect("a project-wide file rule covers the project and nothing outside it",
   }),
 );
 
+testEffect("yolo auto-allows write and bash without asking; always-ask still prompts write", () =>
+  Effect.gen(function* () {
+    const yolo = harness([], { mode: "yolo" });
+    yield* yolo.gate.pipe(
+      Effect.flatMap((gate) => gate.assert(assertion("write", ["./a.ts"], "write"))),
+    );
+    yield* yolo.gate.pipe(Effect.flatMap((gate) => gate.assert(assertion("bash", ["ls"], "exec"))));
+    expect(yolo.emitted()).toEqual([]);
+
+    const ask = harness([], { mode: "always-ask" });
+    yield* Effect.gen(function* () {
+      const gate = yield* ask.gate;
+      const running = yield* Effect.forkChild(gate.assert(assertion("write", ["./a.ts"], "write")));
+      const request = yield* ask.awaitRequest;
+      yield* gate.resolve(request, "once");
+      yield* Fiber.join(running);
+    });
+    expect(
+      ask
+        .emitted()
+        .map(unwrap)
+        .filter((event) => event?._tag === "permission.request"),
+    ).toHaveLength(1);
+  }),
+);
+
+testEffect("write mode auto-allows write tier but still asks for exec", () =>
+  Effect.gen(function* () {
+    const world = harness([], { mode: "write" });
+    yield* world.gate.pipe(
+      Effect.flatMap((gate) => gate.assert(assertion("write", ["./a.ts"], "write"))),
+    );
+    expect(world.emitted()).toEqual([]);
+
+    yield* Effect.gen(function* () {
+      const gate = yield* world.gate;
+      const running = yield* Effect.forkChild(gate.assert(assertion("bash", ["ls"], "exec")));
+      const request = yield* world.awaitRequest;
+      yield* gate.resolve(request, "once");
+      yield* Fiber.join(running);
+    });
+    expect(
+      world
+        .emitted()
+        .map(unwrap)
+        .filter((event) => event?._tag === "permission.request"),
+    ).toHaveLength(1);
+  }),
+);
+
+testEffect("per-tool prompt override asks even under yolo; deny still refuses", () =>
+  Effect.gen(function* () {
+    const prompted = harness([], { mode: "yolo", toolApprovals: { bash: "prompt" } });
+    yield* Effect.gen(function* () {
+      const gate = yield* prompted.gate;
+      const running = yield* Effect.forkChild(gate.assert(assertion("bash", ["ls"], "exec")));
+      yield* gate.resolve(yield* prompted.awaitRequest, "once");
+      yield* Fiber.join(running);
+    });
+    expect(
+      prompted
+        .emitted()
+        .map(unwrap)
+        .filter((event) => event?._tag === "permission.request"),
+    ).toHaveLength(1);
+
+    const denied = harness([], { mode: "yolo", toolApprovals: { write: "deny" } });
+    const result = yield* Effect.result(
+      denied.gate.pipe(
+        Effect.flatMap((gate) => gate.assert(assertion("write", ["./a.ts"], "write"))),
+      ),
+    );
+    expect(result).toMatchObject({
+      _tag: "Failure",
+      failure: "Denied by the user: policy denies this",
+    });
+  }),
+);
+
 testEffect("a read runs without asking, and nothing is emitted for it", () =>
   Effect.gen(function* () {
     const world = harness();
-    yield* world.gate.pipe(Effect.flatMap((gate) => gate.assert(assertion("read", ["./a.ts"]))));
+    yield* world.gate.pipe(
+      Effect.flatMap((gate) => gate.assert(assertion("read", ["./a.ts"], "read"))),
+    );
     expect(world.emitted()).toEqual([]);
   }),
 );
@@ -211,6 +354,7 @@ testEffect("an approved write runs, is remembered on disk, and does not ask agai
     const frames: (AgentEventPayload | AgentDelta)[] = [];
     const store = projectStoreLayer(workspace).pipe(
       Layer.provide(BunFileSystem.layer),
+      Layer.provide(Path.layer),
       Layer.provide(
         Layer.succeed(
           ConfigProvider.ConfigProvider,
@@ -230,7 +374,7 @@ testEffect("an approved write runs, is remembered on disk, and does not ask agai
             store,
             emit: (frame) => Effect.sync(() => void frames.push(frame)),
           });
-          const toolkit = yield* agentToolkit(workspace, gate, { session: "agent-1", store });
+          const toolkit = yield* withGate(gate, agentToolkit(workspace, { session: "agent-1", store }));
           const first = yield* Effect.forkChild(
             handle(toolkit.handle("write", { path: "notes.md", content: "hello" })),
           );
@@ -274,10 +418,10 @@ testEffect("the second answer to a resolved request is dropped", () =>
     try {
       yield* Effect.gen(function* () {
         const gate = yield* world.gate;
-        const toolkit = yield* agentToolkit(workspace, gate, {
+        const toolkit = yield* withGate(gate, agentToolkit(workspace, {
           session: "agent-1",
           store: world.store,
-        });
+        }));
         const running = yield* Effect.forkChild(
           handle(toolkit.handle("write", { path: "answer.txt", content: "first" })),
         );
@@ -337,10 +481,10 @@ testEffect(
       try {
         const result = yield* Effect.gen(function* () {
           const gate = yield* world.gate;
-          const toolkit = yield* agentToolkit(workspace, gate, {
+          const toolkit = yield* withGate(gate, agentToolkit(workspace, {
             session: "agent-1",
             store: world.store,
-          });
+          }));
           const running = yield* Effect.forkChild(
             handle(toolkit.handle("write", { path: "rejected.txt", content: "must not exist" })),
           );
@@ -386,15 +530,26 @@ testEffect(
     }),
 );
 
-const assertion = (action: string, resources: readonly string[]): Assertion => ({
+const assertion = (
+  action: string,
+  resources: readonly string[],
+  tier: ApprovalTier = action === "read" ? "read" : action === "bash" ? "exec" : "write",
+): Assertion => ({
   action,
   resources,
   tool: action,
+  tier,
   input: { resources: [...resources] },
 });
 
 /** A gate wired to a recorded emit stream and a store that only remembers. */
-function harness(extra: readonly PermissionRule[] = []) {
+function harness(
+  extra: readonly PermissionRule[] = [],
+  options: {
+    readonly mode?: ApprovalMode;
+    readonly toolApprovals?: Readonly<Record<string, "allow" | "deny" | "prompt">>;
+  } = {},
+) {
   const frames: (AgentEventPayload | AgentDelta)[] = [];
   const saved: PermissionRule[] = [];
   const store = {
@@ -410,6 +565,8 @@ function harness(extra: readonly PermissionRule[] = []) {
     rules: [...DEFAULT_RULES, ...extra],
     store,
     emit: (frame) => Effect.sync(() => void frames.push(frame)),
+    mode: options.mode,
+    toolApprovals: options.toolApprovals,
   });
   return { gate, emitted: () => frames, saved, awaitRequest: awaitRequest(frames), store };
 }

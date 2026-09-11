@@ -81,7 +81,9 @@ testEffect(Layer.empty).live(
     };
     pane.session!.term.write(bytes("drag"));
     yield* scene.renderOnce();
-    yield* Effect.promise(() => scene.t.mockMouse.drag(pane.x + 1, pane.y + 1, pane.x + 4, pane.y + 1));
+    yield* Effect.promise(() =>
+      scene.t.mockMouse.drag(pane.x + 1, pane.y + 1, pane.x + 4, pane.y + 1),
+    );
     expect(copied).toEqual(["drag"]);
   }),
 );

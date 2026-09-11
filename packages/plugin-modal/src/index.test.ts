@@ -48,71 +48,69 @@ test("enters with the configured leader, retires one-shot commands, and consumes
       },
     });
     await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const host = yield* createPluginHost(environment);
-          for (const tag of [BindingsTag, ContextsTag, OptionsTag, PanelTag]) {
-            const provider = environment.registryEntries.find((entry) =>
-              entry.provide?.some((provided) => provided.key === tag.key),
-            ) as PluginDefinition;
-            yield* Effect.orDie(host.add(provider));
-          }
-          yield* Effect.orDie(host.add(modalPlugin));
-          const [entry, amux] = contexts;
-          expect(amux!.showOnEntry).toBe(true);
-          expect(amux!.rearmHintsOnKey).toBe(true);
-          let paneKeys = 0;
-          createBindings(
-            t.renderer,
-            [
-              {
-                name: "pane.focus-left",
-                key: "<leader>h",
-                desc: "focus pane left",
-                group: "panes",
-                run: Effect.sync(() => runs.push("pane.focus-left")),
-              },
-              ...bindings,
-            ],
+      Effect.gen(function* () {
+        const host = yield* createPluginHost(environment);
+        for (const tag of [BindingsTag, ContextsTag, OptionsTag, PanelTag]) {
+          const provider = environment.registryEntries.find((entry) =>
+            entry.provide?.some((provided) => provided.key === tag.key),
+          ) as PluginDefinition;
+          yield* Effect.orDie(host.add(provider));
+        }
+        yield* Effect.orDie(host.add(modalPlugin));
+        const [entry, amux] = contexts;
+        expect(amux!.showOnEntry).toBe(true);
+        expect(amux!.rearmHintsOnKey).toBe(true);
+        let paneKeys = 0;
+        createBindings(
+          t.renderer,
+          [
             {
-              keys: { leader: "ctrl+b", bindings: {} },
-              onUnhandled: (event) => {
-                if (resolveUnhandled([entry!, amux!], event)) return true;
-                paneKeys++;
-                return true;
-              },
+              name: "pane.focus-left",
+              key: "<prefix>h",
+              desc: "focus pane left",
+              group: "panes",
+              run: Effect.sync(() => runs.push("pane.focus-left")),
             },
-          );
+            ...bindings,
+          ],
+          {
+            keys: { prefix: "ctrl+b", leader: "space", bindings: {} },
+            onUnhandled: (event) => {
+              if (resolveUnhandled([entry!, amux!], event)) return true;
+              paneKeys++;
+              return true;
+            },
+          },
+        );
 
-          t.mockInput.pressKey("b", { ctrl: true });
-          expect(amux!.active()).toBe(true);
-          t.mockInput.pressKey("h");
-          expect(runs).toEqual(["pane.focus-left"]);
-          expect(amux!.active()).toBe(false);
+        t.mockInput.pressKey("b", { ctrl: true });
+        expect(amux!.active()).toBe(true);
+        t.mockInput.pressKey("h");
+        expect(runs).toEqual(["pane.focus-left"]);
+        expect(amux!.active()).toBe(false);
 
-          t.mockInput.pressKey("b", { ctrl: true });
-          t.mockInput.pressKey("x");
-          expect(amux!.active()).toBe(false);
-          expect(paneKeys).toBe(0);
-          t.mockInput.pressKey("x");
-          expect(paneKeys).toBe(1);
+        t.mockInput.pressKey("b", { ctrl: true });
+        t.mockInput.pressKey("x");
+        expect(amux!.active()).toBe(false);
+        expect(paneKeys).toBe(0);
+        t.mockInput.pressKey("x");
+        expect(paneKeys).toBe(1);
 
-          setOptions((current) => ({ ...current, "modal.vimMode": true }));
-          t.mockInput.pressKey("b", { ctrl: true });
-          t.mockInput.pressKey("h");
-          expect(amux!.active()).toBe(true);
-          expect(runs).toEqual(["pane.focus-left", "pane.focus-left"]);
-          t.mockInput.pressKey("h", { meta: true });
-          expect(runs).toEqual(["pane.focus-left", "pane.focus-left", "pane.resize"]);
-          expect(amux!.active()).toBe(true);
-          t.mockInput.pressKey("i");
-          expect(amux!.active()).toBe(false);
+        setOptions((current) => ({ ...current, "modal.vimMode": true }));
+        t.mockInput.pressKey("b", { ctrl: true });
+        t.mockInput.pressKey("h");
+        expect(amux!.active()).toBe(true);
+        expect(runs).toEqual(["pane.focus-left", "pane.focus-left"]);
+        t.mockInput.pressKey("h", { meta: true });
+        expect(runs).toEqual(["pane.focus-left", "pane.focus-left", "pane.resize"]);
+        expect(amux!.active()).toBe(true);
+        t.mockInput.pressKey("i");
+        expect(amux!.active()).toBe(false);
 
-          yield* host.remove(modalPlugin.id);
-          expect(bindings).toEqual([]);
-          expect(contexts).toEqual([]);
-        }),
-      ),
+        yield* host.remove(modalPlugin.id);
+        expect(bindings).toEqual([]);
+        expect(contexts).toEqual([]);
+      }).pipe(Effect.scoped),
     );
   } finally {
     t.renderer.destroy();

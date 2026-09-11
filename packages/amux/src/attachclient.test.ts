@@ -22,15 +22,16 @@ import {
   Scope,
 } from "effect";
 import * as FileSystem from "effect/FileSystem";
+import type { PlatformError } from "effect/PlatformError";
 import { BunFileSystem } from "@effect/platform-bun";
 import { which } from "bun";
 import { SessionHandle, type SessionHandleOptions } from "./session-handle.ts";
 type SessionOptions = SessionHandleOptions;
 import type { PersistedSession } from "./session.ts";
-import { AttachClient } from "./attach.ts";
+import { AttachClient, type AttachClientContract } from "./attach.ts";
 import { SessionClient, type SessionClientContract } from "./client.ts";
 import { startDaemon, type SessionDaemonService } from "./daemon.ts";
-import { captureVisible } from "./capture.ts";
+import { captureScrollback, captureVisible } from "./capture.ts";
 import { MODE_ALT_SCREEN } from "./ghostty.ts";
 import { processAlive, sessionPaths, SessionStore } from "./session.ts";
 import { Schema as S, Stream } from "effect";
@@ -73,9 +74,8 @@ const join = (...paths: string[]) =>
   Effect.runSync(
     Effect.map(Path.Path, (path) => path.join(...paths)).pipe(Effect.provide(Path.layer)),
   );
-const fsRun = <A>(
-  effect: Effect.Effect<A, import("effect/PlatformError").PlatformError, FileSystem.FileSystem>,
-) => Effect.runPromise(effect.pipe(Effect.provide(BunFileSystem.layer)));
+const fsRun = <A>(effect: Effect.Effect<A, PlatformError, FileSystem.FileSystem>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(BunFileSystem.layer)));
 const rm = (path: string, _options?: { recursive?: boolean; force?: boolean }) =>
   fsRun(
     Effect.flatMap(FileSystem.FileSystem, (fs) =>
@@ -104,11 +104,13 @@ const connect = Effect.fnUntraced(function* (
 const sessions: SessionHandle[] = [];
 let nextProjection = 0;
 const run = <A, E>(
-  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem>,
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path>,
   env: NodeJS.ProcessEnv,
 ) =>
   effect.pipe(
-    Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
+    Effect.provide(
+      SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
+    ),
     Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
   );
 
@@ -930,7 +932,7 @@ testEffect("a delayed handshake closes its socket and rejects on timeout", () =>
     let closed = 0;
     let latePongs = 0;
     let settlements = 0;
-    let resurrected: import("./attach.ts").AttachClientContract | null = null;
+    let resurrected: AttachClientContract | null = null;
     let buffer = "";
     const listener = Bun.listen<undefined>({
       unix: path,
@@ -1011,7 +1013,7 @@ testEffect("the connection scope emits heartbeats and stops them when released",
     let beats = 0;
     let closes = 0;
     let finalized = 0;
-    let client: import("./attach.ts").AttachClientContract | null = null;
+    let client: AttachClientContract | null = null;
     const listener = Bun.listen<undefined>({
       unix: path,
       data: undefined,
@@ -1233,10 +1235,10 @@ testEffect("an adopted agent is resized before its screen replay", () =>
   }),
 );
 
-testEffect("daemon replay keeps only the current screen, with no scrollback", () =>
+testEffect("daemon replay restores bounded scrollback to a reattaching client", () =>
   Effect.gen(function* () {
-    const { daemon, env } = yield* startSession("replay-no-scrollback");
-    const first = yield* attach("replay-no-scrollback", env, "first");
+    const { daemon, env } = yield* startSession("replay-with-scrollback");
+    const first = yield* attach("replay-with-scrollback", env, "first");
     const session = yield* projectAgent(daemon, first, {
       cmd: [
         "sh",
@@ -1257,7 +1259,7 @@ testEffect("daemon replay keeps only the current screen, with no scrollback", ()
       () => attachedClient(daemon).pipe(Effect.map((c) => c === null)),
       "the daemon to notice the detach",
     );
-    const second = yield* attach("replay-no-scrollback", env, "second");
+    const second = yield* attach("replay-with-scrollback", env, "second");
     const readopted = yield* projectAgent(daemon, second, {
       id: session.id,
       cmd: ["cat"],
@@ -1266,7 +1268,56 @@ testEffect("daemon replay keeps only the current screen, with no scrollback", ()
     });
 
     yield* until(() => screen(readopted).includes("last"), "the current screen replay");
-    expect(screen(readopted)).not.toContain("old-3");
+    // The live viewport lost old-3, but the daemon kept it in scrollback and
+    // formatScreen restored it on the reattaching client.
+    yield* until(
+      () => captureScrollback(readopted.term).includes("old-3"),
+      "the restored scrollback",
+    );
+  }),
+);
+
+testEffect("the daemon answers a live pane's cursor-position query into the PTY", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* startSession("query-reply");
+    const client = yield* attach("query-reply", env);
+    const dir = tempDir("query-reply");
+    const resultPath = `${dir}/result.hex`;
+    const quotedResultPath = yield* S.encodeEffect(S.fromJsonString(S.String))(resultPath);
+    // Raw mode + CSI 6 n: without WRITE_PTY the read times out empty.
+    // select budget is generous — under full-suite load the daemon's reply
+    // to DSR can land after a quiet-machine 2s window (empty hex once in 1547).
+    yield* projectAgent(daemon, client, {
+      cmd: [
+        "python3",
+        "-c",
+        [
+          "import os,termios,tty,select",
+          "old=termios.tcgetattr(0)",
+          "tty.setraw(0)",
+          "os.write(1,b'\\x1b[6n')",
+          "ready,_,_=select.select([0],[],[],10)",
+          "resp=os.read(0,32) if ready else b''",
+          "termios.tcsetattr(0,termios.TCSANOW,old)",
+          `open(${quotedResultPath},'wb').write(resp.hex().encode())`,
+        ].join(";"),
+      ],
+      cols: 40,
+      rows: 10,
+    });
+    yield* until(
+      () =>
+        Bun.file(resultPath)
+          .exists()
+          .then((ok) => ok && Bun.file(resultPath).size > 0),
+      "the query probe to finish with a DSR reply",
+      15_000,
+    );
+    const hex = yield* Effect.tryPromise(() => Bun.file(resultPath).text());
+    expect(hex.length).toBeGreaterThan(0);
+    expect(Buffer.from(hex, "hex").toString()).toMatch(
+      new RegExp(`^${String.fromCharCode(0x1b)}\\[\\d+;\\d+R$`),
+    );
   }),
 );
 
@@ -1455,26 +1506,24 @@ testEffect("closing a client rejects queued workspace commands", () =>
 
 test("closing a client rejects a workspace command in flight", () =>
   Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { env } = yield* startSession("client-command-in-flight");
-        const client = yield* attach("client-command-in-flight", env);
-        const pending = yield* Effect.forkChild(
-          client.runWorkspace(command("pane.split", { axis: "row" }), {
-            size: { cols: 80, rows: 24 },
-            shell: ["sh", "-c", "sleep 30"],
-            cwd: "/tmp",
-          }),
-        );
-        yield* Effect.sleep(10);
-        const close = scopes[scopes.length - 1]!;
-        yield* Scope.close(close, Exit.void);
-        scopes.splice(scopes.indexOf(close), 1);
-        clients.splice(clients.indexOf(client), 1);
-        const result = yield* Fiber.await(pending);
-        expect(Exit.isFailure(result)).toBe(true);
-      }),
-    ),
+    Effect.gen(function* () {
+      const { env } = yield* startSession("client-command-in-flight");
+      const client = yield* attach("client-command-in-flight", env);
+      const pending = yield* Effect.forkChild(
+        client.runWorkspace(command("pane.split", { axis: "row" }), {
+          size: { cols: 80, rows: 24 },
+          shell: ["sh", "-c", "sleep 30"],
+          cwd: "/tmp",
+        }),
+      );
+      yield* Effect.sleep(10);
+      const close = scopes[scopes.length - 1]!;
+      yield* Scope.close(close, Exit.void);
+      scopes.splice(scopes.indexOf(close), 1);
+      clients.splice(clients.indexOf(client), 1);
+      const result = yield* Fiber.await(pending);
+      expect(Exit.isFailure(result)).toBe(true);
+    }).pipe(Effect.scoped),
   ));
 
 testEffect(
@@ -1677,5 +1726,51 @@ testEffect("every subscriber to a session receives every frame", () =>
       expect(text).toBe("alpha beta gamma delta epsilon");
     }
     yield* daemon.killSession(id);
+  }),
+);
+
+/**
+ * Sessionless plugin capture is answered by whichever client is attached —
+ * the daemon has no pty grid for that leaf. Stub the client's command
+ * surface so the RPC path is what is under test, not OpenTUI pixels.
+ */
+testEffect("pane.capture of a plugin pane returns what the attached client answers", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* startSession("plugin-capture-client");
+    const client = yield* attach("plugin-capture-client", env);
+    yield* Effect.forkScoped(
+      Stream.runForEach(client.commandRequests, ({ id, command: raw }) =>
+        Effect.sync(() => {
+          const tag =
+            raw && typeof raw === "object" && "_tag" in raw
+              ? String((raw as { _tag: unknown })._tag)
+              : "";
+          if (tag === "pane.capture") client.respondCommand(id, "plugin-frame-text");
+          else client.respondCommand(id, undefined, `unexpected ${tag}`);
+        }),
+      ),
+    );
+
+    const opened = yield* run(
+      controlCall(daemon.id, (c) =>
+        c.Batch({
+          values: [
+            command("pane.open-plugin", {
+              type: "amux.editor",
+              descriptor: { file: "/note.txt" },
+            }),
+          ],
+          context: { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" },
+        }),
+      ),
+      env,
+    );
+    const pane = (opened.outputs[0]!.result as { pane: string }).pane;
+
+    const captured = yield* run(
+      controlCall(daemon.id, (c) => c.Batch({ values: [command("pane.capture", { pane })] })),
+      env,
+    );
+    expect(captured.outputs[0]!.result).toBe("plugin-frame-text");
   }),
 );

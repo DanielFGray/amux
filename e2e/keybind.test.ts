@@ -17,10 +17,14 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { launch, LEADER, E2E_TIMEOUT, defaultE2ePlugins, type App, type E2eConfig } from "./app.ts";
 
+// This half pins prefix to ctrl+a so the rebound is unambiguous against
+// DEFAULT_PREFIX (ctrl+s). LEADER below is the default ctrl+s for the edit half.
+const CTRL_A = "\x01";
+
 // ^a g is bound to nothing by default, so a split appearing under it can only
 // have come from the config.
 const REBOUND = {
-  keys: { leader: "ctrl+a", bindings: { "pane.split-row": ["<leader>g"] } },
+  keys: { prefix: "ctrl+a", leader: "space", bindings: { "pane.split-row": ["<prefix>g"] } },
   plugins: defaultE2ePlugins(),
 };
 
@@ -35,7 +39,7 @@ let added: E2eConfig | null = null;
 beforeAll(async () => {
   configured = await launch("e2e-keybind-config", { config: REBOUND });
   beforeSplit = await configured.workspaceSummary();
-  await configured.press(`${LEADER}g`);
+  await configured.press(`${CTRL_A}g`);
   await configured.until(
     async () => (await configured.workspaceSummary()) === "1sp 1win 2ag",
     "the rebound split to persist",
@@ -61,7 +65,7 @@ beforeAll(async () => {
   await edited.press("g");
   await edited.press("s");
   await edited.until(
-    async () => (await edited.config())?.keys?.bindings?.["pane.split-row"]?.[0] === "<leader>g",
+    async () => (await edited.config())?.keys?.bindings?.["pane.split-row"]?.[0] === "<prefix>g",
     "the captured binding to be saved",
   );
   captured = await edited.config();
@@ -91,7 +95,7 @@ beforeAll(async () => {
   await edited.press("s");
   await edited.until(
     async () =>
-      (await edited.config())?.keys?.bindings?.["pane.split-row"]?.includes("<leader>g") ?? false,
+      (await edited.config())?.keys?.bindings?.["pane.split-row"]?.includes("<prefix>g") ?? false,
     "the added binding to be saved",
   );
   added = await edited.config();
@@ -112,7 +116,7 @@ test("save writes the binding to the config", () => {
 });
 
 test("capture records the pressed key under the prefix", () => {
-  expect(captured?.keys?.bindings?.["pane.split-row"]?.[0]).toBe("<leader>g");
+  expect(captured?.keys?.bindings?.["pane.split-row"]?.[0]).toBe("<prefix>g");
 });
 
 test("reset takes the row back to its default", () => {
@@ -121,8 +125,8 @@ test("reset takes the row back to its default", () => {
 
 test("add preserves the command's default bindings", () => {
   expect(added?.keys?.bindings?.["pane.split-row"]).toEqual([
-    "<leader>|",
-    "<leader>\\",
-    "<leader>g",
+    "<prefix>|",
+    "<prefix>\\",
+    "<prefix>g",
   ]);
 });

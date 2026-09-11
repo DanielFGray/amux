@@ -52,6 +52,8 @@ export interface PluginContributions {
    * winner, so the caller keeps whatever was running and reports these.
    */
   readonly commit: (owner: PluginInstance) => readonly string[];
+  /** Commit a replacement generation as one visible change. */
+  readonly commitAll: (owners: readonly PluginInstance[]) => readonly string[];
   /** Drop this instance's claim to being visible, if it still holds it. */
   readonly retire: (owner: PluginInstance) => void;
   readonly isCommitted: (owner: PluginInstance) => boolean;
@@ -107,6 +109,23 @@ export function createPluginContributions(): PluginContributions {
     };
   }
 
+  const commitOwners = (owners: readonly PluginInstance[]) => {
+    const conflicts = owners.flatMap((owner) =>
+      tables.flatMap((registered) => registered.conflicts(owner)),
+    );
+    if (conflicts.length > 0) return conflicts;
+    if (owners.every(isCommitted)) return [];
+    batch(() => {
+      setCommitted((current) => {
+        const next = new Map(current);
+        for (const owner of owners) next.set(owner.id, owner.generation);
+        return next;
+      });
+      for (const listener of [...listeners]) listener();
+    });
+    return [];
+  };
+
   return {
     table,
     isCommitted,
@@ -116,16 +135,8 @@ export function createPluginContributions(): PluginContributions {
         listeners.delete(listener);
       };
     },
-    commit(owner) {
-      const conflicts = tables.flatMap((registered) => registered.conflicts(owner));
-      if (conflicts.length > 0) return conflicts;
-      if (isCommitted(owner)) return [];
-      batch(() => {
-        setCommitted((current) => new Map(current).set(owner.id, owner.generation));
-        for (const listener of [...listeners]) listener();
-      });
-      return [];
-    },
+    commit: (owner) => commitOwners([owner]),
+    commitAll: commitOwners,
     retire(owner) {
       if (!isCommitted(owner)) return;
       batch(() => {

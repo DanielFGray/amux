@@ -1,0 +1,23 @@
+{
+  "id": "examples.pane-picker",
+  "name": "Pane Picker",
+  "version": "0.1.0",
+  "description": "fzf picker over amux panes — floating + transient process-plugin dogfood",
+  "actions": [
+    {
+      "id": "open",
+      "title": "Pick pane",
+      "description": "Open the floating fzf pane picker",
+      "command": ["sh", "-c", "echo \"use: amux process-plugin pane open examples.pane-picker picker\""]
+    }
+  ],
+  "panes": [
+    {
+      "id": "picker",
+      "title": "Pane picker",
+      "placement": "floating",
+      "transient": true,
+      "command": ["bun", "./pick-pane.ts"]
+    }
+  ]
+}

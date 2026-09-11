@@ -56,7 +56,9 @@ export const modalPlugin: PluginDefinition = definePlugin({
           key,
           desc,
           group: "amux",
-          run: panel.run(command("pane.resize", { direction })).pipe(Effect.ensuring(leaveAfterAction)),
+          run: panel
+            .run(command("pane.resize", { direction }))
+            .pipe(Effect.ensuring(leaveAfterAction)),
         });
       yield* options.register([
         "modal.vimMode",
@@ -69,7 +71,7 @@ export const modalPlugin: PluginDefinition = definePlugin({
       yield* bindings.register(
         contextCommand(entry, {
           name: "enter",
-          key: "<leader>",
+          key: "<prefix>",
           desc: "enter amux mode",
           group: "amux",
           run: Effect.sync(enter),
@@ -86,10 +88,15 @@ export const modalPlugin: PluginDefinition = definePlugin({
           }),
         ),
       );
-      yield* Effect.forEach([
-        action("alt+h", "resize left", "left"), action("alt+j", "resize down", "down"),
-        action("alt+k", "resize up", "up"), action("alt+l", "resize right", "right"),
-      ], (binding) => bindings.register(binding));
+      yield* Effect.forEach(
+        [
+          action("alt+h", "resize left", "left"),
+          action("alt+j", "resize down", "down"),
+          action("alt+k", "resize up", "up"),
+          action("alt+l", "resize right", "right"),
+        ],
+        (binding) => bindings.register(binding),
+      );
     }),
 });
 

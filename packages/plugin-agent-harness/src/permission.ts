@@ -6,8 +6,12 @@
  * meant. A pane only draws the question and offers a decision, so a second pane
  * on the same session — or a client that has since gone away — cannot change
  * what happened.
+ *
+ * Approval tiers and modes (OMP docs/approval-mode.md) sit on this same gate —
+ * no second approval channel. Resource rules still win first; mode only decides
+ * what happens when rules leave the call at "ask".
  */
-import { Deferred, Effect, Ref } from "effect";
+import { Context, Deferred, Effect, Match, Option, Ref, Schema as S } from "effect";
 import * as Path from "effect/Path";
 import { randomUUID } from "node:crypto";
 import { ProcessState } from "@danielfgray/amux";
@@ -15,21 +19,41 @@ import { agentStateTopic } from "./state-topic.ts";
 import {
   evaluateAll,
   type PermissionDecision,
+  type PermissionEffect,
   type PermissionRule,
 } from "@danielfgray/amux/permission.ts";
 import type { AgentDelta, AgentEventPayload } from "@danielfgray/amux/protocol";
 import type { Interface as ProjectStore } from "@danielfgray/amux/project-store.ts";
 import type { JsonValue } from "@danielfgray/amux";
+import type { ApprovalMode } from "./options.ts";
+import type { HarnessHooks } from "./hooks.ts";
 import { emit as toAgentMessage, type HarnessEvent } from "./protocol.ts";
 
 type PermissionStore = Pick<ProjectStore, "addRules">;
+
+/**
+ * Tool-declared approval tier — OMP approval-mode.md. Unknown/custom tools
+ * default to `exec` (safe). MCP-like tools that only mutate files use `write`.
+ */
+export const ApprovalTierSchema = S.Literals(["read", "write", "exec"]);
+export type ApprovalTier = typeof ApprovalTierSchema.Type;
+
+/** Per-tool override: OMP `tools.approval.<tool>` allow|deny|prompt. */
+export const ToolApprovalOverrideSchema = S.Literals(["allow", "deny", "prompt"]);
+export type ToolApprovalOverride = typeof ToolApprovalOverrideSchema.Type;
 
 /** What a tool asks the gate: a verb, what it would touch, and how to say it. */
 export interface Assertion {
   readonly action: string;
   readonly resources: readonly string[];
   readonly tool: string;
+  /** Declared tier; omitted or unknown is treated as `exec`. */
+  readonly tier: ApprovalTier;
   readonly input: JsonValue;
+  /** The tool-call id from the provider turn, when the handler has one. */
+  readonly call?: string;
+  /** Prospective unified diff shown in the approve pane before the mutate. */
+  readonly diff?: string;
 }
 
 export interface PermissionGate {
@@ -46,13 +70,68 @@ export interface PermissionGate {
   ) => Effect.Effect<void>;
 }
 
+export class PermissionGateTag extends Context.Service<PermissionGateTag, PermissionGate>()(
+  "amux/PermissionGate",
+) {}
+
+/**
+ * Which tiers a mode auto-approves without asking.
+ *
+ * | Mode         | Auto-approves     | Prompts for   |
+ * | always-ask   | read              | write, exec   |
+ * | write        | read, write       | exec          |
+ * | yolo         | read, write, exec | none          |
+ *
+ * Cite: ../oh-my-pi/docs/approval-mode.md § Modes.
+ */
+export function modeAllows(mode: ApprovalMode, tier: ApprovalTier): boolean {
+  return Match.value(mode).pipe(
+    Match.when("always-ask", () => tier === "read"),
+    Match.when("write", () => tier === "read" || tier === "write"),
+    Match.when("yolo", () => true),
+    Match.exhaustive,
+  );
+}
+
+/**
+ * Resolve resource-rule effect + mode + per-tool override into allow | ask | deny.
+ *
+ * Order (extends evaluateAll; does not replace it):
+ * 1. Resource or per-tool deny always refuses (OMP: user deny cannot be bypassed).
+ * 2. Per-tool prompt forces ask even under yolo.
+ * 3. Resource allow (always-persist / project rules) or per-tool allow passes.
+ * 4. Mode auto-approves by tier, else ask.
+ *
+ * Cite OMP approval-mode.md resolution steps 2–6, simplified onto the existing
+ * rule vocabulary — still one gate, no second approval channel.
+ */
+export function resolvePermission(
+  resourceEffect: PermissionEffect,
+  tier: ApprovalTier,
+  mode: ApprovalMode,
+  override: ToolApprovalOverride | undefined,
+): PermissionEffect {
+  if (resourceEffect === "deny" || override === "deny") return "deny";
+  if (override === "prompt") return "ask";
+  if (resourceEffect === "allow" || override === "allow") return "allow";
+  return modeAllows(mode, tier) ? "allow" : "ask";
+}
+
 export const makePermissionGate = Effect.fnUntraced(function* (options: {
   readonly session: string;
   readonly turn: Effect.Effect<string>;
   readonly rules: readonly PermissionRule[];
   readonly store: PermissionStore;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
+  /** OMP approval mode; default always-ask preserves prior ask-on-write behavior. */
+  readonly mode?: ApprovalMode;
+  /** Per-tool allow|deny|prompt; cannot override a resource deny. */
+  readonly toolApprovals?: Readonly<Record<string, ToolApprovalOverride>>;
+  /** Pi-shaped tool_call hooks (ts-b656be); first block wins before policy. */
+  readonly hooks?: HarnessHooks;
 }) {
+  const mode = options.mode ?? "always-ask";
+  const toolApprovals = options.toolApprovals ?? {};
   const rules = yield* Ref.make(options.rules);
   const pending = yield* Ref.make(new Map<string, Deferred.Deferred<Answer>>());
   const emitEvent = (event: HarnessEvent) => options.emit(toAgentMessage(options.session, event));
@@ -69,8 +148,8 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
 
   const emitRequest = (request: string, assertion: Assertion, save: readonly PermissionRule[]) =>
     options.turn.pipe(
-      Effect.flatMap((turn) =>
-        emitEvent({
+      Effect.flatMap((turn) => {
+        const event: Extract<HarnessEvent, { _tag: "permission.request" }> = {
           _tag: "permission.request",
           turn,
           request,
@@ -79,8 +158,11 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
           resources: assertion.resources,
           save,
           input: assertion.input,
-        }),
-      ),
+        };
+        if (assertion.call !== undefined) Object.assign(event, { call: assertion.call });
+        if (assertion.diff !== undefined) Object.assign(event, { diff: assertion.diff });
+        return emitEvent(event);
+      }),
     );
 
   const ask = Effect.fnUntraced(function* (assertion: Assertion, save: readonly PermissionRule[]) {
@@ -156,8 +238,40 @@ export const makePermissionGate = Effect.fnUntraced(function* (options: {
   return {
     assert: (assertion) =>
       Effect.gen(function* () {
+        if (options.hooks) {
+          const turn = yield* options.turn;
+          const event =
+            assertion.call !== undefined
+              ? {
+                  _tag: "tool_call" as const,
+                  session: options.session,
+                  turn,
+                  tool: assertion.tool,
+                  action: assertion.action,
+                  resources: assertion.resources,
+                  input: assertion.input,
+                  call: assertion.call,
+                }
+              : {
+                  _tag: "tool_call" as const,
+                  session: options.session,
+                  turn,
+                  tool: assertion.tool,
+                  action: assertion.action,
+                  resources: assertion.resources,
+                  input: assertion.input,
+                };
+          const hooked = yield* options.hooks.emitToolCall(event);
+          if (hooked.block === true) return yield* Effect.fail(hooked.reason);
+        }
         const current = yield* Ref.get(rules);
-        const effect = evaluateAll(assertion.action, assertion.resources, current);
+        const resourceEffect = evaluateAll(assertion.action, assertion.resources, current);
+        const effect = resolvePermission(
+          resourceEffect,
+          assertion.tier,
+          mode,
+          toolApprovals[assertion.tool],
+        );
         if (effect === "allow") return;
         if (effect === "ask") return yield* ask(assertion, savedRules(assertion));
         // A refusal is announced as a question that was already answered: an
@@ -195,6 +309,73 @@ export function savedRules(assertion: Assertion): readonly PermissionRule[] {
     resource: `${commandPrefix(segment)} *`,
     effect: "allow" as const,
   }));
+}
+
+/**
+ * OMP bash-tool-runtime.md § interception: route shell misuse to a dedicated
+ * tool when that tool is in the active toolkit. Not a sandbox — only a
+ * ToolError naming the right tool. Cite ../oh-my-pi/docs/bash-tool-runtime.md
+ * and packages/coding-agent/src/tools/bash-interceptor.ts.
+ */
+export interface BashInterceptorRule {
+  readonly pattern: RegExp;
+  readonly tool: string;
+  readonly message: string;
+}
+
+/** Representative defaults: cat/head/tail → read, sed -i → edit, grep/rg → grep, find -name → glob. */
+export const DEFAULT_BASH_INTERCEPTOR_RULES: readonly BashInterceptorRule[] = [
+  {
+    pattern: /^\s*(cat|head|tail|less|more)\s+/,
+    tool: "read",
+    message:
+      "Use the `read` tool instead of cat/head/tail. It provides better context and handles binary files.",
+  },
+  {
+    pattern: /^\s*(grep|rg|ripgrep|ag|ack)\s+/,
+    tool: "grep",
+    message:
+      "Use the `grep` tool instead of grep/rg. It respects .gitignore and provides structured output.",
+  },
+  {
+    pattern: /^\s*(find|fd)\s+.*(-name|-iname|-type|--type|-glob)/,
+    tool: "glob",
+    message:
+      "Use the `glob` tool instead of find/fd. It respects .gitignore and is faster for glob patterns.",
+  },
+  {
+    pattern: /^\s*sed\s+(-i|--in-place)/,
+    tool: "edit",
+    message: "Use the `edit` tool instead of sed -i. It provides diff preview and fuzzy matching.",
+  },
+];
+
+/**
+ * If the command is clearly a dedicated-tool job and that tool is available,
+ * return a block message. Otherwise None. Checks the full command and each
+ * bashResources segment (OMP also excludes piped-stdin fragments; we keep the
+ * simpler segment split already owned here).
+ */
+export function checkBashInterception(
+  command: string,
+  availableTools: ReadonlySet<string> | readonly string[],
+  rules: readonly BashInterceptorRule[] = DEFAULT_BASH_INTERCEPTOR_RULES,
+): Option.Option<{ readonly tool: string; readonly message: string }> {
+  const tools = availableTools instanceof Set ? availableTools : new Set(availableTools);
+  const candidates = [command.trim(), ...bashResources(command)];
+  for (const rule of rules) {
+    if (!tools.has(rule.tool)) continue;
+    for (const candidate of candidates) {
+      rule.pattern.lastIndex = 0;
+      if (rule.pattern.test(candidate)) {
+        return Option.some({
+          tool: rule.tool,
+          message: `Blocked: ${rule.message}\n\nOriginal command: ${command}`,
+        });
+      }
+    }
+  }
+  return Option.none();
 }
 
 /**

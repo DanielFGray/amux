@@ -116,6 +116,7 @@ test("an unknown name has no declaration to act on", () => {
 test("sections are the name prefixes, so declaring an option places its row", () => {
   expect(optionSections).toEqual(["window", "status", "appearance", "behaviour"]);
   expect(optionsIn("appearance")).toEqual([
+    "appearance.theme",
     "appearance.gap",
     "appearance.outerBorder",
     "appearance.padding",

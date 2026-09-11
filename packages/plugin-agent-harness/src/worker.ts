@@ -4,7 +4,6 @@ import {
   type LanguageModel,
   type Response,
   type Tool,
-  type Toolkit,
 } from "effect/unstable/ai";
 import {
   Cause,
@@ -12,6 +11,7 @@ import {
   Exit,
   Fiber,
   FiberHandle,
+  Option,
   Queue,
   Ref,
   Scope,
@@ -29,6 +29,16 @@ import {
   type HarnessDelta,
   type HarnessEvent,
 } from "./protocol.ts";
+import type { AgentToolkit } from "./tools.ts";
+import { agentToolkitForChat } from "./tools.ts";
+import {
+  COMPACTION_TOPIC,
+  DEFAULT_COMPACTION_STRATEGY,
+  DEFAULT_KEEP_RECENT_TOKENS,
+  compactChatHistory,
+  type CompactionPolicy,
+  type CompactOutcome,
+} from "./compaction.ts";
 
 /** Matches the provider id `agent-harness.tsx` registers this worker under
  *  (`spawnProviders.register(["native", ...])`) — the identity a turn's
@@ -42,11 +52,21 @@ export type AgentWorker = {
       readonly id?: string;
       readonly delivery?: PromptDelivery;
       readonly resume?: boolean;
+      /** Rewrite an existing queued admission (same turn id) instead of admitting a new one. */
+      readonly replace?: string;
     },
   ) => Effect.Effect<void>;
   /** Schedule an existing durable admission after a worker restart. */
   readonly resume: (entry: PromptInboxEntry) => Effect.Effect<void>;
   readonly interrupt: (reason?: string) => Effect.Effect<void>;
+  /**
+   * Prefix-preserving compaction. Manual `/compact` passes `force: true`;
+   * auto-compact after a turn uses the policy threshold.
+   */
+  readonly compact: (options?: {
+    readonly instructions?: string;
+    readonly force?: boolean;
+  }) => Effect.Effect<CompactOutcome, never, LanguageModel.LanguageModel>;
   readonly close: Effect.Effect<void>;
 };
 
@@ -60,6 +80,10 @@ export function sanitizeAgentError(error: Error | string): string {
   // Stripping ANSI sequences means matching the ESC control character on purpose.
   // eslint-disable-next-line eslint/no-control-regex
   const normalized = message.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").toLowerCase();
+  // Keep the provider id — it is not a secret, and collapsing it into the
+  // generic auth line made Codex-vs-OpenCode mixups undiagnosable in the UI.
+  const missing = normalized.match(/credential missing for ([a-z0-9._-]+)/);
+  if (missing) return `No credential for ${missing[1]}. Check Settings > auth.`;
   if (
     /credential|api key|api_key|unauthori[sz]ed|forbidden|authentication|401|403/.test(normalized)
   )
@@ -176,15 +200,30 @@ export function harnessDeltaForPart(
  * ours is the scheduler above it: a mailbox, one turn at a time, and
  * interruption that leaves the transcript intact.
  */
-export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E = never>(options: {
+export function makeAgentWorker<E = never>(options: {
   readonly session: string;
   readonly chat: Chat.Service;
   readonly emit: (frame: AgentEventPayload | AgentDelta) => Effect.Effect<void>;
-  readonly toolkit?: Effect.Effect<Toolkit.WithHandler<Tools>>;
+  /**
+   * Handlers already installed (`AgentToolkit`). Prefer this over
+   * `Toolkit.WithHandler<Record<string, Tool.Any>>`, which puts `any` in R via
+   * `Tool.HandlerServices`.
+   */
+  readonly toolkit?: Effect.Effect<AgentToolkit>;
   /** Commit the provider-valid history only after a provider step has settled. */
   readonly persist?: Effect.Effect<void>;
   /** Fire when a turn actually begins executing, not when it is queued. */
   readonly onTurnStart?: (turn: string) => Effect.Effect<void>;
+  /**
+   * After a tool result is emitted. Used for prewalk handoff on the first
+   * successful mutating tool; optional so unit tests stay free of model policy.
+   */
+  readonly onToolResult?: (tool: string, succeeded: boolean) => Effect.Effect<void>;
+  /**
+   * Compaction policy from harness options + catalog context limit.
+   * Absent → manual compact still works with keepRecent defaults; auto never fires.
+   */
+  readonly compaction?: CompactionPolicy;
   /** Durable admission store. The worker remains the executor, never the authority. */
   readonly inbox?: {
     readonly admitPrompt: (
@@ -196,12 +235,12 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
     ) => Effect.Effect<PromptInboxEntry, E>;
     readonly pendingPrompts: (session: string) => Effect.Effect<readonly PromptInboxEntry[], E>;
     readonly promotePrompt: (id: string) => Effect.Effect<void, E>;
+    readonly updatePendingPrompt: (
+      id: string,
+      patch: { readonly prompt?: string; readonly delivery?: PromptDelivery },
+    ) => Effect.Effect<PromptInboxEntry, E>;
   };
-}): Effect.Effect<
-  AgentWorker,
-  never,
-  Scope.Scope | LanguageModel.LanguageModel | Tool.HandlerServices<Tools[keyof Tools]>
-> {
+}): Effect.Effect<AgentWorker, never, Scope.Scope | LanguageModel.LanguageModel> {
   return Effect.gen(function* () {
     const inbox = yield* Ref.make<readonly QueuedTurn[]>([]);
     const wake = yield* Queue.unbounded<void>();
@@ -229,6 +268,41 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
      */
     const repairOpenToolCalls = closeOpenToolCalls(options.chat);
 
+    const policy: CompactionPolicy = options.compaction ?? {
+      auto: false,
+      atPercent: 85,
+      keepRecentTokens: DEFAULT_KEEP_RECENT_TOKENS,
+      strategy: DEFAULT_COMPACTION_STRATEGY,
+    };
+
+    const runCompact = (opts?: {
+      readonly instructions?: string;
+      readonly force?: boolean;
+    }): Effect.Effect<CompactOutcome, never, LanguageModel.LanguageModel> =>
+      compactChatHistory({
+        history: options.chat.history,
+        policy,
+        instructions: opts?.instructions,
+        force: opts?.force,
+      }).pipe(
+        Effect.tap((outcome) =>
+          outcome._tag === "compacted"
+            ? emitTopic({
+                _tag: "topic",
+                topic: COMPACTION_TOPIC,
+                payload: {
+                  tokensBefore: outcome.tokensBefore,
+                  tokensAfter: outcome.tokensAfter,
+                  summarized: outcome.summarizedMessages,
+                  kept: outcome.keptMessages,
+                  strategy: outcome.strategy,
+                  manual: opts?.force === true,
+                },
+              }).pipe(Effect.andThen(options.persist ?? Effect.void))
+            : Effect.void,
+        ),
+      );
+
     /**
      * Terminal frames for every exit, so no path leaves the pane mid-turn.
      *
@@ -236,7 +310,11 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
      * reported, because runTurn absorbs it afterwards. Dropping it here makes a
      * provider rejecting the request indistinguishable from an empty answer.
      */
-    const settle = (turn: string, exit: Exit.Exit<void, unknown>, text: string) => {
+    const settle = (
+      turn: string,
+      exit: Exit.Exit<void, unknown>,
+      text: string,
+    ): Effect.Effect<void, never, LanguageModel.LanguageModel> => {
       const outcome = Exit.isSuccess(exit)
         ? ("completed" as const)
         : Cause.hasInterruptsOnly(exit.cause)
@@ -273,6 +351,13 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
             },
           }),
         ),
+        // Auto-compact after a successful turn when the gauge says so.
+        // Manual /compact uses force:true and skips the threshold.
+        Effect.andThen(
+          outcome === "completed"
+            ? runCompact({ force: false }).pipe(Effect.asVoid)
+            : Effect.void,
+        ),
       );
     };
 
@@ -281,37 +366,50 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
     // ending the session and what FiberHandle<void, never> requires.
     const takeSteer = Ref.modify(inbox, (pending) => {
       const index = pending.findIndex((item) => item.delivery === "steer");
-      if (index < 0) return [undefined, pending] as const;
-      return [pending[index], [...pending.slice(0, index), ...pending.slice(index + 1)]] as const;
+      if (index < 0) return [Option.none<QueuedTurn>(), pending] as const;
+      return [
+        Option.some(pending[index]!),
+        [...pending.slice(0, index), ...pending.slice(index + 1)],
+      ] as const;
     });
 
     const runTurn = (
       queued: QueuedTurn,
-    ): Effect.Effect<
-      void,
-      never,
-      LanguageModel.LanguageModel | Tool.HandlerServices<Tools[keyof Tools]>
-    > => {
+    ): Effect.Effect<void, never, LanguageModel.LanguageModel> => {
       const { turn, prompt } = queued;
       let responseText = "";
+      const openToolNames = new Map<string, string>();
       const runStep = (
         stepPrompt: string | Prompt.Prompt,
-      ): Effect.Effect<
-        void,
-        AgentWorkerError,
-        LanguageModel.LanguageModel | Tool.HandlerServices<Tools[keyof Tools]>
-      > => {
+      ): Effect.Effect<void, AgentWorkerError, LanguageModel.LanguageModel> => {
         let needsContinuation = false;
         const stream = options.toolkit
-          ? options.chat.streamText({ prompt: stepPrompt, toolkit: options.toolkit })
+          ? options.chat.streamText({
+              prompt: stepPrompt,
+              toolkit: agentToolkitForChat(options.toolkit),
+            })
           : options.chat.streamText({ prompt: stepPrompt });
+        // Chat.streamText's ToolkitInput defaults `R = any` for open tool maps;
+        // handlers are already installed on AgentToolkit (stream R=never).
+        // @effect-diagnostics-next-line anyUnknownInErrorContext:off
         return stream.pipe(
           Stream.runForEach((rawPart) => {
             const part = rawPart as Response.StreamPart<Record<string, Tool.Any>>;
             const event = harnessEventForPart(turn, part);
             if (event) {
-              if (event._tag === "tool.start") needsContinuation = true;
-              return emitEvent(event);
+              if (event._tag === "tool.start") {
+                needsContinuation = true;
+                openToolNames.set(event.call, event.tool);
+              }
+              const after =
+                event._tag === "tool.result"
+                  ? (() => {
+                      const tool = openToolNames.get(event.call) ?? "";
+                      openToolNames.delete(event.call);
+                      return options.onToolResult?.(tool, event.isError !== true) ?? Effect.void;
+                    })()
+                  : Effect.void;
+              return emitEvent(event).pipe(Effect.andThen(after));
             }
             const fragment = harnessDeltaForPart(turn, part);
             if (fragment) {
@@ -329,7 +427,12 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
           Effect.flatMap(() =>
             needsContinuation
               ? takeSteer.pipe(
-                  Effect.flatMap((steer) => (steer ? runTurn(steer) : runStep(Prompt.empty))),
+                  Effect.flatMap((steer) =>
+                    Option.match(steer, {
+                      onNone: () => runStep(Prompt.empty),
+                      onSome: (turn) => runTurn(turn),
+                    }),
+                  ),
                 )
               : Effect.void,
           ),
@@ -376,9 +479,9 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
     const next = Ref.modify(inbox, (pending) => {
       const index = pending.findIndex((item) => item.delivery === "steer");
       const selected = index < 0 ? pending[0] : pending[index];
-      if (!selected) return [undefined, pending] as const;
+      if (selected === undefined) return [Option.none<QueuedTurn>(), pending] as const;
       return [
-        selected,
+        Option.some(selected),
         [...pending.slice(0, index < 0 ? 1 : index), ...pending.slice(index + 1)],
       ] as const;
     });
@@ -386,62 +489,139 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
       Queue.take(wake).pipe(
         Effect.andThen(next),
         Effect.flatMap((queued) =>
-          queued
-            ? FiberHandle.run(running, runTurn(queued)).pipe(
+          Option.match(queued, {
+            onNone: () => Effect.void,
+            onSome: (turn) =>
+              FiberHandle.run(running, runTurn(turn)).pipe(
                 Effect.flatMap(Fiber.join),
                 Effect.ignoreCause,
-              )
-            : Effect.void,
+              ),
+          }),
         ),
       ),
     );
     const drainFiber = yield* Effect.forkScoped(drain);
 
+    const admit = (
+      text: string,
+      promptOptions: {
+        readonly id?: string;
+        readonly delivery?: PromptDelivery;
+        readonly resume?: boolean;
+      } = {},
+    ): Effect.Effect<void> => {
+      const admission: Effect.Effect<Option.Option<PromptInboxEntry>> = options.inbox
+        ? options.inbox
+            .admitPrompt(
+              options.session,
+              text,
+              promptOptions.delivery ?? "queue",
+              promptOptions.resume,
+              promptOptions.id,
+            )
+            .pipe(
+              Effect.mapError(() => new AgentWorkerError({ message: "prompt admission failed" })),
+              Effect.map(Option.some),
+              Effect.orElseSucceed(Option.none),
+            )
+        : Effect.succeed(Option.none());
+      return admission.pipe(
+        Effect.flatMap((admitted) =>
+          Ref.updateAndGet(turns, (n) => n + 1).pipe(
+            Effect.flatMap((n) => {
+              const turn = Option.match(admitted, {
+                onNone: () => `turn-${n}`,
+                onSome: (entry) => entry.turn,
+              });
+              const queued = {
+                turn,
+                prompt: text,
+                delivery: promptOptions.delivery ?? "queue",
+                ...Option.match(admitted, {
+                  onNone: () => ({}),
+                  onSome: (entry) => ({ id: entry.id }),
+                }),
+              } satisfies QueuedTurn;
+              return emitEvent({
+                _tag: "turn.queued",
+                turn,
+                prompt: text,
+                delivery: promptOptions.delivery ?? "queue",
+              }).pipe(
+                Effect.andThen(
+                  promptOptions.resume === false
+                    ? Effect.void
+                    : Ref.update(inbox, (pending) => [...pending, queued]),
+                ),
+                Effect.andThen(
+                  promptOptions.resume === false ? Effect.void : Queue.offer(wake, undefined),
+                ),
+                Effect.asVoid,
+              );
+            }),
+          ),
+        ),
+      );
+    };
+
     return {
       prompt: (text, promptOptions = {}) => {
-        const admission: Effect.Effect<PromptInboxEntry | undefined> = options.inbox
-          ? options.inbox
-              .admitPrompt(
-                options.session,
-                text,
-                promptOptions.delivery ?? "queue",
-                promptOptions.resume,
-                promptOptions.id,
-              )
-              .pipe(
-                Effect.mapError(() => new AgentWorkerError({ message: "prompt admission failed" })),
-                Effect.orElseSucceed(() => undefined),
-              )
-          : Effect.void.pipe(Effect.as<PromptInboxEntry | undefined>(undefined));
-        return admission.pipe(
-          Effect.flatMap((admitted) =>
-            Ref.updateAndGet(turns, (n) => n + 1).pipe(
-              Effect.flatMap((n) => {
-                const turn = admitted?.turn ?? `turn-${n}`;
-                const queued = {
-                  turn,
-                  prompt: text,
-                  delivery: promptOptions.delivery ?? "queue",
-                } satisfies QueuedTurn;
-                if (admitted) Object.assign(queued, { id: admitted.id });
-                return emitEvent({
-                  _tag: "turn.queued",
-                  turn,
-                  prompt: text,
-                  delivery: promptOptions.delivery ?? "queue",
-                }).pipe(
+        const replaceTurn = promptOptions.replace;
+        if (!replaceTurn) return admit(text, promptOptions);
+
+        const delivery = promptOptions.delivery;
+        return Ref.modify(inbox, (pending) => {
+          const index = pending.findIndex((entry) => entry.turn === replaceTurn);
+          if (index < 0) return [Option.none<QueuedTurn>(), pending] as const;
+          const previous = pending[index]!;
+          const next = {
+            ...previous,
+            prompt: text,
+            delivery: delivery ?? previous.delivery,
+          } satisfies QueuedTurn;
+          return [
+            Option.some(next),
+            [...pending.slice(0, index), next, ...pending.slice(index + 1)],
+          ] as const;
+        }).pipe(
+          Effect.flatMap((updated) =>
+            Option.match(updated, {
+              onNone: () => {
+                const { replace: _omit, ...rest } = promptOptions;
+                return admit(text, rest);
+              },
+              onSome: (entry) => {
+                const persist =
+                  entry.id !== undefined && options.inbox
+                    ? options.inbox
+                        .updatePendingPrompt(
+                          entry.id,
+                          delivery !== undefined ? { prompt: text, delivery } : { prompt: text },
+                        )
+                        .pipe(
+                          Effect.mapError(
+                            () => new AgentWorkerError({ message: "prompt update failed" }),
+                          ),
+                          Effect.ignore,
+                        )
+                    : Effect.void;
+                return persist.pipe(
                   Effect.andThen(
-                    promptOptions.resume === false
-                      ? Effect.void
-                      : Ref.update(inbox, (pending) => [...pending, queued]),
+                    emitEvent({
+                      _tag: "turn.queued",
+                      turn: entry.turn,
+                      prompt: text,
+                      delivery: entry.delivery,
+                    }),
                   ),
-                  Effect.andThen(
-                    promptOptions.resume === false ? Effect.void : Queue.offer(wake, undefined),
-                  ),
+                  // Steer is checked at the next provider boundary; offering wake
+                  // is harmless and covers an idle session whose only pending
+                  // work just flipped from queue to steer.
+                  Effect.andThen(Queue.offer(wake, undefined)),
                   Effect.asVoid,
                 );
-              }),
-            ),
+              },
+            }),
           ),
         );
       },
@@ -453,6 +633,11 @@ export function makeAgentWorker<Tools extends Record<string, Tool.Any> = {}, E =
       // Interruption is Effect's, so the provider request, the stream and every
       // finalizer unwind together; there is no abort flag to keep in sync.
       interrupt: () => FiberHandle.clear(running),
+      compact: (compactOptions) =>
+        runCompact({
+          instructions: compactOptions?.instructions,
+          force: compactOptions?.force ?? true,
+        }),
       close: Fiber.interrupt(drainFiber).pipe(Effect.asVoid),
     } satisfies AgentWorker;
   });

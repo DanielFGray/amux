@@ -30,7 +30,7 @@ import {
   type SimpleHighlight,
   type TextChunk,
 } from "@opentui/core";
-import { theme } from "@danielfgray/amux";
+import { theme, onThemeChange } from "@danielfgray/amux";
 
 /** Per-line styled chunks, keyed by buffer row. */
 export type LineChunks = ReadonlyMap<number, readonly TextChunk[]>;
@@ -46,6 +46,11 @@ export type HighlightSnapshot = (content: string, filetype: string) => Promise<L
  *  Undefined means render plain — untagged and unknown fences included. */
 export const filetypeForInfo = (info: string): string | undefined =>
   info === "" ? undefined : infoStringToFiletype(info);
+
+/** Path → tree-sitter filetype for OpenTUI `<diff>` / `<code>`. Undefined when
+ *  the extension is unknown — DiffRenderable then skips syntax colors. */
+export const filetypeForPath = (filePath: string): string | undefined =>
+  pathToFiletype(filePath) ?? undefined;
 
 /**
  * The `TreeSitterClient` surface the provider uses. The real client satisfies
@@ -95,11 +100,12 @@ export class HighlightProvider extends Context.Service<
 >()("amux.highlight/Highlight") {}
 
 /**
- * Token colors from the app's own Catppuccin Mocha table, so highlighted
- * code cannot drift from the chrome palette. Only base groups are
- * registered — `getStyle` falls back from `keyword.import` to `keyword`.
+ * Token colors from the live app theme table, so highlighted code cannot
+ * drift from the chrome palette. Only base groups are registered —
+ * `getStyle` falls back from `keyword.import` to `keyword`.
  */
-const TOKEN_STYLES = {
+const tokenStyles = () => ({
+  // Source tokens — editor buffers, <diff>, and fenced code inside <markdown>.
   keyword: { fg: theme.mauve },
   string: { fg: theme.green },
   comment: { fg: theme.overlay1 },
@@ -113,12 +119,69 @@ const TOKEN_STYLES = {
   punctuation: { fg: theme.overlay1 },
   variable: { fg: theme.text },
   property: { fg: theme.blue },
-} as const;
+  // Markdown prose — OpenTUI MarkdownRenderable / opencode TextPart scopes.
+  // Cite: opencode tui/context/theme.tsx markup.* rules; opentui markdown.mdx.
+  default: { fg: theme.text },
+  "markup.heading": { fg: theme.blue, bold: true },
+  "markup.heading.1": { fg: theme.blue, bold: true },
+  "markup.heading.2": { fg: theme.blue, bold: true },
+  "markup.heading.3": { fg: theme.blue, bold: true },
+  "markup.heading.4": { fg: theme.blue, bold: true },
+  "markup.heading.5": { fg: theme.blue, bold: true },
+  "markup.heading.6": { fg: theme.blue, bold: true },
+  "markup.bold": { fg: theme.text, bold: true },
+  "markup.strong": { fg: theme.text, bold: true },
+  "markup.italic": { fg: theme.subtext0, italic: true },
+  "markup.list": { fg: theme.peach },
+  "markup.quote": { fg: theme.overlay1, italic: true },
+  "markup.raw": { fg: theme.green },
+  "markup.raw.block": { fg: theme.green },
+  "markup.raw.inline": { fg: theme.green },
+  "markup.link": { fg: theme.blue },
+  "markup.link.label": { fg: theme.blue },
+  "markup.link.url": { fg: theme.blue },
+  "markup.strikethrough": { fg: theme.overlay1 },
+});
+
+const paintStyles = (style: SyntaxStyle): void => {
+  for (const [name, def] of Object.entries(tokenStyles())) {
+    style.registerStyle(name, def);
+  }
+  style.clearCache();
+};
+
+/**
+ * Process-wide SyntaxStyle matching the live theme. Shared by DiffRenderable,
+ * OpenTUI `<markdown>` (assistant chat), and any consumer that needs the same
+ * code + markup token table. Chat fences that still go through
+ * `HighlightSnapshot` paint via the worker using these same names.
+ */
+let sharedSyntaxStyle: SyntaxStyle | undefined;
+export const codeSyntaxStyle = (): SyntaxStyle => {
+  if (sharedSyntaxStyle === undefined) {
+    sharedSyntaxStyle = SyntaxStyle.fromStyles(tokenStyles());
+  }
+  return sharedSyntaxStyle;
+};
+
+/** Live SyntaxStyle instances that must re-register when the theme switches. */
+const liveStyles = new Set<SyntaxStyle>();
+/** Providers that hold open buffers and must re-emit chunks on theme change. */
+const themeRefreshers = new Set<() => void>();
+
+onThemeChange(() => {
+  if (sharedSyntaxStyle !== undefined) paintStyles(sharedSyntaxStyle);
+  for (const style of liveStyles) paintStyles(style);
+  for (const refresh of themeRefreshers) refresh();
+});
 
 interface OpenBuffer {
   readonly id: number;
   version: number;
   content: string;
+  /** Last worker response, kept so a theme switch can recolor without a
+   *  round-trip. Absent until the first highlights:response lands. */
+  responses?: HighlightResponse[];
 }
 
 /** Process-wide buffer ids: every provider instance draws from this counter
@@ -135,7 +198,8 @@ export const makeHighlightProvider = (
   extraParsers: readonly FiletypeParserOptions[] = [],
 ): Effect.Effect<HighlightProviderService, never, Scope.Scope> =>
   Effect.gen(function* () {
-    const style = SyntaxStyle.fromStyles({ ...TOKEN_STYLES });
+    const style = SyntaxStyle.fromStyles(tokenStyles());
+    liveStyles.add(style);
     const buffers = new Map<string, OpenBuffer>();
     const listeners = new Set<HighlightListener>();
     let initPromise: Promise<void> | null = null;
@@ -156,14 +220,27 @@ export const makeHighlightProvider = (
       return initPromise;
     };
 
+    const emit = (file: string, state: OpenBuffer): void => {
+      const responses = state.responses;
+      if (responses === undefined) return;
+      const chunks = toLineChunks(state.content, responses, style);
+      for (const listener of listeners) listener(file, state.version, chunks);
+    };
+
     const onResponse = (bufferId: number, version: number, responses: HighlightResponse[]) => {
       for (const [file, state] of buffers) {
         if (state.id !== bufferId || state.version !== version) continue;
-        const chunks = toLineChunks(state.content, responses, style);
-        for (const listener of listeners) listener(file, version, chunks);
+        state.responses = responses;
+        emit(file, state);
       }
     };
     client.on("highlights:response", onResponse);
+
+    const refreshTheme = (): void => {
+      if (shut) return;
+      for (const [file, state] of buffers) emit(file, state);
+    };
+    themeRefreshers.add(refreshTheme);
 
     const dropBuffer = (file: string): Promise<void> => {
       const state = buffers.get(file);
@@ -236,6 +313,8 @@ export const makeHighlightProvider = (
       didShutdown = true;
       shut = true;
       buffers.clear();
+      themeRefreshers.delete(refreshTheme);
+      liveStyles.delete(style);
       client.off("highlights:response", onResponse);
       style.destroy();
       return Promise.resolve();

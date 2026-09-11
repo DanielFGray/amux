@@ -15,6 +15,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import { Layer, Schema as S } from "effect";
+import { TextEdit } from "@danielfgray/amux-text-buffer";
 import { Command, RuntimeCommandSchema } from "./commands.ts";
 import { DaemonEvent } from "./effect/EventBus.ts";
 import { AgentEvent } from "./effect/AttachProtocol.ts";
@@ -33,6 +34,21 @@ const BufferEntrySchema = S.Struct({
   name: S.String,
   bytes: S.Int,
   preview: S.String,
+});
+
+const DocumentMetaSchema = S.Struct({
+  uri: S.String,
+  generation: S.Int,
+  dirty: S.Boolean,
+  lineCount: S.Int,
+  byteLength: S.Int,
+  charCount: S.Int,
+  refs: S.Int,
+});
+
+const DocumentSnapshotSchema = S.Struct({
+  ...DocumentMetaSchema.fields,
+  text: S.String,
 });
 
 const AttachInfoSchema = S.Struct({
@@ -117,6 +133,57 @@ export class ControlRpcs extends RpcGroup.make(
     payload: { name: S.optional(S.String) },
     success: S.String,
     error: ControlError,
+  }),
+  // Open documents — same ownership plane as paste buffers. Generation-checked
+  // apply/write so editor and agent share one sequenced authority.
+  Rpc.make("DocumentOpen", {
+    payload: { uri: S.String, text: S.optional(S.String) },
+    success: DocumentMetaSchema,
+    error: ControlError,
+  }),
+  Rpc.make("DocumentApply", {
+    payload: {
+      uri: S.String,
+      baseGeneration: S.Int,
+      edits: S.Array(TextEdit),
+    },
+    success: DocumentMetaSchema,
+    error: ControlError,
+  }),
+  Rpc.make("DocumentWrite", {
+    payload: { uri: S.String, baseGeneration: S.Int, text: S.String },
+    success: DocumentMetaSchema,
+    error: ControlError,
+  }),
+  Rpc.make("DocumentSnapshot", {
+    payload: { uri: S.String },
+    success: DocumentSnapshotSchema,
+    error: ControlError,
+  }),
+  Rpc.make("DocumentSlice", {
+    payload: { uri: S.String, start: S.Int, end: S.Int },
+    success: S.Array(S.String),
+    error: ControlError,
+  }),
+  Rpc.make("DocumentSave", {
+    payload: { uri: S.String },
+    success: DocumentMetaSchema,
+    error: ControlError,
+  }),
+  Rpc.make("DocumentClose", {
+    payload: { uri: S.String, force: S.optional(S.Boolean) },
+    success: S.Void,
+    error: ControlError,
+  }),
+  Rpc.make("DocumentList", {
+    success: S.Array(DocumentMetaSchema),
+    error: ControlError,
+  }),
+  /** Live document snapshots. Optional `uri` filters; seed emits the current open set. */
+  Rpc.make("DocumentWatch", {
+    payload: { uri: S.optional(S.String) },
+    success: DocumentSnapshotSchema,
+    stream: true,
   }),
   Rpc.make("Events", { success: DaemonEvent, stream: true }),
   Rpc.make("AgentCursor", {

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  collapse,
   layoutPanes,
   makeLayout,
   type Layout,
@@ -29,13 +30,43 @@ test("init opens one column per pane at half the viewport", () => {
 
   const root = scrollOf(layout);
   expect(root.arrangement.offset).toBe(0);
-  expect(root.arrangement.sizes).toEqual([40, 40, 40]);
+  // (80 - 1 gap) / 2 = 39, so two columns + gutter fit the viewport exactly.
+  expect(root.arrangement.sizes).toEqual([39, 39, 39]);
   expect(root.children.map((child) => layoutPanes(child).map((leaf) => leaf.id))).toEqual([
     ["a"],
     ["b"],
     ["c"],
   ]);
   expect(layout.focus).toBe("a");
+});
+
+test("init of a sole pane fills the viewport instead of opening at half width", () => {
+  const layout = niriTilingAlgorithm.init([pane("solo")], size);
+  expect(scrollOf(layout).arrangement.sizes).toEqual([80]);
+});
+
+test("closing down to one column expands it to fill the viewport", () => {
+  const layout = niriTilingAlgorithm.init([pane("a"), pane("b")], size);
+  expect(scrollOf(layout).arrangement.sizes[0]).toBe(39);
+  const closed = niriTilingAlgorithm.close(layout, size, "b");
+  expect(scrollOf(closed).arrangement.sizes).toEqual([80]);
+  expect(layoutPanes(closed.root).map((leaf) => leaf.id)).toEqual(["a"]);
+});
+
+test("ensureVisible expands a leftover half-width sole column to the viewport", () => {
+  // Simulate a saved strip that still has the half-width default for one column.
+  const leftover = makeLayout({
+    root: {
+      type: "container",
+      kind: "scroll",
+      weight: 1,
+      arrangement: { offset: 0, sizes: [39], active: ["a"], basisCols: 80 },
+      children: [{ type: "pane", ...pane("a"), weight: 1 }],
+    },
+    focus: "a",
+  });
+  const shown = niriTilingAlgorithm.ensureVisible!(leftover, size, "a");
+  expect(scrollOf(shown).arrangement.sizes).toEqual([80]);
 });
 
 test("init of no panes is the empty layout", () => {
@@ -52,7 +83,7 @@ test("closing the only pane in a column removes the column", () => {
     ["c"],
   ]);
   // Column widths are intrinsic: survivors keep theirs, they do not stretch.
-  expect(root.arrangement.sizes).toEqual([40, 40]);
+  expect(root.arrangement.sizes).toEqual([39, 39]);
 });
 
 test("closing a pane in a multi-pane column keeps the column", () => {
@@ -104,6 +135,30 @@ test("left/right cross columns, up/down walk the column stack", () => {
   expect(niriTilingAlgorithm.focusInDirection(stacked, size, "b2", "right")).toBe("c");
 });
 
+test("left/right restore each column's last-focused pane", () => {
+  const single = niriTilingAlgorithm.init([pane("a"), pane("b")], size);
+  const stacked = niriColumns.insertIntoColumn(
+    niriColumns.insertIntoColumn(single, size, "b", pane("b2")),
+    size,
+    "b",
+    pane("b0"),
+    "before",
+  );
+  // Focus b2 inside column b, then stamp it via ensureVisible.
+  const onB2 = niriTilingAlgorithm.ensureVisible!(
+    makeLayout({ ...stacked, focus: "b2" }),
+    size,
+    "b2",
+  );
+  expect(scrollOf(onB2).arrangement.active[1]).toBe("b2");
+
+  // Leave to column a and come back — land on b2, not the row-matched b0.
+  const toA = niriTilingAlgorithm.focusInDirection(onB2, size, "b2", "left");
+  expect(toA).toBe("a");
+  const back = niriTilingAlgorithm.focusInDirection(onB2, size, "a", "right");
+  expect(back).toBe("b2");
+});
+
 test("directional focus returns null at the edges", () => {
   const layout = niriTilingAlgorithm.init([pane("a"), pane("b")], size);
   const stacked = niriColumns.insertIntoColumn(layout, size, "a", pane("a2"));
@@ -115,44 +170,56 @@ test("directional focus returns null at the edges", () => {
   expect(niriTilingAlgorithm.focusInDirection(stacked, size, "nope", "right")).toBeNull();
 });
 
-test("moving focus to an offscreen column scrolls it into view by the minimum", () => {
-  // Three 40-cell columns in an 80-cell viewport: [a][b] visible, [c] off right.
+test("closing a whole column focuses the previous column's active pane", () => {
+  const layout = niriTilingAlgorithm.init([pane("a"), pane("b"), pane("c")], size);
+  const closed = niriTilingAlgorithm.close(makeLayout({ ...layout, focus: "b" }), size, "b");
+  expect(layoutPanes(scrollOf(closed).children[0]!).map((p) => p.id)).toEqual(["a"]);
+  expect(layoutPanes(scrollOf(closed).children[1]!).map((p) => p.id)).toEqual(["c"]);
+  expect(closed.focus).toBe("a");
+});
+
+test("moving focus to an offscreen column scrolls it into view preferring less motion", () => {
+  // Three 39-cell columns with 1-cell gaps in an 80-cell viewport:
+  // starts at 0, 40, 80 — [a][b] fit exactly, [c] off right.
   const layout = niriTilingAlgorithm.init([pane("a"), pane("b"), pane("c")], size);
 
   const target = niriTilingAlgorithm.focusInDirection(layout, size, "b", "right");
   expect(target).toBe("c");
   // focusInDirection is a pure query: the input layout is untouched.
   expect(scrollOf(layout).arrangement.offset).toBe(0);
-  // Column c spans [80, 120); the viewport was [0, 80): shift to [40, 120).
+  // Column c spans [80, 119); right-align with padding wants 40, clamped to
+  // contentWidth-viewport = 39 (strip ends at 119).
   const shown = niriTilingAlgorithm.ensureVisible!(layout, size, target!);
-  expect(scrollOf(shown).arrangement.offset).toBe(40);
+  expect(scrollOf(shown).arrangement.offset).toBe(39);
 
-  // Column b spans [40, 80) — fully inside [40, 120) — so coming back moves nothing.
+  // Column b spans [40, 79) — fully inside [39, 119) with padding — so coming
+  // back keeps the offset (and stamps b as column 1's active).
   const back = niriTilingAlgorithm.focusInDirection(shown, size, "c", "left");
   expect(back).toBe("b");
-  expect(niriTilingAlgorithm.ensureVisible!(shown, size, back!)).toBe(shown);
+  const returned = niriTilingAlgorithm.ensureVisible!(shown, size, back!);
+  expect(scrollOf(returned).arrangement.offset).toBe(39);
 });
 
 test("a partially visible target scrolls just enough, a visible one not at all", () => {
   const layout = niriTilingAlgorithm.init([pane("a"), pane("b"), pane("c")], size);
-  // Column c spans [80, 120); the viewport moves from [0, 80) to [40, 120).
+  // Column c spans [80, 119); the viewport moves from [0, 80) to [39, 119).
   const shifted = niriColumns.scrollIntoView(layout, size, "c");
-  expect(scrollOf(shifted).arrangement.offset).toBe(40);
+  expect(scrollOf(shifted).arrangement.offset).toBe(39);
 
-  // Column c spans [80, 120); the viewport is [40, 120): already visible.
+  // Column c is already fully visible in [39, 119).
   expect(niriTilingAlgorithm.ensureVisible!(shifted, size, "c")).toBe(shifted);
 
-  // A partially visible target scrolls just enough: offset 10 shows [10, 90),
-  // so column c hangs 30 cells off the right and the viewport shifts to [40, 120).
+  // A partially visible target: offset 10 shows [10, 90), so column c hangs
+  // off the right and the viewport right-aligns (clamped) to [39, 119).
   const shiftedRoot = scrollOf(shifted);
   const partial = makeLayout({
     ...shifted,
     root: { ...shiftedRoot, arrangement: { ...shiftedRoot.arrangement, offset: 10 } },
   });
   const eased = niriTilingAlgorithm.ensureVisible!(partial, size, "c");
-  expect(scrollOf(eased).arrangement.offset).toBe(40);
+  expect(scrollOf(eased).arrangement.offset).toBe(39);
 
-  // Column a spans [0, 40); the viewport is [40, 120): shift to [0, 80).
+  // Column a spans [0, 39); the viewport is [39, 119): shift back to 0.
   const first = niriTilingAlgorithm.ensureVisible!(shifted, size, "a");
   expect(scrollOf(first).arrangement.offset).toBe(0);
 });
@@ -171,11 +238,11 @@ test("resizeFocus widens and narrows the focused column", () => {
   const layout = niriTilingAlgorithm.init([pane("a"), pane("b")], size);
 
   const wider = niriTilingAlgorithm.resizeFocus!(layout, size, "a", "right", 5);
-  expect(scrollOf(wider).arrangement.sizes[0]).toBe(45);
-  expect(scrollOf(wider).arrangement.sizes[1]).toBe(40);
+  expect(scrollOf(wider).arrangement.sizes[0]).toBe(44);
+  expect(scrollOf(wider).arrangement.sizes[1]).toBe(39);
 
   const narrower = niriTilingAlgorithm.resizeFocus!(wider, size, "a", "left", 5);
-  expect(scrollOf(narrower).arrangement.sizes[0]).toBe(40);
+  expect(scrollOf(narrower).arrangement.sizes[0]).toBe(39);
 
   // Shrinking below a usable terminal width is refused, not clamped.
   expect(niriTilingAlgorithm.resizeFocus!(layout, size, "a", "left", 1000)).toBe(layout);
@@ -203,9 +270,86 @@ test("the algorithm carries only the vocabulary the interface declares", () => {
   expect(niriTilingAlgorithm.resizeFocus).toBeDefined();
   expect(niriTilingAlgorithm.ensureVisible).toBeDefined();
   expect(niriTilingAlgorithm.split).toBeDefined();
-  for (const omitted of ["swap", "applyPreset", "resizeDivider", "hasNeighbour"] as const) {
+  expect(niriTilingAlgorithm.hasNeighbour).toBeDefined();
+  expect(niriTilingAlgorithm.resizeDivider).toBeDefined();
+  for (const omitted of ["swap", "applyPreset"] as const) {
     expect(omitted in niriTilingAlgorithm).toBe(false);
   }
+});
+
+test("resizeDivider transfers cells between adjacent columns", () => {
+  const layout = niriTilingAlgorithm.init([pane("a"), pane("b"), pane("c")], size);
+  const width = niriColumns.defaultColumnWidth(size);
+  expect(scrollOf(layout).arrangement.sizes).toEqual([width, width, width]);
+  const moved = niriTilingAlgorithm.resizeDivider!(layout, size, [], 0, 5);
+  expect(scrollOf(moved).arrangement.sizes).toEqual([width + 5, width - 5, width]);
+  // Floor: cannot shrink a column below MIN_COLUMN_WIDTH.
+  const clamped = niriTilingAlgorithm.resizeDivider!(moved, size, [], 0, -100);
+  expect(scrollOf(clamped).arrangement.sizes[0]).toBe(20);
+  expect(scrollOf(clamped).arrangement.sizes[1]).toBe(2 * width - 20);
+});
+
+test("resizeDivider inside a stacked column steals weight between panes", () => {
+  const layout = niriTilingAlgorithm.init([pane("a")], size);
+  const stacked = niriTilingAlgorithm.split!(layout, size, "a", "column", pane("a2"));
+  const moved = niriTilingAlgorithm.resizeDivider!(stacked, size, [0], 0, 4);
+  const column = scrollOf(moved).children[0]!;
+  expect(column.type).toBe("split");
+  if (column.type !== "split") return;
+  expect(column.children[0]!.weight).toBeGreaterThan(column.children[1]!.weight);
+  // Deeper paths are not a niri seam.
+  expect(niriTilingAlgorithm.resizeDivider!(stacked, size, [0, 0], 0, 1)).toBe(stacked);
+});
+
+test("a single-column scroll root survives collapse instead of becoming a bare stack", () => {
+  const layout = niriTilingAlgorithm.init([pane("a")], size);
+  const stacked = niriTilingAlgorithm.split!(layout, size, "a", "column", pane("a2"));
+  expect(scrollOf(stacked).children).toHaveLength(1);
+  // collapse used to unwrap the container to a bare column split — the
+  // reattach "rows instead of columns" bug (encode/decode both collapse).
+  const kept = collapse(stacked.root);
+  expect(kept?.type).toBe("container");
+  expect(kept && kept.type === "container" ? kept.kind : undefined).toBe("scroll");
+});
+
+test("resizeDivider does not rescale columns when basisCols disagrees with size.cols", () => {
+  // Mid-drag size.cols flicker used to adaptViewport first (rubber band).
+  const wide = { cols: 81, rows: 24 };
+  const layout = niriTilingAlgorithm.init([pane("a"), pane("b")], wide);
+  expect(scrollOf(layout).arrangement.sizes).toEqual([40, 40]);
+  const narrow = { cols: 61, rows: 24 };
+  const moved = niriTilingAlgorithm.resizeDivider!(layout, narrow, [], 0, 5);
+  expect(scrollOf(moved).arrangement.sizes).toEqual([45, 35]);
+  expect(scrollOf(moved).arrangement.basisCols).toBe(61);
+});
+
+test("hasNeighbour sees adjacent columns and stack rows, not outer edges", () => {
+  const layout = niriTilingAlgorithm.init([pane("a"), pane("b"), pane("c")], size);
+  expect(niriTilingAlgorithm.hasNeighbour!(layout, size, "a", "row", -1)).toBe(false);
+  expect(niriTilingAlgorithm.hasNeighbour!(layout, size, "a", "row", 1)).toBe(true);
+  expect(niriTilingAlgorithm.hasNeighbour!(layout, size, "b", "row", -1)).toBe(true);
+  expect(niriTilingAlgorithm.hasNeighbour!(layout, size, "c", "row", 1)).toBe(false);
+
+  const stacked = niriTilingAlgorithm.split!(layout, size, "a", "column", pane("a2"));
+  expect(niriTilingAlgorithm.hasNeighbour!(stacked, size, "a", "column", 1)).toBe(true);
+  expect(niriTilingAlgorithm.hasNeighbour!(stacked, size, "a2", "column", -1)).toBe(true);
+  expect(niriTilingAlgorithm.hasNeighbour!(stacked, size, "a", "column", -1)).toBe(false);
+});
+
+test("ensureVisible rescales column widths when the viewport shrinks", () => {
+  const wide = { cols: 81, rows: 24 };
+  const layout = niriTilingAlgorithm.init([pane("a"), pane("b")], wide);
+  expect(scrollOf(layout).arrangement.sizes).toEqual([40, 40]);
+  expect(scrollOf(layout).arrangement.basisCols).toBe(81);
+
+  const narrow = { cols: 61, rows: 24 };
+  const adapted = niriTilingAlgorithm.ensureVisible!(layout, narrow, "a");
+  const sizes = scrollOf(adapted).arrangement.sizes;
+  // Two columns + gap must fit the new viewport: 30+1+30 = 61.
+  expect(sizes[0]! + 1 + sizes[1]!).toBeLessThanOrEqual(61);
+  expect(scrollOf(adapted).arrangement.basisCols).toBe(61);
+  // A second call at the same size is a no-op (reference-equal after stamp).
+  expect(niriTilingAlgorithm.ensureVisible!(adapted, narrow, "a")).toBe(adapted);
 });
 
 test("split 'column' on a layout not yet in niri's own scroll shape stacks the pane rather than dropping it", () => {

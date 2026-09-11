@@ -303,6 +303,37 @@ testEffect("a failed replacement can be retried with the same definition", () =>
   }),
 );
 
+testEffect("batch replacement keeps every old plugin when one candidate fails", () =>
+  Effect.gen(function* () {
+    const { host } = yield* makeHost();
+    const active: string[] = [];
+    const version = (id: string, name: string, fail = false) =>
+      mkPlugin({
+        id,
+        effect: () =>
+          Effect.sync(() => {
+            if (fail) throw new Error("candidate failed");
+            active.push(name);
+          }),
+      });
+
+    yield* host.add(version("one", "old-one"));
+    yield* host.add(version("two", "old-two"));
+    const result = yield* Effect.exit(
+      host.replace([version("one", "new-one"), version("two", "new-two", true)]),
+    );
+
+    expect(Exit.isFailure(result)).toBe(true);
+    expect(
+      host
+        .status()
+        .map((status) => status.id)
+        .sort(),
+    ).toEqual(["one", "two"]);
+    expect(active).toEqual(["old-one", "old-two", "new-one"]);
+  }),
+);
+
 // --- Panel cleanup ---
 
 testEffect("registered panels are disposed when the plugin is removed", () =>
@@ -377,7 +408,7 @@ testEffect("registered bindings are disposed when the plugin is removed", () =>
           const bindings = yield* BindingsTag;
           yield* bindings.register({
             name: "binding-plugin.open",
-            key: "<leader>n",
+            key: "<prefix>n",
             desc: "open",
             group: "test",
             run: Effect.void,
@@ -752,13 +783,11 @@ testEffect("host auto-disposes when enclosing scope closes", () =>
   Effect.gen(function* () {
     let host: PluginHost = null!;
 
-    yield* Effect.scoped(
-      Effect.gen(function* () {
-        host = (yield* makeHost()).host;
-        yield* host.add(mkPlugin({ id: "scoped" }));
-        expect(host.status().length).toBe(1);
-      }),
-    );
+    yield* Effect.gen(function* () {
+      host = (yield* makeHost()).host;
+      yield* host.add(mkPlugin({ id: "scoped" }));
+      expect(host.status().length).toBe(1);
+    }).pipe(Effect.scoped);
 
     expect(host.status()).toEqual([]);
     yield* host.dispose;
