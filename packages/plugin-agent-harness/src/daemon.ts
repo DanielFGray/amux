@@ -48,15 +48,15 @@ const agentNew = {
   fields: {
     provider: S.optionalKey(S.String),
     prompt: S.optionalKey(S.String),
-    // Replace the calling pane instead of splitting a sibling. Default stays
-    // split so agent scripting keeps the "sibling" meaning in skill.md.
-    here: S.optionalKey(S.Boolean),
+    // Force a sibling split even when invoked from a pane (AMUX_PANE_ID /
+    // focused leaf). Same flag as editor.open.
+    split: S.optionalKey(S.Boolean),
     /** Resume this prior agent id: recreate it in the workspace so its
      *  conversation + AgentLog (UI transcript) both come back. */
     resumeFrom: S.optionalKey(S.String),
   },
   meta: agentPluginMeta("start a coding agent", "workspace", "agent"),
-  reduce: (draft, command) => {
+  reduce: (draft, command, context) => {
     const target = draft.activeWindow();
     if (!target) return;
     // This plugin registers the tag and is the only spawn provider it ever
@@ -78,7 +78,12 @@ const agentNew = {
       ...(resumeFrom !== undefined ? { id: resumeFrom } : {}),
     });
     if (typeof command.prompt === "string") pendingPrompts.set(agent.id, command.prompt);
-    const mode = command.here === true ? "replace" : "split";
+    // From inside a pane (CLI / shell with AMUX_PANE_ID, or the focused leaf
+    // from the client): replace that leaf and keep the displaced PTY alive.
+    // Palette / remote call without a caller: split. `split: true` always splits.
+    // Cite: packages/editor/src/daemon.ts editorOpen.
+    const mode =
+      command.split === true ? "split" : context.pane !== undefined ? "replace" : "split";
     const pane = draft.placeSessionPane(target, agent, { mode });
     draft.setResult({ session: agent.id, pane });
   },

@@ -20,6 +20,7 @@ const context = { cwd: "/tmp", shell: ["sh"], size: { cols: 80, rows: 24 } };
  *  agentNew.reduce actually calls. */
 function fakeDraft() {
   let added: LiveSession | undefined;
+  let placedMode: "split" | "replace" | undefined;
   const draft: WorkspaceDraft = {
     activeWindow: () => ({ window: {} as never, space: { dir: "/tmp" } as never }),
     findSession: () => null,
@@ -36,14 +37,17 @@ function fakeDraft() {
       } as never;
       return added as never;
     },
-    placeSessionPane: () => "pane-1",
+    placeSessionPane: (_entry, _agent, opts) => {
+      placedMode = opts?.mode;
+      return "pane-1";
+    },
     placePluginPane: () => null,
     pushAction: () => {},
     setResult: () => {},
     listAgents: () => [],
     getAgent: () => null,
   };
-  return { draft, added: () => added };
+  return { draft, added: () => added, placedMode: () => placedMode };
 }
 
 const fakeSessionOps = (calls: LiveSessionCalls): LiveSessionOps => ({
@@ -106,9 +110,41 @@ testEffect("agent.new resumeFrom recreates the prior session id (keeps AgentLog)
     const { draft, added } = fakeDraft();
     agentNew.reduce!(
       draft,
-      { _tag: "agent.new", provider: "native", here: true, resumeFrom: "agent-prior" },
-      context,
+      { _tag: "agent.new", provider: "native", resumeFrom: "agent-prior" },
+      { ...context, pane: "pane-shell" },
     );
     expect(added()?.id).toBe("agent-prior");
+  }),
+);
+
+testEffect("agent.new splits when there is no calling pane", () =>
+  Effect.gen(function* () {
+    const { draft, placedMode } = fakeDraft();
+    agentNew.reduce!(draft, { _tag: "agent.new", provider: "native" }, context);
+    expect(placedMode()).toBe("split");
+  }),
+);
+
+testEffect("agent.new replaces the calling pane when context.pane is set", () =>
+  Effect.gen(function* () {
+    const { draft, placedMode } = fakeDraft();
+    agentNew.reduce!(
+      draft,
+      { _tag: "agent.new", provider: "native" },
+      { ...context, pane: "pane-shell" },
+    );
+    expect(placedMode()).toBe("replace");
+  }),
+);
+
+testEffect("agent.new --split forces a sibling even from a calling pane", () =>
+  Effect.gen(function* () {
+    const { draft, placedMode } = fakeDraft();
+    agentNew.reduce!(
+      draft,
+      { _tag: "agent.new", provider: "native", split: true },
+      { ...context, pane: "pane-shell" },
+    );
+    expect(placedMode()).toBe("split");
   }),
 );

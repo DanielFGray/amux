@@ -1093,7 +1093,7 @@ test("pane.close after agent.new kills the agent and restores the displaced PTY"
   const current = run(workspaceFromSession(base(singlePaneLayout)));
   const opened = applyWorkspaceCommand(
     current,
-    command("agent.new", { provider: "test", here: true }),
+    command("agent.new", { provider: "test" }),
     { ...context, pane: "pane-a" },
     agentPlugins,
   ).snapshot;
@@ -1729,7 +1729,7 @@ test("agent.new from a calling pane replaces it and keeps the displaced PTY", ()
   const current = run(workspaceFromSession(base(singlePaneLayout)));
   const mutation = applyWorkspaceCommand(
     current,
-    command("agent.new", { provider: "test", here: true }),
+    command("agent.new", { provider: "test" }),
     { ...context, pane: "pane-a" },
     agentPlugins,
   );
@@ -1750,13 +1750,13 @@ test("agent.new from a calling pane replaces it and keeps the displaced PTY", ()
   expect(mutation.actions).toEqual([{ _tag: "spawn", agent, pane: "pane-a" }]);
 });
 
-test("chained agent.new --here keeps the original shell and reaps the middle agent", () => {
+test("chained agent.new replace keeps the original shell and reaps the middle agent", () => {
   // A second replace used to set displaced to the middle agent and leave the
   // shell live with no retainer — daemon reload then failed the workspace
   // invariant ("live but no pane retains it").
   const first = applyWorkspaceCommand(
     run(workspaceFromSession(base(singlePaneLayout))),
-    command("agent.new", { provider: "test", here: true }),
+    command("agent.new", { provider: "test" }),
     { ...context, pane: "pane-a" },
     agentPlugins,
   );
@@ -1765,7 +1765,7 @@ test("chained agent.new --here keeps the original shell and reaps the middle age
   )!;
   const second = applyWorkspaceCommand(
     first.snapshot,
-    command("agent.new", { provider: "test", here: true }),
+    command("agent.new", { provider: "test" }),
     { ...context, pane: "pane-a" },
     agentPlugins,
   );

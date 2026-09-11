@@ -21,9 +21,9 @@ const editorOpen = {
   },
   meta: { desc: "open an editor pane", group: "editor", target: "workspace", exposure: "human" },
   reduce: (draft, command, context) => {
-    // From inside a pane (CLI / shell with AMUX_PANE_ID): replace that leaf and
-    // keep the displaced PTY alive. Palette / keybind without a caller: split.
-    // `split: true` always splits.
+    // From inside a pane (CLI / shell with AMUX_PANE_ID, or the focused leaf
+    // from the client): replace that leaf and keep the displaced PTY alive.
+    // Remote call without a caller: split. `split: true` always splits.
     const mode =
       command.split === true ? "split" : context.pane !== undefined ? "replace" : "split";
     const raw = typeof command.file === "string" ? command.file.trim() : "";

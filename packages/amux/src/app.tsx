@@ -776,20 +776,26 @@ function buildApp(
     return projection;
   };
   runFiber("workspace-models", runModelProjections(session.models, project));
-  const workspaceContext = () => ({
-    size: {
-      cols: Math.max(1, paneHost.width),
-      rows: Math.max(1, paneHost.height),
-    },
-    shell: [
-      // @effect-diagnostics-next-line processEnv:off -- render-tree workspace context fallback.
-      resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash",
-    ],
-    cwd: spaces.active?.dir ?? process.cwd(),
-    blockedAgents: spaces.allSessions
-      .filter((session) => session.state === ProcessState.Blocked)
-      .map((session) => session.id),
-  });
+  const workspaceContext = () => {
+    const focused = spaces.activeWindow?.focused;
+    return {
+      size: {
+        cols: Math.max(1, paneHost.width),
+        rows: Math.max(1, paneHost.height),
+      },
+      shell: [
+        // @effect-diagnostics-next-line processEnv:off -- render-tree workspace context fallback.
+        resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash",
+      ],
+      cwd: spaces.active?.dir ?? process.cwd(),
+      // So editor.open / agent.new can replace the focused leaf the same way a
+      // shell CLI does via AMUX_PANE_ID. Absent when nothing is focused.
+      ...(focused != null ? { pane: focused.id } : {}),
+      blockedAgents: spaces.allSessions
+        .filter((session) => session.state === ProcessState.Blocked)
+        .map((session) => session.id),
+    };
+  };
 
   const runPanelCommand = <T extends CommandTag>(
     value: Extract<Command, { _tag: T }>,

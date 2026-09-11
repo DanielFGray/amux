@@ -85,7 +85,6 @@ export const registerSessionPicker: Effect.Effect<
       panel.run(
         runtimeCommand("agent.new", {
           provider: "native",
-          here: true,
           resumeFrom: entry.value,
         }),
       ),
