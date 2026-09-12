@@ -300,7 +300,11 @@ const applySubstitute = (
   return {
     ...next,
     cursor: { row: firstRow < 0 ? state.cursor.row : firstRow, col: 0 },
-    lastSearch: { needle: pat, direction: state.lastSearch?.direction ?? "forward" },
+    lastSearch: {
+      needle: pat,
+      direction: state.lastSearch?.direction ?? "forward",
+      wholeWord: false,
+    },
     searchHighlight: state.options.hlsearch,
     message: `${count} substitution${count === 1 ? "" : "s"} on ${count} line${count === 1 ? "" : "s"}`,
   };

@@ -135,7 +135,9 @@ export const registerLspUi: Effect.Effect<
   never,
   SlotsTag | ContextsTag | CurrentPlugin | Scope.Scope
 > = Effect.gen(function* () {
-  const runtime = yield* Effect.context();
+  // Explicit R: Effect.context defaults to never, which drops CurrentPlugin|Scope
+  // and makes deferred slots.register fail at the runForkWith boundary.
+  const runtime = yield* Effect.context<CurrentPlugin | Scope.Scope>();
   const [locations, setLocations] = createSignal<LocationPickerView | null>(null);
   const [rename, setRename] = createSignal<RenamePromptView | null>(null);
   const [preview, setPreview] = createSignal<PreviewPickerView | null>(null);

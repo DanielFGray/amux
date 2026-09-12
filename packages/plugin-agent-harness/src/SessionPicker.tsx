@@ -115,7 +115,9 @@ export const registerSessionPicker: Effect.Effect<
 
   const slots = yield* SlotsTag;
   const contexts = yield* ContextsTag;
-  const runtime = yield* Effect.context();
+  // Explicit R: Effect.context defaults to never, which drops CurrentPlugin|Scope
+  // and makes deferred slots.register fail at the runForkWith boundary.
+  const runtime = yield* Effect.context<CurrentPlugin | Scope.Scope>();
   const occupant: OverlayOccupant = {
     id: "amux.agent-harness.session-picker",
     title: "session picker",

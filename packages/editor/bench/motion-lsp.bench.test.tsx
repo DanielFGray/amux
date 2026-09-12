@@ -95,7 +95,7 @@ const makeCountingLsp = (): {
 } => {
   const live = new Map<string, LiveDocument>();
   let publishes = 0;
-  const fibers: Fiber.RuntimeFiber<void, unknown>[] = [];
+  const fibers: Fiber.Fiber<void, unknown>[] = [];
 
   const documents: DocumentServiceApi = {
     read: (request) =>

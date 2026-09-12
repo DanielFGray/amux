@@ -56,7 +56,9 @@ export const registerFileUi: Effect.Effect<
   never,
   SlotsTag | ContextsTag | CurrentPlugin | Scope.Scope
 > = Effect.gen(function* () {
-  const runtime = yield* Effect.context();
+  // Explicit R: Effect.context defaults to never, which drops CurrentPlugin|Scope
+  // and makes deferred slots.register fail at the runForkWith boundary.
+  const runtime = yield* Effect.context<CurrentPlugin | Scope.Scope>();
   const [view, setView] = createSignal<FilePickerView | null>(null);
   let searchLive: FileSearch | null = null;
   let searchGeneration = 0;

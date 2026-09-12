@@ -137,7 +137,7 @@ const HoverSegmentView = (props: {
 }) => (
   <Switch>
     <Match when={props.segment.kind === "code" ? props.segment : false}>
-      {(code) => (
+      {(code: () => Extract<HoverSegment, { kind: "code" }>) => (
         <HoverCode
           code={code().code}
           language={code().language}
@@ -147,7 +147,7 @@ const HoverSegmentView = (props: {
       )}
     </Match>
     <Match when={props.segment.kind === "text" ? props.segment : false}>
-      {(text) => (
+      {(text: () => Extract<HoverSegment, { kind: "text" }>) => (
         <HoverProse text={text().text} width={props.width} highlight={props.highlight} />
       )}
     </Match>
