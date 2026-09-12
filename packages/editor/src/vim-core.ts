@@ -515,12 +515,16 @@ const continueOperator = (state: EditorState, key: KeyEvent): EditorState => {
   if (range === null) return unknownKey(state, key.name);
   const applied = applyOperator(recorded, range.range);
   const motionName = motionKeyName(key);
+  const beforeLines = linesOf(state.buffer);
+  const afterLines = linesOf(applied.buffer);
   const prefer = nextCurswant(
     state.curswant,
     state.setCurswant,
     motionName,
     state.cursor.col,
     applied.cursor.col,
+    beforeLines[state.cursor.row] ?? "",
+    afterLines[applied.cursor.row] ?? "",
   );
   return {
     ...applied,
@@ -1334,14 +1338,23 @@ const motionCtx = (
   cursor = state.cursor,
   motionName?: string,
   eol = false,
-): MotionContext => ({
-  lines: linesOf(state.buffer),
-  cursor,
-  count,
-  curswant: curswantForMotion(state.curswant, state.setCurswant, cursor.col, motionName),
-  viewport: state.viewport,
-  eol,
-});
+): MotionContext => {
+  const lines = linesOf(state.buffer);
+  return {
+    lines,
+    cursor,
+    count,
+    curswant: curswantForMotion(
+      state.curswant,
+      state.setCurswant,
+      cursor.col,
+      motionName,
+      lines[cursor.row] ?? "",
+    ),
+    viewport: state.viewport,
+    eol,
+  };
+};
 
 /** Motions whose result may sit on the EOL NUL and need `adjust_cursor`. */
 const EOL_ADJUST_MOTIONS = new Set(["w", "W", "b", "B", "e", "E", "ge", "gE"]);
@@ -1381,6 +1394,8 @@ function moveTo(state: EditorState, motion: Motion, base = state, jumpKey?: stri
     jumpKey,
     state.cursor.col,
     landed.to.col,
+    linesOf(state.buffer)[state.cursor.row] ?? "",
+    linesOf(state.buffer)[landed.to.row] ?? "",
   );
   return {
     ...withJump,

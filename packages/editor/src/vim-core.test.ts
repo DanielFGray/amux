@@ -127,6 +127,41 @@ test("$ then j/k sticks to the end of each line", () => {
   expect(long.cursor).toEqual({ row: 2, col: 9 });
 });
 
+test("j/k preserve display-cell curswant across wide characters", () => {
+  // "你好abc" cells: 你@0-1 好@2-3 a@4 b@5 c@6. Cursor on 'a' (string 2, cell 4).
+  // Short line "xy" has cells 0,1 — clamp to 'y'. Long line restores cell 4 → 'a'.
+  const start = seedBuffer(
+    initialEditor(),
+    bufferFromLines(["你好abc", "xy", "你好abc"]),
+    { row: 0, col: 2 },
+  );
+  const mid = typeKeys(start, ["j"]);
+  expect(mid.cursor).toEqual({ row: 1, col: 1 });
+  const back = typeKeys(mid, ["j"]);
+  expect(back.cursor).toEqual({ row: 2, col: 2 });
+});
+
+test("$ over an emoji lands on the grapheme, not a surrogate half", () => {
+  const start = seedBuffer(initialEditor(), bufferFromLines(["a👨b"]), {
+    row: 0,
+    col: 0,
+  });
+  const atEnd = typeKeys(start, ["$"]);
+  // "a👨b" — last grapheme is 'b' at string index 3 (👨 is two UTF-16 units).
+  expect(atEnd.cursor).toEqual({ row: 0, col: 3 });
+  expect(atEnd.curswant).toBeGreaterThan(atEnd.cursor.col);
+});
+
+test("| goes to a display column, not a UTF-16 index", () => {
+  // 你@0-1, a@2 → `3|` is display cell 2 → 'a' at string index 1.
+  const start = seedBuffer(initialEditor(), bufferFromLines(["你a"]), {
+    row: 0,
+    col: 0,
+  });
+  const landed = typeKeys(start, ["3", "|"]);
+  expect(landed.cursor).toEqual({ row: 0, col: 1 });
+});
+
 test("0 and $ jump to line start and end", () => {
   const state = reduceEditor(
     { ...initialEditor(), buffer: bufferFromLines(["abc", "defgh"]), cursor: { row: 1, col: 2 } },

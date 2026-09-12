@@ -10,6 +10,11 @@
  */
 import { Match, Option } from "effect";
 import { Schema as S } from "effect";
+import {
+  cellColumnOf,
+  rowCells,
+  stringIndexAtCell,
+} from "@danielfgray/amux/cell-width.ts";
 import type { Cursor } from "./schema.ts";
 
 export const MotionRange = S.Struct({
@@ -30,7 +35,7 @@ export interface MotionContext {
   readonly lines: readonly string[];
   readonly cursor: Cursor;
   readonly count: number;
-  /** Preferred column for vertical motions — neovim `w_curswant`. */
+  /** Preferred column for vertical motions — neovim `w_curswant` (display cells). */
   readonly curswant: number;
   /** Visible window — H/M/L and half-page motions read this. */
   readonly viewport: { readonly top: number; readonly height: number };
@@ -352,11 +357,12 @@ export const wordEndBack =
 export const wordEndBackSmall = wordEndBack(false);
 export const wordEndBackBig = wordEndBack(true);
 
-/** `|` — go to count-th column (1-based; bare `|` → column 1). */
+/** `|` — go to count-th display column (1-based; bare `|` → column 1). */
 export const gotoColumn: Motion = ({ lines, cursor, count }) => {
   const line = lines[cursor.row]!;
-  const col = Math.max(0, Math.min(line.length, Math.max(1, count) - 1));
-  return { row: cursor.row, col };
+  if (line.length === 0) return { row: cursor.row, col: 0 };
+  const want = Math.max(0, Math.max(1, count) - 1);
+  return { row: cursor.row, col: colAdvance(line, want) };
 };
 
 /**
@@ -456,12 +462,12 @@ export const firstNonBlank: Motion = ({ lines, cursor }) => {
 };
 
 /**
- * `$` — last character of the line (not past it). Empty → col 0.
+ * `$` — last grapheme of the line (not past it). Empty → col 0.
  * Cite: neovim `nv_dollar` + `coladvance(MAXCOL)` with `one_more == 0`.
  */
 export const lineEnd: Motion = ({ lines, cursor }) => {
   const line = lines[cursor.row]!;
-  return { row: cursor.row, col: line.length === 0 ? 0 : line.length - 1 };
+  return { row: cursor.row, col: colAdvance(line, MAXCOL) };
 };
 
 export const firstColumn: Motion = ({ cursor }) => ({ row: cursor.row, col: 0 });
@@ -473,14 +479,16 @@ export const firstColumn: Motion = ({ cursor }) => ({ row: cursor.row, col: 0 })
 export const MAXCOL = 0x7fffffff;
 
 /**
- * Land on `curswant` within a line. `MAXCOL` sticks to the last character
- * (neovim `coladvance` MAXCOL branch in normal mode); a finite want clamps
- * the same way. Empty lines stay at col 0.
+ * Land on `curswant` within a line. `curswant` is a virtual (display-cell)
+ * column — neovim `w_curswant` / `coladvance`. `MAXCOL` sticks to the last
+ * grapheme; a finite want lands on the grapheme that occupies that cell
+ * (including the second half of a wide character). Empty lines stay at col 0.
  */
 export const colAdvance = (line: string, curswant: number): number => {
   if (line.length === 0) return 0;
-  if (curswant >= MAXCOL) return line.length - 1;
-  return Math.min(curswant, line.length - 1);
+  const map = rowCells(line);
+  if (curswant >= MAXCOL) return stringIndexAtCell(map, Number.MAX_SAFE_INTEGER);
+  return stringIndexAtCell(map, curswant);
 };
 
 /** Motions that must not refresh `curswant` from the landed column. */
@@ -489,6 +497,8 @@ export const CURSWANT_PRESERVE = new Set(["j", "k", "ctrl-d", "ctrl-u"]);
 /**
  * Next preferred-column state after a named motion.
  * Cite: neovim `update_curswant` / `nv_dollar` / vertical motions.
+ * `curswant` is stored in display cells; `cursorCol` / `landedCol` are
+ * string indices into `cursorLine` / `landedLine`.
  */
 export type CurswantUpdate = {
   readonly curswant: number;
@@ -501,14 +511,21 @@ export const nextCurswant = (
   motionName: string | undefined,
   cursorCol: number,
   landedCol: number,
+  cursorLine: string,
+  landedLine: string = cursorLine,
 ): CurswantUpdate => {
   // Vertical: optionally sync from the cursor first (deferred update), then keep.
   if (motionName !== undefined && CURSWANT_PRESERVE.has(motionName)) {
-    const synced = setCurswant ? cursorCol : prev;
+    const synced = setCurswant
+      ? cellColumnOf(rowCells(cursorLine), cursorCol)
+      : prev;
     return { curswant: synced, setCurswant: false };
   }
   if (motionName === "$") return { curswant: MAXCOL, setCurswant: false };
-  return { curswant: landedCol, setCurswant: true };
+  return {
+    curswant: cellColumnOf(rowCells(landedLine), landedCol),
+    setCurswant: true,
+  };
 };
 
 /** Curswant to feed a vertical motion right now. */
@@ -517,9 +534,10 @@ export const curswantForMotion = (
   setCurswant: boolean,
   cursorCol: number,
   motionName: string | undefined,
+  cursorLine: string,
 ): number => {
   if (motionName !== undefined && CURSWANT_PRESERVE.has(motionName) && setCurswant) {
-    return cursorCol;
+    return cellColumnOf(rowCells(cursorLine), cursorCol);
   }
   return curswant;
 };

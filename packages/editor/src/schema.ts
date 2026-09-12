@@ -276,13 +276,14 @@ export type EditorState = {
   readonly pendingEdits: readonly TextEdit[];
   readonly cursor: Cursor;
   /**
-   * Preferred column for `j`/`k` / half-page — neovim `w_curswant`.
-   * `MAXCOL` (`motions.MAXCOL`) means "stick to EOL" after `$`.
+   * Preferred virtual (display-cell) column for `j`/`k` / half-page —
+   * neovim `w_curswant`. `MAXCOL` (`motions.MAXCOL`) means "stick to EOL"
+   * after `$`. Distinct from `cursor.col`, which is a UTF-16 string index.
    */
   readonly curswant: number;
   /**
-   * When true, the next vertical motion syncs `curswant` from `cursor.col`
-   * first — neovim `w_set_curswant`.
+   * When true, the next vertical motion syncs `curswant` from the cursor's
+   * display column first — neovim `w_set_curswant`.
    */
   readonly setCurswant: boolean;
   readonly command: string;

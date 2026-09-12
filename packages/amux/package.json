@@ -26,6 +26,7 @@
     "./session.ts": "./src/session.ts",
     "./test-tmp.ts": "./src/test-tmp.ts",
     "./config.ts": "./src/config.ts",
+    "./cell-width.ts": "./src/cell-width.ts",
     "./env.ts": "./src/env.ts",
     "./git.ts": "./src/git.ts",
     "./space.ts": "./src/space.ts",
