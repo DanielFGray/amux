@@ -23,6 +23,7 @@ import { LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts";
 import { TerminalPane } from "./pane.ts";
 import { readGit } from "./git.ts";
 import { createKeyDispatcher, sendKeys, type SendTarget } from "./send.ts";
+import { NO_REALM, paneRealm, realmOf } from "./realm.ts";
 import {
   createBindings,
   helpGroups,
@@ -190,6 +191,7 @@ export interface AppOptions {
 
 export interface PluginRuntime {
   reloader?: PluginReloader;
+  host?: PluginHost;
   pathFor?: (id: string) => string | undefined;
   resumePending?: (workspace: WorkspaceSnapshot) => Effect.Effect<void>;
   /**
@@ -415,6 +417,7 @@ export function createApp(
       (app) => app.release,
     );
     pluginHost = yield* createPluginHost({ contributions, consumers: app.consumers });
+    pluginRuntime.host = pluginHost;
     runFiber(
       "plugin-service-changes",
       Stream.runForEach(pluginHost.onServiceChange, (key) =>
@@ -952,11 +955,9 @@ function buildApp(
   /** Where every panel on screen is registered. See panelGroups below. */
 
   const [overlay, setOverlay] = createSignal<Overlay>("none");
-  // The raw compiled parts, not a formatted string: the which-key panel has to
-  // match them against every binding's sequence to work out what is still
-  // reachable, and a display string cannot be matched back.
+  // The raw compiled chord parts for which-key matching (not showcmd layout).
   const [pendingParts, setPendingParts] = createSignal<readonly { display: string }[]>([]);
-  const [countDigits, setCountDigits] = createSignal("");
+  const [showcmdEpoch, setShowcmdEpoch] = createSignal(0);
   const [hintsVisible, setHintsVisible] = createSignal(false);
   const [promptRequest, setPromptRequest] = createSignal<PromptRequest | null>(null);
   /** Compile error from the send-keys prompt's last submit. Kept separate from
@@ -2322,6 +2323,15 @@ function buildApp(
     onUnhandled,
     onError: showCommandError,
     runtime: rootRuntime,
+    // The focused pane is the realm: a command reaching a pane-scoped service
+    // gets the pane it was typed into. Read per dispatch, never captured —
+    // focus moves between keystrokes.
+    realm: () => {
+      const pane = spaces.activeWindow?.focused?.id;
+      const host = pluginRuntime.host;
+      if (pane === undefined || host === undefined) return NO_REALM;
+      return realmOf(paneRealm(pane), host.realmContext(paneRealm(pane)));
+    },
   });
   // Sticky minimode: after `^S ^W`, bare h/j/|/… keep firing window maps until
   // Escape. Same ChordMatcher API the editor uses for a future sticky `g`.
@@ -2412,13 +2422,13 @@ function buildApp(
     armHintVisibility(sequence.length > 0, () => pendingParts().length > 0 || showOnEntryActive());
   }
 
-  // showcmd + which-key pending: ChordMatcher is the only multi-key authority.
-  // Count digits (`^S ^W 80`) refresh showcmd but do not enter which-key's trie.
+  // which-key: chord trie only. showcmd: one pending table (grammar/chord/count).
+  // Cite: ts-5583b8; which-key must not route through the pending table.
   const disposeChordPending = bindings.chords.subscribe((strokes) => {
     updateHintVisibility(strokes.map((display) => ({ display })));
   });
-  const disposeChordCount = bindings.subscribeCount(() => {
-    setCountDigits(bindings.countDigits());
+  const disposeShowcmdPending = bindings.pending.subscribe(() => {
+    setShowcmdEpoch((n) => n + 1);
   });
   const disposeHintRearm = bindings.keymap.intercept("key:after", (input) => {
     if (!input.handled || !rearmHintsOnKeyActive()) return;
@@ -2472,13 +2482,31 @@ function buildApp(
   );
 
   const pending = createMemo(() => {
-    if (pendingParts().length === 0) return [];
-    const sequence = formatSequence(pendingParts(), bindings.leaders());
-    const digits = countDigits();
-    return [digits === "" ? sequence : `${sequence} ${digits}`];
+    showcmdEpoch();
+    const entries = bindings.pending.current();
+    const strokesOf = (role: "grammar" | "chord" | "count") =>
+      entries.find((entry) => entry.role === role)?.strokes ?? [];
+    const grammar = strokesOf("grammar");
+    const chordStrokes = strokesOf("chord");
+    const count = strokesOf("count");
+    if (chordStrokes.length === 0 && grammar.length === 0) return [];
+    const chordSeq =
+      chordStrokes.length > 0
+        ? formatSequence(
+            chordStrokes.map((display) => ({ display })),
+            bindings.leaders(),
+          )
+        : "";
+    const grammarSeq = grammar.join("");
+    const digits = count[0] ?? "";
+    const body = [grammarSeq, chordSeq].filter((part) => part.length > 0).join(" ");
+    return [digits === "" ? body : `${body} ${digits}`];
   });
   const hints = createMemo(() =>
-    nextKeys(bindings, bindings.commands(), contexts(), pendingParts()),
+    // which-key is the chord trie only — operator grammar has no continuations list.
+    pendingParts().length === 0
+      ? []
+      : nextKeys(bindings, bindings.commands(), contexts(), pendingParts()),
   );
 
   // Recomputed whenever the keys change, since that is what the list is *for*:
@@ -2881,7 +2909,7 @@ function buildApp(
     if (copyMode.active) copyMode.exit();
     spaces.refreshChrome();
     disposeChordPending();
-    disposeChordCount();
+    disposeShowcmdPending();
     disposeHintRearm();
     rawBindings.dispose();
     renderer.removeListener("resize", onResize);

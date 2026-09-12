@@ -248,7 +248,7 @@ test("hold motions publish zero LSP changes; edit still publishes", () =>
             keyProfile={() => "vim"}
             io={io}
             lsp={() => counting.services}
-            registerController={(next) => {
+            registerController={(_paneId, next) => {
               controller = next;
               return () => {
                 controller = null;

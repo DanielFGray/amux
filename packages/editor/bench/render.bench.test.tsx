@@ -99,7 +99,7 @@ async function measure(file: string, lines: number, io: EditorIoService): Promis
       lineNumbers={() => true}
       keyProfile={() => "vim"}
       io={io}
-      registerController={(next) => {
+      registerController={(_paneId, next) => {
         controller = next;
         return () => {
           controller = null;

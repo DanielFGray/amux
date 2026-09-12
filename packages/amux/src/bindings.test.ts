@@ -1,12 +1,14 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
-import { Duration, Effect } from "effect";
+import { Context, Duration, Effect, Option } from "effect";
+import { NO_REALM, Realm, realmOf, type RealmValue } from "./realm.ts";
 import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
 import type { KeyEvent } from "@opentui/core";
 import {
   contextCommand,
   createBindings,
+  createPendingTable,
   formatKey,
   helpGroups,
   keyToBinding,
@@ -15,6 +17,7 @@ import {
   mayDispatchPaletteEntry,
   nextKeys,
   paletteEntries,
+  pendingStrokes,
   registerLayerChecked,
   type CommandSpec,
 } from "./bindings.ts";
@@ -1512,23 +1515,32 @@ test("timeoutlen prefers the longer chord, else the exact shorter binding", asyn
   }
 });
 
-test("createBindings exposes a ChordMatcher with the same timeoutlen", async () => {
+test("createBindings exposes a ChordMatcher with the same timeoutlen; CommandSpecs sync onto it", async () => {
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     const fired: string[] = [];
-    const bindings = createBindings(t.renderer, [], {
-      keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
-      onUnhandled: () => true,
-      timeoutlenMs: 40,
-    });
+    const bindings = createBindings(
+      t.renderer,
+      [
+        {
+          name: "t.ab",
+          key: "ab",
+          desc: "ab",
+          group: "t",
+          run: Effect.sync(() => fired.push("ab")),
+        },
+      ],
+      {
+        keys: { prefix: "ctrl+s", leader: "space", bindings: {} },
+        onUnhandled: () => true,
+        timeoutlenMs: 40,
+      },
+    );
     expect(bindings.chords.timeoutlen()).toEqual(Duration.millis(40));
-    bindings.chords.register({
-      id: "ab",
-      strokes: ["a", "b"],
-      run: () => fired.push("ab"),
-    });
     expect(bindings.chords.push("a")._tag).toBe("pending");
-    expect(bindings.chords.push("b")).toEqual({ _tag: "matched", id: "ab" });
+    const matched = bindings.chords.push("b");
+    expect(matched._tag).toBe("matched");
+    if (matched._tag === "matched") expect(matched.id).toContain("t.ab");
     expect(fired).toEqual(["ab"]);
   } finally {
     t.renderer.destroy();
@@ -1636,6 +1648,115 @@ test("which-key lists leader continuations from ChordMatcher pending", async () 
         ],
       },
     ]);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("pending grammar is display-only and independent of chord pending", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const bindings = createBindings(t.renderer, [], {
+      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
+      onUnhandled: () => true,
+    });
+    let grammar: readonly string[] = [];
+    const seen: string[][] = [];
+    const stopGrammar = bindings.pending.register({
+      id: "test.grammar",
+      role: "grammar",
+      strokes: () => grammar,
+    });
+    const stop = bindings.pending.subscribe(() => {
+      seen.push([...pendingStrokes(bindings.pending, "grammar")]);
+    });
+    grammar = ["d"];
+    bindings.pending.notify();
+    grammar = ["3", "d"];
+    bindings.pending.notify();
+    bindings.pending.notify(); // same strokes — still notifies; equality is the source's job
+    expect(pendingStrokes(bindings.pending, "grammar")).toEqual(["3", "d"]);
+    expect(bindings.chords.pending()).toEqual([]);
+    expect(pendingStrokes(bindings.pending, "chord")).toEqual([]);
+    expect(seen).toEqual([["d"], ["3", "d"], ["3", "d"]]);
+    stop();
+    stopGrammar();
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+test("pending table rejects a second source for the same role", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const bindings = createBindings(t.renderer, [], {
+      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
+      onUnhandled: () => true,
+    });
+    // chord + count are already claimed by createBindings.
+    expect(() =>
+      bindings.pending.register({
+        id: "test.chord.dupe",
+        role: "chord",
+        strokes: () => [],
+      }),
+    ).toThrow(/pending role 'chord' is already registered by 'amux.bindings.chord'/);
+
+    const table = createPendingTable();
+    table.register({ id: "a", role: "grammar", strokes: () => ["x"] });
+    expect(() =>
+      table.register({ id: "b", role: "grammar", strokes: () => ["y"] }),
+    ).toThrow(/pending role 'grammar' is already registered by 'a'/);
+  } finally {
+    t.renderer.destroy();
+  }
+});
+
+/**
+ * Isolation at dispatch grain (paper Definition 25). The realm is read when
+ * the key fires, not when the table was built, so the same command reaches a
+ * different binding depending on which pane the user typed into. That is what
+ * replaces resolving "the focused one" by hand inside every command body.
+ */
+test("a command that declares Realm reads the binding for the pane it ran in", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    class Thing extends Context.Service<Thing, { readonly of: string }>()("test/Thing") {}
+    const panes: Record<string, RealmValue> = {
+      "%1": realmOf("pane:%1", Context.make(Thing, { of: "left" })),
+      "%2": realmOf("pane:%2", Context.make(Thing, { of: "right" })),
+    };
+    let focused = "%1";
+    const seen: Array<string | undefined> = [];
+    const commands: CommandSpec[] = [
+      {
+        name: "t.which",
+        key: "<prefix>w",
+        desc: "which",
+        group: "t",
+        run: Effect.gen(function* () {
+          const realm = yield* Realm;
+          seen.push(Option.getOrUndefined(realm.get(Thing))?.of);
+        }),
+      },
+    ];
+    createBindings(t.renderer, commands, {
+      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
+      onUnhandled: () => true,
+      realm: () => panes[focused] ?? NO_REALM,
+    });
+
+    t.mockInput.pressKey("a", { ctrl: true });
+    t.mockInput.pressKey("w");
+    focused = "%2";
+    t.mockInput.pressKey("a", { ctrl: true });
+    t.mockInput.pressKey("w");
+    // No pane focused at all: the command still runs, and reads nothing.
+    focused = "%3";
+    t.mockInput.pressKey("a", { ctrl: true });
+    t.mockInput.pressKey("w");
+
+    expect(seen).toEqual(["left", "right", undefined]);
   } finally {
     t.renderer.destroy();
   }

@@ -21,6 +21,7 @@ test("sorts unbound actions first without changing their relative order", () => 
       desc: "bound",
       available: true,
       contextual: false,
+      hidden: false,
     },
     {
       name: "free.first",
@@ -29,6 +30,7 @@ test("sorts unbound actions first without changing their relative order", () => 
       desc: "free",
       available: true,
       contextual: false,
+      hidden: false,
     },
     {
       name: "free.second",
@@ -37,6 +39,7 @@ test("sorts unbound actions first without changing their relative order", () => 
       desc: "free",
       available: true,
       contextual: false,
+      hidden: false,
     },
     {
       name: "bound.second",
@@ -45,6 +48,7 @@ test("sorts unbound actions first without changing their relative order", () => 
       desc: "bound",
       available: true,
       contextual: false,
+      hidden: false,
     },
   ];
 
@@ -66,6 +70,7 @@ test("selection keeps the action picker row visible", async () => {
     desc: `description-${index}`,
     available: true,
     contextual: false,
+    hidden: false,
   }));
   const [view, setView] = createSignal<KeybindPickerView>({
     entries,

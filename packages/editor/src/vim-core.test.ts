@@ -9,12 +9,15 @@ import {
   beginSurround,
   charFromKey,
   initialEditor,
+  mapScopeOf,
   reduceEditor,
+  runBuiltinMap,
 } from "./vim-core.ts";
 import { withExtraCursors } from "./cmd-atom.ts";
 import type { EditorState } from "./schema.ts";
 import { bufferFromLines, linesOf } from "./buffer-state.ts";
 import { seedBuffer } from "./history.ts";
+import { isMapPrefixStroke, pushBuiltinMap, strokeFromKey } from "./maps.ts";
 
 function key(name: string, extra: Partial<KeyEvent> = {}): KeyEvent {
   return {
@@ -28,12 +31,37 @@ function key(name: string, extra: Partial<KeyEvent> = {}): KeyEvent {
   } as KeyEvent;
 }
 
-/** Drive a sequence of keys through the machine. A string is shorthand for a
- *  plain press of that name. */
+/**
+ * Drive keys through the machine. Multi-key builtin maps are resolved with the
+ * same trie ChordMatcher uses in the live app (maps.ts) — vim-core no longer
+ * owns mapKeys pending. Cite: ts-9e2f54.
+ */
 function typeKeys(state: EditorState, keys: Array<string | KeyEvent>): EditorState {
   let current = state;
+  let mapPending: readonly string[] = [];
   for (const entry of keys) {
     const event = typeof entry === "string" ? key(entry) : entry;
+    const stroke = strokeFromKey(event);
+    const scope = mapScopeOf(current);
+    // Maps only apply in normal mode (operator-pending stays mode "normal").
+    // Insert / replace / command must not treat `z` as a zz prefix.
+    if (
+      current.mode === "normal" &&
+      stroke !== null &&
+      (mapPending.length > 0 || isMapPrefixStroke(scope, stroke))
+    ) {
+      const result = pushBuiltinMap(scope, mapPending, stroke);
+      if (result._tag === "pending") {
+        mapPending = result.keys;
+        continue;
+      }
+      if (result._tag === "matched") {
+        mapPending = [];
+        current = runBuiltinMap(current, result.id);
+        continue;
+      }
+      mapPending = [];
+    }
     current = reduceEditor(current, { _tag: "key", key: event });
   }
   return current;

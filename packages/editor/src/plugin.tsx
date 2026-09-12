@@ -16,6 +16,8 @@ import {
   KeyInvocation,
   OptionsTag,
   PanelTag,
+  paneRealm,
+  Realm,
   SessionViewsTag,
   SettingsTag,
   SlotsTag,
@@ -24,10 +26,11 @@ import {
 import { contextCommand, type ContextSpec, type PanelContext } from "@danielfgray/amux";
 import { command } from "@danielfgray/amux";
 import type { OptionSpec } from "@danielfgray/amux";
-import { EditorPane, type EditorController } from "./EditorPane.tsx";
+import { EditorControllerTag, EditorPane, type EditorController } from "./EditorPane.tsx";
 import { EditorIo, listEntriesWith, runShellCommand, type EditorIoService } from "./io.ts";
-import { BUILTIN_MAPS, type BuiltinMapId } from "./maps.ts";
+import { BUILTIN_MAPS, type BuiltinMapId, type MapScope } from "./maps.ts";
 import { applySurround, beginSearch, beginSubstitute, beginSurround, runBuiltinMap } from "./vim-core.ts";
+import { showcmdStrokes } from "./showcmd.ts";
 import { registerLspUi, type LspUi } from "./lsp-ui.tsx";
 import { registerFileUi, type FileUi } from "./file-ui.tsx";
 import { SearchService } from "@danielfgray/amux-plugin-search";
@@ -108,8 +111,11 @@ function cycleEnumSetting(
   if (spec.kind !== "enum") return;
   const values = spec.values;
   const current = settingValue(panel, name);
-  const index = values.indexOf(current as string);
-  const next = values[(index + by + values.length) % values.length]!;
+  // settingValue is keyed by the full EditorSettingName union, so current may
+  // still be boolean here; only string values participate in an enum cycle.
+  if (typeof current !== "string") return;
+  const index = values.findIndex((value) => value === current);
+  const next = values[(Math.max(index, 0) + by + values.length) % values.length]!;
   panel.setOption(name, next);
   panel.saveOptions();
 }
@@ -188,7 +194,7 @@ const buildEditorIo: Effect.Effect<EditorIoService> = Effect.gen(function* () {
 export const editorPlugin: PluginDefinition = definePlugin({
   id: EDITOR_PLUGIN_ID,
   inject: [SessionViewsTag, SettingsTag, BindingsTag, ContextsTag, OptionsTag, PanelTag, SlotsTag],
-  provide: [EditorIo, HighlightProvider, Editor],
+  provide: [EditorIo, HighlightProvider, Editor, EditorControllerTag],
   effect: (ctx) =>
     Effect.gen(function* () {
       const sessionViews = yield* SessionViewsTag;
@@ -255,10 +261,45 @@ export const editorPlugin: PluginDefinition = definePlugin({
 
       const [controllers, setControllers] = createSignal<readonly EditorController[]>([]);
       const focusedEditor = () => controllers().find((controller) => controller.active()) ?? null;
-      const registerController = (controller: EditorController) => {
+      // Lazy grammar source — EditorPane's effect notifies on state/active flips;
+      // unregister notifies so an empty controller list clears showcmd.
+      const notifyShowcmd = () => bindings.pending.notify();
+      const disposeGrammarPending = bindings.pending.register({
+        id: "amux.editor.grammar",
+        role: "grammar",
+        strokes: () => {
+          const focused = focusedEditor();
+          return focused !== null && focused.active()
+            ? showcmdStrokes(focused.state())
+            : [];
+        },
+      });
+      const registerController = (paneId: string, controller: EditorController) => {
         setControllers((current) => [...current, controller]);
-        return () => setControllers((current) => current.filter((entry) => entry !== controller));
+        // Bind this controller in the pane's realm, so a command dispatched
+        // from this pane resolves EditorControllerTag to *this* editor. The
+        // signal above stays the reactive view that context predicates read;
+        // both hold the same object, registered here once.
+        const unbind = ctx.provide(EditorControllerTag, controller, paneRealm(paneId));
+        return () => {
+          unbind();
+          setControllers((current) => current.filter((entry) => entry !== controller));
+          notifyShowcmd();
+        };
       };
+
+      /**
+       * Run against the editor this keystroke's realm names — the pane the key
+       * was typed into, not whichever editor happens to hold focus when the
+       * effect runs. Silent when the realm binds no controller: the context
+       * predicate already gates these commands on an active editor.
+       */
+      const editorEffect = (run: (controller: EditorController) => void) =>
+        Effect.gen(function* () {
+          const realm = yield* Realm;
+          const controller = Option.getOrUndefined(realm.get(EditorControllerTag));
+          if (controller !== undefined) run(controller);
+        });
       // Modal overlay owns typing (picker filter). Pane vim layers would
       // otherwise stay enabled and steal those keys before OpenTUI's focused
       // <input> sees them — `j`/`i`/`a` never reach the filter.
@@ -357,8 +398,9 @@ export const editorPlugin: PluginDefinition = definePlugin({
             state.pendingIndent === null &&
             state.pendingReplace === null &&
             state.pendingRegister === "" &&
-            state.mapKeys.length === 0 &&
-            state.pendingFind === null
+            state.pendingFind === null &&
+            state.pendingCase === null &&
+            state.pendingEqual === null
           );
         }),
         priority: CONTEXT_PRIORITY.PANE,
@@ -373,20 +415,12 @@ export const editorPlugin: PluginDefinition = definePlugin({
           return (
             pending !== null &&
             !("textObject" in pending) &&
-            state.pendingFind === null &&
-            state.mapKeys.length === 0
+            state.pendingFind === null
           );
         }),
         priority: CONTEXT_PRIORITY.PANE + 2,
         rebindable: false,
         beforeDispatch: countInput,
-        handle: (event) => dispatchEditor(event),
-      };
-      const mapPending: ContextSpec = {
-        id: "editor.map",
-        active: active((controller) => controller.state().mapKeys.length > 0),
-        priority: CONTEXT_PRIORITY.PANE + 1,
-        rebindable: false,
         handle: (event) => dispatchEditor(event),
       };
       const textObject: ContextSpec = {
@@ -649,7 +683,6 @@ export const editorPlugin: PluginDefinition = definePlugin({
       yield* Effect.forEach(
         [
           normal,
-          mapPending,
           operator,
           textObject,
           surround,
@@ -679,7 +712,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
           key: "shift+k",
           desc: "LSP hover",
           group: "editor",
-          run: Effect.sync(() => focusedEditor()?.requestHover()),
+          run: editorEffect((editor) => editor.requestHover()),
         }),
       );
       for (const key of ["escape", "return", "enter", "q"] as const) {
@@ -689,15 +722,15 @@ export const editorPlugin: PluginDefinition = definePlugin({
             key,
             desc: "close hover",
             group: "editor",
-            run: Effect.sync(() => focusedEditor()?.dismissHover()),
+            run: editorEffect((editor) => editor.dismissHover()),
           }),
         );
       }
-      // Mapping chords on Bindings.chords (shared matcher). Builtin `g*` / `z*`
-      // share the table with user maps (`gr*`, `<leader>*`) so prefix-wait comes
-      // from bindings — not vim-core hardcoding `g`/`z`. Matched builtins apply
-      // via runBuiltinMap (one semantic transition); they do not feedVim raw
-      // keys back into a pendingG flag. Cite: maps.ts; chord-matcher.ts.
+      // Mapping chords as CommandSpecs — syncCommandChords mirrors them onto
+      // Bindings.chords so prefix-wait / showcmd / which-key share one trie.
+      // Builtin `g*` / `z*` share the table with LSP (`grr`, …). Matched
+      // builtins apply via runBuiltinMap; they do not feedVim raw keys back
+      // into a pendingG flag. Cite: maps.ts; chord-matcher.ts; ts-b36737.
       const feedVim = (strokes: readonly string[]) => {
         const controller = focusedEditor();
         if (controller === null) return;
@@ -721,197 +754,210 @@ export const editorPlugin: PluginDefinition = definePlugin({
           } as KeyEvent);
         }
       };
-      const applyBuiltin = (id: BuiltinMapId) => {
-        focusedEditor()?.apply((state) => runBuiltinMap(state, id));
-      };
+      const applyBuiltin = (id: BuiltinMapId) =>
+        editorEffect((editor) => {
+          editor.apply((state) => runBuiltinMap(state, id));
+        });
       bindings.chords.setAmbiguousTimeout((strokes) => {
         // Mux `<prefix>` wait abandons; do not feed vim a token name.
         if (strokes[0] === "<prefix>") return;
         // `<leader>` is a chord token; vim-core wants the physical key (space).
         feedVim(strokes.map((stroke) => (stroke === "<leader>" ? bindings.leader() : stroke)));
       });
-      const chordDisposers: (() => void)[] = [
-        ...BUILTIN_MAPS.filter((entry) => entry.scopes.includes("normal")).map((entry) =>
-          bindings.chords.register({
-            id: `editor.${entry.id}`,
-            strokes: [...entry.bindingStrokes],
-            active: normal.active,
-            desc: entry.id,
-            group: "editor",
-            priority: CONTEXT_PRIORITY.PANE,
-            run: () => applyBuiltin(entry.id),
-          }),
+      // Dual-scope builtins (gg/ge/gE) register under normal *and* operator so
+      // `dgg` keeps working — mutually exclusive contexts, same key token.
+      // Key form is unspaced (`grr`, `gshift+d`); spaces are literal keys.
+      const mapContexts = (scopes: readonly MapScope[]) =>
+        scopes.flatMap((scope) => {
+          if (scope === "normal") return [normal];
+          if (scope === "operator") return [operator];
+          return [];
+        });
+      yield* Effect.forEach(BUILTIN_MAPS, (entry) =>
+        Effect.forEach(mapContexts(entry.scopes), (context) =>
+          bindings.register(
+            contextCommand(context, {
+              name: `map.${entry.id}`,
+              key: entry.bindingStrokes.join(""),
+              desc: entry.id,
+              group: "editor",
+              hidden: true,
+              run: applyBuiltin(entry.id),
+            }),
+          ),
         ),
-        // `g+` also accepts shift+= (same as vim).
-        bindings.chords.register({
-          id: "editor.g+.shift",
-          strokes: ["g", "shift+="],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "map.g+.shift",
+          key: "gshift+=",
           desc: "g+",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => applyBuiltin("g+"),
+          hidden: true,
+          run: applyBuiltin("g+"),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.references",
-          strokes: ["g", "r", "r"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.references",
+          key: "grr",
           desc: "LSP references",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestReferences(),
+          run: editorEffect((editor) => editor.requestReferences()),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.definition",
-          strokes: ["g", "r", "d"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.definition",
+          key: "grd",
           desc: "LSP definition",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestDefinition(),
+          run: editorEffect((editor) => editor.requestDefinition()),
         }),
-        // Vim `gd` / `gD` — LSP definition (declaration API not wired yet).
-        // Cite: neovim `gd` local / `gD` global; both map to textDocument/definition.
-        bindings.chords.register({
-          id: "editor.lsp.gd",
-          strokes: ["g", "d"],
-          active: normal.active,
+      );
+      // Vim `gd` / `gD` — LSP definition (declaration API not wired yet).
+      // Cite: neovim `gd` local / `gD` global; both map to textDocument/definition.
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.gd",
+          key: "gd",
           desc: "LSP definition (gd)",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestDefinition(),
+          run: editorEffect((editor) => editor.requestDefinition()),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.gD",
-          strokes: ["g", "shift+d"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.gD",
+          key: "gshift+d",
           desc: "LSP declaration (gD)",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestDeclaration(),
+          run: editorEffect((editor) => editor.requestDeclaration()),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.implementation",
-          strokes: ["g", "r", "i"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.implementation",
+          key: "gri",
           desc: "LSP implementation",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestImplementation(),
+          run: editorEffect((editor) => editor.requestImplementation()),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.typeDefinition",
-          strokes: ["g", "r", "t"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.typeDefinition",
+          key: "grt",
           desc: "LSP type definition",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestTypeDefinition(),
+          run: editorEffect((editor) => editor.requestTypeDefinition()),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.codeAction",
-          strokes: ["g", "r", "a"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.codeAction",
+          key: "gra",
           desc: "LSP code action",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestCodeAction(),
+          run: editorEffect((editor) => editor.requestCodeAction()),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.codeLens",
-          strokes: ["g", "r", "x"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.codeLens",
+          key: "grx",
           desc: "LSP code lens",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestCodeLens(),
+          run: editorEffect((editor) => editor.requestCodeLens()),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.documentSymbols",
-          strokes: ["g", "shift+o"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.documentSymbols",
+          key: "gshift+o",
           desc: "LSP document symbols",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestDocumentSymbols(),
+          run: editorEffect((editor) => editor.requestDocumentSymbols()),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.diagnosticNext",
-          strokes: ["]", "d"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.diagnosticNext",
+          key: "]d",
           desc: "next diagnostic",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.jumpDiagnostic("next"),
+          run: editorEffect((editor) => editor.jumpDiagnostic("next")),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.diagnosticPrev",
-          strokes: ["[", "d"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.diagnosticPrev",
+          key: "[d",
           desc: "previous diagnostic",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.jumpDiagnostic("prev"),
+          run: editorEffect((editor) => editor.jumpDiagnostic("prev")),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.diagnosticLast",
-          strokes: ["]", "shift+d"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.diagnosticLast",
+          key: "]shift+d",
           desc: "last diagnostic",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.jumpDiagnostic("last"),
+          run: editorEffect((editor) => editor.jumpDiagnostic("last")),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.diagnosticFirst",
-          strokes: ["[", "shift+d"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.diagnosticFirst",
+          key: "[shift+d",
           desc: "first diagnostic",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.jumpDiagnostic("first"),
+          run: editorEffect((editor) => editor.jumpDiagnostic("first")),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.diagnosticFloat",
-          strokes: ["g", "l"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.diagnosticFloat",
+          key: "gl",
           desc: "diagnostic under cursor",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
           // nvim uses <C-W>d — mux owns CTRL-W, so `gl` (show diagnostics float).
-          run: () => focusedEditor()?.showDiagnosticFloat(),
+          run: editorEffect((editor) => editor.showDiagnosticFloat()),
         }),
-        bindings.chords.register({
-          id: "editor.g*.shift",
-          strokes: ["g", "shift+8"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "map.gstar.shift",
+          key: "gshift+8",
           desc: "g*",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => applyBuiltin("g*"),
+          hidden: true,
+          run: applyBuiltin("g*"),
         }),
-        bindings.chords.register({
-          id: "editor.g#.shift",
-          strokes: ["g", "shift+3"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "map.ghash.shift",
+          key: "gshift+3",
           desc: "g#",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => applyBuiltin("g#"),
+          hidden: true,
+          run: applyBuiltin("g#"),
         }),
-        bindings.chords.register({
-          id: "editor.lsp.rename",
-          strokes: ["g", "r", "n"],
-          active: normal.active,
+      );
+      yield* bindings.register(
+        contextCommand(normal, {
+          name: "lsp.rename",
+          key: "grn",
           desc: "LSP rename",
           group: "editor",
-          priority: CONTEXT_PRIORITY.PANE,
-          run: () => focusedEditor()?.requestRename(),
+          run: editorEffect((editor) => editor.requestRename()),
         }),
-      ];
+      );
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          for (const dispose of chordDisposers) dispose();
+          disposeGrammarPending();
           bindings.chords.setAmbiguousTimeout(null);
         }),
       );
@@ -928,7 +974,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
           key: "ctrl+s",
           desc: "LSP signature help",
           group: "editor",
-          run: Effect.sync(() => focusedEditor()?.requestSignatureHelp()),
+          run: editorEffect((editor) => editor.requestSignatureHelp()),
         }),
       );
 
@@ -949,6 +995,7 @@ export const editorPlugin: PluginDefinition = definePlugin({
             lspUi={lspUi}
             search={getSearch}
             registerController={registerController}
+            onShowcmdSync={notifyShowcmd}
           />
         ),
       ]);

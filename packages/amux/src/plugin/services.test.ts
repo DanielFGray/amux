@@ -928,3 +928,61 @@ testEffect(
       yield* Fiber.await(fiber);
     }),
 );
+
+/**
+ * Isolation (paper Definition 25). The flat table refuses a second provider for
+ * one key; a realm is what makes that refusal per-realm instead of global, so
+ * one plugin can bind the same key once per pane.
+ */
+testEffect("two realms bind the same key to different values", () =>
+  Effect.gen(function* () {
+    const contributions = createPluginContributions();
+    const services = yield* createPluginServices(contributions);
+    const owner = { id: "editor", generation: 0 };
+
+    services.provide(owner, IndexTag, { of: "left" }, "pane:%1");
+    services.provide(owner, IndexTag, { of: "right" }, "pane:%2");
+    services.provide(owner, NumberTag, 7);
+    contributions.commit(owner);
+
+    // sigma(rho(k)) with rho = the pane: one key, two bindings, no conflict.
+    expect(Context.getUnsafe(services.realmContext("pane:%1"), IndexTag)).toEqual({ of: "left" });
+    expect(Context.getUnsafe(services.realmContext("pane:%2"), IndexTag)).toEqual({ of: "right" });
+
+    // A key nobody isolated stays out of every realm context, so a caller
+    // layering the realm over the global table gets rho(k) = k for it.
+    expect(Context.getOption(services.realmContext("pane:%1"), NumberTag)).toEqual(Option.none());
+    expect(services.get(NumberTag)).toEqual(Option.some(7));
+
+    // ...and the isolated key has no global binding to fall back to.
+    expect(services.get(IndexTag)).toEqual(Option.none());
+  }),
+);
+
+testEffect("withdrawing one realm's binding leaves the other standing", () =>
+  Effect.gen(function* () {
+    const contributions = createPluginContributions();
+    const services = yield* createPluginServices(contributions);
+    const owner = { id: "editor", generation: 0 };
+
+    services.provide(owner, IndexTag, { of: "left" }, "pane:%1");
+    services.provide(owner, IndexTag, { of: "right" }, "pane:%2");
+    contributions.commit(owner);
+
+    services.withdraw(owner, IndexTag, "pane:%1");
+
+    expect(Context.getOption(services.realmContext("pane:%1"), IndexTag)).toEqual(Option.none());
+    expect(Context.getUnsafe(services.realmContext("pane:%2"), IndexTag)).toEqual({ of: "right" });
+  }),
+);
+
+testEffect("one realm still admits only one provider for a key", () =>
+  Effect.gen(function* () {
+    const contributions = createPluginContributions();
+    const services = yield* createPluginServices(contributions);
+    services.provide({ id: "first", generation: 0 }, IndexTag, { of: "a" }, "pane:%1");
+    expect(() =>
+      services.provide({ id: "second", generation: 0 }, IndexTag, { of: "b" }, "pane:%1"),
+    ).toThrow("service 'test/Index' in realm 'pane:%1' is already provided by 'first'");
+  }),
+);

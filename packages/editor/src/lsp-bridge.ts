@@ -179,7 +179,6 @@ export const applyGoto = (
   const cursor = { row: Math.max(0, row), col: Math.max(0, col) };
   const jumped = {
     ...state,
-    mapKeys: [],
     jumpList: pushJump(state.jumpList, state.cursor),
     count: "",
     message: null,

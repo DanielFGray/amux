@@ -293,11 +293,6 @@ export type EditorState = {
   readonly message: string | null;
   readonly request: EditorRequest | null;
   readonly count: string;
-  /**
-   * Incomplete builtin multi-key map (`g…`, `z…`). Derived from the map
-   * table — not a named prefix flag. Cite: maps.ts; chord-matcher.ts.
-   */
-  readonly mapKeys: readonly string[];
   /** Waiting for the target character after `f`/`F`/`t`/`T`. */
   readonly pendingFind: { readonly kind: FindKind } | null;
   /** Last character-find, for `;` and `,`. */

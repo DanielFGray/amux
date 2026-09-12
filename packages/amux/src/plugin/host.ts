@@ -68,6 +68,8 @@ export interface PluginHost {
     metadata: Metadata,
   ) => void;
   readonly clearInterception: (pluginId: string, tag: PluginService) => void;
+  /** The derived context for one realm — see {@link PluginServices.realmContext}. */
+  readonly realmContext: PluginServices["realmContext"];
   readonly status: () => readonly PluginStatus[];
   /** The committed instance number, used to reject stale renderer errors. */
   readonly generation: (id: string) => number | undefined;
@@ -183,7 +185,7 @@ export function createPluginHost(
       return {
         id: pluginId,
         kv: kvFor(pluginId),
-        provide: (tag, service) => {
+        provide: (tag, service, realm) => {
           // The declaration is what the host reasons about before anything
           // runs, so a provision outside it would make that reasoning wrong.
           // Caught here, at the call site that broke the promise.
@@ -191,8 +193,8 @@ export function createPluginHost(
             throw new Error(
               `plugin '${pluginId}' provided '${tag.key}', which it does not declare in 'provide'`,
             );
-          services.provide(owner, tag, service);
-          return scoped(() => services.withdraw(owner, tag));
+          services.provide(owner, tag, service, realm);
+          return scoped(() => services.withdraw(owner, tag, realm));
         },
         get: (tag) => services.get(tag),
       };
@@ -610,6 +612,7 @@ export function createPluginHost(
       await: services.await,
       intercept: services.intercept,
       clearInterception: services.clearInterception,
+      realmContext: services.realmContext,
       status() {
         if (disposed) return [];
         return [...desired.keys()]

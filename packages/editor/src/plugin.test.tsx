@@ -171,7 +171,7 @@ const mount = (
             io={makeTestEditorIo(ioState)}
             editor={editor}
             highlight={highlight}
-            registerController={(next) => {
+            registerController={(_paneId, next) => {
               controller = next;
               return () => {
                 controller = null;
@@ -222,20 +222,24 @@ testEffect(
       "editor.number",
       "editor.keyProfile",
     ]);
-    expect(seenBindings).toContain("editor.normal.open");
-    expect(seenBindings).toContain("editor.normal.find-file");
-    expect(seenBindings).toContain("editor.normal.find-sibling");
-    expect(seenBindings).toContain("editor.focused.surround");
-    expect(seenBindings).toContain("editor.focused.search");
-    expect(seenBindings).toContain("editor.focused.substitute");
-    // `gg` / `grr` live on Bindings.chords now (inactive until a pane focuses).
-    expect(seenBindings).not.toContain("editor.normal.lsp.references");
-    expect(seenBindings).not.toContain("editor.normal.key.gg");
+    expect(seenBindings.includes("editor.normal.open")).toBe(true);
+    expect(seenBindings.includes("editor.normal.find-file")).toBe(true);
+    expect(seenBindings.includes("editor.normal.find-sibling")).toBe(true);
+    expect(seenBindings.includes("editor.focused.surround")).toBe(true);
+    expect(seenBindings.includes("editor.focused.search")).toBe(true);
+    expect(seenBindings.includes("editor.focused.substitute")).toBe(true);
+    // Multi-stroke maps/LSP are CommandSpecs (one dispatch path); syncCommandChords
+    // mirrors them onto the shared trie. Cite: ts-b36737.
+    expect(seenBindings.includes("editor.normal.lsp.references")).toBe(true);
+    expect(seenBindings.includes("editor.normal.map.gg")).toBe(true);
+    expect(seenBindings.includes("editor.operator.map.gg")).toBe(true);
+    // Test host stubs bindings.register (records names only), so hidden flags
+    // are not on Bindings.commands() here — covered by the registration source.
     expect(Duration.toMillis(Option.getOrThrow(host.get(BindingsTag)).chords.timeoutlen())).toBeGreaterThan(
       0,
     );
-    expect(seenBindings).toContain("editor.operator.key.w");
-    expect(seenBindings).toContain("editor.insert.key.escape");
+    expect(seenBindings.includes("editor.operator.key.w")).toBe(true);
+    expect(seenBindings.includes("editor.insert.key.escape")).toBe(true);
     expect(
       Option.getOrThrow(host.get(ContextsTag))
         .all()
@@ -244,7 +248,6 @@ testEffect(
       "amux.editor.lsp-ui",
       "amux.editor.file-ui",
       "editor.normal",
-      "editor.map",
       "editor.operator",
       "editor.text-object",
       "editor.surround",

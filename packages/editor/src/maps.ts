@@ -1,7 +1,8 @@
 /**
- * Builtin multi-key maps. Prefix-wait is derived from this table — not from
- * hardcoded `pendingG` / `pendingZ`. Cite: packages/amux/src/chord-matcher.ts
- * (same trie rule); neovim handle_mapping.
+ * Builtin multi-key maps. Live prefix-wait is {@link ChordMatcher} via
+ * CommandSpec → syncCommandChords (one trie). This module stays the pure
+ * trie for tests / documentation — not a second pending buffer in
+ * EditorState. Cite: chord-matcher.ts; ts-b36737.
  */
 import type { KeyEvent } from "@opentui/core";
 

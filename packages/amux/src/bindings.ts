@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, Schema as S } from "effect";
+import { Duration, Effect, Schema as S } from "effect";
 import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core";
 import { createOpenTuiKeymap } from "@opentui/keymap/opentui";
 import {
@@ -14,7 +14,12 @@ import { reactiveMatcherFromSignal } from "@opentui/keymap/solid";
 import type { KeyStroke } from "./keys.ts";
 import { runDetached, type CommandError } from "./commands.ts";
 import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
-import { createCountAccumulator, KeyInvocation } from "./key-invocation.ts";
+import {
+  createCountAccumulator,
+  KeyInvocation,
+  type KeyInvocationValue,
+} from "./key-invocation.ts";
+import { NO_REALM, Realm, type RealmValue } from "./realm.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import {
   createChordMatcher,
@@ -24,6 +29,7 @@ import {
   type ChordMode,
   type ChordStroke,
 } from "./chord-matcher.ts";
+import { createConstraintTable, refuseIfDenied, type ConstraintTable } from "./constraint.ts";
 import type { RootRuntimeContext } from "./env.ts";
 
 export type { ChordBinding, ChordStroke, ChordMode };
@@ -266,11 +272,12 @@ export interface CommandSpec {
    *
    * `KeyInvocation` in the requirement channel is what a command declares to
    * read the keystroke that ran it — the event, and whatever the dispatching
-   * context captured ahead of it (a count, a register, a text object). Most
-   * commands need none of that and stay `Effect<any, CommandError>`: `never`
-   * satisfies any declared requirement, so nothing else changes for them.
+   * context captured ahead of it (a count, a register, a text object).
+   * `Realm` is what it declares to reach services bound for the pane it ran
+   * in. Most commands need neither and stay `Effect<any, CommandError>`:
+   * `never` satisfies any declared requirement, so nothing changes for them.
    */
-  run: Effect.Effect<any, CommandError, KeyInvocation>;
+  run: Effect.Effect<any, CommandError, KeyInvocation | Realm>;
 }
 
 /**
@@ -284,6 +291,78 @@ export function contextCommand(
   local: Omit<CommandSpec, "context">,
 ): CommandSpec {
   return { ...local, name: `${context.id}.${local.name}`, context };
+}
+
+/**
+ * Showcmd contribution role. The renderer lays roles out in a fixed order
+ * (grammar, chord, count); registrants do not order themselves — that would
+ * be a non-commutative chain (paper Def. 44). Cite: ts-5583b8.
+ */
+export type PendingRole = "count" | "grammar" | "chord";
+
+/** One showcmd contributor. `strokes` is read lazily on notify. */
+export interface PendingSource {
+  readonly id: string;
+  readonly role: PendingRole;
+  /** Current display strokes; empty when idle. */
+  readonly strokes: () => readonly string[];
+}
+
+/**
+ * Commutative showcmd table: one source per role. which-key does not read
+ * this — it stays on the chord trie (`nextKeys` + {@link Bindings.chords}).
+ */
+export interface PendingTable {
+  register(source: PendingSource): () => void;
+  current(): readonly { readonly role: PendingRole; readonly strokes: readonly string[] }[];
+  subscribe(listener: () => void): () => void;
+  /** Sources call this when their underlying state may have changed. */
+  notify(): void;
+}
+
+/** Read one role's strokes from the table (tests / diagnostics). */
+export const pendingStrokes = (
+  table: PendingTable,
+  role: PendingRole,
+): readonly string[] => table.current().find((entry) => entry.role === role)?.strokes ?? [];
+
+export function createPendingTable(): PendingTable {
+  const byRole = new Map<PendingRole, PendingSource>();
+  const listeners = new Set<() => void>();
+  const notify = () => {
+    for (const listener of listeners) listener();
+  };
+  return {
+    register(source) {
+      const taken = byRole.get(source.role);
+      if (taken !== undefined) {
+        throw new Error(
+          `pending role '${source.role}' is already registered by '${taken.id}'`,
+        );
+      }
+      byRole.set(source.role, source);
+      notify();
+      return () => {
+        if (byRole.get(source.role) === source) {
+          byRole.delete(source.role);
+          notify();
+        }
+      };
+    },
+    current() {
+      return Array.from(byRole.values()).map((source) => ({
+        role: source.role,
+        strokes: source.strokes(),
+      }));
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    notify,
+  };
 }
 
 /** The sequences a command answers to right now: the user's, or its own. */
@@ -313,18 +392,22 @@ export interface Bindings {
   keymap: AppKeymap;
   /**
    * Shared mapping-chord matcher (pending / timeoutlen / showcmd / which-key).
-   * Multi-key CommandSpecs sync here on {@link Bindings.apply}; plugins may
-   * also {@link ChordMatcher.register} directly (editor `g*` / LSP).
+   * CommandSpecs sync onto this trie in {@link Bindings.apply}; plugins do not
+   * register raw chord callbacks — that path bypassed Realm, the palette, and
+   * interception (ts-b36737). Modes ({@link ChordMatcher.registerMode}) and
+   * ambiguous-timeout remain here for mux window chords and editor feedVim.
    */
-  chords: ChordMatcher;
+  chords: Omit<ChordMatcher, "register">;
   /**
-   * Digits accumulated while a chord is pending (`^S ^W 80`). Empty when idle.
-   * showcmd appends these; which-key still keys off {@link ChordMatcher.pending}
-   * alone — counts are not trie strokes. Cite: key-invocation.ts; neovim count.
+   * Showcmd contribution table (grammar / chord / count by role). Display
+   * only — which-key reads {@link Bindings.chords} directly. Cite: ts-5583b8.
    */
-  countDigits(): string;
-  /** Fires when {@link Bindings.countDigits} changes (pending chord counts). */
-  subscribeCount(listener: () => void): () => void;
+  pending: PendingTable;
+  /**
+   * Commutative command constraints (move 4). Registrants claim a fixed rank;
+   * {@link Bindings}' invoke refuses on deny. Cite: ts-6baa81.
+   */
+  constraints: ConstraintTable;
   /** Execute a registered command through the keymap's command dispatcher. */
   dispatch: (name: string) => boolean;
   /** Command whose binding is synchronously producing another key, if any. */
@@ -414,6 +497,13 @@ export function createBindings(
     runtime?: RootRuntimeContext;
     /** Ambiguous exact/prefix wait (neovim `'timeoutlen'`). */
     timeoutlenMs?: number;
+    /**
+     * The realm a keystroke runs in — the focused pane, normally. A command
+     * that declares {@link Realm} reads *this* pane's services instead of
+     * hunting for the focused one itself. Omit it and every dispatch gets
+     * {@link NO_REALM}, which binds nothing.
+     */
+    realm?: () => RealmValue;
   },
 ): Bindings {
   const keymap = createOpenTuiKeymap(renderer);
@@ -457,19 +547,32 @@ export function createBindings(
   let chordData: Readonly<Record<string, JsonValue>> = {};
   /** Mux/editor map counts while ChordMatcher pending — not OpenTUI getData. */
   const chordCount = createCountAccumulator();
-  const countListeners = new Set<() => void>();
-  const notifyCount = () => {
-    for (const listener of countListeners) listener();
-  };
+  const pendingTable = createPendingTable();
+  const constraints = createConstraintTable();
   const resetChordCount = () => {
     if (chordCount.digits() === "") return;
     chordCount.reset();
-    notifyCount();
+    pendingTable.notify();
   };
   // timeoutlen / clear abandons pending without going through the feed — drop
   // a stranded count so showcmd cannot show `^S 80` with no chord left.
-  chords.subscribe((strokes) => {
-    if (strokes.length === 0) resetChordCount();
+  const disposeChordPendingNotify = chords.subscribe(() => {
+    if (chords.pending().length === 0) resetChordCount();
+    pendingTable.notify();
+  });
+  // Built-in showcmd roles — plugins may add grammar only.
+  const disposeCountSource = pendingTable.register({
+    id: "amux.bindings.count",
+    role: "count",
+    strokes: () => {
+      const digits = chordCount.digits();
+      return digits === "" ? [] : [digits];
+    },
+  });
+  const disposeChordSource = pendingTable.register({
+    id: "amux.bindings.chord",
+    role: "chord",
+    strokes: () => chords.pending(),
   });
 
   /** Compile a binding token to ChordMatcher strokes (`<prefix>`, `z`, …). */
@@ -515,18 +618,26 @@ export function createBindings(
   const disposeChordFeed = keymap.intercept(
     "key",
     (input) => {
-      if (input.event.defaultPrevented) return;
       const stroke = keyToBinding(input.event);
-      if (stroke === null) return;
-      // OpenTUI / mockInput may spell the name "escape" or "Escape".
-      if (stroke.toLowerCase() === "escape") {
-        if (chords.pending().length === 0 && chordCount.digits() === "") return;
+      // Escape exits ChordMatcher even when OpenTUI already prevented default
+      // (registerEscapeClearsPendingSequence) — sticky minimodes keep pending
+      // at the mode root and must still clear. Cite: window-chords.test.ts.
+      if (stroke !== null && stroke.toLowerCase() === "escape") {
+        if (
+          chords.pending().length === 0 &&
+          chordCount.digits() === "" &&
+          chords.activeMode() === null
+        ) {
+          return;
+        }
         chords.clear();
         resetChordCount();
         input.consume({ preventDefault: true });
         input.event.preventDefault();
         return;
       }
+      if (input.event.defaultPrevented) return;
+      if (stroke === null) return;
 
       const pending = chords.pending();
       if (pending.length > 0) {
@@ -538,7 +649,7 @@ export function createBindings(
           });
         if (chordCount.offer(input.event, boundAtPending)) {
           chords.rearmTimeout();
-          notifyCount();
+          pendingTable.notify();
           input.consume({ preventDefault: true });
           input.event.preventDefault();
           return;
@@ -587,6 +698,25 @@ export function createBindings(
     ctx.event.preventDefault();
   });
 
+  /**
+   * One dispatch: the command body under the keystroke that ran it and the
+   * realm it ran in. The realm is read here, at dispatch, not captured when
+   * the table was built — which is the whole point, since the focused pane
+   * changes between one keystroke and the next.
+   */
+  function invoke(
+    run: CommandSpec["run"],
+    invocation: KeyInvocationValue,
+    commandName: string,
+  ): Effect.Effect<unknown, CommandError> {
+    const denied = refuseIfDenied(constraints, commandName);
+    if (denied !== null) return Effect.fail(denied);
+    return run.pipe(
+      Effect.provideService(KeyInvocation, invocation),
+      Effect.provideService(Realm, opts.realm?.() ?? NO_REALM),
+    );
+  }
+
   function layerContent(group: readonly CommandSpec[], keys: Keys) {
     return {
       // Multi-key sequences live on ChordMatcher (synced in apply). OpenTUI
@@ -611,13 +741,15 @@ export function createBindings(
             const captured = S.decodeUnknownOption(S.Record(S.String, JsonValueSchema))(ctx.data);
             runDetached(
               cmd.name,
-              cmd.run.pipe(
-                Effect.provideService(KeyInvocation, {
+              invoke(
+                cmd.run,
+                {
                   event: ctx.event,
                   data: captured._tag === "Some" ? captured.value : {},
                   input: ctx.input,
                   payload: ctx.payload,
-                }),
+                },
+                cmd.name,
               ),
               opts.onError,
               opts.runtime,
@@ -661,13 +793,15 @@ export function createBindings(
                 try {
                   runDetached(
                     name,
-                    command.run.pipe(
-                      Effect.provideService(KeyInvocation, {
+                    invoke(
+                      command.run,
+                      {
                         event,
                         data: chordData,
                         input: "",
                         payload: undefined,
-                      }),
+                      },
+                      name,
                     ),
                     opts.onError,
                     opts.runtime,
@@ -769,13 +903,8 @@ export function createBindings(
   const bindings: Bindings = {
     keymap,
     chords,
-    countDigits: () => chordCount.digits(),
-    subscribeCount(listener) {
-      countListeners.add(listener);
-      return () => {
-        countListeners.delete(listener);
-      };
-    },
+    pending: pendingTable,
+    constraints,
     dispatch(name) {
       return keymap.dispatchCommand(name).ok;
     },
@@ -801,9 +930,11 @@ export function createBindings(
       capturing = null;
       for (const dispose of disposeAutoChords) dispose();
       disposeAutoChords = [];
+      disposeChordPendingNotify();
+      disposeCountSource();
+      disposeChordSource();
       chords.dispose();
       resetChordCount();
-      countListeners.clear();
       for (const dispose of disposeLayers) dispose();
       disposeLayers = [];
       for (const dispose of disposeContextInterceptors) dispose();

@@ -20,6 +20,7 @@ const entries: PaletteEntry[] = [
     desc: "split left/right",
     available: true,
     contextual: false,
+    hidden: false,
   },
   {
     name: "app.help",
@@ -28,6 +29,7 @@ const entries: PaletteEntry[] = [
     desc: "keybinds",
     available: true,
     contextual: false,
+    hidden: false,
   },
 ];
 
@@ -127,6 +129,7 @@ test("selection keeps the command palette row visible while moving down", async 
     desc: `description-${index}`,
     available: true,
     contextual: false,
+    hidden: false,
   }));
   await render(
     () => (

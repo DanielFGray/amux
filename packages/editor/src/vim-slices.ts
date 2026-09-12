@@ -114,10 +114,9 @@ export const walkJump = (state: EditorState, dir: "older" | "newer"): EditorStat
 
 export const walkChange = (state: EditorState, dir: "older" | "newer"): EditorState => {
   const walked = dir === "older" ? changeOlder(state.changeList) : changeNewer(state.changeList);
-  if (walked === null) return { ...state, mapKeys: [], message: null };
+  if (walked === null) return { ...state, message: null };
   return {
     ...state,
-    mapKeys: [],
     changeList: walked.list,
     cursor: walked.cursor,
     count: "",
@@ -150,10 +149,9 @@ export const rememberVisual = (state: EditorState): EditorState => {
 
 export const restoreVisual = (state: EditorState): EditorState => {
   const last = state.lastVisual;
-  if (last === null) return { ...state, mapKeys: [], message: null };
+  if (last === null) return { ...state, message: null };
   return {
     ...state,
-    mapKeys: [],
     mode: "visual",
     visual: { kind: last.kind, anchor: { ...last.anchor } },
     cursor: { ...last.cursor },
@@ -168,7 +166,6 @@ export const resumeInsert = (state: EditorState): EditorState => {
   const col = Math.min(at.col, line.length);
   return {
     ...state,
-    mapKeys: [],
     mode: "insert",
     cursor: { row: at.row, col },
     count: "",
@@ -253,7 +250,6 @@ export const snapViewport = (
   return {
     ...state,
     viewport: { ...state.viewport, top },
-    mapKeys: [],
     count: "",
     message: null,
   };
@@ -491,7 +487,6 @@ export const hasArmedInput = (state: EditorState): boolean =>
   state.pendingSurround !== null ||
   state.pendingReplace !== null ||
   state.pendingIndent !== null ||
-  state.mapKeys.length > 0 ||
   state.pendingFind !== null ||
   state.pendingMark ||
   state.pendingJump !== null ||

@@ -350,8 +350,13 @@ const serviceInterception = (
     : undefined;
 
 export interface PluginServices {
-  readonly provide: <Id, S>(owner: PluginInstance, tag: Context.Service<Id, S>, service: S) => void;
-  readonly withdraw: (owner: PluginInstance, tag: PluginService) => void;
+  readonly provide: <Id, S>(
+    owner: PluginInstance,
+    tag: Context.Service<Id, S>,
+    service: S,
+    realm?: string,
+  ) => void;
+  readonly withdraw: (owner: PluginInstance, tag: PluginService, realm?: string) => void;
   readonly withdrawAll: (owner: PluginInstance) => void;
   readonly get: <Id, S>(tag: Context.Service<Id, S>) => Option.Option<S>;
   /** Wait until `tag` has a committed provider. Unlike a change stream, this
@@ -371,6 +376,16 @@ export interface PluginServices {
   ) => Effect.Effect<Context.Context<never>>;
   readonly waitingOn: (owner: PluginInstance) => readonly string[];
   readonly dependentsOf: (owner: PluginInstance) => readonly string[];
+  /**
+   * The derived context for one realm — every service committed *into* that
+   * realm, keyed by its own tag so a consumer reads `yield* Tag` unchanged.
+   *
+   * This is Definition 25's `isolate(k, r)` with the paper's derived
+   * realization (Definition 23): nothing in the shared table moves, the result
+   * is a fresh context, and recovery is discarding it. That is why isolation
+   * carries no inverse while `provide` does.
+   */
+  readonly realmContext: (realm: string) => Context.Context<never>;
 }
 
 /**
@@ -394,10 +409,11 @@ export const createPluginServices = Effect.fnUntraced(function* (
   const interceptions = new Map<string, unknown>();
   let changed = Deferred.makeUnsafe<void>();
 
-  function slotFor(key: string): Slot {
+  function slotFor(tagKey: string, realm?: string): Slot {
+    const key = slotKey(tagKey, realm);
     let slot = slots.get(key);
     if (!slot) {
-      slot = { key, provider: undefined, providers: [] };
+      slot = { key, tagKey, realm, provider: undefined, providers: [] };
       slots.set(key, slot);
     }
     return slot;
@@ -413,7 +429,9 @@ export const createPluginServices = Effect.fnUntraced(function* (
       const provider = visible(slot);
       if (slot.provider === provider) continue;
       slot.provider = provider;
-      keys.push(slot.key);
+      // Observers watch coeffect keys, not realms: a pane-scoped provider
+      // changing is still "this key changed" to anything tracking the key.
+      keys.push(slot.tagKey);
     }
     if (keys.length === 0) return;
     const previous = changed;
@@ -422,6 +440,22 @@ export const createPluginServices = Effect.fnUntraced(function* (
     Deferred.doneUnsafe(previous, Effect.void);
     for (const key of keys) onChange(key);
   }
+
+  /**
+   * Every service committed into `realm`, merged into one context keyed by the
+   * tags themselves. A realm holding no provider for a tag simply omits it, so
+   * a caller that layers this over the global context gets the paper's
+   * `rho(k) = k` fallback for free — pane-scoped keys resolve to the pane,
+   * everything else to the one shared binding.
+   */
+  const realmContext = (realm: string): Context.Context<never> => {
+    let context = Context.empty();
+    for (const slot of slots.values()) {
+      if (slot.realm !== realm || slot.provider === undefined) continue;
+      context = Context.merge(context, slot.provider.context);
+    }
+    return context;
+  };
 
   const unsubscribe = contributions.onChange(update);
   yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
@@ -441,19 +475,23 @@ export const createPluginServices = Effect.fnUntraced(function* (
   };
 
   return {
-    provide(owner, tag, service) {
-      const slot = slotFor(tag.key);
+    provide(owner, tag, service, realm?) {
+      const slot = slotFor(tag.key, realm);
+      // One provider per (key, realm) — the flat table's rule, transported
+      // along rho. Two panes may each provide the same key because they are
+      // different realms; two plugins may not, in any one realm.
+      const where = realm === undefined ? `'${tag.key}'` : `'${tag.key}' in realm '${realm}'`;
       const conflict = slot.providers.find((provider) => provider.owner.id !== owner.id);
       if (conflict)
-        throw new Error(`service '${tag.key}' is already provided by '${conflict.owner.id}'`);
+        throw new Error(`service ${where} is already provided by '${conflict.owner.id}'`);
       if (slot.providers.some((provider) => sameInstance(provider.owner, owner)))
-        throw new Error(`plugin '${owner.id}' provided '${tag.key}' twice`);
+        throw new Error(`plugin '${owner.id}' provided ${where} twice`);
       slot.providers.push({ owner, context: Context.make(tag, service) });
       update();
     },
 
-    withdraw(owner, tag) {
-      const slot = slots.get(tag.key);
+    withdraw(owner, tag, realm?) {
+      const slot = slots.get(slotKey(tag.key, realm));
       if (!slot) return;
       slot.providers = slot.providers.filter((provider) => !sameInstance(provider.owner, owner));
       update();
@@ -550,11 +588,26 @@ export const createPluginServices = Effect.fnUntraced(function* (
         })
         .map(({ owner }) => owner.id);
     },
+
+    realmContext,
   } satisfies PluginServices;
 });
 
+/**
+ * The storage address for a coeffect key under a realm — `rho(k)` made
+ * concrete. A key with no realm addresses itself, which is the paper's
+ * "a key outside dom(rho) resolves to its own realm", and keeps every
+ * unrealmed slot byte-identical to the flat table it replaces.
+ */
+const slotKey = (tagKey: string, realm: string | undefined): string =>
+  realm === undefined ? tagKey : `${realm}\0${tagKey}`;
+
 interface Slot {
   readonly key: string;
+  /** The coeffect key `k`, independent of which realm stores it. */
+  readonly tagKey: string;
+  /** `rho(k)`, or undefined for the key's own realm. */
+  readonly realm: string | undefined;
   provider: Provider | undefined;
   providers: Provider[];
 }

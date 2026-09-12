@@ -8,6 +8,7 @@ import {
 } from "../workspace.ts";
 import type { SessionState } from "../session.ts";
 import { KeyInvocation } from "../key-invocation.ts";
+import { NO_REALM, Realm } from "../realm.ts";
 import { placementOf } from "../layout.ts";
 import {
   processPluginActionBindingName,
@@ -168,7 +169,8 @@ test("processPluginBindingSpecs emits unbound action and pane entries", () => {
   expect(specs.every((s) => s.key === undefined)).toBe(true);
   expect(specs[0]?.desc).toBe("Smoke: Ping");
   expect(specs[1]?.desc).toBe("Smoke: Board");
-  const withKey = <A, E>(effect: Effect.Effect<A, E, KeyInvocation>) =>
+  // Mirrors what dispatch supplies: the keystroke, and the realm it ran in.
+  const withKey = <A, E>(effect: Effect.Effect<A, E, KeyInvocation | Realm>) =>
     effect.pipe(
       Effect.provideService(KeyInvocation, {
         event: {} as never,
@@ -176,6 +178,7 @@ test("processPluginBindingSpecs emits unbound action and pane entries", () => {
         input: "",
         payload: undefined,
       }),
+      Effect.provideService(Realm, NO_REALM),
     );
   Effect.runSync(withKey(specs[0]!.run));
   Effect.runSync(withKey(specs[1]!.run));

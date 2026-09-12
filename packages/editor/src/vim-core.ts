@@ -43,13 +43,7 @@ import {
   type MotionContext,
   type MotionRange,
 } from "./motions.ts";
-import {
-  type BuiltinMapId,
-  type MapScope,
-  isMapPrefixStroke,
-  pushBuiltinMap,
-  strokeFromKey,
-} from "./maps.ts";
+import { type BuiltinMapId, type MapScope } from "./maps.ts";
 import {
   appendChangeKey,
   cancelChange,
@@ -153,7 +147,6 @@ export function initialEditor(): EditorState {
     message: null,
     request: null,
     count: "",
-    mapKeys: [],
     pendingFind: null,
     lastFind: null,
     viewport: DEFAULT_VIEWPORT,
@@ -219,7 +212,6 @@ export function reduceEditor(
         message: `${n} ${n === 1 ? "line" : "lines"}`,
         request: null,
         count: "",
-        mapKeys: [],
         pendingFind: null,
         pending: null,
         pendingSurround: null,
@@ -252,7 +244,6 @@ export function reduceEditor(
         request: null,
         pending: null,
         pendingSurround: null,
-        mapKeys: [],
         pendingFind: null,
         count: "",
         undoTree: initialUndoTree(buffer, cursor),
@@ -276,7 +267,6 @@ export function reduceEditor(
       };
       const jumped = {
         ...state,
-        mapKeys: [],
         jumpList: pushJump(state.jumpList, state.cursor),
         count: "",
         message: null,
@@ -403,18 +393,14 @@ function normalKey(state: EditorState, key: KeyEvent): EditorState {
     return playMacro(state, name.length === 1 ? name.toLowerCase() : "", parsedCount(state));
   }
 
-  // Incomplete builtin map (`g…` / `z…`) — prefix wait comes from the table.
-  if (state.mapKeys.length > 0) return continueMapKeys(state, key);
+  // Multi-key maps (`g…` / `z…` / `gr*`) live on Bindings.chords — not here.
+  // Cite: maps.ts; chord-matcher.ts; ts-9e2f54.
 
   // `g~` / `gu` / `gU` / `=` wait for a motion (or a doubled letter).
   if (state.pendingCase !== null) {
-    const mapped = tryMapKey(state, key);
-    if (mapped !== null) return mapped;
     return continueCase(state, key);
   }
   if (state.pendingEqual !== null) {
-    const mapped = tryMapKey(state, key);
-    if (mapped !== null) return mapped;
     return continueEqual(state, key);
   }
 
@@ -423,15 +409,11 @@ function normalKey(state: EditorState, key: KeyEvent): EditorState {
 
   // `>` / `<` wait for a doubled key (line indent) for now.
   if (state.pendingIndent !== null) {
-    const mapped = tryMapKey(state, key);
-    if (mapped !== null) return mapped;
     return completeIndent(state, key);
   }
 
   // An armed operator consumes the next motion or text object.
   if (state.pending) {
-    const mapped = tryMapKey(state, key);
-    if (mapped !== null) return mapped;
     return continueOperator(state, key);
   }
 
@@ -442,9 +424,6 @@ function normalKey(state: EditorState, key: KeyEvent): EditorState {
     return { ...state, count: state.count === "0" ? key.name : state.count + key.name };
   }
 
-  const mapped = tryMapKey(state, key);
-  if (mapped !== null) return mapped;
-
   return dispatchNormalKey(state, key);
 }
 
@@ -454,7 +433,6 @@ const cancelPendingOnEscape = (state: EditorState): EditorState => {
     state.pendingSurround !== null ||
     state.pendingReplace !== null ||
     state.pendingIndent !== null ||
-    state.mapKeys.length > 0 ||
     state.pendingFind !== null ||
     state.pendingMark ||
     state.pendingJump !== null ||
@@ -472,7 +450,6 @@ const cancelPendingOnEscape = (state: EditorState): EditorState => {
       pendingSurround: null,
       pendingReplace: null,
       pendingIndent: null,
-      mapKeys: [],
       pendingFind: null,
       pendingMark: false,
       pendingJump: null,
@@ -832,7 +809,7 @@ const finishSurroundChange = (state: EditorState, old: string, key: KeyEvent): E
 };
 
 /** Scope for the builtin map trie: operator-armed waits share motion maps. */
-const mapScopeOf = (state: EditorState): MapScope =>
+export const mapScopeOf = (state: EditorState): MapScope =>
   state.pending !== null ||
   state.pendingCase !== null ||
   state.pendingEqual !== null ||
@@ -840,42 +817,9 @@ const mapScopeOf = (state: EditorState): MapScope =>
     ? "operator"
     : "normal";
 
-/**
- * Start or continue a builtin multi-key map. Returns null when this key is
- * not a map prefix in the current scope (caller falls through).
- */
-const tryMapKey = (state: EditorState, key: KeyEvent): EditorState | null => {
-  const stroke = strokeFromKey(key);
-  if (stroke === null) return null;
-  const scope = mapScopeOf(state);
-  if (state.mapKeys.length === 0 && !isMapPrefixStroke(scope, stroke)) return null;
-  return continueMapKeys(state, key);
-};
-
-const continueMapKeys = (state: EditorState, key: KeyEvent): EditorState => {
-  const stroke = strokeFromKey(key);
-  if (stroke === null) return normalKey({ ...state, mapKeys: [] }, key);
-  const scope = mapScopeOf(state);
-  const result = pushBuiltinMap(scope, state.mapKeys, stroke);
-  if (result._tag === "pending") {
-    const next: EditorState = { ...state, mapKeys: result.keys, message: null };
-    return state.pending !== null ? appendChangeKey(next, stroke) : next;
-  }
-  if (result._tag === "matched") {
-    const cleared = { ...state, mapKeys: [] };
-    const recorded =
-      state.pending !== null && stroke !== result.keys[0]
-        ? appendChangeKey(cleared, stroke)
-        : cleared;
-    return runBuiltinMap(recorded, result.id);
-  }
-  // Map-fail: abandon the prefix, retry this key alone (neovim).
-  return normalKey({ ...state, mapKeys: [] }, key);
-};
-
 /** Apply a completed builtin map. Exported for the plugin chord layer. */
 export const runBuiltinMap = (state: EditorState, id: BuiltinMapId): EditorState => {
-  const cleared: EditorState = { ...state, mapKeys: [], message: null };
+  const cleared: EditorState = { ...state, message: null };
   switch (id) {
     case "gg": {
       const next = { ...cleared, count: "" };
@@ -1374,7 +1318,6 @@ function isCountDigit(state: EditorState, key: KeyEvent): boolean {
     const surround = state.pendingSurround;
     if (!(surround.mode === "add" && surround.phase === "motion")) return false;
   }
-  if (state.mapKeys.length > 0) return false;
   if (state.pendingCase !== null || state.pendingEqual !== null) return false;
   if (state.pendingMacro || state.pendingAt || state.pendingRegister !== "") return false;
   if (key.ctrl || key.meta || key.option) return false;
@@ -1445,7 +1388,6 @@ function moveTo(state: EditorState, motion: Motion, base = state, jumpKey?: stri
     curswant: prefer.curswant,
     setCurswant: prefer.setCurswant,
     count: "",
-    mapKeys: [],
     pendingFind: null,
   };
 }
@@ -2063,7 +2005,6 @@ function unknownKey(state: EditorState, name: string): EditorState {
     pendingSurround: null,
     pendingReplace: null,
     pendingIndent: null,
-    mapKeys: [],
     pendingFind: null,
     count: "",
     message: `not a normal-mode key: ${name}`,
@@ -2502,7 +2443,6 @@ function leaveInsert(state: EditorState): EditorState {
     cursor: { ...withDot.cursor, col: Math.max(0, withDot.cursor.col - 1) },
     lastInsert,
     count: "",
-    mapKeys: [],
     pendingFind: null,
     pending: null,
     pendingSurround: null,
@@ -2758,7 +2698,6 @@ function searchIdent(
           cursor: start,
           lastSearch,
           count: "",
-          mapKeys: [],
           message: null,
         },
         direction,
@@ -2980,7 +2919,6 @@ function repeatLastChange(state: EditorState): EditorState {
     pendingSurround: null,
     pendingReplace: null,
     pendingIndent: null,
-    mapKeys: [],
     pendingFind: null,
   };
   for (const name of keys) {

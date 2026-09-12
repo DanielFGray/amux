@@ -133,7 +133,12 @@ export interface EditorViewProps extends PaneViewProps {
    *  only exercise builtins — reduceEditor then uses the builtin table. */
   readonly editor?: EditorService;
   /** Publish this pane's controller to the plugin's mode contexts. */
-  readonly registerController?: (controller: EditorController) => () => void;
+  readonly registerController?: (
+    paneId: string,
+    controller: EditorController,
+  ) => () => void;
+  /** Re-publish grammar showcmd when focus or state changes (ts-9e2f54). */
+  readonly onShowcmdSync?: () => void;
   /** Tree-sitter highlight provider, built by the plugin activation. Absent
    *  when tests mount the view directly without highlighting — the pane then
    *  renders plain text. */
@@ -153,6 +158,19 @@ export interface EditorViewProps extends PaneViewProps {
    */
   readonly onAtom?: (atom: import("./cmd-atom.ts").CmdAtom) => void;
 }
+
+/**
+ * This pane's controller, bound into the pane's realm.
+ *
+ * One editor plugin serves every editor pane, so this key has no single
+ * binding — it is isolated per pane (`paneRealm(paneId)`). A command declaring
+ * `Realm` resolves it to the pane its keystroke was typed into, which is what
+ * replaces each command body hunting for the focused controller itself.
+ */
+export class EditorControllerTag extends Context.Service<
+  EditorControllerTag,
+  EditorController
+>()("amux.editor/Controller") {}
 
 export interface EditorController {
   readonly active: () => boolean;
@@ -205,6 +223,11 @@ export function EditorPane(props: EditorViewProps) {
     scrollBy,
     hover,
   } = createEditorBuffer(props);
+  createEffect(() => {
+    props.active();
+    state();
+    props.onShowcmdSync?.();
+  });
   const pickerHeight = () => (completionVisible() ? Math.min(8, commandItems().length + 2) : 0);
   const height = () =>
     Math.max(1, props.height() - (state().mode === "command" ? 2 + pickerHeight() : 1));
@@ -1509,7 +1532,7 @@ function createEditorBuffer(props: EditorViewProps) {
       });
     },
   };
-  const unregister = props.registerController?.(controller);
+  const unregister = props.registerController?.(props.paneId, controller);
 
   // Insert text has no finite binding table. It remains at the bottom of the
   // input chain; normal-mode keys are claimed by the plugin's contexts.

@@ -116,6 +116,8 @@ export {
   type RuntimeCommand,
 } from "./commands.ts";
 
+export { NO_REALM, paneRealm, Realm, realmOf, type RealmValue } from "./realm.ts";
+
 // Where a panel can be put, and what it is told about where it landed.
 export {
   type Anchor,
@@ -144,7 +146,27 @@ export { CONTEXT_PRIORITY, type ContextSpec, type ContextPriorityConflict } from
 // overlayBlocksPane stays internal to amux core (onUnhandled); pane plugins
 // must not call it from their own `active()` — that recurses through every
 // context including the caller.
-export { contextCommand, keyToBinding, type CommandSpec } from "./bindings.ts";
+export {
+  contextCommand,
+  createPendingTable,
+  keyToBinding,
+  pendingStrokes,
+  type CommandSpec,
+  type PendingRole,
+  type PendingSource,
+  type PendingTable,
+} from "./bindings.ts";
+export {
+  combineConstraintRules,
+  createConstraintTable,
+  CONSTRAINT_RANKS,
+  refuseIfDenied,
+  type ConstraintEffect,
+  type ConstraintRank,
+  type ConstraintRule,
+  type ConstraintSource,
+  type ConstraintTable,
+} from "./constraint.ts";
 export {
   createChordMatcher,
   DEFAULT_CHORD_TIMEOUTLEN,

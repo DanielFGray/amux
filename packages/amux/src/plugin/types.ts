@@ -118,8 +118,20 @@ export const defineConsumer = <const Dependencies extends readonly PluginDepende
 export interface PluginHostContext {
   readonly id: string;
   readonly kv: PluginKV;
-  /** Publish a service other plugins may inject. It is withdrawn when this plugin stops. */
-  readonly provide: <Id, S>(tag: Context.Service<Id, S>, service: S) => () => void;
+  /**
+   * Publish a service other plugins may inject. It is withdrawn when this
+   * plugin stops.
+   *
+   * A `realm` isolates the binding: the key resolves to this value only for
+   * work running in that realm, and the same key may be bound again in another
+   * realm without conflict. That is how one plugin serves many panes — see
+   * `PluginServices.realmContext`. Omit it for the one shared binding.
+   */
+  readonly provide: <Id, S>(
+    tag: Context.Service<Id, S>,
+    service: S,
+    realm?: string,
+  ) => () => void;
   /** Read a service without depending on it. `inject` is what makes the host wait. */
   readonly get: <Id, S>(tag: Context.Service<Id, S>) => Option.Option<S>;
 }
