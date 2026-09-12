@@ -1411,7 +1411,7 @@ test("the CLI read surface resolves the calling pane from inside one", async () 
     return { code, stdout, stderr };
   };
 
-  const current = await run(["pane.current", "--current"]);
+  const current = await run(["pane.current"]);
   expect(current.code).toBe(0);
   expect(JSON.parse(current.stdout)).toMatchObject({
     id: pane,
@@ -1420,7 +1420,7 @@ test("the CLI read surface resolves the calling pane from inside one", async () 
     session,
   });
 
-  const layout = await run(["pane.layout", "--current"]);
+  const layout = await run(["pane.layout"]);
   expect(layout.code).toBe(0);
   const geometry = JSON.parse(layout.stdout);
   expect(geometry.pane).toBe(pane);
@@ -1512,6 +1512,66 @@ test("the CLI splits, sends keys to, captures and closes a named pane without mo
 }, 30000);
 
 /**
+ * Caller pane beats focus: from inside pane A while B is focused, an unnamed
+ * `pane.capture` reads A (tmux TMUX_PANE semantics via resolveTarget).
+ */
+test("CLI pane.capture without a named pane acts on the calling pane, not focus", async () => {
+  const { daemon, env } = await started("cli-capture-caller-not-focus");
+  const workspace = Effect.runSync(daemon.getWorkspace);
+  const paneA = workspacePaneId(workspace);
+  const sessionA = workspace.spaces[0]!.windows[0]!.sessions[0]!.id;
+  const entry = new URL("./cli.ts", import.meta.url).pathname;
+  const cli = (args: string[], pane = paneA, agent = sessionA) =>
+    Bun.spawn([process.execPath, entry, ...args], {
+      env: {
+        ...process.env,
+        ...env,
+        AMUX_DAEMON_SESSION: daemon.id,
+        AMUX_PANE_ID: pane,
+        AMUX_AGENT_ID: agent,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  const run = async (
+    args: string[],
+    pane = paneA,
+    agent = sessionA,
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    const child = cli(args, pane, agent);
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  };
+
+  const split = await run(["pane.split", "--axis", "row"]);
+  expect(split.code).toBe(0);
+  const created = JSON.parse(split.stdout) as { session: string; pane: string };
+  const afterSplit = Effect.runSync(daemon.getWorkspace);
+  expect(afterSplit.spaces[0]!.windows[0]!.state.focus).toBe(created.pane);
+
+  const markA = await run(["pane.send-keys", "--pane", paneA, "--keys", "printf 'caller-pane\\n'"]);
+  expect(markA.code).toBe(0);
+  const markB = await run(
+    ["pane.send-keys", "--pane", created.pane, "--keys", "printf 'focus-pane\\n'"],
+    created.pane,
+    created.session,
+  );
+  expect(markB.code).toBe(0);
+
+  await waitForCapture(daemon, env, paneA, "caller-pane");
+  await waitForCapture(daemon, env, created.pane, "focus-pane");
+
+  const captured = await run(["pane.capture"]);
+  expect(captured.code).toBe(0);
+  expect(captured.stdout).toContain("caller-pane");
+  expect(captured.stdout).not.toContain("focus-pane");
+}, 30000);
+
+/**
  * `--dispatch` needs a live keymap's binding resolution, which only exists
  * in an attached client — there is no daemon-side equivalent, unlike the
  * direct session write a plain send-keys uses. This has no client attached,
@@ -1554,6 +1614,29 @@ test("pane.capture of a sessionless plugin pane needs an attached client", async
   expect(error._tag).toBe("ControlError");
   expect(error.message).toContain("no client attached");
   expect(error.message).not.toContain("has no session");
+});
+
+/**
+ * A CLI capture whose caller cannot resolve (stale agent, no pane, no focus
+ * fallback) fails in the daemon — it must not reach a client overlay.
+ */
+test("CLI pane.capture that resolves nothing fails without opening a client overlay", async () => {
+  const { daemon, env } = await started("cli-capture-unresolved");
+  const error = await ctl(daemon.id, env, (c) =>
+    Effect.flip(
+      c.Batch({
+        values: [command("pane.capture")],
+        context: {
+          ...context,
+          source: "cli",
+          agent: "no-such-agent",
+        },
+      }),
+    ),
+  );
+  expect(error._tag).toBe("ControlError");
+  expect(error.message).toContain("could not resolve a pane");
+  expect(error.message).not.toContain("no client attached");
 });
 
 /** The first pane id the default space's window places. */

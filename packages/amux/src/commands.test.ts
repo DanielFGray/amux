@@ -5,10 +5,14 @@ import {
   COMMAND_META,
   Command,
   CommandError,
+  PaneTarget,
+  PaneTargetPane,
   agentToolDefinitions,
   command,
+  commandDefinition,
   commandInvocation,
   decodeCommand,
+  fieldDeclaresPaneTarget,
   makeCommands,
   isCoreCommandTag,
   runDetached,
@@ -279,6 +283,23 @@ test("a detached command reports its failure", () => {
 /**
  * Commands with results return typed values, not just void.
  */
+test("PaneTarget.pane carries the pane-target annotation; inspect subjects do not", () => {
+  expect(fieldDeclaresPaneTarget(PaneTarget.pane)).toBe(true);
+  expect(fieldDeclaresPaneTarget(PaneTargetPane)).toBe(true);
+  const inspectFields = commandDefinition("plugin.inspect").argumentFields as {
+    readonly pane: typeof PaneTarget.pane;
+  };
+  expect(fieldDeclaresPaneTarget(inspectFields.pane)).toBe(false);
+  const captureFields = commandDefinition("pane.capture").argumentFields as {
+    readonly pane: typeof PaneTarget.pane;
+  };
+  const sendFields = commandDefinition("pane.send-keys").argumentFields as {
+    readonly pane: typeof PaneTarget.pane;
+  };
+  expect(fieldDeclaresPaneTarget(captureFields.pane)).toBe(true);
+  expect(fieldDeclaresPaneTarget(sendFields.pane)).toBe(true);
+});
+
 test("commands with declared results carry them through the handler", () => {
   const handlers: CommandHandlerTable = {
     ...recording().handlers,

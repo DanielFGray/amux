@@ -561,7 +561,7 @@ function main(): Effect.Effect<number> {
           cwd: process.cwd(),
           source: "cli",
           // The calling pane and its session, when this CLI runs inside one.
-          // The daemon resolves --current from these; it never trusts the CLI
+          // The daemon resolves the target from these; it never trusts the CLI
           // to have picked a pane.
         };
         if (readEnv("AMUX_AGENT_ID")) context.agent = readEnv("AMUX_AGENT_ID");

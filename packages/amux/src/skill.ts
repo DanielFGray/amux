@@ -49,10 +49,7 @@ Run \`amux --help\` for the full surface. Do not probe a nested command with mis
 
 IDs are opaque, stable handles, never reused after close. Spaces are \`s1\`, \`s2\`, and a pane id carries the space that owns it: \`s1:p3\`. Agent (session) ids are opaque strings like \`agent-…\`. \`AMUX_PANE_ID\` identifies the caller's pane; \`AMUX_AGENT_ID\` identifies the session the caller runs in. Use IDs returned by commands and reads; do not derive IDs from layout order, names, or examples.
 
-Every pane command takes an optional target, resolved by the daemon:
-- \`--pane <id>\` — act on that named pane wherever it lives.
-- \`--current\` — act on the caller's own pane (resolved server-side, never substituted by the CLI).
-- neither — act on the focused pane, which belongs to whoever is driving the UI and moves. A delegating agent must name a target rather than rely on it.
+Every pane command takes an optional \`--pane <id>\`. Omit it to act on the caller's own pane (\`AMUX_PANE_ID\` / \`AMUX_AGENT_ID\`, resolved server-side). When the caller has no pane (no env, remote batch without context), the focused pane of the active window is used — that belongs to whoever is driving the UI and moves.
 
 Add \`--no-focus\` to a command batch to do background work: the command's structure applies, but the human's view — active space, active window, focused pane — is left exactly as it was.
 
@@ -64,8 +61,8 @@ The narrow read verbs answer questions without the whole snapshot, and no read m
 amux space.list              # spaces, active window, window count
 amux window.list             # windows, their panes and focus
 amux pane.list               # panes, their home, session and focus flags
-amux pane.current --current  # the caller's own pane (or --pane <id>)
-amux pane.layout --current   # a pane's geometry, for choosing a split direction
+amux pane.current            # the caller's own pane (or --pane <id>)
+amux pane.layout             # a pane's geometry, for choosing a split direction
 amux agent.list              # agents with their home and state
 amux agent.get <session-id>  # one agent, by its session id
 \`\`\`
@@ -110,7 +107,7 @@ Read the session id from the \`agent.new\` result and from \`agent.watch\` event
 ## Safety
 
 - Keep work in the caller's daemon session. Do not supply another daemon session unless the user explicitly requests it.
-- Name a pane (\`--pane\`/\`--current\`) for work that must not depend on another client's focus; use \`--no-focus\` for background work unless the user asked to switch context.
+- Name a pane (\`--pane\`) when the caller's pane is not the one you mean; use \`--no-focus\` for background work unless the user asked to switch context.
 - Do not close spaces, windows, panes, or sessions that you did not create unless the user explicitly asks.
 - Closing a pane can stop its backend when no other pane shows it. Closing a window or space can stop all agents inside it.
 - Do not use synchronized panes for background work: input is sent to every pane in the window.

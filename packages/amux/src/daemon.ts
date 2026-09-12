@@ -92,8 +92,10 @@ const encodeJson = S.encodeSync(S.fromJsonString(S.Unknown));
 const decodeJson = S.decodeSync(S.fromJsonString(S.Unknown));
 import {
   command,
+  commandDefinition,
   CommandError,
   COMMAND_META,
+  fieldDeclaresPaneTarget,
   isCoreCommand,
   type Command,
   type CommandMeta,
@@ -101,13 +103,12 @@ import {
 } from "./commands.ts";
 import {
   findPaneBySession,
-  findWindow,
   markSessionExited,
   markSessionUnavailable,
   parseWorkspaceCommandContext,
   applyPaneAgentSession,
+  resolveTarget,
   workspaceFromSession,
-  workspacePaneOf,
   workspaceSession,
   workspaceSessions,
   type WorkspaceCommandContext,
@@ -129,7 +130,7 @@ import {
   makeForeignHarnessAdapters,
 } from "./foreign-harness.ts";
 import { gitWorktreeExists } from "./git.ts";
-import { layoutRefs, paneSession } from "./layout.ts";
+import { paneSession } from "./layout.ts";
 import { createHeadlessKeyParser, parseSendKeys } from "./send.ts";
 import { encodeKey } from "./keys.ts";
 import { errorMessage } from "./error-message.ts";
@@ -1371,15 +1372,14 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
 
-  /** Caller record for a client-routed command — source must be on the batch. */
-  const clientInvocation = (
-    ctx: {
-      readonly source?: "socket" | "cli";
-      readonly pane?: string;
-      readonly agent?: string;
-    },
-    paneOverride?: string,
-  ): Effect.Effect<
+  /** Caller record for a client-routed command — source must be on the batch.
+   *  Names the caller (ctx.pane), not the resolved target; the routed command
+   *  carries any pinned pane arg separately. */
+  const clientInvocation = (ctx: {
+    readonly source?: "socket" | "cli";
+    readonly pane?: string;
+    readonly agent?: string;
+  }): Effect.Effect<
     {
       readonly source: "socket" | "cli";
       readonly pane?: string;
@@ -1389,7 +1389,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   > => {
     if (ctx.source === undefined)
       return controlFail("client-routed command needs context.source (socket | cli)");
-    const pane = paneOverride ?? ctx.pane;
+    const pane = ctx.pane;
     const agent = ctx.agent;
     if (pane !== undefined && agent !== undefined)
       return Effect.succeed({ source: ctx.source, pane, agent });
@@ -1400,7 +1400,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   /**
    * Which session `pane.capture` reads when the daemon can answer alone: the
-   * one named directly, or the one a named / calling pane shows. Null means
+   * one named directly, or the one {@link resolveTarget} selects. Null means
    * the pane is client-only (plugin view, no pty) — not a resolution failure:
    * the caller falls through to `runOnClient`, the only place a Solid pane's
    * pixels exist. Cite: resolveSendKeysTarget's sessionless fallthrough.
@@ -1412,33 +1412,22 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   ): Effect.Effect<string | null, ControlError> =>
     Effect.gen(function* () {
       if (value.session) return value.session;
-      if (value.pane) {
-        const found = workspacePaneOf(workspace, value.pane);
-        if (!found) return yield* new ControlError({ message: `pane '${value.pane}' not found` });
-        return paneSession(found.pane.content) ?? null;
+      const target = resolveTarget(workspace, value, {
+        agent: context?.agent,
+        pane: context?.pane,
+      });
+      if (!target) {
+        if (typeof value.pane === "string" && value.pane !== "")
+          return yield* new ControlError({ message: `pane '${value.pane}' not found` });
+        return null;
       }
-      if (value.current) {
-        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, workspace).pipe(
-          Effect.mapError((e) => new ControlError({ message: e.message })),
-        );
-        if (ctx.agent) return ctx.agent;
-        if (ctx.pane) {
-          const found = workspacePaneOf(workspace, ctx.pane);
-          return found ? (paneSession(found.pane.content) ?? null) : null;
-        }
-        return yield* new ControlError({
-          message: "pane.capture --current needs a managed pane",
-        });
-      }
-      // No target at all: human keybind opens the overlay on the client.
-      return null;
+      return paneSession(target.pane.content) ?? null;
     });
 
   /**
    * Which session `pane.send-keys` writes to, when it can be resolved
-   * without a client at all: the pane named directly, the caller's own pane
-   * for `--current`, or the focused pane of the active window — the same
-   * order `paneTarget()` uses in the workspace reducer for every other pane
+   * without a client at all: {@link resolveTarget}'s pane, then that pane's
+   * session — the same rule the workspace reducer uses for every other pane
    * command, read here off a snapshot since resolving this must not itself
    * depend on a live client.
    *
@@ -1451,30 +1440,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
     value: Extract<Command, { _tag: "pane.send-keys" }>,
     context: WorkspaceCommandRequestContext | undefined,
     workspace: WorkspaceSnapshot,
-  ): Effect.Effect<string | null, ControlError> =>
-    Effect.gen(function* () {
-      if (value.pane) {
-        const found = workspacePaneOf(workspace, value.pane);
-        return found ? (paneSession(found.pane.content) ?? null) : null;
-      }
-      if (value.current) {
-        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, workspace).pipe(
-          Effect.mapError((e) => new ControlError({ message: e.message })),
-        );
-        if (ctx.agent) return ctx.agent;
-        if (ctx.pane) {
-          const found = workspacePaneOf(workspace, ctx.pane);
-          return found ? (paneSession(found.pane.content) ?? null) : null;
-        }
-        return null;
-      }
-      const active = findWindow(workspace, {});
-      if (!active) return null;
-      const pane = layoutRefs(active.window.layout).find(
-        (item) => item.id === active.window.state.focus,
-      );
-      return pane ? (paneSession(pane.content) ?? null) : null;
+  ): Effect.Effect<string | null, ControlError> => {
+    const target = resolveTarget(workspace, value, {
+      agent: context?.agent,
+      pane: context?.pane,
     });
+    return Effect.succeed(target ? (paneSession(target.pane.content) ?? null) : null);
+  };
 
   const runRemote = Effect.fnUntraced(function* (
     value: Command | RuntimeCommand,
@@ -1570,9 +1542,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       }
     }
     // Session-backed capture stays on the daemon (pty grid). A plugin pane
-    // has no session — fall through to the client, which crops the live
-    // OpenTUI frame. A bare `pane.capture` (human keybind) also falls through
-    // so the client can open its overlay.
+    // has no session — fall through to the client with a pinned pane id.
     if (command._tag === "pane.capture") {
       const cur = yield* model.get;
       const session = yield* resolveCaptureSession(command, context, cur.workspace);
@@ -1587,21 +1557,43 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         `command '${command._tag}' is a view command, not remotely invocable`,
       );
     if (meta.target === "client") {
+      const cur = yield* model.get;
+      let routed: JsonValue = command as JsonValue;
+      // Pin resolveTarget onto commands whose pane field is a declared target
+      // (PaneTarget annotation). Subject panes (plugin.inspect) are unchanged.
+      // invocation.pane stays the caller (clientInvocation(ctx)).
+      const def = commandDefinition(command._tag);
+      const paneField =
+        "pane" in def.argumentFields
+          ? (def.argumentFields as { readonly pane: S.Top }).pane
+          : undefined;
+      if (fieldDeclaresPaneTarget(paneField)) {
+        const paneNamed =
+          "pane" in command && typeof command.pane === "string" && command.pane !== "";
+        const target = resolveTarget(
+          cur.workspace,
+          {
+            pane:
+              "pane" in command && typeof command.pane === "string" ? command.pane : undefined,
+          },
+          {
+            agent: context?.agent,
+            pane: context?.pane,
+          },
+        );
+        if (!target) {
+          if (paneNamed)
+            return yield* controlFail(`pane '${String(command.pane)}' not found`);
+          return yield* controlFail(`command '${command._tag}' could not resolve a pane`);
+        }
+        routed = { ...command, pane: target.pane.id } as JsonValue;
+      }
       const connections = yield* model.attachedConnections;
       const first = connections[0];
       if (!first) return yield* controlFail(`no client attached, cannot run '${command._tag}'`);
-      const cur = yield* model.get;
       const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
-      let routed: JsonValue = command as JsonValue;
-      let pane = ctx.pane;
-      if ("current" in command && command.current) {
-        if (!ctx.pane)
-          return yield* controlFail(`command '${command._tag}' --current needs a managed pane`);
-        routed = { ...command, current: false, pane: ctx.pane } as JsonValue;
-        pane = ctx.pane;
-      }
       const host = yield* requireHost;
-      const invocation = yield* clientInvocation(ctx, pane);
+      const invocation = yield* clientInvocation(ctx);
       const result = yield* host.runOnClient(first.client, first.connection, routed, invocation);
       return result === undefined ? {} : { result };
     }

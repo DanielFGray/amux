@@ -121,7 +121,7 @@ function parseFieldSpecs(tag: string, fields: FieldSpec[], argv: string[]): Pars
         continue;
       }
       // A boolean flag consumes a separated value only when that value parses
-      // as a boolean; otherwise a bare `--current` would swallow the positional
+      // as a boolean; otherwise a bare `--split` would swallow the positional
       // that follows it. Value-taking flags consume the next token unless it
       // looks like a flag.
       const next = argv[i + 1];

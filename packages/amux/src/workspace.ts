@@ -689,6 +689,95 @@ export function viewportSizeForCommand(
   return { cols, rows };
 }
 
+/** A pane plus the window entry that owns it. */
+export type ResolvedPaneTarget = {
+  readonly window: WindowEntry;
+  readonly pane: PaneRef;
+};
+
+/** The pane showing a session, with its window — first walk-order match. */
+const paneEntryForSession = (
+  workspace: WorkspaceSnapshot,
+  agentId: string,
+): ResolvedPaneTarget | null => {
+  for (const entry of workspaceWindows(workspace)) {
+    const pane = layoutRefs(entry.window.layout).find(
+      (item) => paneSession(item.content) === agentId,
+    );
+    if (pane) return { window: entry, pane };
+  }
+  return null;
+};
+
+/** Caller identity for pane targeting — the agent/pane fields shared by
+ * {@link WorkspaceCommandContext} and the committed CommandInvocation record. */
+type ResolveTargetCaller = Pick<WorkspaceCommandContext, "agent" | "pane">;
+
+/** The caller's own pane: session identity first, then the env pane id. */
+const resolveCallerPane = (
+  workspace: WorkspaceSnapshot,
+  caller: ResolveTargetCaller,
+): ResolvedPaneTarget | null => {
+  if (caller.agent !== undefined) {
+    const byAgent = paneEntryForSession(workspace, caller.agent);
+    if (byAgent) return byAgent;
+  }
+  if (caller.pane !== undefined && caller.pane !== "") {
+    const found = workspacePaneOf(workspace, caller.pane);
+    if (found) return { window: { space: found.space, window: found.window }, pane: found.pane };
+  }
+  return null;
+};
+
+/**
+ * The window used for focus fallback and for window-only navigation.
+ * Prefers the window that owns the caller's agent pane (same lookup as
+ * {@link resolveTarget}); if the agent is on the roster but not in a pane,
+ * the window that lists it. An agent id that resolves to nothing yields null
+ * — never the human's active window.
+ */
+const activeWindowForCaller = (
+  workspace: WorkspaceSnapshot,
+  caller: ResolveTargetCaller,
+): WindowEntry | null => {
+  if (caller.agent !== undefined) {
+    const fromPane = paneEntryForSession(workspace, caller.agent);
+    if (fromPane) return fromPane.window;
+    const fromRoster = [...workspaceWindows(workspace)].find((entry) =>
+      entry.window.sessions.some((session) => session.id === caller.agent),
+    );
+    return fromRoster ?? null;
+  }
+  return findWindow(workspace, {});
+};
+
+const focusedPaneOf = (entry: WindowEntry): ResolvedPaneTarget | null => {
+  const pane = layoutRefs(entry.window.layout).find(
+    (item) => item.id === entry.window.state.focus,
+  );
+  return pane ? { window: entry, pane } : null;
+};
+
+/**
+ * Where a pane command acts: the named pane, else the caller's own pane
+ * (agent session first, then caller.pane), else the focused pane of the
+ * active window. One rule for mutations, reads, and replace placement.
+ */
+export function resolveTarget(
+  workspace: WorkspaceSnapshot,
+  command: { readonly pane?: string },
+  caller: ResolveTargetCaller = {},
+): ResolvedPaneTarget | null {
+  if (typeof command.pane === "string" && command.pane !== "") {
+    const found = workspacePaneOf(workspace, command.pane);
+    return found ? { window: { space: found.space, window: found.window }, pane: found.pane } : null;
+  }
+  const fromCaller = resolveCallerPane(workspace, caller);
+  if (fromCaller) return fromCaller;
+  const active = activeWindowForCaller(workspace, caller);
+  return active ? focusedPaneOf(active) : null;
+}
+
 /**
  * Apply one existing command value to a private candidate generation.
  *
@@ -736,77 +825,17 @@ export function applyWorkspaceCommand(
       "space" in command && typeof command.space === "string" ? command.space : undefined,
     );
   const window = () => findWindow(next, command as { space?: string; window?: number });
-  const activeWindow = () =>
-    context.agent
-      ? ([...workspaceWindows(next)].find((entry) =>
-          entry.window.sessions.some((agent) => agent.id === context.agent),
-        ) ?? null)
-      : findWindow(next, {});
-  /** The pane the caller runs in: its session (the stable identity, which
-   *  survives a pane move) first, then the pane id its env named (which may be
-   *  stale if the pane moved). */
-  const callingPane = (): { window: WindowEntry; pane: PaneRef } | null => {
-    if (context.agent) {
-      for (const entry of workspaceWindows(next)) {
-        const pane = layoutRefs(entry.window.layout).find(
-          (item) => paneSession(item.content) === context.agent,
-        );
-        if (pane) return { window: entry, pane };
-      }
-    }
-    if (context.pane) {
-      for (const entry of workspaceWindows(next)) {
-        const pane = layoutRefs(entry.window.layout).find((item) => item.id === context.pane);
-        if (pane) return { window: entry, pane };
-      }
-    }
-    return null;
-  };
-  /** Where a pane command acts: a named pane, the caller's own pane, or the
-   *  focused pane of the active window. Absent both targets, the command keeps
-   *  today's meaning — the focused pane — so a keybinding and the UI mean the
-   *  same thing. */
-  const paneTarget = (): { window: WindowEntry; pane: PaneRef } | null => {
-    const named = "pane" in command && typeof command.pane === "string" && command.pane !== "";
-    if (named) {
-      for (const entry of workspaceWindows(next)) {
-        const pane = layoutRefs(entry.window.layout).find((item) => item.id === command.pane);
-        if (pane) return { window: entry, pane };
-      }
-      return null;
-    }
-    if ("current" in command && command.current === true) return callingPane();
-    const target = activeWindow();
-    if (!target) return null;
-    const pane = layoutRefs(target.window.layout).find(
-      (item) => item.id === target.window.state.focus,
+  const caller: ResolveTargetCaller = { agent: context.agent, pane: context.pane };
+  const activeWindow = () => activeWindowForCaller(next, caller);
+  const targetPane = () =>
+    resolveTarget(
+      next,
+      {
+        pane:
+          "pane" in command && typeof command.pane === "string" ? command.pane : undefined,
+      },
+      caller,
     );
-    return pane ? { window: target, pane } : null;
-  };
-  /** Where a read whose name is "current" acts: the caller's own pane, else the
-   *  focused pane. Reads are the way an agent resolves itself, so "current"
-   *  means the caller rather than whoever has the human's focus. */
-  const readTarget = (): { window: WindowEntry; pane: PaneRef } | null => {
-    const named = "pane" in command && typeof command.pane === "string" && command.pane !== "";
-    if (named) {
-      for (const entry of workspaceWindows(next)) {
-        const pane = layoutRefs(entry.window.layout).find((item) => item.id === command.pane);
-        if (pane) return { window: entry, pane };
-      }
-      return null;
-    }
-    return (
-      callingPane() ??
-      (() => {
-        const target = activeWindow();
-        if (!target) return null;
-        const pane = layoutRefs(target.window.layout).find(
-          (item) => item.id === target.window.state.focus,
-        );
-        return pane ? { window: target, pane } : null;
-      })()
-    );
-  };
   const setFocus = (target: WorkspaceWindow, id: string | undefined) => {
     if (!id) return;
     if (target.state.focus !== id) {
@@ -905,7 +934,7 @@ export function applyWorkspaceCommand(
   ): string => {
     const content = paneContentFor(agent);
     if (opts?.mode === "replace") {
-      const target = callingPane() ?? paneTarget();
+      const target = targetPane();
       if (target && target.window.window === entry.window) {
         return replacePaneContent(target, content);
       }
@@ -953,7 +982,7 @@ export function applyWorkspaceCommand(
     opts?: { readonly mode?: "split" | "replace" },
   ): string | null => {
     if (opts?.mode === "replace") {
-      const target = callingPane() ?? paneTarget();
+      const target = targetPane();
       if (!target) return null;
       return replacePaneContent(target, {
         kind: "plugin",
@@ -961,7 +990,7 @@ export function applyWorkspaceCommand(
         descriptor,
       });
     }
-    const target = paneTarget();
+    const target = targetPane();
     if (!target) return null;
     const { space, window } = target.window;
     const panes = layoutPanes(window.layout.root);
@@ -1048,7 +1077,7 @@ export function applyWorkspaceCommand(
   }
   switch (command._tag) {
     case "pane.split": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target) break;
       // A split inherits the caller's directory, not the space's: an agent
       // delegating from a worktree pane must not land the sibling in the repo
@@ -1069,7 +1098,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "process-plugin.pane.open": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target) break;
       // Daemon must resolve argv/env before apply; an unresolved open is a no-op.
       if (command.command === undefined || command.command.length === 0) break;
@@ -1150,7 +1179,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.set-descriptor": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target) break;
       const window = target.window.window;
       const next = setPaneDescriptor(window.layout, target.pane.id, command.descriptor);
@@ -1159,7 +1188,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.resize": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target || target.window.window.state.zoom) break;
       const layout = target.window.window.layout;
       const resized =
@@ -1194,7 +1223,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.set-size": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target || target.window.window.state.zoom) break;
       const layout = target.window.window.layout;
       const cells = command.cells === undefined ? null : command.cells;
@@ -1208,7 +1237,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.zoom": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target || layoutRefs(target.window.window.layout).length < 2) break;
       const pane = target.pane.id;
       target.window.window.state.zoom = target.window.window.state.zoom
@@ -1217,7 +1246,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.float": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target) break;
       const window = target.window.window;
       const placement = placementOf(window.layout, target.pane.id);
@@ -1238,7 +1267,7 @@ export function applyWorkspaceCommand(
     case "pane.dock-right":
     case "pane.dock-top":
     case "pane.dock-bottom": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target) break;
       const side = command._tag.slice("pane.dock-".length) as "left" | "right" | "top" | "bottom";
       target.window.window.layout = setDock(target.window.window.layout, target.pane.id, side);
@@ -1247,7 +1276,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.undock": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target) break;
       target.window.window.layout = undockPane(target.window.window.layout, target.pane.id);
       target.window.window.state.zoom = null;
@@ -1255,7 +1284,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.swap": {
-      const target = paneTarget();
+      const target = targetPane();
       if (!target) break;
       const window = target.window.window;
       const panes = layoutPanes(window.layout.root);
@@ -1270,7 +1299,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.close": {
-      const found = paneTarget();
+      const found = targetPane();
       if (!found) break;
       // Restoring a displace-keepalive puts the previous session back in the
       // leaf. The plugin/component that was the viewport is then unreferenced
@@ -1309,7 +1338,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.break": {
-      const found = paneTarget();
+      const found = targetPane();
       if (!found) break;
       const { space, window } = found.window;
       const slot = found.pane;
@@ -1341,7 +1370,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.join": {
-      const destination = paneTarget()?.window;
+      const destination = targetPane()?.window;
       if (!destination) break;
       const sourceNumber =
         command.source ??
@@ -1371,7 +1400,7 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.move": {
-      const source = paneTarget();
+      const source = targetPane();
       const destination = findSpace(next, command.space);
       const target = destination?.windows.find(
         (window) => window.number === destination.state.activeWindow,
@@ -1656,12 +1685,12 @@ export function applyWorkspaceCommand(
       break;
     }
     case "pane.current": {
-      const target = readTarget();
+      const target = targetPane();
       result = target ? paneEntry(target.window.space, target.window.window, target.pane) : null;
       break;
     }
     case "pane.layout": {
-      const target = readTarget();
+      const target = targetPane();
       result = target ? paneLayout(next, target.pane.id, context.size) : null;
       break;
     }

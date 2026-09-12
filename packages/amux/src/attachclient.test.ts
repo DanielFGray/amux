@@ -43,6 +43,7 @@ import {
 } from "./effect/AttachProtocol.ts";
 import { command } from "./commands.ts";
 import { controlCall } from "./control-client.ts";
+import { layoutRefs } from "./layout.ts";
 import { registerCleanup, tempDir } from "./test-tmp.ts";
 import { testEffect } from "./test-effect.ts";
 import { until } from "./test-wait.ts";
@@ -1787,5 +1788,194 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
       env,
     );
     expect(captured.outputs[0]!.result).toBe("plugin-frame-text");
+  }),
+);
+
+/**
+ * Client-routed commands with no pane named must pin the caller's pane, not
+ * the focused one — same resolveTarget rule the reducer uses.
+ */
+testEffect("unnamed client-routed send-keys pins the calling pane, not focus", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* startSession("client-route-caller-pane");
+    const client = yield* attach("client-route-caller-pane", env);
+    let seen: unknown;
+    yield* Effect.forkScoped(
+      Stream.runForEach(client.commandRequests, ({ id, command: raw }) =>
+        Effect.sync(() => {
+          seen = raw;
+          client.respondCommand(id, undefined);
+        }),
+      ),
+    );
+
+    const before = yield* daemon.getWorkspace;
+    const paneA = layoutRefs(before.spaces[0]!.windows[0]!.layout)[0]!.id;
+
+    const split = yield* run(
+      controlCall(daemon.id, (c) =>
+        c.Batch({
+          values: [command("pane.split", { axis: "row" })],
+          context: {
+            size: { cols: 80, rows: 24 },
+            shell: ["sh"],
+            cwd: "/tmp",
+            source: "socket",
+          },
+        }),
+      ),
+      env,
+    );
+    const paneB = (split.outputs[0]!.result as { pane: string }).pane;
+    const afterSplit = yield* daemon.getWorkspace;
+    expect(afterSplit.spaces[0]!.windows[0]!.state.focus).toBe(paneB);
+
+    yield* run(
+      controlCall(daemon.id, (c) =>
+        c.Batch({
+          values: [command("pane.send-keys", { keys: "x", dispatch: true })],
+          context: {
+            size: { cols: 80, rows: 24 },
+            shell: ["sh"],
+            cwd: "/tmp",
+            source: "cli",
+            pane: paneA,
+          },
+        }),
+      ),
+      env,
+    );
+    expect(seen).toMatchObject({
+      _tag: "pane.send-keys",
+      keys: "x",
+      dispatch: true,
+      pane: paneA,
+    });
+  }),
+);
+
+/**
+ * plugin.inspect's pane field is a subject, not a PaneTarget — the daemon must
+ * not pin a caller pane onto it. Bare inspect and subject forms pass through.
+ */
+testEffect("plugin.inspect subject forms are not given a pinned caller pane", () =>
+  Effect.gen(function* () {
+    const { daemon, env } = yield* startSession("client-route-inspect-subjects");
+    const client = yield* attach("client-route-inspect-subjects", env);
+    const seen: unknown[] = [];
+    yield* Effect.forkScoped(
+      Stream.runForEach(client.commandRequests, ({ id, command: raw }) =>
+        Effect.sync(() => {
+          seen.push(raw);
+          const tag =
+            raw && typeof raw === "object" && "_tag" in raw
+              ? String((raw as { _tag: unknown })._tag)
+              : "";
+          if (tag !== "plugin.inspect") {
+            client.respondCommand(id, undefined, `unexpected ${tag}`);
+            return;
+          }
+          const q = raw as {
+            plugin?: string;
+            command?: string;
+            pane?: string;
+          };
+          if (q.pane !== undefined) {
+            client.respondCommand(id, undefined, "pane must not be pinned onto inspect");
+            return;
+          }
+          if (q.plugin !== undefined) {
+            client.respondCommand(id, {
+              kind: "plugin",
+              name: q.plugin,
+              found: true,
+            });
+            return;
+          }
+          if (q.command !== undefined) {
+            client.respondCommand(id, {
+              kind: "command",
+              name: q.command,
+              found: true,
+            });
+            return;
+          }
+          client.respondCommand(id, undefined, "plugin.inspect needs one of: command, binding, key, pane, plugin");
+        }),
+      ),
+    );
+
+    const before = yield* daemon.getWorkspace;
+    const paneA = layoutRefs(before.spaces[0]!.windows[0]!.layout)[0]!.id;
+    const split = yield* run(
+      controlCall(daemon.id, (c) =>
+        c.Batch({
+          values: [command("pane.split", { axis: "row" })],
+          context: {
+            size: { cols: 80, rows: 24 },
+            shell: ["sh"],
+            cwd: "/tmp",
+            source: "socket",
+          },
+        }),
+      ),
+      env,
+    );
+    const paneB = (split.outputs[0]!.result as { pane: string }).pane;
+    expect((yield* daemon.getWorkspace).spaces[0]!.windows[0]!.state.focus).toBe(paneB);
+
+    const caller = {
+      size: { cols: 80, rows: 24 },
+      shell: ["sh"] as const,
+      cwd: "/tmp",
+      source: "cli" as const,
+      pane: paneA,
+    };
+
+    const byPlugin = yield* run(
+      controlCall(daemon.id, (c) =>
+        c.Batch({
+          values: [command("plugin.inspect", { plugin: "amux" })],
+          context: caller,
+        }),
+      ),
+      env,
+    );
+    expect(byPlugin.outputs[0]!.result).toMatchObject({ kind: "plugin", name: "amux", found: true });
+
+    const byCommand = yield* run(
+      controlCall(daemon.id, (c) =>
+        c.Batch({
+          values: [command("plugin.inspect", { command: "pane.zoom" })],
+          context: caller,
+        }),
+      ),
+      env,
+    );
+    expect(byCommand.outputs[0]!.result).toMatchObject({
+      kind: "command",
+      name: "pane.zoom",
+      found: true,
+    });
+
+    const bare = yield* run(
+      Effect.flip(
+        controlCall(daemon.id, (c) =>
+          c.Batch({
+            values: [command("plugin.inspect")],
+            context: caller,
+          }),
+        ),
+      ),
+      env,
+    );
+    expect(bare._tag).toBe("ControlError");
+    expect(bare.message).toContain("plugin.inspect needs one of");
+
+    expect(seen).toEqual([
+      { _tag: "plugin.inspect", plugin: "amux" },
+      { _tag: "plugin.inspect", command: "pane.zoom" },
+      { _tag: "plugin.inspect" },
+    ]);
   }),
 );

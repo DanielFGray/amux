@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
-import { Context, Effect, Option } from "effect";
+import { Context, Effect, Exit, Option } from "effect";
 import {
+  CommandError,
   CurrentInvocation,
   command,
   commandInvocation,
   makeCommands,
+  type CommandHandlerTable,
   type CommandInvocation,
 } from "./commands.ts";
 import { NO_REALM, Realm, paneRealm, realmOf } from "./realm.ts";
@@ -95,4 +97,42 @@ test("withRealm is the same provider Commands.run uses", () => {
 
   expect(fromRun).toBe("left");
   expect(fromWithRealm).toBe("left");
+});
+
+/**
+ * Locks the app.tsx pane.capture contract: overlay only when the invocation
+ * is a key press with no target. A CLI/socket call with missing pane fails
+ * instead of opening the human's overlay.
+ */
+test("pane.capture opens the overlay only for a key invocation with no target", () => {
+  let overlay = 0;
+  const handlers: CommandHandlerTable = {
+    "pane.capture": (args) =>
+      Effect.gen(function* () {
+        if (args._tag !== "pane.capture") return "";
+        const { session, pane } = args;
+        const inv = yield* CurrentInvocation;
+        if (session === undefined && pane === undefined && inv.source === "key") {
+          overlay += 1;
+          return "";
+        }
+        if (pane === undefined) return yield* new CommandError({ message: "no pane to capture" });
+        return `captured:${pane}`;
+      }),
+  };
+  const commands = makeCommands(handlers);
+
+  expect(Effect.runSync(commands.run(command("pane.capture"), commandInvocation("key")))).toBe("");
+  expect(overlay).toBe(1);
+
+  const cli = Effect.runSyncExit(commands.run(command("pane.capture"), commandInvocation("cli")));
+  expect(Exit.isFailure(cli)).toBe(true);
+  expect(overlay).toBe(1);
+
+  expect(
+    Effect.runSync(
+      commands.run(command("pane.capture", { pane: "s1:p1" }), commandInvocation("cli")),
+    ),
+  ).toBe("captured:s1:p1");
+  expect(overlay).toBe(1);
 });

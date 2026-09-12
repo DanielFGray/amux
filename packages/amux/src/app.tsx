@@ -47,6 +47,7 @@ import {
   CommandError,
   command,
   commandInvocation,
+  CurrentInvocation,
   makeCommands,
   isCoreCommand,
   runDetached,
@@ -1710,34 +1711,32 @@ function buildApp(
     "pane.join": runCommand,
     "pane.move": runCommand,
     "pane.send-keys": ({ keys, pane, dispatch }) =>
-      Effect.suspend(() => {
-        const target = sendKeysTarget(pane, dispatch === true);
-        if (!target) return Effect.fail(new CommandError({ message: "no pane to send to" }));
+      Effect.gen(function* () {
+        const inv = yield* CurrentInvocation;
+        const id = pane ?? inv.pane;
+        if (id === undefined) return yield* new CommandError({ message: "no pane to send to" });
+        const target = sendKeysTarget(id, dispatch === true);
+        if (!target) return yield* new CommandError({ message: "no pane to send to" });
         const error = sendKeys(target, keys, parseKeyStrokes.bind(null, bindings.keymap));
-        return error ? Effect.fail(new CommandError({ message: error.message })) : Effect.void;
+        if (error) return yield* new CommandError({ message: error.message });
       }),
-    "pane.capture": ({ session, pane, current }) =>
-      Effect.suspend(() => {
-        // Human keybind: no target → open the capture overlay (pty panes;
-        // plugin panes use the CLI / remote path below).
-        if (session === undefined && pane === undefined && current !== true) {
+    "pane.capture": ({ session, pane }) =>
+      Effect.gen(function* () {
+        const inv = yield* CurrentInvocation;
+        // Human keybind only: remote/CLI paths must arrive with a pinned pane
+        // (or fail in the daemon). Inferring overlay from missing args would
+        // open a capture UI on the attached human for a failed CLI call.
+        if (session === undefined && pane === undefined && inv.source === "key") {
           openCapture();
-          return Effect.succeed("");
+          return "";
         }
-        // Daemon already answered session-backed panes and rewrote `--current`
-        // to an explicit pane id. Anything still here is a sessionless leaf.
-        const id = pane ?? spaces.activeWindow?.focused?.id;
-        if (id === undefined)
-          return Effect.fail(new CommandError({ message: "no pane to capture" }));
-        const target = findPane(id);
-        if (!target) return Effect.fail(new CommandError({ message: `pane '${id}' not found` }));
-        if (target.session !== null)
-          return Effect.succeed(captureSpan(target.session.term, "visible"));
+        if (pane === undefined) return yield* new CommandError({ message: "no pane to capture" });
+        const target = findPane(pane);
+        if (!target) return yield* new CommandError({ message: `pane '${pane}' not found` });
+        if (target.session !== null) return captureSpan(target.session.term, "visible");
         if (!(target instanceof ComponentPane))
-          return Effect.fail(
-            new CommandError({ message: `pane '${id}' has no capturable content` }),
-          );
-        return Effect.succeed(capturePluginPane(target));
+          return yield* new CommandError({ message: `pane '${pane}' has no capturable content` });
+        return capturePluginPane(target);
       }),
     "pane.list": runCommand,
     "pane.current": runCommand,

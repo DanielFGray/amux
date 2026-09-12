@@ -105,15 +105,24 @@ test("parseArgs accepts separated values for every flag kind", () => {
 });
 
 test("parseArgs accepts a separated boolean value only when it is a boolean", () => {
-  expect(parseArgs("pane.zoom", ["--current", "false"]).parsed).toEqual({ current: false });
-  expect(parseArgs("pane.zoom", ["--current", "true"]).parsed).toEqual({ current: true });
+  expect(parseArgs("pane.send-keys", ["--keys", "x", "--dispatch", "false"]).parsed).toEqual({
+    keys: "x",
+    dispatch: false,
+  });
+  expect(parseArgs("pane.send-keys", ["--keys", "x", "--dispatch", "true"]).parsed).toEqual({
+    keys: "x",
+    dispatch: true,
+  });
   // A non-boolean token after a boolean flag stays a positional, so a bare
   // flag never swallows the argument that follows it.
-  expect(parseArgs("pane.close", ["--current", "--pane", "s1:p3"]).parsed).toEqual({
-    current: true,
-    pane: "s1:p3",
+  expect(parseArgs("pane.send-keys", ["--dispatch", "--keys", "x"]).parsed).toEqual({
+    dispatch: true,
+    keys: "x",
   });
-  expect(parseArgs("pane.close", ["--current", "true"]).parsed).toEqual({ current: true });
+  expect(parseArgs("pane.send-keys", ["--keys", "x", "--dispatch", "true"]).parsed).toEqual({
+    keys: "x",
+    dispatch: true,
+  });
 });
 
 test("fieldNames returns all fields for a command", () => {
@@ -134,9 +143,12 @@ test("generateHelp is non-empty", () => {
 
 test("group help derives command syntax from schemas", () => {
   expect(generateGroupHelp("panes")).toContain("pane.split <row|column> [--cwd=<cwd>]");
-  // A boolean is named, not assigned: `--current=<current>` would tell a reader
+  // A boolean is named, not assigned: `--dispatch=<dispatch>` would tell a reader
   // to invent a value for a flag whose presence is the whole signal.
-  expect(generateGroupHelp("panes")).toContain("pane.zoom [--pane=<pane>] [--current]");
+  expect(generateGroupHelp("panes")).toContain("pane.zoom [--pane=<pane>]");
+  expect(generateGroupHelp("panes")).toContain(
+    "pane.send-keys <keys> [--dispatch] [--pane=<pane>]",
+  );
   expect(generateGroupHelp("missing")).toBeUndefined();
 });
 
@@ -151,7 +163,7 @@ test("pane targets are schema fields the CLI parses", () => {
     keys: "ls",
     pane: "s1:p3",
   });
-  expect(parseArgs("pane.close", ["--current"]).parsed).toEqual({ current: true });
+  expect(parseArgs("pane.close", []).parsed).toEqual({});
   expect(parseArgs("pane.capture", ["--pane", "s1:p3"]).parsed).toEqual({ pane: "s1:p3" });
   // --no-focus is a batch-level context flag, not a command field, so the
   // schema parser refuses it: the CLI strips it before parsing.
@@ -161,8 +173,8 @@ test("pane targets are schema fields the CLI parses", () => {
 test("the read surface is exposed to agents with derived fields", () => {
   const panes = fieldNames("pane.list");
   expect(panes.map((f) => f.name)).toEqual([]);
-  expect(fieldNames("pane.current").map((f) => f.name)).toEqual(["pane", "current"]);
-  expect(fieldNames("pane.layout").map((f) => f.name)).toEqual(["pane", "current"]);
+  expect(fieldNames("pane.current").map((f) => f.name)).toEqual(["pane"]);
+  expect(fieldNames("pane.layout").map((f) => f.name)).toEqual(["pane"]);
   expect(generateGroupHelp("panes")).toContain("pane.current");
   expect(generateGroupHelp("panes")).toContain("pane.layout");
   expect(generateGroupHelp("panes")).toContain("pane.list");

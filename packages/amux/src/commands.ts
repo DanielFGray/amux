@@ -151,14 +151,33 @@ const NotifyTarget = { session: S.optionalKey(S.String) };
 const AgentTarget = { target: S.optionalKey(S.String) };
 
 /**
- * Where a pane command acts: a named pane, the caller's own pane (resolved
- * server-side from the command context, never substituted by the CLI), or —
- * absent both — the focused pane. On the command schema, so the harness tool
- * surface and every other surface inherit the target.
+ * Where a pane command acts: a named pane, else the caller's own pane
+ * (resolved server-side from the command context), else the focused pane.
+ * On the command schema, so the harness tool surface and every other surface
+ * inherit the target.
+ *
+ * The pane field is annotated {@link PaneTargetAnnotation} so the daemon can
+ * tell a pane *target* (this) from a pane *subject* (e.g. plugin.inspect).
  */
-const PaneTarget = {
-  pane: S.optionalKey(S.String.pipe(S.check(S.isMinLength(1)))),
-  current: S.optionalKey(S.Boolean),
+export const PaneTargetAnnotation = "amux/PaneTarget" as const;
+
+/** Required pane id marked as a resolveTarget target — not an inspect subject. */
+export const PaneTargetPane = S.String.pipe(S.check(S.isMinLength(1))).annotate({
+  [PaneTargetAnnotation]: true,
+});
+
+/** Optional pane target field every pane-acting command spreads. */
+export const PaneTarget = {
+  pane: S.optionalKey(PaneTargetPane),
+};
+
+/** True when a command field schema declares a pane target (not a subject). */
+export const fieldDeclaresPaneTarget = (field: S.Top | undefined): boolean => {
+  if (field === undefined) return false;
+  const annotations = S.resolveAnnotations(field) as
+    | { readonly [PaneTargetAnnotation]?: true }
+    | undefined;
+  return annotations?.[PaneTargetAnnotation] === true;
 };
 
 const Axis = S.Literals(["row", "column"]);
@@ -286,7 +305,7 @@ const PaneFocus = define(
 );
 const PaneSelect = define(
   "pane.select",
-  { pane: S.String },
+  { pane: PaneTargetPane },
   {
     desc: "focus a pane by id",
     group: "panes",

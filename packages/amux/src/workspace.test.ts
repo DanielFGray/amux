@@ -2011,13 +2011,9 @@ test("agent.list and agent.get report agents with their home and pane", () => {
   expect(missing.result).toBeNull();
 });
 
-test("pane.current --current resolves the calling pane, not the focused pane", () => {
+test("pane.current with a calling pane resolves the caller, not the focused pane", () => {
   const adopted = run(workspaceFromSession(wideBase()));
-  const mutation = applyWorkspaceCommand(
-    adopted,
-    command("pane.current", { current: true }),
-    wideContext,
-  );
+  const mutation = applyWorkspaceCommand(adopted, command("pane.current"), wideContext);
   expect(mutation.result).toEqual({
     id: "pane-b1",
     space: "space-b",
