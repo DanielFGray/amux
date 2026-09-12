@@ -7,6 +7,7 @@ import {
   parseWorkspace,
   parseWorkspaceCommandContext,
   parseWorkspaceJson,
+  viewportSizeForCommand,
   workspaceFromSession,
   workspaceSession,
 } from "./workspace.ts";
@@ -1009,8 +1010,39 @@ test("editor.open from a calling pane replaces it and keeps the displaced PTY al
   expect(window.sessions).toHaveLength(1);
   expect(window.sessions[0]!.id).toBe(shellId);
   expect(window.sessions[0]!.exited).toBe(false);
+  expect(window.state.focus).toBe("pane-a");
+  expect(window.layout.focus).toBe("pane-a");
   expect(opened.actions).toEqual([]);
   expect(opened.result).toEqual({ pane: "pane-a" });
+});
+
+test("editor.open replace of a non-focused pane keeps layout.focus in sync", () => {
+  const adopted = run(workspaceFromSession(twoPaneSession()));
+  const opened = applyWorkspaceCommand(
+    adopted,
+    command("editor.open"),
+    { ...context, pane: "pane-b" },
+    editorPlugins,
+  );
+  const window = opened.snapshot.spaces[0]!.windows[0]!;
+  expect(window.state.focus).toBe("pane-b");
+  expect(window.layout.focus).toBe("pane-b");
+  expect(run(parseWorkspace(structuredClone(opened.snapshot))).spaces[0]!.windows[0]!.state.focus).toBe(
+    "pane-b",
+  );
+  expect(layoutPanes(window.layout.root).find((pane) => pane.id === "pane-b")!.content).toEqual({
+    kind: "plugin",
+    type: "amux.editor",
+    descriptor: {},
+    displaced: "agent-b",
+  });
+});
+
+test("viewportSizeForCommand prefers live session geometry over a small CLI size", () => {
+  const adopted = run(workspaceFromSession(base(singlePaneLayout)));
+  adopted.spaces[0]!.windows[0]!.sessions[0]!.cols = 160;
+  adopted.spaces[0]!.windows[0]!.sessions[0]!.rows = 40;
+  expect(viewportSizeForCommand(adopted, { cols: 80, rows: 24 })).toEqual({ cols: 160, rows: 40 });
 });
 
 test("exiting a displaced session clears the keepalive instead of poisoning the layout", () => {

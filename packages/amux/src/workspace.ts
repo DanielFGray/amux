@@ -659,6 +659,29 @@ export function parseWorkspaceCommandContext(
 }
 
 /**
+ * Prefer live PTY geometry over a CLI/agent `context.size` that under-reports
+ * the pane host (external `amux editor.open` sees Cursor's stdout cols, not
+ * the attached client's). Niri column widths and ensureVisible scroll against
+ * this size — using 80 against a 180-col strip stamps tiny columns and can
+ * leave the new pane looking like it never opened.
+ */
+export function viewportSizeForCommand(
+  workspace: WorkspaceSnapshot,
+  size: LayoutSize,
+): LayoutSize {
+  let cols = Math.max(1, size.cols);
+  let rows = Math.max(1, size.rows);
+  for (const { window } of workspaceWindows(workspace)) {
+    for (const session of window.sessions) {
+      if (session.exited) continue;
+      cols = Math.max(cols, session.cols);
+      rows = Math.max(rows, session.rows);
+    }
+  }
+  return { cols, rows };
+}
+
+/**
  * Apply one existing command value to a private candidate generation.
  *
  * Core tags run the switch below; anything else is a daemon-plugin command
@@ -669,11 +692,15 @@ export function parseWorkspaceCommandContext(
 export function applyWorkspaceCommand(
   current: WorkspaceSnapshot,
   command: Command | RuntimeCommand,
-  context: WorkspaceCommandContext,
+  request: WorkspaceCommandContext,
   plugins?: { readonly reducers: ReadonlyMap<string, PluginWorkspaceReducer> },
   algorithm: TilingAlgorithm = defaultTilingAlgorithm,
 ): WorkspaceMutation {
   const next = structuredClone(current);
+  const context: WorkspaceCommandContext = {
+    ...request,
+    size: viewportSizeForCommand(next, request.size),
+  };
   const agentIds = workspaceSessionIds(next);
   const newAgentId = () => allocateId("agent", agentIds);
   // Readable hierarchical handles: a space is `s3`, a pane is `s3:p7`. The
@@ -900,9 +927,13 @@ export function applyWorkspaceCommand(
           : content
         : content;
     window.layout = setPaneContent(window.layout, target.pane.id, nextContent);
-    window.state.focus = target.pane.id;
     window.state.zoom = null;
     window.state.preset = null;
+    // Same path as pane.select: keep layout.focus in lockstep with state.focus
+    // (parseWorkspace refuses a desync) and let niri ensureVisible scroll the
+    // replaced leaf on screen. Assigning state.focus alone left layout.focus
+    // stale — CLI replace of a non-focused pane then bounced off the client.
+    setFocus(window, target.pane.id);
     afterPaneRemoved(next, space, window, actions);
     return target.pane.id;
   };
