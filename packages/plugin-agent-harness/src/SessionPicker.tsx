@@ -284,7 +284,7 @@ const activeSpaceDir = (snapshot: WorkspaceSnapshot): string | undefined => {
 
 const listStoredConversations = (cwd: string) =>
   Effect.gen(function* () {
-    const root = yield* Effect.promise(() => projectRoot(cwd));
+    const root = yield* projectRoot(cwd);
     return yield* Effect.scoped(
       Effect.gen(function* () {
         const store = yield* ProjectStore;

@@ -70,8 +70,6 @@ import type { TilingAlgorithm } from "./tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import { commandName } from "@danielfgray/amux-agent-facts/command-name.ts";
 
-const { basename, join, resolve } = nodePath;
-
 export class WorkspaceParseError extends S.TaggedError<WorkspaceParseError>()(
   "WorkspaceParseError",
   {
@@ -694,9 +692,11 @@ export function applyWorkspaceCommand(
   current: WorkspaceSnapshot,
   command: Command | RuntimeCommand,
   request: WorkspaceCommandContext,
+  path: Effect.Success<typeof nodePath>,
   plugins?: { readonly reducers: ReadonlyMap<string, PluginWorkspaceReducer> },
   algorithm: TilingAlgorithm = defaultTilingAlgorithm,
 ): WorkspaceMutation {
+  const { basename, join, resolve } = path;
   const next = structuredClone(current);
   const context: WorkspaceCommandContext = {
     ...request,

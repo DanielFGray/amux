@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { command } from "./commands.ts";
 import { Effect, Cause, Path, Schema as S } from "effect";
 import {
-  applyWorkspaceCommand,
+  applyWorkspaceCommand as applyWorkspaceCommandWithPath,
   markSessionExited,
   parseWorkspace,
   parseWorkspaceCommandContext,
@@ -11,6 +11,7 @@ import {
   workspaceFromSession,
   workspaceSession,
 } from "./workspace.ts";
+import { nodePath } from "./effect/node-path.ts";
 import { layoutPanes, makeLayout, DescriptorSchema } from "./layout.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
@@ -21,6 +22,16 @@ import { editorDaemonCommands } from "../../editor/src/daemon.ts";
 import { niriTilingAlgorithm } from "../../plugin-niri/src/niri.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
+const path = run(nodePath);
+const applyWorkspaceCommand = (
+  ...args: [
+    Parameters<typeof applyWorkspaceCommandWithPath>[0],
+    Parameters<typeof applyWorkspaceCommandWithPath>[1],
+    Parameters<typeof applyWorkspaceCommandWithPath>[2],
+    Parameters<typeof applyWorkspaceCommandWithPath>[4]?,
+    Parameters<typeof applyWorkspaceCommandWithPath>[5]?,
+  ]
+) => applyWorkspaceCommandWithPath(args[0], args[1], args[2], path, args[3], args[4]);
 const runFailMessage = <E>(effect: Effect.Effect<unknown, E>): string => {
   const exit = Effect.runSyncExit(effect);
   if (exit._tag === "Success") throw new Error("expected effect to fail");

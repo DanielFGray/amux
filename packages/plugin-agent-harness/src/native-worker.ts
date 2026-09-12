@@ -192,7 +192,7 @@ else {
     );
     // Approvals belong to the repository, not to this worktree or this pane, so
     // the store is opened on the project root that every worktree shares.
-    const root = yield* Effect.promise(() => projectRoot(workspace));
+    const root = yield* projectRoot(workspace);
     yield* Effect.gen(function* () {
       const store = yield* ProjectStore;
       const hooks = makeHarnessHooks();

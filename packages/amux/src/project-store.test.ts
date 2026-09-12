@@ -62,9 +62,10 @@ const refusal = (effect: Effect.Effect<unknown>) =>
   );
 
 test("a project's slug is stable for a root and distinct between roots", () => {
-  expect(projectSlug("/home/dan/build/amux")).toBe(projectSlug("/home/dan/build/amux/"));
-  expect(projectSlug("/home/dan/build/amux")).not.toBe(projectSlug("/home/other/amux"));
-  expect(projectSlug("/home/dan/build/amux")).toStartWith("amux-");
+  const slug = (root: string) => Effect.runSync(projectSlug(root));
+  expect(slug("/home/dan/build/amux")).toBe(slug("/home/dan/build/amux/"));
+  expect(slug("/home/dan/build/amux")).not.toBe(slug("/home/other/amux"));
+  expect(slug("/home/dan/build/amux")).toStartWith("amux-");
 });
 
 testEffect("a fresh database migrates, records its own root, and starts with no rules", () =>

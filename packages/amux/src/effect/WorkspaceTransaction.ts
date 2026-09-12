@@ -34,6 +34,7 @@ import {
   type PluginWorkspaceAction,
   type PluginWorkspaceReducer,
 } from "../workspace.ts";
+import { nodePath } from "./node-path.ts";
 import { COMMAND_META, isCoreCommand, type Command, type RuntimeCommand } from "../commands.ts";
 import type { PaneEntry } from "../read-model.ts";
 import type { PersistedSession, SessionState } from "../session.ts";
@@ -297,10 +298,12 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                 algorithmContext,
               );
 
+              const path = yield* nodePath;
               const mutation = applyWorkspaceCommand(
                 cur.workspace,
                 value,
                 context,
+                path,
                 plugins.pipe(Option.getOrElse(() => ({ reducers: new Map() }))),
                 algorithm,
               );

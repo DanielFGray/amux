@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import { command } from "../commands.ts";
 import {
-  applyWorkspaceCommand,
+  applyWorkspaceCommand as applyWorkspaceCommandWithPath,
   markSessionExited,
   workspaceFromSession,
 } from "../workspace.ts";
+import { nodePath } from "../effect/node-path.ts";
 import type { SessionState } from "../session.ts";
 import { KeyInvocation } from "../key-invocation.ts";
 import { NO_REALM, Realm } from "../realm.ts";
@@ -18,6 +19,16 @@ import {
 import type { LinkedProcessPluginInfo } from "./registry.ts";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): A => Effect.runSync(effect);
+const path = run(nodePath);
+const applyWorkspaceCommand = (
+  ...args: [
+    Parameters<typeof applyWorkspaceCommandWithPath>[0],
+    Parameters<typeof applyWorkspaceCommandWithPath>[1],
+    Parameters<typeof applyWorkspaceCommandWithPath>[2],
+    Parameters<typeof applyWorkspaceCommandWithPath>[4]?,
+    Parameters<typeof applyWorkspaceCommandWithPath>[5]?,
+  ]
+) => applyWorkspaceCommandWithPath(args[0], args[1], args[2], path, args[3], args[4]);
 
 const base = (): SessionState => ({
   version: 1,

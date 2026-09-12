@@ -15,7 +15,6 @@
  */
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { homedir } from "node:os";
 import * as FileSystem from "effect/FileSystem";
 import { Clock, Context, Effect, Layer, Schema as S, type Scope } from "effect";
 import * as Path from "effect/Path";
@@ -118,17 +117,18 @@ export const layer = (
  * digest is what makes it unique, because two checkouts of `api` under
  * different parents are different projects.
  */
-export function projectSlug(root: string): string {
-  const path = nodePath;
-  const absolute = path.resolve(root);
-  const digest = createHash("sha256").update(absolute).digest("hex").slice(0, 8);
-  return `${path.basename(absolute) || "root"}-${digest}`;
-}
+export const projectSlug = (root: string): Effect.Effect<string> =>
+  Effect.gen(function* () {
+    const path = yield* nodePath;
+    const absolute = path.resolve(root);
+    const digest = createHash("sha256").update(absolute).digest("hex").slice(0, 8);
+    return `${path.basename(absolute) || "root"}-${digest}`;
+  });
 
 export const projectDirectory = (root: string): Effect.Effect<string, never, Path.Path> =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
-    return path.join(yield* stateRoot(), "amux", "projects", projectSlug(root));
+    return path.join(yield* stateRoot(), "amux", "projects", yield* projectSlug(root));
   });
 
 /**
@@ -374,36 +374,6 @@ const attempt = <A>(operation: string, body: () => A) =>
     try: body,
     catch: (error) => new ProjectStoreError({ operation, message: errorMessage(error) }),
   });
-
-/**
- * Sync project root for reducer paths that cannot await `projectRoot`.
- * Same git-common-dir rule as `git.ts` — worktrees collapse to one project.
- */
-export function projectRootSync(dir: string): string {
-  const path = nodePath;
-  const absolute = path.resolve(dir);
-  const result = Bun.spawnSync(
-    ["git", "-C", absolute, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  if (result.exitCode === 0) {
-    const common = result.stdout.toString().trim();
-    if (common.length > 0) return path.dirname(common);
-  }
-  return absolute;
-}
-
-const stateRootSync = (): string => {
-  // @effect-diagnostics-next-line processEnv:off -- sync mirror of session.stateRoot for reducers
-  const xdg = process.env.XDG_STATE_HOME;
-  if (xdg && xdg.length > 0) return xdg;
-  // @effect-diagnostics-next-line processEnv:off
-  const home = process.env.HOME;
-  return nodePath.join(home && home.length > 0 ? home : homedir(), ".local", "state");
-};
-
-export const projectDatabasePathSync = (root: string): string =>
-  nodePath.join(stateRootSync(), "amux", "projects", projectSlug(root), "amux.db");
 
 /** Short label for a picker row — first user-ish text blob in the JSON export. */
 export function conversationPreview(conversation: string, maxLen = 72): string {
