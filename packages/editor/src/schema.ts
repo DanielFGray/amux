@@ -286,6 +286,11 @@ export type EditorState = {
    * display column first — neovim `w_set_curswant`.
    */
   readonly setCurswant: boolean;
+  /**
+   * When true, refuse buffer mutations with E21 — vim `'nomodifiable'`.
+   * Motions, search, visual, and yank still run. Cite: ep-7e80cc decision 5.
+   */
+  readonly nomodifiable: boolean;
   readonly command: string;
   readonly file: string | null;
   /** Daemon OpenDocumentStore generation; null for scratch / offline buffers. */

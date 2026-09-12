@@ -390,6 +390,7 @@ const applySet = (state: EditorState, arg: string): EditorState => {
   }
   const parts = raw.split(/\s+/);
   let options = { ...state.options };
+  let nomodifiable = state.nomodifiable;
   let searchHighlight = state.searchHighlight;
   const messages: string[] = [];
 
@@ -403,6 +404,8 @@ const applySet = (state: EditorState, arg: string): EditorState => {
         messages.push(options.number ? "number" : "nonumber");
       else if (name === "hlsearch" || name === "hls")
         messages.push(options.hlsearch ? "hlsearch" : "nohlsearch");
+      else if (name === "modifiable" || name === "ma")
+        messages.push(state.nomodifiable ? "nomodifiable" : "modifiable");
       else return { ...state, message: `Unknown option: ${name}` };
       continue;
     }
@@ -427,12 +430,16 @@ const applySet = (state: EditorState, arg: string): EditorState => {
     else if (name === "hlsearch" || name === "hls") {
       options = { ...options, hlsearch: !off };
       if (off) searchHighlight = false;
+    } else if (name === "modifiable" || name === "ma") {
+      // `:set nomodifiable` → off; `:set modifiable` → on. Stored inverted on state.
+      nomodifiable = off;
     } else return { ...state, message: `Unknown option: ${part}` };
   }
 
   return {
     ...state,
     options,
+    nomodifiable,
     searchHighlight,
     message: messages.length > 0 ? messages.join("  ") : null,
   };

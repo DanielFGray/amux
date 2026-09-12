@@ -1980,3 +1980,111 @@ test("beginSubstitute under CUA prefills :%s/ and runs :s", () => {
   expect(text(done)).toBe("x bar x");
   expect(done.mode).toBe("insert");
 });
+
+const nomod = (state: EditorState): EditorState => ({ ...state, nomodifiable: true });
+
+test(":set nomodifiable and :set modifiable toggle the flag", () => {
+  const start = seedBuffer(initialEditor(), bufferFromLines(["abc"]), { row: 0, col: 0 });
+  const off = typeKeys(start, [":", ..."set nomodifiable".split(""), "return"]);
+  expect(off.nomodifiable).toBe(true);
+  const on = typeKeys(off, [":", ..."set modifiable".split(""), "return"]);
+  expect(on.nomodifiable).toBe(false);
+});
+
+test("nomodifiable refuses mutating operators and keeps the buffer", () => {
+  const base = nomod(
+    seedBuffer(initialEditor(), bufferFromLines(["hello world", "second"]), {
+      row: 0,
+      col: 1,
+    }),
+  );
+  const cases: string[][] = [
+    ["x"],
+    ["X"],
+    ["d", "d"],
+    ["d", "w"],
+    ["c", "w"],
+    ["C"],
+    ["D"],
+    ["r", "z"],
+    ["R"],
+    ["~"],
+    ["i"],
+    ["a"],
+    ["A"],
+    ["I"],
+    ["o"],
+    ["O"],
+    ["J"],
+    [">", ">"],
+    ["<", "<"],
+    ["=", "="],
+  ];
+  for (const keys of cases) {
+    const next = typeKeys(base, keys);
+    expect(text(next)).toBe("hello world\nsecond");
+    expect(next.message).toBe("E21: Cannot make changes, 'modifiable' is off");
+    expect(next.mode).toBe("normal");
+    expect(next.nomodifiable).toBe(true);
+  }
+
+  // p/P need a filled register; yank while modifiable, then lock and paste.
+  const withYank = typeKeys(
+    seedBuffer(initialEditor(), bufferFromLines(["hello world"]), { row: 0, col: 0 }),
+    ["y", "y"],
+  );
+  const locked = nomod(withYank);
+  for (const keyName of ["p", "P"] as const) {
+    const next = typeKeys(locked, [keyName]);
+    expect(text(next)).toBe("hello world");
+    expect(next.message).toBe("E21: Cannot make changes, 'modifiable' is off");
+  }
+});
+
+test("nomodifiable still allows motions, search, visual, and yank", () => {
+  const start = nomod(
+    seedBuffer(initialEditor(), bufferFromLines(["alpha", "bravo", "charlie"]), {
+      row: 0,
+      col: 0,
+    }),
+  );
+  const moved = typeKeys(start, ["j", "l"]);
+  expect(moved.cursor).toEqual({ row: 1, col: 1 });
+  expect(text(moved)).toBe("alpha\nbravo\ncharlie");
+  expect(moved.message).toBeNull();
+
+  const searched = typeKeys(start, ["/", "c", "h", "a", "return"]);
+  expect(searched.cursor).toEqual({ row: 2, col: 0 });
+  expect(text(searched)).toBe("alpha\nbravo\ncharlie");
+
+  const visual = typeKeys(start, ["v", "l", "l"]);
+  expect(visual.mode).toBe("visual");
+  expect(text(visual)).toBe("alpha\nbravo\ncharlie");
+
+  const yanked = typeKeys(start, ["y", "y"]);
+  expect(text(yanked)).toBe("alpha\nbravo\ncharlie");
+  expect(yanked.message).toContain("yanked");
+  expect(yanked.nomodifiable).toBe(true);
+});
+
+test("nomodifiable refuses visual delete but allows visual yank", () => {
+  const start = nomod(
+    seedBuffer(initialEditor(), bufferFromLines(["abcdef"]), { row: 0, col: 0 }),
+  );
+  const deleted = typeKeys(start, ["v", "l", "l", "d"]);
+  expect(text(deleted)).toBe("abcdef");
+  expect(deleted.message).toBe("E21: Cannot make changes, 'modifiable' is off");
+
+  const yanked = typeKeys(start, ["v", "l", "l", "y"]);
+  expect(text(yanked)).toBe("abcdef");
+  expect(yanked.message).toContain("yanked");
+});
+
+test("nomodifiable refuses :substitute", () => {
+  const start = nomod(
+    seedBuffer(initialEditor(), bufferFromLines(["foo bar"]), { row: 0, col: 0 }),
+  );
+  const next = typeKeys(start, [":", ..."%s/foo/baz/g".split(""), "return"]);
+  expect(text(next)).toBe("foo bar");
+  expect(next.message).toBe("E21: Cannot make changes, 'modifiable' is off");
+});

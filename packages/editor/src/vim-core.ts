@@ -129,6 +129,50 @@ import {
 
 const DEFAULT_VIEWPORT = { top: 0, height: 24 } as const;
 
+/** Cite: vim E21 when `'modifiable'` is off. */
+const NOMODIFIABLE_MSG = "E21: Cannot make changes, 'modifiable' is off";
+
+/**
+ * One gate for `'nomodifiable'`: after a key reduces, drop any transition that
+ * would mutate the buffer, enter insert/replace, or arm a mutating operator.
+ * Yank, motions, search, and visual selection keep their results.
+ */
+function refuseNomodifiable(before: EditorState, after: EditorState): EditorState {
+  if (!before.nomodifiable) return after;
+  if (after.buffer !== before.buffer) {
+    return { ...before, message: NOMODIFIABLE_MSG, request: null };
+  }
+  if (
+    (after.mode === "insert" || after.mode === "replace") &&
+    after.mode !== before.mode
+  ) {
+    return { ...before, message: NOMODIFIABLE_MSG, request: null };
+  }
+  if (after.pending?.kind === "delete" || after.pending?.kind === "change") {
+    return { ...before, message: NOMODIFIABLE_MSG, request: null };
+  }
+  if (after.pendingReplace !== null && before.pendingReplace === null) {
+    return { ...before, message: NOMODIFIABLE_MSG, request: null };
+  }
+  if (after.pendingIndent !== null && before.pendingIndent === null) {
+    return { ...before, message: NOMODIFIABLE_MSG, request: null };
+  }
+  if (after.pendingCase !== null && before.pendingCase === null) {
+    return { ...before, message: NOMODIFIABLE_MSG, request: null };
+  }
+  if (after.pendingEqual !== null && before.pendingEqual === null) {
+    return { ...before, message: NOMODIFIABLE_MSG, request: null };
+  }
+  if (
+    after.pendingSurround !== null &&
+    before.pendingSurround === null &&
+    (after.pendingSurround.mode === "delete" || after.pendingSurround.mode === "change")
+  ) {
+    return { ...before, message: NOMODIFIABLE_MSG, request: null };
+  }
+  return after;
+}
+
 /** An editor with no file: a scratch buffer rooted at the workspace. */
 export function initialEditor(): EditorState {
   const buffer = emptyBuffer();
@@ -140,6 +184,7 @@ export function initialEditor(): EditorState {
     cursor,
     curswant: 0,
     setCurswant: true,
+    nomodifiable: false,
     command: "",
     file: null,
     generation: null,
@@ -191,7 +236,10 @@ export function reduceEditor(
 ): EditorState {
   switch (event._tag) {
     case "key":
-      return settleCascade(state, onKey(state, event.key, commands), commands);
+      return refuseNomodifiable(
+        state,
+        settleCascade(state, onKey(state, event.key, commands), commands),
+      );
     case "scroll":
       return scrollViewport(state, event.delta);
     case "command-complete":
