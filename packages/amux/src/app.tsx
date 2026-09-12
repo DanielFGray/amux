@@ -522,7 +522,7 @@ export function createApp(
     // `commands.run`, exactly as a keybinding would.
     runFiber(
       "command-requests",
-      Stream.runForEach(options.session.commandRequests, ({ id, command: raw, source, pane }) => {
+      Stream.runForEach(options.session.commandRequests, ({ id, command: raw, source, pane, agent }) => {
         const tag = (raw as RuntimeCommand)._tag;
         if (tag === "plugin.reload") {
           const command = raw as {
@@ -561,7 +561,7 @@ export function createApp(
             ),
           );
         return app.commands
-          .run(raw as RuntimeCommand, commandInvocation(source, pane))
+          .run(raw as RuntimeCommand, commandInvocation(source, pane, agent))
           .pipe(
             Effect.map((result) =>
               options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined),
@@ -800,7 +800,7 @@ function buildApp(
         resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash",
       ],
       cwd: spaces.active?.dir ?? process.cwd(),
-      // Attached client's control socket — not the CLI and not an agent tool.
+      // Attached client's control socket — not the CLI.
       source: "socket" as const,
       blockedAgents: spaces.allSessions
         .filter((session) => session.state === ProcessState.Blocked)

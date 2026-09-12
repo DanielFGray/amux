@@ -704,7 +704,7 @@ export function createBindings(
   /**
    * One dispatch: the command body under the keystroke that ran it.
    * Realm comes from {@link opts.withRealm} with a key invocation built from
-   * focus — the same provider {@link Commands.run} uses for socket/CLI/agent.
+   * focus — the same provider {@link Commands.run} uses for socket/CLI.
    */
   function invoke(
     run: CommandSpec["run"],

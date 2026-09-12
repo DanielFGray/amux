@@ -10,8 +10,8 @@ import {
 import { NO_REALM, Realm, paneRealm, realmOf } from "./realm.ts";
 
 /**
- * Commands.run takes an invocation record and is the one place that provides
- * Realm. Key, socket, CLI, and agent each build that record; a realm-reading
+ * Commands.run takes a caller record and is the one place that provides
+ * Realm. Key, socket, and CLI each build that record; a realm-reading
  * command sees the same pane binding regardless of which source delivered it.
  */
 
@@ -24,15 +24,18 @@ test("each invocation source reaches Commands.run with the right record", () => 
       }),
   });
 
-  for (const source of ["key", "socket", "cli", "agent"] as const) {
+  for (const source of ["key", "socket", "cli"] as const) {
     Effect.runSync(commands.run(command("pane.zoom"), commandInvocation(source, "s1:p1")));
   }
+  Effect.runSync(
+    commands.run(command("pane.zoom"), commandInvocation("cli", "s1:p1", "agent-1")),
+  );
 
   expect(seen).toEqual([
     { source: "key", pane: "s1:p1" },
     { source: "socket", pane: "s1:p1" },
     { source: "cli", pane: "s1:p1" },
-    { source: "agent", pane: "s1:p1" },
+    { source: "cli", pane: "s1:p1", agent: "agent-1" },
   ]);
 });
 
@@ -56,11 +59,10 @@ test("a realm-reading command sees the same pane binding over socket as over a k
   Effect.runSync(commands.run(command("pane.zoom"), commandInvocation("key", paneId)));
   Effect.runSync(commands.run(command("pane.zoom"), commandInvocation("socket", paneId)));
   Effect.runSync(commands.run(command("pane.zoom"), commandInvocation("cli", paneId)));
-  Effect.runSync(commands.run(command("pane.zoom"), commandInvocation("agent", paneId)));
   // No pane → NO_REALM.
   Effect.runSync(commands.run(command("pane.zoom"), commandInvocation("socket")));
 
-  expect(seen).toEqual(["pane-three", "pane-three", "pane-three", "pane-three", undefined]);
+  expect(seen).toEqual(["pane-three", "pane-three", "pane-three", undefined]);
 });
 
 test("withRealm is the same provider Commands.run uses", () => {

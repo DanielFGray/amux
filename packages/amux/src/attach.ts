@@ -116,9 +116,9 @@ export interface AttachClientContract {
     {
       readonly id: string;
       readonly command: JsonValue;
-      readonly source: "socket" | "cli" | "agent";
+      readonly source: "socket" | "cli";
       readonly pane?: string;
-      readonly originSession?: string;
+      readonly agent?: string;
     },
     never,
     never
@@ -185,9 +185,9 @@ class AttachClientConnection {
   private readonly _commandQ: Queue.Queue<{
     readonly id: string;
     readonly command: JsonValue;
-    readonly source: "socket" | "cli" | "agent";
+    readonly source: "socket" | "cli";
     readonly pane?: string;
-    readonly originSession?: string;
+    readonly agent?: string;
   }>;
   private _onClose: ((error: Error | null) => void) | undefined;
   private _onError: ((message: string) => void) | undefined;
@@ -205,9 +205,9 @@ class AttachClientConnection {
       readonly command: Queue.Queue<{
         readonly id: string;
         readonly command: JsonValue;
-        readonly source: "socket" | "cli" | "agent";
+        readonly source: "socket" | "cli";
         readonly pane?: string;
-        readonly originSession?: string;
+        readonly agent?: string;
       }>;
     },
   ) {
@@ -277,9 +277,9 @@ class AttachClientConnection {
     {
       readonly id: string;
       readonly command: JsonValue;
-      readonly source: "socket" | "cli" | "agent";
+      readonly source: "socket" | "cli";
       readonly pane?: string;
-      readonly originSession?: string;
+      readonly agent?: string;
     },
     never,
     never
@@ -439,13 +439,13 @@ class AttachClientConnection {
       }),
       Match.tag("command.request", (frame) => {
         const request =
-          frame.pane !== undefined && frame.originSession !== undefined
+          frame.pane !== undefined && frame.agent !== undefined
             ? {
                 id: frame.id,
                 command: frame.command,
                 source: frame.source,
                 pane: frame.pane,
-                originSession: frame.originSession,
+                agent: frame.agent,
               }
             : frame.pane !== undefined
               ? {
@@ -454,12 +454,12 @@ class AttachClientConnection {
                   source: frame.source,
                   pane: frame.pane,
                 }
-              : frame.originSession !== undefined
+              : frame.agent !== undefined
                 ? {
                     id: frame.id,
                     command: frame.command,
                     source: frame.source,
-                    originSession: frame.originSession,
+                    agent: frame.agent,
                   }
                 : { id: frame.id, command: frame.command, source: frame.source };
         Queue.offerUnsafe(this._commandQ, request);
@@ -535,9 +535,9 @@ const makeScoped = (
     const commandQ = yield* Queue.unbounded<{
       readonly id: string;
       readonly command: JsonValue;
-      readonly source: "socket" | "cli" | "agent";
+      readonly source: "socket" | "cli";
       readonly pane?: string;
-      readonly originSession?: string;
+      readonly agent?: string;
     }>();
     return yield* captureRootRuntime.pipe(
       Effect.flatMap((runtime) => {

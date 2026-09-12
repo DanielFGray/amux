@@ -1366,14 +1366,19 @@ export const COMMAND_META = Object.fromEntries(
 ) as Record<CommandTag, CommandMeta>;
 
 /**
- * Who asked {@link Commands.run} to run, and which pane's realm it should see.
+ * Who called: the surface that asked, and the calling session/pane when known.
  *
  * Every surface builds this record explicitly — key dispatch from focus,
- * socket/CLI/agent from the batch context the daemon routes — so Realm has
+ * socket/CLI from the batch context the daemon routes — so Realm has
  * exactly one provider ({@link Commands.run}) and cannot drift per path.
+ * Names the caller, not the target; Realm still keys off `pane` until a
+ * later task moves it to the resolved target.
  */
 export const CommandInvocationSchema = S.Struct({
-  source: S.Literals(["key", "socket", "cli", "agent"]),
+  source: S.Literals(["key", "socket", "cli"]),
+  /** Calling session id (`AMUX_AGENT_ID` / `context.agent`), when there is one. */
+  agent: S.optional(S.String),
+  /** Calling pane id, when the call came from inside one. */
   pane: S.optional(S.String),
 });
 export type CommandInvocation = typeof CommandInvocationSchema.Type;
@@ -1383,11 +1388,17 @@ export class CurrentInvocation extends Context.Service<CurrentInvocation, Comman
   "amux/CommandInvocation",
 ) {}
 
-/** Build an invocation record; omit `pane` when the call has no pane. */
+/** Build a caller record; omit `pane`/`agent` when the call has none. */
 export const commandInvocation = (
   source: CommandInvocation["source"],
   pane?: string,
-): CommandInvocation => (pane === undefined ? { source } : { source, pane });
+  agent?: string,
+): CommandInvocation => {
+  if (pane !== undefined && agent !== undefined) return { source, pane, agent };
+  if (pane !== undefined) return { source, pane };
+  if (agent !== undefined) return { source, agent };
+  return { source };
+};
 
 /**
  * What each verb actually does.

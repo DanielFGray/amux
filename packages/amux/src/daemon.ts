@@ -1371,30 +1371,30 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
 
-  /** Invocation record for a client-routed command — source must be on the batch. */
+  /** Caller record for a client-routed command — source must be on the batch. */
   const clientInvocation = (
     ctx: {
-      readonly source?: "socket" | "cli" | "agent";
+      readonly source?: "socket" | "cli";
       readonly pane?: string;
-      readonly originSession?: string;
+      readonly agent?: string;
     },
     paneOverride?: string,
   ): Effect.Effect<
     {
-      readonly source: "socket" | "cli" | "agent";
+      readonly source: "socket" | "cli";
       readonly pane?: string;
-      readonly originSession?: string;
+      readonly agent?: string;
     },
     ControlError
   > => {
     if (ctx.source === undefined)
-      return controlFail("client-routed command needs context.source (socket | cli | agent)");
+      return controlFail("client-routed command needs context.source (socket | cli)");
     const pane = paneOverride ?? ctx.pane;
-    const originSession = ctx.originSession;
-    if (pane !== undefined && originSession !== undefined)
-      return Effect.succeed({ source: ctx.source, pane, originSession });
+    const agent = ctx.agent;
+    if (pane !== undefined && agent !== undefined)
+      return Effect.succeed({ source: ctx.source, pane, agent });
     if (pane !== undefined) return Effect.succeed({ source: ctx.source, pane });
-    if (originSession !== undefined) return Effect.succeed({ source: ctx.source, originSession });
+    if (agent !== undefined) return Effect.succeed({ source: ctx.source, agent });
     return Effect.succeed({ source: ctx.source });
   };
 

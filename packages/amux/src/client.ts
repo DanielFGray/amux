@@ -63,9 +63,9 @@ export interface SessionClientContract extends DaemonSession {
     {
       readonly id: string;
       readonly command: JsonValue;
-      readonly source: "socket" | "cli" | "agent";
+      readonly source: "socket" | "cli";
       readonly pane?: string;
-      readonly originSession?: string;
+      readonly agent?: string;
     },
     never,
     never

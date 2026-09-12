@@ -81,7 +81,7 @@ test("a forwarded command retains the session that caused it", () => {
     _tag: "command.request",
     id: "reload-1",
     command: { _tag: "plugin.reload" },
-    originSession: "agent-1",
+    agent: "agent-1",
     source: "cli",
   });
   expect(decodeAttachFrames(encoded).frames).toEqual([
@@ -89,7 +89,7 @@ test("a forwarded command retains the session that caused it", () => {
       _tag: "command.request",
       id: "reload-1",
       command: { _tag: "plugin.reload" },
-      originSession: "agent-1",
+      agent: "agent-1",
       source: "cli",
     },
   ]);

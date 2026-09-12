@@ -240,15 +240,15 @@ const Pong = S.TaggedStruct("pong", {
 const CommandRequest = S.TaggedStruct("command.request", {
   id: S.String,
   command: JsonValueSchema,
-  /** Session whose process caused this request, when there is one. */
-  originSession: S.optional(S.String),
   /**
-   * Who asked: socket client, CLI, or agent. Required so the receiving client
-   * can build a {@link CommandInvocation} without guessing. Key dispatch never
+   * Who asked: socket client or CLI. Required so the receiving client can
+   * build a {@link CommandInvocation} without guessing. Key dispatch never
    * crosses this wire.
    */
-  source: S.Literals(["socket", "cli", "agent"]),
-  /** Pane whose realm {@link Commands.run} should provide, when known. */
+  source: S.Literals(["socket", "cli"]),
+  /** Calling session id, when the batch context carried one. */
+  agent: S.optional(S.String),
+  /** Calling pane id, when known — Realm still keys off this today. */
   pane: S.optional(S.String),
 });
 

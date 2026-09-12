@@ -143,13 +143,15 @@ export interface WorkspaceCommandContext {
   /** The pane the caller runs in, when the call came from inside one. */
   pane?: string;
   /**
-   * Who issued this batch: the interactive CLI, a control-socket client, or an
-   * agent tool. Forwarded onto client `command.request` frames so
-   * {@link Commands.run} builds the same invocation record the key path does.
+   * Who issued this batch: the interactive CLI or a control-socket client.
+   * Forwarded onto client `command.request` frames so {@link Commands.run}
+   * builds the same invocation record the key path does.
    */
-  source?: "socket" | "cli" | "agent";
+  source?: "socket" | "cli";
   /** The daemon-owned session that caused a command from its process. This is
-   * only attribution for durable feedback, never a workspace target. */
+   * only attribution for durable feedback, never a workspace target. Distinct
+   * from {@link agent} (`AMUX_AGENT_ID`): this is `AMUX_SESSION`, which is the
+   * agent id in a component worker and the mux session name in the TUI. */
   originSession?: string;
   /** True when a background caller asked for no focus to move. The mutation
    *  applies its structure but leaves the workspace's focus and activation
@@ -225,7 +227,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
   cwd: NonEmptyString,
   agent: S.optional(NonEmptyString),
   pane: S.optional(NonEmptyString),
-  source: S.optional(S.Literals(["socket", "cli", "agent"])),
+  source: S.optional(S.Literals(["socket", "cli"])),
   originSession: S.optional(NonEmptyString),
   noFocus: S.optional(S.Boolean),
   blockedAgents: S.optional(S.Array(NonEmptyString)),

@@ -211,7 +211,7 @@ export interface AttachHostService {
    * the daemon runs no plugins, so this is the only way a plugin verb can
    * execute at all. `client`/`connection` name a specific attachment (see
    * `DaemonModel.attachedConnections`); the caller decides who to ask.
-   * `source`/`pane` travel on the wire so the client builds the same
+   * The caller record travels on the wire so the client builds the same
    * invocation record key dispatch would.
    */
   readonly runOnClient: (
@@ -219,9 +219,9 @@ export interface AttachHostService {
     connection: string,
     command: JsonValue,
     invocation: {
-      readonly source: "socket" | "cli" | "agent";
+      readonly source: "socket" | "cli";
       readonly pane?: string;
-      readonly originSession?: string;
+      readonly agent?: string;
     },
   ) => Effect.Effect<JsonValue | undefined, AttachHostCommandError>;
   /**
@@ -448,9 +448,9 @@ export const makeAttachHost = <
       connection: string,
       command: JsonValue,
       invocation: {
-        readonly source: "socket" | "cli" | "agent";
+        readonly source: "socket" | "cli";
         readonly pane?: string;
-        readonly originSession?: string;
+        readonly agent?: string;
       },
     ): Effect.Effect<JsonValue | undefined, AttachHostCommandError> =>
       Effect.gen(function* () {
@@ -458,14 +458,14 @@ export const makeAttachHost = <
         const deferred = yield* Deferred.make<JsonValue | undefined, string>();
         pendingCommands.set(id, deferred);
         const frame =
-          invocation.pane !== undefined && invocation.originSession !== undefined
+          invocation.pane !== undefined && invocation.agent !== undefined
             ? {
                 _tag: "command.request" as const,
                 id,
                 command,
                 source: invocation.source,
                 pane: invocation.pane,
-                originSession: invocation.originSession,
+                agent: invocation.agent,
               }
             : invocation.pane !== undefined
               ? {
@@ -475,13 +475,13 @@ export const makeAttachHost = <
                   source: invocation.source,
                   pane: invocation.pane,
                 }
-              : invocation.originSession !== undefined
+              : invocation.agent !== undefined
                 ? {
                     _tag: "command.request" as const,
                     id,
                     command,
                     source: invocation.source,
-                    originSession: invocation.originSession,
+                    agent: invocation.agent,
                   }
                 : {
                     _tag: "command.request" as const,
