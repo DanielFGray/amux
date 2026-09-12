@@ -10,27 +10,24 @@ import * as FileSystem from "effect/FileSystem";
  * the XDG data dir, so a plugin's own dependencies resolve normally without
  * polluting or being polluted by anything else on the machine.
  *
- * Every function below takes the store dir as an optional trailing
- * parameter defaulting here, so tests can point at a scratch directory
- * instead of the real store.
+ * Paths are Effects, not module-level constants: reading XDG at import time
+ * was an Effect.runSync side effect. Callers that need the default store
+ * yield it; every function below also takes an optional store dir so tests
+ * can point at a scratch directory instead of the real store.
  */
-export const PLUGIN_STORE_DIR = join(
-  Effect.runSync(
-    EffectConfig.string("XDG_DATA_HOME").pipe(
-      EffectConfig.orElse(() =>
-        EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "share"))),
-      ),
-      EffectConfig.withDefault(join(".", ".local", "share")),
-    ),
-    // Resolved once at module load (before any Effect runtime exists), the
-    // same way config.ts resolves the config dir.
+const xdgDataHome = EffectConfig.string("XDG_DATA_HOME").pipe(
+  EffectConfig.orElse(() =>
+    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "share"))),
   ),
-  "amux",
-  "plugins",
+  EffectConfig.withDefault(join(".", ".local", "share")),
 );
 
+export const pluginStoreDir: Effect.Effect<string> = Effect.map(xdgDataHome, (home) =>
+  join(home, "amux", "plugins"),
+).pipe(Effect.orDie);
+
 /** The store subdirectory for a package: `@scope/name` flattens to `scope__name`. */
-export function pluginDirFor(packageName: string, storeDir: string = PLUGIN_STORE_DIR): string {
+export function pluginDirFor(packageName: string, storeDir: string): string {
   return join(storeDir, packageName.replace(/^@/, "").replace("/", "__"));
 }
 
@@ -87,11 +84,12 @@ const decodeManifest = (path: string, value: unknown) =>
 /** The installed package's own manifest: version plus its `engines.amux` range, if any. */
 export const readInstalledManifest = (
   packageName: string,
-  storeDir: string = PLUGIN_STORE_DIR,
+  storeDir?: string,
 ): Effect.Effect<{ version: string; enginesAmux?: string }, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const root = storeDir ?? (yield* pluginStoreDir);
     const path = join(
-      pluginDirFor(packageName, storeDir),
+      pluginDirFor(packageName, root),
       "node_modules",
       packageName,
       "package.json",
@@ -110,11 +108,12 @@ export const readInstalledManifest = (
 /** Whether the package explicitly publishes the privileged daemon entrypoint. */
 export const installedHasDaemonExport = (
   packageName: string,
-  storeDir: string = PLUGIN_STORE_DIR,
+  storeDir?: string,
 ): Effect.Effect<boolean, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const root = storeDir ?? (yield* pluginStoreDir);
     const path = join(
-      pluginDirFor(packageName, storeDir),
+      pluginDirFor(packageName, root),
       "node_modules",
       packageName,
       "package.json",
@@ -130,12 +129,13 @@ export const installedHasDaemonExport = (
 /** The entry file of an installed package, resolved the way an import would. */
 export const resolveInstalledEntry = (
   packageName: string,
-  storeDir: string = PLUGIN_STORE_DIR,
+  storeDir?: string,
   subpath: string = ".",
 ): Effect.Effect<string, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const root = storeDir ?? (yield* pluginStoreDir);
     const fs = yield* FileSystem.FileSystem;
-    const dir = pluginDirFor(packageName, storeDir);
+    const dir = pluginDirFor(packageName, root);
     yield* fs
       .stat(dir)
       .pipe(Effect.mapError(() => `plugin '${packageName}' is not installed (no store directory)`));
@@ -157,11 +157,12 @@ export const resolveInstalledEntry = (
  */
 export const installPackage = (
   ref: PackageRef,
-  storeDir: string = PLUGIN_STORE_DIR,
+  storeDir?: string,
 ): Effect.Effect<{ version: string }, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const root = storeDir ?? (yield* pluginStoreDir);
     const fs = yield* FileSystem.FileSystem;
-    const dir = pluginDirFor(ref.name, storeDir);
+    const dir = pluginDirFor(ref.name, root);
     yield* fs
       .makeDirectory(dir, { recursive: true })
       .pipe(Effect.mapError((error) => `cannot create ${dir}: ${String(error)}`));
@@ -195,19 +196,20 @@ export const installPackage = (
     });
     if (exitCode !== 0)
       return yield* Effect.fail(`cannot install '${target}': bun exited ${exitCode}`);
-    const manifest = yield* readInstalledManifest(ref.name, storeDir);
+    const manifest = yield* readInstalledManifest(ref.name, root);
     return { version: manifest.version };
   });
 
 /** Drop a plugin's whole store directory. A missing one is already gone. */
 export const uninstallPackage = (
   packageName: string,
-  storeDir: string = PLUGIN_STORE_DIR,
+  storeDir?: string,
 ): Effect.Effect<void, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const root = storeDir ?? (yield* pluginStoreDir);
     const fs = yield* FileSystem.FileSystem;
     yield* fs
-      .remove(pluginDirFor(packageName, storeDir), { recursive: true, force: true })
+      .remove(pluginDirFor(packageName, root), { recursive: true, force: true })
       .pipe(Effect.mapError((error) => `cannot remove '${packageName}': ${String(error)}`));
   });
 
@@ -217,12 +219,13 @@ export interface InstalledPlugin {
 }
 
 /** Every store directory whose install completed (manifest present and readable). */
-export const listInstalled = Effect.fnUntraced(function* (storeDir: string = PLUGIN_STORE_DIR) {
+export const listInstalled = Effect.fnUntraced(function* (storeDir?: string) {
+  const root = storeDir ?? (yield* pluginStoreDir);
   const fs = yield* FileSystem.FileSystem;
-  const entries = yield* fs.readDirectory(storeDir).pipe(Effect.orElseSucceed(() => []));
+  const entries = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []));
   const found: InstalledPlugin[] = [];
   for (const entry of [...entries].sort()) {
-    const path = join(storeDir, entry, "package.json");
+    const path = join(root, entry, "package.json");
     const dependencies = yield* readJsonFile(path).pipe(
       Effect.map(
         (value) => (value as { dependencies?: Record<string, string> }).dependencies ?? {},
@@ -230,7 +233,7 @@ export const listInstalled = Effect.fnUntraced(function* (storeDir: string = PLU
       Effect.orElseSucceed(() => ({})),
     );
     for (const name of Object.keys(dependencies).sort()) {
-      const manifest = yield* readInstalledManifest(name, storeDir).pipe(
+      const manifest = yield* readInstalledManifest(name, root).pipe(
         Effect.orElseSucceed(() => null),
       );
       if (manifest) found.push({ name, version: manifest.version });

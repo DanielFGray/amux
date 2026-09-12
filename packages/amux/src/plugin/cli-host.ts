@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { dirname } from "node:path";
-import { CONFIG_PATH, loadConfig } from "../config.ts";
+import { configPath, loadConfig } from "../config.ts";
 import { createPluginContributions } from "./contributions.ts";
 import { createPluginHost, type RefusedPlugin } from "./host.ts";
 import { loadCliPluginsFromConfig } from "./loader.ts";
@@ -54,7 +54,7 @@ export const dispatchCliCommand = (
         (_owner, adapter) => harnessAdapters.register(adapter),
       );
       const host = yield* createPluginHost({ contributions });
-      const { refused } = yield* loadCliPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
+      const { refused } = yield* loadCliPluginsFromConfig(config, host, dirname(yield* configPath), [
         definePlugin({
           id: "amux.registry.cli-commands",
           provide: [CliCommandsTag],

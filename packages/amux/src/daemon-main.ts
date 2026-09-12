@@ -43,18 +43,16 @@ export function runDaemonMain(id?: string): void {
 if (import.meta.main) {
   // The e2e lifecycle test uses this barrier to signal after spawn but before
   // the daemon creates its lease. Normal daemon launches never set it.
-  const barrier = Option.getOrUndefined(
-    Effect.runSync(Config.option(Config.string("AMUX_DAEMON_START_BARRIER"))),
+  // Read through Config inside the Effect — not Effect.runSync at module load.
+  const boot = Effect.gen(function* () {
+    const barrier = Option.getOrUndefined(yield* Config.option(Config.string("AMUX_DAEMON_START_BARRIER")));
+    if (barrier) {
+      while (!(yield* Effect.promise(() => Bun.file(barrier).exists()))) {
+        yield* Effect.promise(() => Bun.sleep(10));
+      }
+    }
+  }).pipe(
+    Effect.andThen(Effect.sync(() => runDaemonMain(process.argv[2]))),
   );
-  if (barrier) {
-    Effect.runPromise(
-      Effect.gen(function* () {
-        while (!(yield* Effect.promise(() => Bun.file(barrier).exists()))) {
-          yield* Effect.promise(() => Bun.sleep(10));
-        }
-      }),
-    ).then(() => runDaemonMain(process.argv[2]));
-  } else {
-    runDaemonMain(process.argv[2]);
-  }
+  Effect.runPromise(boot);
 }

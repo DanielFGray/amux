@@ -34,6 +34,7 @@ import { startDaemon, type SessionDaemonService } from "./daemon.ts";
 import {
   managedPluginEntryPath,
   managedPluginSpecPath,
+  pluginScratchDir,
   scratchEntryPath,
 } from "./plugin/scratch.ts";
 import { errorMessage } from "./error-message.ts";
@@ -337,8 +338,9 @@ testEffect(
       );
 
       // Scratch file may linger under the process-wide scratch dir; remove ours.
+      const scratchDir = yield* pluginScratchDir;
       yield* Effect.promise(() =>
-        rm(scratchEntryPath(pluginId), { force: true }).catch(() => undefined),
+        rm(scratchEntryPath(pluginId, scratchDir), { force: true }).catch(() => undefined),
       );
     }),
   60_000,

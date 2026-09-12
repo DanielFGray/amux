@@ -3,7 +3,7 @@ import { BunServices } from "@effect/platform-bun";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
-  CONFIG_PATH,
+  configPath,
   loadConfig,
   pluginSpecKey,
   saveConfig,
@@ -19,7 +19,7 @@ import {
   readInstalledManifest,
   installedHasDaemonExport,
   uninstallPackage,
-  PLUGIN_STORE_DIR,
+  pluginStoreDir,
 } from "./store.ts";
 
 export const PLUGIN_CLI_HELP = [
@@ -38,12 +38,14 @@ export const PLUGIN_CLI_HELP = [
  */
 export function runPluginCli(
   argv: readonly string[],
-  configPath: string = CONFIG_PATH,
-  storeDir: string = PLUGIN_STORE_DIR,
+  configFile?: string,
+  storeDir?: string,
 ): Promise<number> {
   const writeOut = (text: string) => process.stdout.write(text + "\n");
   const writeErr = (text: string) => process.stderr.write(text + "\n");
   const program = Effect.gen(function* () {
+    const resolvedConfig = configFile ?? (yield* configPath);
+    const resolvedStore = storeDir ?? (yield* pluginStoreDir);
     const [verb, arg] = argv;
     if (verb === "-h" || verb === "--help" || arg === "-h" || arg === "--help") {
       writeOut(PLUGIN_CLI_HELP);
@@ -55,7 +57,7 @@ export function runPluginCli(
           writeErr("usage: amux plugin add <spec>");
           return 2;
         }
-        return yield* addPlugin(arg, configPath, storeDir).pipe(
+        return yield* addPlugin(arg, resolvedConfig, resolvedStore).pipe(
           Effect.tap((message) => Effect.sync(() => writeOut(message))),
           Effect.as(0),
           Effect.catch((error) =>
@@ -70,7 +72,7 @@ export function runPluginCli(
           writeErr("usage: amux plugin rm <name>");
           return 2;
         }
-        return yield* removePlugin(arg, configPath, storeDir).pipe(
+        return yield* removePlugin(arg, resolvedConfig, resolvedStore).pipe(
           Effect.tap((message) => Effect.sync(() => writeOut(message))),
           Effect.as(0),
           Effect.catch((error) =>
@@ -85,7 +87,7 @@ export function runPluginCli(
           writeErr("usage: amux plugin ls");
           return 2;
         }
-        return yield* listPlugins(configPath, storeDir).pipe(
+        return yield* listPlugins(resolvedConfig, resolvedStore).pipe(
           Effect.tap((message) => Effect.sync(() => writeOut(message))),
           Effect.as(0),
         );
@@ -94,7 +96,7 @@ export function runPluginCli(
           writeErr("usage: amux plugin upgrade <name>");
           return 2;
         }
-        return yield* upgradePlugin(arg, configPath, storeDir).pipe(
+        return yield* upgradePlugin(arg, resolvedConfig, resolvedStore).pipe(
           Effect.tap((message) => Effect.sync(() => writeOut(message))),
           Effect.as(0),
           Effect.catch((error) =>

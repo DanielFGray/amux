@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- CONFIG_PATH is a filesystem path.
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- configPath is a filesystem path.
 import { dirname } from "node:path";
 import {
   Cause,
@@ -49,7 +49,7 @@ import {
   WorkspaceTransactionPlugins,
   type WorkspaceTransactionResult,
 } from "./effect/WorkspaceTransaction.ts";
-import { CONFIG_PATH, loadConfig, type Config } from "./config.ts";
+import { configPath, loadConfig, type Config } from "./config.ts";
 import { createPluginContributions } from "./plugin/contributions.ts";
 import type { DaemonKernelPhase } from "./daemon-kernel.ts";
 import { startDaemonKernel } from "./daemon-kernel.ts";
@@ -711,7 +711,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
         scope: daemonScope,
         contributions: pluginContributions,
         config,
-        configDirectory: dirname(CONFIG_PATH),
+        configDirectory: dirname(yield* configPath),
         coreEntries: daemonCoreEntries,
         attach: {
           path: paths.attach,

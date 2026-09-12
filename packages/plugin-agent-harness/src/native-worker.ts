@@ -5,7 +5,7 @@ import * as Path from "effect/Path";
 import { Effect, Layer, Match, Option, Ref, Schema as S, Stream } from "effect";
 import { Default as IntegrationDefault, Service as Integration } from "./integration.ts";
 import * as ModelCatalog from "./model-catalog.ts";
-import { CONFIG_DIR, loadConfig } from "@danielfgray/amux/config.ts";
+import { configDir, loadConfig } from "@danielfgray/amux/config.ts";
 import { coerceOption } from "@danielfgray/amux";
 import { AGENT_HARNESS_OPTIONS, parseModelReference, type ApprovalMode } from "./options.ts";
 import { resolveCompactionStrategy } from "./compaction-strategies.ts";
@@ -226,7 +226,7 @@ else {
         const documents = yield* makeDocumentService({ session }).pipe(
           Effect.provide(BunServices.layer),
         );
-        const overrides = yield* loadCatalogOverrides(`${CONFIG_DIR}/amux`).pipe(
+        const overrides = yield* loadCatalogOverrides(`${yield* configDir}/amux`).pipe(
           Effect.provide(BunServices.layer),
           Effect.orElseSucceed(() => ({ languages: {} })),
         );

@@ -79,20 +79,23 @@ export const DEFAULT_CONFIG: Config = {
   permissions: [],
 };
 
-/** `${XDG_CONFIG_HOME:-~/.config}`, resolved once at module load (before any
- *  Effect runtime exists) and read synchronously by render code — nothing
- *  substitutes it via a `ConfigProvider` today. `Effect.runSync` against
- *  `Config.string` still routes the read through Effect's config layer
- *  instead of touching `process.env` directly. */
-export const CONFIG_DIR = Effect.runSync(
-  EffectConfig.string("XDG_CONFIG_HOME").pipe(
-    EffectConfig.orElse(() =>
-      EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
-    ),
-    EffectConfig.withDefault(join(".", ".config")),
+/**
+ * `${XDG_CONFIG_HOME:-~/.config}`. An Effect, not a module-level constant:
+ * reading XDG at import time was an Effect.runSync side effect. Callers that
+ * need the default roots yield them (same shape as process-plugin/paths.ts).
+ */
+const xdgConfigHome = EffectConfig.string("XDG_CONFIG_HOME").pipe(
+  EffectConfig.orElse(() =>
+    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
   ),
+  EffectConfig.withDefault(join(".", ".config")),
 );
-export const CONFIG_PATH = join(CONFIG_DIR, "amux", "config.json");
+
+export const configDir: Effect.Effect<string> = xdgConfigHome.pipe(Effect.orDie);
+
+export const configPath: Effect.Effect<string> = Effect.map(configDir, (dir) =>
+  join(dir, "amux", "config.json"),
+);
 
 const KeysSchema = S.Struct({
   // Optional so a pre-rename file ({ leader: mux-chord }) still decodes;
@@ -213,32 +216,36 @@ const decodePluginEntry = (entry: JsonValue): Option.Option<PluginSpec> => {
 };
 
 export const loadConfig = (
-  path = CONFIG_PATH,
+  path?: string,
 ): Effect.Effect<Config, never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const exists = yield* fs.exists(path);
-    if (!exists) return structuredClone(DEFAULT_CONFIG);
-    const contents = yield* fs.readFileString(path);
-    return decodeConfig(yield* S.decodeEffect(S.fromJsonString(JsonValueSchema))(contents));
-  }).pipe(
-    Effect.catch((error) =>
-      Effect.logWarning(`Ignoring unreadable config at ${path}: ${errorMessage(error)}`).pipe(
-        Effect.as(structuredClone(DEFAULT_CONFIG)),
+    const resolved = path ?? (yield* configPath);
+    return yield* Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const exists = yield* fs.exists(resolved);
+      if (!exists) return structuredClone(DEFAULT_CONFIG);
+      const contents = yield* fs.readFileString(resolved);
+      return decodeConfig(yield* S.decodeEffect(S.fromJsonString(JsonValueSchema))(contents));
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning(`Ignoring unreadable config at ${resolved}: ${errorMessage(error)}`).pipe(
+          Effect.as(structuredClone(DEFAULT_CONFIG)),
+        ),
       ),
-    ),
-  );
+    );
+  });
 
 export const saveConfig = (
   config: Config,
-  path = CONFIG_PATH,
+  path?: string,
 ): Effect.Effect<void, PlatformError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const resolved = path ?? (yield* configPath);
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(dirname(path), { recursive: true });
+    yield* fs.makeDirectory(dirname(resolved), { recursive: true });
     // Config is validated field-by-field on read, by design (see decodeConfig's
     // doc comment) rather than through one derived schema for the whole shape;
     // encoding an already-typed Config has no unknown-shape risk to guard against.
     // @effect-diagnostics-next-line preferSchemaOverJson:off
-    yield* fs.writeFileString(path, JSON.stringify(config, null, 2) + "\n");
+    yield* fs.writeFileString(resolved, JSON.stringify(config, null, 2) + "\n");
   });

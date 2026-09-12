@@ -21,36 +21,41 @@ import { processPluginPathComponent } from "../process-plugin/paths.ts";
  *
  *   $XDG_STATE_HOME/amux/scratch/<stem>.ts
  *   $XDG_STATE_HOME/amux/scratch/<stem>/…
+ *
+ * Paths are Effects, not module-level constants: reading XDG at import time
+ * was an Effect.runSync side effect. Callers that need the default scratch
+ * root yield it.
  */
-const xdgStateHome = Effect.runSync(
-  EffectConfig.string("XDG_STATE_HOME").pipe(
-    EffectConfig.orElse(() =>
-      EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "state"))),
-    ),
-    EffectConfig.withDefault(join(".", ".local", "state")),
+const xdgStateHome = EffectConfig.string("XDG_STATE_HOME").pipe(
+  EffectConfig.orElse(() =>
+    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "state"))),
   ),
+  EffectConfig.withDefault(join(".", ".local", "state")),
 );
 
-export const PLUGIN_SCRATCH_DIR = join(xdgStateHome, "amux", "scratch");
+export const pluginScratchDir: Effect.Effect<string> = Effect.map(xdgStateHome, (home) =>
+  join(home, "amux", "scratch"),
+).pipe(Effect.orDie);
 
 /** Filesystem stem for a scratch plugin id (same encoding as process plugins). */
 export const scratchStem = (id: string): string => processPluginPathComponent(id);
 
-export const scratchEntryPath = (id: string, scratchDir: string = PLUGIN_SCRATCH_DIR): string =>
+export const scratchEntryPath = (id: string, scratchDir: string): string =>
   join(scratchDir, `${scratchStem(id)}.ts`);
 
 /** Write source to the scratch entry. Does not import or activate. */
 export const materializeScratch = (
   id: string,
   source: string,
-  scratchDir: string = PLUGIN_SCRATCH_DIR,
+  scratchDir?: string,
 ): Effect.Effect<URL, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    const dir = scratchDir ?? (yield* pluginScratchDir);
     const fs = yield* FileSystem.FileSystem;
     yield* fs
-      .makeDirectory(scratchDir, { recursive: true })
+      .makeDirectory(dir, { recursive: true })
       .pipe(Effect.mapError((error) => `cannot create scratch dir: ${String(error)}`));
-    const entry = scratchEntryPath(id, scratchDir);
+    const entry = scratchEntryPath(id, dir);
     yield* fs
       .writeFileString(entry, source)
       .pipe(Effect.mapError((error) => `cannot write scratch '${id}': ${String(error)}`));
@@ -115,10 +120,11 @@ export const evalScratch = (
   reloader: PluginReloader,
   id: string,
   source: string,
-  scratchDir: string = PLUGIN_SCRATCH_DIR,
+  scratchDir?: string,
 ): Effect.Effect<PluginEntry, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const entryUrl = yield* materializeScratch(id, source, scratchDir);
+    const dir = scratchDir ?? (yield* pluginScratchDir);
+    const entryUrl = yield* materializeScratch(id, source, dir);
     if (reloader.reloadable().includes(id)) {
       yield* reloader.reload(id, { disk: true }).pipe(
         Effect.mapError(

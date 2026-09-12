@@ -126,7 +126,7 @@ export {
   promoteScratch,
   sendSelectionScratchSource,
   sendTopBufferToPane,
-  PLUGIN_SCRATCH_DIR,
+  pluginScratchDir,
   scratchEntryPath,
   scratchEntryFilePath,
   managedPluginSpecPath,

@@ -1,8 +1,9 @@
 /** @effect-diagnostics *:skip-file -- runs before any Effect runtime exists;
  *  see the comment below. */
 /**
- * `[test].preload` — runs before any test file imports config.ts, whose
- * CONFIG_DIR/CONFIG_PATH resolve from XDG_CONFIG_HOME once at module load.
+ * `[test].preload` — sets XDG_CONFIG_HOME before any test file runs so
+ * `configDir` / `configPath` Effects (and `loadConfig()`) resolve against an
+ * isolated temp tree rather than the developer's real ~/.config/amux.
  *
  * Without this, every test process (and every CLI subprocess a test spawns,
  * which inherits process.env) reads the developer's real

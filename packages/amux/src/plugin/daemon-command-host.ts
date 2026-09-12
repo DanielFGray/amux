@@ -2,7 +2,7 @@ import { Effect, Logger } from "effect";
 import { BunFileSystem } from "@effect/platform-bun";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- pure path computation, not I/O.
 import { dirname } from "node:path";
-import { CONFIG_PATH, loadConfig } from "../config.ts";
+import { configPath, loadConfig } from "../config.ts";
 import { createPluginContributions } from "./contributions.ts";
 import { createPluginHost } from "./host.ts";
 import { loadDaemonPluginsFromConfig } from "./loader.ts";
@@ -26,7 +26,7 @@ export const daemonCommandRegistrations = (): Promise<readonly DaemonCommandRegi
           table.add(owner, registration.tag, registration),
       );
       const host = yield* createPluginHost({ contributions });
-      yield* loadDaemonPluginsFromConfig(config, host, dirname(CONFIG_PATH), [
+      yield* loadDaemonPluginsFromConfig(config, host, dirname(yield* configPath), [
         definePlugin({
           id: "amux.registry.daemon-commands",
           provide: [DaemonCommandsTag],

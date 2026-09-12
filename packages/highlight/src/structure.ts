@@ -14,8 +14,12 @@
  * Internally tree-sitter points use UTF-8 byte columns within each line.
  */
 import { createRequire } from "node:module";
+// Path.Path-service adoption is a repo-wide policy decision tracked separately;
+// this module only needs join/dirname for wasm paths, not an Effect Path service
+// resolved at import time.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import { dirname, join } from "node:path";
 import { Effect } from "effect";
-import * as Path from "effect/Path";
 import * as Http from "effect/unstable/http";
 import { getDataPaths } from "@opentui/core";
 import { Language, Parser, type Node, type Tree } from "web-tree-sitter";
@@ -47,9 +51,6 @@ export type StructureTree = {
 };
 
 const require = createRequire(import.meta.url);
-
-/** Resolved once at module load — Path.layer is pure/sync, no finalizer. */
-const _path: Path.Path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
 
 /**
  * Filetype → grammar wasm stem. `typescriptreact` needs `tsx` — OpenTUI's
@@ -85,7 +86,7 @@ let initPromise: Promise<void> | null = null;
 let parser: Parser | null = null;
 
 const languagesDir = (): string =>
-  _path.join(getDataPaths().globalDataPath, "tree-sitter", "languages");
+  join(getDataPaths().globalDataPath, "tree-sitter", "languages");
 
 export const grammarForFiletype = (filetype: string): string => {
   if (Object.hasOwn(GRAMMAR_BY_FILETYPE, filetype)) {
@@ -95,8 +96,8 @@ export const grammarForFiletype = (filetype: string): string => {
 };
 
 const resolveRuntimeWasm = (): Promise<string> => {
-  const pkg = _path.dirname(require.resolve("web-tree-sitter/package.json"));
-  const wasmPath = _path.join(pkg, "tree-sitter.wasm");
+  const pkg = dirname(require.resolve("web-tree-sitter/package.json"));
+  const wasmPath = join(pkg, "tree-sitter.wasm");
   return Bun.file(wasmPath)
     .exists()
     .then((ok) => {
@@ -108,8 +109,8 @@ const resolveRuntimeWasm = (): Promise<string> => {
 const resolveBundledGrammarWasm = (grammar: string): Promise<string | null> => {
   if (grammar !== "javascript" && grammar !== "typescript") return Promise.resolve(null);
   try {
-    const coreRoot = _path.dirname(require.resolve("@opentui/core/package.json"));
-    const wasmPath = _path.join(coreRoot, "assets", grammar, `tree-sitter-${grammar}.wasm`);
+    const coreRoot = dirname(require.resolve("@opentui/core/package.json"));
+    const wasmPath = join(coreRoot, "assets", grammar, `tree-sitter-${grammar}.wasm`);
     return Bun.file(wasmPath)
       .exists()
       .then((ok) => (ok ? wasmPath : null));
@@ -119,7 +120,7 @@ const resolveBundledGrammarWasm = (grammar: string): Promise<string | null> => {
 };
 
 const resolveCachedGrammarWasm = (grammar: string): Promise<string | null> => {
-  const wasmPath = _path.join(languagesDir(), `tree-sitter-${grammar}.wasm`);
+  const wasmPath = join(languagesDir(), `tree-sitter-${grammar}.wasm`);
   return Bun.file(wasmPath)
     .exists()
     .then((ok) => (ok ? wasmPath : null));
@@ -135,7 +136,7 @@ const downloadGrammarWasm = (grammar: string): Promise<string | null> => {
   const url = GRAMMAR_DOWNLOAD_URL[grammar as keyof typeof GRAMMAR_DOWNLOAD_URL];
   const dir = languagesDir();
   Bun.spawnSync(["mkdir", "-p", dir]);
-  const dest = _path.join(dir, `tree-sitter-${grammar}.wasm`);
+  const dest = join(dir, `tree-sitter-${grammar}.wasm`);
   return Effect.runPromise(
     Effect.gen(function* () {
       const response = yield* Http.HttpClient.get(url);

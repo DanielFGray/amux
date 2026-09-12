@@ -7,7 +7,7 @@ import type { PluginDefinition } from "./types.ts";
 import type { PluginHost, RefusedPlugin } from "./host.ts";
 import { hotImport, resolveExportsSubpath } from "./hot.ts";
 import { checkPluginCompat } from "./compat.ts";
-import { PLUGIN_STORE_DIR, resolveInstalledEntry } from "./store.ts";
+import { pluginStoreDir, resolveInstalledEntry } from "./store.ts";
 import { lastGoodStoreLayer, LastGoodStoreTag, restoreLastGood } from "./last-good.ts";
 
 /**
@@ -55,9 +55,10 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
-  storeDir: string = PLUGIN_STORE_DIR,
+  storeDir?: string,
   entrypoint: string = ".",
 ) {
+  const resolvedStore = storeDir ?? (yield* pluginStoreDir);
   const entries: PluginEntry[] = [];
   const enabled: PluginDefinition[] = [];
   const path = yield* Path.Path;
@@ -91,7 +92,7 @@ const loadPluginsFromConfigEffect = Effect.fnUntraced(function* (
     const key = pluginSpecKey(spec);
     const source =
       "package" in spec
-        ? yield* resolveInstalledEntry(spec.package, storeDir, entrypoint).pipe(
+        ? yield* resolveInstalledEntry(spec.package, resolvedStore, entrypoint).pipe(
             Effect.map((entry): SourceResolution => ({ _tag: "found", url: pathToFileURL(entry) })),
             Effect.tapError((error) =>
               Effect.logWarning(`Could not load plugin '${key}': ${error}`),
@@ -144,7 +145,7 @@ export const loadDaemonPluginsFromConfig = (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
-  storeDir: string = PLUGIN_STORE_DIR,
+  storeDir?: string,
 ) =>
   loadPluginsFromConfigEffect(config, host, configDir, coreEntries, storeDir, "./daemon").pipe(
     Effect.provide(BunServices.layer),
@@ -158,7 +159,7 @@ export const loadCliPluginsFromConfig = (
   host: PluginHost,
   configDir: string,
   coreEntries: readonly PluginDefinition[] = [],
-  storeDir: string = PLUGIN_STORE_DIR,
+  storeDir?: string,
 ) =>
   loadPluginsFromConfigEffect(config, host, configDir, coreEntries, storeDir, "./cli").pipe(
     Effect.provide(BunServices.layer),

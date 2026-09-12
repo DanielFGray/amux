@@ -57,7 +57,7 @@ import {
 } from "./commands.ts";
 import { BunFileSystem } from "@effect/platform-bun";
 import {
-  CONFIG_PATH,
+  configPath,
   pluginSpecKey,
   saveConfig as saveConfigEffect,
   type Config,
@@ -466,7 +466,7 @@ export function createApp(
         const loaded = yield* loadPluginsFromConfig(
           options.config,
           pluginHost,
-          options.configDir ?? dirname(CONFIG_PATH),
+          options.configDir ?? dirname(yield* configPath),
           [...app.registryEntries, ...app.coreEntries],
         );
         pluginEntries = [...app.pluginEntries, ...loaded.entries];
@@ -477,7 +477,7 @@ export function createApp(
         if (pluginRuntime.remountLayouts) {
           yield* Effect.promise(() => pluginRuntime.remountLayouts!());
         }
-        const configDir = options.configDir ?? dirname(CONFIG_PATH);
+        const configDir = options.configDir ?? dirname(yield* configPath);
         const lastGood = yield* LastGoodStoreTag.pipe(
           Effect.provide(
             lastGoodStoreLayer(join(configDir, ".amux", "plugin-last-good.json")).pipe(
@@ -1928,11 +1928,13 @@ function buildApp(
         const reloader = pluginRuntime.reloader;
         if (!reloader)
           return Effect.fail(new CommandError({ message: "plugin runtime is unavailable" }));
-        const configDir = appOptions.configDir ?? dirname(CONFIG_PATH);
-        return promoteScratch(reloader, plugin, {
-          config: configState(),
-          configDir,
-          configPath: join(configDir, "config.json"),
+        return Effect.gen(function* () {
+          const configDir = appOptions.configDir ?? dirname(yield* configPath);
+          return yield* promoteScratch(reloader, plugin, {
+            config: configState(),
+            configDir,
+            configPath: join(configDir, "config.json"),
+          });
         }).pipe(
           Effect.provide(BunFileSystem.layer),
           Effect.tap((result) => Effect.sync(() => setConfigState(result.config))),

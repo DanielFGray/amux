@@ -1,7 +1,7 @@
 import { Effect, Option } from "effect";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { definePlugin, type PluginDefinition } from "@danielfgray/amux";
-import { CONFIG_DIR } from "@danielfgray/amux/config.ts";
+import { configDir } from "@danielfgray/amux/config.ts";
 import { optionalEnvVar } from "@danielfgray/amux/session.ts";
 import { catalogWithOverrides, loadCatalogOverrides } from "./catalog.ts";
 import { DocumentService, makeDocumentService } from "./document.ts";
@@ -25,7 +25,7 @@ export const lspPlugin: PluginDefinition = definePlugin({
       );
       ctx.provide(DocumentService, documents);
 
-      const overrides = yield* loadCatalogOverrides(`${CONFIG_DIR}/amux`).pipe(
+      const overrides = yield* loadCatalogOverrides(`${yield* configDir}/amux`).pipe(
         Effect.provide(BunServices.layer),
         Effect.orElseSucceed(() => ({ languages: {} })),
       );

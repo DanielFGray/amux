@@ -10,7 +10,7 @@ import {
   listInstalled,
   parsePackageSpec,
   pluginDirFor,
-  PLUGIN_STORE_DIR,
+  pluginStoreDir,
   readInstalledManifest,
   resolveInstalledEntry,
   uninstallPackage,
@@ -19,9 +19,12 @@ import { testEffect } from "../test-effect.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
 
-test("the store lives under the XDG data dir", () => {
-  expect(PLUGIN_STORE_DIR.endsWith(join("amux", "plugins"))).toBe(true);
-});
+testEffect("the store lives under the XDG data dir", () =>
+  Effect.gen(function* () {
+    const store = yield* pluginStoreDir;
+    expect(store.endsWith(join("amux", "plugins"))).toBe(true);
+  }),
+);
 
 test("parsePackageSpec splits names and pins, scoped included", () => {
   expect(parsePackageSpec("example-plugin")).toEqual(
@@ -49,12 +52,15 @@ test("parsePackageSpec rejects paths and malformed specs", () => {
   expect(parsePackageSpec("!!!")).toEqual(Option.none());
 });
 
-test("pluginDirFor flattens scoped names and stays inside the store", () => {
-  expect(pluginDirFor("example-plugin")).toBe(join(PLUGIN_STORE_DIR, "example-plugin"));
-  expect(pluginDirFor("@scope/example-plugin")).toBe(
-    join(PLUGIN_STORE_DIR, "scope__example-plugin"),
-  );
-});
+testEffect("pluginDirFor flattens scoped names and stays inside the store", () =>
+  Effect.gen(function* () {
+    const store = yield* pluginStoreDir;
+    expect(pluginDirFor("example-plugin", store)).toBe(join(store, "example-plugin"));
+    expect(pluginDirFor("@scope/example-plugin", store)).toBe(
+      join(store, "scope__example-plugin"),
+    );
+  }),
+);
 
 const tempDir: Effect.Effect<string, PlatformError, FileSystem.FileSystem | Scope.Scope> =
   Effect.gen(function* () {
