@@ -113,7 +113,13 @@ export interface AttachClientContract {
   readonly workspace: Stream.Stream<WorkspaceSnapshot, never, never>;
   /** Plugin verbs the daemon is asking this client to run — see `respondCommand`. */
   readonly commandRequests: Stream.Stream<
-    { readonly id: string; readonly command: JsonValue; readonly originSession?: string },
+    {
+      readonly id: string;
+      readonly command: JsonValue;
+      readonly source: "socket" | "cli" | "agent";
+      readonly pane?: string;
+      readonly originSession?: string;
+    },
     never,
     never
   >;
@@ -179,6 +185,8 @@ class AttachClientConnection {
   private readonly _commandQ: Queue.Queue<{
     readonly id: string;
     readonly command: JsonValue;
+    readonly source: "socket" | "cli" | "agent";
+    readonly pane?: string;
     readonly originSession?: string;
   }>;
   private _onClose: ((error: Error | null) => void) | undefined;
@@ -197,6 +205,8 @@ class AttachClientConnection {
       readonly command: Queue.Queue<{
         readonly id: string;
         readonly command: JsonValue;
+        readonly source: "socket" | "cli" | "agent";
+        readonly pane?: string;
         readonly originSession?: string;
       }>;
     },
@@ -264,7 +274,13 @@ class AttachClientConnection {
   /** Commands the daemon is asking this client to run — a plugin verb the
    *  daemon cannot execute itself. Each one wants a matching {@link respondCommand}. */
   get commandRequests(): Stream.Stream<
-    { readonly id: string; readonly command: JsonValue; readonly originSession?: string },
+    {
+      readonly id: string;
+      readonly command: JsonValue;
+      readonly source: "socket" | "cli" | "agent";
+      readonly pane?: string;
+      readonly originSession?: string;
+    },
     never,
     never
   > {
@@ -422,7 +438,31 @@ class AttachClientConnection {
         this._onError?.(frame.message);
       }),
       Match.tag("command.request", (frame) => {
-        Queue.offerUnsafe(this._commandQ, { id: frame.id, command: frame.command });
+        const request =
+          frame.pane !== undefined && frame.originSession !== undefined
+            ? {
+                id: frame.id,
+                command: frame.command,
+                source: frame.source,
+                pane: frame.pane,
+                originSession: frame.originSession,
+              }
+            : frame.pane !== undefined
+              ? {
+                  id: frame.id,
+                  command: frame.command,
+                  source: frame.source,
+                  pane: frame.pane,
+                }
+              : frame.originSession !== undefined
+                ? {
+                    id: frame.id,
+                    command: frame.command,
+                    source: frame.source,
+                    originSession: frame.originSession,
+                  }
+                : { id: frame.id, command: frame.command, source: frame.source };
+        Queue.offerUnsafe(this._commandQ, request);
       }),
       Match.tag("workspace", (frame) => {
         try {
@@ -495,6 +535,8 @@ const makeScoped = (
     const commandQ = yield* Queue.unbounded<{
       readonly id: string;
       readonly command: JsonValue;
+      readonly source: "socket" | "cli" | "agent";
+      readonly pane?: string;
       readonly originSession?: string;
     }>();
     return yield* captureRootRuntime.pipe(

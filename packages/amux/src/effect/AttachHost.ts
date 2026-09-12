@@ -211,11 +211,18 @@ export interface AttachHostService {
    * the daemon runs no plugins, so this is the only way a plugin verb can
    * execute at all. `client`/`connection` name a specific attachment (see
    * `DaemonModel.attachedConnections`); the caller decides who to ask.
+   * `source`/`pane` travel on the wire so the client builds the same
+   * invocation record key dispatch would.
    */
   readonly runOnClient: (
     client: string,
     connection: string,
     command: JsonValue,
+    invocation: {
+      readonly source: "socket" | "cli" | "agent";
+      readonly pane?: string;
+      readonly originSession?: string;
+    },
   ) => Effect.Effect<JsonValue | undefined, AttachHostCommandError>;
   /**
    * The server's paste buffer stack. Owned here because it belongs to the
@@ -440,12 +447,49 @@ export const makeAttachHost = <
       client: string,
       connection: string,
       command: JsonValue,
+      invocation: {
+        readonly source: "socket" | "cli" | "agent";
+        readonly pane?: string;
+        readonly originSession?: string;
+      },
     ): Effect.Effect<JsonValue | undefined, AttachHostCommandError> =>
       Effect.gen(function* () {
         const id = randomUUID();
         const deferred = yield* Deferred.make<JsonValue | undefined, string>();
         pendingCommands.set(id, deferred);
-        yield* hub.publishTo(client, connection, { _tag: "command.request", id, command });
+        const frame =
+          invocation.pane !== undefined && invocation.originSession !== undefined
+            ? {
+                _tag: "command.request" as const,
+                id,
+                command,
+                source: invocation.source,
+                pane: invocation.pane,
+                originSession: invocation.originSession,
+              }
+            : invocation.pane !== undefined
+              ? {
+                  _tag: "command.request" as const,
+                  id,
+                  command,
+                  source: invocation.source,
+                  pane: invocation.pane,
+                }
+              : invocation.originSession !== undefined
+                ? {
+                    _tag: "command.request" as const,
+                    id,
+                    command,
+                    source: invocation.source,
+                    originSession: invocation.originSession,
+                  }
+                : {
+                    _tag: "command.request" as const,
+                    id,
+                    command,
+                    source: invocation.source,
+                  };
+        yield* hub.publishTo(client, connection, frame);
         return yield* Deferred.await(deferred).pipe(
           Effect.timeoutOrElse({
             duration: "10 seconds",

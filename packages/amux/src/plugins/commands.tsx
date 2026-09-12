@@ -11,7 +11,7 @@ import {
 import { CONTEXT_PRIORITY, type ContextSpec } from "../key-context.ts";
 import { OverlayTag } from "../plugin/overlay.ts";
 import { CommandsChromeTag } from "../plugin/chrome.ts";
-import { command } from "../commands.ts";
+import { command, CurrentInvocation } from "../commands.ts";
 import { loadProcessPluginBindingSpecs } from "../process-plugin/index.ts";
 import { paletteOverlayKeys } from "./commands/keys.ts";
 import { errorOverlayKeys, inspectOverlayKeys, promptOverlayKeys } from "./commands/overlay-keys.ts";
@@ -86,9 +86,21 @@ export default definePlugin({
 
       const processBindings = yield* loadProcessPluginBindingSpecs({
         runAction: (plugin, action) =>
-          commands.run(command("process-plugin.action.invoke", { plugin, action })),
+          Effect.gen(function* () {
+            const inv = yield* CurrentInvocation;
+            yield* commands.run(
+              command("process-plugin.action.invoke", { plugin, action }),
+              inv,
+            );
+          }),
         runPane: (plugin, entrypoint) =>
-          commands.run(command("process-plugin.pane.open", { plugin, entrypoint })),
+          Effect.gen(function* () {
+            const inv = yield* CurrentInvocation;
+            yield* commands.run(
+              command("process-plugin.pane.open", { plugin, entrypoint }),
+              inv,
+            );
+          }),
       }).pipe(Effect.provide(BunServices.layer));
 
       yield* Effect.forEach(panels, (entry) => slots.register(entry));

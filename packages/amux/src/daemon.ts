@@ -1371,6 +1371,33 @@ export const makeDaemonService = Effect.fnUntraced(function* (
 
   const controlFail = (message: string) => Effect.fail(new ControlError({ message }));
 
+  /** Invocation record for a client-routed command — source must be on the batch. */
+  const clientInvocation = (
+    ctx: {
+      readonly source?: "socket" | "cli" | "agent";
+      readonly pane?: string;
+      readonly originSession?: string;
+    },
+    paneOverride?: string,
+  ): Effect.Effect<
+    {
+      readonly source: "socket" | "cli" | "agent";
+      readonly pane?: string;
+      readonly originSession?: string;
+    },
+    ControlError
+  > => {
+    if (ctx.source === undefined)
+      return controlFail("client-routed command needs context.source (socket | cli | agent)");
+    const pane = paneOverride ?? ctx.pane;
+    const originSession = ctx.originSession;
+    if (pane !== undefined && originSession !== undefined)
+      return Effect.succeed({ source: ctx.source, pane, originSession });
+    if (pane !== undefined) return Effect.succeed({ source: ctx.source, pane });
+    if (originSession !== undefined) return Effect.succeed({ source: ctx.source, originSession });
+    return Effect.succeed({ source: ctx.source });
+  };
+
   /**
    * Which session `pane.capture` reads when the daemon can answer alone: the
    * one named directly, or the one a named / calling pane shows. Null means
@@ -1497,7 +1524,15 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       const first = connections[0];
       if (!first) return yield* controlFail(`no client attached, cannot run '${value._tag}'`);
       const host = yield* requireHost;
-      const result = yield* host.runOnClient(first.client, first.connection, value as JsonValue);
+      const cur = yield* model.get;
+      const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
+      const invocation = yield* clientInvocation(ctx);
+      const result = yield* host.runOnClient(
+        first.client,
+        first.connection,
+        value as JsonValue,
+        invocation,
+      );
       return result === undefined ? {} : { result };
     }
     if (!isCoreCommand(value)) return yield* controlFail(`unknown command: ${value._tag}`);
@@ -1555,16 +1590,19 @@ export const makeDaemonService = Effect.fnUntraced(function* (
       const connections = yield* model.attachedConnections;
       const first = connections[0];
       if (!first) return yield* controlFail(`no client attached, cannot run '${command._tag}'`);
+      const cur = yield* model.get;
+      const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
       let routed: JsonValue = command as JsonValue;
+      let pane = ctx.pane;
       if ("current" in command && command.current) {
-        const cur = yield* model.get;
-        const ctx = yield* parseWorkspaceCommandContext(context ?? {}, cur.workspace);
         if (!ctx.pane)
           return yield* controlFail(`command '${command._tag}' --current needs a managed pane`);
         routed = { ...command, current: false, pane: ctx.pane } as JsonValue;
+        pane = ctx.pane;
       }
       const host = yield* requireHost;
-      const result = yield* host.runOnClient(first.client, first.connection, routed);
+      const invocation = yield* clientInvocation(ctx, pane);
+      const result = yield* host.runOnClient(first.client, first.connection, routed, invocation);
       return result === undefined ? {} : { result };
     }
     if (meta.target === "workspace") {

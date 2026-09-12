@@ -46,11 +46,13 @@ import {
   COMMAND_META,
   CommandError,
   command,
+  commandInvocation,
   makeCommands,
   isCoreCommand,
   runDetached,
   type Command,
   type CommandHandlers,
+  type CommandInvocation,
   type CommandTag,
   type CommandResult,
   type RuntimeCommand,
@@ -520,7 +522,7 @@ export function createApp(
     // `commands.run`, exactly as a keybinding would.
     runFiber(
       "command-requests",
-      Stream.runForEach(options.session.commandRequests, ({ id, command: raw }) => {
+      Stream.runForEach(options.session.commandRequests, ({ id, command: raw, source, pane }) => {
         const tag = (raw as RuntimeCommand)._tag;
         if (tag === "plugin.reload") {
           const command = raw as {
@@ -558,14 +560,16 @@ export function createApp(
               `command '${tag}' is a view command, not remotely invocable`,
             ),
           );
-        return app.commands.run(raw as RuntimeCommand).pipe(
-          Effect.map((result) =>
-            options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined),
-          ),
-          Effect.catch((error) =>
-            Effect.sync(() => options.session.respondCommand(id, undefined, errorMessage(error))),
-          ),
-        );
+        return app.commands
+          .run(raw as RuntimeCommand, commandInvocation(source, pane))
+          .pipe(
+            Effect.map((result) =>
+              options.session.respondCommand(id, (result as JsonValue | undefined) ?? undefined),
+            ),
+            Effect.catch((error) =>
+              Effect.sync(() => options.session.respondCommand(id, undefined, errorMessage(error))),
+            ),
+          );
       }),
     );
     return { ...app, pluginHost };
@@ -786,7 +790,7 @@ function buildApp(
   runFiber("workspace-models", runModelProjections(session.models, project));
   const workspaceContext = () => {
     const focused = spaces.activeWindow?.focused;
-    return {
+    const base = {
       size: {
         cols: Math.max(1, paneHost.width),
         rows: Math.max(1, paneHost.height),
@@ -796,13 +800,15 @@ function buildApp(
         resolveOptions(configState().options)["behaviour.shell"] || process.env.SHELL || "bash",
       ],
       cwd: spaces.active?.dir ?? process.cwd(),
-      // So editor.open / agent.new can replace the focused leaf the same way a
-      // shell CLI does via AMUX_PANE_ID. Absent when nothing is focused.
-      ...(focused != null ? { pane: focused.id } : {}),
+      // Attached client's control socket — not the CLI and not an agent tool.
+      source: "socket" as const,
       blockedAgents: spaces.allSessions
         .filter((session) => session.state === ProcessState.Blocked)
         .map((session) => session.id),
     };
+    // So editor.open / agent.new can replace the focused leaf the same way a
+    // shell CLI does via AMUX_PANE_ID. Absent when nothing is focused.
+    return focused != null ? { ...base, pane: focused.id } : base;
   };
 
   const runPanelCommand = <T extends CommandTag>(
@@ -829,7 +835,7 @@ function buildApp(
       value,
       () => runPanelCommand(value, input),
       () =>
-        session.run(value).pipe(
+        session.run(value, workspaceContext()).pipe(
           Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
           Effect.map((result) => result as CommandResult<T>),
         ),
@@ -1173,7 +1179,7 @@ function buildApp(
     } else {
       args.dir = answers[2] || cwd;
     }
-    yield* commands.run(command("space.new", args));
+    yield* commands.run(command("space.new", args), keyInvocation());
   });
 
   const promptRenameSpace = Effect.gen(function* () {
@@ -1181,7 +1187,7 @@ function buildApp(
     if (!space) return;
     const answers = yield* ask("Rename space", [{ label: "Name", value: space.name }]);
     if (!answers) return;
-    yield* commands.run(command("space.rename", { space: space.id, name: answers[0] ?? "" }));
+    yield* commands.run(command("space.rename", { space: space.id, name: answers[0] ?? "" }), keyInvocation());
   });
 
   const promptMovePane = Effect.gen(function* () {
@@ -1200,7 +1206,7 @@ function buildApp(
       (space) => space.id === answers[0] || space.name === answers[0]?.trim(),
     );
     if (!wanted) return yield* new CommandError({ message: "unknown target space" });
-    yield* commands.run(command("pane.move", { space: wanted.id }));
+    yield* commands.run(command("pane.move", { space: wanted.id }), keyInvocation());
   });
 
   const promptRenameWindow = Effect.gen(function* () {
@@ -1223,6 +1229,7 @@ function buildApp(
         window: window.number,
         name: answers[0] ?? "",
       }),
+      keyInvocation(),
     );
   });
 
@@ -1643,7 +1650,7 @@ function buildApp(
         if (values === null) return setPromptRequest(null);
         runDetached(
           "pane.send-keys",
-          commands.run(command("pane.send-keys", { keys: values[0] ?? "" })),
+          commands.run(command("pane.send-keys", { keys: values[0] ?? "" }), keyInvocation()),
           showCommandError,
           rootRuntime,
         );
@@ -1678,7 +1685,7 @@ function buildApp(
     "pane.open-plugin": runCommand,
     "process-plugin.pane.open": runCommand,
     "process-plugin.action.invoke": (value) =>
-      session.run(value).pipe(
+      session.run(value, workspaceContext()).pipe(
         Effect.asVoid,
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
@@ -1896,7 +1903,7 @@ function buildApp(
     // Through the daemon and back, so that every client attached to this
     // workspace reloads — including the one the agent is not looking at.
     "plugin.reload": (value) =>
-      session.run(value).pipe(
+      session.run(value, workspaceContext()).pipe(
         Effect.asVoid,
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
@@ -2024,10 +2031,21 @@ function buildApp(
     "app.quit": () => Effect.sync(shutdown),
   };
 
-  const rawCommands = makeCommands(handlers);
+  const focusedPaneId = (): string | undefined => spaces.activeWindow?.focused?.id;
+
+  const keyInvocation = (): CommandInvocation => commandInvocation("key", focusedPaneId());
+
+  const rawCommands = makeCommands(handlers, {
+    realmForPane: (paneId) => {
+      const host = pluginRuntime.host;
+      if (host === undefined) return NO_REALM;
+      return realmOf(paneRealm(paneId), host.realmContext(paneRealm(paneId)));
+    },
+  });
   const commandsService = scopedRegistry(
     {
       run: rawCommands.run,
+      withRealm: rawCommands.withRealm,
       list: rawCommands.list,
       isWorkspaceCommand: rawCommands.isWorkspaceCommand,
       isRemoteCommand: rawCommands.isRemoteCommand,
@@ -2044,7 +2062,7 @@ function buildApp(
   const commandsProvider = providerRef<CommandsService>(commandsService);
   const commands = commandsProvider.value;
   runProjectedCommand = (value) =>
-    runDetached(value._tag, commands.run(value), showCommandError, rootRuntime);
+    runDetached(value._tag, commands.run(value, keyInvocation()), showCommandError, rootRuntime);
 
   /**
    * One keybinding: a name, the keys that reach it, and the command it invokes
@@ -2073,7 +2091,7 @@ function buildApp(
       group: opts.group ?? meta.group,
       hidden: opts.hidden,
       fixed: opts.fixed,
-      run: commands.run(cmd),
+      run: Effect.suspend(() => commands.run(cmd, keyInvocation())),
     };
   }
 
@@ -2215,6 +2233,7 @@ function buildApp(
             "pane.set-size",
             cells === undefined ? { axis: "cols" } : { axis: "cols", cells },
           ),
+          keyInvocation(),
         );
       }),
     },
@@ -2232,6 +2251,7 @@ function buildApp(
             "pane.set-size",
             cells === undefined ? { axis: "rows" } : { axis: "rows", cells },
           ),
+          keyInvocation(),
         );
       }),
     },
@@ -2426,15 +2446,9 @@ function buildApp(
     onUnhandled,
     onError: showCommandError,
     runtime: rootRuntime,
-    // The focused pane is the realm: a command reaching a pane-scoped service
-    // gets the pane it was typed into. Read per dispatch, never captured —
-    // focus moves between keystrokes.
-    realm: () => {
-      const pane = spaces.activeWindow?.focused?.id;
-      const host = pluginRuntime.host;
-      if (pane === undefined || host === undefined) return NO_REALM;
-      return realmOf(paneRealm(pane), host.realmContext(paneRealm(pane)));
-    },
+    // Focused pane id for the key invocation; Realm comes from commands.withRealm.
+    pane: focusedPaneId,
+    withRealm: (...args) => commands.withRealm(...args),
   });
   // Sticky minimode: after `^S ^W`, bare h/j/|/… keep firing window maps until
   // Escape. Same ChordMatcher API the editor uses for a future sticky `g`.

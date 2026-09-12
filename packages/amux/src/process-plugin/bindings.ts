@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import type { CommandError } from "../commands.ts";
+import type { CommandError, CurrentInvocation } from "../commands.ts";
 import type { CommandSpec } from "../bindings.ts";
 import { getProcessPlugin, listProcessPlugins, type ProcessPluginRoots } from "./registry.ts";
 import type { LinkedProcessPluginInfo } from "./registry.ts";
@@ -12,11 +12,11 @@ export interface ProcessPluginBindingRunners {
   readonly runAction: (
     pluginId: string,
     actionId: string,
-  ) => Effect.Effect<unknown, CommandError>;
+  ) => Effect.Effect<unknown, CommandError, CurrentInvocation>;
   readonly runPane: (
     pluginId: string,
     entrypointId: string,
-  ) => Effect.Effect<unknown, CommandError>;
+  ) => Effect.Effect<unknown, CommandError, CurrentInvocation>;
 }
 
 /** Binding name for one linked action — opaque; args live in `run`. */

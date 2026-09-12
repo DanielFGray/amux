@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Config as EffectConfig, Effect } from "effect";
 import * as FileSystem from "effect/FileSystem";
-import { command, CommandError, type Commands } from "../commands.ts";
+import { command, CommandError, CurrentInvocation, type Commands } from "../commands.ts";
 import { saveConfig, upsertPluginSpec, type Config } from "../config.ts";
 import { hotImport } from "./hot.ts";
 import type { PluginEntry } from "./loader.ts";
@@ -71,10 +71,11 @@ export const materializeScratch = (
 export const sendTopBufferToPane = (
   run: Commands["run"],
   pane?: string,
-): Effect.Effect<void, CommandError> =>
+): Effect.Effect<void, CommandError, CurrentInvocation> =>
   Effect.gen(function* () {
-    if (pane !== undefined) yield* run(command("pane.select", { pane }));
-    yield* run(command("buffer.paste", {}));
+    const inv = yield* CurrentInvocation;
+    if (pane !== undefined) yield* run(command("pane.select", { pane }), inv);
+    yield* run(command("buffer.paste", {}), inv);
   });
 
 /**

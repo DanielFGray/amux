@@ -142,6 +142,12 @@ export interface WorkspaceCommandContext {
   agent?: string;
   /** The pane the caller runs in, when the call came from inside one. */
   pane?: string;
+  /**
+   * Who issued this batch: the interactive CLI, a control-socket client, or an
+   * agent tool. Forwarded onto client `command.request` frames so
+   * {@link Commands.run} builds the same invocation record the key path does.
+   */
+  source?: "socket" | "cli" | "agent";
   /** The daemon-owned session that caused a command from its process. This is
    * only attribution for durable feedback, never a workspace target. */
   originSession?: string;
@@ -219,6 +225,7 @@ export const WorkspaceCommandContextSchema = S.Struct({
   cwd: NonEmptyString,
   agent: S.optional(NonEmptyString),
   pane: S.optional(NonEmptyString),
+  source: S.optional(S.Literals(["socket", "cli", "agent"])),
   originSession: S.optional(NonEmptyString),
   noFocus: S.optional(S.Boolean),
   blockedAgents: S.optional(S.Array(NonEmptyString)),
@@ -1064,12 +1071,18 @@ export function applyWorkspaceCommand(
       if (!target) break;
       // Daemon must resolve argv/env before apply; an unresolved open is a no-op.
       if (command.command === undefined || command.command.length === 0) break;
-      const agent = addSession(target.window.window, resolve(context.cwd, command.cwd?.trim() || "."), {
-        cmd: command.command,
-        ...(command.env !== undefined ? { env: command.env } : {}),
-        ...(command.title !== undefined ? { name: command.title } : {}),
-        ...(command.transient === true ? { transient: true } : {}),
-      });
+      const base = { cmd: command.command };
+      const withEnv =
+        command.env !== undefined ? { ...base, env: command.env } : base;
+      const withTitle =
+        command.title !== undefined ? { ...withEnv, name: command.title } : withEnv;
+      const sessionOpts =
+        command.transient === true ? { ...withTitle, transient: true as const } : withTitle;
+      const agent = addSession(
+        target.window.window,
+        resolve(context.cwd, command.cwd?.trim() || "."),
+        sessionOpts,
+      );
       const paneId = splitAtTarget(command.axis ?? "row", agent, target);
       const placement = command.placement ?? "tiled";
       // Amux Placement only — floating uses setPlacement; docks use setDock.

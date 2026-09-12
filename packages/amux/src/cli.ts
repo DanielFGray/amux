@@ -323,6 +323,7 @@ function main(): Effect.Effect<number> {
       size: { cols: number; rows: number };
       shell: readonly string[];
       cwd: string;
+      source: "cli";
       agent?: string;
       pane?: string;
       originSession?: string;
@@ -422,9 +423,37 @@ function main(): Effect.Effect<number> {
         return 2;
       }
       const { BunFileSystem } = yield* Effect.promise(() => import("@effect/platform-bun"));
-      return yield* controlCall(targetId, (control) =>
-        control.Batch({ values: [{ _tag: sub, ...parsedArgs.parsed }] }),
-      ).pipe(
+      return yield* controlCall(targetId, (control) => {
+        const agent = readEnv("AMUX_AGENT_ID");
+        const pane = readEnv("AMUX_PANE_ID");
+        const originSession = readEnv("AMUX_SESSION");
+        const base = {
+          size: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
+          shell: [readEnv("SHELL") ?? "sh"],
+          cwd: process.cwd(),
+          source: "cli" as const,
+        };
+        const context =
+          agent && pane && originSession
+            ? { ...base, agent, pane, originSession }
+            : agent && pane
+              ? { ...base, agent, pane }
+              : agent && originSession
+                ? { ...base, agent, originSession }
+                : pane && originSession
+                  ? { ...base, pane, originSession }
+                  : agent
+                    ? { ...base, agent }
+                    : pane
+                      ? { ...base, pane }
+                      : originSession
+                        ? { ...base, originSession }
+                        : base;
+        return control.Batch({
+          values: [{ _tag: sub, ...parsedArgs.parsed }],
+          context,
+        });
+      }).pipe(
         Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
         Effect.map(({ outputs }) => {
           const result = outputs[0]?.result;
@@ -530,6 +559,7 @@ function main(): Effect.Effect<number> {
           size: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
           shell: [readEnv("SHELL") ?? "sh"],
           cwd: process.cwd(),
+          source: "cli",
           // The calling pane and its session, when this CLI runs inside one.
           // The daemon resolves --current from these; it never trusts the CLI
           // to have picked a pane.

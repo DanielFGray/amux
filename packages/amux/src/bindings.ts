@@ -12,14 +12,14 @@ import {
 import type { CommandContext, Keymap } from "@opentui/keymap";
 import { reactiveMatcherFromSignal } from "@opentui/keymap/solid";
 import type { KeyStroke } from "./keys.ts";
-import { runDetached, type CommandError } from "./commands.ts";
+import { runDetached, CurrentInvocation, type CommandError, type CommandInvocation, type Commands } from "./commands.ts";
 import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
 import {
   createCountAccumulator,
   KeyInvocation,
   type KeyInvocationValue,
 } from "./key-invocation.ts";
-import { NO_REALM, Realm, type RealmValue } from "./realm.ts";
+import { NO_REALM, Realm } from "./realm.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import {
   createChordMatcher,
@@ -273,11 +273,12 @@ export interface CommandSpec {
    * `KeyInvocation` in the requirement channel is what a command declares to
    * read the keystroke that ran it — the event, and whatever the dispatching
    * context captured ahead of it (a count, a register, a text object).
-   * `Realm` is what it declares to reach services bound for the pane it ran
-   * in. Most commands need neither and stay `Effect<any, CommandError>`:
-   * `never` satisfies any declared requirement, so nothing changes for them.
+   * `Realm` / `CurrentInvocation` are provided by {@link Commands.withRealm}
+   * (same path as {@link Commands.run}) at dispatch. Most commands need none
+   * and stay `Effect<any, CommandError>`: `never` satisfies any declared
+   * requirement, so nothing changes for them.
    */
-  run: Effect.Effect<any, CommandError, KeyInvocation | Realm>;
+  run: Effect.Effect<any, CommandError, KeyInvocation | Realm | CurrentInvocation>;
 }
 
 /**
@@ -498,12 +499,17 @@ export function createBindings(
     /** Ambiguous exact/prefix wait (neovim `'timeoutlen'`). */
     timeoutlenMs?: number;
     /**
-     * The realm a keystroke runs in — the focused pane, normally. A command
-     * that declares {@link Realm} reads *this* pane's services instead of
-     * hunting for the focused one itself. Omit it and every dispatch gets
-     * {@link NO_REALM}, which binds nothing.
+     * Focused pane id for the key invocation record. Read per dispatch —
+     * focus moves between keystrokes. Combined with {@link withRealm} so
+     * {@link Commands.run} is not the only caller of the shared realm
+     * provider: editor context verbs still yield {@link Realm} directly.
      */
-    realm?: () => RealmValue;
+    pane?: () => string | undefined;
+    /**
+     * Provide Realm for a key-dispatched body. Same function {@link Commands.run}
+     * uses — bindings do not resolve realms themselves.
+     */
+    withRealm?: Commands["withRealm"];
   },
 ): Bindings {
   const keymap = createOpenTuiKeymap(renderer);
@@ -586,11 +592,6 @@ export function createBindings(
     }
   };
 
-  const jsonData = (value: unknown): JsonValue | undefined => {
-    const decoded = S.decodeUnknownOption(JsonValueSchema)(value);
-    return decoded._tag === "Some" ? decoded.value : undefined;
-  };
-
   // Ahead of dispatch, so recording a binding can record keys that are
   // themselves bound — including the prefix, which would otherwise arm a
   // sequence instead of being read.
@@ -659,13 +660,15 @@ export function createBindings(
       const chordStroke =
         stroke === prefix ? "<prefix>" : stroke === leader ? "<leader>" : stroke;
       chordEvent = input.event;
-      const editorCount = jsonData(input.getData("count"));
+      // OpenTUI getData is unknown at the I/O boundary — decode here, not via a
+      // helper that would re-accept unknown.
+      const editorCount = S.decodeUnknownOption(JsonValueSchema)(input.getData("count"));
       chordData =
         chordCount.digits() !== ""
           ? { count: chordCount.count() }
-          : editorCount === undefined
-            ? {}
-            : { count: editorCount };
+          : editorCount._tag === "Some"
+            ? { count: editorCount.value }
+            : {};
       const result = chords.push(chordStroke);
       if (result._tag === "matched") {
         resetChordCount();
@@ -699,10 +702,9 @@ export function createBindings(
   });
 
   /**
-   * One dispatch: the command body under the keystroke that ran it and the
-   * realm it ran in. The realm is read here, at dispatch, not captured when
-   * the table was built — which is the whole point, since the focused pane
-   * changes between one keystroke and the next.
+   * One dispatch: the command body under the keystroke that ran it.
+   * Realm comes from {@link opts.withRealm} with a key invocation built from
+   * focus — the same provider {@link Commands.run} uses for socket/CLI/agent.
    */
   function invoke(
     run: CommandSpec["run"],
@@ -711,10 +713,20 @@ export function createBindings(
   ): Effect.Effect<unknown, CommandError> {
     const denied = refuseIfDenied(constraints, commandName);
     if (denied !== null) return Effect.fail(denied);
-    return run.pipe(
-      Effect.provideService(KeyInvocation, invocation),
-      Effect.provideService(Realm, opts.realm?.() ?? NO_REALM),
-    );
+    const body = run.pipe(Effect.provideService(KeyInvocation, invocation));
+    const pane = opts.pane?.();
+    const commandInvocation: CommandInvocation =
+      pane === undefined ? { source: "key" } : { source: "key", pane };
+    // Production always passes Commands.withRealm. The NO_REALM fallback is for
+    // bindings tests that never wire a Commands table.
+    const provide =
+      opts.withRealm ??
+      ((inv, effect) =>
+        effect.pipe(
+          Effect.provideService(CurrentInvocation, inv),
+          Effect.provideService(Realm, NO_REALM),
+        ));
+    return provide(commandInvocation, body);
   }
 
   function layerContent(group: readonly CommandSpec[], keys: Keys) {

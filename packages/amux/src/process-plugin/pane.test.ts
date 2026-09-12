@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
-import { command } from "../commands.ts";
+import { command, commandInvocation, CurrentInvocation } from "../commands.ts";
 import {
   applyWorkspaceCommand as applyWorkspaceCommandWithPath,
   markSessionExited,
@@ -181,7 +181,9 @@ test("processPluginBindingSpecs emits unbound action and pane entries", () => {
   expect(specs[0]?.desc).toBe("Smoke: Ping");
   expect(specs[1]?.desc).toBe("Smoke: Board");
   // Mirrors what dispatch supplies: the keystroke, and the realm it ran in.
-  const withKey = <A, E>(effect: Effect.Effect<A, E, KeyInvocation | Realm>) =>
+  const withKey = <A, E>(
+    effect: Effect.Effect<A, E, KeyInvocation | Realm | CurrentInvocation>,
+  ) =>
     effect.pipe(
       Effect.provideService(KeyInvocation, {
         event: {} as never,
@@ -189,6 +191,7 @@ test("processPluginBindingSpecs emits unbound action and pane entries", () => {
         input: "",
         payload: undefined,
       }),
+      Effect.provideService(CurrentInvocation, commandInvocation("key")),
       Effect.provideService(Realm, NO_REALM),
     );
   Effect.runSync(withKey(specs[0]!.run));

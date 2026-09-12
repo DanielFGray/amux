@@ -1760,7 +1760,12 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
               descriptor: { file: "/note.txt" },
             }),
           ],
-          context: { size: { cols: 80, rows: 24 }, shell: ["sh"], cwd: "/tmp" },
+          context: {
+            size: { cols: 80, rows: 24 },
+            shell: ["sh"],
+            cwd: "/tmp",
+            source: "socket",
+          },
         }),
       ),
       env,
@@ -1768,7 +1773,17 @@ testEffect("pane.capture of a plugin pane returns what the attached client answe
     const pane = (opened.outputs[0]!.result as { pane: string }).pane;
 
     const captured = yield* run(
-      controlCall(daemon.id, (c) => c.Batch({ values: [command("pane.capture", { pane })] })),
+      controlCall(daemon.id, (c) =>
+        c.Batch({
+          values: [command("pane.capture", { pane })],
+          context: {
+            size: { cols: 80, rows: 24 },
+            shell: ["sh"],
+            cwd: "/tmp",
+            source: "socket",
+          },
+        }),
+      ),
       env,
     );
     expect(captured.outputs[0]!.result).toBe("plugin-frame-text");

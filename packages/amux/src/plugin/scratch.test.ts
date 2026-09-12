@@ -14,7 +14,7 @@ import { DEFAULT_CONFIG, loadConfig, type Config } from "../config.ts";
 import { testPluginEnvironment } from "./test-environment.ts";
 import { testEffect } from "../test-effect.ts";
 import { CommandsTag, type CommandRegistration } from "./services.ts";
-import { makeCommands } from "../commands.ts";
+import { commandInvocation, CurrentInvocation, makeCommands } from "../commands.ts";
 import * as FileSystem from "effect/FileSystem";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
@@ -183,7 +183,9 @@ testEffect("sendTopBufferToPane selects the pane then pastes the top buffer", ()
           calls.push("paste");
         }),
     });
-    yield* sendTopBufferToPane(commands.run, "review");
+    yield* sendTopBufferToPane(commands.run, "review").pipe(
+      Effect.provideService(CurrentInvocation, commandInvocation("key")),
+    );
     expect(calls).toEqual(["select:review", "paste"]);
   }),
 );
@@ -197,7 +199,9 @@ testEffect("sendTopBufferToPane pastes into the focused pane when none is named"
           calls.push("paste");
         }),
     });
-    yield* sendTopBufferToPane(commands.run);
+    yield* sendTopBufferToPane(commands.run).pipe(
+      Effect.provideService(CurrentInvocation, commandInvocation("key")),
+    );
     expect(calls).toEqual(["paste"]);
   }),
 );

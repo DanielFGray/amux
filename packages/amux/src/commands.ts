@@ -12,6 +12,7 @@ import {
   WindowListResultSchema,
 } from "./read-model.ts";
 import type { RootRuntimeContext } from "./env.ts";
+import { NO_REALM, Realm, type RealmValue } from "./realm.ts";
 
 /**
  * The commands, as values.
@@ -1249,6 +1250,30 @@ export const COMMAND_META = Object.fromEntries(
 ) as Record<CommandTag, CommandMeta>;
 
 /**
+ * Who asked {@link Commands.run} to run, and which pane's realm it should see.
+ *
+ * Every surface builds this record explicitly — key dispatch from focus,
+ * socket/CLI/agent from the batch context the daemon routes — so Realm has
+ * exactly one provider ({@link Commands.run}) and cannot drift per path.
+ */
+export const CommandInvocationSchema = S.Struct({
+  source: S.Literals(["key", "socket", "cli", "agent"]),
+  pane: S.optional(S.String),
+});
+export type CommandInvocation = typeof CommandInvocationSchema.Type;
+
+/** The invocation {@link Commands.run} is serving — nested handlers may read it. */
+export class CurrentInvocation extends Context.Service<CurrentInvocation, CommandInvocation>()(
+  "amux/CommandInvocation",
+) {}
+
+/** Build an invocation record; omit `pane` when the call has no pane. */
+export const commandInvocation = (
+  source: CommandInvocation["source"],
+  pane?: string,
+): CommandInvocation => (pane === undefined ? { source } : { source, pane });
+
+/**
  * What each verb actually does.
  *
  * Keyed by tag and total over the union, so adding a member to COMMAND_DEFS is
@@ -1256,11 +1281,16 @@ export const COMMAND_META = Object.fromEntries(
  * result values defined in the COMMAND_DEFS table.
  */
 export type CommandHandlers = {
-  readonly [T in CommandTag]: (args: CommandOf<T>) => Effect.Effect<CommandResult<T>, CommandError>;
+  readonly [T in CommandTag]: (
+    args: CommandOf<T>,
+  ) => Effect.Effect<CommandResult<T>, CommandError, Realm | CurrentInvocation>;
 };
 
 export type CommandHandlerTable = Readonly<
-  Record<string, (args: Command) => Effect.Effect<AnyCommandResult, CommandError>>
+  Record<
+    string,
+    (args: Command) => Effect.Effect<AnyCommandResult, CommandError, Realm | CurrentInvocation>
+  >
 >;
 
 /** A command value arriving at runtime under a tag the compiler has never seen
@@ -1295,18 +1325,38 @@ export const RuntimeCommandSchema = S.StructWithRest(S.Struct({ _tag: S.String }
 interface CommandEntry {
   readonly meta: CommandMeta;
   readonly schema: S.Codec<any>;
-  readonly handler: (args: any) => Effect.Effect<unknown, CommandError>;
+  readonly handler: (
+    args: any,
+  ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>;
 }
 
 export interface Commands {
   /** Run a command. Local dispatch, not a round trip: the keymap needs the
    *  effect's synchronous prefix to run in the keypress it was dispatched from.
    *  Arguments are decoded against the registered schema for both core and
-   *  plugin tags. Compile-time totality only covers the core union. */
+   *  plugin tags. Compile-time totality only covers the core union.
+   *
+   *  `invocation` names who asked and which pane's {@link Realm} to provide —
+   *  the one place every surface (key, socket, CLI, agent) goes through. */
   readonly run: {
-    (command: Command): Effect.Effect<AnyCommandResult, CommandError>;
-    (command: RuntimeCommand): Effect.Effect<unknown, CommandError>;
+    (
+      command: Command,
+      invocation: CommandInvocation,
+    ): Effect.Effect<AnyCommandResult, CommandError>;
+    (
+      command: RuntimeCommand,
+      invocation: CommandInvocation,
+    ): Effect.Effect<unknown, CommandError>;
   };
+  /**
+   * Provide {@link Realm} (and {@link CurrentInvocation}) for a key-dispatched
+   * body that is not itself a `run` call — editor context verbs that still
+   * yield Realm directly. Same resolver {@link run} uses; not a second channel.
+   */
+  readonly withRealm: <A, E, R>(
+    invocation: CommandInvocation,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, Exclude<R, Realm | CurrentInvocation>>;
   /** Every verb and what it is — core plus whatever plugins have registered —
    *  for whichever surface is listing them. */
   readonly list: (filter?: { target?: CommandTarget; exposure?: CommandExposure }) => CommandMeta[];
@@ -1331,7 +1381,9 @@ export interface Commands {
     verb: string,
     fields: Fields,
     meta: Meta,
-    handler: (args: S.Struct.Type<Fields>) => Effect.Effect<unknown, CommandError>,
+    handler: (
+      args: S.Struct.Type<Fields>,
+    ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
   ) => () => void;
   /**
    * Claim a full tag — one core never declared but a daemon-resident plugin
@@ -1344,11 +1396,21 @@ export interface Commands {
     tag: string,
     fields: Fields,
     meta: Meta,
-    handler: (args: S.Struct.Type<Fields>) => Effect.Effect<unknown, CommandError>,
+    handler: (
+      args: S.Struct.Type<Fields>,
+    ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
   ) => () => void;
 }
 
-export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): Commands => {
+export type MakeCommandsOptions = {
+  /** Resolve a pane id to the realm bindings that pane published. */
+  readonly realmForPane?: (paneId: string) => RealmValue;
+};
+
+export const makeCommands = (
+  handlers: CommandHandlers | CommandHandlerTable,
+  options: MakeCommandsOptions = {},
+): Commands => {
   const entries = new Map<string, CommandEntry>(
     COMMAND_DEFS.map((def) => [
       def.tag,
@@ -1364,11 +1426,29 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
 
   const metaFor = (tag: string): CommandMeta | undefined => entries.get(tag)?.meta;
 
+  const realmOfInvocation = (invocation: CommandInvocation): RealmValue => {
+    if (invocation.pane === undefined || options.realmForPane === undefined) return NO_REALM;
+    return options.realmForPane(invocation.pane);
+  };
+
+  const withRealm = <A, E, R>(
+    invocation: CommandInvocation,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, Exclude<R, Realm | CurrentInvocation>> =>
+    // provideService drops the service from R; the assertion names the two we add.
+    // @effect-diagnostics-next-line unsafeEffectTypeAssertion:off
+    effect.pipe(
+      Effect.provideService(CurrentInvocation, invocation),
+      Effect.provideService(Realm, realmOfInvocation(invocation)),
+    ) as Effect.Effect<A, E, Exclude<R, Realm | CurrentInvocation>>;
+
   const claim = (
     tag: string,
     fields: S.Struct.Fields,
     meta: Meta,
-    handler: (args: any) => Effect.Effect<unknown, CommandError>,
+    handler: (
+      args: any,
+    ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
   ): (() => void) => {
     if (metaFor(tag)) throw new Error(`command already registered: ${tag}`);
     const schema = S.TaggedStruct(tag, fields).annotate({
@@ -1398,7 +1478,7 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
   const registerFullCommand: Commands["registerFullCommand"] = (tag, fields, meta, handler) =>
     claim(tag, fields, meta, handler);
 
-  const run = ((command: RuntimeCommand) =>
+  const run = ((command: RuntimeCommand, invocation: CommandInvocation) =>
     // Suspended, because a caller builds the effect once — a binding's `run` is
     // built when the table is built — and the handler has to read the workspace
     // at the moment it runs, not at the moment it was named.
@@ -1406,14 +1486,17 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
       const entry = entries.get(command._tag);
       if (!entry)
         return Effect.fail(new CommandError({ message: `unknown command: ${command._tag}` }));
-      return S.decodeEffect(entry.schema)(command).pipe(
-        Effect.mapError(
-          (error) =>
-            new CommandError({
-              message: `${command._tag}: ${formatSchemaIssue(error.issue)}`,
-            }),
+      return withRealm(
+        invocation,
+        S.decodeEffect(entry.schema)(command).pipe(
+          Effect.mapError(
+            (error) =>
+              new CommandError({
+                message: `${command._tag}: ${formatSchemaIssue(error.issue)}`,
+              }),
+          ),
+          Effect.flatMap(entry.handler),
         ),
-        Effect.flatMap(entry.handler),
       );
     })) as Commands["run"];
 
@@ -1428,6 +1511,7 @@ export const makeCommands = (handlers: CommandHandlers | CommandHandlerTable): C
 
   return {
     run,
+    withRealm,
     list,
     isWorkspaceCommand: (tag) => {
       const meta = metaFor(tag);

@@ -60,7 +60,13 @@ export interface SessionClientContract extends DaemonSession {
   /** A plugin verb the daemon forwarded here because it has no plugin runtime
    *  of its own; each one wants a matching {@link respondCommand}. */
   readonly commandRequests: Stream.Stream<
-    { readonly id: string; readonly command: JsonValue },
+    {
+      readonly id: string;
+      readonly command: JsonValue;
+      readonly source: "socket" | "cli" | "agent";
+      readonly pane?: string;
+      readonly originSession?: string;
+    },
     never,
     never
   >;
@@ -74,7 +80,10 @@ export interface SessionClientContract extends DaemonSession {
     never
   >;
   /** Raw control-protocol Run for commands that do not produce a workspace snapshot. */
-  readonly run: (command: Command | RuntimeCommand) => Effect.Effect<unknown, ControlError>;
+  readonly run: (
+    command: Command | RuntimeCommand,
+    context: WorkspaceCommandContext,
+  ) => Effect.Effect<unknown, ControlError>;
   readonly resumeAgent: (input: {
     session: string;
     provider: string;
@@ -283,8 +292,8 @@ const make = (
             Deferred.await(closed).pipe(Effect.flatMap(() => Effect.fail(closingError()))),
           );
         }),
-      run: (command) =>
-        control.Batch({ values: [command] }).pipe(
+      run: (command, context) =>
+        control.Batch({ values: [command], context }).pipe(
           Effect.map(({ outputs }) => outputs[0]?.result),
           Effect.mapError(toControlError),
         ),

@@ -106,12 +106,21 @@ const ctl = <A, E>(
   use: (control: ControlClient) => Effect.Effect<A, E>,
 ) => run(controlCall(id, use), env);
 
+const socketContext = {
+  size: { cols: 80, rows: 24 },
+  shell: ["sh"],
+  cwd: "/tmp",
+  source: "socket" as const,
+};
+
 const batch = (
   id: string,
   env: NodeJS.ProcessEnv,
   value: ReturnType<typeof command>,
 ) =>
-  ctl(id, env, (c) => c.Batch({ values: [value] })).then((result) => result.outputs[0]!);
+  ctl(id, env, (c) => c.Batch({ values: [value], context: socketContext })).then(
+    (result) => result.outputs[0]!,
+  );
 
 /** Context id the demo plugin registers its binding under. */
 const DEMO_CONTEXT = "demo.scope";
@@ -207,6 +216,7 @@ export default definePlugin({
 });`,
                   }),
                 ],
+                context: socketContext,
               }),
             ),
             env,

@@ -21,6 +21,7 @@ import {
   registerLayerChecked,
   type CommandSpec,
 } from "./bindings.ts";
+import { makeCommands } from "./commands.ts";
 import { CONTEXT_PRIORITY, type ContextSpec } from "./key-context.ts";
 import {
   createCountAccumulator,
@@ -1728,6 +1729,10 @@ test("a command that declares Realm reads the binding for the pane it ran in", a
     ]);
     let focused = "%1";
     const seen: Array<string | undefined> = [];
+    const table = makeCommands(
+      {},
+      { realmForPane: (paneId) => panes.get(paneId) ?? NO_REALM },
+    );
     const commands: CommandSpec[] = [
       {
         name: "t.which",
@@ -1743,7 +1748,8 @@ test("a command that declares Realm reads the binding for the pane it ran in", a
     createBindings(t.renderer, commands, {
       keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
-      realm: () => panes.get(focused) ?? NO_REALM,
+      pane: () => focused,
+      withRealm: table.withRealm,
     });
 
     t.mockInput.pressKey("a", { ctrl: true });

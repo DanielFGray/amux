@@ -242,6 +242,14 @@ const CommandRequest = S.TaggedStruct("command.request", {
   command: JsonValueSchema,
   /** Session whose process caused this request, when there is one. */
   originSession: S.optional(S.String),
+  /**
+   * Who asked: socket client, CLI, or agent. Required so the receiving client
+   * can build a {@link CommandInvocation} without guessing. Key dispatch never
+   * crosses this wire.
+   */
+  source: S.Literals(["socket", "cli", "agent"]),
+  /** Pane whose realm {@link Commands.run} should provide, when known. */
+  pane: S.optional(S.String),
 });
 
 /** The client's answer to a `command.request`, correlated by `id`. */

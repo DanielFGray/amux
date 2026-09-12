@@ -172,6 +172,7 @@ export function testPluginEnvironment(
     commands: scopedRegistry(
       {
         run: rawCommands.run,
+        withRealm: rawCommands.withRealm,
         list: rawCommands.list,
         isWorkspaceCommand: rawCommands.isWorkspaceCommand,
         isRemoteCommand: rawCommands.isRemoteCommand,
