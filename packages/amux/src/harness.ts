@@ -36,7 +36,7 @@ import type { SessionBackendFactory } from "./backend.ts";
 import type { PaneView } from "./component-pane.tsx";
 import { layoutSessions, windowState, type Layout } from "./layout.ts";
 import type { PersistedSession } from "./session.ts";
-import { commandName } from "./command-name.ts";
+import { commandName } from "@danielfgray/amux-agent-facts/command-name.ts";
 import { spaceSetState, spaceState } from "./space-model.ts";
 import type { WorkspaceSnapshot } from "./workspace.ts";
 import { resolveOptions, type Options } from "./options.ts";

@@ -1,4 +1,7 @@
-const executableName = (token: string): string =>
+import { Config } from "effect";
+
+/** Basename of a path or argv token, lowercased, with a few script extensions stripped. */
+export const executableName = (token: string): string =>
   token
     .split("/")
     .pop()!
@@ -18,3 +21,9 @@ export function commandName(cmd: readonly string[]): string {
   if (!first) return "shell";
   return executableName(first.replace(/^-/, "")) || "shell";
 }
+
+/** Basename of `$SHELL`, lowercased — empty when unset. Yield; do not `runSync`. */
+export const shellName = Config.string("SHELL").pipe(
+  Config.map((shell) => shell.split("/").pop()?.toLowerCase() ?? ""),
+  Config.withDefault(""),
+);

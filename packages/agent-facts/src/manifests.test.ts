@@ -35,8 +35,8 @@ const writeOverride = Effect.fnUntraced(function* (
 const { live } = testEffect(BunFileSystem.layer.pipe(Layer.provideMerge(BunPath.layer)));
 
 live("bundled manifests cover the known agent executables", () =>
-  Effect.sync(() => {
-    const registry = bundledRegistry();
+  Effect.gen(function* () {
+    const registry = yield* bundledRegistry;
     expect(registry.identifyAgent("claude")).toEqual(Option.some("claude"));
     expect(registry.identifyAgent("codex")).toEqual(Option.some("codex"));
     expect(registry.identifyAgent("nvim")).toEqual(Option.none());
@@ -77,8 +77,8 @@ live("a local file can add a new agent the bundle does not know", () =>
 );
 
 live("an agent with no custom rules falls back to the default adapter's rules", () =>
-  Effect.sync(() => {
-    const registry = bundledRegistry();
+  Effect.gen(function* () {
+    const registry = yield* bundledRegistry;
     expect(registry.adapterFor("gemini").id).toBe("default");
     expect(registry.adapterFor("claude").id).toBe("claude");
   }),

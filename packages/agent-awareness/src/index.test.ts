@@ -63,7 +63,7 @@ test("agentAwarenessPlugin publishes presence matching resolvePresence for the s
     yield* Effect.orDie(host.reconcile([noopHostServices, agentAwarenessPlugin]));
     const awareness = Option.getOrThrow(host.get(AgentAwarenessTag));
     const expected = resolvePresence(
-      bundledRegistry(),
+      yield* bundledRegistry,
       "s1",
       fact({ declaredAgent: "claude", processState: ProcessState.Running }),
       undefined,

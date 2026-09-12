@@ -7,7 +7,7 @@ import {
   type SessionBackendFactory,
 } from "./backend.ts";
 import { scrollViewport, ScrollTo } from "./shim.ts";
-import { commandName } from "./command-name.ts";
+import { commandName } from "@danielfgray/amux-agent-facts/command-name.ts";
 import { ProcessState } from "./process-state.ts";
 import { ProcessStateArbiter, ProcessStateAuthority } from "./process-state-arbiter.ts";
 import { extractScreenRegion, type ScreenRegion, type ScreenSnapshot } from "./screen-regions.ts";

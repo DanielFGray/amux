@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
+import { Effect } from "effect";
 import { ProcessState, type SessionFact } from "@danielfgray/amux";
 import type { AttachFrame } from "@danielfgray/amux/protocol";
 import { hookAgentFromFrame, resolvePresence } from "./presence.ts";
 import { AGENT_AWARENESS_IDENTITY_TOPIC } from "./identity-state.ts";
 import { bundledRegistry } from "@danielfgray/amux-agent-facts/manifests.ts";
 
-const registry = bundledRegistry();
+const registry = await Effect.runPromise(bundledRegistry);
 
 function fact(overrides: Partial<SessionFact> = {}): SessionFact {
   return {

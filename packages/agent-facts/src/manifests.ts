@@ -64,6 +64,7 @@
 import { Config, Context, Effect, Layer, Option, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import { executableName, shellName } from "./command-name.ts";
 import bundledData from "./manifests.json" with { type: "json" };
 
 export const MANIFEST_ENGINE_VERSION = 1;
@@ -222,20 +223,7 @@ const BundledManifests = S.Array(Manifest).pipe(
   S.check(S.makeFilter((manifests) => manifests.some((manifest) => manifest.id === "default"))),
 );
 
-const executableName = (token: string): string =>
-  token
-    .split("/")
-    .pop()!
-    .replace(/\.(exe|cmd|js|mjs|ts)$/i, "")
-    .toLowerCase();
-
-const shellName = Effect.runSync(
-  Config.string("SHELL").pipe(
-    Config.map((shell) => shell.split("/").pop()?.toLowerCase() ?? ""),
-    Config.withDefault(""),
-  ),
-);
-const INTERPRETERS = new Set([
+const BASE_INTERPRETERS = [
   "node",
   "bun",
   "deno",
@@ -245,8 +233,7 @@ const INTERPRETERS = new Set([
   "bash",
   "fish",
   "zsh",
-  shellName,
-]);
+] as const;
 
 function toManifest(manifest: typeof Manifest.Type): AgentManifest {
   return { ...manifest, rules: manifest.rules as readonly AdapterRule[] };
@@ -288,7 +275,11 @@ const loadLocalOverrides = (
     );
   });
 
-function makeRegistry(manifests: readonly AgentManifest[]): AgentManifestRegistryService {
+function makeRegistry(
+  manifests: readonly AgentManifest[],
+  shell: string,
+): AgentManifestRegistryService {
+  const interpreters = new Set<string>([...BASE_INTERPRETERS, shell]);
   const fallback = manifests.find((manifest) => manifest.id === "default")!;
   const byName = new Map<string, AgentManifest>();
   const byExecutable = new Map<string, string>();
@@ -300,7 +291,7 @@ function makeRegistry(manifests: readonly AgentManifest[]): AgentManifestRegistr
   }
   return {
     manifests,
-    identifyAgent: (command) => identifyFromExecutables(byExecutable, command),
+    identifyAgent: (command) => identifyFromExecutables(byExecutable, interpreters, command),
     adapterFor: (agent) => {
       const manifest = byName.get(agent.toLowerCase());
       return manifest && manifest.rules.length > 0 ? manifest : fallback;
@@ -310,6 +301,7 @@ function makeRegistry(manifests: readonly AgentManifest[]): AgentManifestRegistr
 
 function identifyFromExecutables(
   executables: ReadonlyMap<string, string>,
+  interpreters: ReadonlySet<string>,
   command: string | readonly string[],
 ): Option.Option<string> {
   const tokens =
@@ -317,7 +309,7 @@ function identifyFromExecutables(
   return Option.flatMap(Option.fromUndefinedOr(tokens[0]), (first) => {
     const base = executableName(first);
     return Option.orElse(Option.fromUndefinedOr(executables.get(base)), () =>
-      !INTERPRETERS.has(base)
+      !interpreters.has(base)
         ? Option.none()
         : Option.flatMap(Option.fromUndefinedOr(tokens[1]), (interpreterTarget) =>
             Option.fromUndefinedOr(executables.get(executableName(interpreterTarget))),
@@ -330,13 +322,17 @@ export const loadRegistry = (
   configHome: string,
 ): Effect.Effect<AgentManifestRegistryService, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
+    const shell = yield* shellName.pipe(Effect.orDie);
     const overrides = new Map(decodeBundled().map((manifest) => [manifest.id, manifest]));
     for (const manifest of yield* loadLocalOverrides(configHome))
       overrides.set(manifest.id, manifest);
-    return makeRegistry([...overrides.values()]);
+    return makeRegistry([...overrides.values()], shell);
   });
 
-export const bundledRegistry = (): AgentManifestRegistryService => makeRegistry(decodeBundled());
+export const bundledRegistry: Effect.Effect<AgentManifestRegistryService> = shellName.pipe(
+  Effect.orDie,
+  Effect.map((shell) => makeRegistry(decodeBundled(), shell)),
+);
 
 export const layer = (
   configHome: string,

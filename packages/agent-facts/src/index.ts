@@ -19,5 +19,6 @@ export {
   type RegexPattern,
   type RuleGate,
 } from "./manifests.ts";
+export { commandName, executableName, shellName } from "./command-name.ts";
 export { identifyAgent, splitActivity } from "./identify.ts";
 export { readHarnessLog, type HarnessLogMessage } from "./harness-log.ts";

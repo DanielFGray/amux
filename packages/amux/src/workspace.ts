@@ -68,6 +68,7 @@ import type { PaneAgentSessionSnapshot } from "./agent-session.ts";
 import { Clock, Effect, Option, Result, Schema as S } from "effect";
 import type { TilingAlgorithm } from "./tiling-algorithm.ts";
 import { defaultTilingAlgorithm } from "./tiling-algorithm-default.ts";
+import { commandName } from "@danielfgray/amux-agent-facts/command-name.ts";
 
 const { basename, join, resolve } = nodePath;
 
@@ -1994,8 +1995,6 @@ function paneContentFor(session: PersistedSession): PaneContent {
       }
     : { kind: "pty", session: session.id };
 }
-
-const commandName = (command: readonly string[]) => basename(command[0] ?? "") || "shell";
 
 // ---------------------------------------------------------------------------
 // The machine-facing read surface. These are pure projections of a snapshot:
