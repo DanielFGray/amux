@@ -1,7 +1,7 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect } from "bun:test";
 import { Context, Duration, Effect, Option } from "effect";
-import { NO_REALM, Realm, realmOf, type RealmValue } from "./realm.ts";
+import { NO_REALM, Realm, realmOf } from "./realm.ts";
 import { createSignal } from "solid-js";
 import { createTestRenderer } from "@opentui/core/testing";
 import type { KeyEvent } from "@opentui/core";
@@ -1722,10 +1722,10 @@ test("a command that declares Realm reads the binding for the pane it ran in", a
   const t = await createTestRenderer({ width: 40, height: 10 });
   try {
     class Thing extends Context.Service<Thing, { readonly of: string }>()("test/Thing") {}
-    const panes: Record<string, RealmValue> = {
-      "%1": realmOf("pane:%1", Context.make(Thing, { of: "left" })),
-      "%2": realmOf("pane:%2", Context.make(Thing, { of: "right" })),
-    };
+    const panes = new Map([
+      ["%1", realmOf("pane:%1", Context.make(Thing, { of: "left" }))],
+      ["%2", realmOf("pane:%2", Context.make(Thing, { of: "right" }))],
+    ]);
     let focused = "%1";
     const seen: Array<string | undefined> = [];
     const commands: CommandSpec[] = [
@@ -1743,7 +1743,7 @@ test("a command that declares Realm reads the binding for the pane it ran in", a
     createBindings(t.renderer, commands, {
       keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
       onUnhandled: () => true,
-      realm: () => panes[focused] ?? NO_REALM,
+      realm: () => panes.get(focused) ?? NO_REALM,
     });
 
     t.mockInput.pressKey("a", { ctrl: true });

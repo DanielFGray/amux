@@ -1,4 +1,4 @@
-import { Schema as S } from "effect";
+import { Schema as S, type Types } from "effect";
 import { fileURLToPath } from "node:url";
 import { keysFor, type CommandSpec, type Keys } from "../bindings.ts";
 import type { CommandMeta } from "../commands.ts";
@@ -29,6 +29,8 @@ export const InspectResultSchema = S.Struct({
   details: S.optional(S.Record(S.String, S.Unknown)),
 });
 export type InspectResult = S.Schema.Type<typeof InspectResultSchema>;
+
+type Details = Types.Mutable<NonNullable<InspectResult["details"]>>;
 
 export interface InspectQuery {
   readonly command?: string;
@@ -66,6 +68,10 @@ export const parsePluginCommandTag = (
   return { pluginId: rest.slice(0, lastDot), verb: rest.slice(lastDot + 1) };
 };
 
+/**
+ * Absent facts are omitted keys, never `undefined` values: an inspect result
+ * crosses the client socket as a JsonValue, which has no `undefined`.
+ */
 export const provenanceFor = (
   catalog: InspectCatalog,
   pluginId: string,
@@ -74,14 +80,191 @@ export const provenanceFor = (
   const status = catalog.pluginStatus(pluginId);
   const source = catalog.pluginSource(pluginId);
   const gen = generation ?? catalog.pluginGeneration(pluginId);
-  return {
+  const provenance: Types.Mutable<PluginProvenance> = {
     pluginId,
-    ...(gen !== undefined ? { generation: gen } : {}),
-    ...(source !== undefined ? { source: fileURLToPath(source) } : {}),
-    ...(status !== undefined ? { phase: status.phase } : {}),
     waitingFor: status?.waitingFor ?? [],
     active: status?.phase === "active",
   };
+  if (gen !== undefined) provenance.generation = gen;
+  if (source !== undefined) provenance.source = fileURLToPath(source);
+  if (status !== undefined) provenance.phase = status.phase;
+  return provenance;
+};
+
+export const inspect = (catalog: InspectCatalog, query: InspectQuery): InspectResult => {
+  const subject = exactlyOne(query);
+  if (typeof subject === "string") {
+    return { kind: "plugin", name: "", found: false, description: subject };
+  }
+
+  switch (subject.kind) {
+    case "plugin": {
+      const status = catalog.pluginStatus(subject.name);
+      if (!status && catalog.pluginGeneration(subject.name) === undefined) {
+        return { kind: "plugin", name: subject.name, found: false };
+      }
+      const provider = provenanceFor(catalog, subject.name);
+      const details: Details = {};
+      if (status?.error !== undefined) details.error = status.error.message;
+      if (status?.replacement !== undefined) details.replacementPhase = status.replacement.phase;
+      return {
+        kind: "plugin",
+        name: subject.name,
+        found: true,
+        provider,
+        whyActive: whyPlugin(provider),
+        details,
+      };
+    }
+    case "command": {
+      const meta = catalog.commandMeta(subject.name);
+      const parsed = parsePluginCommandTag(subject.name);
+      if (!meta && !parsed) return { kind: "command", name: subject.name, found: false };
+      if (parsed) {
+        const provider = provenanceFor(catalog, parsed.pluginId);
+        const details: Details = { verb: parsed.verb };
+        const result: Types.Mutable<InspectResult> = {
+          kind: "command",
+          name: subject.name,
+          found: true,
+          provider,
+          whyActive: whyPlugin(provider),
+          details,
+        };
+        if (meta !== undefined) {
+          result.description = meta.desc;
+          details.group = meta.group;
+          details.target = meta.target;
+          details.exposure = meta.exposure;
+        }
+        return result;
+      }
+      return {
+        kind: "command",
+        name: subject.name,
+        found: true,
+        description: meta!.desc,
+        provider: coreProvenance(),
+        whyActive: "core command (built into the command table)",
+        details: { group: meta!.group, target: meta!.target, exposure: meta!.exposure },
+      };
+    }
+    case "binding": {
+      const entry = catalog.bindings().find((candidate) => candidate.name === subject.name);
+      if (!entry) return { kind: "binding", name: subject.name, found: false };
+      const provider = provenanceFor(catalog, entry.owner.id, entry.owner.generation);
+      const details: Details = {
+        keys: keysFor(entry.value, catalog.keys()),
+        group: entry.value.group,
+      };
+      if (entry.value.context !== undefined) details.context = entry.value.context.id;
+      return {
+        kind: "binding",
+        name: subject.name,
+        found: true,
+        description: entry.value.desc,
+        provider,
+        whyActive: whyBinding(entry.value, provider),
+        details,
+      };
+    }
+    case "key": {
+      const keys = catalog.keys();
+      const entry = catalog
+        .bindings()
+        .find((candidate) => keysFor(candidate.value, keys).includes(subject.name));
+      if (!entry) return { kind: "key", name: subject.name, found: false };
+      const provider = provenanceFor(catalog, entry.owner.id, entry.owner.generation);
+      const details: Details = {
+        binding: entry.value.name,
+        keys: keysFor(entry.value, keys),
+      };
+      if (entry.value.context !== undefined) details.context = entry.value.context.id;
+      return {
+        kind: "key",
+        name: subject.name,
+        found: true,
+        description: entry.value.desc,
+        provider,
+        whyActive: whyBinding(entry.value, provider),
+        details,
+      };
+    }
+    case "pane": {
+      const content = catalog.paneContent(subject.name);
+      if (!content) return { kind: "pane", name: subject.name, found: false };
+      const details: Details = { contentKind: content.kind };
+      if (content.session !== undefined) details.session = content.session;
+      if (content.kind === "pty") {
+        return {
+          kind: "pane",
+          name: subject.name,
+          found: true,
+          description: "terminal (pty) pane",
+          provider: coreProvenance(),
+          whyActive: "core pty pane; no plugin view",
+          details,
+        };
+      }
+      details.paneType = content.type;
+      const owner = catalog.paneViewOwner(content.type);
+      if (!owner) {
+        return {
+          kind: "pane",
+          name: subject.name,
+          found: true,
+          description: `plugin pane type '${content.type}' has no committed view`,
+          whyActive: `pane type '${content.type}' is unregistered or its provider is inactive`,
+          details,
+        };
+      }
+      const provider = provenanceFor(catalog, owner.id, owner.generation);
+      return {
+        kind: "pane",
+        name: subject.name,
+        found: true,
+        description: `plugin pane type '${content.type}'`,
+        provider,
+        whyActive: whyPlugin(provider),
+        details,
+      };
+    }
+  }
+};
+
+/**
+ * Short human lines for the describe-key panel. Keep it denser than the
+ * agent JSON: kind/name, owner+generation, why active, source path.
+ */
+export const formatInspectResult = (result: InspectResult): readonly string[] => {
+  const subject = result.name === "" ? result.kind : `${result.kind}  ${result.name}`;
+  if (!result.found) {
+    return [subject, result.description ?? "not found"];
+  }
+  const lines: string[] = [subject];
+  if (result.description !== undefined && result.description !== "") {
+    lines.push(result.description);
+  }
+  const provider = result.provider;
+  if (provider !== undefined) {
+    const gen = provider.generation !== undefined ? `  gen ${provider.generation}` : "";
+    lines.push(`owner  ${provider.pluginId}${gen}`);
+  }
+  if (result.whyActive !== undefined && result.whyActive !== "") {
+    lines.push(`why    ${result.whyActive}`);
+  }
+  if (provider?.source !== undefined && provider.source !== "") {
+    lines.push(`source ${provider.source}`);
+  }
+  const keys = result.details?.keys;
+  if (Array.isArray(keys) && keys.length > 0) {
+    lines.push(`keys   ${keys.map(String).join(", ")}`);
+  }
+  const binding = result.details?.binding;
+  if (typeof binding === "string" && binding !== "") {
+    lines.push(`binds  ${binding}`);
+  }
+  return lines;
 };
 
 const coreProvenance = (): PluginProvenance => ({
@@ -122,187 +305,4 @@ const whyBinding = (binding: CommandSpec, prov: PluginProvenance): string => {
   return active
     ? `${whyPlugin(prov)}; context '${context.id}' is active`
     : `${whyPlugin(prov)}; context '${context.id}' is inactive (binding registered, not claiming keys)`;
-};
-
-export const inspect = (catalog: InspectCatalog, query: InspectQuery): InspectResult => {
-  const subject = exactlyOne(query);
-  if (typeof subject === "string") {
-    return { kind: "plugin", name: "", found: false, description: subject };
-  }
-
-  switch (subject.kind) {
-    case "plugin": {
-      const status = catalog.pluginStatus(subject.name);
-      if (!status && catalog.pluginGeneration(subject.name) === undefined) {
-        return { kind: "plugin", name: subject.name, found: false };
-      }
-      const provider = provenanceFor(catalog, subject.name);
-      return {
-        kind: "plugin",
-        name: subject.name,
-        found: true,
-        provider,
-        whyActive: whyPlugin(provider),
-        details: {
-          ...(status?.error !== undefined ? { error: status.error.message } : {}),
-          ...(status?.replacement !== undefined
-            ? { replacementPhase: status.replacement.phase }
-            : {}),
-        },
-      };
-    }
-    case "command": {
-      const meta = catalog.commandMeta(subject.name);
-      const parsed = parsePluginCommandTag(subject.name);
-      if (!meta && !parsed) return { kind: "command", name: subject.name, found: false };
-      if (parsed) {
-        const provider = provenanceFor(catalog, parsed.pluginId);
-        return {
-          kind: "command",
-          name: subject.name,
-          found: true,
-          description: meta?.desc,
-          provider,
-          whyActive: whyPlugin(provider),
-          details: {
-            verb: parsed.verb,
-            ...(meta !== undefined
-              ? { group: meta.group, target: meta.target, exposure: meta.exposure }
-              : {}),
-          },
-        };
-      }
-      return {
-        kind: "command",
-        name: subject.name,
-        found: true,
-        description: meta!.desc,
-        provider: coreProvenance(),
-        whyActive: "core command (built into the command table)",
-        details: { group: meta!.group, target: meta!.target, exposure: meta!.exposure },
-      };
-    }
-    case "binding": {
-      const entry = catalog.bindings().find((candidate) => candidate.name === subject.name);
-      if (!entry) return { kind: "binding", name: subject.name, found: false };
-      const provider = provenanceFor(catalog, entry.owner.id, entry.owner.generation);
-      const bound = keysFor(entry.value, catalog.keys());
-      return {
-        kind: "binding",
-        name: subject.name,
-        found: true,
-        description: entry.value.desc,
-        provider,
-        whyActive: whyBinding(entry.value, provider),
-        details: {
-          keys: bound,
-          group: entry.value.group,
-          ...(entry.value.context !== undefined ? { context: entry.value.context.id } : {}),
-        },
-      };
-    }
-    case "key": {
-      const keys = catalog.keys();
-      const entry = catalog
-        .bindings()
-        .find((candidate) => keysFor(candidate.value, keys).includes(subject.name));
-      if (!entry) return { kind: "key", name: subject.name, found: false };
-      const provider = provenanceFor(catalog, entry.owner.id, entry.owner.generation);
-      return {
-        kind: "key",
-        name: subject.name,
-        found: true,
-        description: entry.value.desc,
-        provider,
-        whyActive: whyBinding(entry.value, provider),
-        details: {
-          binding: entry.value.name,
-          keys: keysFor(entry.value, keys),
-          ...(entry.value.context !== undefined ? { context: entry.value.context.id } : {}),
-        },
-      };
-    }
-    case "pane": {
-      const content = catalog.paneContent(subject.name);
-      if (!content) return { kind: "pane", name: subject.name, found: false };
-      if (content.kind === "pty") {
-        return {
-          kind: "pane",
-          name: subject.name,
-          found: true,
-          description: "terminal (pty) pane",
-          provider: coreProvenance(),
-          whyActive: "core pty pane; no plugin view",
-          details: {
-            contentKind: content.kind,
-            ...(content.session !== undefined ? { session: content.session } : {}),
-          },
-        };
-      }
-      const owner = catalog.paneViewOwner(content.type);
-      if (!owner) {
-        return {
-          kind: "pane",
-          name: subject.name,
-          found: true,
-          description: `plugin pane type '${content.type}' has no committed view`,
-          whyActive: `pane type '${content.type}' is unregistered or its provider is inactive`,
-          details: {
-            contentKind: content.kind,
-            paneType: content.type,
-            ...(content.session !== undefined ? { session: content.session } : {}),
-          },
-        };
-      }
-      const provider = provenanceFor(catalog, owner.id, owner.generation);
-      return {
-        kind: "pane",
-        name: subject.name,
-        found: true,
-        description: `plugin pane type '${content.type}'`,
-        provider,
-        whyActive: whyPlugin(provider),
-        details: {
-          contentKind: content.kind,
-          paneType: content.type,
-          ...(content.session !== undefined ? { session: content.session } : {}),
-        },
-      };
-    }
-  }
-};
-
-/**
- * Short human lines for the describe-key panel. Keep it denser than the
- * agent JSON: kind/name, owner+generation, why active, source path.
- */
-export const formatInspectResult = (result: InspectResult): readonly string[] => {
-  const subject = result.name === "" ? result.kind : `${result.kind}  ${result.name}`;
-  if (!result.found) {
-    return [subject, result.description ?? "not found"];
-  }
-  const lines: string[] = [subject];
-  if (result.description !== undefined && result.description !== "") {
-    lines.push(result.description);
-  }
-  const provider = result.provider;
-  if (provider !== undefined) {
-    const gen = provider.generation !== undefined ? `  gen ${provider.generation}` : "";
-    lines.push(`owner  ${provider.pluginId}${gen}`);
-  }
-  if (result.whyActive !== undefined && result.whyActive !== "") {
-    lines.push(`why    ${result.whyActive}`);
-  }
-  if (provider?.source !== undefined && provider.source !== "") {
-    lines.push(`source ${provider.source}`);
-  }
-  const keys = result.details?.keys;
-  if (Array.isArray(keys) && keys.length > 0) {
-    lines.push(`keys   ${keys.map(String).join(", ")}`);
-  }
-  const binding = result.details?.binding;
-  if (typeof binding === "string" && binding !== "") {
-    lines.push(`binds  ${binding}`);
-  }
-  return lines;
 };

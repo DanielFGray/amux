@@ -248,7 +248,7 @@ export class SessionHandle {
   #pump(): Fiber.Fiber<void> {
     return Effect.runForkWith(this.#runtime)(
       Stream.runForEach(this.#backend.stream, (chunk) =>
-        Effect.gen({ self: this }, function* () {
+        Effect.sync(() => {
           this.term.write(chunk);
           this.#outputRevision++;
           if (this.#viewers === 0) this.#unseen = true;

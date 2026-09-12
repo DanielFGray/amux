@@ -36,7 +36,6 @@ import {
   managedPluginSpecPath,
   scratchEntryPath,
 } from "./plugin/scratch.ts";
-import { projectRootSync } from "./project-store.ts";
 import { errorMessage } from "./error-message.ts";
 import { SessionStore } from "./session.ts";
 import { testEffect } from "./test-effect.ts";
@@ -225,7 +224,6 @@ testEffect(
     Effect.gen(function* () {
       const sessionId = "live-image-demo";
       const pluginId = `live.e2e.${Date.now()}`;
-      const projectRoot = projectRootSync(process.cwd());
       const bindingName = `${DEMO_CONTEXT}.ping`;
       const { daemon, env, configDir, configPath } = yield* Effect.promise(() => started(sessionId));
       const client = yield* attachClient(daemon.id, env);
