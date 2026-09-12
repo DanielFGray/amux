@@ -8,14 +8,6 @@ import {
 } from "./cell-width.ts";
 import { ScrollTo, captureRange, clearSelection, scrollViewport, setSelection } from "./shim.ts";
 
-export {
-  cellColumnOf,
-  cellWidth,
-  rowCells,
-  stringIndexOf,
-  type RowMap,
-} from "./cell-width.ts";
-
 /**
  * Keyboard copy mode: a tmux-style modal over a pane's terminal, entered with
  * `<prefix>[`.

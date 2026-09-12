@@ -23,7 +23,7 @@ import type { SessionHandle } from "./session-handle.ts";
 import type { Options } from "./options.ts";
 import { captureRange } from "./shim.ts";
 import { clearSelection, setSelection } from "./shim.ts";
-import { cellWidth } from "./copy.ts";
+import { cellWidth } from "./cell-width.ts";
 import { encodeKey } from "./keys.ts";
 import { acquireFfi, acquireRenderable } from "./bridge.ts";
 import { theme } from "./ui/theme.ts";
