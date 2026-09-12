@@ -291,5 +291,12 @@ export {
 } from "./ui/theme.ts";
 export { POLL_MS } from "./ui/state.ts";
 
+// Pane approval prompt (agent tools and constrained commands).
+export {
+  ApprovalPrompt,
+  type ApprovalPromptProps,
+  type ApprovalPromptRequest,
+} from "./ui/ApprovalPrompt.tsx";
+
 // Host overlay shared by settings / command palette (stable across reload).
 export { OverlayTag, type OverlayKind, type OverlayService } from "./plugin/overlay.ts";

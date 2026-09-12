@@ -16,7 +16,7 @@ import {
   type Accessor,
   type JSX,
 } from "solid-js";
-import { theme } from "@danielfgray/amux";
+import { ApprovalPrompt, theme } from "@danielfgray/amux";
 import type { PermissionDecision } from "@danielfgray/amux/permission.ts";
 import {
   permissionSummary,
@@ -163,20 +163,16 @@ function ToolCardFrame(
       {props.body}
       <Show
         when={
-          props.permission !== undefined &&
-          props.permission.decision === undefined &&
-          !props.explaining
+          props.permission !== undefined && props.permission.decision === undefined
         }
       >
-        <ApprovalChoices
+        <HarnessApprovalPrompt
           request={props.permission!}
           width={props.width}
+          explaining={props.explaining}
           onDecide={(decision) => props.onDecide?.(decision)}
           onExplain={() => props.onExplain?.()}
         />
-      </Show>
-      <Show when={props.permission?.decision === undefined && props.explaining}>
-        <text style={{ height: 1, fg: theme.yellow }}>awaiting approval</text>
       </Show>
       <Show when={props.expandable}>
         <text style={{ height: 1, fg: theme.overlay1 }}>
@@ -195,34 +191,18 @@ function collapseOutput(output: string, maxLines: number): CollapsedOutput {
   return { text: `${lines.slice(0, maxLines).join("\n")}\n...`, overflow: true };
 }
 
-/** Shared by tool cards and orphan permission cards. */
-export function ApprovalChoices(props: {
+/**
+ * Harness adapter: permission blocks → core ApprovalPrompt, with DiffBlock
+ * children. Diff splitting stays harness-local (amux-highlight).
+ */
+export function HarnessApprovalPrompt(props: {
   request: PermissionBlock;
   width: Accessor<number>;
+  explaining?: boolean;
+  framed?: boolean;
   onDecide: (decision: PermissionDecision) => void;
   onExplain: () => void;
 }) {
-  // Keep this short: the transcript sticky-scrolls to the bottom, so a tall
-  // choice list would push the primary [o] action above the visible fold.
-  const choices = [
-    { key: "o", label: "once", color: theme.green, run: () => props.onDecide("once") },
-    ...(props.request.save.length > 0
-      ? [
-          {
-            key: "a",
-            label: "always",
-            color: theme.green,
-            run: () => props.onDecide("always"),
-          },
-        ]
-      : []),
-    { key: "d", label: "deny", color: theme.red, run: () => props.onDecide("reject") },
-    { key: "e", label: "explain", color: theme.red, run: props.onExplain },
-  ];
-  const alwaysRule =
-    props.request.save.length > 0
-      ? props.request.save.map((rule) => `${rule.action} ${rule.resource}`).join(", ")
-      : undefined;
   const previewDiffs = createMemo(() => {
     if (props.request.diff === undefined) return [] as const;
     const parts = splitUnifiedDiffs(props.request.diff);
@@ -230,41 +210,22 @@ export function ApprovalChoices(props: {
   });
 
   return (
-    <box
-      style={{
-        width: "100%",
-        flexDirection: "column",
-        flexShrink: 0,
-        marginTop: 1,
-        backgroundColor: theme.mantle,
-        border: true,
-        borderColor: theme.yellow,
+    <ApprovalPrompt
+      request={{
+        verb: props.request.tool,
+        resources: props.request.resources,
+        summary: permissionSummary(props.request),
+        save: props.request.save,
       }}
+      width={props.width}
+      explaining={props.explaining}
+      framed={props.framed}
+      onDecide={props.onDecide}
+      onExplain={props.onExplain}
     >
-      <text style={{ wrapMode: "word", width: "100%", fg: theme.text }}>
-        {permissionSummary(props.request)}
-      </text>
-      <Show when={alwaysRule}>
-        <text style={{ wrapMode: "word", width: "100%", fg: theme.overlay1 }}>
-          {`always → ${alwaysRule}`}
-        </text>
-      </Show>
       <For each={[...previewDiffs()]}>
         {(diff) => <DiffBlock diff={diff} width={props.width} />}
       </For>
-      <box style={{ height: 1, flexShrink: 0, flexDirection: "row" }}>
-        <For each={choices}>
-          {(choice) => (
-            <box
-              style={{ height: 1, flexShrink: 0, flexDirection: "row", marginRight: 2 }}
-              onMouseUp={choice.run}
-            >
-              <text style={{ fg: theme.mauve }}>{`[${choice.key}]`}</text>
-              <text style={{ fg: choice.color }}>{` ${choice.label}`}</text>
-            </box>
-          )}
-        </For>
-      </box>
-    </box>
+    </ApprovalPrompt>
   );
 }

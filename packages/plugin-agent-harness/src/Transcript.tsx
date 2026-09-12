@@ -20,7 +20,7 @@ import { codeSyntaxStyle, type HighlightSnapshot } from "@danielfgray/amux-highl
 import type { PermissionDecision } from "@danielfgray/amux/permission.ts";
 import { splitFences } from "./fences.ts";
 import { CodeBlock } from "./CodeBlock.tsx";
-import { ApprovalChoices, ToolCard } from "./ToolCards.tsx";
+import { HarnessApprovalPrompt, ToolCard } from "./ToolCards.tsx";
 
 /**
  * Stable list identity for Solid `<For>`.
@@ -194,8 +194,9 @@ export function Transcript(props: TranscriptProps) {
                   <Show
                     when={block().kind !== "permission"}
                     fallback={
-                      <PermissionCard
-                        permission={permission()!}
+                      <HarnessApprovalPrompt
+                        request={permission()!}
+                        framed
                         explaining={props.explaining === permission()!.request}
                         width={() => Math.max(1, width())}
                         onDecide={(decision) =>
@@ -479,40 +480,6 @@ function ChatCard(props: {
       </Show>
       <Show when={queued}>
         <text style={{ height: 1, fg: theme.overlay1 }}>{queuedLabel.padStart(column())}</text>
-      </Show>
-    </box>
-  );
-}
-
-/** A permission ask that never joined a tool card — still answerable in-place. */
-function PermissionCard(props: {
-  permission: PermissionBlock;
-  explaining: boolean;
-  width: Accessor<number>;
-  onDecide: (decision: PermissionDecision) => void;
-  onExplain: () => void;
-}) {
-  return (
-    <box
-      style={{
-        width: "100%",
-        flexShrink: 0,
-        flexDirection: "column",
-        marginTop: 1,
-        marginBottom: 1,
-        backgroundColor: theme.surface0,
-      }}
-    >
-      <Show
-        when={!props.explaining}
-        fallback={<text style={{ height: 1, fg: theme.yellow }}>awaiting approval</text>}
-      >
-        <ApprovalChoices
-          request={props.permission}
-          width={props.width}
-          onDecide={props.onDecide}
-          onExplain={props.onExplain}
-        />
       </Show>
     </box>
   );
