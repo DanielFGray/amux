@@ -10,6 +10,7 @@ import { createBindings } from "./bindings.ts";
 import {
   combineConstraintRules,
   createConstraintTable,
+  DEFAULT_CONSTRAINT_SOURCE,
   type ConstraintRank,
   type ConstraintRule,
   type ConstraintSource,
@@ -63,36 +64,38 @@ test("combineConstraintRules: deny wins wherever it sits; else last match", () =
       "git status",
     ),
   ).toBe("allow");
+  // Monoid identity: empty match list → ask. The production allow default is
+  // table data (DEFAULT_CONSTRAINT_SOURCE), not a combine special case.
   expect(combineConstraintRules([], "bash", "ls")).toBe("ask");
 });
 
 test("constraint ranks concatenate in fixed order, not registration order", () => {
-  const defaults = source("defaults", "defaults", [rule("*", "*", "ask")]);
+  // Factory already owns defaults; permute the three higher ranks.
   const config = source("config", "config", [rule("bash", "rm *", "deny")]);
   const project = source("project", "project", [rule("bash", "*", "allow")]);
-  const trio = [defaults, config, project];
+  const runtime = source("runtime", "runtime", [rule("bash", "curl *", "ask")]);
+  const trio = [config, project, runtime];
 
   const outcomes = permutations(trio).map((order) => {
     const table = createConstraintTable();
     const disposers = order.map((entry) => table.register(entry));
     const denied = table.decide("bash", "rm -rf /");
     const allowed = table.decide("bash", "ls");
+    const asked = table.decide("bash", "curl example.com");
     for (const dispose of disposers) dispose();
-    return { denied, allowed, order: order.map((entry) => entry.rank).join(",") };
+    return { denied, allowed, asked, order: order.map((entry) => entry.rank).join(",") };
   });
 
   expect(outcomes.length).toBe(6);
   for (const outcome of outcomes) {
     expect(outcome.denied).toBe("deny");
     expect(outcome.allowed).toBe("allow");
+    expect(outcome.asked).toBe("ask");
   }
 });
 
 test("withdrawing one constraint source does not disturb the others", () => {
   const table = createConstraintTable();
-  const dropDefaults = table.register(
-    source("defaults", "defaults", [rule("*", "*", "ask"), rule("read", "*", "allow")]),
-  );
   const dropConfig = table.register(
     source("config", "config", [rule("bash", "curl *", "deny")]),
   );
@@ -100,17 +103,13 @@ test("withdrawing one constraint source does not disturb the others", () => {
 
   expect(table.decide("bash", "curl example.com")).toBe("deny");
   expect(table.decide("bash", "ls")).toBe("allow");
-  expect(table.decide("read", "x")).toBe("allow");
+  expect(table.decide("read", "x")).toBe("allow"); // factory defaults
 
   dropConfig();
-  // Config deny gone; project allow remains. Defaults alone would ask for bash.
+  // Config deny gone; project allow remains. Defaults alone would allow.
   expect(table.decide("bash", "curl example.com")).toBe("allow");
   expect(table.decide("bash", "ls")).toBe("allow");
   expect(table.decide("read", "x")).toBe("allow");
-
-  dropDefaults();
-  expect(table.decide("read", "x")).toBe("ask"); // no defaults; project has no read rule
-  expect(table.decide("bash", "ls")).toBe("allow");
 });
 
 test("a second source at the same rank is rejected", () => {
@@ -119,10 +118,15 @@ test("a second source at the same rank is rejected", () => {
   expect(() => table.register(source("b", "config", [rule("*", "*", "deny")]))).toThrow(
     /constraint rank 'config' is already registered by 'a'/,
   );
+  expect(() =>
+    table.register(source("other", "defaults", [rule("*", "*", "deny")])),
+  ).toThrow(/constraint rank 'defaults' is already registered by 'amux.constraints.defaults'/);
 });
 
 test("permission semantics map onto the substrate without migrating permission.ts", () => {
   // Same three fixed sources permission.ts documents: defaults, config, project.
+  // Exercised via combineConstraintRules so the factory's allow default does not
+  // occupy the defaults rank — the mapping is the monoid, not the production seed.
   const defaults: readonly PermissionRule[] = DEFAULT_RULES;
   const config: readonly PermissionRule[] = [
     { action: "bash", resource: "rm *", effect: "deny" },
@@ -134,11 +138,11 @@ test("permission semantics map onto the substrate without migrating permission.t
   ];
 
   const flat = [...defaults, ...config, ...project];
-  const table = createConstraintTable();
-  // Deliberately register out of rank order — project before config.
-  table.register(source("project", "project", project));
-  table.register(source("defaults", "defaults", defaults));
-  table.register(source("config", "config", config));
+  const ranked = [
+    { rank: "defaults" as const, rules: defaults },
+    { rank: "config" as const, rules: config },
+    { rank: "project" as const, rules: project },
+  ];
 
   const cases: Array<[string, string]> = [
     ["read", "src/main.tsx"],
@@ -149,7 +153,47 @@ test("permission semantics map onto the substrate without migrating permission.t
     ["webfetch", "https://example.com"],
   ];
   for (const [action, resource] of cases) {
-    expect(table.decide(action, resource)).toBe(evaluate(action, resource, flat));
+    expect(combineConstraintRules(ranked, action, resource)).toBe(
+      evaluate(action, resource, flat),
+    );
+  }
+});
+
+test("factory seeds defaults-rank allow; higher ranks outrank it", () => {
+  const table = createConstraintTable();
+  expect(table.sources()).toEqual([
+    { id: DEFAULT_CONSTRAINT_SOURCE.id, rank: "defaults" },
+  ]);
+  // No user rules → every call allowed.
+  expect(table.decide("pane.split", "*")).toBe("allow");
+  expect(table.decide("bash", "rm -rf /")).toBe("allow");
+  expect(table.decide("webfetch", "https://example.com")).toBe("allow");
+
+  table.register(source("config", "config", [rule("bash", "rm *", "deny")]));
+  expect(table.decide("bash", "rm -rf /")).toBe("deny");
+  expect(table.decide("bash", "ls")).toBe("allow");
+
+  table.register(source("project", "project", [rule("bash", "curl *", "ask")]));
+  expect(table.decide("bash", "curl example.com")).toBe("ask");
+  expect(table.decide("bash", "ls")).toBe("allow");
+
+  table.register(source("runtime", "runtime", [rule("pane.split", "*", "deny")]));
+  expect(table.decide("pane.split", "*")).toBe("deny");
+});
+
+test("bindings.constraints exposes the factory default for inspect", async () => {
+  const t = await createTestRenderer({ width: 40, height: 10 });
+  try {
+    const bindings = createBindings(t.renderer, [], {
+      keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
+      onUnhandled: () => true,
+    });
+    expect(bindings.constraints.sources()).toEqual([
+      { id: "amux.constraints.defaults", rank: "defaults" },
+    ]);
+    expect(bindings.constraints.decide("any.command", "*")).toBe("allow");
+  } finally {
+    t.renderer.destroy();
   }
 });
 

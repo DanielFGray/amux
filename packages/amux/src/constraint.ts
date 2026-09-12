@@ -48,6 +48,17 @@ export type ConstraintTable = {
 };
 
 /**
+ * Production default: unmatched calls are allowed. Data in the table — not a
+ * decide() special case — so sources() / plugin.inspect can see it. The monoid
+ * still returns ask on an empty match list (same as permission.evaluate).
+ */
+export const DEFAULT_CONSTRAINT_SOURCE: ConstraintSource = {
+  id: "amux.constraints.defaults",
+  rank: "defaults",
+  rules: () => [{ action: "*", resource: "*", effect: "allow" }],
+};
+
+/**
  * Flatten sources in fixed rank order, then apply the permission monoid:
  * deny wins wherever it appears; otherwise last match wins; empty → ask.
  *
@@ -71,7 +82,7 @@ export const combineConstraintRules = (
 
 export function createConstraintTable(): ConstraintTable {
   const byRank = new Map<ConstraintRank, ConstraintSource>();
-  return {
+  const table: ConstraintTable = {
     register(source) {
       const taken = byRank.get(source.rank);
       if (taken !== undefined) {
@@ -100,6 +111,9 @@ export function createConstraintTable(): ConstraintTable {
       });
     },
   };
+  // Every table owner goes through this factory — one registration site.
+  table.register(DEFAULT_CONSTRAINT_SOURCE);
+  return table;
 }
 
 /** Refuse a command when constraints decide deny. ask/allow proceed. */
