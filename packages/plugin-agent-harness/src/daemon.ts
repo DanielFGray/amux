@@ -56,6 +56,10 @@ const agentNew = {
     resumeFrom: S.optionalKey(S.String),
   },
   meta: agentPluginMeta("start a coding agent", "workspace", "agent"),
+  resources: (args) =>
+    [args.provider, args.resumeFrom].flatMap((value) =>
+      typeof value === "string" ? [value] : [],
+    ),
   reduce: (draft, command, context) => {
     const target = draft.activeWindow();
     if (!target) return;
@@ -111,6 +115,7 @@ const agentPrompt = {
     timeout: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
   },
   meta: agentPluginMeta("send a prompt to an agent", "session", "agent"),
+  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
   run: (command, context) => {
     if (typeof command.target !== "string" || typeof command.text !== "string")
       return Effect.fail(new CommandError({ message: "agent.prompt requires target and text" }));
@@ -131,6 +136,7 @@ const agentWatch = {
     after: S.optionalKey(S.Int.check(S.isGreaterThanOrEqualTo(0))),
   },
   meta: agentPluginMeta("stream durable agent events from a replay cursor", "session", "agent"),
+  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
   // The CLI consumes this declaration to parse its arguments, then follows
   // the core-owned event cursor RPC. A batch invocation has no stream return.
   run: () => Effect.void,
@@ -140,6 +146,7 @@ const agentInterrupt = {
   tag: "agent.interrupt",
   fields: { ...sessionTarget, reason: S.optionalKey(S.String) },
   meta: agentPluginMeta("interrupt an agent turn", "workspace", "human"),
+  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
   reduce: (draft, command) => {
     if (typeof command.target !== "string") return;
     if (typeof command.reason === "string") {
@@ -176,6 +183,7 @@ const agentCompact = {
     "workspace",
     "human",
   ),
+  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
   reduce: (draft, command) => {
     if (typeof command.target !== "string") return;
     if (typeof command.instructions === "string") {
@@ -211,6 +219,7 @@ const agentPermission = {
     feedback: S.optionalKey(S.String),
   },
   meta: agentPluginMeta("answer an agent's permission request", "workspace", "human"),
+  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
   reduce: (draft, command) => {
     if (
       typeof command.target === "string" &&
@@ -254,6 +263,7 @@ const agentList = {
   tag: "agent.list",
   fields: {},
   meta: agentPluginMeta("list agents and where they live", "workspace", "agent"),
+  resources: () => [],
   reduce: (draft) => draft.setResult(draft.listAgents()),
 } satisfies DaemonCommandRegistration;
 
@@ -261,6 +271,7 @@ const agentGet = {
   tag: "agent.get",
   fields: { target: S.String },
   meta: agentPluginMeta("one agent, by its session id", "workspace", "agent"),
+  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
   reduce: (draft, command) =>
     draft.setResult(draft.getAgent(typeof command.target === "string" ? command.target : "")),
 } satisfies DaemonCommandRegistration;
@@ -269,6 +280,7 @@ const agentLogs = {
   tag: "agent.logs",
   fields: { target: S.String, lines: S.optionalKey(S.Int) },
   meta: agentPluginMeta("read the harness durable log", "session", "agent"),
+  resources: (args) => (typeof args.target === "string" ? [args.target] : []),
   run: (command, context) => {
     if (typeof command.target !== "string")
       return Effect.fail(new CommandError({ message: "agent.logs requires target" }));

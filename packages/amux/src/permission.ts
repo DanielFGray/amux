@@ -79,15 +79,26 @@ export function evaluate(
  *
  * A single `deny` refuses the whole call and a single `ask` blocks it, whatever
  * the other resources evaluate to: `ls && rm -rf /` is not two thirds allowed.
+ *
+ * An empty resource list is a verb-only check: only rules whose resource
+ * pattern is exactly `*` apply. Resource-scoped rules cannot match a call that
+ * names no resource.
  */
 export function evaluateAll(
   action: string,
   resources: readonly string[],
   rules: readonly PermissionRule[],
 ): PermissionEffect {
+  if (resources.length === 0) {
+    const matched = rules.filter(
+      (rule) => matchWildcard(action, rule.action) && rule.resource === "*",
+    );
+    if (matched.some((rule) => rule.effect === "deny")) return "deny";
+    return matched.at(-1)?.effect ?? "ask";
+  }
   const effects = resources.map((resource) => evaluate(action, resource, rules));
   if (effects.includes("deny")) return "deny";
-  return effects.includes("ask") || effects.length === 0 ? "ask" : "allow";
+  return effects.includes("ask") ? "ask" : "allow";
 }
 
 /**

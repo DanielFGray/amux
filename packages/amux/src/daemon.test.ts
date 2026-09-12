@@ -1420,6 +1420,7 @@ export default definePlugin({
         tag: "test.on-session-live-probe",
         fields: {},
         meta: { desc: "probe", group: "test", target: "session", exposure: "human" },
+        resources: () => [],
         onSessionLive: (session) =>
           Effect.sync(() => {
             require("node:fs").appendFileSync(${JSON.stringify(marker)}, session.id + "\\n");

@@ -87,12 +87,26 @@ type CommandDef<T extends string, Fields extends S.Struct.Fields, Sch extends S.
   readonly arguments: S.Codec<any>;
   readonly schema: Sch;
   readonly result: R;
+  /** What the decoded args name — subjects a resource-scoped rule can match. */
+  readonly resources: (args: S.Struct.Type<Fields>) => readonly string[];
 };
+
+/**
+ * Present string/number args that name what the verb touches. Absent optionals
+ * are omitted — never invent the focused pane, active space, or similar.
+ */
+const resourcesOf = (
+  ...values: ReadonlyArray<string | number | undefined>
+): readonly string[] => values.flatMap((value) => (value === undefined ? [] : [String(value)]));
+
+/** A command whose decoded args name nothing a rule can scope. */
+const noResources = (): readonly string[] => [];
 
 const define = <const Tag extends string, Fields extends S.Struct.Fields, R = typeof S.Void>(
   tag: Tag,
   fields: Fields,
   meta: Meta,
+  resources: (args: S.Struct.Type<Fields>) => readonly string[],
   result?: R,
 ): CommandDef<
   Tag,
@@ -112,6 +126,7 @@ const define = <const Tag extends string, Fields extends S.Struct.Fields, R = ty
   }) as any,
   arguments: S.Struct(fields) as any,
   result: (result ?? S.Void) as any,
+  resources,
 });
 
 /**
@@ -150,6 +165,8 @@ const Axis = S.Literals(["row", "column"]);
 const Direction = S.Literals(["left", "right", "up", "down"]);
 
 // Panes.
+const paneTargetResources = (args: { pane?: string }): readonly string[] => resourcesOf(args.pane);
+
 const PaneSplit = define(
   "pane.split",
   { axis: Axis, cwd: S.optionalKey(S.String), ...PaneTarget },
@@ -159,6 +176,7 @@ const PaneSplit = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.cwd, args.pane),
   creationResultSchema("pane.split"),
 );
 /**
@@ -178,6 +196,7 @@ const PaneOpenPlugin = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.type, args.pane),
   creationResultSchema("pane.open-plugin"),
 );
 /**
@@ -211,6 +230,7 @@ const ProcessPluginPaneOpen = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.plugin, args.entrypoint, args.cwd, args.pane),
   creationResultSchema("process-plugin.pane.open"),
 );
 /**
@@ -229,6 +249,7 @@ const ProcessPluginActionInvoke = define(
     target: "server",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.plugin, args.action),
 );
 const PaneNext = define(
   "pane.next",
@@ -239,6 +260,7 @@ const PaneNext = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const PaneLast = define(
   "pane.last",
@@ -249,6 +271,7 @@ const PaneLast = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const PaneFocus = define(
   "pane.focus",
@@ -259,6 +282,7 @@ const PaneFocus = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const PaneSelect = define(
   "pane.select",
@@ -269,6 +293,7 @@ const PaneSelect = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.pane),
 );
 const PaneResize = define(
   "pane.resize",
@@ -279,6 +304,7 @@ const PaneResize = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 const PaneResizeDivider = define(
   "pane.resize-divider",
@@ -289,6 +315,7 @@ const PaneResizeDivider = define(
     target: "workspace",
     exposure: "human",
   },
+  noResources,
 );
 const PaneSetSize = define(
   "pane.set-size",
@@ -304,6 +331,7 @@ const PaneSetSize = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 const PaneZoom = define(
   "pane.zoom",
@@ -314,6 +342,7 @@ const PaneZoom = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 const PaneFloat = define(
   "pane.float",
@@ -324,6 +353,7 @@ const PaneFloat = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 const PaneDock = <
   const Tag extends "pane.dock-left" | "pane.dock-right" | "pane.dock-top" | "pane.dock-bottom",
@@ -340,6 +370,7 @@ const PaneDock = <
       target: "workspace",
       exposure: "human",
     },
+    paneTargetResources,
   );
 const PaneDockLeft = PaneDock("pane.dock-left", "left");
 const PaneDockRight = PaneDock("pane.dock-right", "right");
@@ -354,6 +385,7 @@ const PaneUndock = define(
     target: "workspace",
     exposure: "human",
   },
+  paneTargetResources,
 );
 const PaneSwap = define(
   "pane.swap",
@@ -364,6 +396,7 @@ const PaneSwap = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 const PaneClose = define(
   "pane.close",
@@ -374,6 +407,7 @@ const PaneClose = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 const PaneBreak = define(
   "pane.break",
@@ -384,6 +418,7 @@ const PaneBreak = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 const PaneJoin = define(
   "pane.join",
@@ -394,6 +429,7 @@ const PaneJoin = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.source, args.pane),
 );
 /**
  * A pane moved to another space gets a new space-qualified id. The move
@@ -416,6 +452,7 @@ const PaneMove = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.space, args.pane),
   PaneMoveResult,
 );
 // "client" is the fallback the daemon reaches for a client-only pane (no
@@ -433,6 +470,7 @@ const PaneSendKeys = define(
     target: "client",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 // Capture opens a local overlay when unbound from a target (human keybind).
 // Remotely, a session-backed pane is captured by the daemon (pty grid); a
@@ -448,6 +486,7 @@ const PaneCapture = define(
     target: "client",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.session, args.pane),
   S.String,
 );
 // The machine-facing read surface (ts-33067b). These are pure projections of
@@ -462,6 +501,7 @@ const PaneList = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
   PaneListResultSchema,
 );
 const PaneCurrent = define(
@@ -473,6 +513,7 @@ const PaneCurrent = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
   PaneCurrentResultSchema,
 );
 const PaneLayout = define(
@@ -484,6 +525,7 @@ const PaneLayout = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
   PaneLayoutResultSchema,
 );
 const PaneCopyMode = define(
@@ -495,6 +537,7 @@ const PaneCopyMode = define(
     target: "view",
     exposure: "human",
   },
+  noResources,
 );
 const PaneSetDescriptor = define(
   "pane.set-descriptor",
@@ -505,6 +548,7 @@ const PaneSetDescriptor = define(
     target: "workspace",
     exposure: "agent",
   },
+  paneTargetResources,
 );
 
 // Buffers — tmux's paste-buffer family. The stack itself lives on the daemon,
@@ -520,6 +564,7 @@ const BufferSet = define(
     target: "buffers",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.name),
   S.String,
 );
 const BufferPaste = define(
@@ -531,6 +576,7 @@ const BufferPaste = define(
     target: "view",
     exposure: "human",
   },
+  (args) => resourcesOf(args.name),
 );
 const BufferList = define(
   "buffer.list",
@@ -541,6 +587,7 @@ const BufferList = define(
     target: "buffers",
     exposure: "agent",
   },
+  noResources,
   S.Array(S.Struct({ name: S.String, bytes: S.Int, preview: S.String })),
 );
 const BufferDelete = define(
@@ -552,6 +599,7 @@ const BufferDelete = define(
     target: "buffers",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.name),
 );
 const BufferShow = define(
   "buffer.show",
@@ -562,6 +610,7 @@ const BufferShow = define(
     target: "buffers",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.name),
   S.String,
 );
 const BufferChoose = define(
@@ -573,9 +622,15 @@ const BufferChoose = define(
     target: "view",
     exposure: "human",
   },
+  noResources,
 );
 
 // Windows.
+const windowTargetResources = (args: {
+  space?: string;
+  window?: number;
+}): readonly string[] => resourcesOf(args.space, args.window);
+
 const WindowNew = define(
   "window.new",
   {},
@@ -585,6 +640,7 @@ const WindowNew = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
   creationResultSchema("window.new"),
 );
 const WindowNext = define(
@@ -596,6 +652,7 @@ const WindowNext = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const WindowPrevious = define(
   "window.previous",
@@ -606,6 +663,7 @@ const WindowPrevious = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const WindowLast = define(
   "window.last",
@@ -616,6 +674,7 @@ const WindowLast = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const WindowSelect = define(
   "window.select",
@@ -626,6 +685,7 @@ const WindowSelect = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.space, args.number),
 );
 const WindowRename = define(
   "window.rename",
@@ -636,13 +696,19 @@ const WindowRename = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.space, args.window, args.name),
 );
-const WindowClose = define("window.close", Window, {
-  desc: "kill a window and its agents",
-  group: "windows",
-  target: "workspace",
-  exposure: "agent",
-});
+const WindowClose = define(
+  "window.close",
+  Window,
+  {
+    desc: "kill a window and its agents",
+    group: "windows",
+    target: "workspace",
+    exposure: "agent",
+  },
+  windowTargetResources,
+);
 const WindowNextLayout = define(
   "window.next-layout",
   {},
@@ -652,6 +718,7 @@ const WindowNextLayout = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const WindowSelectLayout = define(
   "window.select-layout",
@@ -662,6 +729,7 @@ const WindowSelectLayout = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.preset),
 );
 const WindowSynchronize = define(
   "window.synchronize-panes",
@@ -672,13 +740,19 @@ const WindowSynchronize = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
-const WorkspaceRebuildTiling = define("workspace.rebuild-tiling", Window, {
-  desc: "rebuild tiled arrangements with the elected algorithm",
-  group: "workspace",
-  target: "workspace",
-  exposure: "human",
-});
+const WorkspaceRebuildTiling = define(
+  "workspace.rebuild-tiling",
+  Window,
+  {
+    desc: "rebuild tiled arrangements with the elected algorithm",
+    group: "workspace",
+    target: "workspace",
+    exposure: "human",
+  },
+  windowTargetResources,
+);
 const WindowList = define(
   "window.list",
   {},
@@ -688,16 +762,22 @@ const WindowList = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
   WindowListResultSchema,
 );
 
 // Agents.
-const SessionKill = define("session.kill", AgentTarget, {
-  desc: "stop a session",
-  group: "sessions",
-  target: "workspace",
-  exposure: "agent",
-});
+const SessionKill = define(
+  "session.kill",
+  AgentTarget,
+  {
+    desc: "stop a session",
+    group: "sessions",
+    target: "workspace",
+    exposure: "agent",
+  },
+  (args) => resourcesOf(args.target),
+);
 /** Opaque control payload for a plugin-owned component session. The daemon
  * orders and routes it; interpreting it is the component's responsibility. */
 const SessionMessage = define(
@@ -709,6 +789,7 @@ const SessionMessage = define(
     target: "session",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.target),
 );
 const Notify = define(
   "notify",
@@ -719,13 +800,19 @@ const Notify = define(
     target: "session",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.session),
 );
-const SessionRestart = define("session.restart", AgentTarget, {
-  desc: "restart an exited session",
-  group: "sessions",
-  target: "workspace",
-  exposure: "agent",
-});
+const SessionRestart = define(
+  "session.restart",
+  AgentTarget,
+  {
+    desc: "restart an exited session",
+    group: "sessions",
+    target: "workspace",
+    exposure: "agent",
+  },
+  (args) => resourcesOf(args.target),
+);
 const SessionReveal = define(
   "session.reveal",
   { target: S.String },
@@ -735,6 +822,7 @@ const SessionReveal = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.target),
 );
 const SessionNextBlocked = define(
   "session.next-blocked",
@@ -745,6 +833,7 @@ const SessionNextBlocked = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 
 // Spaces.
@@ -762,6 +851,7 @@ const SpaceNew = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.name, args.dir, args.branch, args.base),
   creationResultSchema("space.new"),
 );
 const SpaceSelect = define(
@@ -773,6 +863,7 @@ const SpaceSelect = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.space),
 );
 const SpaceRename = define(
   "space.rename",
@@ -783,13 +874,19 @@ const SpaceRename = define(
     target: "workspace",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.space, args.name),
 );
-const SpaceClose = define("space.close", Space, {
-  desc: "close a space and everything in it",
-  group: "spaces",
-  target: "workspace",
-  exposure: "agent",
-});
+const SpaceClose = define(
+  "space.close",
+  Space,
+  {
+    desc: "close a space and everything in it",
+    group: "spaces",
+    target: "workspace",
+    exposure: "agent",
+  },
+  (args) => resourcesOf(args.space),
+);
 const SpaceNext = define(
   "space.next",
   {},
@@ -799,6 +896,7 @@ const SpaceNext = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const SpacePrevious = define(
   "space.previous",
@@ -809,6 +907,7 @@ const SpacePrevious = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
 );
 const SpaceList = define(
   "space.list",
@@ -819,6 +918,7 @@ const SpaceList = define(
     target: "workspace",
     exposure: "agent",
   },
+  noResources,
   SpaceListResultSchema,
 );
 
@@ -840,6 +940,7 @@ const ConfigSet = define(
   "config.set",
   { name: S.String, value: S.Union([S.String, S.Finite, S.Boolean]) },
   { desc: "set an option", group: "config", target: "view", exposure: "human" },
+  (args) => resourcesOf(args.name),
 );
 const ConfigToggle = define(
   "config.toggle",
@@ -850,6 +951,7 @@ const ConfigToggle = define(
     target: "view",
     exposure: "human",
   },
+  (args) => resourcesOf(args.name),
 );
 const ConfigAdjust = define(
   "config.adjust",
@@ -860,6 +962,7 @@ const ConfigAdjust = define(
     target: "view",
     exposure: "human",
   },
+  (args) => resourcesOf(args.name),
 );
 const ConfigReset = define(
   "config.reset",
@@ -870,6 +973,7 @@ const ConfigReset = define(
     target: "view",
     exposure: "human",
   },
+  (args) => resourcesOf(args.name),
 );
 
 /**
@@ -889,6 +993,7 @@ const PluginReload = define(
     target: "server",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.plugin),
 );
 /**
  * In-session authorship: materialize `source` into the scratch plugin dir and
@@ -907,6 +1012,7 @@ const PluginEval = define(
     target: "client",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.plugin),
   S.Struct({ plugin: S.String, path: S.String }),
 );
 /**
@@ -922,6 +1028,7 @@ const PluginPromote = define(
     target: "client",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.plugin),
   S.Struct({ plugin: S.String, path: S.String }),
 );
 /**
@@ -943,6 +1050,7 @@ const PluginInspect = define(
     target: "client",
     exposure: "agent",
   },
+  (args) => resourcesOf(args.command, args.binding, args.key, args.pane, args.plugin),
   // Result shape lives in plugin/inspect.ts; duplicated fields here so the
   // command table stays the wire schema (commands.ts owns CLI/agent surfaces).
   S.Struct({
@@ -984,6 +1092,7 @@ const AppDescribeKey = define(
     target: "view",
     exposure: "human",
   },
+  (args) => resourcesOf(args.command, args.binding, args.key, args.pane, args.plugin),
 );
 const PluginEnable = define(
   "plugin.enable",
@@ -994,6 +1103,7 @@ const PluginEnable = define(
     target: "view",
     exposure: "human",
   },
+  (args) => resourcesOf(args.plugin),
 );
 const PluginDisable = define(
   "plugin.disable",
@@ -1004,6 +1114,7 @@ const PluginDisable = define(
     target: "view",
     exposure: "human",
   },
+  (args) => resourcesOf(args.plugin),
 );
 
 // The app itself. These drive overlays and the local terminal.
@@ -1011,6 +1122,7 @@ const AppHelp = define(
   "app.help",
   {},
   { desc: "keybinds", group: "global", target: "view", exposure: "human" },
+  noResources,
 );
 const AppPalette = define(
   "app.command-palette",
@@ -1021,11 +1133,13 @@ const AppPalette = define(
     target: "view",
     exposure: "human",
   },
+  noResources,
 );
 const AppSettings = define(
   "app.settings",
   {},
   { desc: "settings", group: "global", target: "view", exposure: "human" },
+  noResources,
 );
 const AppSendPrefix = define(
   "app.send-prefix",
@@ -1036,6 +1150,7 @@ const AppSendPrefix = define(
     target: "view",
     exposure: "human",
   },
+  noResources,
 );
 /**
  * Leaving the app detaches from the session; it does not end it.
@@ -1055,6 +1170,7 @@ const AppQuit = define(
     target: "view",
     exposure: "human",
   },
+  noResources,
 );
 
 /** Every verb, in the order the surfaces list them. */
@@ -1325,6 +1441,7 @@ export const RuntimeCommandSchema = S.StructWithRest(S.Struct({ _tag: S.String }
 interface CommandEntry {
   readonly meta: CommandMeta;
   readonly schema: S.Codec<any>;
+  readonly resources: (args: any) => readonly string[];
   readonly handler: (
     args: any,
   ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>;
@@ -1367,6 +1484,12 @@ export interface Commands {
   /** Whether a command tag is remotely invocable. Same absent-tag behavior. */
   readonly isRemoteCommand: (tag: string) => boolean;
   /**
+   * Declared resources for a decoded command value. Undefined when the tag is
+   * unregistered — the next gate (Commands.run) only asks after a successful
+   * decode against a known entry.
+   */
+  readonly resourcesFor: (command: RuntimeCommand) => readonly string[] | undefined;
+  /**
    * Claim `plugin.<pluginId>.<verb>` for the lifetime of the plugin instance.
    *
    * Args are validated on the way in here (the fields must form a real
@@ -1381,6 +1504,7 @@ export interface Commands {
     verb: string,
     fields: Fields,
     meta: Meta,
+    resources: (args: S.Struct.Type<Fields>) => readonly string[],
     handler: (
       args: S.Struct.Type<Fields>,
     ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
@@ -1396,6 +1520,7 @@ export interface Commands {
     tag: string,
     fields: Fields,
     meta: Meta,
+    resources: (args: S.Struct.Type<Fields>) => readonly string[],
     handler: (
       args: S.Struct.Type<Fields>,
     ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
@@ -1417,6 +1542,7 @@ export const makeCommands = (
       {
         meta: COMMAND_META[def.tag],
         schema: def.schema,
+        resources: def.resources as (args: any) => readonly string[],
         handler:
           (handlers as CommandHandlerTable)[def.tag] ??
           (() => Effect.fail(new CommandError({ message: `unknown command: ${def.tag}` }))),
@@ -1446,6 +1572,7 @@ export const makeCommands = (
     tag: string,
     fields: S.Struct.Fields,
     meta: Meta,
+    resources: (args: any) => readonly string[],
     handler: (
       args: any,
     ) => Effect.Effect<unknown, CommandError, Realm | CurrentInvocation>,
@@ -1464,6 +1591,7 @@ export const makeCommands = (
         exposure: meta.exposure,
       },
       schema: schema as any,
+      resources,
       handler,
     };
     entries.set(tag, entry);
@@ -1472,11 +1600,27 @@ export const makeCommands = (
     };
   };
 
-  const registerCommand: Commands["registerCommand"] = (pluginId, verb, fields, meta, handler) =>
-    claim(`plugin.${pluginId}.${verb}`, fields, meta, handler);
+  const registerCommand: Commands["registerCommand"] = (
+    pluginId,
+    verb,
+    fields,
+    meta,
+    resources,
+    handler,
+  ) => claim(`plugin.${pluginId}.${verb}`, fields, meta, resources, handler);
 
-  const registerFullCommand: Commands["registerFullCommand"] = (tag, fields, meta, handler) =>
-    claim(tag, fields, meta, handler);
+  const registerFullCommand: Commands["registerFullCommand"] = (
+    tag,
+    fields,
+    meta,
+    resources,
+    handler,
+  ) => claim(tag, fields, meta, resources, handler);
+
+  const resourcesFor: Commands["resourcesFor"] = (command) => {
+    const entry = entries.get(command._tag);
+    return entry === undefined ? undefined : entry.resources(command);
+  };
 
   const run = ((command: RuntimeCommand, invocation: CommandInvocation) =>
     // Suspended, because a caller builds the effect once — a binding's `run` is
@@ -1521,6 +1665,7 @@ export const makeCommands = (
       const meta = metaFor(tag);
       return meta ? isRemoteCommand(meta.target) : false;
     },
+    resourcesFor,
     registerCommand,
     registerFullCommand,
   };

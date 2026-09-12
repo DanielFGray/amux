@@ -9,13 +9,14 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { createBindings } from "./bindings.ts";
 import {
   combineConstraintRules,
+  combineConstraintRulesAll,
   createConstraintTable,
   DEFAULT_CONSTRAINT_SOURCE,
   type ConstraintRank,
   type ConstraintRule,
   type ConstraintSource,
 } from "./constraint.ts";
-import { DEFAULT_RULES, evaluate, type PermissionRule } from "./permission.ts";
+import { DEFAULT_RULES, evaluate, evaluateAll, type PermissionRule } from "./permission.ts";
 
 const rule = (
   action: string,
@@ -234,4 +235,46 @@ test("invoke refuses a command when constraints decide deny", async () => {
   } finally {
     t.renderer.destroy();
   }
+});
+
+test("combineConstraintRulesAll: resource-scoped rules match declared resources", () => {
+  const ranked = [
+    {
+      rank: "config" as const,
+      rules: [
+        rule("*", "*", "allow"),
+        rule("pane.close", "editor-*", "deny"),
+        rule("pane.close", "shell-*", "ask"),
+      ],
+    },
+  ];
+  expect(combineConstraintRulesAll(ranked, "pane.close", ["editor-1"])).toBe("deny");
+  expect(combineConstraintRulesAll(ranked, "pane.close", ["shell-1"])).toBe("ask");
+  expect(combineConstraintRulesAll(ranked, "pane.close", ["term-1"])).toBe("allow");
+  expect(combineConstraintRulesAll(ranked, "pane.close", ["shell-1", "editor-2"])).toBe("deny");
+  // Same as permission.evaluateAll for each resource.
+  for (const resources of [["editor-1"], ["shell-1"], ["term-1"], ["shell-1", "editor-2"]] as const) {
+    expect(combineConstraintRulesAll(ranked, "pane.close", resources)).toBe(
+      evaluateAll("pane.close", resources, ranked[0]!.rules),
+    );
+  }
+});
+
+test("combineConstraintRulesAll: empty resources match only '*' resource rules", () => {
+  const ranked = [
+    {
+      rank: "config" as const,
+      rules: [
+        rule("*", "*", "allow"),
+        rule("pane.close", "editor-*", "deny"),
+        rule("pane.zoom", "*", "deny"),
+      ],
+    },
+  ];
+  // [] is verb-only — the editor-* deny does not fire.
+  expect(combineConstraintRulesAll(ranked, "pane.close", [])).toBe("allow");
+  expect(combineConstraintRulesAll(ranked, "pane.zoom", [])).toBe("deny");
+  expect(combineConstraintRulesAll(ranked, "pane.close", [])).toBe(
+    evaluateAll("pane.close", [], ranked[0]!.rules),
+  );
 });

@@ -2049,6 +2049,7 @@ function buildApp(
       list: rawCommands.list,
       isWorkspaceCommand: rawCommands.isWorkspaceCommand,
       isRemoteCommand: rawCommands.isRemoteCommand,
+      resourcesFor: rawCommands.resourcesFor,
     },
     (owner, registration: CommandRegistration) =>
       rawCommands.registerCommand(
@@ -2056,6 +2057,7 @@ function buildApp(
         registration.verb,
         registration.fields,
         registration.meta,
+        registration.resources,
         registration.handler,
       ),
   );

@@ -176,6 +176,7 @@ export function testPluginEnvironment(
         list: rawCommands.list,
         isWorkspaceCommand: rawCommands.isWorkspaceCommand,
         isRemoteCommand: rawCommands.isRemoteCommand,
+        resourcesFor: rawCommands.resourcesFor,
       },
       registries.commands,
     ),

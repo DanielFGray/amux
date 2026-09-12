@@ -39,6 +39,7 @@ export const notificationsPlugin: PluginDefinition = definePlugin({
           target: "server",
           exposure: "human",
         },
+        () => [],
         (args) =>
           Effect.sync(() => {
             for (let i = 0; i < (args.times ?? 1); i++) process.stdout.write("\x07");

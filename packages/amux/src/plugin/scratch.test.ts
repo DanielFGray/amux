@@ -46,6 +46,7 @@ const scratchSource = (id: string, generation: string, verb = "send-selection") 
          "${verb}",
          { text: S.optional(S.String) },
          { desc: "spike: send selection to review", group: "scratch", target: "server", exposure: "human" },
+         () => [],
          (args) => Effect.sync(() => {
            (globalThis.AMUX_SCRATCH_TEST ??= []).push("run:${generation}:" + (args.text ?? ""));
          }),

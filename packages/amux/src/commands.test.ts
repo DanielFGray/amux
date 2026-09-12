@@ -323,6 +323,29 @@ test("command result types match the declared schema", () => {
   expect(Schema.decodeSync(paneZoomDef.result)(undefined)).toBe(undefined);
 });
 
+test("built-in commands declare resources from decoded args", () => {
+  const { handlers } = recording();
+  const commands = makeCommands(handlers);
+
+  expect(commands.resourcesFor(command("pane.next"))).toEqual([]);
+  expect(commands.resourcesFor(command("pane.select", { pane: "p1" }))).toEqual(["p1"]);
+  expect(commands.resourcesFor(command("pane.split", { axis: "row", cwd: "/tmp" }))).toEqual([
+    "/tmp",
+  ]);
+  expect(commands.resourcesFor(command("pane.zoom"))).toEqual([]);
+  expect(commands.resourcesFor(command("pane.zoom", { pane: "editor-1" }))).toEqual(["editor-1"]);
+  expect(commands.resourcesFor(command("window.select", { number: 3 }))).toEqual(["3"]);
+  expect(commands.resourcesFor(command("config.set", { name: "sidebar.open", value: true }))).toEqual(
+    ["sidebar.open"],
+  );
+  // Every core verb has a declaration — typecheck already requires it; this
+  // proves the runtime table retained each one.
+  for (const def of COMMAND_DEFS) {
+    expect(typeof def.resources).toBe("function");
+    expect(Array.isArray(def.resources({} as never))).toBe(true);
+  }
+});
+
 test("a plugin registers a verb under its own namespace and it dispatches, lists, and validates", () => {
   const { handlers } = recording();
   const commands = makeCommands(handlers);
@@ -338,6 +361,7 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
       target: "workspace",
       exposure: "agent",
     },
+    (args) => (args.target !== undefined ? [args.target] : []),
     (args) => Effect.sync(() => void seen.push(args)).pipe(Effect.as("focused")),
   );
 
@@ -348,6 +372,10 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
     ),
   ).toBe("focused");
   expect(seen).toEqual([{ _tag: "plugin.agent-awareness.focus", target: "pane-1" }]);
+  expect(commands.resourcesFor({ _tag: "plugin.agent-awareness.focus", target: "pane-1" })).toEqual([
+    "pane-1",
+  ]);
+  expect(commands.resourcesFor({ _tag: "plugin.nobody.nothing" })).toBeUndefined();
 
   // Arguments are validated against the registered schema, not trusted as-is.
   const badArgs = Effect.runSync(
@@ -368,6 +396,7 @@ test("a plugin registers a verb under its own namespace and it dispatches, lists
       "focus",
       {},
       { desc: "x", group: "x", target: "view", exposure: "human" },
+      () => [],
       () => Effect.void,
     ),
   ).toThrow();
@@ -394,12 +423,18 @@ test("runtime core arguments are validated before reaching a handler", () => {
 test("a disposed command cannot remove its replacement and saved effects use the current owner", () => {
   const commands = makeCommands(recording().handlers);
   const meta = { desc: "test", group: "test", target: "view", exposure: "human" } as const;
-  const dispose = commands.registerFullCommand("custom.run", {}, meta, () => Effect.succeed("old"));
+  const dispose = commands.registerFullCommand("custom.run", {}, meta, () => [], () =>
+    Effect.succeed("old"),
+  );
   const saved = commands.run({ _tag: "custom.run" }, inv);
   expect(Effect.runSync(saved)).toBe("old");
   dispose();
-  const disposeReplacement = commands.registerFullCommand("custom.run", {}, meta, () =>
-    Effect.succeed("new"),
+  const disposeReplacement = commands.registerFullCommand(
+    "custom.run",
+    {},
+    meta,
+    () => [],
+    () => Effect.succeed("new"),
   );
   dispose();
   expect(Effect.runSync(saved)).toBe("new");
@@ -420,6 +455,7 @@ test("prototype property names are ordinary unregistered tags", () => {
     "constructor",
     {},
     { desc: "test", group: "test", target: "view", exposure: "human" },
+    () => [],
     () => Effect.succeed("registered"),
   );
   expect(Effect.runSync(commands.run({ _tag: "constructor" }, inv))).toBe("registered");

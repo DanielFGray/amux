@@ -20,6 +20,7 @@ const editorOpen = {
     split: S.optionalKey(S.Boolean),
   },
   meta: { desc: "open an editor pane", group: "editor", target: "workspace", exposure: "human" },
+  resources: (args) => (typeof args.file === "string" ? [args.file] : []),
   reduce: (draft, command, context) => {
     // From inside a pane (CLI / shell with AMUX_PANE_ID, or the focused leaf
     // from the client): replace that leaf and keep the displaced PTY alive.

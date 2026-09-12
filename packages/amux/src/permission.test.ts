@@ -68,6 +68,32 @@ test("one denied resource denies the whole call", () => {
   expect(evaluateAll("bash", ["ls -la", "rm -rf /"], rules)).toBe("deny");
 });
 
-test("an action with no resources is asked about rather than waved through", () => {
-  expect(evaluateAll("bash", [], [{ action: "*", resource: "*", effect: "allow" }])).toBe("ask");
+test("an empty resource list is verb-only: only rules whose resource is '*' apply", () => {
+  const rules: PermissionRule[] = [
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "bash", resource: "rm *", effect: "deny" },
+    { action: "pane.close", resource: "pane-*", effect: "deny" },
+  ];
+  // [] does not invent a resource — resource-scoped denies stay inert.
+  expect(evaluateAll("bash", [], rules)).toBe("allow");
+  expect(evaluateAll("pane.close", [], rules)).toBe("allow");
+  expect(evaluateAll("bash", [], [{ action: "bash", resource: "rm *", effect: "deny" }])).toBe(
+    "ask",
+  );
+  expect(
+    evaluateAll("bash", [], [
+      { action: "*", resource: "*", effect: "ask" },
+      { action: "bash", resource: "*", effect: "deny" },
+    ]),
+  ).toBe("deny");
+});
+
+test("resource-scoped rules match declared resources, not the literal '*'", () => {
+  const rules: PermissionRule[] = [
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "pane.close", resource: "editor-*", effect: "deny" },
+  ];
+  expect(evaluateAll("pane.close", ["editor-1"], rules)).toBe("deny");
+  expect(evaluateAll("pane.close", ["shell-1"], rules)).toBe("allow");
+  expect(evaluateAll("pane.close", ["shell-1", "editor-2"], rules)).toBe("deny");
 });

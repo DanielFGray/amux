@@ -12,7 +12,7 @@
  * the isolated tests prove the mapping.
  */
 import { CommandError } from "./commands.ts";
-import { matchWildcard, type PermissionEffect } from "./permission.ts";
+import { evaluateAll, matchWildcard, type PermissionEffect } from "./permission.ts";
 
 /**
  * Evaluator-owned source ranks. Concatenation order is this list, never
@@ -78,6 +78,22 @@ export const combineConstraintRules = (
   );
   if (matched.some((rule) => rule.effect === "deny")) return "deny";
   return matched.at(-1)?.effect ?? "ask";
+};
+
+/**
+ * Multi-resource combine — same monoid as {@link evaluateAll}. Empty resources
+ * are verb-only: only rules whose resource pattern is exactly `*` apply.
+ */
+export const combineConstraintRulesAll = (
+  ranked: readonly { readonly rank: ConstraintRank; readonly rules: readonly ConstraintRule[] }[],
+  action: string,
+  resources: readonly string[],
+): ConstraintEffect => {
+  const ordered = CONSTRAINT_RANKS.flatMap((rank) => {
+    const entry = ranked.find((item) => item.rank === rank);
+    return entry === undefined ? [] : entry.rules;
+  });
+  return evaluateAll(action, resources, ordered);
 };
 
 export function createConstraintTable(): ConstraintTable {

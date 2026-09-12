@@ -103,6 +103,7 @@ export default definePlugin({
           target: "server",
           exposure: "human",
         },
+        (args) => (args.pane !== undefined ? [args.pane] : []),
         (args) => sendTopBufferToPane(commands.run, args.pane ?? defaultPane),
       );
     }),

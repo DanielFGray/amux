@@ -39,6 +39,7 @@ export interface CommandRegistration {
   readonly verb: string;
   readonly fields: S.Struct.Fields;
   readonly meta: Meta;
+  readonly resources: (args: any) => readonly string[];
   readonly handler: (args: any) => Effect.Effect<unknown, CommandError>;
 }
 
@@ -118,6 +119,7 @@ export interface DaemonCommandSpec {
   readonly tag: string;
   readonly fields: S.Struct.Fields;
   readonly meta: Meta;
+  readonly resources: (args: any) => readonly string[];
 }
 
 export interface DaemonCommandRegistration extends DaemonCommandSpec {
@@ -268,10 +270,11 @@ export const registerCommand = <Fields extends S.Struct.Fields>(
   verb: string,
   fields: Fields,
   meta: Meta,
+  resources: (args: S.Struct.Type<Fields>) => readonly string[],
   handler: (args: S.Struct.Type<Fields>) => Effect.Effect<unknown, CommandError>,
 ): Effect.Effect<void, never, CommandsTag | CurrentPlugin | Scope.Scope> =>
   CommandsTag.pipe(
-    Effect.flatMap((commands) => commands.register({ verb, fields, meta, handler })),
+    Effect.flatMap((commands) => commands.register({ verb, fields, meta, resources, handler })),
   );
 
 /**
