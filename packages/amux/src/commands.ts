@@ -889,6 +889,101 @@ const PluginReload = define(
     exposure: "agent",
   },
 );
+/**
+ * In-session authorship: materialize `source` into the scratch plugin dir and
+ * adopt/reload it on the attached client. Client-targeted because plugins run
+ * in clients, not the daemon — same forwarding path as pane.send-keys.
+ */
+const PluginEval = define(
+  "plugin.eval",
+  {
+    plugin: S.String.pipe(S.check(S.isMinLength(1))),
+    source: S.String.pipe(S.check(S.isMinLength(1))),
+  },
+  {
+    desc: "eval plugin source in-session (scratch adopt/reload)",
+    group: "plugins",
+    target: "client",
+    exposure: "agent",
+  },
+  S.Struct({ plugin: S.String, path: S.String }),
+);
+/**
+ * Promote a live scratch plugin into `$configDir/plugins/` and the config
+ * `plugins` array so the ordinary startup loader picks it up after restart.
+ */
+const PluginPromote = define(
+  "plugin.promote",
+  { plugin: S.String.pipe(S.check(S.isMinLength(1))) },
+  {
+    desc: "promote a scratch plugin into config plugins",
+    group: "plugins",
+    target: "client",
+    exposure: "agent",
+  },
+  S.Struct({ plugin: S.String, path: S.String }),
+);
+/**
+ * Read-only describe-key / ownership query over the live contribution tables.
+ * Client-targeted: bindings, generations, and source paths live on the client.
+ */
+const PluginInspect = define(
+  "plugin.inspect",
+  {
+    command: S.optionalKey(S.String),
+    binding: S.optionalKey(S.String),
+    key: S.optionalKey(S.String),
+    pane: S.optionalKey(S.String),
+    plugin: S.optionalKey(S.String),
+  },
+  {
+    desc: "describe what provides a command, binding, key, pane, or plugin",
+    group: "plugins",
+    target: "client",
+    exposure: "agent",
+  },
+  // Result shape lives in plugin/inspect.ts; duplicated fields here so the
+  // command table stays the wire schema (commands.ts owns CLI/agent surfaces).
+  S.Struct({
+    kind: S.Literals(["command", "binding", "key", "pane", "plugin"]),
+    name: S.String,
+    found: S.Boolean,
+    description: S.optional(S.String),
+    provider: S.optional(
+      S.Struct({
+        pluginId: S.String,
+        generation: S.optional(S.Int),
+        source: S.optional(S.String),
+        phase: S.optional(S.String),
+        waitingFor: S.Array(S.String),
+        active: S.Boolean,
+      }),
+    ),
+    whyActive: S.optional(S.String),
+    details: S.optional(S.Record(S.String, S.Unknown)),
+  }),
+);
+/**
+ * Human entry for {@link PluginInspect}: palette / bound key, defaulting to
+ * the focused pane. Renders a float panel; the agent JSON path stays
+ * `plugin.inspect`.
+ */
+const AppDescribeKey = define(
+  "app.describe-key",
+  {
+    command: S.optionalKey(S.String),
+    binding: S.optionalKey(S.String),
+    key: S.optionalKey(S.String),
+    pane: S.optionalKey(S.String),
+    plugin: S.optionalKey(S.String),
+  },
+  {
+    desc: "describe what provides the focused pane (or a named subject)",
+    group: "global",
+    target: "view",
+    exposure: "human",
+  },
+);
 const PluginEnable = define(
   "plugin.enable",
   { plugin: S.String },
@@ -1029,9 +1124,13 @@ export const COMMAND_DEFS = [
   ConfigAdjust,
   ConfigReset,
   PluginReload,
+  PluginEval,
+  PluginPromote,
+  PluginInspect,
   PluginEnable,
   PluginDisable,
   AppHelp,
+  AppDescribeKey,
   AppPalette,
   AppSettings,
   AppSendPrefix,

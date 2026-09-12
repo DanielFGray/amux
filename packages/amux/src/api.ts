@@ -116,6 +116,35 @@ export {
   type RuntimeCommand,
 } from "./commands.ts";
 
+export {
+  quoteSendKeysLiteral,
+} from "./send.ts";
+
+export {
+  evalScratch,
+  materializeScratch,
+  promoteScratch,
+  sendSelectionScratchSource,
+  sendTopBufferToPane,
+  PLUGIN_SCRATCH_DIR,
+  scratchEntryPath,
+  scratchEntryFilePath,
+  managedPluginSpecPath,
+  managedPluginEntryPath,
+} from "./plugin/scratch.ts";
+
+export {
+  inspect,
+  formatInspectResult,
+  parsePluginCommandTag,
+  provenanceFor,
+  InspectResultSchema,
+  type InspectCatalog,
+  type InspectQuery,
+  type InspectResult,
+  type PluginProvenance,
+} from "./plugin/inspect.ts";
+
 export { NO_REALM, paneRealm, Realm, realmOf, type RealmValue } from "./realm.ts";
 
 // Where a panel can be put, and what it is told about where it landed.

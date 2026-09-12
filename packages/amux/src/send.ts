@@ -260,6 +260,20 @@ function isPlainStroke(stroke: KeyStroke): boolean {
 }
 
 /**
+ * Wrap text as a send-keys quoted literal. Prefer single quotes; if the text
+ * contains `'`, use double quotes. Text that contains both quote kinds cannot
+ * be one send-keys token (adjacent quoted tokens join with a space) — callers
+ * that need arbitrary bytes should use the paste-buffer path instead.
+ */
+export function quoteSendKeysLiteral(text: string): string {
+  if (!text.includes("'")) return `'${text}'`;
+  if (!text.includes('"')) return `"${text}"`;
+  throw new SendKeysError({
+    message: "text contains both single and double quotes; use paste-buffer",
+  });
+}
+
+/**
  * Send a compiled input to a target, reporting compile errors instead of
  * throwing — the prompt path wants to show them inline and keep editing.
  * Returns null on success.

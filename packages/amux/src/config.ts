@@ -30,6 +30,22 @@ export function pluginSpecKey(spec: PluginSpec): string {
 }
 
 /**
+ * Insert or replace a plugin spec by {@link pluginSpecKey}, enabling it.
+ * Shared by `amux plugin add` and scratch promote — one writer shape.
+ */
+export function upsertPluginSpec(config: Config, spec: PluginSpec): Config {
+  const key = pluginSpecKey(spec);
+  const index = config.plugins.findIndex((entry) => pluginSpecKey(entry) === key);
+  if (index < 0) return { ...config, plugins: [...config.plugins, spec] };
+  return {
+    ...config,
+    plugins: config.plugins.map((entry, at) =>
+      at === index ? { ...entry, ...spec, enabled: true } : entry,
+    ) as PluginSpec[],
+  };
+}
+
+/**
  * The file, and nothing else.
  *
  * Both halves record only what the user changed: options.ts explains why for

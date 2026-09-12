@@ -138,7 +138,7 @@ export function testPluginEnvironment(
         }),
     },
     sessionViews: scopedRegistry(
-      { view: sessionViews.view, has: sessionViews.has },
+      { view: sessionViews.view, has: sessionViews.has, ownerOf: sessionViews.ownerOf },
       (owner, [type, view]: readonly [string, PaneView]) =>
         registries.sessionViews.register(owner, type, view),
     ),

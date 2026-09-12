@@ -8,6 +8,7 @@ import {
   tokenizeSendKeys,
   parseSendKeys,
   sendKeys,
+  quoteSendKeysLiteral,
   createKeyDispatcher,
   SendKeysError,
   type SendKeyParser,
@@ -106,6 +107,18 @@ test("unknown tokens pass through as the text they are", () => {
   // does an all-plain token, which is text either way.
   expect(encoded("'C-a'")).toBe("C-a");
   expect(encoded("C-a")).toBe("C-a");
+});
+
+test("quoteSendKeysLiteral prefers single quotes", () => {
+  expect(quoteSendKeysLiteral("hello world")).toBe("'hello world'");
+});
+
+test("quoteSendKeysLiteral uses double quotes when text has single quotes", () => {
+  expect(quoteSendKeysLiteral("it's fine")).toBe(`"it's fine"`);
+});
+
+test("quoteSendKeysLiteral refuses text with both quote kinds", () => {
+  expect(() => quoteSendKeysLiteral(`it's "fine"`)).toThrow(SendKeysError);
 });
 
 test("sendKeys writes to the target and returns null on success", () => {

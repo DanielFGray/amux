@@ -7,6 +7,7 @@ import {
   loadConfig,
   pluginSpecKey,
   saveConfig,
+  upsertPluginSpec,
   type Config,
   type PluginSpec,
 } from "../config.ts";
@@ -124,15 +125,6 @@ const persist = (
     Effect.mapError((error) => `cannot save ${configPath}: ${String(error)}`),
   );
 
-const upsertSpec = (config: { plugins: PluginSpec[] }, spec: PluginSpec): PluginSpec[] => {
-  const key = pluginSpecKey(spec);
-  const index = config.plugins.findIndex((entry) => pluginSpecKey(entry) === key);
-  if (index < 0) return [...config.plugins, spec];
-  return config.plugins.map((entry, at) =>
-    at === index ? { ...entry, ...spec, enabled: true } : entry,
-  ) as PluginSpec[];
-};
-
 const addPlugin = (
   spec: string,
   configPath: string,
@@ -149,10 +141,10 @@ const addPlugin = (
       .pipe(Effect.mapError((error) => `cannot stat '${spec}': ${String(error)}`));
     if (known) {
       const config = yield* loadConfig(configPath);
-      yield* persist(configPath, {
-        ...config,
-        plugins: upsertSpec(config, { path: resolved, enabled: true }),
-      });
+      yield* persist(
+        configPath,
+        upsertPluginSpec(config, { path: resolved, enabled: true }),
+      );
       return `added ${resolved}`;
     }
     const parsed = parsePackageSpec(spec);
@@ -181,7 +173,7 @@ const addPlugin = (
       onNone: () => ({ package: ref.name, enabled: true }) as const,
       onSome: (version) => ({ package: ref.name, version, enabled: true }) as const,
     });
-    yield* persist(configPath, { ...config, plugins: upsertSpec(config, entry) });
+    yield* persist(configPath, upsertPluginSpec(config, entry));
     return `added ${ref.name}@${installed.version}`;
   });
 
@@ -255,6 +247,6 @@ const upgradePlugin = (
       entry && "package" in entry && entry.version !== undefined
         ? { package: entry.package, version: installed.version, enabled: true }
         : entry;
-    if (next) yield* persist(configPath, { ...config, plugins: upsertSpec(config, next) });
+    if (next) yield* persist(configPath, upsertPluginSpec(config, next));
     return `upgraded ${name}@${installed.version}`;
   });

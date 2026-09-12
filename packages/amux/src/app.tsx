@@ -19,7 +19,7 @@ import { writeFile } from "node:fs/promises";
 import { ProcessState } from "./process-state.ts";
 
 import { projectWorkspace, SpaceSet } from "./space.ts";
-import { LAYOUT_PRESETS, type LayoutPreset } from "./layout.ts";
+import { LAYOUT_PRESETS, layoutRefs, type LayoutPreset } from "./layout.ts";
 import { TerminalPane } from "./pane.ts";
 import { readGit } from "./git.ts";
 import { createKeyDispatcher, sendKeys, type SendTarget } from "./send.ts";
@@ -136,6 +136,8 @@ import {
 import { makeSessionFacts } from "./session-facts.ts";
 import { createReloader } from "./plugin/reloader.ts";
 import type { PluginReloader } from "./plugin/reloader.ts";
+import { evalScratch, promoteScratch, scratchEntryFilePath } from "./plugin/scratch.ts";
+import { formatInspectResult, inspect, type InspectCatalog } from "./plugin/inspect.ts";
 import { lastGoodStoreLayer, LastGoodStoreTag } from "./plugin/last-good.ts";
 import {
   defineConsumer,
@@ -338,7 +340,7 @@ export function createApp(
     const sessionViews = createSessionViews(contributions);
     const processDisplay = createProcessDisplay(contributions);
     const sessionViewsService = scopedRegistry(
-      { view: sessionViews.view, has: sessionViews.has },
+      { view: sessionViews.view, has: sessionViews.has, ownerOf: sessionViews.ownerOf },
       (owner, [type, view]: readonly [string, PaneView]) =>
         sessionViews.register(owner, type, view),
     );
@@ -598,7 +600,7 @@ export function runModelProjections<A>(
 }
 
 function buildApp(
-  { renderer, paneHost, config, session, quit }: AppOptions,
+  appOptions: AppOptions,
   spaces: SpaceSet,
   fiberScope: Scope.Closeable,
   runFiber: AppFiberRunner,
@@ -621,6 +623,7 @@ function buildApp(
     readonly spawnProviders: SpawnProvidersService;
   },
 ): ManagedAppHandle {
+  const { renderer, paneHost, config, session, quit } = appOptions;
   /**
    * Run one of the workspace's Effect-returning methods here and now.
    *
@@ -676,6 +679,8 @@ function buildApp(
    */
   const copyMode = new CopyMode();
   copyMode.onStateChange = () => app.refresh();
+  // Filled once contribution tables exist; plugin.inspect reads it lazily.
+  let inspectCatalog: InspectCatalog | undefined;
   // The search prompt reuses the app's modal prompt; resolve feeds the query back
   // into the mode. A blank query or a cancel leaves the search untouched.
   copyMode.onSearchRequest = (dir) => {
@@ -996,12 +1001,14 @@ function buildApp(
    *  longer than the window. */
   let keybindList: ScrollBoxRenderable | null = null;
   const [commandError, setCommandError] = createSignal<string | null>(null);
+  const [inspectLines, setInspectLines] = createSignal<readonly string[] | null>(null);
   // Logs into OpenTUI's console capture and shows a compact snack. The snack
   // stays until dismissed (Escape / close / show more) rather than on a timer:
   // a message worth reading is worth copying, and a fixed auto-hide can outrun both.
   function showCommandError(message: string) {
     // @effect-diagnostics-next-line globalConsole:off -- feeds the OpenTUI console overlay.
     console.error(message);
+    setInspectLines(null);
     setCommandError(message);
   }
   function showCommandConsole() {
@@ -1893,6 +1900,95 @@ function buildApp(
         Effect.asVoid,
         Effect.mapError((error) => new CommandError({ message: errorMessage(error) })),
       ),
+    // Client-local: scratch materialize + adopt/reload. Arrives here both from
+    // a local invoke and from the daemon's runOnClient forward (CLI/agent).
+    "plugin.eval": ({ plugin, source }) =>
+      Effect.suspend(() => {
+        const reloader = pluginRuntime.reloader;
+        if (!reloader)
+          return Effect.fail(new CommandError({ message: "plugin runtime is unavailable" }));
+        return evalScratch(reloader, plugin, source).pipe(
+          Effect.provide(BunFileSystem.layer),
+          Effect.map((entry) => ({ plugin: entry.id, path: scratchEntryFilePath(entry) })),
+          Effect.tapError((error) =>
+            Effect.sync(() =>
+              showCommandError(typeof error === "string" ? error : errorMessage(error)),
+            ),
+          ),
+          Effect.mapError(
+            (error) =>
+              new CommandError({
+                message: typeof error === "string" ? error : errorMessage(error),
+              }),
+          ),
+        );
+      }),
+    "plugin.promote": ({ plugin }) =>
+      Effect.suspend(() => {
+        const reloader = pluginRuntime.reloader;
+        if (!reloader)
+          return Effect.fail(new CommandError({ message: "plugin runtime is unavailable" }));
+        const configDir = appOptions.configDir ?? dirname(CONFIG_PATH);
+        return promoteScratch(reloader, plugin, {
+          config: configState(),
+          configDir,
+          configPath: join(configDir, "config.json"),
+        }).pipe(
+          Effect.provide(BunFileSystem.layer),
+          Effect.tap((result) => Effect.sync(() => setConfigState(result.config))),
+          Effect.map((result) => ({ plugin: result.plugin, path: result.path })),
+          Effect.tapError((error) =>
+            Effect.sync(() =>
+              showCommandError(typeof error === "string" ? error : errorMessage(error)),
+            ),
+          ),
+          Effect.mapError(
+            (error) =>
+              new CommandError({
+                message: typeof error === "string" ? error : errorMessage(error),
+              }),
+          ),
+        );
+      }),
+    "plugin.inspect": (query) =>
+      Effect.suspend(() => {
+        if (!inspectCatalog)
+          return Effect.fail(new CommandError({ message: "plugin runtime is unavailable" }));
+        const result = inspect(inspectCatalog, query);
+        if (!result.found && result.description?.startsWith("plugin.inspect "))
+          return Effect.fail(new CommandError({ message: result.description }));
+        return Effect.succeed(result);
+      }),
+    "app.describe-key": (query) =>
+      Effect.sync(() => {
+        if (!inspectCatalog) {
+          showCommandError("plugin runtime is unavailable");
+          return;
+        }
+        const hasSubject =
+          (query.command !== undefined && query.command !== "") ||
+          (query.binding !== undefined && query.binding !== "") ||
+          (query.key !== undefined && query.key !== "") ||
+          (query.pane !== undefined && query.pane !== "") ||
+          (query.plugin !== undefined && query.plugin !== "");
+        const resolved = hasSubject
+          ? query
+          : (() => {
+              const pane = spaces.activeWindow?.focused?.id;
+              return pane !== undefined ? { pane } : undefined;
+            })();
+        if (resolved === undefined) {
+          showCommandError("no focused pane to describe");
+          return;
+        }
+        const result = inspect(inspectCatalog, resolved);
+        if (!result.found && result.description?.startsWith("plugin.inspect ")) {
+          showCommandError(result.description);
+          return;
+        }
+        setCommandError(null);
+        setInspectLines(formatInspectResult(result));
+      }),
     "plugin.enable": ({ plugin }) =>
       Effect.suspend(
         () =>
@@ -2260,6 +2356,11 @@ function buildApp(
     ),
     // `<prefix>/` is reserved for editor.find-file (project picker). Keep help on `?` only.
     bind("app.help", "<prefix>?", command("app.help")),
+    // Near help: ownership / describe-key for the focused pane (or a named subject).
+    // shift+k, not "K": capitals collapse to the lowercase stroke (see app.settings).
+    bind("app.describe-key", "<prefix>shift+k", command("app.describe-key"), {
+      desc: "describe focused pane / binding ownership",
+    }),
     bind("app.command-palette", "<prefix>:", command("app.command-palette")),
     // shift+s, not "S": a bare capital compiles to the same sequence as the
     // lowercase one, so this was silently shadowed by space.new's ^a s.
@@ -2375,6 +2476,29 @@ function buildApp(
     registerContext,
   );
   const contextsProvider = providerRef<ContextsService>(contextsService);
+
+  inspectCatalog = {
+    bindings: () => bindingTable.all(),
+    contexts: () => contextTable.all(),
+    paneViewOwner: (paneType) => externalProviders.sessionViews.value.ownerOf(paneType),
+    commandMeta: (tag) => {
+      if (Object.hasOwn(COMMAND_META, tag)) return COMMAND_META[tag as keyof typeof COMMAND_META];
+      return commands.list().find((meta) => meta.name === tag);
+    },
+    pluginStatus: (id) => pluginRuntime.host?.status().find((status) => status.id === id),
+    pluginGeneration: (id) => pluginRuntime.host?.generation(id),
+    pluginSource: (id) => pluginRuntime.reloader?.get(id)?.source,
+    paneContent: (paneId) => {
+      for (const space of session.workspace().spaces) {
+        for (const window of space.windows) {
+          const pane = layoutRefs(window.layout).find((candidate) => candidate.id === paneId);
+          if (pane) return pane.content;
+        }
+      }
+      return undefined;
+    },
+    keys: () => configState().keys,
+  };
 
   // Whether some active context wants the panel open the moment it was
   // entered (key-context.ts's `showOnEntry`) — reactive both to a context
@@ -3023,6 +3147,8 @@ function buildApp(
     commandError,
     clearCommandError: () => setCommandError(null),
     showCommandConsole,
+    inspectLines,
+    clearInspect: () => setInspectLines(null),
     pending: () => pending().join(" "),
     hintsVisible,
     hints,

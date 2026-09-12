@@ -7,6 +7,8 @@ export interface SessionViews {
   readonly register: (owner: PluginInstance, type: string, view: PaneView) => () => void;
   readonly view: PaneView;
   readonly has: (type: string) => boolean;
+  /** The committed owner of a pane type's view, if any. */
+  readonly ownerOf: (type: string) => PluginInstance | undefined;
 }
 
 /**
@@ -30,5 +32,6 @@ export function createSessionViews(contributions: PluginContributions): SessionV
       </Show>
     ),
     has: (type) => views.get(type) !== undefined,
+    ownerOf: (type) => views.all().find((entry) => entry.name === type)?.owner,
   };
 }

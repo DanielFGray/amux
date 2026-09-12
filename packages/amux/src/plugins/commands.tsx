@@ -14,8 +14,8 @@ import { CommandsChromeTag } from "../plugin/chrome.ts";
 import { command } from "../commands.ts";
 import { loadProcessPluginBindingSpecs } from "../process-plugin/index.ts";
 import { paletteOverlayKeys } from "./commands/keys.ts";
-import { errorOverlayKeys, promptOverlayKeys } from "./commands/overlay-keys.ts";
-import { errorPanel, hintsPanel, palettePanel, promptPanel } from "./commands/panel.tsx";
+import { errorOverlayKeys, inspectOverlayKeys, promptOverlayKeys } from "./commands/overlay-keys.ts";
+import { errorPanel, hintsPanel, inspectPanel, palettePanel, promptPanel } from "./commands/panel.tsx";
 
 /**
  * Command palette, prompt, which-key, and error snack. File-backed for
@@ -48,6 +48,7 @@ export default definePlugin({
           },
         },
         { slot: "float", occupant: errorPanel(chrome), priority: 55 },
+        { slot: "float", occupant: inspectPanel(chrome), priority: 56 },
       ];
       const specs: readonly ContextSpec[] = [
         {
@@ -69,7 +70,17 @@ export default definePlugin({
           active: () => chrome.commandError() !== null,
           priority: CONTEXT_PRIORITY.OVERLAY + 55,
           rebindable: false,
+          // Escape dismisses; other keys must reach the focused pane (ctrl+c/d).
+          blocksPane: false,
           handle: (event) => errorOverlayKeys(chrome, event),
+        },
+        {
+          id: "amux.inspect",
+          active: () => chrome.inspectLines() !== null,
+          priority: CONTEXT_PRIORITY.OVERLAY + 56,
+          rebindable: false,
+          blocksPane: false,
+          handle: (event) => inspectOverlayKeys(chrome, event),
         },
       ];
 

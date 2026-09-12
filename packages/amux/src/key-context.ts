@@ -79,6 +79,13 @@ export interface ContextSpec {
    */
   rearmHintsOnKey?: boolean;
   /**
+   * When false, an active OVERLAY-band context does not block the pane via
+   * {@link overlayBlocksPane}. Error/inspect snacks only claim Escape; every
+   * other key must still reach the PTY. Default (omit / true): declining a key
+   * means "leave it for a focused OpenTUI input", not the pane.
+   */
+  blocksPane?: boolean;
+  /**
    * The which-key panel's entry for this context, while it has no `handle`
    * substitute: a context with `handle` (above) reads its own live state to
    * decide what a key does, so there is no `CommandSpec` `nextKeys` could
@@ -138,10 +145,17 @@ export const CONTEXT_PRIORITY = {
  * to a focused OpenTUI input — palette filter, prompt field, settings edit —
  * not to the pane. `onUnhandled` must not fall through to a PTY in that case:
  * the pane would claim the key and `preventDefault` it, starving the input.
+ *
+ * Opt out with `blocksPane: false` for chrome that only claims Escape (error
+ * snack, inspect) — otherwise a sticky snack after plugin load eats ctrl+c /
+ * ctrl+d in terminals.
  */
 export function overlayBlocksPane(contexts: readonly ContextSpec[]): boolean {
   return contexts.some(
-    (context) => context.active() && context.priority >= CONTEXT_PRIORITY.OVERLAY,
+    (context) =>
+      context.active() &&
+      context.priority >= CONTEXT_PRIORITY.OVERLAY &&
+      context.blocksPane !== false,
   );
 }
 

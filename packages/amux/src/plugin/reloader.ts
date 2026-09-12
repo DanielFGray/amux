@@ -20,6 +20,19 @@ export interface PluginReloader {
   readonly reloadStale: (changed: URL) => Effect.Effect<readonly string[], string>;
   /** Every plugin amux can reload, for a request that names none. */
   readonly reloadable: () => readonly string[];
+  /** The tracked entry for `id`, if the reloader has adopted or started it. */
+  readonly get: (id: string) => PluginEntry | undefined;
+  /**
+   * Start tracking a plugin that was not in the startup set — scratch eval,
+   * or any other in-session authorship path. Fails if `id` is already tracked.
+   */
+  readonly adopt: (entry: PluginEntry) => Effect.Effect<void, string>;
+  /**
+   * Move the tracked source URL for a live plugin without tearing it down.
+   * Used after promote: the bytes already match; later reload/checkpoint must
+   * read the managed path config will load on restart, not the scratch file.
+   */
+  readonly retarget: (id: string, source: URL) => Effect.Effect<void, string>;
   readonly enable: (id: string) => Effect.Effect<void, string>;
   readonly disable: (id: string) => Effect.Effect<void, string>;
   /** Observe the one shared host error stream; stale generations are ignored. */
@@ -78,6 +91,39 @@ export const createReloader = (
   }).pipe(Effect.provide(BunFileSystem.layer));
 
   const isActive = (id: string) => host.status().some((status) => status.id === id);
+
+  const get = (id: string): PluginEntry | undefined => {
+    const current = running.get(id);
+    if (!current) return undefined;
+    return { id, source: current.source, definition: current.definition };
+  };
+
+  const adopt = (entry: PluginEntry): Effect.Effect<void, string> =>
+    Effect.gen(function* () {
+      if (running.has(entry.id))
+        return yield* Effect.fail(`plugin '${entry.id}' is already reloadable`);
+      if (entry.definition.id !== entry.id)
+        return yield* Effect.fail(
+          `entry id '${entry.id}' does not match definition id '${entry.definition.id}'`,
+        );
+      yield* host.add(entry.definition);
+      if (!isActive(entry.id)) return yield* Effect.fail(`plugin '${entry.id}' did not start`);
+      const tracked = { source: entry.source, definition: entry.definition };
+      running.set(entry.id, tracked);
+      lastGood.set(entry.id, tracked);
+    });
+
+  const retarget = (id: string, source: URL): Effect.Effect<void, string> =>
+    Effect.gen(function* () {
+      const current = running.get(id);
+      if (!current) return yield* Effect.fail(`unknown plugin '${id}'`);
+      running.set(id, { source, definition: current.definition });
+      const good = lastGood.get(id);
+      lastGood.set(id, {
+        source,
+        definition: good?.definition ?? current.definition,
+      });
+    });
 
   const enable = (id: string): Effect.Effect<void, string> =>
     Effect.gen(function* () {
@@ -192,6 +238,9 @@ export const createReloader = (
     reload,
     reloadStale,
     reloadable: () => [...running.keys()],
+    get,
+    adopt,
+    retarget,
     enable,
     disable,
     observeError,

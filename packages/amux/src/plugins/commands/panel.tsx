@@ -5,6 +5,7 @@ import { CommandPalette } from "../../ui/CommandPalette.tsx";
 import { Prompt, type PromptRequest } from "../../ui/Prompt.tsx";
 import { Hints } from "../../ui/Hints.tsx";
 import { ErrorSnack } from "../../ui/ErrorSnack.tsx";
+import { InspectPanel } from "../../ui/InspectPanel.tsx";
 import type { OverlayService } from "../../plugin/overlay.ts";
 import type { CommandsChrome } from "../../plugin/chrome.ts";
 
@@ -69,6 +70,20 @@ export const errorPanel = (chrome: CommandsChrome): FloatOccupant => ({
       width={props.width}
       onClose={chrome.clearCommandError}
       onShowMore={chrome.showCommandConsole}
+    />
+  ),
+});
+
+export const inspectPanel = (chrome: CommandsChrome): FloatOccupant => ({
+  id: "amux.inspect",
+  title: "describe",
+  visible: () => chrome.inspectLines() !== null,
+  component: (props) => (
+    <InspectPanel
+      lines={chrome.inspectLines() ?? []}
+      left={props.left}
+      width={props.width}
+      onClose={chrome.clearInspect}
     />
   ),
 });

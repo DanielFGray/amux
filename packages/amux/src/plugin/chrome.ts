@@ -86,6 +86,9 @@ export interface CommandsChrome {
   readonly clearCommandError: () => void;
   /** Dismiss the snack and open OpenTUI's captured-console overlay. */
   readonly showCommandConsole: () => void;
+  /** Human describe-key panel lines from `formatInspectResult`. */
+  readonly inspectLines: Accessor<readonly string[] | null>;
+  readonly clearInspect: () => void;
   /** Formatted pending-sequence label for the which-key panel. */
   readonly pending: Accessor<string>;
   readonly hintsVisible: Accessor<boolean>;

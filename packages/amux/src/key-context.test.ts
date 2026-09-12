@@ -162,3 +162,25 @@ test("overlayBlocksPane is true while an overlay-band context is active", () => 
   expect(overlayBlocksPane([copyMode])).toBe(false);
   expect(overlayBlocksPane([{ ...palette, active: () => false }])).toBe(false);
 });
+
+test("overlayBlocksPane ignores snacks that opt out (error/inspect)", () => {
+  // A sticky command-error snack after plugin load used to starve the PTY of
+  // ctrl+c / ctrl+d: overlay active + handle declines non-Escape → blocksPane.
+  const error: ContextSpec = {
+    id: "amux.error",
+    active: () => true,
+    priority: CONTEXT_PRIORITY.OVERLAY + 55,
+    rebindable: false,
+    blocksPane: false,
+    handle: (event) => event.name === "escape",
+  };
+  const palette: ContextSpec = {
+    id: "amux.palette",
+    active: () => true,
+    priority: CONTEXT_PRIORITY.OVERLAY + 10,
+    rebindable: false,
+    handle: () => false,
+  };
+  expect(overlayBlocksPane([error])).toBe(false);
+  expect(overlayBlocksPane([error, palette])).toBe(true);
+});

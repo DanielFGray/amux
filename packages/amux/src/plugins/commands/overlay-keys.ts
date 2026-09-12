@@ -26,3 +26,9 @@ export function errorOverlayKeys(chrome: CommandsChrome, event: KeyEvent): boole
   chrome.clearCommandError();
   return true;
 }
+
+export function inspectOverlayKeys(chrome: CommandsChrome, event: KeyEvent): boolean {
+  if (event.name !== "escape") return false;
+  chrome.clearInspect();
+  return true;
+}
