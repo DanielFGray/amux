@@ -24,10 +24,10 @@ export {
   type ProcessPluginContextOptions,
 } from "./context.ts";
 export {
-  PROCESS_PLUGIN_DATA_DIR,
-  PROCESS_PLUGIN_REGISTRY_PATH,
-  PROCESS_PLUGIN_CONFIG_ROOT,
-  PROCESS_PLUGIN_STATE_ROOT,
+  processPluginDataDir,
+  processPluginRegistryPath,
+  processPluginConfigRoot,
+  processPluginStateRoot,
   processPluginPathComponent,
   processPluginConfigDir,
   processPluginStateDir,

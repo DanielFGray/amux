@@ -151,7 +151,7 @@ const parseManifestText = (
 ): Effect.Effect<unknown, ProcessPluginManifestError> =>
   Match.value(kind).pipe(
     Match.when("json", () =>
-      S.decodeUnknownEffect(S.fromJsonString(S.Unknown))(text).pipe(
+      S.decodeEffect(S.fromJsonString(S.Unknown))(text).pipe(
         Effect.mapError(
           (error) =>
             new ProcessPluginManifestError({

@@ -13,38 +13,49 @@ import * as FileSystem from "effect/FileSystem";
  *   $XDG_DATA_HOME/amux/process-plugins/registry.json
  *   $XDG_CONFIG_HOME/amux/process-plugins/<id>/
  *   $XDG_STATE_HOME/amux/process-plugins/<id>/
+ *
+ * Paths are Effects, not module-level constants: reading XDG at import time
+ * was an Effect.runSync side effect. Callers that need the default roots
+ * yield them (see `defaultProcessPluginRoots` in registry.ts).
  */
-const xdgDataHome = Effect.runSync(
-  EffectConfig.string("XDG_DATA_HOME").pipe(
-    EffectConfig.orElse(() =>
-      EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "share"))),
-    ),
-    EffectConfig.withDefault(join(".", ".local", "share")),
+
+const xdgDataHome = EffectConfig.string("XDG_DATA_HOME").pipe(
+  EffectConfig.orElse(() =>
+    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "share"))),
   ),
+  EffectConfig.withDefault(join(".", ".local", "share")),
 );
 
-const xdgConfigHome = Effect.runSync(
-  EffectConfig.string("XDG_CONFIG_HOME").pipe(
-    EffectConfig.orElse(() =>
-      EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
-    ),
-    EffectConfig.withDefault(join(".", ".config")),
+const xdgConfigHome = EffectConfig.string("XDG_CONFIG_HOME").pipe(
+  EffectConfig.orElse(() =>
+    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".config"))),
   ),
+  EffectConfig.withDefault(join(".", ".config")),
 );
 
-const xdgStateHome = Effect.runSync(
-  EffectConfig.string("XDG_STATE_HOME").pipe(
-    EffectConfig.orElse(() =>
-      EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "state"))),
-    ),
-    EffectConfig.withDefault(join(".", ".local", "state")),
+const xdgStateHome = EffectConfig.string("XDG_STATE_HOME").pipe(
+  EffectConfig.orElse(() =>
+    EffectConfig.string("HOME").pipe(EffectConfig.map((home) => join(home, ".local", "state"))),
   ),
+  EffectConfig.withDefault(join(".", ".local", "state")),
 );
 
-export const PROCESS_PLUGIN_DATA_DIR = join(xdgDataHome, "amux", "process-plugins");
-export const PROCESS_PLUGIN_REGISTRY_PATH = join(PROCESS_PLUGIN_DATA_DIR, "registry.json");
-export const PROCESS_PLUGIN_CONFIG_ROOT = join(xdgConfigHome, "amux", "process-plugins");
-export const PROCESS_PLUGIN_STATE_ROOT = join(xdgStateHome, "amux", "process-plugins");
+export const processPluginDataDir: Effect.Effect<string> = Effect.map(xdgDataHome, (home) =>
+  join(home, "amux", "process-plugins"),
+).pipe(Effect.orDie);
+
+export const processPluginRegistryPath: Effect.Effect<string> = Effect.map(
+  processPluginDataDir,
+  (dir) => join(dir, "registry.json"),
+);
+
+export const processPluginConfigRoot: Effect.Effect<string> = Effect.map(xdgConfigHome, (home) =>
+  join(home, "amux", "process-plugins"),
+).pipe(Effect.orDie);
+
+export const processPluginStateRoot: Effect.Effect<string> = Effect.map(xdgStateHome, (home) =>
+  join(home, "amux", "process-plugins"),
+).pipe(Effect.orDie);
 
 /** Filesystem-safe path component for a plugin id (percent-encode non-safe bytes). */
 export function processPluginPathComponent(pluginId: string): string {
@@ -68,17 +79,11 @@ export function processPluginPathComponent(pluginId: string): string {
   return component.length === 0 ? "%plugin" : component;
 }
 
-export function processPluginConfigDir(
-  pluginId: string,
-  root: string = PROCESS_PLUGIN_CONFIG_ROOT,
-): string {
+export function processPluginConfigDir(pluginId: string, root: string): string {
   return join(root, processPluginPathComponent(pluginId));
 }
 
-export function processPluginStateDir(
-  pluginId: string,
-  root: string = PROCESS_PLUGIN_STATE_ROOT,
-): string {
+export function processPluginStateDir(pluginId: string, root: string): string {
   return join(root, processPluginPathComponent(pluginId));
 }
 
@@ -91,8 +96,10 @@ export const ensureProcessPluginUserDirs = (
 ): Effect.Effect<void, string, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const configDir = processPluginConfigDir(pluginId, options.configRoot);
-    const stateDir = processPluginStateDir(pluginId, options.stateRoot);
+    const configRoot = options.configRoot ?? (yield* processPluginConfigRoot);
+    const stateRoot = options.stateRoot ?? (yield* processPluginStateRoot);
+    const configDir = processPluginConfigDir(pluginId, configRoot);
+    const stateDir = processPluginStateDir(pluginId, stateRoot);
     yield* fs
       .makeDirectory(configDir, { recursive: true })
       .pipe(Effect.mapError((error) => `cannot create ${configDir}: ${String(error)}`));

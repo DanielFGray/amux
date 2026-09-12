@@ -1,5 +1,11 @@
+import { Effect, Schema as S } from "effect";
 import type { ProcessPluginManifest } from "./manifest.ts";
-import { processPluginConfigDir, processPluginStateDir } from "./paths.ts";
+import {
+  processPluginConfigDir,
+  processPluginConfigRoot,
+  processPluginStateDir,
+  processPluginStateRoot,
+} from "./paths.ts";
 
 /**
  * Environment injected into out-of-process plugin commands.
@@ -64,36 +70,41 @@ export interface ProcessPluginLaunchOptions {
   readonly stateRoot?: string;
 }
 
+const encodeContextJson = S.encodeSync(S.fromJsonString(S.Unknown));
+
 /** Build the env map for a process-plugin action or pane. */
-export function processPluginLaunchEnv(
+export const processPluginLaunchEnv = (
   options: ProcessPluginLaunchOptions,
-): Record<string, string> {
-  const env: Record<string, string> = {};
-  if (options.extraEnv) {
-    for (const [key, value] of Object.entries(options.extraEnv)) {
-      if (!isProcessPluginProtectedEnvKey(key)) env[key] = value;
+): Effect.Effect<Record<string, string>> =>
+  Effect.gen(function* () {
+    const env: Record<string, string> = {};
+    if (options.extraEnv) {
+      for (const [key, value] of Object.entries(options.extraEnv)) {
+        if (!isProcessPluginProtectedEnvKey(key)) env[key] = value;
+      }
     }
-  }
 
-  env.AMUX_ENV = "1";
-  env.AMUX_PLUGIN_ID = options.plugin.id;
-  env.AMUX_PLUGIN_ROOT = options.pluginRoot;
-  env.AMUX_PLUGIN_CONFIG_DIR = processPluginConfigDir(options.plugin.id, options.configRoot);
-  env.AMUX_PLUGIN_STATE_DIR = processPluginStateDir(options.plugin.id, options.stateRoot);
+    const configRoot = options.configRoot ?? (yield* processPluginConfigRoot);
+    const stateRoot = options.stateRoot ?? (yield* processPluginStateRoot);
 
-  if (options.binPath !== undefined) env.AMUX_BIN_PATH = options.binPath;
-  if (options.controlSocket !== undefined) env.AMUX_CONTROL_SOCKET = options.controlSocket;
-  if (options.processStateSocket !== undefined) {
-    env.AMUX_PROCESS_STATE_SOCKET = options.processStateSocket;
-  }
-  if (options.daemonSession !== undefined) env.AMUX_DAEMON_SESSION = options.daemonSession;
-  if (options.actionId !== undefined) env.AMUX_PLUGIN_ACTION_ID = options.actionId;
-  if (options.entrypointId !== undefined) env.AMUX_PLUGIN_ENTRYPOINT_ID = options.entrypointId;
-  if (options.event !== undefined) env.AMUX_PLUGIN_EVENT = options.event;
-  if (options.eventJson !== undefined) env.AMUX_PLUGIN_EVENT_JSON = options.eventJson;
+    env.AMUX_ENV = "1";
+    env.AMUX_PLUGIN_ID = options.plugin.id;
+    env.AMUX_PLUGIN_ROOT = options.pluginRoot;
+    env.AMUX_PLUGIN_CONFIG_DIR = processPluginConfigDir(options.plugin.id, configRoot);
+    env.AMUX_PLUGIN_STATE_DIR = processPluginStateDir(options.plugin.id, stateRoot);
 
-  const context = options.context ?? {};
-  env.AMUX_PLUGIN_CONTEXT_JSON = JSON.stringify(context);
+    if (options.binPath !== undefined) env.AMUX_BIN_PATH = options.binPath;
+    if (options.controlSocket !== undefined) env.AMUX_CONTROL_SOCKET = options.controlSocket;
+    if (options.processStateSocket !== undefined) {
+      env.AMUX_PROCESS_STATE_SOCKET = options.processStateSocket;
+    }
+    if (options.daemonSession !== undefined) env.AMUX_DAEMON_SESSION = options.daemonSession;
+    if (options.actionId !== undefined) env.AMUX_PLUGIN_ACTION_ID = options.actionId;
+    if (options.entrypointId !== undefined) env.AMUX_PLUGIN_ENTRYPOINT_ID = options.entrypointId;
+    if (options.event !== undefined) env.AMUX_PLUGIN_EVENT = options.event;
+    if (options.eventJson !== undefined) env.AMUX_PLUGIN_EVENT_JSON = options.eventJson;
 
-  return env;
-}
+    env.AMUX_PLUGIN_CONTEXT_JSON = encodeContextJson(options.context ?? {});
+
+    return env;
+  });

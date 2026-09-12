@@ -1,6 +1,6 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
 import { test, expect, afterEach } from "bun:test";
-import { Effect, Layer } from "effect";
+import { Effect, Exit, Layer, Scope } from "effect";
 import { MouseEvent } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { SessionHandle } from "./session-handle.ts";
@@ -24,17 +24,29 @@ const { live } = testEffect(Layer.empty);
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 
+/** Open a SessionHandle whose Scope stays alive until `close` is called. */
+const openSession = (opts: Parameters<typeof SessionHandle.make>[0]) => {
+  const scope = Scope.makeUnsafe();
+  return Effect.runPromise(
+    SessionHandle.make(opts).pipe(Effect.provideService(Scope.Scope, scope)),
+  ).then((session) => ({
+    session,
+    close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+  }));
+};
+
 /** A pane on a tombstone session (no PTY) with a real ghostty terminal, sized
  *  40x10. The pane is never mounted — CopyMode only reads the terminal and
  *  calls invalidate/copyText, neither of which needs layout. */
 async function makePane(vt: string) {
   const t = await createTestRenderer({ width: 80, height: 24 });
-  const session = new SessionHandle({
+  const opened = await openSession({
     cmd: ["true"],
     exited: { code: 0 },
     cols: 40,
     rows: 10,
   });
+  const session = opened.session;
   const pane = TerminalPane.make(t.renderer, { id: "pane", session: session }, resolveOptions({}));
   session.term.resize(40, 10);
   if (vt) session.term.write(bytes(vt));
@@ -44,7 +56,7 @@ async function makePane(vt: string) {
     pane,
     dispose: () => {
       Effect.runSync(pane.release);
-      session.dispose();
+      void opened.close();
       t.renderer.destroy();
     },
   };
@@ -777,12 +789,13 @@ test("moving up off the live bottom pins the viewport against new output", async
 
 test("the keymap enters copy mode and the leader keeps its meaning inside it", async () => {
   const t = await createTestRenderer({ width: 60, height: 12 });
-  const session = new SessionHandle({
+  const opened = await openSession({
     cmd: ["true"],
     exited: { code: 0 },
     cols: 40,
     rows: 10,
   });
+  const session = opened.session;
   const pane = TerminalPane.make(t.renderer, { id: "pane", session: session }, resolveOptions({}));
   session.term.resize(40, 10);
   session.term.write(bytes("alpha beta\r\ngamma"));
@@ -837,7 +850,7 @@ test("the keymap enters copy mode and the leader keeps its meaning inside it", a
   expect(mode.cursor).toEqual({ x: 0, y: 0 });
 
   Effect.runSync(pane.release);
-  session.dispose();
+  await opened.close();
   t.renderer.destroy();
 });
 

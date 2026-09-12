@@ -194,7 +194,9 @@ test("transient window state stays live but is omitted from persistence", () => 
     context,
   ).snapshot;
   expect(synced.spaces[0]!.windows[0]!.state.sync).toBe(true);
-  expect(workspaceSession(synced, base("null")).spaces[0]!.windows[0]).not.toHaveProperty("state");
+  expect(run(workspaceSession(synced, base("null"))).spaces[0]!.windows[0]).not.toHaveProperty(
+    "state",
+  );
 });
 
 test("commands transform a private generation and leave their input untouched", () => {
@@ -824,7 +826,7 @@ test("a window with a container layout survives the trip to an attached client",
 test("a window with a float survives the save-and-reload round trip", () => {
   const adopted = run(workspaceFromSession(twoPaneSession()));
   const floated = applyWorkspaceCommand(adopted, command("pane.float"), context).snapshot;
-  const reloaded = run(workspaceFromSession(workspaceSession(floated, base("null"))));
+  const reloaded = run(workspaceFromSession(run(workspaceSession(floated, base("null")))));
   expect(reloaded.spaces[0]!.windows[0]!.layout).toEqual(floated.spaces[0]!.windows[0]!.layout);
 });
 
@@ -872,7 +874,7 @@ test("a sessionless plugin pane survives the wire and the save round trip", () =
   const received = run(parseWorkspaceJson(JSON.stringify(withEditor)));
   expect(received.spaces[0]!.windows[0]!.layout).toEqual(expected);
 
-  const reloaded = run(workspaceFromSession(workspaceSession(withEditor, base("null"))));
+  const reloaded = run(workspaceFromSession(run(workspaceSession(withEditor, base("null")))));
   expect(reloaded.spaces[0]!.windows[0]!.layout).toEqual(expected);
 });
 

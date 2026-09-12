@@ -81,11 +81,6 @@ export class Space {
     return this.#windows.find((window) => window.number === this.#state.activeWindow) ?? null;
   }
 
-  /** Stable model identity used by persistence and, eventually, the daemon. */
-  get activeWindowNumber(): number | null {
-    return this.#state.activeWindow;
-  }
-
   /** Reconcile selection counters after windows have been projected. */
   projectState(state: SpaceState): void {
     this.#state = structuredClone(state);

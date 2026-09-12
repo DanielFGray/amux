@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Exit, Fiber, Scope, Stream } from "effect";
+import { Clock, Effect, Exit, Fiber, Scope, Stream } from "effect";
 import { RenderState, Terminal } from "./ghostty.ts";
 import {
   localPty,
@@ -66,6 +66,15 @@ function reserveAgentId(id: string) {
   if (n) nextAgentId = Math.max(nextAgentId, Number(n[1]) + 1);
 }
 
+type SessionHandleInit = {
+  readonly opts: SessionHandleOptions;
+  readonly runtime: RootRuntimeContext;
+  readonly startedAt: number;
+  readonly scope: Scope.Closeable;
+  readonly term: Terminal;
+  readonly detect: RenderState;
+};
+
 /**
  * The client's handle on one daemon-owned session: a running process and its
  * terminal state.
@@ -84,6 +93,9 @@ function reserveAgentId(id: string) {
  * local PTY is the default and the only one the UI creates today; the seam is
  * what lets a daemon-owned PTY and a restored tombstone be the same kind of
  * thing to everything above.
+ *
+ * Construct only via {@link SessionHandle.make} — construction yields Clock for
+ * `startedAt` and registers FFI finalizers on a Scope.
  */
 export class SessionHandle {
   readonly id: string;
@@ -98,11 +110,10 @@ export class SessionHandle {
   #exited = false;
   #detached = false;
   #exitCode: number | null = null;
-  #lastOutputAt = 0;
   #outputRevision = 0;
   #viewers = 0;
   #unseen = false;
-  #detect: RenderState | null = null;
+  #detect: RenderState;
   #state = new ProcessStateArbiter();
   /** Declared by whoever started this session as an agent. Fixed for its life. */
   readonly #declaredAgent: string | null;
@@ -119,9 +130,9 @@ export class SessionHandle {
    * the heap if something frees them twice, and they used to be freed by
    * dispose() remembering to name each one. Closing a scope cannot forget.
    */
-  #scope = Scope.makeUnsafe();
+  #scope: Scope.Closeable;
   #disposed = false;
-  /** The runtime #own and #pump run their Effects on; see RootRuntime in env.ts. */
+  /** The runtime #pump runs its Effects on; see RootRuntime in env.ts. */
   readonly #runtime: RootRuntimeContext;
 
   /** Bumped whenever output arrives, so views can invalidate caches. */
@@ -131,9 +142,13 @@ export class SessionHandle {
    *  sidebar's ▲ indicator stays accurate. */
   onScroll?: (session: SessionHandle) => void;
 
-  constructor(opts: SessionHandleOptions) {
-    this.#runtime = opts.runtime ?? defaultRootRuntime();
-    this.startedAt = Effect.runSyncWith(this.#runtime)(Clock.currentTimeMillis);
+  private constructor(init: SessionHandleInit) {
+    const opts = init.opts;
+    this.#runtime = init.runtime;
+    this.#scope = init.scope;
+    this.startedAt = init.startedAt;
+    this.term = init.term;
+    this.#detect = init.detect;
     this.id = opts.id ?? `agent-${nextAgentId++}`;
     this.kind = opts.kind ?? "pty";
     if (opts.id) reserveAgentId(opts.id);
@@ -144,10 +159,6 @@ export class SessionHandle {
     this.provider = opts.provider;
     const cols = opts.cols ?? 80;
     const rows = opts.rows ?? 24;
-    this.term = this.#own(
-      () => new Terminal(cols, rows),
-      (t) => t.free(),
-    );
     this.#state.register({
       authority: ProcessStateAuthority.Terminal,
       state: () => (this.#exited ? ProcessState.Done : "unknown"),
@@ -176,31 +187,33 @@ export class SessionHandle {
   }
 
   /**
-   * Allocate an FFI handle into this agent's scope.
-   *
-   * runSync is honest here rather than a shortcut: these constructors are
-   * synchronous C calls, so there is nothing to await, and the alternative is
-   * making every caller of `new Agent` an Effect before the rest of the app is
-   * ready to be one. The scope is what matters; how it is entered is not.
-   */
-  #own<A>(acquire: () => A, free: (handle: A) => void): A {
-    return Effect.runSyncWith(this.#runtime)(
-      Scope.provide(
-        Effect.acquireRelease(Effect.sync(acquire), (handle) => Effect.sync(() => free(handle))),
-        this.#scope,
-      ),
-    );
-  }
-
-  /**
    * An agent whose handles are released when the surrounding scope closes.
    *
-   * The lifetime-correct way to make one. `new Agent` still works and still
-   * needs dispose(); this is what the call sites become as they convert.
+   * Clock for `startedAt` and Scope finalizers for FFI live here — never in a
+   * sync constructor.
    */
   static make(opts: SessionHandleOptions): Effect.Effect<SessionHandle, never, Scope.Scope> {
     return Effect.acquireRelease(
-      Effect.sync(() => new SessionHandle(opts)),
+      Effect.gen(function* () {
+        const runtime = opts.runtime ?? defaultRootRuntime();
+        const startedAt = yield* Clock.currentTimeMillis;
+        const cols = opts.cols ?? 80;
+        const rows = opts.rows ?? 24;
+        const scope = Scope.makeUnsafe();
+        const term = new Terminal(cols, rows);
+        yield* Scope.addFinalizer(scope, Effect.sync(() => term.free()));
+        const detect = new RenderState();
+        yield* Scope.addFinalizer(scope, Effect.sync(() => detect.free()));
+
+        return new SessionHandle({
+          opts,
+          runtime,
+          startedAt,
+          scope,
+          term,
+          detect,
+        });
+      }),
       (agent) => agent.release(),
     );
   }
@@ -238,7 +251,6 @@ export class SessionHandle {
         Effect.gen({ self: this }, function* () {
           this.term.write(chunk);
           this.#outputRevision++;
-          this.#lastOutputAt = yield* Clock.currentTimeMillis;
           if (this.#viewers === 0) this.#unseen = true;
           this.onOutput?.(this);
         }),
@@ -353,10 +365,6 @@ export class SessionHandle {
 
   #screenSnapshot(): ScreenSnapshot {
     if (this.#disposed) return { lines: [], oscTitle: "", oscProgress: "" };
-    this.#detect ??= this.#own(
-      () => new RenderState(),
-      (state) => state.free(),
-    );
     this.#detect.update(this.term);
     return {
       lines: this.#detect.tailText(this.term.rows),
@@ -380,7 +388,13 @@ export class SessionHandle {
 
   /** Command name of the foreground process, e.g. "vim" — "" when at a prompt.
    *  Cached: the sidebar reads this for every row on every tick, and a process
-   *  starting is not a sub-second event. */
+   *  starting is not a sub-second event.
+   *
+   *  The runSyncWith(Clock) here is owed to the getter being sync, not to
+   *  anything about the clock: `effect/SolidRuntime` bridges push sources
+   *  (`fromStream`) but has no pull counterpart yet, so a sampled value like
+   *  this one has nowhere to live but a getter the render path calls directly.
+   */
   get foregroundCommand(): string {
     if (this.#exited) return "";
     const now = Effect.runSyncWith(this.#runtime)(Clock.currentTimeMillis);
@@ -395,12 +409,6 @@ export class SessionHandle {
       }
     }
     return this.#comm;
-  }
-
-  get msSinceOutput() {
-    return this.#lastOutputAt === 0
-      ? Infinity
-      : Effect.runSyncWith(this.#runtime)(Clock.currentTimeMillis) - this.#lastOutputAt;
   }
 
   /** Monotonic terminal-output revision for value-only projections. */
@@ -458,11 +466,8 @@ export class SessionHandle {
   }
 
   /**
-   * Synchronous teardown, for the call sites that are not Effects yet.
-   *
-   * Prefer `Agent.make`, which needs no teardown call at all. This stays until
-   * the last of them converts; it runs the same finalizers, just without a
-   * scope to hang them on.
+   * Synchronous teardown for call sites that hold a handle outside a Scope
+   * (rare; prefer letting {@link make}'s Scope finalizer run).
    */
   dispose() {
     Effect.runForkWith(this.#runtime)(this.release());

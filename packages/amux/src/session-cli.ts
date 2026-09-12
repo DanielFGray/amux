@@ -17,10 +17,13 @@ function formatUptime(ms: number): string {
 export const sessionAliveness = Effect.fnUntraced(function* () {
   const ids = yield* Effect.flatMap(SessionStore, (store) => store.list);
   return yield* Effect.forEach(ids, (id) =>
-    Effect.flatMap(SessionStore, (store) => store.readLease(id)).pipe(
-      Effect.map((lease) => ({ id, lease, alive: lease !== null && processAlive(lease.pid) })),
-      Effect.orElseSucceed(() => ({ id, lease: null, alive: false })),
-    ),
+    Effect.gen(function* () {
+      const lease = yield* Effect.flatMap(SessionStore, (store) => store.readLease(id)).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (lease === null) return { id, lease: null, alive: false };
+      return { id, lease, alive: yield* processAlive(lease.pid) };
+    }),
   );
 });
 
@@ -36,32 +39,31 @@ export function runningSessionIds(): Promise<string[]> {
 /** `amux list`: every known session id, and whether its daemon is alive. */
 function listSessions(): Promise<number> {
   return Effect.runPromise(
-    sessionAliveness().pipe(
-      Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
-    ),
-  ).then((rows) => {
-    if (rows.length === 0) {
-      process.stdout.write("no sessions\n");
+    Effect.gen(function* () {
+      const rows = yield* sessionAliveness();
+      if (rows.length === 0) {
+        process.stdout.write("no sessions\n");
+        return 0;
+      }
+      const now = yield* Clock.currentTimeMillis;
+      const table = rows.map(({ id, lease, alive }) => ({
+        session: id,
+        status: alive ? "running" : "stopped",
+        pid: alive && lease ? String(lease.pid) : "-",
+        uptime: alive && lease ? formatUptime(now - lease.startedAt) : "-",
+        attached: alive && lease ? String(lease.attachments?.length ?? 0) : "-",
+      }));
+      const columns = ["session", "status", "pid", "uptime", "attached"] as const;
+      const widths = columns.map((col) =>
+        Math.max(col.length, ...table.map((row) => row[col].length)),
+      );
+      const printRow = (values: readonly string[]) =>
+        process.stdout.write(values.map((v, i) => v.padEnd(widths[i]!)).join("  ") + "\n");
+      printRow(columns);
+      for (const row of table) printRow(columns.map((col) => row[col]));
       return 0;
-    }
-    const now = Effect.runSync(Clock.currentTimeMillis);
-    const table = rows.map(({ id, lease, alive }) => ({
-      session: id,
-      status: alive ? "running" : "stopped",
-      pid: alive && lease ? String(lease.pid) : "-",
-      uptime: alive && lease ? formatUptime(now - lease.startedAt) : "-",
-      attached: alive && lease ? String(lease.attachments?.length ?? 0) : "-",
-    }));
-    const columns = ["session", "status", "pid", "uptime", "attached"] as const;
-    const widths = columns.map((col) =>
-      Math.max(col.length, ...table.map((row) => row[col].length)),
-    );
-    const printRow = (values: readonly string[]) =>
-      process.stdout.write(values.map((v, i) => v.padEnd(widths[i]!)).join("  ") + "\n");
-    printRow(columns);
-    for (const row of table) printRow(columns.map((col) => row[col]));
-    return 0;
-  });
+    }).pipe(Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer)))),
+  );
 }
 
 /** `amux status <id>` / `amux stop <id>` / `amux list`: one-shot lifecycle commands. */

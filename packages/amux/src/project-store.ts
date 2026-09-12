@@ -15,7 +15,6 @@
  */
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import * as FileSystem from "effect/FileSystem";
 import { Clock, Context, Effect, Layer, Schema as S, type Scope } from "effect";
@@ -405,34 +404,6 @@ const stateRootSync = (): string => {
 
 export const projectDatabasePathSync = (root: string): string =>
   nodePath.join(stateRootSync(), "amux", "projects", projectSlug(root), "amux.db");
-
-/**
- * Copy a conversation onto a new session id before the worker spawns.
- * Used from `agent.new` reduce so ResumeAgent loads the resumed history.
- */
-export function copyConversationSync(cwd: string, from: string, to: string): boolean {
-  if (from === to) return true;
-  const dbPath = projectDatabasePathSync(projectRootSync(cwd));
-  if (!existsSync(dbPath)) return false;
-  const database = new Database(dbPath);
-  try {
-    const source = database
-      .query<{ conversation: string }, [string]>(
-        "SELECT conversation FROM conversation WHERE session = ?",
-      )
-      .get(from)?.conversation;
-    if (source === undefined) return false;
-    database
-      .query(
-        `INSERT INTO conversation (session, conversation, updated) VALUES (?, ?, ?)
-         ON CONFLICT (session) DO UPDATE SET conversation = excluded.conversation, updated = excluded.updated`,
-      )
-      .run(to, source, Date.now());
-    return true;
-  } finally {
-    database.close(false);
-  }
-}
 
 /** Short label for a picker row — first user-ish text blob in the JSON export. */
 export function conversationPreview(conversation: string, maxLen = 72): string {

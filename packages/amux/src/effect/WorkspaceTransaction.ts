@@ -229,7 +229,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
             if (cur2.closing) return;
             const next = markSessionExited(cur2.workspace, sid, code);
             if (next === cur2.workspace) return;
-            const newState = workspaceSession(next, cur2.state);
+            const newState = yield* workspaceSession(next, cur2.state);
             yield* persistence.persistUntilSuccess(newState, `natural exit for '${sid}'`);
             yield* model.commitWorkspace(next, newState);
             yield* events.publishWorkspaceFrame(next);
@@ -304,7 +304,7 @@ export class WorkspaceTransaction extends Context.Service<WorkspaceTransaction>(
                 plugins.pipe(Option.getOrElse(() => ({ reducers: new Map() }))),
                 algorithm,
               );
-              const candidate = workspaceSession(mutation.snapshot, cur.state);
+              const candidate = yield* workspaceSession(mutation.snapshot, cur.state);
               const worktrees = gitWorktreesFor(value, mutation.snapshot, cur.workspace);
               const prepared: PreparedSession[] = [];
               const exitsSettled = yield* Deferred.make<boolean>();

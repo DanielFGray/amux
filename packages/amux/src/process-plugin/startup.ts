@@ -44,7 +44,7 @@ export const runProcessPluginStartups = (
           invocationSource: "startup",
           correlationId: "process-plugin-startup",
         };
-        const env = processPluginLaunchEnv({
+        const env = yield* processPluginLaunchEnv({
           plugin: linked.manifest,
           pluginRoot: linked.pluginRoot,
           binPath: host.binPath,

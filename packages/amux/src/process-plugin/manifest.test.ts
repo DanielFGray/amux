@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { Effect, Layer, Path } from "effect";
+import { Effect, Layer, Path, Schema as S } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { BunFileSystem } from "@effect/platform-bun";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import { testEffect } from "../test-effect.ts";
 
 const testDir = fileURLToPath(new URL(".", import.meta.url));
 const layers = Layer.mergeAll(BunFileSystem.layer, Path.layer);
+const encodeJson = S.encodeSync(S.fromJsonString(S.Unknown));
 
 testEffect("decodes a minimal process-plugin manifest", () =>
   Effect.gen(function* () {
@@ -128,7 +129,7 @@ testEffect("loads amux-plugin.json and amux-plugin.toml", () =>
     yield* fs.makeDirectory(jsonRoot, { recursive: true });
     yield* fs.writeFileString(
       path.join(jsonRoot, PROCESS_PLUGIN_MANIFEST_JSON),
-      JSON.stringify({
+      encodeJson({
         id: "example.json",
         name: "Json",
         version: "0.1.0",
@@ -159,7 +160,7 @@ testEffect("loads amux-plugin.json and amux-plugin.toml", () =>
     yield* fs.makeDirectory(bothRoot, { recursive: true });
     yield* fs.writeFileString(
       path.join(bothRoot, PROCESS_PLUGIN_MANIFEST_JSON),
-      JSON.stringify({ id: "example.both", name: "Both", version: "0.1.0" }),
+      encodeJson({ id: "example.both", name: "Both", version: "0.1.0" }),
     );
     yield* fs.writeFileString(
       path.join(bothRoot, PROCESS_PLUGIN_MANIFEST_TOML),

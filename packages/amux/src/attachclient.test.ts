@@ -152,7 +152,7 @@ const projectAgent = Effect.fnUntraced(function* (
   const id = options.id ?? `transport-${nextProjection++}`;
   const live = yield* daemon.liveSessions;
   (client.live as Set<string>).add(id);
-  const projected = new SessionHandle({
+  const projected = yield* SessionHandle.make({
     ...options,
     id,
     backend: client.backend(),
@@ -225,7 +225,7 @@ testEffect("native agent status frames become authoritative projected state", ()
       rows: 24,
     });
     (client.live as Set<string>).add("native-status-agent");
-    const session = new SessionHandle({
+    const session = yield* SessionHandle.make({
       id: "native-status-agent",
       cmd,
       kind: "component",
@@ -1093,7 +1093,7 @@ testEffect("killing through the daemon ends the agent here too", () =>
     const client = yield* attach("killed", env);
 
     const saved = modeledAgent(client);
-    const session = new SessionHandle({ ...saved, backend: client.backend() });
+    const session = yield* SessionHandle.make({ ...saved, backend: client.backend() });
     sessions.push(session);
 
     yield* until(
@@ -1137,7 +1137,7 @@ testEffect("a projection of an unmodeled id never asks the daemon to spawn it", 
     const client = yield* attach("unreachable", env);
 
     const before = yield* daemon.liveSessions;
-    const session = new SessionHandle({
+    const session = yield* SessionHandle.make({
       id: "not-modeled",
       cmd: ["cat"],
       backend: client.backend(),
@@ -1386,7 +1386,7 @@ testEffect("a daemon started on demand keeps agents between two separate clients
       expect(lease!.pid).not.toBe(process.pid);
 
       const saved = modeledAgent(first);
-      const session = new SessionHandle({ ...saved, backend: first.backend() });
+      const session = yield* SessionHandle.make({ ...saved, backend: first.backend() });
       sessions.push(session);
       session.write("printf 'across-processes\\n'\n");
       yield* until(() => screen(session).includes("across-processes"), "the daemon's echo");
@@ -1395,7 +1395,7 @@ testEffect("a daemon started on demand keeps agents between two separate clients
       // A second client, with no memory of the first, finds the agent still there.
       const second = yield* connect(id, env, { client: "second" });
       expect(second.live).toContain(session.id);
-      const readopted = new SessionHandle({
+      const readopted = yield* SessionHandle.make({
         ...saved,
         backend: second.backend(),
       });
@@ -1408,7 +1408,7 @@ testEffect("a daemon started on demand keeps agents between two separate clients
         Effect.flatMap(SessionStore, (store) => store.readLease(id)),
         env,
       );
-      if (lease && processAlive(lease.pid)) process.kill(lease.pid, "SIGKILL");
+      if (lease && (yield* processAlive(lease.pid))) process.kill(lease.pid, "SIGKILL");
     }
   }),
 );

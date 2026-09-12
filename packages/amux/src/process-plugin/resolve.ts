@@ -67,7 +67,7 @@ export const resolveProcessPluginAction = (
       actionId,
       argv: [program, ...args],
       cwd: linked.pluginRoot,
-      env: processPluginLaunchEnv({
+      env: yield* processPluginLaunchEnv({
         plugin: linked.manifest,
         pluginRoot: linked.pluginRoot,
         binPath: host.binPath,
@@ -111,7 +111,7 @@ export const resolveProcessPluginPane = (
       cwd: linked.pluginRoot,
       placement: pane.placement,
       transient: pane.transient,
-      env: processPluginLaunchEnv({
+      env: yield* processPluginLaunchEnv({
         plugin: linked.manifest,
         pluginRoot: linked.pluginRoot,
         binPath: host.binPath,

@@ -453,11 +453,14 @@ export function workspaceFromSession(
 }
 
 /** Serialize only durable model fields. Transient WindowState stays daemon-live. */
-export function workspaceSession(workspace: WorkspaceSnapshot, base: SessionState): SessionState {
+export const workspaceSession = Effect.fnUntraced(function* (
+  workspace: WorkspaceSnapshot,
+  base: SessionState,
+) {
   return {
     ...base,
     version: SESSION_VERSION,
-    updatedAt: Effect.runSync(Clock.currentTimeMillis),
+    updatedAt: yield* Clock.currentTimeMillis,
     activeSpace: workspace.state.activeSpace,
     nextSpace: workspace.state.nextSpace,
     spaces: workspace.spaces.map((space) => ({
@@ -475,8 +478,8 @@ export function workspaceSession(workspace: WorkspaceSnapshot, base: SessionStat
         layout: encodeLayout(window.layout),
       })),
     })),
-  };
-}
+  } satisfies SessionState;
+});
 
 /** Parse a subscribed model before a client projects it. */
 export function parseWorkspace(
@@ -493,7 +496,7 @@ export function parseWorkspace(
     );
     const raw = structuredClone(decoded) as WorkspaceSnapshot;
     yield* parseSessionState(
-      workspaceSession(raw, {
+      yield* workspaceSession(raw, {
         version: SESSION_VERSION,
         id: "workspace",
         createdAt: 0,

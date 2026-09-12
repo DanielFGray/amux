@@ -20,7 +20,7 @@ const ContextJson = S.Struct({
 
 testEffect("injects identity dirs and strips protected caller keys", () =>
   Effect.gen(function* () {
-    const env = processPluginLaunchEnv({
+    const env = yield* processPluginLaunchEnv({
       plugin,
       pluginRoot: "/plugins/example.tools",
       binPath: "/usr/bin/amux",
@@ -56,14 +56,16 @@ testEffect("injects identity dirs and strips protected caller keys", () =>
 );
 
 testEffect("injects daemon session and startup event", () =>
-  Effect.sync(() => {
-    const env = processPluginLaunchEnv({
+  Effect.gen(function* () {
+    const env = yield* processPluginLaunchEnv({
       plugin,
       pluginRoot: "/plugins/example.tools",
       binPath: "/usr/bin/amux",
       daemonSession: "sess-1",
       controlSocket: "/tmp/control.sock",
       event: "startup",
+      configRoot: "/cfg",
+      stateRoot: "/state",
     });
     expect(env.AMUX_DAEMON_SESSION).toBe("sess-1");
     expect(env.AMUX_CONTROL_SOCKET).toBe("/tmp/control.sock");

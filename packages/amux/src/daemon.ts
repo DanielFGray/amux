@@ -372,13 +372,13 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           yield* fs.remove(paths.lock).pipe(Effect.ignore);
           return yield* new StaleLock();
         }
-        if (processAlive(owner.success))
+        if (yield* processAlive(owner.success))
           return yield* new DaemonError({
             message: `session '${id}' is already being opened`,
           });
 
         const lease = yield* session.readLease(id);
-        if (lease && processAlive(lease.pid))
+        if (lease && (yield* processAlive(lease.pid)))
           return yield* new DaemonError({
             message: `session '${id}' is already owned by pid ${lease.pid}`,
           });
@@ -405,17 +405,18 @@ export const makeDaemonService = Effect.fnUntraced(function* (
   // Lock acquired. Verify the lease one more time — the lock could have
   // been absent while a daemon with a valid lease is still running.
   const existing = yield* session.readLease(id);
-  if (existing && processAlive(existing.pid))
+  if (existing && (yield* processAlive(existing.pid)))
     return yield* new DaemonError({
       message: `session '${id}' is already owned by pid ${existing.pid}`,
     });
 
   const loaded = yield* session.load(id);
+  const now = yield* Clock.currentTimeMillis;
   const state: SessionState = loaded ?? {
     version: 1,
     id,
-    createdAt: yield* Clock.currentTimeMillis,
-    updatedAt: yield* Clock.currentTimeMillis,
+    createdAt: now,
+    updatedAt: now,
     attached: false,
     spaces: [],
   };
@@ -552,7 +553,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
           paneAgentSessionSnapshot(record),
         );
         if (!next) return;
-        const candidate = workspaceSession(next, cur.state);
+        const candidate = yield* workspaceSession(next, cur.state);
         yield* persist(candidate);
         yield* model.commitWorkspace(next, candidate);
       }),
@@ -817,7 +818,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
             }
           }
         }
-        const newState = workspaceSession(next, cur.state);
+        const newState = yield* workspaceSession(next, cur.state);
         if (changed) yield* persist(newState);
         yield* model.commitWorkspace(next, newState);
         host.hydrateAgentSessions(next);
@@ -1772,7 +1773,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
                 sessionId,
                 `provider '${provider}' is unavailable`,
               );
-              const state = workspaceSession(next, cur.state);
+              const state = yield* workspaceSession(next, cur.state);
               yield* persist(state);
               yield* model.commitWorkspace(next, state);
               yield* requireHost.pipe(
@@ -1805,7 +1806,7 @@ export const makeDaemonService = Effect.fnUntraced(function* (
               Effect.catch((error) =>
                 Effect.gen(function* () {
                   const next = markSessionUnavailable(cur.workspace, sessionId, describe(error));
-                  const state = workspaceSession(next, cur.state);
+                  const state = yield* workspaceSession(next, cur.state);
                   yield* persist(state);
                   yield* model.commitWorkspace(next, state);
                   yield* requireHost.pipe(

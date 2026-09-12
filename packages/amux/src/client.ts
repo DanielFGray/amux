@@ -337,7 +337,7 @@ export function daemonAlive(
     const lease = yield* Effect.flatMap(SessionStore, (store) => store.readLease(id)).pipe(
       Effect.orElseSucceed(() => null),
     );
-    if (!lease || !processAlive(lease.pid)) return false;
+    if (!lease || !(yield* processAlive(lease.pid))) return false;
     return yield* controlCall(id, (control) => control.Ping()).pipe(
       Effect.as(true),
       Effect.orElseSucceed(() => false),

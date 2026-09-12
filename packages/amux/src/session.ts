@@ -2,7 +2,7 @@ import { Path } from "effect";
 import { homedir } from "node:os";
 import * as FileSystem from "effect/FileSystem";
 import type { PlatformError } from "effect/PlatformError";
-import { Clock, Config, Context, Effect, Exit, Layer, Option, Result, Schema as S } from "effect";
+import { Clock, Config, Context, Effect, Layer, Option, Result, Schema as S } from "effect";
 import { layoutPanes, parseLayout } from "./layout.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
 import {
@@ -492,12 +492,19 @@ function schemaError(error: S.SchemaError): SessionStateError {
   return invalidState;
 }
 
-function validState(
-  value: S.Schema.Type<typeof SessionStateSchema>,
-  expectedId?: string,
-): value is SessionState {
-  return Exit.isSuccess(Effect.runSync(Effect.exit(parseSessionState(value, expectedId))));
-}
+/**
+ * A state file's contents once parsed, or null when the file is absent or
+ * unusable. Decoding is the validity test — a state that will not parse is a
+ * state we cannot use — so this yields the parsed value rather than a boolean
+ * verdict the caller would have to re-derive the type from.
+ */
+const usableState = (
+  file: Option.Option<S.Schema.Type<typeof SessionStateSchema>>,
+  expectedId: string,
+): Effect.Effect<SessionState | null> =>
+  Option.isNone(file)
+    ? Effect.succeed(null)
+    : parseSessionState(file.value, expectedId).pipe(Effect.orElseSucceed(() => null));
 
 const jsonFile = <A, I>(path: string, schema: S.Codec<A, I>) =>
   Effect.gen(function* () {
@@ -534,10 +541,14 @@ export class SessionStore extends Context.Service<SessionStore>()("Session", {
 
     const load = Effect.fnUntraced(function* (id: string) {
       const sessionPaths = yield* pathFor(id);
-      const current = yield* jsonFile(sessionPaths.state, SessionStateSchema);
-      if (Option.isSome(current) && validState(current.value, id)) return current.value;
-      const backup = yield* jsonFile(sessionPaths.backup, SessionStateSchema);
-      return Option.isSome(backup) && validState(backup.value, id) ? backup.value : null;
+      // The backup is the fallback only when the live file is missing or
+      // unparseable; a readable state always wins.
+      const current = yield* usableState(
+        yield* jsonFile(sessionPaths.state, SessionStateSchema),
+        id,
+      );
+      if (current !== null) return current;
+      return yield* usableState(yield* jsonFile(sessionPaths.backup, SessionStateSchema), id);
     });
 
     const save = Effect.fnUntraced(function* (state: SessionState) {
@@ -645,15 +656,14 @@ function sessionPathsFromRoot(id: string, root: string): Effect.Effect<SessionPa
   }).pipe(Effect.provide(Path.layer));
 }
 
-export function processAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  const result = Effect.runSync(
-    Effect.result(
-      Effect.try({
-        try: () => process.kill(pid, 0),
-        catch: (error) => new ProcessSignalError({ cause: String(error) }),
-      }),
-    ),
+export const processAlive = (pid: number): Effect.Effect<boolean> => {
+  if (!Number.isInteger(pid) || pid <= 0) return Effect.succeed(false);
+  return Effect.result(
+    Effect.try({
+      try: () => process.kill(pid, 0),
+      catch: (error) => new ProcessSignalError({ cause: String(error) }),
+    }),
+  ).pipe(
+    Effect.map((result) => Result.isSuccess(result) || result.failure.cause.includes("EPERM")),
   );
-  return Result.isSuccess(result) || result.failure.cause.includes("EPERM");
-}
+};

@@ -250,14 +250,12 @@ function main(): Effect.Effect<number> {
           writeErr(`error: --state must be one of ${ProcessStateSchema.literals.join(", ")}`);
           return 2;
         }
-        return yield* Effect.promise(() =>
-          reportProcessState(socketPath, agent, state).then(
-            () => 0,
-            (error) => {
-              writeErr(`error: ${String(error)}`);
-              return 1;
-            },
-          ),
+        return yield* reportProcessState(socketPath, agent, state).pipe(
+          Effect.as(0),
+          Effect.catch((error) => {
+            writeErr(`error: ${String(error)}`);
+            return Effect.succeed(1);
+          }),
         );
       });
     }

@@ -116,11 +116,12 @@ export const invokeProcessPluginAction = (
  */
 export function runProcessPluginCli(
   argv: readonly string[],
-  roots: ProcessPluginRoots = defaultProcessPluginRoots(),
+  roots?: ProcessPluginRoots,
 ): Promise<number> {
   const writeOut = (text: string) => process.stdout.write(text + "\n");
   const writeErr = (text: string) => process.stderr.write(text + "\n");
   const program = Effect.gen(function* () {
+    const resolvedRoots = roots ?? (yield* defaultProcessPluginRoots);
     const [verb, arg, ...rest] = argv;
     if (verb === "-h" || verb === "--help" || arg === "-h" || arg === "--help") {
       writeOut(PROCESS_PLUGIN_CLI_HELP);
@@ -132,7 +133,7 @@ export function runProcessPluginCli(
           writeErr("usage: amux process-plugin link <path>");
           return 2;
         }
-        return yield* linkProcessPlugin(arg, { roots }).pipe(
+        return yield* linkProcessPlugin(arg, { roots: resolvedRoots }).pipe(
           Effect.tap((linked) =>
             Effect.sync(() =>
               writeOut(`linked ${linked.pluginId} ${linked.version} (${linked.pluginRoot})`),
@@ -152,7 +153,7 @@ export function runProcessPluginCli(
           writeErr("usage: amux process-plugin unlink <id>");
           return 2;
         }
-        return yield* unlinkProcessPlugin(arg, { roots }).pipe(
+        return yield* unlinkProcessPlugin(arg, { roots: resolvedRoots }).pipe(
           Effect.tap((removed) =>
             Effect.sync(() =>
               writeOut(removed ? `unlinked ${arg}` : `process plugin '${arg}' was not linked`),
@@ -172,7 +173,7 @@ export function runProcessPluginCli(
           writeErr("usage: amux process-plugin ls");
           return 2;
         }
-        return yield* listProcessPlugins({ roots }).pipe(
+        return yield* listProcessPlugins({ roots: resolvedRoots }).pipe(
           Effect.tap((plugins) =>
             Effect.sync(() => {
               if (plugins.length === 0) {
@@ -200,7 +201,7 @@ export function runProcessPluginCli(
           return 2;
         }
         const [pluginId, actionId] = rest as [string, string];
-        return yield* invokeProcessPluginAction(pluginId, actionId, { roots }).pipe(
+        return yield* invokeProcessPluginAction(pluginId, actionId, { roots: resolvedRoots }).pipe(
           Effect.tap(({ exitCode, stdout, stderr }) =>
             Effect.sync(() => {
               if (stdout) process.stdout.write(stdout);
@@ -238,7 +239,10 @@ export function runProcessPluginCli(
           }
           axis = match[1] as "row" | "column";
         }
-        return yield* openProcessPluginPane(pluginId!, entrypoint!, { roots, axis }).pipe(
+        return yield* openProcessPluginPane(pluginId!, entrypoint!, {
+          roots: resolvedRoots,
+          axis,
+        }).pipe(
           Effect.tap((result) =>
             Effect.gen(function* () {
               const text = yield* S.encodeEffect(S.fromJsonString(S.Unknown, { space: 2 }))(result);

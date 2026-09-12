@@ -8,9 +8,9 @@ import {
 } from "./manifest.ts";
 import {
   ensureProcessPluginUserDirs,
-  PROCESS_PLUGIN_CONFIG_ROOT,
-  PROCESS_PLUGIN_REGISTRY_PATH,
-  PROCESS_PLUGIN_STATE_ROOT,
+  processPluginConfigRoot,
+  processPluginRegistryPath,
+  processPluginStateRoot,
 } from "./paths.ts";
 
 export const LinkedProcessPluginSchema = S.Struct({
@@ -44,11 +44,15 @@ export interface ProcessPluginRoots {
   readonly stateRoot: string;
 }
 
-export const defaultProcessPluginRoots = (): ProcessPluginRoots => ({
-  registryPath: PROCESS_PLUGIN_REGISTRY_PATH,
-  configRoot: PROCESS_PLUGIN_CONFIG_ROOT,
-  stateRoot: PROCESS_PLUGIN_STATE_ROOT,
-});
+export const defaultProcessPluginRoots: Effect.Effect<ProcessPluginRoots> = Effect.gen(
+  function* () {
+    return {
+      registryPath: yield* processPluginRegistryPath,
+      configRoot: yield* processPluginConfigRoot,
+      stateRoot: yield* processPluginStateRoot,
+    };
+  },
+);
 
 const emptyRegistry = (): ProcessPluginRegistry => ({ plugins: [] });
 
@@ -151,7 +155,7 @@ export const linkProcessPlugin = (
   FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
-    const roots = options.roots ?? defaultProcessPluginRoots();
+    const roots = options.roots ?? (yield* defaultProcessPluginRoots);
     const absolute = yield* resolveRoot(pluginRoot);
     const manifest = yield* loadProcessPluginManifest(absolute);
     yield* ensureProcessPluginUserDirs(manifest.id, {
@@ -185,7 +189,7 @@ export const unlinkProcessPlugin = (
   options: { readonly roots?: ProcessPluginRoots } = {},
 ): Effect.Effect<boolean, ProcessPluginRegistryError, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
-    const roots = options.roots ?? defaultProcessPluginRoots();
+    const roots = options.roots ?? (yield* defaultProcessPluginRoots);
     const registry = yield* readRegistry(roots.registryPath);
     const kept = registry.plugins.filter((plugin) => plugin.pluginId !== pluginId);
     if (kept.length === registry.plugins.length) return false;
@@ -198,7 +202,7 @@ export const listProcessPlugins = (
   options: { readonly roots?: ProcessPluginRoots } = {},
 ): Effect.Effect<readonly LinkedProcessPlugin[], ProcessPluginRegistryError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const roots = options.roots ?? defaultProcessPluginRoots();
+    const roots = options.roots ?? (yield* defaultProcessPluginRoots);
     const registry = yield* readRegistry(roots.registryPath);
     return registry.plugins;
   });
@@ -213,7 +217,7 @@ export const getProcessPlugin = (
   FileSystem.FileSystem | Path.Path
 > =>
   Effect.gen(function* () {
-    const roots = options.roots ?? defaultProcessPluginRoots();
+    const roots = options.roots ?? (yield* defaultProcessPluginRoots);
     const registry = yield* readRegistry(roots.registryPath);
     const entry = registry.plugins.find((plugin) => plugin.pluginId === pluginId);
     if (entry === undefined) {

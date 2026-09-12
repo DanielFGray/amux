@@ -1108,7 +1108,7 @@ testEffect(
       );
       // Projection of the modeled-but-not-live session: backend must resize
       // (not "is not live") so AttachHost flushes the pending resume.
-      const projected = new SessionHandle({
+      const projected = yield* SessionHandle.make({
         id: sessionId,
         cmd: ["/usr/bin/zsh"],
         cols: 100,

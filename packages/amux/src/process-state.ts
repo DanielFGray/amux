@@ -71,31 +71,30 @@ const encodeRequest = S.encodeSync(S.fromJsonString(ProcessStateRequestSchema));
  * pane this is already knows where to write, and keeping session naming out of
  * here is what lets the vocabulary above stay dependency-free.
  */
-export function reportProcessState(
+export const reportProcessState = Effect.fnUntraced(function* (
   socketPath: string,
   session: string,
   state: ProcessState,
-): Promise<void> {
-  return Effect.runPromise(
-    Effect.callback<void, ProcessStateError>((resume) => {
-      const socket = net.createConnection(socketPath);
-      const request = encodeRequest({
-        id: `amux:process-state:${Effect.runSync(Clock.currentTimeMillis)}`,
-        method: "process.state",
-        params: { session, state },
-      });
-      let settled = false;
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        socket.destroy();
-        if (error) resume(Effect.fail(new ProcessStateError({ message: error.message })));
-        else resume(Effect.void);
-      };
-      socket.setTimeout(500, () => finish(new Error("process state request timed out")));
-      socket.once("error", finish);
-      socket.once("data", () => finish());
-      socket.once("connect", () => socket.write(`${request}\n`));
-    }),
-  );
-}
+) {
+  const now = yield* Clock.currentTimeMillis;
+  return yield* Effect.callback<void, ProcessStateError>((resume) => {
+    const socket = net.createConnection(socketPath);
+    const request = encodeRequest({
+      id: `amux:process-state:${now}`,
+      method: "process.state",
+      params: { session, state },
+    });
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error) resume(Effect.fail(new ProcessStateError({ message: error.message })));
+      else resume(Effect.void);
+    };
+    socket.setTimeout(500, () => finish(new Error("process state request timed out")));
+    socket.once("error", finish);
+    socket.once("data", () => finish());
+    socket.once("connect", () => socket.write(`${request}\n`));
+  });
+});

@@ -21,6 +21,7 @@ import {
 } from "./effect/AttachProtocol.ts";
 import { errorMessage } from "./error-message.ts";
 import {
+  Cause,
   Clock,
   Context,
   Deferred,
@@ -191,20 +192,22 @@ class AttachClientConnection {
     socket: Bun.Socket<undefined>,
     runtime: RootRuntimeContext,
     handshake: { nonce: string; accept: () => void },
+    queues: {
+      readonly workspace: Queue.Queue<WorkspaceSnapshot>;
+      readonly command: Queue.Queue<{
+        readonly id: string;
+        readonly command: JsonValue;
+        readonly originSession?: string;
+      }>;
+    },
   ) {
     this.client = client;
     this._socket = socket;
     this._runtime = runtime;
     this._handshake = handshake;
     this._closedSignal = Deferred.makeUnsafe<void>();
-    this._workspaceQ = Effect.runSyncWith(runtime)(Queue.sliding<WorkspaceSnapshot>(1));
-    this._commandQ = Effect.runSyncWith(runtime)(
-      Queue.unbounded<{
-        readonly id: string;
-        readonly command: JsonValue;
-        readonly originSession?: string;
-      }>(),
-    );
+    this._workspaceQ = queues.workspace;
+    this._commandQ = queues.command;
     this._writer = createSocketWriter(socket, () => {
       this._finish(new AttachError({ message: "attach client is too slow" }));
       socket.end();
@@ -295,16 +298,20 @@ class AttachClientConnection {
 
   ping(timeoutMs = 5_000): Promise<boolean> {
     if (this._closed) return Promise.resolve(false);
-    const nonce = `ping-${Effect.runSyncWith(this._runtime)(Random.next).toString(36)}`;
-    const pong = Deferred.makeUnsafe<boolean>();
-    this._pongs.set(nonce, pong);
-    this._send({ _tag: "ping", nonce });
+    // Random + await live in one Effect: ping is already a Promise boundary
+    // (Bun/UI callers), so fold the nonce into that rather than runSync(Random).
     return Effect.runPromiseWith(this._runtime)(
-      Deferred.await(pong).pipe(
-        Effect.timeout(timeoutMs),
-        Effect.orElseSucceed(() => false),
-      ),
-    ).finally(() => this._pongs.delete(nonce));
+      Effect.gen({ self: this }, function* () {
+        const nonce = `ping-${(yield* Random.next).toString(36)}`;
+        const pong = Deferred.makeUnsafe<boolean>();
+        this._pongs.set(nonce, pong);
+        this._send({ _tag: "ping", nonce });
+        return yield* Deferred.await(pong).pipe(
+          Effect.timeout(timeoutMs),
+          Effect.orElseSucceed(() => false),
+        ).pipe(Effect.ensuring(Effect.sync(() => this._pongs.delete(nonce))));
+      }),
+    );
   }
 
   close(): void {
@@ -382,9 +389,8 @@ class AttachClientConnection {
     this._releaseScope = null;
     this._handshake = null;
     this._writer.close();
-    Effect.runSyncWith(this._runtime)(Deferred.succeed(this._closedSignal, undefined));
-    for (const pong of this._pongs.values())
-      Effect.runSyncWith(this._runtime)(Deferred.succeed(pong, false));
+    Deferred.doneUnsafe(this._closedSignal, Effect.void);
+    for (const pong of this._pongs.values()) Deferred.doneUnsafe(pong, Effect.succeed(false));
     this._pongs.clear();
     for (const { queues } of this._queued.values())
       for (const queue of queues) this._shutdownQueue(queue);
@@ -409,7 +415,7 @@ class AttachClientConnection {
           return;
         }
         const pong = this._pongs.get(frame.nonce);
-        if (pong) Effect.runSyncWith(this._runtime)(Deferred.succeed(pong, true));
+        if (pong) Deferred.doneUnsafe(pong, Effect.succeed(true));
         this._pongs.delete(frame.nonce);
       }),
       Match.tag("error", (frame) => {
@@ -420,6 +426,9 @@ class AttachClientConnection {
       }),
       Match.tag("workspace", (frame) => {
         try {
+          // Bun socket `data` is synchronous and must keep frame order inside
+          // one chunk — parseWorkspaceJson is Effect-only (schema + session
+          // validation), so this is the one remaining sync boundary in attach.
           const workspace = Effect.runSyncWith(this._runtime)(parseWorkspaceJson(frame.state));
           if (workspace.revision !== frame.revision)
             throw new AttachError({ message: "workspace revision does not match frame" });
@@ -458,7 +467,9 @@ class AttachClientConnection {
   }
 
   private _shutdownQueue<A>(queue: Queue.Queue<A>): void {
-    Effect.runSyncWith(this._runtime)(Queue.shutdown(queue));
+    // Mirror Queue.shutdown's interrupt finalize without runSync — Bun socket
+    // close is sync and must wake waiters before the connection drops.
+    Queue.failCauseUnsafe(queue, Cause.interrupt());
   }
 }
 
@@ -480,6 +491,12 @@ const makeScoped = (
   return Effect.gen(function* () {
     const n = yield* Random.next;
     const nonce = `hello-${n.toString(36).slice(2)}`;
+    const workspaceQ = yield* Queue.sliding<WorkspaceSnapshot>(1);
+    const commandQ = yield* Queue.unbounded<{
+      readonly id: string;
+      readonly command: JsonValue;
+      readonly originSession?: string;
+    }>();
     return yield* captureRootRuntime.pipe(
       Effect.flatMap((runtime) => {
         const acquire = Effect.callback<AttachClientConnection, AttachError>((resume) => {
@@ -510,14 +527,20 @@ const makeScoped = (
                   socket.end();
                   return;
                 }
-                const client = new AttachClientConnection(options.client, socket, runtime, {
-                  nonce,
-                  accept: () => {
-                    if (settled) return;
-                    settled = true;
-                    resume(Effect.succeed(client));
+                const client = new AttachClientConnection(
+                  options.client,
+                  socket,
+                  runtime,
+                  {
+                    nonce,
+                    accept: () => {
+                      if (settled) return;
+                      settled = true;
+                      resume(Effect.succeed(client));
+                    },
                   },
-                });
+                  { workspace: workspaceQ, command: commandQ },
+                );
                 attached = client;
                 if (
                   !client._writer.send(

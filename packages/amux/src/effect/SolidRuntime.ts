@@ -1,5 +1,5 @@
 import type { Layer } from "effect";
-import { Effect, Exit, ManagedRuntime, Scope, Stream } from "effect";
+import { Context, Effect, Exit, ManagedRuntime, Scope, Stream } from "effect";
 import type { Accessor } from "solid-js";
 import { createSignal, onCleanup } from "solid-js";
 
@@ -39,7 +39,7 @@ export function scopedSignal<A>(
 }
 
 /** Empty context for Solid↔Effect bridge exits (`Scope.close` is `R = never`). */
-const bridgeRuntime = Effect.runSync(Effect.context<never>());
+const bridgeRuntime = Context.empty();
 const runBridgeFork = Effect.runForkWith(bridgeRuntime);
 const runBridgeSync = Effect.runSyncWith(bridgeRuntime);
 
