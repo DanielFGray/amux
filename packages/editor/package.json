@@ -23,6 +23,7 @@
     "@danielfgray/amux-plugin-completion": "workspace:*",
     "@danielfgray/amux-plugin-lsp": "workspace:*",
     "@danielfgray/amux-plugin-search": "workspace:*",
+    "@danielfgray/amux-text-buffer": "workspace:*",
     "@effect/platform-bun": "catalog:",
     "@opentui/core": "catalog:",
     "@opentui/solid": "catalog:",
