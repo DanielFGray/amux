@@ -2,7 +2,7 @@ import { Effect, Match, Option, Schema as S } from "effect";
 import { COMMAND_DEFS, COMMAND_META } from "./commands.ts";
 import { errorMessage } from "./error-message.ts";
 import { JsonValueSchema, type JsonValue } from "./effect/AttachProtocol.ts";
-import type { DaemonCommandSpec } from "./plugin/services.ts";
+import type { PluginCommandDeclaration } from "./plugin-behaviour.ts";
 
 /**
  * Field metadata derived from each command's schema fields.
@@ -298,12 +298,7 @@ export function generateGroupHelp(group: string): string | undefined {
   ].join("\n");
 }
 
-export const generateHelp = (
-  daemonCommands: readonly {
-    readonly command: DaemonCommandSpec;
-    readonly fields: JsonSchemaObject;
-  }[] = [],
-): string => {
+export const generateHelp = (daemonCommands: readonly PluginCommandDeclaration[] = []): string => {
   const lines: string[] = [
     "usage: amux <command> [args] [--flag=value] [--session=<id>]",
     "       amux <command> [args] \\; <command> [args] ...",
@@ -321,10 +316,10 @@ export const generateHelp = (
     groups.set(def.group, groupEntries);
   }
   for (const record of daemonCommands) {
-    const entry = daemonCommandHelp(record.command, record.fields);
-    const groupEntries = groups.get(record.command.meta.group) ?? [];
+    const entry = daemonCommandHelp(record);
+    const groupEntries = groups.get(record.meta.group) ?? [];
     groupEntries.push(entry);
-    groups.set(record.command.meta.group, groupEntries);
+    groups.set(record.meta.group, groupEntries);
   }
 
   for (const group of [...groups.keys()].sort()) {
@@ -358,6 +353,10 @@ export const generateHelp = (
   return lines.join("\n");
 };
 
+/** Shown with core-only help when no session daemon answered. */
+export const PLUGIN_COMMANDS_DAEMON_NOTE =
+  "Plugin commands appear when the session daemon is running.";
+
 function commandHelp(def: (typeof COMMAND_DEFS)[number]): string {
   const syntax = fieldNames(def.tag)
     .map((field) => {
@@ -372,13 +371,13 @@ function commandHelp(def: (typeof COMMAND_DEFS)[number]): string {
   return `  ${def.tag} ${syntax}`.trimEnd() + `\n      ${COMMAND_META[def.tag].desc}`;
 }
 
-function daemonCommandHelp(spec: DaemonCommandSpec, document: JsonSchemaObject): string {
-  const syntax = fieldNamesForFields(document)
+function daemonCommandHelp(declaration: PluginCommandDeclaration): string {
+  const syntax = fieldNamesForFields(declaration.fields)
     .map((field) => {
       const value = field.kind === "literal" ? field.literals.join("|") : field.name;
       if (field.required) return `<${value}>`;
       return field.kind === "boolean" ? `[--${field.name}]` : `[--${field.name}=<${value}>]`;
     })
     .join(" ");
-  return `  ${spec.tag} ${syntax}`.trimEnd() + `\n      ${spec.meta.desc}`;
+  return `  ${declaration.tag} ${syntax}`.trimEnd() + `\n      ${declaration.meta.desc}`;
 }

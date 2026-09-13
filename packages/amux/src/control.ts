@@ -20,6 +20,7 @@ import { WireCommand } from "./commands.ts";
 import { DaemonEvent } from "./effect/EventBus.ts";
 import { AgentEvent } from "./effect/AttachProtocol.ts";
 import { MAX_RPC_BYTES } from "./limits.ts";
+import { PluginDeclarationsSchema } from "./plugin-behaviour.ts";
 import { PluginHostStatusSchema } from "./plugin-host/rpc.ts";
 import { SessionStateSchema } from "./session.ts";
 import { WorkspaceCommandContextSchema } from "./workspace.ts";
@@ -85,6 +86,10 @@ const BatchResultSchema = S.Struct({ outputs: S.Array(BatchOutputSchema) });
 export class ControlRpcs extends RpcGroup.make(
   Rpc.make("Ping", { success: AttachInfoSchema, error: ControlError }),
   Rpc.make("Status", { success: StatusSchema, error: ControlError }),
+  Rpc.make("PluginDeclarations", {
+    success: PluginDeclarationsSchema,
+    error: ControlError,
+  }),
   Rpc.make("Stop", { success: S.Void, error: ControlError }),
   Rpc.make("Batch", {
     payload: {

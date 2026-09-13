@@ -42,6 +42,7 @@ import {
 import { BunRuntime } from "@effect/platform-bun";
 import type { RuntimeCommand } from "./commands.ts";
 import type { JsonValue } from "./effect/AttachProtocol.ts";
+import type { PluginCommandDeclaration } from "./plugin-behaviour.ts";
 
 const writeOut = (text: string) => process.stdout.write(text + "\n");
 const writeErr = (text: string) => process.stderr.write(text + "\n");
@@ -102,7 +103,14 @@ export function splitCommandArgs(argv: readonly string[]): string[][] {
  * `--session` is a CLI-level flag: it selects the daemon, never a command
  * argument. Accepts the target string directly (not a CommandTag) so this
  * file avoids importing the full commands module.
+ * A `workspace` target always resolves (flag, then AMUX_DAEMON_SESSION, then
+ * `default`); only `session` can return null outside a managed pane.
  */
+export function resolveCommandSession(target: "workspace", sessionFlag: string | undefined): string;
+export function resolveCommandSession(
+  target: string,
+  sessionFlag: string | undefined,
+): string | null;
 export function resolveCommandSession(
   target: string,
   sessionFlag: string | undefined,
@@ -146,6 +154,32 @@ function stripSessionFlag(
 }
 
 /**
+ * Core help plus any plugin declarations a live session daemon reports.
+ * Never starts a daemon; appends the daemon note when none answers.
+ */
+const pluginAwareHelpText = Effect.fnUntraced(function* (sessionFlag: string | undefined) {
+  const [
+    { generateHelp, PLUGIN_COMMANDS_DAEMON_NOTE },
+    { fetchPluginDeclarations },
+    { BunFileSystem },
+    { SessionStore },
+  ] = yield* Effect.promise(() =>
+    Promise.all([
+      import("./command-cli.ts"),
+      import("./fetch-plugin-declarations.ts"),
+      import("@effect/platform-bun"),
+      import("./session.ts"),
+    ]),
+  );
+  const fetched = yield* fetchPluginDeclarations(
+    resolveCommandSession("workspace", sessionFlag),
+  ).pipe(Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))));
+  let text = generateHelp(fetched.commands);
+  if (!fetched.daemonAnswered) text += "\n\n" + PLUGIN_COMMANDS_DAEMON_NOTE;
+  return text;
+});
+
+/**
  * A plugin's own CLI subcommand — a setup verb like an agent-hook installer,
  * not a second command system. Building the CLI's plugin host costs real
  * time (it loads every configured plugin), so this runs only on the fallback
@@ -155,10 +189,7 @@ const dispatchPluginCommand = Effect.fnUntraced(function* (sub: string, argv: st
   const { dispatchCliCommand } = yield* Effect.promise(() => import("./plugin/cli-host.ts"));
   const result = yield* Effect.promise(() => dispatchCliCommand(sub, argv));
   if ("code" in result) return result.code;
-  const [{ generateHelp }, { daemonCommandRecords }] = yield* Effect.promise(() =>
-    Promise.all([import("./command-cli.ts"), import("./plugin/daemon-command-host.ts")]),
-  );
-  let text = generateHelp(yield* Effect.promise(() => daemonCommandRecords()));
+  let text = yield* pluginAwareHelpText(undefined);
   if (result.refused.length > 0) {
     text +=
       "\n\nPlugins unavailable outside an attached client:\n" +
@@ -174,12 +205,12 @@ function main(): Effect.Effect<number> {
     const sub = argv[0];
 
     if (sub === "help" || sub === "--help" || sub === "-h") {
-      const [{ generateHelp }, { daemonCommandRecords }] = yield* Effect.promise(() =>
-        Promise.all([import("./command-cli.ts"), import("./plugin/daemon-command-host.ts")]),
-      );
-      process.stdout.write(
-        generateHelp(yield* Effect.promise(() => daemonCommandRecords())) + "\n",
-      );
+      const stripped = stripSessionFlag(argv.slice(1));
+      if ("error" in stripped) {
+        writeErr(`error: ${stripped.error}`);
+        return 2;
+      }
+      process.stdout.write((yield* pluginAwareHelpText(stripped.session)) + "\n");
       return 0;
     }
 
@@ -303,27 +334,67 @@ function main(): Effect.Effect<number> {
     // `new`, an out-of-schema plugin verb (its own single-command path
     // below, matched by prefix alone), and a bare session-id attach never
     // consult daemonCommandByTag — they dispatch on sub alone, without ever
-    // reaching parseCommandGroup/isCommandTag. Booting a plugin host to
-    // build a map none of them will read would just tax those paths
+    // reaching parseCommandGroup/isCommandTag. Asking a daemon for
+    // declarations none of them will read would just tax those paths
     // (notably runClient's nesting-guard refusal) for nothing. Every core
     // and daemon command tag is dot-namespaced ("pane.split", "agent.new"),
     // so a bare, dot-free sub unambiguously can't be one — the only shape a
     // real session id takes here, since a dotted sub must still be checked
     // against daemonCommands in case it names a plugin verb.
-    const daemonCommands =
+    const commandGroups = splitCommandArgs(argv);
+    const needsDeclarations =
       sub !== "new" &&
       !sub.startsWith("plugin.") &&
       !(!sub.includes(".") && isSessionId(sub)) &&
-      splitCommandArgs(argv).some((group) => group[0] !== undefined && !isCoreCommandTag(group[0]))
-        ? yield* Effect.promise(() =>
-            import("./plugin/daemon-command-host.ts").then(({ daemonCommandRecords }) =>
-              daemonCommandRecords(),
-            ),
-          )
-        : [];
-    const daemonCommandByTag = new Map(
-      daemonCommands.map((record) => [record.command.tag, record]),
-    );
+      commandGroups.some((group) => group[0] !== undefined && !isCoreCommandTag(group[0]));
+    let daemonCommands: readonly PluginCommandDeclaration[] = [];
+    let daemonAnswered = false;
+    if (needsDeclarations) {
+      let sessionFlag: string | undefined;
+      for (const group of commandGroups) {
+        const cleaned = group.slice(1).filter((arg) => arg !== "--no-focus");
+        const stripped = stripSessionFlag(cleaned);
+        if ("error" in stripped) {
+          writeErr(`error: ${stripped.error}`);
+          return 2;
+        }
+        if (stripped.session !== undefined) {
+          if (sessionFlag !== undefined && stripped.session !== sessionFlag) {
+            writeErr("error: chained commands must target the same daemon session");
+            return 2;
+          }
+          sessionFlag = stripped.session;
+        }
+      }
+      const sessionId = resolveCommandSession("workspace", sessionFlag);
+      const { BunFileSystem } = yield* Effect.promise(() => import("@effect/platform-bun"));
+      // agent.new is a plugin daemon command (plugin-agent-harness), so
+      // needsDeclarations is already true; start the daemon before fetching
+      // its declaration so `agent.new ; <plugin verb>` can parse.
+      if (commandGroups.some((group) => group[0] === "agent.new")) {
+        const { ensureDaemon } = yield* Effect.promise(() => import("./client.ts"));
+        const started = yield* ensureDaemon(sessionId).pipe(
+          Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              writeErr(`error: ${String(error)}`);
+              return false;
+            }),
+          ),
+        );
+        if (!started) return 1;
+      }
+      const { fetchPluginDeclarations } = yield* Effect.promise(
+        () => import("./fetch-plugin-declarations.ts"),
+      );
+      const fetched = yield* fetchPluginDeclarations(sessionId).pipe(
+        Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
+      );
+      daemonCommands = fetched.commands;
+      daemonAnswered = fetched.daemonAnswered;
+    }
+    const daemonCommandByTag = new Map(daemonCommands.map((record) => [record.tag, record]));
     type CommandTag = string;
     type CommandContext = {
       size: { cols: number; rows: number };
@@ -390,8 +461,16 @@ function main(): Effect.Effect<number> {
     > {
       return Effect.sync(() => {
         const tag = argv[0];
-        if (!tag || !isCommandTag(tag))
-          return { errors: [`unknown command: ${tag === undefined ? '""' : `"${tag}"`}`] };
+        if (!tag || !isCommandTag(tag)) {
+          const quoted = tag === undefined ? '""' : `"${tag}"`;
+          const message = `unknown command: ${quoted}`;
+          if (needsDeclarations && !daemonAnswered) {
+            return {
+              errors: [`${message} (plugin commands need the session daemon to be running)`],
+            };
+          }
+          return { errors: [message] };
+        }
 
         const stripped = stripSessionFlag(argv.slice(1));
         if ("error" in stripped) return { errors: [stripped.error] };
@@ -506,7 +585,7 @@ function main(): Effect.Effect<number> {
         const targetId: string | null = resolveCommandSession(
           isCoreCommandTag(parsed.tag)
             ? commandDefinition(parsed.tag).target
-            : (daemonCommandByTag.get(parsed.tag)?.command.meta.target ?? "workspace"),
+            : (daemonCommandByTag.get(parsed.tag)?.meta.target ?? "workspace"),
           parsed.sessionFlag,
         );
         if (!targetId) {
@@ -526,20 +605,6 @@ function main(): Effect.Effect<number> {
       }
 
       const { BunFileSystem } = yield* Effect.promise(() => import("@effect/platform-bun"));
-      if (cmds.some((command) => command._tag === "agent.new")) {
-        const { ensureDaemon } = yield* Effect.promise(() => import("./client.ts"));
-        const started = yield* ensureDaemon(id!).pipe(
-          Effect.provide(SessionStore.layer.pipe(Layer.provideMerge(BunFileSystem.layer))),
-          Effect.as(true),
-          Effect.catch((error) =>
-            Effect.sync(() => {
-              writeErr(`error: ${String(error)}`);
-              return false;
-            }),
-          ),
-        );
-        if (!started) return 1;
-      }
       const prompt = cmds.length === 1 && cmds[0] && isPromptCommand(cmds[0]) ? cmds[0] : undefined;
       const watch = cmds.length === 1 && cmds[0] && isWatchCommand(cmds[0]) ? cmds[0] : undefined;
       if (watch) {

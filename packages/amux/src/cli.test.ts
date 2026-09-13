@@ -1,11 +1,36 @@
 /** @effect-diagnostics *:skip-file -- plain-async by design: SolidJS/opentui render tree, or a real OS boundary (PTY/socket/subprocess) this suite deliberately drives unmocked. See the seam documented in packages/amux/src/harness.ts. */
-import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect } from "effect";
+import { ConfigProvider, Effect, Layer, Path, Scope } from "effect";
+import * as FileSystem from "effect/FileSystem";
+import { BunFileSystem } from "@effect/platform-bun";
 import { resolveCommandSession, splitCommandArgs } from "./cli.ts";
+import { startDaemon, type SessionDaemonService } from "./daemon.ts";
+import { SessionStore } from "./session.ts";
 import { testEffect } from "./test-effect.ts";
+import { registerCleanup, tempDir } from "./test-tmp.ts";
+
+registerCleanup();
+
+const daemons: SessionDaemonService[] = [];
+afterEach(async () => {
+  for (const daemon of daemons.splice(0)) await Effect.runPromise(daemon.stop).catch(() => {});
+});
+
+const runDaemon = <A, E>(
+  effect: Effect.Effect<A, E, SessionStore | FileSystem.FileSystem | Path.Path | Scope.Scope>,
+  env: NodeJS.ProcessEnv,
+) =>
+  Effect.runPromise(
+    Effect.scoped(effect).pipe(
+      Effect.provide(
+        SessionStore.layer.pipe(Layer.provideMerge(Layer.merge(BunFileSystem.layer, Path.layer))),
+      ),
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(env)),
+    ),
+  );
 
 test("escaped shell semicolons divide command argument groups", () => {
   expect(splitCommandArgs(["pane.split", "row", ";", "pane.focus", "right"])).toEqual([
@@ -160,43 +185,146 @@ test("a client launch refuses to nest inside a pane amux already owns", () => {
   expect(Buffer.from(result.stdout).toString()).toBe("");
 });
 
-testEffect("--help prints the derived help, not a stale static copy", () =>
+testEffect("--help prints core help plus the daemon note when no daemon answers", () =>
   Effect.gen(function* () {
-    const { generateHelp } = yield* Effect.promise(() => import("./command-cli.ts"));
-    const { daemonCommandRecords } = yield* Effect.promise(
-      () => import("./plugin/daemon-command-host.ts"),
+    const { generateHelp, PLUGIN_COMMANDS_DAEMON_NOTE } = yield* Effect.promise(
+      () => import("./command-cli.ts"),
     );
-    const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"], {
-      env: process.env,
-    });
-    const stdout = Buffer.from(result.stdout).toString();
-    expect(result.exitCode).toBe(0);
-    expect(stdout).toBe(generateHelp(yield* Effect.promise(() => daemonCommandRecords())) + "\n");
+    const home = mkdtempSync(join(tmpdir(), "amux-help-no-daemon-"));
+    try {
+      const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+      const env = {
+        ...clean,
+        HOME: home,
+        XDG_STATE_HOME: join(home, "state"),
+        XDG_CONFIG_HOME: join(home, "config"),
+      };
+      const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"], {
+        env,
+      });
+      const stdout = Buffer.from(result.stdout).toString();
+      expect(result.exitCode).toBe(0);
+      expect(stdout).toBe(generateHelp() + "\n\n" + PLUGIN_COMMANDS_DAEMON_NOTE + "\n");
+      expect(stdout).not.toContain("editor.open");
+      // Help must not start a daemon: no lease under the isolated state home.
+      const stateDir = join(home, "state", "amux");
+      expect(existsSync(stateDir) ? readdirSync(stateDir).length : 0).toBe(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   }),
 );
 
-test("configured editor contributes editor.open to CLI help without a missing daemon warning", () => {
-  const configHome = mkdtempSync(join(tmpdir(), "amux-editor-help-"));
+test("a plugin daemon tag with no daemon falls through to help with the daemon note", () => {
+  const home = mkdtempSync(join(tmpdir(), "amux-no-daemon-cmd-"));
   try {
-    const configDir = join(configHome, "amux");
-    mkdirSync(configDir, { recursive: true });
-    writeFileSync(
-      join(configDir, "config.json"),
-      JSON.stringify({
+    const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+    const env: NodeJS.ProcessEnv = {
+      ...clean,
+      HOME: home,
+      XDG_STATE_HOME: join(home, "state"),
+      XDG_CONFIG_HOME: join(home, "config"),
+    };
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, "packages/amux/src/cli.ts", "editor.open"],
+      env,
+    });
+    const stdout = Buffer.from(result.stdout).toString();
+    expect(result.exitCode).toBe(0);
+    expect(stdout).toContain("Plugin commands appear when the session daemon is running.");
+    expect(stdout).not.toContain("editor.open");
+    const stateDir = join(home, "state", "amux");
+    expect(existsSync(stateDir) ? readdirSync(stateDir).length : 0).toBe(0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a later chain group names the daemon requirement when no daemon answers", () => {
+  const home = mkdtempSync(join(tmpdir(), "amux-chain-no-daemon-"));
+  try {
+    const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+    const env: NodeJS.ProcessEnv = {
+      ...clean,
+      HOME: home,
+      XDG_STATE_HOME: join(home, "state"),
+      XDG_CONFIG_HOME: join(home, "config"),
+    };
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "packages/amux/src/cli.ts",
+        "pane.focus",
+        "right",
+        ";",
+        "editor.open",
+      ],
+      env,
+    });
+    expect(result.exitCode).toBe(2);
+    expect(Buffer.from(result.stderr).toString()).toContain(
+      'unknown command: "editor.open" (plugin commands need the session daemon to be running)',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("with a daemon, --help lists plugin daemon commands and a plugin verb parses", async () => {
+  const home = tempDir("cli-help-daemon");
+  const configHome = join(home, "config");
+  const editor = new URL("../../editor", import.meta.url).pathname;
+  mkdirSync(join(configHome, "amux"), { recursive: true });
+  writeFileSync(
+    join(configHome, "amux", "config.json"),
+    JSON.stringify({
+      plugins: [{ path: editor, enabled: true }],
+    }),
+  );
+  const env: NodeJS.ProcessEnv = {
+    HOME: home,
+    XDG_STATE_HOME: join(home, "state"),
+    XDG_CONFIG_HOME: configHome,
+  };
+  const id = "cli-help-daemon";
+  const daemon = await runDaemon(
+    startDaemon(id, {
+      pluginConfig: {
         options: {},
         keys: { prefix: "ctrl+a", leader: "space", bindings: {} },
-        plugins: [{ path: join(import.meta.dir, "../../editor"), enabled: true }],
+        plugins: [{ path: editor, enabled: true }],
         permissions: [],
         layoutRules: [],
-      }),
-    );
-    const result = Bun.spawnSync([process.execPath, "packages/amux/src/cli.ts", "--help"], {
-      env: { ...process.env, XDG_CONFIG_HOME: configHome },
+      },
+    }),
+    env,
+  );
+  daemons.push(daemon);
+
+  // Async spawn: the daemon runs in this process, so spawnSync would block the
+  // event loop and the child could never complete its control RPC.
+  const { AMUX_DAEMON_SESSION: _session, ...clean } = process.env;
+  const runCli = async (args: string[]) => {
+    const child = Bun.spawn({
+      cmd: [process.execPath, "packages/amux/src/cli.ts", ...args],
+      env: { ...clean, ...env },
+      stdout: "pipe",
+      stderr: "pipe",
     });
-    expect(result.exitCode).toBe(0);
-    expect(Buffer.from(result.stdout).toString()).toContain("editor.open");
-    expect(Buffer.from(result.stderr).toString()).not.toContain("src/daemon");
-  } finally {
-    rmSync(configHome, { recursive: true, force: true });
-  }
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { exitCode, stdout, stderr };
+  };
+
+  const help = await runCli(["--help", `--session=${id}`]);
+  expect(help.exitCode).toBe(0);
+  expect(help.stdout).toContain("editor.open");
+  expect(help.stdout).not.toContain("Plugin commands appear when the session daemon is running.");
+
+  const verb = await runCli(["editor.open", "--split", `--session=${id}`]);
+  expect(verb.stderr).toBe("");
+  expect(verb.exitCode).toBe(0);
 });

@@ -1838,6 +1838,8 @@ export const makeDaemonService = Effect.fnUntraced(
           }),
         ),
 
+      PluginDeclarations: () => guard(pluginBehaviour.declarations),
+
       // The response must be written before shutdown closes the server that is
       // serving this very request, so the stop runs on a detached fiber.
       Stop: () =>

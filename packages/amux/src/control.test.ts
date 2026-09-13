@@ -163,6 +163,19 @@ test("ping and status answer over the session's unix socket", async () => {
   expect(status.agents).toHaveLength(1);
 });
 
+test("PluginDeclarations returns declared plugin commands over the wire", async () => {
+  const { daemon, env } = await started("control-plugin-declarations");
+  const { PluginDeclarationsSchema } = await import("./plugin-behaviour.ts");
+  const viaRpc = await ctl(daemon.id, env, (c) => c.PluginDeclarations());
+  expect(Option.isSome(S.decodeUnknownOption(PluginDeclarationsSchema)(viaRpc))).toBe(true);
+  const editor = viaRpc.commands.find((entry) => entry.tag === "editor.open");
+  expect(editor).toMatchObject({
+    tag: "editor.open",
+    meta: { desc: expect.any(String), group: expect.any(String), target: expect.any(String) },
+    fields: expect.any(Object),
+  });
+});
+
 test("workspace JSON responses are schema-validated before projection", async () => {
   const { daemon, env } = await started("control-workspace-validation");
   const status = await ctl(daemon.id, env, (c) => c.Status());
